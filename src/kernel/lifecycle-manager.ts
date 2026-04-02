@@ -45,7 +45,7 @@ export function createLifecycleManager(opts: {
     },
 
     async shutdown() {
-      if (idleTimerId) clearTimeout(idleTimerId);
+      if (idleTimerId) clearInterval(idleTimerId);
       for (const aug of [...augments].reverse()) {
         try {
           if (aug.onShutdown) {
@@ -65,22 +65,21 @@ export function createLifecycleManager(opts: {
 
     stopIdleTimer() {
       if (idleTimerId) {
-        clearTimeout(idleTimerId);
+        clearInterval(idleTimerId);
         idleTimerId = null;
       }
     },
 
     resetIdleTimer() {
-      if (idleTimerId) clearTimeout(idleTimerId);
+      if (idleTimerId) clearInterval(idleTimerId);
       if (!idleCallback) return;
       const cb = idleCallback;
-      idleTimerId = setTimeout(async () => {
+      idleTimerId = setInterval(async () => {
         try {
           await cb();
         } catch {
           // Log and continue
         }
-        manager.resetIdleTimer();
       }, idleIntervalMs);
     },
 

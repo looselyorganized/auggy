@@ -1,11 +1,5 @@
-import type { z } from "zod";
-import type {
-  Augment,
-  Tool,
-  ToolCategory,
-  ContextBlock,
-  TurnState,
-} from "./types";
+import { z } from "zod";
+import type { Augment, Tool, ToolCategory } from "./types";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function defineTool<T extends z.ZodType<any, any, any>>(opts: {
@@ -20,42 +14,11 @@ export function defineTool<T extends z.ZodType<any, any, any>>(opts: {
     description: opts.description,
     category: opts.category,
     input: opts.input,
+    inputJsonSchema: z.toJSONSchema(opts.input) as Record<string, unknown>,
     execute: opts.execute,
   };
 }
 
-export function defineAugment(
-  opts: Omit<Augment, "context"> & {
-    context?: (
-      turn: TurnState,
-      priorContext?: ContextBlock[],
-    ) => Promise<ContextBlock[] | string>;
-  },
-): Augment {
-  const { context: rawContext, ...rest } = opts;
-
-  if (!rawContext) return { ...rest };
-
-  const wrappedContext = async (
-    turn: TurnState,
-    priorContext?: ContextBlock[],
-  ): Promise<ContextBlock[] | string> => {
-    const result = await rawContext(turn, priorContext);
-    if (typeof result === "string") {
-      return [
-        {
-          source: opts.name,
-          content: result,
-          placement: "preamble",
-          provenance: "augment",
-          priority: "normal",
-          eviction: "drop",
-          origin: "system",
-        },
-      ];
-    }
-    return result;
-  };
-
-  return { ...rest, context: wrappedContext };
+export function defineAugment(opts: Augment): Augment {
+  return opts;
 }

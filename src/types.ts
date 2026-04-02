@@ -32,6 +32,7 @@ export interface Tool<TInput = any> {
   category: ToolCategory;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   input: z.ZodType<TInput, any, any>;
+  inputJsonSchema?: Record<string, unknown>;
   execute: (input: TInput) => Promise<string>;
 }
 

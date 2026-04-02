@@ -36,28 +36,20 @@ describe("defineTool", () => {
 });
 
 describe("defineAugment", () => {
-  it("creates an augment with defaults", () => {
+  it("creates an augment and passes through all fields", () => {
     const aug = defineAugment({ name: "test" });
     expect(aug.name).toBe("test");
   });
 
-  it("wraps string context() return in a ContextBlock", async () => {
+  it("preserves string-returning context (kernel handles wrapping)", async () => {
     const aug = defineAugment({
       name: "notes",
       context: async () => "Some notes",
     });
 
-    const blocks = await aug.context!(stubTurn, undefined);
-
-    expect(Array.isArray(blocks)).toBe(true);
-    const arr = blocks as ContextBlock[];
-    expect(arr).toHaveLength(1);
-    expect(arr[0]!.source).toBe("notes");
-    expect(arr[0]!.content).toBe("Some notes");
-    expect(arr[0]!.placement).toBe("preamble");
-    expect(arr[0]!.priority).toBe("normal");
-    expect(arr[0]!.eviction).toBe("drop");
-    expect(arr[0]!.origin).toBe("system");
+    const result = await aug.context!(stubTurn, undefined);
+    // defineAugment passes through — the string is returned as-is
+    expect(result).toBe("Some notes");
   });
 
   it("passes through ContextBlock[] return unchanged", async () => {

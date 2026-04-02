@@ -1,4 +1,3 @@
-import { z } from "zod";
 import type { Tool, TurnState, ToolDefinition } from "../types";
 
 export interface ToolSelectionResult {
@@ -36,7 +35,7 @@ export function selectTools(
   const definitions: ToolDefinition[] = mounted.map((t) => ({
     name: t.name,
     description: t.description,
-    inputSchema: z.toJSONSchema(t.input) as Record<string, unknown>,
+    inputSchema: t.inputJsonSchema ?? {},
   }));
 
   return {
