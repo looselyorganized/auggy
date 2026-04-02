@@ -1,0 +1,79 @@
+import type { TurnTrace } from "../types";
+
+export interface TraceEmitter {
+  startTurn(opts: {
+    turnId: string;
+    threadId: string;
+    trigger: TurnTrace["trigger"];
+  }): TurnTrace;
+
+  recordContextAssembly(
+    trace: TurnTrace,
+    data: TurnTrace["contextAssembly"],
+  ): void;
+  recordToolSelection(
+    trace: TurnTrace,
+    data: TurnTrace["toolSelection"],
+  ): void;
+  recordInference(trace: TurnTrace, data: TurnTrace["inference"]): void;
+  recordCapabilityCheck(
+    trace: TurnTrace,
+    check: { tool: string; result: "allowed" | "needs-approval" | "denied" },
+  ): void;
+  finalize(trace: TurnTrace): void;
+}
+
+export function createTraceEmitter(): TraceEmitter {
+  return {
+    startTurn(opts): TurnTrace {
+      return {
+        turnId: opts.turnId,
+        threadId: opts.threadId,
+        timestamp: Date.now(),
+        duration: 0,
+        trigger: opts.trigger,
+        contextAssembly: {
+          augmentBlocks: [],
+          historyTokens: 0,
+          totalTokens: 0,
+          budgetUsed: 0,
+        },
+        toolSelection: {
+          totalTools: 0,
+          phase1Used: false,
+          mountedTools: [],
+          withheldTools: [],
+        },
+        inference: {
+          model: "",
+          inputTokens: 0,
+          outputTokens: 0,
+          durationMs: 0,
+          toolCalls: [],
+          cost: { inputCost: 0, outputCost: 0, total: 0 },
+        },
+        capabilityChecks: [],
+      };
+    },
+
+    recordContextAssembly(trace, data) {
+      trace.contextAssembly = data;
+    },
+
+    recordToolSelection(trace, data) {
+      trace.toolSelection = data;
+    },
+
+    recordInference(trace, data) {
+      trace.inference = data;
+    },
+
+    recordCapabilityCheck(trace, check) {
+      trace.capabilityChecks.push(check);
+    },
+
+    finalize(trace) {
+      trace.duration = Date.now() - trace.timestamp;
+    },
+  };
+}
