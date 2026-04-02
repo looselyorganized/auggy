@@ -323,4 +323,67 @@ describe("TurnLoop", () => {
     // If parallel: ~100ms. If sequential: ~300ms. Allow margin.
     expect(elapsed).toBeLessThan(250);
   });
+
+  it("stops gracefully when model returns finishReason 'length'", async () => {
+    const model = createMockModel();
+    model.pushResponse({
+      content: "I was cut off mid-sen",
+      finishReason: "max_tokens",
+    });
+
+    const loop = createTurnLoop({
+      augments: [],
+      model,
+      tokenizer: createTokenizer(),
+      config: { name: "test", model: "mock", augments: [] },
+    });
+
+    const result = await loop.executeTurn(makeTrigger("Write a long essay"), "thread-h9");
+    expect(result.success).toBe(true);
+    expect(result.response?.text).toBe("I was cut off mid-sen");
+    // Model should only be called once — no re-inference after length stop
+    expect(model.calls).toHaveLength(1);
+  });
+
+  it("stops after tool execution if next inference returns finishReason 'max_tokens'", async () => {
+    const model = createMockModel();
+    // First call: tool request
+    model.pushResponse({
+      content: "",
+      toolCalls: [{ name: "echo", arguments: { input: "test" } }],
+      finishReason: "tool_use",
+    });
+    // Second call: model gets cut off
+    model.pushResponse({
+      content: "Started to respond but was cu",
+      finishReason: "max_tokens",
+    });
+
+    const echoAugment: Augment = {
+      name: "echo-aug",
+      tools: [
+        {
+          name: "echo",
+          description: "Echo",
+          category: "meta",
+          input: z.object({ input: z.string() }),
+          execute: async ({ input }) => `echoed-${input}`,
+        },
+      ],
+    };
+
+    const loop = createTurnLoop({
+      augments: [echoAugment],
+      model,
+      tokenizer: createTokenizer(),
+      config: { name: "test", model: "mock", augments: [] },
+    });
+
+    const result = await loop.executeTurn(makeTrigger("Go"), "thread-h9b");
+    expect(result.success).toBe(true);
+    expect(result.response?.text).toBe("Started to respond but was cu");
+    // Tool executed, then model called again, got max_tokens, loop stops
+    expect(model.calls).toHaveLength(2);
+    expect(result.toolCalls).toHaveLength(1);
+  });
 });

@@ -12,14 +12,10 @@ describe("defineAgent", () => {
     const model = createMockModel({ response: "Hello!" });
     const transport = createMockTransport();
 
-    const agent = defineAgent({
-      config: {
-        name: "test-agent",
-        model: "mock",
-        augments: [transport.augment],
-      },
+    const agent = defineAgent(
+      { name: "test-agent", model: "mock", augments: [transport.augment] },
       model,
-    });
+    );
 
     await agent.start();
     const health = agent.health();
@@ -33,8 +29,8 @@ describe("defineAgent", () => {
     const model = createMockModel({ response: "I am a test agent." });
     const transport = createMockTransport();
 
-    const agent = defineAgent({
-      config: {
+    const agent = defineAgent(
+      {
         name: "test-agent",
         model: "mock",
         augments: [
@@ -43,7 +39,7 @@ describe("defineAgent", () => {
         ],
       },
       model,
-    });
+    );
 
     await agent.start();
     const result = await transport.sendMessage("Who are you?");
@@ -87,14 +83,10 @@ describe("defineAgent", () => {
 
     const transport = createMockTransport();
 
-    const agent = defineAgent({
-      config: {
-        name: "math-agent",
-        model: "mock",
-        augments: [mathAugment, transport.augment],
-      },
+    const agent = defineAgent(
+      { name: "math-agent", model: "mock", augments: [mathAugment, transport.augment] },
       model,
-    });
+    );
 
     await agent.start();
     const result = await transport.sendMessage("What is 2 + 3?");
@@ -109,14 +101,10 @@ describe("defineAgent", () => {
   it("provides inject() for test-mode triggers", async () => {
     const model = createMockModel({ response: "Injected response" });
 
-    const agent = defineAgent({
-      config: {
-        name: "test-agent",
-        model: "mock",
-        augments: [],
-      },
+    const agent = defineAgent(
+      { name: "test-agent", model: "mock", augments: [] },
       model,
-    });
+    );
 
     await agent.start();
     const result = await agent.inject({
@@ -146,19 +134,14 @@ describe("defineAgent", () => {
 
   it("reports health with augment status", async () => {
     const model = createMockModel();
-    const agent = defineAgent({
-      config: {
+    const agent = defineAgent(
+      {
         name: "test-agent",
         model: "mock",
-        augments: [
-          {
-            name: "healthy-aug",
-            onBoot: async () => {},
-          },
-        ],
+        augments: [{ name: "healthy-aug", onBoot: async () => {} }],
       },
       model,
-    });
+    );
 
     await agent.start();
     const health = agent.health();
@@ -171,8 +154,8 @@ describe("defineAgent", () => {
     const model = createMockModel({ response: "Hello" });
     let turnEndCalled = false;
 
-    const agent = defineAgent({
-      config: {
+    const agent = defineAgent(
+      {
         name: "test-agent",
         model: "mock",
         augments: [
@@ -185,7 +168,7 @@ describe("defineAgent", () => {
         ],
       },
       model,
-    });
+    );
 
     await agent.start();
     await agent.inject({
@@ -207,7 +190,6 @@ describe("defineAgent", () => {
       },
     });
 
-    // Give fire-and-forget hooks a moment to complete
     await new Promise((r) => setTimeout(r, 50));
     expect(turnEndCalled).toBe(true);
 

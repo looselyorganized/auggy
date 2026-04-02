@@ -22,8 +22,12 @@ import {
   type HistoryManager,
 } from "./history-manager";
 
+export interface TurnLoopOptions {
+  signal?: AbortSignal;
+}
+
 export interface TurnLoop {
-  executeTurn(trigger: TurnTrigger, threadId: string): Promise<TurnResult>;
+  executeTurn(trigger: TurnTrigger, threadId: string, options?: TurnLoopOptions): Promise<TurnResult>;
   getHistoryManager(threadId: string): HistoryManager;
 }
 
@@ -64,7 +68,9 @@ export function createTurnLoop(opts: {
     async executeTurn(
       trigger: TurnTrigger,
       threadId: string,
+      options?: TurnLoopOptions,
     ): Promise<TurnResult> {
+      const signal = options?.signal;
       const peer = trigger.peer ?? null;
       const turnState: TurnState = {
         turnId: trigger.turnId,
@@ -76,6 +82,8 @@ export function createTurnLoop(opts: {
         metadata: {},
       };
 
+      const toolCallRecords: ToolCallRecord[] = [];
+
       const trace = traceEmitter.startTurn({
         turnId: trigger.turnId,
         threadId,
@@ -86,6 +94,21 @@ export function createTurnLoop(opts: {
           trustLevel: peer?.trustLevel,
         },
       });
+
+      function makeAbortResult(): TurnResult {
+        traceEmitter.finalize(trace);
+        return {
+          turnId: trigger.turnId,
+          success: false,
+          errorResponse: "Turn was aborted.",
+          toolCalls: toolCallRecords,
+          trace,
+          error: { message: "Turn aborted via AbortSignal", source: "kernel" },
+        };
+      }
+
+      // Check abort before starting work
+      if (signal?.aborted) return makeAbortResult();
 
       const history = getOrCreateHistory(threadId);
 
@@ -205,12 +228,12 @@ export function createTurnLoop(opts: {
       });
 
       // Inference + tool execution loop
-      const toolCallRecords: ToolCallRecord[] = [];
       const consecutiveFailures = new Map<string, number>();
       let inferenceCount = 0;
       const maxInferenceLoops = 10;
 
       while (inferenceCount < maxInferenceLoops) {
+        if (signal?.aborted) return makeAbortResult();
         inferenceCount++;
         const inferStart = Date.now();
         const response = await model.complete(currentPrompt);
@@ -236,8 +259,8 @@ export function createTurnLoop(opts: {
           });
         }
 
-        // No tool calls — we're done
-        if (!response.toolCalls?.length || response.finishReason === "end_turn") {
+        // No tool calls, end_turn, or context window exhausted — we're done
+        if (!response.toolCalls?.length || response.finishReason === "end_turn" || response.finishReason === "max_tokens") {
           traceEmitter.finalize(trace);
           return {
             turnId: trigger.turnId,
@@ -390,6 +413,9 @@ export function createTurnLoop(opts: {
             trace,
           };
         }
+
+        // Check abort after tool execution
+        if (signal?.aborted) return makeAbortResult();
 
         // Rebuild prompt with updated history
         const updatedHistory = history.getHistory(historyBudget);

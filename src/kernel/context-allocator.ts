@@ -38,8 +38,19 @@ export function createContextAllocator(config: ContextAllocatorConfig) {
       const toolBudget = Math.floor(
         config.maxTokens * (config.toolSchemaPercent / 100),
       );
-      const contextBudget =
-        config.maxTokens - historyBudget - toolBudget - preambleTokens;
+
+      // Count actual tool schema tokens
+      const toolSchemaTokens = tools.reduce((sum, t) => {
+        const schemaStr = JSON.stringify(t);
+        return sum + config.tokenizer.count(schemaStr);
+      }, 0);
+
+      // If tools exceed their budget, they eat into the context budget
+      const effectiveToolTokens = Math.max(toolSchemaTokens, toolBudget);
+      const contextBudget = Math.max(
+        0,
+        config.maxTokens - historyBudget - effectiveToolTokens - preambleTokens,
+      );
 
       // Compute token counts for blocks that don't have them
       for (const block of augmentBlocks) {
@@ -99,7 +110,7 @@ export function createContextAllocator(config: ContextAllocatorConfig) {
         (sum, m) => sum + m.tokenCount,
         0,
       );
-      const totalTokens = preambleTokens + contextUsed + historyTokens;
+      const totalTokens = preambleTokens + contextUsed + historyTokens + toolSchemaTokens;
 
       return {
         systemBlocks,

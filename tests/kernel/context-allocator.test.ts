@@ -162,4 +162,56 @@ describe("ContextAllocator", () => {
       prompt.contextBlocks.some((b) => b.includes("Some regular context")),
     ).toBe(true);
   });
+
+  it("tracks tool schema tokens in totalTokens", () => {
+    const allocator = createContextAllocator({
+      maxTokens: 1000,
+      historyPercent: 40,
+      toolSchemaPercent: 10,
+      tokenizer,
+      preamble: "P",
+    });
+
+    const toolDefs = [
+      {
+        name: "big_tool",
+        description: "A".repeat(200),
+        inputSchema: { type: "object", properties: {} },
+      },
+    ];
+
+    const prompt = allocator.assemble([], [], toolDefs);
+    // totalTokens should include tool schema tokens
+    expect(prompt.totalTokens).toBeGreaterThan(0);
+  });
+
+  it("reduces context budget when tool schemas are large", () => {
+    // maxTokens=300, history=40%(120), toolBudget=10%(30), preamble~1
+    // Normal context budget: 300 - 120 - 30 - 1 = 149
+    // A block of ~120 tokens would fit in 149 budget.
+    //
+    // But tool schema is ~250 tokens (well over the 30 budget).
+    // Effective context budget: 300 - 120 - 250 - 1 = -71 → clamped to 0
+    // So the block gets evicted.
+    const allocator = createContextAllocator({
+      maxTokens: 300,
+      historyPercent: 40,
+      toolSchemaPercent: 10,
+      tokenizer,
+      preamble: "P",
+    });
+
+    const toolDefs = [
+      {
+        name: "huge_tool",
+        description: "X".repeat(1000), // ~250+ tokens when serialized
+        inputSchema: { type: "object", properties: { a: { type: "string" } } },
+      },
+    ];
+
+    const blocks = [block("extra", "E".repeat(100), "evictable")];
+
+    const prompt = allocator.assemble(blocks, [], toolDefs);
+    expect(prompt.evictions.some((e) => e.source === "extra")).toBe(true);
+  });
 });

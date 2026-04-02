@@ -13,11 +13,10 @@ import { createTokenizer } from "./tokenizer";
 import { createTurnLoop } from "./kernel/turn-loop";
 import { createLifecycleManager } from "./kernel/lifecycle-manager";
 
-export function defineAgent(opts: {
-  config: AgentConfig;
-  model: ModelClient;
-}): AgentHandle {
-  const { config, model } = opts;
+export function defineAgent(
+  config: AgentConfig,
+  model: ModelClient,
+): AgentHandle {
   const tokenizer = createTokenizer();
   const lifecycle = createLifecycleManager({
     name: config.name,
