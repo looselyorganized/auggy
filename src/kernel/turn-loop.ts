@@ -335,12 +335,14 @@ export function createTurnLoop(opts: {
           }),
         );
 
-        // Phase 3: Append all results to history in order
+        // Phase 3: Append all results to history in order with matching toolCallIds
         for (const { call, output, durationMs, isError } of execResults) {
           const callStr = JSON.stringify(call);
+          const toolCallId = crypto.randomUUID();
           history.append({
             id: crypto.randomUUID(),
             role: "tool_use",
+            toolCallId,
             content: callStr,
             timestamp: Date.now(),
             tokenCount: tokenizer.count(callStr),
@@ -348,6 +350,7 @@ export function createTurnLoop(opts: {
           history.append({
             id: crypto.randomUUID(),
             role: "tool_result",
+            toolCallId,
             content: output,
             timestamp: Date.now(),
             tokenCount: tokenizer.count(output),

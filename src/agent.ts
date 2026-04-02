@@ -119,8 +119,20 @@ export function defineAgent(opts: {
     },
 
     async inject(trigger: TurnTrigger): Promise<TurnResult> {
+      lifecycle.resetIdleTimer();
       const threadId = trigger.peer?.id ?? trigger.turnId;
-      return turnLoop.executeTurn(trigger, threadId);
+      const result = await turnLoop.executeTurn(trigger, threadId);
+
+      await dispatchOutbound(result, trigger);
+
+      // Run onTurnEnd hooks (non-blocking, same as transport path)
+      for (const a of config.augments) {
+        if (a.onTurnEnd) {
+          a.onTurnEnd(result).catch(() => {});
+        }
+      }
+
+      return result;
     },
   };
 

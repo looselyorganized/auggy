@@ -123,7 +123,7 @@ export interface TurnTrace {
     mountedTools: string[];
     withheldTools: string[];
   };
-  inference: {
+  inferenceSteps: {
     model: string;
     inputTokens: number;
     outputTokens: number;
@@ -135,7 +135,7 @@ export interface TurnTrace {
       approved: boolean;
     }[];
     cost: { inputCost: number; outputCost: number; total: number };
-  };
+  }[];
   capabilityChecks: {
     tool: string;
     result: "allowed" | "needs-approval" | "denied";
@@ -165,6 +165,7 @@ export interface Message {
   id: string;
   role: MessageRole;
   peerId?: string;
+  toolCallId?: string;
   content: string;
   timestamp: number;
   tokenCount: number;
@@ -181,6 +182,7 @@ export interface ToolDefinition {
 export interface AssembledPrompt {
   systemBlocks: string[];
   contextBlocks: string[];
+  assistantPreamble?: string[];
   messages: Message[];
   tools: ToolDefinition[];
   totalTokens: number;

@@ -1,5 +1,7 @@
 import type { TurnTrace } from "../types";
 
+type InferenceStep = TurnTrace["inferenceSteps"][number];
+
 export interface TraceEmitter {
   startTurn(opts: {
     turnId: string;
@@ -15,7 +17,7 @@ export interface TraceEmitter {
     trace: TurnTrace,
     data: TurnTrace["toolSelection"],
   ): void;
-  recordInference(trace: TurnTrace, data: TurnTrace["inference"]): void;
+  recordInference(trace: TurnTrace, data: InferenceStep): void;
   recordCapabilityCheck(
     trace: TurnTrace,
     check: { tool: string; result: "allowed" | "needs-approval" | "denied" },
@@ -44,14 +46,7 @@ export function createTraceEmitter(): TraceEmitter {
           mountedTools: [],
           withheldTools: [],
         },
-        inference: {
-          model: "",
-          inputTokens: 0,
-          outputTokens: 0,
-          durationMs: 0,
-          toolCalls: [],
-          cost: { inputCost: 0, outputCost: 0, total: 0 },
-        },
+        inferenceSteps: [],
         capabilityChecks: [],
       };
     },
@@ -65,7 +60,7 @@ export function createTraceEmitter(): TraceEmitter {
     },
 
     recordInference(trace, data) {
-      trace.inference = data;
+      trace.inferenceSteps.push(data);
     },
 
     recordCapabilityCheck(trace, check) {

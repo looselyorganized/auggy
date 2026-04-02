@@ -74,9 +74,10 @@ export function createContextAllocator(config: ContextAllocatorConfig) {
         }
       }
 
-      // Build system blocks and context strings
+      // Build system blocks, context strings, and assistant preamble
       const systemBlocks = [config.preamble];
       const contextStrings: string[] = [];
+      const assistantPreambleStrings: string[] = [];
 
       for (const block of included) {
         if (block.visibility === "pipeline-only") continue;
@@ -87,6 +88,8 @@ export function createContextAllocator(config: ContextAllocatorConfig) {
 
         if (block.placement === "system") {
           systemBlocks.push(wrapped);
+        } else if (block.placement === "assistant-preamble") {
+          assistantPreambleStrings.push(wrapped);
         } else {
           contextStrings.push(wrapped);
         }
@@ -101,6 +104,7 @@ export function createContextAllocator(config: ContextAllocatorConfig) {
       return {
         systemBlocks,
         contextBlocks: contextStrings,
+        assistantPreamble: assistantPreambleStrings.length > 0 ? assistantPreambleStrings : undefined,
         messages: history,
         tools,
         totalTokens,

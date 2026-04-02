@@ -58,8 +58,43 @@ describe("TraceEmitter", () => {
       cost: { inputCost: 0.003, outputCost: 0.003, total: 0.006 },
     });
 
-    expect(trace.inference.model).toBe("claude-sonnet-4-6");
-    expect(trace.inference.durationMs).toBe(1500);
+    expect(trace.inferenceSteps).toHaveLength(1);
+    expect(trace.inferenceSteps[0]!.model).toBe("claude-sonnet-4-6");
+    expect(trace.inferenceSteps[0]!.durationMs).toBe(1500);
+  });
+
+  it("accumulates multiple inference steps", () => {
+    const emitter = createTraceEmitter();
+    const trace = emitter.startTurn({
+      turnId: "t1",
+      threadId: "th1",
+      trigger: { type: "message" },
+    });
+
+    emitter.recordInference(trace, {
+      model: "claude-sonnet-4-6",
+      inputTokens: 1000,
+      outputTokens: 200,
+      durationMs: 1500,
+      toolCalls: [],
+      cost: { inputCost: 0.003, outputCost: 0.003, total: 0.006 },
+    });
+
+    emitter.recordInference(trace, {
+      model: "claude-sonnet-4-6",
+      inputTokens: 1200,
+      outputTokens: 100,
+      durationMs: 800,
+      toolCalls: [],
+      cost: { inputCost: 0.004, outputCost: 0.001, total: 0.005 },
+    });
+
+    expect(trace.inferenceSteps).toHaveLength(2);
+    const totalTokens = trace.inferenceSteps.reduce(
+      (sum, s) => sum + s.inputTokens + s.outputTokens,
+      0,
+    );
+    expect(totalTokens).toBe(2500);
   });
 
   it("finalizes with duration", () => {

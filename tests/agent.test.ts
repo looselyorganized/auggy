@@ -166,4 +166,51 @@ describe("defineAgent", () => {
 
     await agent.stop();
   });
+
+  it("inject() runs onTurnEnd hooks", async () => {
+    const model = createMockModel({ response: "Hello" });
+    let turnEndCalled = false;
+
+    const agent = defineAgent({
+      config: {
+        name: "test-agent",
+        model: "mock",
+        augments: [
+          {
+            name: "tracker",
+            onTurnEnd: async () => {
+              turnEndCalled = true;
+            },
+          },
+        ],
+      },
+      model,
+    });
+
+    await agent.start();
+    await agent.inject({
+      type: "message",
+      turnId: "test-turn",
+      timestamp: Date.now(),
+      source: "test",
+      peer: {
+        id: "tester",
+        kind: "human",
+        trustLevel: "operator",
+        sourceAugment: "test",
+      },
+      payload: {
+        text: "Test",
+        sourceAugment: "test",
+        peer: null,
+        timestamp: Date.now(),
+      },
+    });
+
+    // Give fire-and-forget hooks a moment to complete
+    await new Promise((r) => setTimeout(r, 50));
+    expect(turnEndCalled).toBe(true);
+
+    await agent.stop();
+  });
 });

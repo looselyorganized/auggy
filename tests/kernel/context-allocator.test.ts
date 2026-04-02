@@ -130,4 +130,36 @@ describe("ContextAllocator", () => {
     const prompt = allocator.assemble([], history, []);
     expect(prompt.messages).toHaveLength(2);
   });
+
+  it("places assistant-preamble blocks in assistantPreamble array", () => {
+    const allocator = createContextAllocator({
+      maxTokens: 10000,
+      historyPercent: 40,
+      toolSchemaPercent: 10,
+      tokenizer,
+      preamble: "P",
+    });
+
+    const blocks: ContextBlock[] = [
+      {
+        ...block("primer", "Start your response with a greeting"),
+        placement: "assistant-preamble",
+      },
+      block("context", "Some regular context"),
+    ];
+
+    const prompt = allocator.assemble(blocks, [], []);
+    // assistant-preamble should NOT be in contextBlocks
+    expect(
+      prompt.contextBlocks.some((b) => b.includes("Start your response")),
+    ).toBe(false);
+    // It should be in assistantPreamble
+    expect(prompt.assistantPreamble).toBeDefined();
+    expect(prompt.assistantPreamble!.length).toBe(1);
+    expect(prompt.assistantPreamble![0]).toContain("Start your response");
+    // Regular context should still be in contextBlocks
+    expect(
+      prompt.contextBlocks.some((b) => b.includes("Some regular context")),
+    ).toBe(true);
+  });
 });
