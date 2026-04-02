@@ -1,8 +1,9 @@
-import type { Message, Storage } from "../types";
+import type { Message, Storage, CompactionStrategy } from "../types";
 
 export interface HistoryManager {
   append(message: Message): void;
   getHistory(tokenBudget: number): Message[];
+  compact(tokenBudget: number, strategy: CompactionStrategy): void;
   save(storage: Storage): Promise<void>;
   restore(storage: Storage): Promise<void>;
   totalTokens(): number;
@@ -58,6 +59,52 @@ export function createHistoryManager(opts: {
       }
 
       return messages.slice(startIndex);
+    },
+
+    compact(tokenBudget: number, strategy: CompactionStrategy) {
+      const threshold = Math.floor(tokenBudget * 0.8);
+      if (runningTokens <= threshold) return;
+
+      if (strategy === "truncate" || strategy === "summarize") {
+        // summarize is treated as truncate in v1
+        // Drop oldest messages until under threshold, respecting atomic tool pairs
+        while (messages.length > 0 && runningTokens > threshold) {
+          const first = messages[0]!;
+          if (first.role === "tool_use" && messages.length > 1 && messages[1]!.role === "tool_result") {
+            // Drop the pair together
+            runningTokens -= first.tokenCount + messages[1]!.tokenCount;
+            messages.splice(0, 2);
+          } else if (first.role === "tool_result") {
+            // Orphaned tool_result — drop it
+            runningTokens -= first.tokenCount;
+            messages.splice(0, 1);
+          } else {
+            runningTokens -= first.tokenCount;
+            messages.splice(0, 1);
+          }
+        }
+      } else if (strategy === "sliding-window") {
+        // Keep newest messages that fit within threshold
+        let kept = 0;
+        let keepFrom = messages.length;
+        for (let i = messages.length - 1; i >= 0; i--) {
+          const msg = messages[i]!;
+          if (kept + msg.tokenCount > threshold) break;
+          // Ensure tool pairs stay together
+          if (msg.role === "tool_result" && i > 0 && messages[i - 1]!.role === "tool_use") {
+            const pairCost = msg.tokenCount + messages[i - 1]!.tokenCount;
+            if (kept + pairCost > threshold) break;
+            kept += pairCost;
+            keepFrom = i - 1;
+            i--; // skip tool_use
+          } else {
+            kept += msg.tokenCount;
+            keepFrom = i;
+          }
+        }
+        const removed = messages.splice(0, keepFrom);
+        runningTokens -= removed.reduce((s, m) => s + m.tokenCount, 0);
+      }
     },
 
     async save(storage: Storage) {

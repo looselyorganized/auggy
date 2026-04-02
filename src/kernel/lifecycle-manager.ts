@@ -1,4 +1,4 @@
-import type { Augment, AgentHealth } from "../types";
+import type { Augment, AgentHealth, ModelClient } from "../types";
 import { withTimeout } from "./timeout";
 
 export interface LifecycleManager {
@@ -13,6 +13,7 @@ export interface LifecycleManager {
 export function createLifecycleManager(opts: {
   name: string;
   augments: Augment[];
+  model?: ModelClient;
 }): LifecycleManager {
   const { name, augments } = opts;
   const augmentStatus = new Map<
@@ -92,8 +93,17 @@ export function createLifecycleManager(opts: {
         (s) => s.status === "degraded",
       );
 
+      let modelReachable = true;
+      if (opts.model) {
+        try {
+          opts.model.countTokens("health check");
+        } catch {
+          modelReachable = false;
+        }
+      }
+
       return {
-        status: hasFailed
+        status: hasFailed || !modelReachable
           ? "unhealthy"
           : hasDegraded
             ? "degraded"
@@ -103,7 +113,7 @@ export function createLifecycleManager(opts: {
           ? Math.floor((Date.now() - bootTime) / 1000)
           : 0,
         augments: statuses,
-        model: { reachable: true },
+        model: { reachable: modelReachable },
       };
     },
   };

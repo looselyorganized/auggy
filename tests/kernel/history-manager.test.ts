@@ -99,4 +99,70 @@ describe("HistoryManager", () => {
     hm.append(msg("assistant", "World", 10));
     expect(hm.totalTokens()).toBe(15);
   });
+
+  it("compact truncate: drops oldest messages when over 80% budget", () => {
+    const hm = createHistoryManager({ threadId: "t1" });
+    // 5 messages at 20 tokens each = 100 total
+    for (let i = 0; i < 5; i++) {
+      hm.append(msg("user", `msg-${i}`, 20));
+    }
+    expect(hm.totalTokens()).toBe(100);
+
+    // Budget of 100, threshold 80% = 80 tokens. We're at 100 → compact.
+    hm.compact(100, "truncate");
+
+    // Should drop oldest until at or under 80 tokens (drop 1 → 80 tokens)
+    expect(hm.totalTokens()).toBeLessThanOrEqual(80);
+    const history = hm.getHistory(10000);
+    expect(history[0]!.content).toBe("msg-1");
+  });
+
+  it("compact truncate: preserves atomic tool pairs", () => {
+    const hm = createHistoryManager({ threadId: "t1" });
+    hm.append(msg("user", "start", 10));
+    hm.append(msg("tool_use", "call", 10));
+    hm.append(msg("tool_result", "result", 10));
+    hm.append(msg("assistant", "done", 10));
+    // 40 tokens total
+
+    // Budget 40, threshold 80% = 32. Need to compact.
+    hm.compact(40, "truncate");
+
+    const history = hm.getHistory(10000);
+    // Should drop user message (10), but tool pair must stay together
+    // If it drops user (10) → 30 tokens, under 32. Done.
+    // OR if it tries to drop tool_use, it must also drop tool_result
+    const roles = history.map((m) => m.role);
+    const hasToolUse = roles.includes("tool_use");
+    const hasToolResult = roles.includes("tool_result");
+    // Either both present or both absent
+    expect(hasToolUse).toBe(hasToolResult);
+  });
+
+  it("compact does nothing when under threshold", () => {
+    const hm = createHistoryManager({ threadId: "t1" });
+    hm.append(msg("user", "Hello", 10));
+    hm.append(msg("assistant", "Hi", 10));
+    // 20 tokens, budget 100, threshold 80 → no compact needed
+
+    hm.compact(100, "truncate");
+    expect(hm.totalTokens()).toBe(20);
+  });
+
+  it("compact sliding-window: keeps last N turns", () => {
+    const hm = createHistoryManager({ threadId: "t1" });
+    for (let i = 0; i < 10; i++) {
+      hm.append(msg("user", `u-${i}`, 10));
+      hm.append(msg("assistant", `a-${i}`, 10));
+    }
+    // 20 messages, 200 tokens
+
+    // Budget 100, threshold 80% = 80. sliding-window keeps newest pairs.
+    hm.compact(100, "sliding-window");
+
+    expect(hm.totalTokens()).toBeLessThanOrEqual(80);
+    const history = hm.getHistory(10000);
+    // Last message should be the newest
+    expect(history[history.length - 1]!.content).toBe("a-9");
+  });
 });

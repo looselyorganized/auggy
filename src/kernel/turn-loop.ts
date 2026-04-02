@@ -17,6 +17,7 @@ import { createCapabilityTable } from "./capability-table";
 import { selectTools } from "./tool-selector";
 import { createTraceEmitter } from "./trace-emitter";
 import { buildPreamble } from "./preamble";
+import { validateOutput } from "./output-validator";
 import {
   createHistoryManager,
   type HistoryManager,
@@ -228,6 +229,7 @@ export function createTurnLoop(opts: {
       });
 
       // Inference + tool execution loop
+      capabilityTable.resetTurn();
       const consecutiveFailures = new Map<string, number>();
       let inferenceCount = 0;
       const maxInferenceLoops = 10;
@@ -261,6 +263,19 @@ export function createTurnLoop(opts: {
 
         // No tool calls, end_turn, or context window exhausted — we're done
         if (!response.toolCalls?.length || response.finishReason === "end_turn" || response.finishReason === "max_tokens") {
+          // Output validation (v1: flag and trace, don't block)
+          if (response.content) {
+            const toolNames = allTools.map((t) => t.name);
+            const augmentNames = augments.map((a) => a.name);
+            const validation = validateOutput(response.content, [...toolNames, ...augmentNames]);
+            if (validation.flagged) {
+              trace.outputValidation = {
+                flagged: true,
+                reasons: validation.reasons,
+              };
+            }
+          }
+
           traceEmitter.finalize(trace);
           return {
             turnId: trigger.turnId,
@@ -299,27 +314,27 @@ export function createTurnLoop(opts: {
 
           if ("denied" in check) {
             entries.push({ type: "error", call, error: `Error: ${check.reason}` });
-            turnState.toolCallsSoFar++;
+            capabilityTable.recordToolCall(call.name);
             break;
           }
 
           if ("needsApproval" in check) {
             entries.push({ type: "error", call, error: "Tool requires operator approval. Skipping for now." });
-            turnState.toolCallsSoFar++;
+            capabilityTable.recordToolCall(call.name);
             continue;
           }
 
           const reg = toolRegistry.get(call.name);
           if (!reg) {
             entries.push({ type: "error", call, error: `Error: Unknown tool "${call.name}"` });
-            turnState.toolCallsSoFar++;
+            capabilityTable.recordToolCall(call.name);
             continue;
           }
 
           const validation = reg.tool.input.safeParse(call.arguments);
           if (!validation.success) {
             entries.push({ type: "error", call, error: `Validation error: ${JSON.stringify(validation.error)}` });
-            turnState.toolCallsSoFar++;
+            capabilityTable.recordToolCall(call.name);
             const prevCount = consecutiveFailures.get(call.name) ?? 0;
             consecutiveFailures.set(call.name, prevCount + 1);
             if ((consecutiveFailures.get(call.name) ?? 0) >= 2) {
@@ -385,7 +400,7 @@ export function createTurnLoop(opts: {
               output,
               durationMs,
             });
-            turnState.toolCallsSoFar++;
+            capabilityTable.recordToolCall(call.name);
           }
         }
 

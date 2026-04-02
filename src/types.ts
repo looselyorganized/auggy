@@ -64,6 +64,7 @@ export interface InboundMessage {
 export interface TurnTrigger {
   type: TurnTriggerType;
   turnId: string;
+  threadId?: string;
   timestamp: number;
   source?: string;
   peer?: PeerIdentity | null;
@@ -145,12 +146,17 @@ export interface TurnTrace {
     outcome: "approved" | "denied" | "timeout";
     waitMs: number;
   }[];
+  outputValidation?: {
+    flagged: boolean;
+    reasons: string[];
+  };
 }
 
 export interface TurnResult {
   turnId: string;
   success: boolean;
   response?: OutboundMessage;
+  responses?: OutboundMessage[];
   errorResponse?: string;
   toolCalls: ToolCallRecord[];
   trace: TurnTrace;
