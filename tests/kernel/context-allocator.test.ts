@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "bun:test";
 import { createContextAllocator } from "@/kernel/context-allocator";
 import { createTokenizer } from "@/tokenizer";
 import type { ContextBlock, Message } from "@/types";

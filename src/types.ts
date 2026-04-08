@@ -21,6 +21,59 @@ export interface ContextBlock {
   tokenCount?: number;
 }
 
+// === A2A-compatible content types (spec §3, A2A-shaped) ===
+
+export type Part =
+  | { kind: "text"; text: string }
+  | { kind: "file"; uri: string; mimeType?: string; name?: string }
+  | { kind: "data"; data: Record<string, unknown> };
+
+// === Task lifecycle (A2A-shaped, v1 uses "completed" | "failed" | "canceled") ===
+
+export type TaskState =
+  | "working"
+  | "input-required"
+  | "auth-required"
+  | "completed"
+  | "failed"
+  | "canceled"
+  | "rejected";
+
+// === Memory Provider Contract ===
+
+export interface MemoryDefaults {
+  mutable: boolean;
+  origin: ContextOrigin;
+  priority: ContextPriority;
+  placement: ContextPlacement;
+  eviction: EvictionPolicy;
+  ttl?: "turn" | "session" | "persistent";
+}
+
+export interface MemoryEntry {
+  label: string;
+  content: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface StaticMemoryProvider {
+  owns: { kind: "static"; labels: string[] };
+  defaults: MemoryDefaults;
+  read: (label: string) => Promise<MemoryEntry | null>;
+  write?: (label: string, content: string) => Promise<void>;
+}
+
+export interface NamespaceMemoryProvider {
+  owns: { kind: "namespace"; prefix: string };
+  defaults: MemoryDefaults;
+  search: (query: string) => Promise<MemoryEntry[]>;
+  write?: (label: string, content: string) => Promise<void>;
+  read?: (label: string) => Promise<MemoryEntry | null>;
+  list?: () => Promise<string[]>;
+}
+
+export type MemoryProviderSpec = StaticMemoryProvider | NamespaceMemoryProvider;
+
 // === Tool Types (spec §3) ===
 
 export type ToolCategory = "memory" | "search" | "communication" | "meta" | (string & {});
@@ -55,10 +108,12 @@ export interface PeerIdentity {
 export type TurnTriggerType = "message" | "scheduled" | "event" | "continuation";
 
 export interface InboundMessage {
-  text: string;
+  parts: Part[];
   sourceAugment: string;
   peer: PeerIdentity | null;
   timestamp: number;
+  contextId?: string;
+  taskId?: string;
   metadata?: Record<string, unknown>;
 }
 
@@ -66,6 +121,8 @@ export interface TurnTrigger {
   type: TurnTriggerType;
   turnId: string;
   threadId?: string;
+  contextId?: string;
+  taskId?: string;
   timestamp: number;
   source?: string;
   peer?: PeerIdentity | null;
@@ -83,9 +140,11 @@ export interface TurnState {
 }
 
 export interface OutboundMessage {
-  text: string;
+  parts: Part[];
   targetAugment?: string;
   targetPeer?: string;
+  contextId?: string;
+  taskId?: string;
   metadata?: Record<string, unknown>;
 }
 
@@ -156,6 +215,7 @@ export interface TurnTrace {
 export interface TurnResult {
   turnId: string;
   success: boolean;
+  status: TaskState;
   response?: OutboundMessage;
   responses?: OutboundMessage[];
   errorResponse?: string;
@@ -163,6 +223,57 @@ export interface TurnResult {
   trace: TurnTrace;
   error?: { message: string; source: string };
 }
+
+// === Kernel Events (internal — emitted by turn loop, consumed by transports) ===
+
+export type KernelEvent =
+  | {
+      kind: "run_started";
+      turnId: string;
+      threadId: string;
+      contextId?: string;
+      taskId?: string;
+    }
+  | {
+      kind: "tool_call_started";
+      turnId: string;
+      toolCallId: string;
+      toolName: string;
+      augmentName: string;
+    }
+  | {
+      kind: "tool_call_args";
+      turnId: string;
+      toolCallId: string;
+      args: Record<string, unknown>;
+    }
+  | {
+      kind: "tool_call_result";
+      turnId: string;
+      toolCallId: string;
+      output: string;
+      isError: boolean;
+    }
+  | {
+      kind: "text_message";
+      turnId: string;
+      messageId: string;
+      role: "assistant";
+      text: string;
+    }
+  | {
+      kind: "run_finished";
+      turnId: string;
+      status: TaskState;
+    }
+  | {
+      kind: "run_error";
+      turnId: string;
+      message: string;
+      source: string;
+    };
+
+export type KernelEventHandler = (event: KernelEvent) => void;
 
 // === Message / History (spec §4) ===
 
@@ -219,13 +330,47 @@ export interface Storage {
   list(prefix: string): Promise<string[]>;
 }
 
+// === Agent Card (A2A-shaped, used for discovery) ===
+
+export interface AgentCardProvider {
+  name: string;
+  version?: string;
+  contact?: string;
+}
+
+export interface AgentCardCapabilities {
+  streaming: boolean;
+  pushNotifications: boolean;
+  memory: boolean;
+  transport: boolean;
+}
+
+export interface AgentCardSkill {
+  name: string;
+  description: string;
+  category: string;
+}
+
+export interface AgentCard {
+  provider: AgentCardProvider;
+  purpose?: string;
+  capabilities: AgentCardCapabilities;
+  skills: AgentCardSkill[];
+  interfaces: string[];
+  extensions: Record<string, unknown>;
+}
+
 // === Transport (spec §3) ===
 
 export interface TransportKernel {
-  handleInbound(trigger: TurnTrigger): Promise<TurnResult>;
+  handleInbound(
+    trigger: TurnTrigger,
+    options?: { onEvent?: KernelEventHandler },
+  ): Promise<TurnResult>;
   onOutbound(
     callback: (peer: PeerIdentity, message: OutboundMessage) => Promise<void>,
   ): void;
+  getAgentCard(): AgentCard;
 }
 
 export interface TransportSpec {
@@ -261,9 +406,11 @@ export interface Augment {
   receivesPriorContext?: boolean;
   tools?: Tool[];
   transport?: TransportSpec;
+  memory?: MemoryProviderSpec;
   constraints?: AugmentConstraints;
   onBoot?: () => Promise<void>;
   onShutdown?: () => Promise<void>;
+  onTurnStart?: (turn: TurnState) => Promise<void>;
   onTurnEnd?: (turn: TurnResult) => Promise<void>;
   onIdle?: () => Promise<void>;
 }
@@ -301,5 +448,6 @@ export interface AgentHandle {
   stop(): Promise<void>;
   ready(): Promise<void>;
   health(): AgentHealth;
+  card(): AgentCard;
   inject(trigger: TurnTrigger): Promise<TurnResult>;
 }

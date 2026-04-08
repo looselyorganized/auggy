@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "bun:test";
 import { createHistoryManager } from "@/kernel/history-manager";
 import type { Message, Storage } from "@/types";
 

@@ -1,4 +1,5 @@
 import type {
+  AgentCard,
   AgentConfig,
   AgentHandle,
   AgentHealth,
@@ -10,6 +11,8 @@ import type {
   OutboundMessage,
 } from "./types";
 import { createTokenizer } from "./tokenizer";
+import { generateAgentCard } from "./agent-card";
+import { wireMemoryBus } from "./memory/memory-bus";
 import { createTurnLoop } from "./kernel/turn-loop";
 import { createLifecycleManager } from "./kernel/lifecycle-manager";
 import { createTransportQueue } from "./kernel/transport-queue";
@@ -19,16 +22,34 @@ export function defineAgent(
   model: ModelClient,
 ): AgentHandle {
   const tokenizer = createTokenizer();
+
+  // Wire the memory bus BEFORE constructing other kernel components.
+  // This synthesizes context() for memory providers and adds a synthetic
+  // augment carrying the generic memory tools.
+  const wiring = wireMemoryBus(config.augments);
+  const effectiveAugments = wiring.syntheticToolsAugment
+    ? [...wiring.augmentsWithSynthesizedContext, wiring.syntheticToolsAugment]
+    : wiring.augmentsWithSynthesizedContext;
+
+  const effectiveConfig: AgentConfig = {
+    ...config,
+    augments: effectiveAugments,
+  };
+
+  // Agent card is generated from the effective config (includes memory
+  // capability if any augment has a memory field).
+  const agentCard: AgentCard = generateAgentCard(effectiveConfig);
+
   const lifecycle = createLifecycleManager({
-    name: config.name,
-    augments: config.augments,
+    name: effectiveConfig.name,
+    augments: effectiveAugments,
     model,
   });
   const turnLoop = createTurnLoop({
-    augments: config.augments,
+    augments: effectiveAugments,
     model,
     tokenizer,
-    config,
+    config: effectiveConfig,
   });
 
   const outboundHandlers = new Map<
@@ -64,7 +85,7 @@ export function defineAgent(
       await lifecycle.boot();
 
       // Register transport augments
-      for (const aug of config.augments) {
+      for (const aug of effectiveAugments) {
         if (aug.transport) {
           const queue = createTransportQueue({
             concurrency: aug.transport.concurrency ?? 1,
@@ -75,11 +96,14 @@ export function defineAgent(
           const transportKernel: TransportKernel = {
             async handleInbound(
               trigger: TurnTrigger,
+              opts?: { onEvent?: import("./types").KernelEventHandler },
             ): Promise<TurnResult> {
               return queue.enqueue(trigger, async (t) => {
                 lifecycle.resetIdleTimer();
                 const threadId = t.threadId ?? t.turnId;
-                const result = await turnLoop.executeTurn(t, threadId);
+                const result = await turnLoop.executeTurn(t, threadId, {
+                  onEvent: opts?.onEvent,
+                });
 
                 await dispatchOutbound(result, t);
 
@@ -93,7 +117,7 @@ export function defineAgent(
                 );
 
                 // Run onTurnEnd hooks (non-blocking)
-                for (const a of config.augments) {
+                for (const a of effectiveAugments) {
                   if (a.onTurnEnd) {
                     a.onTurnEnd(result).catch(() => {});
                   }
@@ -105,6 +129,9 @@ export function defineAgent(
             onOutbound(callback) {
               outboundHandlers.set(aug.name, callback);
             },
+            getAgentCard() {
+              return agentCard;
+            },
           };
           await aug.transport.register(transportKernel);
         }
@@ -112,7 +139,7 @@ export function defineAgent(
 
       // Start idle timer
       lifecycle.startIdleTimer(async () => {
-        for (const aug of config.augments) {
+        for (const aug of effectiveAugments) {
           if (aug.onIdle) {
             try {
               await aug.onIdle();
@@ -140,6 +167,10 @@ export function defineAgent(
       return lifecycle.health();
     },
 
+    card(): AgentCard {
+      return agentCard;
+    },
+
     async inject(trigger: TurnTrigger): Promise<TurnResult> {
       lifecycle.resetIdleTimer();
       const threadId = trigger.threadId ?? trigger.turnId;
@@ -157,7 +188,7 @@ export function defineAgent(
       );
 
       // Run onTurnEnd hooks (non-blocking, same as transport path)
-      for (const a of config.augments) {
+      for (const a of effectiveAugments) {
         if (a.onTurnEnd) {
           a.onTurnEnd(result).catch(() => {});
         }

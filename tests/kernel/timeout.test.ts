@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, spyOn } from "bun:test";
 import { withTimeout, TimeoutError } from "@/kernel/timeout";
 
 describe("withTimeout", () => {
@@ -17,7 +17,7 @@ describe("withTimeout", () => {
   });
 
   it("clears the timer when the call completes (no leaked timers)", async () => {
-    const clearSpy = vi.spyOn(globalThis, "clearTimeout");
+    const clearSpy = spyOn(globalThis, "clearTimeout");
 
     await withTimeout(async () => "fast", 5000);
 
@@ -26,7 +26,7 @@ describe("withTimeout", () => {
   });
 
   it("clears the timer when the call throws (no leaked timers)", async () => {
-    const clearSpy = vi.spyOn(globalThis, "clearTimeout");
+    const clearSpy = spyOn(globalThis, "clearTimeout");
 
     await expect(
       withTimeout(async () => {

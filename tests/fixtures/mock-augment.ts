@@ -105,7 +105,7 @@ export function createMockTransport(): {
       source: "mock-transport",
       peer: p,
       payload: {
-        text,
+        parts: [{ kind: "text", text }],
         sourceAugment: "mock-transport",
         peer: p,
         timestamp: Date.now(),

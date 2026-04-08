@@ -71,6 +71,7 @@ export function createTransportQueue(
         return {
           turnId: trigger.turnId,
           success: false,
+          status: "rejected",
           errorResponse: "Rate limit exceeded. Please wait before sending more messages.",
           toolCalls: [],
           trace: {
@@ -92,6 +93,7 @@ export function createTransportQueue(
         return {
           turnId: trigger.turnId,
           success: false,
+          status: "rejected",
           errorResponse: "Too many pending messages. Please try again later.",
           toolCalls: [],
           trace: {

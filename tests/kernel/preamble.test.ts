@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "bun:test";
 import { buildPreamble } from "@/kernel/preamble";
 import type { PeerIdentity } from "@/types";
 

@@ -9,8 +9,11 @@ import type {
   InboundMessage,
   Tool,
   ToolCallRecord,
+  KernelEvent,
+  KernelEventHandler,
 } from "../types";
 import type { Tokenizer } from "../tokenizer";
+import { extractText } from "../parts";
 import { withTimeout } from "./timeout";
 import { createContextAllocator } from "./context-allocator";
 import { createCapabilityTable } from "./capability-table";
@@ -25,10 +28,15 @@ import {
 
 export interface TurnLoopOptions {
   signal?: AbortSignal;
+  onEvent?: KernelEventHandler;
 }
 
 export interface TurnLoop {
-  executeTurn(trigger: TurnTrigger, threadId: string, options?: TurnLoopOptions): Promise<TurnResult>;
+  executeTurn(
+    trigger: TurnTrigger,
+    threadId: string,
+    options?: TurnLoopOptions,
+  ): Promise<TurnResult>;
   getHistoryManager(threadId: string): HistoryManager;
 }
 
@@ -72,6 +80,7 @@ export function createTurnLoop(opts: {
       options?: TurnLoopOptions,
     ): Promise<TurnResult> {
       const signal = options?.signal;
+      const emitEvent: KernelEventHandler = options?.onEvent ?? (() => {});
       const peer = trigger.peer ?? null;
       const turnState: TurnState = {
         turnId: trigger.turnId,
@@ -97,10 +106,22 @@ export function createTurnLoop(opts: {
       });
 
       function makeAbortResult(): TurnResult {
+        emitEvent({
+          kind: "run_error",
+          turnId: trigger.turnId,
+          message: "Turn aborted via AbortSignal",
+          source: "kernel",
+        });
+        emitEvent({
+          kind: "run_finished",
+          turnId: trigger.turnId,
+          status: "canceled",
+        });
         traceEmitter.finalize(trace);
         return {
           turnId: trigger.turnId,
           success: false,
+          status: "canceled",
           errorResponse: "Turn was aborted.",
           toolCalls: toolCallRecords,
           trace,
@@ -113,18 +134,63 @@ export function createTurnLoop(opts: {
 
       const history = getOrCreateHistory(threadId);
 
-      // Append inbound message to history
-      if (trigger.type === "message" && trigger.payload && "text" in trigger.payload) {
+      // Append inbound message to history (extract text from parts)
+      if (trigger.type === "message" && trigger.payload && "parts" in trigger.payload) {
         const inbound = trigger.payload as InboundMessage;
+        const text = extractText(inbound.parts);
         history.append({
           id: crypto.randomUUID(),
           role: "user",
           peerId: peer?.id,
-          content: inbound.text,
+          content: text,
           timestamp: trigger.timestamp,
-          tokenCount: tokenizer.count(inbound.text),
+          tokenCount: tokenizer.count(text),
         });
       }
+
+      // onTurnStart hooks — fire before context assembly
+      for (const aug of augments) {
+        if (aug.onTurnStart) {
+          try {
+            await aug.onTurnStart(turnState);
+          } catch (err) {
+            if (aug.required) {
+              emitEvent({
+                kind: "run_error",
+                turnId: trigger.turnId,
+                message: String(err),
+                source: aug.name,
+              });
+              emitEvent({
+                kind: "run_finished",
+                turnId: trigger.turnId,
+                status: "failed",
+              });
+              traceEmitter.finalize(trace);
+              return {
+                turnId: trigger.turnId,
+                success: false,
+                status: "failed",
+                errorResponse:
+                  "An internal error occurred during turn initialization.",
+                toolCalls: [],
+                trace,
+                error: { message: String(err), source: aug.name },
+              };
+            }
+            // Non-required: log and continue
+          }
+        }
+      }
+
+      // Emit run_started event
+      emitEvent({
+        kind: "run_started",
+        turnId: trigger.turnId,
+        threadId,
+        contextId: trigger.contextId,
+        taskId: trigger.taskId,
+      });
 
       // Run augment context pipeline
       const contextBlocks: ContextBlock[] = [];
@@ -154,10 +220,22 @@ export function createTurnLoop(opts: {
           }
         } catch (err) {
           if (aug.required) {
+            emitEvent({
+              kind: "run_error",
+              turnId: trigger.turnId,
+              message: String(err),
+              source: aug.name,
+            });
+            emitEvent({
+              kind: "run_finished",
+              turnId: trigger.turnId,
+              status: "failed",
+            });
             traceEmitter.finalize(trace);
             return {
               turnId: trigger.turnId,
               success: false,
+              status: "failed",
               errorResponse:
                 "An internal error occurred. Please try again.",
               toolCalls: [],
@@ -276,12 +354,31 @@ export function createTurnLoop(opts: {
             }
           }
 
+          // Emit text_message event for the final response
+          if (response.content) {
+            emitEvent({
+              kind: "text_message",
+              turnId: trigger.turnId,
+              messageId: crypto.randomUUID(),
+              role: "assistant",
+              text: response.content,
+            });
+          }
+
+          // Emit run_finished
+          emitEvent({
+            kind: "run_finished",
+            turnId: trigger.turnId,
+            status: "completed",
+          });
+
           traceEmitter.finalize(trace);
           return {
             turnId: trigger.turnId,
             success: true,
+            status: "completed",
             response: response.content
-              ? { text: response.content }
+              ? { parts: [{ kind: "text", text: response.content }] }
               : undefined,
             toolCalls: toolCallRecords,
             trace,
@@ -349,14 +446,30 @@ export function createTurnLoop(opts: {
           entries.push({ type: "execute", call, reg, validatedInput: validation.data });
         }
 
-        // Phase 2: Execute validated tools in parallel
+        // Phase 2: Execute validated tools in parallel (with event emission)
         const execResults = await Promise.all(
           entries.map(async (entry) => {
             if (entry.type === "error") {
-              return { call: entry.call, output: entry.error, durationMs: 0, isError: true };
+              return { call: entry.call, output: entry.error, durationMs: 0, isError: true, toolCallId: crypto.randomUUID() };
             }
+            const toolCallId = `${entry.call.name}-${crypto.randomUUID()}`;
+            emitEvent({
+              kind: "tool_call_started",
+              turnId: trigger.turnId,
+              toolCallId,
+              toolName: entry.call.name,
+              augmentName: entry.reg.augment,
+            });
+            emitEvent({
+              kind: "tool_call_args",
+              turnId: trigger.turnId,
+              toolCallId,
+              args: entry.call.arguments,
+            });
+
             const execStart = Date.now();
             let output: string;
+            let isError = false;
             try {
               const augForTool = augments.find((a) =>
                 a.tools?.some((t) => t.name === entry.reg.tool.name),
@@ -368,15 +481,24 @@ export function createTurnLoop(opts: {
               );
             } catch (err) {
               output = `Error: ${String(err)}`;
+              isError = true;
             }
-            return { call: entry.call, output, durationMs: Date.now() - execStart, isError: false };
+
+            emitEvent({
+              kind: "tool_call_result",
+              turnId: trigger.turnId,
+              toolCallId,
+              output,
+              isError,
+            });
+
+            return { call: entry.call, output, durationMs: Date.now() - execStart, isError, toolCallId };
           }),
         );
 
         // Phase 3: Append all results to history in order with matching toolCallIds
-        for (const { call, output, durationMs, isError } of execResults) {
+        for (const { call, output, durationMs, isError, toolCallId } of execResults) {
           const callStr = JSON.stringify(call);
-          const toolCallId = crypto.randomUUID();
           history.append({
             id: crypto.randomUUID(),
             role: "tool_use",
@@ -408,7 +530,6 @@ export function createTurnLoop(opts: {
         if (terminateToolLoop) {
           const updatedHistory = history.getHistory(historyBudget);
           currentPrompt = allocator.assemble(contextBlocks, updatedHistory, toolSelection.definitions);
-          // One more inference to let model acknowledge the failure
           const finalResponse = await model.complete(currentPrompt);
           if (finalResponse.content) {
             history.append({
@@ -418,12 +539,27 @@ export function createTurnLoop(opts: {
               timestamp: Date.now(),
               tokenCount: tokenizer.count(finalResponse.content),
             });
+            emitEvent({
+              kind: "text_message",
+              turnId: trigger.turnId,
+              messageId: crypto.randomUUID(),
+              role: "assistant",
+              text: finalResponse.content,
+            });
           }
+          emitEvent({
+            kind: "run_finished",
+            turnId: trigger.turnId,
+            status: "completed",
+          });
           traceEmitter.finalize(trace);
           return {
             turnId: trigger.turnId,
             success: true,
-            response: finalResponse.content ? { text: finalResponse.content } : undefined,
+            status: "completed",
+            response: finalResponse.content
+              ? { parts: [{ kind: "text", text: finalResponse.content }] }
+              : undefined,
             toolCalls: toolCallRecords,
             trace,
           };
@@ -442,11 +578,26 @@ export function createTurnLoop(opts: {
       }
 
       // Max inference loops reached
+      emitEvent({
+        kind: "text_message",
+        turnId: trigger.turnId,
+        messageId: crypto.randomUUID(),
+        role: "assistant",
+        text: "I've completed the available actions.",
+      });
+      emitEvent({
+        kind: "run_finished",
+        turnId: trigger.turnId,
+        status: "completed",
+      });
       traceEmitter.finalize(trace);
       return {
         turnId: trigger.turnId,
         success: true,
-        response: { text: "I've completed the available actions." },
+        status: "completed",
+        response: {
+          parts: [{ kind: "text", text: "I've completed the available actions." }],
+        },
         toolCalls: toolCallRecords,
         trace,
       };

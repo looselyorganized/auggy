@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "bun:test";
 import { z } from "zod";
 import { createTurnLoop } from "@/kernel/turn-loop";
 import { createMockModel } from "@tests/fixtures/mock-model";
@@ -24,7 +24,7 @@ function makeTrigger(text: string): TurnTrigger {
     source: "test",
     peer,
     payload: {
-      text,
+      parts: [{ kind: "text", text }],
       sourceAugment: "test",
       peer,
       timestamp: Date.now(),

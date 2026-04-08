@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "bun:test";
 import { z } from "zod";
 import { createCapabilityTable } from "@/kernel/capability-table";
 import type { Augment, TurnState } from "@/types";

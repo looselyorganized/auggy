@@ -1,6 +1,7 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "bun:test";
 import { z } from "zod";
 import { defineAgent } from "@/agent";
+import { extractText } from "@/parts";
 import { createMockModel } from "@tests/fixtures/mock-model";
 import {
   createMockTransport,
@@ -44,10 +45,10 @@ describe("defineAgent", () => {
     await agent.start();
     const result = await transport.sendMessage("Who are you?");
     expect(result.success).toBe(true);
-    expect(result.response?.text).toBe("I am a test agent.");
+    expect(extractText(result.response?.parts ?? [])).toBe("I am a test agent.");
 
     expect(transport.outboundMessages).toHaveLength(1);
-    expect(transport.outboundMessages[0]!.message.text).toBe(
+    expect(extractText(transport.outboundMessages[0]!.message.parts)).toBe(
       "I am a test agent.",
     );
 
@@ -93,7 +94,7 @@ describe("defineAgent", () => {
     expect(result.success).toBe(true);
     expect(result.toolCalls).toHaveLength(1);
     expect(result.toolCalls[0]!.output).toBe("5");
-    expect(result.response?.text).toBe("The sum is 5.");
+    expect(extractText(result.response?.parts ?? [])).toBe("The sum is 5.");
 
     await agent.stop();
   });
@@ -119,7 +120,7 @@ describe("defineAgent", () => {
         sourceAugment: "test",
       },
       payload: {
-        text: "Test message",
+        parts: [{ kind: "text", text: "Test message" }],
         sourceAugment: "test",
         peer: null,
         timestamp: Date.now(),
@@ -127,7 +128,7 @@ describe("defineAgent", () => {
     });
 
     expect(result.success).toBe(true);
-    expect(result.response?.text).toBe("Injected response");
+    expect(extractText(result.response?.parts ?? [])).toBe("Injected response");
 
     await agent.stop();
   });
@@ -183,7 +184,7 @@ describe("defineAgent", () => {
         sourceAugment: "test",
       },
       payload: {
-        text: "Test",
+        parts: [{ kind: "text", text: "Test" }],
         sourceAugment: "test",
         peer: null,
         timestamp: Date.now(),

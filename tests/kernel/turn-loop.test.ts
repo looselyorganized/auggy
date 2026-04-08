@@ -1,8 +1,9 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "bun:test";
 import { z } from "zod";
 import { createTurnLoop } from "@/kernel/turn-loop";
 import { createMockModel } from "@tests/fixtures/mock-model";
 import { createTokenizer } from "@/tokenizer";
+import { extractText } from "@/parts";
 import type {
   Augment,
   TurnTrigger,
@@ -24,7 +25,7 @@ function makeTrigger(text: string): TurnTrigger {
     source: "test",
     peer,
     payload: {
-      text,
+      parts: [{ kind: "text", text }],
       sourceAugment: "test",
       peer,
       timestamp: Date.now(),
@@ -60,7 +61,7 @@ describe("TurnLoop", () => {
 
     const result = await loop.executeTurn(makeTrigger("Hi"), "thread-1");
     expect(result.success).toBe(true);
-    expect(result.response?.text).toBe("Hello back!");
+    expect(extractText(result.response?.parts ?? [])).toBe("Hello back!");
     expect(model.calls).toHaveLength(1);
   });
 
@@ -340,7 +341,7 @@ describe("TurnLoop", () => {
 
     const result = await loop.executeTurn(makeTrigger("Write a long essay"), "thread-h9");
     expect(result.success).toBe(true);
-    expect(result.response?.text).toBe("I was cut off mid-sen");
+    expect(extractText(result.response?.parts ?? [])).toBe("I was cut off mid-sen");
     // Model should only be called once — no re-inference after length stop
     expect(model.calls).toHaveLength(1);
   });
@@ -381,7 +382,7 @@ describe("TurnLoop", () => {
 
     const result = await loop.executeTurn(makeTrigger("Go"), "thread-h9b");
     expect(result.success).toBe(true);
-    expect(result.response?.text).toBe("Started to respond but was cu");
+    expect(extractText(result.response?.parts ?? [])).toBe("Started to respond but was cu");
     // Tool executed, then model called again, got max_tokens, loop stops
     expect(model.calls).toHaveLength(2);
     expect(result.toolCalls).toHaveLength(1);
