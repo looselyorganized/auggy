@@ -22,11 +22,12 @@ If you're new to the codebase, read in order. Each doc assumes the previous one.
 
 ## Research artifacts
 
-Point-in-time investigations that inform design decisions. These are dated snapshots — unlike the numbered reference docs above, they are not updated as the codebase evolves.
+Investigations that inform design decisions. The eval landscape doc is a dated snapshot; the research provenance is a living reference.
 
-| Doc | Date | Summary |
+| Doc | Kind | Summary |
 |-----|------|---------|
-| [Agent eval landscape 2026](./research/eval-landscape-2026-04-08.md) | 2026-04-08 | OpenClaw's eval ecosystem (fragmented, narrow) vs practitioner consensus (Anthropic's Jan 2026 prescription). Sources Plan 7's eval harness design. |
+| [Research provenance](./research/research-provenance.md) | Living reference | What papers we read, which decisions came from each, and how they shaped the runtime. The canonical answer to "why is the code like this?" |
+| [Agent eval landscape 2026](./research/eval-landscape-2026-04-08.md) | Dated snapshot (2026-04-08) | OpenClaw's eval ecosystem (fragmented, narrow) vs practitioner consensus (Anthropic's Jan 2026 prescription). Sources Plan 7's eval harness design. |
 
 ## Code map
 
