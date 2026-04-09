@@ -28,6 +28,7 @@ Investigations that inform design decisions. The eval landscape doc is a dated s
 |-----|------|---------|
 | [Research provenance](./research/research-provenance.md) | Living reference | What papers we read, which decisions came from each, and how they shaped the runtime. The canonical answer to "why is the code like this?" |
 | [Agent eval landscape 2026](./research/eval-landscape-2026-04-08.md) | Dated snapshot (2026-04-08) | OpenClaw's eval ecosystem (fragmented, narrow) vs practitioner consensus (Anthropic's Jan 2026 prescription). Sources Plan 7's eval harness design. |
+| [Rust hybrid analysis](./research/rust-hybrid-analysis-2026-04-09.md) | Dated snapshot (2026-04-09) | Thought experiment: Auggy in Rust. Full trade-off analysis, precise bottleneck math (when token counting crosses 50ms), the surgical native-tokenizer intervention plan for v1.0, and the decision record for why we stay TypeScript. |
 
 ## Code map
 
