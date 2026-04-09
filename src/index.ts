@@ -86,6 +86,10 @@ export type { SupabaseMemoryOptions } from "./augments/supabase-memory";
 export { webTransport } from "./transports/web-transport";
 export type { WebTransportOptions } from "./transports/web-transport";
 
+// === Engines (model client adapters) ===
+export { createAnthropicEngine } from "./engines/anthropic";
+export type { AnthropicEngineOptions } from "./engines/anthropic";
+
 // === AG-UI event protocol (for custom transports or advanced consumers) ===
 export {
   runStarted,

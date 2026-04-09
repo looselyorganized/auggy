@@ -1,0 +1,592 @@
+# 03 — Types
+
+> The shared contract. Every type that crosses a module boundary lives in `src/types.ts` (no runtime code, type definitions only). This doc walks through every group with what each shape is for and what its invariants are.
+
+## Why one types file
+
+Auggy puts every cross-module type in one file by deliberate choice. This is the opposite of "one type per file" or "types-colocated-with-implementation." The reasoning:
+
+1. **Discoverability.** New contributors can read the entire type contract in one sitting. There is exactly one file to grep.
+2. **Coherence.** Types that need to be consistent (e.g. `KernelEvent`, `AGUIEvent`, and the `translateKernelEvent` function) are easier to keep in sync when they're visually adjacent.
+3. **No circular imports.** Modules import types from one place; runtime modules import from each other. Type-only imports are erased at compile time, so this also costs nothing at runtime.
+
+The trade-off is that `types.ts` is large (~450 LOC). It is structured into clearly labeled sections (`// === Section Name ===`) so it can be navigated by section.
+
+## Section 1 — Context
+
+The vocabulary that augments use to contribute information to the model.
+
+```ts
+export type ContextPlacement = "system" | "preamble" | "assistant-preamble";
+export type ContextProvenance = "identity" | "memory" | "retrieval" | "augment";
+export type ContextPriority = "required" | "high" | "normal" | "low" | "evictable";
+export type EvictionPolicy = "never" | "summarize" | "drop";
+export type ContextOrigin = "operator" | "system" | "peer-derived";
+
+export interface ContextBlock {
+  source: string;          // augment name (used in trace + [AUGMENT CONTEXT: source] markers)
+  content: string;
+  placement: ContextPlacement;
+  provenance: ContextProvenance;
+  priority: ContextPriority;
+  eviction: EvictionPolicy;
+  origin: ContextOrigin;
+  ttl?: "turn" | "session" | "persistent";
+  visibility?: "public" | "pipeline-only";
+  tokenCount?: number;     // populated by allocator if missing
+}
+```
+
+**`placement`** decides which array of the `AssembledPrompt` the block ends up in:
+- `"system"` → joined into `systemBlocks` (sent as system prompt)
+- `"preamble"` → joined into `contextBlocks` (sent as part of the user-side context wrapper)
+- `"assistant-preamble"` → joined into `assistantPreamble` (assistant-side priming, used for things like personality reinforcement)
+
+**`provenance`** is purely informational; it's recorded in the trace and helps with debugging and policy decisions but the kernel doesn't switch on it.
+
+**`priority`** determines eviction order when the context budget is exceeded. The allocator sorts blocks by priority (`required` first, `evictable` last) and includes blocks until the budget runs out. Blocks past the budget go into `evictions` for the trace.
+
+**`origin`** is the trust marker. `peer-derived` blocks get a `[PEER-DERIVED]` marker prepended to their content in the prompt, and the system preamble explicitly tells the model to treat them with caution. **This is load-bearing for security:** an augment that mishandles a peer-derived label can leak adversarial input into a position the model treats as authoritative.
+
+**`visibility: "pipeline-only"`** means the block is computed for downstream augments via `priorContext` but never sent to the model. Use case: an augment that runs an LLM-based filter on the user's input and contributes both the filter result (pipeline-only) and a sanitized version (public).
+
+**`tokenCount`** is optional. If absent, the allocator computes it via the tokenizer. Augments can pre-compute it if they have a faster path.
+
+## Section 2 — A2A-compatible content (`Part`)
+
+Content is polymorphic. Following A2A's shape:
+
+```ts
+export type Part =
+  | { kind: "text"; text: string }
+  | { kind: "file"; uri: string; mimeType?: string; name?: string }
+  | { kind: "data"; data: Record<string, unknown> };
+```
+
+Every `InboundMessage`, `OutboundMessage`, and (in `KernelEvent`) `text_message` carries content as `Part[]`, not `string`. v1 only really uses `kind: "text"` end to end, but the type space is open so file and data parts can land in v2 without a breaking change.
+
+Helpers for working with parts live in `src/parts.ts`:
+- `extractText(parts)` — joins all `text` parts and JSON-stringifies all `data` parts (file parts are dropped from the text rendering).
+- `textPart(text)` and `dataPart(data)` — constructors.
+
+## Section 3 — Task lifecycle
+
+```ts
+export type TaskState =
+  | "working"
+  | "input-required"
+  | "auth-required"
+  | "completed"
+  | "failed"
+  | "canceled"
+  | "rejected";
+```
+
+This is straight from A2A's task states. v1 only ever produces `completed`, `failed`, `canceled`, and `rejected` — but the type space exists so transports that need to expose `input-required` (approval gates) or `auth-required` (credential prompts) can do so without a type change.
+
+`TurnResult.status` is one of these values. `KernelEvent { kind: "run_finished" }` carries one too.
+
+## Section 4 — Memory provider contract
+
+```ts
+export interface MemoryDefaults {
+  mutable: boolean;
+  origin: ContextOrigin;
+  priority: ContextPriority;
+  placement: ContextPlacement;
+  eviction: EvictionPolicy;
+  ttl?: "turn" | "session" | "persistent";
+}
+
+export interface MemoryEntry {
+  label: string;
+  content: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface StaticMemoryProvider {
+  owns: { kind: "static"; labels: string[] };
+  defaults: MemoryDefaults;
+  read: (label: string) => Promise<MemoryEntry | null>;
+  write?: (label: string, content: string) => Promise<void>;
+}
+
+export interface NamespaceMemoryProvider {
+  owns: { kind: "namespace"; prefix: string };
+  defaults: MemoryDefaults;
+  search: (query: string) => Promise<MemoryEntry[]>;
+  write?: (label: string, content: string) => Promise<void>;
+  read?: (label: string) => Promise<MemoryEntry | null>;
+  list?: () => Promise<string[]>;
+}
+
+export type MemoryProviderSpec = StaticMemoryProvider | NamespaceMemoryProvider;
+```
+
+The discriminator is `owns.kind`. Two flavors:
+
+**Static providers** declare a fixed list of labels they own. `read(label)` is mandatory. `write(label, content)` is optional and only present when the provider is mutable. Used for content that has a known, finite set of named slots — identity files, configuration, pinned notes.
+
+**Namespace providers** declare a prefix string. They own every label that starts with that prefix. `search(query)` is mandatory; `read`, `write`, and `list` are optional. Used for content with an open-ended label space — episodic memories, message history, retrieved documents.
+
+`MemoryDefaults` are the values used by `synthesizeContextFor` when wrapping retrieved entries into `ContextBlock`s. Setting `mutable: true` here means "this provider supports writes via `write`," not "the provider's memory is *somehow* mutable" — it gates whether the synthetic `memory_write` tool can target labels owned by this provider.
+
+See [05-memory-subsystem.md](./05-memory-subsystem.md) for how the registry enforces uniqueness across providers and how `memory_read`/`memory_write`/`memory_search`/`memory_list` route to the right provider at runtime.
+
+## Section 5 — Tools
+
+```ts
+export type ToolCategory = "memory" | "search" | "communication" | "meta" | (string & {});
+
+export interface Tool<TInput = any> {
+  name: string;
+  description: string;
+  category: ToolCategory;
+  input: z.ZodType<TInput, any, any>;
+  inputJsonSchema?: Record<string, unknown>;
+  execute: (input: TInput) => Promise<string>;
+}
+
+export interface ToolDefinition {
+  name: string;
+  description: string;
+  inputSchema: Record<string, unknown>;
+}
+```
+
+`Tool` is the augment-author-facing type — what you write when you `defineTool({...})`. It has a Zod schema for `input` and an `execute` function that returns a string (which becomes the tool result content).
+
+`ToolDefinition` is the model-facing type — what gets sent to the model in the tools array. The kernel converts `Tool[]` → `ToolDefinition[]` via `selectTools()` in `src/kernel/tool-selector.ts`.
+
+The `(string & {})` trick on `ToolCategory` is a TypeScript pattern for "give autocomplete on these strings, but accept any string." It lets users add their own categories without losing the type-narrowing benefit on the canonical four.
+
+`inputJsonSchema?` is an optional pre-computed JSON schema. If absent, the kernel uses `{}` (which works for tools without parameters). v1 doesn't auto-derive JSON schema from Zod; users either pre-compute it or accept the empty fallback.
+
+## Section 6 — Peer identity & trust
+
+```ts
+export type PeerKind = "human" | "agent" | "system" | "anonymous";
+export type TrustLevel = "operator" | "facility" | "authenticated" | "untrusted";
+
+export interface PeerIdentity {
+  id: string;
+  kind: PeerKind;
+  trustLevel: TrustLevel;
+  sourceAugment: string;     // which augment minted this identity
+  displayName?: string;
+  orgId?: string;
+}
+```
+
+Trust levels are ordered from most to least:
+- **`operator`** — the human running the agent. Maximum trust. (Reserved; nothing in v1 actually mints `operator`-level identities — that's the spine's job in Plan 4+.)
+- **`facility`** — internal facility components (e.g. another LORF agent over the spine). High trust.
+- **`authenticated`** — a peer that presented valid credentials via the transport (e.g. bearer token). Default for the web transport.
+- **`untrusted`** — a peer with no verified identity. Inputs from `untrusted` peers should be treated as adversarial.
+
+The kernel never assigns trust levels — only transports do, in their `identify()` function. The kernel reads `trustLevel` to build the system preamble (which warns the model about untrusted peers) and to mark `peer-derived` context blocks.
+
+`sourceAugment` records which augment minted the identity. This is used in the trace and in `OutboundMessage.targetAugment` (for routing responses back to the right transport when multiple transports are mounted).
+
+## Section 7 — Turns
+
+```ts
+export type TurnTriggerType = "message" | "scheduled" | "event" | "continuation";
+
+export interface InboundMessage {
+  parts: Part[];
+  sourceAugment: string;
+  peer: PeerIdentity | null;
+  timestamp: number;
+  contextId?: string;
+  taskId?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface TurnTrigger {
+  type: TurnTriggerType;
+  turnId: string;
+  threadId?: string;
+  contextId?: string;
+  taskId?: string;
+  timestamp: number;
+  source?: string;
+  peer?: PeerIdentity | null;
+  payload: InboundMessage | Record<string, unknown>;
+}
+```
+
+`TurnTrigger` is the only thing the kernel accepts as input. Everything else (HTTP requests, scheduled jobs, internal events) gets translated into a `TurnTrigger` by the augment that originated it.
+
+**`type`** discriminates the payload shape:
+- `"message"` — `payload` is an `InboundMessage`. The user is talking to the agent.
+- `"scheduled"` — `payload` is a generic record. A timer fired.
+- `"event"` — `payload` is a generic record. Something happened externally that the agent should react to.
+- `"continuation"` — `payload` is a generic record. The agent is resuming a task it was working on.
+
+**`turnId`** is per-turn (one round-trip with the model loop). **`threadId`** is per-conversation (many turns share a thread). **`contextId`** and **`taskId`** are A2A-shaped grouping IDs that survive across turns and threads — they're optional in v1 but reserved for future use.
+
+```ts
+export interface TurnState {
+  turnId: string;
+  threadId: string;
+  trigger: TurnTrigger;
+  peer: PeerIdentity | null;
+  toolCallsSoFar: number;
+  turnStartedAt: number;
+  metadata: Record<string, unknown>;
+}
+```
+
+`TurnState` is the read-only view of the turn that augments see in their `context()` and `onTurnStart()` hooks. `metadata` is a scratchpad — augments can stash data here that other augments downstream can read.
+
+```ts
+export interface OutboundMessage {
+  parts: Part[];
+  targetAugment?: string;     // which transport to send through (defaults to inbound source)
+  targetPeer?: string;
+  contextId?: string;
+  taskId?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface ToolCallRecord {
+  name: string;
+  input: unknown;
+  output: string;
+  durationMs: number;
+}
+
+export interface TurnResult {
+  turnId: string;
+  success: boolean;
+  status: TaskState;
+  response?: OutboundMessage;
+  responses?: OutboundMessage[];     // for multi-destination dispatch
+  errorResponse?: string;
+  toolCalls: ToolCallRecord[];
+  trace: TurnTrace;
+  error?: { message: string; source: string };
+}
+```
+
+`TurnResult` is what comes back from `kernel.handleInbound()`. The presence of both `response` (singular) and `responses` (plural) supports both the simple case (one reply to the source) and the multi-destination case (e.g. an agent that broadcasts to multiple peers).
+
+`status` and `success` are redundant for the common case (`status === "completed"` ↔ `success === true`) but `status` carries additional information (`canceled`, `rejected`, `failed`) that `success` can't.
+
+## Section 8 — Kernel events
+
+```ts
+export type KernelEvent =
+  | { kind: "run_started"; turnId; threadId; contextId?; taskId? }
+  | { kind: "tool_call_started"; turnId; toolCallId; toolName; augmentName }
+  | { kind: "tool_call_args"; turnId; toolCallId; args: Record<string, unknown> }
+  | { kind: "tool_call_result"; turnId; toolCallId; output; isError }
+  | { kind: "text_message"; turnId; messageId; role: "assistant"; text }
+  | { kind: "run_finished"; turnId; status: TaskState }
+  | { kind: "run_error"; turnId; message; source };
+
+export type KernelEventHandler = (event: KernelEvent) => void;
+```
+
+This is the **internal** event vocabulary. The kernel emits these via the `onEvent` callback that transports pass into `handleInbound`. Transports translate them into their wire protocol (e.g. AG-UI events for the web transport).
+
+The kernel never speaks AG-UI directly. It only speaks `KernelEvent`. This is what makes it possible to have multiple transports (web/AG-UI, future spine/A2A, future MCP) without coupling the kernel to any specific protocol.
+
+The translator from `KernelEvent` to AG-UI lives in `src/transports/ag-ui-events.ts` (`translateKernelEvent`). It's a switch statement with one case per `kind`.
+
+## Section 9 — Messages and history
+
+```ts
+export type MessageRole = "user" | "assistant" | "tool_use" | "tool_result";
+
+export interface Message {
+  id: string;
+  role: MessageRole;
+  peerId?: string;
+  toolCallId?: string;       // matches tool_use to tool_result
+  content: string;
+  timestamp: number;
+  tokenCount: number;
+}
+```
+
+`Message` is the type used inside the `HistoryManager`. Note that `tool_use` and `tool_result` are separate roles (not modeled as Anthropic's nested content blocks) — this keeps the history a flat list and lets the manager track them as ordered atomic pairs.
+
+`tokenCount` is mandatory because the history manager needs to know it without reading content (cumulative budget tracking).
+
+## Section 10 — Model interface
+
+```ts
+export interface AssembledPrompt {
+  systemBlocks: string[];
+  contextBlocks: string[];
+  assistantPreamble?: string[];
+  messages: Message[];
+  tools: ToolDefinition[];
+  totalTokens: number;
+  evictions: { source: string; priority: ContextPriority; reason: string }[];
+}
+
+export interface ModelResponse {
+  content: string;
+  toolCalls?: { name: string; arguments: Record<string, unknown> }[];
+  inputTokens: number;
+  outputTokens: number;
+  finishReason: "end_turn" | "tool_use" | "max_tokens";
+}
+
+export interface ModelClient {
+  complete(prompt: AssembledPrompt): Promise<ModelResponse>;
+  countTokens(text: string): number;
+  maxContextTokens: number;
+}
+```
+
+`ModelClient` is the only thing the kernel needs to know about the LLM. It's a three-method interface: `complete()`, `countTokens()`, and `maxContextTokens` (a number).
+
+This is intentionally not a "chat completions" interface or a "messages API" interface — it's the *kernel's* interface. The adapter for any specific provider (Anthropic, OpenAI, etc.) is responsible for translating between `AssembledPrompt` and the provider's request shape, and between the provider's response shape and `ModelResponse`.
+
+`AssembledPrompt` is produced by `context-allocator.ts`. The allocator splits the context into three placement buckets (`systemBlocks`, `contextBlocks`, `assistantPreamble`) so the adapter can decide how to serialize them — e.g. an Anthropic adapter would join `systemBlocks` into the `system` field, prepend `contextBlocks` to the first user message, and use `assistantPreamble` to seed the assistant turn.
+
+`evictions` is an audit trail — what was dropped, why. The trace emitter writes it to the trace.
+
+## Section 11 — Storage
+
+```ts
+export interface Storage {
+  get(key: string): Promise<string | null>;
+  put(key: string, value: string): Promise<void>;
+  delete(key: string): Promise<void>;
+  list(prefix: string): Promise<string[]>;
+}
+```
+
+A minimal KV interface that the history manager uses for `save()` and `restore()`. There is no built-in `Storage` implementation in v1 — it's defined so augments can plug in whatever backend (filesystem, Redis, SQLite, Supabase) without touching the kernel.
+
+## Section 12 — Agent Card (A2A discovery)
+
+```ts
+export interface AgentCardProvider {
+  name: string;
+  version?: string;
+  contact?: string;
+}
+
+export interface AgentCardCapabilities {
+  streaming: boolean;
+  pushNotifications: boolean;
+  memory: boolean;
+  transport: boolean;
+}
+
+export interface AgentCardSkill {
+  name: string;
+  description: string;
+  category: string;
+}
+
+export interface AgentCard {
+  provider: AgentCardProvider;
+  purpose?: string;
+  capabilities: AgentCardCapabilities;
+  skills: AgentCardSkill[];
+  interfaces: string[];
+  extensions: Record<string, unknown>;
+}
+```
+
+The Agent Card is the JSON document an agent serves at `/.well-known/agent-card.json`. Other agents and discovery services use it to learn what an agent can do.
+
+In v1:
+- `provider.name` = the `name` from `AgentConfig`
+- `purpose` = the `purpose` from `AgentConfig`
+- `capabilities.streaming` = `false` (true once token streaming lands)
+- `capabilities.pushNotifications` = `false` (reserved for the future webhook augment)
+- `capabilities.memory` = `true` if any augment has a `memory` field
+- `capabilities.transport` = `true` if any augment has a `transport` field
+- `skills` = derived from every augment's `tools[]` (one skill per tool, with name/description/category)
+- `interfaces` = `["HTTP+JSON"]` (will grow as more transports land)
+- `extensions` = `{}` (reserved for future use)
+
+The card is built once at `defineAgent` time from the *effective* config (after `wireMemoryBus` adds the synthetic `memory-bus` augment), so the four generic memory tools show up as skills automatically.
+
+## Section 13 — Transport contract
+
+```ts
+export interface TransportKernel {
+  handleInbound(
+    trigger: TurnTrigger,
+    options?: { onEvent?: KernelEventHandler },
+  ): Promise<TurnResult>;
+  onOutbound(
+    callback: (peer: PeerIdentity, message: OutboundMessage) => Promise<void>,
+  ): void;
+  getAgentCard(): AgentCard;
+}
+
+export interface TransportSpec {
+  register(kernel: TransportKernel): Promise<void>;
+  identify(raw: unknown): PeerIdentity | null;
+  concurrency?: number;
+  maxQueueDepth?: number;
+  rateLimitPerPeer?: { maxPerMinute: number };
+}
+```
+
+`TransportSpec` is what an augment puts on its `transport` field. The runtime calls `register(kernel)` once at boot, passing in a `TransportKernel` that the augment can use to feed inbound triggers and listen for outbound messages.
+
+`identify(raw)` is a pure function from "whatever the transport's wire format hands you" to `PeerIdentity | null`. The web transport implements it by reading `x-peer-*` headers; a future spine transport would read auth tokens from a different envelope.
+
+`concurrency`, `maxQueueDepth`, and `rateLimitPerPeer` are configuration for the per-transport queue that the runtime constructs around `handleInbound`. Defaults: `1`, `50`, none.
+
+## Section 14 — Augment
+
+```ts
+export type AugmentCapability = "transport" | "context" | "tools" | "lifecycle";
+
+export interface AugmentConstraints {
+  maxToolCallsPerTurn?: number;
+  requiresHumanApproval?: string[];
+  approvalPolicy?: "block-and-queue" | "skip" | "fail";
+  neverExpose?: string[];
+  contextTimeoutMs?: number;
+  toolTimeoutMs?: number;
+}
+
+export interface Augment {
+  name: string;
+  version?: string;
+  required?: boolean;
+  capabilities?: AugmentCapability[];
+  context?: (turn: TurnState, priorContext?: ContextBlock[]) =>
+    Promise<ContextBlock[] | string>;
+  receivesPriorContext?: boolean;
+  tools?: Tool[];
+  transport?: TransportSpec;
+  memory?: MemoryProviderSpec;
+  constraints?: AugmentConstraints;
+  onBoot?: () => Promise<void>;
+  onShutdown?: () => Promise<void>;
+  onTurnStart?: (turn: TurnState) => Promise<void>;
+  onTurnEnd?: (turn: TurnResult) => Promise<void>;
+  onIdle?: () => Promise<void>;
+}
+```
+
+This is the **single most important type in the entire framework.** Everything else exists to support this shape. An augment is anything you can put on this interface; the runtime only knows how to call these methods.
+
+**`name`** is required. Used in traces, in `[AUGMENT CONTEXT: name]` markers, in error messages, in capability table per-augment limits, and in the agent card skills list.
+
+**`required: true`** means: if this augment's `context()` or `onTurnStart()` throws, abort the entire turn and return a `failed` result. Without `required`, augment failures are logged and skipped.
+
+**`capabilities`** is informational — declares what the augment does. The kernel doesn't enforce that an augment with `capabilities: ["transport"]` actually has a `transport` field, but the agent card uses these declarations.
+
+**`context()`** is the augment's contribution to the prompt. Returns either an array of `ContextBlock`s or a single string (which gets wrapped as a default-priority block).
+
+**`receivesPriorContext: true`** opts the augment into seeing the context blocks from previous augments in the pipeline. Used by augments that summarize, deduplicate, or react to other augments' contributions.
+
+**`tools`** is the array of tools this augment provides. The capability table maps each tool back to its owning augment for per-augment enforcement.
+
+**`transport`** is the `TransportSpec` (above). An augment with a transport gets a queue and a `TransportKernel` registered against it at start time.
+
+**`memory`** is the `MemoryProviderSpec` (above). The memory bus scans for these and wires them up.
+
+**`constraints`** are policy declarations:
+- `maxToolCallsPerTurn` — per-augment cap (default 5; the synthetic `memory-bus` augment overrides this to 20 to match its budget)
+- `requiresHumanApproval` — list of tool names that need operator approval before executing (v1: tools matching this skip with a "needs approval" error)
+- `approvalPolicy` — what to do when a tool needs approval (v1: always `skip`)
+- `neverExpose` — tools the capability table will never let the model see
+- `contextTimeoutMs` — wraps `context()` in `withTimeout` (default 5000ms)
+- `toolTimeoutMs` — wraps each `execute()` in `withTimeout` (default 30000ms)
+
+**Lifecycle hooks:**
+- `onBoot` — called once at `agent.start()`. Failures throw and abort startup.
+- `onShutdown` — called once at `agent.stop()`, in reverse order, with a 5s timeout. Failures swallowed.
+- `onTurnStart` — called at the beginning of every turn, before context assembly. Failures on required augments abort the turn.
+- `onTurnEnd` — called after every turn, fire-and-forget. Failures swallowed.
+- `onIdle` — called by the lifecycle manager's idle timer (5min default). Used by augments that do background work like consolidation.
+
+## Section 15 — Agent config and handle
+
+```ts
+export type CompactionStrategy = "summarize" | "truncate" | "sliding-window";
+
+export interface AgentConfig {
+  name: string;
+  purpose?: string;
+  model: string;
+  augments: Augment[];
+  operators?: string[];
+  contextBudget?: {
+    historyPercent?: number;        // default 40
+    toolSchemaPercent?: number;     // default 10
+  };
+  compactionStrategy?: CompactionStrategy;  // default "truncate"
+}
+
+export interface AgentHealth {
+  status: "healthy" | "degraded" | "unhealthy";
+  agent: string;
+  uptime: number;
+  augments: Record<string, { status: "ok" | "degraded" | "failed"; error?: string }>;
+  model: { reachable: boolean };
+}
+
+export interface AgentHandle {
+  start(): Promise<void>;
+  stop(): Promise<void>;
+  ready(): Promise<void>;
+  health(): AgentHealth;
+  card(): AgentCard;
+  inject(trigger: TurnTrigger): Promise<TurnResult>;
+}
+```
+
+`AgentConfig` is what users pass to `defineAgent`. The `model: string` field is just a label that ends up in traces — the actual model client is passed as the second argument to `defineAgent(config, model)`.
+
+`AgentHandle` is what `defineAgent` returns. The methods are explained in [08-agent-lifecycle.md](./08-agent-lifecycle.md).
+
+`inject()` is the back door — it lets non-transport code feed a trigger directly into the kernel without going through a transport's queue. Used by tests and by augments that need to schedule their own work (cron, internal triggers).
+
+## How the type sections relate
+
+```
+                ┌────────────────────────────────┐
+                │           Augment              │
+                │  (the central interface)       │
+                └──┬─────────────┬───────────────┘
+                   │             │
+        ┌──────────┘             └────────────┐
+        ▼                                     ▼
+┌──────────────────┐                ┌──────────────────┐
+│  TransportSpec   │                │ MemoryProviderSpec│
+└──────────────────┘                └──────────────────┘
+        │                                     │
+        ▼                                     ▼
+┌──────────────────┐                ┌──────────────────┐
+│ PeerIdentity     │                │  MemoryEntry     │
+│ TurnTrigger      │                │  MemoryDefaults  │
+│ TurnResult       │                └──────────────────┘
+└──────────────────┘                          │
+        │                                     ▼
+        ▼                            ┌──────────────────┐
+┌──────────────────┐                  │   ContextBlock   │
+│  KernelEvent     │                  └──────────────────┘
+│ KernelEventHdlr  │                          │
+└──────────────────┘                          ▼
+                                     ┌──────────────────┐
+                                     │ AssembledPrompt  │
+                                     │ → ModelClient    │
+                                     └──────────────────┘
+```
+
+## Where to make type changes
+
+- **Adding a new event the kernel emits:** add a case to `KernelEvent`, update `translateKernelEvent` in `src/transports/ag-ui-events.ts`, update the turn loop to emit it.
+- **Adding a new augment lifecycle hook:** add it to `Augment` interface, update `defineAgent`/`turn-loop`/`lifecycle-manager` to call it.
+- **Adding a new memory provider kind:** extend the `MemoryProviderSpec` discriminated union, add a case to `buildRegistry` for the new `kind`, add a case to `synthesizeContextFor`, possibly add new generic tools.
+- **Adding a new content part kind:** extend the `Part` union, update `extractText` in `src/parts.ts`.
+- **Adding a new task state:** add to `TaskState`, update places that switch on it (mostly transports).
+
+In every case: **the type goes in `types.ts`, the behavior change goes in the relevant module.** Don't sneak runtime behavior into the type file.
