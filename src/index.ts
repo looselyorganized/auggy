@@ -81,6 +81,8 @@ export { fileMemory } from "./augments/file-memory";
 export type { FileMemoryOptions } from "./augments/file-memory";
 export { supabaseMemory } from "./augments/supabase-memory";
 export type { SupabaseMemoryOptions } from "./augments/supabase-memory";
+export { filesystem } from "./augments/filesystem";
+export type { FilesystemOptions, FsMount } from "./augments/filesystem";
 
 // === Built-in transports ===
 export { webTransport } from "./transports/web-transport";
