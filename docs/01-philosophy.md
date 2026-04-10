@@ -72,6 +72,93 @@ The unit tests cover individual modules with mocked collaborators. The integrati
 
 This keeps the mock surface tiny (one file, one interface) and makes integration tests honest: the only thing that's fake is the LLM call itself.
 
+## The portable agent — org infrastructure is just augments
+
+Everything above — the augment primitive, the minimal kernel, the trust model, the standard type shapes — converges on one architectural consequence that deserves its own section because it reframes the entire purpose of the design.
+
+**The agent is the portable unit. The org is the environment it plugs into.**
+
+An agent running on Auggy carries its own kernel, its own identity, its own tools, and its own capabilities. When it "joins" an org — LORF, or any other facility — it mounts that org's infrastructure as augments: the org's brain (knowledge), the org's spine (communication), the org's registry (governance). When it leaves, it unmounts them. The kernel is indifferent to which org the agent is serving.
+
+```
+┌──────────────────────────────────────────────────┐
+│  Agent (running on Auggy)                        │
+│  ├── kernel (fixed, travels with agent)          │
+│  ├── identity (self — the agent's own)           │
+│  ├── capabilities (tools — the agent's own)      │
+│  ├── engine (model adapter — the agent's own)    │
+│  │                                               │
+│  └── org augments (swappable per environment):   │
+│       ├── spine-connector(org)                   │
+│       ├── brain-connector(org)                   │
+│       └── registry-connector(org)                │
+└──────────────────────────────────────────────────┘
+```
+
+To de-register from one org and plug into another: swap the org augments. To be authorized in multiple orgs simultaneously: mount multiple sets of org augments, each with its own transport, trust context, and memory namespace.
+
+```
+┌──────────────────────────────────────────────────┐
+│  Agent authorized in two orgs simultaneously     │
+│  ├── kernel                                      │
+│  ├── identity (self)                             │
+│  │                                               │
+│  ├── org-A augments:                             │
+│  │    ├── spine-connector(A)                     │
+│  │    ├── brain-connector(A)                     │
+│  │    └── memory: org-a:episode:*                │
+│  │                                               │
+│  └── org-B augments:                             │
+│       ├── spine-connector(B)                     │
+│       ├── brain-connector(B)                     │
+│       └── memory: org-b:episode:*                │
+└──────────────────────────────────────────────────┘
+```
+
+Messages from org A's spine arrive tagged with org A's peer context and trust level. Messages from org B arrive with org B's. The kernel routes them through the same turn loop — it doesn't know or care which org originated the request. `PeerIdentity.orgId` (already in the type system) is the discriminator.
+
+### Why this is architecturally load-bearing
+
+If brain, spine, and registry were kernel features — as they are in most agent frameworks — switching orgs would mean switching kernels. The agent would be locked to the framework author's infrastructure choices. Portability would require forking the kernel.
+
+Because they're augments, switching orgs means swapping augments. The kernel stays the same. The agent's identity stays the same. Only the environment changes. This is the fundamental reason augments are the *single* extensibility primitive: **the thing you swap when you change orgs IS augments.** If there were a second extensibility mechanism (plugins, middleware, kernel hooks), org infrastructure could live there instead, and the augment-based portability guarantee would leak.
+
+### What this means for LORF specifically
+
+LORF is the first org to mount its augments onto agents running Auggy. It is not special to the runtime. LORF's brain is a `supabaseMemory` augment (or a future brain augment) connected to LORF's Supabase instance. LORF's spine (Plan 4) will be a transport augment connected to LORF's message bus. LORF's governance is `AugmentConstraints` declared by LORF's augments.
+
+Another org could mount its own brain augment connected to its own Postgres, its own spine augment connected to its own message queue, its own governance constraints. The agent running Auggy wouldn't know the difference — it would just have different augments mounted.
+
+### The multi-org case and cross-org communication
+
+An agent authorized in multiple orgs simultaneously needs:
+
+1. **Org-scoped memory** — org A's episodic memories don't leak into org B's context. Achieved via namespace prefixing: `org-a:episode:*` and `org-b:episode:*` are separate namespace providers pointing at different backends. The memory registry already handles non-overlapping prefixes.
+
+2. **Org-scoped capabilities** — org A might restrict `neverExpose: ["delete_user"]` while org B doesn't. This requires the capability table to scope its decisions per org context, which is a future kernel enhancement (the table is currently global). The `orgId` on `PeerIdentity` provides the routing key.
+
+3. **Cross-org communication** — agent-in-org-A talks to agent-in-org-B. This is A2A's native territory: inter-org, cross-runtime agent communication with task-oriented messaging and trust negotiation. Plan 8+ (A2A transport) provides the wire protocol.
+
+4. **Governance negotiation** — when an agent joins an org, the org's governance policy (what tools, what memory, what trust level) must be established. The agent may accept or reject. This is Agent Behavioral Contracts (Bhardwaj, arXiv:2602.22302) at the org level: contracts between the agent and the org.
+
+### What exists today vs what's needed
+
+Most of the portable-agent architecture is already in place — it falls out naturally from the augment design. The remaining gaps are specific, bounded extensions:
+
+| Piece | Status |
+|---|---|
+| Org augments are just augments (brain, spine, registry) | By design — not LORF-locked |
+| `PeerIdentity.orgId` for org-tagging | In the type system |
+| Multiple transports mountable simultaneously | Working — each gets its own queue |
+| Memory namespace isolation across orgs | Working — registry prevents prefix collisions |
+| Agent Card as portable identity | Working — generated from effective config |
+| Per-org capability scoping | **Needed** — capability table is currently global |
+| Runtime augment swapping (de-register + re-register) | **Needed** — augments are fixed at `defineAgent` time today |
+| Cross-org federation protocol | **Needed** — A2A transport (Plan 8+) |
+| Governance negotiation at join time | **Needed** — Agent Behavioral Contracts at the org level |
+
+The gaps are real but none require rethinking the kernel. They're extensions of existing primitives — the augment boundary, the trust model, the type shapes. That's the test of whether an architecture is right: the hard future problems are incremental extensions, not rewrites.
+
 ## What we explicitly do NOT build
 
 These are deliberate omissions, not oversights. Several are documented as "deferred to future plans" and several are documented as "not in scope for Auggy."
