@@ -470,4 +470,60 @@ describe("webTransport HTTP server", () => {
       await agent.stop();
     }
   });
+
+  it("responds to OPTIONS preflight with CORS headers", async () => {
+    const model = createMockModel();
+    const port = 18909;
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: "test-token" },
+      cors: { origins: ["https://example.com"] },
+    });
+    const agent = defineAgent(
+      { name: "test", model: "mock", augments: [aug] },
+      model,
+    );
+    await agent.start();
+
+    try {
+      const resp = await fetch(`http://localhost:${port}/agent/run`, {
+        method: "OPTIONS",
+      });
+      expect(resp.status).toBe(204);
+      expect(resp.headers.get("access-control-allow-methods")).toContain(
+        "POST",
+      );
+      expect(resp.headers.get("access-control-allow-headers")).toContain(
+        "authorization",
+      );
+      expect(resp.headers.get("access-control-allow-headers")).toContain(
+        "x-peer-id",
+      );
+      expect(resp.headers.get("access-control-allow-origin")).toBe(
+        "https://example.com",
+      );
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("rejects double-start with a clear error", async () => {
+    const model = createMockModel();
+    const port = 18910;
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: "test-token" },
+    });
+    const agent = defineAgent(
+      { name: "test", model: "mock", augments: [aug] },
+      model,
+    );
+    await agent.start();
+
+    try {
+      await expect(agent.start()).rejects.toThrow(/already started/);
+    } finally {
+      await agent.stop();
+    }
+  });
 });

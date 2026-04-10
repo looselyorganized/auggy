@@ -430,6 +430,8 @@ export interface AgentConfig {
     toolSchemaPercent?: number;
   };
   compactionStrategy?: CompactionStrategy;
+  /** Max inference loop iterations per turn. Default 10. */
+  maxInferenceLoops?: number;
 }
 
 export interface AgentHealth {

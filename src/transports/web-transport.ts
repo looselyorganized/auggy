@@ -92,9 +92,23 @@ export function webTransport(opts: WebTransportOptions): Augment {
     rateLimitPerPeer: opts.rateLimitPerPeer,
   };
 
+  function isValidAuth(header: string): boolean {
+    const expected = `Bearer ${opts.auth.token}`;
+    if (header.length !== expected.length) return false;
+    // Timing-safe comparison to prevent token extraction via timing side-channel.
+    // Constant-time: XOR all bytes and reduce. No early exit on mismatch.
+    const a = new TextEncoder().encode(header);
+    const b = new TextEncoder().encode(expected);
+    let diff = 0;
+    for (let i = 0; i < a.length; i++) {
+      diff |= a[i]! ^ b[i]!;
+    }
+    return diff === 0;
+  }
+
   async function handleAgentRun(req: Request): Promise<Response> {
     const authHeader = req.headers.get("authorization") ?? "";
-    if (authHeader !== `Bearer ${opts.auth.token}`) {
+    if (!isValidAuth(authHeader)) {
       return json({ error: "unauthorized" }, 401);
     }
 
@@ -157,10 +171,9 @@ export function webTransport(opts: WebTransportOptions): Augment {
 
     const stream = new ReadableStream<Uint8Array>({
       start(controller) {
+        let streamClosed = false;
+
         const patchThreadId = (e: AGUIEvent): AGUIEvent => {
-          // Kernel emits RUN_FINISHED with an empty threadId — the
-          // transport layer is authoritative for threadId, so patch
-          // it here before sending to the client.
           if (e.type === "RUN_FINISHED" && !e.threadId) {
             return runFinished({ threadId, runId: trigger.turnId });
           }
@@ -168,7 +181,13 @@ export function webTransport(opts: WebTransportOptions): Augment {
         };
 
         const writeEvent = (e: AGUIEvent) => {
-          controller.enqueue(encoder.encode(serializeSSE(patchThreadId(e))));
+          if (streamClosed) return; // guard against enqueue after close
+          try {
+            controller.enqueue(encoder.encode(serializeSSE(patchThreadId(e))));
+          } catch {
+            // Stream already closed (client disconnect) — swallow
+            streamClosed = true;
+          }
         };
 
         const onEvent = (kernelEvent: KernelEvent) => {
@@ -177,9 +196,6 @@ export function webTransport(opts: WebTransportOptions): Augment {
           }
         };
 
-        // Run the kernel and stream events as they arrive. Any exception
-        // or queue-rejected status becomes a synthetic RUN_ERROR +
-        // RUN_FINISHED pair so the client always sees a terminal event.
         (async () => {
           try {
             const result = await k.handleInbound(trigger, { onEvent });
@@ -201,7 +217,8 @@ export function webTransport(opts: WebTransportOptions): Augment {
             );
             writeEvent(runFinished({ threadId, runId: trigger.turnId }));
           } finally {
-            controller.close();
+            streamClosed = true;
+            try { controller.close(); } catch { /* already closed */ }
           }
         })();
       },
@@ -216,6 +233,19 @@ export function webTransport(opts: WebTransportOptions): Augment {
       sseHeaders["access-control-allow-origin"] = opts.cors.origins.join(",");
     }
     return new Response(stream, { status: 200, headers: sseHeaders });
+  }
+
+  function handleCorsPreFlight(): Response {
+    const headers: Record<string, string> = {
+      "access-control-allow-methods": "GET, POST, OPTIONS",
+      "access-control-allow-headers":
+        "content-type, authorization, x-peer-id, x-peer-kind, x-peer-name, x-org-id",
+      "access-control-max-age": "86400",
+    };
+    if (opts.cors) {
+      headers["access-control-allow-origin"] = opts.cors.origins.join(",");
+    }
+    return new Response(null, { status: 204, headers });
   }
 
   function handleHealth(): Response {
@@ -248,6 +278,12 @@ export function webTransport(opts: WebTransportOptions): Augment {
         port: opts.port,
         async fetch(req) {
           const url = new URL(req.url);
+
+          // CORS preflight — required for browser-based AG-UI clients
+          if (req.method === "OPTIONS") {
+            return handleCorsPreFlight();
+          }
+
           if (req.method === "POST" && url.pathname === "/agent/run") {
             return handleAgentRun(req);
           }

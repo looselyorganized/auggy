@@ -201,7 +201,46 @@ function convertMessages(messages: Message[]): MessageParam[] {
     i++;
   }
 
-  return result;
+  // Coalesce pass: Anthropic requires strict user/assistant alternation.
+  // Consecutive same-role messages can appear when:
+  //   - tool_result (mapped to user) is followed by the next turn's user message
+  //   - Empty assistant content is skipped, producing adjacent user messages
+  // Merge consecutive same-role messages by combining their content blocks.
+  return coalesceMessages(result);
+}
+
+function coalesceMessages(messages: MessageParam[]): MessageParam[] {
+  if (messages.length <= 1) return messages;
+
+  const coalesced: MessageParam[] = [messages[0]!];
+
+  for (let i = 1; i < messages.length; i++) {
+    const prev = coalesced[coalesced.length - 1]!;
+    const curr = messages[i]!;
+
+    if (prev.role === curr.role) {
+      // Merge: combine content into an array of content blocks
+      const prevBlocks = toContentBlocks(prev.content);
+      const currBlocks = toContentBlocks(curr.content);
+      (prev as { content: ContentBlockParam[] }).content = [
+        ...prevBlocks,
+        ...currBlocks,
+      ];
+    } else {
+      coalesced.push(curr);
+    }
+  }
+
+  return coalesced;
+}
+
+function toContentBlocks(
+  content: string | ContentBlockParam[],
+): ContentBlockParam[] {
+  if (typeof content === "string") {
+    return [{ type: "text", text: content }];
+  }
+  return content;
 }
 
 function safeParseToolCall(
@@ -242,17 +281,42 @@ function convertTools(toolDefs: ToolDefinition[]): AnthropicTool[] {
   }));
 }
 
+// JSON Schema keys Anthropic's API accepts for tool input schemas.
+const ALLOWED_SCHEMA_KEYS = new Set([
+  "properties",
+  "required",
+  "description",
+  "enum",
+  "items",
+  "minItems",
+  "maxItems",
+  "minimum",
+  "maximum",
+  "pattern",
+  "format",
+  "default",
+  "anyOf",
+  "oneOf",
+  "allOf",
+  "not",
+  "additionalProperties",
+]);
+
 function normalizeSchema(
   schema: Record<string, unknown> | undefined,
 ): AnthropicInputSchema {
-  // Anthropic requires a JSON Schema object literally typed as "object".
-  // Auggy's ToolDefinition allows an empty record (for tools with no
-  // params); we fill in the minimum shape here so the API doesn't reject it.
   if (!schema || Object.keys(schema).length === 0) {
     return { type: "object", properties: {} };
   }
-  const { type: _type, ...rest } = schema;
-  return { type: "object", ...rest } as AnthropicInputSchema;
+  // Filter to known JSON Schema keys — strip $schema, $id, and other
+  // keys that Anthropic may reject or silently ignore.
+  const filtered: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(schema)) {
+    if (key !== "type" && ALLOWED_SCHEMA_KEYS.has(key)) {
+      filtered[key] = value;
+    }
+  }
+  return { type: "object", ...filtered } as AnthropicInputSchema;
 }
 
 // === Anthropic response → ModelResponse translation ===
@@ -270,10 +334,14 @@ function buildModelResponse(
     if (block.type === "text") {
       content += block.text;
     } else if (block.type === "tool_use") {
-      toolCalls.push({
-        name: block.name,
-        arguments: block.input as Record<string, unknown>,
-      });
+      // Validate input is a plain object — the model could hallucinate
+      // a non-object value which would break downstream JSON.stringify
+      const input = block.input;
+      const args =
+        input && typeof input === "object" && !Array.isArray(input)
+          ? (input as Record<string, unknown>)
+          : {};
+      toolCalls.push({ name: block.name, arguments: args });
     }
   }
 

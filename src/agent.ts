@@ -82,6 +82,7 @@ export function defineAgent(
 
   const handle: AgentHandle = {
     async start() {
+      if (started) throw new Error("Agent already started. Call stop() first.");
       await lifecycle.boot();
 
       // Register transport augments
@@ -119,7 +120,9 @@ export function defineAgent(
                 // Run onTurnEnd hooks (non-blocking)
                 for (const a of effectiveAugments) {
                   if (a.onTurnEnd) {
-                    a.onTurnEnd(result).catch(() => {});
+                    a.onTurnEnd(result).catch((err) => {
+                      console.warn(`onTurnEnd hook "${a.name}" failed: ${err}`);
+                    });
                   }
                 }
 
@@ -154,6 +157,7 @@ export function defineAgent(
     },
 
     async stop() {
+      if (!started) return; // no-op if not started
       lifecycle.stopIdleTimer();
       await lifecycle.shutdown();
       started = false;
@@ -190,7 +194,9 @@ export function defineAgent(
       // Run onTurnEnd hooks (non-blocking, same as transport path)
       for (const a of effectiveAugments) {
         if (a.onTurnEnd) {
-          a.onTurnEnd(result).catch(() => {});
+          a.onTurnEnd(result).catch((err) => {
+                      console.warn(`onTurnEnd hook "${a.name}" failed: ${err}`);
+                    });
         }
       }
 

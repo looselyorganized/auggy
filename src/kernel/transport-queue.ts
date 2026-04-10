@@ -34,7 +34,11 @@ export function createTransportQueue(
     const timestamps = peerTimestamps.get(peerId) ?? [];
     // Clean old timestamps
     const recent = timestamps.filter((t) => now - t < windowMs);
-    peerTimestamps.set(peerId, recent);
+    if (recent.length === 0) {
+      peerTimestamps.delete(peerId); // evict stale peer entries
+    } else {
+      peerTimestamps.set(peerId, recent);
+    }
     return recent.length >= config.rateLimitPerPeer.maxPerMinute;
   }
 

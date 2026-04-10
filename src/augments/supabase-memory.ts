@@ -61,10 +61,13 @@ export function supabaseMemory(opts: SupabaseMemoryOptions): Augment {
   const limit = opts.searchLimit ?? 10;
 
   const search = async (query: string): Promise<MemoryEntry[]> => {
+    // Escape ILIKE wildcards (% and _) in user input so they're treated
+    // as literal characters, not pattern matchers.
+    const escaped = query.replace(/[%_]/g, (c) => `\\${c}`);
     const { data, error } = await opts.client
       .from(opts.table)
       .select("label, content, metadata, created_at")
-      .ilike("content", `%${query}%`)
+      .ilike("content", `%${escaped}%`)
       .order("created_at", { ascending: false })
       .limit(limit);
 

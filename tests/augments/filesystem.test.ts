@@ -235,6 +235,30 @@ describe("filesystem augment", () => {
       ).rejects.toThrow(/outside mount.*boundary/);
     });
 
+    it("rejects write-path traversal via ../", async () => {
+      const aug = createTestFs();
+      await expect(
+        execTool(aug, "fs_write", {
+          path: "work/../../etc/evil.txt",
+          content: "escaped",
+        }),
+      ).rejects.toThrow(/outside mount.*boundary/);
+    });
+
+    it("rejects mkdir-path traversal via ../", async () => {
+      const aug = createTestFs();
+      await expect(
+        execTool(aug, "fs_mkdir", { path: "work/../../escape" }),
+      ).rejects.toThrow(/outside mount.*boundary/);
+    });
+
+    it("rejects remove-path traversal via ../", async () => {
+      const aug = createTestFs();
+      await expect(
+        execTool(aug, "fs_remove", { path: "del/../../etc/passwd" }),
+      ).rejects.toThrow(/outside mount.*boundary/);
+    });
+
     it("rejects symlinks that escape the mount boundary", async () => {
       // Create a symlink inside readable/ that points outside
       const linkPath = join(tmp.path, "readable", "escape-link.txt");

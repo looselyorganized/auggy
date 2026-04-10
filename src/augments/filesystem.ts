@@ -230,10 +230,7 @@ export function filesystem(opts: FilesystemOptions): Augment {
         return `Error: "${logicalPath}" is a directory. Use fs_list instead.`;
       }
 
-      const buffer = Buffer.alloc(Math.min(stats.size, maxRead));
-      const file = Bun.file(physicalPath);
-      const slice = file.slice(0, maxRead);
-      const content = await slice.text();
+      const content = await Bun.file(physicalPath).slice(0, maxRead).text();
 
       if (stats.size > maxRead) {
         return `${content}\n\n[truncated at ${formatSize(maxRead)}, total size: ${formatSize(stats.size)}]`;
@@ -481,8 +478,12 @@ export function filesystem(opts: FilesystemOptions): Augment {
       if (opts.skillFile) {
         try {
           cachedSkill = await readFile(opts.skillFile, "utf-8");
-        } catch {
-          // SKILL.md is optional — missing file is not a boot failure
+        } catch (err) {
+          // SKILL.md is optional — missing file is not a boot failure,
+          // but log so the operator knows the teaching layer is absent.
+          console.warn(
+            `filesystem: failed to load SKILL.md from "${opts.skillFile}": ${err}`,
+          );
         }
       }
     },

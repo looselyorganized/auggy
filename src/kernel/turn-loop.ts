@@ -51,6 +51,8 @@ export function createTurnLoop(opts: {
   const capabilityTable = createCapabilityTable(augments);
   const traceEmitter = createTraceEmitter();
   const historyManagers = new Map<string, HistoryManager>();
+  const historyLastAccess = new Map<string, number>();
+  const MAX_HISTORY_THREADS = 500;
 
   // Collect all tools with their owning augment
   const toolRegistry = new Map<string, { tool: Tool; augment: string }>();
@@ -65,9 +67,25 @@ export function createTurnLoop(opts: {
   function getOrCreateHistory(threadId: string): HistoryManager {
     let hm = historyManagers.get(threadId);
     if (!hm) {
+      // Evict oldest thread if at capacity
+      if (historyManagers.size >= MAX_HISTORY_THREADS) {
+        let oldestId: string | null = null;
+        let oldestTime = Infinity;
+        for (const [id, t] of historyLastAccess) {
+          if (t < oldestTime) {
+            oldestTime = t;
+            oldestId = id;
+          }
+        }
+        if (oldestId) {
+          historyManagers.delete(oldestId);
+          historyLastAccess.delete(oldestId);
+        }
+      }
       hm = createHistoryManager({ threadId });
       historyManagers.set(threadId, hm);
     }
+    historyLastAccess.set(threadId, Date.now());
     return hm;
   }
 
@@ -310,7 +328,7 @@ export function createTurnLoop(opts: {
       capabilityTable.resetTurn();
       const consecutiveFailures = new Map<string, number>();
       let inferenceCount = 0;
-      const maxInferenceLoops = 10;
+      const maxInferenceLoops = config.maxInferenceLoops ?? 10;
 
       while (inferenceCount < maxInferenceLoops) {
         if (signal?.aborted) return makeAbortResult();
@@ -339,8 +357,11 @@ export function createTurnLoop(opts: {
           });
         }
 
-        // No tool calls, end_turn, or context window exhausted — we're done
-        if (!response.toolCalls?.length || response.finishReason === "end_turn" || response.finishReason === "max_tokens") {
+        // No tool calls or context window exhausted — we're done.
+        // If tool calls ARE present, always execute them regardless of
+        // finishReason. Some engines return "end_turn" alongside tool
+        // calls; dropping them would silently lose the model's work.
+        if (!response.toolCalls?.length || response.finishReason === "max_tokens") {
           // Output validation (v1: flag and trace, don't block)
           if (response.content) {
             const toolNames = allTools.map((t) => t.name);
@@ -411,27 +432,23 @@ export function createTurnLoop(opts: {
 
           if ("denied" in check) {
             entries.push({ type: "error", call, error: `Error: ${check.reason}` });
-            capabilityTable.recordToolCall(call.name);
             break;
           }
 
           if ("needsApproval" in check) {
             entries.push({ type: "error", call, error: "Tool requires operator approval. Skipping for now." });
-            capabilityTable.recordToolCall(call.name);
             continue;
           }
 
           const reg = toolRegistry.get(call.name);
           if (!reg) {
             entries.push({ type: "error", call, error: `Error: Unknown tool "${call.name}"` });
-            capabilityTable.recordToolCall(call.name);
             continue;
           }
 
           const validation = reg.tool.input.safeParse(call.arguments);
           if (!validation.success) {
             entries.push({ type: "error", call, error: `Validation error: ${JSON.stringify(validation.error)}` });
-            capabilityTable.recordToolCall(call.name);
             const prevCount = consecutiveFailures.get(call.name) ?? 0;
             consecutiveFailures.set(call.name, prevCount + 1);
             if ((consecutiveFailures.get(call.name) ?? 0) >= 2) {
