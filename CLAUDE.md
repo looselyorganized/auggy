@@ -27,9 +27,11 @@ Auggy (`augment-1`) is a modular agent runtime in TypeScript/Bun. Agents are com
 | `docs/04-kernel.md` | Turn loop + supporting machinery |
 | `docs/05-memory-subsystem.md` | Provider contract, registry, bus, context synthesis, generic tools |
 | `docs/06-transports.md` | Transport interface, AG-UI event protocol, SSE streaming |
-| `docs/07-built-in-augments.md` | `fileMemory`, `supabaseMemory`, `webTransport` |
+| `docs/07-built-in-augments.md` | `fileMemory`, `supabaseMemory`, `webTransport`, `filesystem` |
 | `docs/08-agent-lifecycle.md` | `defineAgent`, `AgentHandle`, lifecycle hooks |
 | `docs/09-testing.md` | Test strategy, fixtures, what to mock |
+| `docs/10-system-diagrams.md` | Visual maps: three primitives, full architecture, data flow, filesystem layout |
+| `docs/11-skills.md` | How skills work: progressive disclosure, filesystem-as-loader, SKILL.md convention |
 
 `docs/research/` holds dated research artifacts (e.g. `eval-landscape-2026-04-08.md`) that inform design decisions but aren't kept in sync with code.
 
@@ -71,7 +73,9 @@ src/
 │
 ├── augments/             # Built-in augments
 │   ├── file-memory.ts      # Static memory provider
-│   └── supabase-memory.ts  # Namespace memory provider
+│   ├── supabase-memory.ts  # Namespace memory provider
+│   ├── filesystem.ts       # Multi-mount scoped file access (6 tools, realpath security)
+│   └── filesystem-skill/   # SKILL.md + references/ for the filesystem augment
 │
 └── engines/              # ModelClient adapters (the "reasoning engines")
     └── anthropic.ts        # Anthropic Messages API adapter
@@ -80,8 +84,9 @@ tests/
 ├── fixtures/             # mock-model, mock-augment, mock-supabase, temp-dir
 ├── kernel/               # Per-kernel-component unit tests
 ├── memory/               # Memory subsystem tests
-├── augments/             # Built-in augment tests
-├── transports/           # Transport tests
+├── augments/             # Built-in augment tests (incl filesystem security tests)
+├── engines/              # Engine adapter tests (message coalescing)
+├── transports/           # Transport tests (incl CORS preflight, streaming, rate limit)
 └── integration/          # Full-agent end-to-end tests
 
 scripts/
@@ -94,11 +99,13 @@ scripts/
 1. **The kernel is finished.** Behavior changes go in augments, not in `src/kernel/`. Bug fixes to kernel files are fine; adding new kernel features requires explicit justification.
 2. **Every shared type lives in `src/types.ts`** — do not scatter types across modules. One file is deliberate.
 3. **Every module is a `create*` factory returning an object** — no classes, no `this`.
-4. **Test gate before committing:** `bun test` (168 passing) + `bun run tsc --noEmit` (clean) must both pass.
+4. **Test gate before committing:** `bun test` (209 passing) + `bun run tsc --noEmit` (clean) must both pass.
 5. **A2A-shaped types are load-bearing** — `Part[]`, `TaskState`, `AgentCard` follow A2A's shapes even though v1 doesn't speak A2A on the wire. Do not deviate.
 6. **Never use `vitest`** — we migrated to `bun:test` in Plan 2. The import is `from "bun:test"`.
 7. **Model adapters go in `src/engines/`** — not `src/models/` (see philosophy: the adapter is the reasoning engine, not the model itself).
-8. **Reference docs in `docs/01-09-*.md` should match the code.** If you change behavior that's documented there, update the doc in the same PR.
+8. **Reference docs in `docs/01-11-*.md` should match the code.** If you change behavior that's documented there, update the doc in the same PR.
+9. **Skills are files, not code.** Don't boot-load SKILL.md into context. Skills live in a `skills/` directory mounted read-only via the filesystem augment. The model reads them on demand via `fs_read`. See `docs/11-skills.md`.
+10. **Three primitives: augments (infrastructure), tools (mechanism), skills (teaching).** Don't conflate them. See `docs/10-system-diagrams.md §1`.
 
 ## Project identity
 

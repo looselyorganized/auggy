@@ -421,12 +421,104 @@ What happens on a turn:
 
 This is what a deployable Auggy agent looks like. ~30 lines of user code; everything else is in the library.
 
+## `filesystem` — Multi-mount scoped file access
+
+```ts
+import { filesystem } from "augment-1";
+
+const fs = filesystem({
+  mounts: [
+    { name: "skills",    path: "./skills",    writable: false },
+    { name: "workspace", path: "./workspace",  writable: true, deletable: true },
+    { name: "repo",      path: "/repos/platform", writable: false },
+  ],
+});
+```
+
+### What it is
+
+A multi-mount filesystem augment following the Docker volumes model. The operator declares named mounts with per-mount permissions. The model uses logical paths (`mount-name/path/to/file`); the augment resolves physical paths and enforces security boundaries.
+
+### When to use it
+
+Two primary use cases:
+
+**1. Skill folder access.** The agent needs to read SKILL.md files and their supporting references on demand. This is the **progressive disclosure** pattern described in [11-skills.md](./11-skills.md) — the model reads skills via `fs_read` when it decides the conversation needs guidance. The filesystem augment IS the skill loader.
+
+**2. Agent workspace.** The agent needs to create, read, and manage files as part of its work — drafts, notes, reports, intermediate outputs.
+
+Additional use cases: reading external code repositories (read-only mount), writing to shared output directories, accessing configuration files.
+
+### Why it's built in
+
+The skill folder pattern requires the model to read files on demand. Without a filesystem augment, skill files are either boot-loaded into context (wastes tokens) or inaccessible. Every agent that uses skills needs filesystem access — shipping it built-in ensures consistent security boundaries, tool naming, and mount scoping.
+
+### Tools (6)
+
+| Tool | What | Permission gate |
+|---|---|---|
+| `fs_read(path)` | Read file contents (truncated at `maxReadSize`, binary detection) | Any mount |
+| `fs_write(path, content)` | Write/create file (auto-creates parent dirs, capped at `maxWriteSize`) | Writable mounts |
+| `fs_list(path)` | List directory with sizes, types, modified dates | Any mount |
+| `fs_mkdir(path)` | Create directory (recursive) | Writable mounts |
+| `fs_remove(path)` | Delete file or empty directory | Deletable mounts |
+| `fs_search(path, pattern)` | Glob search (excludes .git/node_modules by default, caps at 100 results) | Any mount |
+
+### Configuration
+
+```ts
+interface FsMount {
+  name: string;           // logical name — first path segment the model uses
+  path: string;           // physical path on disk
+  writable?: boolean;     // allow fs_write, fs_mkdir. Default false.
+  deletable?: boolean;    // allow fs_remove. Default false. Requires writable.
+  maxReadSize?: number;   // truncation cap on fs_read. Default 256KB.
+  maxWriteSize?: number;  // cap on fs_write content. Default 1MB.
+  searchExcludes?: string[]; // glob excludes. Default [".git", "node_modules", ".next", "__pycache__"]
+}
+```
+
+Three permission tiers: **read-only** (default) → **writable** → **writable + deletable**.
+
+### Security model
+
+- **`fs.realpath()`** resolves symlinks before every boundary check — prevents symlink-escape attacks
+- **`startsWith()`** against the realpath'd mount root — prevents `../` traversal
+- **Binary detection** via file extension — returns an error message instead of garbage content for images, PDFs, compiled binaries
+- **Size truncation** — files over `maxReadSize` are truncated with a `[truncated at 256KB, total size: 20MB]` marker
+- **Per-mount permissions** — enforced on every operation before any file I/O
+- **Mount isolation** — each mount is an independent security boundary; no cross-mount path references
+
+### Lifecycle
+
+| Hook | What it does |
+|------|-------------|
+| `onBoot` | Resolves and caches all mount root paths. Optionally loads a SKILL.md if `skillFile` is configured. |
+| `onShutdown` | None. |
+
+### Important constraint
+
+**Filesystem mount paths must not overlap with `fileMemory` source paths.** If the same file is owned by `fileMemory` (cached at boot) and accessible via a writable filesystem mount, writes through the filesystem augment won't invalidate `fileMemory`'s cache, causing stale context. This is an operator responsibility in v1.
+
+### Ships with a skill folder
+
+The filesystem augment is the first augment to ship with its own SKILL.md + references:
+
+```
+src/augments/filesystem-skill/
+├── SKILL.md                        # teaches when/how to use the 6 fs tools
+└── references/
+    └── mount-permissions.md        # full permission matrix + security details
+```
+
+This skill is loaded by the model on demand via `fs_read`, following the progressive disclosure pattern.
+
 ## Why these aren't exhaustive
 
-The three built-in augments are the **minimum viable set**. Real agents will mount more — escalation augments (Zip's `ping_human` tool), eval augments, telemetry augments, ad-hoc tool augments. None of those belong in the runtime; they're application-specific.
+The four built-in augments are the **minimum viable set**. Real agents will mount more — escalation augments (Zip's `ping_human` tool), eval augments, telemetry augments, ad-hoc tool augments. None of those belong in the runtime; they're application-specific.
 
 The line between "ship it built-in" and "user implements" is roughly:
-- **Built in:** anything that's a load-bearing reference implementation of a contract Auggy defines (`MemoryProviderSpec`, `TransportSpec`).
+- **Built in:** anything that's a load-bearing reference implementation of a contract Auggy defines (`MemoryProviderSpec`, `TransportSpec`, filesystem access for skills).
 - **User code:** anything that's domain-specific or where multiple competing implementations make sense.
 
 A future plan (Plan 3 — CLI & Manifest System) introduces an **augment catalog** — a way to publish and consume augments without bundling them into the runtime. That's where the "second batch" of augments will live: catalog-based, not built-in.

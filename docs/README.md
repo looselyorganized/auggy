@@ -20,6 +20,7 @@ If you're new to the codebase, read in order. Each doc assumes the previous one.
 | 08 | [Agent lifecycle](./08-agent-lifecycle.md) | `defineAgent`, `AgentHandle`, the augment lifecycle hooks, agent card generation |
 | 09 | [Testing](./09-testing.md) | Test strategy, fixtures, the `bun:test` runner, what to mock |
 | 10 | [System diagrams](./10-system-diagrams.md) | Visual maps: three primitives, full architecture, filesystem layout, turn data flow, portable agent, codebase map |
+| 11 | [Skills](./11-skills.md) | How skills work: progressive disclosure, the three-primitive model, SKILL.md convention, filesystem-as-loader |
 
 ## Research artifacts
 
