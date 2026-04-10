@@ -1,8 +1,10 @@
 # Design Exploration: The Skill Folder Pattern for Auggy Augments
 
 **Date:** 2026-04-09
-**Status:** Design decided, not yet implemented. Requires: filesystem augment (built-in) + skill-loading convention.
+**Status:** Filesystem augment shipped. Skill loading model REVISED on 2026-04-10 — see update below.
 **Trigger:** Operator asked whether Auggy agents should use SKILL.md files — the standard adopted by Claude Code, Codex, Gemini, and others.
+
+> **Updated 2026-04-10:** The loading strategy in §6 was revised from "boot-load SKILL.md as an evictable context block" to **progressive disclosure: skills are files the model reads on demand via `fs_read`**. The boot-loading approach had the context budget pressure problem identified in §4.1 — loading all skills on every turn wastes tokens when most turns don't need most skills. The revised model follows Claude Code's three-level pattern: Level 1 (manifest, ~100 tokens, always in context) → Level 2 (full SKILL.md, on demand via `fs_read`) → Level 3 (references, deeper on demand). The filesystem augment IS the skill loader — no separate mechanism needed. See `docs/10-system-diagrams.md §1` for the visual and `lo/docs/solutions/architecture/` for the compounded decision.
 
 ---
 
@@ -139,55 +141,40 @@ This closes the loop: the SKILL.md can say "check `references/brain-api-schema.j
 
 Every agent that uses skill folders needs filesystem access. Making each author write their own `fs_read` tool is wasted effort and inconsistent interfaces. A built-in ensures consistent scoping, security boundaries, and tool naming.
 
-## 6. The Loading Strategy
+## 6. The Loading Strategy — Progressive Disclosure
 
-### SKILL.md — boot-loaded, cached, evictable
+> **Revised 2026-04-10.** The original design boot-loaded SKILL.md as an evictable context block. This was replaced with progressive disclosure after recognizing that boot-loading has the exact context budget problem §4.1 identified — and that Claude Code's own skill loading model uses a three-level approach where the model decides what to load.
 
-```typescript
-let cachedSkill: string | null = null;
+### Three levels
 
-return {
-  name: "facility-brain",
-  
-  onBoot: async () => {
-    cachedSkill = await readFile("./SKILL.md", "utf-8");
-  },
-  
-  context: async () => cachedSkill ? [{
-    source: "facility-brain",
-    content: cachedSkill,
-    placement: "preamble",
-    provenance: "augment",
-    priority: "evictable",      // yields to dynamic content under pressure
-    eviction: "drop",
-    origin: "operator",
-  }] : [],
-  
-  tools: [
-    defineTool({ name: "brain_recall", ... }),
-    defineTool({ name: "brain_capture", ... }),
-  ],
-};
-```
+| Level | What | When loaded | Token cost |
+|---|---|---|---|
+| **Level 1: Manifest** | Skill names + one-line descriptions | Always in context (identity file or small context block) | ~100 tokens total |
+| **Level 2: SKILL.md body** | Full when/why/how teaching | On demand — model calls `fs_read("skills/memory/SKILL.md")` | 2-5K tokens per skill, only when relevant |
+| **Level 3: References** | Schemas, examples, detailed specs | Deeper on demand — model calls `fs_read("skills/memory/references/...")` | Variable, only when needed |
 
-### References/examples/scripts — on-demand via filesystem augment
+### How it works
 
-The model reads supporting files only when it needs them, via the filesystem augment's `fs_read` tool. The SKILL.md tells the model what files exist and when to consult them:
+The agent's identity file (or a small context-only augment) contains a manifest:
 
 ```markdown
-## References
-- `references/brain-api-schema.json` — full API schema for brain_recall parameters
-- `references/retrieval-strategies.md` — comparison of keyword vs semantic retrieval
+## Available skills
+Read a skill guide with fs_read when you need guidance on how to use your tools.
 
-## Examples  
-- `examples/recall-project-status.md` — worked example of recalling project state
-- `examples/capture-visitor-decision.md` — worked example of capturing a decision
-
-Check these when unsure about parameter format or retrieval strategy.
-Don't load them every turn — only when you need the specific detail.
+- `skills/memory/SKILL.md` — when/how to use memory_read, memory_write, memory_search, memory_list
+- `skills/filesystem/SKILL.md` — when/how to use fs_read, fs_write, fs_list, fs_mkdir, fs_remove, fs_search
+- `skills/escalation/SKILL.md` — when/how to escalate to the operator
 ```
 
-The model reads this guidance in the SKILL.md (boot-loaded), and pulls individual files via `fs_read` only when the turn requires it. Context budget stays clean — references are on-demand, not always-loaded.
+The model sees "I have skill guides available" (~100 tokens). When the conversation involves memory, the model calls `fs_read("skills/memory/SKILL.md")` to load the full teaching. When it needs the detailed reference, it calls `fs_read("skills/memory/references/provider-types.md")`.
+
+### Why this is better than boot-loading
+
+1. **Zero wasted tokens.** A turn that doesn't involve memory never loads the memory SKILL.md.
+2. **The model decides what's relevant**, not the boot process. The model has context about the conversation that boot doesn't.
+3. **Scales to any number of skills.** 20 skills cost ~500 tokens in the manifest. Boot-loading 20 skills would cost 40-100K tokens.
+4. **The filesystem augment IS the skill loader.** No separate mechanism, no new code, no changes to defineAgent or the synthetic augment.
+5. **Matches Claude Code's own model.** Level 1 (description in system prompt), Level 2 (SKILL.md read on trigger), Level 3 (reference files on demand).
 
 ## 7. When to Include a SKILL.md (Not Every Augment Needs One)
 
@@ -205,36 +192,46 @@ The model reads this guidance in the SKILL.md (boot-loaded), and pulls individua
 
 **The rule of thumb:** if you'd tell a new team member "here's what you need to know before using this tool" for more than 30 seconds, it needs a SKILL.md.
 
-## 8. What Needs to Be Built
+## 8. What's Been Built
 
-| Item | Effort | Depends on | Priority |
-|---|---|---|---|
-| **Filesystem augment** (`src/augments/filesystem.ts`) | ~100 LOC, 1 day | Plan 2 (done) | High — load-bearing for skill pattern |
-| **Skill-loading convention in docs** | Documentation | This doc | Medium — convention, not code |
-| **`createSkillAugment()` helper** (optional) | ~50 LOC | Filesystem augment | Low — convenience, not required |
-| **Update CLAUDE.md with skill folder convention** | Documentation | Convention finalized | Low |
-| **Example skill-equipped augment** | 1 day | Filesystem augment | Medium — proves the pattern |
+| Item | Status |
+|---|---|
+| **Filesystem augment** (`src/augments/filesystem.ts`) | ✅ Shipped — multi-mount, 6 tools, realpath security, 30 tests |
+| **Filesystem SKILL.md** (`src/augments/filesystem-skill/`) | ✅ Shipped — first skill folder, with references/ |
+| **Progressive disclosure convention** | ✅ Decided — documented in this section and in `docs/10-system-diagrams.md` |
+| **`createSkillAugment()` helper** | ❌ Not needed — skills are files, not code |
 
-The filesystem augment is the gate. Everything else follows from it.
+No remaining gates. The pattern is proven and documented.
 
-## 9. The Full Picture
+## 9. The Full Picture (Revised)
 
 ```
-An Auggy augment
-├── SKILL.md          ← behavioral teaching (WHEN/WHY, loaded at boot)
-├── references/       ← domain knowledge (on-demand via filesystem augment)  
-├── examples/         ← few-shot determinism (on-demand or inline in SKILL.md)
-├── scripts/          ← procedures (compound tools or inline descriptions)
-└── index.ts          ← typed tools (WHAT/HOW) + context() + lifecycle hooks
+Agent directory
+├── identity.md           ← fileMemory (system prompt, always in context)
+│                           includes skill manifest: "read skills/*.md when needed"
+│
+├── skills/               ← skill folders (read-only filesystem mount)
+│   ├── memory/
+│   │   ├── SKILL.md      ← model reads on demand via fs_read
+│   │   └── references/   ← model reads on deeper demand
+│   ├── filesystem/
+│   │   ├── SKILL.md
+│   │   └── references/
+│   └── escalation/
+│       └── SKILL.md
+│
+├── workspace/            ← writable filesystem mount
+│
+└── [augment code]        ← typed tools live in the augment's index.ts
 ```
 
-- **SKILL.md** provides the judgment the industry's skill standard is built on
-- **Typed tools** provide the mechanism that's better than CLI invocation
-- **context()** mediates — boot-loads SKILL.md, surfaces it to the model
-- **Filesystem augment** enables on-demand access to the supporting directories
-- **The model gets both:** the determinism of a well-taught skill AND the precision of typed, validated tools
+- **Augments** provide tools (mechanism) and context (runtime knowledge)
+- **Skills** are files on disk the model reads on demand (teaching)
+- **The filesystem augment** is the skill loader — `fs_read` is how skills enter context
+- **The identity file** contains the manifest — "these skills exist, read them when needed"
+- **Progressive disclosure** keeps context clean — manifest always, SKILL.md on demand, references on deeper demand
 
-This is not either/or. It's **skills for judgment, typed tools for mechanism, and the augment as the composition primitive that holds both.**
+**Augments are infrastructure. Tools are mechanism. Skills are teaching.** They compose independently.
 
 ## Related
 
