@@ -19,6 +19,7 @@ If you're new to the codebase, read in order. Each doc assumes the previous one.
 | 07 | [Built-in augments](./07-built-in-augments.md) | `fileMemory`, `supabaseMemory`, `webTransport` — the augments shipped in Plan 2 |
 | 08 | [Agent lifecycle](./08-agent-lifecycle.md) | `defineAgent`, `AgentHandle`, the augment lifecycle hooks, agent card generation |
 | 09 | [Testing](./09-testing.md) | Test strategy, fixtures, the `bun:test` runner, what to mock |
+| 10 | [System diagrams](./10-system-diagrams.md) | Visual maps: three primitives, full architecture, filesystem layout, turn data flow, portable agent, codebase map |
 
 ## Research artifacts
 
