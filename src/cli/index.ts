@@ -1,20 +1,24 @@
 #!/usr/bin/env bun
 /**
- * auggy — CLI for the Auggy modular agent runtime.
+ * aug1 — CLI for the Auggy agent runtime.
  *
  * Commands:
- *   auggy create <name>              Scaffold a new agent directory
- *   auggy dev <name> [--config path] Run agent in foreground
- *   auggy start <name> [--config]    Install as launchd service (always-on)
- *   auggy stop <name>                Stop a running agent
- *   auggy status [name]              Show running agents
+ *   aug1 create <name>              Scaffold a new agent (interactive)
+ *   aug1 add <name>                 Add augments to an existing agent
+ *   aug1 dev <name> [--config]      Run agent in foreground
+ *   aug1 start <name> [--config]    Install as launchd service (always-on)
+ *   aug1 stop <name>                Stop a running agent
+ *   aug1 restart <name>             Stop + start
+ *   aug1 status [name]              Show running agents
  */
 
 import { Command } from "commander";
 import { runCreate } from "./commands/create";
+import { runAdd } from "./commands/add";
 import { runDev } from "./commands/dev";
 import { runStart } from "./commands/start";
 import { runStop } from "./commands/stop";
+import { runRestart } from "./commands/restart";
 import { runStatus } from "./commands/status";
 
 const program = new Command();
@@ -26,12 +30,24 @@ program
 
 program
   .command("create <name>")
-  .description("Scaffold a new agent directory")
+  .description("Scaffold a new agent directory (interactive)")
   .option("--dir <path>", "target directory (defaults to ./<name>)")
-  .option("--purpose <text>", "agent purpose description")
-  .action(async (name: string, opts: { dir?: string; purpose?: string }) => {
+  .action(async (name: string, opts: { dir?: string }) => {
     try {
       await runCreate(name, opts);
+    } catch (err) {
+      console.error(`Error: ${(err as Error).message}`);
+      process.exit(1);
+    }
+  });
+
+program
+  .command("add <name>")
+  .description("Add augments to an existing agent")
+  .option("--config <path>", "path to agent.yaml")
+  .action(async (name: string, opts: { config?: string }) => {
+    try {
+      await runAdd(name, opts);
     } catch (err) {
       console.error(`Error: ${(err as Error).message}`);
       process.exit(1);
@@ -71,6 +87,19 @@ program
   .action(async (name: string) => {
     try {
       await runStop(name);
+    } catch (err) {
+      console.error(`Error: ${(err as Error).message}`);
+      process.exit(1);
+    }
+  });
+
+program
+  .command("restart <name>")
+  .description("Stop and restart a running agent")
+  .option("--config <path>", "path to agent.yaml")
+  .action(async (name: string, opts: { config?: string }) => {
+    try {
+      await runRestart(name, opts);
     } catch (err) {
       console.error(`Error: ${(err as Error).message}`);
       process.exit(1);

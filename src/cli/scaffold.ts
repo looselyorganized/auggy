@@ -53,10 +53,15 @@ export function scaffoldAgent(opts: ScaffoldOptions): string {
     cpSync(fsSkillSrc, join(dir, "skills", "filesystem"), { recursive: true });
   }
 
-  // Write template memory SKILL.md.
+  // Write template skill files.
   writeFileSync(
     join(dir, "skills", "memory", "SKILL.md"),
     MEMORY_SKILL_TEMPLATE,
+  );
+  mkdirSync(join(dir, "skills", "web-fetch"), { recursive: true });
+  writeFileSync(
+    join(dir, "skills", "web-fetch", "SKILL.md"),
+    WEB_FETCH_SKILL_TEMPLATE,
   );
 
   // Scan skills and generate manifest.
@@ -141,6 +146,11 @@ augments:
           writable: true
           deletable: true
 
+  - name: fetch
+    type: webFetch
+    options:
+      timeoutMs: 15000
+
   - name: web
     type: webTransport
     options:
@@ -193,6 +203,47 @@ description: When and how to use memory_read, memory_write, memory_search, memor
 | memory_search when you know the label | memory_read with the exact label |
 | Writing to an immutable label | Check memory_list first |
 | Searching with very long queries | Keep search queries to key phrases |
+`;
+
+const WEB_FETCH_SKILL_TEMPLATE = `---
+name: web-fetch
+description: Fetch URLs, read web pages, and call HTTP APIs using the web_fetch tool.
+---
+
+# Web Fetch
+
+You have a \`web_fetch\` tool that retrieves content from URLs.
+
+## When to use it
+
+| Situation | Action |
+|---|---|
+| User shares a URL | Fetch it and summarize the content |
+| Need to check a web page | Fetch the URL |
+| Need to call an API | Fetch the API endpoint |
+| User asks about a link | Fetch and read it |
+
+## How to use it
+
+\`\`\`
+web_fetch({ url: "https://example.com", prompt: "summarize this page" })
+\`\`\`
+
+**Parameters:**
+- \`url\` — the URL to fetch (http:// URLs are auto-upgraded to https://)
+- \`prompt\` — what you want to know about the content
+
+## What it returns
+
+- For **web pages**: stripped HTML to readable text, summarized based on your prompt
+- For **JSON APIs**: the raw JSON response (up to 20K chars)
+
+## Common mistakes
+
+| Wrong | Correct |
+|-------|---------|
+| Telling the user you can't access URLs | Use \`web_fetch\` — you CAN fetch URLs |
+| Fetching without a prompt | Always include a prompt describing what you need |
 `;
 
 const ENV_TEMPLATE = `# Auggy agent secrets — this file is gitignored.

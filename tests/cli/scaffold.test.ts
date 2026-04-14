@@ -15,7 +15,7 @@ describe("scaffoldAgent", () => {
     const dir = scaffoldAgent({ name: "test-agent", targetDir: join(TMP, "test-agent") });
 
     expect(existsSync(join(dir, "agent.yaml"))).toBe(true);
-    expect(existsSync(join(dir, ".env"))).toBe(true);
+    expect(existsSync(join(dir, ".env.example"))).toBe(true);
     expect(existsSync(join(dir, "identity.md"))).toBe(true);
     expect(existsSync(join(dir, "learned.md"))).toBe(true);
     expect(existsSync(join(dir, ".gitignore"))).toBe(true);
