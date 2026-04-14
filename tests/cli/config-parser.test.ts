@@ -128,6 +128,119 @@ describe("validation errors", () => {
     }));
     expect(() => parseConfig(path)).toThrow("compactionStrategy");
   });
+
+  test("rejects unknown engine provider", () => {
+    const path = writeYaml("agent.yaml", minimalConfig({
+      engine: { provider: "foobar", model: "x" },
+    }));
+    expect(() => parseConfig(path)).toThrow('unknown provider "foobar"');
+  });
+});
+
+describe("engine.reasoningEffort validation", () => {
+  for (const effort of ["none", "minimal", "low", "medium", "high", "xhigh"]) {
+    test(`accepts ${effort}`, () => {
+      const path = writeYaml("agent.yaml", minimalConfig({
+        engine: { provider: "anthropic", model: "claude-sonnet-4-6", reasoningEffort: effort },
+      }));
+      const config = parseConfig(path);
+      expect(config.engine.reasoningEffort).toBe(effort as never);
+    });
+  }
+
+  test("rejects invalid reasoningEffort value", () => {
+    const path = writeYaml("agent.yaml", minimalConfig({
+      engine: { provider: "anthropic", model: "claude-sonnet-4-6", reasoningEffort: "ultra" },
+    }));
+    expect(() => parseConfig(path)).toThrow("engine.reasoningEffort");
+  });
+});
+
+describe("engine.providerRouting validation", () => {
+  test("accepts valid providerRouting for openrouter", () => {
+    const path = writeYaml("agent.yaml", minimalConfig({
+      engine: {
+        provider: "openrouter",
+        model: "qwen/qwen3.5-397b-a17b",
+        providerRouting: {
+          only: ["OpenAI"],
+          sort: "price",
+          max_price: { prompt: 1, completion: 2 },
+        },
+      },
+    }));
+    const config = parseConfig(path);
+    expect(config.engine.providerRouting?.only).toEqual(["OpenAI"]);
+    expect(config.engine.providerRouting?.sort).toBe("price");
+  });
+
+  test("rejects providerRouting for non-openrouter provider", () => {
+    const path = writeYaml("agent.yaml", minimalConfig({
+      engine: {
+        provider: "anthropic",
+        model: "claude-sonnet-4-6",
+        providerRouting: { only: ["OpenAI"] },
+      },
+    }));
+    expect(() => parseConfig(path)).toThrow(
+      "providerRouting: only valid for provider 'openrouter'",
+    );
+  });
+
+  test("rejects invalid sort value", () => {
+    const path = writeYaml("agent.yaml", minimalConfig({
+      engine: {
+        provider: "openrouter",
+        model: "x",
+        providerRouting: { sort: "speed" },
+      },
+    }));
+    expect(() => parseConfig(path)).toThrow("providerRouting.sort");
+  });
+
+  test("rejects non-array only", () => {
+    const path = writeYaml("agent.yaml", minimalConfig({
+      engine: {
+        provider: "openrouter",
+        model: "x",
+        providerRouting: { only: "OpenAI" },
+      },
+    }));
+    expect(() => parseConfig(path)).toThrow("providerRouting.only");
+  });
+
+  test("rejects empty only array", () => {
+    const path = writeYaml("agent.yaml", minimalConfig({
+      engine: {
+        provider: "openrouter",
+        model: "x",
+        providerRouting: { only: [] },
+      },
+    }));
+    expect(() => parseConfig(path)).toThrow("providerRouting.only");
+  });
+
+  test("rejects negative max_price.prompt", () => {
+    const path = writeYaml("agent.yaml", minimalConfig({
+      engine: {
+        provider: "openrouter",
+        model: "x",
+        providerRouting: { max_price: { prompt: -1 } },
+      },
+    }));
+    expect(() => parseConfig(path)).toThrow("max_price.prompt");
+  });
+
+  test("rejects non-numeric max_price.completion", () => {
+    const path = writeYaml("agent.yaml", minimalConfig({
+      engine: {
+        provider: "openrouter",
+        model: "x",
+        providerRouting: { max_price: { completion: "free" } },
+      },
+    }));
+    expect(() => parseConfig(path)).toThrow("max_price.completion");
+  });
 });
 
 describe("env var interpolation", () => {

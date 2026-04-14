@@ -32,16 +32,40 @@ export interface AugmentConfig {
 
 /** Engine configuration from agent.yaml. */
 export interface EngineConfig {
-  /** Engine provider identifier. Currently only "anthropic". */
+  /** Engine provider identifier ("anthropic", "openai", or "openrouter"). */
   provider: string;
-  /** Model identifier (e.g. "claude-sonnet-4-6"). */
+  /** Model identifier (e.g. "claude-sonnet-4-6", "gpt-5", "qwen/qwen3.5-397b-a17b"). */
   model: string;
   /** Max context window in tokens. */
   maxContextTokens?: number;
-  /** Max output tokens per turn. */
+  /** Max output tokens per turn (sent as `max_completion_tokens` for openai/openrouter). */
   maxTokens?: number;
-  /** Optional proxy/gateway base URL. */
+  /** Optional proxy/gateway base URL. Ignored for openrouter (hardcoded). */
   baseURL?: string;
+  /**
+   * Reasoning effort for reasoning-capable models (o-series, gpt-5, qwen3.5 thinking).
+   * `none` is gpt-5.1-only; `xhigh` is gpt-5.1-codex-max+ (and most OpenRouter reasoning models).
+   * Older OpenAI Chat Completions models (e.g. gpt-4) do not support this field — the API returns an error.
+   */
+  reasoningEffort?: "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
+  /**
+   * OpenRouter-only: provider routing hints. Rejected by the parser when provider !== "openrouter".
+   * Note: provider slugs in `only`/`ignore` are NOT semantically validated — a typo
+   * silently falls back to OpenRouter's default routing.
+   */
+  providerRouting?: ProviderRouting;
+}
+
+/** OpenRouter provider routing config (forwarded as the `provider` body field). */
+export interface ProviderRouting {
+  /** Allowlist of provider slugs (e.g. ["OpenAI", "Anthropic"]). */
+  only?: string[];
+  /** Denylist of provider slugs. */
+  ignore?: string[];
+  /** Sort upstream providers by this attribute. */
+  sort?: "price" | "throughput" | "latency";
+  /** Cap upstream prices in USD per million tokens. */
+  max_price?: { prompt?: number; completion?: number };
 }
 
 /** Agent settings from agent.yaml. */

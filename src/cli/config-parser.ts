@@ -121,6 +121,16 @@ const BUILTIN_TYPES = new Set([
   "webTransport",
   "webFetch",
 ]);
+const KNOWN_PROVIDERS = new Set(["anthropic", "openai", "openrouter"]);
+const VALID_REASONING_EFFORTS = new Set([
+  "none",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+]);
+const VALID_ROUTING_SORTS = new Set(["price", "throughput", "latency"]);
 
 function validateConfig(raw: Record<string, unknown>): ParsedConfig {
   const errors: string[] = [];
@@ -142,9 +152,95 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
   } else {
     if (typeof engine.provider !== "string") {
       errors.push("engine.provider: required string");
+    } else if (!KNOWN_PROVIDERS.has(engine.provider)) {
+      errors.push(
+        `engine.provider: unknown provider "${engine.provider}" (supported: ${[...KNOWN_PROVIDERS].join(", ")})`,
+      );
     }
     if (typeof engine.model !== "string") {
       errors.push("engine.model: required string");
+    }
+    if (engine.reasoningEffort !== undefined) {
+      if (
+        typeof engine.reasoningEffort !== "string" ||
+        !VALID_REASONING_EFFORTS.has(engine.reasoningEffort)
+      ) {
+        errors.push(
+          `engine.reasoningEffort: must be one of ${[...VALID_REASONING_EFFORTS].join(", ")}`,
+        );
+      }
+    }
+    if (engine.providerRouting !== undefined) {
+      if (
+        typeof engine.providerRouting !== "object" ||
+        engine.providerRouting === null ||
+        Array.isArray(engine.providerRouting)
+      ) {
+        errors.push("engine.providerRouting: must be an object");
+      } else if (engine.provider !== "openrouter") {
+        errors.push(
+          "engine.providerRouting: only valid for provider 'openrouter'",
+        );
+      } else {
+        const r = engine.providerRouting as Record<string, unknown>;
+        if (r.only !== undefined) {
+          if (
+            !Array.isArray(r.only) ||
+            r.only.length === 0 ||
+            !r.only.every((v) => typeof v === "string")
+          ) {
+            errors.push(
+              "engine.providerRouting.only: must be a non-empty array of strings",
+            );
+          }
+        }
+        if (r.ignore !== undefined) {
+          if (
+            !Array.isArray(r.ignore) ||
+            r.ignore.length === 0 ||
+            !r.ignore.every((v) => typeof v === "string")
+          ) {
+            errors.push(
+              "engine.providerRouting.ignore: must be a non-empty array of strings",
+            );
+          }
+        }
+        if (
+          r.sort !== undefined &&
+          (typeof r.sort !== "string" || !VALID_ROUTING_SORTS.has(r.sort))
+        ) {
+          errors.push(
+            `engine.providerRouting.sort: must be one of ${[...VALID_ROUTING_SORTS].join(", ")}`,
+          );
+        }
+        if (r.max_price !== undefined) {
+          if (
+            typeof r.max_price !== "object" ||
+            r.max_price === null ||
+            Array.isArray(r.max_price)
+          ) {
+            errors.push("engine.providerRouting.max_price: must be an object");
+          } else {
+            const mp = r.max_price as Record<string, unknown>;
+            if (
+              mp.prompt !== undefined &&
+              (typeof mp.prompt !== "number" || mp.prompt <= 0)
+            ) {
+              errors.push(
+                "engine.providerRouting.max_price.prompt: must be a positive number",
+              );
+            }
+            if (
+              mp.completion !== undefined &&
+              (typeof mp.completion !== "number" || mp.completion <= 0)
+            ) {
+              errors.push(
+                "engine.providerRouting.max_price.completion: must be a positive number",
+              );
+            }
+          }
+        }
+      }
     }
   }
 
