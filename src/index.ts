@@ -84,6 +84,19 @@ export type { SupabaseMemoryOptions } from "./augments/supabase-memory";
 export { filesystem } from "./augments/filesystem";
 export type { FilesystemOptions, FsMount } from "./augments/filesystem";
 
+// === Built-in augments (web) ===
+export { webFetch } from "./augments/web-fetch";
+export type { WebFetchOptions, WebFetchResult } from "./augments/web-fetch";
+
+// === HTTP client (for augment authors who need HTTP) ===
+export { createHttpClient } from "./http";
+export type {
+  HttpClient,
+  HttpClientOptions,
+  HttpRequestInit,
+  HttpResponse,
+} from "./http";
+
 // === Built-in transports ===
 export { webTransport } from "./transports/web-transport";
 export type { WebTransportOptions } from "./transports/web-transport";
