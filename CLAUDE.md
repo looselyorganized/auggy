@@ -10,11 +10,11 @@ Auggy (`augment-1`) is a modular agent runtime in TypeScript/Bun. Agents are com
 
 ```bash
 # CLI
-auggy create <name>              # Scaffold a new agent directory
-auggy dev <name> [--config path] # Run agent in foreground (Ctrl-C stops)
-auggy start <name>               # Install as launchd service (always-on)
-auggy stop <name>                # Stop agent (either mode)
-auggy status [name]              # Show running agents
+aug1 create <name>              # Scaffold a new agent directory
+aug1 dev <name> [--config path] # Run agent in foreground (Ctrl-C stops)
+aug1 start <name>               # Install as launchd service (always-on)
+aug1 stop <name>                # Stop agent (either mode)
+aug1 status [name]              # Show running agents
 
 # Development
 bun test                         # Run full test suite (310 tests)
@@ -92,7 +92,7 @@ src/
 ├── engines/              # ModelClient adapters (the "reasoning engines")
 │   └── anthropic.ts        # Anthropic Messages API adapter
 │
-└── cli/                  # auggy CLI (Plan 3)
+└── cli/                  # aug1 CLI (Plan 3)
     ├── index.ts            # Commander.js entrypoint
     ├── types.ts            # ParsedConfig, PidManifest, AugmentConfig
     ├── config-parser.ts    # YAML → env interpolation → validation → ParsedConfig
@@ -101,14 +101,14 @@ src/
     ├── resolve-config.ts   # Shared config path resolution
     ├── pid-registry.ts     # ~/.auggy/<name>.json atomic PID manifests
     ├── plist-generator.ts  # macOS launchd plist generation
-    ├── scaffold.ts         # auggy create directory + template generation
+    ├── scaffold.ts         # aug1 create directory + template generation
     ├── skill-manifest.ts   # Scan skills/*/SKILL.md → identity manifest
     └── commands/
-        ├── create.ts       # auggy create <name>
-        ├── dev.ts          # auggy dev (foreground runner, core lifecycle)
-        ├── start.ts        # auggy start (launchd install)
-        ├── stop.ts         # auggy stop (SIGTERM or launchctl unload)
-        └── status.ts       # auggy status (list or detail)
+        ├── create.ts       # aug1 create <name>
+        ├── dev.ts          # aug1 dev (foreground runner, core lifecycle)
+        ├── start.ts        # aug1 start (launchd install)
+        ├── stop.ts         # aug1 stop (SIGTERM or launchctl unload)
+        └── status.ts       # aug1 status (list or detail)
 
 tests/                    # 310 tests across 36 files
 ├── fixtures/             # mock-model, mock-augment, mock-supabase, temp-dir

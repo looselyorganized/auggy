@@ -20,5 +20,5 @@ export async function runCreate(
   console.log(`  1. Edit ${dir}/agent.yaml to configure augments`);
   console.log(`  2. Edit ${dir}/.env to add your API keys`);
   console.log(`  3. Edit ${dir}/identity.md to define the agent's personality`);
-  console.log(`  4. Run: auggy dev ${name}`);
+  console.log(`  4. Run: aug1 dev ${name}`);
 }

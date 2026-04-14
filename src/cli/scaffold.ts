@@ -1,5 +1,5 @@
 /**
- * Scaffold — generates a new agent directory with auggy create.
+ * Scaffold — generates a new agent directory with aug1create.
  *
  * Creates the standard agent directory convention:
  *   <name>/

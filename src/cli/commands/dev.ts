@@ -71,7 +71,7 @@ export async function runDev(
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "EEXIST") {
       throw new Error(
-        `Agent "${agentName}" is already running. Use "auggy stop ${agentName}" first.`,
+        `Agent "${agentName}" is already running. Use "aug1 stop ${agentName}" first.`,
       );
     }
     throw err;

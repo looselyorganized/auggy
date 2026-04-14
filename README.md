@@ -9,14 +9,14 @@ A modular agent runtime in TypeScript/Bun. Agents are composed from swappable **
 bun install
 
 # Create an agent
-auggy create zip
+aug1 create zip
 
 # Configure it
 vim zip/agent.yaml
 echo "ANTHROPIC_API_KEY=sk-ant-..." > zip/.env
 
 # Run it
-auggy dev zip
+aug1 dev zip
 ```
 
 ## How it works
@@ -57,11 +57,11 @@ augments:
 
 | Command | What it does |
 |---------|-------------|
-| `auggy create <name>` | Scaffold agent directory |
-| `auggy dev <name>` | Run in foreground (Ctrl-C stops) |
-| `auggy start <name>` | Install as launchd service (always-on) |
-| `auggy stop <name>` | Stop a running agent |
-| `auggy status [name]` | Show running agents |
+| `aug1 create <name>` | Scaffold agent directory |
+| `aug1 dev <name>` | Run in foreground (Ctrl-C stops) |
+| `aug1 start <name>` | Install as launchd service (always-on) |
+| `aug1 stop <name>` | Stop a running agent |
+| `aug1 status [name]` | Show running agents |
 
 ## Built-in augments
 

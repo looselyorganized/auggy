@@ -26,7 +26,7 @@ export interface PlistOptions {
 
 /** The launchd label for an agent. */
 export function plistLabel(name: string): string {
-  return `com.auggy.agent.${name}`;
+  return `com.aug1.agent.${name}`;
 }
 
 /** Where generated plists are stored. */

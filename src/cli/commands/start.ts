@@ -42,7 +42,7 @@ export async function runStart(
   // Check if already running.
   if (!tryClaimName(agentName)) {
     throw new Error(
-      `Agent "${agentName}" is already running. Use "auggy stop ${agentName}" first.`,
+      `Agent "${agentName}" is already running. Use "aug1 stop ${agentName}" first.`,
     );
   }
 
@@ -109,8 +109,8 @@ export async function runStart(
       }
       console.log(`  Logs:    ${logDir()}/${agentName}.{log,err}`);
       console.log();
-      console.log(`  To stop:   auggy stop ${agentName}`);
-      console.log(`  To status: auggy status ${agentName}`);
+      console.log(`  To stop:   aug1 stop ${agentName}`);
+      console.log(`  To status: aug1 status ${agentName}`);
       console.log(`  To logs:   tail -f ${logDir()}/${agentName}.log`);
       return;
     }

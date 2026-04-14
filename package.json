@@ -4,7 +4,7 @@
   "type": "module",
   "private": true,
   "bin": {
-    "auggy": "src/cli/index.ts"
+    "aug1": "src/cli/index.ts"
   },
   "scripts": {
     "test": "bun test",

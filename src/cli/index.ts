@@ -20,8 +20,8 @@ import { runStatus } from "./commands/status";
 const program = new Command();
 
 program
-  .name("auggy")
-  .description("Auggy modular agent runtime CLI")
+  .name("aug1")
+  .description("Auggy agent runtime CLI")
   .version("0.1.0");
 
 program
