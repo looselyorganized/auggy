@@ -102,10 +102,14 @@ name: ${name}
 purpose: "${purpose}"
 
 engine:
-  provider: anthropic
-  model: claude-sonnet-4-6
-  maxContextTokens: 200000
-  maxTokens: 4096
+  provider: anthropic        # or: openai, openrouter
+  model: claude-sonnet-4-6   # openai: gpt-5 | openrouter: qwen/qwen3.5-397b-a17b
+  maxContextTokens: 200000   # for openrouter, set per-model — defaults vary
+  maxTokens: 4096            # sent as max_completion_tokens for openai/openrouter
+  # reasoningEffort: medium  # optional: none|minimal|low|medium|high|xhigh
+  # providerRouting:         # openrouter only — slugs not semantically validated
+  #   only: [OpenAI]
+  #   sort: price
 
 settings:
   compactionStrategy: truncate
@@ -247,9 +251,12 @@ web_fetch({ url: "https://example.com", prompt: "summarize this page" })
 `;
 
 const ENV_TEMPLATE = `# Auggy agent secrets — this file is gitignored.
-# Add your API keys and tokens here.
+# Add your API keys and tokens here. Only the key matching the
+# configured engine.provider in agent.yaml needs to be filled in.
 
 ANTHROPIC_API_KEY=
+# OPENAI_API_KEY=
+# OPENROUTER_API_KEY=
 AUGGY_WEB_TOKEN=
 # SUPABASE_URL=
 # SUPABASE_SERVICE_KEY=

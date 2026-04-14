@@ -104,6 +104,21 @@ export type { WebTransportOptions } from "./transports/web-transport";
 // === Engines (model client adapters) ===
 export { createAnthropicEngine } from "./engines/anthropic";
 export type { AnthropicEngineOptions } from "./engines/anthropic";
+export { createOpenAIEngine } from "./engines/openai";
+export type { OpenAIEngineOptions } from "./engines/openai";
+export {
+  assembleOpenAISystemMessage,
+  buildOpenAIModelResponse,
+  convertOpenAIMessages,
+  convertOpenAITools,
+  safeParseJson as openaiSafeParseJson,
+  safeParseToolCall as openaiSafeParseToolCall,
+} from "./engines/openai";
+export { createOpenRouterEngine } from "./engines/openrouter";
+export type {
+  OpenRouterEngineOptions,
+  OpenRouterProviderRouting,
+} from "./engines/openrouter";
 
 // === AG-UI event protocol (for custom transports or advanced consumers) ===
 export {
