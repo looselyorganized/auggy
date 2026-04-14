@@ -109,6 +109,8 @@ function walkAndInterpolate(
 // ---------------------------------------------------------------------------
 
 const AUG1_ID_RE = /^aug1_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+/** Agent and augment names: lowercase alphanumeric, hyphens, underscores. No dots, slashes, spaces. */
+export const VALID_NAME_RE = /^[a-z0-9][a-z0-9_-]*$/;
 const VALID_COMPACTION = new Set(["truncate", "summarize", "sliding-window"]);
 const BUILTIN_TYPES = new Set([
   "fileMemory",
@@ -127,6 +129,8 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
   }
   if (typeof raw.name !== "string" || raw.name.length === 0) {
     errors.push("name: required, non-empty string");
+  } else if (!VALID_NAME_RE.test(raw.name)) {
+    errors.push(`name: must be lowercase alphanumeric with hyphens/underscores (got "${raw.name}")`);
   }
 
   // Engine.
@@ -154,6 +158,8 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
 
       if (typeof aug.name !== "string" || aug.name.length === 0) {
         errors.push(`${prefix}.name: required, non-empty string`);
+      } else if (!VALID_NAME_RE.test(aug.name)) {
+        errors.push(`${prefix}.name: must be lowercase alphanumeric with hyphens/underscores (got "${aug.name}")`);
       } else if (names.has(aug.name)) {
         errors.push(`${prefix}.name: duplicate name "${aug.name}"`);
       } else {
