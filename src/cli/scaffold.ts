@@ -75,8 +75,8 @@ export function scaffoldAgent(opts: ScaffoldOptions): string {
   // Write agent.yaml.
   writeFileSync(join(dir, "agent.yaml"), agentYamlTemplate(id, opts.name, purpose));
 
-  // Write .env template.
-  writeFileSync(join(dir, ".env"), ENV_TEMPLATE);
+  // Write .env.example template (operator copies to .env with real values).
+  writeFileSync(join(dir, ".env.example"), ENV_TEMPLATE);
 
   // Write .gitignore.
   writeFileSync(join(dir, ".gitignore"), GITIGNORE_TEMPLATE);
@@ -205,6 +205,7 @@ AUGGY_WEB_TOKEN=
 `;
 
 const GITIGNORE_TEMPLATE = `.env
+.env.local
 workspace/
 *.log
 *.err

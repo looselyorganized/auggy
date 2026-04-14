@@ -44,7 +44,9 @@ export function loadEnvFile(dir: string): void {
     ) {
       value = value.slice(1, -1);
     }
-    if (key && !(key in process.env)) {
+    // Skip empty values (placeholder lines like KEY= in the template).
+    // Don't override existing env vars (shell exports take precedence).
+    if (key && value && !(key in process.env)) {
       process.env[key] = value;
     }
   }
