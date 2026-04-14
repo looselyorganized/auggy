@@ -1,13 +1,21 @@
 /**
  * Engine resolver — EngineConfig → ModelClient.
  *
- * Maps the `engine.provider` string from agent.yaml to the
- * corresponding engine factory. Currently only "anthropic" is
- * supported. The API key is NEVER in the config — the Anthropic
- * SDK reads ANTHROPIC_API_KEY from the environment.
+ * Maps the `engine.provider` string from agent.yaml to the corresponding
+ * engine factory. Supports "anthropic", "openai", and "openrouter".
+ *
+ * API keys are NEVER in the YAML config — each engine reads its own
+ * environment variable:
+ *   - anthropic   → ANTHROPIC_API_KEY (read by the Anthropic SDK)
+ *   - openai      → OPENAI_API_KEY    (read by the openai SDK)
+ *   - openrouter  → OPENROUTER_API_KEY (read by createOpenRouterEngine,
+ *     which throws explicitly if absent rather than letting the SDK fall
+ *     through to OPENAI_API_KEY)
  */
 
 import { createAnthropicEngine } from "../engines/anthropic";
+import { createOpenAIEngine } from "../engines/openai";
+import { createOpenRouterEngine } from "../engines/openrouter";
 import type { ModelClient } from "../types";
 import type { EngineConfig } from "./types";
 
@@ -22,7 +30,30 @@ export function resolveEngine(config: EngineConfig): ModelClient {
     });
   }
 
+  if (config.provider === "openai") {
+    return createOpenAIEngine({
+      model: config.model,
+      maxContextTokens: config.maxContextTokens,
+      maxTokens: config.maxTokens,
+      baseURL: config.baseURL,
+      reasoningEffort: config.reasoningEffort,
+      // apiKey intentionally omitted — SDK reads OPENAI_API_KEY from env.
+    });
+  }
+
+  if (config.provider === "openrouter") {
+    return createOpenRouterEngine({
+      model: config.model,
+      maxContextTokens: config.maxContextTokens,
+      maxTokens: config.maxTokens,
+      reasoningEffort: config.reasoningEffort,
+      providerRouting: config.providerRouting,
+      // baseURL intentionally NOT passed — hardcoded to OpenRouter.
+      // apiKey intentionally omitted — engine reads OPENROUTER_API_KEY from env.
+    });
+  }
+
   throw new Error(
-    `Unknown engine provider: "${config.provider}" (supported: anthropic)`,
+    `Unknown engine provider: "${config.provider}" (supported: anthropic, openai, openrouter)`,
   );
 }
