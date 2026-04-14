@@ -1,0 +1,234 @@
+import { describe, test, expect, beforeEach, afterEach } from "bun:test";
+import { writeFileSync, mkdirSync, rmSync } from "fs";
+import { join } from "path";
+import { resolveAugments } from "../../src/cli/augment-resolver";
+import type { AugmentConfig } from "../../src/cli/types";
+
+const TMP = join(import.meta.dir, ".tmp-resolver-test");
+
+beforeEach(() => {
+  mkdirSync(TMP, { recursive: true });
+});
+
+afterEach(() => {
+  rmSync(TMP, { recursive: true, force: true });
+});
+
+// ---------------------------------------------------------------------------
+// fileMemory
+// ---------------------------------------------------------------------------
+
+describe("resolveAugments — fileMemory", () => {
+  test("resolves a fileMemory augment with relative source path", async () => {
+    writeFileSync(join(TMP, "identity.md"), "# Identity");
+
+    const configs: AugmentConfig[] = [
+      {
+        name: "identity",
+        type: "fileMemory",
+        options: {
+          label: "self",
+          source: "./identity.md",
+          mutable: false,
+          origin: "operator",
+          priority: "required",
+          placement: "system",
+          eviction: "never",
+        },
+      },
+    ];
+
+    const augments = await resolveAugments(configs, TMP);
+    expect(augments).toHaveLength(1);
+    expect(augments[0]!.name).toBe("identity");
+    expect(augments[0]!.memory).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// filesystem
+// ---------------------------------------------------------------------------
+
+describe("resolveAugments — filesystem", () => {
+  test("resolves a filesystem augment with mounts", async () => {
+    mkdirSync(join(TMP, "skills"), { recursive: true });
+    mkdirSync(join(TMP, "workspace"), { recursive: true });
+
+    const configs: AugmentConfig[] = [
+      {
+        name: "files",
+        type: "filesystem",
+        options: {
+          mounts: [
+            { name: "skills", path: "./skills", writable: false },
+            { name: "workspace", path: "./workspace", writable: true },
+          ],
+        },
+      },
+    ];
+
+    const augments = await resolveAugments(configs, TMP);
+    expect(augments).toHaveLength(1);
+    expect(augments[0]!.name).toBe("files");
+    expect(augments[0]!.tools).toBeDefined();
+    expect(augments[0]!.tools!.length).toBe(6);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// webTransport
+// ---------------------------------------------------------------------------
+
+describe("resolveAugments — webTransport", () => {
+  test("resolves a webTransport augment", async () => {
+    const configs: AugmentConfig[] = [
+      {
+        name: "web",
+        type: "webTransport",
+        options: {
+          port: 9999,
+          auth: { type: "bearer", token: "test-token" },
+        },
+      },
+    ];
+
+    const augments = await resolveAugments(configs, TMP);
+    expect(augments).toHaveLength(1);
+    expect(augments[0]!.name).toBe("web");
+    expect(augments[0]!.transport).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// webFetch
+// ---------------------------------------------------------------------------
+
+describe("resolveAugments — webFetch", () => {
+  test("resolves a webFetch augment with options", async () => {
+    const configs: AugmentConfig[] = [
+      {
+        name: "fetch",
+        type: "webFetch",
+        options: { timeoutMs: 10000 },
+      },
+    ];
+
+    const augments = await resolveAugments(configs, TMP);
+    expect(augments).toHaveLength(1);
+    expect(augments[0]!.name).toBe("fetch");
+    expect(augments[0]!.tools).toBeDefined();
+    expect(augments[0]!.tools![0]!.name).toBe("web_fetch");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// custom
+// ---------------------------------------------------------------------------
+
+describe("resolveAugments — custom", () => {
+  test("loads a custom augment from a local .ts file", async () => {
+    const customPath = join(TMP, "custom-augment.ts");
+    writeFileSync(
+      customPath,
+      `export default function(opts) {
+        return {
+          name: "from-factory",
+          capabilities: ["tools"],
+          tools: [],
+        };
+      }`,
+    );
+
+    const configs: AugmentConfig[] = [
+      {
+        name: "my-custom",
+        type: "custom",
+        source: "./custom-augment.ts",
+        options: { foo: "bar" },
+      },
+    ];
+
+    const augments = await resolveAugments(configs, TMP);
+    expect(augments).toHaveLength(1);
+    // Name should be overridden to the config name.
+    expect(augments[0]!.name).toBe("my-custom");
+  });
+
+  test("throws for missing source file", async () => {
+    const configs: AugmentConfig[] = [
+      {
+        name: "bad",
+        type: "custom",
+        source: "./nonexistent.ts",
+      },
+    ];
+
+    expect(resolveAugments(configs, TMP)).rejects.toThrow("failed to import");
+  });
+
+  test("throws when default export is not a function", async () => {
+    const customPath = join(TMP, "not-a-function.ts");
+    writeFileSync(customPath, `export default { name: "oops" };`);
+
+    const configs: AugmentConfig[] = [
+      {
+        name: "bad",
+        type: "custom",
+        source: "./not-a-function.ts",
+      },
+    ];
+
+    expect(resolveAugments(configs, TMP)).rejects.toThrow(
+      "must have a default export that is a function",
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Name override
+// ---------------------------------------------------------------------------
+
+describe("resolveAugments — name override", () => {
+  test("overrides auto-generated augment name with config name", async () => {
+    const configs: AugmentConfig[] = [
+      {
+        name: "my-custom-fetch-name",
+        type: "webFetch",
+        options: {},
+      },
+    ];
+
+    const augments = await resolveAugments(configs, TMP);
+    // webFetch normally produces name "web-fetch"; config overrides it.
+    expect(augments[0]!.name).toBe("my-custom-fetch-name");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Multiple augments
+// ---------------------------------------------------------------------------
+
+describe("resolveAugments — multiple", () => {
+  test("resolves multiple augments in order", async () => {
+    writeFileSync(join(TMP, "identity.md"), "# ID");
+    mkdirSync(join(TMP, "workspace"), { recursive: true });
+
+    const configs: AugmentConfig[] = [
+      {
+        name: "identity",
+        type: "fileMemory",
+        options: { label: "self", source: "./identity.md", mutable: false, origin: "operator", priority: "required", placement: "system", eviction: "never" },
+      },
+      {
+        name: "fetch",
+        type: "webFetch",
+        options: {},
+      },
+    ];
+
+    const augments = await resolveAugments(configs, TMP);
+    expect(augments).toHaveLength(2);
+    expect(augments[0]!.name).toBe("identity");
+    expect(augments[1]!.name).toBe("fetch");
+  });
+});
