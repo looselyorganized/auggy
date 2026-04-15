@@ -32,3 +32,9 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 
 # Finder (MacOS) folder config
 .DS_Store
+
+# Agent runtime directories (operator-created, not source)
+# Individual agents scaffolded with `aug1 create <name>` — their config,
+# identity, learned memory, and workspace are runtime state, not code.
+zip/
+
