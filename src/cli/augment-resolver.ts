@@ -20,6 +20,7 @@ import { supabaseMemory } from "../augments/supabase-memory";
 import { filesystem } from "../augments/filesystem";
 import { webTransport } from "../transports/web-transport";
 import { webFetch } from "../augments/web-fetch";
+import { orgContext } from "../augments/org-context";
 import type { Augment } from "../types";
 import type { AugmentConfig } from "./types";
 
@@ -187,6 +188,13 @@ export async function resolveAugments(
         break;
       case "webFetch":
         augment = resolveWebFetch(opts);
+        break;
+      case "orgContext":
+        augment = orgContext({
+          baseUrl: opts.baseUrl as string,
+          token: opts.token as string | undefined,
+          cacheTtlMs: opts.cacheTtlMs as number | undefined,
+        });
         break;
       case "custom":
         augment = await resolveCustom(config, agentDir);

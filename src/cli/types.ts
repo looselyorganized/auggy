@@ -16,7 +16,8 @@ export type BuiltinAugmentType =
   | "supabaseMemory"
   | "filesystem"
   | "webTransport"
-  | "webFetch";
+  | "webFetch"
+  | "orgContext";
 
 /** A single augment entry from the `augments:` array in agent.yaml. */
 export interface AugmentConfig {

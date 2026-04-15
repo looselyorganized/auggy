@@ -101,6 +101,47 @@ web_fetch({ url: "https://example.com", prompt: "summarize this page" })
 // Catalog
 // ---------------------------------------------------------------------------
 
+const ORG_CONTEXT_SKILL = `---
+name: org-context
+description: Fetch org knowledge and escalate to the operator using org_fetch and org_escalate tools.
+---
+
+# Org Context
+
+You are connected to your organization's knowledge base. Two tools are available:
+
+## org_fetch — retrieve org knowledge
+
+| Situation | Endpoint | Example |
+|---|---|---|
+| Visitor asks about the facility | /vision | \`org_fetch({ endpoint: "/vision" })\` |
+| Visitor asks about projects | /initiatives | \`org_fetch({ endpoint: "/initiatives" })\` |
+| Need architecture decisions | /solutions/architecture | \`org_fetch({ endpoint: "/solutions/architecture" })\` |
+| Need research findings | /solutions/research | \`org_fetch({ endpoint: "/solutions/research" })\` |
+
+Check your org context manifest (in your system prompt) for available endpoints.
+
+## org_escalate — alert the operator
+
+Use when:
+- A visitor's request is outside your scope
+- You're uncertain about a decision
+- Explicit human approval is needed
+- A visitor asks to speak to a human
+
+\`\`\`
+org_escalate({ summary: "Visitor wants to discuss partnership", reason: "Outside my scope" })
+\`\`\`
+
+## Common mistakes
+
+| Wrong | Correct |
+|-------|---------|
+| Saying "I don't know what LORF is" | Use org_fetch to check /vision |
+| Handling scope-exceeding requests yourself | Use org_escalate |
+| Fetching all endpoints every turn | Only fetch what's relevant to the conversation |
+`;
+
 export const AUGMENT_CATALOG: CatalogEntry[] = [
   {
     label: "fileMemory (identity)",
@@ -195,6 +236,19 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
     required: false,
     envVars: ["SUPABASE_URL", "SUPABASE_SERVICE_KEY"],
     hasSkill: false,
+  },
+  {
+    label: "orgContext",
+    description: "Connect to org knowledge API (manifest + escalation)",
+    type: "orgContext",
+    defaultName: "org",
+    defaultOptions: {
+      baseUrl: "${ORG_CONTEXT_URL}",
+    },
+    required: false,
+    envVars: ["ORG_CONTEXT_URL"],
+    hasSkill: true,
+    skillTemplate: ORG_CONTEXT_SKILL,
   },
 ];
 
