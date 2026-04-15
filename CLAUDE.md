@@ -4,7 +4,7 @@
 
 Auggy (`augment-1`) is a modular agent runtime in TypeScript/Bun. Agents are composed from swappable augments; the kernel manages context, tools, permissions, and lifecycle. Framework-agnostic by design — **not LORF-locked**.
 
-**Status (2026-04-14):** Plans 1 (kernel) + 2 (built-in augments) + 3 (CLI & manifest) complete. 310 tests passing. See `lo/docs/auggy-plans-roadmap.md` (outside this repo) for the plan-by-plan roadmap.
+**Status: v0.1.0 (2026-04-14).** Plans 1 (kernel) + 2 (built-in augments) + 3 (CLI & manifest) complete. 6 augments, 3 engines, 406 tests. First agent live with chat, memory, web fetch, org knowledge, and escalation. See `lo/docs/auggy-plans-roadmap.md` (outside this repo) for the plan-by-plan roadmap.
 
 ## Commands
 
@@ -37,7 +37,7 @@ To use the CLI globally: `bun link` in this directory makes `auggy` available as
 | `docs/04-kernel.md` | Turn loop + supporting machinery |
 | `docs/05-memory-subsystem.md` | Provider contract, registry, bus, context synthesis, generic tools |
 | `docs/06-transports.md` | Transport interface, AG-UI event protocol, SSE streaming |
-| `docs/07-built-in-augments.md` | `fileMemory`, `supabaseMemory`, `webTransport`, `filesystem`, `webFetch` |
+| `docs/07-built-in-augments.md` | `fileMemory`, `supabaseMemory`, `webTransport`, `filesystem`, `webFetch`, `orgContext` |
 | `docs/08-agent-lifecycle.md` | `defineAgent`, `AgentHandle`, lifecycle hooks |
 | `docs/09-testing.md` | Test strategy, fixtures, what to mock |
 | `docs/10-system-diagrams.md` | Visual maps: three primitives, full architecture, data flow, filesystem layout |
@@ -87,10 +87,15 @@ src/
 │   ├── supabase-memory.ts  # Namespace memory provider
 │   ├── filesystem.ts       # Multi-mount scoped file access (6 tools, realpath security)
 │   ├── filesystem-skill/   # SKILL.md + references/ for the filesystem augment
-│   └── web-fetch.ts        # URL fetch with HTML→text, JSON passthrough
+│   ├── web-fetch.ts        # URL fetch with HTML→text, JSON passthrough
+│   └── org-context.ts      # Org knowledge (manifest + org_fetch + org_escalate)
 │
 ├── engines/              # ModelClient adapters (the "reasoning engines")
-│   └── anthropic.ts        # Anthropic Messages API adapter
+│   ├── anthropic.ts        # Anthropic Messages API adapter
+│   ├── openai.ts           # OpenAI Chat Completions adapter
+│   ├── openrouter.ts       # OpenRouter multi-provider adapter
+│   └── _shared/
+│       └── schema-normalize.ts  # Zod→JSON Schema normalization
 │
 └── cli/                  # aug1 CLI (Plan 3)
     ├── index.ts            # Commander.js entrypoint
@@ -110,7 +115,7 @@ src/
         ├── stop.ts         # aug1 stop (SIGTERM or launchctl unload)
         └── status.ts       # aug1 status (list or detail)
 
-tests/                    # 310 tests across 36 files
+tests/                    # 406 tests across 38 files
 ├── fixtures/             # mock-model, mock-augment, mock-supabase, temp-dir
 ├── kernel/               # Per-kernel-component unit tests
 ├── memory/               # Memory subsystem tests
@@ -132,7 +137,7 @@ scripts/
 1. **The kernel is finished.** Behavior changes go in augments, not in `src/kernel/`. Bug fixes to kernel files are fine; adding new kernel features requires explicit justification.
 2. **Every shared type lives in `src/types.ts`** — do not scatter types across modules. One file is deliberate.
 3. **Every module is a `create*` factory returning an object** — no classes, no `this`.
-4. **Test gate before committing:** `bun test` (310 passing) + `bunx tsc --noEmit` (clean) must both pass.
+4. **Test gate before committing:** `bun test` (406 passing) + `bunx tsc --noEmit` (clean) must both pass.
 5. **A2A-shaped types are load-bearing** — `Part[]`, `TaskState`, `AgentCard` follow A2A's shapes even though v1 doesn't speak A2A on the wire. Do not deviate.
 6. **Never use `vitest`** — we migrated to `bun:test` in Plan 2. The import is `from "bun:test"`.
 7. **Model adapters go in `src/engines/`** — not `src/models/` (see philosophy: the adapter is the reasoning engine, not the model itself).

@@ -2,18 +2,20 @@
 
 A modular agent runtime in TypeScript/Bun. Agents are composed from swappable **augments** — the kernel manages context, tools, permissions, and lifecycle. Framework-agnostic by design.
 
+**v0.1.0** — 6 augments, 3 engines, 406 tests. Agents boot from YAML, chat via AG-UI SSE, remember across restarts, fetch URLs, pull org knowledge, and escalate to the operator.
+
 ## Quick start
 
 ```bash
 # Install dependencies
 bun install
 
-# Create an agent
+# Create an agent (interactive augment selection)
 aug1 create zip
 
-# Configure it
-vim zip/agent.yaml
-echo "ANTHROPIC_API_KEY=sk-ant-..." > zip/.env
+# Configure secrets
+cp zip/.env.example zip/.env
+# Add your API key to zip/.env
 
 # Run it
 aug1 dev zip
@@ -29,7 +31,7 @@ name: zip
 purpose: "Front-door agent"
 
 engine:
-  provider: anthropic
+  provider: anthropic           # or: openai, openrouter
   model: claude-sonnet-4-6
 
 augments:
@@ -44,6 +46,11 @@ augments:
       placement: system
       eviction: never
 
+  - name: org
+    type: orgContext
+    options:
+      baseUrl: ${ORG_CONTEXT_URL}
+
   - name: web
     type: webTransport
     options:
@@ -57,10 +64,12 @@ augments:
 
 | Command | What it does |
 |---------|-------------|
-| `aug1 create <name>` | Scaffold agent directory |
+| `aug1 create <name>` | Scaffold agent directory (interactive augment selection) |
+| `aug1 add <name>` | Add augments to an existing agent |
 | `aug1 dev <name>` | Run in foreground (Ctrl-C stops) |
 | `aug1 start <name>` | Install as launchd service (always-on) |
 | `aug1 stop <name>` | Stop a running agent |
+| `aug1 restart <name>` | Stop and restart |
 | `aug1 status [name]` | Show running agents |
 
 ## Built-in augments
@@ -72,6 +81,15 @@ augments:
 | `filesystem` | Multi-mount scoped file access (6 tools, realpath security) |
 | `webTransport` | AG-UI SSE chat transport (HTTP, bearer auth, CORS, rate limiting) |
 | `webFetch` | URL fetch with HTML-to-text and JSON passthrough |
+| `orgContext` | Org knowledge via manifest API (org_fetch + org_escalate tools) |
+
+## Engines
+
+| Provider | Model examples | Config |
+|----------|---------------|--------|
+| `anthropic` | claude-sonnet-4-6, claude-opus-4-6 | `ANTHROPIC_API_KEY` env |
+| `openai` | gpt-5, o3 | `OPENAI_API_KEY` env |
+| `openrouter` | qwen/qwen3.5-397b-a17b, any model | `OPENROUTER_API_KEY` env |
 
 ## Custom augments
 
@@ -123,7 +141,3 @@ Three primitives, independent of each other:
 The kernel (~1000 LOC) runs turns. Everything domain-specific is an augment.
 
 See [`docs/`](docs/README.md) for the full reference documentation.
-
-## Status
-
-Plans 1 (kernel), 2 (built-in augments), and 3 (CLI) are complete. 310 tests passing. See the [roadmap](../docs/auggy-plans-roadmap.md) for what's next.
