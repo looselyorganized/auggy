@@ -2,9 +2,9 @@
   <img src="assets/auggy.png" alt="Auggy — a sketch of a modular robot with detachable arms, sensors, and accessories" width="220" />
 </p>
 
-<h1 align="center">augment-1 (Auggy)</h1>
+<h1 align="center">Augment-1</h1>
 
-A modular agent runtime in TypeScript/Bun. Agents are composed from swappable **augments** — the kernel manages context, tools, permissions, and lifecycle. Framework-agnostic by design.
+Auggy (augment-1) is a modular agent runtime in TypeScript/Bun. Agents are composed from swappable **augments** — the kernel manages context, tools, permissions, and lifecycle. Framework-agnostic by design.
 
 **v0.1.0** — 6 augments, 3 engines, 406 tests. Agents boot from YAML, chat via AG-UI SSE, remember across restarts, fetch URLs, pull org knowledge, and escalate to the operator.
 
