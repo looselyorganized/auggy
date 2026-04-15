@@ -84,8 +84,19 @@ export function createOpenAIEngine(opts: OpenAIEngineOptions): ModelClient {
           : {}),
       };
 
-      const completion = await client.chat.completions.create(params);
-      return buildOpenAIModelResponse(completion);
+      let completion: OpenAI.Chat.ChatCompletion;
+      try {
+        completion = await client.chat.completions.create(params);
+      } catch (err) {
+        // Wrap the SDK error so logs identify which engine + model failed,
+        // not just "OpenAIError: 429". `cause` preserves the original SDK
+        // error (including `.status`) for callers that introspect.
+        const msg = err instanceof Error ? err.message : String(err);
+        throw new Error(`OpenAI engine (${opts.model}) failed: ${msg}`, {
+          cause: err,
+        });
+      }
+      return buildOpenAIModelResponse(completion, opts.model);
     },
   };
 }
@@ -133,7 +144,8 @@ export function safeParseToolCall(
       parsed &&
       typeof parsed.name === "string" &&
       parsed.arguments &&
-      typeof parsed.arguments === "object"
+      typeof parsed.arguments === "object" &&
+      !Array.isArray(parsed.arguments)
     ) {
       return {
         name: parsed.name,
@@ -189,6 +201,11 @@ export function convertOpenAIMessages(
               arguments: JSON.stringify(parsed.arguments),
             },
           });
+        } else {
+          // Malformed history is a kernel-side bug or storage corruption.
+          // Drop the entry rather than fail the turn, but emit a warning so
+          // operators can grep for `[Auggy:openai]` and trace the cause.
+          warnDroppedToolUse(tu, parsed);
         }
         i++;
       }
@@ -225,6 +242,8 @@ export function convertOpenAIMessages(
             },
           ],
         });
+      } else {
+        warnDroppedToolUse(msg, parsed);
       }
       i++;
       continue;
@@ -247,6 +266,23 @@ export function convertOpenAIMessages(
   }
 
   return coalesceConsecutiveUsers(result);
+}
+
+/** Surface dropped tool_use entries to operators. The kernel writes these
+ *  payloads itself, so a malformed entry indicates a kernel bug or storage
+ *  corruption — silent drops would let the agent re-call tools without
+ *  knowing. We log instead of throwing because failing the entire turn
+ *  over one bad history entry is too aggressive. */
+function warnDroppedToolUse(
+  m: Message,
+  parsed: { name: string; arguments: Record<string, unknown> } | null,
+): void {
+  const reason = parsed === null ? "parse failed" : "missing toolCallId";
+  const preview = m.content.slice(0, 80);
+  // eslint-disable-next-line no-console
+  console.warn(
+    `[Auggy:openai] dropping malformed tool_use msg=${m.id} reason=${reason} content=${JSON.stringify(preview)}`,
+  );
 }
 
 function coalesceConsecutiveUsers(
@@ -305,16 +341,20 @@ export function safeParseJson(s: string): Record<string, unknown> {
 
 export function buildOpenAIModelResponse(
   completion: OpenAI.Chat.ChatCompletion,
+  modelLabel: string = "openai",
 ): ModelResponse {
   const choice = completion.choices[0];
   if (!choice) {
-    // Empty choices array — rare edge case (e.g. content policy rejection).
-    return {
-      content: "",
-      inputTokens: completion.usage?.prompt_tokens ?? 0,
-      outputTokens: completion.usage?.completion_tokens ?? 0,
-      finishReason: "end_turn",
-    };
+    // Empty choices array — rare API edge case (typically a content policy
+    // rejection that was caught before generation). We throw rather than
+    // return an empty response because a silent empty turn means the agent
+    // sends nothing back to the user with no explanation. The thrown error
+    // wraps up through the kernel's transport layer.
+    throw new Error(
+      `OpenAI engine (${modelLabel}) returned no choices in completion ` +
+        `(usage=${JSON.stringify(completion.usage)}, id=${completion.id ?? "?"}). ` +
+        `Likely a content-policy rejection — inspect the prompt for blocked content.`,
+    );
   }
 
   const message = choice.message;

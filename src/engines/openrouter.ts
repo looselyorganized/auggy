@@ -63,6 +63,15 @@ export interface OpenRouterProviderRouting {
 
 const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
 
+/** Local extension of the SDK request type with OpenRouter-specific extras.
+ *  These fields don't exist in the SDK's typed surface — OpenRouter's
+ *  server reads them when present and the SDK forwards them unchanged. */
+type OpenRouterChatParams =
+  OpenAI.Chat.ChatCompletionCreateParamsNonStreaming & {
+    reasoning?: { effort: OpenAI.Chat.ChatCompletionReasoningEffort };
+    provider?: OpenRouterProviderRouting;
+  };
+
 export function createOpenRouterEngine(
   opts: OpenRouterEngineOptions,
 ): ModelClient {
@@ -112,19 +121,22 @@ export function createOpenRouterEngine(
         ...(opts.providerRouting ? { provider: opts.providerRouting } : {}),
       };
 
-      const completion = await client.chat.completions.create(
-        params as OpenAI.Chat.ChatCompletionCreateParamsNonStreaming,
-      );
-      return buildOpenAIModelResponse(completion);
+      let completion: OpenAI.Chat.ChatCompletion;
+      try {
+        completion = await client.chat.completions.create(
+          params as OpenAI.Chat.ChatCompletionCreateParamsNonStreaming,
+        );
+      } catch (err) {
+        // Wrap with provider+model context. Without this, an OpenRouter
+        // upstream error (e.g. provider 502) reads identically to an
+        // OpenAI direct-call error in logs.
+        const msg = err instanceof Error ? err.message : String(err);
+        throw new Error(
+          `OpenRouter engine (${opts.model}) failed: ${msg}`,
+          { cause: err },
+        );
+      }
+      return buildOpenAIModelResponse(completion, `openrouter:${opts.model}`);
     },
   };
 }
-
-/** Local extension of the SDK request type with OpenRouter-specific extras.
- *  These fields don't exist in the SDK's typed surface — OpenRouter's
- *  server reads them when present and the SDK forwards them unchanged. */
-type OpenRouterChatParams =
-  OpenAI.Chat.ChatCompletionCreateParamsNonStreaming & {
-    reasoning?: { effort: OpenAI.Chat.ChatCompletionReasoningEffort };
-    provider?: OpenRouterProviderRouting;
-  };

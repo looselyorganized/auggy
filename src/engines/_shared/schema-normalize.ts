@@ -51,8 +51,13 @@ export type NormalizedObjectSchema = {
 /** Strip `schema` to its safe subset and force `type: "object"` at the root.
  *
  *  Empty or undefined input → `{ type: "object", properties: {} }`.
- *  Any non-allowed key (including `$schema`, `$id`, `title`) is dropped.
+ *  Top-level non-allowed keys (including `$schema`, `$id`, `title`) are dropped.
  *  The input's own `type` field is overwritten — tool input schemas are always objects.
+ *
+ *  IMPORTANT: this function only normalizes the TOP LEVEL. Nested schemas
+ *  inside `properties` and `items` are passed through unchanged. In practice
+ *  Zod-generated schemas don't put metadata keys inside nested definitions,
+ *  but if a future caller produces such schemas they will not be stripped.
  */
 export function normalizeSchema(
   schema: Record<string, unknown> | undefined,

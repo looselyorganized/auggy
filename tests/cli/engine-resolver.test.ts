@@ -70,6 +70,53 @@ describe("resolveEngine", () => {
       'Unknown engine provider: "foobar" (supported: anthropic, openai, openrouter)',
     );
   });
+
+  test("throws clearly when provider is empty string", () => {
+    expect(() => resolveEngine({ provider: "", model: "x" })).toThrow(
+      "engine.provider is required",
+    );
+  });
+
+  test("throws clearly when provider is undefined (programmatic misuse)", () => {
+    expect(() =>
+      resolveEngine({
+        provider: undefined as unknown as string,
+        model: "x",
+      }),
+    ).toThrow("engine.provider is required");
+  });
+
+  test("does NOT forward baseURL to OpenRouter engine (hardcoded URL)", () => {
+    process.env.OPENROUTER_API_KEY = "sk-test-resolver";
+    // The engine factory hardcodes the OpenRouter URL. The resolver MUST NOT
+    // pass `config.baseURL` through — doing so would let an operator
+    // accidentally redirect OpenRouter calls to a wrong host. The resolver
+    // omits the field; we confirm here by passing a baseURL that, if
+    // forwarded, would break Qwen calls.
+    expect(() =>
+      resolveEngine({
+        provider: "openrouter",
+        model: "qwen/qwen3.5-397b-a17b",
+        baseURL: "https://wrong-host.example.com/v1",
+      }),
+    ).not.toThrow();
+    // The engine constructed successfully — if baseURL had been forwarded,
+    // the openrouter engine would still construct (it's just the wrong URL),
+    // so this test on its own can't fully prove non-forwarding. The static
+    // contract is: src/cli/engine-resolver.ts openrouter branch does not
+    // pass baseURL. Codify it as a regression-grep test instead:
+    const fs = require("node:fs");
+    const source = fs.readFileSync(
+      "src/cli/engine-resolver.ts",
+      "utf-8",
+    ) as string;
+    // Find the openrouter branch and confirm baseURL is absent within it.
+    const openrouterBlock = source.match(
+      /config\.provider === "openrouter"[\s\S]*?createOpenRouterEngine\([\s\S]*?\}\);/,
+    );
+    expect(openrouterBlock).not.toBeNull();
+    expect(openrouterBlock![0]).not.toMatch(/baseURL\s*:/);
+  });
 });
 
 afterAll(() => {

@@ -150,6 +150,18 @@ describe("safeParseToolCall", () => {
   test("returns null on missing arguments", () => {
     expect(safeParseToolCall(JSON.stringify({ name: "x" }))).toBeNull();
   });
+
+  test("returns null when arguments is an array (typeof array === 'object' bypass)", () => {
+    expect(
+      safeParseToolCall(JSON.stringify({ name: "x", arguments: [1, 2, 3] })),
+    ).toBeNull();
+  });
+
+  test("returns null when arguments is null", () => {
+    expect(
+      safeParseToolCall(JSON.stringify({ name: "x", arguments: null })),
+    ).toBeNull();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -278,6 +290,51 @@ describe("convertOpenAIMessages", () => {
     // Empty assistant is dropped; the two users then coalesce.
     expect(result).toHaveLength(1);
     expect(result[0]?.role).toBe("user");
+  });
+
+  test("drops tool_use with valid parse but missing toolCallId, with warning", () => {
+    const warnings: string[] = [];
+    const original = console.warn;
+    console.warn = (s: string) => warnings.push(s);
+    try {
+      const result = convertOpenAIMessages([
+        msg({ role: "assistant", content: "checking" }),
+        msg({
+          role: "tool_use",
+          // No toolCallId set
+          content: JSON.stringify({ name: "x", arguments: {} }),
+        }),
+      ]);
+      // Assistant text remains, tool_calls array is empty (so omitted).
+      expect(result).toHaveLength(1);
+      const a = result[0] as OpenAI.Chat.ChatCompletionAssistantMessageParam;
+      expect(a.content).toBe("checking");
+      expect(a.tool_calls).toBeUndefined();
+      expect(warnings.length).toBe(1);
+      expect(warnings[0]).toMatch(/missing toolCallId/);
+    } finally {
+      console.warn = original;
+    }
+  });
+
+  test("drops tool_use with malformed JSON content, with warning", () => {
+    const warnings: string[] = [];
+    const original = console.warn;
+    console.warn = (s: string) => warnings.push(s);
+    try {
+      convertOpenAIMessages([
+        msg({
+          role: "tool_use",
+          toolCallId: "t1",
+          content: "this is not valid json",
+        }),
+      ]);
+      expect(warnings.length).toBe(1);
+      expect(warnings[0]).toMatch(/parse failed/);
+      expect(warnings[0]).toMatch(/\[Auggy:openai\]/);
+    } finally {
+      console.warn = original;
+    }
   });
 });
 
@@ -504,13 +561,22 @@ describe("buildOpenAIModelResponse", () => {
     expect(r.toolCalls).toEqual([{ name: "x", arguments: {} }]);
   });
 
-  test("handles empty choices array with safe default", () => {
-    const r = buildOpenAIModelResponse(
-      mockCompletion({ emptyChoices: true, inputTokens: 5 }),
-    );
-    expect(r.content).toBe("");
-    expect(r.finishReason).toBe("end_turn");
-    expect(r.inputTokens).toBe(5);
+  test("throws on empty choices array (visible failure not silent empty turn)", () => {
+    expect(() =>
+      buildOpenAIModelResponse(mockCompletion({ emptyChoices: true })),
+    ).toThrow(/returned no choices/);
+  });
+
+  test("empty-choices error includes model label", () => {
+    expect(() =>
+      buildOpenAIModelResponse(mockCompletion({ emptyChoices: true }), "gpt-5"),
+    ).toThrow(/gpt-5/);
+  });
+
+  test("empty-choices error mentions content policy as likely cause", () => {
+    expect(() =>
+      buildOpenAIModelResponse(mockCompletion({ emptyChoices: true })),
+    ).toThrow(/content-policy/);
   });
 
   test("treats null content as empty string", () => {
@@ -572,12 +638,27 @@ describe("createOpenAIEngine — SDK call payload", () => {
     expect(tools).toHaveLength(1);
   });
 
-  test("propagates SDK errors", async () => {
+  test("propagates SDK errors wrapped with engine + model context", async () => {
     throwOnCreate = new Error("rate limited");
     const engine = createOpenAIEngine({ model: "gpt-5" });
     await expect(
       engine.complete(emptyPrompt({ messages: [msg({ content: "hi" })] })),
-    ).rejects.toThrow("rate limited");
+    ).rejects.toThrow("OpenAI engine (gpt-5) failed: rate limited");
+  });
+
+  test("preserves original SDK error as `cause`", async () => {
+    const original = new Error("503 service unavailable");
+    throwOnCreate = original;
+    const engine = createOpenAIEngine({ model: "o3" });
+    try {
+      await engine.complete(
+        emptyPrompt({ messages: [msg({ content: "hi" })] }),
+      );
+      throw new Error("should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(Error);
+      expect((err as Error & { cause?: unknown }).cause).toBe(original);
+    }
   });
 
   test("countTokens uses char/4 approximation", () => {

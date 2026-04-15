@@ -20,6 +20,16 @@ import type { ModelClient } from "../types";
 import type { EngineConfig } from "./types";
 
 export function resolveEngine(config: EngineConfig): ModelClient {
+  // Defensive: programmatic callers may bypass the YAML parser. Catch
+  // missing/empty provider with a clearer message than the catch-all throw.
+  if (typeof config.provider !== "string" || config.provider.length === 0) {
+    throw new Error(
+      "engine.provider is required (got: " +
+        JSON.stringify(config.provider) +
+        ")",
+    );
+  }
+
   if (config.provider === "anthropic") {
     return createAnthropicEngine({
       model: config.model,

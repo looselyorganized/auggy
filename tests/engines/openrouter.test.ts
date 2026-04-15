@@ -227,12 +227,53 @@ describe("createOpenRouterEngine — SDK call payload", () => {
     expect(lastCreateArgs?.stream).toBeUndefined();
   });
 
-  test("propagates SDK errors", async () => {
+  test("propagates SDK errors wrapped with engine + model context", async () => {
     throwOnCreate = new Error("upstream provider down");
     const engine = createOpenRouterEngine({ model: "qwen/qwen3.5-397b-a17b" });
     await expect(
       engine.complete(emptyPrompt({ messages: [msg({ content: "hi" })] })),
-    ).rejects.toThrow("upstream provider down");
+    ).rejects.toThrow(
+      "OpenRouter engine (qwen/qwen3.5-397b-a17b) failed: upstream provider down",
+    );
+  });
+
+  test("preserves original SDK error as `cause`", async () => {
+    const original = new Error("502 bad gateway");
+    throwOnCreate = original;
+    const engine = createOpenRouterEngine({ model: "qwen/qwen3.5-397b-a17b" });
+    try {
+      await engine.complete(
+        emptyPrompt({ messages: [msg({ content: "hi" })] }),
+      );
+      throw new Error("should have thrown");
+    } catch (err) {
+      expect((err as Error & { cause?: unknown }).cause).toBe(original);
+    }
+  });
+
+  test("empty choices from OpenRouter throws via shared buildOpenAIModelResponse", async () => {
+    // Override the default response with an empty choices array.
+    const originalCreate = throwOnCreate;
+    // We can't easily re-stub the per-call response with this mock setup,
+    // so we test buildOpenAIModelResponse directly with the openrouter label
+    // — same code path as called from createOpenRouterEngine.
+    const { buildOpenAIModelResponse } = await import(
+      "../../src/engines/openai"
+    );
+    expect(() =>
+      buildOpenAIModelResponse(
+        {
+          id: "x",
+          object: "chat.completion",
+          created: 0,
+          model: "qwen/qwen3.5-397b-a17b",
+          choices: [],
+          usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+        },
+        "openrouter:qwen/qwen3.5-397b-a17b",
+      ),
+    ).toThrow(/openrouter:qwen\/qwen3\.5-397b-a17b/);
+    void originalCreate;
   });
 
   test("response shape parses through buildOpenAIModelResponse correctly", async () => {
