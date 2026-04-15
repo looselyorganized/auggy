@@ -14,8 +14,6 @@
 
 Auggy (augment-1) is a modular agent runtime in TypeScript/Bun. Agents are composed from swappable **augments** — the kernel manages context, tools, permissions, and lifecycle. Framework-agnostic by design.
 
-[![Get Started](https://img.shields.io/badge/Get%20Started-Quick%20start-darkgreen?style=for-the-badge)](#quick-start)
-
 **v0.1.0** — 6 augments, 3 engines, 406 tests. Agents boot from YAML, chat via AG-UI SSE, remember across restarts, fetch URLs, pull org knowledge, and escalate to the operator.
 
 ## Quick start
