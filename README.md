@@ -2,7 +2,7 @@
   <img src="assets/auggy.png" alt="Auggy — a sketch of a modular robot with detachable arms, sensors, and accessories" width="220" />
 </p>
 
-# augment-1 (Auggy)
+<h1 align="center">augment-1 (Auggy)</h1>
 
 A modular agent runtime in TypeScript/Bun. Agents are composed from swappable **augments** — the kernel manages context, tools, permissions, and lifecycle. Framework-agnostic by design.
 
