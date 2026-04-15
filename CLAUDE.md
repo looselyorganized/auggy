@@ -4,7 +4,7 @@
 
 Auggy (`augment-1`) is a modular agent runtime in TypeScript/Bun. Agents are composed from swappable augments; the kernel manages context, tools, permissions, and lifecycle. Framework-agnostic by design — **not LORF-locked**.
 
-**Status: v0.1.0 (2026-04-14).** Plans 1 (kernel) + 2 (built-in augments) + 3 (CLI & manifest) complete. 6 augments, 3 engines, 406 tests. First agent live with chat, memory, web fetch, org knowledge, and escalation. See `lo/docs/auggy-plans-roadmap.md` (outside this repo) for the plan-by-plan roadmap.
+**Status: v0.1.1 (2026-04-14).** Plans 1 (kernel) + 2 (built-in augments) + 3 (CLI & manifest) complete. 6 augments, 3 engines, 406 tests. `aug1 create` prompts for engine + model and shows a welcome banner. First agent live with chat, memory, web fetch, org knowledge, and escalation. See `lo/docs/auggy-plans-roadmap.md` (outside this repo) for the plan-by-plan roadmap.
 
 ## Commands
 
@@ -147,6 +147,6 @@ scripts/
 
 ## Project identity
 
-- `lo.yml` at the repo root declares `id: proj_718dcc89-9421-4199-917f-4a65911f3689` and `version: 0.1.0`
+- `lo.yml` at the repo root declares `id: proj_718dcc89-9421-4199-917f-4a65911f3689` and `version: 0.1.1`
 - Registered in the LORF Supabase projects table under slug `augment-1`
 - Hosted at `github.com/looselyorganized/augment-1` (private)
