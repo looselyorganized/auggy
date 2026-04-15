@@ -35,6 +35,8 @@ aug1 dev zip
 
 ## How it works
 
+**Engines** drive the model call (one per agent). **Augments** plug in around it — context, tools, transport, memory (many per agent). Both are swappable via YAML.
+
 Write a YAML config. The CLI resolves your augments, boots the kernel, and starts serving.
 
 ```yaml
