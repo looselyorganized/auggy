@@ -9,7 +9,7 @@ import {
   stat,
   lstat,
 } from "node:fs/promises";
-import { resolve, join, relative, extname } from "node:path";
+import { resolve, join, relative, extname, isAbsolute, sep } from "node:path";
 import { Glob } from "bun";
 import type { Augment, ContextBlock } from "../types";
 import { defineTool } from "../helpers";
@@ -79,6 +79,31 @@ const BINARY_EXTENSIONS = new Set([
   ".exe", ".dll", ".so", ".dylib", ".o", ".a",
   ".wasm", ".pyc", ".class",
 ]);
+
+/**
+ * Boundary check via `path.relative()`. Rejects:
+ *   - targets whose relative path escapes the mount ("..", "../foo", etc.)
+ *   - targets on a different filesystem root (Windows cross-drive —
+ *     `relative()` returns an absolute path in that case).
+ * Accepts the mount root itself (relative "") and any descendant.
+ *
+ * Chose `relative()` over `startsWith(mountRoot + sep)` because the
+ * separator-suffix form breaks when mountRoot is itself a filesystem root
+ * (e.g. "/" on POSIX → `mountRoot + sep` becomes "//", which never matches
+ * any real child path). The relative-based check handles both the
+ * root-mount case and the prefix-collision case (mount `/var/data/work`
+ * vs sibling `/var/data/workspace`) uniformly. Exported for testability.
+ */
+export function isWithinMount(
+  realTarget: string,
+  mountRoot: string,
+): boolean {
+  const rel = relative(mountRoot, realTarget);
+  if (rel === "") return true;
+  if (rel === ".." || rel.startsWith(".." + sep)) return false;
+  if (isAbsolute(rel)) return false;
+  return true;
+}
 
 /**
  * Filesystem augment factory.
@@ -181,7 +206,7 @@ export function filesystem(opts: FilesystemOptions): Augment {
       realTarget = targetPath;
     }
 
-    if (!realTarget.startsWith(mountRoot) && realTarget !== mountRoot) {
+    if (!isWithinMount(realTarget, mountRoot)) {
       throw new Error(
         `Path "${logicalPath}" resolves outside mount "${mountName}" boundary`,
       );
@@ -210,7 +235,7 @@ export function filesystem(opts: FilesystemOptions): Augment {
       if (lstats?.isSymbolicLink()) {
         const realTarget = await realpath(physicalPath);
         const mountRoot = await resolveMountRoot(mount);
-        if (!realTarget.startsWith(mountRoot)) {
+        if (!isWithinMount(realTarget, mountRoot)) {
           return `Error: Symlink "${logicalPath}" points outside mount boundary`;
         }
       }
@@ -463,7 +488,19 @@ export function filesystem(opts: FilesystemOptions): Augment {
   return {
     name: "filesystem",
     capabilities: ["tools", "context"],
-    constraints: { maxToolCallsPerTurn: 15 },
+    constraints: {
+      maxToolCallsPerTurn: 15,
+      // Structural Layer 1 defaults: mutation tools are hidden from the
+      // untrusted peer's tool list entirely. Destruction is further restricted
+      // to facility/operator. Mount-level `writable` / `deletable` flags are a
+      // separate, complementary defense — they run inside the tool after it
+      // has already been exposed and called. perTrustLevel runs before the
+      // model sees the tool.
+      perTrustLevel: {
+        untrusted: { neverExpose: ["fs_write", "fs_mkdir", "fs_remove"] },
+        authenticated: { neverExpose: ["fs_remove"] },
+      },
+    },
 
     tools: [fsRead, fsWrite, fsList, fsMkdir, fsRemove, fsSearch],
 

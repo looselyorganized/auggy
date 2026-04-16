@@ -7,7 +7,7 @@ import {
 } from "bun:test";
 import { writeFile, mkdir, symlink, readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { filesystem } from "@/augments/filesystem";
+import { filesystem, isWithinMount } from "@/augments/filesystem";
 import { createTempDir } from "@tests/fixtures/temp-dir";
 
 describe("filesystem augment", () => {
@@ -121,6 +121,20 @@ describe("filesystem augment", () => {
     it("sets maxToolCallsPerTurn to 15", () => {
       const aug = createTestFs();
       expect(aug.constraints?.maxToolCallsPerTurn).toBe(15);
+    });
+
+    it("sets perTrustLevel structural defaults for untrusted + authenticated", () => {
+      const aug = createTestFs();
+      expect(aug.constraints?.perTrustLevel?.untrusted?.neverExpose).toEqual([
+        "fs_write",
+        "fs_mkdir",
+        "fs_remove",
+      ]);
+      expect(aug.constraints?.perTrustLevel?.authenticated?.neverExpose).toEqual([
+        "fs_remove",
+      ]);
+      expect(aug.constraints?.perTrustLevel?.operator).toBeUndefined();
+      expect(aug.constraints?.perTrustLevel?.facility).toBeUndefined();
     });
 
     it("throws on duplicate mount names", () => {
@@ -270,6 +284,62 @@ describe("filesystem augment", () => {
       // string. Here we verify the security check fires.
       await expect(
         execTool(aug, "fs_read", { path: "read/escape-link.txt" }),
+      ).rejects.toThrow(/outside mount.*boundary/);
+    });
+
+    // Codex review P2: separator-suffix check broke mounts rooted at
+     // filesystem roots ("/" on POSIX). These pure-unit tests verify the
+     // new `path.relative`-based boundary check handles root mounts,
+     // prefix-collision siblings, and cross-drive cases uniformly.
+    it("isWithinMount allows children of a root-level mount (POSIX `/`)", () => {
+      expect(isWithinMount("/etc/hosts", "/")).toBe(true);
+      expect(isWithinMount("/", "/")).toBe(true);
+      expect(isWithinMount("/usr/local/bin/foo", "/")).toBe(true);
+    });
+
+    it("isWithinMount still rejects prefix-collision siblings", () => {
+      // mountRoot /var/data/work — target /var/data/workspace/file starts
+      // with the same string prefix but is outside the mount.
+      expect(
+        isWithinMount("/var/data/workspace/file", "/var/data/work"),
+      ).toBe(false);
+      expect(
+        isWithinMount("/tmp/abc/file", "/tmp/a"),
+      ).toBe(false);
+    });
+
+    it("isWithinMount rejects parent traversal", () => {
+      expect(isWithinMount("/tmp", "/tmp/a")).toBe(false);
+      expect(isWithinMount("/", "/tmp/a")).toBe(false);
+    });
+
+    it("isWithinMount accepts direct descendants and the mount itself", () => {
+      expect(isWithinMount("/tmp/a", "/tmp/a")).toBe(true);
+      expect(isWithinMount("/tmp/a/b", "/tmp/a")).toBe(true);
+      expect(isWithinMount("/tmp/a/b/c/d", "/tmp/a")).toBe(true);
+    });
+
+    it("rejects symlinks that escape via prefix-collision sibling (Codex Finding 2)", async () => {
+      // Create mount root `readable/` and a sibling `readable-evil/` whose
+      // path starts with the mountRoot as a string prefix. A symlink inside
+      // readable/ points into readable-evil/. Before the separator-aware
+      // boundary check, `startsWith(mountRoot)` returned true and the
+      // symlink was accepted.
+      await mkdir(join(tmp.path, "readable-evil"), { recursive: true });
+      await writeFile(
+        join(tmp.path, "readable-evil", "secret.txt"),
+        "should not be readable",
+        "utf-8",
+      );
+      const linkPath = join(tmp.path, "readable", "collision-link.txt");
+      await symlink(
+        join(tmp.path, "readable-evil", "secret.txt"),
+        linkPath,
+      );
+
+      const aug = createTestFs();
+      await expect(
+        execTool(aug, "fs_read", { path: "read/collision-link.txt" }),
       ).rejects.toThrow(/outside mount.*boundary/);
     });
   });

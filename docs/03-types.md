@@ -21,7 +21,7 @@ export type ContextPlacement = "system" | "preamble" | "assistant-preamble";
 export type ContextProvenance = "identity" | "memory" | "retrieval" | "augment";
 export type ContextPriority = "required" | "high" | "normal" | "low" | "evictable";
 export type EvictionPolicy = "never" | "summarize" | "drop";
-export type ContextOrigin = "operator" | "system" | "peer-derived";
+export type ContextOrigin = "operator" | "system" | "agent" | "peer-derived";
 
 export interface ContextBlock {
   source: string;          // augment name (used in trace + [AUGMENT CONTEXT: source] markers)
@@ -46,7 +46,13 @@ export interface ContextBlock {
 
 **`priority`** determines eviction order when the context budget is exceeded. The allocator sorts blocks by priority (`required` first, `evictable` last) and includes blocks until the budget runs out. Blocks past the budget go into `evictions` for the trace.
 
-**`origin`** is the trust marker. `peer-derived` blocks get a `[PEER-DERIVED]` marker prepended to their content in the prompt, and the system preamble explicitly tells the model to treat them with caution. **This is load-bearing for security:** an augment that mishandles a peer-derived label can leak adversarial input into a position the model treats as authoritative.
+**`origin`** is the trust marker. Four values:
+- `operator` — block was authored by the operator (e.g. `identity.md`). Preamble-safe.
+- `system` — block was produced by system-authored machinery (e.g. a deterministic context augment). Preamble-safe.
+- `agent` — block contains content the agent wrote during earlier turns (e.g. mutable `learned.md`). Rendered with an `[AGENT-DERIVED]` marker and preamble rule 7 instructs the model to treat these as observations, not instructions.
+- `peer-derived` — block contains content influenced by an external peer (e.g. an episodic entry created from a visitor message). Rendered with a `[PEER-DERIVED]` marker and preamble rule 6 warns the model about adversarial input.
+
+**This is load-bearing for security:** an augment that mishandles the `origin` field can leak adversarial or self-authored content into a position the model treats as authoritative. Mutable memory sources should use `origin: agent` and `placement: context` (not `placement: preamble`) so a successful prompt injection can't elevate to durable system-level context on future turns.
 
 **`visibility: "pipeline-only"`** means the block is computed for downstream augments via `priorContext` but never sent to the model. Use case: an augment that runs an LLM-based filter on the user's input and contributes both the filter result (pipeline-only) and a sanitized version (public).
 
@@ -452,6 +458,15 @@ export interface AugmentConstraints {
   neverExpose?: string[];
   contextTimeoutMs?: number;
   toolTimeoutMs?: number;
+  perTrustLevel?: Partial<
+    Record<
+      TrustLevel,
+      {
+        neverExpose?: string[];
+        requiresHumanApproval?: string[];
+      }
+    >
+  >;
 }
 
 export interface Augment {
@@ -496,9 +511,10 @@ This is the **single most important type in the entire framework.** Everything e
 - `maxToolCallsPerTurn` — per-augment cap (default 5; the synthetic `memory-bus` augment overrides this to 20 to match its budget)
 - `requiresHumanApproval` — list of tool names that need operator approval before executing (v1: tools matching this skip with a "needs approval" error)
 - `approvalPolicy` — what to do when a tool needs approval (v1: always `skip`)
-- `neverExpose` — tools the capability table will never let the model see
+- `neverExpose` — tools the capability table will never let the model see (global; applies to every peer trust level)
 - `contextTimeoutMs` — wraps `context()` in `withTimeout` (default 5000ms)
 - `toolTimeoutMs` — wraps each `execute()` in `withTimeout` (default 30000ms)
+- `perTrustLevel` — per-trust-level additive constraints (Layer 1). Keyed by `TrustLevel` (`operator` / `facility` / `authenticated` / `untrusted`), each level can specify its own `neverExpose` and `requiresHumanApproval` lists. These apply only to peers at that level; top-level `neverExpose` still applies to everyone (no escape). Null peer (internal/scheduled triggers) is treated as `operator`. Example: `perTrustLevel: { untrusted: { neverExpose: ["fs_remove"] } }` hides `fs_remove` from untrusted peers but keeps it visible to authenticated and above.
 
 **Lifecycle hooks:**
 - `onBoot` — called once at `agent.start()`. Failures throw and abort startup.

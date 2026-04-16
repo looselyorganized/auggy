@@ -483,11 +483,12 @@ Three permission tiers: **read-only** (default) → **writable** → **writable 
 ### Security model
 
 - **`fs.realpath()`** resolves symlinks before every boundary check — prevents symlink-escape attacks
-- **`startsWith()`** against the realpath'd mount root — prevents `../` traversal
+- **`path.relative()`-based boundary check** — prevents `../` traversal, prefix-collision escapes (mount `/var/data/work` doesn't accept `/var/data/workspace/...`), and cross-drive escapes on Windows, while still working correctly when the mount itself is a filesystem root (e.g. `/` on POSIX)
 - **Binary detection** via file extension — returns an error message instead of garbage content for images, PDFs, compiled binaries
 - **Size truncation** — files over `maxReadSize` are truncated with a `[truncated at 256KB, total size: 20MB]` marker
 - **Per-mount permissions** — enforced on every operation before any file I/O
 - **Mount isolation** — each mount is an independent security boundary; no cross-mount path references
+- **Per-trust-level structural defaults** — the augment ships with `perTrustLevel: { untrusted: { neverExpose: ["fs_write", "fs_mkdir", "fs_remove"] }, authenticated: { neverExpose: ["fs_remove"] } }`. Untrusted peers structurally cannot see the three mutation tools; authenticated peers cannot see `fs_remove`. This runs at the capability table *before* the model sees the tool list (Layer 1 enforcement). Mount-level `writable` / `deletable` flags remain as a complementary defense — they run inside the tool after it has already been called, so they catch operator-authorized tools being called against the wrong mount.
 
 ### Lifecycle
 
@@ -513,9 +514,41 @@ src/augments/filesystem-skill/
 
 This skill is loaded by the model on demand via `fs_read`, following the progressive disclosure pattern.
 
+## `webFetch` — URL fetch with HTML→text rendering
+
+```ts
+import { webFetch } from "augment-1";
+
+const fetcher = webFetch({
+  timeoutMs: 15000,
+});
+```
+
+A single-tool augment exposing `web_fetch(url, prompt)`. Fetches the URL, strips HTML (or passes JSON through), produces a prompt-aware summary. Built around `createHttpClient` from `src/http.ts`.
+
+### Security model — structural SSRF defense
+
+The augment instantiates its http client with `rejectUnsafeUrls: true`. Both the initial URL and every redirect hop are filtered at the http layer, *before* any network I/O, against:
+
+- Loopback (`localhost`, `127.0.0.0/8`, `::1`)
+- RFC 1918 private ranges (`10/8`, `172.16/12`, `192.168/16`)
+- Link-local (`169.254.0.0/16` — covers AWS EC2 metadata `169.254.169.254` and similar)
+- IPv6 link-local (`fe80::/10`) and unique-local (`fc00::/7`)
+- `0.0.0.0/8`
+- Cloud metadata FQDNs (`metadata`, `metadata.google.internal`)
+- Non-http(s) schemes (`file://`, `ftp://`, `gopher://`, …)
+
+Rejected URLs throw from the http client and are caught by the `web_fetch` tool, surfaced as a structured error JSON with the reason (`"blocked: loopback"`, `"blocked: RFC 1918 (10/8)"`, etc.). This is **structural** defense — the filter runs regardless of what the model or the peer says, and it covers the redirect path, not just the first hop.
+
+**Not covered by this layer:**
+- DNS rebinding — a public-looking hostname that resolves to a private IP at fetch time. The filter runs against hostnames/IP literals, not the resolved address.
+- Allow/deny lists — operators who need a private endpoint reachable (e.g. internal APIs) should build a separate augment with an explicit allowlist, not disable this filter.
+
+The SSRF filter lives in `src/http.ts` as the exported helper `rejectUnsafeUrl(url)` so other augments can adopt it with `createHttpClient({ rejectUnsafeUrls: true })`.
+
 ## Why these aren't exhaustive
 
-The four built-in augments are the **minimum viable set**. Real agents will mount more — escalation augments (Zip's `ping_human` tool), eval augments, telemetry augments, ad-hoc tool augments. None of those belong in the runtime; they're application-specific.
+The built-in augments above are the **minimum viable set**. Real agents will mount more — escalation augments (Zip's `org_escalate` tool), eval augments, telemetry augments, ad-hoc tool augments. None of those belong in the runtime; they're application-specific.
 
 The line between "ship it built-in" and "user implements" is roughly:
 - **Built in:** anything that's a load-bearing reference implementation of a contract Auggy defines (`MemoryProviderSpec`, `TransportSpec`, filesystem access for skills).

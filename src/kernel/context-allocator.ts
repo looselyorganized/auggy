@@ -93,9 +93,11 @@ export function createContextAllocator(config: ContextAllocatorConfig) {
       for (const block of included) {
         if (block.visibility === "pipeline-only") continue;
 
-        const peerDerived =
-          block.origin === "peer-derived" ? " [PEER-DERIVED]" : "";
-        const wrapped = `[AUGMENT CONTEXT: ${block.source}]${peerDerived}\n${block.content}`;
+        const originMarker =
+          block.origin === "peer-derived" ? " [PEER-DERIVED]" :
+          block.origin === "agent" ? " [AGENT-DERIVED]" :
+          "";
+        const wrapped = `[AUGMENT CONTEXT: ${block.source}]${originMarker}\n${block.content}`;
 
         if (block.placement === "system") {
           systemBlocks.push(wrapped);

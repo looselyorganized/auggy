@@ -6,7 +6,7 @@ export type ContextPlacement = "system" | "preamble" | "assistant-preamble";
 export type ContextProvenance = "identity" | "memory" | "retrieval" | "augment";
 export type ContextPriority = "required" | "high" | "normal" | "low" | "evictable";
 export type EvictionPolicy = "never" | "summarize" | "drop";
-export type ContextOrigin = "operator" | "system" | "peer-derived";
+export type ContextOrigin = "operator" | "system" | "agent" | "peer-derived";
 
 export interface ContextBlock {
   source: string;
@@ -392,6 +392,26 @@ export interface AugmentConstraints {
   neverExpose?: string[];
   contextTimeoutMs?: number;
   toolTimeoutMs?: number;
+  /**
+   * Per-trust-level structural constraints. Applied additively on top of the
+   * top-level `neverExpose` / `requiresHumanApproval` fields. Top-level rules
+   * apply to every peer; per-level rules apply only to the specific level.
+   *
+   * Example: hide `fs_remove` from untrusted peers but keep it visible to
+   * authenticated and operator:
+   *   perTrustLevel: { untrusted: { neverExpose: ["fs_remove"] } }
+   *
+   * Null peer (internal/scheduled triggers) is treated as "operator" trust.
+   */
+  perTrustLevel?: Partial<
+    Record<
+      TrustLevel,
+      {
+        neverExpose?: string[];
+        requiresHumanApproval?: string[];
+      }
+    >
+  >;
 }
 
 export interface Augment {

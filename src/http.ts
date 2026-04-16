@@ -27,6 +27,118 @@ export interface HttpClientOptions {
   defaultHeaders?: Record<string, string>;
   /** Maximum response body size in bytes. Responses exceeding this are truncated. Default 5MB. */
   maxBodyBytes?: number;
+  /**
+   * Reject URLs that resolve to loopback, RFC 1918 private ranges, link-local,
+   * cloud metadata endpoints, and non-http(s) schemes. Applied to the initial
+   * URL and every redirect hop. Default: false.
+   *
+   * Enable on clients that consume model- or peer-supplied URLs (web_fetch).
+   * Leave disabled on clients fetching operator-configured endpoints (e.g. the
+   * org-context manifest URL, which is often localhost during dev).
+   */
+  rejectUnsafeUrls?: boolean;
+}
+
+/**
+ * Reject URLs pointing to loopback, private networks, link-local, cloud
+ * metadata endpoints, or non-http(s) schemes. Returns a reason string if
+ * the URL should be blocked, or null if it's safe.
+ *
+ * This is a structural SSRF defense — the check runs before any network
+ * I/O, at each hop. It does NOT perform DNS resolution, so DNS-rebinding
+ * attacks that resolve a public-looking name to a private IP at fetch
+ * time are out of scope for this layer.
+ */
+export function rejectUnsafeUrl(url: string): string | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return "unparseable URL";
+  }
+
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    return `blocked scheme: ${parsed.protocol}`;
+  }
+
+  // Strip IPv6 brackets. URL.hostname retains brackets on IPv6 literals
+  // (e.g. "[::1]"), so range checks that match raw IPv6 text must unwrap
+  // the brackets first.
+  let host = parsed.hostname.toLowerCase();
+  if (host.startsWith("[") && host.endsWith("]")) {
+    host = host.slice(1, -1);
+  }
+
+  // Hostname-style blocks. Trailing dot makes a name "fully qualified"
+  // but resolves to the same destination, so block both.
+  if (host === "localhost" || host === "localhost.") {
+    return "blocked: loopback";
+  }
+  if (host === "metadata" || host === "metadata.google.internal") {
+    return "blocked: cloud metadata endpoint";
+  }
+
+  // IPv6 canonical forms — loopback, unspecified, link-local, unique-local.
+  if (host === "::1" || host === "0:0:0:0:0:0:0:1") {
+    return "blocked: IPv6 loopback (::1)";
+  }
+  if (host === "::" || host === "0:0:0:0:0:0:0:0") {
+    return "blocked: IPv6 unspecified (::/128)";
+  }
+  // fe80::/10 spans the first-group range fe80-febf (binary 1111 1110 10xx xxxx).
+  if (/^fe[89ab][0-9a-f]:/i.test(host)) {
+    return "blocked: IPv6 link-local (fe80::/10)";
+  }
+  // fc00::/7 spans the first-group range fc00-fdff (binary 1111 110x xxxx xxxx).
+  if (/^f[cd][0-9a-f]{2}:/i.test(host)) {
+    return "blocked: IPv6 unique-local (fc00::/7)";
+  }
+
+  // IPv4-mapped IPv6 — re-check the embedded IPv4 against the IPv4 rules
+  // so an attacker can't bypass by wrapping an internal IP in IPv6 form.
+  // The URL parser normalizes dotted-quad forms to hex (::ffff:a.b.c.d →
+  // ::ffff:hhhh:hhhh) so we handle both.
+  const mappedV4 = extractIPv4Mapped(host);
+  if (mappedV4) {
+    const reason = checkIpv4Ranges(mappedV4);
+    if (reason) return `${reason} (via IPv4-mapped IPv6)`;
+  } else {
+    const ipv4Reason = checkIpv4Ranges(host);
+    if (ipv4Reason) return ipv4Reason;
+  }
+
+  return null;
+}
+
+function extractIPv4Mapped(host: string): string | null {
+  // Dotted-quad form: ::ffff:10.0.0.1 (rare — most parsers normalize away).
+  const dotted = host.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
+  if (dotted) return dotted[1]!;
+
+  // Hex form emitted by the URL parser: ::ffff:a00:1 (two 16-bit groups).
+  const hex = host.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i);
+  if (hex) {
+    const high = parseInt(hex[1]!, 16);
+    const low = parseInt(hex[2]!, 16);
+    return `${(high >> 8) & 0xff}.${high & 0xff}.${(low >> 8) & 0xff}.${low & 0xff}`;
+  }
+  return null;
+}
+
+function checkIpv4Ranges(host: string): string | null {
+  if (host === "127.0.0.1" || /^127\./.test(host)) {
+    return "blocked: loopback (127/8)";
+  }
+  if (/^10\./.test(host)) return "blocked: RFC 1918 (10/8)";
+  if (/^192\.168\./.test(host)) return "blocked: RFC 1918 (192.168/16)";
+  if (/^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(host)) {
+    return "blocked: RFC 1918 (172.16/12)";
+  }
+  if (/^169\.254\./.test(host)) {
+    return "blocked: link-local / cloud metadata (169.254/16)";
+  }
+  if (/^0\./.test(host)) return "blocked: 0.0.0.0/8";
+  return null;
 }
 
 export interface HttpRequestInit {
@@ -86,6 +198,7 @@ export function createHttpClient(opts: HttpClientOptions = {}): HttpClient {
   const userAgent = opts.userAgent ?? DEFAULT_USER_AGENT;
   const defaultHeaders = opts.defaultHeaders ?? {};
   const maxBodyBytes = opts.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
+  const ssrfGuard = opts.rejectUnsafeUrls ?? false;
 
   const request = async (
     url: string,
@@ -97,6 +210,13 @@ export function createHttpClient(opts: HttpClientOptions = {}): HttpClient {
       ...defaultHeaders,
       ...(init.headers ?? {}),
     };
+
+    if (ssrfGuard) {
+      const reason = rejectUnsafeUrl(url);
+      if (reason) {
+        throw new Error(`http client: unsafe URL ${url} (${reason})`);
+      }
+    }
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -137,6 +257,15 @@ export function createHttpClient(opts: HttpClientOptions = {}): HttpClient {
           await response.body?.cancel();
 
           currentUrl = new URL(location, currentUrl).toString();
+
+          if (ssrfGuard) {
+            const reason = rejectUnsafeUrl(currentUrl);
+            if (reason) {
+              throw new Error(
+                `http client: unsafe redirect target ${currentUrl} (${reason})`,
+              );
+            }
+          }
 
           // Per RFC 7231: 301/302/303 change the method to GET and drop the body.
           // 307/308 preserve the method and body.
