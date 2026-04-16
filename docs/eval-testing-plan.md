@@ -295,6 +295,19 @@ Before building `aug1 eval run`, test these manually against a running Zip agent
 
 ## 6. Eval Infrastructure Roadmap (Plan 7)
 
+### Phase 0 (shipped 2026-04-16): Security eval suite
+
+First cut of the runner + deterministic graders — scoped specifically to security regression testing. Lives at `evals/security/` with:
+
+- `suite.yaml` — 10 adversarial cases seeded from the 2026-04-16 red-team (prompt injection, SSRF, escalation abuse, file-write hijack, operator impersonation, fake system injection, fiction jailbreak)
+- `benign.yaml` — 5 counterpart cases to prevent one-sided optimization (over-refusal)
+- `graders/` — 8 deterministic graders implementing the types in §2.3
+- `run.ts` — bun-runnable script: `bun run evals/security/run.ts`
+- `schema/{suite,result}.schema.json` — stable v1 contract for OSS consumers
+- `README.md` — how to run, extend, maintain
+
+The suite uses the YAML format defined in §2.2 and the grader types in §2.3 — it's the reference implementation the `aug1 eval run` CLI command (Phase 1 below) will generalize.
+
 ### Phase 1: Runner + Deterministic Graders
 - `aug1 eval run <suite.yaml>` — send cases through agent, collect traces
 - Deterministic graders: `response_contains`, `tool_called`, `task_state`, `response_length`
