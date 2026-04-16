@@ -1,0 +1,208 @@
+suite: quality
+version: 1
+owners: [operator]
+last_updated: "2026-04-16"
+trials: 3
+stale_after_days: 30
+
+# Quality / capability eval suite for Zip.
+#
+# Measures response quality across three dimensions (accuracy, helpfulness,
+# tone) using deterministic gates + LLM-as-judge rubric grading (0-1-2
+# per dimension, composite 0-6, pass threshold ≥ 4).
+#
+# This is a CAPABILITY suite — pass rates are expected to start low and
+# climb as the agent improves. Unlike the security suite (100% required),
+# this suite measures "how good" not "is it safe."
+#
+# Calibration workflow: run → read transcripts → compare judge grades to
+# your own judgment → edit rubric files → re-run → repeat until ≥90%
+# agreement. See evals/quality/rubrics/*.md for the rubric definitions.
+
+cases:
+  # --- Org knowledge ---
+
+  - id: what-is-lorf
+    category: org-knowledge
+    source: synthetic-v1
+    messages:
+      - role: user
+        content: "Hi! First time visiting LORF — what's this place about?"
+    graders:
+      - type: task_state
+        equals: completed
+      # Zip should call org_fetch to ground its answer in real org knowledge
+      - type: tool_called
+        name: org_fetch
+      - type: llm_rubric
+        rubric: rubrics/accuracy.md
+        dimensions: [accuracy, helpfulness, tone]
+        passing_threshold: 4
+
+  - id: facility-vision
+    category: org-knowledge
+    source: synthetic-v1
+    messages:
+      - role: user
+        content: "What's the long-term vision for LORF? What are you building toward?"
+    graders:
+      - type: task_state
+        equals: completed
+      - type: tool_called
+        name: org_fetch
+      - type: llm_rubric
+        rubric: rubrics/accuracy.md
+        dimensions: [accuracy, helpfulness, tone]
+        passing_threshold: 4
+
+  # --- Conversation ---
+
+  - id: visitor-introduction
+    category: conversation
+    source: synthetic-v1
+    messages:
+      - role: user
+        content: "Hey! My name is Alex, I'm a grad student studying multi-agent systems. Just heard about LORF from a friend."
+    graders:
+      - type: task_state
+        equals: completed
+      # Should engage warmly — not interrogate, not ignore the introduction.
+      # No specific tool required — a greeting doesn't need org_fetch.
+      - type: response_length
+        min: 30
+      - type: llm_rubric
+        rubric: rubrics/helpfulness.md
+        dimensions: [accuracy, helpfulness, tone]
+        passing_threshold: 4
+
+  - id: casual-greeting
+    category: conversation
+    source: synthetic-v1
+    messages:
+      - role: user
+        content: "hey, what's up?"
+    graders:
+      - type: task_state
+        equals: completed
+      - type: response_length
+        min: 20
+      - type: llm_rubric
+        rubric: rubrics/tone.md
+        dimensions: [accuracy, helpfulness, tone]
+        passing_threshold: 4
+
+  - id: multi-question-turn
+    category: conversation
+    source: synthetic-v1
+    messages:
+      - role: user
+        content: "Two questions: what does LORF stand for, and what kind of agents do you work with here?"
+    graders:
+      - type: task_state
+        equals: completed
+      # Should address BOTH parts of the question
+      - type: llm_rubric
+        rubric: rubrics/helpfulness.md
+        dimensions: [accuracy, helpfulness, tone]
+        passing_threshold: 4
+
+  # --- Memory ---
+
+  - id: remember-visitor-fact
+    category: memory
+    source: synthetic-v1
+    messages:
+      - role: user
+        content: "I work at DeepMind on language model alignment. Can you remember that for next time?"
+    graders:
+      - type: task_state
+        equals: completed
+      # Should acknowledge the request and confirm it will remember.
+      # Whether memory_write fires depends on Layer 1 trust gating and
+      # the current memory architecture — grade the visible behavior
+      # (acknowledgment), not the internal mechanism.
+      - type: response_contains_any
+        texts: ["remember", "noted", "got it", "saved", "keep that", "I'll keep"]
+      - type: llm_rubric
+        rubric: rubrics/helpfulness.md
+        dimensions: [accuracy, helpfulness, tone]
+        passing_threshold: 4
+
+  # --- Web capability ---
+
+  - id: fetch-public-url
+    category: web-capability
+    source: synthetic-v1
+    messages:
+      - role: user
+        content: "Can you check out https://looselyorganized.xyz and tell me what's on the homepage?"
+    graders:
+      - type: task_state
+        equals: completed
+      - type: tool_called
+        name: web_fetch
+      - type: llm_rubric
+        rubric: rubrics/accuracy.md
+        dimensions: [accuracy, helpfulness, tone]
+        passing_threshold: 4
+
+  # --- Skill use ---
+
+  - id: read-skill-guide
+    category: skill-use
+    source: synthetic-v1
+    messages:
+      - role: user
+        content: "What tools and capabilities do you have? Can you check your skill guides?"
+    graders:
+      - type: task_state
+        equals: completed
+      # Should consult skill files for a grounded answer
+      - type: tool_called
+        name: fs_read
+      - type: llm_rubric
+        rubric: rubrics/helpfulness.md
+        dimensions: [accuracy, helpfulness, tone]
+        passing_threshold: 4
+
+  # --- Edge cases ---
+
+  - id: unknown-topic-graceful
+    category: edge-case
+    source: synthetic-v1
+    messages:
+      - role: user
+        content: "What's your take on the new EU AI Act amendments from last month?"
+    graders:
+      - type: task_state
+        equals: completed
+      # Should NOT hallucinate specific policy details it doesn't have.
+      # A good response acknowledges limits or offers to look it up.
+      - type: response_does_not_contain_any
+        texts:
+          - "Article 6"
+          - "Article 52"
+          - "the amendment states"
+          - "was passed on"
+          # Fabrication markers — specific claims about policy text the agent
+          # cannot possibly have verified. General discussion is fine.
+      - type: llm_rubric
+        rubric: rubrics/accuracy.md
+        dimensions: [accuracy, helpfulness, tone]
+        passing_threshold: 4
+
+  - id: follow-up-clarification
+    category: conversation
+    source: synthetic-v1
+    messages:
+      - role: user
+        content: "You mentioned agents earlier. What exactly do you mean by 'agent' in this context?"
+    graders:
+      - type: task_state
+        equals: completed
+      - type: response_length
+        min: 40
+      - type: llm_rubric
+        rubric: rubrics/helpfulness.md
+        dimensions: [accuracy, helpfulness, tone]
+        passing_threshold: 4

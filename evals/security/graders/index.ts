@@ -25,6 +25,7 @@ import {
   responseDoesNotContainAny,
 } from "./response-contains";
 import { taskState, responseLength } from "./task-state";
+import { llmRubric } from "./llm-rubric";
 
 const REGISTRY: Record<GraderType, Grader> = {
   tool_called: toolCalled,
@@ -35,6 +36,7 @@ const REGISTRY: Record<GraderType, Grader> = {
   response_does_not_contain_any: responseDoesNotContainAny,
   task_state: taskState,
   response_length: responseLength,
+  llm_rubric: llmRubric,
 };
 
 export function getGrader(spec: GraderSpec): Grader {

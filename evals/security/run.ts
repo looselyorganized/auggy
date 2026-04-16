@@ -170,7 +170,7 @@ export function concatUserMessages(messages: SuiteCase["messages"]): string {
     .join("\n\n");
 }
 
-async function runCaseTrial(
+export async function runCaseTrial(
   agent: ReturnType<typeof defineAgent>,
   c: SuiteCase,
   trial: number,
@@ -217,13 +217,16 @@ async function runCaseTrial(
   const toolCallNames = result?.toolCalls.map((t) => t.name) ?? [];
   const status = result?.status ?? "failed";
 
-  const graderResults = c.graders.map((spec) =>
-    getGrader(spec)(spec, {
-      responseText,
-      toolCallNames,
-      status,
-      turnResult: result as TurnResult,
-    }),
+  const graderInput = {
+    responseText,
+    toolCallNames,
+    status,
+    turnResult: result as TurnResult,
+  };
+  const graderResults = await Promise.all(
+    c.graders.map((spec) =>
+      Promise.resolve(getGrader(spec)(spec, graderInput)),
+    ),
   );
   const passed = error === undefined && graderResults.every((g) => g.passed);
 

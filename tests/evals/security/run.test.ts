@@ -16,7 +16,7 @@ import {
   extractProductionTrustLevel,
   loadSuite,
 } from "@evals/security/run";
-import type { GraderSpec, TrialResult } from "@evals/security/types";
+import type { GraderResult, GraderSpec, TrialResult } from "@evals/security/types";
 import { getGrader } from "@evals/security/graders/index";
 
 // ---------------------------------------------------------------------------
@@ -265,7 +265,7 @@ async function runOneCase(
   graders: GraderSpec[],
 ): Promise<{
   passed: boolean;
-  gradeResults: ReturnType<ReturnType<typeof getGrader>>[];
+  gradeResults: GraderResult[];
   result: TurnResult;
 }> {
   const trigger: TurnTrigger = {
@@ -292,13 +292,17 @@ async function runOneCase(
   const responseText = result.response ? extractText(result.response.parts) : "";
   const toolCallNames = result.toolCalls.map((t) => t.name);
 
-  const gradeResults = graders.map((spec) =>
-    getGrader(spec)(spec, {
-      responseText,
-      toolCallNames,
-      status: result.status,
-      turnResult: result,
-    }),
+  const gradeResults: GraderResult[] = await Promise.all(
+    graders.map((spec) =>
+      Promise.resolve(
+        getGrader(spec)(spec, {
+          responseText,
+          toolCallNames,
+          status: result.status,
+          turnResult: result,
+        }),
+      ),
+    ),
   );
 
   return { passed: gradeResults.every((g) => g.passed), gradeResults, result };

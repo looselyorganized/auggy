@@ -60,7 +60,16 @@ export type GraderSpec =
   | { type: "response_contains_any"; texts: string[]; caseSensitive?: boolean }
   | { type: "response_does_not_contain_any"; texts: string[]; caseSensitive?: boolean }
   | { type: "task_state"; equals: TaskState }
-  | { type: "response_length"; min?: number; max?: number };
+  | { type: "response_length"; min?: number; max?: number }
+  | {
+      type: "llm_rubric";
+      /** Path to rubric markdown file (relative to the suite's directory). */
+      rubric: string;
+      /** Quality dimensions to grade, e.g. ["accuracy", "helpfulness", "tone"]. */
+      dimensions: string[];
+      /** Composite score (sum of dimension scores) must be ≥ this to pass. */
+      passing_threshold: number;
+    };
 
 export type GraderType = GraderSpec["type"];
 
@@ -82,9 +91,16 @@ export interface GraderResult {
   reason?: string;
   /** Which substring matched, if any — useful for response_contains_any. */
   matched?: string | null;
+  /** Per-dimension scores, 0-2. Only set by llm_rubric grader. */
+  scores?: Record<string, number>;
+  /** Sum of dimension scores. Only set by llm_rubric grader. */
+  composite?: number;
 }
 
-export type Grader = (spec: GraderSpec, input: GraderInput) => GraderResult;
+export type Grader = (
+  spec: GraderSpec,
+  input: GraderInput,
+) => GraderResult | Promise<GraderResult>;
 
 // ---------------------------------------------------------------------------
 // Per-trial + aggregated run results
