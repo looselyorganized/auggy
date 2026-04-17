@@ -92,6 +92,13 @@ export type { OrgContextOptions } from "./augments/org-context";
 export { webFetch } from "./augments/web-fetch";
 export type { WebFetchOptions, WebFetchResult } from "./augments/web-fetch";
 
+export { bash } from "./augments/bash";
+export type {
+  BashAugmentOptions,
+  BashRiskLevel,
+  BashScript,
+} from "./augments/bash";
+
 // === HTTP client (for augment authors who need HTTP) ===
 export { createHttpClient } from "./http";
 export type {

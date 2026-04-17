@@ -3,6 +3,7 @@ import type {
   AssembledPrompt,
   Message,
   ModelClient,
+  ModelDelta,
   ModelResponse,
   ToolDefinition,
 } from "../types";
@@ -61,19 +62,36 @@ export function createAnthropicEngine(
       return Math.ceil(text.length / 4);
     },
 
-    async complete(prompt: AssembledPrompt): Promise<ModelResponse> {
+    async complete(
+      prompt: AssembledPrompt,
+      opts2?: { onDelta?: (delta: ModelDelta) => void },
+    ): Promise<ModelResponse> {
       const system = assembleSystemText(prompt);
       const messages = convertMessages(prompt.messages);
       const tools = convertTools(prompt.tools);
-
-      const response = await client.messages.create({
+      const params = {
         model: opts.model,
         max_tokens: maxOutputTokens,
         system,
         messages,
         ...(tools.length > 0 ? { tools } : {}),
-      });
+      };
 
+      if (opts2?.onDelta) {
+        // Streaming path: emit text deltas as they arrive from the model.
+        // Tool-use blocks are NOT streamed in v1 — they arrive in the
+        // finalMessage. This is intentional: text streaming is the latency
+        // win; tool args are small.
+        const stream = client.messages.stream(params);
+        stream.on("text", (text) => {
+          opts2.onDelta!({ kind: "text_delta", text });
+        });
+        const finalMessage = await stream.finalMessage();
+        return buildModelResponse(finalMessage);
+      }
+
+      // Non-streaming path (backward compat for tests, other consumers)
+      const response = await client.messages.create(params);
       return buildModelResponse(response);
     },
   };

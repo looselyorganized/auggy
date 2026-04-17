@@ -21,9 +21,15 @@ import type { HttpClient, HttpClientOptions, HttpResponse } from "../http";
  *  - Output carries the POST-redirect final URL, raw byte count, and
  *    round-trip duration so the model can reason about cost.
  *
+ * Structural SSRF defense:
+ *  - Pre-fetch URL filter rejects loopback, RFC 1918, link-local,
+ *    cloud metadata endpoints, and non-http(s) schemes.
+ *  - Redirect targets are filtered at each hop (via HttpClient's
+ *    `rejectUnsafeUrls: true`), so a 3xx → internal-IP attack fails.
+ *  - Note: DNS-rebinding is NOT defended at this layer — a public-looking
+ *    hostname that resolves to a private IP at fetch time is out of scope.
+ *
  * Not carried over:
- *  - No SSRF protection. Operators mounting this in a production agent
- *    should wrap it with a hooks augment or an allowlist of hosts.
  *  - No caching. Every call hits the network.
  */
 
@@ -263,7 +269,10 @@ export interface WebFetchResult {
  * reason about directly. Matches the Rust WebFetchOutput shape.
  */
 export function webFetch(opts: WebFetchOptions = {}): Augment {
-  const client = opts.client ?? createHttpClient(opts);
+  // SSRF guard is on by default — web_fetch ingests model-supplied URLs.
+  // Operators can still override by passing an explicit client.
+  const client =
+    opts.client ?? createHttpClient({ rejectUnsafeUrls: true, ...opts });
 
   const webFetchTool = defineTool({
     name: "web_fetch",
@@ -284,6 +293,9 @@ export function webFetch(opts: WebFetchOptions = {}): Augment {
           error: `invalid URL: ${(error as Error).message}`,
         });
       }
+
+      // SSRF guard is enforced by the underlying HttpClient — rejected URLs
+      // throw and fall into the catch below, surfaced as a structured error.
 
       let response: HttpResponse;
       try {

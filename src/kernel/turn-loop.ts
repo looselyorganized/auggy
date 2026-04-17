@@ -1,7 +1,9 @@
 import type {
   Augment,
   AgentConfig,
+  AssembledPrompt,
   ModelClient,
+  ModelResponse,
   TurnTrigger,
   TurnState,
   TurnResult,
@@ -14,6 +16,66 @@ import type {
 } from "../types";
 import type { Tokenizer } from "../tokenizer";
 import { extractText } from "../parts";
+
+// ---------------------------------------------------------------------------
+// Streaming inference helper
+// ---------------------------------------------------------------------------
+
+/**
+ * Run a model inference call with streaming text deltas. Emits
+ * text_message_start / text_message_delta / text_message_end KernelEvents
+ * as text arrives. If the engine doesn't call onDelta (non-streaming
+ * engines), no streaming events are emitted and the caller falls back to
+ * the classic text_message event.
+ *
+ * On error, closes any open text stream before re-throwing so the client
+ * never has an unclosed message stuck in "typing" state.
+ */
+async function streamingInference(
+  model: ModelClient,
+  prompt: AssembledPrompt,
+  turnId: string,
+  emitEvent: KernelEventHandler,
+): Promise<{ response: ModelResponse; streamed: boolean; messageId: string }> {
+  const messageId = crypto.randomUUID();
+  let streamed = false;
+
+  let response: ModelResponse;
+  try {
+    response = await model.complete(prompt, {
+      onDelta: (delta) => {
+        if (delta.kind === "text_delta") {
+          if (!streamed) {
+            emitEvent({
+              kind: "text_message_start",
+              turnId,
+              messageId,
+              role: "assistant",
+            });
+            streamed = true;
+          }
+          emitEvent({
+            kind: "text_message_delta",
+            turnId,
+            messageId,
+            delta: delta.text,
+          });
+        }
+      },
+    });
+  } catch (err) {
+    if (streamed) {
+      emitEvent({ kind: "text_message_end", turnId, messageId });
+    }
+    throw err;
+  }
+
+  if (streamed) {
+    emitEvent({ kind: "text_message_end", turnId, messageId });
+  }
+
+  return { response, streamed, messageId };
+}
 import { withTimeout } from "./timeout";
 import { createContextAllocator } from "./context-allocator";
 import { createCapabilityTable } from "./capability-table";
@@ -334,7 +396,11 @@ export function createTurnLoop(opts: {
         if (signal?.aborted) return makeAbortResult();
         inferenceCount++;
         const inferStart = Date.now();
-        const response = await model.complete(currentPrompt);
+        const {
+          response,
+          streamed: streamedText,
+          messageId: streamMessageId,
+        } = await streamingInference(model, currentPrompt, trigger.turnId, emitEvent);
         const inferDuration = Date.now() - inferStart;
 
         traceEmitter.recordInference(trace, {
@@ -375,12 +441,14 @@ export function createTurnLoop(opts: {
             }
           }
 
-          // Emit text_message event for the final response
-          if (response.content) {
+          // Emit text_message event for the final response — only if we
+          // didn't already stream it AND there's actual content (skip empty
+          // text from pure tool_use responses).
+          if (!streamedText && response.content) {
             emitEvent({
               kind: "text_message",
               turnId: trigger.turnId,
-              messageId: crypto.randomUUID(),
+              messageId: streamMessageId,
               role: "assistant",
               text: response.content,
             });
@@ -547,7 +615,13 @@ export function createTurnLoop(opts: {
         if (terminateToolLoop) {
           const updatedHistory = history.getHistory(historyBudget);
           currentPrompt = allocator.assemble(contextBlocks, updatedHistory, toolSelection.definitions);
-          const finalResponse = await model.complete(currentPrompt);
+
+          const {
+            response: finalResponse,
+            streamed: termStreamed,
+            messageId: termMessageId,
+          } = await streamingInference(model, currentPrompt, trigger.turnId, emitEvent);
+
           if (finalResponse.content) {
             history.append({
               id: crypto.randomUUID(),
@@ -556,13 +630,15 @@ export function createTurnLoop(opts: {
               timestamp: Date.now(),
               tokenCount: tokenizer.count(finalResponse.content),
             });
-            emitEvent({
-              kind: "text_message",
-              turnId: trigger.turnId,
-              messageId: crypto.randomUUID(),
-              role: "assistant",
-              text: finalResponse.content,
-            });
+            if (!termStreamed) {
+              emitEvent({
+                kind: "text_message",
+                turnId: trigger.turnId,
+                messageId: termMessageId,
+                role: "assistant",
+                text: finalResponse.content,
+              });
+            }
           }
           emitEvent({
             kind: "run_finished",

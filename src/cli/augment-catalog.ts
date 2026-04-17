@@ -142,6 +142,49 @@ org_escalate({ summary: "Visitor wants to discuss partnership", reason: "Outside
 | Fetching all endpoints every turn | Only fetch what's relevant to the conversation |
 `;
 
+const BASH_SKILL = `---
+name: bash
+description: Run shell commands using shell_exec and operator-defined scripts using run_script.
+---
+
+# Bash
+
+Run shell commands and operator-defined scripts.
+
+## shell_exec — run a command
+
+Returns JSON: \`{ stdout, stderr, exitCode, durationMs, truncated, command }\`
+
+- **exitCode 0** = success. Non-zero = failure (check stderr).
+- **truncated: true** means output was cut at the byte limit.
+- The operator configures which commands are allowed. If rejected, the error says why.
+
+## run_script — run a named script
+
+Scripts are pre-defined by the operator. Check the tool description for available scripts.
+
+## When to use
+
+- System diagnostics: disk, memory, uptime, process lists
+- Version control: git status, git log, git diff
+- Build and deploy: operator-defined deploy scripts
+- Data processing: piping, jq, text manipulation
+
+## When NOT to use
+
+- Reading/writing files in mounted directories — use filesystem tools instead
+- Fetching URLs — use web_fetch instead
+- Anything destructive without clear operator intent
+
+## Common mistakes
+
+| Wrong | Correct |
+|-------|---------|
+| Destructive operations without operator request | Ask before any destructive command |
+| Ignoring non-zero exit codes | Check exitCode and stderr, report failures |
+| Running commands that prompt for input | Only run non-interactive commands |
+`;
+
 export const AUGMENT_CATALOG: CatalogEntry[] = [
   {
     label: "fileMemory (identity)",
@@ -249,6 +292,19 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
     envVars: ["ORG_CONTEXT_URL"],
     hasSkill: true,
     skillTemplate: ORG_CONTEXT_SKILL,
+  },
+  {
+    label: "bash",
+    description: "Execute shell commands with configurable risk levels",
+    type: "bash",
+    defaultName: "bash",
+    defaultOptions: {
+      risk: "restricted",
+      allowedCommands: ["echo", "ls", "cat", "pwd", "date"],
+    },
+    required: false,
+    hasSkill: true,
+    skillTemplate: BASH_SKILL,
   },
 ];
 

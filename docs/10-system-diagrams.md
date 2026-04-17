@@ -517,10 +517,13 @@ augment-1/
 │   │   ├── context-synthesis.ts ·· synthesizeContextFor (auto context())
 │   │   └── tools.ts ·············· 4 generic memory tools + budget
 │   │
-│   ├── augments/ ················· BUILT-IN AUGMENTS
+│   ├── augments/ ················· BUILT-IN AUGMENTS (6)
 │   │   ├── file-memory.ts ········ static provider (file-backed)
 │   │   ├── supabase-memory.ts ···· namespace provider (Supabase-backed)
-│   │   └── filesystem.ts ········· multi-mount scoped file access
+│   │   ├── filesystem.ts ········· multi-mount scoped file access
+│   │   ├── web-fetch.ts ·········· URL fetch (HTML→text, JSON passthrough)
+│   │   ├── org-context.ts ········ org manifest + fetch + escalate
+│   │   └── bash.ts ··············· scoped shell execution
 │   │
 │   ├── augments/filesystem-skill/  FIRST SKILL FOLDER (ships with fs augment)
 │   │   ├── SKILL.md ·············· teaches fs tool usage
@@ -531,17 +534,36 @@ augment-1/
 │   │   ├── ag-ui-events.ts ······· AG-UI types + kernel→AG-UI translator
 │   │   └── web-transport.ts ······ Bun.serve + ReadableStream SSE
 │   │
-│   └── engines/ ·················· MODEL CLIENT ADAPTERS
-│       └── anthropic.ts ·········· Anthropic Messages API adapter
+│   ├── engines/ ·················· MODEL CLIENT ADAPTERS (3)
+│   │   ├── anthropic.ts ·········· Anthropic Messages API adapter
+│   │   ├── openai.ts ············· OpenAI Chat Completions adapter
+│   │   ├── openrouter.ts ········· OpenRouter multi-provider adapter
+│   │   └── _shared/schema-normalize.ts
+│   │
+│   ├── cli/ ······················ aug1 CLI (Plan 3)
+│   │   ├── index.ts ·············· Commander.js entrypoint
+│   │   ├── config-parser.ts ······ YAML → ParsedConfig
+│   │   ├── augment-catalog.ts ···· built-in registry for create/add
+│   │   ├── augment-resolver.ts ··· AugmentConfig[] → Augment[]
+│   │   ├── engine-resolver.ts ···· EngineConfig → ModelClient
+│   │   ├── pid-registry.ts ······· ~/.auggy/<name>.json manifests
+│   │   ├── plist-generator.ts ···· launchd plist generation
+│   │   ├── scaffold.ts ··········· aug1 create templates
+│   │   ├── skill-manifest.ts ····· scan skills/*/SKILL.md
+│   │   └── commands/ ············· create, add, dev, start, stop, restart, status
+│   │
+│   └── http.ts ··················· shared HTTP client (redirect security)
 │
-├── tests/ ························ 209 TESTS across 27 files
+├── tests/ ························ 537 TESTS across 42 files
 │   ├── fixtures/ ················· mock-model, mock-augment, mock-supabase, temp-dir
 │   ├── kernel/ ··················· per-component unit tests
 │   ├── memory/ ··················· registry, synthesis, tools, bus tests
-│   ├── augments/ ················· file-memory, supabase-memory, filesystem
+│   ├── augments/ ················· file-memory, supabase-memory, filesystem, web-fetch, bash
 │   ├── transports/ ··············· ag-ui-events, web-transport (incl streaming)
-│   ├── engines/ ·················· anthropic message coalescing
-│   └── integration/ ·············· full agent end-to-end
+│   ├── engines/ ·················· anthropic, openai, openrouter
+│   ├── cli/ ······················ config, resolvers, PID, plist, scaffold, manifest
+│   ├── integration/ ·············· full agent end-to-end
+│   └── evals/ ···················· security eval harness (grader pipeline)
 │
 ├── scripts/
 │   ├── hello.ts ·················· hello world composition

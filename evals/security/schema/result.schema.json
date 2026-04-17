@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/looselyorganized/augment-1/evals/security/schema/result.schema.json",
+  "title": "Auggy security eval result (one line of JSONL)",
+  "description": "Stable v1 schema for a single trial result written to results/*.jsonl. One JSON object per line.",
+  "type": "object",
+  "required": [
+    "run_id",
+    "run_started_at",
+    "suite",
+    "suite_version",
+    "model_id",
+    "case_id",
+    "category",
+    "trial",
+    "passed",
+    "grader_results",
+    "response",
+    "tool_calls",
+    "latency_ms",
+    "tokens_in",
+    "tokens_out"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "run_id": { "type": "string", "format": "uuid" },
+    "run_started_at": { "type": "string", "format": "date-time" },
+    "suite": { "type": "string" },
+    "suite_version": { "type": "integer", "minimum": 1 },
+    "agent_commit": { "type": "string" },
+    "model_id": { "type": "string" },
+    "case_id": { "type": "string" },
+    "category": { "type": "string" },
+    "threat": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "severity": {
+      "type": "string",
+      "enum": ["critical", "high", "medium", "low"]
+    },
+    "trial": { "type": "integer", "minimum": 1 },
+    "passed": { "type": "boolean" },
+    "grader_results": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["type", "passed"],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "tool_called",
+              "tool_not_called",
+              "response_contains",
+              "response_does_not_contain",
+              "response_contains_any",
+              "response_does_not_contain_any",
+              "task_state",
+              "response_length"
+            ]
+          },
+          "passed": { "type": "boolean" },
+          "reason": { "type": "string" },
+          "matched": { "type": ["string", "null"] }
+        }
+      }
+    },
+    "response": { "type": "string" },
+    "tool_calls": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "latency_ms": { "type": "integer", "minimum": 0 },
+    "tokens_in": { "type": "integer", "minimum": 0 },
+    "tokens_out": { "type": "integer", "minimum": 0 },
+    "error": { "type": "string" }
+  }
+}

@@ -21,6 +21,7 @@ import { filesystem } from "../augments/filesystem";
 import { webTransport } from "../transports/web-transport";
 import { webFetch } from "../augments/web-fetch";
 import { orgContext } from "../augments/org-context";
+import { bash } from "../augments/bash";
 import type { Augment } from "../types";
 import type { AugmentConfig } from "./types";
 
@@ -45,7 +46,7 @@ function resolveFileMemory(
     label: opts.label as string,
     source: resolvePath(opts.source as string, agentDir),
     mutable: opts.mutable as boolean,
-    origin: opts.origin as "operator" | "system" | "peer-derived",
+    origin: opts.origin as "operator" | "system" | "agent" | "peer-derived",
     priority: opts.priority as "required" | "high" | "normal" | "low" | "evictable",
     placement: opts.placement as "system" | "preamble" | "assistant-preamble",
     eviction: opts.eviction as "never" | "summarize" | "drop",
@@ -74,7 +75,7 @@ async function resolveSupabaseMemory(
     client,
     table: rest.table as string,
     mutable: rest.mutable as boolean,
-    origin: rest.origin as "operator" | "system" | "peer-derived",
+    origin: rest.origin as "operator" | "system" | "agent" | "peer-derived",
     priority: rest.priority as "required" | "high" | "normal" | "low" | "evictable",
     placement: rest.placement as "system" | "preamble" | "assistant-preamble",
     eviction: rest.eviction as "never" | "summarize" | "drop",
@@ -158,6 +159,38 @@ async function resolveCustom(
 // Public API
 // ---------------------------------------------------------------------------
 
+function resolveBash(
+  opts: Record<string, unknown>,
+  agentDir: string,
+): Augment {
+  const scripts = (opts.scripts as Array<Record<string, unknown>> | undefined)?.map(
+    (s) => ({
+      name: s.name as string,
+      description: s.description as string,
+      command: s.command as string,
+      workingDir: s.workingDir
+        ? resolvePath(s.workingDir as string, agentDir)
+        : undefined,
+      timeout: s.timeout as number | undefined,
+    }),
+  );
+
+  return bash({
+    risk: opts.risk as "scripts-only" | "restricted" | "standard" | "unrestricted" | undefined,
+    allowedCommands: opts.allowedCommands as string[] | undefined,
+    blockedCommands: opts.blockedCommands as string[] | undefined,
+    workingDir: opts.workingDir
+      ? resolvePath(opts.workingDir as string, agentDir)
+      : undefined,
+    inheritEnv: opts.inheritEnv as boolean | undefined,
+    env: opts.env as Record<string, string> | undefined,
+    timeout: opts.timeout as number | undefined,
+    maxOutputBytes: opts.maxOutputBytes as number | undefined,
+    maxToolCallsPerTurn: opts.maxToolCallsPerTurn as number | undefined,
+    scripts,
+  });
+}
+
 /**
  * Resolve an array of augment configs into concrete Augment objects.
  * Built-in types dispatch to their factory functions; custom types
@@ -195,6 +228,9 @@ export async function resolveAugments(
           token: opts.token as string | undefined,
           cacheTtlMs: opts.cacheTtlMs as number | undefined,
         });
+        break;
+      case "bash":
+        augment = resolveBash(opts, agentDir);
         break;
       case "custom":
         augment = await resolveCustom(config, agentDir);

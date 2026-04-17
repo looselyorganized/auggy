@@ -8,6 +8,7 @@ import {
 import type {
   AssembledPrompt,
   ModelClient,
+  ModelDelta,
   ModelResponse,
 } from "../types";
 
@@ -98,7 +99,7 @@ export function createOpenRouterEngine(
       return Math.ceil(text.length / 4);
     },
 
-    async complete(prompt: AssembledPrompt): Promise<ModelResponse> {
+    async complete(prompt: AssembledPrompt, _opts?: { onDelta?: (delta: ModelDelta) => void }): Promise<ModelResponse> {
       const systemMessage = assembleOpenAISystemMessage(prompt);
       const messages = convertOpenAIMessages(prompt.messages);
       const tools = convertOpenAITools(prompt.tools);

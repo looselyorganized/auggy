@@ -116,6 +116,51 @@ describe("ContextAllocator", () => {
     ).toBe(true);
   });
 
+  it("marks agent-derived blocks with [AGENT-DERIVED]", () => {
+    const allocator = createContextAllocator({
+      maxTokens: 10000,
+      historyPercent: 40,
+      toolSchemaPercent: 10,
+      tokenizer,
+      preamble: "P",
+    });
+
+    const blocks: ContextBlock[] = [
+      { ...block("learned", "Agent self-note from earlier turn"), origin: "agent" },
+    ];
+
+    const prompt = allocator.assemble(blocks, [], []);
+    expect(
+      prompt.contextBlocks.some((b) => b.includes("[AGENT-DERIVED]")),
+    ).toBe(true);
+    // Must not carry the [PEER-DERIVED] marker
+    expect(
+      prompt.contextBlocks.some((b) => b.includes("[PEER-DERIVED]")),
+    ).toBe(false);
+  });
+
+  it("leaves operator-origin blocks unmarked", () => {
+    const allocator = createContextAllocator({
+      maxTokens: 10000,
+      historyPercent: 40,
+      toolSchemaPercent: 10,
+      tokenizer,
+      preamble: "P",
+    });
+
+    const blocks: ContextBlock[] = [
+      { ...block("identity", "You are auggy."), origin: "operator" },
+    ];
+
+    const prompt = allocator.assemble(blocks, [], []);
+    const identityBlock = prompt.contextBlocks.find((b) =>
+      b.includes("You are auggy."),
+    );
+    expect(identityBlock).toBeDefined();
+    expect(identityBlock).not.toContain("[PEER-DERIVED]");
+    expect(identityBlock).not.toContain("[AGENT-DERIVED]");
+  });
+
   it("includes history within its budget slice", () => {
     const allocator = createContextAllocator({
       maxTokens: 1000,

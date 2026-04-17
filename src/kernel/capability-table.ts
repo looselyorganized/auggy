@@ -1,6 +1,15 @@
-import type { Augment, TurnState } from "../types";
+import type { Augment, PeerIdentity, TrustLevel, TurnState } from "../types";
 
 const KERNEL_DEFAULT_MAX_TOOL_CALLS = 5;
+
+/**
+ * Null peer means "no external initiator" — an internal/scheduled trigger
+ * fired by the agent's own configuration. Treated as operator for capability
+ * checks: if the operator scheduled it, the operator authorized it.
+ */
+export function effectiveTrustLevel(peer: PeerIdentity | null): TrustLevel {
+  return peer?.trustLevel ?? "operator";
+}
 
 export interface CapabilityTable {
   canExpose(toolName: string, turn: TurnState): boolean;
@@ -19,6 +28,9 @@ export interface CapabilityTable {
 export function createCapabilityTable(augments: Augment[]): CapabilityTable {
   const neverExpose = new Set<string>();
   const requiresApproval = new Set<string>();
+  // Per-trust-level additive constraints. Applied on top of the global sets.
+  const perLevelNeverExpose = new Map<TrustLevel, Set<string>>();
+  const perLevelRequiresApproval = new Map<TrustLevel, Set<string>>();
 
   // Map tool name → augment name
   const toolOwner = new Map<string, string>();
@@ -35,6 +47,31 @@ export function createCapabilityTable(augments: Augment[]): CapabilityTable {
     if (c) {
       for (const tool of c.neverExpose ?? []) neverExpose.add(tool);
       for (const tool of c.requiresHumanApproval ?? []) requiresApproval.add(tool);
+
+      if (c.perTrustLevel) {
+        for (const [level, rules] of Object.entries(c.perTrustLevel) as [
+          TrustLevel,
+          { neverExpose?: string[]; requiresHumanApproval?: string[] },
+        ][]) {
+          if (!rules) continue;
+          for (const tool of rules.neverExpose ?? []) {
+            let set = perLevelNeverExpose.get(level);
+            if (!set) {
+              set = new Set<string>();
+              perLevelNeverExpose.set(level, set);
+            }
+            set.add(tool);
+          }
+          for (const tool of rules.requiresHumanApproval ?? []) {
+            let set = perLevelRequiresApproval.get(level);
+            if (!set) {
+              set = new Set<string>();
+              perLevelRequiresApproval.set(level, set);
+            }
+            set.add(tool);
+          }
+        }
+      }
     }
 
     const limit = c?.maxToolCallsPerTurn ?? KERNEL_DEFAULT_MAX_TOOL_CALLS;
@@ -50,11 +87,38 @@ export function createCapabilityTable(augments: Augment[]): CapabilityTable {
   if (globalLimit === 0) globalLimit = KERNEL_DEFAULT_MAX_TOOL_CALLS;
 
   return {
-    canExpose(toolName: string, _turn: TurnState): boolean {
-      return !neverExpose.has(toolName);
+    canExpose(toolName: string, turn: TurnState): boolean {
+      // Global block (applies to every trust level, no escape).
+      if (neverExpose.has(toolName)) return false;
+      // Per-trust-level block (applies only to that level).
+      const level = effectiveTrustLevel(turn.peer);
+      if (perLevelNeverExpose.get(level)?.has(toolName)) return false;
+      return true;
     },
 
-    canExecute(toolName: string, _input: unknown, _turn: TurnState) {
+    canExecute(toolName: string, _input: unknown, turn: TurnState) {
+      const level = effectiveTrustLevel(turn.peer);
+
+      // Structural denial: tools in neverExpose cannot execute, regardless
+      // of whether they appeared in the model's tool list. canExpose is a
+      // pre-flight filter that shapes the catalog shown to the model;
+      // canExecute must re-enforce the same rule here because the turn
+      // loop resolves tool calls against the full tool registry — if the
+      // model fabricates a tool name that happens to match a withheld
+      // tool, without this check the call would run.
+      if (neverExpose.has(toolName)) {
+        return {
+          denied: true,
+          reason: `Tool "${toolName}" is blocked (neverExpose)`,
+        };
+      }
+      if (perLevelNeverExpose.get(level)?.has(toolName)) {
+        return {
+          denied: true,
+          reason: `Tool "${toolName}" is not available at trust level "${level}"`,
+        };
+      }
+
       // Global limit
       if (globalCalls >= globalLimit) {
         return {
@@ -76,12 +140,22 @@ export function createCapabilityTable(augments: Augment[]): CapabilityTable {
         }
       }
 
+      // Global approval gate (applies to every trust level).
       if (requiresApproval.has(toolName)) {
         return {
           needsApproval: true,
           reason: `Tool "${toolName}" requires human approval`,
         };
       }
+
+      // Per-trust-level approval gate (applies only to that level).
+      if (perLevelRequiresApproval.get(level)?.has(toolName)) {
+        return {
+          needsApproval: true,
+          reason: `Tool "${toolName}" requires human approval for peer trust level "${level}"`,
+        };
+      }
+
       return { allowed: true };
     },
 

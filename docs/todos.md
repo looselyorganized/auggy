@@ -8,7 +8,9 @@ Format: `- [ ] [category] description (context: where/when found)`
 
 ## Bugs
 
-- [ ] **[webTransport]** `[Bun.serve]: request timed out after 10 seconds. Pass idleTimeout to configure.` — observed when calling a slow upstream (Railway cold start). Bun's default server idleTimeout is 10s; some `agent_run` turns legitimately exceed that. Fix: pass `idleTimeout` to `Bun.serve` in `src/transports/web-transport.ts`, probably 120s to match the proxy timeout.
+- [x] ~~**[engine+transport] Token streaming in Anthropic engine + AG-UI delta events.**~~ — shipped: `messages.stream()` in Anthropic adapter with `onDelta` callback, `text_message_start`/`text_message_delta`/`text_message_end` KernelEvents, AG-UI translator routes deltas 1:1 to `TEXT_MESSAGE_CONTENT`. Turn loop emits start/delta/end with error cleanup (closes stream on error). Non-streaming engines backward compat via existing `text_message` triple.
+- [x] ~~**[webTransport] Bun.serve idleTimeout.**~~ — shipped: `idleTimeout: 120` in `Bun.serve()`. Streaming keeps the pipe warm; this is the safety net for long tool executions.
+- [ ] **[orgContext] org_escalate rate limiting + deduplication.** Prevent operator-attention DoS. A persistent adversary running many sessions triggers repeated Telegram escalations → operator notification fatigue → reflexive dismissal. Fix: per-peer/session cooldown on `org_escalate` calls, deduplication window for similar escalation summaries, circuit breaker on repeated abuse from the same peer. Tool-level rate limit, not transport-level. Surfaced during red-team session (2026-04-16) where 9 attacks produced one escalation (naturally batched by the model), but the structural limit doesn't exist. See `src/augments/org-context.ts`.
 
 ## UX
 
@@ -25,9 +27,9 @@ Format: `- [ ] [category] description (context: where/when found)`
 
 ## Post-ship augments (separate roadmap entries, captured here for cross-reference)
 
-- [ ] bashAugment — scoped shell execution with allowlist + timeout
+- [x] ~~bashAugment~~ — shipped: `bash` augment with risk presets (scripts-only / restricted / standard / unrestricted), Layer 1 trust gating, named scripts, env sanitization. See `src/augments/bash.ts`.
 - [ ] hooksAugment — PreToolUse/PostToolUse with Claw's exit-code contract
-- [ ] compactHistory — LLM-summarize variant of compaction
+- [ ] **Memory Layer Architecture** — L0-L3 hierarchy with promotion rules, per-layer trust gating, consolidation pipeline, peer-scoped retrieval. Supersedes compactHistory (compaction is a bridge, not the architecture). **Planning brief:** [`docs/memory-layer-architecture-brief.md`](./memory-layer-architecture-brief.md). Large multi-session project — design session first.
 - [ ] projectInstructions — AUGGY.md ancestor walk pattern
 - [ ] Permission-mode ladder in agent.yaml
 - [ ] researchAugment — web search + arxiv + document analysis for agents that need to look things up. Could wrap Brave/Tavily/Firecrawl; tools: `research_search`, `research_fetch_paper`, `research_summarize`. Progressive disclosure pattern.

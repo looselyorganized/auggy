@@ -83,10 +83,13 @@ startTestServer();
 afterAll(() => server.stop(true));
 
 // Helper: get the web_fetch tool from the augment.
+// The test HTTP server runs on localhost, which the SSRF guard blocks by
+// default. Tests disable the guard and re-enable it explicitly in the SSRF
+// describe block below.
 function getWebFetchTool() {
   const augment = webFetch({
-    // Use localhost to avoid http→https upgrade.
     timeoutMs: 5000,
+    rejectUnsafeUrls: false,
   });
   const tool = augment.tools?.find((t) => t.name === "web_fetch");
   if (!tool) throw new Error("web_fetch tool not found");
@@ -278,4 +281,42 @@ describe("web_fetch output structure", () => {
     expect(result.error).toBeDefined();
     expect(result.durationMs).toBeDefined();
   });
+});
+
+// ---------------------------------------------------------------------------
+// SSRF filter — structural rejection of loopback, private, link-local, and
+// metadata endpoints. Default behavior when no `rejectUnsafeUrls` override.
+// ---------------------------------------------------------------------------
+
+describe("SSRF filter", () => {
+  function getGuardedTool() {
+    // No rejectUnsafeUrls override → default (true)
+    const augment = webFetch({ timeoutMs: 5000 });
+    const tool = augment.tools?.find((t) => t.name === "web_fetch");
+    if (!tool) throw new Error("web_fetch tool not found");
+    return tool;
+  }
+
+  const blockedUrls: [string, RegExp][] = [
+    ["http://localhost/anything", /loopback/i],
+    ["http://127.0.0.1/anything", /loopback/i],
+    ["http://10.0.0.5/internal", /RFC 1918/i],
+    ["http://192.168.1.1/router", /RFC 1918/i],
+    ["http://172.16.0.1/private", /RFC 1918/i],
+    ["http://169.254.169.254/latest/meta-data/", /link-local|metadata/i],
+    ["http://metadata.google.internal/computeMetadata/v1/", /metadata/i],
+    ["file:///etc/passwd", /scheme/i],
+  ];
+
+  for (const [url, errorRegex] of blockedUrls) {
+    test(`rejects ${url}`, async () => {
+      const tool = getGuardedTool();
+      const result = JSON.parse(await tool.execute({ url, prompt: "x" }));
+      expect(result.error).toBeDefined();
+      expect(result.error).toMatch(errorRegex);
+      // No network call should have happened — the response body in the
+      // success path is never populated.
+      expect(result.code).toBeUndefined();
+    });
+  }
 });

@@ -126,15 +126,57 @@ Built-in augments. This directory is intentionally small — only augments that 
 |------|---------------|
 | `file-memory.ts` | `fileMemory(opts)` — static memory provider backed by a single file. Loads at boot, optionally writes back. Used for identity (`mutable: false`) and self-notes (`mutable: true`). |
 | `supabase-memory.ts` | `supabaseMemory(opts)` — namespace memory provider backed by a Supabase table. Insert + ILIKE search + label-prefix isolation. Used for episodic memory. |
+| `filesystem.ts` | `filesystem(opts)` — multi-mount scoped file access (6 tools, realpath-based sandbox). Loads skills from mounted skill dirs. |
+| `filesystem-skill/` | SKILL.md + references for the filesystem augment (loaded on demand, not boot-time). |
+| `web-fetch.ts` | `webFetch(opts)` — URL fetch with HTML→text conversion and JSON passthrough. Uses the shared `src/http.ts` client. |
+| `org-context.ts` | `orgContext(opts)` — org knowledge augment (manifest + `org_fetch` + `org_escalate`). Pulls from the agent-context-api. |
+| `bash.ts` | `bash(opts)` — scoped shell execution (allowlist, working dir, timeout). |
 
 See [07-built-in-augments.md](./07-built-in-augments.md).
 
-### `src/parts.ts`, `src/helpers.ts`, `src/tokenizer.ts`
+### `src/engines/`
+Model client adapters. Each engine is a `createXxxModel(opts) → ModelClient` factory that normalizes a provider's API onto the kernel's `ModelClient` contract.
+
+| File | Responsibility |
+|------|---------------|
+| `anthropic.ts` | Anthropic Messages API adapter. |
+| `openai.ts` | OpenAI Chat Completions adapter (handles message coalescing). |
+| `openrouter.ts` | OpenRouter multi-provider adapter. |
+| `_shared/schema-normalize.ts` | Zod → JSON Schema normalization used by all engines. |
+
+Engines are a reasoning-engine concern, not a model-metadata concern — see [01-philosophy.md](./01-philosophy.md) for why the directory is named `engines/` and not `models/`.
+
+### `src/cli/` — the `aug1` CLI (Plan 3)
+Turns Auggy from "write a `main.ts`" into "configure a YAML file and run `aug1 start`." Each file is one concern.
+
+| File | Responsibility |
+|------|---------------|
+| `index.ts` | Commander.js entrypoint. |
+| `types.ts` | `ParsedConfig`, `PidManifest`, `AugmentConfig`, etc. |
+| `config-parser.ts` | YAML → env interpolation → validation → `ParsedConfig`. |
+| `augment-catalog.ts` | Registry of built-in augments available to `aug1 create / add`. |
+| `augment-resolver.ts` | `AugmentConfig[]` → `Augment[]` (built-in + custom). |
+| `engine-resolver.ts` | `EngineConfig` → `ModelClient`. |
+| `resolve-config.ts` | Shared config path resolution. |
+| `pid-registry.ts` | `~/.auggy/<name>.json` atomic PID manifests. |
+| `plist-generator.ts` | macOS launchd plist generation. |
+| `scaffold.ts` | `aug1 create` directory + template generation. |
+| `skill-manifest.ts` | Scans `skills/*/SKILL.md` → identity manifest. |
+| `commands/create.ts` | `aug1 create <name>` — interactive scaffold. |
+| `commands/add.ts` | `aug1 add <name>` — add augments to an existing agent. |
+| `commands/dev.ts` | `aug1 dev <name>` — foreground runner (core lifecycle). |
+| `commands/start.ts` | `aug1 start <name>` — install as launchd service. |
+| `commands/stop.ts` | `aug1 stop <name>` — SIGTERM or `launchctl unload`. |
+| `commands/restart.ts` | `aug1 restart <name>` — stop + start. |
+| `commands/status.ts` | `aug1 status [name]` — list or detail view. |
+
+### `src/parts.ts`, `src/helpers.ts`, `src/tokenizer.ts`, `src/http.ts`
 Small utility modules.
 
 - `parts.ts` — `extractText(parts)`, `textPart(text)`, `dataPart(data)`. The A2A `Part[]` shape requires helpers to convert between text-only and the polymorphic content type.
 - `helpers.ts` — `defineAugment(spec)`, `defineTool(spec)`. These are pass-throughs that exist purely for type inference (so users get autocomplete on partial specs). They're not factories — they don't add behavior.
 - `tokenizer.ts` — `createTokenizer()` returns a `{count(text)}` object. v1 uses a simple character-divided-by-4 estimate. Real tokenization is a model-specific concern that should live in the `ModelClient` adapter.
+- `http.ts` — shared HTTP client used by `webFetch` and `orgContext`. Enforces redirect security (same-origin on auth redirects), body size cap, and auth-header stripping on cross-origin redirects.
 
 ### `src/index.ts`
 The public API surface. Re-exports everything users should be able to import. If a symbol isn't in `index.ts`, it's an internal detail.

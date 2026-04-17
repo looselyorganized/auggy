@@ -6,7 +6,7 @@ export type ContextPlacement = "system" | "preamble" | "assistant-preamble";
 export type ContextProvenance = "identity" | "memory" | "retrieval" | "augment";
 export type ContextPriority = "required" | "high" | "normal" | "low" | "evictable";
 export type EvictionPolicy = "never" | "summarize" | "drop";
-export type ContextOrigin = "operator" | "system" | "peer-derived";
+export type ContextOrigin = "operator" | "system" | "agent" | "peer-derived";
 
 export interface ContextBlock {
   source: string;
@@ -262,6 +262,23 @@ export type KernelEvent =
       text: string;
     }
   | {
+      kind: "text_message_start";
+      turnId: string;
+      messageId: string;
+      role: "assistant";
+    }
+  | {
+      kind: "text_message_delta";
+      turnId: string;
+      messageId: string;
+      delta: string;
+    }
+  | {
+      kind: "text_message_end";
+      turnId: string;
+      messageId: string;
+    }
+  | {
       kind: "run_finished";
       turnId: string;
       status: TaskState;
@@ -315,8 +332,13 @@ export interface ModelResponse {
   finishReason: "end_turn" | "tool_use" | "max_tokens";
 }
 
+export type ModelDelta = { kind: "text_delta"; text: string };
+
 export interface ModelClient {
-  complete(prompt: AssembledPrompt): Promise<ModelResponse>;
+  complete(
+    prompt: AssembledPrompt,
+    opts?: { onDelta?: (delta: ModelDelta) => void },
+  ): Promise<ModelResponse>;
   countTokens(text: string): number;
   maxContextTokens: number;
 }
@@ -392,6 +414,26 @@ export interface AugmentConstraints {
   neverExpose?: string[];
   contextTimeoutMs?: number;
   toolTimeoutMs?: number;
+  /**
+   * Per-trust-level structural constraints. Applied additively on top of the
+   * top-level `neverExpose` / `requiresHumanApproval` fields. Top-level rules
+   * apply to every peer; per-level rules apply only to the specific level.
+   *
+   * Example: hide `fs_remove` from untrusted peers but keep it visible to
+   * authenticated and operator:
+   *   perTrustLevel: { untrusted: { neverExpose: ["fs_remove"] } }
+   *
+   * Null peer (internal/scheduled triggers) is treated as "operator" trust.
+   */
+  perTrustLevel?: Partial<
+    Record<
+      TrustLevel,
+      {
+        neverExpose?: string[];
+        requiresHumanApproval?: string[];
+      }
+    >
+  >;
 }
 
 export interface Augment {

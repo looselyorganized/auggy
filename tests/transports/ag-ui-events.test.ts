@@ -109,6 +109,44 @@ describe("translateKernelEvent", () => {
     expect(events[2]!.type).toBe("TEXT_MESSAGE_END");
   });
 
+  // --- Streaming text lifecycle events ---
+
+  it("translates text_message_start to TEXT_MESSAGE_START", () => {
+    const ke: KernelEvent = {
+      kind: "text_message_start",
+      turnId: "t1",
+      messageId: "m1",
+      role: "assistant",
+    };
+    const events = translateKernelEvent(ke);
+    expect(events).toHaveLength(1);
+    expect(events[0]!.type).toBe("TEXT_MESSAGE_START");
+  });
+
+  it("translates text_message_delta to TEXT_MESSAGE_CONTENT", () => {
+    const ke: KernelEvent = {
+      kind: "text_message_delta",
+      turnId: "t1",
+      messageId: "m1",
+      delta: "Hello",
+    };
+    const events = translateKernelEvent(ke);
+    expect(events).toHaveLength(1);
+    expect(events[0]!.type).toBe("TEXT_MESSAGE_CONTENT");
+    expect((events[0] as { delta: string }).delta).toBe("Hello");
+  });
+
+  it("translates text_message_end to TEXT_MESSAGE_END", () => {
+    const ke: KernelEvent = {
+      kind: "text_message_end",
+      turnId: "t1",
+      messageId: "m1",
+    };
+    const events = translateKernelEvent(ke);
+    expect(events).toHaveLength(1);
+    expect(events[0]!.type).toBe("TEXT_MESSAGE_END");
+  });
+
   it("translates tool_call_started to TOOL_CALL_START", () => {
     const ke: KernelEvent = {
       kind: "tool_call_started",

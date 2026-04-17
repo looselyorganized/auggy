@@ -4,13 +4,19 @@
 
 ## What we test
 
-168 tests across 25 files as of 2026-04-08. The tests are divided into three layers:
+537 tests across 42 files as of 2026-04-16 (v0.1.1). The tests are divided into five layers:
 
-1. **Unit tests** — one module, one file. Mocked collaborators where they exist. Most of `tests/kernel/`, `tests/memory/`, `tests/transports/`, plus `tests/parts.test.ts`, `tests/tokenizer.test.ts`, `tests/helpers.test.ts`, `tests/agent-card.test.ts`.
+1. **Unit tests** — one module, one file. Mocked collaborators where they exist. Most of `tests/kernel/`, `tests/memory/`, `tests/transports/`, plus `tests/parts.test.ts`, `tests/tokenizer.test.ts`, `tests/helpers.test.ts`, `tests/agent-card.test.ts`, `tests/http.test.ts`.
 
-2. **Augment tests** — `tests/augments/`. These exercise the built-in augments (`fileMemory`, `supabaseMemory`) with their real backends-or-test-equivalents. `fileMemory` uses real temp directories. `supabaseMemory` uses an in-memory mock that satisfies the structural type.
+2. **Augment tests** — `tests/augments/`. These exercise the built-in augments (`fileMemory`, `supabaseMemory`, `filesystem`, `webFetch`, `bash`) with their real backends-or-test-equivalents. `fileMemory` and `filesystem` use real temp directories. `supabaseMemory` uses an in-memory mock that satisfies the structural type. `webFetch` uses a local Bun.serve fixture.
 
-3. **Integration tests** — `tests/integration/`. These stand up a real `defineAgent` with real built-in augments (file memory, Supabase memory via mock client, web transport) and exercise the full HTTP surface end to end. The only fake is the model client.
+3. **Engine tests** — `tests/engines/`. Adapter-level tests for `anthropic`, `openai`, `openrouter` — message coalescing, tool-call translation, schema normalization.
+
+4. **CLI tests** — `tests/cli/`. Config parser, augment resolver, engine resolver, PID registry, plist generator, scaffold, skill manifest. Real filesystem, no real launchctl.
+
+5. **Integration tests** — `tests/integration/`. Stand up a real `defineAgent` with real built-in augments (file memory, Supabase memory via mock client, web transport) and exercise the full HTTP surface end to end. The only fake is the model client.
+
+6. **Eval harness** — `tests/evals/`. Security-focused grader pipeline (`tests/evals/security/`). Mocks the agent via `createMockModel` and asserts on refusals, forbidden substrings, and tool-call gating.
 
 The split is deliberate: each layer protects against a different class of bug.
 
@@ -45,7 +51,7 @@ bun test tests/integration/full-agent.test.ts  # one file
 
 ## Test fixtures
 
-Fixtures live in `tests/fixtures/`. There are five.
+Fixtures live in `tests/fixtures/`. There are four: `mock-model.ts`, `mock-augment.ts`, `mock-supabase.ts`, `temp-dir.ts`.
 
 ### `mock-model.ts` — `createMockModel`
 
@@ -247,17 +253,20 @@ expect(events).toContain({ type: "RUN_FINISHED" });
 
 This proves that queue rejections produce visible terminal events instead of an empty 200 response. Was added after the P1 review finding ("Propagate transport-queue rejections to the SSE response").
 
-## Test counts (as of 2026-04-08)
+## Test counts (as of 2026-04-16, v0.1.1)
 
-| Directory | Files | Tests |
-|-----------|-------|-------|
-| `tests/` (top-level) | 5 | ~30 |
-| `tests/kernel/` | 11 | ~60 |
-| `tests/memory/` | 4 | ~34 |
-| `tests/augments/` | 2 | ~14 |
-| `tests/transports/` | 2 | ~31 |
-| `tests/integration/` | 1 | 2 |
-| **Total** | **25** | **168** |
+| Directory | Files |
+|-----------|-------|
+| `tests/` (top-level) | 6 |
+| `tests/kernel/` | 11 |
+| `tests/memory/` | 4 |
+| `tests/augments/` | 5 |
+| `tests/transports/` | 2 |
+| `tests/engines/` | 3 |
+| `tests/cli/` | 7 |
+| `tests/integration/` | 1 |
+| `tests/evals/` | 3 |
+| **Total** | **42 files, 537 tests** |
 
 `bun run tsc --noEmit` is also clean. The tests + typecheck are the two gates for "is the code in a shippable state."
 

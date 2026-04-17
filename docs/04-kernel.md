@@ -256,19 +256,32 @@ createCapabilityTable(augments) → {
 ```
 
 Construction walks the augment list and builds:
-- A `Set<string>` of `neverExpose` tool names (never sent to the model)
-- A `Set<string>` of `requiresHumanApproval` tool names
+- A `Set<string>` of global `neverExpose` tool names (never sent to the model, regardless of trust level)
+- A `Set<string>` of global `requiresHumanApproval` tool names
+- A `Map<TrustLevel, Set<string>>` of per-level `neverExpose` tool names (Layer 1)
+- A `Map<TrustLevel, Set<string>>` of per-level `requiresHumanApproval` tool names (Layer 1)
 - A `Map<toolName, augmentName>` so `canExecute` can look up the owning augment for per-augment limit enforcement
 - A `Map<augmentName, limit>` of per-augment maxToolCallsPerTurn (default 5 if unset)
 - A computed `globalLimit` (sum of all augment limits, falling back to the default if no augment has tools)
 
+`canExpose` checks:
+1. Global `neverExpose` → if yes, hidden from everyone.
+2. Per-level `neverExpose` for `effectiveTrustLevel(turn.peer)` → if yes, hidden from this peer only.
+
 `canExecute` checks (in order):
 1. Global limit not exceeded
 2. Per-augment limit for the owning augment not exceeded
-3. Tool isn't in `requiresHumanApproval` (if it is, return `needsApproval`)
-4. Otherwise: `allowed`
+3. Tool isn't in global `requiresHumanApproval` (if it is, return `needsApproval`)
+4. Tool isn't in per-level `requiresHumanApproval` for `effectiveTrustLevel(turn.peer)` (if it is, return `needsApproval`)
+5. Otherwise: `allowed`
 
 `recordToolCall` bumps the global counter and the per-augment counter. `resetTurn` clears both.
+
+**Trust routing.** `effectiveTrustLevel(peer)` is a module-exported helper: it returns the peer's `trustLevel` if present, or `"operator"` if `peer === null`. Null peer means "no external initiator" — internal/scheduled triggers authored by the operator's own configuration. This mapping is the one place the kernel treats null peers as operator; both `canExpose` and `canExecute` consult it.
+
+**Why structural, not prompt-based.** Per ALARA (arXiv:2603.20380), prompt-instruction hardening produces suggestions the model may ignore; removing a tool from the model's tool list produces guaranteed behavioral change. The capability table's `canExpose` is the structural enforcement point: it runs in `selectTools` *before* the model sees the tool catalog. An untrusted peer's message cannot invoke a tool that was never in its option space for that turn, regardless of how the peer frames the request.
+
+**Example: filesystem augment defaults.** The filesystem augment declares `perTrustLevel: { untrusted: { neverExpose: ["fs_write", "fs_mkdir", "fs_remove"] }, authenticated: { neverExpose: ["fs_remove"] } }`. An untrusted chat visitor's tool list will not contain the three mutation tools even if they successfully convince the model that they should be able to modify files; an authenticated peer sees five of six tools but cannot see `fs_remove`. Operator and facility peers see all six.
 
 The `KERNEL_DEFAULT_MAX_TOOL_CALLS = 5` was the source of the P2 review finding: the synthetic `memory-bus` augment was getting silently capped at 5 even though its budget said 20. The fix was to set `constraints.maxToolCallsPerTurn` on the synthetic augment (`memory-bus.ts`).
 

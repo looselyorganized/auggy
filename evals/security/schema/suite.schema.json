@@ -1,0 +1,225 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/looselyorganized/augment-1/evals/security/schema/suite.schema.json",
+  "title": "Auggy security eval suite",
+  "description": "Stable v1 schema for the Auggy security eval suite YAML. Additive changes are allowed within v1; breaking changes require bumping the top-level `version` field.",
+  "type": "object",
+  "required": ["suite", "version", "cases"],
+  "additionalProperties": false,
+  "properties": {
+    "suite": {
+      "type": "string",
+      "description": "Suite identifier. e.g. 'auggy-security', 'auggy-security-benign'.",
+      "minLength": 1
+    },
+    "version": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Schema version. Bump when making breaking changes."
+    },
+    "owners": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Human or team names responsible for this suite."
+    },
+    "last_updated": {
+      "type": "string",
+      "format": "date",
+      "description": "ISO-8601 date of last modification (YYYY-MM-DD)."
+    },
+    "trials": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 3,
+      "description": "Trials per case for Pass^k scoring."
+    },
+    "stale_after_days": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 90,
+      "description": "Runner warns if last_updated is older than this."
+    },
+    "cases": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/case" }
+    }
+  },
+  "$defs": {
+    "case": {
+      "type": "object",
+      "required": ["id", "category", "messages", "graders"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9-]+$",
+          "description": "kebab-case unique identifier"
+        },
+        "category": {
+          "type": "string",
+          "description": "Grouping for rollups. e.g. 'info-disclosure', 'prompt-injection', 'ssrf', 'escalation-abuse'."
+        },
+        "threat": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "confidentiality",
+              "integrity",
+              "availability",
+              "privilege-escalation",
+              "repudiation",
+              "spoofing"
+            ]
+          },
+          "description": "STRIDE-style threat tags."
+        },
+        "severity": {
+          "type": "string",
+          "enum": ["critical", "high", "medium", "low"]
+        },
+        "source": {
+          "type": "string",
+          "description": "Where this case came from. e.g. 'red-team-2026-04-16', 'user-report-#42'."
+        },
+        "counterpart_of": {
+          "type": "string",
+          "description": "For benign cases: the attack case id this mirrors."
+        },
+        "messages": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/message" }
+        },
+        "graders": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/grader" }
+        }
+      }
+    },
+    "message": {
+      "type": "object",
+      "required": ["role", "content"],
+      "additionalProperties": false,
+      "properties": {
+        "role": {
+          "type": "string",
+          "enum": ["user", "assistant"]
+        },
+        "content": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "grader": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["type", "name"],
+          "additionalProperties": false,
+          "properties": {
+            "type": { "const": "tool_called" },
+            "name": { "type": "string" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["type", "name"],
+          "additionalProperties": false,
+          "properties": {
+            "type": { "const": "tool_not_called" },
+            "name": {
+              "type": "string",
+              "description": "Tool name. Use '*' to mean 'any tool must not have fired'."
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["type", "text"],
+          "additionalProperties": false,
+          "properties": {
+            "type": { "const": "response_contains" },
+            "text": { "type": "string", "minLength": 1 },
+            "caseSensitive": { "type": "boolean", "default": false }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["type", "text"],
+          "additionalProperties": false,
+          "properties": {
+            "type": { "const": "response_does_not_contain" },
+            "text": { "type": "string", "minLength": 1 },
+            "caseSensitive": { "type": "boolean", "default": false }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["type", "texts"],
+          "additionalProperties": false,
+          "properties": {
+            "type": { "const": "response_contains_any" },
+            "texts": {
+              "type": "array",
+              "minItems": 1,
+              "items": { "type": "string", "minLength": 1 }
+            },
+            "caseSensitive": { "type": "boolean", "default": false }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["type", "texts"],
+          "additionalProperties": false,
+          "properties": {
+            "type": { "const": "response_does_not_contain_any" },
+            "texts": {
+              "type": "array",
+              "minItems": 1,
+              "items": { "type": "string", "minLength": 1 }
+            },
+            "caseSensitive": { "type": "boolean", "default": false }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["type", "equals"],
+          "additionalProperties": false,
+          "properties": {
+            "type": { "const": "task_state" },
+            "equals": {
+              "type": "string",
+              "enum": [
+                "working",
+                "input-required",
+                "auth-required",
+                "completed",
+                "failed",
+                "canceled",
+                "rejected"
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["type"],
+          "additionalProperties": false,
+          "properties": {
+            "type": { "const": "response_length" },
+            "min": { "type": "integer", "minimum": 0 },
+            "max": { "type": "integer", "minimum": 1 }
+          },
+          "anyOf": [
+            { "required": ["min"] },
+            { "required": ["max"] }
+          ]
+        }
+      ]
+    }
+  }
+}
