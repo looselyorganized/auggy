@@ -10,6 +10,7 @@ Format: `- [ ] [category] description (context: where/when found)`
 
 - [x] ~~**[engine+transport] Token streaming in Anthropic engine + AG-UI delta events.**~~ — shipped: `messages.stream()` in Anthropic adapter with `onDelta` callback, `text_message_start`/`text_message_delta`/`text_message_end` KernelEvents, AG-UI translator routes deltas 1:1 to `TEXT_MESSAGE_CONTENT`. Turn loop emits start/delta/end with error cleanup (closes stream on error). Non-streaming engines backward compat via existing `text_message` triple.
 - [x] ~~**[webTransport] Bun.serve idleTimeout.**~~ — shipped: `idleTimeout: 120` in `Bun.serve()`. Streaming keeps the pipe warm; this is the safety net for long tool executions.
+- [ ] **[orgContext] org_escalate rate limiting + deduplication.** Prevent operator-attention DoS. A persistent adversary running many sessions triggers repeated Telegram escalations → operator notification fatigue → reflexive dismissal. Fix: per-peer/session cooldown on `org_escalate` calls, deduplication window for similar escalation summaries, circuit breaker on repeated abuse from the same peer. Tool-level rate limit, not transport-level. Surfaced during red-team session (2026-04-16) where 9 attacks produced one escalation (naturally batched by the model), but the structural limit doesn't exist. See `src/augments/org-context.ts`.
 
 ## UX
 
