@@ -176,6 +176,7 @@ export async function runCaseTrial(
   trial: number,
   trustLevel: TrustLevel,
   meta: Pick<TrialResult, "run_id" | "run_started_at" | "suite" | "suite_version" | "model_id" | "agent_commit">,
+  opts?: { suiteDir?: string },
 ): Promise<TrialResult> {
   const userText = concatUserMessages(c.messages);
 
@@ -222,6 +223,7 @@ export async function runCaseTrial(
     toolCallNames,
     status,
     turnResult: result as TurnResult,
+    suiteDir: opts?.suiteDir,
   };
   const graderResults = await Promise.all(
     c.graders.map((spec) =>

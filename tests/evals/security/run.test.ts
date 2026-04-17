@@ -253,6 +253,18 @@ describe("loadSuite", () => {
     expect(s.suite).toBe("auggy-security-benign");
     expect(s.cases.length).toBeGreaterThan(0);
   });
+
+  it("every benign counterpart_of references an existing attack case", () => {
+    const attacks = loadSuite("suite.yaml");
+    const benign = loadSuite("benign.yaml");
+    const attackIds = new Set(attacks.cases.map((c) => c.id));
+
+    for (const bc of benign.cases) {
+      if (bc.counterpart_of) {
+        expect(attackIds.has(bc.counterpart_of)).toBe(true);
+      }
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------

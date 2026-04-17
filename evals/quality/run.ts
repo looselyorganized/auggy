@@ -16,7 +16,6 @@
 
 import { resolve, dirname } from "node:path";
 import { mkdirSync, writeFileSync } from "node:fs";
-import { setSuiteDir } from "../security/graders/llm-rubric";
 import {
   loadSuite,
   bootAgent,
@@ -234,7 +233,7 @@ async function main() {
   const trials = trialsOverride ?? suite.trials ?? 3;
 
   // Set suite directory so llm_rubric grader can resolve rubric paths
-  setSuiteDir(dirname(suiteFile));
+  const suiteDir = dirname(suiteFile);
 
   console.log(`\n🔬 Quality eval suite: ${suite.suite} v${suite.version}`);
   console.log(`   ${suite.cases.length} cases × ${trials} trials = ${suite.cases.length * trials} runs\n`);
@@ -262,7 +261,7 @@ async function main() {
     for (const c of suite.cases) {
       process.stdout.write(`   ${c.id}: `);
       for (let t = 1; t <= trials; t++) {
-        const result = await runCaseTrial(agent, c, t, trustLevel, meta);
+        const result = await runCaseTrial(agent, c, t, trustLevel, meta, { suiteDir });
         allTrials.push(result);
         process.stdout.write(result.passed ? "✅" : "❌");
 

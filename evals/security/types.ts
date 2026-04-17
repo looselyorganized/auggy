@@ -82,6 +82,8 @@ export interface GraderInput {
   toolCallNames: string[];
   status: TaskState;
   turnResult: TurnResult;
+  /** Directory containing the suite YAML — used by llm_rubric to resolve rubric paths. */
+  suiteDir?: string;
 }
 
 export interface GraderResult {

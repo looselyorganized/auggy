@@ -1,7 +1,9 @@
 import type {
   Augment,
   AgentConfig,
+  AssembledPrompt,
   ModelClient,
+  ModelResponse,
   TurnTrigger,
   TurnState,
   TurnResult,
@@ -14,6 +16,66 @@ import type {
 } from "../types";
 import type { Tokenizer } from "../tokenizer";
 import { extractText } from "../parts";
+
+// ---------------------------------------------------------------------------
+// Streaming inference helper
+// ---------------------------------------------------------------------------
+
+/**
+ * Run a model inference call with streaming text deltas. Emits
+ * text_message_start / text_message_delta / text_message_end KernelEvents
+ * as text arrives. If the engine doesn't call onDelta (non-streaming
+ * engines), no streaming events are emitted and the caller falls back to
+ * the classic text_message event.
+ *
+ * On error, closes any open text stream before re-throwing so the client
+ * never has an unclosed message stuck in "typing" state.
+ */
+async function streamingInference(
+  model: ModelClient,
+  prompt: AssembledPrompt,
+  turnId: string,
+  emitEvent: KernelEventHandler,
+): Promise<{ response: ModelResponse; streamed: boolean; messageId: string }> {
+  const messageId = crypto.randomUUID();
+  let streamed = false;
+
+  let response: ModelResponse;
+  try {
+    response = await model.complete(prompt, {
+      onDelta: (delta) => {
+        if (delta.kind === "text_delta") {
+          if (!streamed) {
+            emitEvent({
+              kind: "text_message_start",
+              turnId,
+              messageId,
+              role: "assistant",
+            });
+            streamed = true;
+          }
+          emitEvent({
+            kind: "text_message_delta",
+            turnId,
+            messageId,
+            delta: delta.text,
+          });
+        }
+      },
+    });
+  } catch (err) {
+    if (streamed) {
+      emitEvent({ kind: "text_message_end", turnId, messageId });
+    }
+    throw err;
+  }
+
+  if (streamed) {
+    emitEvent({ kind: "text_message_end", turnId, messageId });
+  }
+
+  return { response, streamed, messageId };
+}
 import { withTimeout } from "./timeout";
 import { createContextAllocator } from "./context-allocator";
 import { createCapabilityTable } from "./capability-table";
@@ -334,59 +396,11 @@ export function createTurnLoop(opts: {
         if (signal?.aborted) return makeAbortResult();
         inferenceCount++;
         const inferStart = Date.now();
-
-        // --- Streaming text deltas ---
-        // If the engine supports onDelta (Anthropic), emit text_message_start
-        // on the first delta, text_message_delta for each chunk, and
-        // text_message_end after the call completes. If the engine doesn't
-        // call onDelta (OpenAI, OpenRouter), the existing text_message event
-        // fires at the terminal response for backward compat.
-        const streamMessageId = crypto.randomUUID();
-        let streamedText = false;
-
-        let response;
-        try {
-          response = await model.complete(currentPrompt, {
-            onDelta: (delta) => {
-              if (delta.kind === "text_delta") {
-                if (!streamedText) {
-                  emitEvent({
-                    kind: "text_message_start",
-                    turnId: trigger.turnId,
-                    messageId: streamMessageId,
-                    role: "assistant",
-                  });
-                  streamedText = true;
-                }
-                emitEvent({
-                  kind: "text_message_delta",
-                  turnId: trigger.turnId,
-                  messageId: streamMessageId,
-                  delta: delta.text,
-                });
-              }
-            },
-          });
-        } catch (err) {
-          // Close the text stream if we started one before the error
-          if (streamedText) {
-            emitEvent({
-              kind: "text_message_end",
-              turnId: trigger.turnId,
-              messageId: streamMessageId,
-            });
-          }
-          throw err;
-        }
-
-        if (streamedText) {
-          emitEvent({
-            kind: "text_message_end",
-            turnId: trigger.turnId,
-            messageId: streamMessageId,
-          });
-        }
-
+        const {
+          response,
+          streamed: streamedText,
+          messageId: streamMessageId,
+        } = await streamingInference(model, currentPrompt, trigger.turnId, emitEvent);
         const inferDuration = Date.now() - inferStart;
 
         traceEmitter.recordInference(trace, {
@@ -602,32 +616,11 @@ export function createTurnLoop(opts: {
           const updatedHistory = history.getHistory(historyBudget);
           currentPrompt = allocator.assemble(contextBlocks, updatedHistory, toolSelection.definitions);
 
-          const termMessageId = crypto.randomUUID();
-          let termStreamed = false;
-
-          let finalResponse;
-          try {
-            finalResponse = await model.complete(currentPrompt, {
-              onDelta: (delta) => {
-                if (delta.kind === "text_delta") {
-                  if (!termStreamed) {
-                    emitEvent({ kind: "text_message_start", turnId: trigger.turnId, messageId: termMessageId, role: "assistant" });
-                    termStreamed = true;
-                  }
-                  emitEvent({ kind: "text_message_delta", turnId: trigger.turnId, messageId: termMessageId, delta: delta.text });
-                }
-              },
-            });
-          } catch (err) {
-            if (termStreamed) {
-              emitEvent({ kind: "text_message_end", turnId: trigger.turnId, messageId: termMessageId });
-            }
-            throw err;
-          }
-
-          if (termStreamed) {
-            emitEvent({ kind: "text_message_end", turnId: trigger.turnId, messageId: termMessageId });
-          }
+          const {
+            response: finalResponse,
+            streamed: termStreamed,
+            messageId: termMessageId,
+          } = await streamingInference(model, currentPrompt, trigger.turnId, emitEvent);
 
           if (finalResponse.content) {
             history.append({

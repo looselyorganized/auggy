@@ -18,17 +18,6 @@ import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import type { Grader, GraderResult, GraderSpec, GraderInput } from "../types";
 
-/**
- * Path to the suite file currently being evaluated. Must be set by the
- * runner before any llm_rubric grader is invoked, so rubric paths can
- * be resolved relative to the suite directory.
- */
-let _suiteDir: string = process.cwd();
-
-export function setSuiteDir(dir: string): void {
-  _suiteDir = dir;
-}
-
 interface DimensionGrade {
   score: number;
   reason: string;
@@ -43,9 +32,10 @@ export const llmRubric: Grader = async (
   }
 
   // Read rubric file
+  const suiteDir = input.suiteDir ?? process.cwd();
   let rubricContent: string;
   try {
-    const rubricPath = resolve(_suiteDir, spec.rubric);
+    const rubricPath = resolve(suiteDir, spec.rubric);
     rubricContent = readFileSync(rubricPath, "utf-8");
   } catch (err) {
     return {
