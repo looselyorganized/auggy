@@ -4,6 +4,7 @@ import type {
   AssembledPrompt,
   Message,
   ModelClient,
+  ModelDelta,
   ModelResponse,
   ToolDefinition,
 } from "../types";
@@ -66,7 +67,7 @@ export function createOpenAIEngine(opts: OpenAIEngineOptions): ModelClient {
       return Math.ceil(text.length / 4);
     },
 
-    async complete(prompt: AssembledPrompt): Promise<ModelResponse> {
+    async complete(prompt: AssembledPrompt, _opts?: { onDelta?: (delta: ModelDelta) => void }): Promise<ModelResponse> {
       const systemMessage = assembleOpenAISystemMessage(prompt);
       const messages = convertOpenAIMessages(prompt.messages);
       const tools = convertOpenAITools(prompt.tools);

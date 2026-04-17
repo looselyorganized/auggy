@@ -276,6 +276,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
     async onBoot() {
       server = Bun.serve({
         port: opts.port,
+        idleTimeout: 120, // 120s — covers long model calls + tool chains
         async fetch(req) {
           const url = new URL(req.url);
 

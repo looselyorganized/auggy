@@ -334,7 +334,59 @@ export function createTurnLoop(opts: {
         if (signal?.aborted) return makeAbortResult();
         inferenceCount++;
         const inferStart = Date.now();
-        const response = await model.complete(currentPrompt);
+
+        // --- Streaming text deltas ---
+        // If the engine supports onDelta (Anthropic), emit text_message_start
+        // on the first delta, text_message_delta for each chunk, and
+        // text_message_end after the call completes. If the engine doesn't
+        // call onDelta (OpenAI, OpenRouter), the existing text_message event
+        // fires at the terminal response for backward compat.
+        const streamMessageId = crypto.randomUUID();
+        let streamedText = false;
+
+        let response;
+        try {
+          response = await model.complete(currentPrompt, {
+            onDelta: (delta) => {
+              if (delta.kind === "text_delta") {
+                if (!streamedText) {
+                  emitEvent({
+                    kind: "text_message_start",
+                    turnId: trigger.turnId,
+                    messageId: streamMessageId,
+                    role: "assistant",
+                  });
+                  streamedText = true;
+                }
+                emitEvent({
+                  kind: "text_message_delta",
+                  turnId: trigger.turnId,
+                  messageId: streamMessageId,
+                  delta: delta.text,
+                });
+              }
+            },
+          });
+        } catch (err) {
+          // Close the text stream if we started one before the error
+          if (streamedText) {
+            emitEvent({
+              kind: "text_message_end",
+              turnId: trigger.turnId,
+              messageId: streamMessageId,
+            });
+          }
+          throw err;
+        }
+
+        if (streamedText) {
+          emitEvent({
+            kind: "text_message_end",
+            turnId: trigger.turnId,
+            messageId: streamMessageId,
+          });
+        }
+
         const inferDuration = Date.now() - inferStart;
 
         traceEmitter.recordInference(trace, {
@@ -375,12 +427,14 @@ export function createTurnLoop(opts: {
             }
           }
 
-          // Emit text_message event for the final response
-          if (response.content) {
+          // Emit text_message event for the final response — only if we
+          // didn't already stream it AND there's actual content (skip empty
+          // text from pure tool_use responses).
+          if (!streamedText && response.content) {
             emitEvent({
               kind: "text_message",
               turnId: trigger.turnId,
-              messageId: crypto.randomUUID(),
+              messageId: streamMessageId,
               role: "assistant",
               text: response.content,
             });
@@ -547,7 +601,34 @@ export function createTurnLoop(opts: {
         if (terminateToolLoop) {
           const updatedHistory = history.getHistory(historyBudget);
           currentPrompt = allocator.assemble(contextBlocks, updatedHistory, toolSelection.definitions);
-          const finalResponse = await model.complete(currentPrompt);
+
+          const termMessageId = crypto.randomUUID();
+          let termStreamed = false;
+
+          let finalResponse;
+          try {
+            finalResponse = await model.complete(currentPrompt, {
+              onDelta: (delta) => {
+                if (delta.kind === "text_delta") {
+                  if (!termStreamed) {
+                    emitEvent({ kind: "text_message_start", turnId: trigger.turnId, messageId: termMessageId, role: "assistant" });
+                    termStreamed = true;
+                  }
+                  emitEvent({ kind: "text_message_delta", turnId: trigger.turnId, messageId: termMessageId, delta: delta.text });
+                }
+              },
+            });
+          } catch (err) {
+            if (termStreamed) {
+              emitEvent({ kind: "text_message_end", turnId: trigger.turnId, messageId: termMessageId });
+            }
+            throw err;
+          }
+
+          if (termStreamed) {
+            emitEvent({ kind: "text_message_end", turnId: trigger.turnId, messageId: termMessageId });
+          }
+
           if (finalResponse.content) {
             history.append({
               id: crypto.randomUUID(),
@@ -556,13 +637,15 @@ export function createTurnLoop(opts: {
               timestamp: Date.now(),
               tokenCount: tokenizer.count(finalResponse.content),
             });
-            emitEvent({
-              kind: "text_message",
-              turnId: trigger.turnId,
-              messageId: crypto.randomUUID(),
-              role: "assistant",
-              text: finalResponse.content,
-            });
+            if (!termStreamed) {
+              emitEvent({
+                kind: "text_message",
+                turnId: trigger.turnId,
+                messageId: termMessageId,
+                role: "assistant",
+                text: finalResponse.content,
+              });
+            }
           }
           emitEvent({
             kind: "run_finished",

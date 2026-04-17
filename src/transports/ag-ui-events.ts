@@ -202,6 +202,17 @@ export function translateKernelEvent(event: KernelEvent): AGUIEvent[] {
         textMessageEnd({ messageId: event.messageId }),
       ];
 
+    // Streaming text lifecycle: emitted by engines that support onDelta.
+    // Each maps 1:1 to its AG-UI counterpart.
+    case "text_message_start":
+      return [textMessageStart({ messageId: event.messageId, role: event.role })];
+
+    case "text_message_delta":
+      return [textMessageContent({ messageId: event.messageId, delta: event.delta })];
+
+    case "text_message_end":
+      return [textMessageEnd({ messageId: event.messageId })];
+
     case "run_finished":
       return [runFinished({ threadId: "", runId: event.turnId })];
 

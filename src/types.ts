@@ -262,6 +262,23 @@ export type KernelEvent =
       text: string;
     }
   | {
+      kind: "text_message_start";
+      turnId: string;
+      messageId: string;
+      role: "assistant";
+    }
+  | {
+      kind: "text_message_delta";
+      turnId: string;
+      messageId: string;
+      delta: string;
+    }
+  | {
+      kind: "text_message_end";
+      turnId: string;
+      messageId: string;
+    }
+  | {
       kind: "run_finished";
       turnId: string;
       status: TaskState;
@@ -315,8 +332,13 @@ export interface ModelResponse {
   finishReason: "end_turn" | "tool_use" | "max_tokens";
 }
 
+export type ModelDelta = { kind: "text_delta"; text: string };
+
 export interface ModelClient {
-  complete(prompt: AssembledPrompt): Promise<ModelResponse>;
+  complete(
+    prompt: AssembledPrompt,
+    opts?: { onDelta?: (delta: ModelDelta) => void },
+  ): Promise<ModelResponse>;
   countTokens(text: string): number;
   maxContextTokens: number;
 }
