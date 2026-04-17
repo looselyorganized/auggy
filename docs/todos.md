@@ -28,7 +28,7 @@ Format: `- [ ] [category] description (context: where/when found)`
 
 - [x] ~~bashAugment~~ — shipped: `bash` augment with risk presets (scripts-only / restricted / standard / unrestricted), Layer 1 trust gating, named scripts, env sanitization. See `src/augments/bash.ts`.
 - [ ] hooksAugment — PreToolUse/PostToolUse with Claw's exit-code contract
-- [ ] compactHistory — LLM-summarize variant of compaction
+- [ ] **Memory Layer Architecture** — L0-L3 hierarchy with promotion rules, per-layer trust gating, consolidation pipeline, peer-scoped retrieval. Supersedes compactHistory (compaction is a bridge, not the architecture). **Planning brief:** [`docs/memory-layer-architecture-brief.md`](./memory-layer-architecture-brief.md). Large multi-session project — design session first.
 - [ ] projectInstructions — AUGGY.md ancestor walk pattern
 - [ ] Permission-mode ladder in agent.yaml
 - [ ] researchAugment — web search + arxiv + document analysis for agents that need to look things up. Could wrap Brave/Tavily/Firecrawl; tools: `research_search`, `research_fetch_paper`, `research_summarize`. Progressive disclosure pattern.
