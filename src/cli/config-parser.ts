@@ -121,6 +121,7 @@ const BUILTIN_TYPES = new Set([
   "webTransport",
   "webFetch",
   "orgContext",
+  "bash",
 ]);
 const KNOWN_PROVIDERS = new Set(["anthropic", "openai", "openrouter"]);
 const VALID_REASONING_EFFORTS = new Set([

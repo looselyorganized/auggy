@@ -26,7 +26,7 @@ Format: `- [ ] [category] description (context: where/when found)`
 
 ## Post-ship augments (separate roadmap entries, captured here for cross-reference)
 
-- [ ] bashAugment — scoped shell execution with allowlist + timeout
+- [x] ~~bashAugment~~ — shipped: `bash` augment with risk presets (scripts-only / restricted / standard / unrestricted), Layer 1 trust gating, named scripts, env sanitization. See `src/augments/bash.ts`.
 - [ ] hooksAugment — PreToolUse/PostToolUse with Claw's exit-code contract
 - [ ] compactHistory — LLM-summarize variant of compaction
 - [ ] projectInstructions — AUGGY.md ancestor walk pattern
