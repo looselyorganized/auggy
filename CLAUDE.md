@@ -4,20 +4,22 @@
 
 Auggy (`augment-1`) is a modular agent runtime in TypeScript/Bun. Agents are composed from swappable augments; the kernel manages context, tools, permissions, and lifecycle. Framework-agnostic by design — **not LORF-locked**.
 
-**Status: v0.1.1 (2026-04-14).** Plans 1 (kernel) + 2 (built-in augments) + 3 (CLI & manifest) complete. 6 augments, 3 engines, 406 tests. `aug1 create` prompts for engine + model and shows a welcome banner. First agent live with chat, memory, web fetch, org knowledge, and escalation. See `lo/docs/auggy-plans-roadmap.md` (outside this repo) for the plan-by-plan roadmap.
+**Status: v0.1.1 (2026-04-14, counts updated 2026-04-16).** Plans 1 (kernel) + 2 (built-in augments) + 3 (CLI & manifest) complete. 6 augments, 3 engines, 537 tests across 42 files. `aug1 create` prompts for engine + model and shows a welcome banner. First agent live with chat, memory, web fetch, org knowledge, and escalation. See `lo/docs/auggy-plans-roadmap.md` (outside this repo) for the plan-by-plan roadmap.
 
 ## Commands
 
 ```bash
 # CLI
 aug1 create <name>              # Scaffold a new agent directory
+aug1 add <name>                 # Add augments to an existing agent
 aug1 dev <name> [--config path] # Run agent in foreground (Ctrl-C stops)
 aug1 start <name>               # Install as launchd service (always-on)
 aug1 stop <name>                # Stop agent (either mode)
+aug1 restart <name>             # Stop + start
 aug1 status [name]              # Show running agents
 
 # Development
-bun test                         # Run full test suite (310 tests)
+bun test                         # Run full test suite (537 tests across 42 files)
 bun test --watch                 # Watch mode
 bunx tsc --noEmit                # Typecheck (must pass before committing)
 bun run scripts/hello.ts         # Hello-world agent (requires ANTHROPIC_API_KEY)
@@ -88,7 +90,8 @@ src/
 │   ├── filesystem.ts       # Multi-mount scoped file access (6 tools, realpath security)
 │   ├── filesystem-skill/   # SKILL.md + references/ for the filesystem augment
 │   ├── web-fetch.ts        # URL fetch with HTML→text, JSON passthrough
-│   └── org-context.ts      # Org knowledge (manifest + org_fetch + org_escalate)
+│   ├── org-context.ts      # Org knowledge (manifest + org_fetch + org_escalate)
+│   └── bash.ts             # Scoped shell execution (allowlist, cwd, timeout)
 │
 ├── engines/              # ModelClient adapters (the "reasoning engines")
 │   ├── anthropic.ts        # Anthropic Messages API adapter
@@ -101,6 +104,7 @@ src/
     ├── index.ts            # Commander.js entrypoint
     ├── types.ts            # ParsedConfig, PidManifest, AugmentConfig
     ├── config-parser.ts    # YAML → env interpolation → validation → ParsedConfig
+    ├── augment-catalog.ts  # Registry of built-in augments for create/add
     ├── augment-resolver.ts # AugmentConfig[] → Augment[] (built-in + custom)
     ├── engine-resolver.ts  # EngineConfig → ModelClient
     ├── resolve-config.ts   # Shared config path resolution
@@ -110,12 +114,14 @@ src/
     ├── skill-manifest.ts   # Scan skills/*/SKILL.md → identity manifest
     └── commands/
         ├── create.ts       # aug1 create <name>
+        ├── add.ts          # aug1 add <name> (add augments to existing agent)
         ├── dev.ts          # aug1 dev (foreground runner, core lifecycle)
         ├── start.ts        # aug1 start (launchd install)
         ├── stop.ts         # aug1 stop (SIGTERM or launchctl unload)
+        ├── restart.ts      # aug1 restart (stop + start)
         └── status.ts       # aug1 status (list or detail)
 
-tests/                    # 406 tests across 38 files
+tests/                    # 537 tests across 42 files
 ├── fixtures/             # mock-model, mock-augment, mock-supabase, temp-dir
 ├── kernel/               # Per-kernel-component unit tests
 ├── memory/               # Memory subsystem tests
@@ -123,9 +129,10 @@ tests/                    # 406 tests across 38 files
 ├── engines/              # Engine adapter tests (message coalescing)
 ├── transports/           # Transport tests (incl CORS preflight, streaming, rate limit)
 ├── integration/          # Full-agent end-to-end tests
-├── cli/                  # CLI tests (config parser, resolver, PID, plist, scaffold)
+├── cli/                  # CLI tests (config parser, resolvers, PID, plist, scaffold, manifest)
+├── evals/                # Security eval harness (grader pipeline)
 ├── http.test.ts          # HTTP client tests (redirects, body size, auth stripping)
-└── web-fetch.test.ts     # (in augments/) entity decoding, script strip, JSON pass
+└── (augments/web-fetch.test.ts — entity decoding, script strip, JSON pass)
 
 scripts/
 ├── hello.ts              # Hello-world composition (real Claude, file identity, web transport)
@@ -137,7 +144,7 @@ scripts/
 1. **The kernel is finished.** Behavior changes go in augments, not in `src/kernel/`. Bug fixes to kernel files are fine; adding new kernel features requires explicit justification.
 2. **Every shared type lives in `src/types.ts`** — do not scatter types across modules. One file is deliberate.
 3. **Every module is a `create*` factory returning an object** — no classes, no `this`.
-4. **Test gate before committing:** `bun test` (406 passing) + `bunx tsc --noEmit` (clean) must both pass.
+4. **Test gate before committing:** `bun test` (537 passing) + `bunx tsc --noEmit` (clean) must both pass.
 5. **A2A-shaped types are load-bearing** — `Part[]`, `TaskState`, `AgentCard` follow A2A's shapes even though v1 doesn't speak A2A on the wire. Do not deviate.
 6. **Never use `vitest`** — we migrated to `bun:test` in Plan 2. The import is `from "bun:test"`.
 7. **Model adapters go in `src/engines/`** — not `src/models/` (see philosophy: the adapter is the reasoning engine, not the model itself).

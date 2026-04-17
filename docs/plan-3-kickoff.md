@@ -1,5 +1,7 @@
 # Plan 3 Kickoff — CLI & Manifest System
 
+> **Status: superseded / historical (2026-04-14).** Plan 3 shipped in v0.1.1 — CLI, manifest, engines, and 3 new augments are all live. This file is kept as the original scoping document; for current state read [`README.md`](./README.md), [`02-architecture-overview.md`](./02-architecture-overview.md), and the project `CLAUDE.md`. Do not treat the "current state" section below as accurate.
+
 **Use this document to brief a new Claude Code session on Plan 3. It contains everything needed to start scoping and building without losing context from prior sessions.**
 
 ---
