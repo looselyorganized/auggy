@@ -2,6 +2,7 @@ import { z } from "zod";
 import { resolve } from "node:path";
 import type { Augment } from "../types";
 import { defineTool } from "../helpers";
+import { readStreamWithCap } from "../http";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -139,7 +140,7 @@ function resolvePreset(opts: BashAugmentOptions): ResolvedConfig {
     allowedCommands = null; // no check
   }
   if (allowedCommands) {
-    mode = "exec"; // C1 fix: allowlist only works with exec mode
+    mode = "exec";
   }
 
   return {
@@ -209,8 +210,8 @@ async function executeCommand(opts: {
 
   // Read streams with byte-count truncation
   const [stdout, stderr] = await Promise.all([
-    readStream(proc.stdout, opts.maxOutputBytes),
-    readStream(proc.stderr, opts.maxOutputBytes),
+    readStreamWithCap(proc.stdout, opts.maxOutputBytes),
+    readStreamWithCap(proc.stderr, opts.maxOutputBytes),
   ]);
 
   const exitCode = await proc.exited;
@@ -227,47 +228,6 @@ async function executeCommand(opts: {
     durationMs,
     truncated,
   };
-}
-
-async function readStream(
-  stream: ReadableStream<Uint8Array>,
-  maxBytes: number,
-): Promise<{ text: string; truncated: boolean }> {
-  const reader = stream.getReader();
-  const chunks: Uint8Array[] = [];
-  let totalBytes = 0;
-  let truncated = false;
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-
-    if (totalBytes + value.byteLength > maxBytes) {
-      const remaining = maxBytes - totalBytes;
-      if (remaining > 0) {
-        chunks.push(value.slice(0, remaining));
-      }
-      totalBytes = maxBytes;
-      truncated = true;
-      await reader.cancel();
-      break;
-    }
-
-    chunks.push(value);
-    totalBytes += value.byteLength;
-  }
-
-  const decoder = new TextDecoder("utf-8", { fatal: false });
-  let text = "";
-  for (let i = 0; i < chunks.length; i++) {
-    text += decoder.decode(chunks[i], { stream: i < chunks.length - 1 });
-  }
-
-  if (truncated) {
-    text += `\n[truncated at ${maxBytes} bytes]`;
-  }
-
-  return { text, truncated };
 }
 
 // ---------------------------------------------------------------------------

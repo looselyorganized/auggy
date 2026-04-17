@@ -326,13 +326,17 @@ export function createHttpClient(opts: HttpClientOptions = {}): HttpClient {
 }
 
 /**
- * Read the response body with a byte-size cap. If the body exceeds
- * `maxBytes`, truncate and append a marker so the caller knows.
+ * Read a byte stream with a byte-size cap. Backs off to a UTF-8 character
+ * boundary before truncating, preventing U+FFFD replacement characters.
+ *
+ * Shared by the HTTP client (response bodies) and the bash augment
+ * (stdout/stderr capture). Exported for reuse by any stream consumer.
  */
-async function readBody(response: Response, maxBytes: number): Promise<string> {
-  if (!response.body) return "";
-
-  const reader = response.body.getReader();
+export async function readStreamWithCap(
+  stream: ReadableStream<Uint8Array>,
+  maxBytes: number,
+): Promise<{ text: string; truncated: boolean }> {
+  const reader = stream.getReader();
   const chunks: Uint8Array[] = [];
   let totalBytes = 0;
   let truncated = false;
@@ -342,9 +346,6 @@ async function readBody(response: Response, maxBytes: number): Promise<string> {
     if (done) break;
 
     if (totalBytes + value.byteLength > maxBytes) {
-      // Take only the bytes that fit within the cap, backing off to a
-      // UTF-8 character boundary so we don't split a multi-byte sequence
-      // and produce U+FFFD replacement characters.
       let end = maxBytes - totalBytes;
       while (end > 0 && (value[end]! & 0xc0) === 0x80) {
         end--;
@@ -369,11 +370,21 @@ async function readBody(response: Response, maxBytes: number): Promise<string> {
   }
 
   if (truncated) {
-    const contentLength = response.headers.get("content-length");
-    const totalSize = contentLength ? ` total size: ${contentLength} bytes` : "";
-    text += `\n[truncated at ${maxBytes} bytes${totalSize}]`;
+    text += `\n[truncated at ${maxBytes} bytes]`;
   }
 
+  return { text, truncated };
+}
+
+/** Read an HTTP response body with a byte-size cap. */
+async function readBody(response: Response, maxBytes: number): Promise<string> {
+  if (!response.body) return "";
+  const { text, truncated } = await readStreamWithCap(response.body, maxBytes);
+  if (truncated) {
+    const contentLength = response.headers.get("content-length");
+    const totalSize = contentLength ? ` total size: ${contentLength} bytes` : "";
+    return text.replace(/\[truncated at \d+ bytes\]$/, `[truncated at ${maxBytes} bytes${totalSize}]`);
+  }
   return text;
 }
 

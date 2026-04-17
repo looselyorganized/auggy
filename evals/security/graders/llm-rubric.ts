@@ -15,8 +15,11 @@
  */
 
 import { readFileSync } from "node:fs";
-import { resolve, dirname } from "node:path";
+import { resolve } from "node:path";
 import type { Grader, GraderResult, GraderSpec, GraderInput } from "../types";
+
+/** Cache rubric file contents — rubrics don't change mid-run. */
+const rubricCache = new Map<string, string>();
 
 interface DimensionGrade {
   score: number;
@@ -31,12 +34,18 @@ export const llmRubric: Grader = async (
     return { type: spec.type, passed: false, reason: "grader type mismatch" };
   }
 
-  // Read rubric file
+  // Read rubric file (cached — rubrics don't change mid-run)
   const suiteDir = input.suiteDir ?? process.cwd();
   let rubricContent: string;
   try {
     const rubricPath = resolve(suiteDir, spec.rubric);
-    rubricContent = readFileSync(rubricPath, "utf-8");
+    const cached = rubricCache.get(rubricPath);
+    if (cached) {
+      rubricContent = cached;
+    } else {
+      rubricContent = readFileSync(rubricPath, "utf-8");
+      rubricCache.set(rubricPath, rubricContent);
+    }
   } catch (err) {
     return {
       type: "llm_rubric",

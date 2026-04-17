@@ -155,10 +155,22 @@ function generateReviewIndex(
   lines.push(`- **Generated:** ${now}`);
   lines.push("");
 
-  // Per-case table
+  // Discover dimension names from actual grader output (not hardcoded)
+  const allDimensions = new Set<string>();
+  for (const t of trials) {
+    for (const g of t.grader_results) {
+      if (g.scores) {
+        for (const dim of Object.keys(g.scores)) allDimensions.add(dim);
+      }
+    }
+  }
+  const dims = [...allDimensions];
+
+  // Per-case table — columns derived from discovered dimensions
   lines.push("## Per-Case Results");
-  lines.push("| Case | T1 | T2 | T3 | Pass^k | Accuracy | Helpful | Tone | Composite |");
-  lines.push("|------|----|----|----|--------|----------|---------|------|-----------|");
+  const dimHeaders = dims.map((d) => d.slice(0, 8)).join(" | ");
+  lines.push(`| Case | T1 | T2 | T3 | Pass^k | ${dimHeaders} | Composite |`);
+  lines.push(`|------|----|----|----|--------|${dims.map(() => "---").join("|")}|-----------|`);
 
   // Group trials by case
   const byCase = new Map<string, TrialResult[]>();
@@ -167,6 +179,9 @@ function generateReviewIndex(
     arr.push(t);
     byCase.set(t.case_id, arr);
   }
+
+  const avg = (arr: number[]) =>
+    arr.length > 0 ? (arr.reduce((a, b) => a + b, 0) / arr.length).toFixed(1) : "—";
 
   for (const [caseId, caseTrials] of byCase) {
     const trialIcons: string[] = caseTrials
@@ -177,8 +192,8 @@ function generateReviewIndex(
     const agg = aggs.find((a) => a.case_id === caseId);
     const passK = agg?.pass_k === 1 ? "✅" : "❌";
 
-    // Average dimension scores across trials
-    const dimAvgs: Record<string, number[]> = { accuracy: [], helpfulness: [], tone: [] };
+    // Average dimension scores across trials (dynamic, not hardcoded)
+    const dimAvgs: Record<string, number[]> = {};
     for (const t of caseTrials) {
       for (const g of t.grader_results) {
         if (g.scores) {
@@ -188,13 +203,15 @@ function generateReviewIndex(
         }
       }
     }
-    const avg = (arr: number[]) => (arr.length > 0 ? (arr.reduce((a, b) => a + b, 0) / arr.length).toFixed(1) : "—");
-    const compositeAvg = rubricTrials.length > 0
-      ? avg(caseTrials.map((t) => t.grader_results.find((g) => g.composite !== undefined)?.composite ?? 0))
-      : "—";
+    const dimCols = dims.map((d) => avg(dimAvgs[d] ?? [])).join(" | ");
+    const compositeAvg = avg(
+      caseTrials
+        .map((t) => t.grader_results.find((g) => g.composite !== undefined)?.composite)
+        .filter((c): c is number => c !== undefined),
+    );
 
     lines.push(
-      `| ${caseId} | ${trialIcons[0]} | ${trialIcons[1]} | ${trialIcons[2]} | ${passK} | ${avg(dimAvgs.accuracy ?? [])} | ${avg(dimAvgs.helpfulness ?? [])} | ${avg(dimAvgs.tone ?? [])} | ${compositeAvg} |`,
+      `| ${caseId} | ${trialIcons[0]} | ${trialIcons[1]} | ${trialIcons[2]} | ${passK} | ${dimCols} | ${compositeAvg} |`,
     );
   }
   lines.push("");
