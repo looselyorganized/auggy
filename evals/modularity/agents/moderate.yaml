@@ -1,0 +1,34 @@
+# Moderate agent — webFetch + filesystem + fileMemory (3 augments, ~8-10 tools)
+# Used by modularity-accuracy eval to test mid-weight agent accuracy.
+
+name: eval-moderate
+engine:
+  provider: anthropic
+  model: claude-sonnet-4-6
+  maxTokens: 1024
+settings:
+  compactionStrategy: truncate
+  maxInferenceLoops: 1
+  toolChoice: any
+augments:
+  - name: identity
+    type: fileMemory
+    options:
+      label: self
+      source: ./identity.md
+      mutable: false
+      origin: operator
+      priority: required
+      placement: system
+      eviction: never
+  - name: files
+    type: filesystem
+    options:
+      mounts:
+        - name: workspace
+          path: ./workspace
+          writable: true
+  - name: fetch
+    type: webFetch
+    options:
+      timeoutMs: 15000

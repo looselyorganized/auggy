@@ -1,0 +1,51 @@
+# Full agent — all non-external augments (5 augments, ~18-20 tools)
+# Used by modularity-accuracy eval to test loaded agent accuracy.
+# Excludes supabaseMemory and orgContext (require external services).
+
+name: eval-full
+engine:
+  provider: anthropic
+  model: claude-sonnet-4-6
+  maxTokens: 1024
+settings:
+  compactionStrategy: truncate
+  maxInferenceLoops: 1
+  toolChoice: any
+augments:
+  - name: identity
+    type: fileMemory
+    options:
+      label: self
+      source: ./identity.md
+      mutable: false
+      origin: operator
+      priority: required
+      placement: system
+      eviction: never
+  - name: learned
+    type: fileMemory
+    options:
+      label: learned
+      source: ./learned.md
+      mutable: true
+      origin: agent
+      priority: normal
+      placement: context
+      eviction: drop
+  - name: files
+    type: filesystem
+    options:
+      mounts:
+        - name: workspace
+          path: ./workspace
+          writable: true
+          deletable: true
+  - name: fetch
+    type: webFetch
+    options:
+      timeoutMs: 15000
+  - name: bash
+    type: bash
+    options:
+      risk: restricted
+      allowedCommands: ["echo", "ls", "cat", "pwd", "date"]

@@ -1,0 +1,17 @@
+# Minimal agent — webFetch only (1 augment, ~1 tool)
+# Used by modularity-accuracy eval to test focused agent accuracy.
+
+name: eval-minimal
+engine:
+  provider: anthropic
+  model: claude-sonnet-4-6
+  maxTokens: 1024
+settings:
+  compactionStrategy: truncate
+  maxInferenceLoops: 1
+  toolChoice: any
+augments:
+  - name: fetch
+    type: webFetch
+    options:
+      timeoutMs: 15000
