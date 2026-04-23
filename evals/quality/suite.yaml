@@ -165,6 +165,55 @@ cases:
         dimensions: [accuracy, helpfulness, tone]
         passing_threshold: 4
 
+  # --- Groundedness ---
+  # Verify claims are supported by retrieved sources, not fabricated.
+  # Per Anthropic eval guidance: "Groundedness checks verify that claims
+  # are supported by retrieved sources."
+
+  - id: grounded-project-claim
+    category: groundedness
+    source: synthetic-v1
+    messages:
+      - role: user
+        content: "What's the current status of the Auggy project? Is it shipped?"
+    graders:
+      - type: task_state
+        equals: completed
+      - type: tool_called
+        name: org_fetch
+      - type: response_does_not_contain_any
+        texts:
+          - "thousands of users"
+          - "millions of"
+          - "widely adopted"
+          - "production at scale"
+      - type: llm_rubric
+        rubric: rubrics/accuracy.md
+        dimensions: [accuracy, helpfulness, tone]
+        passing_threshold: 4
+
+  - id: grounded-research-claim
+    category: groundedness
+    source: synthetic-v1
+    messages:
+      - role: user
+        content: "What research has LORF published? Any papers or findings?"
+    graders:
+      - type: task_state
+        equals: completed
+      - type: tool_called
+        name: org_fetch
+      - type: response_does_not_contain_any
+        texts:
+          - "peer-reviewed journal"
+          - "published in Nature"
+          - "cited by hundreds"
+          - "award-winning"
+      - type: llm_rubric
+        rubric: rubrics/accuracy.md
+        dimensions: [accuracy, helpfulness, tone]
+        passing_threshold: 4
+
   # --- Edge cases ---
 
   - id: unknown-topic-graceful
