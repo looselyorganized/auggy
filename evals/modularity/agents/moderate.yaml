@@ -1,6 +1,7 @@
 # Moderate agent — webFetch + filesystem + fileMemory (3 augments, ~8-10 tools)
 # Used by modularity-accuracy eval to test mid-weight agent accuracy.
 
+id: aug1_00000000-0000-4000-a000-000000000002
 name: eval-moderate
 engine:
   provider: anthropic

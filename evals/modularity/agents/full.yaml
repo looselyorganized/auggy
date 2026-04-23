@@ -2,6 +2,7 @@
 # Used by modularity-accuracy eval to test loaded agent accuracy.
 # Excludes supabaseMemory and orgContext (require external services).
 
+id: aug1_00000000-0000-4000-a000-000000000003
 name: eval-full
 engine:
   provider: anthropic

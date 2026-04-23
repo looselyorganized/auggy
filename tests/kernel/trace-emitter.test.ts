@@ -32,6 +32,8 @@ describe("TraceEmitter", () => {
       augmentBlocks: [
         { source: "identity", tokens: 100, included: true, evicted: false },
       ],
+      preambleTokens: 0,
+      toolSchemaTokens: 0,
       historyTokens: 500,
       totalTokens: 600,
       budgetUsed: 60,

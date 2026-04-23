@@ -1,6 +1,7 @@
 # Minimal agent — webFetch only (1 augment, ~1 tool)
 # Used by modularity-accuracy eval to test focused agent accuracy.
 
+id: aug1_00000000-0000-4000-a000-000000000001
 name: eval-minimal
 engine:
   provider: anthropic

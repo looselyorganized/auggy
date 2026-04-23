@@ -50,13 +50,20 @@ export function computeContextUtilization(
 ): ContextUtilizationMetrics {
   const included = trace.contextAssembly.augmentBlocks.filter((b) => b.included);
 
-  const structuralTokens = included
+  const preambleTokens = trace.contextAssembly.preambleTokens ?? 0;
+  const toolSchemaTokens = trace.contextAssembly.toolSchemaTokens ?? 0;
+
+  const structuralAugmentTokens = included
     .filter((b) => isStructural(b.source, structuralSources))
     .reduce((s, b) => s + b.tokens, 0);
 
-  const taskRelevantTokens = included
+  const structuralTokens = preambleTokens + toolSchemaTokens + structuralAugmentTokens;
+
+  const taskRelevantAugmentTokens = included
     .filter((b) => !isStructural(b.source, structuralSources))
     .reduce((s, b) => s + b.tokens, 0);
+
+  const taskRelevantTokens = trace.contextAssembly.historyTokens + taskRelevantAugmentTokens;
 
   const totalTokens = trace.contextAssembly.totalTokens;
 

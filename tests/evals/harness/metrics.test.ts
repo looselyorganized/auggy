@@ -16,14 +16,15 @@ function makeTrace(overrides?: Partial<TurnTrace>): TurnTrace {
     trigger: { type: "message" },
     contextAssembly: {
       augmentBlocks: [
-        { source: "preamble", tokens: 100, included: true, evicted: false },
         { source: "webFetch", tokens: 50, included: true, evicted: false },
         { source: "filesystem", tokens: 80, included: true, evicted: false },
         { source: "eval-identity", tokens: 30, included: true, evicted: false },
         { source: "unused-aug", tokens: 200, included: false, evicted: true },
       ],
+      preambleTokens: 100,
+      toolSchemaTokens: 120,
       historyTokens: 150,
-      totalTokens: 410,
+      totalTokens: 530,
       budgetUsed: 45,
     },
     toolSelection: {
@@ -60,29 +61,34 @@ describe("computeTokenCost", () => {
 
   test("includes augment breakdown", () => {
     const result = computeTokenCost(makeTrace());
-    expect(result.augmentBreakdown.length).toBe(5);
-    const preamble = result.augmentBreakdown.find((b) => b.source === "preamble");
-    expect(preamble?.tokens).toBe(100);
-    expect(preamble?.included).toBe(true);
+    expect(result.augmentBreakdown.length).toBe(4);
+    const webFetch = result.augmentBreakdown.find((b) => b.source === "webFetch");
+    expect(webFetch?.tokens).toBe(50);
+    expect(webFetch?.included).toBe(true);
   });
 });
 
 describe("computeContextUtilization", () => {
-  test("classifies preamble and eval- sources as structural", () => {
+  test("classifies preamble, tool schemas, and eval- sources as structural", () => {
     const result = computeContextUtilization(makeTrace());
-    expect(result.structuralTokens).toBe(130); // preamble 100 + eval-identity 30
-    expect(result.taskRelevantTokens).toBe(130); // webFetch 50 + filesystem 80
+    // structural = preamble 100 + toolSchema 120 + eval-identity 30 = 250
+    expect(result.structuralTokens).toBe(250);
+    // task-relevant = history 150 + webFetch 50 + filesystem 80 = 280
+    expect(result.taskRelevantTokens).toBe(280);
   });
 
   test("computes utilization ratio", () => {
     const result = computeContextUtilization(makeTrace());
-    expect(result.utilizationRatio).toBeCloseTo(130 / 410, 2);
+    // task-relevant 280 / total 530
+    expect(result.utilizationRatio).toBeCloseTo(280 / 530, 2);
   });
 
   test("respects explicit structural sources", () => {
     const result = computeContextUtilization(makeTrace(), ["filesystem"]);
-    expect(result.structuralTokens).toBe(210); // preamble 100 + eval-identity 30 + filesystem 80
-    expect(result.taskRelevantTokens).toBe(50); // webFetch only
+    // structural = preamble 100 + toolSchema 120 + eval-identity 30 + filesystem 80 = 330
+    expect(result.structuralTokens).toBe(330);
+    // task-relevant = history 150 + webFetch 50 = 200
+    expect(result.taskRelevantTokens).toBe(200);
   });
 
   test("excludes evicted blocks", () => {

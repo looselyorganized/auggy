@@ -173,6 +173,8 @@ export interface TurnTrace {
       included: boolean;
       evicted: boolean;
     }[];
+    preambleTokens: number;
+    toolSchemaTokens: number;
     historyTokens: number;
     totalTokens: number;
     budgetUsed: number;

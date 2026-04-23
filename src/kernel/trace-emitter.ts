@@ -36,6 +36,8 @@ export function createTraceEmitter(): TraceEmitter {
         trigger: opts.trigger,
         contextAssembly: {
           augmentBlocks: [],
+          preambleTokens: 0,
+          toolSchemaTokens: 0,
           historyTokens: 0,
           totalTokens: 0,
           budgetUsed: 0,

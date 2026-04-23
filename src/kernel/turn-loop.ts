@@ -360,6 +360,12 @@ export function createTurnLoop(opts: {
         toolChoiceOpt,
       );
 
+      const preambleTokens = currentPrompt.systemBlocks.reduce(
+        (s, b) => s + tokenizer.count(b), 0,
+      );
+      const toolSchemaTokens = currentPrompt.tools.reduce(
+        (s, t) => s + tokenizer.count(JSON.stringify(t)), 0,
+      );
       traceEmitter.recordContextAssembly(trace, {
         augmentBlocks: contextBlocks.map((b) => ({
           source: b.source,
@@ -371,6 +377,8 @@ export function createTurnLoop(opts: {
             (e) => e.source === b.source,
           ),
         })),
+        preambleTokens,
+        toolSchemaTokens,
         historyTokens: historyMessages.reduce(
           (s, m) => s + m.tokenCount,
           0,
