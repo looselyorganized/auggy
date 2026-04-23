@@ -8,8 +8,10 @@ import type {
   EvalTrialResult,
   Scorecard,
 } from "./types";
+import type { TurnTrace } from "../../src/types";
 import { buildEvalAgent } from "./agent-factory";
 import { buildScorecard, formatScorecardYaml } from "./scorecard";
+import { aggregateMetrics, printMetricsSummary } from "./metrics";
 
 export interface RunOptions {
   definition: EvalDefinition;
@@ -74,6 +76,7 @@ export async function runAblation(opts: RunOptions): Promise<Scorecard> {
 
   const runId = randomUUID();
   const allTrials: EvalTrialResult[] = [];
+  const allTraces: TurnTrace[] = [];
   const log = onProgress ?? (() => {});
 
   if (!existsSync(outputDir)) mkdirSync(outputDir, { recursive: true });
@@ -138,6 +141,7 @@ export async function runAblation(opts: RunOptions): Promise<Scorecard> {
                     0,
                   );
 
+                  allTraces.push(result.trace);
                   const domains = [...new Set(task.toolSpecs.map((s) => s.domain))];
                   allTrials.push({
                     run_id: runId,
@@ -224,6 +228,11 @@ export async function runAblation(opts: RunOptions): Promise<Scorecard> {
   log(`Results: ${jsonlPath}`);
   log(`Scorecard: ${scorecardPath}`);
   printSummary(scorecard, opts.evalLabel ?? definition.eval_name);
+
+  if (allTraces.length > 0) {
+    const agg = aggregateMetrics(allTraces);
+    printMetricsSummary(agg, opts.evalLabel ?? definition.eval_name);
+  }
 
   return scorecard;
 }
