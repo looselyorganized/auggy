@@ -49,6 +49,7 @@ export function buildEvalAgent(
     model: "eval",
     augments: [evalAugment],
     maxInferenceLoops: opts?.maxInferenceLoops ?? 1,
+    toolChoice: "any",
   };
 
   return defineAgent(config, model);

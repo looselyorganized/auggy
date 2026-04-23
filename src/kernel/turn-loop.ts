@@ -352,10 +352,12 @@ export function createTurnLoop(opts: {
         canExpose: (name) => capabilityTable.canExpose(name, turnState),
       });
 
+      const toolChoiceOpt = config.toolChoice ? { toolChoice: config.toolChoice } : undefined;
       let currentPrompt = allocator.assemble(
         contextBlocks,
         historyMessages,
         toolSelection.definitions,
+        toolChoiceOpt,
       );
 
       traceEmitter.recordContextAssembly(trace, {
@@ -614,7 +616,7 @@ export function createTurnLoop(opts: {
         // If consecutive failures terminated tool use, let model see the error and respond
         if (terminateToolLoop) {
           const updatedHistory = history.getHistory(historyBudget);
-          currentPrompt = allocator.assemble(contextBlocks, updatedHistory, toolSelection.definitions);
+          currentPrompt = allocator.assemble(contextBlocks, updatedHistory, toolSelection.definitions, toolChoiceOpt);
 
           const {
             response: finalResponse,
@@ -667,6 +669,7 @@ export function createTurnLoop(opts: {
           contextBlocks,
           updatedHistory,
           toolSelection.definitions,
+          toolChoiceOpt,
         );
       }
 

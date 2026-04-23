@@ -18,7 +18,7 @@ function makeTrigger(text: string): TurnTrigger {
     timestamp: Date.now(),
     source: "eval",
     payload: {
-      parts: [{ type: "text" as const, text }],
+      parts: [{ kind: "text" as const, text }],
       sourceAugment: "eval",
       peer: null,
       timestamp: Date.now(),

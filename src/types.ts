@@ -320,6 +320,7 @@ export interface AssembledPrompt {
   assistantPreamble?: string[];
   messages: Message[];
   tools: ToolDefinition[];
+  toolChoice?: "auto" | "any" | { name: string };
   totalTokens: number;
   evictions: { source: string; priority: ContextPriority; reason: string }[];
 }
@@ -474,6 +475,9 @@ export interface AgentConfig {
   compactionStrategy?: CompactionStrategy;
   /** Max inference loop iterations per turn. Default 10. */
   maxInferenceLoops?: number;
+  /** Tool-choice policy sent to the model. "auto" (default) lets the model
+   *  decide; "any" forces a tool call; { name } forces a specific tool. */
+  toolChoice?: "auto" | "any" | { name: string };
 }
 
 export interface AgentHealth {

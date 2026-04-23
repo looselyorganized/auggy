@@ -27,8 +27,9 @@ if (!apiKey) {
 }
 
 const model = createAnthropicEngine({
-  model: "claude-sonnet-4-6-20250514",
+  model: "claude-sonnet-4-6",
   apiKey,
+  maxTokens: 1024,
 });
 
 const outputDir = resolve(import.meta.dir, "results");
@@ -57,7 +58,7 @@ const scorecard = await runAblation({
   trials,
   frameworkVersion: "0.2.0",
   modelName: "claude-sonnet-4-6",
-  modelVersion: "2025-05-14",
+  modelVersion: "claude-sonnet-4-6",
   outputDir,
   runType: runType as "pilot" | "full",
   evalLabel: "ALARA Structural-Omission Ablation",

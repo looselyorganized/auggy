@@ -5,7 +5,7 @@ export interface ToolTemplate extends ToolSpec {
 }
 
 export const TOOL_TEMPLATES: ToolTemplate[] = [
-  // --- Weather / Climate (5) ---
+  // --- Weather / Climate (10) ---
   {
     name: "get_weather",
     description: "Get the current weather conditions for a given city",
@@ -61,8 +61,63 @@ export const TOOL_TEMPLATES: ToolTemplate[] = [
       "Should I wear sunscreen in Phoenix? What's the UV?",
     ],
   },
+  {
+    name: "get_air_quality",
+    description: "Get the current air quality index (AQI) for a given city",
+    domain: "weather",
+    inputSchema: { type: "object", properties: { city: { type: "string" } }, required: ["city"] },
+    prompts: [
+      "What's the air quality in Beijing right now?",
+      "Is the air safe to breathe in Delhi today?",
+      "Tell me the AQI for Mexico City.",
+    ],
+  },
+  {
+    name: "get_pollen_count",
+    description: "Get the current pollen count and allergy forecast for a given city",
+    domain: "weather",
+    inputSchema: { type: "object", properties: { city: { type: "string" } }, required: ["city"] },
+    prompts: [
+      "What's the pollen count in Atlanta today?",
+      "Is it a bad allergy day in Austin?",
+      "How high is the pollen in Nashville right now?",
+    ],
+  },
+  {
+    name: "get_dew_point",
+    description: "Get the current dew point temperature for a given city",
+    domain: "weather",
+    inputSchema: { type: "object", properties: { city: { type: "string" } }, required: ["city"] },
+    prompts: [
+      "What's the dew point in Houston right now?",
+      "How muggy is it in New Orleans today?",
+      "Tell me the dew point temperature in Tampa.",
+    ],
+  },
+  {
+    name: "get_sunrise_time",
+    description: "Get the sunrise and sunset times for a given city on a given date",
+    domain: "weather",
+    inputSchema: { type: "object", properties: { city: { type: "string" }, date: { type: "string" } }, required: ["city"] },
+    prompts: [
+      "When does the sun rise in Anchorage tomorrow?",
+      "What time is sunset in Lisbon today?",
+      "Tell me the sunrise time for Reykjavik.",
+    ],
+  },
+  {
+    name: "get_pressure",
+    description: "Get the current atmospheric pressure reading for a given city",
+    domain: "weather",
+    inputSchema: { type: "object", properties: { city: { type: "string" } }, required: ["city"] },
+    prompts: [
+      "What's the barometric pressure in Denver right now?",
+      "Tell me the atmospheric pressure in Zurich.",
+      "How high is the pressure in Madrid today?",
+    ],
+  },
 
-  // --- Calendar (5) ---
+  // --- Calendar (10) ---
   {
     name: "create_event",
     description: "Create a new calendar event with a title, date, and time",
@@ -118,8 +173,63 @@ export const TOOL_TEMPLATES: ToolTemplate[] = [
       "When am I available this Thursday afternoon?",
     ],
   },
+  {
+    name: "set_reminder",
+    description: "Set a reminder notification for an upcoming calendar event",
+    domain: "calendar",
+    inputSchema: { type: "object", properties: { event_id: { type: "string" }, minutes_before: { type: "number" } }, required: ["event_id"] },
+    prompts: [
+      "Remind me 15 minutes before my next meeting.",
+      "Set a 1-hour reminder for the dentist appointment.",
+      "Add a notification for tomorrow's standup.",
+    ],
+  },
+  {
+    name: "find_meeting_time",
+    description: "Find the next available meeting slot that works for all attendees",
+    domain: "calendar",
+    inputSchema: { type: "object", properties: { attendees: { type: "array", items: { type: "string" } }, duration_minutes: { type: "number" } }, required: ["attendees"] },
+    prompts: [
+      "Find a time that works for me, Alice, and Bob this week.",
+      "When can all three of us meet for 30 minutes?",
+      "Schedule a group meeting with the design team.",
+    ],
+  },
+  {
+    name: "get_event_details",
+    description: "Get full details of a specific calendar event including attendees and location",
+    domain: "calendar",
+    inputSchema: { type: "object", properties: { event_id: { type: "string" } }, required: ["event_id"] },
+    prompts: [
+      "What are the details for my 2pm meeting?",
+      "Who's attending the Sprint Review?",
+      "Where is tomorrow's lunch meeting?",
+    ],
+  },
+  {
+    name: "add_attendee",
+    description: "Add an attendee to an existing calendar event",
+    domain: "calendar",
+    inputSchema: { type: "object", properties: { event_id: { type: "string" }, attendee: { type: "string" } }, required: ["event_id", "attendee"] },
+    prompts: [
+      "Add Charlie to the Sprint Review meeting.",
+      "Invite sarah@company.com to tomorrow's sync.",
+      "Include the new hire in Friday's onboarding session.",
+    ],
+  },
+  {
+    name: "create_recurring_event",
+    description: "Create a recurring calendar event that repeats on a schedule",
+    domain: "calendar",
+    inputSchema: { type: "object", properties: { title: { type: "string" }, start_date: { type: "string" }, frequency: { type: "string" } }, required: ["title", "start_date", "frequency"] },
+    prompts: [
+      "Set up a weekly standup every Monday at 9am.",
+      "Create a recurring 1-on-1 every other Thursday.",
+      "Schedule a monthly team retrospective.",
+    ],
+  },
 
-  // --- File Operations (5) ---
+  // --- File Operations (10) ---
   {
     name: "read_file",
     description: "Read the contents of a file at the given path",
@@ -175,8 +285,63 @@ export const TOOL_TEMPLATES: ToolTemplate[] = [
       "Show me the contents of the src folder.",
     ],
   },
+  {
+    name: "move_file",
+    description: "Move or rename a file from one path to another",
+    domain: "files",
+    inputSchema: { type: "object", properties: { source: { type: "string" }, destination: { type: "string" } }, required: ["source", "destination"] },
+    prompts: [
+      "Move report.pdf to the archive folder.",
+      "Rename old-config.yaml to config.yaml.",
+      "Move all logs to /var/archive/.",
+    ],
+  },
+  {
+    name: "get_file_info",
+    description: "Get metadata about a file including size, permissions, and last modified date",
+    domain: "files",
+    inputSchema: { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
+    prompts: [
+      "How big is the database.sqlite file?",
+      "When was config.yaml last modified?",
+      "Show me the file permissions for /etc/hosts.",
+    ],
+  },
+  {
+    name: "search_files",
+    description: "Search for files matching a name pattern or containing specific text",
+    domain: "files",
+    inputSchema: { type: "object", properties: { pattern: { type: "string" }, directory: { type: "string" } }, required: ["pattern"] },
+    prompts: [
+      "Find all .log files in the project.",
+      "Search for files containing 'TODO' in src/.",
+      "Where are the test files in this repo?",
+    ],
+  },
+  {
+    name: "create_directory",
+    description: "Create a new directory at the given path, including parent directories",
+    domain: "files",
+    inputSchema: { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
+    prompts: [
+      "Create a new folder called 'backups'.",
+      "Make the directory structure src/components/ui/.",
+      "Set up a tmp/exports/ directory.",
+    ],
+  },
+  {
+    name: "compress_file",
+    description: "Compress a file or directory into a zip or tar archive",
+    domain: "files",
+    inputSchema: { type: "object", properties: { source: { type: "string" }, output: { type: "string" }, format: { type: "string" } }, required: ["source", "output"] },
+    prompts: [
+      "Zip up the logs directory.",
+      "Create a tar.gz of the src folder.",
+      "Compress report.pdf into an archive.",
+    ],
+  },
 
-  // --- Communication (5) ---
+  // --- Communication (10) ---
   {
     name: "send_email",
     description: "Send an email to a recipient with a subject and body",
@@ -230,6 +395,61 @@ export const TOOL_TEMPLATES: ToolTemplate[] = [
       "Find all contacts from Acme Corp.",
       "Search my contacts for someone named Sarah.",
       "List everyone in my contacts from the engineering team.",
+    ],
+  },
+  {
+    name: "schedule_message",
+    description: "Schedule a message to be sent to a channel at a specific time",
+    domain: "communication",
+    inputSchema: { type: "object", properties: { channel: { type: "string" }, message: { type: "string" }, send_at: { type: "string" } }, required: ["channel", "message", "send_at"] },
+    prompts: [
+      "Schedule 'Good morning team!' to #general at 9am tomorrow.",
+      "Send a reminder to #releases at 5pm Friday.",
+      "Queue a message for the standup channel at 8:55am.",
+    ],
+  },
+  {
+    name: "get_unread_messages",
+    description: "Get unread messages from a messaging channel or direct message thread",
+    domain: "communication",
+    inputSchema: { type: "object", properties: { channel: { type: "string" } }, required: ["channel"] },
+    prompts: [
+      "Show me unread messages in #engineering.",
+      "Do I have any new DMs?",
+      "What did I miss in the #incidents channel?",
+    ],
+  },
+  {
+    name: "reply_to_thread",
+    description: "Reply to a specific message thread in a channel",
+    domain: "communication",
+    inputSchema: { type: "object", properties: { thread_id: { type: "string" }, message: { type: "string" } }, required: ["thread_id", "message"] },
+    prompts: [
+      "Reply to that deploy thread saying 'Confirmed working.'",
+      "Add a comment on the bug report thread.",
+      "Respond to Alice's question in the design thread.",
+    ],
+  },
+  {
+    name: "forward_message",
+    description: "Forward a message from one channel or conversation to another",
+    domain: "communication",
+    inputSchema: { type: "object", properties: { message_id: { type: "string" }, to_channel: { type: "string" } }, required: ["message_id", "to_channel"] },
+    prompts: [
+      "Forward that error report to #incidents.",
+      "Share Alice's message with the #leadership channel.",
+      "Send that announcement to #all-hands too.",
+    ],
+  },
+  {
+    name: "set_status",
+    description: "Set your status message and availability in the messaging platform",
+    domain: "communication",
+    inputSchema: { type: "object", properties: { status: { type: "string" }, emoji: { type: "string" } }, required: ["status"] },
+    prompts: [
+      "Set my status to 'In a meeting' for the next hour.",
+      "Mark me as away with status 'Back at 3pm'.",
+      "Set my Slack status to 'Focusing — DND'.",
     ],
   },
 ];

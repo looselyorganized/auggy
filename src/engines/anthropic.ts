@@ -69,12 +69,18 @@ export function createAnthropicEngine(
       const system = assembleSystemText(prompt);
       const messages = convertMessages(prompt.messages);
       const tools = convertTools(prompt.tools);
+      const toolChoice = prompt.toolChoice === "any"
+        ? { type: "any" as const }
+        : prompt.toolChoice === "auto" || !prompt.toolChoice
+          ? { type: "auto" as const }
+          : { type: "tool" as const, name: prompt.toolChoice.name };
+
       const params = {
         model: opts.model,
         max_tokens: maxOutputTokens,
         system,
         messages,
-        ...(tools.length > 0 ? { tools } : {}),
+        ...(tools.length > 0 ? { tools, tool_choice: toolChoice } : {}),
       };
 
       if (opts2?.onDelta) {

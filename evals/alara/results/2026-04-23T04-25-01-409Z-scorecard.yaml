@@ -1,0 +1,51 @@
+eval_id: 1
+eval_name: alara-structural-omission
+framework: auggy
+framework_version: 0.2.0
+harness: auggy-eval-harness
+harness_version: 0.1.0
+model: claude-sonnet-4-6
+model_version: claude-sonnet-4-6
+dataset: alara-synthetic-4-16
+dataset_snapshot: 2d84004c
+seed: [42]
+k: 1
+date_run: 2026-04-23
+tag: SELF
+run_type: pilot
+grader:
+  type: deterministic
+  calibration_status: n/a
+  agreement_rate: null
+  rubric_version: null
+per_catalog_size:
+  4:
+    control:
+      pass_at_1: 1.0000
+      pass_at_k: 1.0000
+      cost_per_task: 0.000000
+      latency_p50_ms: 1392
+      latency_p95_ms: 2673
+    treatment:
+      pass_at_1: 0.2000
+      pass_at_k: 0.2000
+      cost_per_task: 0.000000
+      latency_p50_ms: 1404
+      latency_p95_ms: 2336
+    delta_pass_1: 0.8000
+    delta_pass_k: 0.8000
+  16:
+    control:
+      pass_at_1: 1.0000
+      pass_at_k: 1.0000
+      cost_per_task: 0.000000
+      latency_p50_ms: 1254
+      latency_p95_ms: 3460
+    treatment:
+      pass_at_1: 0.9000
+      pass_at_k: 0.9000
+      cost_per_task: 0.000000
+      latency_p50_ms: 1432
+      latency_p95_ms: 2261
+    delta_pass_1: 0.1000
+    delta_pass_k: 0.1000

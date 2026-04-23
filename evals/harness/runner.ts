@@ -35,7 +35,7 @@ function makeTrigger(prompt: string): TurnTrigger {
     timestamp: Date.now(),
     source: "eval-harness",
     payload: {
-      parts: [{ type: "text" as const, text: prompt }],
+      parts: [{ kind: "text" as const, text: prompt }],
       sourceAugment: "eval-harness",
       peer: null,
       timestamp: Date.now(),
@@ -180,7 +180,8 @@ export async function runAblation(opts: RunOptions): Promise<Scorecard> {
                     cost_usd: 0,
                     error: err instanceof Error ? err.message : String(err),
                   });
-                  process.stdout.write("E");
+                  const errMsg = err instanceof Error ? err.message : String(err);
+              process.stderr.write(`\n  ERROR [${task.id} trial ${trial}]: ${errMsg}\n`);
                 }
               }
             } finally {

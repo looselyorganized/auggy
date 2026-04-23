@@ -1,9 +1,9 @@
 import type {
+  AssembledPrompt,
   ContextBlock,
   ContextPriority,
   Message,
   ToolDefinition,
-  AssembledPrompt,
 } from "../types";
 import type { Tokenizer } from "../tokenizer";
 
@@ -31,6 +31,7 @@ export function createContextAllocator(config: ContextAllocatorConfig) {
       augmentBlocks: ContextBlock[],
       history: Message[],
       tools: ToolDefinition[],
+      opts?: { toolChoice?: AssembledPrompt["toolChoice"] },
     ): AssembledPrompt {
       const historyBudget = Math.floor(
         config.maxTokens * (config.historyPercent / 100),
@@ -120,6 +121,7 @@ export function createContextAllocator(config: ContextAllocatorConfig) {
         assistantPreamble: assistantPreambleStrings.length > 0 ? assistantPreambleStrings : undefined,
         messages: history,
         tools,
+        toolChoice: opts?.toolChoice,
         totalTokens,
         evictions,
       };
