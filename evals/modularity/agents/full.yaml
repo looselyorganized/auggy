@@ -1,6 +1,6 @@
-# Full agent — all non-external augments (5 augments, ~18-20 tools)
+# Full agent — all non-external augments + orgContext (6 augments, ~15 tools)
 # Used by modularity-accuracy eval to test loaded agent accuracy.
-# Excludes supabaseMemory and orgContext (require external services).
+# orgContext uses a dummy URL — tools register but never execute (distractors).
 
 id: aug1_00000000-0000-4000-a000-000000000003
 name: eval-full
@@ -11,7 +11,6 @@ engine:
 settings:
   compactionStrategy: truncate
   maxInferenceLoops: 1
-  toolChoice: any
 augments:
   - name: identity
     type: fileMemory
@@ -50,3 +49,14 @@ augments:
     options:
       risk: restricted
       allowedCommands: ["echo", "ls", "cat", "pwd", "date"]
+      scripts:
+        - name: deploy
+          description: "Deploy the current build to staging"
+          command: "echo deployed"
+        - name: health_check
+          description: "Run health checks against all services"
+          command: "echo healthy"
+  - name: org
+    type: orgContext
+    options:
+      baseUrl: http://localhost:0

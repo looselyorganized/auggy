@@ -12,14 +12,20 @@ export const modularityDefinition: EvalDefinition = {
       staticPerCohort: true,
     },
     {
+      id: "light",
+      label: "Light agent — webFetch + fileMemory (~5 tools)",
+      neverExpose: () => [],
+      staticPerCohort: true,
+    },
+    {
       id: "moderate",
-      label: "Moderate agent — webFetch + filesystem + fileMemory (~8-10 tools)",
+      label: "Moderate agent — webFetch + filesystem + fileMemory (~11 tools)",
       neverExpose: () => [],
       staticPerCohort: true,
     },
     {
       id: "full",
-      label: "Full agent — all non-external augments (~18-20 tools)",
+      label: "Full agent — all augments including orgContext + bash scripts (~15 tools)",
       neverExpose: () => [],
       staticPerCohort: true,
     },

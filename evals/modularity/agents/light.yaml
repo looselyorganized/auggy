@@ -1,0 +1,27 @@
+# Light agent — webFetch + fileMemory (2 augments, ~5 tools)
+# Used by modularity-accuracy eval.
+
+id: aug1_00000000-0000-4000-a000-000000000004
+name: eval-light
+engine:
+  provider: anthropic
+  model: claude-sonnet-4-6
+  maxTokens: 1024
+settings:
+  compactionStrategy: truncate
+  maxInferenceLoops: 1
+augments:
+  - name: identity
+    type: fileMemory
+    options:
+      label: self
+      source: ./identity.md
+      mutable: false
+      origin: operator
+      priority: required
+      placement: system
+      eviction: never
+  - name: fetch
+    type: webFetch
+    options:
+      timeoutMs: 15000

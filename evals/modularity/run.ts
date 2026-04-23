@@ -33,6 +33,7 @@ const tasksPerSeed = Math.ceil(definition.tasksPerSweepValue / seeds.length);
 
 const AGENT_CONFIGS = [
   { id: "minimal", path: resolve(import.meta.dir, "agents/minimal.yaml") },
+  { id: "light", path: resolve(import.meta.dir, "agents/light.yaml") },
   { id: "moderate", path: resolve(import.meta.dir, "agents/moderate.yaml") },
   { id: "full", path: resolve(import.meta.dir, "agents/full.yaml") },
 ];
@@ -100,6 +101,11 @@ for (const config of AGENT_CONFIGS) {
   const { agent, modelId, toolCount } = await bootAgent(config.path);
   console.log(`  Tools exposed: ${toolCount}`);
   perConfigTraces[config.id] = [];
+
+  // Warmup: one throwaway request to eliminate cold-start artifacts
+  try {
+    await agent.inject(makeTrigger("warmup"));
+  } catch { /* ignore warmup errors */ }
 
   try {
     for (const seed of seeds) {
