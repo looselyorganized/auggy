@@ -227,6 +227,13 @@ export async function resolveAugments(
           baseUrl: opts.baseUrl as string,
           token: opts.token as string | undefined,
           cacheTtlMs: opts.cacheTtlMs as number | undefined,
+          escalation: opts.escalation as {
+            enabled?: boolean;
+            cooldownMs?: number;
+            globalMaxPerHour?: number;
+            dedupWindowMs?: number;
+            dedupThreshold?: number;
+          } | undefined,
         });
         break;
       case "bash":

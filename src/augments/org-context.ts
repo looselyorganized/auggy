@@ -18,7 +18,7 @@
  */
 
 import { z } from "zod";
-import type { Augment, ContextBlock } from "../types";
+import type { Augment, ContextBlock, PeerIdentity, TurnState } from "../types";
 import { defineTool } from "../helpers";
 import { createHttpClient } from "../http";
 import type { HttpClient } from "../http";
@@ -26,6 +26,14 @@ import type { HttpClient } from "../http";
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
+
+export interface EscalationLimits {
+  enabled?: boolean;
+  cooldownMs?: number;
+  globalMaxPerHour?: number;
+  dedupWindowMs?: number;
+  dedupThreshold?: number;
+}
 
 export interface OrgContextOptions {
   /** Base URL of the org's API (e.g. "http://localhost:3000"). */
@@ -36,6 +44,8 @@ export interface OrgContextOptions {
   cacheTtlMs?: number;
   /** Optional pre-built HTTP client (for sharing across augments or testing). */
   client?: HttpClient;
+  /** Escalation rate limiting config. Enabled by default with sensible thresholds. */
+  escalation?: EscalationLimits;
 }
 
 interface ManifestEndpoint {
@@ -71,6 +81,79 @@ export function orgContext(opts: OrgContextOptions): Augment {
 
   let cachedManifest: OrgManifest | null = null;
   let cacheExpiresAt = 0;
+
+  // ---------------------------------------------------------------------------
+  // Escalation rate limiting
+  // ---------------------------------------------------------------------------
+
+  const esc = opts.escalation ?? {};
+  const escalationEnabled = esc.enabled !== false;
+  const cooldownMs = esc.cooldownMs ?? 120_000;
+  const globalMaxPerHour = esc.globalMaxPerHour ?? 5;
+  const dedupWindowMs = esc.dedupWindowMs ?? 300_000;
+  const dedupThreshold = esc.dedupThreshold ?? 0.6;
+
+  let currentPeer: PeerIdentity | null = null;
+  const peerLastEscalation = new Map<string, number>();
+  const recentSummaries: Array<{ summary: string; timestamp: number }> = [];
+  let globalCountThisHour = 0;
+  let globalHourStart = Date.now();
+
+  function checkCooldown(peerId: string): string | null {
+    const last = peerLastEscalation.get(peerId);
+    if (!last) return null;
+    const elapsed = Date.now() - last;
+    if (elapsed < cooldownMs) {
+      const remainingSec = Math.ceil((cooldownMs - elapsed) / 1000);
+      return `Escalation suppressed — cooldown active. Next escalation available in ${remainingSec} seconds.`;
+    }
+    return null;
+  }
+
+  function checkGlobalLimit(): string | null {
+    const now = Date.now();
+    if (now - globalHourStart > 3_600_000) {
+      globalCountThisHour = 0;
+      globalHourStart = now;
+    }
+    if (globalCountThisHour >= globalMaxPerHour) {
+      return `Escalation suppressed — global limit reached (${globalMaxPerHour} per hour). The operator has been notified of prior escalations.`;
+    }
+    return null;
+  }
+
+  function checkDedup(summary: string): string | null {
+    if (dedupThreshold <= 0) return null;
+    const now = Date.now();
+    while (recentSummaries.length > 0 && now - recentSummaries[0]!.timestamp > dedupWindowMs) {
+      recentSummaries.shift();
+    }
+    for (const recent of recentSummaries) {
+      if (wordOverlap(summary, recent.summary) >= dedupThreshold) {
+        return "Escalation suppressed — a similar escalation was already sent recently.";
+      }
+    }
+    return null;
+  }
+
+  function wordOverlap(a: string, b: string): number {
+    const wordsA = new Set(a.toLowerCase().split(/\s+/).filter((w) => w.length > 2));
+    const wordsB = new Set(b.toLowerCase().split(/\s+/).filter((w) => w.length > 2));
+    if (wordsA.size === 0 || wordsB.size === 0) return 0;
+    const smaller = wordsA.size <= wordsB.size ? wordsA : wordsB;
+    const larger = wordsA.size > wordsB.size ? wordsA : wordsB;
+    let matches = 0;
+    for (const word of smaller) {
+      if (larger.has(word)) matches++;
+    }
+    return matches / smaller.size;
+  }
+
+  function recordEscalation(peerId: string, summary: string): void {
+    peerLastEscalation.set(peerId, Date.now());
+    recentSummaries.push({ summary, timestamp: Date.now() });
+    globalCountThisHour++;
+  }
 
   // ---------------------------------------------------------------------------
   // Manifest fetching
@@ -219,6 +302,38 @@ export function orgContext(opts: OrgContextOptions): Augment {
         .describe("Visitor name or identifier if known"),
     }),
     execute: async ({ summary, reason, visitor }) => {
+      const trustLevel = currentPeer?.trustLevel ?? "operator";
+      if (escalationEnabled && trustLevel !== "operator") {
+        const peerId = currentPeer!.id;
+
+        const cooldownMsg = checkCooldown(peerId);
+        if (cooldownMsg) {
+          return JSON.stringify({
+            status: "rate_limited",
+            message: cooldownMsg,
+            hint: "Inform the visitor that you've already notified the operator and are waiting for a response.",
+          });
+        }
+
+        const globalMsg = checkGlobalLimit();
+        if (globalMsg) {
+          return JSON.stringify({
+            status: "rate_limited",
+            message: globalMsg,
+            hint: "Inform the visitor that the operator is aware of the situation.",
+          });
+        }
+
+        const dedupMsg = checkDedup(summary);
+        if (dedupMsg) {
+          return JSON.stringify({
+            status: "rate_limited",
+            message: dedupMsg,
+            hint: "Inform the visitor that the operator has been notified about this topic.",
+          });
+        }
+      }
+
       try {
         const res = await client.post(`${baseUrl}/notify`, {
           headers: { "content-type": "application/json" },
@@ -235,6 +350,10 @@ export function orgContext(opts: OrgContextOptions): Augment {
             error: `Escalation failed: ${res.status}`,
             detail: res.body.slice(0, 500),
           });
+        }
+
+        if (trustLevel !== "operator") {
+          recordEscalation(currentPeer?.id ?? "unknown", summary);
         }
 
         const result = JSON.parse(res.body) as { status: string };
@@ -276,6 +395,10 @@ export function orgContext(opts: OrgContextOptions): Augment {
       };
 
       return [block];
+    },
+
+    onTurnStart: async (turn: TurnState) => {
+      currentPeer = turn.peer;
     },
 
     onBoot: async () => {

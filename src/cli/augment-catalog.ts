@@ -288,6 +288,8 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
     defaultName: "org",
     defaultOptions: {
       baseUrl: "${ORG_CONTEXT_URL}",
+      // Escalation rate limiting (enabled by default with sensible thresholds):
+      // escalation: { cooldownMs: 120000, globalMaxPerHour: 5, dedupWindowMs: 300000, dedupThreshold: 0.6, enabled: true }
     },
     required: false,
     envVars: ["ORG_CONTEXT_URL"],
