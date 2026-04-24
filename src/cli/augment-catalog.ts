@@ -242,6 +242,7 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
     defaultName: "web",
     defaultOptions: {
       port: 8080,
+      trustLevel: "untrusted",
       auth: { type: "bearer", token: "${AUGGY_WEB_TOKEN}" },
     },
     required: false,

@@ -15,7 +15,7 @@ describe("scaffoldAgent", () => {
     const dir = scaffoldAgent({ name: "test-agent", targetDir: join(TMP, "test-agent") });
 
     expect(existsSync(join(dir, "agent.yaml"))).toBe(true);
-    expect(existsSync(join(dir, ".env.example"))).toBe(true);
+    expect(existsSync(join(dir, ".env"))).toBe(true);
     expect(existsSync(join(dir, "identity.md"))).toBe(true);
     expect(existsSync(join(dir, "learned.md"))).toBe(true);
     expect(existsSync(join(dir, ".gitignore"))).toBe(true);
@@ -35,6 +35,12 @@ describe("scaffoldAgent", () => {
     const dir = scaffoldAgent({ name: "zip", targetDir: join(TMP, "zip") });
     const yaml = readFileSync(join(dir, "agent.yaml"), "utf-8");
     expect(yaml).toContain("name: zip");
+  });
+
+  test("agent.yaml sets trustLevel: untrusted on webTransport", () => {
+    const dir = scaffoldAgent({ name: "zip", targetDir: join(TMP, "zip") });
+    const yaml = readFileSync(join(dir, "agent.yaml"), "utf-8");
+    expect(yaml).toContain("trustLevel: untrusted");
   });
 
   test("identity.md contains the agent name and skill manifest", () => {

@@ -1,9 +1,9 @@
 # Memory Layer Architecture — Planning Brief
 
-> **Status:** Pre-design. This document captures the problem space, design directions, and open questions for a dedicated design session. Not an implementation plan — the design session produces that.
+> **Status:** Resolved — design session completed 2026-04-23. See [ADR-018](../../docs/solutions/architecture/adr-018-layered-memory-augment.md) for the decision. Phase 1 implementation plan is next.
 >
 > **Owner:** Michael
-> **Target session:** Next major design session after Pre-v0 closes
+> **Resolved:** 2026-04-23 — ADR-018 chose Direction B (L1 + L3 first) with full schema designed upfront for all four layers. Single `layeredMemory` augment, SQLite-first, 11 day-one mitigations in schema from Phase 1.
 > **Scope:** Large — multi-session design + implementation project
 
 ## The Problem

@@ -75,7 +75,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
     return {
       id: peerId,
       kind,
-      trustLevel: opts.trustLevel ?? "authenticated",
+      trustLevel: opts.trustLevel ?? "untrusted",
       sourceAugment: "web",
       displayName: req.headers["x-peer-name"],
       orgId: req.headers["x-org-id"],

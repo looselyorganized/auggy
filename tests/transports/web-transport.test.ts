@@ -42,7 +42,7 @@ describe("webTransport structure", () => {
     expect(identity).toEqual({
       id: "alice-123",
       kind: "human",
-      trustLevel: "authenticated",
+      trustLevel: "untrusted",
       sourceAugment: "web",
       displayName: "Alice",
       orgId: "acme",
