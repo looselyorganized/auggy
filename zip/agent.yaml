@@ -1,0 +1,67 @@
+# Agent configuration
+
+id: aug1_fa625ba1-c997-4436-b278-bf172d968b38
+name: zip
+engine:
+  provider: anthropic
+  model: claude-sonnet-4-6
+  maxContextTokens: 200000
+  maxTokens: 4096
+settings:
+  compactionStrategy: truncate
+  maxInferenceLoops: 10
+augments:
+  - name: identity
+    type: fileMemory
+    options:
+      label: self
+      source: ./identity.md
+      mutable: false
+      origin: operator
+      priority: required
+      placement: system
+      eviction: never
+  - name: learned
+    type: fileMemory
+    options:
+      label: learned
+      source: ./learned.md
+      # Mutable agent-written notes. Loaded as a regular context block with
+      # [AGENT-DERIVED] marker so the model treats it as observation, not as
+      # system-level instruction. Prior config (origin: system, priority: high,
+      # placement: preamble) turned a successful prompt injection into durable
+      # system-level context on future turns — Codex adversarial finding.
+      mutable: true
+      origin: agent
+      priority: normal
+      placement: context
+      eviction: drop
+  - name: files
+    type: filesystem
+    options:
+      mounts:
+        - name: skills
+          path: ./skills
+          writable: false
+        - name: workspace
+          path: ./workspace
+          writable: true
+          deletable: true
+  - name: web
+    type: webTransport
+    options:
+      port: 8080
+      trustLevel: untrusted
+      auth:
+        type: bearer
+        token: ${AUGGY_WEB_TOKEN}
+      visitorTokens:
+        signingKey: ${VISITOR_SIGNING_KEY}
+  - name: fetch
+    type: webFetch
+    options:
+      timeoutMs: 15000
+  - name: org
+    type: orgContext
+    options:
+      baseUrl: ${ORG_CONTEXT_URL}

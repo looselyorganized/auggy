@@ -49,16 +49,16 @@ describe("webTransport structure", () => {
     });
   });
 
-  it("identify() respects configured trustLevel", () => {
+  it("identify() respects configured trustLevel override", () => {
     const aug = webTransport({
       port: 0,
       auth: { type: "bearer", token: "test-token" },
-      trustLevel: "untrusted",
+      trustLevel: "facility",
     });
     const identity = aug.transport!.identify({
       headers: { "x-peer-id": "alice" },
     });
-    expect(identity?.trustLevel).toBe("untrusted");
+    expect(identity?.trustLevel).toBe("facility");
   });
 });
 

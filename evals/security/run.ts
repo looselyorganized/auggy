@@ -109,11 +109,10 @@ export function extractProductionTrustLevel(augmentConfigs: AugmentConfig[]): Tr
     if (a.type === "webTransport") {
       const tl = a.options?.trustLevel;
       if (typeof tl === "string") return tl as TrustLevel;
-      return "authenticated"; // web-transport.ts default
+      return "untrusted"; // web-transport.ts default (changed from "authenticated" on 2026-04-24)
     }
   }
-  // No transport configured — treat as "authenticated" (match web-transport default).
-  return "authenticated";
+  return "untrusted";
 }
 
 export async function bootAgent(configPath: string): Promise<{

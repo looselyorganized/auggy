@@ -84,18 +84,18 @@ describe("extractProductionTrustLevel", () => {
     expect(extractProductionTrustLevel(cfgs)).toBe("facility");
   });
 
-  it("returns 'authenticated' default when webTransport omits trustLevel", () => {
+  it("returns 'untrusted' default when webTransport omits trustLevel", () => {
     const cfgs: AugmentConfig[] = [
       { name: "web", type: "webTransport", options: { port: 8080 } },
     ];
-    expect(extractProductionTrustLevel(cfgs)).toBe("authenticated");
+    expect(extractProductionTrustLevel(cfgs)).toBe("untrusted");
   });
 
-  it("returns 'authenticated' when no webTransport is configured", () => {
+  it("returns 'untrusted' when no webTransport is configured", () => {
     const cfgs: AugmentConfig[] = [
       { name: "identity", type: "fileMemory", options: { source: "self.md" } },
     ];
-    expect(extractProductionTrustLevel(cfgs)).toBe("authenticated");
+    expect(extractProductionTrustLevel(cfgs)).toBe("untrusted");
   });
 });
 
