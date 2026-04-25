@@ -34,7 +34,7 @@ export async function createVisitorToken(
   key: CryptoKey,
   agentId: string,
   ttlSeconds: number,
-): Promise<string> {
+): Promise<{ token: string; payload: VisitorTokenPayload }> {
   const payload: VisitorTokenPayload = {
     visitorId: `vis_${crypto.randomUUID()}`,
     agentId,
@@ -48,7 +48,7 @@ export async function createVisitorToken(
     encoder.encode(payloadB64),
   );
   const sigB64 = btoa(String.fromCharCode(...new Uint8Array(signature)));
-  return `${payloadB64}.${sigB64}`;
+  return { token: `${payloadB64}.${sigB64}`, payload };
 }
 
 export async function verifyVisitorToken(
@@ -66,10 +66,14 @@ export async function verifyVisitorToken(
     return null;
   }
 
+  const sigBuffer = sigBytes.buffer.slice(
+    sigBytes.byteOffset,
+    sigBytes.byteOffset + sigBytes.byteLength,
+  ) as ArrayBuffer;
   const valid = await crypto.subtle.verify(
     "HMAC",
     key,
-    sigBytes.buffer as ArrayBuffer,
+    sigBuffer,
     encoder.encode(payloadB64),
   );
   if (!valid) return null;

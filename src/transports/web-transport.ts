@@ -144,8 +144,9 @@ export function webTransport(opts: WebTransportOptions): Augment {
       }
       if (!visitorPayload) {
         const agentName = kernel?.getAgentCard()?.provider?.name ?? "auggy";
-        newToken = await createVisitorToken(signingKey, agentName, visitorTokenTtl);
-        visitorPayload = await verifyVisitorToken(signingKey, newToken);
+        const issued = await createVisitorToken(signingKey, agentName, visitorTokenTtl);
+        newToken = issued.token;
+        visitorPayload = issued.payload;
       }
     }
 
@@ -275,6 +276,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
     }
     if (opts.cors) {
       sseHeaders["access-control-allow-origin"] = opts.cors.origins.join(",");
+      sseHeaders["access-control-expose-headers"] = "x-visitor-token";
     }
     return new Response(stream, { status: 200, headers: sseHeaders });
   }
@@ -284,6 +286,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
       "access-control-allow-methods": "GET, POST, OPTIONS",
       "access-control-allow-headers":
         "content-type, authorization, x-peer-id, x-peer-kind, x-peer-name, x-org-id, x-visitor-token",
+      "access-control-expose-headers": "x-visitor-token",
       "access-control-max-age": "86400",
     };
     if (opts.cors) {

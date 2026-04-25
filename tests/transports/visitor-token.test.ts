@@ -25,16 +25,18 @@ describe("visitor-token", () => {
     expect(new Uint8Array(exported1)).not.toEqual(new Uint8Array(exported2));
   });
 
-  it("createVisitorToken returns a payload.signature string", async () => {
+  it("createVisitorToken returns a token string and payload", async () => {
     const key = await deriveSigningKey(bearerToken);
-    const token = await createVisitorToken(key, agentId, 86400);
+    const { token, payload } = await createVisitorToken(key, agentId, 86400);
     expect(typeof token).toBe("string");
     expect(token.split(".").length).toBe(2);
+    expect(payload.visitorId).toMatch(/^vis_/);
+    expect(payload.agentId).toBe(agentId);
   });
 
   it("verifyVisitorToken round-trips with createVisitorToken", async () => {
     const key = await deriveSigningKey(bearerToken);
-    const token = await createVisitorToken(key, agentId, 86400);
+    const { token } = await createVisitorToken(key, agentId, 86400);
     const payload = await verifyVisitorToken(key, token);
     expect(payload).not.toBeNull();
     expect(payload!.visitorId).toMatch(/^vis_/);
@@ -44,14 +46,14 @@ describe("visitor-token", () => {
 
   it("verifyVisitorToken returns null for an expired token", async () => {
     const key = await deriveSigningKey(bearerToken);
-    const token = await createVisitorToken(key, agentId, -1);
+    const { token } = await createVisitorToken(key, agentId, -1);
     const payload = await verifyVisitorToken(key, token);
     expect(payload).toBeNull();
   });
 
   it("verifyVisitorToken returns null for a tampered token", async () => {
     const key = await deriveSigningKey(bearerToken);
-    const token = await createVisitorToken(key, agentId, 86400);
+    const { token } = await createVisitorToken(key, agentId, 86400);
     const tampered = token.slice(0, -4) + "XXXX";
     const payload = await verifyVisitorToken(key, tampered);
     expect(payload).toBeNull();
@@ -60,7 +62,7 @@ describe("visitor-token", () => {
   it("verifyVisitorToken returns null for a token signed with a different key", async () => {
     const key1 = await deriveSigningKey("secret-1");
     const key2 = await deriveSigningKey("secret-2");
-    const token = await createVisitorToken(key1, agentId, 86400);
+    const { token } = await createVisitorToken(key1, agentId, 86400);
     const payload = await verifyVisitorToken(key2, token);
     expect(payload).toBeNull();
   });
