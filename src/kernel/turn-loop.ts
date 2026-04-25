@@ -570,8 +570,13 @@ export function createTurnLoop(opts: {
                 a.tools?.some((t) => t.name === entry.reg.tool.name),
               );
               const timeout = augForTool?.constraints?.toolTimeoutMs ?? 30000;
+              const toolContext = {
+                turnId: trigger.turnId,
+                peer: peer ?? null,
+                threadId,
+              };
               output = await withTimeout(
-                () => entry.reg.tool.execute(entry.validatedInput),
+                () => entry.reg.tool.execute(entry.validatedInput, toolContext),
                 timeout,
               );
             } catch (err) {

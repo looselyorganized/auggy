@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { Augment, Tool, ToolCategory } from "./types";
+import type { Augment, Tool, ToolCategory, ToolExecuteContext } from "./types";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function defineTool<T extends z.ZodType<any, any, any>>(opts: {
@@ -7,7 +7,7 @@ export function defineTool<T extends z.ZodType<any, any, any>>(opts: {
   description: string;
   category: ToolCategory;
   input: T;
-  execute: (input: z.infer<T>) => Promise<string>;
+  execute: (input: z.infer<T>, context?: ToolExecuteContext) => Promise<string>;
 }): Tool<z.infer<T>> {
   return {
     name: opts.name,

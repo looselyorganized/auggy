@@ -78,6 +78,12 @@ export type MemoryProviderSpec = StaticMemoryProvider | NamespaceMemoryProvider;
 
 export type ToolCategory = "memory" | "search" | "communication" | "meta" | (string & {});
 
+export interface ToolExecuteContext {
+  turnId: string;
+  peer: PeerIdentity | null;
+  threadId: string;
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export interface Tool<TInput = any> {
   name: string;
@@ -86,7 +92,7 @@ export interface Tool<TInput = any> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   input: z.ZodType<TInput, any, any>;
   inputJsonSchema?: Record<string, unknown>;
-  execute: (input: TInput) => Promise<string>;
+  execute: (input: TInput, context?: ToolExecuteContext) => Promise<string>;
 }
 
 // === Peer Identity (spec §4) ===
