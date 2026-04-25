@@ -567,4 +567,79 @@ describe("webTransport HTTP server", () => {
       await agent.stop();
     }
   });
+
+  it("returning visitor with valid token gets no new token issued", async () => {
+    const model = createMockModel({ response: "hello" });
+    const port = 18921;
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: "test-token" },
+    });
+    const agent = defineAgent(
+      {
+        name: "test",
+        model: "mock",
+        augments: [createIdentityAugment("You are a test agent."), aug],
+      },
+      model,
+    );
+    await agent.start();
+
+    try {
+      const resp1 = await fetch(`http://localhost:${port}/agent/run`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: "Bearer test-token",
+          "x-peer-id": "visitor-1",
+        },
+        body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
+      });
+      const token = resp1.headers.get("x-visitor-token")!;
+      expect(token).not.toBeNull();
+      await resp1.text();
+
+      model.pushResponse({ content: "hello again", finishReason: "end_turn" });
+
+      const resp2 = await fetch(`http://localhost:${port}/agent/run`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: "Bearer test-token",
+          "x-visitor-token": token,
+          "x-peer-id": "visitor-1",
+        },
+        body: JSON.stringify({ messages: [{ role: "user", content: "hello again" }] }),
+      });
+      expect(resp2.status).toBe(200);
+      expect(resp2.headers.get("x-visitor-token")).toBeNull();
+      await resp2.text();
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("CORS preflight allows x-visitor-token header", async () => {
+    const model = createMockModel();
+    const port = 18922;
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: "test-token" },
+      cors: { origins: ["https://example.com"] },
+    });
+    const agent = defineAgent(
+      { name: "test", model: "mock", augments: [aug] },
+      model,
+    );
+    await agent.start();
+
+    try {
+      const resp = await fetch(`http://localhost:${port}/agent/run`, {
+        method: "OPTIONS",
+      });
+      expect(resp.headers.get("access-control-allow-headers")).toContain("x-visitor-token");
+    } finally {
+      await agent.stop();
+    }
+  });
 });
