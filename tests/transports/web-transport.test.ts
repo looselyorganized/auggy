@@ -116,12 +116,45 @@ describe("webTransport HTTP server", () => {
     }
   });
 
-  it("rejects POST /agent/run with missing x-peer-id", async () => {
-    const model = createMockModel();
+  it("accepts POST /agent/run without x-peer-id when visitor tokens are enabled (issues a token)", async () => {
+    const model = createMockModel({ response: "hi" });
     const port = 18902;
     const aug = webTransport({
       port,
       auth: { type: "bearer", token: "test-token" },
+    });
+    const agent = defineAgent(
+      { name: "test", model: "mock", augments: [createIdentityAugment("test"), aug] },
+      model,
+    );
+    await agent.start();
+
+    try {
+      const resp = await fetch(`http://localhost:${port}/agent/run`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: "Bearer test-token",
+        },
+        body: JSON.stringify({
+          messages: [{ role: "user", content: "hello" }],
+        }),
+      });
+      expect(resp.status).toBe(200);
+      expect(resp.headers.get("x-visitor-token")).not.toBeNull();
+      await resp.text();
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("rejects POST /agent/run with missing x-peer-id when visitor tokens are disabled", async () => {
+    const model = createMockModel();
+    const port = 18912;
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: "test-token" },
+      visitorTokens: { enabled: false },
     });
     const agent = defineAgent(
       { name: "test", model: "mock", augments: [aug] },
@@ -430,28 +463,36 @@ describe("webTransport HTTP server", () => {
     await agent.start();
 
     try {
-      const runOnce = () =>
-        fetch(`http://localhost:${port}/agent/run`, {
-          method: "POST",
-          headers: {
-            "content-type": "application/json",
-            authorization: "Bearer test-token",
-            "x-peer-id": "heavy-user",
-          },
-          body: JSON.stringify({
-            messages: [{ role: "user", content: "hi" }],
-          }),
-        });
-
-      // First call: under the limit, succeeds normally.
-      const first = await runOnce();
+      // First call: under the limit, succeeds. Capture the visitor token.
+      const first = await fetch(`http://localhost:${port}/agent/run`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: "Bearer test-token",
+          "x-peer-id": "heavy-user",
+        },
+        body: JSON.stringify({
+          messages: [{ role: "user", content: "hi" }],
+        }),
+      });
       expect(first.status).toBe(200);
+      const visitorToken = first.headers.get("x-visitor-token") ?? "";
       await first.text();
 
-      // Second call: rate-limited. Must still return 200 with an SSE
-      // body, but the body must contain a synthesized RUN_ERROR plus a
-      // terminal RUN_FINISHED so clients see what happened.
-      const second = await runOnce();
+      // Second call: same visitor (send token back), rate-limited.
+      model.pushResponse({ content: "ok again", finishReason: "end_turn" });
+      const second = await fetch(`http://localhost:${port}/agent/run`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: "Bearer test-token",
+          "x-peer-id": "heavy-user",
+          "x-visitor-token": visitorToken,
+        },
+        body: JSON.stringify({
+          messages: [{ role: "user", content: "hi again" }],
+        }),
+      });
       expect(second.status).toBe(200);
       const body = await second.text();
       const events = body

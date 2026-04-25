@@ -69,7 +69,7 @@ export async function verifyVisitorToken(
   const valid = await crypto.subtle.verify(
     "HMAC",
     key,
-    sigBytes,
+    sigBytes.buffer as ArrayBuffer,
     encoder.encode(payloadB64),
   );
   if (!valid) return null;

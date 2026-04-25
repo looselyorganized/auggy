@@ -16,6 +16,12 @@ import {
   runError,
   type AGUIEvent,
 } from "./ag-ui-events";
+import {
+  deriveSigningKey,
+  createVisitorToken,
+  verifyVisitorToken,
+  type VisitorTokenPayload,
+} from "./visitor-token";
 
 export interface WebTransportOptions {
   port: number;
@@ -26,6 +32,7 @@ export interface WebTransportOptions {
   concurrency?: number;
   maxQueueDepth?: number;
   rateLimitPerPeer?: { maxPerMinute: number };
+  visitorTokens?: { enabled?: boolean; ttlSeconds?: number };
 }
 
 interface AGUIRunRequestBody {
@@ -65,17 +72,32 @@ export function webTransport(opts: WebTransportOptions): Augment {
   let kernel: TransportKernel | null = null;
 
   const maxMessageLength = opts.maxMessageLength ?? 4000;
+  const visitorTokensEnabled = opts.visitorTokens?.enabled !== false;
+  const visitorTokenTtl = opts.visitorTokens?.ttlSeconds ?? 30 * 24 * 3600;
+  let signingKey: CryptoKey | null = null;
 
   const identify = (raw: unknown): PeerIdentity | null => {
-    const req = raw as { headers: Record<string, string> };
+    const req = raw as { headers: Record<string, string>; __visitorPayload?: VisitorTokenPayload };
+    const kind = (req.headers["x-peer-kind"] as PeerIdentity["kind"]) ?? "human";
+    const trustLevel = opts.trustLevel ?? "untrusted";
+
+    if (req.__visitorPayload) {
+      return {
+        id: req.__visitorPayload.visitorId,
+        kind,
+        trustLevel,
+        sourceAugment: "web",
+        displayName: req.headers["x-peer-name"],
+        orgId: req.headers["x-org-id"],
+      };
+    }
+
     const peerId = req.headers["x-peer-id"];
     if (!peerId) return null;
-    const kind =
-      (req.headers["x-peer-kind"] as PeerIdentity["kind"]) ?? "human";
     return {
       id: peerId,
       kind,
-      trustLevel: opts.trustLevel ?? "untrusted",
+      trustLevel,
       sourceAugment: "web",
       displayName: req.headers["x-peer-name"],
       orgId: req.headers["x-org-id"],
@@ -112,11 +134,30 @@ export function webTransport(opts: WebTransportOptions): Augment {
       return json({ error: "unauthorized" }, 401);
     }
 
+    let visitorPayload: VisitorTokenPayload | null = null;
+    let newToken: string | null = null;
+
+    if (visitorTokensEnabled && signingKey) {
+      const tokenHeader = req.headers.get("x-visitor-token");
+      if (tokenHeader) {
+        visitorPayload = await verifyVisitorToken(signingKey, tokenHeader);
+      }
+      if (!visitorPayload) {
+        const agentName = kernel?.getAgentCard()?.provider?.name ?? "auggy";
+        newToken = await createVisitorToken(signingKey, agentName, visitorTokenTtl);
+        visitorPayload = await verifyVisitorToken(signingKey, newToken);
+      }
+    }
+
     const headers: Record<string, string> = {};
     req.headers.forEach((v, k) => {
       headers[k.toLowerCase()] = v;
     });
-    const peer = identify({ headers });
+    const identifyArg: { headers: Record<string, string>; __visitorPayload?: VisitorTokenPayload } = { headers };
+    if (visitorPayload) {
+      identifyArg.__visitorPayload = visitorPayload;
+    }
+    const peer = identify(identifyArg);
     if (!peer) {
       return json({ error: "missing peer identity" }, 400);
     }
@@ -229,6 +270,9 @@ export function webTransport(opts: WebTransportOptions): Augment {
       "cache-control": "no-cache",
       connection: "keep-alive",
     };
+    if (newToken) {
+      sseHeaders["x-visitor-token"] = newToken;
+    }
     if (opts.cors) {
       sseHeaders["access-control-allow-origin"] = opts.cors.origins.join(",");
     }
@@ -239,7 +283,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
     const headers: Record<string, string> = {
       "access-control-allow-methods": "GET, POST, OPTIONS",
       "access-control-allow-headers":
-        "content-type, authorization, x-peer-id, x-peer-kind, x-peer-name, x-org-id",
+        "content-type, authorization, x-peer-id, x-peer-kind, x-peer-name, x-org-id, x-visitor-token",
       "access-control-max-age": "86400",
     };
     if (opts.cors) {
@@ -274,6 +318,9 @@ export function webTransport(opts: WebTransportOptions): Augment {
     capabilities: ["transport"],
     transport,
     async onBoot() {
+      if (visitorTokensEnabled) {
+        signingKey = await deriveSigningKey(opts.auth.token);
+      }
       server = Bun.serve({
         port: opts.port,
         idleTimeout: 120, // 120s — covers long model calls + tool chains
