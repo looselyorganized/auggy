@@ -18,7 +18,7 @@
  */
 
 import { z } from "zod";
-import type { Augment, ContextBlock, PeerIdentity, TurnState } from "../types";
+import type { Augment, ContextBlock, PeerIdentity, TurnState, ToolExecuteContext } from "../types";
 import { defineTool } from "../helpers";
 import { createHttpClient } from "../http";
 import type { HttpClient } from "../http";
@@ -93,7 +93,6 @@ export function orgContext(opts: OrgContextOptions): Augment {
   const dedupWindowMs = esc.dedupWindowMs ?? 300_000;
   const dedupThreshold = esc.dedupThreshold ?? 0.6;
 
-  let currentPeer: PeerIdentity | null = null;
   const peerLastEscalation = new Map<string, number>();
   const recentSummaries: Array<{ summary: string; timestamp: number }> = [];
   let globalCountThisHour = 0;
@@ -301,10 +300,15 @@ export function orgContext(opts: OrgContextOptions): Augment {
         .optional()
         .describe("Visitor name or identifier if known"),
     }),
-    execute: async ({ summary, reason, visitor }) => {
-      const trustLevel = currentPeer?.trustLevel ?? "operator";
+    execute: async ({ summary, reason, visitor }, context?: ToolExecuteContext) => {
+      if (!context) {
+        return JSON.stringify({
+          error: "org_escalate requires turn context — cannot determine peer identity.",
+        });
+      }
+      const trustLevel = context.peer?.trustLevel ?? "operator";
       if (escalationEnabled && trustLevel !== "operator") {
-        const peerId = currentPeer!.id;
+        const peerId = context.peer!.id;
 
         const cooldownMsg = checkCooldown(peerId);
         if (cooldownMsg) {
@@ -353,7 +357,7 @@ export function orgContext(opts: OrgContextOptions): Augment {
         }
 
         if (trustLevel !== "operator") {
-          recordEscalation(currentPeer?.id ?? "unknown", summary);
+          recordEscalation(context.peer?.id ?? "unknown", summary);
         }
 
         const result = JSON.parse(res.body) as { status: string };
@@ -395,10 +399,6 @@ export function orgContext(opts: OrgContextOptions): Augment {
       };
 
       return [block];
-    },
-
-    onTurnStart: async (turn: TurnState) => {
-      currentPeer = turn.peer;
     },
 
     onBoot: async () => {

@@ -1,6 +1,6 @@
 import { describe, it, expect } from "bun:test";
 import { orgContext } from "../../src/augments/org-context";
-import type { TurnState, PeerIdentity } from "../../src/types";
+import type { PeerIdentity, ToolExecuteContext } from "../../src/types";
 
 function mockClient(responses: Record<string, { status: number; body: string }>) {
   return {
@@ -29,16 +29,8 @@ function makePeer(id: string, trustLevel: PeerIdentity["trustLevel"] = "untruste
   return { id, kind: "human", trustLevel, sourceAugment: "web" };
 }
 
-function makeTurnState(peer: PeerIdentity): TurnState {
-  return {
-    turnId: "turn-1",
-    threadId: "thread-1",
-    trigger: { type: "message", turnId: "turn-1", timestamp: Date.now(), payload: { parts: [], sourceAugment: "web", peer, timestamp: Date.now() } },
-    peer,
-    toolCallsSoFar: 0,
-    turnStartedAt: Date.now(),
-    metadata: {},
-  };
+function makeContext(peer: PeerIdentity | null = null): ToolExecuteContext {
+  return { turnId: `turn-${crypto.randomUUID()}`, peer, threadId: "thread-1" };
 }
 
 describe("org_escalate rate limiting", () => {
@@ -49,12 +41,9 @@ describe("org_escalate rate limiting", () => {
         client: mockClient(MANIFEST_RESPONSE) as any,
         escalation: { cooldownMs: 60_000, dedupThreshold: 0 },
       });
-
-      const peer = makePeer("visitor-1");
-      await aug.onTurnStart?.(makeTurnState(peer));
-
       const tool = aug.tools!.find((t) => t.name === "org_escalate")!;
-      const result = JSON.parse(await tool.execute({ summary: "needs help" }));
+      const ctx = makeContext(makePeer("visitor-1"));
+      const result = JSON.parse(await tool.execute({ summary: "needs help" }, ctx));
       expect(result.status).toBe("sent");
     });
 
@@ -64,13 +53,10 @@ describe("org_escalate rate limiting", () => {
         client: mockClient(MANIFEST_RESPONSE) as any,
         escalation: { cooldownMs: 60_000, dedupThreshold: 0 },
       });
-
-      const peer = makePeer("visitor-1");
-      await aug.onTurnStart?.(makeTurnState(peer));
-
       const tool = aug.tools!.find((t) => t.name === "org_escalate")!;
-      await tool.execute({ summary: "first escalation" });
-      const result = JSON.parse(await tool.execute({ summary: "second escalation" }));
+      const ctx = makeContext(makePeer("visitor-1"));
+      await tool.execute({ summary: "first escalation" }, ctx);
+      const result = JSON.parse(await tool.execute({ summary: "second escalation" }, ctx));
       expect(result.status).toBe("rate_limited");
       expect(result.hint).toBeDefined();
     });
@@ -81,15 +67,9 @@ describe("org_escalate rate limiting", () => {
         client: mockClient(MANIFEST_RESPONSE) as any,
         escalation: { cooldownMs: 60_000, dedupThreshold: 0 },
       });
-
-      const peer1 = makePeer("visitor-1");
-      await aug.onTurnStart?.(makeTurnState(peer1));
       const tool = aug.tools!.find((t) => t.name === "org_escalate")!;
-      await tool.execute({ summary: "from visitor 1" });
-
-      const peer2 = makePeer("visitor-2");
-      await aug.onTurnStart?.(makeTurnState(peer2));
-      const result = JSON.parse(await tool.execute({ summary: "from visitor 2" }));
+      await tool.execute({ summary: "from visitor 1" }, makeContext(makePeer("visitor-1")));
+      const result = JSON.parse(await tool.execute({ summary: "from visitor 2" }, makeContext(makePeer("visitor-2"))));
       expect(result.status).toBe("sent");
     });
   });
@@ -101,16 +81,12 @@ describe("org_escalate rate limiting", () => {
         client: mockClient(MANIFEST_RESPONSE) as any,
         escalation: { cooldownMs: 0, dedupWindowMs: 60_000, dedupThreshold: 0.6 },
       });
-
-      const peer = makePeer("visitor-1");
-      await aug.onTurnStart?.(makeTurnState(peer));
-
       const tool = aug.tools!.find((t) => t.name === "org_escalate")!;
-      await tool.execute({ summary: "visitor wants to discuss partnership opportunity" });
-
-      const peer2 = makePeer("visitor-2");
-      await aug.onTurnStart?.(makeTurnState(peer2));
-      const result = JSON.parse(await tool.execute({ summary: "visitor wants to discuss partnership opportunity with the facility" }));
+      await tool.execute({ summary: "visitor wants to discuss partnership opportunity" }, makeContext(makePeer("v1")));
+      const result = JSON.parse(await tool.execute(
+        { summary: "visitor wants to discuss partnership opportunity with the facility" },
+        makeContext(makePeer("v2")),
+      ));
       expect(result.status).toBe("rate_limited");
       expect(result.message).toContain("similar");
     });
@@ -121,16 +97,12 @@ describe("org_escalate rate limiting", () => {
         client: mockClient(MANIFEST_RESPONSE) as any,
         escalation: { cooldownMs: 0, dedupWindowMs: 60_000, dedupThreshold: 0.6 },
       });
-
-      const peer = makePeer("visitor-1");
-      await aug.onTurnStart?.(makeTurnState(peer));
-
       const tool = aug.tools!.find((t) => t.name === "org_escalate")!;
-      await tool.execute({ summary: "visitor wants to discuss partnership" });
-
-      const peer2 = makePeer("visitor-2");
-      await aug.onTurnStart?.(makeTurnState(peer2));
-      const result = JSON.parse(await tool.execute({ summary: "security incident detected in the logs" }));
+      await tool.execute({ summary: "visitor wants to discuss partnership" }, makeContext(makePeer("v1")));
+      const result = JSON.parse(await tool.execute(
+        { summary: "security incident detected in the logs" },
+        makeContext(makePeer("v2")),
+      ));
       expect(result.status).toBe("sent");
     });
   });
@@ -142,20 +114,10 @@ describe("org_escalate rate limiting", () => {
         client: mockClient(MANIFEST_RESPONSE) as any,
         escalation: { cooldownMs: 0, globalMaxPerHour: 2, dedupThreshold: 0 },
       });
-
       const tool = aug.tools!.find((t) => t.name === "org_escalate")!;
-
-      const peer1 = makePeer("v1");
-      await aug.onTurnStart?.(makeTurnState(peer1));
-      await tool.execute({ summary: "escalation 1" });
-
-      const peer2 = makePeer("v2");
-      await aug.onTurnStart?.(makeTurnState(peer2));
-      await tool.execute({ summary: "escalation 2" });
-
-      const peer3 = makePeer("v3");
-      await aug.onTurnStart?.(makeTurnState(peer3));
-      const result = JSON.parse(await tool.execute({ summary: "escalation 3" }));
+      await tool.execute({ summary: "escalation 1" }, makeContext(makePeer("v1")));
+      await tool.execute({ summary: "escalation 2" }, makeContext(makePeer("v2")));
+      const result = JSON.parse(await tool.execute({ summary: "escalation 3" }, makeContext(makePeer("v3"))));
       expect(result.status).toBe("rate_limited");
       expect(result.message).toContain("global limit");
     });
@@ -168,16 +130,9 @@ describe("org_escalate rate limiting", () => {
         client: mockClient(MANIFEST_RESPONSE) as any,
         escalation: { cooldownMs: 60_000, globalMaxPerHour: 1, dedupThreshold: 0.9 },
       });
-
       const tool = aug.tools!.find((t) => t.name === "org_escalate")!;
-
-      const peer = makePeer("v1");
-      await aug.onTurnStart?.(makeTurnState(peer));
-      await tool.execute({ summary: "first" });
-
-      const operator = makePeer("operator-1", "operator");
-      await aug.onTurnStart?.(makeTurnState(operator));
-      const result = JSON.parse(await tool.execute({ summary: "first" }));
+      await tool.execute({ summary: "first" }, makeContext(makePeer("v1")));
+      const result = JSON.parse(await tool.execute({ summary: "first" }, makeContext(makePeer("op", "operator"))));
       expect(result.status).toBe("sent");
     });
   });
@@ -189,19 +144,13 @@ describe("org_escalate rate limiting", () => {
         client: mockClient(MANIFEST_RESPONSE) as any,
         escalation: { cooldownMs: 50, dedupThreshold: 0 },
       });
-
-      const peer = makePeer("visitor-1");
-      await aug.onTurnStart?.(makeTurnState(peer));
-
       const tool = aug.tools!.find((t) => t.name === "org_escalate")!;
-      await tool.execute({ summary: "first" });
-
-      const blocked = JSON.parse(await tool.execute({ summary: "second" }));
+      const ctx = makeContext(makePeer("visitor-1"));
+      await tool.execute({ summary: "first" }, ctx);
+      const blocked = JSON.parse(await tool.execute({ summary: "second" }, ctx));
       expect(blocked.status).toBe("rate_limited");
-
       await new Promise((r) => setTimeout(r, 60));
-
-      const allowed = JSON.parse(await tool.execute({ summary: "third" }));
+      const allowed = JSON.parse(await tool.execute({ summary: "third" }, ctx));
       expect(allowed.status).toBe("sent");
     });
   });
@@ -213,11 +162,23 @@ describe("org_escalate rate limiting", () => {
         client: mockClient(MANIFEST_RESPONSE) as any,
         escalation: { cooldownMs: 60_000, globalMaxPerHour: 1 },
       });
-
       const tool = aug.tools!.find((t) => t.name === "org_escalate")!;
-      await tool.execute({ summary: "first" });
-      const result = JSON.parse(await tool.execute({ summary: "second" }));
+      const ctx = makeContext(null);
+      await tool.execute({ summary: "first" }, ctx);
+      const result = JSON.parse(await tool.execute({ summary: "second" }, ctx));
       expect(result.status).toBe("sent");
+    });
+  });
+
+  describe("context requirement", () => {
+    it("denies escalation when context is not provided", async () => {
+      const aug = orgContext({
+        baseUrl: "http://localhost:9999",
+        client: mockClient(MANIFEST_RESPONSE) as any,
+      });
+      const tool = aug.tools!.find((t) => t.name === "org_escalate")!;
+      const result = JSON.parse(await tool.execute({ summary: "no context" }));
+      expect(result.error).toContain("context");
     });
   });
 
@@ -228,13 +189,10 @@ describe("org_escalate rate limiting", () => {
         client: mockClient(MANIFEST_RESPONSE) as any,
         escalation: { enabled: false },
       });
-
-      const peer = makePeer("visitor-1");
-      await aug.onTurnStart?.(makeTurnState(peer));
-
       const tool = aug.tools!.find((t) => t.name === "org_escalate")!;
-      await tool.execute({ summary: "first" });
-      const result = JSON.parse(await tool.execute({ summary: "first" }));
+      const ctx = makeContext(makePeer("visitor-1"));
+      await tool.execute({ summary: "first" }, ctx);
+      const result = JSON.parse(await tool.execute({ summary: "first" }, ctx));
       expect(result.status).toBe("sent");
     });
   });
