@@ -115,7 +115,7 @@ function resolveWebTransport(opts: Record<string, unknown>): Augment {
     concurrency: opts.concurrency as number | undefined,
     maxQueueDepth: opts.maxQueueDepth as number | undefined,
     rateLimitPerPeer: opts.rateLimitPerPeer as { maxPerMinute: number } | undefined,
-    visitorTokens: opts.visitorTokens as { enabled?: boolean; ttlSeconds?: number } | undefined,
+    visitorTokens: opts.visitorTokens as { enabled?: boolean; ttlSeconds?: number; signingKey?: string } | undefined,
   });
 }
 

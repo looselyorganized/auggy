@@ -67,6 +67,14 @@ describe("visitor-token", () => {
     expect(payload).toBeNull();
   });
 
+  it("token signed with bearer-derived key is rejected by a dedicated signing key", async () => {
+    const bearerKey = await deriveSigningKey("shared-bearer-token");
+    const dedicatedKey = await deriveSigningKey("dedicated-signing-secret");
+    const { token } = await createVisitorToken(bearerKey, agentId, 86400);
+    const payload = await verifyVisitorToken(dedicatedKey, token);
+    expect(payload).toBeNull();
+  });
+
   it("verifyVisitorToken returns null for malformed input", async () => {
     const key = await deriveSigningKey(bearerToken);
     expect(await verifyVisitorToken(key, "")).toBeNull();

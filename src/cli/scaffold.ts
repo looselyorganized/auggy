@@ -163,6 +163,8 @@ augments:
       auth:
         type: bearer
         token: \${AUGGY_WEB_TOKEN}
+      visitorTokens:
+        signingKey: \${VISITOR_SIGNING_KEY}
 `;
 }
 
@@ -259,6 +261,7 @@ ANTHROPIC_API_KEY=
 # OPENAI_API_KEY=
 # OPENROUTER_API_KEY=
 AUGGY_WEB_TOKEN=
+VISITOR_SIGNING_KEY=
 # SUPABASE_URL=
 # SUPABASE_SERVICE_KEY=
 `;

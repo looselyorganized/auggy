@@ -53,13 +53,14 @@ describe("scaffoldAgent", () => {
 
   test("generated agent.yaml parses through the config parser", () => {
     const dir = scaffoldAgent({ name: "zip", targetDir: join(TMP, "zip") });
-    // Set the required env var for the web transport token.
     process.env.AUGGY_WEB_TOKEN = "test-token";
+    process.env.VISITOR_SIGNING_KEY = "test-signing-key";
     const config = parseConfig(join(dir, "agent.yaml"));
     expect(config.name).toBe("zip");
     expect(config.id).toMatch(/^aug1_/);
     expect(config.augments.length).toBeGreaterThanOrEqual(3);
     delete process.env.AUGGY_WEB_TOKEN;
+    delete process.env.VISITOR_SIGNING_KEY;
   });
 
   test("throws if target directory already exists", () => {

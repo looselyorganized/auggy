@@ -32,7 +32,7 @@ export interface WebTransportOptions {
   concurrency?: number;
   maxQueueDepth?: number;
   rateLimitPerPeer?: { maxPerMinute: number };
-  visitorTokens?: { enabled?: boolean; ttlSeconds?: number };
+  visitorTokens?: { enabled?: boolean; ttlSeconds?: number; signingKey?: string };
 }
 
 interface AGUIRunRequestBody {
@@ -322,7 +322,14 @@ export function webTransport(opts: WebTransportOptions): Augment {
     transport,
     async onBoot() {
       if (visitorTokensEnabled) {
-        signingKey = await deriveSigningKey(opts.auth.token);
+        const keySource = opts.visitorTokens?.signingKey;
+        if (keySource) {
+          signingKey = await deriveSigningKey(keySource);
+        } else {
+          const ephemeral = crypto.randomUUID() + crypto.randomUUID();
+          signingKey = await deriveSigningKey(ephemeral);
+          console.warn("[web-transport] No VISITOR_SIGNING_KEY configured — using ephemeral key. Visitor tokens will not survive agent restart. Set VISITOR_SIGNING_KEY in .env for persistent visitor identity.");
+        }
       }
       server = Bun.serve({
         port: opts.port,
