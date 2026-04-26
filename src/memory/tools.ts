@@ -1,38 +1,35 @@
 import { z } from "zod";
-import type { Tool, NamespaceMemoryProvider } from "../types";
+import type { Tool, NamespaceMemoryProvider, ToolExecuteContext } from "../types";
 import { defineTool } from "../helpers";
 import { lookupProvider } from "./registry";
 import type { MemoryRegistry } from "./types";
 
 const DEFAULT_MAX_MEMORY_OPS_PER_TURN = 20;
 
-export interface MemoryToolBudget {
-  calls: number;
-  max: number;
-}
-
-export interface CreateMemoryToolsOptions {
-  maxPerTurn?: number;
-  budgetRef?: MemoryToolBudget;
+export interface CreateMemoryToolsResult {
+  tools: Tool[];
+  cleanupHook: () => void;
 }
 
 export function createMemoryTools(
   registry: MemoryRegistry,
-  opts: CreateMemoryToolsOptions = {},
-): Tool[] {
-  const budget: MemoryToolBudget =
-    opts.budgetRef ?? {
-      calls: 0,
-      max: opts.maxPerTurn ?? DEFAULT_MAX_MEMORY_OPS_PER_TURN,
-    };
+  opts: { maxPerTurn?: number } = {},
+): CreateMemoryToolsResult {
+  const maxPerTurn = opts.maxPerTurn ?? DEFAULT_MAX_MEMORY_OPS_PER_TURN;
+  const turnBudgets = new Map<string, number>();
 
-  const checkBudget = (): string | null => {
-    if (budget.calls >= budget.max) {
-      return `Error: Memory operation budget exceeded (${budget.max} per turn)`;
+  function checkBudget(turnId: string): string | null {
+    const calls = turnBudgets.get(turnId) ?? 0;
+    if (calls >= maxPerTurn) {
+      return `Error: Memory operation budget exceeded (${maxPerTurn} per turn)`;
     }
-    budget.calls++;
+    turnBudgets.set(turnId, calls + 1);
     return null;
-  };
+  }
+
+  function cleanupHook(): void {
+    if (turnBudgets.size > 100) turnBudgets.clear();
+  }
 
   const memoryRead = defineTool({
     name: "memory_read",
@@ -42,8 +39,8 @@ export function createMemoryTools(
     input: z.object({
       label: z.string().describe("The memory label to read (e.g. 'self')"),
     }),
-    execute: async ({ label }) => {
-      const err = checkBudget();
+    execute: async ({ label }, context?) => {
+      const err = checkBudget(context?.turnId ?? "unknown");
       if (err) return err;
 
       const provider = lookupProvider(registry, label);
@@ -68,8 +65,8 @@ export function createMemoryTools(
       label: z.string().describe("The label to write to"),
       content: z.string().describe("The content to store"),
     }),
-    execute: async ({ label, content }) => {
-      const err = checkBudget();
+    execute: async ({ label, content }, context?) => {
+      const err = checkBudget(context?.turnId ?? "unknown");
       if (err) return err;
 
       const provider = lookupProvider(registry, label);
@@ -79,6 +76,15 @@ export function createMemoryTools(
       if (!spec.write) {
         return `Error: Memory label "${label}" is immutable (owned by "${provider.name}")`;
       }
+
+      const origin = spec.defaults.origin;
+      const trustLevel = context?.peer?.trustLevel ?? "operator";
+      if (origin !== "peer-derived") {
+        if (trustLevel === "untrusted" || trustLevel === "authenticated") {
+          return `Error: Memory label "${label}" requires facility or operator trust to write. Current peer trust: ${trustLevel}.`;
+        }
+      }
+
       await spec.write(label, content);
       return `Successfully wrote to "${label}"`;
     },
@@ -96,8 +102,8 @@ export function createMemoryTools(
         .optional()
         .describe("Optional provider name filter"),
     }),
-    execute: async ({ query, providers: restrictTo }) => {
-      const err = checkBudget();
+    execute: async ({ query, providers: restrictTo }, context?) => {
+      const err = checkBudget(context?.turnId ?? "unknown");
       if (err) return err;
 
       const candidates = registry.namespaces
@@ -136,8 +142,8 @@ export function createMemoryTools(
       "List all available memory labels and namespace prefixes for this agent.",
     category: "memory",
     input: z.object({}),
-    execute: async () => {
-      const err = checkBudget();
+    execute: async (_input, context?) => {
+      const err = checkBudget(context?.turnId ?? "unknown");
       if (err) return err;
 
       const staticLabels = Array.from(registry.static.keys());
@@ -147,5 +153,8 @@ export function createMemoryTools(
     },
   });
 
-  return [memoryRead, memoryWrite, memorySearch, memoryList];
+  return {
+    tools: [memoryRead, memoryWrite, memorySearch, memoryList],
+    cleanupHook,
+  };
 }
