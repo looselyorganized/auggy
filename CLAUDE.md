@@ -4,7 +4,7 @@
 
 Auggy (`augment-1`) is a modular agent runtime in TypeScript/Bun. Agents are composed from swappable augments; the kernel manages context, tools, permissions, and lifecycle. Framework-agnostic by design — **not LORF-locked**.
 
-**Status: v0.2.0 (2026-04-16).** Plans 1 (kernel) + 2 (built-in augments) + 3 (CLI & manifest) complete. Layer 1 trust-aware capability table, security + quality eval suites, bashAugment, SSE token streaming. 7 augments, 3 engines, 538 tests across 42 files. See `lo/docs/auggy-plans-roadmap.md` (outside this repo) for the plan-by-plan roadmap.
+**Status: v0.2.0 (2026-04-16).** Plans 1 (kernel) + 2 (built-in augments) + 3 (CLI & manifest) complete. Layer 1 trust-aware capability table, security + quality eval suites, bashAugment, SSE token streaming, layeredMemory (peer-scoped episodic memory with provenance). 8 augments, 3 engines, 652 tests across 53 files. See `lo/docs/auggy-plans-detail.md` (outside this repo) for the plan-by-plan roadmap.
 
 ## Commands
 
@@ -19,7 +19,7 @@ aug1 restart <name>             # Stop + start
 aug1 status [name]              # Show running agents
 
 # Development
-bun test                         # Run full test suite (537 tests across 42 files)
+bun test                         # Run full test suite (652 tests across 53 files)
 bun test --watch                 # Watch mode
 bunx tsc --noEmit                # Typecheck (must pass before committing)
 bun run scripts/hello.ts         # Hello-world agent (requires ANTHROPIC_API_KEY)
@@ -86,7 +86,9 @@ src/
 │
 ├── augments/             # Built-in augments
 │   ├── file-memory.ts      # Static memory provider
-│   ├── supabase-memory.ts  # Namespace memory provider
+│   ├── supabase-memory.ts  # Namespace memory provider (frozen, kept for migration)
+│   ├── layered-memory.ts   # Peer-scoped episodic memory augment (entry point)
+│   ├── layered-memory/     # Pluggable storage backend (sqlite + supabase)
 │   ├── filesystem.ts       # Multi-mount scoped file access (6 tools, realpath security)
 │   ├── filesystem-skill/   # SKILL.md + references/ for the filesystem augment
 │   ├── web-fetch.ts        # URL fetch with HTML→text, JSON passthrough
@@ -121,7 +123,7 @@ src/
         ├── restart.ts      # aug1 restart (stop + start)
         └── status.ts       # aug1 status (list or detail)
 
-tests/                    # 537 tests across 42 files
+tests/                    # 652 tests across 53 files
 ├── fixtures/             # mock-model, mock-augment, mock-supabase, temp-dir
 ├── kernel/               # Per-kernel-component unit tests
 ├── memory/               # Memory subsystem tests
@@ -144,7 +146,7 @@ scripts/
 1. **The kernel is finished.** Behavior changes go in augments, not in `src/kernel/`. Bug fixes to kernel files are fine; adding new kernel features requires explicit justification.
 2. **Every shared type lives in `src/types.ts`** — do not scatter types across modules. One file is deliberate.
 3. **Every module is a `create*` factory returning an object** — no classes, no `this`.
-4. **Test gate before committing:** `bun test` (537 passing) + `bunx tsc --noEmit` (clean) must both pass.
+4. **Test gate before committing:** `bun test` (600 passing) + `bunx tsc --noEmit` (clean) must both pass.
 5. **A2A-shaped types are load-bearing** — `Part[]`, `TaskState`, `AgentCard` follow A2A's shapes even though v1 doesn't speak A2A on the wire. Do not deviate.
 6. **Never use `vitest`** — we migrated to `bun:test` in Plan 2. The import is `from "bun:test"`.
 7. **Model adapters go in `src/engines/`** — not `src/models/` (see philosophy: the adapter is the reasoning engine, not the model itself).
