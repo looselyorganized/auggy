@@ -194,7 +194,7 @@ describe("createMemoryTools", () => {
             owns: { kind: "static", labels: ["notes"] },
             defaults,
             read: async () => null,
-            write: async (label, content) => {
+            write: async (label: string, content: string) => {
               writes.push({ label, content });
             },
           },
@@ -285,7 +285,7 @@ describe("createMemoryTools", () => {
             owns: { kind: "static", labels: ["learned"] },
             defaults,
             read: async () => null,
-            write: async (_l, c) => { writes.push(c); },
+            write: async (_l: string, c: string) => { writes.push(c); },
           },
         },
       ];
@@ -309,7 +309,7 @@ describe("createMemoryTools", () => {
             owns: { kind: "static", labels: ["learned"] },
             defaults,
             read: async () => null,
-            write: async (_l, c) => { writes.push(c); },
+            write: async (_l: string, c: string) => { writes.push(c); },
           },
         },
       ];
@@ -334,7 +334,7 @@ describe("createMemoryTools", () => {
             owns: { kind: "namespace", prefix: "ep:" },
             defaults: peerDerivedDefaults,
             search: async () => [],
-            write: async (_l, c) => { writes.push(c); },
+            write: async (_l: string, c: string) => { writes.push(c); },
           },
         },
       ];
@@ -377,7 +377,7 @@ describe("createMemoryTools", () => {
             owns: { kind: "static", labels: ["learned"] },
             defaults,
             read: async () => null,
-            write: async (_l, c) => { writes.push(c); },
+            write: async (_l: string, c: string) => { writes.push(c); },
           },
         },
       ];

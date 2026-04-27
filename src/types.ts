@@ -54,6 +54,22 @@ export interface MemoryEntry {
   label: string;
   content: string;
   metadata?: Record<string, unknown>;
+  // Provenance — providers that don't track this omit these fields
+  peerId?: string;
+  trustLevel?: TrustLevel;
+  createdAt?: number;
+  supersededBy?: string;
+  retentionClass?: "operational" | "lesson";
+  isVerbatim?: boolean;
+}
+
+export interface MemoryQueryOpts {
+  peerId?: string;
+}
+
+export interface MemoryWriteOpts {
+  peerId?: string;
+  trustLevel?: TrustLevel;
 }
 
 export interface StaticMemoryProvider {
@@ -66,10 +82,11 @@ export interface StaticMemoryProvider {
 export interface NamespaceMemoryProvider {
   owns: { kind: "namespace"; prefix: string };
   defaults: MemoryDefaults;
-  search: (query: string) => Promise<MemoryEntry[]>;
-  write?: (label: string, content: string) => Promise<void>;
+  search: (query: string, opts?: MemoryQueryOpts) => Promise<MemoryEntry[]>;
+  write?: (label: string, content: string, opts?: MemoryWriteOpts) => Promise<void>;
   read?: (label: string) => Promise<MemoryEntry | null>;
   list?: () => Promise<string[]>;
+  forget?: (peerId: string) => Promise<number>;
 }
 
 export type MemoryProviderSpec = StaticMemoryProvider | NamespaceMemoryProvider;
