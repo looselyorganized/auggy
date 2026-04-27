@@ -226,4 +226,34 @@ describe("synthesizeContextFor namespace provider", () => {
       wrapped.context!(makeMessageTurnState("hi"), undefined),
     ).rejects.toThrow("db down");
   });
+
+  it("passes peerId from turn.peer to namespace search()", async () => {
+    let receivedOpts: { peerId?: string } | undefined;
+    const aug: Augment = {
+      name: "episodic",
+      memory: {
+        owns: { kind: "namespace", prefix: "ep:" },
+        defaults: {
+          mutable: true,
+          origin: "peer-derived",
+          priority: "normal",
+          placement: "preamble",
+          eviction: "drop",
+        },
+        search: async (_query, opts) => {
+          receivedOpts = opts;
+          return [];
+        },
+      },
+    };
+
+    const wrapped = synthesizeContextFor(aug);
+    const turn: TurnState = {
+      ...makeMessageTurnState("hello"),
+      peer: { id: "vis_abc", kind: "human", trustLevel: "untrusted", sourceAugment: "web" },
+    };
+
+    await wrapped.context!(turn, undefined);
+    expect(receivedOpts).toEqual({ peerId: "vis_abc" });
+  });
 });

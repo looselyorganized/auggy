@@ -49,7 +49,7 @@ export function synthesizeContextFor(aug: Augment): Augment {
       const query = extractText(payload?.parts ?? []);
       if (!query) return [];
       try {
-        const results = await nsSpec.search(query);
+        const results = await nsSpec.search(query, { peerId: turn.peer?.id });
         entries.push(...results);
       } catch (err) {
         if (isRequired) throw err;
