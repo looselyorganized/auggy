@@ -133,16 +133,16 @@ describe("CapabilityTable", () => {
 });
 
 describe("CapabilityTable — trust-aware", () => {
-  it("effectiveTrustLevel maps null peer to operator", () => {
-    expect(effectiveTrustLevel(null)).toBe("operator");
+  it("effectiveTrustLevel maps null peer to creator", () => {
+    expect(effectiveTrustLevel(null)).toBe("creator");
     expect(
       effectiveTrustLevel({
         id: "x",
         kind: "human",
-        trustLevel: "untrusted",
+        trustLevel: "public",
         sourceAugment: "t",
       }),
-    ).toBe("untrusted");
+    ).toBe("public");
   });
 
   it("perTrustLevel.neverExpose hides a tool from one level only", () => {
@@ -151,26 +151,26 @@ describe("CapabilityTable — trust-aware", () => {
         name: "fs",
         constraints: {
           perTrustLevel: {
-            untrusted: { neverExpose: ["fs_remove"] },
+            public: { neverExpose: ["fs_remove"] },
           },
         },
       },
     ];
     const table = createCapabilityTable(augments);
 
-    expect(table.canExpose("fs_remove", turnWithTrust("untrusted"))).toBe(false);
-    expect(table.canExpose("fs_remove", turnWithTrust("authenticated"))).toBe(true);
-    expect(table.canExpose("fs_remove", turnWithTrust("facility"))).toBe(true);
-    expect(table.canExpose("fs_remove", turnWithTrust("operator"))).toBe(true);
+    expect(table.canExpose("fs_remove", turnWithTrust("public"))).toBe(false);
+    expect(table.canExpose("fs_remove", turnWithTrust("agent"))).toBe(true);
+    expect(table.canExpose("fs_remove", turnWithTrust("agent"))).toBe(true);
+    expect(table.canExpose("fs_remove", turnWithTrust("creator"))).toBe(true);
   });
 
-  it("null peer sees perTrustLevel tools gated to operator (treated as operator)", () => {
+  it("null peer sees perTrustLevel tools gated to creator (treated as creator)", () => {
     const augments: Augment[] = [
       {
         name: "fs",
         constraints: {
           perTrustLevel: {
-            untrusted: { neverExpose: ["fs_remove"] },
+            public: { neverExpose: ["fs_remove"] },
           },
         },
       },
@@ -187,14 +187,14 @@ describe("CapabilityTable — trust-aware", () => {
         constraints: {
           neverExpose: ["fs_remove"], // global block
           perTrustLevel: {
-            operator: { neverExpose: [] }, // empty per-level does not override global
+            creator: { neverExpose: [] }, // empty per-level does not override global
           },
         },
       },
     ];
     const table = createCapabilityTable(augments);
-    expect(table.canExpose("fs_remove", turnWithTrust("operator"))).toBe(false);
-    expect(table.canExpose("fs_remove", turnWithTrust("untrusted"))).toBe(false);
+    expect(table.canExpose("fs_remove", turnWithTrust("creator"))).toBe(false);
+    expect(table.canExpose("fs_remove", turnWithTrust("public"))).toBe(false);
   });
 
   it("perTrustLevel blocks stack additively with top-level neverExpose", () => {
@@ -204,8 +204,8 @@ describe("CapabilityTable — trust-aware", () => {
         constraints: {
           neverExpose: ["fs_globally_blocked"],
           perTrustLevel: {
-            untrusted: { neverExpose: ["fs_write", "fs_mkdir", "fs_remove"] },
-            authenticated: { neverExpose: ["fs_remove"] },
+            public: { neverExpose: ["fs_write", "fs_mkdir", "fs_remove"] },
+            agent: { neverExpose: ["fs_remove"] },
           },
         },
       },
@@ -213,23 +213,23 @@ describe("CapabilityTable — trust-aware", () => {
     const table = createCapabilityTable(augments);
 
     // Global block for everyone
-    expect(table.canExpose("fs_globally_blocked", turnWithTrust("operator"))).toBe(false);
-    expect(table.canExpose("fs_globally_blocked", turnWithTrust("untrusted"))).toBe(false);
+    expect(table.canExpose("fs_globally_blocked", turnWithTrust("creator"))).toBe(false);
+    expect(table.canExpose("fs_globally_blocked", turnWithTrust("public"))).toBe(false);
 
-    // Untrusted loses all three
-    expect(table.canExpose("fs_write", turnWithTrust("untrusted"))).toBe(false);
-    expect(table.canExpose("fs_mkdir", turnWithTrust("untrusted"))).toBe(false);
-    expect(table.canExpose("fs_remove", turnWithTrust("untrusted"))).toBe(false);
+    // Public loses all three
+    expect(table.canExpose("fs_write", turnWithTrust("public"))).toBe(false);
+    expect(table.canExpose("fs_mkdir", turnWithTrust("public"))).toBe(false);
+    expect(table.canExpose("fs_remove", turnWithTrust("public"))).toBe(false);
 
-    // Authenticated loses only fs_remove
-    expect(table.canExpose("fs_write", turnWithTrust("authenticated"))).toBe(true);
-    expect(table.canExpose("fs_mkdir", turnWithTrust("authenticated"))).toBe(true);
-    expect(table.canExpose("fs_remove", turnWithTrust("authenticated"))).toBe(false);
+    // Agent loses only fs_remove
+    expect(table.canExpose("fs_write", turnWithTrust("agent"))).toBe(true);
+    expect(table.canExpose("fs_mkdir", turnWithTrust("agent"))).toBe(true);
+    expect(table.canExpose("fs_remove", turnWithTrust("agent"))).toBe(false);
 
-    // Operator keeps everything (except the global block)
-    expect(table.canExpose("fs_write", turnWithTrust("operator"))).toBe(true);
-    expect(table.canExpose("fs_mkdir", turnWithTrust("operator"))).toBe(true);
-    expect(table.canExpose("fs_remove", turnWithTrust("operator"))).toBe(true);
+    // Creator keeps everything (except the global block)
+    expect(table.canExpose("fs_write", turnWithTrust("creator"))).toBe(true);
+    expect(table.canExpose("fs_mkdir", turnWithTrust("creator"))).toBe(true);
+    expect(table.canExpose("fs_remove", turnWithTrust("creator"))).toBe(true);
   });
 
   it("perTrustLevel.requiresHumanApproval returns needsApproval for that level only", () => {
@@ -238,7 +238,7 @@ describe("CapabilityTable — trust-aware", () => {
         name: "danger",
         constraints: {
           perTrustLevel: {
-            untrusted: { requiresHumanApproval: ["memory_write"] },
+            public: { requiresHumanApproval: ["memory_write"] },
           },
         },
       },
@@ -248,15 +248,15 @@ describe("CapabilityTable — trust-aware", () => {
     const untrustedResult = table.canExecute(
       "memory_write",
       {},
-      turnWithTrust("untrusted"),
+      turnWithTrust("public"),
     );
     expect(untrustedResult).toHaveProperty("needsApproval", true);
 
     expect(
-      table.canExecute("memory_write", {}, turnWithTrust("authenticated")),
+      table.canExecute("memory_write", {}, turnWithTrust("agent")),
     ).toEqual({ allowed: true });
     expect(
-      table.canExecute("memory_write", {}, turnWithTrust("operator")),
+      table.canExecute("memory_write", {}, turnWithTrust("creator")),
     ).toEqual({ allowed: true });
   });
 
@@ -266,7 +266,7 @@ describe("CapabilityTable — trust-aware", () => {
         name: "fs",
         constraints: {
           perTrustLevel: {
-            untrusted: { neverExpose: ["fs_remove"] },
+            public: { neverExpose: ["fs_remove"] },
           },
         },
       },
@@ -274,7 +274,7 @@ describe("CapabilityTable — trust-aware", () => {
     const table = createCapabilityTable(augments);
 
     // fs_read is not mentioned anywhere — every level sees it
-    for (const level of ["untrusted", "authenticated", "facility", "operator"] as const) {
+    for (const level of ["public", "agent", "creator"] as const) {
       expect(table.canExpose("fs_read", turnWithTrust(level))).toBe(true);
     }
   });
@@ -289,7 +289,7 @@ describe("CapabilityTable — trust-aware", () => {
     ];
     const table = createCapabilityTable(augments);
 
-    const result = table.canExecute("secret_tool", {}, turnWithTrust("operator"));
+    const result = table.canExecute("secret_tool", {}, turnWithTrust("creator"));
     expect(result).toHaveProperty("denied", true);
     if ("denied" in result) {
       expect(result.reason).toMatch(/neverExpose/i);
@@ -302,27 +302,27 @@ describe("CapabilityTable — trust-aware", () => {
         name: "fs",
         constraints: {
           perTrustLevel: {
-            untrusted: { neverExpose: ["fs_write", "fs_remove"] },
+            public: { neverExpose: ["fs_write", "fs_remove"] },
           },
         },
       },
     ];
     const table = createCapabilityTable(augments);
 
-    // Untrusted peer fabricates a call to fs_write (it wasn't in their
+    // Public peer fabricates a call to fs_write (it wasn't in their
     // tool list via canExpose, but the model emitted the name anyway).
     const untrustedResult = table.canExecute(
       "fs_write",
       {},
-      turnWithTrust("untrusted"),
+      turnWithTrust("public"),
     );
     expect(untrustedResult).toHaveProperty("denied", true);
 
-    // Authenticated peer — tool is not in their neverExpose list — allowed.
+    // Agent peer — tool is not in their neverExpose list — allowed.
     const authResult = table.canExecute(
       "fs_write",
       {},
-      turnWithTrust("authenticated"),
+      turnWithTrust("agent"),
     );
     expect(authResult).toEqual({ allowed: true });
   });

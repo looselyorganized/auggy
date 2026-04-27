@@ -232,3 +232,69 @@ describe("resolveAugments — multiple", () => {
     expect(augments[1]!.name).toBe("fetch");
   });
 });
+
+// ---------------------------------------------------------------------------
+// budgets
+// ---------------------------------------------------------------------------
+
+describe("resolveAugments — budgets", () => {
+  test("resolves a budgets augment with dbPath resolved against agentDir", async () => {
+    const configs: AugmentConfig[] = [
+      {
+        name: "budgets",
+        type: "budgets",
+        options: {
+          dbPath: "./budgets.db",
+          caps: {
+            public: {
+              recognized: { maxTurnsPerThread: 20, maxTurnsPerDay: 50, maxUsdPerDay: 1 },
+              anonymous: { maxTurnsPerThread: 5 },
+            },
+          },
+          anonymousGlobalLimit: 30,
+          dailyBudgetUsd: 5,
+        },
+      },
+    ];
+
+    const augments = await resolveAugments(configs, TMP);
+    expect(augments).toHaveLength(1);
+    expect(augments[0]!.name).toBe("budgets");
+    expect(augments[0]!.turnGate).toBeDefined();
+    // Budgets is not a memory provider.
+    expect(augments[0]!.memory).toBeUndefined();
+    // Capabilities include lifecycle (for onShutdown) and context.
+    expect(augments[0]!.capabilities).toContain("lifecycle");
+    expect(augments[0]!.capabilities).toContain("context");
+  });
+
+  test("resolves budgets augment with default dbPath when omitted from options", async () => {
+    const configs: AugmentConfig[] = [
+      {
+        name: "budgets",
+        type: "budgets",
+        options: {},
+      },
+    ];
+
+    const augments = await resolveAugments(configs, TMP);
+    expect(augments).toHaveLength(1);
+    expect(augments[0]!.name).toBe("budgets");
+    expect(augments[0]!.turnGate).toBeDefined();
+  });
+
+  test("closes the store on shutdown without error", async () => {
+    const configs: AugmentConfig[] = [
+      {
+        name: "budgets",
+        type: "budgets",
+        options: { dbPath: "./budgets-shutdown-test.db" },
+      },
+    ];
+
+    const augments = await resolveAugments(configs, TMP);
+    expect(augments[0]!.onShutdown).toBeDefined();
+    // Should resolve cleanly without throwing.
+    await expect(augments[0]!.onShutdown!()).resolves.toBeUndefined();
+  });
+});

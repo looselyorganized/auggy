@@ -35,7 +35,7 @@ export interface TransportSpec {
 
 **`identify(raw)`** is a pure function from "whatever the transport's wire format hands you" to `PeerIdentity | null`. It runs once per inbound request, before the request enters the queue. Returning `null` means "I cannot identify this peer" — the transport is responsible for what to do with that (the web transport returns a 400 error).
 
-The web transport's `identify()` reads `x-peer-id`, `x-peer-kind`, `x-peer-name`, and `x-org-id` headers from a request and returns a `PeerIdentity` with `trustLevel` set from `opts.trustLevel` (default `"authenticated"`). A future spine transport would read auth tokens from a different envelope and probably set `trustLevel: "facility"`.
+The web transport's `identify()` reads `x-peer-id`, `x-peer-kind`, `x-peer-name`, and `x-org-id` headers from a request and returns a `PeerIdentity` with `trustLevel` set from `opts.trustLevel` (default `"public"`). A future spine transport would read auth tokens from a different envelope and probably set `trustLevel: "agent"`.
 
 **`concurrency`**, **`maxQueueDepth`**, and **`rateLimitPerPeer`** are configuration for the per-transport queue that the runtime constructs when the agent starts. Defaults: `1`, `50`, none. See [04-kernel.md § transport-queue.ts](./04-kernel.md#srckerneltransport-queuets--per-transport-queue) for details.
 
@@ -218,7 +218,7 @@ export interface WebTransportOptions {
   auth: { type: "bearer"; token: string };
   cors?: { origins: string[] };
   maxMessageLength?: number;     // default 4000
-  trustLevel?: TrustLevel;       // default "authenticated"
+  trustLevel?: TrustLevel;       // default "public"
   concurrency?: number;          // default 1
   maxQueueDepth?: number;        // default 50
   rateLimitPerPeer?: { maxPerMinute: number };

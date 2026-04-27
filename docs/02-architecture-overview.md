@@ -208,7 +208,7 @@ Content-Type: application/json
   threadId: ...,
   timestamp: ...,
   source: "web",
-  peer: { id: "visitor-001", kind: "human", trustLevel: "authenticated", ... },
+  peer: { id: "visitor-001", kind: "human", trustLevel: "public", ... },
   payload: {
     parts: [{ kind: "text", text: "are you open?" }],
     sourceAugment: "web",

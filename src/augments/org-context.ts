@@ -306,8 +306,8 @@ export function orgContext(opts: OrgContextOptions): Augment {
           error: "org_escalate requires turn context — cannot determine peer identity.",
         });
       }
-      const trustLevel = context.peer?.trustLevel ?? "operator";
-      if (escalationEnabled && trustLevel !== "operator") {
+      const trustLevel = context.peer?.trustLevel ?? "creator";
+      if (escalationEnabled && trustLevel !== "creator") {
         const peerId = context.peer!.id;
 
         const cooldownMsg = checkCooldown(peerId);
@@ -356,7 +356,7 @@ export function orgContext(opts: OrgContextOptions): Augment {
           });
         }
 
-        if (trustLevel !== "operator") {
+        if (trustLevel !== "creator") {
           recordEscalation(context.peer?.id ?? "unknown", summary);
         }
 

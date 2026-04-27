@@ -182,13 +182,13 @@ All four tools enforce the same trust rule before executing:
 ```
 - Missing context        → DENY (fail-closed)
 - origin "peer-derived"  → ALLOW (peer-scoped memory is open to all)
-- trust ∈ {operator, facility} → ALLOW
-- otherwise              → DENY (untrusted, authenticated, or any future level)
+- trust ∈ {creator, agent} → ALLOW
+- otherwise              → DENY (public, or any future level below agent)
 ```
 
 This is structural defense alongside the prompt-based defenses (red-team 2026-04-16). The rule is encoded in `assertMemoryAccess(operation, origin, context)` and applied identically across read, write, search, and list.
 
-Null peer (internal/scheduled triggers) is treated as operator trust per the convention from `effectiveTrustLevel` in capability-table.ts.
+Null peer (internal/scheduled triggers) is treated as creator trust per the convention from `effectiveTrustLevel` in capability-table.ts.
 
 ### `memory_read(label: string)`
 

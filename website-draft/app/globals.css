@@ -1,0 +1,53 @@
+/**
+ * Auggy "Composer's Plate" palette.
+ *
+ * We reuse the OpenHands design-system component library as-is (Button, Pill,
+ * TerminalCard, etc.) but rebind the CSS variables underneath. The components
+ * never see "cream" or "cocoa" or "highlight" — they see whatever hex these
+ * tokens resolve to. So mapping --color-cream → bone is enough to repaint the
+ * entire system.
+ *
+ * If/when an Auggy-only token is needed, prefix with `--color-aug-...` to
+ * avoid colliding with the OpenHands names.
+ */
+
+@import "tailwindcss";
+@plugin "@tailwindcss/typography";
+
+@theme {
+  /* Composer's Plate — bone / iron / signal */
+  --color-cream:           #EFEAE0;  /* page background ("bone parchment") */
+  --color-cream-soft:      #E9E2D2;  /* hover state for parchment cards */
+  --color-parchment:       #F5F1E7;  /* card surface, slightly warmer than bone */
+  --color-cocoa:           #181A1E;  /* primary text + terminal surfaces ("iron") */
+  --color-cocoa-soft:      #2A2D33;  /* borders / dividers on iron */
+  --color-highlight:       #E85D24;  /* THE accent — signal / persimmon */
+  --color-highlight-soft:  #F4C8AE;  /* lower-energy signal band */
+  --color-contour:         #D8CDB6;  /* topographic / dashed dividers ("grid") */
+  --color-muted:           #6F6457;  /* secondary text on bone */
+  --color-glyph:           #B6A98E;  /* ASCII background field — recedes */
+
+  /* Type stacks — wire Söhne or Inter Tight via next/font/local */
+  --font-display: "Söhne", "Inter Tight", "Inter", system-ui, sans-serif;
+  --font-sans:    "Söhne", "Inter Tight", "Inter", system-ui, sans-serif;
+  --font-mono:    "Geist Mono", "JetBrains Mono", ui-monospace, monospace;
+
+  /* Radii */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+}
+
+html, body {
+  background: var(--color-cream);
+  color: var(--color-cocoa);
+  font-family: var(--font-sans);
+  font-size: 14.4px;
+  line-height: 1.7;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* The hero ASCII backdrop renders in --color-glyph; nothing to override here.
+   If the persimmon palette feels too warm against the bone background, drop
+   --color-glyph half a step toward #A89C82 to push it further into the parchment. */

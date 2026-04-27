@@ -116,7 +116,7 @@ describe("defineAgent", () => {
       peer: {
         id: "tester",
         kind: "human",
-        trustLevel: "operator",
+        trustLevel: "creator",
         sourceAugment: "test",
       },
       payload: {
@@ -180,7 +180,7 @@ describe("defineAgent", () => {
       peer: {
         id: "tester",
         kind: "human",
-        trustLevel: "operator",
+        trustLevel: "creator",
         sourceAugment: "test",
       },
       payload: {

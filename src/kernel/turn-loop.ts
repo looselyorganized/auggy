@@ -14,6 +14,8 @@ import type {
   KernelEvent,
   KernelEventHandler,
   CostResult,
+  TurnGateProvider,
+  TurnGateTicket,
 } from "../types";
 import type { Tokenizer } from "../tokenizer";
 import { extractText } from "../parts";
@@ -213,6 +215,109 @@ export function createTurnLoop(opts: {
       // Check abort before starting work
       if (signal?.aborted) return makeAbortResult();
 
+      // ---------------------------------------------------------------------------
+      // Pre-dispatch: turn-gate admission via 2PC (prepare → confirm/rollback → cost commit)
+      // ---------------------------------------------------------------------------
+      const turnGates = augments.filter(
+        (a): a is Augment & { turnGate: TurnGateProvider } => a.turnGate !== undefined,
+      );
+
+      const tickets: TurnGateTicket[] = [];
+
+      // Phase 1: Prepare — each gate stages its writes inside its own open transaction.
+      for (const gate of turnGates) {
+        let ticket: TurnGateTicket;
+        try {
+          ticket = await gate.turnGate.prepare({
+            turnId: trigger.turnId,
+            peer: trigger.peer ?? null,
+            threadId,
+            trigger,
+          });
+        } catch (err) {
+          // prepare itself threw — treat as admission-state-failed.
+          // Roll back any tickets already prepared.
+          for (const t of tickets) {
+            try { await t.rollback(); }
+            catch (e) {
+              console.error(`[turn-gate ${gate.name}] rollback after prepare-throw failed:`, e);
+            }
+          }
+          traceEmitter.finalize(trace);
+          return {
+            turnId: trigger.turnId,
+            success: false,
+            status: "rejected",
+            response: undefined,
+            toolCalls: [],
+            trace,
+            error: {
+              message: `turn-gate "${gate.name}" prepare failed: ${err instanceof Error ? err.message : String(err)}`,
+              source: gate.name,
+            },
+            errorClass: "admission-state-failed",
+          };
+        }
+        tickets.push(ticket);
+      }
+
+      // Phase 2: Decision evaluation — conjunctive. Any denial rolls back all tickets.
+      const denied = tickets.find((t) => !t.decision.allow);
+      if (denied) {
+        const denialReason = (denied.decision as { allow: false; reason: string }).reason;
+        for (const t of tickets) {
+          try { await t.rollback(); }
+          catch (err) { console.error("[turn-gate] rollback failed:", err); }
+        }
+        traceEmitter.finalize(trace);
+        return {
+          turnId: trigger.turnId,
+          success: false,
+          status: "rejected",
+          response: undefined,
+          toolCalls: [],
+          trace,
+          error: { message: denialReason, source: "turn-gate" },
+          errorClass: "cap-denied",
+        };
+      }
+
+      // Phase 3: Confirm — fail-closed. If any confirm throws, roll back all tickets.
+      let confirmError: unknown = null;
+      let confirmErrorGateName = "turn-gate";
+      for (let ci = 0; ci < tickets.length; ci++) {
+        try {
+          await tickets[ci]!.confirm();
+        } catch (err) {
+          confirmError = err;
+          confirmErrorGateName = turnGates[ci]?.name ?? "turn-gate";
+          break;
+        }
+      }
+      if (confirmError !== null) {
+        for (const t of tickets) {
+          try { await t.rollback(); }
+          catch (err) { console.error("[turn-gate] rollback after confirm-throw failed:", err); }
+        }
+        traceEmitter.finalize(trace);
+        return {
+          turnId: trigger.turnId,
+          success: false,
+          status: "rejected",
+          response: undefined,
+          toolCalls: [],
+          trace,
+          error: {
+            message: `admission state could not be persisted: ${confirmError instanceof Error ? confirmError.message : String(confirmError)}`,
+            source: confirmErrorGateName,
+          },
+          errorClass: "admission-state-failed",
+        };
+      }
+
+      // All gates admitted. Fall through to turn body.
+      // Phase 5 (cost commit) runs after the engine call returns — see bottom of executeTurn.
+
       const history = getOrCreateHistory(threadId);
 
       // Append inbound message to history (extract text from parts)
@@ -397,6 +502,30 @@ export function createTurnLoop(opts: {
         withheldTools: toolSelection.withheld,
       });
 
+      // Phase 5 helper: cost commit (post-response, fail-safe).
+      // Called after each successful engine exit. Errors are logged; they
+      // do NOT fail the turn because the response already exists.
+      async function runCostCommit(): Promise<void> {
+        const lastInferenceStep = trace.inferenceSteps[trace.inferenceSteps.length - 1];
+        const cost: CostResult = lastInferenceStep?.cost ?? {
+          priced: false,
+          reason: "no inference recorded",
+        };
+        for (const gate of turnGates) {
+          if (!gate.turnGate.commit) continue;
+          try {
+            await gate.turnGate.commit({
+              turnId: trigger.turnId,
+              peer: trigger.peer ?? null,
+              threadId,
+              cost,
+            });
+          } catch (err) {
+            console.error(`[turn-gate ${gate.name}] commit failed:`, err);
+          }
+        }
+      }
+
       // Inference + tool execution loop
       capabilityTable.resetTurn();
       const consecutiveFailures = new Map<string, number>();
@@ -477,6 +606,7 @@ export function createTurnLoop(opts: {
           });
 
           traceEmitter.finalize(trace);
+          await runCostCommit();
           return {
             turnId: trigger.turnId,
             success: true,
@@ -666,6 +796,7 @@ export function createTurnLoop(opts: {
             status: "completed",
           });
           traceEmitter.finalize(trace);
+          await runCostCommit();
           return {
             turnId: trigger.turnId,
             success: true,
@@ -705,6 +836,7 @@ export function createTurnLoop(opts: {
         status: "completed",
       });
       traceEmitter.finalize(trace);
+      await runCostCommit();
       return {
         turnId: trigger.turnId,
         success: true,

@@ -497,8 +497,8 @@ export function filesystem(opts: FilesystemOptions): Augment {
       // has already been exposed and called. perTrustLevel runs before the
       // model sees the tool.
       perTrustLevel: {
-        untrusted: { neverExpose: ["fs_write", "fs_mkdir", "fs_remove"] },
-        authenticated: { neverExpose: ["fs_remove"] },
+        public: { neverExpose: ["fs_write", "fs_mkdir", "fs_remove"] },
+        agent: { neverExpose: ["fs_remove"] },
       },
     },
 

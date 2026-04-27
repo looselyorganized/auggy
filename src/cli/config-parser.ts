@@ -123,6 +123,7 @@ const BUILTIN_TYPES = new Set([
   "webFetch",
   "orgContext",
   "bash",
+  "budgets",
 ]);
 const KNOWN_PROVIDERS = new Set(["anthropic", "openai", "openrouter"]);
 const VALID_REASONING_EFFORTS = new Set([
@@ -134,6 +135,119 @@ const VALID_REASONING_EFFORTS = new Set([
   "xhigh",
 ]);
 const VALID_ROUTING_SORTS = new Set(["price", "throughput", "latency"]);
+
+// ---------------------------------------------------------------------------
+// Per-augment option validators
+// ---------------------------------------------------------------------------
+
+/**
+ * Validate a BudgetCaps object (used for agent, public.anonymous, public.recognized).
+ * Each field must be a positive number when present.
+ */
+function validateBudgetCaps(
+  caps: Record<string, unknown>,
+  path: string,
+  errors: string[],
+): void {
+  const numericFields = [
+    "maxTurnsPerThread",
+    "maxTurnsPerDay",
+    "maxUsdPerDay",
+    "maxUsdPerThread",
+  ] as const;
+  for (const field of numericFields) {
+    if (caps[field] !== undefined) {
+      if (typeof caps[field] !== "number" || (caps[field] as number) <= 0) {
+        errors.push(`${path}.${field}: must be a positive number`);
+      }
+    }
+  }
+}
+
+/**
+ * Validate the options block for a budgets augment.
+ */
+function validateBudgetsOptions(
+  opts: Record<string, unknown>,
+  prefix: string,
+  errors: string[],
+): void {
+  if (typeof opts.dbPath !== "string" || opts.dbPath.length === 0) {
+    errors.push(`${prefix}.options.dbPath: required string`);
+  }
+
+  const numericPositive: Array<keyof typeof opts> = [
+    "anonymousGlobalLimit",
+    "dailyBudgetUsd",
+    "cleanupWindowMs",
+  ];
+  for (const field of numericPositive) {
+    if (opts[field] !== undefined) {
+      if (typeof opts[field] !== "number" || (opts[field] as number) <= 0) {
+        errors.push(`${prefix}.options.${field}: must be a positive number`);
+      }
+    }
+  }
+
+  if (opts.caps !== undefined) {
+    if (
+      typeof opts.caps !== "object" ||
+      opts.caps === null ||
+      Array.isArray(opts.caps)
+    ) {
+      errors.push(`${prefix}.options.caps: must be an object`);
+      return;
+    }
+    const caps = opts.caps as Record<string, unknown>;
+
+    if (caps.agent !== undefined) {
+      if (
+        typeof caps.agent !== "object" ||
+        caps.agent === null ||
+        Array.isArray(caps.agent)
+      ) {
+        errors.push(`${prefix}.options.caps.agent: must be an object`);
+      } else {
+        validateBudgetCaps(
+          caps.agent as Record<string, unknown>,
+          `${prefix}.options.caps.agent`,
+          errors,
+        );
+      }
+    }
+
+    if (caps.public !== undefined) {
+      if (
+        typeof caps.public !== "object" ||
+        caps.public === null ||
+        Array.isArray(caps.public)
+      ) {
+        errors.push(`${prefix}.options.caps.public: must be an object`);
+      } else {
+        const pub = caps.public as Record<string, unknown>;
+        for (const substate of ["anonymous", "recognized"] as const) {
+          if (pub[substate] !== undefined) {
+            if (
+              typeof pub[substate] !== "object" ||
+              pub[substate] === null ||
+              Array.isArray(pub[substate])
+            ) {
+              errors.push(
+                `${prefix}.options.caps.public.${substate}: must be an object`,
+              );
+            } else {
+              validateBudgetCaps(
+                pub[substate] as Record<string, unknown>,
+                `${prefix}.options.caps.public.${substate}`,
+                errors,
+              );
+            }
+          }
+        }
+      }
+    }
+  }
+}
 
 function validateConfig(raw: Record<string, unknown>): ParsedConfig {
   const errors: string[] = [];
@@ -306,6 +420,11 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
 
       if (aug.type === "custom" && typeof aug.source !== "string") {
         errors.push(`${prefix}.source: required for type "custom"`);
+      }
+
+      if (aug.type === "budgets") {
+        const opts = (aug.options ?? {}) as Record<string, unknown>;
+        validateBudgetsOptions(opts, prefix, errors);
       }
     }
   }

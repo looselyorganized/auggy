@@ -30,7 +30,7 @@ describe("SqliteStore", () => {
       label: "ep:vis_a:topic1",
       content: "visitor liked espresso",
       peerId: "vis_a",
-      trustLevel: "untrusted",
+      trustLevel: "public",
       createdAt: Date.now(),
       supersededBy: null,
       retentionClass: "operational",
@@ -42,19 +42,19 @@ describe("SqliteStore", () => {
     const fetched = await store.read("ep:vis_a:topic1");
     expect(fetched?.content).toBe("visitor liked espresso");
     expect(fetched?.peerId).toBe("vis_a");
-    expect(fetched?.trustLevel).toBe("untrusted");
+    expect(fetched?.trustLevel).toBe("public");
   });
 
   it("search returns entries matching content (LIKE)", async () => {
     const now = Date.now();
     await store.write({
       label: "ep:vis_a:1", content: "loves espresso", peerId: "vis_a",
-      trustLevel: "untrusted", createdAt: now, supersededBy: null,
+      trustLevel: "public", createdAt: now, supersededBy: null,
       retentionClass: "operational", isVerbatim: false, expiresAt: null,
     });
     await store.write({
       label: "ep:vis_a:2", content: "asked about weather", peerId: "vis_a",
-      trustLevel: "untrusted", createdAt: now, supersededBy: null,
+      trustLevel: "public", createdAt: now, supersededBy: null,
       retentionClass: "operational", isVerbatim: false, expiresAt: null,
     });
 
@@ -67,12 +67,12 @@ describe("SqliteStore", () => {
     const now = Date.now();
     await store.write({
       label: "ep:vis_a:1", content: "espresso fan", peerId: "vis_a",
-      trustLevel: "untrusted", createdAt: now, supersededBy: null,
+      trustLevel: "public", createdAt: now, supersededBy: null,
       retentionClass: "operational", isVerbatim: false, expiresAt: null,
     });
     await store.write({
       label: "ep:vis_b:1", content: "espresso hater", peerId: "vis_b",
-      trustLevel: "untrusted", createdAt: now, supersededBy: null,
+      trustLevel: "public", createdAt: now, supersededBy: null,
       retentionClass: "operational", isVerbatim: false, expiresAt: null,
     });
 
@@ -89,12 +89,12 @@ describe("SqliteStore", () => {
     const now = Date.now();
     await store.write({
       label: "ep:vis_a:1", content: "x", peerId: "vis_a",
-      trustLevel: "untrusted", createdAt: now, supersededBy: null,
+      trustLevel: "public", createdAt: now, supersededBy: null,
       retentionClass: "operational", isVerbatim: false, expiresAt: null,
     });
     await store.write({
       label: "ep:vis_b:1", content: "y", peerId: "vis_b",
-      trustLevel: "untrusted", createdAt: now, supersededBy: null,
+      trustLevel: "public", createdAt: now, supersededBy: null,
       retentionClass: "operational", isVerbatim: false, expiresAt: null,
     });
 
@@ -106,17 +106,17 @@ describe("SqliteStore", () => {
     const now = Date.now();
     await store.write({
       label: "ep:vis_a:1", content: "a1", peerId: "vis_a",
-      trustLevel: "untrusted", createdAt: now, supersededBy: null,
+      trustLevel: "public", createdAt: now, supersededBy: null,
       retentionClass: "operational", isVerbatim: false, expiresAt: null,
     });
     await store.write({
       label: "ep:vis_a:2", content: "a2", peerId: "vis_a",
-      trustLevel: "untrusted", createdAt: now, supersededBy: null,
+      trustLevel: "public", createdAt: now, supersededBy: null,
       retentionClass: "operational", isVerbatim: false, expiresAt: null,
     });
     await store.write({
       label: "ep:vis_b:1", content: "b1", peerId: "vis_b",
-      trustLevel: "untrusted", createdAt: now, supersededBy: null,
+      trustLevel: "public", createdAt: now, supersededBy: null,
       retentionClass: "operational", isVerbatim: false, expiresAt: null,
     });
 
@@ -132,12 +132,12 @@ describe("SqliteStore", () => {
     const now = Date.now();
     const old = await store.write({
       label: "ep:vis_a:1", content: "old fact", peerId: "vis_a",
-      trustLevel: "untrusted", createdAt: now, supersededBy: null,
+      trustLevel: "public", createdAt: now, supersededBy: null,
       retentionClass: "operational", isVerbatim: false, expiresAt: null,
     });
     const fresh = await store.write({
       label: "ep:vis_a:1b", content: "fresh fact", peerId: "vis_a",
-      trustLevel: "untrusted", createdAt: now + 1, supersededBy: null,
+      trustLevel: "public", createdAt: now + 1, supersededBy: null,
       retentionClass: "operational", isVerbatim: false, expiresAt: null,
     });
     await store.supersede(old.id, fresh.id);
@@ -151,12 +151,12 @@ describe("SqliteStore", () => {
     const now = Date.now();
     await store.write({
       label: "ep:vis_a:soon", content: "expires soon", peerId: "vis_a",
-      trustLevel: "untrusted", createdAt: now, supersededBy: null,
+      trustLevel: "public", createdAt: now, supersededBy: null,
       retentionClass: "operational", isVerbatim: false, expiresAt: now + 1_000,
     });
     await store.write({
       label: "ep:vis_a:fresh", content: "stays", peerId: "vis_a",
-      trustLevel: "untrusted", createdAt: now, supersededBy: null,
+      trustLevel: "public", createdAt: now, supersededBy: null,
       retentionClass: "operational", isVerbatim: false, expiresAt: now + 1_000_000,
     });
 
@@ -182,11 +182,11 @@ describe("SqliteStore", () => {
     const now = Date.now();
     await store.write({
       label: "ep:vis_a:1", content: "lesson learned", peerId: "vis_a",
-      trustLevel: "facility", createdAt: now, supersededBy: null,
+      trustLevel: "agent", createdAt: now, supersededBy: null,
       retentionClass: "lesson", isVerbatim: true, expiresAt: null,
     });
     const fetched = await store.read("ep:vis_a:1");
-    expect(fetched?.trustLevel).toBe("facility");
+    expect(fetched?.trustLevel).toBe("agent");
     expect(fetched?.retentionClass).toBe("lesson");
     expect(fetched?.isVerbatim).toBe(true);
   });
@@ -195,7 +195,7 @@ describe("SqliteStore", () => {
     const now = Date.now();
     const written = await store.write({
       label: "ep:vis_a:1", content: "x", peerId: "vis_a",
-      trustLevel: "untrusted", createdAt: now, supersededBy: null,
+      trustLevel: "public", createdAt: now, supersededBy: null,
       retentionClass: "operational", isVerbatim: false, expiresAt: null,
     });
     expect(written.expiresAt).not.toBeNull();
@@ -211,7 +211,7 @@ describe("SqliteStore", () => {
     const now = Date.now();
     await store.write({
       label: "ep:vis_a:1", content: "tracked", peerId: "vis_a",
-      trustLevel: "untrusted", createdAt: now, supersededBy: null,
+      trustLevel: "public", createdAt: now, supersededBy: null,
       retentionClass: "operational", isVerbatim: false, expiresAt: null,
     });
 
@@ -244,7 +244,7 @@ describe("SqliteStore", () => {
         label: `ep:vis_a:${i}`,
         content: `entry ${i}`,
         peerId: "vis_a",
-        trustLevel: "untrusted",
+        trustLevel: "public",
         createdAt: now + i,
         supersededBy: null,
         retentionClass: "operational",
@@ -266,12 +266,12 @@ describe("SqliteStore", () => {
     const now = Date.now();
     await store.write({
       label: "ep:vis_a:1", content: "literal % match", peerId: "vis_a",
-      trustLevel: "untrusted", createdAt: now, supersededBy: null,
+      trustLevel: "public", createdAt: now, supersededBy: null,
       retentionClass: "operational", isVerbatim: false, expiresAt: null,
     });
     await store.write({
       label: "ep:vis_a:2", content: "should not match", peerId: "vis_a",
-      trustLevel: "untrusted", createdAt: now, supersededBy: null,
+      trustLevel: "public", createdAt: now, supersededBy: null,
       retentionClass: "operational", isVerbatim: false, expiresAt: null,
     });
 

@@ -24,6 +24,7 @@ import { orgContext } from "../augments/org-context";
 import { bash } from "../augments/bash";
 import type { Augment } from "../types";
 import type { AugmentConfig } from "./types";
+import type { BudgetsAugmentOptions } from "../augments/budgets";
 
 // ---------------------------------------------------------------------------
 // Path resolution helper
@@ -154,7 +155,7 @@ function resolveWebTransport(opts: Record<string, unknown>): Augment {
     auth: opts.auth as { type: "bearer"; token: string },
     cors: opts.cors as { origins: string[] } | undefined,
     maxMessageLength: opts.maxMessageLength as number | undefined,
-    trustLevel: opts.trustLevel as "operator" | "facility" | "authenticated" | "untrusted" | undefined,
+    access: opts.access as { agents?: Array<{ id: string; sharedSecret: string }> } | undefined,
     concurrency: opts.concurrency as number | undefined,
     maxQueueDepth: opts.maxQueueDepth as number | undefined,
     rateLimitPerPeer: opts.rateLimitPerPeer as { maxPerMinute: number } | undefined,
@@ -286,6 +287,18 @@ export async function resolveAugments(
       case "bash":
         augment = resolveBash(opts, agentDir);
         break;
+      case "budgets": {
+        const { budgets } = await import("../augments/budgets");
+        const dbPath = (opts.dbPath as string | undefined) ?? "./budgets.db";
+        augment = budgets({
+          dbPath: resolvePath(dbPath, agentDir),
+          caps: opts.caps as BudgetsAugmentOptions["caps"],
+          anonymousGlobalLimit: opts.anonymousGlobalLimit as number | undefined,
+          dailyBudgetUsd: opts.dailyBudgetUsd as number | undefined,
+          cleanupWindowMs: opts.cleanupWindowMs as number | undefined,
+        });
+        break;
+      }
       case "custom":
         augment = await resolveCustom(config, agentDir);
         break;

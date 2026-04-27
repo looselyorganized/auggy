@@ -7,12 +7,12 @@ describe("buildPreamble", () => {
     const peer: PeerIdentity = {
       id: "alice",
       kind: "human",
-      trustLevel: "authenticated",
+      trustLevel: "agent",
       sourceAugment: "web",
       displayName: "Alice",
     };
     const preamble = buildPreamble({ sourceAugment: "web", peer });
-    expect(preamble).toContain("authenticated");
+    expect(preamble).toContain("agent");
     expect(preamble).toContain("Alice");
     expect(preamble).toContain("web");
   });
@@ -24,7 +24,7 @@ describe("buildPreamble", () => {
 
   it("includes all hardening rules", () => {
     const preamble = buildPreamble({ sourceAugment: "web", peer: null });
-    expect(preamble).toContain("untrusted");
+    expect(preamble).toContain("public");
     expect(preamble).toContain("Never reveal");
     expect(preamble).toContain("Never fabricate");
     expect(preamble).toContain("PEER-DERIVED");

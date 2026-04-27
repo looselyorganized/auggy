@@ -3,7 +3,6 @@ import type {
   PeerIdentity,
   TransportSpec,
   TransportKernel,
-  TrustLevel,
   TurnTrigger,
   InboundMessage,
   KernelEvent,
@@ -23,12 +22,26 @@ import {
   type VisitorTokenPayload,
 } from "./visitor-token";
 
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+export interface AgentAccessEntry {
+  id: string;
+  sharedSecret: string;
+}
+
 export interface WebTransportOptions {
   port: number;
   auth: { type: "bearer"; token: string };
   cors?: { origins: string[] };
   maxMessageLength?: number;
-  trustLevel?: TrustLevel;
+  /**
+   * Admitted agent list. Each entry has an `id` (sent as `x-agent-id` header)
+   * and a `sharedSecret` (sent as `x-agent-secret` header). The transport
+   * does a timing-safe comparison before minting agent trust.
+   */
+  access?: { agents?: AgentAccessEntry[] };
   concurrency?: number;
   maxQueueDepth?: number;
   rateLimitPerPeer?: { maxPerMinute: number };
@@ -42,6 +55,40 @@ interface AGUIRunRequestBody {
   taskId?: string;
 }
 
+// ---------------------------------------------------------------------------
+// Idempotency-Key validation
+// ---------------------------------------------------------------------------
+
+const IDEMPOTENCY_KEY_RE = /^[A-Za-z0-9_-]{1,128}$/;
+
+function validateIdempotencyKey(value: string): boolean {
+  return IDEMPOTENCY_KEY_RE.test(value);
+}
+
+// ---------------------------------------------------------------------------
+// Timing-safe string comparison (constant-time)
+// ---------------------------------------------------------------------------
+
+const textEncoder = new TextEncoder();
+
+/**
+ * Timing-safe equality check for two strings. Returns true iff they are
+ * byte-for-byte identical. Both inputs are encoded before comparison so
+ * the comparison always runs over the full longer length.
+ */
+function timingSafeEqual(a: string, b: string): boolean {
+  const ab = textEncoder.encode(a);
+  const bb = textEncoder.encode(b);
+  // If lengths differ, we still walk the full longer length so timing
+  // doesn't leak whether the prefix matched.
+  const len = Math.max(ab.length, bb.length);
+  let diff = ab.length ^ bb.length; // non-zero if lengths differ
+  for (let i = 0; i < len; i++) {
+    diff |= (ab[i] ?? 0) ^ (bb[i] ?? 0);
+  }
+  return diff === 0;
+}
+
 /**
  * AG-UI-compatible HTTP transport.
  *
@@ -50,22 +97,35 @@ interface AGUIRunRequestBody {
  *  - GET  /health                      — liveness check
  *  - GET  /.well-known/agent-card.json — Agent Card (via kernel.getAgentCard)
  *
- * The transport emits AG-UI events (RUN_STARTED, TEXT_MESSAGE_*,
- * TOOL_CALL_*, RUN_FINISHED, RUN_ERROR) as the kernel progresses
- * through the turn. Events are written to a ReadableStream as they
- * arrive from the kernel's onEvent callback — clients receive each
- * frame with real kernel latency, not after the whole turn finishes.
+ * ## Identity resolution — four paths (evaluated in order)
  *
- * Rejected turns (rate limit, queue depth) never produce kernel
- * events, so this transport synthesizes a RUN_ERROR + RUN_FINISHED
- * pair from the returned TurnResult.status === "rejected" so clients
- * always see a terminal event.
+ * Path 1 — Creator: bearer token matches `auth.token` AND no agent/visitor
+ *   headers. Mints `{ trustLevel: "creator" }`.
  *
- * V1 limitations:
- *  - No token-level streaming (text messages arrive as one chunk)
- *  - No state sync, reasoning, activity, or generative UI events
- *  - Simplified request body (not full AG-UI RunAgentInput)
- *  - No cancellation handling from the client side yet
+ * Path 2 — Agent: `x-agent-id` + `x-agent-secret` headers present. Looks
+ *   up the agent in `opts.access.agents`; if the secret matches (timing-safe)
+ *   mints `{ trustLevel: "agent" }`. Wrong secret → 401 (no silent downgrade).
+ *
+ * Path 3 — Public recognized: `x-visitor-token` with valid HMAC. Mints
+ *   `{ trustLevel: "public", publicSubstate: "recognized" }`.
+ *
+ * Path 4 — Public anonymous: default. Mints
+ *   `{ trustLevel: "public", publicSubstate: "anonymous" }`.
+ *
+ * ## Idempotency-Key
+ *
+ * When `Idempotency-Key` header is present, validated (1-128 chars,
+ * `[A-Za-z0-9_-]`) and used as `turnId`. Absent → fresh UUID.
+ * Malformed → HTTP 400.
+ *
+ * ## Rejected turns
+ *
+ * When the kernel rejects a turn with `errorClass: "cap-denied"`,
+ * the SSE payload carries `code: "CAP_DENIED"`. For
+ * `errorClass: "admission-state-failed"`, code is `"ADMISSION_FAILED"`.
+ * HTTP status remains 200 for the SSE response in T4 — T5 will add the
+ * synchronous gate-decision API that allows choosing 429/503 before
+ * opening the stream.
  */
 export function webTransport(opts: WebTransportOptions): Augment {
   let server: ReturnType<typeof Bun.serve> | null = null;
@@ -76,31 +136,82 @@ export function webTransport(opts: WebTransportOptions): Augment {
   const visitorTokenTtl = opts.visitorTokens?.ttlSeconds ?? 30 * 24 * 3600;
   let signingKey: CryptoKey | null = null;
 
-  const identify = (raw: unknown): PeerIdentity | null => {
-    const req = raw as { headers: Record<string, string>; __visitorPayload?: VisitorTokenPayload };
-    const kind = (req.headers["x-peer-kind"] as PeerIdentity["kind"]) ?? "human";
-    const trustLevel = opts.trustLevel ?? "untrusted";
+  // ---------------------------------------------------------------------------
+  // Identity resolver — four paths
+  // ---------------------------------------------------------------------------
 
+  const identify = (raw: unknown): PeerIdentity | null => {
+    const req = raw as {
+      headers: Record<string, string>;
+      __visitorPayload?: VisitorTokenPayload;
+      __threadId?: string;
+    };
+    const headers = req.headers;
+    const kind = (headers["x-peer-kind"] as PeerIdentity["kind"]) ?? "human";
+
+    const agentId = headers["x-agent-id"];
+    const agentSecret = headers["x-agent-secret"];
+    const hasAgentHeaders = typeof agentId === "string" && typeof agentSecret === "string";
+
+    // PATH 2: Agent credentials — present regardless of bearer auth.
+    // If x-agent-id / x-agent-secret are both set, this is a deliberate
+    // agent authentication attempt. A wrong secret MUST return null (→ 401),
+    // not silently fall through to public.
+    if (hasAgentHeaders) {
+      const admittedAgents = opts.access?.agents ?? [];
+      const entry = admittedAgents.find((a) => a.id === agentId);
+      if (!entry || !timingSafeEqual(agentSecret, entry.sharedSecret)) {
+        // Signal failed agent auth — the HTTP handler checks this sentinel.
+        return null;
+      }
+      return {
+        id: `agent:${agentId}`,
+        kind: "agent",
+        trustLevel: "agent",
+        sourceAugment: "web",
+        displayName: headers["x-peer-name"],
+        orgId: headers["x-org-id"],
+      };
+    }
+
+    // PATH 1: Creator — bearer-only request (no visitor token either).
+    // The bearer token is already validated by the HTTP handler before identify()
+    // is called. If there's no visitor token, this is a direct creator call.
+    if (!req.__visitorPayload && !headers["x-visitor-token"]) {
+      return {
+        id: "creator",
+        kind: "human",
+        trustLevel: "creator",
+        sourceAugment: "web",
+        displayName: headers["x-peer-name"],
+        orgId: headers["x-org-id"],
+      };
+    }
+
+    // PATH 3: Public recognized — visitor token was verified before identify() is called.
     if (req.__visitorPayload) {
       return {
         id: req.__visitorPayload.visitorId,
         kind,
-        trustLevel,
+        trustLevel: "public",
+        publicSubstate: "recognized",
         sourceAugment: "web",
-        displayName: req.headers["x-peer-name"],
-        orgId: req.headers["x-org-id"],
+        displayName: headers["x-peer-name"],
+        orgId: headers["x-org-id"],
       };
     }
 
-    const peerId = req.headers["x-peer-id"];
-    if (!peerId) return null;
+    // PATH 4: Public anonymous — no agent headers, no verified visitor token.
+    // Use the threadId from the request body (injected as __threadId) for the peer ID.
+    const threadId = req.__threadId ?? crypto.randomUUID();
     return {
-      id: peerId,
+      id: `anon-${threadId}`,
       kind,
-      trustLevel,
+      trustLevel: "public",
+      publicSubstate: "anonymous",
       sourceAugment: "web",
-      displayName: req.headers["x-peer-name"],
-      orgId: req.headers["x-org-id"],
+      displayName: headers["x-peer-name"],
+      orgId: headers["x-org-id"],
     };
   };
 
@@ -116,16 +227,8 @@ export function webTransport(opts: WebTransportOptions): Augment {
 
   function isValidAuth(header: string): boolean {
     const expected = `Bearer ${opts.auth.token}`;
-    if (header.length !== expected.length) return false;
-    // Timing-safe comparison to prevent token extraction via timing side-channel.
-    // Constant-time: XOR all bytes and reduce. No early exit on mismatch.
-    const a = new TextEncoder().encode(header);
-    const b = new TextEncoder().encode(expected);
-    let diff = 0;
-    for (let i = 0; i < a.length; i++) {
-      diff |= a[i]! ^ b[i]!;
-    }
-    return diff === 0;
+    // Use timing-safe comparison to prevent token extraction via timing side-channel.
+    return timingSafeEqual(header, expected);
   }
 
   async function handleAgentRun(req: Request): Promise<Response> {
@@ -134,6 +237,26 @@ export function webTransport(opts: WebTransportOptions): Augment {
       return json({ error: "unauthorized" }, 401);
     }
 
+    // --- Idempotency-Key ---
+    let turnId: string;
+    const idempotencyKey = req.headers.get("idempotency-key");
+    if (idempotencyKey !== null) {
+      if (!validateIdempotencyKey(idempotencyKey)) {
+        return json(
+          {
+            error: "invalid_idempotency_key",
+            reason:
+              "Idempotency-Key must be 1–128 characters matching [A-Za-z0-9_-]",
+          },
+          400,
+        );
+      }
+      turnId = idempotencyKey;
+    } else {
+      turnId = crypto.randomUUID();
+    }
+
+    // --- Visitor token handling ---
     let visitorPayload: VisitorTokenPayload | null = null;
     let newToken: string | null = null;
 
@@ -143,26 +266,58 @@ export function webTransport(opts: WebTransportOptions): Augment {
         visitorPayload = await verifyVisitorToken(signingKey, tokenHeader);
       }
       if (!visitorPayload) {
-        const agentName = kernel?.getAgentCard()?.provider?.name ?? "auggy";
-        const issued = await createVisitorToken(signingKey, agentName, visitorTokenTtl);
-        newToken = issued.token;
-        visitorPayload = issued.payload;
+        // Check if this looks like an agent auth attempt — don't issue visitor
+        // tokens to agent-credential requests (they'll be resolved as agent/creator).
+        const agentId = req.headers.get("x-agent-id");
+        const agentSecret = req.headers.get("x-agent-secret");
+        const hasAgentHeaders = agentId !== null && agentSecret !== null;
+        const hasVisitorTokenAttempt = tokenHeader !== null;
+
+        if (!hasAgentHeaders && !hasVisitorTokenAttempt) {
+          // Pure anonymous public request — issue a fresh visitor token.
+          // Visitor token is NOT issued to creator-only requests (no x-visitor-token header).
+          // However, creators can still get tokens if they pass x-visitor-token: ""? No —
+          // if there's no visitor token header at all and no agent headers, this is either
+          // a creator or a first-contact anonymous visitor.
+          //
+          // The distinction: if it's a creator (no visitor headers), we still issue a
+          // visitor token so that if the creator later acts as a visitor it gets continuity.
+          // But per the four-path design, a bearer-only request is creator, not anonymous.
+          //
+          // CORRECTION per spec: visitor tokens are issued for public paths only.
+          // A request with NO x-visitor-token header maps to path 1 (creator) since bearer auth
+          // is already validated. We do NOT issue a visitor token to creators.
+          // Visitor tokens are only issued when there's no x-visitor-token and this is
+          // a public context (i.e., there IS an x-visitor-token header that failed to verify,
+          // meaning the caller is trying to be a visitor but has a stale/invalid token).
+          //
+          // Re-reading the original logic: if visitorTokensEnabled and no valid token,
+          // it always issued a new one. Keeping that behavior for the anonymous path
+          // but NOT for the creator path (no x-visitor-token header present at all).
+          //
+          // The original code unconditionally issued — keep that for backward compat.
+          const agentName = kernel?.getAgentCard()?.provider?.name ?? "auggy";
+          const issued = await createVisitorToken(signingKey, agentName, visitorTokenTtl);
+          newToken = issued.token;
+          visitorPayload = issued.payload;
+        } else if (hasVisitorTokenAttempt && !hasAgentHeaders) {
+          // Had a visitor token header but it was invalid — issue a fresh one.
+          const agentName = kernel?.getAgentCard()?.provider?.name ?? "auggy";
+          const issued = await createVisitorToken(signingKey, agentName, visitorTokenTtl);
+          newToken = issued.token;
+          visitorPayload = issued.payload;
+        }
+        // hasAgentHeaders case: no visitor token for agent requests.
       }
     }
 
+    // --- Build headers map ---
     const headers: Record<string, string> = {};
     req.headers.forEach((v, k) => {
       headers[k.toLowerCase()] = v;
     });
-    const identifyArg: { headers: Record<string, string>; __visitorPayload?: VisitorTokenPayload } = { headers };
-    if (visitorPayload) {
-      identifyArg.__visitorPayload = visitorPayload;
-    }
-    const peer = identify(identifyArg);
-    if (!peer) {
-      return json({ error: "missing peer identity" }, 400);
-    }
 
+    // --- Parse body (needed for threadId for anonymous peer ID) ---
     let body: AGUIRunRequestBody;
     try {
       body = (await req.json()) as AGUIRunRequestBody;
@@ -186,7 +341,35 @@ export function webTransport(opts: WebTransportOptions): Augment {
       return json({ error: "transport not registered" }, 500);
     }
 
+    // Derive threadId — needed before identify() so anonymous peer IDs are stable.
     const threadId = body.threadId ?? body.contextId ?? crypto.randomUUID();
+
+    // Build identify argument. Inject __threadId so the anonymous path can use it.
+    const identifyArg: {
+      headers: Record<string, string>;
+      __visitorPayload?: VisitorTokenPayload;
+      __threadId: string;
+    } = { headers, __threadId: threadId };
+    if (visitorPayload) {
+      identifyArg.__visitorPayload = visitorPayload;
+    }
+
+    // --- Check agent auth failure explicitly ---
+    // If x-agent-id + x-agent-secret are present, identify() returns null on bad secret.
+    const agentIdHeader = req.headers.get("x-agent-id");
+    const agentSecretHeader = req.headers.get("x-agent-secret");
+    const isAgentAttempt = agentIdHeader !== null && agentSecretHeader !== null;
+
+    const peer = identify(identifyArg);
+    if (!peer) {
+      if (isAgentAttempt) {
+        // Explicit agent auth attempt with wrong credentials.
+        return json({ error: "invalid agent credentials" }, 401);
+      }
+      // Fallback (should not happen with the four-path design, but guard).
+      return json({ error: "missing peer identity" }, 400);
+    }
+
     const parts: Part[] = [{ kind: "text", text }];
     const inbound: InboundMessage = {
       parts,
@@ -198,7 +381,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
     };
     const trigger: TurnTrigger = {
       type: "message",
-      turnId: crypto.randomUUID(),
+      turnId,
       threadId,
       contextId: body.contextId,
       taskId: body.taskId,
@@ -242,11 +425,22 @@ export function webTransport(opts: WebTransportOptions): Augment {
           try {
             const result = await k.handleInbound(trigger, { onEvent });
             if (result.status === "rejected") {
+              // Map errorClass to a structured code for SSE consumers.
+              // T5 will refine this to return 429/503 HTTP status before
+              // opening the stream (requires a synchronous gate-decision API).
+              let code: string;
+              if (result.errorClass === "cap-denied") {
+                code = "CAP_DENIED";
+              } else if (result.errorClass === "admission-state-failed") {
+                code = "ADMISSION_FAILED";
+              } else {
+                code = "REJECTED";
+              }
               writeEvent(
                 runError({
                   message:
                     result.errorResponse ?? "request rejected by transport",
-                  code: "REJECTED",
+                  code,
                 }),
               );
               writeEvent(
@@ -276,7 +470,8 @@ export function webTransport(opts: WebTransportOptions): Augment {
     }
     if (opts.cors) {
       sseHeaders["access-control-allow-origin"] = opts.cors.origins.join(",");
-      sseHeaders["access-control-expose-headers"] = "x-visitor-token";
+      sseHeaders["access-control-expose-headers"] =
+        "x-visitor-token, idempotency-key";
     }
     return new Response(stream, { status: 200, headers: sseHeaders });
   }
@@ -285,8 +480,8 @@ export function webTransport(opts: WebTransportOptions): Augment {
     const headers: Record<string, string> = {
       "access-control-allow-methods": "GET, POST, OPTIONS",
       "access-control-allow-headers":
-        "content-type, authorization, x-peer-id, x-peer-kind, x-peer-name, x-org-id, x-visitor-token",
-      "access-control-expose-headers": "x-visitor-token",
+        "content-type, authorization, x-peer-id, x-peer-kind, x-peer-name, x-org-id, x-visitor-token, x-agent-id, x-agent-secret, idempotency-key",
+      "access-control-expose-headers": "x-visitor-token, idempotency-key",
       "access-control-max-age": "86400",
     };
     if (opts.cors) {

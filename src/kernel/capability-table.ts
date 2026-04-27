@@ -8,7 +8,7 @@ const KERNEL_DEFAULT_MAX_TOOL_CALLS = 5;
  * checks: if the operator scheduled it, the operator authorized it.
  */
 export function effectiveTrustLevel(peer: PeerIdentity | null): TrustLevel {
-  return peer?.trustLevel ?? "operator";
+  return peer?.trustLevel ?? "creator";
 }
 
 export interface CapabilityTable {

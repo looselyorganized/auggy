@@ -77,25 +77,27 @@ describe("concatUserMessages", () => {
 // ---------------------------------------------------------------------------
 
 describe("extractProductionTrustLevel", () => {
-  it("returns the configured trustLevel when webTransport declares one", () => {
-    const cfgs: AugmentConfig[] = [
-      { name: "web", type: "webTransport", options: { port: 8080, trustLevel: "facility" } },
-    ];
-    expect(extractProductionTrustLevel(cfgs)).toBe("facility");
-  });
-
-  it("returns 'untrusted' default when webTransport omits trustLevel", () => {
+  it("returns 'public' when webTransport is present (trust is per-request since T4)", () => {
     const cfgs: AugmentConfig[] = [
       { name: "web", type: "webTransport", options: { port: 8080 } },
     ];
-    expect(extractProductionTrustLevel(cfgs)).toBe("untrusted");
+    expect(extractProductionTrustLevel(cfgs)).toBe("public");
   });
 
-  it("returns 'untrusted' when no webTransport is configured", () => {
+  it("returns 'public' even when webTransport options include legacy trustLevel (ignored)", () => {
+    // trustLevel is no longer read from config — kept as a regression guard.
+    const cfgs: AugmentConfig[] = [
+      { name: "web", type: "webTransport", options: { port: 8080, trustLevel: "agent" } },
+    ];
+    // Static config is ignored; eval always uses "public" for visitor surface.
+    expect(extractProductionTrustLevel(cfgs)).toBe("public");
+  });
+
+  it("returns 'public' when no webTransport is configured", () => {
     const cfgs: AugmentConfig[] = [
       { name: "identity", type: "fileMemory", options: { source: "self.md" } },
     ];
-    expect(extractProductionTrustLevel(cfgs)).toBe("untrusted");
+    expect(extractProductionTrustLevel(cfgs)).toBe("public");
   });
 });
 
@@ -289,7 +291,7 @@ async function runOneCase(
     peer: {
       id: "test",
       kind: "human",
-      trustLevel: "authenticated",
+      trustLevel: "agent",
       sourceAugment: "security-eval",
     },
     payload: {

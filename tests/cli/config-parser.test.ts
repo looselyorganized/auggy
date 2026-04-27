@@ -402,3 +402,186 @@ describe("loadEnvFile", () => {
     expect(() => loadEnvFile("/nonexistent/path")).not.toThrow();
   });
 });
+
+// ---------------------------------------------------------------------------
+// budgets augment options validation
+// ---------------------------------------------------------------------------
+
+describe("budgets augment options validation", () => {
+  test("accepts a valid budgets block with full caps", () => {
+    const path = writeYaml("agent.yaml", minimalConfig({
+      augments: [
+        {
+          name: "budgets",
+          type: "budgets",
+          options: {
+            dbPath: "./budgets.db",
+            caps: {
+              agent: { maxTurnsPerThread: 100 },
+              public: {
+                recognized: { maxTurnsPerThread: 20, maxTurnsPerDay: 50, maxUsdPerDay: 1 },
+                anonymous: { maxTurnsPerThread: 5 },
+              },
+            },
+            anonymousGlobalLimit: 30,
+            dailyBudgetUsd: 5,
+            cleanupWindowMs: 86400000,
+          },
+        },
+      ],
+    }));
+    const config = parseConfig(path);
+    expect(config.augments[0]!.type).toBe("budgets");
+    expect(config.augments[0]!.options!.dbPath).toBe("./budgets.db");
+    expect(config.augments[0]!.options!.dailyBudgetUsd).toBe(5);
+  });
+
+  test("accepts a minimal budgets block (only dbPath)", () => {
+    const path = writeYaml("agent.yaml", minimalConfig({
+      augments: [
+        { name: "budgets", type: "budgets", options: { dbPath: "./budgets.db" } },
+      ],
+    }));
+    const config = parseConfig(path);
+    expect(config.augments[0]!.type).toBe("budgets");
+  });
+
+  test("rejects budgets block missing dbPath", () => {
+    const path = writeYaml("agent.yaml", minimalConfig({
+      augments: [
+        { name: "budgets", type: "budgets", options: {} },
+      ],
+    }));
+    expect(() => parseConfig(path)).toThrow("dbPath");
+  });
+
+  test("rejects negative dailyBudgetUsd", () => {
+    const path = writeYaml("agent.yaml", minimalConfig({
+      augments: [
+        {
+          name: "budgets",
+          type: "budgets",
+          options: { dbPath: "./budgets.db", dailyBudgetUsd: -1 },
+        },
+      ],
+    }));
+    expect(() => parseConfig(path)).toThrow("dailyBudgetUsd");
+  });
+
+  test("rejects zero dailyBudgetUsd", () => {
+    const path = writeYaml("agent.yaml", minimalConfig({
+      augments: [
+        {
+          name: "budgets",
+          type: "budgets",
+          options: { dbPath: "./budgets.db", dailyBudgetUsd: 0 },
+        },
+      ],
+    }));
+    expect(() => parseConfig(path)).toThrow("dailyBudgetUsd");
+  });
+
+  test("rejects negative anonymousGlobalLimit", () => {
+    const path = writeYaml("agent.yaml", minimalConfig({
+      augments: [
+        {
+          name: "budgets",
+          type: "budgets",
+          options: { dbPath: "./budgets.db", anonymousGlobalLimit: -5 },
+        },
+      ],
+    }));
+    expect(() => parseConfig(path)).toThrow("anonymousGlobalLimit");
+  });
+
+  test("rejects negative cleanupWindowMs", () => {
+    const path = writeYaml("agent.yaml", minimalConfig({
+      augments: [
+        {
+          name: "budgets",
+          type: "budgets",
+          options: { dbPath: "./budgets.db", cleanupWindowMs: -1000 },
+        },
+      ],
+    }));
+    expect(() => parseConfig(path)).toThrow("cleanupWindowMs");
+  });
+
+  test("rejects caps.public.anonymous.maxTurnsPerThread = -5", () => {
+    const path = writeYaml("agent.yaml", minimalConfig({
+      augments: [
+        {
+          name: "budgets",
+          type: "budgets",
+          options: {
+            dbPath: "./budgets.db",
+            caps: {
+              public: {
+                anonymous: { maxTurnsPerThread: -5 },
+              },
+            },
+          },
+        },
+      ],
+    }));
+    expect(() => parseConfig(path)).toThrow("caps.public.anonymous.maxTurnsPerThread");
+  });
+
+  test("rejects caps.public.recognized.maxUsdPerDay = 0", () => {
+    const path = writeYaml("agent.yaml", minimalConfig({
+      augments: [
+        {
+          name: "budgets",
+          type: "budgets",
+          options: {
+            dbPath: "./budgets.db",
+            caps: {
+              public: {
+                recognized: { maxUsdPerDay: 0 },
+              },
+            },
+          },
+        },
+      ],
+    }));
+    expect(() => parseConfig(path)).toThrow("maxUsdPerDay");
+  });
+
+  test("rejects caps.agent.maxTurnsPerDay as non-number", () => {
+    const path = writeYaml("agent.yaml", minimalConfig({
+      augments: [
+        {
+          name: "budgets",
+          type: "budgets",
+          options: {
+            dbPath: "./budgets.db",
+            caps: { agent: { maxTurnsPerDay: "many" } },
+          },
+        },
+      ],
+    }));
+    expect(() => parseConfig(path)).toThrow("caps.agent.maxTurnsPerDay");
+  });
+
+  test("tolerates unknown extra fields under caps (pass-through)", () => {
+    // Unknown fields are not validated — they are passed through to the factory.
+    const path = writeYaml("agent.yaml", minimalConfig({
+      augments: [
+        {
+          name: "budgets",
+          type: "budgets",
+          options: {
+            dbPath: "./budgets.db",
+            caps: {
+              public: {
+                recognized: { maxTurnsPerThread: 10, unknownCap: 999 },
+              },
+            },
+          },
+        },
+      ],
+    }));
+    const config = parseConfig(path);
+    expect(config.augments[0]!.type).toBe("budgets");
+  });
+});

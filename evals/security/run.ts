@@ -97,22 +97,25 @@ export function loadSuite(filename: string): Suite {
 
 /**
  * Extract the trustLevel a real visitor would have under the configured
- * transport. If no webTransport is declared or no trustLevel is set, fall
- * back to the transport's documented default (see `web-transport.ts`).
+ * transport. Since T4, trust is derived per-request via four identity paths
+ * rather than from a static config option. An unauthenticated visitor
+ * always resolves to `"public"` (path 4: anonymous). The eval harness
+ * uses this level when injecting test turns — matching the production surface
+ * that an untrusted visitor would see.
  *
  * Using the production trust level (not a made-up "untrusted") is important:
  * an eval that runs against a stricter surface than production can PASS
  * while a real visitor at the production trust level could still breach.
  */
 export function extractProductionTrustLevel(augmentConfigs: AugmentConfig[]): TrustLevel {
+  // webTransport no longer has a static trustLevel option. Any web transport
+  // that is present means public visitors will reach this agent.
   for (const a of augmentConfigs) {
     if (a.type === "webTransport") {
-      const tl = a.options?.trustLevel;
-      if (typeof tl === "string") return tl as TrustLevel;
-      return "untrusted"; // web-transport.ts default (changed from "authenticated" on 2026-04-24)
+      return "public";
     }
   }
-  return "untrusted";
+  return "public";
 }
 
 export async function bootAgent(configPath: string): Promise<{

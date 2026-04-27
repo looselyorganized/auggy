@@ -36,11 +36,11 @@ function assertMemoryAccess(
   if (origin === "peer-derived") {
     return null;
   }
-  const trustLevel = context.peer?.trustLevel ?? "operator";
-  if (trustLevel === "operator" || trustLevel === "facility") {
+  const trustLevel = context.peer?.trustLevel ?? "creator";
+  if (trustLevel === "creator" || trustLevel === "agent") {
     return null;
   }
-  return `Error: memory_${operation} on this label requires facility or operator trust. Current peer trust: ${trustLevel}.`;
+  return `Error: memory_${operation} on this label requires agent or creator trust. Current peer trust: ${trustLevel}.`;
 }
 
 export interface CreateMemoryToolsResult {
@@ -256,12 +256,12 @@ export function createMemoryTools(
         return "Error: memory_forget requires turn context.";
       }
 
-      // Destructive admin action — gated to operator/facility regardless of
+      // Destructive admin action — gated to creator/agent regardless of
       // any individual provider's origin. Null peer (internal trigger) is
-      // treated as operator trust, matching the convention elsewhere.
-      const trustLevel = context.peer?.trustLevel ?? "operator";
-      if (trustLevel !== "operator" && trustLevel !== "facility") {
-        return `Error: memory_forget requires facility or operator trust. Current peer trust: ${trustLevel}.`;
+      // treated as creator trust, matching the convention elsewhere.
+      const trustLevel = context.peer?.trustLevel ?? "creator";
+      if (trustLevel !== "creator" && trustLevel !== "agent") {
+        return `Error: memory_forget requires agent or creator trust. Current peer trust: ${trustLevel}.`;
       }
 
       let totalDeleted = 0;

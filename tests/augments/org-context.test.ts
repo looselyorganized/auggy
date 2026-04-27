@@ -25,7 +25,7 @@ const MANIFEST_RESPONSE = {
   },
 };
 
-function makePeer(id: string, trustLevel: PeerIdentity["trustLevel"] = "untrusted"): PeerIdentity {
+function makePeer(id: string, trustLevel: PeerIdentity["trustLevel"] = "public"): PeerIdentity {
   return { id, kind: "human", trustLevel, sourceAugment: "web" };
 }
 
@@ -124,7 +124,7 @@ describe("org_escalate rate limiting", () => {
   });
 
   describe("trust-aware bypass", () => {
-    it("operator bypasses all rate limits", async () => {
+    it("creator bypasses all rate limits", async () => {
       const aug = orgContext({
         baseUrl: "http://localhost:9999",
         client: mockClient(MANIFEST_RESPONSE) as any,
@@ -132,7 +132,7 @@ describe("org_escalate rate limiting", () => {
       });
       const tool = aug.tools!.find((t) => t.name === "org_escalate")!;
       await tool.execute({ summary: "first" }, makeContext(makePeer("v1")));
-      const result = JSON.parse(await tool.execute({ summary: "first" }, makeContext(makePeer("op", "operator"))));
+      const result = JSON.parse(await tool.execute({ summary: "first" }, makeContext(makePeer("op", "creator"))));
       expect(result.status).toBe("sent");
     });
   });

@@ -71,7 +71,7 @@ export function createMockTransport(): {
   const defaultPeer: PeerIdentity = {
     id: "test-peer",
     kind: "human",
-    trustLevel: "untrusted",
+    trustLevel: "public",
     sourceAugment: "mock-transport",
   };
 

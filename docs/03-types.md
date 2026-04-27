@@ -174,7 +174,7 @@ The `(string & {})` trick on `ToolCategory` is a TypeScript pattern for "give au
 
 ```ts
 export type PeerKind = "human" | "agent" | "system" | "anonymous";
-export type TrustLevel = "operator" | "facility" | "authenticated" | "untrusted";
+export type TrustLevel = "creator" | "agent" | "public";
 
 export interface PeerIdentity {
   id: string;
@@ -187,12 +187,11 @@ export interface PeerIdentity {
 ```
 
 Trust levels are ordered from most to least:
-- **`operator`** — the human running the agent. Maximum trust. (Reserved; nothing in v1 actually mints `operator`-level identities — that's the spine's job in Plan 4+.)
-- **`facility`** — internal facility components (e.g. another LORF agent over the spine). High trust.
-- **`authenticated`** — a peer that presented valid credentials via the transport (e.g. bearer token). Default for the web transport.
-- **`untrusted`** — a peer with no verified identity. Inputs from `untrusted` peers should be treated as adversarial.
+- **`creator`** — the human deploying/operating the agent. Maximum trust. Null peer (internal/scheduled trigger) is also treated as `creator`.
+- **`agent`** — another admitted agent (e.g. over the spine) or verified machine peer. High trust.
+- **`public`** — an unauthenticated or unverified peer. Inputs from `public` peers should be treated as potentially adversarial.
 
-The kernel never assigns trust levels — only transports do, in their `identify()` function. The kernel reads `trustLevel` to build the system preamble (which warns the model about untrusted peers) and to mark `peer-derived` context blocks.
+The kernel never assigns trust levels — only transports do, in their `identify()` function. The kernel reads `trustLevel` to build the system preamble (which warns the model about public peers) and to mark `peer-derived` context blocks.
 
 `sourceAugment` records which augment minted the identity. This is used in the trace and in `OutboundMessage.targetAugment` (for routing responses back to the right transport when multiple transports are mounted).
 
@@ -516,7 +515,7 @@ This is the **single most important type in the entire framework.** Everything e
 - `neverExpose` — tools the capability table will never let the model see (global; applies to every peer trust level)
 - `contextTimeoutMs` — wraps `context()` in `withTimeout` (default 5000ms)
 - `toolTimeoutMs` — wraps each `execute()` in `withTimeout` (default 30000ms)
-- `perTrustLevel` — per-trust-level additive constraints (Layer 1). Keyed by `TrustLevel` (`operator` / `facility` / `authenticated` / `untrusted`), each level can specify its own `neverExpose` and `requiresHumanApproval` lists. These apply only to peers at that level; top-level `neverExpose` still applies to everyone (no escape). Null peer (internal/scheduled triggers) is treated as `operator`. Example: `perTrustLevel: { untrusted: { neverExpose: ["fs_remove"] } }` hides `fs_remove` from untrusted peers but keeps it visible to authenticated and above.
+- `perTrustLevel` — per-trust-level additive constraints (Layer 1). Keyed by `TrustLevel` (`creator` / `agent` / `public`), each level can specify its own `neverExpose` and `requiresHumanApproval` lists. These apply only to peers at that level; top-level `neverExpose` still applies to everyone (no escape). Null peer (internal/scheduled triggers) is treated as `creator`. Example: `perTrustLevel: { public: { neverExpose: ["fs_remove"] } }` hides `fs_remove` from public peers but keeps it visible to agent and creator.
 
 **Lifecycle hooks:**
 - `onBoot` — called once at `agent.start()`. Failures throw and abort startup.

@@ -37,10 +37,11 @@ describe("scaffoldAgent", () => {
     expect(yaml).toContain("name: zip");
   });
 
-  test("agent.yaml sets trustLevel: untrusted on webTransport", () => {
+  test("agent.yaml does not set trustLevel on webTransport (trust is per-request)", () => {
     const dir = scaffoldAgent({ name: "zip", targetDir: join(TMP, "zip") });
     const yaml = readFileSync(join(dir, "agent.yaml"), "utf-8");
-    expect(yaml).toContain("trustLevel: untrusted");
+    // Trust is now derived per-request (four identity paths) — no static trustLevel.
+    expect(yaml).not.toContain("trustLevel");
   });
 
   test("identity.md contains the agent name and skill manifest", () => {
@@ -93,5 +94,36 @@ describe("scaffoldAgent", () => {
     const gitignore = readFileSync(join(dir, ".gitignore"), "utf-8");
     expect(gitignore).toContain(".env");
     expect(gitignore).toContain("workspace/");
+  });
+
+  test("agent.yaml includes a budgets augment block", () => {
+    const dir = scaffoldAgent({ name: "zip", targetDir: join(TMP, "zip") });
+    const yaml = readFileSync(join(dir, "agent.yaml"), "utf-8");
+    expect(yaml).toContain("type: budgets");
+    expect(yaml).toContain("dbPath: ./budgets.db");
+    expect(yaml).toContain("anonymousGlobalLimit: 30");
+    expect(yaml).toContain("dailyBudgetUsd: 5");
+  });
+
+  test(".gitignore includes budgets.db lines", () => {
+    const dir = scaffoldAgent({ name: "zip", targetDir: join(TMP, "zip") });
+    const gitignore = readFileSync(join(dir, ".gitignore"), "utf-8");
+    expect(gitignore).toContain("budgets.db");
+    expect(gitignore).toContain("budgets.db-journal");
+    expect(gitignore).toContain("budgets.db-wal");
+    expect(gitignore).toContain("budgets.db-shm");
+  });
+
+  test("generated agent.yaml with budgets parses through the config parser", () => {
+    const dir = scaffoldAgent({ name: "zip", targetDir: join(TMP, "zip-budgets") });
+    process.env.AUGGY_WEB_TOKEN = "test-token";
+    process.env.VISITOR_SIGNING_KEY = "test-signing-key";
+    const config = parseConfig(join(dir, "agent.yaml"));
+    const budgetsAugment = config.augments.find((a) => a.type === "budgets");
+    expect(budgetsAugment).toBeDefined();
+    expect(budgetsAugment!.name).toBe("budgets");
+    expect(budgetsAugment!.options!.dbPath).toBe("./budgets.db");
+    delete process.env.AUGGY_WEB_TOKEN;
+    delete process.env.VISITOR_SIGNING_KEY;
   });
 });

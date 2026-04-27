@@ -146,6 +146,21 @@ augments:
       namespace: ep
       retentionDays: 90
 
+  - name: budgets
+    type: budgets
+    options:
+      dbPath: ./budgets.db
+      caps:
+        public:
+          recognized:
+            maxTurnsPerThread: 20
+            maxTurnsPerDay: 50
+            maxUsdPerDay: 1
+          anonymous:
+            maxTurnsPerThread: 5
+      anonymousGlobalLimit: 30
+      dailyBudgetUsd: 5
+
   - name: files
     type: filesystem
     options:
@@ -167,7 +182,6 @@ augments:
     type: webTransport
     options:
       port: 8080
-      trustLevel: untrusted
       auth:
         type: bearer
         token: \${AUGGY_WEB_TOKEN}
@@ -284,4 +298,8 @@ memory.db
 memory.db-journal
 memory.db-wal
 memory.db-shm
+budgets.db
+budgets.db-journal
+budgets.db-wal
+budgets.db-shm
 `;

@@ -117,12 +117,37 @@ export interface Tool<TInput = any> {
 // === Peer Identity (spec §4) ===
 
 export type PeerKind = "human" | "agent" | "system" | "anonymous";
-export type TrustLevel = "operator" | "facility" | "authenticated" | "untrusted";
+
+/**
+ * Trust level for an inbound peer. Determines what they CAN do
+ * (capability gating).
+ *
+ *   creator — the deployer of this specific agent. Bypasses budgets.
+ *   agent   — a machine the creator has admitted (shared-secret).
+ *   public  — everyone else (anonymous or recognized via visitor token).
+ *
+ * v0 ships these three. "person" (verified human, post-OAuth/SSO) is
+ * the post-v0 fourth level — reserved in design, not enabled in code.
+ */
+export type TrustLevel = "creator" | "agent" | "public";
 
 export interface PeerIdentity {
   id: string;
   kind: PeerKind;
   trustLevel: TrustLevel;
+  /**
+   * Substate within the `public` trust level. Set by the transport at
+   * identity resolution. Differentiates first-contact anonymous visitors
+   * from those holding a valid agent-issued visitor token.
+   *
+   * - "anonymous": no token, ephemeral peer.id (anon-<threadId>).
+   *   Memory writes attach to ephemeral identity.
+   * - "recognized": HMAC-verified visitor token, durable peer.id (vis_*).
+   *   Memory writes attach to durable identity.
+   *
+   * Present iff trustLevel === "public". Other trust levels MUST omit it.
+   */
+  publicSubstate?: "anonymous" | "recognized";
   sourceAugment: string;
   displayName?: string;
   orgId?: string;
@@ -249,6 +274,18 @@ export interface TurnResult {
   toolCalls: ToolCallRecord[];
   trace: TurnTrace;
   error?: { message: string; source: string };
+  /**
+   * When status is "rejected", this names the class of rejection so
+   * the transport can map to the right HTTP status:
+   *   - "cap-denied"            → HTTP 429 (over budget cap)
+   *   - "admission-state-failed" → HTTP 5xx (confirm-phase failure)
+   *   - "engine-error"          → HTTP 5xx (engine call threw)
+   *   - other strings           → HTTP 5xx fallback
+   *
+   * Optional for backward compatibility — older callers and existing
+   * rejection sites may not yet set this.
+   */
+  errorClass?: string;
 }
 
 // === Kernel Events (internal — emitted by turn loop, consumed by transports) ===
@@ -435,6 +472,70 @@ export interface TransportSpec {
   rateLimitPerPeer?: { maxPerMinute: number };
 }
 
+// === Turn Gate (2PC admission) ===
+
+/**
+ * Pre-dispatch admission gate. Augments declaring `turnGate` participate
+ * in two-phase commit (2PC) admission: the augment opens a transaction,
+ * stages writes inside it, returns a ticket the kernel uses to confirm
+ * (commit) or rollback (discard).
+ *
+ * The kernel pairs every prepare with exactly one of confirm or rollback.
+ * Storage transactions enforce atomicity; the augment cannot leak partial
+ * state because the writes only escape into the live state when the
+ * kernel signals confirm.
+ *
+ * v0 NOTE: This contract is FIRST-PARTY ONLY. The kernel cannot
+ * mechanically prevent third-party augments from violating the
+ * prepare-then-confirm contract (e.g. by writing outside the transaction).
+ * v0 ships with the budgets augment as the sole turn-gate; third-party
+ * turn-gate augments are out of scope until the contract has more
+ * real-world miles.
+ */
+export interface TurnGateProvider {
+  /**
+   * Stage admission writes inside an open transaction. Returns a ticket
+   * the kernel uses to confirm or rollback. The augment evaluates caps
+   * using whatever reads it needs, stages reservation rows / rate-limit
+   * ticks / etc inside the transaction, and returns either:
+   *   - { decision: { allow: false, reason }, confirm, rollback }
+   *     where confirm is a no-op and rollback closes the read transaction.
+   *   - { decision: { allow: true }, confirm, rollback }
+   *     where confirm commits the staged writes and rollback discards them.
+   *
+   * The kernel pairs every prepare with exactly one of confirm/rollback.
+   */
+  prepare(args: {
+    turnId: string;
+    peer: PeerIdentity | null;
+    threadId: string;
+    trigger: TurnTrigger;
+  }): Promise<TurnGateTicket>;
+
+  /**
+   * Post-response cost commit. Receives the cost result; the augment
+   * uses this to debit USD totals or mark reservations completed.
+   * The CostResult discriminated union forces unpriced-aware handling.
+   *
+   * Optional. Errors here are logged but do not fail the turn — the
+   * response already exists.
+   */
+  commit?(args: {
+    turnId: string;
+    peer: PeerIdentity | null;
+    threadId: string;
+    cost: CostResult;
+  }): Promise<void>;
+}
+
+export interface TurnGateTicket {
+  decision: { allow: true } | { allow: false; reason: string };
+  /** Commit the staged writes. Idempotent — calling twice is a no-op. */
+  confirm(): Promise<void>;
+  /** Discard the staged writes. Idempotent — calling twice is a no-op. */
+  rollback(): Promise<void>;
+}
+
 // === Augment (spec §3) ===
 
 export type AugmentCapability = "transport" | "context" | "tools" | "lifecycle";
@@ -451,11 +552,11 @@ export interface AugmentConstraints {
    * top-level `neverExpose` / `requiresHumanApproval` fields. Top-level rules
    * apply to every peer; per-level rules apply only to the specific level.
    *
-   * Example: hide `fs_remove` from untrusted peers but keep it visible to
-   * authenticated and operator:
-   *   perTrustLevel: { untrusted: { neverExpose: ["fs_remove"] } }
+   * Example: hide `fs_remove` from public peers but keep it visible to
+   * agent and creator:
+   *   perTrustLevel: { public: { neverExpose: ["fs_remove"] } }
    *
-   * Null peer (internal/scheduled triggers) is treated as "operator" trust.
+   * Null peer (internal/scheduled triggers) is treated as "creator" trust.
    */
   perTrustLevel?: Partial<
     Record<
@@ -487,6 +588,15 @@ export interface Augment {
   onTurnStart?: (turn: TurnState) => Promise<void>;
   onTurnEnd?: (turn: TurnResult) => Promise<void>;
   onIdle?: () => Promise<void>;
+  /**
+   * Pre-dispatch admission gate. Kernel calls prepare/confirm/rollback
+   * before executing the turn. See TurnGateProvider for the 2PC contract.
+   *
+   * v0 NOTE: First-party only. The budgets augment is the sole shipped
+   * implementation. Third-party turn-gate augments are out of scope
+   * until the contract has more real-world miles.
+   */
+  turnGate?: TurnGateProvider;
 }
 
 // === Agent Config (spec §8) ===

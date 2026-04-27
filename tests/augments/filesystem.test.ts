@@ -123,18 +123,17 @@ describe("filesystem augment", () => {
       expect(aug.constraints?.maxToolCallsPerTurn).toBe(15);
     });
 
-    it("sets perTrustLevel structural defaults for untrusted + authenticated", () => {
+    it("sets perTrustLevel structural defaults for public + agent", () => {
       const aug = createTestFs();
-      expect(aug.constraints?.perTrustLevel?.untrusted?.neverExpose).toEqual([
+      expect(aug.constraints?.perTrustLevel?.public?.neverExpose).toEqual([
         "fs_write",
         "fs_mkdir",
         "fs_remove",
       ]);
-      expect(aug.constraints?.perTrustLevel?.authenticated?.neverExpose).toEqual([
+      expect(aug.constraints?.perTrustLevel?.agent?.neverExpose).toEqual([
         "fs_remove",
       ]);
-      expect(aug.constraints?.perTrustLevel?.operator).toBeUndefined();
-      expect(aug.constraints?.perTrustLevel?.facility).toBeUndefined();
+      expect(aug.constraints?.perTrustLevel?.creator).toBeUndefined();
     });
 
     it("throws on duplicate mount names", () => {

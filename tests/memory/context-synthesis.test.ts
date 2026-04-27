@@ -250,7 +250,7 @@ describe("synthesizeContextFor namespace provider", () => {
     const wrapped = synthesizeContextFor(aug);
     const turn: TurnState = {
       ...makeMessageTurnState("hello"),
-      peer: { id: "vis_abc", kind: "human", trustLevel: "untrusted", sourceAugment: "web" },
+      peer: { id: "vis_abc", kind: "human", trustLevel: "public", sourceAugment: "web" },
     };
 
     await wrapped.context!(turn, undefined);

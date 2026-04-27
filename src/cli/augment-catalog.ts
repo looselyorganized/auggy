@@ -242,7 +242,6 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
     defaultName: "web",
     defaultOptions: {
       port: 8080,
-      trustLevel: "untrusted",
       auth: { type: "bearer", token: "${AUGGY_WEB_TOKEN}" },
     },
     required: false,
@@ -322,6 +321,25 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
     required: false,
     hasSkill: true,
     skillTemplate: BASH_SKILL,
+  },
+  {
+    label: "budgets",
+    description: "Per-trust-level turn budgets + dailyBudgetUsd ceiling (SQLite)",
+    type: "budgets",
+    defaultName: "budgets",
+    defaultOptions: {
+      dbPath: "./budgets.db",
+      caps: {
+        public: {
+          recognized: { maxTurnsPerThread: 20, maxTurnsPerDay: 50, maxUsdPerDay: 1 },
+          anonymous: { maxTurnsPerThread: 5 },
+        },
+      },
+      anonymousGlobalLimit: 30,
+      dailyBudgetUsd: 5,
+    },
+    required: false,
+    hasSkill: false,
   },
 ];
 

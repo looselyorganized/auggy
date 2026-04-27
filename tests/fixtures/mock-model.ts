@@ -24,6 +24,8 @@ export function createMockModel(opts?: {
         inputTokens: r.inputTokens ?? 100,
         outputTokens: r.outputTokens ?? 50,
         finishReason: r.finishReason ?? "end_turn",
+        costUsd: r.costUsd,
+        unpricedReason: r.unpricedReason,
       });
     },
 

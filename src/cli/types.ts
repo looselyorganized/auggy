@@ -19,7 +19,8 @@ export type BuiltinAugmentType =
   | "webTransport"
   | "webFetch"
   | "orgContext"
-  | "bash";
+  | "bash"
+  | "budgets";
 
 /** A single augment entry from the `augments:` array in agent.yaml. */
 export interface AugmentConfig {

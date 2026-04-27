@@ -21,7 +21,7 @@ describe("SupabaseStore", () => {
     const now = Date.now();
     await store.write({
       label: "ep:vis_a:1", content: "test content", peerId: "vis_a",
-      trustLevel: "untrusted", createdAt: now, supersededBy: null,
+      trustLevel: "public", createdAt: now, supersededBy: null,
       retentionClass: "operational", isVerbatim: false, expiresAt: null,
     });
 
@@ -34,12 +34,12 @@ describe("SupabaseStore", () => {
     const now = Date.now();
     await store.write({
       label: "ep:vis_a:1", content: "espresso", peerId: "vis_a",
-      trustLevel: "untrusted", createdAt: now, supersededBy: null,
+      trustLevel: "public", createdAt: now, supersededBy: null,
       retentionClass: "operational", isVerbatim: false, expiresAt: null,
     });
     await store.write({
       label: "ep:vis_b:1", content: "espresso", peerId: "vis_b",
-      trustLevel: "untrusted", createdAt: now, supersededBy: null,
+      trustLevel: "public", createdAt: now, supersededBy: null,
       retentionClass: "operational", isVerbatim: false, expiresAt: null,
     });
 
@@ -52,12 +52,12 @@ describe("SupabaseStore", () => {
     const now = Date.now();
     await store.write({
       label: "ep:vis_a:1", content: "x", peerId: "vis_a",
-      trustLevel: "untrusted", createdAt: now, supersededBy: null,
+      trustLevel: "public", createdAt: now, supersededBy: null,
       retentionClass: "operational", isVerbatim: false, expiresAt: null,
     });
     await store.write({
       label: "ep:vis_a:2", content: "y", peerId: "vis_a",
-      trustLevel: "untrusted", createdAt: now, supersededBy: null,
+      trustLevel: "public", createdAt: now, supersededBy: null,
       retentionClass: "operational", isVerbatim: false, expiresAt: null,
     });
 
@@ -77,7 +77,7 @@ describe("SupabaseStore", () => {
         label: `ep:vis_b:${i}`,
         content: "espresso shot",
         peerId: "vis_b",
-        trustLevel: "untrusted",
+        trustLevel: "public",
         createdAt: now + i + 1, // strictly newer than peer A's
         supersededBy: null,
         retentionClass: "operational",
@@ -89,7 +89,7 @@ describe("SupabaseStore", () => {
       label: "ep:vis_a:1",
       content: "espresso fan",
       peerId: "vis_a",
-      trustLevel: "untrusted",
+      trustLevel: "public",
       createdAt: now,
       supersededBy: null,
       retentionClass: "operational",
@@ -109,7 +109,7 @@ describe("SupabaseStore", () => {
       label: "ep:vis_a:expired",
       content: "stale match",
       peerId: "vis_a",
-      trustLevel: "untrusted",
+      trustLevel: "public",
       createdAt: now - 10_000,
       supersededBy: null,
       retentionClass: "operational",
@@ -120,7 +120,7 @@ describe("SupabaseStore", () => {
       label: "ep:vis_a:fresh",
       content: "fresh match",
       peerId: "vis_a",
-      trustLevel: "untrusted",
+      trustLevel: "public",
       createdAt: now,
       supersededBy: null,
       retentionClass: "operational",
@@ -137,12 +137,12 @@ describe("SupabaseStore", () => {
     const now = Date.now();
     await store.write({
       id: "old-id", label: "ep:vis_a:1", content: "old fact", peerId: "vis_a",
-      trustLevel: "untrusted", createdAt: now, supersededBy: null,
+      trustLevel: "public", createdAt: now, supersededBy: null,
       retentionClass: "operational", isVerbatim: false, expiresAt: null,
     });
     await store.write({
       id: "new-id", label: "ep:vis_a:1b", content: "fresh fact", peerId: "vis_a",
-      trustLevel: "untrusted", createdAt: now + 1, supersededBy: null,
+      trustLevel: "public", createdAt: now + 1, supersededBy: null,
       retentionClass: "operational", isVerbatim: false, expiresAt: null,
     });
     await store.supersede("old-id", "new-id");

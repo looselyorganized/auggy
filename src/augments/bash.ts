@@ -428,8 +428,7 @@ export function bash(opts: BashAugmentOptions = {}): Augment {
     constraints: {
       maxToolCallsPerTurn: opts.maxToolCallsPerTurn ?? 10,
       perTrustLevel: {
-        untrusted: { neverExpose: toolNames },
-        authenticated: { neverExpose: toolNames },
+        public: { neverExpose: toolNames },
       },
     },
     tools,

@@ -449,8 +449,8 @@ Six methods. Most users only call `start()`, `stop()`, and let transports do the
 
 There is **no method to mutate the augment list at runtime**. Once an agent is constructed, its augments are fixed. To change them, stop the agent, construct a new one with the new config, start it. This is intentional: hot-reloading augments without restarting the kernel is a complex problem that's not in v1's scope, and the semantics (what happens to in-flight turns? what happens to pending tool calls in those turns?) are hard to get right.
 
-## What "operator" means here
+## What "creator" trust means here
 
-`AgentConfig.operators?: string[]` is reserved but unused in v1. The intent: a list of peer IDs that have `trustLevel: "operator"` regardless of how they authenticate. A future spine transport will use this to identify the human operator across different communication channels (web, Telegram, email, IRC).
+`AgentConfig.operators?: string[]` is reserved but unused in v1. The intent: a list of peer IDs that have `trustLevel: "creator"` regardless of how they authenticate. A future spine transport will use this to identify the human operator across different communication channels (web, Telegram, email, IRC).
 
-In v1, no peer ever gets `trustLevel: "operator"` — the highest the web transport mints is `"authenticated"`. The `operator` trust level exists in the type space for future use.
+In v1, no peer ever gets `trustLevel: "creator"` via the web transport — the highest the web transport mints is configurable but defaults to `"public"`. The `creator` trust level is reserved for null-peer (internal/scheduled) triggers and future spine use.

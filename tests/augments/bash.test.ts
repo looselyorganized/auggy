@@ -15,7 +15,7 @@ function getTool(augment: ReturnType<typeof bash>, name: string) {
   return tool;
 }
 
-function turnWithTrust(level: "operator" | "facility" | "authenticated" | "untrusted"): TurnState {
+function turnWithTrust(level: "creator" | "agent" | "public"): TurnState {
   return {
     turnId: "t1",
     threadId: "th1",
@@ -95,25 +95,24 @@ describe("bash augment structure", () => {
 // ---------------------------------------------------------------------------
 
 describe("bash trust gating", () => {
-  it("hides shell_exec from untrusted and authenticated by default", () => {
+  it("hides shell_exec from public by default", () => {
     const aug = bash({ risk: "standard" });
     const table = createCapabilityTable([aug]);
 
-    expect(table.canExpose("shell_exec", turnWithTrust("untrusted"))).toBe(false);
-    expect(table.canExpose("shell_exec", turnWithTrust("authenticated"))).toBe(false);
-    expect(table.canExpose("shell_exec", turnWithTrust("facility"))).toBe(true);
-    expect(table.canExpose("shell_exec", turnWithTrust("operator"))).toBe(true);
+    expect(table.canExpose("shell_exec", turnWithTrust("public"))).toBe(false);
+    expect(table.canExpose("shell_exec", turnWithTrust("agent"))).toBe(true);
+    expect(table.canExpose("shell_exec", turnWithTrust("creator"))).toBe(true);
   });
 
-  it("hides run_script from untrusted and authenticated by default", () => {
+  it("hides run_script from public by default", () => {
     const aug = bash({
       risk: "scripts-only",
       scripts: [{ name: "s", description: "s", command: "echo" }],
     });
     const table = createCapabilityTable([aug]);
 
-    expect(table.canExpose("run_script", turnWithTrust("untrusted"))).toBe(false);
-    expect(table.canExpose("run_script", turnWithTrust("operator"))).toBe(true);
+    expect(table.canExpose("run_script", turnWithTrust("public"))).toBe(false);
+    expect(table.canExpose("run_script", turnWithTrust("creator"))).toBe(true);
   });
 });
 

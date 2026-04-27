@@ -15,7 +15,7 @@ function makeTrigger(text: string): TurnTrigger {
   const peer: PeerIdentity = {
     id: "p1",
     kind: "human",
-    trustLevel: "authenticated",
+    trustLevel: "agent",
     sourceAugment: "test",
   };
   return {

@@ -11,7 +11,7 @@ describe("TraceEmitter", () => {
         type: "message",
         sourceAugment: "web",
         peerKind: "human",
-        trustLevel: "authenticated",
+        trustLevel: "agent",
       },
     });
 

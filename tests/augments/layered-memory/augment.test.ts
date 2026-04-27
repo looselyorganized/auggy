@@ -36,19 +36,19 @@ describe("layeredMemory", () => {
     const spec = aug.memory as NamespaceMemoryProvider;
     await spec.write!("ep:vis_a:1", "loved espresso", {
       peerId: "vis_a",
-      trustLevel: "untrusted",
+      trustLevel: "public",
     });
 
     const results = await spec.search("espresso", { peerId: "vis_a" });
     expect(results.length).toBe(1);
     expect(results[0]!.peerId).toBe("vis_a");
-    expect(results[0]!.trustLevel).toBe("untrusted");
+    expect(results[0]!.trustLevel).toBe("public");
   });
 
   it("search isolates entries by peerId", async () => {
     const spec = aug.memory as NamespaceMemoryProvider;
-    await spec.write!("ep:vis_a:1", "espresso", { peerId: "vis_a", trustLevel: "untrusted" });
-    await spec.write!("ep:vis_b:1", "espresso", { peerId: "vis_b", trustLevel: "untrusted" });
+    await spec.write!("ep:vis_a:1", "espresso", { peerId: "vis_a", trustLevel: "public" });
+    await spec.write!("ep:vis_b:1", "espresso", { peerId: "vis_b", trustLevel: "public" });
 
     const aResults = await spec.search("espresso", { peerId: "vis_a" });
     expect(aResults.length).toBe(1);
@@ -57,8 +57,8 @@ describe("layeredMemory", () => {
 
   it("forget deletes a peer's entries and returns count", async () => {
     const spec = aug.memory as NamespaceMemoryProvider;
-    await spec.write!("ep:vis_a:1", "x", { peerId: "vis_a", trustLevel: "untrusted" });
-    await spec.write!("ep:vis_a:2", "y", { peerId: "vis_a", trustLevel: "untrusted" });
+    await spec.write!("ep:vis_a:1", "x", { peerId: "vis_a", trustLevel: "public" });
+    await spec.write!("ep:vis_a:2", "y", { peerId: "vis_a", trustLevel: "public" });
 
     const count = await spec.forget!("vis_a");
     expect(count).toBe(2);
@@ -70,7 +70,7 @@ describe("layeredMemory", () => {
   it("rejects writes whose label does not match the namespace prefix", async () => {
     const spec = aug.memory as NamespaceMemoryProvider;
     await expect(
-      spec.write!("other:vis_a:1", "x", { peerId: "vis_a", trustLevel: "untrusted" }),
+      spec.write!("other:vis_a:1", "x", { peerId: "vis_a", trustLevel: "public" }),
     ).rejects.toThrow();
   });
 
@@ -99,7 +99,7 @@ describe("layeredMemory", () => {
       await expect(
         spec.write!("ep:vis_b:1", "poison", {
           peerId: "vis_a",
-          trustLevel: "untrusted",
+          trustLevel: "public",
         }),
       ).rejects.toThrow(/cannot write to label/);
     });
@@ -108,11 +108,11 @@ describe("layeredMemory", () => {
       const spec = aug.memory as NamespaceMemoryProvider;
       await spec.write!("ep:vis_a:1", "fine", {
         peerId: "vis_a",
-        trustLevel: "untrusted",
+        trustLevel: "public",
       });
       await spec.write!("ep:vis_a", "also fine", {
         peerId: "vis_a",
-        trustLevel: "untrusted",
+        trustLevel: "public",
       });
 
       const results = await spec.search("fine", { peerId: "vis_a" });
@@ -126,7 +126,7 @@ describe("layeredMemory", () => {
       await expect(
         spec.write!("ep:vis_aa:1", "subtle", {
           peerId: "vis_a",
-          trustLevel: "untrusted",
+          trustLevel: "public",
         }),
       ).rejects.toThrow(/cannot write to label/);
     });
