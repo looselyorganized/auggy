@@ -408,4 +408,32 @@ describe("createOpenRouterEngine — costUsd", () => {
     );
     expect(result.costUsd).toBeUndefined();
   });
+
+  test("costOverride populates costUsd for unknown provider slug", async () => {
+    // qwen/qwen3.5 is unknown in pricing table; costOverride should be used
+    // $4/Mtok in, $16/Mtok out; 250 input + 125 output → 0.001 + 0.002 = 0.003
+    nextResponse = mockCompletionWithTokens(250, 125, "qwen/qwen3.5-397b-a17b");
+    const engine = createOpenRouterEngine({
+      model: "qwen/qwen3.5-397b-a17b",
+      costOverride: { inputUsdPerMtok: 4, outputUsdPerMtok: 16 },
+    });
+    const result = await engine.complete(
+      emptyPrompt({ messages: [msg({ content: "hi" })] }),
+    );
+    expect(result.costUsd).toBeCloseTo(0.003, 8);
+  });
+
+  test("costOverride takes precedence over slug-routed pricing-table entry", async () => {
+    // anthropic/claude-sonnet-4-6 resolves to $3/$15 in the table; costOverride wins ($2/$6)
+    // 600 input + 300 output → (600/1e6)*2 + (300/1e6)*6 = 0.0012 + 0.0018 = 0.003
+    nextResponse = mockCompletionWithTokens(600, 300, "anthropic/claude-sonnet-4-6");
+    const engine = createOpenRouterEngine({
+      model: "anthropic/claude-sonnet-4-6",
+      costOverride: { inputUsdPerMtok: 2, outputUsdPerMtok: 6 },
+    });
+    const result = await engine.complete(
+      emptyPrompt({ messages: [msg({ content: "hi" })] }),
+    );
+    expect(result.costUsd).toBeCloseTo(0.003, 8);
+  });
 });

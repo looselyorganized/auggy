@@ -245,6 +245,35 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
         }
       }
     }
+    if (engine.costOverride !== undefined) {
+      if (
+        typeof engine.costOverride !== "object" ||
+        engine.costOverride === null ||
+        Array.isArray(engine.costOverride)
+      ) {
+        errors.push("engine.costOverride: must be an object");
+      } else {
+        const co = engine.costOverride as Record<string, unknown>;
+        if (
+          typeof co.inputUsdPerMtok !== "number" ||
+          !isFinite(co.inputUsdPerMtok) ||
+          co.inputUsdPerMtok < 0
+        ) {
+          errors.push(
+            "engine.costOverride.inputUsdPerMtok: must be a finite non-negative number",
+          );
+        }
+        if (
+          typeof co.outputUsdPerMtok !== "number" ||
+          !isFinite(co.outputUsdPerMtok) ||
+          co.outputUsdPerMtok < 0
+        ) {
+          errors.push(
+            "engine.costOverride.outputUsdPerMtok: must be a finite non-negative number",
+          );
+        }
+      }
+    }
   }
 
   // Augments.

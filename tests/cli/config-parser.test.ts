@@ -243,6 +243,95 @@ describe("engine.providerRouting validation", () => {
   });
 });
 
+describe("engine.costOverride validation", () => {
+  test("accepts valid costOverride with positive rates", () => {
+    const path = writeYaml("agent.yaml", minimalConfig({
+      engine: {
+        provider: "anthropic",
+        model: "claude-future-99-experimental",
+        costOverride: { inputUsdPerMtok: 2.5, outputUsdPerMtok: 10.0 },
+      },
+    }));
+    const config = parseConfig(path);
+    expect(config.engine.costOverride?.inputUsdPerMtok).toBe(2.5);
+    expect(config.engine.costOverride?.outputUsdPerMtok).toBe(10.0);
+  });
+
+  test("accepts costOverride with zero rates (free tier or internal model)", () => {
+    const path = writeYaml("agent.yaml", minimalConfig({
+      engine: {
+        provider: "openai",
+        model: "gpt-internal",
+        costOverride: { inputUsdPerMtok: 0, outputUsdPerMtok: 0 },
+      },
+    }));
+    const config = parseConfig(path);
+    expect(config.engine.costOverride?.inputUsdPerMtok).toBe(0);
+    expect(config.engine.costOverride?.outputUsdPerMtok).toBe(0);
+  });
+
+  test("rejects costOverride that is not an object", () => {
+    const path = writeYaml("agent.yaml", minimalConfig({
+      engine: {
+        provider: "anthropic",
+        model: "x",
+        costOverride: "free",
+      },
+    }));
+    expect(() => parseConfig(path)).toThrow("engine.costOverride");
+  });
+
+  test("rejects costOverride with missing inputUsdPerMtok", () => {
+    const path = writeYaml("agent.yaml", minimalConfig({
+      engine: {
+        provider: "anthropic",
+        model: "x",
+        costOverride: { outputUsdPerMtok: 5 },
+      },
+    }));
+    expect(() => parseConfig(path)).toThrow("engine.costOverride.inputUsdPerMtok");
+  });
+
+  test("rejects costOverride with missing outputUsdPerMtok", () => {
+    const path = writeYaml("agent.yaml", minimalConfig({
+      engine: {
+        provider: "anthropic",
+        model: "x",
+        costOverride: { inputUsdPerMtok: 5 },
+      },
+    }));
+    expect(() => parseConfig(path)).toThrow("engine.costOverride.outputUsdPerMtok");
+  });
+
+  test("rejects costOverride with negative inputUsdPerMtok", () => {
+    const path = writeYaml("agent.yaml", minimalConfig({
+      engine: {
+        provider: "anthropic",
+        model: "x",
+        costOverride: { inputUsdPerMtok: -1, outputUsdPerMtok: 5 },
+      },
+    }));
+    expect(() => parseConfig(path)).toThrow("engine.costOverride.inputUsdPerMtok");
+  });
+
+  test("rejects costOverride with non-number outputUsdPerMtok", () => {
+    const path = writeYaml("agent.yaml", minimalConfig({
+      engine: {
+        provider: "anthropic",
+        model: "x",
+        costOverride: { inputUsdPerMtok: 1, outputUsdPerMtok: "cheap" },
+      },
+    }));
+    expect(() => parseConfig(path)).toThrow("engine.costOverride.outputUsdPerMtok");
+  });
+
+  test("omitted costOverride leaves field undefined (no validation errors)", () => {
+    const path = writeYaml("agent.yaml", minimalConfig());
+    const config = parseConfig(path);
+    expect(config.engine.costOverride).toBeUndefined();
+  });
+});
+
 describe("env var interpolation", () => {
   test("replaces ${VAR} with env value", () => {
     process.env.TEST_INTERP_VAR = "replaced-value";

@@ -36,6 +36,7 @@ export function resolveEngine(config: EngineConfig): ModelClient {
       maxContextTokens: config.maxContextTokens,
       maxTokens: config.maxTokens,
       baseURL: config.baseURL,
+      costOverride: config.costOverride,
       // apiKey intentionally omitted — SDK reads ANTHROPIC_API_KEY from env.
     });
   }
@@ -47,6 +48,7 @@ export function resolveEngine(config: EngineConfig): ModelClient {
       maxTokens: config.maxTokens,
       baseURL: config.baseURL,
       reasoningEffort: config.reasoningEffort,
+      costOverride: config.costOverride,
       // apiKey intentionally omitted — SDK reads OPENAI_API_KEY from env.
     });
   }
@@ -58,6 +60,7 @@ export function resolveEngine(config: EngineConfig): ModelClient {
       maxTokens: config.maxTokens,
       reasoningEffort: config.reasoningEffort,
       providerRouting: config.providerRouting,
+      costOverride: config.costOverride,
       // baseURL intentionally NOT passed — hardcoded to OpenRouter.
       // apiKey intentionally omitted — engine reads OPENROUTER_API_KEY from env.
     });

@@ -251,4 +251,50 @@ describe("createAnthropicEngine — costUsd", () => {
     );
     expect(result.costUsd).toBeCloseTo(0.0016, 8);
   });
+
+  it("costOverride populates costUsd for unknown model", async () => {
+    // Unknown model + costOverride: $2/Mtok in, $8/Mtok out
+    // 500 input + 250 output → (500/1e6)*2 + (250/1e6)*8 = 0.001 + 0.002 = 0.003
+    nextAnthropicResponse = {
+      id: "msg_test",
+      type: "message",
+      role: "assistant",
+      content: [{ type: "text", text: "hello" }],
+      model: "claude-future-99-experimental",
+      stop_reason: "end_turn",
+      stop_sequence: null,
+      usage: { input_tokens: 500, output_tokens: 250 },
+    };
+    const engine = createAnthropicEngine({
+      model: "claude-future-99-experimental",
+      costOverride: { inputUsdPerMtok: 2, outputUsdPerMtok: 8 },
+    });
+    const result = await engine.complete(
+      emptyPrompt({ messages: [anthropicMsg({ content: "hi" })] }),
+    );
+    expect(result.costUsd).toBeCloseTo(0.003, 8);
+  });
+
+  it("costOverride takes precedence over pricing-table entry for known model", async () => {
+    // claude-sonnet-4-6 is in the pricing table ($3/$15) but costOverride wins ($1/$2)
+    // 300 input + 150 output → (300/1e6)*1 + (150/1e6)*2 = 0.0003 + 0.0003 = 0.0006
+    nextAnthropicResponse = {
+      id: "msg_test",
+      type: "message",
+      role: "assistant",
+      content: [{ type: "text", text: "hello" }],
+      model: "claude-sonnet-4-6",
+      stop_reason: "end_turn",
+      stop_sequence: null,
+      usage: { input_tokens: 300, output_tokens: 150 },
+    };
+    const engine = createAnthropicEngine({
+      model: "claude-sonnet-4-6",
+      costOverride: { inputUsdPerMtok: 1, outputUsdPerMtok: 2 },
+    });
+    const result = await engine.complete(
+      emptyPrompt({ messages: [anthropicMsg({ content: "hi" })] }),
+    );
+    expect(result.costUsd).toBeCloseTo(0.0006, 8);
+  });
 });

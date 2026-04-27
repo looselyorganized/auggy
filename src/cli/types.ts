@@ -57,6 +57,15 @@ export interface EngineConfig {
    * silently falls back to OpenRouter's default routing.
    */
   providerRouting?: ProviderRouting;
+  /**
+   * Override pricing for cost estimation. If set, the adapter uses these rates
+   * instead of the built-in pricing table. Useful for unknown models or custom
+   * pricing arrangements. USD per million tokens.
+   */
+  costOverride?: {
+    inputUsdPerMtok: number;
+    outputUsdPerMtok: number;
+  };
 }
 
 /** OpenRouter provider routing config (forwarded as the `provider` body field). */

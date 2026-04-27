@@ -730,4 +730,32 @@ describe("createOpenAIEngine — costUsd", () => {
     );
     expect(result.costUsd).toBeCloseTo(0.0015, 8);
   });
+
+  test("costOverride populates costUsd for unknown model", async () => {
+    // Unknown model + costOverride: $3/Mtok in, $12/Mtok out
+    // 400 input + 200 output → (400/1e6)*3 + (200/1e6)*12 = 0.0012 + 0.0024 = 0.0036
+    nextResponse = mockCompletion({ inputTokens: 400, outputTokens: 200 });
+    const engine = createOpenAIEngine({
+      model: "gpt-future-99-experimental",
+      costOverride: { inputUsdPerMtok: 3, outputUsdPerMtok: 12 },
+    });
+    const result = await engine.complete(
+      emptyPrompt({ messages: [msg({ content: "hi" })] }),
+    );
+    expect(result.costUsd).toBeCloseTo(0.0036, 8);
+  });
+
+  test("costOverride takes precedence over pricing-table entry for known model", async () => {
+    // gpt-5 is in the pricing table ($5/$20) but costOverride wins ($1/$4)
+    // 600 input + 300 output → (600/1e6)*1 + (300/1e6)*4 = 0.0006 + 0.0012 = 0.0018
+    nextResponse = mockCompletion({ inputTokens: 600, outputTokens: 300 });
+    const engine = createOpenAIEngine({
+      model: "gpt-5",
+      costOverride: { inputUsdPerMtok: 1, outputUsdPerMtok: 4 },
+    });
+    const result = await engine.complete(
+      emptyPrompt({ messages: [msg({ content: "hi" })] }),
+    );
+    expect(result.costUsd).toBeCloseTo(0.0018, 8);
+  });
 });

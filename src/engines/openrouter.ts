@@ -47,6 +47,15 @@ export interface OpenRouterEngineOptions {
    *  field. Slugs in `only`/`ignore` are NOT semantically validated — typos
    *  silently fall back to OpenRouter's default routing. */
   providerRouting?: OpenRouterProviderRouting;
+  /**
+   * Override pricing for cost estimation. If set, the adapter uses these rates
+   * instead of the built-in pricing table. Useful for unknown models or custom
+   * pricing arrangements. USD per million tokens.
+   */
+  costOverride?: {
+    inputUsdPerMtok: number;
+    outputUsdPerMtok: number;
+  };
 }
 
 /** OpenRouter provider routing config (forwarded as the `provider` body field).
@@ -157,7 +166,7 @@ export function createOpenRouterEngine(
         );
       }
       const response = buildOpenAIModelResponse(completion, `openrouter:${opts.model}`);
-      const rates = lookupOpenRouterPricing(opts.model);
+      const rates = opts.costOverride ?? lookupOpenRouterPricing(opts.model);
       const costUsd = rates
         ? computeCostUsd(rates, { inputTokens: response.inputTokens, outputTokens: response.outputTokens })
         : undefined;

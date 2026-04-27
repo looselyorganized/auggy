@@ -50,6 +50,15 @@ export interface OpenAIEngineOptions {
    *  Older Chat Completions models (e.g. gpt-4) do NOT support this — the API
    *  returns an error which propagates through `complete()`. */
   reasoningEffort?: OpenAI.Chat.ChatCompletionReasoningEffort;
+  /**
+   * Override pricing for cost estimation. If set, the adapter uses these rates
+   * instead of the built-in pricing table. Useful for unknown models or custom
+   * pricing arrangements. USD per million tokens.
+   */
+  costOverride?: {
+    inputUsdPerMtok: number;
+    outputUsdPerMtok: number;
+  };
 }
 
 export function createOpenAIEngine(opts: OpenAIEngineOptions): ModelClient {
@@ -99,7 +108,7 @@ export function createOpenAIEngine(opts: OpenAIEngineOptions): ModelClient {
         });
       }
       const response = buildOpenAIModelResponse(completion, opts.model);
-      const rates = lookupPricing("openai", opts.model);
+      const rates = opts.costOverride ?? lookupPricing("openai", opts.model);
       const costUsd = rates
         ? computeCostUsd(rates, { inputTokens: response.inputTokens, outputTokens: response.outputTokens })
         : undefined;

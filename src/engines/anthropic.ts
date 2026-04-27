@@ -39,6 +39,15 @@ export interface AnthropicEngineOptions {
   maxTokens?: number;
   /** Optional base URL override (for proxying or compatible providers). */
   baseURL?: string;
+  /**
+   * Override pricing for cost estimation. If set, the adapter uses these rates
+   * instead of the built-in pricing table. Useful for unknown models or custom
+   * pricing arrangements. USD per million tokens.
+   */
+  costOverride?: {
+    inputUsdPerMtok: number;
+    outputUsdPerMtok: number;
+  };
 }
 
 export function createAnthropicEngine(
@@ -85,7 +94,7 @@ export function createAnthropicEngine(
       };
 
       const withCost = (r: ModelResponse): ModelResponse => {
-        const rates = lookupPricing("anthropic", opts.model);
+        const rates = opts.costOverride ?? lookupPricing("anthropic", opts.model);
         const costUsd = rates
           ? computeCostUsd(rates, { inputTokens: r.inputTokens, outputTokens: r.outputTokens })
           : undefined;
