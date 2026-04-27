@@ -96,7 +96,12 @@ export function createAnthropicEngine(
       const withCost = (r: ModelResponse): ModelResponse => {
         const rates = opts.costOverride ?? lookupPricing("anthropic", opts.model);
         const costUsd = rates
-          ? computeCostUsd(rates, { inputTokens: r.inputTokens, outputTokens: r.outputTokens })
+          ? computeCostUsd(rates, {
+              inputTokens: r.inputTokens,
+              outputTokens: r.outputTokens,
+              cacheCreationTokens: r.cacheCreationTokens,
+              cacheReadTokens: r.cacheReadTokens,
+            })
           : undefined;
         return { ...r, costUsd };
       };
@@ -394,11 +399,18 @@ function buildModelResponse(
         ? "max_tokens"
         : "end_turn";
 
+  // Anthropic's SDK may return null or omit cache fields when caching isn't active.
+  // Map nullish values to undefined so ModelResponse consumers can rely on undefined-checking.
+  const cacheCreationTokens = response.usage.cache_creation_input_tokens ?? undefined;
+  const cacheReadTokens = response.usage.cache_read_input_tokens ?? undefined;
+
   return {
     content,
     toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
     inputTokens: response.usage.input_tokens,
     outputTokens: response.usage.output_tokens,
+    ...(cacheCreationTokens !== undefined ? { cacheCreationTokens } : {}),
+    ...(cacheReadTokens !== undefined ? { cacheReadTokens } : {}),
     finishReason,
   };
 }

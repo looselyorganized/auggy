@@ -297,4 +297,63 @@ describe("createAnthropicEngine — costUsd", () => {
     );
     expect(result.costUsd).toBeCloseTo(0.0006, 8);
   });
+
+  it("populates cacheCreationTokens and cacheReadTokens from SDK usage and prices them correctly", async () => {
+    // claude-sonnet-4-6: $3.00/Mtok input, $15.00/Mtok output, $3.75/Mtok cache-write, $0.30/Mtok cache-read
+    // 100 input + 50 output + 200k cache_creation + 1M cache_read:
+    //   input:        (100/1e6)*3.0     = 0.0003
+    //   output:       (50/1e6)*15.0     = 0.00075
+    //   cache_write:  (200000/1e6)*3.75 = 0.75
+    //   cache_read:   (1000000/1e6)*0.3 = 0.3
+    //   total:        1.05105
+    nextAnthropicResponse = {
+      id: "msg_test",
+      type: "message",
+      role: "assistant",
+      content: [{ type: "text", text: "hello" }],
+      model: "claude-sonnet-4-6",
+      stop_reason: "end_turn",
+      stop_sequence: null,
+      usage: {
+        input_tokens: 100,
+        output_tokens: 50,
+        cache_creation_input_tokens: 200_000,
+        cache_read_input_tokens: 1_000_000,
+      },
+    };
+    const engine = createAnthropicEngine({ model: "claude-sonnet-4-6" });
+    const result = await engine.complete(
+      emptyPrompt({ messages: [anthropicMsg({ content: "hi" })] }),
+    );
+    expect(result.cacheCreationTokens).toBe(200_000);
+    expect(result.cacheReadTokens).toBe(1_000_000);
+    expect(result.costUsd).toBeCloseTo(1.05105, 6);
+  });
+
+  it("leaves cacheCreationTokens and cacheReadTokens undefined when SDK returns null/absent", async () => {
+    // SDK returns null for cache fields (no caching active in this call)
+    nextAnthropicResponse = {
+      id: "msg_test",
+      type: "message",
+      role: "assistant",
+      content: [{ type: "text", text: "hello" }],
+      model: "claude-sonnet-4-6",
+      stop_reason: "end_turn",
+      stop_sequence: null,
+      usage: {
+        input_tokens: 100,
+        output_tokens: 50,
+        cache_creation_input_tokens: null,
+        cache_read_input_tokens: null,
+      },
+    };
+    const engine = createAnthropicEngine({ model: "claude-sonnet-4-6" });
+    const result = await engine.complete(
+      emptyPrompt({ messages: [anthropicMsg({ content: "hi" })] }),
+    );
+    expect(result.cacheCreationTokens).toBeUndefined();
+    expect(result.cacheReadTokens).toBeUndefined();
+    // costUsd should only reflect input + output (no cache penalty)
+    expect(result.costUsd).toBeCloseTo(0.00105, 8);
+  });
 });

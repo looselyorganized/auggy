@@ -355,6 +355,8 @@ export interface ModelResponse {
   toolCalls?: { name: string; arguments: Record<string, unknown> }[];
   inputTokens: number;
   outputTokens: number;
+  cacheCreationTokens?: number;  // Anthropic-specific: tokens written to prompt cache
+  cacheReadTokens?: number;      // Anthropic-specific: tokens read from prompt cache
   finishReason: "end_turn" | "tool_use" | "max_tokens";
   costUsd?: number;  // populated by adapter when pricing is known; undefined otherwise
 }
