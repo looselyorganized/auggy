@@ -41,7 +41,7 @@ export function wireMemoryBus(
   });
 
   const maxPerTurn = opts.maxPerTurn ?? 20;
-  const { tools, cleanupHook } = createMemoryTools(registry, { maxPerTurn });
+  const { tools, onTurnEnd, onTurnStart } = createMemoryTools(registry, { maxPerTurn });
 
   const syntheticToolsAugment: Augment = {
     name: "memory-bus",
@@ -49,7 +49,10 @@ export function wireMemoryBus(
     constraints: { maxToolCallsPerTurn: maxPerTurn },
     tools,
     onTurnStart: async () => {
-      cleanupHook();
+      onTurnStart();
+    },
+    onTurnEnd: async (turn) => {
+      onTurnEnd(turn.turnId);
     },
   };
 

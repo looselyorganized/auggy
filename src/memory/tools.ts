@@ -1,14 +1,52 @@
 import { z } from "zod";
-import type { Tool, NamespaceMemoryProvider, ToolExecuteContext } from "../types";
+import type {
+  Tool,
+  NamespaceMemoryProvider,
+  ToolExecuteContext,
+  ContextOrigin,
+} from "../types";
 import { defineTool } from "../helpers";
 import { lookupProvider } from "./registry";
 import type { MemoryRegistry } from "./types";
 
 const DEFAULT_MAX_MEMORY_OPS_PER_TURN = 20;
+const EMERGENCY_CLEANUP_THRESHOLD = 1000;
+
+/**
+ * Unified trust gate for memory operations. Returns an error string
+ * if the operation should be denied, or null if allowed.
+ *
+ * Rule:
+ *   - Missing context        → DENY (fail-closed)
+ *   - origin "peer-derived"  → ALLOW (peer-scoped memory is open to all)
+ *   - trust ∈ {operator, facility} → ALLOW
+ *   - otherwise              → DENY (untrusted, authenticated, or any future level)
+ *
+ * Null peer (internal/scheduled triggers) is treated as operator trust,
+ * matching the convention from effectiveTrustLevel in capability-table.ts.
+ */
+function assertMemoryAccess(
+  operation: "read" | "write" | "search" | "list",
+  origin: ContextOrigin,
+  context: ToolExecuteContext | undefined,
+): string | null {
+  if (!context) {
+    return `Error: memory_${operation} requires turn context.`;
+  }
+  if (origin === "peer-derived") {
+    return null;
+  }
+  const trustLevel = context.peer?.trustLevel ?? "operator";
+  if (trustLevel === "operator" || trustLevel === "facility") {
+    return null;
+  }
+  return `Error: memory_${operation} on this label requires facility or operator trust. Current peer trust: ${trustLevel}.`;
+}
 
 export interface CreateMemoryToolsResult {
   tools: Tool[];
-  cleanupHook: () => void;
+  onTurnEnd: (turnId: string) => void;
+  onTurnStart: () => void;
 }
 
 export function createMemoryTools(
@@ -27,8 +65,23 @@ export function createMemoryTools(
     return null;
   }
 
-  function cleanupHook(): void {
-    if (turnBudgets.size > 100) turnBudgets.clear();
+  // Primary cleanup: called by the agent's onTurnEnd lifecycle for every
+  // completed turn (success, failure, or rejection). Removes that turn's
+  // budget entry.
+  function onTurnEnd(turnId: string): void {
+    turnBudgets.delete(turnId);
+  }
+
+  // Defense-in-depth: emergency clear if the map grows beyond a sane bound.
+  // Should never fire under normal operation (onTurnEnd handles cleanup).
+  // If it does fire, that signals a kernel/agent bug to investigate.
+  function onTurnStart(): void {
+    if (turnBudgets.size > EMERGENCY_CLEANUP_THRESHOLD) {
+      console.warn(
+        `[memory-bus] Emergency budget cleanup: ${turnBudgets.size} stale entries. Indicates onTurnEnd hooks not firing.`,
+      );
+      turnBudgets.clear();
+    }
   }
 
   const memoryRead = defineTool({
@@ -40,8 +93,8 @@ export function createMemoryTools(
       label: z.string().describe("The memory label to read (e.g. 'self')"),
     }),
     execute: async ({ label }, context?) => {
-      const err = checkBudget(context?.turnId ?? "unknown");
-      if (err) return err;
+      const budgetErr = checkBudget(context?.turnId ?? "unknown");
+      if (budgetErr) return budgetErr;
 
       const provider = lookupProvider(registry, label);
       if (!provider) return `Error: No provider owns label "${label}"`;
@@ -50,6 +103,10 @@ export function createMemoryTools(
       if (!spec.read) {
         return `Error: Provider "${provider.name}" does not support reading by label (use memory_search)`;
       }
+
+      const accessErr = assertMemoryAccess("read", spec.defaults.origin, context);
+      if (accessErr) return accessErr;
+
       const entry = await spec.read(label);
       if (!entry) return `No entry found for label "${label}"`;
       return JSON.stringify(entry);
@@ -66,8 +123,8 @@ export function createMemoryTools(
       content: z.string().describe("The content to store"),
     }),
     execute: async ({ label, content }, context?) => {
-      const err = checkBudget(context?.turnId ?? "unknown");
-      if (err) return err;
+      const budgetErr = checkBudget(context?.turnId ?? "unknown");
+      if (budgetErr) return budgetErr;
 
       const provider = lookupProvider(registry, label);
       if (!provider) return `Error: No provider owns label "${label}"`;
@@ -77,13 +134,8 @@ export function createMemoryTools(
         return `Error: Memory label "${label}" is immutable (owned by "${provider.name}")`;
       }
 
-      const origin = spec.defaults.origin;
-      const trustLevel = context?.peer?.trustLevel ?? "operator";
-      if (origin !== "peer-derived") {
-        if (trustLevel === "untrusted" || trustLevel === "authenticated") {
-          return `Error: Memory label "${label}" requires facility or operator trust to write. Current peer trust: ${trustLevel}.`;
-        }
-      }
+      const accessErr = assertMemoryAccess("write", spec.defaults.origin, context);
+      if (accessErr) return accessErr;
 
       await spec.write(label, content);
       return `Successfully wrote to "${label}"`;
@@ -103,11 +155,22 @@ export function createMemoryTools(
         .describe("Optional provider name filter"),
     }),
     execute: async ({ query, providers: restrictTo }, context?) => {
-      const err = checkBudget(context?.turnId ?? "unknown");
-      if (err) return err;
+      const budgetErr = checkBudget(context?.turnId ?? "unknown");
+      if (budgetErr) return budgetErr;
+
+      // Context required for search — without it we can't enforce the
+      // origin gate, so deny rather than over-share.
+      if (!context) {
+        return "Error: memory_search requires turn context.";
+      }
 
       const candidates = registry.namespaces
         .filter((ns) => !restrictTo || restrictTo.includes(ns.augment.name))
+        .filter(
+          (ns) =>
+            assertMemoryAccess("search", ns.augment.memory!.defaults.origin, context) ===
+            null,
+        )
         .map((ns) => ns.augment);
 
       if (candidates.length === 0) {
@@ -143,11 +206,28 @@ export function createMemoryTools(
     category: "memory",
     input: z.object({}),
     execute: async (_input, context?) => {
-      const err = checkBudget(context?.turnId ?? "unknown");
-      if (err) return err;
+      const budgetErr = checkBudget(context?.turnId ?? "unknown");
+      if (budgetErr) return budgetErr;
 
-      const staticLabels = Array.from(registry.static.keys());
-      const namespaces = registry.namespaces.map((ns) => `${ns.prefix}*`);
+      // Context required — without it we can't filter by trust, so deny.
+      if (!context) {
+        return "Error: memory_list requires turn context.";
+      }
+
+      const staticLabels = Array.from(registry.static.entries())
+        .filter(
+          ([, aug]) =>
+            assertMemoryAccess("list", aug.memory!.defaults.origin, context) === null,
+        )
+        .map(([label]) => label);
+
+      const namespaces = registry.namespaces
+        .filter(
+          (ns) =>
+            assertMemoryAccess("list", ns.augment.memory!.defaults.origin, context) ===
+            null,
+        )
+        .map((ns) => `${ns.prefix}*`);
 
       return JSON.stringify({ static: staticLabels, namespaces });
     },
@@ -155,6 +235,7 @@ export function createMemoryTools(
 
   return {
     tools: [memoryRead, memoryWrite, memorySearch, memoryList],
-    cleanupHook,
+    onTurnEnd,
+    onTurnStart,
   };
 }
