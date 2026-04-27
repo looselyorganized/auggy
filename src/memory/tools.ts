@@ -137,7 +137,14 @@ export function createMemoryTools(
       const accessErr = assertMemoryAccess("write", spec.defaults.origin, context);
       if (accessErr) return accessErr;
 
-      await spec.write(label, content);
+      if (spec.owns.kind === "namespace") {
+        await spec.write(label, content, {
+          peerId: context?.peer?.id,
+          trustLevel: context?.peer?.trustLevel,
+        });
+      } else {
+        await spec.write(label, content);
+      }
       return `Successfully wrote to "${label}"`;
     },
   });
@@ -182,7 +189,7 @@ export function createMemoryTools(
           const spec = aug.memory! as NamespaceMemoryProvider;
           return {
             provider: aug.name,
-            entries: await spec.search(query),
+            entries: await spec.search(query, { peerId: context.peer?.id }),
           };
         }),
       );
@@ -233,8 +240,56 @@ export function createMemoryTools(
     },
   });
 
+  const memoryForget = defineTool({
+    name: "memory_forget",
+    description:
+      "Delete all episodic memory entries for a specific visitor. Use for right-to-erasure requests. Operator/facility only.",
+    category: "memory",
+    input: z.object({
+      peerId: z.string().describe("The visitor ID to forget (e.g. 'vis_abc123')"),
+    }),
+    execute: async ({ peerId: targetPeerId }, context?) => {
+      const budgetErr = checkBudget(context?.turnId ?? "unknown");
+      if (budgetErr) return budgetErr;
+
+      if (!context) {
+        return "Error: memory_forget requires turn context.";
+      }
+
+      // Destructive admin action — gated to operator/facility regardless of
+      // any individual provider's origin. Null peer (internal trigger) is
+      // treated as operator trust, matching the convention elsewhere.
+      const trustLevel = context.peer?.trustLevel ?? "operator";
+      if (trustLevel !== "operator" && trustLevel !== "facility") {
+        return `Error: memory_forget requires facility or operator trust. Current peer trust: ${trustLevel}.`;
+      }
+
+      let totalDeleted = 0;
+      const errors: string[] = [];
+      for (const ns of registry.namespaces) {
+        const spec = ns.augment.memory as NamespaceMemoryProvider;
+        if (spec.forget) {
+          try {
+            totalDeleted += await spec.forget(targetPeerId);
+          } catch (err) {
+            errors.push(
+              `${ns.augment.name}: ${err instanceof Error ? err.message : String(err)}`,
+            );
+          }
+        }
+      }
+
+      return JSON.stringify({
+        status: errors.length === 0 ? "ok" : "partial",
+        deleted: totalDeleted,
+        errors: errors.length > 0 ? errors : undefined,
+        message: `Deleted ${totalDeleted} entries for peer "${targetPeerId}".`,
+      });
+    },
+  });
+
   return {
-    tools: [memoryRead, memoryWrite, memorySearch, memoryList],
+    tools: [memoryRead, memoryWrite, memorySearch, memoryList, memoryForget],
     onTurnEnd,
     onTurnStart,
   };

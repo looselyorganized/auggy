@@ -71,7 +71,7 @@ describe("wireMemoryBus", () => {
     expect(wiring.syntheticToolsAugment).not.toBeNull();
     expect(wiring.syntheticToolsAugment!.name).toBe("memory-bus");
     expect(wiring.syntheticToolsAugment!.tools).toBeDefined();
-    expect(wiring.syntheticToolsAugment!.tools!.length).toBe(4);
+    expect(wiring.syntheticToolsAugment!.tools!.length).toBe(5);
   });
 
   it("sets maxToolCallsPerTurn on the synthetic augment to match the budget", () => {

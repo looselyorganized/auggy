@@ -18,7 +18,7 @@ const DEFAULT_CTX: ToolExecuteContext = {
 };
 
 describe("createMemoryTools", () => {
-  it("creates four tools with correct names", () => {
+  it("creates five tools with correct names", () => {
     const registry = buildRegistry([]);
     const { tools } = createMemoryTools(registry);
     expect(tools.map((t) => t.name)).toEqual([
@@ -26,6 +26,7 @@ describe("createMemoryTools", () => {
       "memory_write",
       "memory_search",
       "memory_list",
+      "memory_forget",
     ]);
   });
 
@@ -751,6 +752,168 @@ describe("createMemoryTools", () => {
 
       const exhaustedB = await readTool.execute({ label: "self" }, ctxB);
       expect(exhaustedB).toMatch(/budget exceeded/i);
+    });
+  });
+
+  describe("memory_write provenance", () => {
+    it("passes peerId and trustLevel from context to namespace provider write", async () => {
+      let receivedOpts: { peerId?: string; trustLevel?: string } | undefined;
+      const peerDerivedDefaults: MemoryDefaults = { ...defaults, origin: "peer-derived" };
+      const providers: Augment[] = [
+        {
+          name: "episodic",
+          memory: {
+            owns: { kind: "namespace", prefix: "ep:" },
+            defaults: peerDerivedDefaults,
+            search: async () => [],
+            write: async (_label: string, _content: string, opts) => {
+              receivedOpts = opts;
+            },
+          },
+        },
+      ];
+      const registry = buildRegistry(providers);
+      const { tools } = createMemoryTools(registry);
+      const writeTool = tools.find((t) => t.name === "memory_write")!;
+      await writeTool.execute(
+        { label: "ep:vis_a:1", content: "x" },
+        {
+          turnId: "t1",
+          threadId: "th",
+          peer: { id: "vis_a", kind: "human", trustLevel: "untrusted", sourceAugment: "web" },
+        },
+      );
+      expect(receivedOpts).toEqual({ peerId: "vis_a", trustLevel: "untrusted" });
+    });
+  });
+
+  describe("memory_search peer scoping", () => {
+    it("passes peerId from context to provider search", async () => {
+      let receivedOpts: { peerId?: string } | undefined;
+      const peerDerivedDefaults: MemoryDefaults = { ...defaults, origin: "peer-derived" };
+      const providers: Augment[] = [
+        {
+          name: "episodic",
+          memory: {
+            owns: { kind: "namespace", prefix: "ep:" },
+            defaults: peerDerivedDefaults,
+            search: async (_q, opts) => {
+              receivedOpts = opts;
+              return [];
+            },
+          },
+        },
+      ];
+      const registry = buildRegistry(providers);
+      const { tools } = createMemoryTools(registry);
+      const searchTool = tools.find((t) => t.name === "memory_search")!;
+      await searchTool.execute(
+        { query: "espresso" },
+        {
+          turnId: "t1",
+          threadId: "th",
+          peer: { id: "vis_a", kind: "human", trustLevel: "untrusted", sourceAugment: "web" },
+        },
+      );
+      expect(receivedOpts).toEqual({ peerId: "vis_a" });
+    });
+  });
+
+  describe("memory_forget", () => {
+    function makeAug(name: string, forgetCount: number, prefix: string): Augment {
+      const peerDerivedDefaults: MemoryDefaults = { ...defaults, origin: "peer-derived" };
+      return {
+        name,
+        memory: {
+          owns: { kind: "namespace", prefix },
+          defaults: peerDerivedDefaults,
+          search: async () => [],
+          forget: async () => forgetCount,
+        },
+      };
+    }
+
+    it("returns combined deleted count across providers", async () => {
+      const a = makeAug("a", 3, "ep:");
+      const b = makeAug("b", 2, "other:");
+      const registry = buildRegistry([a, b]);
+      const { tools } = createMemoryTools(registry);
+      const forgetTool = tools.find((t) => t.name === "memory_forget")!;
+      const result = await forgetTool.execute(
+        { peerId: "vis_a" },
+        {
+          turnId: "t1",
+          threadId: "th",
+          peer: { id: "op", kind: "human", trustLevel: "operator", sourceAugment: "cli" },
+        },
+      );
+      const parsed = JSON.parse(result);
+      expect(parsed.deleted).toBe(5);
+    });
+
+    it("denies untrusted peers", async () => {
+      const a = makeAug("a", 3, "ep:");
+      const registry = buildRegistry([a]);
+      const { tools } = createMemoryTools(registry);
+      const forgetTool = tools.find((t) => t.name === "memory_forget")!;
+      const result = await forgetTool.execute(
+        { peerId: "vis_a" },
+        {
+          turnId: "t1",
+          threadId: "th",
+          peer: { id: "vis_x", kind: "human", trustLevel: "untrusted", sourceAugment: "web" },
+        },
+      );
+      expect(result).toContain("Error");
+      expect(result).toContain("operator");
+    });
+
+    it("ignores providers without forget()", async () => {
+      const peerDerivedDefaults: MemoryDefaults = { ...defaults, origin: "peer-derived" };
+      const noForget: Augment = {
+        name: "no-forget",
+        memory: {
+          owns: { kind: "namespace", prefix: "x:" },
+          defaults: peerDerivedDefaults,
+          search: async () => [],
+        },
+      };
+      const withForget = makeAug("with", 4, "ep:");
+      const registry = buildRegistry([noForget, withForget]);
+      const { tools } = createMemoryTools(registry);
+      const forgetTool = tools.find((t) => t.name === "memory_forget")!;
+      const result = await forgetTool.execute(
+        { peerId: "vis_a" },
+        {
+          turnId: "t1",
+          threadId: "th",
+          peer: { id: "op", kind: "human", trustLevel: "operator", sourceAugment: "cli" },
+        },
+      );
+      const parsed = JSON.parse(result);
+      expect(parsed.deleted).toBe(4);
+    });
+
+    it("denies on missing context", async () => {
+      const a = makeAug("a", 3, "ep:");
+      const registry = buildRegistry([a]);
+      const { tools } = createMemoryTools(registry);
+      const forgetTool = tools.find((t) => t.name === "memory_forget")!;
+      const result = await forgetTool.execute({ peerId: "vis_a" });
+      expect(result).toContain("Error");
+    });
+
+    it("allows null peer (internal trigger = operator trust)", async () => {
+      const a = makeAug("a", 5, "ep:");
+      const registry = buildRegistry([a]);
+      const { tools } = createMemoryTools(registry);
+      const forgetTool = tools.find((t) => t.name === "memory_forget")!;
+      const result = await forgetTool.execute(
+        { peerId: "vis_a" },
+        { turnId: "t1", threadId: "th", peer: null },
+      );
+      const parsed = JSON.parse(result);
+      expect(parsed.deleted).toBe(5);
     });
   });
 });
