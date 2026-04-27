@@ -1,4 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
+import { lookupPricing, computeCostUsd } from "./_shared/pricing";
 import type {
   AssembledPrompt,
   Message,
@@ -83,6 +84,14 @@ export function createAnthropicEngine(
         ...(tools.length > 0 ? { tools, tool_choice: toolChoice } : {}),
       };
 
+      const withCost = (r: ModelResponse): ModelResponse => {
+        const rates = lookupPricing("anthropic", opts.model);
+        const costUsd = rates
+          ? computeCostUsd(rates, { inputTokens: r.inputTokens, outputTokens: r.outputTokens })
+          : undefined;
+        return { ...r, costUsd };
+      };
+
       if (opts2?.onDelta) {
         // Streaming path: emit text deltas as they arrive from the model.
         // Tool-use blocks are NOT streamed in v1 — they arrive in the
@@ -93,12 +102,12 @@ export function createAnthropicEngine(
           opts2.onDelta!({ kind: "text_delta", text });
         });
         const finalMessage = await stream.finalMessage();
-        return buildModelResponse(finalMessage);
+        return withCost(buildModelResponse(finalMessage));
       }
 
       // Non-streaming path (backward compat for tests, other consumers)
       const response = await client.messages.create(params);
-      return buildModelResponse(response);
+      return withCost(buildModelResponse(response));
     },
   };
 }

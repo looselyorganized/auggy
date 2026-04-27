@@ -1,5 +1,6 @@
 import OpenAI from "openai";
 import { normalizeSchema } from "./_shared/schema-normalize";
+import { lookupPricing, computeCostUsd } from "./_shared/pricing";
 import type {
   AssembledPrompt,
   Message,
@@ -97,7 +98,12 @@ export function createOpenAIEngine(opts: OpenAIEngineOptions): ModelClient {
           cause: err,
         });
       }
-      return buildOpenAIModelResponse(completion, opts.model);
+      const response = buildOpenAIModelResponse(completion, opts.model);
+      const rates = lookupPricing("openai", opts.model);
+      const costUsd = rates
+        ? computeCostUsd(rates, { inputTokens: response.inputTokens, outputTokens: response.outputTokens })
+        : undefined;
+      return { ...response, costUsd };
     },
   };
 }

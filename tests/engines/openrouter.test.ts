@@ -9,6 +9,7 @@ import type { Message, AssembledPrompt } from "../../src/types";
 let lastCreateArgs: Record<string, unknown> | null = null;
 let lastConstructorArgs: Record<string, unknown> | null = null;
 let throwOnCreate: Error | null = null;
+let nextResponse: OpenAI.Chat.ChatCompletion | null = null;
 
 const defaultResponse = (): OpenAI.Chat.ChatCompletion => ({
   id: "chatcmpl-test",
@@ -35,7 +36,7 @@ mock.module("openai", () => {
         ): Promise<OpenAI.Chat.ChatCompletion> => {
           lastCreateArgs = params;
           if (throwOnCreate) throw throwOnCreate;
-          return defaultResponse();
+          return nextResponse ?? defaultResponse();
         },
       },
     };
@@ -58,6 +59,7 @@ beforeEach(() => {
   lastCreateArgs = null;
   lastConstructorArgs = null;
   throwOnCreate = null;
+  nextResponse = null;
   // Restore env to original values before each test.
   if (ORIGINAL_OPENROUTER === undefined) delete process.env.OPENROUTER_API_KEY;
   else process.env.OPENROUTER_API_KEY = ORIGINAL_OPENROUTER;
@@ -326,5 +328,84 @@ describe("createOpenRouterEngine — defaults", () => {
     expect(typeof engine.complete).toBe("function");
     expect(typeof engine.countTokens).toBe("function");
     expect(typeof engine.maxContextTokens).toBe("number");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// createOpenRouterEngine — costUsd population (slug-aware routing)
+// ---------------------------------------------------------------------------
+
+function mockCompletionWithTokens(
+  inputTokens: number,
+  outputTokens: number,
+  model = "test-model",
+): OpenAI.Chat.ChatCompletion {
+  return {
+    id: "chatcmpl-cost-test",
+    object: "chat.completion",
+    created: 0,
+    model,
+    choices: [
+      {
+        index: 0,
+        message: { role: "assistant", content: "ok", refusal: null },
+        finish_reason: "stop",
+        logprobs: null,
+      },
+    ],
+    usage: {
+      prompt_tokens: inputTokens,
+      completion_tokens: outputTokens,
+      total_tokens: inputTokens + outputTokens,
+    },
+  };
+}
+
+describe("createOpenRouterEngine — costUsd", () => {
+  beforeEach(() => {
+    process.env.OPENROUTER_API_KEY = "sk-test";
+  });
+
+  test("routes-to-anthropic slug populates costUsd", async () => {
+    // anthropic/claude-sonnet-4-6 → lookupPricing("anthropic", "claude-sonnet-4-6")
+    // $3.00/Mtok in, $15.00/Mtok out; 200 in + 100 out → 0.0006 + 0.0015 = 0.0021 USD
+    nextResponse = mockCompletionWithTokens(200, 100, "anthropic/claude-sonnet-4-6");
+    const engine = createOpenRouterEngine({ model: "anthropic/claude-sonnet-4-6" });
+    const result = await engine.complete(
+      emptyPrompt({ messages: [msg({ content: "hi" })] }),
+    );
+    expect(result.costUsd).toBeGreaterThan(0);
+    expect(result.costUsd).toBeCloseTo(0.0021, 8);
+  });
+
+  test("routes-to-openai slug populates costUsd", async () => {
+    // openai/gpt-5 → lookupPricing("openai", "gpt-5")
+    // $5.00/Mtok in, $20.00/Mtok out; 400 in + 200 out → 0.002 + 0.004 = 0.006 USD
+    nextResponse = mockCompletionWithTokens(400, 200, "openai/gpt-5");
+    const engine = createOpenRouterEngine({ model: "openai/gpt-5" });
+    const result = await engine.complete(
+      emptyPrompt({ messages: [msg({ content: "hi" })] }),
+    );
+    expect(result.costUsd).toBeGreaterThan(0);
+    expect(result.costUsd).toBeCloseTo(0.006, 8);
+  });
+
+  test("unknown provider slug leaves costUsd undefined", async () => {
+    // qwen/qwen3.5-397b-a17b — no "qwen" provider in pricing tables
+    nextResponse = mockCompletionWithTokens(100, 50, "qwen/qwen3.5-397b-a17b");
+    const engine = createOpenRouterEngine({ model: "qwen/qwen3.5-397b-a17b" });
+    const result = await engine.complete(
+      emptyPrompt({ messages: [msg({ content: "hi" })] }),
+    );
+    expect(result.costUsd).toBeUndefined();
+  });
+
+  test("slug with no slash leaves costUsd undefined (openrouter table is empty)", async () => {
+    nextResponse = mockCompletionWithTokens(100, 50, "somemodel");
+    const engine = createOpenRouterEngine({ model: "somemodel" });
+    const result = await engine.complete(
+      emptyPrompt({ messages: [msg({ content: "hi" })] }),
+    );
+    expect(result.costUsd).toBeUndefined();
   });
 });

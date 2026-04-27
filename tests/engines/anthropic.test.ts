@@ -1,5 +1,5 @@
-import { describe, it, expect } from "bun:test";
-import type { Message } from "@/types";
+import { describe, it, expect, mock, beforeEach } from "bun:test";
+import type { Message, AssembledPrompt } from "@/types";
 
 /**
  * Tests for the Anthropic engine's message conversion.
@@ -114,5 +114,141 @@ describe("Anthropic message coalescing", () => {
     expect(merged[0]!.text).toBe("first");
     expect(merged[1]!.text).toBe("second");
     expect(merged[2]!.text).toBe("third");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// createAnthropicEngine — costUsd population
+//
+// Mock the SDK so complete() returns a controlled response with known token
+// counts. The mock must be registered before the dynamic import below so
+// Bun's module registry picks it up.
+// ---------------------------------------------------------------------------
+
+let nextAnthropicResponse: Record<string, unknown> | null = null;
+
+mock.module("@anthropic-ai/sdk", () => {
+  const makeResponse = (overrides?: Record<string, unknown>) =>
+    overrides ?? {
+      id: "msg_test",
+      type: "message",
+      role: "assistant",
+      content: [{ type: "text", text: "hello" }],
+      model: "claude-sonnet-4-6",
+      stop_reason: "end_turn",
+      stop_sequence: null,
+      usage: { input_tokens: 100, output_tokens: 50 },
+    };
+
+  class FakeAnthropic {
+    messages = {
+      create: async (_params: Record<string, unknown>) => {
+        return nextAnthropicResponse !== null
+          ? nextAnthropicResponse
+          : makeResponse();
+      },
+      stream: (_params: Record<string, unknown>) => {
+        // Not used by these tests (non-streaming path only).
+        throw new Error("streaming not mocked in costUsd tests");
+      },
+    };
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    constructor(_opts: Record<string, unknown>) {}
+  }
+
+  return { default: FakeAnthropic };
+});
+
+// Dynamic import AFTER mock.module so the mocked SDK is used.
+const { createAnthropicEngine } = await import("../../src/engines/anthropic");
+
+function emptyPrompt(over: Partial<AssembledPrompt> = {}): AssembledPrompt {
+  return {
+    systemBlocks: [],
+    contextBlocks: [],
+    messages: [],
+    tools: [],
+    totalTokens: 0,
+    evictions: [],
+    ...over,
+  };
+}
+
+function anthropicMsg(partial: Partial<Message>): Message {
+  return {
+    id: partial.id ?? crypto.randomUUID(),
+    role: partial.role ?? "user",
+    content: partial.content ?? "hi",
+    timestamp: partial.timestamp ?? Date.now(),
+    tokenCount: partial.tokenCount ?? 0,
+    toolCallId: partial.toolCallId,
+    peerId: partial.peerId,
+  };
+}
+
+beforeEach(() => {
+  nextAnthropicResponse = null;
+});
+
+describe("createAnthropicEngine — costUsd", () => {
+  it("populates costUsd when pricing is known for the model", async () => {
+    // claude-sonnet-4-6: $3.00/Mtok input, $15.00/Mtok output
+    // 100 input + 50 output → (100/1e6)*3 + (50/1e6)*15 = 0.0003 + 0.00075 = 0.00105
+    nextAnthropicResponse = {
+      id: "msg_test",
+      type: "message",
+      role: "assistant",
+      content: [{ type: "text", text: "hello" }],
+      model: "claude-sonnet-4-6",
+      stop_reason: "end_turn",
+      stop_sequence: null,
+      usage: { input_tokens: 100, output_tokens: 50 },
+    };
+    const engine = createAnthropicEngine({ model: "claude-sonnet-4-6" });
+    const result = await engine.complete(
+      emptyPrompt({ messages: [anthropicMsg({ content: "hi" })] }),
+    );
+    expect(result.costUsd).toBeGreaterThan(0);
+    expect(result.costUsd).toBeCloseTo(0.00105, 8);
+  });
+
+  it("leaves costUsd undefined for unknown models", async () => {
+    nextAnthropicResponse = {
+      id: "msg_test",
+      type: "message",
+      role: "assistant",
+      content: [{ type: "text", text: "hello" }],
+      model: "claude-future-99-experimental",
+      stop_reason: "end_turn",
+      stop_sequence: null,
+      usage: { input_tokens: 100, output_tokens: 50 },
+    };
+    const engine = createAnthropicEngine({
+      model: "claude-future-99-experimental",
+    });
+    const result = await engine.complete(
+      emptyPrompt({ messages: [anthropicMsg({ content: "hi" })] }),
+    );
+    expect(result.costUsd).toBeUndefined();
+  });
+
+  it("computes correct cost for haiku model with different rate", async () => {
+    // claude-haiku-4-5: $0.8/Mtok input, $4.0/Mtok output
+    // 1000 input + 200 output → (1000/1e6)*0.8 + (200/1e6)*4.0 = 0.0008 + 0.0008 = 0.0016
+    nextAnthropicResponse = {
+      id: "msg_test",
+      type: "message",
+      role: "assistant",
+      content: [{ type: "text", text: "quick" }],
+      model: "claude-haiku-4-5",
+      stop_reason: "end_turn",
+      stop_sequence: null,
+      usage: { input_tokens: 1000, output_tokens: 200 },
+    };
+    const engine = createAnthropicEngine({ model: "claude-haiku-4-5" });
+    const result = await engine.complete(
+      emptyPrompt({ messages: [anthropicMsg({ content: "hi" })] }),
+    );
+    expect(result.costUsd).toBeCloseTo(0.0016, 8);
   });
 });

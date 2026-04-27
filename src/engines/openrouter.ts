@@ -5,6 +5,7 @@ import {
   convertOpenAIMessages,
   convertOpenAITools,
 } from "./openai";
+import { lookupPricing, computeCostUsd } from "./_shared/pricing";
 import type {
   AssembledPrompt,
   ModelClient,
@@ -63,6 +64,24 @@ export interface OpenRouterProviderRouting {
 }
 
 const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
+
+/**
+ * Resolve pricing for an OpenRouter model slug.
+ *
+ * OpenRouter slugs are "<provider>/<model>" (e.g. "anthropic/claude-sonnet-4-6").
+ * We parse the prefix and delegate to the underlying provider's pricing table.
+ * Slugs with no slash, or an unrecognised provider prefix, fall back to the
+ * openrouter table (currently empty — returns null → costUsd undefined).
+ */
+function lookupOpenRouterPricing(model: string) {
+  const slashIdx = model.indexOf("/");
+  if (slashIdx === -1) return lookupPricing("openrouter", model);
+  const provider = model.slice(0, slashIdx);
+  const tail = model.slice(slashIdx + 1);
+  if (provider === "anthropic") return lookupPricing("anthropic", tail);
+  if (provider === "openai") return lookupPricing("openai", tail);
+  return lookupPricing("openrouter", model);
+}
 
 /** Local extension of the SDK request type with OpenRouter-specific extras.
  *  These fields don't exist in the SDK's typed surface — OpenRouter's
@@ -137,7 +156,12 @@ export function createOpenRouterEngine(
           { cause: err },
         );
       }
-      return buildOpenAIModelResponse(completion, `openrouter:${opts.model}`);
+      const response = buildOpenAIModelResponse(completion, `openrouter:${opts.model}`);
+      const rates = lookupOpenRouterPricing(opts.model);
+      const costUsd = rates
+        ? computeCostUsd(rates, { inputTokens: response.inputTokens, outputTokens: response.outputTokens })
+        : undefined;
+      return { ...response, costUsd };
     },
   };
 }

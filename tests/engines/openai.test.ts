@@ -693,3 +693,41 @@ describe("createOpenAIEngine — SDK call payload", () => {
     expect(lastConstructorArgs?.apiKey).toBe("sk-test");
   });
 });
+
+// ---------------------------------------------------------------------------
+// createOpenAIEngine — costUsd population
+// ---------------------------------------------------------------------------
+
+describe("createOpenAIEngine — costUsd", () => {
+  test("populates costUsd when pricing is known for the model", async () => {
+    // gpt-5: $5.00/Mtok input, $20.00/Mtok output
+    // 200 input + 100 output → (200/1e6)*5 + (100/1e6)*20 = 0.001 + 0.002 = 0.003
+    nextResponse = mockCompletion({ inputTokens: 200, outputTokens: 100 });
+    const engine = createOpenAIEngine({ model: "gpt-5" });
+    const result = await engine.complete(
+      emptyPrompt({ messages: [msg({ content: "hi" })] }),
+    );
+    expect(result.costUsd).toBeGreaterThan(0);
+    expect(result.costUsd).toBeCloseTo(0.003, 8);
+  });
+
+  test("leaves costUsd undefined for unknown models", async () => {
+    nextResponse = mockCompletion({ inputTokens: 200, outputTokens: 100 });
+    const engine = createOpenAIEngine({ model: "gpt-future-99-experimental" });
+    const result = await engine.complete(
+      emptyPrompt({ messages: [msg({ content: "hi" })] }),
+    );
+    expect(result.costUsd).toBeUndefined();
+  });
+
+  test("computes correct cost for gpt-5-mini model", async () => {
+    // gpt-5-mini: $1.00/Mtok input, $4.00/Mtok output
+    // 500 input + 250 output → (500/1e6)*1 + (250/1e6)*4 = 0.0005 + 0.001 = 0.0015
+    nextResponse = mockCompletion({ inputTokens: 500, outputTokens: 250 });
+    const engine = createOpenAIEngine({ model: "gpt-5-mini" });
+    const result = await engine.complete(
+      emptyPrompt({ messages: [msg({ content: "hi" })] }),
+    );
+    expect(result.costUsd).toBeCloseTo(0.0015, 8);
+  });
+});
