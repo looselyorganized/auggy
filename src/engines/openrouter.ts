@@ -5,7 +5,7 @@ import {
   convertOpenAIMessages,
   convertOpenAITools,
 } from "./openai";
-import { lookupPricing, computeCostUsd } from "./_shared/pricing";
+import { lookupPricing, computeCostUsd, isPricingStale, getPricingVerifiedAt } from "./_shared/pricing";
 import type {
   AssembledPrompt,
   ModelClient,
@@ -75,12 +75,15 @@ export interface OpenRouterProviderRouting {
 const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
 
 /**
- * Resolve pricing for an OpenRouter model slug.
+ * Look up OpenRouter pricing by parsing "<provider>/<model>" slugs.
  *
- * OpenRouter slugs are "<provider>/<model>" (e.g. "anthropic/claude-sonnet-4-6").
- * We parse the prefix and delegate to the underlying provider's pricing table.
- * Slugs with no slash, or an unrecognised provider prefix, fall back to the
- * openrouter table (currently empty — returns null → costUsd undefined).
+ * v0 SCOPE: anthropic/* and openai/* slugs only. Other providers
+ * (qwen/*, deepseek/*, mistral/*, etc.) return null and the operator
+ * must configure engine.costOverride to enable dollar-budget enforcement.
+ *
+ * The proper fix is to fetch pricing from OpenRouter's /api/v1/models
+ * endpoint at startup and route by the actual upstream pricing
+ * arrangement. That's deferred to a future phase.
  */
 function lookupOpenRouterPricing(model: string) {
   const slashIdx = model.indexOf("/");
@@ -119,6 +122,26 @@ export function createOpenRouterEngine(
 
   const maxContextTokens = opts.maxContextTokens ?? 128_000;
   const maxOutputTokens = opts.maxTokens ?? 4096;
+
+  // Pricing freshness + availability warning at startup. Fires once at
+  // factory time, not per-turn.
+  if (!opts.costOverride) {
+    const rates = lookupOpenRouterPricing(opts.model);
+    if (!rates) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[engines/openrouter] No pricing entry for slug "${opts.model}" and no costOverride configured. ` +
+        `OpenRouter v0 cost estimation is limited to anthropic/* and openai/* slugs. ` +
+        `For other providers, configure engine.costOverride in agent.yaml.`,
+      );
+    } else if (isPricingStale("openrouter")) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[engines/openrouter] Pricing table verifiedAt ${getPricingVerifiedAt("openrouter")} is more than 90 days old. ` +
+        `Cost estimates may be drifting from actual billing. Verify rates and update src/engines/_shared/pricing.ts.`,
+      );
+    }
+  }
 
   return {
     maxContextTokens,

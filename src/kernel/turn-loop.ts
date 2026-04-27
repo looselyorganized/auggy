@@ -419,7 +419,12 @@ export function createTurnLoop(opts: {
           outputTokens: response.outputTokens,
           durationMs: inferDuration,
           toolCalls: [],
-          cost: { inputCost: 0, outputCost: 0, total: response.costUsd ?? 0 },
+          cost: {
+            inputCost: 0,
+            outputCost: 0,
+            total: response.costUsd ?? 0,
+            priced: response.costUsd !== undefined,
+          },
         });
 
         // Always append model content to history (even on tool_use turns)

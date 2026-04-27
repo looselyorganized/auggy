@@ -220,7 +220,7 @@ export interface TurnTrace {
       durationMs: number;
       approved: boolean;
     }[];
-    cost: { inputCost: number; outputCost: number; total: number };
+    cost: { inputCost: number; outputCost: number; total: number; priced: boolean };
   }[];
   capabilityChecks: {
     tool: string;

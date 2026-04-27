@@ -437,3 +437,58 @@ describe("createOpenRouterEngine — costUsd", () => {
     expect(result.costUsd).toBeCloseTo(0.003, 8);
   });
 });
+
+// ---------------------------------------------------------------------------
+// createOpenRouterEngine — startup warnings
+// ---------------------------------------------------------------------------
+
+describe("createOpenRouterEngine — startup warnings", () => {
+  beforeEach(() => {
+    process.env.OPENROUTER_API_KEY = "sk-test";
+  });
+
+  test("logs a warning mentioning 'anthropic/* and openai/*' for unknown provider slug", () => {
+    const warnings: string[] = [];
+    const original = console.warn;
+    console.warn = (...args: unknown[]) => warnings.push(String(args[0]));
+    try {
+      createOpenRouterEngine({ model: "qwen/qwen-7b" });
+      expect(warnings.length).toBeGreaterThanOrEqual(1);
+      // Warning must call out the v0 scope limitation explicitly.
+      expect(warnings.some((w) => w.includes("anthropic/* and openai/*"))).toBe(true);
+      expect(warnings.some((w) => w.includes("qwen/qwen-7b"))).toBe(true);
+    } finally {
+      console.warn = original;
+    }
+  });
+
+  test("logs a warning for deepseek/* slug (unknown provider)", () => {
+    const warnings: string[] = [];
+    const original = console.warn;
+    console.warn = (...args: unknown[]) => warnings.push(String(args[0]));
+    try {
+      createOpenRouterEngine({ model: "deepseek/deepseek-r2" });
+      expect(warnings.some((w) => w.includes("anthropic/* and openai/*"))).toBe(true);
+    } finally {
+      console.warn = original;
+    }
+  });
+
+  test("does NOT warn when costOverride is set, even for an unknown slug", () => {
+    const warnings: string[] = [];
+    const original = console.warn;
+    console.warn = (...args: unknown[]) => warnings.push(String(args[0]));
+    try {
+      createOpenRouterEngine({
+        model: "qwen/qwen-7b",
+        costOverride: { inputUsdPerMtok: 0.1, outputUsdPerMtok: 0.3 },
+      });
+      const pricingWarnings = warnings.filter(
+        (w) => w.includes("anthropic/* and openai/*") || w.includes("No pricing entry") || w.includes("Pricing table verifiedAt"),
+      );
+      expect(pricingWarnings).toHaveLength(0);
+    } finally {
+      console.warn = original;
+    }
+  });
+});

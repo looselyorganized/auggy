@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import { lookupPricing, computeCostUsd } from "@/engines/_shared/pricing";
+import { lookupPricing, computeCostUsd, getPricingVerifiedAt, isPricingStale } from "@/engines/_shared/pricing";
 
 describe("pricing", () => {
   it("returns rates for known Anthropic models", () => {
@@ -11,6 +11,43 @@ describe("pricing", () => {
 
   it("returns null for unknown models", () => {
     expect(lookupPricing("anthropic", "claude-future-99")).toBeNull();
+  });
+
+  it("getPricingVerifiedAt returns the verifiedAt string for anthropic", () => {
+    const ts = getPricingVerifiedAt("anthropic");
+    expect(ts).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+  });
+
+  it("getPricingVerifiedAt returns a string for all providers", () => {
+    expect(typeof getPricingVerifiedAt("openai")).toBe("string");
+    expect(typeof getPricingVerifiedAt("openrouter")).toBe("string");
+  });
+
+  it("isPricingStale returns false for a very recent verifiedAt", () => {
+    // Inject 'now' as the same day as the verifiedAt → age is 0 days → not stale.
+    const verifiedAt = getPricingVerifiedAt("anthropic");
+    const sameDay = new Date(verifiedAt + "T12:00:00Z");
+    expect(isPricingStale("anthropic", 90, sameDay)).toBe(false);
+  });
+
+  it("isPricingStale returns false just within the staleDays window", () => {
+    // 89 days after verifiedAt → not stale (threshold is >90, not >=90).
+    const verifiedAt = getPricingVerifiedAt("anthropic");
+    const verifiedDate = new Date(verifiedAt + "T00:00:00Z");
+    const almostStale = new Date(verifiedDate.getTime() + 89 * 24 * 60 * 60 * 1000);
+    expect(isPricingStale("anthropic", 90, almostStale)).toBe(false);
+  });
+
+  it("isPricingStale returns true when now is more than 90 days past verifiedAt", () => {
+    // 2027-01-01 is more than 90 days after 2026-04-27.
+    expect(isPricingStale("anthropic", 90, new Date("2027-01-01"))).toBe(true);
+  });
+
+  it("isPricingStale accepts custom staleDays threshold", () => {
+    // With staleDays=1, any date > 1 day after verifiedAt should be stale.
+    const verifiedAt = getPricingVerifiedAt("anthropic");
+    const twoDaysLater = new Date(new Date(verifiedAt + "T00:00:00Z").getTime() + 2 * 24 * 60 * 60 * 1000);
+    expect(isPricingStale("anthropic", 1, twoDaysLater)).toBe(true);
   });
 
   it("computes cost from token counts", () => {

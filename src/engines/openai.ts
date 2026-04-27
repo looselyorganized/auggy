@@ -1,6 +1,6 @@
 import OpenAI from "openai";
 import { normalizeSchema } from "./_shared/schema-normalize";
-import { lookupPricing, computeCostUsd } from "./_shared/pricing";
+import { lookupPricing, computeCostUsd, isPricingStale, getPricingVerifiedAt } from "./_shared/pricing";
 import type {
   AssembledPrompt,
   Message,
@@ -69,6 +69,26 @@ export function createOpenAIEngine(opts: OpenAIEngineOptions): ModelClient {
 
   const maxContextTokens = opts.maxContextTokens ?? 128_000;
   const maxOutputTokens = opts.maxTokens ?? 4096;
+
+  // Pricing freshness + availability warning at startup. Fires once at
+  // factory time, not per-turn.
+  if (!opts.costOverride) {
+    const rates = lookupPricing("openai", opts.model);
+    if (!rates) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[engines/openai] No pricing entry for model "${opts.model}" and no costOverride configured. ` +
+        `costUsd will be undefined; dailyBudgetUsd cannot enforce against this model. ` +
+        `Add the model to src/engines/_shared/pricing.ts or configure engine.costOverride in agent.yaml.`,
+      );
+    } else if (isPricingStale("openai")) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[engines/openai] Pricing table verifiedAt ${getPricingVerifiedAt("openai")} is more than 90 days old. ` +
+        `Cost estimates may be drifting from actual billing. Verify rates and update src/engines/_shared/pricing.ts.`,
+      );
+    }
+  }
 
   return {
     maxContextTokens,

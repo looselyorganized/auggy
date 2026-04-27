@@ -759,3 +759,41 @@ describe("createOpenAIEngine — costUsd", () => {
     expect(result.costUsd).toBeCloseTo(0.0018, 8);
   });
 });
+
+// ---------------------------------------------------------------------------
+// createOpenAIEngine — startup warnings
+// ---------------------------------------------------------------------------
+
+describe("createOpenAIEngine — startup warnings", () => {
+  test("logs a warning containing 'No pricing entry' when model has no rates and no costOverride", () => {
+    const warnings: string[] = [];
+    const original = console.warn;
+    console.warn = (...args: unknown[]) => warnings.push(String(args[0]));
+    try {
+      createOpenAIEngine({ model: "gpt-future-99" });
+      expect(warnings.length).toBeGreaterThanOrEqual(1);
+      expect(warnings.some((w) => w.includes("No pricing entry"))).toBe(true);
+      expect(warnings.some((w) => w.includes("gpt-future-99"))).toBe(true);
+    } finally {
+      console.warn = original;
+    }
+  });
+
+  test("does NOT warn when costOverride is set, even for an unknown model", () => {
+    const warnings: string[] = [];
+    const original = console.warn;
+    console.warn = (...args: unknown[]) => warnings.push(String(args[0]));
+    try {
+      createOpenAIEngine({
+        model: "gpt-future-99",
+        costOverride: { inputUsdPerMtok: 2, outputUsdPerMtok: 8 },
+      });
+      const pricingWarnings = warnings.filter(
+        (w) => w.includes("No pricing entry") || w.includes("Pricing table verifiedAt"),
+      );
+      expect(pricingWarnings).toHaveLength(0);
+    } finally {
+      console.warn = original;
+    }
+  });
+});

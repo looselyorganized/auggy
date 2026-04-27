@@ -1,5 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { lookupPricing, computeCostUsd } from "./_shared/pricing";
+import { lookupPricing, computeCostUsd, isPricingStale, getPricingVerifiedAt } from "./_shared/pricing";
 import type {
   AssembledPrompt,
   Message,
@@ -60,6 +60,28 @@ export function createAnthropicEngine(
 
   const maxContextTokens = opts.maxContextTokens ?? 200_000;
   const maxOutputTokens = opts.maxTokens ?? 4096;
+
+  // Pricing freshness + availability warning at startup. Cost estimation
+  // is advisory; this surfaces gaps so the operator isn't surprised when
+  // budgets enforce against fabricated zeros. Fires once at factory time,
+  // not per-turn.
+  if (!opts.costOverride) {
+    const rates = lookupPricing("anthropic", opts.model);
+    if (!rates) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[engines/anthropic] No pricing entry for model "${opts.model}" and no costOverride configured. ` +
+        `costUsd will be undefined; dailyBudgetUsd cannot enforce against this model. ` +
+        `Add the model to src/engines/_shared/pricing.ts or configure engine.costOverride in agent.yaml.`,
+      );
+    } else if (isPricingStale("anthropic")) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[engines/anthropic] Pricing table verifiedAt ${getPricingVerifiedAt("anthropic")} is more than 90 days old. ` +
+        `Cost estimates may be drifting from actual billing. Verify rates and update src/engines/_shared/pricing.ts.`,
+      );
+    }
+  }
 
   return {
     maxContextTokens,

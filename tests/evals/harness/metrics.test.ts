@@ -42,7 +42,7 @@ function makeTrace(overrides?: Partial<TurnTrace>): TurnTrace {
         toolCalls: [
           { name: "web_fetch", augment: "webFetch", durationMs: 80, approved: true },
         ],
-        cost: { inputCost: 0.003, outputCost: 0.001, total: 0.004 },
+        cost: { inputCost: 0.003, outputCost: 0.001, total: 0.004, priced: true },
       },
     ],
     capabilityChecks: [],
@@ -125,7 +125,7 @@ describe("aggregateMetrics", () => {
           outputTokens: 80,
           durationMs: 400,
           toolCalls: [],
-          cost: { inputCost: 0.004, outputCost: 0.002, total: 0.006 },
+          cost: { inputCost: 0.004, outputCost: 0.002, total: 0.006, priced: true },
         },
       ],
     });
