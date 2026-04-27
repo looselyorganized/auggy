@@ -356,6 +356,7 @@ export interface ModelResponse {
   inputTokens: number;
   outputTokens: number;
   finishReason: "end_turn" | "tool_use" | "max_tokens";
+  costUsd?: number;  // populated by adapter when pricing is known; undefined otherwise
 }
 
 export type ModelDelta = { kind: "text_delta"; text: string };
