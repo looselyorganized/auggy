@@ -8,36 +8,35 @@ import type {
 import type { TrustLevel } from "../../types";
 
 /**
- * Wider Supabase client interface for layeredMemory: adds delete()
- * and update() to the chain so we can implement forget/supersede.
+ * Wider Supabase client interface for layeredMemory.
+ *
+ * Adds:
+ *   - delete()/update() for forget and supersede
+ *   - eq()/is()/gt() chain methods on the search builder so peer_id,
+ *     superseded_by, and expires_at predicates run in SQL (not app
+ *     code) — critical for tenant isolation under load.
  *
  * Structurally compatible with @supabase/supabase-js and with the
  * extended mock in tests/fixtures/mock-supabase.ts.
  */
+export interface SearchBuilder {
+  eq(column: string, value: unknown): SearchBuilder;
+  is(column: string, value: null): SearchBuilder;
+  gt(column: string, value: number): SearchBuilder;
+  ilike(column: string, value: string): SearchBuilder;
+  or(filterExpr: string): SearchBuilder;
+  order(
+    column: string,
+    opts?: { ascending?: boolean },
+  ): SearchBuilder;
+  limit(n: number): PromiseLike<{ data: unknown[]; error: Error | null }>;
+  maybeSingle(): PromiseLike<{ data: unknown; error: Error | null }>;
+}
+
 export interface LayeredSupabaseClient {
   from(table: string): {
     insert(row: unknown): PromiseLike<{ error: Error | null }>;
-    select(columns?: string): {
-      eq(
-        column: string,
-        value: unknown,
-      ): {
-        maybeSingle(): PromiseLike<{ data: unknown; error: Error | null }>;
-      };
-      ilike(
-        column: string,
-        value: string,
-      ): {
-        order(
-          column: string,
-          opts?: { ascending?: boolean },
-        ): {
-          limit(
-            n: number,
-          ): PromiseLike<{ data: unknown[]; error: Error | null }>;
-        };
-      };
-    };
+    select(columns?: string): SearchBuilder;
     delete(): {
       eq(
         column: string,
@@ -122,28 +121,37 @@ export function createSupabaseStore(
   ): Promise<StoreEntry[]> {
     const escaped = query.replace(/[%_\\]/g, (c) => `\\${c}`);
     const pattern = `%${escaped}%`;
+    const now = Date.now();
 
-    // Peer scoping is filtered client-side here. A production deployment
-    // would express this via a Postgres view or RLS policy.
-    const { data, error } = await config.client
+    // All tenant-isolation and freshness predicates run in SQL BEFORE
+    // LIMIT. Without this, a busy tenant could crowd out another peer's
+    // hits before app-side filtering, returning empty/partial results
+    // even when matching rows exist. Production deployments should ALSO
+    // back this with RLS so the database refuses cross-tenant reads
+    // independent of application code.
+    let builder: SearchBuilder = config.client
       .from(config.table)
       .select(
         "id, label, content, peer_id, trust_level, created_at, superseded_by, retention_class, is_verbatim, expires_at",
-      )
+      );
+
+    if (peerId) {
+      builder = builder.eq("peer_id", peerId);
+    }
+    builder = builder.is("superseded_by", null);
+    // Postgres "or" handles "expires_at IS NULL OR expires_at >= now" —
+    // we send it as a single predicate so PostgREST builds the right
+    // SQL. The mock parses this as a logical OR over its filters.
+    builder = builder.or(`expires_at.is.null,expires_at.gte.${now}`);
+
+    const { data, error } = await builder
       .ilike("content", pattern)
       .order("created_at", { ascending: false })
-      .limit(limit * 4);
+      .limit(limit);
 
     if (error) throw error;
     const rows = (data ?? []) as Row[];
-    const now = Date.now();
-
-    return rows
-      .filter((r) => r.superseded_by === null)
-      .filter((r) => r.expires_at === null || r.expires_at >= now)
-      .filter((r) => !peerId || r.peer_id === peerId)
-      .slice(0, limit)
-      .map(rowToEntry);
+    return rows.map(rowToEntry);
   }
 
   async function read(label: string): Promise<StoreEntry | null> {

@@ -22,6 +22,9 @@ export interface MockQueryBuilder {
   delete(): MockQueryBuilder;
   update(patch: Record<string, unknown>): MockQueryBuilder;
   eq(column: string, value: unknown): MockQueryBuilder;
+  is(column: string, value: null): MockQueryBuilder;
+  gt(column: string, value: number): MockQueryBuilder;
+  or(filterExpr: string): MockQueryBuilder;
   ilike(column: string, value: string): MockQueryBuilder;
   order(
     column: string,
@@ -83,6 +86,47 @@ export function createMockSupabase(): MockSupabaseClient {
       },
       eq(column, value) {
         filters.push((r) => (r as Record<string, unknown>)[column] === value);
+        return builder;
+      },
+      is(column, value) {
+        filters.push(
+          (r) => (r as Record<string, unknown>)[column] === value,
+        );
+        return builder;
+      },
+      gt(column, value) {
+        filters.push((r) => {
+          const v = (r as Record<string, unknown>)[column];
+          return typeof v === "number" && v > value;
+        });
+        return builder;
+      },
+      or(filterExpr) {
+        // Minimal PostgREST-or parser. Supports the shapes layeredMemory
+        // sends: "col.is.null,col.gte.<number>". Splits on top-level
+        // commas, parses each "col.op.value" clause, and matches if any
+        // clause holds. Wider grammars are out of scope for this mock.
+        const clauses = filterExpr.split(",").map((c) => c.trim());
+        const predicates = clauses.map((clause) => {
+          const parts = clause.split(".");
+          const col = parts[0]!;
+          const op = parts[1]!;
+          const rest = parts.slice(2).join(".");
+          return (r: MockRow): boolean => {
+            const v = (r as Record<string, unknown>)[col];
+            if (op === "is" && rest === "null") return v === null;
+            if (op === "gte") {
+              const n = Number(rest);
+              return typeof v === "number" && v >= n;
+            }
+            if (op === "lt") {
+              const n = Number(rest);
+              return typeof v === "number" && v < n;
+            }
+            return false;
+          };
+        });
+        filters.push((r) => predicates.some((p) => p(r)));
         return builder;
       },
       ilike(column, value) {
