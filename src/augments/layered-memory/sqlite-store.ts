@@ -69,17 +69,52 @@ function rowToEntry(row: Row): StoreEntry {
   };
 }
 
+// Sampled cleanup: every ~Nth write triggers a bounded DELETE so write
+// latency doesn't depend on stale-data backlog. Capped via LIMIT so even
+// a huge backlog drains in roughly constant time per write.
+const CLEANUP_SAMPLE_RATE = 50;
+const CLEANUP_BATCH_SIZE = 100;
+
 export function createSqliteStore(config: SqliteStoreConfig): MemoryStore {
   const db = new Database(config.dbPath, { create: true });
   db.run("PRAGMA journal_mode = WAL");
   db.run("PRAGMA foreign_keys = ON");
 
+  // Schema must exist before we prepare statements that reference it.
+  for (const stmt of SCHEMA_STATEMENTS) {
+    db.run(stmt);
+  }
+
   const retentionMs = config.retentionDays * 24 * 60 * 60 * 1000;
 
+  // Pre-compiled statements live as long as the connection.
+  const insertEntryStmt = db.prepare(
+    `INSERT INTO entries (id, label, content, peer_id, trust_level, created_at, superseded_by, retention_class, is_verbatim, expires_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  );
+  const insertEventStmt = db.prepare(
+    "INSERT INTO event_log (id, entry_id, action, peer_id, timestamp, detail) VALUES (?, ?, ?, ?, ?, ?)",
+  );
+  const cleanupStmt = db.prepare(
+    "DELETE FROM entries WHERE id IN (SELECT id FROM entries WHERE expires_at IS NOT NULL AND expires_at < ? LIMIT ?)",
+  );
+
+  type SqlBinding = string | number | bigint | boolean | null | Uint8Array;
+
+  // writeAndLog runs the entry insert and audit insert atomically. If
+  // either fails, both roll back — callers either see a successful
+  // write that's fully recorded, or an error and zero side effects.
+  const writeAndLog = db.transaction(
+    (entryParams: SqlBinding[], eventParams: SqlBinding[]) => {
+      insertEntryStmt.run(...entryParams);
+      insertEventStmt.run(...eventParams);
+    },
+  );
+
   async function initialize(): Promise<void> {
-    for (const stmt of SCHEMA_STATEMENTS) {
-      db.run(stmt);
-    }
+    // Schema is now created at construction time. Kept as a no-op for
+    // contract symmetry with SupabaseStore (whose schema lives in
+    // migrations).
   }
 
   function logEvent(
@@ -88,9 +123,7 @@ export function createSqliteStore(config: SqliteStoreConfig): MemoryStore {
     peerId: string | null,
     detail?: object,
   ) {
-    db.prepare(
-      "INSERT INTO event_log (id, entry_id, action, peer_id, timestamp, detail) VALUES (?, ?, ?, ?, ?, ?)",
-    ).run(
+    insertEventStmt.run(
       randomUUID(),
       entryId,
       action,
@@ -106,32 +139,37 @@ export function createSqliteStore(config: SqliteStoreConfig): MemoryStore {
     const id = input.id ?? randomUUID();
     const expiresAt = input.expiresAt ?? input.createdAt + retentionMs;
 
-    db.prepare(
-      `INSERT INTO entries (id, label, content, peer_id, trust_level, created_at, superseded_by, retention_class, is_verbatim, expires_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run(
-      id,
-      input.label,
-      input.content,
-      input.peerId,
-      input.trustLevel,
-      input.createdAt,
-      input.supersededBy,
-      input.retentionClass,
-      input.isVerbatim ? 1 : 0,
-      expiresAt,
+    writeAndLog(
+      [
+        id,
+        input.label,
+        input.content,
+        input.peerId,
+        input.trustLevel,
+        input.createdAt,
+        input.supersededBy,
+        input.retentionClass,
+        input.isVerbatim ? 1 : 0,
+        expiresAt,
+      ],
+      [
+        randomUUID(),
+        id,
+        "write",
+        input.peerId,
+        Date.now(),
+        null,
+      ],
     );
 
-    logEvent(id, "write", input.peerId);
-
-    // Cheap cleanup of expired entries on every write.
-    const cleanupResult = db
-      .prepare(
-        "DELETE FROM entries WHERE expires_at IS NOT NULL AND expires_at < ?",
-      )
-      .run(Date.now());
-    if (cleanupResult.changes > 0) {
-      logEvent(id, "expire-sweep", null, { swept: cleanupResult.changes });
+    // Sampled, bounded cleanup. Outside the transaction so a partial
+    // sweep can never roll back the user's write. ~1-in-50 writes pay
+    // the small constant DELETE cost; 49-in-50 writes pay nothing.
+    if (Math.random() * CLEANUP_SAMPLE_RATE < 1) {
+      const result = cleanupStmt.run(Date.now(), CLEANUP_BATCH_SIZE);
+      if (result.changes > 0) {
+        logEvent("(batch)", "expire-sweep", null, { swept: result.changes });
+      }
     }
 
     return { ...input, id, expiresAt };

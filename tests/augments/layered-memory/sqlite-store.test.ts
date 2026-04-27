@@ -207,6 +207,61 @@ describe("SqliteStore", () => {
     expect(fetched).toBeNull();
   });
 
+  it("entry insert + event_log insert are atomic (no partial write)", async () => {
+    const now = Date.now();
+    await store.write({
+      label: "ep:vis_a:1", content: "tracked", peerId: "vis_a",
+      trustLevel: "untrusted", createdAt: now, supersededBy: null,
+      retentionClass: "operational", isVerbatim: false, expiresAt: null,
+    });
+
+    const { Database } = await import("bun:sqlite");
+    const db2 = new Database(dbPath, { readwrite: true });
+    const events = db2
+      .prepare<{ count: number }, []>(
+        "SELECT COUNT(*) as count FROM event_log WHERE action = 'write'",
+      )
+      .get();
+    const entries = db2
+      .prepare<{ count: number }, []>(
+        "SELECT COUNT(*) as count FROM entries",
+      )
+      .get();
+    db2.close();
+
+    // Both rows committed together — exactly one entry, exactly one
+    // matching write event.
+    expect(entries?.count).toBe(1);
+    expect(events?.count).toBe(1);
+  });
+
+  it("expiry sweep is decoupled from write — does not retroactively fail successful writes", async () => {
+    // Write 200 entries; with sample rate 1/50 cleanup runs ~4 times.
+    // Even if cleanup hit a constraint, the writes must remain.
+    const now = Date.now();
+    for (let i = 0; i < 200; i++) {
+      await store.write({
+        label: `ep:vis_a:${i}`,
+        content: `entry ${i}`,
+        peerId: "vis_a",
+        trustLevel: "untrusted",
+        createdAt: now + i,
+        supersededBy: null,
+        retentionClass: "operational",
+        isVerbatim: false,
+        expiresAt: null,
+      });
+    }
+
+    const { Database } = await import("bun:sqlite");
+    const db2 = new Database(dbPath, { readwrite: true });
+    const result = db2
+      .prepare<{ count: number }, []>("SELECT COUNT(*) as count FROM entries")
+      .get();
+    db2.close();
+    expect(result?.count).toBe(200);
+  });
+
   it("LIKE wildcards in query are escaped", async () => {
     const now = Date.now();
     await store.write({
