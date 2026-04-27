@@ -1,6 +1,6 @@
 # Auggy — Backlog
 
-Running list of known bugs, UX issues, and small improvements discovered during real use. Not a roadmap — roadmap lives at `lo/docs/auggy-plans-roadmap.md`. This is the "grab one when you have a spare hour" list.
+Running list of known bugs, UX issues, and small improvements discovered during real use. Not a roadmap — roadmap lives at `lo/docs/auggy-plans-detail.md`. This is the "grab one when you have a spare hour" list.
 
 Format: `- [ ] [category] description (context: where/when found)`
 

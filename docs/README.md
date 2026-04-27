@@ -141,4 +141,4 @@ As of 2026-04-16 (v0.1.1):
 - **Tests:** 537 passing across 42 files
 - **Type check:** clean (`bunx tsc --noEmit`)
 
-For roadmap and project status, see [`lo/docs/auggy-plans-roadmap.md`](../../docs/auggy-plans-roadmap.md).
+For roadmap and project status, see [`lo/docs/auggy-plans-detail.md`](../../docs/auggy-plans-detail.md).

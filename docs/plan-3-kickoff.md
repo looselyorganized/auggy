@@ -40,7 +40,7 @@ Auggy (`augment-1`) is a modular agent runtime in TypeScript/Bun. Agents are com
 The project's own rules, commands, code map, and 10 numbered constraints. Read this first — it's what every session loads.
 
 ### 2. The full roadmap with Plan 3's current scope
-**`/Users/bigviking/Documents/github/projects/lo/docs/auggy-plans-roadmap.md`**
+**`/Users/bigviking/Documents/github/projects/lo/docs/auggy-plans-detail.md`**
 Search for "## Plan 3" — has the scope, open design questions, dependencies, and what Plan 3 does NOT build. Also read the TL;DR table at the top for the full plan sequence and the LORF-phase mapping.
 
 ### 3. Philosophy — why Auggy is shaped the way it is
@@ -187,7 +187,7 @@ No TypeScript written. No `main.ts`. No `bun run scripts/hello.ts`. Just config 
 
 1. Read CLAUDE.md
 2. Read this kickoff doc
-3. Read the Plan 3 section of the roadmap (`lo/docs/auggy-plans-roadmap.md`)
+3. Read the Plan 3 section of the roadmap (`lo/docs/auggy-plans-detail.md`)
 4. Read `docs/11-skills.md` and `docs/10-system-diagrams.md` diagram 3
 5. Skim `scripts/hello.ts` to see what the CLI replaces
 6. Design the config file format (this is the first decision — everything else follows from it)

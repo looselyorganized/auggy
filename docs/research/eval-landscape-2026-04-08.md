@@ -14,7 +14,7 @@ OpenClaw ships **no internal eval harness** in its main repository. What exists 
 
 The practitioner consensus from Anthropic, shipping engineers, and academic sources points to a small set of load-bearing principles: grade outcomes not transcripts, distinguish capability from regression evals, use Pass^k not Pass@1, read your transcripts, start with 20–50 tasks from real failures, and use deterministic graders where possible with LLM-as-judge (binary verdicts, human-calibrated) where necessary.
 
-**Recommendation for Auggy:** do not copy OpenClaw's fragmented pattern. Build eval affordances into the runtime from the start, grounded in the Anthropic prescription. See [`auggy-plans-roadmap.md#plan-7-eval-harness--observability`](../../../docs/auggy-plans-roadmap.md#plan-7-eval-harness--observability) for the concrete plan.
+**Recommendation for Auggy:** do not copy OpenClaw's fragmented pattern. Build eval affordances into the runtime from the start, grounded in the Anthropic prescription. See [`auggy-plans-detail.md#plan-7-eval-harness--observability`](../../../docs/auggy-plans-detail.md#plan-7-eval-harness--observability) for the concrete plan.
 
 ---
 
@@ -346,7 +346,7 @@ Since this research was commissioned to inform Auggy's eval strategy before the 
 
 10. **The Anthropic Jan 2026 guide is the prescription.** Not a starting point to deviate from — a specific set of ten principles (see Part 2.7) to follow. Every plan item should map back to one or more of these.
 
-These implications are captured as a concrete plan entry in [`lo/docs/auggy-plans-roadmap.md#plan-7-eval-harness--observability`](../../../docs/auggy-plans-roadmap.md).
+These implications are captured as a concrete plan entry in [`lo/docs/auggy-plans-detail.md#plan-7-eval-harness--observability`](../../../docs/auggy-plans-detail.md).
 
 ---
 
