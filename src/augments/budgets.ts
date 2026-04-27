@@ -8,6 +8,7 @@ import type {
 } from "../types";
 import { createBudgetStore, type BudgetStore } from "./budgets/budget-store";
 import type { BudgetsConfig, BudgetCaps } from "./budgets/types";
+import { buildBudgetPreamble } from "./budgets/preamble";
 
 export interface BudgetsAugmentOptions extends BudgetsConfig {
   /** Storage backend. Only "sqlite" is supported in v0. */
@@ -99,20 +100,18 @@ export function budgets(opts: BudgetsAugmentOptions): Augment {
 
     /**
      * BATS-style budget context block. Reads peer usage from the store
-     * and emits a context block. Phase 1c (Task C1) will create
-     * buildBudgetPreamble; for now this hook returns an empty array
-     * (the wire is in place, content lands in C1).
+     * and emits a ContextBlock describing remaining capacity and behavioral
+     * guidance. Called after the turn-gate 2PC confirm, so `used` already
+     * counts the current turn as consumed — remaining values are post-this-turn.
      */
     context: async (turn: TurnState): Promise<ContextBlock[]> => {
       const peer = turn.peer;
       if (!peer) return [];
       const caps = resolveCaps(peer, opts);
       if (caps === null) return [];
-      // Phase 1c plugs in buildBudgetPreamble here:
-      //   const used = await store.getPeerUsage(peer.id, turn.threadId);
-      //   const block = buildBudgetPreamble({ caps, used });
-      //   return block ? [block] : [];
-      return [];
+      const used = await store.getPeerUsage(peer.id, turn.threadId);
+      const block = buildBudgetPreamble({ caps, used });
+      return block ? [block] : [];
     },
 
     onShutdown: async () => {

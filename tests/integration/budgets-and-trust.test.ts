@@ -479,6 +479,59 @@ describe("budgets + trust integration", () => {
     }
   });
 
+  // ── Test 8: Budget preamble block injected into context ──────────────────
+
+  it("Test 8: recognized peer with caps gets a budget preamble block in the model's contextBlocks", async () => {
+    const dbPath = join(tmp.path, "t8.db");
+    const model = createMockModel({ response: "ok" });
+    const port = allocPort();
+
+    const agent = defineAgent(
+      {
+        name: "test-agent",
+        purpose: "test",
+        model: "mock",
+        augments: [
+          budgets({
+            dbPath,
+            caps: { public: { recognized: { maxTurnsPerThread: 10, maxTurnsPerDay: 50 } } },
+          }),
+          webTransport({
+            port,
+            auth: { type: "bearer", token: "test-token" },
+          }),
+        ],
+      },
+      model,
+    );
+
+    await agent.start();
+    try {
+      const peer = recognizedPeer("vis-test8");
+      const threadId = "thread-t8";
+
+      const result = await agent.inject(makeTrigger({ peer, threadId }));
+      expect(result.success).toBe(true);
+
+      // The model must have been called and the assembled prompt must contain
+      // the BATS budget block in its contextBlocks (placement: "preamble").
+      expect(model.calls.length).toBeGreaterThan(0);
+      const prompt = model.calls[0]!;
+      const contextText = prompt.contextBlocks.join("\n");
+
+      // After 1 turn with maxTurnsPerThread: 10, used.thread = 1, remaining = 9
+      expect(contextText).toContain("Turns remaining in this thread: 9 of 10");
+      // After 1 turn with maxTurnsPerDay: 50, used.day = 1, remaining = 49
+      expect(contextText).toContain("Turns remaining today: 49 of 50");
+      // Guidance: ratio = min(9/10, 49/50) = 0.9 → "Explore thoroughly. No urgency."
+      expect(contextText).toContain("Explore thoroughly. No urgency.");
+      // source label identifies the block
+      expect(contextText).toContain("budgets");
+    } finally {
+      await agent.stop();
+    }
+  });
+
   // ── Test 7: Unpriced cost commit is honest ────────────────────────────────
 
   it("Test 7: unpriced turn increments unpriced_turns, cost_usd stays 0", async () => {
