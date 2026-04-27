@@ -95,16 +95,16 @@ describe("bash augment structure", () => {
 // ---------------------------------------------------------------------------
 
 describe("bash trust gating", () => {
-  it("hides shell_exec from public by default", () => {
+  it("hides shell_exec from public AND agent by default — only creator gets bash", () => {
     const aug = bash({ risk: "standard" });
     const table = createCapabilityTable([aug]);
 
     expect(table.canExpose("shell_exec", turnWithTrust("public"))).toBe(false);
-    expect(table.canExpose("shell_exec", turnWithTrust("agent"))).toBe(true);
+    expect(table.canExpose("shell_exec", turnWithTrust("agent"))).toBe(false);
     expect(table.canExpose("shell_exec", turnWithTrust("creator"))).toBe(true);
   });
 
-  it("hides run_script from public by default", () => {
+  it("hides run_script from public AND agent by default", () => {
     const aug = bash({
       risk: "scripts-only",
       scripts: [{ name: "s", description: "s", command: "echo" }],
@@ -112,7 +112,23 @@ describe("bash trust gating", () => {
     const table = createCapabilityTable([aug]);
 
     expect(table.canExpose("run_script", turnWithTrust("public"))).toBe(false);
+    expect(table.canExpose("run_script", turnWithTrust("agent"))).toBe(false);
     expect(table.canExpose("run_script", turnWithTrust("creator"))).toBe(true);
+  });
+
+  it("operator can override perTrustLevel to admit agent peers", () => {
+    // Explicit perTrustLevel that only blocks public — agent gets bash.
+    const aug = bash({
+      risk: "standard",
+      perTrustLevel: {
+        public: { neverExpose: ["shell_exec"] },
+      },
+    });
+    const table = createCapabilityTable([aug]);
+
+    expect(table.canExpose("shell_exec", turnWithTrust("public"))).toBe(false);
+    expect(table.canExpose("shell_exec", turnWithTrust("agent"))).toBe(true);
+    expect(table.canExpose("shell_exec", turnWithTrust("creator"))).toBe(true);
   });
 });
 

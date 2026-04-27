@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { resolve } from "node:path";
-import type { Augment } from "../types";
+import type { Augment, TrustLevel } from "../types";
 import { defineTool } from "../helpers";
 import { readStreamWithCap } from "../http";
 
@@ -43,6 +43,22 @@ export interface BashAugmentOptions {
   maxToolCallsPerTurn?: number;
   /** Named scripts the operator pre-authors. Available in all risk levels. */
   scripts?: BashScript[];
+  /**
+   * Override per-trust-level constraints. Default: shell_exec and
+   * run_script are blocked for `public` and `agent` peers; `creator`
+   * gets the full surface. Operators wanting to admit an `agent` peer
+   * to bash should pass an explicit `perTrustLevel` (e.g. `{ public:
+   * { neverExpose: toolNames } }` to block public only).
+   */
+  perTrustLevel?: Partial<
+    Record<
+      TrustLevel,
+      {
+        neverExpose?: string[];
+        requiresHumanApproval?: string[];
+      }
+    >
+  >;
 }
 
 // ---------------------------------------------------------------------------
@@ -427,8 +443,12 @@ export function bash(opts: BashAugmentOptions = {}): Augment {
     capabilities: ["tools"],
     constraints: {
       maxToolCallsPerTurn: opts.maxToolCallsPerTurn ?? 10,
-      perTrustLevel: {
+      perTrustLevel: opts.perTrustLevel ?? {
         public: { neverExpose: toolNames },
+        agent: { neverExpose: toolNames },
+        // creator gets the full bash surface by default.
+        // Operators can override the entire perTrustLevel by passing it
+        // explicitly in BashAugmentOptions.
       },
     },
     tools,
