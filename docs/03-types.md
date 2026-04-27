@@ -180,6 +180,7 @@ export interface PeerIdentity {
   id: string;
   kind: PeerKind;
   trustLevel: TrustLevel;
+  publicSubstate?: "anonymous" | "recognized";  // set iff trustLevel === "public"
   sourceAugment: string;     // which augment minted this identity
   displayName?: string;
   orgId?: string;
@@ -187,9 +188,15 @@ export interface PeerIdentity {
 ```
 
 Trust levels are ordered from most to least:
-- **`creator`** — the human deploying/operating the agent. Maximum trust. Null peer (internal/scheduled trigger) is also treated as `creator`.
-- **`agent`** — another admitted agent (e.g. over the spine) or verified machine peer. High trust.
-- **`public`** — an unauthenticated or unverified peer. Inputs from `public` peers should be treated as potentially adversarial.
+- **`creator`** — the deployer of this specific agent. Bypasses budgets and all per-trust-level constraints. Null peer (internal/scheduled trigger) is treated as `creator`.
+- **`agent`** — a machine the creator has admitted (via shared-secret in `access.agents`). High trust.
+- **`public`** — everyone else. Inputs from `public` peers should be treated as potentially adversarial.
+
+**`publicSubstate`** differentiates two sub-populations within `public` trust:
+- `"anonymous"` — no visitor token present; ephemeral identity (peer.id is `anon-<threadId>`). Memory writes attach to this ephemeral ID.
+- `"recognized"` — a valid HMAC visitor token was verified; durable identity (peer.id is `vis_*` from the token). Memory writes attach to this durable ID across sessions.
+
+`publicSubstate` is present **only** when `trustLevel === "public"`. Other trust levels must omit it. The budgets augment uses `publicSubstate` to apply differentiated caps (tighter defaults for anonymous, looser for recognized).
 
 The kernel never assigns trust levels — only transports do, in their `identify()` function. The kernel reads `trustLevel` to build the system preamble (which warns the model about public peers) and to mark `peer-derived` context blocks.
 
@@ -280,6 +287,64 @@ export interface TurnResult {
 `TurnResult` is what comes back from `kernel.handleInbound()`. The presence of both `response` (singular) and `responses` (plural) supports both the simple case (one reply to the source) and the multi-destination case (e.g. an agent that broadcasts to multiple peers).
 
 `status` and `success` are redundant for the common case (`status === "completed"` ↔ `success === true`) but `status` carries additional information (`canceled`, `rejected`, `failed`) that `success` can't.
+
+**`errorClass`** is set on `status: "rejected"` results to help transports map to the right HTTP status. Values:
+- `"cap-denied"` — a turn gate denied admission (over budget). Maps to HTTP 429.
+- `"admission-state-failed"` — confirm phase threw (storage issue). Maps to HTTP 5xx.
+- `"engine-error"` — the engine call itself threw. Maps to HTTP 5xx.
+- Other strings — HTTP 5xx fallback.
+
+Optional for backward compatibility; older rejection sites may omit it.
+
+## Section 7b — Turn gate (admission 2PC)
+
+The turn-gate contract gives augments a structured way to admit or reject a turn **before** the engine is called, with full atomicity guarantees.
+
+```ts
+export interface TurnGateProvider {
+  prepare(args: {
+    turnId: string;
+    peer: PeerIdentity | null;
+    threadId: string;
+    trigger: TurnTrigger;
+  }): Promise<TurnGateTicket>;
+
+  commit?(args: {
+    turnId: string;
+    peer: PeerIdentity | null;
+    threadId: string;
+    cost: CostResult;
+  }): Promise<void>;
+}
+
+export interface TurnGateTicket {
+  decision: { allow: true } | { allow: false; reason: string };
+  confirm(): Promise<void>;   // idempotent
+  rollback(): Promise<void>;  // idempotent
+}
+```
+
+**The 2PC contract:**
+
+1. `prepare(args)` — the gate opens a transaction, evaluates caps against current state, stages reservation rows inside the transaction, and returns a ticket. The ticket carries the decision and owns the open transaction.
+2. The kernel evaluates all decisions conjunctively. Any `allow: false` → rollback all tickets → reject with `errorClass: "cap-denied"`. No engine call.
+3. All `allow: true` → `confirm()` each ticket in order. Any confirm throw → rollback all → reject with `errorClass: "admission-state-failed"`. No engine call.
+4. Engine call proceeds.
+5. After the engine returns, `commit(args)` is called on each gate that defines it, passing the `CostResult`. Errors here are logged but do not fail the turn — the response already exists.
+
+**v0 scope:** first-party only. The budgets augment is the sole shipped implementation. The kernel cannot mechanically prevent third-party augments from violating the prepare-then-confirm contract (e.g. writing outside the transaction). Third-party turn-gate augments are out of scope until the contract has real-world miles.
+
+## Section 7c — CostResult discriminated union
+
+```ts
+export type CostResult =
+  | { priced: true; costUsd: number }
+  | { priced: false; reason: string };
+```
+
+Engines produce a `CostResult` for each inference step. The discriminated union forces callers to handle the unpriced case explicitly — when a model has no pricing table, or when the adapter can't compute cost, the result is `{ priced: false, reason: "..." }` rather than a silent zero.
+
+Per-provider pricing modules live in `src/engines/<provider>/pricing.ts`. The budgets augment's `commit()` receives the aggregate `CostResult` across all inference steps in the turn; if `priced: false`, it marks the reservation as unpriced but still records the turn (so turn-count caps still apply).
 
 ## Section 8 — Kernel events
 
@@ -516,6 +581,8 @@ This is the **single most important type in the entire framework.** Everything e
 - `contextTimeoutMs` — wraps `context()` in `withTimeout` (default 5000ms)
 - `toolTimeoutMs` — wraps each `execute()` in `withTimeout` (default 30000ms)
 - `perTrustLevel` — per-trust-level additive constraints (Layer 1). Keyed by `TrustLevel` (`creator` / `agent` / `public`), each level can specify its own `neverExpose` and `requiresHumanApproval` lists. These apply only to peers at that level; top-level `neverExpose` still applies to everyone (no escape). Null peer (internal/scheduled triggers) is treated as `creator`. Example: `perTrustLevel: { public: { neverExpose: ["fs_remove"] } }` hides `fs_remove` from public peers but keeps it visible to agent and creator.
+
+**`turnGate`** is an optional `TurnGateProvider`. Augments that set this field participate in the kernel's pre-dispatch admission 2PC. The kernel calls `prepare` before running any augment context or the engine; the gate can deny the turn or commit a reservation. See Section 7b for the full contract. v0: only the built-in budgets augment ships a turn gate.
 
 **Lifecycle hooks:**
 - `onBoot` — called once at `agent.start()`. Failures throw and abort startup.

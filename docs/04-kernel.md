@@ -27,6 +27,50 @@ const trace = traceEmitter.startTurn({...});
 
 Every turn starts with a `TurnState` (the read-only view augments see) and a `TurnTrace` (the audit log being built up).
 
+#### Phase 0b — Turn-gate admission (2PC)
+
+Before any augment context or engine work, the kernel runs a pre-dispatch admission check through all augments that declare a `turnGate`.
+
+```ts
+const turnGates = augments.filter((a) => a.turnGate !== undefined);
+```
+
+**Prepare phase.** For each gate in declaration order:
+
+```ts
+ticket = await gate.turnGate.prepare({ turnId, peer, threadId, trigger });
+```
+
+The gate opens a SQLite transaction, evaluates the peer's caps against current usage, stages reservation rows inside the transaction, and returns a `TurnGateTicket`. If `prepare` itself throws, all already-prepared tickets are rolled back and the turn is rejected with `errorClass: "admission-state-failed"`.
+
+**Decision evaluation — conjunctive.** After all prepares complete, the kernel checks for any denial:
+
+```ts
+const denied = tickets.find((t) => !t.decision.allow);
+```
+
+If any ticket denies (`allow: false`), all tickets are rolled back and the turn returns immediately with `status: "rejected"` and `errorClass: "cap-denied"`. No engine call is made.
+
+**Confirm phase — fail-closed.** If all decisions are `allow: true`, the kernel confirms each ticket in order:
+
+```ts
+await tickets[i].confirm();
+```
+
+If any confirm throws, all tickets are rolled back and the turn is rejected with `errorClass: "admission-state-failed"`. No engine call.
+
+**Engine call** proceeds only after all gates have confirmed. The context pipeline, allocator, and inference loop run as normal.
+
+**Cost commit phase.** After the engine returns, for each gate that defines `commit()`:
+
+```ts
+await gate.turnGate.commit({ turnId, peer, threadId, cost });
+```
+
+The `cost` is the aggregate `CostResult` across all inference steps. Errors in the commit phase are logged but do not fail the turn — the response already exists.
+
+**v0 scope:** first-party only. The budgets augment is the sole shipped turn gate. See [03-types.md § Section 7b](./03-types.md#section-7b--turn-gate-admission-2pc) for the full `TurnGateProvider` / `TurnGateTicket` contract.
+
 #### Phase 1 — Abort check + history append
 
 ```ts

@@ -4,7 +4,7 @@
 
 Auggy (`augment-1`) is a modular agent runtime in TypeScript/Bun. Agents are composed from swappable augments; the kernel manages context, tools, permissions, and lifecycle. Framework-agnostic by design — **not LORF-locked**.
 
-**Status: v0.2.0 (2026-04-16).** Plans 1 (kernel) + 2 (built-in augments) + 3 (CLI & manifest) complete. Layer 1 trust-aware capability table, security + quality eval suites, bashAugment, SSE token streaming, layeredMemory (peer-scoped episodic memory with provenance). 8 augments, 3 engines, 652 tests across 53 files. See `lo/docs/auggy-plans-detail.md` (outside this repo) for the plan-by-plan roadmap.
+**Status: v0.2.0 (2026-04-27, visitor-economics complete).** Plans 1 (kernel) + 2 (built-in augments) + 3 (CLI & manifest) complete. Layer 1 trust-aware capability table, security + quality eval suites, bashAugment, SSE token streaming, layeredMemory (peer-scoped episodic memory with provenance). Visitor-economics work (Phase 1b+1c+D1): three-level trust model (creator/agent/public + publicSubstate), TurnGateProvider 2PC contract, budgets augment (per-trust-level turn caps + dollar ceiling + BATS preamble), four-path identity resolution in web transport, Idempotency-Key dedup, bash defaults block shell_exec/run_script for public AND agent. 9 augments, 3 engines, 863 tests across 60+ files. See `lo/docs/auggy-plans-detail.md` (outside this repo) for the plan-by-plan roadmap.
 
 ## Commands
 
@@ -19,7 +19,7 @@ aug1 restart <name>             # Stop + start
 aug1 status [name]              # Show running agents
 
 # Development
-bun test                         # Run full test suite (652 tests across 53 files)
+bun test                         # Run full test suite (863 tests across 60+ files)
 bun test --watch                 # Watch mode
 bunx tsc --noEmit                # Typecheck (must pass before committing)
 bun run scripts/hello.ts         # Hello-world agent (requires ANTHROPIC_API_KEY)
@@ -39,7 +39,8 @@ To use the CLI globally: `bun link` in this directory makes `auggy` available as
 | `docs/04-kernel.md` | Turn loop + supporting machinery |
 | `docs/05-memory-subsystem.md` | Provider contract, registry, bus, context synthesis, generic tools |
 | `docs/06-transports.md` | Transport interface, AG-UI event protocol, SSE streaming |
-| `docs/07-built-in-augments.md` | `fileMemory`, `supabaseMemory`, `webTransport`, `filesystem`, `webFetch`, `orgContext` |
+| `docs/07-built-in-augments.md` | `fileMemory`, `supabaseMemory`, `webTransport`, `filesystem`, `webFetch`, `orgContext`, `bash`, `budgets` |
+| `docs/12-budgets.md` | Comprehensive operator reference for the budgets augment |
 | `docs/08-agent-lifecycle.md` | `defineAgent`, `AgentHandle`, lifecycle hooks |
 | `docs/09-testing.md` | Test strategy, fixtures, what to mock |
 | `docs/10-system-diagrams.md` | Visual maps: three primitives, full architecture, data flow, filesystem layout |
@@ -93,7 +94,9 @@ src/
 │   ├── filesystem-skill/   # SKILL.md + references/ for the filesystem augment
 │   ├── web-fetch.ts        # URL fetch with HTML→text, JSON passthrough
 │   ├── org-context.ts      # Org knowledge (manifest + org_fetch + org_escalate)
-│   └── bash.ts             # Scoped shell execution (allowlist, cwd, timeout)
+│   ├── bash.ts             # Scoped shell execution (allowlist, cwd, timeout)
+│   ├── budgets.ts          # Per-trust-level turn budgets + dollar ceiling (turn-gate 2PC)
+│   └── budgets/            # Budget store (SQLite), BATS preamble builder, types
 │
 ├── engines/              # ModelClient adapters (the "reasoning engines")
 │   ├── anthropic.ts        # Anthropic Messages API adapter
@@ -123,7 +126,7 @@ src/
         ├── restart.ts      # aug1 restart (stop + start)
         └── status.ts       # aug1 status (list or detail)
 
-tests/                    # 652 tests across 53 files
+tests/                    # 863 tests across 60+ files
 ├── fixtures/             # mock-model, mock-augment, mock-supabase, temp-dir
 ├── kernel/               # Per-kernel-component unit tests
 ├── memory/               # Memory subsystem tests
@@ -146,7 +149,7 @@ scripts/
 1. **The kernel is finished.** Behavior changes go in augments, not in `src/kernel/`. Bug fixes to kernel files are fine; adding new kernel features requires explicit justification.
 2. **Every shared type lives in `src/types.ts`** — do not scatter types across modules. One file is deliberate.
 3. **Every module is a `create*` factory returning an object** — no classes, no `this`.
-4. **Test gate before committing:** `bun test` (600 passing) + `bunx tsc --noEmit` (clean) must both pass.
+4. **Test gate before committing:** `bun test` (863 passing) + `bunx tsc --noEmit` (clean) must both pass.
 5. **A2A-shaped types are load-bearing** — `Part[]`, `TaskState`, `AgentCard` follow A2A's shapes even though v1 doesn't speak A2A on the wire. Do not deviate.
 6. **Never use `vitest`** — we migrated to `bun:test` in Plan 2. The import is `from "bun:test"`.
 7. **Model adapters go in `src/engines/`** — not `src/models/` (see philosophy: the adapter is the reasoning engine, not the model itself).

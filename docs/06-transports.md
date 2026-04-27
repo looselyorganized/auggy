@@ -218,10 +218,15 @@ export interface WebTransportOptions {
   auth: { type: "bearer"; token: string };
   cors?: { origins: string[] };
   maxMessageLength?: number;     // default 4000
-  trustLevel?: TrustLevel;       // default "public"
+  access?: { agents?: AgentAccessEntry[] };  // admitted agent list
   concurrency?: number;          // default 1
   maxQueueDepth?: number;        // default 50
   rateLimitPerPeer?: { maxPerMinute: number };
+  visitorTokens?: {
+    enabled?: boolean;       // default true
+    ttlSeconds?: number;     // default 30 days
+    signingKey?: string;     // derive from VISITOR_SIGNING_KEY; ephemeral if absent
+  };
 }
 ```
 
@@ -241,22 +246,39 @@ The handler does this in order:
 #### 1. Authenticate
 
 ```ts
-if (req.headers.get("authorization") !== `Bearer ${opts.auth.token}`) {
+if (!timingSafeEqual(authHeader, `Bearer ${opts.auth.token}`)) {
   return json({ error: "unauthorized" }, 401);
 }
 ```
 
-The bearer token is configured at construction time. v1 only supports a single token (for a single agent operator); a future enhancement would support per-peer tokens or JWT-based auth.
+The bearer token is validated with a timing-safe comparison to prevent extraction via timing side-channel. It is configured at construction time (a single operator token). All four identity paths below require a valid bearer token — the token authenticates the *connection*; the identity headers determine the *peer*.
 
-#### 2. Identify the peer
+#### 2. Idempotency-Key
+
+If the `Idempotency-Key` header is present, it is validated and used as `turnId`:
 
 ```ts
-const headers = lowercased(req.headers);
-const peer = identify({ headers });
-if (!peer) return json({ error: "missing peer identity" }, 400);
+// Valid: 1–128 chars matching [A-Za-z0-9_-]
+turnId = idempotencyKey;    // used as trigger.turnId
 ```
 
-The peer ID is required — `x-peer-id` header. Without it, 400. The optional headers (`x-peer-kind`, `x-peer-name`, `x-org-id`) default to sensible values (`kind: "human"`, no display name, no org).
+Malformed key → HTTP 400. Absent → fresh `crypto.randomUUID()`.
+
+When the budgets augment is mounted, `turnId` is also the primary key of `turn_reservations`. Retrying with the same `Idempotency-Key` hits the store's PK conflict path — the reservation already exists and the store returns the cached decision rather than re-evaluating caps. This is what makes retries safe under budget caps.
+
+#### 3. Identity resolution — four paths
+
+Identity is resolved in a fixed priority order:
+
+**Path 1 — Creator:** bearer token valid AND no `x-agent-id`/`x-agent-secret` headers AND no `x-visitor-token` header. Mints `{ trustLevel: "creator", id: "creator" }`.
+
+**Path 2 — Agent:** `x-agent-id` and `x-agent-secret` headers both present. Looks up the agent ID in `opts.access.agents`; performs a timing-safe secret comparison. If the secret matches, mints `{ trustLevel: "agent", id: "agent:<agentId>" }`. Wrong secret → HTTP 401 immediately — no silent downgrade to public trust.
+
+**Path 3 — Public recognized:** `x-visitor-token` header present and HMAC-verified. Mints `{ trustLevel: "public", publicSubstate: "recognized", id: "<visitorId from token>" }`. The visitor's ID is durable across sessions — memory writes attach to it.
+
+**Path 4 — Public anonymous:** default path. Mints `{ trustLevel: "public", publicSubstate: "anonymous", id: "anon-<threadId>" }`. For fresh anonymous visitors, the transport issues a new visitor token in the `x-visitor-token` response header so subsequent requests can become "recognized."
+
+Path 2 is evaluated before Path 1 — if agent headers are present, they determine the outcome regardless of whether the bearer token is also valid.
 
 #### 3. Validate the body
 
@@ -361,6 +383,19 @@ The original implementation collected all events into an array and returned them
 
 The fix was small: replace the `collected` array with a `ReadableStream`, replace `return new Response(sseBody)` with `return new Response(stream)`, run the kernel call inside an IIFE so the response can return early. The test for it stands up a real model client gated on a `Promise<void>`, makes the request, reads the first chunk (which contains `RUN_STARTED`), then releases the gate and drains the rest. Without true streaming, the read would block forever waiting for the gate.
 
+### Rejection mapping — error codes in SSE
+
+When a turn is rejected (queue full, rate limit, or turn-gate denial), the transport synthesizes `RUN_ERROR` + `RUN_FINISHED` events — the kernel emits no events for turns that don't run. The `code` field on `RUN_ERROR` is:
+
+| Rejection source | `errorClass` | SSE `code` |
+|---|---|---|
+| Turn-gate cap denied | `"cap-denied"` | `"CAP_DENIED"` |
+| Turn-gate confirm error | `"admission-state-failed"` | `"ADMISSION_FAILED"` |
+| Queue full / rate limit | _(none)_ | `"REJECTED"` |
+| Unhandled exception | _(none)_ | `"INTERNAL"` |
+
+**HTTP status remains 200** for the SSE stream in v0. The gate decision is embedded in the stream rather than in the HTTP status because the Response must be opened before the kernel's 2PC result is known (the stream starts synchronously; the turn runs inside the async IIFE). A future enhancement (T5) adds a synchronous gate-decision API that would allow the transport to return 429 or 503 before opening the stream at all.
+
 ### Why the rejection events are synthesized in the transport
 
 The transport-queue rejects requests without ever calling the turn loop. That means **no kernel events fire** — the turn loop never ran. The kernel can't emit events for a turn that didn't happen.
@@ -464,7 +499,7 @@ This is what makes adding a new transport (Plan 4 spine, Plan 6 MCP) a self-cont
 
 Plus the full integration test in `tests/integration/full-agent.test.ts` which exercises the web transport with a real `defineAgent`, real `fileMemory`, real `supabaseMemory` (mocked client), and asserts identity context reaches the model and episodic memory shows up in the prompt's `contextBlocks`.
 
-## What's not in v1
+## What's not in v0/v1
 
 These are deferred to future plans or future improvements:
 
@@ -472,7 +507,7 @@ These are deferred to future plans or future improvements:
 - **Full A2A wire format** — the spine transport (Plan 4) will speak A2A natively.
 - **MCP server transport** — Plan 6.
 - **Cancellation from the client side** — the client closing the SSE stream doesn't currently abort the kernel turn.
-- **Pluggable auth** — only bearer token in v1.
-- **CORS preflight handling** — the `cors` option exists but only for setting `Access-Control-Allow-Origin` on responses; OPTIONS requests aren't specially handled.
-- **WebSocket transport** — SSE only in v1.
+- **Synchronous gate-decision API (T5)** — would allow returning 429/503 before opening the stream, replacing the current in-stream error code approach.
+- **CORS preflight handling** — the `cors` option exists; OPTIONS requests return 204 with allowed headers. Full CORS negotiation (multiple origins, credentials) is not implemented.
+- **WebSocket transport** — SSE only.
 - **Outbound dispatch via web** — the `onOutbound` callback exists but the web transport doesn't have a way to push messages to the peer (one-shot HTTP request/response). A WebSocket version would.

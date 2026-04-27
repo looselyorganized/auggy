@@ -488,7 +488,7 @@ Three permission tiers: **read-only** (default) → **writable** → **writable 
 - **Size truncation** — files over `maxReadSize` are truncated with a `[truncated at 256KB, total size: 20MB]` marker
 - **Per-mount permissions** — enforced on every operation before any file I/O
 - **Mount isolation** — each mount is an independent security boundary; no cross-mount path references
-- **Per-trust-level structural defaults** — the augment ships with `perTrustLevel: { untrusted: { neverExpose: ["fs_write", "fs_mkdir", "fs_remove"] }, authenticated: { neverExpose: ["fs_remove"] } }`. Untrusted peers structurally cannot see the three mutation tools; authenticated peers cannot see `fs_remove`. This runs at the capability table *before* the model sees the tool list (Layer 1 enforcement). Mount-level `writable` / `deletable` flags remain as a complementary defense — they run inside the tool after it has already been called, so they catch operator-authorized tools being called against the wrong mount.
+- **Per-trust-level structural defaults** — the augment ships with `perTrustLevel: { public: { neverExpose: ["fs_write", "fs_mkdir", "fs_remove"] }, agent: { neverExpose: ["fs_remove"] } }`. Public peers structurally cannot see the three mutation tools; agent peers cannot see `fs_remove`. This runs at the capability table *before* the model sees the tool list (Layer 1 enforcement). Mount-level `writable` / `deletable` flags remain as a complementary defense — they run inside the tool after it has already been called, so they catch operator-authorized tools being called against the wrong mount.
 
 ### Lifecycle
 
@@ -546,12 +546,173 @@ Rejected URLs throw from the http client and are caught by the `web_fetch` tool,
 
 The SSRF filter lives in `src/http.ts` as the exported helper `rejectUnsafeUrl(url)` so other augments can adopt it with `createHttpClient({ rejectUnsafeUrls: true })`.
 
+## `bash` — Scoped shell execution
+
+```ts
+import { bash } from "augment-1";
+
+const shell = bash({
+  cwd: "/workspace",
+  allowedCommands: ["ls", "cat", "grep", "git", "bun", "python3"],
+  timeoutMs: 30_000,
+});
+```
+
+### What it is
+
+A shell execution augment exposing two tools — `shell_exec` (run a command string) and `run_script` (write a script to a temp file and execute it). Both tools are gated by an operator-configured command allowlist: the first token of the command (or the script interpreter) must be in `allowedCommands` or the tool returns an error before forking.
+
+### Per-trust-level defaults
+
+By default, `shell_exec` and `run_script` are **blocked for both `public` and `agent` peers**. Only `creator` peers get the full bash surface.
+
+```ts
+// Default perTrustLevel (applied when opts.perTrustLevel is omitted):
+perTrustLevel: {
+  public: { neverExpose: ["shell_exec", "run_script"] },
+  agent:  { neverExpose: ["shell_exec", "run_script"] },
+}
+```
+
+This is a Layer 1 structural default — the capability table removes the tools from the model's tool list before the turn runs. Neither `public` nor `agent` peers can call them no matter how they phrase the request.
+
+**Admitting an agent peer to bash** requires an explicit `perTrustLevel` override:
+
+```ts
+bash({
+  cwd: "/workspace",
+  allowedCommands: ["bun", "git"],
+  // Admit agents but keep blocking public:
+  perTrustLevel: {
+    public: { neverExpose: ["shell_exec", "run_script"] },
+    // agent: omitted — agents see both tools
+  },
+})
+```
+
+Passing `perTrustLevel: {}` would expose bash to everyone. Operators are responsible for understanding what they're opening up.
+
+### Security model
+
+- **Allowlist on entry** — the command token must match exactly. No shell expansion, no path traversal.
+- **`cwd` is the only working directory** — set it to a directory the agent should be allowed to operate in.
+- **`timeoutMs`** — default 30 seconds. Commands that exceed the timeout are killed.
+- **No privilege escalation** — runs as the process user. No `sudo`; no setuid.
+
+### Lifecycle
+
+| Hook | What it does |
+|------|-------------|
+| `onBoot` | Verifies `cwd` exists. Throws if missing (to catch misconfiguration early). |
+| `onShutdown` | None. |
+
+## `budgets` — Per-trust-level turn budgets
+
+```ts
+import { budgets } from "augment-1";
+
+const budget = budgets({
+  dbPath: "./data/budgets.db",
+  caps: {
+    agent: { maxTurnsPerDay: 500 },
+    public: {
+      anonymous: { maxTurnsPerThread: 5 },
+      recognized: { maxTurnsPerThread: 20, maxTurnsPerDay: 50, maxUsdPerDay: 1.00 },
+    },
+  },
+  anonymousGlobalLimit: 60,    // max anonymous requests per rolling minute
+  dailyBudgetUsd: 50.00,       // facility-wide daily USD ceiling
+});
+```
+
+### What it does
+
+The budgets augment is a turn-gate (see [03-types.md § Section 7b](./03-types.md#section-7b--turn-gate-admission-2pc)) that enforces per-trust-level turn budgets using a SQLite store. It runs a full 2PC cycle on every turn: reserve on prepare, commit on confirm, debit on cost-commit.
+
+`creator` peers and null peers (internal/scheduled triggers) bypass all budget checks — no store writes occur.
+
+### Configuration reference
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `dbPath` | `string` | required | Absolute path to the SQLite database file. Created if absent. |
+| `caps.agent` | `BudgetCaps` | none | Caps for `agent`-trust peers. |
+| `caps.public.anonymous` | `BudgetCaps` | none | Caps for public+anonymous peers. |
+| `caps.public.recognized` | `BudgetCaps` | none | Caps for public+recognized peers. |
+| `anonymousGlobalLimit` | `number` | none | Max anonymous requests per rolling minute (facility-wide). |
+| `dailyBudgetUsd` | `number` | none | Facility-wide daily USD ceiling (sum across all priced turns). |
+| `cleanupWindowMs` | `number` | 3,600,000 | Milliseconds before a stuck reservation is swept to `allow:incomplete`. |
+
+**`BudgetCaps` fields:**
+
+| Field | Type | Description |
+|---|---|---|
+| `maxUsdPerDay` | `number` | Max USD spend per peer per calendar day. Post-hoc (see below). |
+| `maxTurnsPerThread` | `number` | Max turns per `threadId` per calendar day. |
+| `maxTurnsPerDay` | `number` | Max turns across all threads per peer per calendar day. |
+
+Omit any field to leave that dimension unconstrained.
+
+### 2PC semantics
+
+On every non-creator turn:
+
+1. **Prepare** — the store opens a SQLite transaction, reads current usage, evaluates all active caps, stages a `turn_reservations` row (and optionally an `anonymous_requests` row), returns a ticket.
+2. **Decision** — if any cap is exceeded, `decision: { allow: false, reason }`. Kernel rolls back all tickets, rejects with `errorClass: "cap-denied"`.
+3. **Confirm** — kernel calls `ticket.confirm()`, which commits the staged rows.
+4. **Context** — `budgets.context()` runs (after confirm, so the current turn is already counted). It reads peer usage and emits a BATS preamble block.
+5. **Engine call** — normal turn execution.
+6. **Cost commit** — kernel calls `gate.commit({ turnId, peer, cost })`. If `cost.priced === true`, the store debits `peer_daily_costs` and `daily_global`. If `priced: false`, the row is marked unpriced — turn-count caps still applied in prepare.
+
+### Storage schema
+
+Four tables in the SQLite database:
+
+| Table | Purpose |
+|---|---|
+| `turn_reservations` | One row per turn. PK = `turn_id`. Tracks decision, costs, committed_at. |
+| `daily_global` | One row per calendar day. Tracks total cost USD and unpriced turn count. |
+| `peer_daily_costs` | One row per (peer, day). Tracks per-peer spend and unpriced turns. |
+| `anonymous_requests` | Rolling log of anonymous request timestamps (for `anonymousGlobalLimit` sliding window). |
+
+### BATS preamble
+
+After the gate confirms, `budgets.context()` reads the peer's current usage from the store and emits a `ContextBlock` with placement `"preamble"`. The block includes:
+
+- Remaining turns in this thread (if `maxTurnsPerThread` configured)
+- Remaining turns today (if `maxTurnsPerDay` configured)
+- Estimated spend today (if `maxUsdPerDay` configured)
+- A behavioral guidance line bucketed by the minimum `budgetRatio`:
+
+| `budgetRatio` | Guidance |
+|---|---|
+| `> 0.6` | "Explore thoroughly. No urgency." |
+| `0.2 – 0.6` | "Focus on the core question. Begin wrapping up." |
+| `< 0.2` | "Final response. Deliver a complete answer." |
+| `= 0` | "Grace turn — summarize and close." |
+
+The preamble is emitted only when at least one cap dimension is configured. `creator` and null peers get no preamble (bypass path).
+
+### Post-hoc dollar caps
+
+`maxUsdPerDay` is enforced **after** the turn runs. The prepare phase evaluates the cap against yesterday's + today's completed turns, not the in-flight turn. This means a single turn can push a peer slightly over their daily dollar limit — one-turn overshoot is acceptable and unavoidable without pre-call cost estimation.
+
+Pre-call cost projection (estimating the turn's cost before running it) is deferred to a future roadmap item. See [ROADMAP.md](../../docs/ROADMAP.md) for "Pre-call cost estimation."
+
+### v0 limitations
+
+- **Single-instance topology.** The SQLite store is not safe for concurrent processes. Run one agent instance per `dbPath`.
+- **One-turn dollar overshoot.** See post-hoc note above.
+- **No rebuild path.** If the database is deleted, usage history is lost. The budgets store does not reconstruct from external state.
+
+For a comprehensive operator reference, see [docs/12-budgets.md](./12-budgets.md).
+
 ## Why these aren't exhaustive
 
 The built-in augments above are the **minimum viable set**. Real agents will mount more — escalation augments (Zip's `org_escalate` tool), eval augments, telemetry augments, ad-hoc tool augments. None of those belong in the runtime; they're application-specific.
 
 The line between "ship it built-in" and "user implements" is roughly:
-- **Built in:** anything that's a load-bearing reference implementation of a contract Auggy defines (`MemoryProviderSpec`, `TransportSpec`, filesystem access for skills).
+- **Built in:** anything that's a load-bearing reference implementation of a contract Auggy defines (`MemoryProviderSpec`, `TransportSpec`, filesystem access for skills), or infrastructure every public-facing agent needs (budgets, bash defaults).
 - **User code:** anything that's domain-specific or where multiple competing implementations make sense.
 
-A future plan (Plan 3 — CLI & Manifest System) introduces an **augment catalog** — a way to publish and consume augments without bundling them into the runtime. That's where the "second batch" of augments will live: catalog-based, not built-in.
+The augment catalog (Plan 3 CLI) provides a way to publish and consume augments without bundling them into the runtime. Domain augments live there, not here.

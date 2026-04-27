@@ -21,6 +21,7 @@ If you're new to the codebase, read in order. Each doc assumes the previous one.
 | 09 | [Testing](./09-testing.md) | Test strategy, fixtures, the `bun:test` runner, what to mock |
 | 10 | [System diagrams](./10-system-diagrams.md) | Visual maps: three primitives, full architecture, filesystem layout, turn data flow, portable agent, codebase map |
 | 11 | [Skills](./11-skills.md) | How skills work: progressive disclosure, the three-primitive model, SKILL.md convention, filesystem-as-loader |
+| 12 | [Budgets](./12-budgets.md) | Operator reference: budgets augment configuration, 2PC flow, storage schema, BATS preamble, limitations |
 
 ### Additional docs
 
@@ -130,15 +131,16 @@ augment-1/
 
 ## Status
 
-As of 2026-04-16 (v0.1.1):
+As of 2026-04-27 (v0.2.0, visitor-economics shipped):
 
-- **Plan 1 (kernel):** complete
+- **Plan 1 (kernel):** complete — includes turn-gate 2PC dispatch
 - **Plan 2 (built-in augments):** complete
 - **Plan 3 (CLI + manifest):** complete, shipped 2026-04-14
-- **Augments:** 6 built-in (`fileMemory`, `supabaseMemory`, `filesystem`, `webFetch`, `orgContext`, `bash`)
+- **Visitor-economics (Phase 1b+1c+D1):** complete — trust model rename, budgets augment, four-path identity, Idempotency-Key, bash defaults
+- **Augments:** 9 built-in (`fileMemory`, `supabaseMemory`, `layeredMemory`, `filesystem`, `webFetch`, `orgContext`, `bash`, `budgets`, `webTransport`)
 - **Engines:** 3 (`anthropic`, `openai`, `openrouter`)
 - **CLI commands:** `aug1 create | add | dev | start | stop | restart | status`
-- **Tests:** 537 passing across 42 files
+- **Tests:** 863 passing
 - **Type check:** clean (`bunx tsc --noEmit`)
 
 For roadmap and project status, see [`lo/docs/auggy-plans-detail.md`](../../docs/auggy-plans-detail.md).
