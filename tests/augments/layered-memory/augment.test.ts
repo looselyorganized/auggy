@@ -86,4 +86,59 @@ describe("layeredMemory", () => {
     await custom.onShutdown?.();
     await dir.cleanup();
   });
+
+  describe("peer isolation", () => {
+    it("does NOT expose read() — peer-derived data is search-only", () => {
+      const spec = aug.memory as NamespaceMemoryProvider;
+      expect(spec.read).toBeUndefined();
+    });
+
+    it("rejects writes where the label is not scoped to the caller's peerId", async () => {
+      const spec = aug.memory as NamespaceMemoryProvider;
+      // Peer A trying to write to a label that claims to belong to peer B
+      await expect(
+        spec.write!("ep:vis_b:1", "poison", {
+          peerId: "vis_a",
+          trustLevel: "untrusted",
+        }),
+      ).rejects.toThrow(/cannot write to label/);
+    });
+
+    it("accepts writes whose label starts with the caller's peer-scoped prefix", async () => {
+      const spec = aug.memory as NamespaceMemoryProvider;
+      await spec.write!("ep:vis_a:1", "fine", {
+        peerId: "vis_a",
+        trustLevel: "untrusted",
+      });
+      await spec.write!("ep:vis_a", "also fine", {
+        peerId: "vis_a",
+        trustLevel: "untrusted",
+      });
+
+      const results = await spec.search("fine", { peerId: "vis_a" });
+      expect(results.length).toBe(2);
+    });
+
+    it("does not let prefix-only-match bypass binding (vis_a vs vis_aa)", async () => {
+      const spec = aug.memory as NamespaceMemoryProvider;
+      // vis_a tries to write to a label that starts with vis_a but actually
+      // belongs to vis_aa. The check must use full-segment match.
+      await expect(
+        spec.write!("ep:vis_aa:1", "subtle", {
+          peerId: "vis_a",
+          trustLevel: "untrusted",
+        }),
+      ).rejects.toThrow(/cannot write to label/);
+    });
+
+    it("allows writes without peerId (operator/system internal triggers)", async () => {
+      const spec = aug.memory as NamespaceMemoryProvider;
+      // No peerId in opts → no binding enforced. This is the operator/null-peer
+      // path — operator can write to any well-formed label.
+      await spec.write!("ep:system:note", "operator note");
+      // The row is stored with peer_id=null. It won't surface in any peer's
+      // search (which filters by peer_id), but operator workflows can still
+      // see it via memory_search without peerId scoping.
+    });
+  });
 });

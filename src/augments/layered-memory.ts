@@ -76,10 +76,27 @@ export async function layeredMemory(opts: LayeredMemoryOptions): Promise<Augment
         `layeredMemory: label "${label}" does not start with namespace prefix "${prefix}"`,
       );
     }
+    // Structural peer-binding: if a peerId is provided, the label MUST be
+    // scoped to that peer (format: <prefix><peerId> or <prefix><peerId>:<rest>).
+    // This prevents peer A from writing to a label like "ep:vis_b:1" — even if
+    // they guessed it — by storing a row whose label segment claims another
+    // peer. Without this, search remains peer-isolated (rows are stored with
+    // the caller's peer_id, not the label's), but the database accumulates
+    // misleading rows that could surface in audit/forget paths.
+    const peerId = writeOpts?.peerId;
+    if (peerId) {
+      const peerScopedPrefix = `${prefix}${peerId}`;
+      if (label !== peerScopedPrefix && !label.startsWith(`${peerScopedPrefix}:`)) {
+        throw new Error(
+          `layeredMemory: peer "${peerId}" cannot write to label "${label}" — labels must be scoped as "${peerScopedPrefix}" or "${peerScopedPrefix}:<topic>"`,
+        );
+      }
+    }
+
     await store.write({
       label,
       content,
-      peerId: writeOpts?.peerId ?? null,
+      peerId: peerId ?? null,
       trustLevel: writeOpts?.trustLevel ?? null,
       createdAt: Date.now(),
       supersededBy: null,
@@ -89,15 +106,16 @@ export async function layeredMemory(opts: LayeredMemoryOptions): Promise<Augment
     });
   };
 
-  const read = async (label: string): Promise<MemoryEntry | null> => {
-    if (!label.startsWith(prefix)) return null;
-    const entry = await store.read(label);
-    return entry ? storeEntryToMemoryEntry(entry) : null;
-  };
-
   const forget = async (peerId: string): Promise<number> => {
     return store.forget(peerId);
   };
+
+  // NOTE: read() is intentionally NOT exposed on this NamespaceMemoryProvider.
+  // Episodic memory is peer-scoped — direct label reads bypass that scoping
+  // because the generic memory_read tool only checks origin, not peer
+  // ownership of the label. Callers must use search (peer-scoped via
+  // ToolExecuteContext) instead. memory_read on an "ep:" label will return
+  // "does not support reading by label", which is the desired behavior.
 
   return {
     name: `layered-memory-${opts.namespace}`,
@@ -114,7 +132,6 @@ export async function layeredMemory(opts: LayeredMemoryOptions): Promise<Augment
       },
       search,
       write,
-      read,
       forget,
     },
     onShutdown: async () => {
