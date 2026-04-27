@@ -210,6 +210,11 @@ export function createBudgetStore(config: BudgetStoreConfig): BudgetStore {
        updated_at     = excluded.updated_at`,
   );
 
+  // Reservation day lookup (for Fix 4: commit books to reservation's day)
+  const selectReservationDayStmt = db.prepare<{ day: string }, [string]>(
+    `SELECT day FROM turn_reservations WHERE turn_id = ?`,
+  );
+
   // Sweep
   const sweepStmt = db.prepare(
     `UPDATE turn_reservations
@@ -285,6 +290,14 @@ export function createBudgetStore(config: BudgetStoreConfig): BudgetStore {
     return null;
   }
 
+  // ── Mutex for prepare ───────────────────────────────────
+  // Serializes BEGIN IMMEDIATE acquisitions across concurrent kernel turns.
+  // Each prepare awaits the prior one's full lifecycle (confirm or rollback)
+  // before starting its own transaction. Without this, concurrency > 1 on the
+  // shared Database handle hits SQLite "transaction already in progress" errors.
+
+  let prepareChain: Promise<void> = Promise.resolve();
+
   // ── prepare ─────────────────────────────────────────────
 
   async function prepare(input: {
@@ -297,10 +310,18 @@ export function createBudgetStore(config: BudgetStoreConfig): BudgetStore {
     anonymousGlobalLimit: number | undefined;
     dailyBudgetUsd: number | undefined;
   }): Promise<TurnGateTicket> {
+    // Wait for any in-flight prepare/confirm/rollback to finish before starting
+    // our own. The chain advances when our ticket's confirm or rollback runs.
+    const priorChain = prepareChain;
+    let releaseChain!: () => void;
+    prepareChain = new Promise<void>((resolve) => {
+      releaseChain = resolve;
+    });
+    await priorChain;
+
     const now = Date.now();
     const dayKey = ymdUtc(now);
 
-    db.run("BEGIN IMMEDIATE");
     let done = false;
 
     function rollbackIfActive(): void {
@@ -311,8 +332,12 @@ export function createBudgetStore(config: BudgetStoreConfig): BudgetStore {
       } catch {
         // Swallow already-rolled-back errors (bun:sqlite throws if no
         // active transaction).
+      } finally {
+        releaseChain();
       }
     }
+
+    db.run("BEGIN IMMEDIATE");
 
     try {
       // ── Retry path: if this turnId already has a reservation row,
@@ -383,7 +408,11 @@ export function createBudgetStore(config: BudgetStoreConfig): BudgetStore {
         confirm: async () => {
           if (done) return;
           done = true;
-          db.run("COMMIT");
+          try {
+            db.run("COMMIT");
+          } finally {
+            releaseChain();
+          }
         },
         rollback: async () => rollbackIfActive(),
       };
@@ -401,9 +430,16 @@ export function createBudgetStore(config: BudgetStoreConfig): BudgetStore {
     cost: CostResult,
   ): Promise<void> {
     const now = Date.now();
-    const dayKey = ymdUtc(now);
 
     const tx = db.transaction(() => {
+      // Look up the reservation's stored day so cost is booked to the SAME
+      // day the admission decision was made against — not the day the engine
+      // call happened to finish in. A turn admitted just before UTC midnight
+      // and finished just after must not leak spend across day boundaries.
+      const reservationRow = selectReservationDayStmt.get(turnId);
+      if (!reservationRow) return; // reservation doesn't exist (never reserved or already swept)
+      const dayKey = reservationRow.day;
+
       if (cost.priced) {
         const result = updateReservationPricedStmt.run(now, cost.costUsd, turnId);
         if (result.changes === 0) return; // already committed — idempotent

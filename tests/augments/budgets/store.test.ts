@@ -436,4 +436,107 @@ describe("BudgetStore", () => {
     }
     await t3.rollback();
   });
+
+  // ── Fix 2: concurrent prepares serialize via mutex ───────
+
+  it("Fix 2: concurrent prepares serialize — no SQLite transaction collision", async () => {
+    // Fire 3 prepare() calls simultaneously to verify the JS-level mutex
+    // prevents "transaction already in progress" errors on the shared handle.
+    // The mutex serializes BEGIN IMMEDIATE acquisitions, so each prepare runs
+    // in sequence. We interleave confirm/rollback inside the Promise chain
+    // so that the mutex's releaseChain fires in time for each subsequent prepare.
+    const caps = { maxTurnsPerDay: 2 };
+
+    // Launch all three concurrently. Each chains off the prior one's mutex.
+    // After each ticket resolves, we immediately confirm (or rollback for deny)
+    // to unblock the next prepare in the chain.
+    const results: Array<{ allow: boolean; reason?: string }> = [];
+    const errors: unknown[] = [];
+
+    async function run(turnId: string): Promise<void> {
+      try {
+        const ticket = await store.prepare(baseInput({ turnId, caps }));
+        results.push({ allow: ticket.decision.allow, reason: (ticket.decision as { allow: false; reason: string }).reason });
+        if (ticket.decision.allow) {
+          await ticket.confirm();
+        } else {
+          await ticket.rollback();
+        }
+      } catch (err) {
+        errors.push(err);
+      }
+    }
+
+    // Fire all three simultaneously — the mutex chains them.
+    await Promise.all([run("c1"), run("c2"), run("c3")]);
+
+    // Must have no errors (no SQLite transaction collisions).
+    expect(errors).toHaveLength(0);
+
+    // Exactly 2 allows (cap = 2), 1 deny.
+    const allows = results.filter((r) => r.allow === true).length;
+    const denies = results.filter((r) => r.allow === false).length;
+    expect(allows).toBe(2);
+    expect(denies).toBe(1);
+
+    // The denial reason must match the cap message.
+    const denied = results.find((r) => !r.allow);
+    expect(denied?.reason).toMatch(/daily turn cap/);
+  });
+
+  // ── Fix 4: commit books to reservation's day, not completion day ──
+
+  it("Fix 4: commit books cost to the reservation's day, not the current day", async () => {
+    // Manually INSERT a reservation row with a past day to simulate a turn that
+    // was admitted on a different UTC day than the one commit() runs on.
+    const pastDay = "2026-04-26";
+    const todayDay = ymdUtc(Date.now());
+
+    // Ensure the days are different (otherwise the test doesn't prove anything).
+    // If they're the same (i.e., today IS 2026-04-26), use a clearly different past day.
+    const reservationDay = todayDay === pastDay ? "2026-04-25" : pastDay;
+
+    const { Database } = await import("bun:sqlite");
+    const db2 = new Database(dbPath, { readwrite: true });
+    db2.run(
+      `INSERT INTO turn_reservations
+         (turn_id, peer_id, thread_id, day, trust_level, public_substate,
+          reserved_at, committed_at, cost_usd, priced, decision, reason)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ["cross-day-turn", "peer-x", "thread-x", reservationDay,
+       "public", null, Date.now() - 86400_000, null, null, 0, "allow", null],
+    );
+    db2.close();
+
+    // Commit today (different day from reservation).
+    await store.commit("cross-day-turn", "peer-x", { priced: true, costUsd: 0.50 });
+
+    // The cost MUST appear in the reservation's day, not today's day.
+    const db3 = new Database(dbPath, { readwrite: true });
+    const pastRow = db3
+      .prepare<{ total_cost_usd: number }, [string]>(
+        "SELECT total_cost_usd FROM daily_global WHERE day = ?",
+      )
+      .get(reservationDay);
+    const todayRow = db3
+      .prepare<{ total_cost_usd: number }, [string]>(
+        "SELECT total_cost_usd FROM daily_global WHERE day = ?",
+      )
+      .get(todayDay);
+    db3.close();
+
+    // The reservation's day gets $0.50.
+    expect(pastRow?.total_cost_usd).toBeCloseTo(0.50, 5);
+    // Today's global total must NOT have the $0.50 from this turn.
+    // (It may have other values from other tests if dbPath is shared, but
+    // since each test gets a fresh temp dir, todayRow should be null or 0.)
+    expect(todayRow?.total_cost_usd ?? 0).toBeCloseTo(0, 5);
+  });
+
+  it("Fix 4: commit with no matching reservation is a silent no-op", async () => {
+    // Calling commit() for a turn_id that was never reserved must not throw.
+    await expect(
+      store.commit("nonexistent-turn", "peer-1", { priced: true, costUsd: 1.0 }),
+    ).resolves.toBeUndefined();
+  });
 });

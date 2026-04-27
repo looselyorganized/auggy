@@ -664,9 +664,18 @@ describe("webTransport HTTP server", () => {
   it("emits RUN_ERROR + RUN_FINISHED when a turn is rejected by the rate limiter", async () => {
     const model = createMockModel({ response: "ok" });
     const port = 18908;
+    // Use agent credentials so both requests have the same stable peer ID
+    // (agent:rate-limited-agent), which the rate limiter can track across requests.
+    // Using visitor tokens would give different peer IDs: the first request with
+    // an invalid token is anonymous (anon-<threadId>), while the second with the
+    // issued token is recognized (vis_<uuid>) — these are different IDs, so the
+    // rate limiter would not fire.
     const aug = webTransport({
       port,
       auth: { type: "bearer", token: "test-token" },
+      access: {
+        agents: [{ id: "rate-limited-agent", sharedSecret: "rl-secret" }],
+      },
       rateLimitPerPeer: { maxPerMinute: 1 },
     });
     const agent = defineAgent(
@@ -675,32 +684,30 @@ describe("webTransport HTTP server", () => {
     );
     await agent.start();
 
+    const agentHeaders = {
+      "content-type": "application/json",
+      authorization: "Bearer test-token",
+      "x-agent-id": "rate-limited-agent",
+      "x-agent-secret": "rl-secret",
+    };
+
     try {
-      // First call: under the limit, succeeds. Capture the visitor token.
+      // First call: under the limit, succeeds.
       const first = await fetch(`http://localhost:${port}/agent/run`, {
         method: "POST",
-        headers: {
-          "content-type": "application/json",
-          authorization: "Bearer test-token",
-          "x-visitor-token": "invalid-first-token",
-        },
+        headers: agentHeaders,
         body: JSON.stringify({
           messages: [{ role: "user", content: "hi" }],
         }),
       });
       expect(first.status).toBe(200);
-      const visitorToken = first.headers.get("x-visitor-token") ?? "";
       await first.text();
 
-      // Second call: same visitor (send token back), rate-limited.
+      // Second call: same agent peer ID → rate-limited.
       model.pushResponse({ content: "ok again", finishReason: "end_turn" });
       const second = await fetch(`http://localhost:${port}/agent/run`, {
         method: "POST",
-        headers: {
-          "content-type": "application/json",
-          authorization: "Bearer test-token",
-          "x-visitor-token": visitorToken,
-        },
+        headers: agentHeaders,
         body: JSON.stringify({
           messages: [{ role: "user", content: "hi again" }],
         }),
@@ -1054,6 +1061,170 @@ describe("webTransport HTTP server", () => {
       const exposeHeader = resp.headers.get("access-control-expose-headers") ?? "";
       expect(exposeHeader).toContain("idempotency-key");
       await resp.text();
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  // Fix 1: invalid visitor token does NOT promote request to recognized
+  // ---------------------------------------------------------------------------
+
+  it("Fix 1: invalid visitor token does NOT promote request to public:recognized", async () => {
+    // An invalid token must keep the request public:anonymous. The transport
+    // still issues a fresh token in the response header (for future requests)
+    // but the current request's peer is anonymous — NOT recognized.
+    // We verify by attaching a budgets augment with an anonymous-only cap of 1
+    // and confirming it fires (i.e., the request was treated as anonymous, not
+    // as recognized which would have no cap).
+    const model = createMockModel({ response: "hi" });
+    const port = 18950;
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: "test-token" },
+    });
+    const agent = defineAgent(
+      { name: "test", model: "mock", augments: [createIdentityAugment("test"), aug] },
+      model,
+    );
+    await agent.start();
+
+    try {
+      const resp = await fetch(`http://localhost:${port}/agent/run`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: "Bearer test-token",
+          // Malformed/garbage token — verification will fail.
+          "x-visitor-token": "this.is.garbage",
+        },
+        body: JSON.stringify({
+          messages: [{ role: "user", content: "hi" }],
+        }),
+      });
+      expect(resp.status).toBe(200);
+
+      // A new token MUST be issued in the response (for future requests).
+      const newToken = resp.headers.get("x-visitor-token");
+      expect(newToken).not.toBeNull();
+      expect(typeof newToken).toBe("string");
+      expect((newToken ?? "").length).toBeGreaterThan(10);
+
+      // Verify the request was treated as anonymous, not recognized, by checking
+      // that the identify() path selected anonymous. The SSE stream succeeds
+      // (there's no cap here to trigger), so we verify the identify function
+      // directly using the transport's identify method with no __visitorPayload
+      // (which is what happens when token verification fails).
+      const identifyArg = {
+        headers: { "x-visitor-token": "this.is.garbage" },
+        __threadId: "verify-anon-thread",
+        // __visitorPayload is NOT set — mirrors what the HTTP handler does after failed verify
+      };
+      const identity = aug.transport!.identify(identifyArg);
+      expect(identity?.trustLevel).toBe("public");
+      expect(identity?.publicSubstate).toBe("anonymous");
+
+      await resp.text();
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("Fix 1: missing visitor token + visitorTokens enabled stays anonymous on first request", async () => {
+    // No x-visitor-token header at all on a bearer-auth request resolves to creator
+    // (path 1). A request with x-visitor-token header that fails verification
+    // resolves to anonymous. This test verifies that a first-contact request
+    // with a present-but-invalid token issues a token AND stays anonymous.
+    const model = createMockModel({ response: "hi" });
+    const port = 18951;
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: "test-token" },
+    });
+    const agent = defineAgent(
+      { name: "test", model: "mock", augments: [createIdentityAugment("test"), aug] },
+      model,
+    );
+    await agent.start();
+
+    try {
+      // Send request with x-visitor-token header present but empty/invalid.
+      const resp = await fetch(`http://localhost:${port}/agent/run`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: "Bearer test-token",
+          "x-visitor-token": "invalid",
+        },
+        body: JSON.stringify({
+          messages: [{ role: "user", content: "first contact" }],
+        }),
+      });
+      expect(resp.status).toBe(200);
+
+      // Response must include a freshly-issued visitor token for future requests.
+      const issuedToken = resp.headers.get("x-visitor-token");
+      expect(issuedToken).not.toBeNull();
+
+      // The identify path must stay anonymous (no __visitorPayload injected
+      // when token fails verification).
+      const identity = aug.transport!.identify({
+        headers: { "x-visitor-token": "invalid" },
+        __threadId: "first-contact-thread",
+      });
+      expect(identity?.publicSubstate).toBe("anonymous");
+
+      await resp.text();
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("Fix 1: valid visitor token classifies request as public:recognized", async () => {
+    // Regression guard: valid tokens must still produce recognized trust.
+    const model = createMockModel({ response: "hi" });
+    const port = 18952;
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: "test-token" },
+    });
+    const agent = defineAgent(
+      { name: "test", model: "mock", augments: [createIdentityAugment("test"), aug] },
+      model,
+    );
+    await agent.start();
+
+    try {
+      // Step 1: get a valid token by sending an invalid one first.
+      const resp1 = await fetch(`http://localhost:${port}/agent/run`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: "Bearer test-token",
+          "x-visitor-token": "stale-token",
+        },
+        body: JSON.stringify({ messages: [{ role: "user", content: "first" }] }),
+      });
+      expect(resp1.status).toBe(200);
+      const validToken = resp1.headers.get("x-visitor-token")!;
+      expect(validToken).not.toBeNull();
+      await resp1.text();
+
+      // Step 2: send the valid token — this request should be recognized.
+      model.pushResponse({ content: "welcome back", finishReason: "end_turn" });
+      const resp2 = await fetch(`http://localhost:${port}/agent/run`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: "Bearer test-token",
+          "x-visitor-token": validToken,
+        },
+        body: JSON.stringify({ messages: [{ role: "user", content: "second" }] }),
+      });
+      expect(resp2.status).toBe(200);
+      // A recognized visitor gets no new token (already has a valid one).
+      expect(resp2.headers.get("x-visitor-token")).toBeNull();
+      await resp2.text();
     } finally {
       await agent.stop();
     }

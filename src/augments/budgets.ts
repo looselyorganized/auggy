@@ -51,6 +51,21 @@ export function budgets(opts: BudgetsAugmentOptions): Augment {
     cleanupWindowMs: opts.cleanupWindowMs,
   });
 
+  // Periodic sweep: mark reservations stuck in pending state (engine errored
+  // before commit) as 'allow:incomplete'. Fire at half the cleanup window so
+  // stale turns are caught within at most cleanupWindowMs of becoming stale.
+  const cleanupWindowMs = opts.cleanupWindowMs ?? 60 * 60_000; // default 1 hour
+  const sweepIntervalMs = Math.max(60_000, Math.floor(cleanupWindowMs / 2));
+  const sweepTimer = setInterval(() => {
+    store.sweepIncompleteReservations({ olderThanMs: cleanupWindowMs }).catch((err) => {
+      console.error("[budgets] sweep failed:", err);
+    });
+  }, sweepIntervalMs);
+  // Don't keep the process alive just for the sweeper.
+  if (typeof sweepTimer === "object" && sweepTimer !== null && "unref" in sweepTimer) {
+    (sweepTimer as { unref(): void }).unref();
+  }
+
   const turnGate: TurnGateProvider = {
     /**
      * PREPARE — delegates to the store. The store opens a SQLite transaction,
@@ -115,6 +130,7 @@ export function budgets(opts: BudgetsAugmentOptions): Augment {
     },
 
     onShutdown: async () => {
+      clearInterval(sweepTimer);
       await store.close();
     },
   };

@@ -273,39 +273,16 @@ export function webTransport(opts: WebTransportOptions): Augment {
         const hasAgentHeaders = agentId !== null && agentSecret !== null;
         const hasVisitorTokenAttempt = tokenHeader !== null;
 
-        if (!hasAgentHeaders && !hasVisitorTokenAttempt) {
-          // Pure anonymous public request — issue a fresh visitor token.
-          // Visitor token is NOT issued to creator-only requests (no x-visitor-token header).
-          // However, creators can still get tokens if they pass x-visitor-token: ""? No —
-          // if there's no visitor token header at all and no agent headers, this is either
-          // a creator or a first-contact anonymous visitor.
-          //
-          // The distinction: if it's a creator (no visitor headers), we still issue a
-          // visitor token so that if the creator later acts as a visitor it gets continuity.
-          // But per the four-path design, a bearer-only request is creator, not anonymous.
-          //
-          // CORRECTION per spec: visitor tokens are issued for public paths only.
-          // A request with NO x-visitor-token header maps to path 1 (creator) since bearer auth
-          // is already validated. We do NOT issue a visitor token to creators.
-          // Visitor tokens are only issued when there's no x-visitor-token and this is
-          // a public context (i.e., there IS an x-visitor-token header that failed to verify,
-          // meaning the caller is trying to be a visitor but has a stale/invalid token).
-          //
-          // Re-reading the original logic: if visitorTokensEnabled and no valid token,
-          // it always issued a new one. Keeping that behavior for the anonymous path
-          // but NOT for the creator path (no x-visitor-token header present at all).
-          //
-          // The original code unconditionally issued — keep that for backward compat.
+        if (hasVisitorTokenAttempt && !hasAgentHeaders) {
+          // Had a visitor token header but it was invalid or missing — mint a fresh
+          // token to send in the response so the recipient has a valid token for their
+          // NEXT request. Do NOT assign issued.payload to visitorPayload here: the
+          // current request presented either no token or a bad one, so it stays
+          // public:anonymous. The freshly-issued token is for future requests only.
           const agentName = kernel?.getAgentCard()?.provider?.name ?? "auggy";
           const issued = await createVisitorToken(signingKey, agentName, visitorTokenTtl);
           newToken = issued.token;
-          visitorPayload = issued.payload;
-        } else if (hasVisitorTokenAttempt && !hasAgentHeaders) {
-          // Had a visitor token header but it was invalid — issue a fresh one.
-          const agentName = kernel?.getAgentCard()?.provider?.name ?? "auggy";
-          const issued = await createVisitorToken(signingKey, agentName, visitorTokenTtl);
-          newToken = issued.token;
-          visitorPayload = issued.payload;
+          // visitorPayload intentionally left null — this request is anonymous.
         }
         // hasAgentHeaders case: no visitor token for agent requests.
       }
