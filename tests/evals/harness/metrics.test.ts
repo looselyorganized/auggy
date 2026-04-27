@@ -42,7 +42,7 @@ function makeTrace(overrides?: Partial<TurnTrace>): TurnTrace {
         toolCalls: [
           { name: "web_fetch", augment: "webFetch", durationMs: 80, approved: true },
         ],
-        cost: { inputCost: 0.003, outputCost: 0.001, total: 0.004, priced: true },
+        cost: { priced: true, costUsd: 0.004 },
       },
     ],
     capabilityChecks: [],
@@ -57,6 +57,33 @@ describe("computeTokenCost", () => {
     expect(result.tokensOut).toBe(60);
     expect(result.tokensTotal).toBe(460);
     expect(result.costUsd).toBeCloseTo(0.004);
+    expect(result.unpricedSteps).toBe(0);
+  });
+
+  test("counts unpriced steps separately and excludes them from costUsd", () => {
+    const trace = makeTrace({
+      inferenceSteps: [
+        {
+          model: "claude-sonnet-4-6",
+          inputTokens: 400,
+          outputTokens: 60,
+          durationMs: 350,
+          toolCalls: [],
+          cost: { priced: true, costUsd: 0.004 },
+        },
+        {
+          model: "claude-future-99",
+          inputTokens: 200,
+          outputTokens: 40,
+          durationMs: 200,
+          toolCalls: [],
+          cost: { priced: false, reason: "anthropic: no pricing entry for model \"claude-future-99\"" },
+        },
+      ],
+    });
+    const result = computeTokenCost(trace);
+    expect(result.costUsd).toBeCloseTo(0.004); // only the priced step
+    expect(result.unpricedSteps).toBe(1);
   });
 
   test("includes augment breakdown", () => {
@@ -125,7 +152,7 @@ describe("aggregateMetrics", () => {
           outputTokens: 80,
           durationMs: 400,
           toolCalls: [],
-          cost: { inputCost: 0.004, outputCost: 0.002, total: 0.006, priced: true },
+          cost: { priced: true, costUsd: 0.006 },
         },
       ],
     });
@@ -133,12 +160,35 @@ describe("aggregateMetrics", () => {
     const agg = aggregateMetrics([t1, t2]);
     expect(agg.tokenCost.meanTokensIn).toBe(450); // (400 + 500) / 2
     expect(agg.tokenCost.meanCostUsd).toBeCloseTo(0.005); // (0.004 + 0.006) / 2
+    expect(agg.tokenCost.totalUnpricedSteps).toBe(0);
     expect(agg.latency.totalP50Ms).toBeGreaterThanOrEqual(500);
+  });
+
+  test("surfaces totalUnpricedSteps across traces", () => {
+    const t1 = makeTrace();
+    const t2 = makeTrace({
+      inferenceSteps: [
+        {
+          model: "claude-future-99",
+          inputTokens: 300,
+          outputTokens: 50,
+          durationMs: 200,
+          toolCalls: [],
+          cost: { priced: false, reason: "anthropic: no pricing entry for model \"claude-future-99\"" },
+        },
+      ],
+    });
+
+    const agg = aggregateMetrics([t1, t2]);
+    expect(agg.tokenCost.totalUnpricedSteps).toBe(1);
+    // Only t1's cost is included in mean (t2 contributes 0)
+    expect(agg.tokenCost.meanCostUsd).toBeCloseTo(0.002); // (0.004 + 0) / 2
   });
 
   test("handles empty trace array", () => {
     const agg = aggregateMetrics([]);
     expect(agg.tokenCost.meanTokensIn).toBe(0);
+    expect(agg.tokenCost.totalUnpricedSteps).toBe(0);
     expect(agg.contextUtilization.meanRatio).toBe(0);
     expect(agg.latency.totalP50Ms).toBe(0);
   });

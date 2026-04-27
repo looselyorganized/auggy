@@ -57,7 +57,7 @@ describe("TraceEmitter", () => {
       outputTokens: 200,
       durationMs: 1500,
       toolCalls: [],
-      cost: { inputCost: 0.003, outputCost: 0.003, total: 0.006, priced: true },
+      cost: { priced: true, costUsd: 0.006 },
     });
 
     expect(trace.inferenceSteps).toHaveLength(1);
@@ -79,7 +79,7 @@ describe("TraceEmitter", () => {
       outputTokens: 200,
       durationMs: 1500,
       toolCalls: [],
-      cost: { inputCost: 0.003, outputCost: 0.003, total: 0.006, priced: true },
+      cost: { priced: true, costUsd: 0.006 },
     });
 
     emitter.recordInference(trace, {
@@ -88,7 +88,7 @@ describe("TraceEmitter", () => {
       outputTokens: 100,
       durationMs: 800,
       toolCalls: [],
-      cost: { inputCost: 0.004, outputCost: 0.001, total: 0.005, priced: true },
+      cost: { priced: true, costUsd: 0.005 },
     });
 
     expect(trace.inferenceSteps).toHaveLength(2);
@@ -111,7 +111,7 @@ describe("TraceEmitter", () => {
     expect(trace.duration).toBeGreaterThanOrEqual(0);
   });
 
-  it("records cost.priced=true when a real cost is known", () => {
+  it("records cost as CostResult { priced: true } when a real cost is known", () => {
     const emitter = createTraceEmitter();
     const trace = emitter.startTurn({
       turnId: "t1",
@@ -125,16 +125,17 @@ describe("TraceEmitter", () => {
       outputTokens: 100,
       durationMs: 800,
       toolCalls: [],
-      cost: { inputCost: 0.0015, outputCost: 0.0015, total: 0.003, priced: true },
+      cost: { priced: true, costUsd: 0.003 },
     });
 
-    expect(trace.inferenceSteps[0]!.cost.priced).toBe(true);
-    expect(trace.inferenceSteps[0]!.cost.total).toBeCloseTo(0.003);
+    const cost = trace.inferenceSteps[0]!.cost;
+    expect(cost.priced).toBe(true);
+    if (cost.priced) expect(cost.costUsd).toBeCloseTo(0.003);
   });
 
-  it("records cost.priced=false and total=0 when model pricing was unavailable", () => {
-    // Represents a turn where costUsd was undefined (unknown model, no costOverride).
-    // The turn-loop sets priced=false and total=0 as a safe display value.
+  it("records cost as CostResult { priced: false } when model pricing was unavailable", () => {
+    // Represents a turn where the engine returned no costUsd (unknown model, no costOverride).
+    // The turn-loop records { priced: false, reason } — no costUsd field exists.
     const emitter = createTraceEmitter();
     const trace = emitter.startTurn({
       turnId: "t2",
@@ -148,10 +149,15 @@ describe("TraceEmitter", () => {
       outputTokens: 50,
       durationMs: 400,
       toolCalls: [],
-      cost: { inputCost: 0, outputCost: 0, total: 0, priced: false },
+      cost: { priced: false, reason: "engine returned no costUsd" },
     });
 
-    expect(trace.inferenceSteps[0]!.cost.priced).toBe(false);
-    expect(trace.inferenceSteps[0]!.cost.total).toBe(0);
+    const cost = trace.inferenceSteps[0]!.cost;
+    expect(cost.priced).toBe(false);
+    if (!cost.priced) {
+      expect(cost.reason).toBe("engine returned no costUsd");
+      // costUsd field does not exist on the unpriced variant
+      expect((cost as Record<string, unknown>)["costUsd"]).toBeUndefined();
+    }
   });
 });

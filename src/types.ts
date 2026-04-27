@@ -1,4 +1,6 @@
 import type { z } from "zod";
+import type { CostResult } from "./engines/_shared/cost";
+export type { CostResult } from "./engines/_shared/cost";
 
 // === Context Types (spec §3) ===
 
@@ -220,7 +222,7 @@ export interface TurnTrace {
       durationMs: number;
       approved: boolean;
     }[];
-    cost: { inputCost: number; outputCost: number; total: number; priced: boolean };
+    cost: CostResult;
   }[];
   capabilityChecks: {
     tool: string;
@@ -358,7 +360,8 @@ export interface ModelResponse {
   cacheCreationTokens?: number;  // Anthropic-specific: tokens written to prompt cache
   cacheReadTokens?: number;      // Anthropic-specific: tokens read from prompt cache
   finishReason: "end_turn" | "tool_use" | "max_tokens";
-  costUsd?: number;  // populated by adapter when pricing is known; undefined otherwise
+  costUsd?: number;        // populated by adapter when pricing is known; undefined otherwise
+  unpricedReason?: string; // set when costUsd is absent, describes why pricing was unavailable
 }
 
 export type ModelDelta = { kind: "text_delta"; text: string };

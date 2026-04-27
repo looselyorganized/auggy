@@ -1,6 +1,6 @@
 import OpenAI from "openai";
 import { normalizeSchema } from "./_shared/schema-normalize";
-import { lookupPricing, computeCostUsd, isPricingStale, getPricingVerifiedAt } from "./_shared/pricing";
+import { lookup, getFreshness, priceOpenAIResponse } from "./openai/pricing";
 import type {
   AssembledPrompt,
   Message,
@@ -73,20 +73,23 @@ export function createOpenAIEngine(opts: OpenAIEngineOptions): ModelClient {
   // Pricing freshness + availability warning at startup. Fires once at
   // factory time, not per-turn.
   if (!opts.costOverride) {
-    const rates = lookupPricing("openai", opts.model);
+    const rates = lookup(opts.model);
     if (!rates) {
       // eslint-disable-next-line no-console
       console.warn(
         `[engines/openai] No pricing entry for model "${opts.model}" and no costOverride configured. ` +
         `costUsd will be undefined; dailyBudgetUsd cannot enforce against this model. ` +
-        `Add the model to src/engines/_shared/pricing.ts or configure engine.costOverride in agent.yaml.`,
+        `Add the model to src/engines/openai/pricing.ts or configure engine.costOverride in agent.yaml.`,
       );
-    } else if (isPricingStale("openai")) {
-      // eslint-disable-next-line no-console
-      console.warn(
-        `[engines/openai] Pricing table verifiedAt ${getPricingVerifiedAt("openai")} is more than 90 days old. ` +
-        `Cost estimates may be drifting from actual billing. Verify rates and update src/engines/_shared/pricing.ts.`,
-      );
+    } else {
+      const f = getFreshness();
+      if (f.stale) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[engines/openai] Pricing table verifiedAt ${f.verifiedAt} is more than 90 days old. ` +
+          `Cost estimates may be drifting from actual billing. Verify rates and update src/engines/openai/pricing.ts.`,
+        );
+      }
     }
   }
 
@@ -128,11 +131,14 @@ export function createOpenAIEngine(opts: OpenAIEngineOptions): ModelClient {
         });
       }
       const response = buildOpenAIModelResponse(completion, opts.model);
-      const rates = opts.costOverride ?? lookupPricing("openai", opts.model);
-      const costUsd = rates
-        ? computeCostUsd(rates, { inputTokens: response.inputTokens, outputTokens: response.outputTokens })
-        : undefined;
-      return { ...response, costUsd };
+      const result = priceOpenAIResponse(opts.model, opts.costOverride, {
+        prompt_tokens: completion.usage?.prompt_tokens ?? response.inputTokens,
+        completion_tokens: completion.usage?.completion_tokens ?? response.outputTokens,
+        reasoning_tokens: (completion.usage as Record<string, unknown> | null | undefined)?.["reasoning_tokens"] as number | undefined,
+      });
+      return result.priced
+        ? { ...response, costUsd: result.costUsd }
+        : { ...response, costUsd: undefined, unpricedReason: result.reason };
     },
   };
 }

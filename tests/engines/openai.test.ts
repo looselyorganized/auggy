@@ -774,6 +774,8 @@ describe("createOpenAIEngine — startup warnings", () => {
       expect(warnings.length).toBeGreaterThanOrEqual(1);
       expect(warnings.some((w) => w.includes("No pricing entry"))).toBe(true);
       expect(warnings.some((w) => w.includes("gpt-future-99"))).toBe(true);
+      // Warning now points to per-adapter file, not _shared
+      expect(warnings.some((w) => w.includes("openai/pricing.ts"))).toBe(true);
     } finally {
       console.warn = original;
     }

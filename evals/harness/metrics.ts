@@ -5,6 +5,7 @@ export interface TokenCostMetrics {
   tokensOut: number;
   tokensTotal: number;
   costUsd: number;
+  unpricedSteps: number;
   augmentBreakdown: { source: string; tokens: number; included: boolean }[];
 }
 
@@ -29,13 +30,23 @@ export interface LatencyMetrics {
 export function computeTokenCost(trace: TurnTrace): TokenCostMetrics {
   const tokensIn = trace.inferenceSteps.reduce((s, step) => s + step.inputTokens, 0);
   const tokensOut = trace.inferenceSteps.reduce((s, step) => s + step.outputTokens, 0);
-  const costUsd = trace.inferenceSteps.reduce((s, step) => s + step.cost.total, 0);
+
+  let costUsd = 0;
+  let unpricedSteps = 0;
+  for (const step of trace.inferenceSteps) {
+    if (step.cost.priced) {
+      costUsd += step.cost.costUsd;
+    } else {
+      unpricedSteps += 1;
+    }
+  }
 
   return {
     tokensIn,
     tokensOut,
     tokensTotal: tokensIn + tokensOut,
     costUsd,
+    unpricedSteps,
     augmentBreakdown: trace.contextAssembly.augmentBlocks.map((b) => ({
       source: b.source,
       tokens: b.tokens,
@@ -119,6 +130,7 @@ export interface AggregatedMetrics {
     meanTokensOut: number;
     meanTotal: number;
     meanCostUsd: number;
+    totalUnpricedSteps: number;
   };
   contextUtilization: {
     meanRatio: number;
@@ -152,6 +164,7 @@ export function aggregateMetrics(
       meanTokensOut: mean(tokenMetrics.map((m) => m.tokensOut)),
       meanTotal: mean(tokenMetrics.map((m) => m.tokensTotal)),
       meanCostUsd: mean(tokenMetrics.map((m) => m.costUsd)),
+      totalUnpricedSteps: tokenMetrics.reduce((s, m) => s + m.unpricedSteps, 0),
     },
     contextUtilization: {
       meanRatio: mean(contextMetrics.map((m) => m.utilizationRatio)),
@@ -178,6 +191,9 @@ export function printMetricsSummary(agg: AggregatedMetrics, label: string): void
   console.log(`  Mean tokens out:   ${agg.tokenCost.meanTokensOut.toFixed(0)}`);
   console.log(`  Mean tokens total: ${agg.tokenCost.meanTotal.toFixed(0)}`);
   console.log(`  Mean cost/task:    $${agg.tokenCost.meanCostUsd.toFixed(6)}`);
+  if (agg.tokenCost.totalUnpricedSteps > 0) {
+    console.log(`  Unpriced steps:    ${agg.tokenCost.totalUnpricedSteps} (cost excluded from mean)`);
+  }
 
   console.log("\nContext Utilization:");
   console.log(`  Mean utilization ratio:    ${(agg.contextUtilization.meanRatio * 100).toFixed(1)}%`);

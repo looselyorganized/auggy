@@ -457,6 +457,8 @@ describe("createOpenRouterEngine — startup warnings", () => {
       // Warning must call out the v0 scope limitation explicitly.
       expect(warnings.some((w) => w.includes("anthropic/* and openai/*"))).toBe(true);
       expect(warnings.some((w) => w.includes("qwen/qwen-7b"))).toBe(true);
+      // Warning should NOT reference old _shared/pricing.ts
+      expect(warnings.some((w) => w.includes("_shared/pricing.ts"))).toBe(false);
     } finally {
       console.warn = original;
     }

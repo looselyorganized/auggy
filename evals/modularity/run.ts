@@ -124,7 +124,7 @@ for (const config of AGENT_CONFIGS) {
             perConfigTraces[config.id]!.push(result.trace);
 
             const totalCost = result.trace.inferenceSteps.reduce(
-              (s, step) => s + step.cost.total, 0,
+              (s, step) => s + (step.cost.priced ? step.cost.costUsd : 0), 0,
             );
             const totalIn = result.trace.inferenceSteps.reduce(
               (s, step) => s + step.inputTokens, 0,

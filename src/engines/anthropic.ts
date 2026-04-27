@@ -1,5 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { lookupPricing, computeCostUsd, isPricingStale, getPricingVerifiedAt } from "./_shared/pricing";
+import { lookup, getFreshness, priceAnthropicResponse } from "./anthropic/pricing";
 import type {
   AssembledPrompt,
   Message,
@@ -66,20 +66,23 @@ export function createAnthropicEngine(
   // budgets enforce against fabricated zeros. Fires once at factory time,
   // not per-turn.
   if (!opts.costOverride) {
-    const rates = lookupPricing("anthropic", opts.model);
+    const rates = lookup(opts.model);
     if (!rates) {
       // eslint-disable-next-line no-console
       console.warn(
         `[engines/anthropic] No pricing entry for model "${opts.model}" and no costOverride configured. ` +
         `costUsd will be undefined; dailyBudgetUsd cannot enforce against this model. ` +
-        `Add the model to src/engines/_shared/pricing.ts or configure engine.costOverride in agent.yaml.`,
+        `Add the model to src/engines/anthropic/pricing.ts or configure engine.costOverride in agent.yaml.`,
       );
-    } else if (isPricingStale("anthropic")) {
-      // eslint-disable-next-line no-console
-      console.warn(
-        `[engines/anthropic] Pricing table verifiedAt ${getPricingVerifiedAt("anthropic")} is more than 90 days old. ` +
-        `Cost estimates may be drifting from actual billing. Verify rates and update src/engines/_shared/pricing.ts.`,
-      );
+    } else {
+      const f = getFreshness();
+      if (f.stale) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[engines/anthropic] Pricing table verifiedAt ${f.verifiedAt} is more than 90 days old. ` +
+          `Cost estimates may be drifting from actual billing. Verify rates and update src/engines/anthropic/pricing.ts.`,
+        );
+      }
     }
   }
 
@@ -115,17 +118,23 @@ export function createAnthropicEngine(
         ...(tools.length > 0 ? { tools, tool_choice: toolChoice } : {}),
       };
 
-      const withCost = (r: ModelResponse): ModelResponse => {
-        const rates = opts.costOverride ?? lookupPricing("anthropic", opts.model);
-        const costUsd = rates
-          ? computeCostUsd(rates, {
-              inputTokens: r.inputTokens,
-              outputTokens: r.outputTokens,
-              cacheCreationTokens: r.cacheCreationTokens,
-              cacheReadTokens: r.cacheReadTokens,
-            })
-          : undefined;
-        return { ...r, costUsd };
+      const withCost = (r: ModelResponse, rawUsage: Anthropic.Messages.Usage): ModelResponse => {
+        const result = priceAnthropicResponse(opts.model, opts.costOverride, {
+          input_tokens: rawUsage.input_tokens,
+          output_tokens: rawUsage.output_tokens,
+          cache_creation_input_tokens: rawUsage.cache_creation_input_tokens ?? null,
+          cache_read_input_tokens: rawUsage.cache_read_input_tokens ?? null,
+          // cache_creation (TTL breakdown) and service_tier are new fields not yet
+          // in the Anthropic SDK type; cast defensively via unknown.
+          cache_creation: (rawUsage as unknown as Record<string, unknown>)["cache_creation"] as
+            | { ephemeral_5m_input_tokens?: number; ephemeral_1h_input_tokens?: number }
+            | null
+            | undefined,
+          service_tier: (rawUsage as unknown as Record<string, unknown>)["service_tier"] as string | null | undefined,
+        });
+        return result.priced
+          ? { ...r, costUsd: result.costUsd }
+          : { ...r, costUsd: undefined, unpricedReason: result.reason };
       };
 
       if (opts2?.onDelta) {
@@ -138,12 +147,12 @@ export function createAnthropicEngine(
           opts2.onDelta!({ kind: "text_delta", text });
         });
         const finalMessage = await stream.finalMessage();
-        return withCost(buildModelResponse(finalMessage));
+        return withCost(buildModelResponse(finalMessage), finalMessage.usage);
       }
 
       // Non-streaming path (backward compat for tests, other consumers)
       const response = await client.messages.create(params);
-      return withCost(buildModelResponse(response));
+      return withCost(buildModelResponse(response), response.usage);
     },
   };
 }

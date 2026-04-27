@@ -5,7 +5,7 @@ import {
   convertOpenAIMessages,
   convertOpenAITools,
 } from "./openai";
-import { lookupPricing, computeCostUsd, isPricingStale, getPricingVerifiedAt } from "./_shared/pricing";
+import { resolveSlug, priceOpenRouterResponse } from "./openrouter/pricing";
 import type {
   AssembledPrompt,
   ModelClient,
@@ -74,27 +74,6 @@ export interface OpenRouterProviderRouting {
 
 const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
 
-/**
- * Look up OpenRouter pricing by parsing "<provider>/<model>" slugs.
- *
- * v0 SCOPE: anthropic/* and openai/* slugs only. Other providers
- * (qwen/*, deepseek/*, mistral/*, etc.) return null and the operator
- * must configure engine.costOverride to enable dollar-budget enforcement.
- *
- * The proper fix is to fetch pricing from OpenRouter's /api/v1/models
- * endpoint at startup and route by the actual upstream pricing
- * arrangement. That's deferred to a future phase.
- */
-function lookupOpenRouterPricing(model: string) {
-  const slashIdx = model.indexOf("/");
-  if (slashIdx === -1) return lookupPricing("openrouter", model);
-  const provider = model.slice(0, slashIdx);
-  const tail = model.slice(slashIdx + 1);
-  if (provider === "anthropic") return lookupPricing("anthropic", tail);
-  if (provider === "openai") return lookupPricing("openai", tail);
-  return lookupPricing("openrouter", model);
-}
-
 /** Local extension of the SDK request type with OpenRouter-specific extras.
  *  These fields don't exist in the SDK's typed surface — OpenRouter's
  *  server reads them when present and the SDK forwards them unchanged. */
@@ -126,19 +105,20 @@ export function createOpenRouterEngine(
   // Pricing freshness + availability warning at startup. Fires once at
   // factory time, not per-turn.
   if (!opts.costOverride) {
-    const rates = lookupOpenRouterPricing(opts.model);
-    if (!rates) {
+    const resolved = resolveSlug(opts.model);
+    if (!resolved) {
       // eslint-disable-next-line no-console
       console.warn(
         `[engines/openrouter] No pricing entry for slug "${opts.model}" and no costOverride configured. ` +
         `OpenRouter v0 cost estimation is limited to anthropic/* and openai/* slugs. ` +
         `For other providers, configure engine.costOverride in agent.yaml.`,
       );
-    } else if (isPricingStale("openrouter")) {
+    } else if (resolved.freshness.stale) {
+      // Freshness binds to the resolved provider's verifiedAt, not OpenRouter's own table.
       // eslint-disable-next-line no-console
       console.warn(
-        `[engines/openrouter] Pricing table verifiedAt ${getPricingVerifiedAt("openrouter")} is more than 90 days old. ` +
-        `Cost estimates may be drifting from actual billing. Verify rates and update src/engines/_shared/pricing.ts.`,
+        `[engines/openrouter] Pricing table verifiedAt ${resolved.freshness.verifiedAt} is more than 90 days old. ` +
+        `Cost estimates may be drifting from actual billing. Verify rates and update src/engines/${resolved.resolvedProvider}/pricing.ts.`,
       );
     }
   }
@@ -189,11 +169,13 @@ export function createOpenRouterEngine(
         );
       }
       const response = buildOpenAIModelResponse(completion, `openrouter:${opts.model}`);
-      const rates = opts.costOverride ?? lookupOpenRouterPricing(opts.model);
-      const costUsd = rates
-        ? computeCostUsd(rates, { inputTokens: response.inputTokens, outputTokens: response.outputTokens })
-        : undefined;
-      return { ...response, costUsd };
+      const result = priceOpenRouterResponse(opts.model, opts.costOverride, {
+        prompt_tokens: response.inputTokens,
+        completion_tokens: response.outputTokens,
+      });
+      return result.priced
+        ? { ...response, costUsd: result.costUsd }
+        : { ...response, costUsd: undefined, unpricedReason: result.reason };
     },
   };
 }

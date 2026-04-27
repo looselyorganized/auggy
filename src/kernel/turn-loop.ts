@@ -13,6 +13,7 @@ import type {
   ToolCallRecord,
   KernelEvent,
   KernelEventHandler,
+  CostResult,
 } from "../types";
 import type { Tokenizer } from "../tokenizer";
 import { extractText } from "../parts";
@@ -413,18 +414,17 @@ export function createTurnLoop(opts: {
         } = await streamingInference(model, currentPrompt, trigger.turnId, emitEvent);
         const inferDuration = Date.now() - inferStart;
 
+        const cost: CostResult = response.costUsd !== undefined
+          ? { priced: true, costUsd: response.costUsd }
+          : { priced: false, reason: response.unpricedReason ?? "engine returned no costUsd" };
+
         traceEmitter.recordInference(trace, {
           model: config.model,
           inputTokens: response.inputTokens,
           outputTokens: response.outputTokens,
           durationMs: inferDuration,
           toolCalls: [],
-          cost: {
-            inputCost: 0,
-            outputCost: 0,
-            total: response.costUsd ?? 0,
-            priced: response.costUsd !== undefined,
-          },
+          cost,
         });
 
         // Always append model content to history (even on tool_use turns)

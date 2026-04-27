@@ -330,6 +330,30 @@ describe("createAnthropicEngine — costUsd", () => {
     expect(result.costUsd).toBeCloseTo(1.05105, 6);
   });
 
+  it("leaves costUsd undefined and sets unpricedReason when cache_creation TTL breakdown is present", async () => {
+    // cache_creation with ephemeral_5m_input_tokens → unpriced discriminator
+    nextAnthropicResponse = {
+      id: "msg_test",
+      type: "message",
+      role: "assistant",
+      content: [{ type: "text", text: "hello" }],
+      model: "claude-sonnet-4-6",
+      stop_reason: "end_turn",
+      stop_sequence: null,
+      usage: {
+        input_tokens: 100,
+        output_tokens: 50,
+        cache_creation: { ephemeral_5m_input_tokens: 40_000 },
+      },
+    };
+    const engine = createAnthropicEngine({ model: "claude-sonnet-4-6" });
+    const result = await engine.complete(
+      emptyPrompt({ messages: [anthropicMsg({ content: "hi" })] }),
+    );
+    expect(result.costUsd).toBeUndefined();
+    expect(result.unpricedReason).toContain("cache_creation TTL breakdown");
+  });
+
   it("leaves cacheCreationTokens and cacheReadTokens undefined when SDK returns null/absent", async () => {
     // SDK returns null for cache fields (no caching active in this call)
     nextAnthropicResponse = {
@@ -372,6 +396,8 @@ describe("createAnthropicEngine — startup warnings", () => {
       expect(warnings.length).toBeGreaterThanOrEqual(1);
       expect(warnings.some((w) => w.includes("No pricing entry"))).toBe(true);
       expect(warnings.some((w) => w.includes("claude-future-99"))).toBe(true);
+      // Warning now points to per-adapter file, not _shared
+      expect(warnings.some((w) => w.includes("anthropic/pricing.ts"))).toBe(true);
     } finally {
       console.warn = original;
     }

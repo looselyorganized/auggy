@@ -1,0 +1,57 @@
+export interface Pricing {
+  inputUsdPerMtok: number;
+  outputUsdPerMtok: number;
+  cacheWriteUsdPerMtok?: number;  // Anthropic: 1.25× input rate (cache creation)
+  cacheReadUsdPerMtok?: number;   // Anthropic: 0.1× input rate (cache read)
+}
+
+export type CostResult =
+  | { priced: true; costUsd: number }
+  | { priced: false; reason: string };
+
+export interface PricingFreshness {
+  verifiedAt: string;
+  ageDays: number;
+  stale: boolean;
+}
+
+export function computeCostUsd(
+  rates: Pricing,
+  tokens: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheCreationTokens?: number;
+    cacheReadTokens?: number;
+  },
+): number {
+  const inputCost = (tokens.inputTokens / 1_000_000) * rates.inputUsdPerMtok;
+  const outputCost = (tokens.outputTokens / 1_000_000) * rates.outputUsdPerMtok;
+
+  // Cache costs only contribute when both the rate AND the tokens are present.
+  // If a model has no cache rates (e.g. OpenAI), cache tokens are silently ignored.
+  // If the response has no cache tokens, no cost added.
+  let cacheWriteCost = 0;
+  if (tokens.cacheCreationTokens && rates.cacheWriteUsdPerMtok !== undefined) {
+    cacheWriteCost = (tokens.cacheCreationTokens / 1_000_000) * rates.cacheWriteUsdPerMtok;
+  }
+  let cacheReadCost = 0;
+  if (tokens.cacheReadTokens && rates.cacheReadUsdPerMtok !== undefined) {
+    cacheReadCost = (tokens.cacheReadTokens / 1_000_000) * rates.cacheReadUsdPerMtok;
+  }
+
+  return inputCost + outputCost + cacheWriteCost + cacheReadCost;
+}
+
+/**
+ * Returns freshness metadata for a pricing table given its verifiedAt date.
+ * Pass `now` to inject a reference date for testing.
+ */
+export function freshness(
+  verifiedAt: string,
+  staleDays = 90,
+  now: Date = new Date(),
+): PricingFreshness {
+  const verified = new Date(verifiedAt + "T00:00:00Z");
+  const ageDays = (now.getTime() - verified.getTime()) / 86_400_000;
+  return { verifiedAt, ageDays, stale: ageDays > staleDays };
+}

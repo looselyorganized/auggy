@@ -129,7 +129,7 @@ export async function runAblation(opts: RunOptions): Promise<Scorecard> {
                   const gradeResult = grader(task, toolCallNames);
 
                   const totalCost = result.trace.inferenceSteps.reduce(
-                    (sum, step) => sum + step.cost.total,
+                    (sum, step) => sum + (step.cost.priced ? step.cost.costUsd : 0),
                     0,
                   );
                   const totalIn = result.trace.inferenceSteps.reduce(
