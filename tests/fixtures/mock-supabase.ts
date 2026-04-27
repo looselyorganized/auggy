@@ -19,6 +19,8 @@ export interface MockSupabaseClient {
 export interface MockQueryBuilder {
   insert(row: MockRow | MockRow[]): Promise<{ error: Error | null }>;
   select(columns?: string): MockQueryBuilder;
+  delete(): MockQueryBuilder;
+  update(patch: Record<string, unknown>): MockQueryBuilder;
   eq(column: string, value: unknown): MockQueryBuilder;
   ilike(column: string, value: string): MockQueryBuilder;
   order(
@@ -57,6 +59,8 @@ export function createMockSupabase(): MockSupabaseClient {
     const filters: Array<(r: MockRow) => boolean> = [];
     let orderBy: { column: string; ascending: boolean } | null = null;
     let limitN: number | null = null;
+    let mode: "select" | "delete" | "update" = "select";
+    let updatePatch: Record<string, unknown> = {};
 
     const builder: MockQueryBuilder = {
       async insert(row) {
@@ -65,6 +69,16 @@ export function createMockSupabase(): MockSupabaseClient {
         return { error: null };
       },
       select() {
+        mode = "select";
+        return builder;
+      },
+      delete() {
+        mode = "delete";
+        return builder;
+      },
+      update(patch) {
+        mode = "update";
+        updatePatch = patch;
         return builder;
       },
       eq(column, value) {
@@ -93,21 +107,38 @@ export function createMockSupabase(): MockSupabaseClient {
         return { data: first, error: result.error };
       },
       then(onfulfilled) {
-        let results = rows.get(table)!.filter((r) =>
-          filters.every((f) => f(r)),
-        );
-        if (orderBy) {
-          results = [...results].sort((a, b) => {
-            const av = a[orderBy!.column];
-            const bv = b[orderBy!.column];
-            const cmp =
-              (av as string | number) < (bv as string | number) ? -1 : 1;
-            return orderBy!.ascending ? cmp : -cmp;
-          });
+        const all = rows.get(table)!;
+        const matched = all.filter((r) => filters.every((f) => f(r)));
+
+        let results: MockRow[];
+
+        if (mode === "delete") {
+          // Remove matched rows from the underlying array, keep a copy as data.
+          const remaining = all.filter((r) => !matched.includes(r));
+          rows.set(table, remaining);
+          results = matched;
+        } else if (mode === "update") {
+          // Mutate matched rows in place.
+          for (const row of matched) {
+            Object.assign(row, updatePatch);
+          }
+          results = matched;
+        } else {
+          results = matched;
+          if (orderBy) {
+            results = [...results].sort((a, b) => {
+              const av = a[orderBy!.column];
+              const bv = b[orderBy!.column];
+              const cmp =
+                (av as string | number) < (bv as string | number) ? -1 : 1;
+              return orderBy!.ascending ? cmp : -cmp;
+            });
+          }
+          if (limitN !== null) {
+            results = results.slice(0, limitN);
+          }
         }
-        if (limitN !== null) {
-          results = results.slice(0, limitN);
-        }
+
         const value: { data: unknown[]; error: Error | null } = {
           data: results,
           error: null,
