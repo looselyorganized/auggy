@@ -54,6 +54,49 @@ function resolveFileMemory(
   });
 }
 
+async function resolveLayeredMemory(
+  opts: Record<string, unknown>,
+  agentDir: string,
+): Promise<Augment> {
+  const { layeredMemory } = await import("../augments/layered-memory");
+  const backend = (opts.backend as string | undefined) ?? "sqlite";
+  const namespace = (opts.namespace as string | undefined) ?? "ep";
+  const retentionDays = opts.retentionDays as number | undefined;
+
+  if (backend === "sqlite") {
+    const dbPath = opts.dbPath as string | undefined;
+    return layeredMemory({
+      backend: "sqlite",
+      dbPath: dbPath ? resolvePath(dbPath, agentDir) : resolvePath("./memory.db", agentDir),
+      namespace,
+      retentionDays,
+    });
+  }
+
+  if (backend === "supabase") {
+    const supabaseUrl = opts.supabaseUrl as string | undefined;
+    const supabaseKey = opts.supabaseKey as string | undefined;
+    if (!supabaseUrl || !supabaseKey) {
+      throw new Error(
+        "layeredMemory: supabase backend requires supabaseUrl and supabaseKey options",
+      );
+    }
+    const { createClient } = await import("@supabase/supabase-js");
+    const client = createClient(supabaseUrl, supabaseKey) as unknown as Parameters<
+      typeof layeredMemory
+    >[0]["client"];
+    return layeredMemory({
+      backend: "supabase",
+      client,
+      table: (opts.table as string | undefined) ?? "agent_memory",
+      namespace,
+      retentionDays,
+    });
+  }
+
+  throw new Error(`layeredMemory: unknown backend "${backend}"`);
+}
+
 async function resolveSupabaseMemory(
   opts: Record<string, unknown>,
 ): Promise<Augment> {
@@ -213,6 +256,9 @@ export async function resolveAugments(
         break;
       case "supabaseMemory":
         augment = await resolveSupabaseMemory(opts);
+        break;
+      case "layeredMemory":
+        augment = await resolveLayeredMemory(opts, agentDir);
         break;
       case "filesystem":
         augment = resolveFilesystem(opts, agentDir);

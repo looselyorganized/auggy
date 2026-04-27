@@ -138,6 +138,14 @@ augments:
       placement: preamble
       eviction: drop
 
+  - name: episodic
+    type: layeredMemory
+    options:
+      backend: sqlite
+      dbPath: ./memory.db
+      namespace: ep
+      retentionDays: 90
+
   - name: files
     type: filesystem
     options:
@@ -272,4 +280,8 @@ workspace/
 *.log
 *.err
 node_modules/
+memory.db
+memory.db-journal
+memory.db-wal
+memory.db-shm
 `;

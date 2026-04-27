@@ -117,6 +117,7 @@ const VALID_COMPACTION = new Set(["truncate", "summarize", "sliding-window"]);
 const BUILTIN_TYPES = new Set([
   "fileMemory",
   "supabaseMemory",
+  "layeredMemory",
   "filesystem",
   "webTransport",
   "webFetch",

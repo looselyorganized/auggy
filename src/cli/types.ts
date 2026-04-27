@@ -10,10 +10,11 @@
 // Config types — the output of parsing agent.yaml
 // ---------------------------------------------------------------------------
 
-/** The five built-in augment type identifiers. */
+/** The built-in augment type identifiers. */
 export type BuiltinAugmentType =
   | "fileMemory"
   | "supabaseMemory"
+  | "layeredMemory"
   | "filesystem"
   | "webTransport"
   | "webFetch"

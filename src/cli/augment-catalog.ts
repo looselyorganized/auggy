@@ -282,6 +282,20 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
     hasSkill: false,
   },
   {
+    label: "layeredMemory",
+    description: "Peer-scoped episodic memory with provenance (SQLite or Supabase)",
+    type: "layeredMemory",
+    defaultName: "episodic",
+    defaultOptions: {
+      backend: "sqlite",
+      dbPath: "./memory.db",
+      namespace: "ep",
+      retentionDays: 90,
+    },
+    required: false,
+    hasSkill: false,
+  },
+  {
     label: "orgContext",
     description: "Connect to org knowledge API (manifest + escalation)",
     type: "orgContext",
