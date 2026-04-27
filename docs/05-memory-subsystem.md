@@ -166,54 +166,75 @@ Note that `metadata` from `MemoryEntry` is **not** transferred to the block — 
 ## `src/memory/tools.ts` — Four generic memory tools
 
 ```ts
-createMemoryTools(registry, opts) → Tool[]    // returns [memory_read, memory_write, memory_search, memory_list]
+createMemoryTools(registry, opts) → {
+  tools: Tool[];                          // [memory_read, memory_write, memory_search, memory_list]
+  onTurnEnd: (turnId: string) => void;    // primary budget cleanup
+  onTurnStart: () => void;                // emergency cleanup backstop
+}
 ```
 
-These four tools are mounted on the synthetic `memory-bus` augment (see below). They give the model a way to interact with memory at runtime:
+These four tools are mounted on the synthetic `memory-bus` augment (see below). They give the model a way to interact with memory at runtime.
+
+### Unified trust gate
+
+All four tools enforce the same trust rule before executing:
+
+```
+- Missing context        → DENY (fail-closed)
+- origin "peer-derived"  → ALLOW (peer-scoped memory is open to all)
+- trust ∈ {operator, facility} → ALLOW
+- otherwise              → DENY (untrusted, authenticated, or any future level)
+```
+
+This is structural defense alongside the prompt-based defenses (red-team 2026-04-16). The rule is encoded in `assertMemoryAccess(operation, origin, context)` and applied identically across read, write, search, and list.
+
+Null peer (internal/scheduled triggers) is treated as operator trust per the convention from `effectiveTrustLevel` in capability-table.ts.
 
 ### `memory_read(label: string)`
 
-Routes the label to its owning provider via `lookupProvider`. If the provider is namespace-only and doesn't implement `read`, returns an error: `Error: Provider "name" does not support reading by label (use memory_search)`. Otherwise calls `provider.read(label)` and returns the entry as JSON, or `No entry found for label "..."` if `null`.
+Routes the label to its owning provider via `lookupProvider`. Checks the trust gate against the provider's `defaults.origin`. If the provider is namespace-only and doesn't implement `read`, returns an error: `Error: Provider "name" does not support reading by label (use memory_search)`. Otherwise calls `provider.read(label)` and returns the entry as JSON, or `No entry found for label "..."` if `null`.
 
 ### `memory_write(label: string, content: string)`
 
-Same routing. If the provider doesn't implement `write` (immutable), returns: `Error: Memory label "label" is immutable (owned by "name")`. Otherwise calls `provider.write(label, content)` and returns `Successfully wrote to "label"`.
+Same routing. If the provider doesn't implement `write` (immutable), returns: `Error: Memory label "label" is immutable (owned by "name")`. Then checks the trust gate. Otherwise calls `provider.write(label, content)` and returns `Successfully wrote to "label"`.
 
 ### `memory_search(query: string, providers?: string[])`
 
-Filters the registry's namespace providers (optionally restricted to a list of provider names), calls `search(query)` on each in parallel via `Promise.allSettled`, and returns a JSON array of `{ provider, entries }` results (or `{ provider, error }` for failures).
+Filters the registry's namespace providers — optionally restricted to a list of provider names, then by the trust gate (provider's origin must be readable by the current peer). Calls `search(query)` on each remaining candidate in parallel via `Promise.allSettled`, and returns a JSON array of `{ provider, entries }` results (or `{ provider, error }` for failures).
 
 Note that this **only searches namespace providers** — static providers don't have `search`. If the model wants to read from a static provider, it uses `memory_read(label)`.
 
 ### `memory_list()`
 
-Returns a JSON object with two arrays:
-- `static` — every static label currently owned
-- `namespaces` — every namespace prefix with a `*` suffix
+Returns a JSON object with two arrays, **filtered by what the current peer can access**:
+- `static` — every static label currently owned and readable by the peer
+- `namespaces` — every namespace prefix (with a `*` suffix) readable by the peer
 
-This is the discovery tool — the model uses it to figure out what memory is available before issuing a `memory_read` or `memory_search`.
+This is the discovery tool — the model uses it to figure out what memory is available before issuing a `memory_read` or `memory_search`. Untrusted peers see only `peer-derived` providers; operator/facility peers see everything.
 
 ### Per-turn budget
 
-All four tools share a single budget object:
+All four tools share a per-turn budget keyed by `turnId` from `ToolExecuteContext`:
 
 ```ts
-interface MemoryToolBudget { calls: number; max: number; }
-```
+const turnBudgets = new Map<string, number>();
 
-Every tool checks the budget at the start of `execute()`:
-
-```ts
-const checkBudget = (): string | null => {
-  if (budget.calls >= budget.max) {
-    return `Error: Memory operation budget exceeded (${budget.max} per turn)`;
+function checkBudget(turnId: string): string | null {
+  const calls = turnBudgets.get(turnId) ?? 0;
+  if (calls >= maxPerTurn) {
+    return `Error: Memory operation budget exceeded (${maxPerTurn} per turn)`;
   }
-  budget.calls++;
+  turnBudgets.set(turnId, calls + 1);
   return null;
-};
+}
 ```
 
-The budget is **reset by the synthetic augment's `onTurnStart` hook**. This means the per-turn cap holds across all four memory tools combined — the model can't read 20 things, then write 20 things, then search 20 things in one turn.
+Concurrent turns get independent budgets — entries are isolated by `turnId`.
+
+**Cleanup happens via two hooks:**
+
+1. **Primary: `onTurnEnd(turnId)`** — called by the agent's onTurnEnd lifecycle for every completed turn (success, failure, or rejection). Removes that turn's entry from the map.
+2. **Backstop: `onTurnStart()`** — emergency clear if the map exceeds 1000 entries (signals onTurnEnd hooks not firing — kernel/agent bug to investigate).
 
 The budget cap is **20** by default, set in `wireMemoryBus({ maxPerTurn: 20 })`. The synthetic augment's `constraints.maxToolCallsPerTurn` is also set to 20 — see below for why both exist.
 
@@ -226,7 +247,6 @@ wireMemoryBus(augments, opts?) → {
   augmentsWithSynthesizedContext: Augment[];
   syntheticToolsAugment: Augment | null;
   registry: MemoryRegistry;
-  budget: MemoryToolBudget;
 }
 ```
 
@@ -238,22 +258,24 @@ wireMemoryBus(augments, opts?) → {
 4. **Synthesize `context()` for providers that don't have one:** map over the augment list and replace each memory provider with `synthesizeContextFor(aug)`. Augments with a pre-existing `context()` are left untouched.
 5. **Create the synthetic `memory-bus` augment:**
    ```ts
+   const { tools, onTurnEnd, onTurnStart } = createMemoryTools(registry, { maxPerTurn });
    {
      name: "memory-bus",
      capabilities: ["tools"],
      constraints: { maxToolCallsPerTurn: maxPerTurn },
-     tools: createMemoryTools(registry, { budgetRef: budget }),
-     onTurnStart: async () => { budget.calls = 0; },
+     tools,
+     onTurnStart: async () => { onTurnStart(); },     // emergency cleanup backstop
+     onTurnEnd: async (turn) => { onTurnEnd(turn.turnId); },  // primary cleanup
    }
    ```
-6. **Return the wiring** — the synthesized augment list, the synthetic augment, the registry, and the budget object.
+6. **Return the wiring** — the synthesized augment list, the synthetic augment, and the registry.
 
 ### Why `constraints.maxToolCallsPerTurn` AND a separate budget
 
 This is the source of the P2 review finding. Two different mechanisms enforce per-turn caps on memory tool calls:
 
 1. **The capability table's per-augment counter** — `KERNEL_DEFAULT_MAX_TOOL_CALLS = 5` is applied to every augment unless overridden by `constraints.maxToolCallsPerTurn`.
-2. **The memory bus's own `MemoryToolBudget`** — a counter that ticks up inside the tool's `execute()` function.
+2. **The memory bus's own per-turn budget** — a `Map<turnId, number>` that tracks calls per turn inside the tool's `execute()` function.
 
 Originally only the budget existed, and the synthetic augment had no constraints. The capability table silently applied the default cap of 5, and memory tools started getting denied at the 6th call even though the budget said 20 were allowed. Codex caught this in review.
 
