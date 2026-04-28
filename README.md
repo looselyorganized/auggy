@@ -5,8 +5,9 @@
 <h1 align="center">Augment-1</h1>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.2.0-blue" alt="Version" />
-  <img src="https://img.shields.io/badge/tests-871%20passing-brightgreen" alt="Tests" />
+  <a href="https://github.com/looselyorganized/augment-1/actions/workflows/ci.yml"><img src="https://github.com/looselyorganized/augment-1/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
+  <a href="https://github.com/looselyorganized/augment-1/releases/latest"><img src="https://img.shields.io/github/v/release/looselyorganized/augment-1?label=release" alt="Latest release" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/looselyorganized/augment-1" alt="License" /></a>
   <img src="https://img.shields.io/badge/runtime-Bun-black?logo=bun" alt="Bun" />
   <img src="https://img.shields.io/badge/language-TypeScript-3178C6?logo=typescript" alt="TypeScript" />
   <a href="https://looselyorganized.xyz"><img src="https://img.shields.io/badge/powered%20by-LORF-red" alt="LORF" /></a>
