@@ -188,6 +188,11 @@ describe("shell_exec execution", () => {
     expect(result.stdout).toContain("[truncated at 50 bytes]");
   });
 
+  // The ceiling is deliberately loose (10s, not 5s) and bun:test's per-test
+  // budget is bumped to 20s. We're proving the timeout killed `sleep 60`
+  // before it ran for 60 seconds — not racing the SIGTERM→SIGKILL escalation
+  // (500ms timeout + 2000ms grace) against cold-CI spawn overhead. A tighter
+  // ceiling reintroduces the flake the loose ceiling exists to fix.
   it("kills long-running commands after timeout", async () => {
     const aug = bash({
       risk: "standard",
@@ -199,8 +204,8 @@ describe("shell_exec execution", () => {
     const result = JSON.parse(await tool.execute({ command: "sleep 60" }));
     const elapsed = performance.now() - start;
     expect(result.exitCode).not.toBe(0);
-    expect(elapsed).toBeLessThan(5000); // Should finish well under 5s
-  });
+    expect(elapsed).toBeLessThan(10_000);
+  }, 20_000);
 });
 
 // ---------------------------------------------------------------------------
@@ -409,6 +414,7 @@ describe("run_script", () => {
     expect(result.stdout.trim()).toBe(realpathSync(scriptDir));
   });
 
+  // Same loose-ceiling rationale as the shell_exec timeout test above.
   it("uses script-specific timeout", async () => {
     const aug = bash({
       risk: "scripts-only",
@@ -421,6 +427,6 @@ describe("run_script", () => {
     const result = JSON.parse(await tool.execute({ name: "slow" }));
     const elapsed = performance.now() - start;
     expect(result.exitCode).not.toBe(0);
-    expect(elapsed).toBeLessThan(5000);
-  });
+    expect(elapsed).toBeLessThan(10_000);
+  }, 20_000);
 });
