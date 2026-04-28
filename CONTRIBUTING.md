@@ -93,4 +93,12 @@ For the maintainer cutting a release:
 3. Commit: `chore(release): vX.Y.Z`.
 4. Tag: `git tag -a vX.Y.Z -m "vX.Y.Z — short release headline"`.
 5. Push: `git push && git push --tags`.
-6. Create a GitHub release from the tag, copy the changelog section into the body.
+6. Create the GitHub Release. A pushed tag is **not** the same as a Release — without this step the "Latest" badge and `/releases` page won't update. Auto-extract the changelog section:
+
+   ```bash
+   gh release create vX.Y.Z \
+     --title "vX.Y.Z — short release headline" \
+     --notes-file <(awk '/^## \[X\.Y\.Z\]/{f=1;next} /^## \[/{f=0} f' CHANGELOG.md)
+   ```
+
+   (Substitute the version in both the tag arg and the awk pattern.)
