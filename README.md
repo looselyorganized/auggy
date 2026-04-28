@@ -9,7 +9,7 @@
   <img src="https://img.shields.io/badge/tests-863%20passing-brightgreen" alt="Tests" />
   <img src="https://img.shields.io/badge/runtime-Bun-black?logo=bun" alt="Bun" />
   <img src="https://img.shields.io/badge/language-TypeScript-3178C6?logo=typescript" alt="TypeScript" />
-  <img src="https://img.shields.io/badge/powered%20by-LORF-red" alt="LORF" />
+  <a href="https://looselyorganized.xyz"><img src="https://img.shields.io/badge/powered%20by-LORF-red" alt="LORF" /></a>
 </p>
 
 Auggy (augment-1) is a modular agent runtime in TypeScript/Bun, purpose-built for **persistent organizational interface agents** — long-running, memory-rich, organization-facing. Agents are composed from swappable **augments**; the kernel manages context, tools, permissions, and lifecycle. Open source, multi-engine, self-hostable.
