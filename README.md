@@ -6,7 +6,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/version-0.2.0-blue" alt="Version" />
-  <img src="https://img.shields.io/badge/tests-863%20passing-brightgreen" alt="Tests" />
+  <img src="https://img.shields.io/badge/tests-871%20passing-brightgreen" alt="Tests" />
   <img src="https://img.shields.io/badge/runtime-Bun-black?logo=bun" alt="Bun" />
   <img src="https://img.shields.io/badge/language-TypeScript-3178C6?logo=typescript" alt="TypeScript" />
   <a href="https://looselyorganized.xyz"><img src="https://img.shields.io/badge/powered%20by-LORF-red" alt="LORF" /></a>
