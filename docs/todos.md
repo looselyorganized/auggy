@@ -25,6 +25,11 @@ Format: `- [ ] [category] description (context: where/when found)`
 - [ ] **[org-context]** Retry-at-boot message says "running without org context" — should also say "lazy retry on first org_fetch" so operator doesn't restart unnecessarily.
 - [ ] **[scaffold]** `agent.yaml` comments could include engine provider options (currently only shows anthropic as the default).
 
+## OSS launch — open questions
+
+- [ ] **[docs] How do we document the user-facing API surface?** We don't have an "SDK" per se — `defineAgent`, `defineAugment`, `defineTool` plus the engines is a small surface. The `docs/01-12-*.md` reference set is contributor-facing, not user-facing. Decide between: (a) one `docs/00-api-reference.md` page that lists each public function with signature + one example (cheap, ~1 hour, ships with v0.2 public release), (b) auto-generated TypeDoc reference (medium, half-day), (c) a real docs site at `docs.aug1.dev` (Mintlify / Nextra / Starlight, ~half-day, defer until v0.3+). Surfaced 2026-04-28 during OSS readiness audit.
+- [ ] **[examples] Do we ship `examples/` clone-and-run agent templates?** `scripts/hello.ts` is a one-shot demo, not a starter template. Candidates if we do: `examples/slack-bot/`, `examples/cli-chat/`, `examples/research-agent/`, `examples/coding-agent/`. Cost: each example is a maintained reference that breaks when the API moves. Benefit: answers "how do I X?" before the issue is filed. Decide between: defer until the first issue asks for it, or seed with 2-3 at launch. Surfaced 2026-04-28 during OSS readiness audit.
+
 ## Post-ship augments (separate roadmap entries, captured here for cross-reference)
 
 - [x] ~~bashAugment~~ — shipped: `bash` augment with risk presets (scripts-only / restricted / standard / unrestricted), Layer 1 trust gating, named scripts, env sanitization. See `src/augments/bash.ts`.
