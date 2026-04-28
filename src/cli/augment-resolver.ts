@@ -14,7 +14,7 @@
  *    operator's chosen instance name from the config.
  */
 
-import { resolve } from "path";
+import { resolve } from "node:path";
 import { fileMemory } from "../augments/file-memory";
 import { supabaseMemory } from "../augments/supabase-memory";
 import { filesystem } from "../augments/filesystem";
@@ -39,10 +39,7 @@ function resolvePath(path: string, agentDir: string): string {
 // Built-in resolvers
 // ---------------------------------------------------------------------------
 
-function resolveFileMemory(
-  opts: Record<string, unknown>,
-  agentDir: string,
-): Augment {
+function resolveFileMemory(opts: Record<string, unknown>, agentDir: string): Augment {
   return fileMemory({
     label: opts.label as string,
     source: resolvePath(opts.source as string, agentDir),
@@ -98,9 +95,7 @@ async function resolveLayeredMemory(
   throw new Error(`layeredMemory: unknown backend "${backend}"`);
 }
 
-async function resolveSupabaseMemory(
-  opts: Record<string, unknown>,
-): Promise<Augment> {
+async function resolveSupabaseMemory(opts: Record<string, unknown>): Promise<Augment> {
   const { supabaseUrl, supabaseKey, ...rest } = opts;
   if (typeof supabaseUrl !== "string" || typeof supabaseKey !== "string") {
     throw new Error(
@@ -112,7 +107,9 @@ async function resolveSupabaseMemory(
   // The real SupabaseClient has narrower types than SupabaseLikeClient
   // (e.g. data is null on error), so we cast through unknown.
   const { createClient } = await import("@supabase/supabase-js");
-  const client = createClient(supabaseUrl, supabaseKey) as unknown as Parameters<typeof supabaseMemory>[0]["client"];
+  const client = createClient(supabaseUrl, supabaseKey) as unknown as Parameters<
+    typeof supabaseMemory
+  >[0]["client"];
 
   return supabaseMemory({
     namespace: rest.namespace as string,
@@ -127,10 +124,7 @@ async function resolveSupabaseMemory(
   });
 }
 
-function resolveFilesystem(
-  opts: Record<string, unknown>,
-  agentDir: string,
-): Augment {
+function resolveFilesystem(opts: Record<string, unknown>, agentDir: string): Augment {
   const mounts = (opts.mounts as Array<Record<string, unknown>>).map((m) => ({
     name: m.name as string,
     path: resolvePath(m.path as string, agentDir),
@@ -143,9 +137,7 @@ function resolveFilesystem(
 
   return filesystem({
     mounts,
-    skillFile: opts.skillFile
-      ? resolvePath(opts.skillFile as string, agentDir)
-      : undefined,
+    skillFile: opts.skillFile ? resolvePath(opts.skillFile as string, agentDir) : undefined,
   });
 }
 
@@ -159,7 +151,9 @@ function resolveWebTransport(opts: Record<string, unknown>): Augment {
     concurrency: opts.concurrency as number | undefined,
     maxQueueDepth: opts.maxQueueDepth as number | undefined,
     rateLimitPerPeer: opts.rateLimitPerPeer as { maxPerMinute: number } | undefined,
-    visitorTokens: opts.visitorTokens as { enabled?: boolean; ttlSeconds?: number; signingKey?: string } | undefined,
+    visitorTokens: opts.visitorTokens as
+      | { enabled?: boolean; ttlSeconds?: number; signingKey?: string }
+      | undefined,
   });
 }
 
@@ -172,10 +166,7 @@ function resolveWebFetch(opts: Record<string, unknown>): Augment {
   });
 }
 
-async function resolveCustom(
-  config: AugmentConfig,
-  agentDir: string,
-): Promise<Augment> {
+async function resolveCustom(config: AugmentConfig, agentDir: string): Promise<Augment> {
   if (!config.source) {
     throw new Error(`Custom augment "${config.name}": source path is required`);
   }
@@ -204,29 +195,20 @@ async function resolveCustom(
 // Public API
 // ---------------------------------------------------------------------------
 
-function resolveBash(
-  opts: Record<string, unknown>,
-  agentDir: string,
-): Augment {
-  const scripts = (opts.scripts as Array<Record<string, unknown>> | undefined)?.map(
-    (s) => ({
-      name: s.name as string,
-      description: s.description as string,
-      command: s.command as string,
-      workingDir: s.workingDir
-        ? resolvePath(s.workingDir as string, agentDir)
-        : undefined,
-      timeout: s.timeout as number | undefined,
-    }),
-  );
+function resolveBash(opts: Record<string, unknown>, agentDir: string): Augment {
+  const scripts = (opts.scripts as Array<Record<string, unknown>> | undefined)?.map((s) => ({
+    name: s.name as string,
+    description: s.description as string,
+    command: s.command as string,
+    workingDir: s.workingDir ? resolvePath(s.workingDir as string, agentDir) : undefined,
+    timeout: s.timeout as number | undefined,
+  }));
 
   return bash({
     risk: opts.risk as "scripts-only" | "restricted" | "standard" | "unrestricted" | undefined,
     allowedCommands: opts.allowedCommands as string[] | undefined,
     blockedCommands: opts.blockedCommands as string[] | undefined,
-    workingDir: opts.workingDir
-      ? resolvePath(opts.workingDir as string, agentDir)
-      : undefined,
+    workingDir: opts.workingDir ? resolvePath(opts.workingDir as string, agentDir) : undefined,
     inheritEnv: opts.inheritEnv as boolean | undefined,
     env: opts.env as Record<string, string> | undefined,
     timeout: opts.timeout as number | undefined,
@@ -275,13 +257,15 @@ export async function resolveAugments(
           baseUrl: opts.baseUrl as string,
           token: opts.token as string | undefined,
           cacheTtlMs: opts.cacheTtlMs as number | undefined,
-          escalation: opts.escalation as {
-            enabled?: boolean;
-            cooldownMs?: number;
-            globalMaxPerHour?: number;
-            dedupWindowMs?: number;
-            dedupThreshold?: number;
-          } | undefined,
+          escalation: opts.escalation as
+            | {
+                enabled?: boolean;
+                cooldownMs?: number;
+                globalMaxPerHour?: number;
+                dedupWindowMs?: number;
+                dedupThreshold?: number;
+              }
+            | undefined,
         });
         break;
       case "bash":

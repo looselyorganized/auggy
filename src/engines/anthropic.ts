@@ -50,9 +50,7 @@ export interface AnthropicEngineOptions {
   };
 }
 
-export function createAnthropicEngine(
-  opts: AnthropicEngineOptions,
-): ModelClient {
+export function createAnthropicEngine(opts: AnthropicEngineOptions): ModelClient {
   const client = new Anthropic({
     apiKey: opts.apiKey,
     baseURL: opts.baseURL,
@@ -71,8 +69,8 @@ export function createAnthropicEngine(
       // eslint-disable-next-line no-console
       console.warn(
         `[engines/anthropic] No pricing entry for model "${opts.model}" and no costOverride configured. ` +
-        `costUsd will be undefined; dailyBudgetUsd cannot enforce against this model. ` +
-        `Add the model to src/engines/anthropic/pricing.ts or configure engine.costOverride in agent.yaml.`,
+          `costUsd will be undefined; dailyBudgetUsd cannot enforce against this model. ` +
+          `Add the model to src/engines/anthropic/pricing.ts or configure engine.costOverride in agent.yaml.`,
       );
     } else {
       const f = getFreshness();
@@ -80,7 +78,7 @@ export function createAnthropicEngine(
         // eslint-disable-next-line no-console
         console.warn(
           `[engines/anthropic] Pricing table verifiedAt ${f.verifiedAt} is more than 90 days old. ` +
-          `Cost estimates may be drifting from actual billing. Verify rates and update src/engines/anthropic/pricing.ts.`,
+            `Cost estimates may be drifting from actual billing. Verify rates and update src/engines/anthropic/pricing.ts.`,
         );
       }
     }
@@ -104,11 +102,12 @@ export function createAnthropicEngine(
       const system = assembleSystemText(prompt);
       const messages = convertMessages(prompt.messages);
       const tools = convertTools(prompt.tools);
-      const toolChoice = prompt.toolChoice === "any"
-        ? { type: "any" as const }
-        : prompt.toolChoice === "auto" || !prompt.toolChoice
-          ? { type: "auto" as const }
-          : { type: "tool" as const, name: prompt.toolChoice.name };
+      const toolChoice =
+        prompt.toolChoice === "any"
+          ? { type: "any" as const }
+          : prompt.toolChoice === "auto" || !prompt.toolChoice
+            ? { type: "auto" as const }
+            : { type: "tool" as const, name: prompt.toolChoice.name };
 
       const params = {
         model: opts.model,
@@ -126,11 +125,14 @@ export function createAnthropicEngine(
           cache_read_input_tokens: rawUsage.cache_read_input_tokens ?? null,
           // cache_creation (TTL breakdown) and service_tier are new fields not yet
           // in the Anthropic SDK type; cast defensively via unknown.
-          cache_creation: (rawUsage as unknown as Record<string, unknown>)["cache_creation"] as
+          cache_creation: (rawUsage as unknown as Record<string, unknown>).cache_creation as
             | { ephemeral_5m_input_tokens?: number; ephemeral_1h_input_tokens?: number }
             | null
             | undefined,
-          service_tier: (rawUsage as unknown as Record<string, unknown>)["service_tier"] as string | null | undefined,
+          service_tier: (rawUsage as unknown as Record<string, unknown>).service_tier as
+            | string
+            | null
+            | undefined,
         });
         return result.priced
           ? { ...r, costUsd: result.costUsd }
@@ -300,10 +302,7 @@ function coalesceMessages(messages: MessageParam[]): MessageParam[] {
       // Merge: combine content into an array of content blocks
       const prevBlocks = toContentBlocks(prev.content);
       const currBlocks = toContentBlocks(curr.content);
-      (prev as { content: ContentBlockParam[] }).content = [
-        ...prevBlocks,
-        ...currBlocks,
-      ];
+      (prev as { content: ContentBlockParam[] }).content = [...prevBlocks, ...currBlocks];
     } else {
       coalesced.push(curr);
     }
@@ -312,9 +311,7 @@ function coalesceMessages(messages: MessageParam[]): MessageParam[] {
   return coalesced;
 }
 
-function toContentBlocks(
-  content: string | ContentBlockParam[],
-): ContentBlockParam[] {
+function toContentBlocks(content: string | ContentBlockParam[]): ContentBlockParam[] {
   if (typeof content === "string") {
     return [{ type: "text", text: content }];
   }
@@ -323,9 +320,7 @@ function toContentBlocks(
 
 function safeParseToolCall(
   content: string,
-):
-  | { name: string; arguments: Record<string, unknown> }
-  | null {
+): { name: string; arguments: Record<string, unknown> } | null {
   try {
     const parsed = JSON.parse(content) as {
       name?: unknown;
@@ -380,9 +375,7 @@ const ALLOWED_SCHEMA_KEYS = new Set([
   "additionalProperties",
 ]);
 
-function normalizeSchema(
-  schema: Record<string, unknown> | undefined,
-): AnthropicInputSchema {
+function normalizeSchema(schema: Record<string, unknown> | undefined): AnthropicInputSchema {
   if (!schema || Object.keys(schema).length === 0) {
     return { type: "object", properties: {} };
   }
@@ -399,9 +392,7 @@ function normalizeSchema(
 
 // === Anthropic response → ModelResponse translation ===
 
-function buildModelResponse(
-  response: Anthropic.Messages.Message,
-): ModelResponse {
+function buildModelResponse(response: Anthropic.Messages.Message): ModelResponse {
   let content = "";
   const toolCalls: {
     name: string;

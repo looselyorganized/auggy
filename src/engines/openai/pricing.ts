@@ -1,9 +1,15 @@
-import { type Pricing, type CostResult, type PricingFreshness, computeCostUsd, freshness } from "../_shared/cost";
+import {
+  type Pricing,
+  type CostResult,
+  type PricingFreshness,
+  computeCostUsd,
+  freshness,
+} from "../_shared/cost";
 
 // USD per million tokens. Update via PR when OpenAI changes pricing.
 const TABLE: Record<string, Pricing> = {
-  "gpt-5":      { inputUsdPerMtok: 5.0,  outputUsdPerMtok: 20.0 },
-  "gpt-5-mini": { inputUsdPerMtok: 1.0,  outputUsdPerMtok: 4.0  },
+  "gpt-5": { inputUsdPerMtok: 5.0, outputUsdPerMtok: 20.0 },
+  "gpt-5-mini": { inputUsdPerMtok: 1.0, outputUsdPerMtok: 4.0 },
 };
 
 const VERIFIED_AT = "2026-04-27";

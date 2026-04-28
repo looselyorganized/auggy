@@ -48,14 +48,26 @@ describe("SqliteStore", () => {
   it("search returns entries matching content (LIKE)", async () => {
     const now = Date.now();
     await store.write({
-      label: "ep:vis_a:1", content: "loves espresso", peerId: "vis_a",
-      trustLevel: "public", createdAt: now, supersededBy: null,
-      retentionClass: "operational", isVerbatim: false, expiresAt: null,
+      label: "ep:vis_a:1",
+      content: "loves espresso",
+      peerId: "vis_a",
+      trustLevel: "public",
+      createdAt: now,
+      supersededBy: null,
+      retentionClass: "operational",
+      isVerbatim: false,
+      expiresAt: null,
     });
     await store.write({
-      label: "ep:vis_a:2", content: "asked about weather", peerId: "vis_a",
-      trustLevel: "public", createdAt: now, supersededBy: null,
-      retentionClass: "operational", isVerbatim: false, expiresAt: null,
+      label: "ep:vis_a:2",
+      content: "asked about weather",
+      peerId: "vis_a",
+      trustLevel: "public",
+      createdAt: now,
+      supersededBy: null,
+      retentionClass: "operational",
+      isVerbatim: false,
+      expiresAt: null,
     });
 
     const results = await store.search("espresso");
@@ -66,14 +78,26 @@ describe("SqliteStore", () => {
   it("peer-scoped search only returns entries for that peer", async () => {
     const now = Date.now();
     await store.write({
-      label: "ep:vis_a:1", content: "espresso fan", peerId: "vis_a",
-      trustLevel: "public", createdAt: now, supersededBy: null,
-      retentionClass: "operational", isVerbatim: false, expiresAt: null,
+      label: "ep:vis_a:1",
+      content: "espresso fan",
+      peerId: "vis_a",
+      trustLevel: "public",
+      createdAt: now,
+      supersededBy: null,
+      retentionClass: "operational",
+      isVerbatim: false,
+      expiresAt: null,
     });
     await store.write({
-      label: "ep:vis_b:1", content: "espresso hater", peerId: "vis_b",
-      trustLevel: "public", createdAt: now, supersededBy: null,
-      retentionClass: "operational", isVerbatim: false, expiresAt: null,
+      label: "ep:vis_b:1",
+      content: "espresso hater",
+      peerId: "vis_b",
+      trustLevel: "public",
+      createdAt: now,
+      supersededBy: null,
+      retentionClass: "operational",
+      isVerbatim: false,
+      expiresAt: null,
     });
 
     const aResults = await store.search("espresso", "vis_a");
@@ -88,14 +112,26 @@ describe("SqliteStore", () => {
   it("list returns labels for a peer when peerId provided", async () => {
     const now = Date.now();
     await store.write({
-      label: "ep:vis_a:1", content: "x", peerId: "vis_a",
-      trustLevel: "public", createdAt: now, supersededBy: null,
-      retentionClass: "operational", isVerbatim: false, expiresAt: null,
+      label: "ep:vis_a:1",
+      content: "x",
+      peerId: "vis_a",
+      trustLevel: "public",
+      createdAt: now,
+      supersededBy: null,
+      retentionClass: "operational",
+      isVerbatim: false,
+      expiresAt: null,
     });
     await store.write({
-      label: "ep:vis_b:1", content: "y", peerId: "vis_b",
-      trustLevel: "public", createdAt: now, supersededBy: null,
-      retentionClass: "operational", isVerbatim: false, expiresAt: null,
+      label: "ep:vis_b:1",
+      content: "y",
+      peerId: "vis_b",
+      trustLevel: "public",
+      createdAt: now,
+      supersededBy: null,
+      retentionClass: "operational",
+      isVerbatim: false,
+      expiresAt: null,
     });
 
     const aLabels = await store.list("vis_a");
@@ -105,19 +141,37 @@ describe("SqliteStore", () => {
   it("forget deletes all entries for a peer and returns count", async () => {
     const now = Date.now();
     await store.write({
-      label: "ep:vis_a:1", content: "a1", peerId: "vis_a",
-      trustLevel: "public", createdAt: now, supersededBy: null,
-      retentionClass: "operational", isVerbatim: false, expiresAt: null,
+      label: "ep:vis_a:1",
+      content: "a1",
+      peerId: "vis_a",
+      trustLevel: "public",
+      createdAt: now,
+      supersededBy: null,
+      retentionClass: "operational",
+      isVerbatim: false,
+      expiresAt: null,
     });
     await store.write({
-      label: "ep:vis_a:2", content: "a2", peerId: "vis_a",
-      trustLevel: "public", createdAt: now, supersededBy: null,
-      retentionClass: "operational", isVerbatim: false, expiresAt: null,
+      label: "ep:vis_a:2",
+      content: "a2",
+      peerId: "vis_a",
+      trustLevel: "public",
+      createdAt: now,
+      supersededBy: null,
+      retentionClass: "operational",
+      isVerbatim: false,
+      expiresAt: null,
     });
     await store.write({
-      label: "ep:vis_b:1", content: "b1", peerId: "vis_b",
-      trustLevel: "public", createdAt: now, supersededBy: null,
-      retentionClass: "operational", isVerbatim: false, expiresAt: null,
+      label: "ep:vis_b:1",
+      content: "b1",
+      peerId: "vis_b",
+      trustLevel: "public",
+      createdAt: now,
+      supersededBy: null,
+      retentionClass: "operational",
+      isVerbatim: false,
+      expiresAt: null,
     });
 
     const deleted = await store.forget("vis_a");
@@ -131,14 +185,26 @@ describe("SqliteStore", () => {
   it("supersede excludes the old entry from search results", async () => {
     const now = Date.now();
     const old = await store.write({
-      label: "ep:vis_a:1", content: "old fact", peerId: "vis_a",
-      trustLevel: "public", createdAt: now, supersededBy: null,
-      retentionClass: "operational", isVerbatim: false, expiresAt: null,
+      label: "ep:vis_a:1",
+      content: "old fact",
+      peerId: "vis_a",
+      trustLevel: "public",
+      createdAt: now,
+      supersededBy: null,
+      retentionClass: "operational",
+      isVerbatim: false,
+      expiresAt: null,
     });
     const fresh = await store.write({
-      label: "ep:vis_a:1b", content: "fresh fact", peerId: "vis_a",
-      trustLevel: "public", createdAt: now + 1, supersededBy: null,
-      retentionClass: "operational", isVerbatim: false, expiresAt: null,
+      label: "ep:vis_a:1b",
+      content: "fresh fact",
+      peerId: "vis_a",
+      trustLevel: "public",
+      createdAt: now + 1,
+      supersededBy: null,
+      retentionClass: "operational",
+      isVerbatim: false,
+      expiresAt: null,
     });
     await store.supersede(old.id, fresh.id);
 
@@ -150,24 +216,33 @@ describe("SqliteStore", () => {
   it("cleanup deletes entries past expires_at", async () => {
     const now = Date.now();
     await store.write({
-      label: "ep:vis_a:soon", content: "expires soon", peerId: "vis_a",
-      trustLevel: "public", createdAt: now, supersededBy: null,
-      retentionClass: "operational", isVerbatim: false, expiresAt: now + 1_000,
+      label: "ep:vis_a:soon",
+      content: "expires soon",
+      peerId: "vis_a",
+      trustLevel: "public",
+      createdAt: now,
+      supersededBy: null,
+      retentionClass: "operational",
+      isVerbatim: false,
+      expiresAt: now + 1_000,
     });
     await store.write({
-      label: "ep:vis_a:fresh", content: "stays", peerId: "vis_a",
-      trustLevel: "public", createdAt: now, supersededBy: null,
-      retentionClass: "operational", isVerbatim: false, expiresAt: now + 1_000_000,
+      label: "ep:vis_a:fresh",
+      content: "stays",
+      peerId: "vis_a",
+      trustLevel: "public",
+      createdAt: now,
+      supersededBy: null,
+      retentionClass: "operational",
+      isVerbatim: false,
+      expiresAt: now + 1_000_000,
     });
 
     // Backdate the first entry's expiry via a parallel WAL-safe handle so
     // the main store's write-time sweep doesn't pre-empt cleanup().
     const { Database } = await import("bun:sqlite");
     const db2 = new Database(dbPath, { readwrite: true });
-    db2.run("UPDATE entries SET expires_at = ? WHERE label = ?", [
-      now - 1,
-      "ep:vis_a:soon",
-    ]);
+    db2.run("UPDATE entries SET expires_at = ? WHERE label = ?", [now - 1, "ep:vis_a:soon"]);
     db2.close();
 
     const removed = await store.cleanup();
@@ -181,9 +256,15 @@ describe("SqliteStore", () => {
   it("provenance fields round-trip through write/read", async () => {
     const now = Date.now();
     await store.write({
-      label: "ep:vis_a:1", content: "lesson learned", peerId: "vis_a",
-      trustLevel: "agent", createdAt: now, supersededBy: null,
-      retentionClass: "lesson", isVerbatim: true, expiresAt: null,
+      label: "ep:vis_a:1",
+      content: "lesson learned",
+      peerId: "vis_a",
+      trustLevel: "agent",
+      createdAt: now,
+      supersededBy: null,
+      retentionClass: "lesson",
+      isVerbatim: true,
+      expiresAt: null,
     });
     const fetched = await store.read("ep:vis_a:1");
     expect(fetched?.trustLevel).toBe("agent");
@@ -194,9 +275,15 @@ describe("SqliteStore", () => {
   it("retentionDays sets a default expires_at when not provided", async () => {
     const now = Date.now();
     const written = await store.write({
-      label: "ep:vis_a:1", content: "x", peerId: "vis_a",
-      trustLevel: "public", createdAt: now, supersededBy: null,
-      retentionClass: "operational", isVerbatim: false, expiresAt: null,
+      label: "ep:vis_a:1",
+      content: "x",
+      peerId: "vis_a",
+      trustLevel: "public",
+      createdAt: now,
+      supersededBy: null,
+      retentionClass: "operational",
+      isVerbatim: false,
+      expiresAt: null,
     });
     expect(written.expiresAt).not.toBeNull();
     expect(written.expiresAt!).toBeGreaterThan(now);
@@ -210,9 +297,15 @@ describe("SqliteStore", () => {
   it("entry insert + event_log insert are atomic (no partial write)", async () => {
     const now = Date.now();
     await store.write({
-      label: "ep:vis_a:1", content: "tracked", peerId: "vis_a",
-      trustLevel: "public", createdAt: now, supersededBy: null,
-      retentionClass: "operational", isVerbatim: false, expiresAt: null,
+      label: "ep:vis_a:1",
+      content: "tracked",
+      peerId: "vis_a",
+      trustLevel: "public",
+      createdAt: now,
+      supersededBy: null,
+      retentionClass: "operational",
+      isVerbatim: false,
+      expiresAt: null,
     });
 
     const { Database } = await import("bun:sqlite");
@@ -223,9 +316,7 @@ describe("SqliteStore", () => {
       )
       .get();
     const entries = db2
-      .prepare<{ count: number }, []>(
-        "SELECT COUNT(*) as count FROM entries",
-      )
+      .prepare<{ count: number }, []>("SELECT COUNT(*) as count FROM entries")
       .get();
     db2.close();
 
@@ -265,14 +356,26 @@ describe("SqliteStore", () => {
   it("LIKE wildcards in query are escaped", async () => {
     const now = Date.now();
     await store.write({
-      label: "ep:vis_a:1", content: "literal % match", peerId: "vis_a",
-      trustLevel: "public", createdAt: now, supersededBy: null,
-      retentionClass: "operational", isVerbatim: false, expiresAt: null,
+      label: "ep:vis_a:1",
+      content: "literal % match",
+      peerId: "vis_a",
+      trustLevel: "public",
+      createdAt: now,
+      supersededBy: null,
+      retentionClass: "operational",
+      isVerbatim: false,
+      expiresAt: null,
     });
     await store.write({
-      label: "ep:vis_a:2", content: "should not match", peerId: "vis_a",
-      trustLevel: "public", createdAt: now, supersededBy: null,
-      retentionClass: "operational", isVerbatim: false, expiresAt: null,
+      label: "ep:vis_a:2",
+      content: "should not match",
+      peerId: "vis_a",
+      trustLevel: "public",
+      createdAt: now,
+      supersededBy: null,
+      retentionClass: "operational",
+      isVerbatim: false,
+      expiresAt: null,
     });
 
     // Query with literal % should only match the entry containing %

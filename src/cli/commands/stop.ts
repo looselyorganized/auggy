@@ -6,18 +6,10 @@
  *   - launchd: launchctl unload, clean up plist + symlink
  */
 
-import { unlinkSync } from "fs";
+import { unlinkSync } from "node:fs";
 import { $ } from "bun";
-import {
-  readPidManifest,
-  removePidManifest,
-  isProcessAlive,
-} from "../pid-registry";
-import {
-  plistLabel,
-  plistStorePath,
-  plistInstallPath,
-} from "../plist-generator";
+import { readPidManifest, removePidManifest, isProcessAlive } from "../pid-registry";
+import { plistStorePath, plistInstallPath } from "../plist-generator";
 
 export async function runStop(name: string): Promise<void> {
   const manifest = readPidManifest(name);
@@ -51,8 +43,12 @@ async function stopLaunchd(name: string, pid: number): Promise<void> {
   }
 
   // Clean up plist files.
-  try { unlinkSync(installPath); } catch {}
-  try { unlinkSync(storePath); } catch {}
+  try {
+    unlinkSync(installPath);
+  } catch {}
+  try {
+    unlinkSync(storePath);
+  } catch {}
 
   // Clean up PID manifest.
   removePidManifest(name);

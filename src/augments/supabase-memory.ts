@@ -19,17 +19,21 @@ export interface SupabaseLikeClient {
   from(table: string): {
     insert(row: unknown): PromiseLike<{ error: Error | null }>;
     select(columns?: string): {
-      eq(column: string, value: unknown): {
+      eq(
+        column: string,
+        value: unknown,
+      ): {
         maybeSingle(): PromiseLike<{ data: unknown; error: Error | null }>;
       };
-      ilike(column: string, value: string): {
+      ilike(
+        column: string,
+        value: string,
+      ): {
         order(
           column: string,
           opts?: { ascending?: boolean },
         ): {
-          limit(
-            n: number,
-          ): PromiseLike<{ data: unknown[]; error: Error | null }>;
+          limit(n: number): PromiseLike<{ data: unknown[]; error: Error | null }>;
         };
       };
     };
@@ -55,9 +59,7 @@ export interface SupabaseMemoryOptions {
  * created_at desc. Intended for episodic memory.
  */
 export function supabaseMemory(opts: SupabaseMemoryOptions): Augment {
-  const prefix = opts.namespace.endsWith(":")
-    ? opts.namespace
-    : `${opts.namespace}:`;
+  const prefix = opts.namespace.endsWith(":") ? opts.namespace : `${opts.namespace}:`;
   const limit = opts.searchLimit ?? 10;
 
   const search = async (query: string): Promise<MemoryEntry[]> => {

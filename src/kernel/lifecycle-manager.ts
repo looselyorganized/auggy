@@ -16,10 +16,7 @@ export function createLifecycleManager(opts: {
   model?: ModelClient;
 }): LifecycleManager {
   const { name, augments } = opts;
-  const augmentStatus = new Map<
-    string,
-    { status: "ok" | "degraded" | "failed"; error?: string }
-  >();
+  const augmentStatus = new Map<string, { status: "ok" | "degraded" | "failed"; error?: string }>();
   let bootTime = 0;
   let idleTimerId: ReturnType<typeof setTimeout> | null = null;
   let idleIntervalMs = 300_000;
@@ -37,9 +34,7 @@ export function createLifecycleManager(opts: {
             status: "failed",
             error: String(err),
           });
-          throw new Error(
-            `Augment "${aug.name}" failed to boot: ${err}`,
-          );
+          throw new Error(`Augment "${aug.name}" failed to boot: ${err}`);
         }
       }
     },
@@ -85,12 +80,8 @@ export function createLifecycleManager(opts: {
 
     health(): AgentHealth {
       const statuses = Object.fromEntries(augmentStatus);
-      const hasFailed = Object.values(statuses).some(
-        (s) => s.status === "failed",
-      );
-      const hasDegraded = Object.values(statuses).some(
-        (s) => s.status === "degraded",
-      );
+      const hasFailed = Object.values(statuses).some((s) => s.status === "failed");
+      const hasDegraded = Object.values(statuses).some((s) => s.status === "degraded");
 
       let modelReachable = true;
       if (opts.model) {
@@ -102,15 +93,9 @@ export function createLifecycleManager(opts: {
       }
 
       return {
-        status: hasFailed || !modelReachable
-          ? "unhealthy"
-          : hasDegraded
-            ? "degraded"
-            : "healthy",
+        status: hasFailed || !modelReachable ? "unhealthy" : hasDegraded ? "degraded" : "healthy",
         agent: name,
-        uptime: bootTime
-          ? Math.floor((Date.now() - bootTime) / 1000)
-          : 0,
+        uptime: bootTime ? Math.floor((Date.now() - bootTime) / 1000) : 0,
         augments: statuses,
         model: { reachable: modelReachable },
       };

@@ -1,4 +1,9 @@
-import { type Pricing, type CostResult, type PricingFreshness, computeCostUsd } from "../_shared/cost";
+import {
+  type Pricing,
+  type CostResult,
+  type PricingFreshness,
+  computeCostUsd,
+} from "../_shared/cost";
 import * as anthropicPricing from "../anthropic/pricing";
 import * as openaiPricing from "../openai/pricing";
 

@@ -3,12 +3,7 @@ import { z } from "zod";
 import { createTurnLoop } from "@/kernel/turn-loop";
 import { createMockModel } from "@tests/fixtures/mock-model";
 import { createTokenizer } from "@/tokenizer";
-import type {
-  Augment,
-  TurnTrigger,
-  PeerIdentity,
-  InboundMessage,
-} from "@/types";
+import type { Augment, TurnTrigger, PeerIdentity, InboundMessage } from "@/types";
 
 function makeTrigger(text: string): TurnTrigger {
   const peer: PeerIdentity = {
@@ -142,9 +137,7 @@ describe("Tool call ID matching", () => {
 
     // Each tool_use must have a matching tool_result with the same toolCallId
     for (const use of toolUses) {
-      const matchingResult = toolResults.find(
-        (r) => r.toolCallId === use.toolCallId,
-      );
+      const matchingResult = toolResults.find((r) => r.toolCallId === use.toolCallId);
       expect(matchingResult).toBeDefined();
     }
 

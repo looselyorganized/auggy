@@ -31,9 +31,7 @@ mock.module("openai", () => {
   class FakeOpenAI {
     chat = {
       completions: {
-        create: async (
-          params: Record<string, unknown>,
-        ): Promise<OpenAI.Chat.ChatCompletion> => {
+        create: async (params: Record<string, unknown>): Promise<OpenAI.Chat.ChatCompletion> => {
           lastCreateArgs = params;
           if (throwOnCreate) throw throwOnCreate;
           return nextResponse ?? defaultResponse();
@@ -47,9 +45,7 @@ mock.module("openai", () => {
   return { default: FakeOpenAI };
 });
 
-const { createOpenRouterEngine } = await import(
-  "../../src/engines/openrouter"
-);
+const { createOpenRouterEngine } = await import("../../src/engines/openrouter");
 
 // Save / restore env between tests so the apiKey guard suite can manipulate it.
 const ORIGINAL_OPENROUTER = process.env.OPENROUTER_API_KEY;
@@ -103,17 +99,17 @@ describe("createOpenRouterEngine — apiKey guard", () => {
   test("throws when neither opts.apiKey nor env is set", () => {
     delete process.env.OPENROUTER_API_KEY;
     delete process.env.OPENAI_API_KEY;
-    expect(() =>
-      createOpenRouterEngine({ model: "qwen/qwen3.5-397b-a17b" }),
-    ).toThrow("OPENROUTER_API_KEY is not set");
+    expect(() => createOpenRouterEngine({ model: "qwen/qwen3.5-397b-a17b" })).toThrow(
+      "OPENROUTER_API_KEY is not set",
+    );
   });
 
   test("throws even when OPENAI_API_KEY is set (silent miswire prevention)", () => {
     delete process.env.OPENROUTER_API_KEY;
     process.env.OPENAI_API_KEY = "sk-openai-not-openrouter";
-    expect(() =>
-      createOpenRouterEngine({ model: "qwen/qwen3.5-397b-a17b" }),
-    ).toThrow("OPENROUTER_API_KEY is not set");
+    expect(() => createOpenRouterEngine({ model: "qwen/qwen3.5-397b-a17b" })).toThrow(
+      "OPENROUTER_API_KEY is not set",
+    );
   });
 
   test("uses opts.apiKey when explicitly provided (overrides env)", () => {
@@ -146,20 +142,14 @@ describe("createOpenRouterEngine — SDK construction", () => {
   test("defaultHeaders includes X-Title", () => {
     process.env.OPENROUTER_API_KEY = "sk-test";
     createOpenRouterEngine({ model: "qwen/qwen3.5-397b-a17b" });
-    const headers = lastConstructorArgs?.defaultHeaders as Record<
-      string,
-      string
-    >;
+    const headers = lastConstructorArgs?.defaultHeaders as Record<string, string>;
     expect(headers["X-Title"]).toBe("Auggy");
   });
 
   test("defaultHeaders does NOT include HTTP-Referer", () => {
     process.env.OPENROUTER_API_KEY = "sk-test";
     createOpenRouterEngine({ model: "qwen/qwen3.5-397b-a17b" });
-    const headers = lastConstructorArgs?.defaultHeaders as Record<
-      string,
-      string
-    >;
+    const headers = lastConstructorArgs?.defaultHeaders as Record<string, string>;
     expect(headers["HTTP-Referer"]).toBeUndefined();
   });
 });
@@ -234,9 +224,7 @@ describe("createOpenRouterEngine — SDK call payload", () => {
     const engine = createOpenRouterEngine({ model: "qwen/qwen3.5-397b-a17b" });
     await expect(
       engine.complete(emptyPrompt({ messages: [msg({ content: "hi" })] })),
-    ).rejects.toThrow(
-      "OpenRouter engine (qwen/qwen3.5-397b-a17b) failed: upstream provider down",
-    );
+    ).rejects.toThrow("OpenRouter engine (qwen/qwen3.5-397b-a17b) failed: upstream provider down");
   });
 
   test("preserves original SDK error as `cause`", async () => {
@@ -244,9 +232,7 @@ describe("createOpenRouterEngine — SDK call payload", () => {
     throwOnCreate = original;
     const engine = createOpenRouterEngine({ model: "qwen/qwen3.5-397b-a17b" });
     try {
-      await engine.complete(
-        emptyPrompt({ messages: [msg({ content: "hi" })] }),
-      );
+      await engine.complete(emptyPrompt({ messages: [msg({ content: "hi" })] }));
       throw new Error("should have thrown");
     } catch (err) {
       expect((err as Error & { cause?: unknown }).cause).toBe(original);
@@ -259,9 +245,7 @@ describe("createOpenRouterEngine — SDK call payload", () => {
     // We can't easily re-stub the per-call response with this mock setup,
     // so we test buildOpenAIModelResponse directly with the openrouter label
     // — same code path as called from createOpenRouterEngine.
-    const { buildOpenAIModelResponse } = await import(
-      "../../src/engines/openai"
-    );
+    const { buildOpenAIModelResponse } = await import("../../src/engines/openai");
     expect(() =>
       buildOpenAIModelResponse(
         {
@@ -280,9 +264,7 @@ describe("createOpenRouterEngine — SDK call payload", () => {
 
   test("response shape parses through buildOpenAIModelResponse correctly", async () => {
     const engine = createOpenRouterEngine({ model: "qwen/qwen3.5-397b-a17b" });
-    const result = await engine.complete(
-      emptyPrompt({ messages: [msg({ content: "hi" })] }),
-    );
+    const result = await engine.complete(emptyPrompt({ messages: [msg({ content: "hi" })] }));
     expect(result.content).toBe("ok");
     expect(result.finishReason).toBe("end_turn");
     expect(result.inputTokens).toBe(10);
@@ -371,9 +353,7 @@ describe("createOpenRouterEngine — costUsd", () => {
     // $3.00/Mtok in, $15.00/Mtok out; 200 in + 100 out → 0.0006 + 0.0015 = 0.0021 USD
     nextResponse = mockCompletionWithTokens(200, 100, "anthropic/claude-sonnet-4-6");
     const engine = createOpenRouterEngine({ model: "anthropic/claude-sonnet-4-6" });
-    const result = await engine.complete(
-      emptyPrompt({ messages: [msg({ content: "hi" })] }),
-    );
+    const result = await engine.complete(emptyPrompt({ messages: [msg({ content: "hi" })] }));
     expect(result.costUsd).toBeGreaterThan(0);
     expect(result.costUsd).toBeCloseTo(0.0021, 8);
   });
@@ -383,9 +363,7 @@ describe("createOpenRouterEngine — costUsd", () => {
     // $5.00/Mtok in, $20.00/Mtok out; 400 in + 200 out → 0.002 + 0.004 = 0.006 USD
     nextResponse = mockCompletionWithTokens(400, 200, "openai/gpt-5");
     const engine = createOpenRouterEngine({ model: "openai/gpt-5" });
-    const result = await engine.complete(
-      emptyPrompt({ messages: [msg({ content: "hi" })] }),
-    );
+    const result = await engine.complete(emptyPrompt({ messages: [msg({ content: "hi" })] }));
     expect(result.costUsd).toBeGreaterThan(0);
     expect(result.costUsd).toBeCloseTo(0.006, 8);
   });
@@ -394,18 +372,14 @@ describe("createOpenRouterEngine — costUsd", () => {
     // qwen/qwen3.5-397b-a17b — no "qwen" provider in pricing tables
     nextResponse = mockCompletionWithTokens(100, 50, "qwen/qwen3.5-397b-a17b");
     const engine = createOpenRouterEngine({ model: "qwen/qwen3.5-397b-a17b" });
-    const result = await engine.complete(
-      emptyPrompt({ messages: [msg({ content: "hi" })] }),
-    );
+    const result = await engine.complete(emptyPrompt({ messages: [msg({ content: "hi" })] }));
     expect(result.costUsd).toBeUndefined();
   });
 
   test("slug with no slash leaves costUsd undefined (openrouter table is empty)", async () => {
     nextResponse = mockCompletionWithTokens(100, 50, "somemodel");
     const engine = createOpenRouterEngine({ model: "somemodel" });
-    const result = await engine.complete(
-      emptyPrompt({ messages: [msg({ content: "hi" })] }),
-    );
+    const result = await engine.complete(emptyPrompt({ messages: [msg({ content: "hi" })] }));
     expect(result.costUsd).toBeUndefined();
   });
 
@@ -417,9 +391,7 @@ describe("createOpenRouterEngine — costUsd", () => {
       model: "qwen/qwen3.5-397b-a17b",
       costOverride: { inputUsdPerMtok: 4, outputUsdPerMtok: 16 },
     });
-    const result = await engine.complete(
-      emptyPrompt({ messages: [msg({ content: "hi" })] }),
-    );
+    const result = await engine.complete(emptyPrompt({ messages: [msg({ content: "hi" })] }));
     expect(result.costUsd).toBeCloseTo(0.003, 8);
   });
 
@@ -431,9 +403,7 @@ describe("createOpenRouterEngine — costUsd", () => {
       model: "anthropic/claude-sonnet-4-6",
       costOverride: { inputUsdPerMtok: 2, outputUsdPerMtok: 6 },
     });
-    const result = await engine.complete(
-      emptyPrompt({ messages: [msg({ content: "hi" })] }),
-    );
+    const result = await engine.complete(emptyPrompt({ messages: [msg({ content: "hi" })] }));
     expect(result.costUsd).toBeCloseTo(0.003, 8);
   });
 });
@@ -486,7 +456,10 @@ describe("createOpenRouterEngine — startup warnings", () => {
         costOverride: { inputUsdPerMtok: 0.1, outputUsdPerMtok: 0.3 },
       });
       const pricingWarnings = warnings.filter(
-        (w) => w.includes("anthropic/* and openai/*") || w.includes("No pricing entry") || w.includes("Pricing table verifiedAt"),
+        (w) =>
+          w.includes("anthropic/* and openai/*") ||
+          w.includes("No pricing entry") ||
+          w.includes("Pricing table verifiedAt"),
       );
       expect(pricingWarnings).toHaveLength(0);
     } finally {

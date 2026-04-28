@@ -1,14 +1,6 @@
-import type {
-  Augment,
-  MemoryEntry,
-  MemoryQueryOpts,
-  MemoryWriteOpts,
-} from "../types";
+import type { Augment, MemoryEntry, MemoryQueryOpts, MemoryWriteOpts } from "../types";
 import { createSqliteStore } from "./layered-memory/sqlite-store";
-import {
-  createSupabaseStore,
-  type LayeredSupabaseClient,
-} from "./layered-memory/supabase-store";
+import { createSupabaseStore, type LayeredSupabaseClient } from "./layered-memory/supabase-store";
 import type { MemoryStore, StoreEntry } from "./layered-memory/types";
 
 export interface LayeredMemoryOptions {
@@ -58,10 +50,7 @@ export async function layeredMemory(opts: LayeredMemoryOptions): Promise<Augment
 
   await store.initialize();
 
-  const search = async (
-    query: string,
-    queryOpts?: MemoryQueryOpts,
-  ): Promise<MemoryEntry[]> => {
+  const search = async (query: string, queryOpts?: MemoryQueryOpts): Promise<MemoryEntry[]> => {
     const results = await store.search(query, queryOpts?.peerId);
     return results.map(storeEntryToMemoryEntry);
   };

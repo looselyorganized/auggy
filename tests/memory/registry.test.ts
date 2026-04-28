@@ -1,9 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import {
-  buildRegistry,
-  lookupProvider,
-  getMemoryProviders,
-} from "@/memory/registry";
+import { buildRegistry, lookupProvider, getMemoryProviders } from "@/memory/registry";
 import type { Augment, MemoryDefaults } from "@/types";
 
 const testDefaults: MemoryDefaults = {
@@ -69,10 +65,7 @@ describe("buildRegistry", () => {
   });
 
   it("throws on duplicate static labels across providers", () => {
-    const providers = [
-      staticProvider("a", ["self"]),
-      staticProvider("b", ["self"]),
-    ];
+    const providers = [staticProvider("a", ["self"]), staticProvider("b", ["self"])];
     expect(() => buildRegistry(providers)).toThrow(/conflict/i);
   });
 

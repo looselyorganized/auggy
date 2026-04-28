@@ -38,8 +38,7 @@ describe("createMemoryTools", () => {
           memory: {
             owns: { kind: "static", labels: ["self"] },
             defaults,
-            read: async (label) =>
-              label === "self" ? { label, content: "I am an agent" } : null,
+            read: async (label) => (label === "self" ? { label, content: "I am an agent" } : null),
           },
         },
       ];
@@ -93,7 +92,11 @@ describe("createMemoryTools", () => {
       const readTool = tools.find((t) => t.name === "memory_read")!;
       const result = await readTool.execute(
         { label: "self" },
-        { turnId: "t1", peer: { id: "vis_1", kind: "human", trustLevel: "public", sourceAugment: "web" }, threadId: "th1" },
+        {
+          turnId: "t1",
+          peer: { id: "vis_1", kind: "human", trustLevel: "public", sourceAugment: "web" },
+          threadId: "th1",
+        },
       );
       expect(result).toMatch(/requires agent or creator/i);
       expect(result).not.toContain("operator-only content");
@@ -115,7 +118,11 @@ describe("createMemoryTools", () => {
       const readTool = tools.find((t) => t.name === "memory_read")!;
       const result = await readTool.execute(
         { label: "learned" },
-        { turnId: "t1", peer: { id: "vis_1", kind: "human", trustLevel: "public", sourceAugment: "web" }, threadId: "th1" },
+        {
+          turnId: "t1",
+          peer: { id: "vis_1", kind: "human", trustLevel: "public", sourceAugment: "web" },
+          threadId: "th1",
+        },
       );
       expect(result).toMatch(/requires agent or creator/i);
       expect(result).not.toContain("system content");
@@ -139,7 +146,11 @@ describe("createMemoryTools", () => {
       const readTool = tools.find((t) => t.name === "memory_read")!;
       const result = await readTool.execute(
         { label: "ep:note" },
-        { turnId: "t1", peer: { id: "vis_1", kind: "human", trustLevel: "public", sourceAugment: "web" }, threadId: "th1" },
+        {
+          turnId: "t1",
+          peer: { id: "vis_1", kind: "human", trustLevel: "public", sourceAugment: "web" },
+          threadId: "th1",
+        },
       );
       expect(result).toContain("visitor entry");
     });
@@ -161,7 +172,11 @@ describe("createMemoryTools", () => {
       const readTool = tools.find((t) => t.name === "memory_read")!;
       const result = await readTool.execute(
         { label: "self" },
-        { turnId: "t1", peer: { id: "op", kind: "human", trustLevel: "creator", sourceAugment: "web" }, threadId: "th1" },
+        {
+          turnId: "t1",
+          peer: { id: "op", kind: "human", trustLevel: "creator", sourceAugment: "web" },
+          threadId: "th1",
+        },
       );
       expect(result).toContain("operator content");
     });
@@ -204,10 +219,7 @@ describe("createMemoryTools", () => {
       const registry = buildRegistry(providers);
       const { tools } = createMemoryTools(registry);
       const writeTool = tools.find((t) => t.name === "memory_write")!;
-      const result = await writeTool.execute(
-        { label: "notes", content: "new note" },
-        DEFAULT_CTX,
-      );
+      const result = await writeTool.execute({ label: "notes", content: "new note" }, DEFAULT_CTX);
       expect(writes).toEqual([{ label: "notes", content: "new note" }]);
       expect(result).toMatch(/success/i);
     });
@@ -226,10 +238,7 @@ describe("createMemoryTools", () => {
       const registry = buildRegistry(providers);
       const { tools } = createMemoryTools(registry);
       const writeTool = tools.find((t) => t.name === "memory_write")!;
-      const result = await writeTool.execute(
-        { label: "self", content: "tampered" },
-        DEFAULT_CTX,
-      );
+      const result = await writeTool.execute({ label: "self", content: "tampered" }, DEFAULT_CTX);
       expect(result).toMatch(/immutable/i);
     });
 
@@ -250,7 +259,11 @@ describe("createMemoryTools", () => {
       const writeTool = tools.find((t) => t.name === "memory_write")!;
       const result = await writeTool.execute(
         { label: "learned", content: "poisoned" },
-        { turnId: "t1", peer: { id: "vis_1", kind: "human", trustLevel: "public", sourceAugment: "web" }, threadId: "th1" },
+        {
+          turnId: "t1",
+          peer: { id: "vis_1", kind: "human", trustLevel: "public", sourceAugment: "web" },
+          threadId: "th1",
+        },
       );
       expect(result).toMatch(/requires agent or creator/i);
     });
@@ -272,7 +285,11 @@ describe("createMemoryTools", () => {
       const writeTool = tools.find((t) => t.name === "memory_write")!;
       const result = await writeTool.execute(
         { label: "learned", content: "poisoned" },
-        { turnId: "t1", peer: { id: "vis_1", kind: "human", trustLevel: "public", sourceAugment: "web" }, threadId: "th1" },
+        {
+          turnId: "t1",
+          peer: { id: "vis_1", kind: "human", trustLevel: "public", sourceAugment: "web" },
+          threadId: "th1",
+        },
       );
       expect(result).toMatch(/requires agent or creator/i);
     });
@@ -286,7 +303,9 @@ describe("createMemoryTools", () => {
             owns: { kind: "static", labels: ["learned"] },
             defaults,
             read: async () => null,
-            write: async (_l: string, c: string) => { writes.push(c); },
+            write: async (_l: string, c: string) => {
+              writes.push(c);
+            },
           },
         },
       ];
@@ -295,7 +314,11 @@ describe("createMemoryTools", () => {
       const writeTool = tools.find((t) => t.name === "memory_write")!;
       const result = await writeTool.execute(
         { label: "learned", content: "operator note" },
-        { turnId: "t1", peer: { id: "op", kind: "human", trustLevel: "creator", sourceAugment: "web" }, threadId: "th1" },
+        {
+          turnId: "t1",
+          peer: { id: "op", kind: "human", trustLevel: "creator", sourceAugment: "web" },
+          threadId: "th1",
+        },
       );
       expect(result).toMatch(/success/i);
       expect(writes).toEqual(["operator note"]);
@@ -310,7 +333,9 @@ describe("createMemoryTools", () => {
             owns: { kind: "static", labels: ["learned"] },
             defaults,
             read: async () => null,
-            write: async (_l: string, c: string) => { writes.push(c); },
+            write: async (_l: string, c: string) => {
+              writes.push(c);
+            },
           },
         },
       ];
@@ -319,7 +344,11 @@ describe("createMemoryTools", () => {
       const writeTool = tools.find((t) => t.name === "memory_write")!;
       const result = await writeTool.execute(
         { label: "learned", content: "facility update" },
-        { turnId: "t1", peer: { id: "agent-1", kind: "agent", trustLevel: "agent", sourceAugment: "spine" }, threadId: "th1" },
+        {
+          turnId: "t1",
+          peer: { id: "agent-1", kind: "agent", trustLevel: "agent", sourceAugment: "spine" },
+          threadId: "th1",
+        },
       );
       expect(result).toMatch(/success/i);
       expect(writes).toEqual(["facility update"]);
@@ -335,7 +364,9 @@ describe("createMemoryTools", () => {
             owns: { kind: "namespace", prefix: "ep:" },
             defaults: peerDerivedDefaults,
             search: async () => [],
-            write: async (_l: string, c: string) => { writes.push(c); },
+            write: async (_l: string, c: string) => {
+              writes.push(c);
+            },
           },
         },
       ];
@@ -344,7 +375,11 @@ describe("createMemoryTools", () => {
       const writeTool = tools.find((t) => t.name === "memory_write")!;
       const result = await writeTool.execute(
         { label: "ep:note", content: "visitor memory" },
-        { turnId: "t1", peer: { id: "vis_1", kind: "human", trustLevel: "public", sourceAugment: "web" }, threadId: "th1" },
+        {
+          turnId: "t1",
+          peer: { id: "vis_1", kind: "human", trustLevel: "public", sourceAugment: "web" },
+          threadId: "th1",
+        },
       );
       expect(result).toMatch(/success/i);
       expect(writes).toEqual(["visitor memory"]);
@@ -378,7 +413,9 @@ describe("createMemoryTools", () => {
             owns: { kind: "static", labels: ["learned"] },
             defaults,
             read: async () => null,
-            write: async (_l: string, c: string) => { writes.push(c); },
+            write: async (_l: string, c: string) => {
+              writes.push(c);
+            },
           },
         },
       ];
@@ -402,9 +439,7 @@ describe("createMemoryTools", () => {
           memory: {
             owns: { kind: "namespace", prefix: "episode:" },
             defaults,
-            search: async (q) => [
-              { label: "episode:1", content: `result for ${q}` },
-            ],
+            search: async (q) => [{ label: "episode:1", content: `result for ${q}` }],
           },
         },
       ];
@@ -449,7 +484,11 @@ describe("createMemoryTools", () => {
       const searchTool = tools.find((t) => t.name === "memory_search")!;
       const result = await searchTool.execute(
         { query: "secret" },
-        { turnId: "t1", peer: { id: "vis_1", kind: "human", trustLevel: "public", sourceAugment: "web" }, threadId: "th1" },
+        {
+          turnId: "t1",
+          peer: { id: "vis_1", kind: "human", trustLevel: "public", sourceAugment: "web" },
+          threadId: "th1",
+        },
       );
       expect(result).not.toContain("should be filtered");
       expect(result).not.toContain("system-notes");
@@ -481,7 +520,11 @@ describe("createMemoryTools", () => {
       const searchTool = tools.find((t) => t.name === "memory_search")!;
       const result = await searchTool.execute(
         { query: "anything" },
-        { turnId: "t1", peer: { id: "op", kind: "human", trustLevel: "creator", sourceAugment: "web" }, threadId: "th1" },
+        {
+          turnId: "t1",
+          peer: { id: "op", kind: "human", trustLevel: "creator", sourceAugment: "web" },
+          threadId: "th1",
+        },
       );
       expect(result).toContain("system result");
       expect(result).toContain("visitor result");
@@ -578,7 +621,11 @@ describe("createMemoryTools", () => {
       const listTool = tools.find((t) => t.name === "memory_list")!;
       const result = await listTool.execute(
         {},
-        { turnId: "t1", peer: { id: "vis_1", kind: "human", trustLevel: "public", sourceAugment: "web" }, threadId: "th1" },
+        {
+          turnId: "t1",
+          peer: { id: "vis_1", kind: "human", trustLevel: "public", sourceAugment: "web" },
+          threadId: "th1",
+        },
       );
       const parsed = JSON.parse(result);
       expect(parsed.static).not.toContain("self");
@@ -612,7 +659,11 @@ describe("createMemoryTools", () => {
       const listTool = tools.find((t) => t.name === "memory_list")!;
       const result = await listTool.execute(
         {},
-        { turnId: "t1", peer: { id: "op", kind: "human", trustLevel: "creator", sourceAugment: "web" }, threadId: "th1" },
+        {
+          turnId: "t1",
+          peer: { id: "op", kind: "human", trustLevel: "creator", sourceAugment: "web" },
+          threadId: "th1",
+        },
       );
       const parsed = JSON.parse(result);
       expect(parsed.static).toContain("self");
@@ -635,7 +686,16 @@ describe("createMemoryTools", () => {
       const registry = buildRegistry(providers);
       const { tools } = createMemoryTools(registry, { maxPerTurn: 2 });
       const readTool = tools.find((t) => t.name === "memory_read")!;
-      const ctx = { turnId: "t1", peer: { id: "op", kind: "human" as const, trustLevel: "creator" as const, sourceAugment: "test" }, threadId: "th1" };
+      const ctx = {
+        turnId: "t1",
+        peer: {
+          id: "op",
+          kind: "human" as const,
+          trustLevel: "creator" as const,
+          sourceAugment: "test",
+        },
+        threadId: "th1",
+      };
       await readTool.execute({ label: "self" }, ctx);
       await readTool.execute({ label: "self" }, ctx);
       const third = await readTool.execute({ label: "self" }, ctx);
@@ -657,8 +717,26 @@ describe("createMemoryTools", () => {
       const { tools } = createMemoryTools(registry, { maxPerTurn: 2 });
       const readTool = tools.find((t) => t.name === "memory_read")!;
 
-      const ctxA = { turnId: "turn-A", peer: { id: "op", kind: "human" as const, trustLevel: "creator" as const, sourceAugment: "test" }, threadId: "th1" };
-      const ctxB = { turnId: "turn-B", peer: { id: "op", kind: "human" as const, trustLevel: "creator" as const, sourceAugment: "test" }, threadId: "th1" };
+      const ctxA = {
+        turnId: "turn-A",
+        peer: {
+          id: "op",
+          kind: "human" as const,
+          trustLevel: "creator" as const,
+          sourceAugment: "test",
+        },
+        threadId: "th1",
+      };
+      const ctxB = {
+        turnId: "turn-B",
+        peer: {
+          id: "op",
+          kind: "human" as const,
+          trustLevel: "creator" as const,
+          sourceAugment: "test",
+        },
+        threadId: "th1",
+      };
 
       await readTool.execute({ label: "self" }, ctxA);
       await readTool.execute({ label: "self" }, ctxA);
@@ -683,7 +761,16 @@ describe("createMemoryTools", () => {
       const registry = buildRegistry(providers);
       const { tools } = createMemoryTools(registry, { maxPerTurn: 1 });
       const readTool = tools.find((t) => t.name === "memory_read")!;
-      const ctxOp = (turnId: string) => ({ turnId, peer: { id: "op", kind: "human" as const, trustLevel: "creator" as const, sourceAugment: "test" }, threadId: "th1" });
+      const ctxOp = (turnId: string) => ({
+        turnId,
+        peer: {
+          id: "op",
+          kind: "human" as const,
+          trustLevel: "creator" as const,
+          sourceAugment: "test",
+        },
+        threadId: "th1",
+      });
 
       await readTool.execute({ label: "self" }, ctxOp("turn-A"));
       const failA = await readTool.execute({ label: "self" }, ctxOp("turn-A"));
@@ -710,7 +797,16 @@ describe("createMemoryTools", () => {
       const registry = buildRegistry(providers);
       const { tools, onTurnEnd } = createMemoryTools(registry, { maxPerTurn: 2 });
       const readTool = tools.find((t) => t.name === "memory_read")!;
-      const ctx = { turnId: "turn-A", peer: { id: "op", kind: "human" as const, trustLevel: "creator" as const, sourceAugment: "test" }, threadId: "th1" };
+      const ctx = {
+        turnId: "turn-A",
+        peer: {
+          id: "op",
+          kind: "human" as const,
+          trustLevel: "creator" as const,
+          sourceAugment: "test",
+        },
+        threadId: "th1",
+      };
 
       await readTool.execute({ label: "self" }, ctx);
       await readTool.execute({ label: "self" }, ctx);
@@ -738,8 +834,26 @@ describe("createMemoryTools", () => {
       const { tools, onTurnEnd } = createMemoryTools(registry, { maxPerTurn: 2 });
       const readTool = tools.find((t) => t.name === "memory_read")!;
 
-      const ctxA = { turnId: "turn-A", peer: { id: "op", kind: "human" as const, trustLevel: "creator" as const, sourceAugment: "test" }, threadId: "th1" };
-      const ctxB = { turnId: "turn-B", peer: { id: "op", kind: "human" as const, trustLevel: "creator" as const, sourceAugment: "test" }, threadId: "th1" };
+      const ctxA = {
+        turnId: "turn-A",
+        peer: {
+          id: "op",
+          kind: "human" as const,
+          trustLevel: "creator" as const,
+          sourceAugment: "test",
+        },
+        threadId: "th1",
+      };
+      const ctxB = {
+        turnId: "turn-B",
+        peer: {
+          id: "op",
+          kind: "human" as const,
+          trustLevel: "creator" as const,
+          sourceAugment: "test",
+        },
+        threadId: "th1",
+      };
 
       await readTool.execute({ label: "self" }, ctxA);
       await readTool.execute({ label: "self" }, ctxA);

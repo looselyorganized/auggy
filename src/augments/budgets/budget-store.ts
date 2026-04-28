@@ -84,7 +84,11 @@ export interface BudgetStore {
    * Read-only accessor for context() preamble (Phase 1c). Returns current
    * usage so the BATS preamble can compute a budgetRatio.
    */
-  getPeerUsage(peerId: string, threadId: string, day?: string): Promise<{
+  getPeerUsage(
+    peerId: string,
+    threadId: string,
+    day?: string,
+  ): Promise<{
     thread: number;
     day: number;
     costUsd: number;
@@ -240,10 +244,7 @@ export function createBudgetStore(config: BudgetStoreConfig): BudgetStore {
     now: number,
   ): string | null {
     // 1. Anonymous global rate (rolling 60-second window)
-    if (
-      input.publicSubstate === "anonymous" &&
-      input.anonymousGlobalLimit !== undefined
-    ) {
+    if (input.publicSubstate === "anonymous" && input.anonymousGlobalLimit !== undefined) {
       const row = countAnonRequestsSinceStmt.get(now - 60_000);
       const count = row?.n ?? 0;
       if (count >= input.anonymousGlobalLimit) {
@@ -351,20 +352,29 @@ export function createBudgetStore(config: BudgetStoreConfig): BudgetStore {
       if (existingRow !== null) {
         // Row already committed on a prior prepare. Roll back (nothing new to commit).
         rollbackIfActive();
-        const allowed = existingRow.decision === "allow" ||
+        const allowed =
+          existingRow.decision === "allow" ||
           existingRow.decision === "allow:incomplete" ||
           existingRow.decision === "allow:orphaned";
         if (allowed) {
           return {
             decision: { allow: true },
-            confirm: async () => { /* already committed */ },
-            rollback: async () => { /* already committed */ },
+            confirm: async () => {
+              /* already committed */
+            },
+            rollback: async () => {
+              /* already committed */
+            },
           };
         }
         return {
           decision: { allow: false, reason: existingRow.reason ?? "denied" },
-          confirm: async () => { /* no-op */ },
-          rollback: async () => { /* no-op */ },
+          confirm: async () => {
+            /* no-op */
+          },
+          rollback: async () => {
+            /* no-op */
+          },
         };
       }
 
@@ -391,15 +401,12 @@ export function createBudgetStore(config: BudgetStoreConfig): BudgetStore {
         now,
         null, // committed_at
         null, // cost_usd
-        0,    // priced
+        0, // priced
         "allow",
         null, // reason
       );
 
-      if (
-        input.publicSubstate === "anonymous" &&
-        input.anonymousGlobalLimit !== undefined
-      ) {
+      if (input.publicSubstate === "anonymous" && input.anonymousGlobalLimit !== undefined) {
         insertAnonRequestStmt.run(now, null);
       }
 
@@ -424,11 +431,7 @@ export function createBudgetStore(config: BudgetStoreConfig): BudgetStore {
 
   // ── commit ───────────────────────────────────────────────
 
-  async function commit(
-    turnId: string,
-    peerId: string,
-    cost: CostResult,
-  ): Promise<void> {
+  async function commit(turnId: string, peerId: string, cost: CostResult): Promise<void> {
     const now = Date.now();
 
     const tx = db.transaction(() => {
@@ -478,9 +481,7 @@ export function createBudgetStore(config: BudgetStoreConfig): BudgetStore {
 
   // ── sweepIncompleteReservations ──────────────────────────
 
-  async function sweepIncompleteReservations(
-    opts?: { olderThanMs?: number },
-  ): Promise<number> {
+  async function sweepIncompleteReservations(opts?: { olderThanMs?: number }): Promise<number> {
     const windowMs = opts?.olderThanMs ?? cleanupWindowMs;
     const cutoff = Date.now() - windowMs;
     const result = sweepStmt.run(cutoff);

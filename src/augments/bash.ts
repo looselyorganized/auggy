@@ -16,11 +16,7 @@ export interface BashScript {
   timeout?: number;
 }
 
-export type BashRiskLevel =
-  | "scripts-only"
-  | "restricted"
-  | "standard"
-  | "unrestricted";
+export type BashRiskLevel = "scripts-only" | "restricted" | "standard" | "unrestricted";
 
 export interface BashAugmentOptions {
   /** Risk preset. Bundles mode, env, and allowlist defaults. Default: "restricted". */
@@ -92,9 +88,7 @@ const HARDCODED_BLOCKED = [
 ];
 
 /** Minimal env inherited when inheritEnv is false. */
-function sanitizedEnv(
-  extra: Record<string, string> = {},
-): Record<string, string> {
+function sanitizedEnv(extra: Record<string, string> = {}): Record<string, string> {
   const base: Record<string, string> = {};
   for (const key of ["PATH", "HOME", "USER", "LANG", "TERM", "SHELL"]) {
     if (process.env[key]) base[key] = process.env[key]!;
@@ -124,12 +118,27 @@ function resolvePreset(opts: BashAugmentOptions): ResolvedConfig {
 
   const presetDefaults: Record<
     BashRiskLevel,
-    { mode: "exec" | "shell"; shellExecEnabled: boolean; inheritEnv: boolean; requireAllowlist: boolean }
+    {
+      mode: "exec" | "shell";
+      shellExecEnabled: boolean;
+      inheritEnv: boolean;
+      requireAllowlist: boolean;
+    }
   > = {
-    "scripts-only": { mode: "exec", shellExecEnabled: false, inheritEnv: false, requireAllowlist: false },
+    "scripts-only": {
+      mode: "exec",
+      shellExecEnabled: false,
+      inheritEnv: false,
+      requireAllowlist: false,
+    },
     restricted: { mode: "exec", shellExecEnabled: true, inheritEnv: false, requireAllowlist: true },
     standard: { mode: "shell", shellExecEnabled: true, inheritEnv: false, requireAllowlist: false },
-    unrestricted: { mode: "shell", shellExecEnabled: true, inheritEnv: true, requireAllowlist: false },
+    unrestricted: {
+      mode: "shell",
+      shellExecEnabled: true,
+      inheritEnv: true,
+      requireAllowlist: false,
+    },
   };
 
   const preset = presetDefaults[risk];
@@ -197,9 +206,7 @@ async function executeCommand(opts: {
   const started = performance.now();
 
   const cmd =
-    opts.mode === "shell"
-      ? ["sh", "-c", opts.command]
-      : [opts.command, ...(opts.args ?? [])];
+    opts.mode === "shell" ? ["sh", "-c", opts.command] : [opts.command, ...(opts.args ?? [])];
 
   const proc = Bun.spawn(cmd, {
     cwd: opts.cwd,
@@ -271,7 +278,7 @@ function checkBlocked(command: string, blockedCommands: string[]): string | null
 
 function checkAllowed(
   command: string,
-  args: string[] | undefined,
+  _args: string[] | undefined,
   mode: "exec" | "shell",
   allowedCommands: string[] | null,
 ): string | null {
@@ -305,9 +312,7 @@ export function bash(opts: BashAugmentOptions = {}): Augment {
   for (const script of config.scripts) {
     const blocked = checkBlocked(script.command, config.blockedCommands);
     if (blocked) {
-      throw new Error(
-        `bash: script "${script.name}" contains a blocked command: ${blocked}`,
-      );
+      throw new Error(`bash: script "${script.name}" contains a blocked command: ${blocked}`);
     }
   }
 
@@ -334,21 +339,14 @@ export function bash(opts: BashAugmentOptions = {}): Augment {
       execute: async ({ command, args }) => {
         // Security checks
         const fullCommand =
-          config.mode === "exec" && args?.length
-            ? `${command} ${args.join(" ")}`
-            : command;
+          config.mode === "exec" && args?.length ? `${command} ${args.join(" ")}` : command;
 
         const blockedReason = checkBlocked(fullCommand, config.blockedCommands);
         if (blockedReason) {
           return JSON.stringify({ error: blockedReason, command: fullCommand });
         }
 
-        const allowedReason = checkAllowed(
-          command,
-          args,
-          config.mode,
-          config.allowedCommands,
-        );
+        const allowedReason = checkAllowed(command, args, config.mode, config.allowedCommands);
         if (allowedReason) {
           return JSON.stringify({ error: allowedReason, command });
         }
@@ -385,9 +383,7 @@ export function bash(opts: BashAugmentOptions = {}): Augment {
 
   if (config.scripts.length > 0) {
     const scriptMap = new Map(config.scripts.map((s) => [s.name, s]));
-    const scriptList = config.scripts
-      .map((s) => `- ${s.name}: ${s.description}`)
-      .join("\n");
+    const scriptList = config.scripts.map((s) => `- ${s.name}: ${s.description}`).join("\n");
 
     const runScriptTool = defineTool({
       name: "run_script",
@@ -412,9 +408,7 @@ export function bash(opts: BashAugmentOptions = {}): Augment {
           const result = await executeCommand({
             command: script.command,
             mode: "shell", // Scripts are operator-authored, shell is safe
-            cwd: script.workingDir
-              ? resolve(script.workingDir)
-              : config.workingDir,
+            cwd: script.workingDir ? resolve(script.workingDir) : config.workingDir,
             env: env as Record<string, string>,
             timeout: script.timeout ?? config.timeout,
             maxOutputBytes: config.maxOutputBytes,

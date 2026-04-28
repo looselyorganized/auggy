@@ -7,13 +7,7 @@ import type {
 } from "../types";
 import type { Tokenizer } from "../tokenizer";
 
-const PRIORITY_ORDER: ContextPriority[] = [
-  "required",
-  "high",
-  "normal",
-  "low",
-  "evictable",
-];
+const PRIORITY_ORDER: ContextPriority[] = ["required", "high", "normal", "low", "evictable"];
 
 export interface ContextAllocatorConfig {
   maxTokens: number;
@@ -33,12 +27,8 @@ export function createContextAllocator(config: ContextAllocatorConfig) {
       tools: ToolDefinition[],
       opts?: { toolChoice?: AssembledPrompt["toolChoice"] },
     ): AssembledPrompt {
-      const historyBudget = Math.floor(
-        config.maxTokens * (config.historyPercent / 100),
-      );
-      const toolBudget = Math.floor(
-        config.maxTokens * (config.toolSchemaPercent / 100),
-      );
+      const historyBudget = Math.floor(config.maxTokens * (config.historyPercent / 100));
+      const toolBudget = Math.floor(config.maxTokens * (config.toolSchemaPercent / 100));
 
       // Count actual tool schema tokens
       const toolSchemaTokens = tools.reduce((sum, t) => {
@@ -62,9 +52,7 @@ export function createContextAllocator(config: ContextAllocatorConfig) {
 
       // Sort by priority
       const sorted = [...augmentBlocks].sort(
-        (a, b) =>
-          PRIORITY_ORDER.indexOf(a.priority) -
-          PRIORITY_ORDER.indexOf(b.priority),
+        (a, b) => PRIORITY_ORDER.indexOf(a.priority) - PRIORITY_ORDER.indexOf(b.priority),
       );
 
       // Allocate context blocks by priority
@@ -95,9 +83,11 @@ export function createContextAllocator(config: ContextAllocatorConfig) {
         if (block.visibility === "pipeline-only") continue;
 
         const originMarker =
-          block.origin === "peer-derived" ? " [PEER-DERIVED]" :
-          block.origin === "agent" ? " [AGENT-DERIVED]" :
-          "";
+          block.origin === "peer-derived"
+            ? " [PEER-DERIVED]"
+            : block.origin === "agent"
+              ? " [AGENT-DERIVED]"
+              : "";
         const wrapped = `[AUGMENT CONTEXT: ${block.source}]${originMarker}\n${block.content}`;
 
         if (block.placement === "system") {
@@ -109,16 +99,14 @@ export function createContextAllocator(config: ContextAllocatorConfig) {
         }
       }
 
-      const historyTokens = history.reduce(
-        (sum, m) => sum + m.tokenCount,
-        0,
-      );
+      const historyTokens = history.reduce((sum, m) => sum + m.tokenCount, 0);
       const totalTokens = preambleTokens + contextUsed + historyTokens + toolSchemaTokens;
 
       return {
         systemBlocks,
         contextBlocks: contextStrings,
-        assistantPreamble: assistantPreambleStrings.length > 0 ? assistantPreambleStrings : undefined,
+        assistantPreamble:
+          assistantPreambleStrings.length > 0 ? assistantPreambleStrings : undefined,
         messages: history,
         tools,
         toolChoice: opts?.toolChoice,

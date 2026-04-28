@@ -348,9 +348,6 @@ export function getAvailableAugments(
   installed: Array<{ type: string; name: string }>,
 ): CatalogEntry[] {
   return AUGMENT_CATALOG.filter(
-    (entry) =>
-      !installed.some(
-        (i) => i.type === entry.type && i.name === entry.defaultName,
-      ),
+    (entry) => !installed.some((i) => i.type === entry.type && i.name === entry.defaultName),
   );
 }

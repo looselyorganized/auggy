@@ -92,10 +92,7 @@ export function createMockTransport(): {
     transport,
   };
 
-  async function sendMessage(
-    text: string,
-    peer?: PeerIdentity,
-  ): Promise<TurnResult> {
+  async function sendMessage(text: string, peer?: PeerIdentity): Promise<TurnResult> {
     if (!kernel) throw new Error("Transport not registered");
     const p = peer ?? defaultPeer;
     const trigger: TurnTrigger = {

@@ -12,10 +12,7 @@ const defaults: MemoryDefaults = {
 
 describe("wireMemoryBus", () => {
   it("returns augments unchanged when none are memory providers", () => {
-    const augments: Augment[] = [
-      { name: "a" },
-      { name: "b", context: async () => [] },
-    ];
+    const augments: Augment[] = [{ name: "a" }, { name: "b", context: async () => [] }];
     const wiring = wireMemoryBus(augments);
     expect(wiring.augmentsWithSynthesizedContext).toEqual(augments);
     expect(wiring.syntheticToolsAugment).toBeNull();
@@ -51,9 +48,7 @@ describe("wireMemoryBus", () => {
       },
     ];
     const wiring = wireMemoryBus(providers);
-    expect(wiring.augmentsWithSynthesizedContext[0]!.context).toBe(
-      customContext,
-    );
+    expect(wiring.augmentsWithSynthesizedContext[0]!.context).toBe(customContext);
   });
 
   it("creates a synthetic tools augment when providers exist", () => {
@@ -87,15 +82,11 @@ describe("wireMemoryBus", () => {
     ];
     // Default budget is 20
     const defaultWiring = wireMemoryBus(providers);
-    expect(
-      defaultWiring.syntheticToolsAugment!.constraints?.maxToolCallsPerTurn,
-    ).toBe(20);
+    expect(defaultWiring.syntheticToolsAugment!.constraints?.maxToolCallsPerTurn).toBe(20);
 
     // Custom budget is honored
     const customWiring = wireMemoryBus(providers, { maxPerTurn: 7 });
-    expect(
-      customWiring.syntheticToolsAugment!.constraints?.maxToolCallsPerTurn,
-    ).toBe(7);
+    expect(customWiring.syntheticToolsAugment!.constraints?.maxToolCallsPerTurn).toBe(7);
   });
 
   it("builds the registry from all memory providers", () => {

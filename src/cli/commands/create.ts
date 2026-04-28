@@ -9,9 +9,9 @@
  *   4. Scaffold directory, agent.yaml, identity.md, skills, .env.example
  */
 
-import { existsSync, mkdirSync, writeFileSync, cpSync } from "fs";
-import { join, resolve } from "path";
-import { randomUUID } from "crypto";
+import { existsSync, mkdirSync, writeFileSync, cpSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { randomUUID } from "node:crypto";
 import { checkbox, select, input } from "@inquirer/prompts";
 import { stringify } from "yaml";
 import { AUGMENT_CATALOG, type CatalogEntry } from "../augment-catalog";
@@ -31,17 +31,13 @@ const PROVIDER_DEFAULTS: Record<Provider, { model: string; envVar: string }> = {
 // ANSI color helpers. Truecolor #FBF7EB ("cream") matches the facility palette.
 // Strips to plain text when stdout is not a TTY so piped output stays clean.
 const IS_TTY = Boolean(process.stdout.isTTY);
-const ansi = (code: string, s: string): string =>
-  IS_TTY ? `\x1b[${code}m${s}\x1b[0m` : s;
+const ansi = (code: string, s: string): string => (IS_TTY ? `\x1b[${code}m${s}\x1b[0m` : s);
 const bold = (s: string): string => ansi("1", s);
 const dim = (s: string): string => ansi("2", s);
 const cream = (s: string): string => ansi("38;2;251;247;235", s);
 const green = (s: string): string => ansi("32", s);
 
-export async function runCreate(
-  name: string,
-  opts: { dir?: string },
-): Promise<void> {
+export async function runCreate(name: string, opts: { dir?: string }): Promise<void> {
   const dir = resolve(opts.dir ?? `./${name}`);
 
   if (existsSync(dir)) {
@@ -99,9 +95,7 @@ export async function runCreate(
   console.log();
   for (const entry of augments) {
     installAugmentSkill(entry, dir);
-    console.log(
-      `   ${green("\u2713")} ${cream(entry.defaultName)} ${dim(`(${entry.type})`)}`,
-    );
+    console.log(`   ${green("\u2713")} ${cream(entry.defaultName)} ${dim(`(${entry.type})`)}`);
   }
 
   // Copy built-in filesystem skill if available and filesystem is selected.
@@ -138,9 +132,7 @@ export async function runCreate(
   console.log();
   console.log(dim(" ─────────────────────────────────────────────"));
   console.log();
-  console.log(
-    ` ${green("\u2713")} ${bold(cream(`Agent "${name}" created`))}`,
-  );
+  console.log(` ${green("\u2713")} ${bold(cream(`Agent "${name}" created`))}`);
   console.log(`   ${dim(dir)}`);
   console.log();
   console.log(` ${bold("Next steps:")}`);
@@ -169,9 +161,7 @@ function printWelcome(): void {
   console.log();
   for (const line of banner) console.log(cream(line));
   console.log();
-  console.log(
-    ` ${bold("augment-1")}  ${dim("·  by the Loosely Organized Research Facility")}`,
-  );
+  console.log(` ${bold("augment-1")}  ${dim("·  by the Loosely Organized Research Facility")}`);
   console.log();
   console.log(" Auggy is a modular agent runtime. Agents are composed from");
   console.log(" swappable augments — the kernel manages context, tools,");
@@ -181,12 +171,8 @@ function printWelcome(): void {
   console.log();
   console.log(" Let's configure your agent. Start by picking an engine.");
   console.log();
-  console.log(
-    dim(" The engine is the LLM provider the kernel calls each turn —"),
-  );
-  console.log(
-    dim(" one per agent (Anthropic, OpenAI, OpenRouter). Augments plug in"),
-  );
+  console.log(dim(" The engine is the LLM provider the kernel calls each turn —"));
+  console.log(dim(" one per agent (Anthropic, OpenAI, OpenRouter). Augments plug in"));
   console.log(dim(" around it. Both are swappable later in agent.yaml."));
   console.log();
 }
@@ -196,9 +182,7 @@ function installAugmentSkill(entry: CatalogEntry, agentDir: string): void {
 
   // Derive skill directory name from the type.
   const skillDirName =
-    entry.type === "fileMemory" ? "memory" :
-    entry.type === "webFetch" ? "web-fetch" :
-    entry.type;
+    entry.type === "fileMemory" ? "memory" : entry.type === "webFetch" ? "web-fetch" : entry.type;
 
   const skillDir = join(agentDir, "skills", skillDirName);
   mkdirSync(skillDir, { recursive: true });
@@ -249,10 +233,7 @@ ${skillManifest}
 `;
 }
 
-function collectEnvVars(
-  augments: CatalogEntry[],
-  provider: Provider,
-): string[] {
+function collectEnvVars(augments: CatalogEntry[], provider: Provider): string[] {
   const vars = new Set<string>([PROVIDER_DEFAULTS[provider].envVar]);
   for (const entry of augments) {
     if (entry.envVars) {
@@ -263,15 +244,11 @@ function collectEnvVars(
 }
 
 function buildEnvExample(vars: string[]): string {
-  const lines = [
-    "# Agent secrets — copy to .env and fill in values.",
-    "# .env is gitignored.",
-    "",
-  ];
+  const lines = ["# Agent secrets — copy to .env and fill in values.", "# .env is gitignored.", ""];
   for (const v of vars) {
     lines.push(`${v}=`);
   }
-  return lines.join("\n") + "\n";
+  return `${lines.join("\n")}\n`;
 }
 
 const GITIGNORE = `.env

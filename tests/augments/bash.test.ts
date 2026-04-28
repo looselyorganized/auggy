@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { writeFileSync, mkdirSync, rmSync, chmodSync } from "node:fs";
+import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { bash } from "@/augments/bash";
 import { createCapabilityTable } from "@/kernel/capability-table";
@@ -171,9 +171,7 @@ describe("shell_exec execution", () => {
     });
     const tool = getTool(aug, "shell_exec");
     // In exec mode, semicolons are NOT interpreted as command separators
-    const result = JSON.parse(
-      await tool.execute({ command: "echo", args: ["hello; ls"] }),
-    );
+    const result = JSON.parse(await tool.execute({ command: "echo", args: ["hello; ls"] }));
     expect(result.stdout.trim()).toBe("hello; ls"); // literal, not executed
     expect(result.exitCode).toBe(0);
   });
@@ -185,9 +183,7 @@ describe("shell_exec execution", () => {
       maxOutputBytes: 50,
     });
     const tool = getTool(aug, "shell_exec");
-    const result = JSON.parse(
-      await tool.execute({ command: "yes hello | head -100" }),
-    );
+    const result = JSON.parse(await tool.execute({ command: "yes hello | head -100" }));
     expect(result.truncated).toBe(true);
     expect(result.stdout).toContain("[truncated at 50 bytes]");
   });
@@ -226,9 +222,7 @@ describe("bash security", () => {
       blockedCommands: ["my-dangerous-cmd"],
     });
     const tool = getTool(aug, "shell_exec");
-    const result = JSON.parse(
-      await tool.execute({ command: "my-dangerous-cmd --flag" }),
-    );
+    const result = JSON.parse(await tool.execute({ command: "my-dangerous-cmd --flag" }));
     expect(result.error).toMatch(/blocked/i);
   });
 
@@ -308,7 +302,7 @@ describe("bash security", () => {
       allowedCommands: ["echo"],
       workingDir: tmpDir,
     });
-    const tool = getTool(aug, "shell_exec");
+    const _tool = getTool(aug, "shell_exec");
     // This should be safe — exec mode passes $(...) literally
     // Verify the augment was created (the mode forcing happens at config time)
     expect(aug.tools).toHaveLength(1);
@@ -321,13 +315,11 @@ describe("bash security", () => {
       workingDir: tmpDir,
     });
     const tool = getTool(aug, "shell_exec");
-    const result = JSON.parse(
-      await tool.execute({ command: "echo", args: ["$(whoami)"] }),
-    );
+    const result = JSON.parse(await tool.execute({ command: "echo", args: ["$(whoami)"] }));
     expect(result.stdout.trim()).toBe("$(whoami)"); // literal, not expanded
   });
 
-  it("C2: blocks rm -rf with quotes (rm -rf \"/\")", async () => {
+  it('C2: blocks rm -rf with quotes (rm -rf "/")', async () => {
     const aug = bash({ risk: "standard", workingDir: tmpDir });
     const tool = getTool(aug, "shell_exec");
     const result = JSON.parse(await tool.execute({ command: 'rm -rf "/"' }));
@@ -354,7 +346,7 @@ describe("bash security", () => {
     const start = performance.now();
     // `cat` with no arguments reads from stdin. With stdin: "ignore", it
     // should get immediate EOF and exit instead of hanging until timeout.
-    const result = JSON.parse(await tool.execute({ command: "cat" }));
+    const _result = JSON.parse(await tool.execute({ command: "cat" }));
     const elapsed = performance.now() - start;
     // The key assertion: should finish near-instantly, NOT wait for timeout
     expect(elapsed).toBeLessThan(1500);
@@ -364,9 +356,7 @@ describe("bash security", () => {
     expect(() =>
       bash({
         risk: "scripts-only",
-        scripts: [
-          { name: "danger", description: "bad", command: "rm -rf /" },
-        ],
+        scripts: [{ name: "danger", description: "bad", command: "rm -rf /" }],
       }),
     ).toThrow(/blocked command/i);
   });
@@ -381,9 +371,7 @@ describe("run_script", () => {
     const aug = bash({
       risk: "scripts-only",
       workingDir: tmpDir,
-      scripts: [
-        { name: "greet", description: "Say hello", command: "echo hello from script" },
-      ],
+      scripts: [{ name: "greet", description: "Say hello", command: "echo hello from script" }],
     });
     const tool = getTool(aug, "run_script");
     const result = JSON.parse(await tool.execute({ name: "greet" }));
@@ -396,9 +384,7 @@ describe("run_script", () => {
     const aug = bash({
       risk: "scripts-only",
       workingDir: tmpDir,
-      scripts: [
-        { name: "greet", description: "Say hello", command: "echo hi" },
-      ],
+      scripts: [{ name: "greet", description: "Say hello", command: "echo hi" }],
     });
     const tool = getTool(aug, "run_script");
     const result = JSON.parse(await tool.execute({ name: "nonexistent" }));
@@ -428,9 +414,7 @@ describe("run_script", () => {
       risk: "scripts-only",
       workingDir: tmpDir,
       timeout: 60000, // augment default: generous
-      scripts: [
-        { name: "slow", description: "Slow", command: "sleep 60", timeout: 500 },
-      ],
+      scripts: [{ name: "slow", description: "Slow", command: "sleep 60", timeout: 500 }],
     });
     const tool = getTool(aug, "run_script");
     const start = performance.now();

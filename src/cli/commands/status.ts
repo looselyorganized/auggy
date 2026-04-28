@@ -6,7 +6,6 @@
  */
 
 import { listPidManifests, readPidManifest, isProcessAlive } from "../pid-registry";
-import type { PidManifest } from "../types";
 
 function formatUptime(startedAt: string): string {
   const ms = Date.now() - new Date(startedAt).getTime();

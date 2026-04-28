@@ -5,10 +5,7 @@ export class TimeoutError extends Error {
   }
 }
 
-export async function withTimeout<T>(
-  fn: () => Promise<T>,
-  ms: number,
-): Promise<T> {
+export async function withTimeout<T>(fn: () => Promise<T>, ms: number): Promise<T> {
   let timerId: ReturnType<typeof setTimeout> | undefined;
 
   const timeoutPromise = new Promise<never>((_, reject) => {

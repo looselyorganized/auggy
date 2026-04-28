@@ -17,10 +17,7 @@ export interface CapabilityTable {
     toolName: string,
     input: unknown,
     turn: TurnState,
-  ):
-    | { allowed: true }
-    | { needsApproval: true; reason: string }
-    | { denied: true; reason: string };
+  ): { allowed: true } | { needsApproval: true; reason: string } | { denied: true; reason: string };
   recordToolCall(toolName: string): void;
   resetTurn(): void;
 }

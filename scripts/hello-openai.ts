@@ -23,12 +23,7 @@
  * Stop with Ctrl-C.
  */
 import { join } from "node:path";
-import {
-  defineAgent,
-  fileMemory,
-  webTransport,
-  createOpenAIEngine,
-} from "../src/index";
+import { defineAgent, fileMemory, webTransport, createOpenAIEngine } from "../src/index";
 
 const apiKey = process.env.OPENAI_API_KEY;
 if (!apiKey) {

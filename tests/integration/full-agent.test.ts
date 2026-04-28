@@ -1,12 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import {
-  defineAgent,
-  fileMemory,
-  supabaseMemory,
-  webTransport,
-} from "@/index";
+import { defineAgent, fileMemory, supabaseMemory, webTransport } from "@/index";
 import { createMockModel } from "@tests/fixtures/mock-model";
 import { createMockSupabase } from "@tests/fixtures/mock-supabase";
 import { createTempDir } from "@tests/fixtures/temp-dir";
@@ -31,11 +26,7 @@ describe("full agent integration", () => {
   it("serves an AG-UI turn end-to-end with identity + episodic memory wired up", async () => {
     // --- identity memory (static) ---
     const soulPath = join(tmp.path, "zip.md");
-    await writeFile(
-      soulPath,
-      "You are Zip, the LORF front-door agent. Be concise.",
-      "utf-8",
-    );
+    await writeFile(soulPath, "You are Zip, the LORF front-door agent. Be concise.", "utf-8");
     const identity = fileMemory({
       label: "self",
       source: soulPath,
@@ -91,9 +82,7 @@ describe("full agent integration", () => {
 
     try {
       // --- agent card is served from the config ---
-      const cardResp = await fetch(
-        `http://localhost:${port}/.well-known/agent-card.json`,
-      );
+      const cardResp = await fetch(`http://localhost:${port}/.well-known/agent-card.json`);
       expect(cardResp.status).toBe(200);
       const card = (await cardResp.json()) as {
         provider: { name: string };
@@ -127,15 +116,11 @@ describe("full agent integration", () => {
           "x-peer-name": "Anonymous Visitor",
         },
         body: JSON.stringify({
-          messages: [
-            { role: "user", content: "are you open today?" },
-          ],
+          messages: [{ role: "user", content: "are you open today?" }],
         }),
       });
       expect(runResp.status).toBe(200);
-      expect(runResp.headers.get("content-type")).toContain(
-        "text/event-stream",
-      );
+      expect(runResp.headers.get("content-type")).toContain("text/event-stream");
 
       const body = await runResp.text();
       const events = body
@@ -167,9 +152,7 @@ describe("full agent integration", () => {
       expect(model.calls.length).toBeGreaterThan(0);
       const firstPrompt = model.calls[0]!;
       const systemText = firstPrompt.systemBlocks.join("\n");
-      expect(systemText).toContain(
-        "You are Zip, the LORF front-door agent.",
-      );
+      expect(systemText).toContain("You are Zip, the LORF front-door agent.");
 
       // --- episodic memory search ran on this turn ---
       // The mock's ILIKE is substring-only and the user's message shares
@@ -203,8 +186,7 @@ describe("full agent integration", () => {
     const supabase = createMockSupabase();
     await supabase.from("agent_memories").insert({
       label: "episode:2026-04-01-001",
-      content:
-        "visitor asked about coffee brewing setup in the facility kitchen",
+      content: "visitor asked about coffee brewing setup in the facility kitchen",
       created_at: "2026-04-01T09:00:00Z",
     });
     const episodic = supabaseMemory({

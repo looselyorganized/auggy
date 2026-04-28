@@ -6,8 +6,8 @@
  * launchd handles daemonization and restart.
  */
 
-import { mkdirSync, symlinkSync, unlinkSync, writeFileSync } from "fs";
-import { dirname, resolve } from "path";
+import { mkdirSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import { $ } from "bun";
 import { parseConfig } from "../config-parser";
 import {
@@ -28,10 +28,7 @@ function resolveCliEntryPoint(): string {
   return resolve(import.meta.dir, "../index.ts");
 }
 
-export async function runStart(
-  name: string,
-  opts: { config?: string },
-): Promise<void> {
+export async function runStart(name: string, opts: { config?: string }): Promise<void> {
   const configPath = resolveConfigPath(name, opts.config);
   const agentDir = dirname(configPath);
 
@@ -41,9 +38,7 @@ export async function runStart(
 
   // Check if already running.
   if (!tryClaimName(agentName)) {
-    throw new Error(
-      `Agent "${agentName}" is already running. Use "aug1 stop ${agentName}" first.`,
-    );
+    throw new Error(`Agent "${agentName}" is already running. Use "aug1 stop ${agentName}" first.`);
   }
 
   // Unload existing plist if present.
@@ -58,8 +53,12 @@ export async function runStart(
 
   // Clean up old plist files.
   const storePath = plistStorePath(agentName);
-  try { unlinkSync(installPath); } catch {}
-  try { unlinkSync(storePath); } catch {}
+  try {
+    unlinkSync(installPath);
+  } catch {}
+  try {
+    unlinkSync(storePath);
+  } catch {}
 
   // Generate plist.
   const plist = generatePlist({

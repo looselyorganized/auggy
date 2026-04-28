@@ -80,11 +80,10 @@ describe("priceOpenRouterResponse — slug routing path", () => {
   it("prices anthropic/* slug via anthropic pricing module", () => {
     // anthropic/claude-sonnet-4-6: $3.00/Mtok in, $15.00/Mtok out
     // 200 in + 100 out → 0.0006 + 0.0015 = 0.0021 USD
-    const result = priceOpenRouterResponse(
-      "anthropic/claude-sonnet-4-6",
-      undefined,
-      { prompt_tokens: 200, completion_tokens: 100 },
-    );
+    const result = priceOpenRouterResponse("anthropic/claude-sonnet-4-6", undefined, {
+      prompt_tokens: 200,
+      completion_tokens: 100,
+    });
     expect(result.priced).toBe(true);
     if (result.priced) expect(result.costUsd).toBeCloseTo(0.0021, 8);
   });
@@ -92,21 +91,19 @@ describe("priceOpenRouterResponse — slug routing path", () => {
   it("prices openai/* slug via openai pricing module", () => {
     // openai/gpt-5: $5.00/Mtok in, $20.00/Mtok out
     // 400 in + 200 out → 0.002 + 0.004 = 0.006 USD
-    const result = priceOpenRouterResponse(
-      "openai/gpt-5",
-      undefined,
-      { prompt_tokens: 400, completion_tokens: 200 },
-    );
+    const result = priceOpenRouterResponse("openai/gpt-5", undefined, {
+      prompt_tokens: 400,
+      completion_tokens: 200,
+    });
     expect(result.priced).toBe(true);
     if (result.priced) expect(result.costUsd).toBeCloseTo(0.006, 8);
   });
 
   it("returns unpriced for unknown provider slug", () => {
-    const result = priceOpenRouterResponse(
-      "qwen/qwen3.5-397b-a17b",
-      undefined,
-      { prompt_tokens: 100, completion_tokens: 50 },
-    );
+    const result = priceOpenRouterResponse("qwen/qwen3.5-397b-a17b", undefined, {
+      prompt_tokens: 100,
+      completion_tokens: 50,
+    });
     expect(result.priced).toBe(false);
     if (!result.priced) {
       expect(result.reason).toContain("anthropic/* and openai/* only");
@@ -114,11 +111,10 @@ describe("priceOpenRouterResponse — slug routing path", () => {
   });
 
   it("returns unpriced for slug with no slash (no table)", () => {
-    const result = priceOpenRouterResponse(
-      "somemodel",
-      undefined,
-      { prompt_tokens: 100, completion_tokens: 50 },
-    );
+    const result = priceOpenRouterResponse("somemodel", undefined, {
+      prompt_tokens: 100,
+      completion_tokens: 50,
+    });
     expect(result.priced).toBe(false);
     if (!result.priced) {
       expect(result.reason).toContain("anthropic/* and openai/* only");
@@ -126,11 +122,10 @@ describe("priceOpenRouterResponse — slug routing path", () => {
   });
 
   it("returns unpriced for anthropic/* with unknown model tail", () => {
-    const result = priceOpenRouterResponse(
-      "anthropic/claude-future-99",
-      undefined,
-      { prompt_tokens: 100, completion_tokens: 50 },
-    );
+    const result = priceOpenRouterResponse("anthropic/claude-future-99", undefined, {
+      prompt_tokens: 100,
+      completion_tokens: 50,
+    });
     expect(result.priced).toBe(false);
   });
 });

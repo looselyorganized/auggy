@@ -200,10 +200,7 @@ export function createHttpClient(opts: HttpClientOptions = {}): HttpClient {
   const maxBodyBytes = opts.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
   const ssrfGuard = opts.rejectUnsafeUrls ?? false;
 
-  const request = async (
-    url: string,
-    init: HttpRequestInit = {},
-  ): Promise<HttpResponse> => {
+  const request = async (url: string, init: HttpRequestInit = {}): Promise<HttpResponse> => {
     const method = (init.method ?? "GET").toUpperCase();
     const currentHeaders: Record<string, string> = {
       "user-agent": userAgent,
@@ -234,10 +231,7 @@ export function createHttpClient(opts: HttpClientOptions = {}): HttpClient {
           redirect: "manual",
           signal: controller.signal,
           headers: currentHeaders,
-          body:
-            currentMethod === "GET" || currentMethod === "HEAD"
-              ? undefined
-              : currentBody,
+          body: currentMethod === "GET" || currentMethod === "HEAD" ? undefined : currentBody,
         });
 
         if (response.status >= 300 && response.status < 400) {
@@ -261,19 +255,13 @@ export function createHttpClient(opts: HttpClientOptions = {}): HttpClient {
           if (ssrfGuard) {
             const reason = rejectUnsafeUrl(currentUrl);
             if (reason) {
-              throw new Error(
-                `http client: unsafe redirect target ${currentUrl} (${reason})`,
-              );
+              throw new Error(`http client: unsafe redirect target ${currentUrl} (${reason})`);
             }
           }
 
           // Per RFC 7231: 301/302/303 change the method to GET and drop the body.
           // 307/308 preserve the method and body.
-          if (
-            response.status === 301 ||
-            response.status === 302 ||
-            response.status === 303
-          ) {
+          if (response.status === 301 || response.status === 302 || response.status === 303) {
             currentMethod = "GET";
             currentBody = undefined;
           }
@@ -303,10 +291,8 @@ export function createHttpClient(opts: HttpClientOptions = {}): HttpClient {
     }
   };
 
-  const get = (
-    url: string,
-    init: Omit<HttpRequestInit, "method" | "body"> = {},
-  ) => request(url, { ...init, method: "GET" });
+  const get = (url: string, init: Omit<HttpRequestInit, "method" | "body"> = {}) =>
+    request(url, { ...init, method: "GET" });
 
   const post = (url: string, init: Omit<HttpRequestInit, "method"> = {}) =>
     request(url, { ...init, method: "POST" });
@@ -317,10 +303,8 @@ export function createHttpClient(opts: HttpClientOptions = {}): HttpClient {
   const del = (url: string, init: Omit<HttpRequestInit, "method"> = {}) =>
     request(url, { ...init, method: "DELETE" });
 
-  const head = (
-    url: string,
-    init: Omit<HttpRequestInit, "method" | "body"> = {},
-  ) => request(url, { ...init, method: "HEAD" });
+  const head = (url: string, init: Omit<HttpRequestInit, "method" | "body"> = {}) =>
+    request(url, { ...init, method: "HEAD" });
 
   return { request, get, post, put, delete: del, head };
 }
@@ -383,16 +367,15 @@ async function readBody(response: Response, maxBytes: number): Promise<string> {
   if (truncated) {
     const contentLength = response.headers.get("content-length");
     const totalSize = contentLength ? ` total size: ${contentLength} bytes` : "";
-    return text.replace(/\[truncated at \d+ bytes\]$/, `[truncated at ${maxBytes} bytes${totalSize}]`);
+    return text.replace(
+      /\[truncated at \d+ bytes\]$/,
+      `[truncated at ${maxBytes} bytes${totalSize}]`,
+    );
   }
   return text;
 }
 
-function buildResponse(
-  finalUrl: string,
-  response: Response,
-  body: string,
-): HttpResponse {
+function buildResponse(finalUrl: string, response: Response, body: string): HttpResponse {
   return {
     finalUrl,
     status: response.status,

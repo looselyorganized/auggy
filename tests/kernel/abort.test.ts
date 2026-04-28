@@ -41,11 +41,9 @@ describe("AbortSignal support", () => {
       config: { name: "test", model: "mock", augments: [] },
     });
 
-    const result = await loop.executeTurn(
-      makeTrigger("Hi"),
-      "thread-abort-1",
-      { signal: abortController.signal },
-    );
+    const result = await loop.executeTurn(makeTrigger("Hi"), "thread-abort-1", {
+      signal: abortController.signal,
+    });
 
     expect(result.success).toBe(false);
     expect(result.error?.message).toContain("abort");
@@ -89,11 +87,9 @@ describe("AbortSignal support", () => {
       config: { name: "test", model: "mock", augments: [] },
     });
 
-    const result = await loop.executeTurn(
-      makeTrigger("Go"),
-      "thread-abort-2",
-      { signal: abortController.signal },
-    );
+    const _result = await loop.executeTurn(makeTrigger("Go"), "thread-abort-2", {
+      signal: abortController.signal,
+    });
 
     // Turn should complete with whatever it has (tool executed, but loop stops)
     // The key assertion: model is NOT called a second time after the abort

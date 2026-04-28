@@ -6,8 +6,8 @@ import {
   plistInstallPath,
   logDir,
 } from "../../src/cli/plist-generator";
-import { homedir } from "os";
-import { join } from "path";
+import { homedir } from "node:os";
+import { join } from "node:path";
 
 describe("plist naming", () => {
   test("plistLabel produces com.aug1.agent.<name>", () => {
@@ -54,9 +54,7 @@ describe("generatePlist", () => {
     expect(plist).toContain("<string>dev</string>");
     expect(plist).toContain("<string>zip</string>");
     expect(plist).toContain("<string>--config</string>");
-    expect(plist).toContain(
-      "<string>/Users/test/agents/zip/agent.yaml</string>",
-    );
+    expect(plist).toContain("<string>/Users/test/agents/zip/agent.yaml</string>");
   });
 
   test("sets KeepAlive to true", () => {
@@ -80,9 +78,7 @@ describe("generatePlist", () => {
   });
 
   test("sets working directory to agent dir", () => {
-    expect(plist).toContain(
-      "<string>/Users/test/agents/zip</string>",
-    );
+    expect(plist).toContain("<string>/Users/test/agents/zip</string>");
   });
 
   test("includes bun in PATH", () => {

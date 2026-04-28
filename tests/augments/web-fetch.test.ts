@@ -55,10 +55,9 @@ function startTestServer() {
       }
 
       if (path === "/json-api-plus") {
-        return new Response(
-          JSON.stringify({ data: "test" }),
-          { headers: { "content-type": "application/vnd.api+json" } },
-        );
+        return new Response(JSON.stringify({ data: "test" }), {
+          headers: { "content-type": "application/vnd.api+json" },
+        });
       }
 
       if (path === "/plain-text") {
@@ -102,27 +101,19 @@ function getWebFetchTool() {
 
 describe("normalizeFetchUrl", () => {
   test("upgrades http to https for non-localhost", () => {
-    expect(normalizeFetchUrl("http://example.com/page")).toBe(
-      "https://example.com/page",
-    );
+    expect(normalizeFetchUrl("http://example.com/page")).toBe("https://example.com/page");
   });
 
   test("preserves http for localhost", () => {
-    expect(normalizeFetchUrl("http://localhost:3000/api")).toBe(
-      "http://localhost:3000/api",
-    );
+    expect(normalizeFetchUrl("http://localhost:3000/api")).toBe("http://localhost:3000/api");
   });
 
   test("preserves http for 127.0.0.1", () => {
-    expect(normalizeFetchUrl("http://127.0.0.1:8080/")).toBe(
-      "http://127.0.0.1:8080/",
-    );
+    expect(normalizeFetchUrl("http://127.0.0.1:8080/")).toBe("http://127.0.0.1:8080/");
   });
 
   test("preserves https urls unchanged", () => {
-    expect(normalizeFetchUrl("https://example.com/")).toBe(
-      "https://example.com/",
-    );
+    expect(normalizeFetchUrl("https://example.com/")).toBe("https://example.com/");
   });
 });
 

@@ -1,12 +1,38 @@
-import { type Pricing, type CostResult, type PricingFreshness, computeCostUsd, freshness } from "../_shared/cost";
+import {
+  type Pricing,
+  type CostResult,
+  type PricingFreshness,
+  computeCostUsd,
+  freshness,
+} from "../_shared/cost";
 
 // USD per million tokens. Update via PR when Anthropic changes pricing.
 // Cache rates: write = 1.25× input, read = 0.1× input (per Anthropic docs).
 const TABLE: Record<string, Pricing> = {
-  "claude-opus-4-7":   { inputUsdPerMtok: 15.0, outputUsdPerMtok: 75.0, cacheWriteUsdPerMtok: 18.75, cacheReadUsdPerMtok: 1.5 },
-  "claude-opus-4-6":   { inputUsdPerMtok: 15.0, outputUsdPerMtok: 75.0, cacheWriteUsdPerMtok: 18.75, cacheReadUsdPerMtok: 1.5 },
-  "claude-sonnet-4-6": { inputUsdPerMtok: 3.0,  outputUsdPerMtok: 15.0, cacheWriteUsdPerMtok: 3.75,  cacheReadUsdPerMtok: 0.3 },
-  "claude-haiku-4-5":  { inputUsdPerMtok: 0.8,  outputUsdPerMtok: 4.0,  cacheWriteUsdPerMtok: 1.0,   cacheReadUsdPerMtok: 0.08 },
+  "claude-opus-4-7": {
+    inputUsdPerMtok: 15.0,
+    outputUsdPerMtok: 75.0,
+    cacheWriteUsdPerMtok: 18.75,
+    cacheReadUsdPerMtok: 1.5,
+  },
+  "claude-opus-4-6": {
+    inputUsdPerMtok: 15.0,
+    outputUsdPerMtok: 75.0,
+    cacheWriteUsdPerMtok: 18.75,
+    cacheReadUsdPerMtok: 1.5,
+  },
+  "claude-sonnet-4-6": {
+    inputUsdPerMtok: 3.0,
+    outputUsdPerMtok: 15.0,
+    cacheWriteUsdPerMtok: 3.75,
+    cacheReadUsdPerMtok: 0.3,
+  },
+  "claude-haiku-4-5": {
+    inputUsdPerMtok: 0.8,
+    outputUsdPerMtok: 4.0,
+    cacheWriteUsdPerMtok: 1.0,
+    cacheReadUsdPerMtok: 0.08,
+  },
 };
 
 const VERIFIED_AT = "2026-04-27";
@@ -51,14 +77,21 @@ export function priceAnthropicResponse(
   // Discriminator gate: TTL breakdown present → unpriced.
   if (
     usage.cache_creation &&
-    (usage.cache_creation.ephemeral_5m_input_tokens || usage.cache_creation.ephemeral_1h_input_tokens)
+    (usage.cache_creation.ephemeral_5m_input_tokens ||
+      usage.cache_creation.ephemeral_1h_input_tokens)
   ) {
-    return { priced: false, reason: "anthropic: cache_creation TTL breakdown not modeled in v0 pricing" };
+    return {
+      priced: false,
+      reason: "anthropic: cache_creation TTL breakdown not modeled in v0 pricing",
+    };
   }
 
   // Discriminator gate: non-standard service tier → unpriced.
   if (usage.service_tier && usage.service_tier !== "standard") {
-    return { priced: false, reason: `anthropic: service_tier=${usage.service_tier} not modeled in v0 pricing` };
+    return {
+      priced: false,
+      reason: `anthropic: service_tier=${usage.service_tier} not modeled in v0 pricing`,
+    };
   }
 
   const rates = override ?? lookup(model);

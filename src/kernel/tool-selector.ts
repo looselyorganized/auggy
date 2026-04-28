@@ -16,7 +16,7 @@ export function selectTools(
     canExpose?: (toolName: string) => boolean;
   } = {},
 ): ToolSelectionResult {
-  const threshold = opts.threshold ?? 25;
+  const _threshold = opts.threshold ?? 25;
   const canExpose = opts.canExpose ?? (() => true);
 
   const exposed: Tool[] = [];

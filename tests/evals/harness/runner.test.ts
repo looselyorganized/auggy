@@ -39,7 +39,9 @@ describe("runAblation", () => {
       const sc = await runAblation({
         definition: MINI_DEF,
         model,
-        grader: (task: EvalTask, calls: string[]) => ({ passed: calls.includes(task.expectedTool) }),
+        grader: (task: EvalTask, calls: string[]) => ({
+          passed: calls.includes(task.expectedTool),
+        }),
         loadTasks: generateTasks,
         controlConditionId: "ctrl",
         treatmentConditionId: "treat",
@@ -69,7 +71,7 @@ describe("runAblation", () => {
         definition: MINI_DEF,
         model,
         grader: () => ({ passed: true }),
-      loadTasks: generateTasks,
+        loadTasks: generateTasks,
         controlConditionId: "ctrl",
         treatmentConditionId: "treat",
         trials: 1,
@@ -99,7 +101,7 @@ describe("runAblation", () => {
         definition: MINI_DEF,
         model,
         grader: () => ({ passed: false }),
-      loadTasks: generateTasks,
+        loadTasks: generateTasks,
         controlConditionId: "ctrl",
         treatmentConditionId: "treat",
         trials: 1,

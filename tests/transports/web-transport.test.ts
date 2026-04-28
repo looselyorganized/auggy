@@ -214,10 +214,7 @@ describe("webTransport HTTP server", () => {
       port,
       auth: { type: "bearer", token: "test-token" },
     });
-    const agent = defineAgent(
-      { name: "test", model: "mock", augments: [aug] },
-      model,
-    );
+    const agent = defineAgent({ name: "test", model: "mock", augments: [aug] }, model);
     await agent.start();
 
     try {
@@ -237,10 +234,7 @@ describe("webTransport HTTP server", () => {
       port,
       auth: { type: "bearer", token: "test-token" },
     });
-    const agent = defineAgent(
-      { name: "test", model: "mock", augments: [aug] },
-      model,
-    );
+    const agent = defineAgent({ name: "test", model: "mock", augments: [aug] }, model);
     await agent.start();
 
     try {
@@ -371,10 +365,7 @@ describe("webTransport HTTP server", () => {
         agents: [{ id: "worker-agent", sharedSecret: "correct-secret" }],
       },
     });
-    const agent = defineAgent(
-      { name: "test", model: "mock", augments: [aug] },
-      model,
-    );
+    const agent = defineAgent({ name: "test", model: "mock", augments: [aug] }, model);
     await agent.start();
 
     try {
@@ -431,9 +422,9 @@ describe("webTransport HTTP server", () => {
 
       const text = await resp.text();
       const lines = text.split("\n").filter((l) => l.startsWith("data: "));
-      const events = lines.map((l) =>
-        JSON.parse(l.slice("data: ".length)),
-      ) as Array<{ type: string }>;
+      const events = lines.map((l) => JSON.parse(l.slice("data: ".length))) as Array<{
+        type: string;
+      }>;
 
       const types = events.map((e) => e.type);
       expect(types).toContain("RUN_STARTED");
@@ -442,9 +433,9 @@ describe("webTransport HTTP server", () => {
       expect(types).toContain("TEXT_MESSAGE_END");
       expect(types).toContain("RUN_FINISHED");
 
-      const contentEvent = events.find(
-        (e) => e.type === "TEXT_MESSAGE_CONTENT",
-      ) as unknown as { delta: string };
+      const contentEvent = events.find((e) => e.type === "TEXT_MESSAGE_CONTENT") as unknown as {
+        delta: string;
+      };
       expect(contentEvent.delta).toBe("Hello back");
     } finally {
       await agent.stop();
@@ -481,10 +472,7 @@ describe("webTransport HTTP server", () => {
       port,
       auth: { type: "bearer", token: "test-token" },
     });
-    const agent = defineAgent(
-      { name: "test", model: "mock", augments: [echoAugment, aug] },
-      model,
-    );
+    const agent = defineAgent({ name: "test", model: "mock", augments: [echoAugment, aug] }, model);
     await agent.start();
 
     try {
@@ -503,9 +491,11 @@ describe("webTransport HTTP server", () => {
 
       const text = await resp.text();
       const lines = text.split("\n").filter((l) => l.startsWith("data: "));
-      const events = lines.map((l) =>
-        JSON.parse(l.slice("data: ".length)),
-      ) as Array<{ type: string; toolCallName?: string; content?: string }>;
+      const events = lines.map((l) => JSON.parse(l.slice("data: ".length))) as Array<{
+        type: string;
+        toolCallName?: string;
+        content?: string;
+      }>;
 
       const types = events.map((e) => e.type);
       expect(types).toContain("TOOL_CALL_START");
@@ -542,9 +532,7 @@ describe("webTransport HTTP server", () => {
     await agent.start();
 
     try {
-      const resp = await fetch(
-        `http://localhost:${port}/.well-known/agent-card.json`,
-      );
+      const resp = await fetch(`http://localhost:${port}/.well-known/agent-card.json`);
       expect(resp.status).toBe(200);
       const card = (await resp.json()) as {
         provider: { name: string };
@@ -567,10 +555,7 @@ describe("webTransport HTTP server", () => {
       auth: { type: "bearer", token: "test-token" },
       maxMessageLength: 10,
     });
-    const agent = defineAgent(
-      { name: "test", model: "mock", augments: [aug] },
-      model,
-    );
+    const agent = defineAgent({ name: "test", model: "mock", augments: [aug] }, model);
     await agent.start();
 
     try {
@@ -582,9 +567,7 @@ describe("webTransport HTTP server", () => {
           "x-visitor-token": "stale",
         },
         body: JSON.stringify({
-          messages: [
-            { role: "user", content: "this message is way too long to fit" },
-          ],
+          messages: [{ role: "user", content: "this message is way too long to fit" }],
         }),
       });
       expect(resp.status).toBe(413);
@@ -613,10 +596,7 @@ describe("webTransport HTTP server", () => {
       port,
       auth: { type: "bearer", token: "test-token" },
     });
-    const agent = defineAgent(
-      { name: "test", model: "mock", augments: [aug] },
-      model,
-    );
+    const agent = defineAgent({ name: "test", model: "mock", augments: [aug] }, model);
     await agent.start();
 
     try {
@@ -678,10 +658,7 @@ describe("webTransport HTTP server", () => {
       },
       rateLimitPerPeer: { maxPerMinute: 1 },
     });
-    const agent = defineAgent(
-      { name: "test", model: "mock", augments: [aug] },
-      model,
-    );
+    const agent = defineAgent({ name: "test", model: "mock", augments: [aug] }, model);
     await agent.start();
 
     const agentHeaders = {
@@ -739,10 +716,7 @@ describe("webTransport HTTP server", () => {
       auth: { type: "bearer", token: "test-token" },
       cors: { origins: ["https://example.com"] },
     });
-    const agent = defineAgent(
-      { name: "test", model: "mock", augments: [aug] },
-      model,
-    );
+    const agent = defineAgent({ name: "test", model: "mock", augments: [aug] }, model);
     await agent.start();
 
     try {
@@ -750,18 +724,10 @@ describe("webTransport HTTP server", () => {
         method: "OPTIONS",
       });
       expect(resp.status).toBe(204);
-      expect(resp.headers.get("access-control-allow-methods")).toContain(
-        "POST",
-      );
-      expect(resp.headers.get("access-control-allow-headers")).toContain(
-        "authorization",
-      );
-      expect(resp.headers.get("access-control-allow-headers")).toContain(
-        "x-peer-id",
-      );
-      expect(resp.headers.get("access-control-allow-origin")).toBe(
-        "https://example.com",
-      );
+      expect(resp.headers.get("access-control-allow-methods")).toContain("POST");
+      expect(resp.headers.get("access-control-allow-headers")).toContain("authorization");
+      expect(resp.headers.get("access-control-allow-headers")).toContain("x-peer-id");
+      expect(resp.headers.get("access-control-allow-origin")).toBe("https://example.com");
     } finally {
       await agent.stop();
     }
@@ -774,10 +740,7 @@ describe("webTransport HTTP server", () => {
       port,
       auth: { type: "bearer", token: "test-token" },
     });
-    const agent = defineAgent(
-      { name: "test", model: "mock", augments: [aug] },
-      model,
-    );
+    const agent = defineAgent({ name: "test", model: "mock", augments: [aug] }, model);
     await agent.start();
 
     try {
@@ -847,10 +810,7 @@ describe("webTransport HTTP server", () => {
       auth: { type: "bearer", token: "test-token" },
       cors: { origins: ["https://example.com"] },
     });
-    const agent = defineAgent(
-      { name: "test", model: "mock", augments: [aug] },
-      model,
-    );
+    const agent = defineAgent({ name: "test", model: "mock", augments: [aug] }, model);
     await agent.start();
 
     try {
@@ -942,10 +902,7 @@ describe("webTransport HTTP server", () => {
       port,
       auth: { type: "bearer", token: "test-token" },
     });
-    const agent = defineAgent(
-      { name: "test", model: "mock", augments: [aug] },
-      model,
-    );
+    const agent = defineAgent({ name: "test", model: "mock", augments: [aug] }, model);
     await agent.start();
 
     try {
@@ -975,10 +932,7 @@ describe("webTransport HTTP server", () => {
       port,
       auth: { type: "bearer", token: "test-token" },
     });
-    const agent = defineAgent(
-      { name: "test", model: "mock", augments: [aug] },
-      model,
-    );
+    const agent = defineAgent({ name: "test", model: "mock", augments: [aug] }, model);
     await agent.start();
 
     try {
@@ -1012,10 +966,7 @@ describe("webTransport HTTP server", () => {
       auth: { type: "bearer", token: "test-token" },
       cors: { origins: ["https://example.com"] },
     });
-    const agent = defineAgent(
-      { name: "test", model: "mock", augments: [aug] },
-      model,
-    );
+    const agent = defineAgent({ name: "test", model: "mock", augments: [aug] }, model);
     await agent.start();
 
     try {

@@ -25,12 +25,7 @@
  * Stop with Ctrl-C.
  */
 import { join } from "node:path";
-import {
-  defineAgent,
-  fileMemory,
-  webTransport,
-  createOpenRouterEngine,
-} from "../src/index";
+import { defineAgent, fileMemory, webTransport, createOpenRouterEngine } from "../src/index";
 
 const apiKey = process.env.OPENROUTER_API_KEY;
 if (!apiKey) {
@@ -78,9 +73,7 @@ const agent = defineAgent(
 await agent.start();
 
 console.log("─".repeat(60));
-console.log(
-  `Auggy hello-openrouter agent (${modelId}) on http://localhost:8082`,
-);
+console.log(`Auggy hello-openrouter agent (${modelId}) on http://localhost:8082`);
 console.log("─".repeat(60));
 console.log("Endpoints:");
 console.log("  POST /agent/run                   (AG-UI SSE)");

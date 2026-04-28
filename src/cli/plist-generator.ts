@@ -8,8 +8,8 @@
  * Pattern replicated from telemetry-exporter/com.lo.telemetry-exporter.plist.
  */
 
-import { homedir } from "os";
-import { dirname, join } from "path";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
 
 export interface PlistOptions {
   /** Agent name (used in label and log file names). */
@@ -36,12 +36,7 @@ export function plistStorePath(name: string): string {
 
 /** Where the symlink goes in ~/Library/LaunchAgents/. */
 export function plistInstallPath(name: string): string {
-  return join(
-    homedir(),
-    "Library",
-    "LaunchAgents",
-    `${plistLabel(name)}.plist`,
-  );
+  return join(homedir(), "Library", "LaunchAgents", `${plistLabel(name)}.plist`);
 }
 
 /** Log directory for agent stdout/stderr. */

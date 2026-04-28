@@ -18,7 +18,7 @@
  */
 
 import { z } from "zod";
-import type { Augment, ContextBlock, PeerIdentity, TurnState, ToolExecuteContext } from "../types";
+import type { Augment, ContextBlock, ToolExecuteContext } from "../types";
 import { defineTool } from "../helpers";
 import { createHttpClient } from "../http";
 import type { HttpClient } from "../http";
@@ -70,13 +70,13 @@ const DEFAULT_CACHE_TTL = 60 * 60 * 1000; // 1 hour
 
 export function orgContext(opts: OrgContextOptions): Augment {
   const baseUrl = opts.baseUrl.replace(/\/$/, "");
-  const client = opts.client ?? createHttpClient({
-    timeoutMs: 10_000,
-    userAgent: "auggy-org-context/0.1",
-    defaultHeaders: opts.token
-      ? { authorization: `Bearer ${opts.token}` }
-      : {},
-  });
+  const client =
+    opts.client ??
+    createHttpClient({
+      timeoutMs: 10_000,
+      userAgent: "auggy-org-context/0.1",
+      defaultHeaders: opts.token ? { authorization: `Bearer ${opts.token}` } : {},
+    });
   const cacheTtl = opts.cacheTtlMs ?? DEFAULT_CACHE_TTL;
 
   let cachedManifest: OrgManifest | null = null;
@@ -136,8 +136,18 @@ export function orgContext(opts: OrgContextOptions): Augment {
   }
 
   function wordOverlap(a: string, b: string): number {
-    const wordsA = new Set(a.toLowerCase().split(/\s+/).filter((w) => w.length > 2));
-    const wordsB = new Set(b.toLowerCase().split(/\s+/).filter((w) => w.length > 2));
+    const wordsA = new Set(
+      a
+        .toLowerCase()
+        .split(/\s+/)
+        .filter((w) => w.length > 2),
+    );
+    const wordsB = new Set(
+      b
+        .toLowerCase()
+        .split(/\s+/)
+        .filter((w) => w.length > 2),
+    );
     if (wordsA.size === 0 || wordsB.size === 0) return 0;
     const smaller = wordsA.size <= wordsB.size ? wordsA : wordsB;
     const larger = wordsA.size > wordsB.size ? wordsA : wordsB;
@@ -183,12 +193,7 @@ export function orgContext(opts: OrgContextOptions): Augment {
   // ---------------------------------------------------------------------------
 
   function buildContextBlock(manifest: OrgManifest): string {
-    const lines = [
-      `# ${manifest.org} — Organization Context`,
-      "",
-      manifest.purpose,
-      "",
-    ];
+    const lines = [`# ${manifest.org} — Organization Context`, "", manifest.purpose, ""];
 
     if (manifest.operator) {
       lines.push(`**Operator:** ${manifest.operator}`);
@@ -212,7 +217,9 @@ export function orgContext(opts: OrgContextOptions): Augment {
     }
 
     lines.push("");
-    lines.push("Use `org_escalate` to alert the operator when a situation requires human judgment.");
+    lines.push(
+      "Use `org_escalate` to alert the operator when a situation requires human judgment.",
+    );
 
     return lines.join("\n");
   }
@@ -230,10 +237,7 @@ export function orgContext(opts: OrgContextOptions): Augment {
       endpoint: z
         .string()
         .describe("The endpoint path (e.g. '/vision', '/initiatives', '/solutions/architecture')"),
-      prompt: z
-        .string()
-        .optional()
-        .describe("Optional: what you want to know from the content"),
+      prompt: z.string().optional().describe("Optional: what you want to know from the content"),
     }),
     execute: async ({ endpoint, prompt }) => {
       const path = endpoint.startsWith("/") ? endpoint : `/${endpoint}`;
@@ -256,9 +260,10 @@ export function orgContext(opts: OrgContextOptions): Augment {
 
             // Truncate if very large.
             const maxChars = 20_000;
-            const truncated = content.length > maxChars
-              ? content.slice(0, maxChars) + `\n\n[truncated — ${content.length} total chars]`
-              : content;
+            const truncated =
+              content.length > maxChars
+                ? `${content.slice(0, maxChars)}\n\n[truncated — ${content.length} total chars]`
+                : content;
 
             return JSON.stringify({
               endpoint: path,
@@ -291,14 +296,8 @@ export function orgContext(opts: OrgContextOptions): Augment {
     category: "communication",
     input: z.object({
       summary: z.string().describe("Brief description of what needs attention"),
-      reason: z
-        .string()
-        .optional()
-        .describe("Why this requires escalation"),
-      visitor: z
-        .string()
-        .optional()
-        .describe("Visitor name or identifier if known"),
+      reason: z.string().optional().describe("Why this requires escalation"),
+      visitor: z.string().optional().describe("Visitor name or identifier if known"),
     }),
     execute: async ({ summary, reason, visitor }, context?: ToolExecuteContext) => {
       if (!context) {
@@ -411,14 +410,20 @@ export function orgContext(opts: OrgContextOptions): Augment {
         manifest = await fetchManifest(true);
         if (manifest) break;
         if (i < delays.length - 1) {
-          console.warn(`[org-context] manifest fetch failed, retrying in ${delays[i + 1]! / 1000}s...`);
+          console.warn(
+            `[org-context] manifest fetch failed, retrying in ${delays[i + 1]! / 1000}s...`,
+          );
         }
       }
 
       if (manifest) {
-        console.log(`[org-context] loaded manifest for ${manifest.org} (${manifest.endpoints.length} endpoints)`);
+        console.log(
+          `[org-context] loaded manifest for ${manifest.org} (${manifest.endpoints.length} endpoints)`,
+        );
       } else {
-        console.warn("[org-context] org API unreachable — running without org context. Will retry on first org_fetch call.");
+        console.warn(
+          "[org-context] org API unreachable — running without org context. Will retry on first org_fetch call.",
+        );
       }
     },
   };

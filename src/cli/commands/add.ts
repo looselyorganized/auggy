@@ -6,18 +6,15 @@
  * updates identity.md manifest.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync, cpSync } from "fs";
-import { dirname, join, resolve } from "path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, cpSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { checkbox } from "@inquirer/prompts";
-import { AUGMENT_CATALOG, getAvailableAugments, type CatalogEntry } from "../augment-catalog";
+import { getAvailableAugments, type CatalogEntry } from "../augment-catalog";
 import { scanSkillManifest, renderSkillManifest } from "../skill-manifest";
 import { resolveConfigPath } from "../resolve-config";
 
-export async function runAdd(
-  name: string,
-  opts: { config?: string },
-): Promise<void> {
+export async function runAdd(name: string, opts: { config?: string }): Promise<void> {
   const configPath = resolveConfigPath(name, opts.config);
   const agentDir = dirname(configPath);
 
@@ -25,9 +22,7 @@ export async function runAdd(
   const raw = parseYaml(readFileSync(configPath, "utf-8")) as Record<string, unknown>;
   const currentAugments = (raw.augments ?? []) as Array<{ type: string; name: string }>;
 
-  console.log(
-    `Currently installed: ${currentAugments.map((a) => a.name).join(", ")}`,
-  );
+  console.log(`Currently installed: ${currentAugments.map((a) => a.name).join(", ")}`);
 
   // Find what's available to add.
   const available = getAvailableAugments(currentAugments);
@@ -86,10 +81,7 @@ export async function runAdd(
     const newManifest = renderSkillManifest(skillEntries);
 
     // Replace the existing skill manifest section.
-    const updated = identity.replace(
-      /## Available skills[\s\S]*$/,
-      newManifest,
-    );
+    const updated = identity.replace(/## Available skills[\s\S]*$/, newManifest);
 
     if (updated !== identity) {
       writeFileSync(identityPath, updated);
@@ -115,9 +107,7 @@ function installAugmentSkill(entry: CatalogEntry, agentDir: string): void {
   if (!entry.hasSkill || !entry.skillTemplate) return;
 
   const skillDirName =
-    entry.type === "fileMemory" ? "memory" :
-    entry.type === "webFetch" ? "web-fetch" :
-    entry.type;
+    entry.type === "fileMemory" ? "memory" : entry.type === "webFetch" ? "web-fetch" : entry.type;
 
   const skillDir = join(agentDir, "skills", skillDirName);
   mkdirSync(skillDir, { recursive: true });

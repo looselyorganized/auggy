@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { writeFileSync, mkdirSync, rmSync } from "fs";
-import { join } from "path";
+import { writeFileSync, mkdirSync, rmSync } from "node:fs";
+import { join } from "node:path";
 import { stringify } from "yaml";
 import { parseConfig, interpolateEnvVars, loadEnvFile } from "../../src/cli/config-parser";
 
@@ -18,7 +18,19 @@ function minimalConfig(overrides: Record<string, unknown> = {}): string {
     name: "test-agent",
     engine: { provider: "anthropic", model: "claude-sonnet-4-6" },
     augments: [
-      { name: "identity", type: "fileMemory", options: { label: "self", source: "./identity.md", mutable: false, origin: "operator", priority: "required", placement: "system", eviction: "never" } },
+      {
+        name: "identity",
+        type: "fileMemory",
+        options: {
+          label: "self",
+          source: "./identity.md",
+          mutable: false,
+          origin: "operator",
+          priority: "required",
+          placement: "system",
+          eviction: "never",
+        },
+      },
     ],
     ...overrides,
   };
@@ -53,11 +65,14 @@ describe("parseConfig", () => {
   });
 
   test("includes optional fields when present", () => {
-    const path = writeYaml("agent.yaml", minimalConfig({
-      purpose: "test purpose",
-      operators: ["op-1"],
-      settings: { compactionStrategy: "truncate", maxInferenceLoops: 5 },
-    }));
+    const path = writeYaml(
+      "agent.yaml",
+      minimalConfig({
+        purpose: "test purpose",
+        operators: ["op-1"],
+        settings: { compactionStrategy: "truncate", maxInferenceLoops: 5 },
+      }),
+    );
     const config = parseConfig(path);
     expect(config.purpose).toBe("test purpose");
     expect(config.operators).toEqual(["op-1"]);
@@ -99,40 +114,55 @@ describe("validation errors", () => {
   });
 
   test("rejects duplicate augment names", () => {
-    const path = writeYaml("agent.yaml", minimalConfig({
-      augments: [
-        { name: "dup", type: "webFetch", options: {} },
-        { name: "dup", type: "webFetch", options: {} },
-      ],
-    }));
+    const path = writeYaml(
+      "agent.yaml",
+      minimalConfig({
+        augments: [
+          { name: "dup", type: "webFetch", options: {} },
+          { name: "dup", type: "webFetch", options: {} },
+        ],
+      }),
+    );
     expect(() => parseConfig(path)).toThrow('duplicate name "dup"');
   });
 
   test("rejects unknown augment type", () => {
-    const path = writeYaml("agent.yaml", minimalConfig({
-      augments: [{ name: "x", type: "unknownThing", options: {} }],
-    }));
+    const path = writeYaml(
+      "agent.yaml",
+      minimalConfig({
+        augments: [{ name: "x", type: "unknownThing", options: {} }],
+      }),
+    );
     expect(() => parseConfig(path)).toThrow("unknownThing");
   });
 
   test("rejects custom augment without source", () => {
-    const path = writeYaml("agent.yaml", minimalConfig({
-      augments: [{ name: "x", type: "custom", options: {} }],
-    }));
+    const path = writeYaml(
+      "agent.yaml",
+      minimalConfig({
+        augments: [{ name: "x", type: "custom", options: {} }],
+      }),
+    );
     expect(() => parseConfig(path)).toThrow("source");
   });
 
   test("rejects invalid compactionStrategy", () => {
-    const path = writeYaml("agent.yaml", minimalConfig({
-      settings: { compactionStrategy: "invalid" },
-    }));
+    const path = writeYaml(
+      "agent.yaml",
+      minimalConfig({
+        settings: { compactionStrategy: "invalid" },
+      }),
+    );
     expect(() => parseConfig(path)).toThrow("compactionStrategy");
   });
 
   test("rejects unknown engine provider", () => {
-    const path = writeYaml("agent.yaml", minimalConfig({
-      engine: { provider: "foobar", model: "x" },
-    }));
+    const path = writeYaml(
+      "agent.yaml",
+      minimalConfig({
+        engine: { provider: "foobar", model: "x" },
+      }),
+    );
     expect(() => parseConfig(path)).toThrow('unknown provider "foobar"');
   });
 });
@@ -140,188 +170,236 @@ describe("validation errors", () => {
 describe("engine.reasoningEffort validation", () => {
   for (const effort of ["none", "minimal", "low", "medium", "high", "xhigh"]) {
     test(`accepts ${effort}`, () => {
-      const path = writeYaml("agent.yaml", minimalConfig({
-        engine: { provider: "anthropic", model: "claude-sonnet-4-6", reasoningEffort: effort },
-      }));
+      const path = writeYaml(
+        "agent.yaml",
+        minimalConfig({
+          engine: { provider: "anthropic", model: "claude-sonnet-4-6", reasoningEffort: effort },
+        }),
+      );
       const config = parseConfig(path);
       expect(config.engine.reasoningEffort).toBe(effort as never);
     });
   }
 
   test("rejects invalid reasoningEffort value", () => {
-    const path = writeYaml("agent.yaml", minimalConfig({
-      engine: { provider: "anthropic", model: "claude-sonnet-4-6", reasoningEffort: "ultra" },
-    }));
+    const path = writeYaml(
+      "agent.yaml",
+      minimalConfig({
+        engine: { provider: "anthropic", model: "claude-sonnet-4-6", reasoningEffort: "ultra" },
+      }),
+    );
     expect(() => parseConfig(path)).toThrow("engine.reasoningEffort");
   });
 });
 
 describe("engine.providerRouting validation", () => {
   test("accepts valid providerRouting for openrouter", () => {
-    const path = writeYaml("agent.yaml", minimalConfig({
-      engine: {
-        provider: "openrouter",
-        model: "qwen/qwen3.5-397b-a17b",
-        providerRouting: {
-          only: ["OpenAI"],
-          sort: "price",
-          max_price: { prompt: 1, completion: 2 },
+    const path = writeYaml(
+      "agent.yaml",
+      minimalConfig({
+        engine: {
+          provider: "openrouter",
+          model: "qwen/qwen3.5-397b-a17b",
+          providerRouting: {
+            only: ["OpenAI"],
+            sort: "price",
+            max_price: { prompt: 1, completion: 2 },
+          },
         },
-      },
-    }));
+      }),
+    );
     const config = parseConfig(path);
     expect(config.engine.providerRouting?.only).toEqual(["OpenAI"]);
     expect(config.engine.providerRouting?.sort).toBe("price");
   });
 
   test("rejects providerRouting for non-openrouter provider", () => {
-    const path = writeYaml("agent.yaml", minimalConfig({
-      engine: {
-        provider: "anthropic",
-        model: "claude-sonnet-4-6",
-        providerRouting: { only: ["OpenAI"] },
-      },
-    }));
+    const path = writeYaml(
+      "agent.yaml",
+      minimalConfig({
+        engine: {
+          provider: "anthropic",
+          model: "claude-sonnet-4-6",
+          providerRouting: { only: ["OpenAI"] },
+        },
+      }),
+    );
     expect(() => parseConfig(path)).toThrow(
       "providerRouting: only valid for provider 'openrouter'",
     );
   });
 
   test("rejects invalid sort value", () => {
-    const path = writeYaml("agent.yaml", minimalConfig({
-      engine: {
-        provider: "openrouter",
-        model: "x",
-        providerRouting: { sort: "speed" },
-      },
-    }));
+    const path = writeYaml(
+      "agent.yaml",
+      minimalConfig({
+        engine: {
+          provider: "openrouter",
+          model: "x",
+          providerRouting: { sort: "speed" },
+        },
+      }),
+    );
     expect(() => parseConfig(path)).toThrow("providerRouting.sort");
   });
 
   test("rejects non-array only", () => {
-    const path = writeYaml("agent.yaml", minimalConfig({
-      engine: {
-        provider: "openrouter",
-        model: "x",
-        providerRouting: { only: "OpenAI" },
-      },
-    }));
+    const path = writeYaml(
+      "agent.yaml",
+      minimalConfig({
+        engine: {
+          provider: "openrouter",
+          model: "x",
+          providerRouting: { only: "OpenAI" },
+        },
+      }),
+    );
     expect(() => parseConfig(path)).toThrow("providerRouting.only");
   });
 
   test("rejects empty only array", () => {
-    const path = writeYaml("agent.yaml", minimalConfig({
-      engine: {
-        provider: "openrouter",
-        model: "x",
-        providerRouting: { only: [] },
-      },
-    }));
+    const path = writeYaml(
+      "agent.yaml",
+      minimalConfig({
+        engine: {
+          provider: "openrouter",
+          model: "x",
+          providerRouting: { only: [] },
+        },
+      }),
+    );
     expect(() => parseConfig(path)).toThrow("providerRouting.only");
   });
 
   test("rejects negative max_price.prompt", () => {
-    const path = writeYaml("agent.yaml", minimalConfig({
-      engine: {
-        provider: "openrouter",
-        model: "x",
-        providerRouting: { max_price: { prompt: -1 } },
-      },
-    }));
+    const path = writeYaml(
+      "agent.yaml",
+      minimalConfig({
+        engine: {
+          provider: "openrouter",
+          model: "x",
+          providerRouting: { max_price: { prompt: -1 } },
+        },
+      }),
+    );
     expect(() => parseConfig(path)).toThrow("max_price.prompt");
   });
 
   test("rejects non-numeric max_price.completion", () => {
-    const path = writeYaml("agent.yaml", minimalConfig({
-      engine: {
-        provider: "openrouter",
-        model: "x",
-        providerRouting: { max_price: { completion: "free" } },
-      },
-    }));
+    const path = writeYaml(
+      "agent.yaml",
+      minimalConfig({
+        engine: {
+          provider: "openrouter",
+          model: "x",
+          providerRouting: { max_price: { completion: "free" } },
+        },
+      }),
+    );
     expect(() => parseConfig(path)).toThrow("max_price.completion");
   });
 });
 
 describe("engine.costOverride validation", () => {
   test("accepts valid costOverride with positive rates", () => {
-    const path = writeYaml("agent.yaml", minimalConfig({
-      engine: {
-        provider: "anthropic",
-        model: "claude-future-99-experimental",
-        costOverride: { inputUsdPerMtok: 2.5, outputUsdPerMtok: 10.0 },
-      },
-    }));
+    const path = writeYaml(
+      "agent.yaml",
+      minimalConfig({
+        engine: {
+          provider: "anthropic",
+          model: "claude-future-99-experimental",
+          costOverride: { inputUsdPerMtok: 2.5, outputUsdPerMtok: 10.0 },
+        },
+      }),
+    );
     const config = parseConfig(path);
     expect(config.engine.costOverride?.inputUsdPerMtok).toBe(2.5);
     expect(config.engine.costOverride?.outputUsdPerMtok).toBe(10.0);
   });
 
   test("accepts costOverride with zero rates (free tier or internal model)", () => {
-    const path = writeYaml("agent.yaml", minimalConfig({
-      engine: {
-        provider: "openai",
-        model: "gpt-internal",
-        costOverride: { inputUsdPerMtok: 0, outputUsdPerMtok: 0 },
-      },
-    }));
+    const path = writeYaml(
+      "agent.yaml",
+      minimalConfig({
+        engine: {
+          provider: "openai",
+          model: "gpt-internal",
+          costOverride: { inputUsdPerMtok: 0, outputUsdPerMtok: 0 },
+        },
+      }),
+    );
     const config = parseConfig(path);
     expect(config.engine.costOverride?.inputUsdPerMtok).toBe(0);
     expect(config.engine.costOverride?.outputUsdPerMtok).toBe(0);
   });
 
   test("rejects costOverride that is not an object", () => {
-    const path = writeYaml("agent.yaml", minimalConfig({
-      engine: {
-        provider: "anthropic",
-        model: "x",
-        costOverride: "free",
-      },
-    }));
+    const path = writeYaml(
+      "agent.yaml",
+      minimalConfig({
+        engine: {
+          provider: "anthropic",
+          model: "x",
+          costOverride: "free",
+        },
+      }),
+    );
     expect(() => parseConfig(path)).toThrow("engine.costOverride");
   });
 
   test("rejects costOverride with missing inputUsdPerMtok", () => {
-    const path = writeYaml("agent.yaml", minimalConfig({
-      engine: {
-        provider: "anthropic",
-        model: "x",
-        costOverride: { outputUsdPerMtok: 5 },
-      },
-    }));
+    const path = writeYaml(
+      "agent.yaml",
+      minimalConfig({
+        engine: {
+          provider: "anthropic",
+          model: "x",
+          costOverride: { outputUsdPerMtok: 5 },
+        },
+      }),
+    );
     expect(() => parseConfig(path)).toThrow("engine.costOverride.inputUsdPerMtok");
   });
 
   test("rejects costOverride with missing outputUsdPerMtok", () => {
-    const path = writeYaml("agent.yaml", minimalConfig({
-      engine: {
-        provider: "anthropic",
-        model: "x",
-        costOverride: { inputUsdPerMtok: 5 },
-      },
-    }));
+    const path = writeYaml(
+      "agent.yaml",
+      minimalConfig({
+        engine: {
+          provider: "anthropic",
+          model: "x",
+          costOverride: { inputUsdPerMtok: 5 },
+        },
+      }),
+    );
     expect(() => parseConfig(path)).toThrow("engine.costOverride.outputUsdPerMtok");
   });
 
   test("rejects costOverride with negative inputUsdPerMtok", () => {
-    const path = writeYaml("agent.yaml", minimalConfig({
-      engine: {
-        provider: "anthropic",
-        model: "x",
-        costOverride: { inputUsdPerMtok: -1, outputUsdPerMtok: 5 },
-      },
-    }));
+    const path = writeYaml(
+      "agent.yaml",
+      minimalConfig({
+        engine: {
+          provider: "anthropic",
+          model: "x",
+          costOverride: { inputUsdPerMtok: -1, outputUsdPerMtok: 5 },
+        },
+      }),
+    );
     expect(() => parseConfig(path)).toThrow("engine.costOverride.inputUsdPerMtok");
   });
 
   test("rejects costOverride with non-number outputUsdPerMtok", () => {
-    const path = writeYaml("agent.yaml", minimalConfig({
-      engine: {
-        provider: "anthropic",
-        model: "x",
-        costOverride: { inputUsdPerMtok: 1, outputUsdPerMtok: "cheap" },
-      },
-    }));
+    const path = writeYaml(
+      "agent.yaml",
+      minimalConfig({
+        engine: {
+          provider: "anthropic",
+          model: "x",
+          costOverride: { inputUsdPerMtok: 1, outputUsdPerMtok: "cheap" },
+        },
+      }),
+    );
     expect(() => parseConfig(path)).toThrow("engine.costOverride.outputUsdPerMtok");
   });
 
@@ -355,9 +433,7 @@ describe("env var interpolation", () => {
   });
 
   test("throws on missing env var with location context", () => {
-    expect(() => interpolateEnvVars({ token: "${MISSING_VAR_XYZ}" })).toThrow(
-      "MISSING_VAR_XYZ",
-    );
+    expect(() => interpolateEnvVars({ token: "${MISSING_VAR_XYZ}" })).toThrow("MISSING_VAR_XYZ");
   });
 
   test("leaves non-string values unchanged", () => {
@@ -409,27 +485,30 @@ describe("loadEnvFile", () => {
 
 describe("budgets augment options validation", () => {
   test("accepts a valid budgets block with full caps", () => {
-    const path = writeYaml("agent.yaml", minimalConfig({
-      augments: [
-        {
-          name: "budgets",
-          type: "budgets",
-          options: {
-            dbPath: "./budgets.db",
-            caps: {
-              agent: { maxTurnsPerThread: 100 },
-              public: {
-                recognized: { maxTurnsPerThread: 20, maxTurnsPerDay: 50, maxUsdPerDay: 1 },
-                anonymous: { maxTurnsPerThread: 5 },
+    const path = writeYaml(
+      "agent.yaml",
+      minimalConfig({
+        augments: [
+          {
+            name: "budgets",
+            type: "budgets",
+            options: {
+              dbPath: "./budgets.db",
+              caps: {
+                agent: { maxTurnsPerThread: 100 },
+                public: {
+                  recognized: { maxTurnsPerThread: 20, maxTurnsPerDay: 50, maxUsdPerDay: 1 },
+                  anonymous: { maxTurnsPerThread: 5 },
+                },
               },
+              anonymousGlobalLimit: 30,
+              dailyBudgetUsd: 5,
+              cleanupWindowMs: 86400000,
             },
-            anonymousGlobalLimit: 30,
-            dailyBudgetUsd: 5,
-            cleanupWindowMs: 86400000,
           },
-        },
-      ],
-    }));
+        ],
+      }),
+    );
     const config = parseConfig(path);
     expect(config.augments[0]!.type).toBe("budgets");
     expect(config.augments[0]!.options!.dbPath).toBe("./budgets.db");
@@ -437,150 +516,176 @@ describe("budgets augment options validation", () => {
   });
 
   test("accepts a minimal budgets block (only dbPath)", () => {
-    const path = writeYaml("agent.yaml", minimalConfig({
-      augments: [
-        { name: "budgets", type: "budgets", options: { dbPath: "./budgets.db" } },
-      ],
-    }));
+    const path = writeYaml(
+      "agent.yaml",
+      minimalConfig({
+        augments: [{ name: "budgets", type: "budgets", options: { dbPath: "./budgets.db" } }],
+      }),
+    );
     const config = parseConfig(path);
     expect(config.augments[0]!.type).toBe("budgets");
   });
 
   test("rejects budgets block missing dbPath", () => {
-    const path = writeYaml("agent.yaml", minimalConfig({
-      augments: [
-        { name: "budgets", type: "budgets", options: {} },
-      ],
-    }));
+    const path = writeYaml(
+      "agent.yaml",
+      minimalConfig({
+        augments: [{ name: "budgets", type: "budgets", options: {} }],
+      }),
+    );
     expect(() => parseConfig(path)).toThrow("dbPath");
   });
 
   test("rejects negative dailyBudgetUsd", () => {
-    const path = writeYaml("agent.yaml", minimalConfig({
-      augments: [
-        {
-          name: "budgets",
-          type: "budgets",
-          options: { dbPath: "./budgets.db", dailyBudgetUsd: -1 },
-        },
-      ],
-    }));
+    const path = writeYaml(
+      "agent.yaml",
+      minimalConfig({
+        augments: [
+          {
+            name: "budgets",
+            type: "budgets",
+            options: { dbPath: "./budgets.db", dailyBudgetUsd: -1 },
+          },
+        ],
+      }),
+    );
     expect(() => parseConfig(path)).toThrow("dailyBudgetUsd");
   });
 
   test("rejects zero dailyBudgetUsd", () => {
-    const path = writeYaml("agent.yaml", minimalConfig({
-      augments: [
-        {
-          name: "budgets",
-          type: "budgets",
-          options: { dbPath: "./budgets.db", dailyBudgetUsd: 0 },
-        },
-      ],
-    }));
+    const path = writeYaml(
+      "agent.yaml",
+      minimalConfig({
+        augments: [
+          {
+            name: "budgets",
+            type: "budgets",
+            options: { dbPath: "./budgets.db", dailyBudgetUsd: 0 },
+          },
+        ],
+      }),
+    );
     expect(() => parseConfig(path)).toThrow("dailyBudgetUsd");
   });
 
   test("rejects negative anonymousGlobalLimit", () => {
-    const path = writeYaml("agent.yaml", minimalConfig({
-      augments: [
-        {
-          name: "budgets",
-          type: "budgets",
-          options: { dbPath: "./budgets.db", anonymousGlobalLimit: -5 },
-        },
-      ],
-    }));
+    const path = writeYaml(
+      "agent.yaml",
+      minimalConfig({
+        augments: [
+          {
+            name: "budgets",
+            type: "budgets",
+            options: { dbPath: "./budgets.db", anonymousGlobalLimit: -5 },
+          },
+        ],
+      }),
+    );
     expect(() => parseConfig(path)).toThrow("anonymousGlobalLimit");
   });
 
   test("rejects negative cleanupWindowMs", () => {
-    const path = writeYaml("agent.yaml", minimalConfig({
-      augments: [
-        {
-          name: "budgets",
-          type: "budgets",
-          options: { dbPath: "./budgets.db", cleanupWindowMs: -1000 },
-        },
-      ],
-    }));
+    const path = writeYaml(
+      "agent.yaml",
+      minimalConfig({
+        augments: [
+          {
+            name: "budgets",
+            type: "budgets",
+            options: { dbPath: "./budgets.db", cleanupWindowMs: -1000 },
+          },
+        ],
+      }),
+    );
     expect(() => parseConfig(path)).toThrow("cleanupWindowMs");
   });
 
   test("rejects caps.public.anonymous.maxTurnsPerThread = -5", () => {
-    const path = writeYaml("agent.yaml", minimalConfig({
-      augments: [
-        {
-          name: "budgets",
-          type: "budgets",
-          options: {
-            dbPath: "./budgets.db",
-            caps: {
-              public: {
-                anonymous: { maxTurnsPerThread: -5 },
+    const path = writeYaml(
+      "agent.yaml",
+      minimalConfig({
+        augments: [
+          {
+            name: "budgets",
+            type: "budgets",
+            options: {
+              dbPath: "./budgets.db",
+              caps: {
+                public: {
+                  anonymous: { maxTurnsPerThread: -5 },
+                },
               },
             },
           },
-        },
-      ],
-    }));
+        ],
+      }),
+    );
     expect(() => parseConfig(path)).toThrow("caps.public.anonymous.maxTurnsPerThread");
   });
 
   test("rejects caps.public.recognized.maxUsdPerDay = 0", () => {
-    const path = writeYaml("agent.yaml", minimalConfig({
-      augments: [
-        {
-          name: "budgets",
-          type: "budgets",
-          options: {
-            dbPath: "./budgets.db",
-            caps: {
-              public: {
-                recognized: { maxUsdPerDay: 0 },
+    const path = writeYaml(
+      "agent.yaml",
+      minimalConfig({
+        augments: [
+          {
+            name: "budgets",
+            type: "budgets",
+            options: {
+              dbPath: "./budgets.db",
+              caps: {
+                public: {
+                  recognized: { maxUsdPerDay: 0 },
+                },
               },
             },
           },
-        },
-      ],
-    }));
+        ],
+      }),
+    );
     expect(() => parseConfig(path)).toThrow("maxUsdPerDay");
   });
 
   test("rejects caps.agent.maxTurnsPerDay as non-number", () => {
-    const path = writeYaml("agent.yaml", minimalConfig({
-      augments: [
-        {
-          name: "budgets",
-          type: "budgets",
-          options: {
-            dbPath: "./budgets.db",
-            caps: { agent: { maxTurnsPerDay: "many" } },
+    const path = writeYaml(
+      "agent.yaml",
+      minimalConfig({
+        augments: [
+          {
+            name: "budgets",
+            type: "budgets",
+            options: {
+              dbPath: "./budgets.db",
+              caps: { agent: { maxTurnsPerDay: "many" } },
+            },
           },
-        },
-      ],
-    }));
+        ],
+      }),
+    );
     expect(() => parseConfig(path)).toThrow("caps.agent.maxTurnsPerDay");
   });
 
   test("tolerates unknown extra fields under caps (pass-through)", () => {
     // Unknown fields are not validated — they are passed through to the factory.
-    const path = writeYaml("agent.yaml", minimalConfig({
-      augments: [
-        {
-          name: "budgets",
-          type: "budgets",
-          options: {
-            dbPath: "./budgets.db",
-            caps: {
-              public: {
-                recognized: { maxTurnsPerThread: 10, unknownCap: 999 },
+    const path = writeYaml(
+      "agent.yaml",
+      minimalConfig({
+        augments: [
+          {
+            name: "budgets",
+            type: "budgets",
+            options: {
+              dbPath: "./budgets.db",
+              caps: {
+                public: {
+                  recognized: { maxTurnsPerThread: 10, unknownCap: 999 },
+                },
               },
             },
           },
-        },
-      ],
-    }));
+        ],
+      }),
+    );
     const config = parseConfig(path);
     expect(config.augments[0]!.type).toBe("budgets");
   });

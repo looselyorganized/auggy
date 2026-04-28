@@ -1,11 +1,6 @@
 import { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
-import type {
-  MemoryStore,
-  RetentionClass,
-  SqliteStoreConfig,
-  StoreEntry,
-} from "./types";
+import type { MemoryStore, RetentionClass, SqliteStoreConfig, StoreEntry } from "./types";
 import type { TrustLevel } from "../../types";
 
 // Each statement run individually to keep the SQL surface explicit.
@@ -104,12 +99,10 @@ export function createSqliteStore(config: SqliteStoreConfig): MemoryStore {
   // writeAndLog runs the entry insert and audit insert atomically. If
   // either fails, both roll back — callers either see a successful
   // write that's fully recorded, or an error and zero side effects.
-  const writeAndLog = db.transaction(
-    (entryParams: SqlBinding[], eventParams: SqlBinding[]) => {
-      insertEntryStmt.run(...entryParams);
-      insertEventStmt.run(...eventParams);
-    },
-  );
+  const writeAndLog = db.transaction((entryParams: SqlBinding[], eventParams: SqlBinding[]) => {
+    insertEntryStmt.run(...entryParams);
+    insertEventStmt.run(...eventParams);
+  });
 
   async function initialize(): Promise<void> {
     // Schema is now created at construction time. Kept as a no-op for
@@ -117,12 +110,7 @@ export function createSqliteStore(config: SqliteStoreConfig): MemoryStore {
     // migrations).
   }
 
-  function logEvent(
-    entryId: string,
-    action: string,
-    peerId: string | null,
-    detail?: object,
-  ) {
+  function logEvent(entryId: string, action: string, peerId: string | null, detail?: object) {
     insertEventStmt.run(
       randomUUID(),
       entryId,
@@ -133,9 +121,7 @@ export function createSqliteStore(config: SqliteStoreConfig): MemoryStore {
     );
   }
 
-  async function write(
-    input: Omit<StoreEntry, "id"> & { id?: string },
-  ): Promise<StoreEntry> {
+  async function write(input: Omit<StoreEntry, "id"> & { id?: string }): Promise<StoreEntry> {
     const id = input.id ?? randomUUID();
     const expiresAt = input.expiresAt ?? input.createdAt + retentionMs;
 
@@ -152,14 +138,7 @@ export function createSqliteStore(config: SqliteStoreConfig): MemoryStore {
         input.isVerbatim ? 1 : 0,
         expiresAt,
       ],
-      [
-        randomUUID(),
-        id,
-        "write",
-        input.peerId,
-        Date.now(),
-        null,
-      ],
+      [randomUUID(), id, "write", input.peerId, Date.now(), null],
     );
 
     // Sampled, bounded cleanup. Outside the transaction so a partial
@@ -175,11 +154,7 @@ export function createSqliteStore(config: SqliteStoreConfig): MemoryStore {
     return { ...input, id, expiresAt };
   }
 
-  async function search(
-    query: string,
-    peerId?: string,
-    limit = 10,
-  ): Promise<StoreEntry[]> {
+  async function search(query: string, peerId?: string, limit = 10): Promise<StoreEntry[]> {
     const escaped = query.replace(/[%_\\]/g, (c) => `\\${c}`);
     const pattern = `%${escaped}%`;
     const now = Date.now();
@@ -239,29 +214,19 @@ export function createSqliteStore(config: SqliteStoreConfig): MemoryStore {
   }
 
   async function forget(peerId: string): Promise<number> {
-    const result = db
-      .prepare("DELETE FROM entries WHERE peer_id = ?")
-      .run(peerId);
+    const result = db.prepare("DELETE FROM entries WHERE peer_id = ?").run(peerId);
     logEvent("(batch)", "forget", peerId, { deleted: result.changes });
     return result.changes;
   }
 
-  async function supersede(
-    entryId: string,
-    newEntryId: string,
-  ): Promise<void> {
-    db.prepare("UPDATE entries SET superseded_by = ? WHERE id = ?").run(
-      newEntryId,
-      entryId,
-    );
+  async function supersede(entryId: string, newEntryId: string): Promise<void> {
+    db.prepare("UPDATE entries SET superseded_by = ? WHERE id = ?").run(newEntryId, entryId);
     logEvent(entryId, "supersede", null, { supersededBy: newEntryId });
   }
 
   async function cleanup(): Promise<number> {
     const result = db
-      .prepare(
-        "DELETE FROM entries WHERE expires_at IS NOT NULL AND expires_at < ?",
-      )
+      .prepare("DELETE FROM entries WHERE expires_at IS NOT NULL AND expires_at < ?")
       .run(Date.now());
     return result.changes;
   }

@@ -42,9 +42,7 @@ function makeTool(name: string) {
 
 describe("CapabilityTable", () => {
   it("blocks neverExpose tools from exposure", () => {
-    const augments: Augment[] = [
-      { name: "a", constraints: { neverExpose: ["secret-tool"] } },
-    ];
+    const augments: Augment[] = [{ name: "a", constraints: { neverExpose: ["secret-tool"] } }];
     const table = createCapabilityTable(augments);
     expect(table.canExpose("secret-tool", stubTurn)).toBe(false);
     expect(table.canExpose("other-tool", stubTurn)).toBe(true);
@@ -245,19 +243,13 @@ describe("CapabilityTable — trust-aware", () => {
     ];
     const table = createCapabilityTable(augments);
 
-    const untrustedResult = table.canExecute(
-      "memory_write",
-      {},
-      turnWithTrust("public"),
-    );
+    const untrustedResult = table.canExecute("memory_write", {}, turnWithTrust("public"));
     expect(untrustedResult).toHaveProperty("needsApproval", true);
 
-    expect(
-      table.canExecute("memory_write", {}, turnWithTrust("agent")),
-    ).toEqual({ allowed: true });
-    expect(
-      table.canExecute("memory_write", {}, turnWithTrust("creator")),
-    ).toEqual({ allowed: true });
+    expect(table.canExecute("memory_write", {}, turnWithTrust("agent"))).toEqual({ allowed: true });
+    expect(table.canExecute("memory_write", {}, turnWithTrust("creator"))).toEqual({
+      allowed: true,
+    });
   });
 
   it("tools without any perTrustLevel entry remain visible to every level", () => {
@@ -284,9 +276,7 @@ describe("CapabilityTable — trust-aware", () => {
   // filtered tool list. A fabricated tool name that matches a withheld
   // tool would otherwise run.
   it("canExecute denies tools listed in global neverExpose (fabricated-call defense)", () => {
-    const augments: Augment[] = [
-      { name: "a", constraints: { neverExpose: ["secret_tool"] } },
-    ];
+    const augments: Augment[] = [{ name: "a", constraints: { neverExpose: ["secret_tool"] } }];
     const table = createCapabilityTable(augments);
 
     const result = table.canExecute("secret_tool", {}, turnWithTrust("creator"));
@@ -311,19 +301,11 @@ describe("CapabilityTable — trust-aware", () => {
 
     // Public peer fabricates a call to fs_write (it wasn't in their
     // tool list via canExpose, but the model emitted the name anyway).
-    const untrustedResult = table.canExecute(
-      "fs_write",
-      {},
-      turnWithTrust("public"),
-    );
+    const untrustedResult = table.canExecute("fs_write", {}, turnWithTrust("public"));
     expect(untrustedResult).toHaveProperty("denied", true);
 
     // Agent peer — tool is not in their neverExpose list — allowed.
-    const authResult = table.canExecute(
-      "fs_write",
-      {},
-      turnWithTrust("agent"),
-    );
+    const authResult = table.canExecute("fs_write", {}, turnWithTrust("agent"));
     expect(authResult).toEqual({ allowed: true });
   });
 });

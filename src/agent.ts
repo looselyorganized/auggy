@@ -17,10 +17,7 @@ import { createTurnLoop } from "./kernel/turn-loop";
 import { createLifecycleManager } from "./kernel/lifecycle-manager";
 import { createTransportQueue } from "./kernel/transport-queue";
 
-export function defineAgent(
-  config: AgentConfig,
-  model: ModelClient,
-): AgentHandle {
+export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandle {
   const tokenizer = createTokenizer();
 
   // Wire the memory bus BEFORE constructing other kernel components.
@@ -59,10 +56,7 @@ export function defineAgent(
 
   let started = false;
 
-  async function dispatchOutbound(
-    result: TurnResult,
-    trigger: TurnTrigger,
-  ) {
+  async function dispatchOutbound(result: TurnResult, trigger: TurnTrigger) {
     // Collect all messages to dispatch: single response + multi-destination responses
     const messages: OutboundMessage[] = [];
     if (result.response) messages.push(result.response);
@@ -112,10 +106,9 @@ export function defineAgent(
                 const historyBudget = Math.floor(
                   model.maxContextTokens * ((config.contextBudget?.historyPercent ?? 40) / 100),
                 );
-                turnLoop.getHistoryManager(threadId).compact(
-                  historyBudget,
-                  config.compactionStrategy ?? "truncate",
-                );
+                turnLoop
+                  .getHistoryManager(threadId)
+                  .compact(historyBudget, config.compactionStrategy ?? "truncate");
 
                 // Run onTurnEnd hooks (non-blocking)
                 for (const a of effectiveAugments) {
@@ -186,17 +179,16 @@ export function defineAgent(
       const historyBudget = Math.floor(
         model.maxContextTokens * ((config.contextBudget?.historyPercent ?? 40) / 100),
       );
-      turnLoop.getHistoryManager(threadId).compact(
-        historyBudget,
-        config.compactionStrategy ?? "truncate",
-      );
+      turnLoop
+        .getHistoryManager(threadId)
+        .compact(historyBudget, config.compactionStrategy ?? "truncate");
 
       // Run onTurnEnd hooks (non-blocking, same as transport path)
       for (const a of effectiveAugments) {
         if (a.onTurnEnd) {
           a.onTurnEnd(result).catch((err) => {
-                      console.warn(`onTurnEnd hook "${a.name}" failed: ${err}`);
-                    });
+            console.warn(`onTurnEnd hook "${a.name}" failed: ${err}`);
+          });
         }
       }
 

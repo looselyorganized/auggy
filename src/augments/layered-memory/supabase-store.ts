@@ -1,10 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type {
-  MemoryStore,
-  RetentionClass,
-  StoreEntry,
-  SupabaseStoreConfig,
-} from "./types";
+import type { MemoryStore, RetentionClass, StoreEntry, SupabaseStoreConfig } from "./types";
 import type { TrustLevel } from "../../types";
 
 /**
@@ -25,10 +20,7 @@ export interface SearchBuilder {
   gt(column: string, value: number): SearchBuilder;
   ilike(column: string, value: string): SearchBuilder;
   or(filterExpr: string): SearchBuilder;
-  order(
-    column: string,
-    opts?: { ascending?: boolean },
-  ): SearchBuilder;
+  order(column: string, opts?: { ascending?: boolean }): SearchBuilder;
   limit(n: number): PromiseLike<{ data: unknown[]; error: Error | null }>;
   maybeSingle(): PromiseLike<{ data: unknown; error: Error | null }>;
 }
@@ -44,10 +36,7 @@ export interface LayeredSupabaseClient {
       ): PromiseLike<{ data: unknown[] | null; error: Error | null }>;
     };
     update(patch: Record<string, unknown>): {
-      eq(
-        column: string,
-        value: unknown,
-      ): PromiseLike<{ error: Error | null }>;
+      eq(column: string, value: unknown): PromiseLike<{ error: Error | null }>;
     };
   };
 }
@@ -89,9 +78,7 @@ export function createSupabaseStore(
     // Supabase schema is created via migrations, not at runtime.
   }
 
-  async function write(
-    input: Omit<StoreEntry, "id"> & { id?: string },
-  ): Promise<StoreEntry> {
+  async function write(input: Omit<StoreEntry, "id"> & { id?: string }): Promise<StoreEntry> {
     const id = input.id ?? randomUUID();
     const expiresAt = input.expiresAt ?? input.createdAt + retentionMs;
 
@@ -114,11 +101,7 @@ export function createSupabaseStore(
     return { ...input, id, expiresAt };
   }
 
-  async function search(
-    query: string,
-    peerId?: string,
-    limit = 10,
-  ): Promise<StoreEntry[]> {
+  async function search(query: string, peerId?: string, limit = 10): Promise<StoreEntry[]> {
     const escaped = query.replace(/[%_\\]/g, (c) => `\\${c}`);
     const pattern = `%${escaped}%`;
     const now = Date.now();
@@ -174,18 +157,12 @@ export function createSupabaseStore(
   }
 
   async function forget(peerId: string): Promise<number> {
-    const { data, error } = await config.client
-      .from(config.table)
-      .delete()
-      .eq("peer_id", peerId);
+    const { data, error } = await config.client.from(config.table).delete().eq("peer_id", peerId);
     if (error) throw error;
     return Array.isArray(data) ? data.length : 0;
   }
 
-  async function supersede(
-    entryId: string,
-    newEntryId: string,
-  ): Promise<void> {
+  async function supersede(entryId: string, newEntryId: string): Promise<void> {
     const { error } = await config.client
       .from(config.table)
       .update({ superseded_by: newEntryId })

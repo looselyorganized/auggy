@@ -54,7 +54,7 @@ describe("visitor-token", () => {
   it("verifyVisitorToken returns null for a tampered token", async () => {
     const key = await deriveSigningKey(bearerToken);
     const { token } = await createVisitorToken(key, agentId, 86400);
-    const tampered = token.slice(0, -4) + "XXXX";
+    const tampered = `${token.slice(0, -4)}XXXX`;
     const payload = await verifyVisitorToken(key, tampered);
     expect(payload).toBeNull();
   });

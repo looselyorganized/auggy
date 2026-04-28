@@ -59,7 +59,9 @@ export function buildBudgetPreamble(input: BuildBudgetPreambleInput): ContextBlo
     lines.push(`Turns remaining today: ${remaining} of ${input.caps.maxTurnsPerDay}`);
   }
   if (input.caps.maxUsdPerDay !== undefined) {
-    lines.push(`Estimated spend today: $${input.used.costUsd.toFixed(2)} of $${input.caps.maxUsdPerDay.toFixed(2)}`);
+    lines.push(
+      `Estimated spend today: $${input.used.costUsd.toFixed(2)} of $${input.caps.maxUsdPerDay.toFixed(2)}`,
+    );
   }
   lines.push("");
   lines.push(`Behavioral guidance (budgetRatio = ${ratio.toFixed(2)}): ${bucketGuidance(ratio)}`);
@@ -78,7 +80,7 @@ export function buildBudgetPreamble(input: BuildBudgetPreambleInput): ContextBlo
 
 function bucketGuidance(ratio: number): string {
   if (ratio <= 0.0) return "Grace turn — summarize and close.";
-  if (ratio < 0.2)  return "Final response. Deliver a complete answer.";
-  if (ratio < 0.6)  return "Focus on the core question. Begin wrapping up.";
+  if (ratio < 0.2) return "Final response. Deliver a complete answer.";
+  if (ratio < 0.6) return "Focus on the core question. Begin wrapping up.";
   return "Explore thoroughly. No urgency.";
 }

@@ -1,10 +1,4 @@
-import {
-  describe,
-  it,
-  expect,
-  beforeEach,
-  afterEach,
-} from "bun:test";
+import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { writeFile, mkdir, symlink, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { filesystem, isWithinMount } from "@/augments/filesystem";
@@ -35,45 +29,19 @@ describe("filesystem augment", () => {
       recursive: true,
     });
 
-    await writeFile(
-      join(tmp.path, "readable", "hello.txt"),
-      "hello world",
-      "utf-8",
-    );
-    await writeFile(
-      join(tmp.path, "readable", "sub", "nested.md"),
-      "nested content",
-      "utf-8",
-    );
-    await writeFile(
-      join(tmp.path, "readable", "big.txt"),
-      "x".repeat(500 * 1024),
-      "utf-8",
-    );
-    await writeFile(
-      join(tmp.path, "readable", "logo.png"),
-      "",
-      "utf-8",
-    );
-    await writeFile(
-      join(tmp.path, "deletable", "trash.txt"),
-      "delete me",
-      "utf-8",
-    );
-    await writeFile(
-      join(tmp.path, "deletable", "nonempty", "keep.txt"),
-      "keep",
-      "utf-8",
-    );
+    await writeFile(join(tmp.path, "readable", "hello.txt"), "hello world", "utf-8");
+    await writeFile(join(tmp.path, "readable", "sub", "nested.md"), "nested content", "utf-8");
+    await writeFile(join(tmp.path, "readable", "big.txt"), "x".repeat(500 * 1024), "utf-8");
+    await writeFile(join(tmp.path, "readable", "logo.png"), "", "utf-8");
+    await writeFile(join(tmp.path, "deletable", "trash.txt"), "delete me", "utf-8");
+    await writeFile(join(tmp.path, "deletable", "nonempty", "keep.txt"), "keep", "utf-8");
   });
 
   afterEach(async () => {
     await tmp.cleanup();
   });
 
-  function createTestFs(overrides?: {
-    mounts?: Parameters<typeof filesystem>[0]["mounts"];
-  }) {
+  function createTestFs(overrides?: { mounts?: Parameters<typeof filesystem>[0]["mounts"] }) {
     const mounts = overrides?.mounts ?? [
       { name: "read", path: join(tmp.path, "readable"), writable: false },
       {
@@ -130,9 +98,7 @@ describe("filesystem augment", () => {
         "fs_mkdir",
         "fs_remove",
       ]);
-      expect(aug.constraints?.perTrustLevel?.agent?.neverExpose).toEqual([
-        "fs_remove",
-      ]);
+      expect(aug.constraints?.perTrustLevel?.agent?.neverExpose).toEqual(["fs_remove"]);
       expect(aug.constraints?.perTrustLevel?.creator).toBeUndefined();
     });
 
@@ -148,9 +114,9 @@ describe("filesystem augment", () => {
     });
 
     it("throws on mount names with path separators", () => {
-      expect(() =>
-        filesystem({ mounts: [{ name: "a/b", path: "/tmp/ab" }] }),
-      ).toThrow(/must not contain path separators/);
+      expect(() => filesystem({ mounts: [{ name: "a/b", path: "/tmp/ab" }] })).toThrow(
+        /must not contain path separators/,
+      );
     });
 
     it("throws if deletable but not writable", () => {
@@ -225,9 +191,9 @@ describe("filesystem augment", () => {
 
     it("rejects unknown mount names", async () => {
       const aug = createTestFs();
-      await expect(
-        execTool(aug, "fs_read", { path: "nonexistent/file.txt" }),
-      ).rejects.toThrow(/Unknown mount/);
+      await expect(execTool(aug, "fs_read", { path: "nonexistent/file.txt" })).rejects.toThrow(
+        /Unknown mount/,
+      );
     });
   });
 
@@ -236,9 +202,9 @@ describe("filesystem augment", () => {
   describe("security", () => {
     it("rejects path traversal via ../", async () => {
       const aug = createTestFs();
-      await expect(
-        execTool(aug, "fs_read", { path: "read/../../etc/passwd" }),
-      ).rejects.toThrow(/outside mount.*boundary/);
+      await expect(execTool(aug, "fs_read", { path: "read/../../etc/passwd" })).rejects.toThrow(
+        /outside mount.*boundary/,
+      );
     });
 
     it("rejects path traversal via encoded ../", async () => {
@@ -260,16 +226,16 @@ describe("filesystem augment", () => {
 
     it("rejects mkdir-path traversal via ../", async () => {
       const aug = createTestFs();
-      await expect(
-        execTool(aug, "fs_mkdir", { path: "work/../../escape" }),
-      ).rejects.toThrow(/outside mount.*boundary/);
+      await expect(execTool(aug, "fs_mkdir", { path: "work/../../escape" })).rejects.toThrow(
+        /outside mount.*boundary/,
+      );
     });
 
     it("rejects remove-path traversal via ../", async () => {
       const aug = createTestFs();
-      await expect(
-        execTool(aug, "fs_remove", { path: "del/../../etc/passwd" }),
-      ).rejects.toThrow(/outside mount.*boundary/);
+      await expect(execTool(aug, "fs_remove", { path: "del/../../etc/passwd" })).rejects.toThrow(
+        /outside mount.*boundary/,
+      );
     });
 
     it("rejects symlinks that escape the mount boundary", async () => {
@@ -281,15 +247,15 @@ describe("filesystem augment", () => {
       // resolveAndValidate catches the symlink escape via realpath and throws.
       // In production, the turn loop's try/catch converts this to an error
       // string. Here we verify the security check fires.
-      await expect(
-        execTool(aug, "fs_read", { path: "read/escape-link.txt" }),
-      ).rejects.toThrow(/outside mount.*boundary/);
+      await expect(execTool(aug, "fs_read", { path: "read/escape-link.txt" })).rejects.toThrow(
+        /outside mount.*boundary/,
+      );
     });
 
     // Codex review P2: separator-suffix check broke mounts rooted at
-     // filesystem roots ("/" on POSIX). These pure-unit tests verify the
-     // new `path.relative`-based boundary check handles root mounts,
-     // prefix-collision siblings, and cross-drive cases uniformly.
+    // filesystem roots ("/" on POSIX). These pure-unit tests verify the
+    // new `path.relative`-based boundary check handles root mounts,
+    // prefix-collision siblings, and cross-drive cases uniformly.
     it("isWithinMount allows children of a root-level mount (POSIX `/`)", () => {
       expect(isWithinMount("/etc/hosts", "/")).toBe(true);
       expect(isWithinMount("/", "/")).toBe(true);
@@ -299,12 +265,8 @@ describe("filesystem augment", () => {
     it("isWithinMount still rejects prefix-collision siblings", () => {
       // mountRoot /var/data/work — target /var/data/workspace/file starts
       // with the same string prefix but is outside the mount.
-      expect(
-        isWithinMount("/var/data/workspace/file", "/var/data/work"),
-      ).toBe(false);
-      expect(
-        isWithinMount("/tmp/abc/file", "/tmp/a"),
-      ).toBe(false);
+      expect(isWithinMount("/var/data/workspace/file", "/var/data/work")).toBe(false);
+      expect(isWithinMount("/tmp/abc/file", "/tmp/a")).toBe(false);
     });
 
     it("isWithinMount rejects parent traversal", () => {
@@ -331,15 +293,12 @@ describe("filesystem augment", () => {
         "utf-8",
       );
       const linkPath = join(tmp.path, "readable", "collision-link.txt");
-      await symlink(
-        join(tmp.path, "readable-evil", "secret.txt"),
-        linkPath,
-      );
+      await symlink(join(tmp.path, "readable-evil", "secret.txt"), linkPath);
 
       const aug = createTestFs();
-      await expect(
-        execTool(aug, "fs_read", { path: "read/collision-link.txt" }),
-      ).rejects.toThrow(/outside mount.*boundary/);
+      await expect(execTool(aug, "fs_read", { path: "read/collision-link.txt" })).rejects.toThrow(
+        /outside mount.*boundary/,
+      );
     });
   });
 
@@ -355,10 +314,7 @@ describe("filesystem augment", () => {
       expect(result).toContain("Written");
 
       // Verify on disk
-      const onDisk = await readFile(
-        join(tmp.path, "writable", "test.txt"),
-        "utf-8",
-      );
+      const onDisk = await readFile(join(tmp.path, "writable", "test.txt"), "utf-8");
       expect(onDisk).toBe("written by agent");
     });
 
@@ -452,9 +408,9 @@ describe("filesystem augment", () => {
 
     it("rejects mkdir on read-only mounts", async () => {
       const aug = createTestFs();
-      await expect(
-        execTool(aug, "fs_mkdir", { path: "read/new-dir" }),
-      ).rejects.toThrow(/read-only/);
+      await expect(execTool(aug, "fs_mkdir", { path: "read/new-dir" })).rejects.toThrow(
+        /read-only/,
+      );
     });
   });
 
@@ -471,15 +427,11 @@ describe("filesystem augment", () => {
 
     it("rejects removal from non-deletable writable mounts", async () => {
       // "work" is writable but not deletable
-      await writeFile(
-        join(tmp.path, "writable", "temp.txt"),
-        "temp",
-        "utf-8",
-      );
+      await writeFile(join(tmp.path, "writable", "temp.txt"), "temp", "utf-8");
       const aug = createTestFs();
-      await expect(
-        execTool(aug, "fs_remove", { path: "work/temp.txt" }),
-      ).rejects.toThrow(/does not allow deletion/);
+      await expect(execTool(aug, "fs_remove", { path: "work/temp.txt" })).rejects.toThrow(
+        /does not allow deletion/,
+      );
     });
 
     it("rejects removal of non-empty directories", async () => {
@@ -505,9 +457,7 @@ describe("filesystem augment", () => {
         count: number;
       };
       expect(parsed.count).toBeGreaterThan(0);
-      expect(parsed.results.some((r) => r.includes("nested.md"))).toBe(
-        true,
-      );
+      expect(parsed.results.some((r) => r.includes("nested.md"))).toBe(true);
     });
 
     it("returns a message when no files match", async () => {
@@ -522,11 +472,7 @@ describe("filesystem augment", () => {
     it("respects maxResults cap", async () => {
       // Create many files
       for (let i = 0; i < 10; i++) {
-        await writeFile(
-          join(tmp.path, "writable", `file-${i}.txt`),
-          `content ${i}`,
-          "utf-8",
-        );
+        await writeFile(join(tmp.path, "writable", `file-${i}.txt`), `content ${i}`, "utf-8");
       }
       const aug = createTestFs();
       const result = await execTool(aug, "fs_search", {
@@ -557,10 +503,10 @@ describe("filesystem augment", () => {
       await aug.onBoot!();
 
       expect(aug.context).toBeDefined();
-      const blocks = await aug.context!(
-        {} as any,
-        undefined,
-      ) as Array<{ content: string; priority: string }>;
+      const blocks = (await aug.context!({} as any, undefined)) as Array<{
+        content: string;
+        priority: string;
+      }>;
 
       expect(blocks).toHaveLength(1);
       expect(blocks[0]!.content).toContain("Filesystem Guide");

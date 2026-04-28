@@ -4,8 +4,8 @@
  * agent's identity file.
  */
 
-import { existsSync, readdirSync, readFileSync, statSync } from "fs";
-import { join } from "path";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { SkillEntry } from "./types";
 
 /**

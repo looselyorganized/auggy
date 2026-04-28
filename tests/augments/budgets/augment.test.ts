@@ -316,9 +316,7 @@ describe("budgets augment", () => {
     expect(t1.decision.allow).toBe(true);
     await t1.confirm();
     await augment.turnGate!.commit!({
-      turnId: (t1 as unknown as { decision: unknown }).decision
-        ? "turn-usd-1"
-        : "turn-usd-1",
+      turnId: (t1 as unknown as { decision: unknown }).decision ? "turn-usd-1" : "turn-usd-1",
       peer,
       threadId,
       cost: { priced: true, costUsd: 0.6 },
@@ -386,9 +384,7 @@ describe("budgets augment", () => {
       trigger: makeTurnState(peer, threadId).trigger,
     });
     expect(t3.decision.allow).toBe(false);
-    expect((t3.decision as { allow: false; reason: string }).reason).toMatch(
-      /peer maxUsdPerDay/,
-    );
+    expect((t3.decision as { allow: false; reason: string }).reason).toMatch(/peer maxUsdPerDay/);
     await t3.rollback();
   });
 
@@ -683,7 +679,9 @@ describe("budgets augment", () => {
     // Mark augment as shut down so afterEach doesn't double-close.
     augment = {
       ...augment,
-      onShutdown: async () => { /* already closed */ },
+      onShutdown: async () => {
+        /* already closed */
+      },
     };
   });
 

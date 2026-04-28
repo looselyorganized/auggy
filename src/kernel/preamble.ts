@@ -1,9 +1,6 @@
 import type { PeerIdentity } from "../types";
 
-export function buildPreamble(opts: {
-  sourceAugment?: string;
-  peer: PeerIdentity | null;
-}): string {
+export function buildPreamble(opts: { sourceAugment?: string; peer: PeerIdentity | null }): string {
   const { sourceAugment, peer } = opts;
 
   const trustInfo = peer

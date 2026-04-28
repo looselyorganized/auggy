@@ -37,9 +37,7 @@ mock.module("openai", () => {
   class FakeOpenAI {
     chat = {
       completions: {
-        create: async (
-          params: Record<string, unknown>,
-        ): Promise<OpenAI.Chat.ChatCompletion> => {
+        create: async (params: Record<string, unknown>): Promise<OpenAI.Chat.ChatCompletion> => {
           lastCreateArgs = params;
           if (throwOnCreate) throw throwOnCreate;
           return nextResponse ?? defaultResponse();
@@ -109,9 +107,7 @@ describe("assembleOpenAISystemMessage", () => {
   });
 
   test("joins systemBlocks", () => {
-    const result = assembleOpenAISystemMessage(
-      emptyPrompt({ systemBlocks: ["a", "b"] }),
-    );
+    const result = assembleOpenAISystemMessage(emptyPrompt({ systemBlocks: ["a", "b"] }));
     expect(result).toEqual({ role: "system", content: "a\n\nb" });
   });
 
@@ -152,15 +148,11 @@ describe("safeParseToolCall", () => {
   });
 
   test("returns null when arguments is an array (typeof array === 'object' bypass)", () => {
-    expect(
-      safeParseToolCall(JSON.stringify({ name: "x", arguments: [1, 2, 3] })),
-    ).toBeNull();
+    expect(safeParseToolCall(JSON.stringify({ name: "x", arguments: [1, 2, 3] }))).toBeNull();
   });
 
   test("returns null when arguments is null", () => {
-    expect(
-      safeParseToolCall(JSON.stringify({ name: "x", arguments: null })),
-    ).toBeNull();
+    expect(safeParseToolCall(JSON.stringify({ name: "x", arguments: null }))).toBeNull();
   });
 });
 
@@ -170,9 +162,7 @@ describe("safeParseToolCall", () => {
 
 describe("convertOpenAIMessages", () => {
   test("maps user message to user role", () => {
-    const result = convertOpenAIMessages([
-      msg({ role: "user", content: "hello" }),
-    ]);
+    const result = convertOpenAIMessages([msg({ role: "user", content: "hello" })]);
     expect(result).toEqual([{ role: "user", content: "hello" }]);
   });
 
@@ -221,8 +211,7 @@ describe("convertOpenAIMessages", () => {
       }),
     ]);
     expect(result).toHaveLength(1);
-    const assistant =
-      result[0] as OpenAI.Chat.ChatCompletionAssistantMessageParam;
+    const assistant = result[0] as OpenAI.Chat.ChatCompletionAssistantMessageParam;
     expect(assistant.tool_calls).toHaveLength(2);
     expect(assistant.tool_calls?.[0]?.id).toBe("t1");
     expect(assistant.tool_calls?.[1]?.id).toBe("t2");
@@ -237,8 +226,7 @@ describe("convertOpenAIMessages", () => {
       }),
     ]);
     expect(result).toHaveLength(1);
-    const assistant =
-      result[0] as OpenAI.Chat.ChatCompletionAssistantMessageParam;
+    const assistant = result[0] as OpenAI.Chat.ChatCompletionAssistantMessageParam;
     expect(assistant.role).toBe("assistant");
     expect(assistant.content).toBeNull();
     expect(assistant.tool_calls).toHaveLength(1);
@@ -248,9 +236,7 @@ describe("convertOpenAIMessages", () => {
     const result = convertOpenAIMessages([
       msg({ role: "tool_result", toolCallId: "t1", content: "result body" }),
     ]);
-    expect(result).toEqual([
-      { role: "tool", tool_call_id: "t1", content: "result body" },
-    ]);
+    expect(result).toEqual([{ role: "tool", tool_call_id: "t1", content: "result body" }]);
   });
 
   test("keeps consecutive tool_results as separate tool messages", () => {
@@ -473,48 +459,37 @@ function mockCompletion(over: {
 
 describe("buildOpenAIModelResponse", () => {
   test("maps finish_reason 'stop' to end_turn", () => {
-    const r = buildOpenAIModelResponse(
-      mockCompletion({ content: "hi", finishReason: "stop" }),
-    );
+    const r = buildOpenAIModelResponse(mockCompletion({ content: "hi", finishReason: "stop" }));
     expect(r.finishReason).toBe("end_turn");
     expect(r.content).toBe("hi");
   });
 
   test("maps finish_reason 'tool_calls' to tool_use", () => {
-    const r = buildOpenAIModelResponse(
-      mockCompletion({ finishReason: "tool_calls" }),
-    );
+    const r = buildOpenAIModelResponse(mockCompletion({ finishReason: "tool_calls" }));
     expect(r.finishReason).toBe("tool_use");
   });
 
   test("maps finish_reason 'function_call' to tool_use (legacy)", () => {
     const r = buildOpenAIModelResponse(
       mockCompletion({
-        finishReason:
-          "function_call" as OpenAI.Chat.ChatCompletion.Choice["finish_reason"],
+        finishReason: "function_call" as OpenAI.Chat.ChatCompletion.Choice["finish_reason"],
       }),
     );
     expect(r.finishReason).toBe("tool_use");
   });
 
   test("maps finish_reason 'length' to max_tokens", () => {
-    const r = buildOpenAIModelResponse(
-      mockCompletion({ finishReason: "length" }),
-    );
+    const r = buildOpenAIModelResponse(mockCompletion({ finishReason: "length" }));
     expect(r.finishReason).toBe("max_tokens");
   });
 
   test("maps finish_reason 'content_filter' to end_turn", () => {
-    const r = buildOpenAIModelResponse(
-      mockCompletion({ finishReason: "content_filter" }),
-    );
+    const r = buildOpenAIModelResponse(mockCompletion({ finishReason: "content_filter" }));
     expect(r.finishReason).toBe("end_turn");
   });
 
   test("extracts token counts from usage", () => {
-    const r = buildOpenAIModelResponse(
-      mockCompletion({ inputTokens: 100, outputTokens: 25 }),
-    );
+    const r = buildOpenAIModelResponse(mockCompletion({ inputTokens: 100, outputTokens: 25 }));
     expect(r.inputTokens).toBe(100);
     expect(r.outputTokens).toBe(25);
   });
@@ -539,9 +514,7 @@ describe("buildOpenAIModelResponse", () => {
   });
 
   test("handles missing tool_calls (returns undefined)", () => {
-    const r = buildOpenAIModelResponse(
-      mockCompletion({ content: "no tools" }),
-    );
+    const r = buildOpenAIModelResponse(mockCompletion({ content: "no tools" }));
     expect(r.toolCalls).toBeUndefined();
   });
 
@@ -562,21 +535,21 @@ describe("buildOpenAIModelResponse", () => {
   });
 
   test("throws on empty choices array (visible failure not silent empty turn)", () => {
-    expect(() =>
-      buildOpenAIModelResponse(mockCompletion({ emptyChoices: true })),
-    ).toThrow(/returned no choices/);
+    expect(() => buildOpenAIModelResponse(mockCompletion({ emptyChoices: true }))).toThrow(
+      /returned no choices/,
+    );
   });
 
   test("empty-choices error includes model label", () => {
-    expect(() =>
-      buildOpenAIModelResponse(mockCompletion({ emptyChoices: true }), "gpt-5"),
-    ).toThrow(/gpt-5/);
+    expect(() => buildOpenAIModelResponse(mockCompletion({ emptyChoices: true }), "gpt-5")).toThrow(
+      /gpt-5/,
+    );
   });
 
   test("empty-choices error mentions content policy as likely cause", () => {
-    expect(() =>
-      buildOpenAIModelResponse(mockCompletion({ emptyChoices: true })),
-    ).toThrow(/content-policy/);
+    expect(() => buildOpenAIModelResponse(mockCompletion({ emptyChoices: true }))).toThrow(
+      /content-policy/,
+    );
   });
 
   test("treats null content as empty string", () => {
@@ -651,9 +624,7 @@ describe("createOpenAIEngine — SDK call payload", () => {
     throwOnCreate = original;
     const engine = createOpenAIEngine({ model: "o3" });
     try {
-      await engine.complete(
-        emptyPrompt({ messages: [msg({ content: "hi" })] }),
-      );
+      await engine.complete(emptyPrompt({ messages: [msg({ content: "hi" })] }));
       throw new Error("should have thrown");
     } catch (err) {
       expect(err).toBeInstanceOf(Error);
@@ -704,9 +675,7 @@ describe("createOpenAIEngine — costUsd", () => {
     // 200 input + 100 output → (200/1e6)*5 + (100/1e6)*20 = 0.001 + 0.002 = 0.003
     nextResponse = mockCompletion({ inputTokens: 200, outputTokens: 100 });
     const engine = createOpenAIEngine({ model: "gpt-5" });
-    const result = await engine.complete(
-      emptyPrompt({ messages: [msg({ content: "hi" })] }),
-    );
+    const result = await engine.complete(emptyPrompt({ messages: [msg({ content: "hi" })] }));
     expect(result.costUsd).toBeGreaterThan(0);
     expect(result.costUsd).toBeCloseTo(0.003, 8);
   });
@@ -714,9 +683,7 @@ describe("createOpenAIEngine — costUsd", () => {
   test("leaves costUsd undefined for unknown models", async () => {
     nextResponse = mockCompletion({ inputTokens: 200, outputTokens: 100 });
     const engine = createOpenAIEngine({ model: "gpt-future-99-experimental" });
-    const result = await engine.complete(
-      emptyPrompt({ messages: [msg({ content: "hi" })] }),
-    );
+    const result = await engine.complete(emptyPrompt({ messages: [msg({ content: "hi" })] }));
     expect(result.costUsd).toBeUndefined();
   });
 
@@ -725,9 +692,7 @@ describe("createOpenAIEngine — costUsd", () => {
     // 500 input + 250 output → (500/1e6)*1 + (250/1e6)*4 = 0.0005 + 0.001 = 0.0015
     nextResponse = mockCompletion({ inputTokens: 500, outputTokens: 250 });
     const engine = createOpenAIEngine({ model: "gpt-5-mini" });
-    const result = await engine.complete(
-      emptyPrompt({ messages: [msg({ content: "hi" })] }),
-    );
+    const result = await engine.complete(emptyPrompt({ messages: [msg({ content: "hi" })] }));
     expect(result.costUsd).toBeCloseTo(0.0015, 8);
   });
 
@@ -739,9 +704,7 @@ describe("createOpenAIEngine — costUsd", () => {
       model: "gpt-future-99-experimental",
       costOverride: { inputUsdPerMtok: 3, outputUsdPerMtok: 12 },
     });
-    const result = await engine.complete(
-      emptyPrompt({ messages: [msg({ content: "hi" })] }),
-    );
+    const result = await engine.complete(emptyPrompt({ messages: [msg({ content: "hi" })] }));
     expect(result.costUsd).toBeCloseTo(0.0036, 8);
   });
 
@@ -753,9 +716,7 @@ describe("createOpenAIEngine — costUsd", () => {
       model: "gpt-5",
       costOverride: { inputUsdPerMtok: 1, outputUsdPerMtok: 4 },
     });
-    const result = await engine.complete(
-      emptyPrompt({ messages: [msg({ content: "hi" })] }),
-    );
+    const result = await engine.complete(emptyPrompt({ messages: [msg({ content: "hi" })] }));
     expect(result.costUsd).toBeCloseTo(0.0018, 8);
   });
 });

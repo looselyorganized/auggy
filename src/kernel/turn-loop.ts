@@ -11,7 +11,6 @@ import type {
   InboundMessage,
   Tool,
   ToolCallRecord,
-  KernelEvent,
   KernelEventHandler,
   CostResult,
   TurnGateProvider,
@@ -86,10 +85,7 @@ import { selectTools } from "./tool-selector";
 import { createTraceEmitter } from "./trace-emitter";
 import { buildPreamble } from "./preamble";
 import { validateOutput } from "./output-validator";
-import {
-  createHistoryManager,
-  type HistoryManager,
-} from "./history-manager";
+import { createHistoryManager, type HistoryManager } from "./history-manager";
 
 export interface TurnLoopOptions {
   signal?: AbortSignal;
@@ -238,8 +234,9 @@ export function createTurnLoop(opts: {
           // prepare itself threw — treat as admission-state-failed.
           // Roll back any tickets already prepared.
           for (const t of tickets) {
-            try { await t.rollback(); }
-            catch (e) {
+            try {
+              await t.rollback();
+            } catch (e) {
               console.error(`[turn-gate ${gate.name}] rollback after prepare-throw failed:`, e);
             }
           }
@@ -266,8 +263,11 @@ export function createTurnLoop(opts: {
       if (denied) {
         const denialReason = (denied.decision as { allow: false; reason: string }).reason;
         for (const t of tickets) {
-          try { await t.rollback(); }
-          catch (err) { console.error("[turn-gate] rollback failed:", err); }
+          try {
+            await t.rollback();
+          } catch (err) {
+            console.error("[turn-gate] rollback failed:", err);
+          }
         }
         traceEmitter.finalize(trace);
         return {
@@ -296,8 +296,11 @@ export function createTurnLoop(opts: {
       }
       if (confirmError !== null) {
         for (const t of tickets) {
-          try { await t.rollback(); }
-          catch (err) { console.error("[turn-gate] rollback after confirm-throw failed:", err); }
+          try {
+            await t.rollback();
+          } catch (err) {
+            console.error("[turn-gate] rollback after confirm-throw failed:", err);
+          }
         }
         traceEmitter.finalize(trace);
         return {
@@ -357,8 +360,7 @@ export function createTurnLoop(opts: {
                 turnId: trigger.turnId,
                 success: false,
                 status: "failed",
-                errorResponse:
-                  "An internal error occurred during turn initialization.",
+                errorResponse: "An internal error occurred during turn initialization.",
                 toolCalls: [],
                 trace,
                 error: { message: String(err), source: aug.name },
@@ -384,13 +386,8 @@ export function createTurnLoop(opts: {
         if (!aug.context) continue;
         try {
           const timeout = aug.constraints?.contextTimeoutMs ?? 5000;
-          const priorContext = aug.receivesPriorContext
-            ? [...contextBlocks]
-            : undefined;
-          const result = await withTimeout(
-            () => aug.context!(turnState, priorContext),
-            timeout,
-          );
+          const priorContext = aug.receivesPriorContext ? [...contextBlocks] : undefined;
+          const result = await withTimeout(() => aug.context!(turnState, priorContext), timeout);
           if (typeof result === "string") {
             contextBlocks.push({
               source: aug.name,
@@ -422,8 +419,7 @@ export function createTurnLoop(opts: {
               turnId: trigger.turnId,
               success: false,
               status: "failed",
-              errorResponse:
-                "An internal error occurred. Please try again.",
+              errorResponse: "An internal error occurred. Please try again.",
               toolCalls: [],
               trace,
               error: { message: String(err), source: aug.name },
@@ -448,8 +444,7 @@ export function createTurnLoop(opts: {
       });
 
       const historyBudget = Math.floor(
-        model.maxContextTokens *
-          ((budgetConfig.historyPercent ?? 40) / 100),
+        model.maxContextTokens * ((budgetConfig.historyPercent ?? 40) / 100),
       );
       const historyMessages = history.getHistory(historyBudget);
 
@@ -466,33 +461,23 @@ export function createTurnLoop(opts: {
         toolChoiceOpt,
       );
 
-      const preambleTokens = currentPrompt.systemBlocks.reduce(
-        (s, b) => s + tokenizer.count(b), 0,
-      );
+      const preambleTokens = currentPrompt.systemBlocks.reduce((s, b) => s + tokenizer.count(b), 0);
       const toolSchemaTokens = currentPrompt.tools.reduce(
-        (s, t) => s + tokenizer.count(JSON.stringify(t)), 0,
+        (s, t) => s + tokenizer.count(JSON.stringify(t)),
+        0,
       );
       traceEmitter.recordContextAssembly(trace, {
         augmentBlocks: contextBlocks.map((b) => ({
           source: b.source,
           tokens: b.tokenCount ?? tokenizer.count(b.content),
-          included: !currentPrompt.evictions.find(
-            (e) => e.source === b.source,
-          ),
-          evicted: !!currentPrompt.evictions.find(
-            (e) => e.source === b.source,
-          ),
+          included: !currentPrompt.evictions.find((e) => e.source === b.source),
+          evicted: !!currentPrompt.evictions.find((e) => e.source === b.source),
         })),
         preambleTokens,
         toolSchemaTokens,
-        historyTokens: historyMessages.reduce(
-          (s, m) => s + m.tokenCount,
-          0,
-        ),
+        historyTokens: historyMessages.reduce((s, m) => s + m.tokenCount, 0),
         totalTokens: currentPrompt.totalTokens,
-        budgetUsed: Math.round(
-          (currentPrompt.totalTokens / model.maxContextTokens) * 100,
-        ),
+        budgetUsed: Math.round((currentPrompt.totalTokens / model.maxContextTokens) * 100),
       });
 
       traceEmitter.recordToolSelection(trace, {
@@ -543,9 +528,10 @@ export function createTurnLoop(opts: {
         } = await streamingInference(model, currentPrompt, trigger.turnId, emitEvent);
         const inferDuration = Date.now() - inferStart;
 
-        const cost: CostResult = response.costUsd !== undefined
-          ? { priced: true, costUsd: response.costUsd }
-          : { priced: false, reason: response.unpricedReason ?? "engine returned no costUsd" };
+        const cost: CostResult =
+          response.costUsd !== undefined
+            ? { priced: true, costUsd: response.costUsd }
+            : { priced: false, reason: response.unpricedReason ?? "engine returned no costUsd" };
 
         traceEmitter.recordInference(trace, {
           model: config.model,
@@ -622,17 +608,22 @@ export function createTurnLoop(opts: {
         // Phase 1: Validate all tool calls (synchronous — fast)
         let terminateToolLoop = false;
         type ToolCallEntry =
-          | { type: "error"; call: { name: string; arguments: Record<string, unknown> }; error: string }
-          | { type: "execute"; call: { name: string; arguments: Record<string, unknown> }; reg: { tool: Tool; augment: string }; validatedInput: unknown };
+          | {
+              type: "error";
+              call: { name: string; arguments: Record<string, unknown> };
+              error: string;
+            }
+          | {
+              type: "execute";
+              call: { name: string; arguments: Record<string, unknown> };
+              reg: { tool: Tool; augment: string };
+              validatedInput: unknown;
+            };
 
         const entries: ToolCallEntry[] = [];
 
         for (const call of response.toolCalls) {
-          const check = capabilityTable.canExecute(
-            call.name,
-            call.arguments,
-            turnState,
-          );
+          const check = capabilityTable.canExecute(call.name, call.arguments, turnState);
           traceEmitter.recordCapabilityCheck(trace, {
             tool: call.name,
             result:
@@ -649,7 +640,11 @@ export function createTurnLoop(opts: {
           }
 
           if ("needsApproval" in check) {
-            entries.push({ type: "error", call, error: "Tool requires operator approval. Skipping for now." });
+            entries.push({
+              type: "error",
+              call,
+              error: "Tool requires operator approval. Skipping for now.",
+            });
             continue;
           }
 
@@ -661,11 +656,19 @@ export function createTurnLoop(opts: {
 
           const validation = reg.tool.input.safeParse(call.arguments);
           if (!validation.success) {
-            entries.push({ type: "error", call, error: `Validation error: ${JSON.stringify(validation.error)}` });
+            entries.push({
+              type: "error",
+              call,
+              error: `Validation error: ${JSON.stringify(validation.error)}`,
+            });
             const prevCount = consecutiveFailures.get(call.name) ?? 0;
             consecutiveFailures.set(call.name, prevCount + 1);
             if ((consecutiveFailures.get(call.name) ?? 0) >= 2) {
-              entries.push({ type: "error", call, error: `Tool "${call.name}" failed validation 2 consecutive times. Stopping tool use.` });
+              entries.push({
+                type: "error",
+                call,
+                error: `Tool "${call.name}" failed validation 2 consecutive times. Stopping tool use.`,
+              });
               terminateToolLoop = true;
               break;
             }
@@ -680,7 +683,13 @@ export function createTurnLoop(opts: {
         const execResults = await Promise.all(
           entries.map(async (entry) => {
             if (entry.type === "error") {
-              return { call: entry.call, output: entry.error, durationMs: 0, isError: true, toolCallId: crypto.randomUUID() };
+              return {
+                call: entry.call,
+                output: entry.error,
+                durationMs: 0,
+                isError: true,
+                toolCallId: crypto.randomUUID(),
+              };
             }
             const toolCallId = `${entry.call.name}-${crypto.randomUUID()}`;
             emitEvent({
@@ -727,7 +736,13 @@ export function createTurnLoop(opts: {
               isError,
             });
 
-            return { call: entry.call, output, durationMs: Date.now() - execStart, isError, toolCallId };
+            return {
+              call: entry.call,
+              output,
+              durationMs: Date.now() - execStart,
+              isError,
+              toolCallId,
+            };
           }),
         );
 
@@ -764,7 +779,12 @@ export function createTurnLoop(opts: {
         // If consecutive failures terminated tool use, let model see the error and respond
         if (terminateToolLoop) {
           const updatedHistory = history.getHistory(historyBudget);
-          currentPrompt = allocator.assemble(contextBlocks, updatedHistory, toolSelection.definitions, toolChoiceOpt);
+          currentPrompt = allocator.assemble(
+            contextBlocks,
+            updatedHistory,
+            toolSelection.definitions,
+            toolChoiceOpt,
+          );
 
           const {
             response: finalResponse,

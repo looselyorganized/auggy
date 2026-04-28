@@ -18,14 +18,21 @@ import type { Message, AssembledPrompt } from "@/types";
 // we replicate the logic here for unit testing. If the logic changes in
 // anthropic.ts, these tests catch regressions via integration tests.
 
-function toContentBlocks(content: string | Array<{ type: string; [key: string]: unknown }>): Array<{ type: string; [key: string]: unknown }> {
+function toContentBlocks(
+  content: string | Array<{ type: string; [key: string]: unknown }>,
+): Array<{ type: string; [key: string]: unknown }> {
   if (typeof content === "string") {
     return [{ type: "text", text: content }];
   }
   return content;
 }
 
-function coalesceMessages(messages: Array<{ role: string; content: string | Array<{ type: string; [key: string]: unknown }> }>): Array<{ role: string; content: string | Array<{ type: string; [key: string]: unknown }> }> {
+function coalesceMessages(
+  messages: Array<{
+    role: string;
+    content: string | Array<{ type: string; [key: string]: unknown }>;
+  }>,
+): Array<{ role: string; content: string | Array<{ type: string; [key: string]: unknown }> }> {
   if (messages.length <= 1) return messages;
   const coalesced = [messages[0]!];
   for (let i = 1; i < messages.length; i++) {
@@ -46,7 +53,13 @@ describe("Anthropic message coalescing", () => {
   it("merges consecutive user messages (tool_result followed by user text)", () => {
     const messages = [
       { role: "user", content: "hello" },
-      { role: "assistant", content: [{ type: "text", text: "let me check" }, { type: "tool_use", id: "t1", name: "memory_read", input: {} }] },
+      {
+        role: "assistant",
+        content: [
+          { type: "text", text: "let me check" },
+          { type: "tool_use", id: "t1", name: "memory_read", input: {} },
+        ],
+      },
       { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "result" }] },
       { role: "user", content: "thanks, what else?" },
     ];
@@ -143,17 +156,13 @@ mock.module("@anthropic-ai/sdk", () => {
   class FakeAnthropic {
     messages = {
       create: async (_params: Record<string, unknown>) => {
-        return nextAnthropicResponse !== null
-          ? nextAnthropicResponse
-          : makeResponse();
+        return nextAnthropicResponse !== null ? nextAnthropicResponse : makeResponse();
       },
       stream: (_params: Record<string, unknown>) => {
         // Not used by these tests (non-streaming path only).
         throw new Error("streaming not mocked in costUsd tests");
       },
     };
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    constructor(_opts: Record<string, unknown>) {}
   }
 
   return { default: FakeAnthropic };

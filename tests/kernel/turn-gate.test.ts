@@ -10,13 +10,7 @@ import { describe, it, expect } from "bun:test";
 import { createTurnLoop } from "@/kernel/turn-loop";
 import { createMockModel } from "@tests/fixtures/mock-model";
 import { createTokenizer } from "@/tokenizer";
-import type {
-  Augment,
-  TurnTrigger,
-  PeerIdentity,
-  InboundMessage,
-  TurnGateTicket,
-} from "@/types";
+import type { Augment, TurnTrigger, PeerIdentity, InboundMessage, TurnGateTicket } from "@/types";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -118,9 +112,7 @@ describe("Turn-gate 2PC dispatch", () => {
   // No turn-gates — loop runs unchanged
   // -------------------------------------------------------------------------
   it("runs unchanged when no augments have turnGate", async () => {
-    const loop = makeLoop([
-      { name: "plain", context: async () => "You are a test agent." },
-    ]);
+    const loop = makeLoop([{ name: "plain", context: async () => "You are a test agent." }]);
     const result = await loop.executeTurn(makeTrigger(), "t-0");
     expect(result.success).toBe(true);
     expect(result.status).toBe("completed");
@@ -377,7 +369,7 @@ describe("Turn-gate 2PC dispatch", () => {
 
     // Model that throws on complete
     const throwingModel = createMockModel();
-    const origComplete = throwingModel.complete.bind(throwingModel);
+    const _origComplete = throwingModel.complete.bind(throwingModel);
     // Override complete to throw after the first call so the gate is properly confirmed
     // before the throw. We do this by pushing a response with a side-effect is not
     // straightforward — instead, create a fully custom mock.
@@ -498,7 +490,10 @@ describe("Turn-gate 2PC dispatch", () => {
           name: "ping",
           description: "Ping",
           category: "meta",
-          input: { parse: (v: unknown) => v, safeParse: (v: unknown) => ({ success: true, data: v }) } as never,
+          input: {
+            parse: (v: unknown) => v,
+            safeParse: (v: unknown) => ({ success: true, data: v }),
+          } as never,
           execute: async (input: unknown) => `pong:${(input as { msg: string }).msg}`,
         },
       ],

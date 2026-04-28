@@ -85,24 +85,15 @@ export type AGUIEvent =
 
 // === Constructor helpers ===
 
-export function runStarted(opts: {
-  threadId: string;
-  runId: string;
-}): AGUIRunStarted {
+export function runStarted(opts: { threadId: string; runId: string }): AGUIRunStarted {
   return { type: "RUN_STARTED", ...opts };
 }
 
-export function runFinished(opts: {
-  threadId: string;
-  runId: string;
-}): AGUIRunFinished {
+export function runFinished(opts: { threadId: string; runId: string }): AGUIRunFinished {
   return { type: "RUN_FINISHED", ...opts };
 }
 
-export function runError(opts: {
-  message: string;
-  code?: string;
-}): AGUIRunError {
+export function runError(opts: { message: string; code?: string }): AGUIRunError {
   return { type: "RUN_ERROR", ...opts };
 }
 
@@ -120,9 +111,7 @@ export function textMessageContent(opts: {
   return { type: "TEXT_MESSAGE_CONTENT", ...opts };
 }
 
-export function textMessageEnd(opts: {
-  messageId: string;
-}): AGUITextMessageEnd {
+export function textMessageEnd(opts: { messageId: string }): AGUITextMessageEnd {
   return { type: "TEXT_MESSAGE_END", ...opts };
 }
 
@@ -134,10 +123,7 @@ export function toolCallStart(opts: {
   return { type: "TOOL_CALL_START", ...opts };
 }
 
-export function toolCallArgs(opts: {
-  toolCallId: string;
-  delta: string;
-}): AGUIToolCallArgs {
+export function toolCallArgs(opts: { toolCallId: string; delta: string }): AGUIToolCallArgs {
   return { type: "TOOL_CALL_ARGS", ...opts };
 }
 

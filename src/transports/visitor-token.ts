@@ -16,18 +16,11 @@ export async function deriveSigningKey(bearerToken: string): Promise<CryptoKey> 
     false,
     ["sign"],
   );
-  const derived = await crypto.subtle.sign(
-    "HMAC",
-    keyMaterial,
-    encoder.encode(PURPOSE),
-  );
-  return crypto.subtle.importKey(
-    "raw",
-    derived,
-    { name: "HMAC", hash: "SHA-256" },
-    true,
-    ["sign", "verify"],
-  );
+  const derived = await crypto.subtle.sign("HMAC", keyMaterial, encoder.encode(PURPOSE));
+  return crypto.subtle.importKey("raw", derived, { name: "HMAC", hash: "SHA-256" }, true, [
+    "sign",
+    "verify",
+  ]);
 }
 
 export async function createVisitorToken(
@@ -42,11 +35,7 @@ export async function createVisitorToken(
     expiresAt: Date.now() + ttlSeconds * 1000,
   };
   const payloadB64 = btoa(JSON.stringify(payload));
-  const signature = await crypto.subtle.sign(
-    "HMAC",
-    key,
-    encoder.encode(payloadB64),
-  );
+  const signature = await crypto.subtle.sign("HMAC", key, encoder.encode(payloadB64));
   const sigB64 = btoa(String.fromCharCode(...new Uint8Array(signature)));
   return { token: `${payloadB64}.${sigB64}`, payload };
 }
@@ -70,12 +59,7 @@ export async function verifyVisitorToken(
     sigBytes.byteOffset,
     sigBytes.byteOffset + sigBytes.byteLength,
   ) as ArrayBuffer;
-  const valid = await crypto.subtle.verify(
-    "HMAC",
-    key,
-    sigBuffer,
-    encoder.encode(payloadB64),
-  );
+  const valid = await crypto.subtle.verify("HMAC", key, sigBuffer, encoder.encode(payloadB64));
   if (!valid) return null;
 
   let payload: VisitorTokenPayload;

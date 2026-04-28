@@ -64,10 +64,7 @@ export function buildRegistry(providers: Augment[]): MemoryRegistry {
  * Look up which provider owns a given label. Static labels win over namespaces.
  * Returns null if no provider owns the label.
  */
-export function lookupProvider(
-  registry: MemoryRegistry,
-  label: string,
-): Augment | null {
+export function lookupProvider(registry: MemoryRegistry, label: string): Augment | null {
   const staticOwner = registry.static.get(label);
   if (staticOwner) return staticOwner;
 

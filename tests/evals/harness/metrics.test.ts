@@ -39,9 +39,7 @@ function makeTrace(overrides?: Partial<TurnTrace>): TurnTrace {
         inputTokens: 400,
         outputTokens: 60,
         durationMs: 350,
-        toolCalls: [
-          { name: "web_fetch", augment: "webFetch", durationMs: 80, approved: true },
-        ],
+        toolCalls: [{ name: "web_fetch", augment: "webFetch", durationMs: 80, approved: true }],
         cost: { priced: true, costUsd: 0.004 },
       },
     ],
@@ -77,7 +75,10 @@ describe("computeTokenCost", () => {
           outputTokens: 40,
           durationMs: 200,
           toolCalls: [],
-          cost: { priced: false, reason: "anthropic: no pricing entry for model \"claude-future-99\"" },
+          cost: {
+            priced: false,
+            reason: 'anthropic: no pricing entry for model "claude-future-99"',
+          },
         },
       ],
     });
@@ -174,7 +175,10 @@ describe("aggregateMetrics", () => {
           outputTokens: 50,
           durationMs: 200,
           toolCalls: [],
-          cost: { priced: false, reason: "anthropic: no pricing entry for model \"claude-future-99\"" },
+          cost: {
+            priced: false,
+            reason: 'anthropic: no pricing entry for model "claude-future-99"',
+          },
         },
       ],
     });

@@ -9,9 +9,7 @@ export interface HistoryManager {
   totalTokens(): number;
 }
 
-export function createHistoryManager(opts: {
-  threadId: string;
-}): HistoryManager {
+export function createHistoryManager(opts: { threadId: string }): HistoryManager {
   let messages: Message[] = [];
   let runningTokens = 0;
   const storageKey = `history:${opts.threadId}`;
@@ -33,11 +31,7 @@ export function createHistoryManager(opts: {
         const msg = messages[i]!;
 
         // Check if this is a tool_result — must include its tool_use pair
-        if (
-          msg.role === "tool_result" &&
-          i > 0 &&
-          messages[i - 1]!.role === "tool_use"
-        ) {
+        if (msg.role === "tool_result" && i > 0 && messages[i - 1]!.role === "tool_use") {
           const pairCost = msg.tokenCount + messages[i - 1]!.tokenCount;
           if (budget - pairCost < 0 && startIndex < messages.length) break;
           budget -= pairCost;
@@ -48,11 +42,8 @@ export function createHistoryManager(opts: {
           i < messages.length - 1 &&
           messages[i + 1]!.role === "tool_result"
         ) {
-          // tool_use encountered before its result in backward walk — skip
-          continue;
         } else {
-          if (budget - msg.tokenCount < 0 && startIndex < messages.length)
-            break;
+          if (budget - msg.tokenCount < 0 && startIndex < messages.length) break;
           budget -= msg.tokenCount;
           startIndex = i;
         }
@@ -70,7 +61,11 @@ export function createHistoryManager(opts: {
         // Drop oldest messages until under threshold, respecting atomic tool pairs
         while (messages.length > 0 && runningTokens > threshold) {
           const first = messages[0]!;
-          if (first.role === "tool_use" && messages.length > 1 && messages[1]!.role === "tool_result") {
+          if (
+            first.role === "tool_use" &&
+            messages.length > 1 &&
+            messages[1]!.role === "tool_result"
+          ) {
             // Drop the pair together
             runningTokens -= first.tokenCount + messages[1]!.tokenCount;
             messages.splice(0, 2);

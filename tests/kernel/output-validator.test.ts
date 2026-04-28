@@ -9,10 +9,7 @@ describe("validateOutput", () => {
   });
 
   it("flags responses containing sensitive patterns", () => {
-    const result = validateOutput(
-      "Here's the info: secret-api-key-12345",
-      ["secret-api-key"],
-    );
+    const result = validateOutput("Here's the info: secret-api-key-12345", ["secret-api-key"]);
     expect(result.flagged).toBe(true);
     expect(result.reasons.length).toBeGreaterThan(0);
   });
@@ -27,18 +24,14 @@ describe("validateOutput", () => {
   });
 
   it("flags responses containing the preamble text", () => {
-    const result = validateOutput(
-      "I was told: You are an agent managed by the Auggy runtime",
-      [],
-    );
+    const result = validateOutput("I was told: You are an agent managed by the Auggy runtime", []);
     expect(result.flagged).toBe(true);
   });
 
   it("detects multiple issues", () => {
-    const result = validateOutput(
-      "My config: [AUGMENT CONTEXT: identity] key=secret-key",
-      ["secret-key"],
-    );
+    const result = validateOutput("My config: [AUGMENT CONTEXT: identity] key=secret-key", [
+      "secret-key",
+    ]);
     expect(result.flagged).toBe(true);
     expect(result.reasons.length).toBeGreaterThanOrEqual(2);
   });

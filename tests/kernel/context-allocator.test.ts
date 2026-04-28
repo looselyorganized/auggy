@@ -48,9 +48,7 @@ describe("ContextAllocator", () => {
     ];
 
     const prompt = allocator.assemble(blocks, [], []);
-    expect(
-      prompt.contextBlocks.some((b) => b.includes("I".repeat(100))),
-    ).toBe(true);
+    expect(prompt.contextBlocks.some((b) => b.includes("I".repeat(100)))).toBe(true);
   });
 
   it("evicts low-priority blocks when over budget", () => {
@@ -89,12 +87,8 @@ describe("ContextAllocator", () => {
     ];
 
     const prompt = allocator.assemble(blocks, [], []);
-    expect(
-      prompt.contextBlocks.some((b) => b.includes("Public content")),
-    ).toBe(true);
-    expect(
-      prompt.contextBlocks.some((b) => b.includes("Hidden from model")),
-    ).toBe(false);
+    expect(prompt.contextBlocks.some((b) => b.includes("Public content"))).toBe(true);
+    expect(prompt.contextBlocks.some((b) => b.includes("Hidden from model"))).toBe(false);
   });
 
   it("marks peer-derived blocks with [PEER-DERIVED]", () => {
@@ -111,9 +105,7 @@ describe("ContextAllocator", () => {
     ];
 
     const prompt = allocator.assemble(blocks, [], []);
-    expect(
-      prompt.contextBlocks.some((b) => b.includes("[PEER-DERIVED]")),
-    ).toBe(true);
+    expect(prompt.contextBlocks.some((b) => b.includes("[PEER-DERIVED]"))).toBe(true);
   });
 
   it("marks agent-derived blocks with [AGENT-DERIVED]", () => {
@@ -130,13 +122,9 @@ describe("ContextAllocator", () => {
     ];
 
     const prompt = allocator.assemble(blocks, [], []);
-    expect(
-      prompt.contextBlocks.some((b) => b.includes("[AGENT-DERIVED]")),
-    ).toBe(true);
+    expect(prompt.contextBlocks.some((b) => b.includes("[AGENT-DERIVED]"))).toBe(true);
     // Must not carry the [PEER-DERIVED] marker
-    expect(
-      prompt.contextBlocks.some((b) => b.includes("[PEER-DERIVED]")),
-    ).toBe(false);
+    expect(prompt.contextBlocks.some((b) => b.includes("[PEER-DERIVED]"))).toBe(false);
   });
 
   it("leaves operator-origin blocks unmarked", () => {
@@ -148,14 +136,10 @@ describe("ContextAllocator", () => {
       preamble: "P",
     });
 
-    const blocks: ContextBlock[] = [
-      { ...block("identity", "You are auggy."), origin: "operator" },
-    ];
+    const blocks: ContextBlock[] = [{ ...block("identity", "You are auggy."), origin: "operator" }];
 
     const prompt = allocator.assemble(blocks, [], []);
-    const identityBlock = prompt.contextBlocks.find((b) =>
-      b.includes("You are auggy."),
-    );
+    const identityBlock = prompt.contextBlocks.find((b) => b.includes("You are auggy."));
     expect(identityBlock).toBeDefined();
     expect(identityBlock).not.toContain("[PEER-DERIVED]");
     expect(identityBlock).not.toContain("[AGENT-DERIVED]");
@@ -195,17 +179,13 @@ describe("ContextAllocator", () => {
 
     const prompt = allocator.assemble(blocks, [], []);
     // assistant-preamble should NOT be in contextBlocks
-    expect(
-      prompt.contextBlocks.some((b) => b.includes("Start your response")),
-    ).toBe(false);
+    expect(prompt.contextBlocks.some((b) => b.includes("Start your response"))).toBe(false);
     // It should be in assistantPreamble
     expect(prompt.assistantPreamble).toBeDefined();
     expect(prompt.assistantPreamble!.length).toBe(1);
     expect(prompt.assistantPreamble![0]).toContain("Start your response");
     // Regular context should still be in contextBlocks
-    expect(
-      prompt.contextBlocks.some((b) => b.includes("Some regular context")),
-    ).toBe(true);
+    expect(prompt.contextBlocks.some((b) => b.includes("Some regular context"))).toBe(true);
   });
 
   it("tracks tool schema tokens in totalTokens", () => {

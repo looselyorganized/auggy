@@ -1,13 +1,12 @@
-import { describe, test, expect, beforeEach, afterEach, mock } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
-import { join } from "path";
+import { describe, test, expect, afterEach } from "bun:test";
+import { join } from "node:path";
 import type { PidManifest } from "../../src/cli/types";
 
 // We test the core logic by importing the functions and operating on
 // temp directories. The real registry uses ~/.auggy/ but tests
 // exercise the same code paths.
 
-const TMP = join(import.meta.dir, ".tmp-pid-test");
+const _TMP = join(import.meta.dir, ".tmp-pid-test");
 
 // Since pid-registry.ts uses a hardcoded AUGGY_DIR, we test by
 // directly testing the exported functions with real filesystem ops.

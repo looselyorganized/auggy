@@ -1,13 +1,11 @@
 export interface Pricing {
   inputUsdPerMtok: number;
   outputUsdPerMtok: number;
-  cacheWriteUsdPerMtok?: number;  // Anthropic: 1.25× input rate (cache creation)
-  cacheReadUsdPerMtok?: number;   // Anthropic: 0.1× input rate (cache read)
+  cacheWriteUsdPerMtok?: number; // Anthropic: 1.25× input rate (cache creation)
+  cacheReadUsdPerMtok?: number; // Anthropic: 0.1× input rate (cache read)
 }
 
-export type CostResult =
-  | { priced: true; costUsd: number }
-  | { priced: false; reason: string };
+export type CostResult = { priced: true; costUsd: number } | { priced: false; reason: string };
 
 export interface PricingFreshness {
   verifiedAt: string;
@@ -51,7 +49,7 @@ export function freshness(
   staleDays = 90,
   now: Date = new Date(),
 ): PricingFreshness {
-  const verified = new Date(verifiedAt + "T00:00:00Z");
+  const verified = new Date(`${verifiedAt}T00:00:00Z`);
   const ageDays = (now.getTime() - verified.getTime()) / 86_400_000;
   return { verifiedAt, ageDays, stale: ageDays > staleDays };
 }

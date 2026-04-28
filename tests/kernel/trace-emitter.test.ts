@@ -29,9 +29,7 @@ describe("TraceEmitter", () => {
     });
 
     emitter.recordContextAssembly(trace, {
-      augmentBlocks: [
-        { source: "identity", tokens: 100, included: true, evicted: false },
-      ],
+      augmentBlocks: [{ source: "identity", tokens: 100, included: true, evicted: false }],
       preambleTokens: 0,
       toolSchemaTokens: 0,
       historyTokens: 500,
@@ -157,7 +155,7 @@ describe("TraceEmitter", () => {
     if (!cost.priced) {
       expect(cost.reason).toBe("engine returned no costUsd");
       // costUsd field does not exist on the unpriced variant
-      expect((cost as Record<string, unknown>)["costUsd"]).toBeUndefined();
+      expect((cost as Record<string, unknown>).costUsd).toBeUndefined();
     }
   });
 });

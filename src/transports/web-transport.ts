@@ -245,8 +245,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
         return json(
           {
             error: "invalid_idempotency_key",
-            reason:
-              "Idempotency-Key must be 1–128 characters matching [A-Za-z0-9_-]",
+            reason: "Idempotency-Key must be 1–128 characters matching [A-Za-z0-9_-]",
           },
           400,
         );
@@ -308,10 +307,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
     const lastMessage = body.messages[body.messages.length - 1]!;
     const text = lastMessage.content ?? "";
     if (text.length > maxMessageLength) {
-      return json(
-        { error: "message too long", limit: maxMessageLength },
-        413,
-      );
+      return json({ error: "message too long", limit: maxMessageLength }, 413);
     }
 
     if (!kernel) {
@@ -415,23 +411,22 @@ export function webTransport(opts: WebTransportOptions): Augment {
               }
               writeEvent(
                 runError({
-                  message:
-                    result.errorResponse ?? "request rejected by transport",
+                  message: result.errorResponse ?? "request rejected by transport",
                   code,
                 }),
               );
-              writeEvent(
-                runFinished({ threadId, runId: trigger.turnId }),
-              );
+              writeEvent(runFinished({ threadId, runId: trigger.turnId }));
             }
           } catch (err) {
-            writeEvent(
-              runError({ message: String(err), code: "INTERNAL" }),
-            );
+            writeEvent(runError({ message: String(err), code: "INTERNAL" }));
             writeEvent(runFinished({ threadId, runId: trigger.turnId }));
           } finally {
             streamClosed = true;
-            try { controller.close(); } catch { /* already closed */ }
+            try {
+              controller.close();
+            } catch {
+              /* already closed */
+            }
           }
         })();
       },
@@ -447,8 +442,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
     }
     if (opts.cors) {
       sseHeaders["access-control-allow-origin"] = opts.cors.origins.join(",");
-      sseHeaders["access-control-expose-headers"] =
-        "x-visitor-token, idempotency-key";
+      sseHeaders["access-control-expose-headers"] = "x-visitor-token, idempotency-key";
     }
     return new Response(stream, { status: 200, headers: sseHeaders });
   }
@@ -500,7 +494,9 @@ export function webTransport(opts: WebTransportOptions): Augment {
         } else {
           const ephemeral = crypto.randomUUID() + crypto.randomUUID();
           signingKey = await deriveSigningKey(ephemeral);
-          console.warn("[web-transport] No VISITOR_SIGNING_KEY configured — using ephemeral key. Visitor tokens will not survive agent restart. Set VISITOR_SIGNING_KEY in .env for persistent visitor identity.");
+          console.warn(
+            "[web-transport] No VISITOR_SIGNING_KEY configured — using ephemeral key. Visitor tokens will not survive agent restart. Set VISITOR_SIGNING_KEY in .env for persistent visitor identity.",
+          );
         }
       }
       server = Bun.serve({
@@ -520,10 +516,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
           if (req.method === "GET" && url.pathname === "/health") {
             return handleHealth();
           }
-          if (
-            req.method === "GET" &&
-            url.pathname === "/.well-known/agent-card.json"
-          ) {
+          if (req.method === "GET" && url.pathname === "/.well-known/agent-card.json") {
             return handleAgentCard();
           }
           return new Response("Not Found", { status: 404 });

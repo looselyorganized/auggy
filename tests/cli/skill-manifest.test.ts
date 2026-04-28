@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { mkdirSync, rmSync, writeFileSync } from "fs";
-import { join } from "path";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { scanSkillManifest, renderSkillManifest } from "../../src/cli/skill-manifest";
 
 const TMP = join(import.meta.dir, ".tmp-skill-test");

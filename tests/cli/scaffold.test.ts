@@ -1,6 +1,6 @@
 import { describe, test, expect, afterEach } from "bun:test";
-import { existsSync, readFileSync, rmSync } from "fs";
-import { join } from "path";
+import { existsSync, readFileSync, rmSync } from "node:fs";
+import { join } from "node:path";
 import { scaffoldAgent } from "../../src/cli/scaffold";
 import { parseConfig } from "../../src/cli/config-parser";
 
@@ -28,7 +28,9 @@ describe("scaffoldAgent", () => {
   test("generates a valid aug1_ UUID in agent.yaml", () => {
     const dir = scaffoldAgent({ name: "test-agent", targetDir: join(TMP, "test-agent") });
     const yaml = readFileSync(join(dir, "agent.yaml"), "utf-8");
-    expect(yaml).toMatch(/^id: aug1_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/m);
+    expect(yaml).toMatch(
+      /^id: aug1_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/m,
+    );
   });
 
   test("agent.yaml contains the agent name", () => {
@@ -66,9 +68,9 @@ describe("scaffoldAgent", () => {
 
   test("throws if target directory already exists", () => {
     scaffoldAgent({ name: "exists", targetDir: join(TMP, "exists") });
-    expect(() =>
-      scaffoldAgent({ name: "exists", targetDir: join(TMP, "exists") }),
-    ).toThrow("already exists");
+    expect(() => scaffoldAgent({ name: "exists", targetDir: join(TMP, "exists") })).toThrow(
+      "already exists",
+    );
   });
 
   test("uses custom purpose when provided", () => {

@@ -64,9 +64,7 @@ describe("resolveEngine", () => {
   });
 
   test("throws for unknown provider with full supported list in message", () => {
-    expect(() =>
-      resolveEngine({ provider: "foobar", model: "x" }),
-    ).toThrow(
+    expect(() => resolveEngine({ provider: "foobar", model: "x" })).toThrow(
       'Unknown engine provider: "foobar" (supported: anthropic, openai, openrouter)',
     );
   });
@@ -106,10 +104,7 @@ describe("resolveEngine", () => {
     // contract is: src/cli/engine-resolver.ts openrouter branch does not
     // pass baseURL. Codify it as a regression-grep test instead:
     const fs = require("node:fs");
-    const source = fs.readFileSync(
-      "src/cli/engine-resolver.ts",
-      "utf-8",
-    ) as string;
+    const source = fs.readFileSync("src/cli/engine-resolver.ts", "utf-8") as string;
     // Find the openrouter branch and confirm baseURL is absent within it.
     const openrouterBlock = source.match(
       /config\.provider === "openrouter"[\s\S]*?createOpenRouterEngine\([\s\S]*?\}\);/,

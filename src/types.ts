@@ -394,10 +394,10 @@ export interface ModelResponse {
   toolCalls?: { name: string; arguments: Record<string, unknown> }[];
   inputTokens: number;
   outputTokens: number;
-  cacheCreationTokens?: number;  // Anthropic-specific: tokens written to prompt cache
-  cacheReadTokens?: number;      // Anthropic-specific: tokens read from prompt cache
+  cacheCreationTokens?: number; // Anthropic-specific: tokens written to prompt cache
+  cacheReadTokens?: number; // Anthropic-specific: tokens read from prompt cache
   finishReason: "end_turn" | "tool_use" | "max_tokens";
-  costUsd?: number;        // populated by adapter when pricing is known; undefined otherwise
+  costUsd?: number; // populated by adapter when pricing is known; undefined otherwise
   unpricedReason?: string; // set when costUsd is absent, describes why pricing was unavailable
 }
 
@@ -458,9 +458,7 @@ export interface TransportKernel {
     trigger: TurnTrigger,
     options?: { onEvent?: KernelEventHandler },
   ): Promise<TurnResult>;
-  onOutbound(
-    callback: (peer: PeerIdentity, message: OutboundMessage) => Promise<void>,
-  ): void;
+  onOutbound(callback: (peer: PeerIdentity, message: OutboundMessage) => Promise<void>): void;
   getAgentCard(): AgentCard;
 }
 
@@ -574,10 +572,7 @@ export interface Augment {
   version?: string;
   required?: boolean;
   capabilities?: AugmentCapability[];
-  context?: (
-    turn: TurnState,
-    priorContext?: ContextBlock[],
-  ) => Promise<ContextBlock[] | string>;
+  context?: (turn: TurnState, priorContext?: ContextBlock[]) => Promise<ContextBlock[] | string>;
   receivesPriorContext?: boolean;
   tools?: Tool[];
   transport?: TransportSpec;
@@ -625,10 +620,7 @@ export interface AgentHealth {
   status: "healthy" | "degraded" | "unhealthy";
   agent: string;
   uptime: number;
-  augments: Record<
-    string,
-    { status: "ok" | "degraded" | "failed"; error?: string }
-  >;
+  augments: Record<string, { status: "ok" | "degraded" | "failed"; error?: string }>;
   model: { reachable: boolean };
 }
 

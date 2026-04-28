@@ -1,8 +1,5 @@
 import type { Augment } from "../types";
-import {
-  buildRegistry,
-  getMemoryProviders,
-} from "./registry";
+import { buildRegistry, getMemoryProviders } from "./registry";
 import type { MemoryRegistry } from "./types";
 import { synthesizeContextFor } from "./context-synthesis";
 import { createMemoryTools } from "./tools";

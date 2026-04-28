@@ -78,8 +78,8 @@ export function createOpenAIEngine(opts: OpenAIEngineOptions): ModelClient {
       // eslint-disable-next-line no-console
       console.warn(
         `[engines/openai] No pricing entry for model "${opts.model}" and no costOverride configured. ` +
-        `costUsd will be undefined; dailyBudgetUsd cannot enforce against this model. ` +
-        `Add the model to src/engines/openai/pricing.ts or configure engine.costOverride in agent.yaml.`,
+          `costUsd will be undefined; dailyBudgetUsd cannot enforce against this model. ` +
+          `Add the model to src/engines/openai/pricing.ts or configure engine.costOverride in agent.yaml.`,
       );
     } else {
       const f = getFreshness();
@@ -87,7 +87,7 @@ export function createOpenAIEngine(opts: OpenAIEngineOptions): ModelClient {
         // eslint-disable-next-line no-console
         console.warn(
           `[engines/openai] Pricing table verifiedAt ${f.verifiedAt} is more than 90 days old. ` +
-          `Cost estimates may be drifting from actual billing. Verify rates and update src/engines/openai/pricing.ts.`,
+            `Cost estimates may be drifting from actual billing. Verify rates and update src/engines/openai/pricing.ts.`,
         );
       }
     }
@@ -100,22 +100,24 @@ export function createOpenAIEngine(opts: OpenAIEngineOptions): ModelClient {
       return Math.ceil(text.length / 4);
     },
 
-    async complete(prompt: AssembledPrompt, _opts?: { onDelta?: (delta: ModelDelta) => void }): Promise<ModelResponse> {
+    async complete(
+      prompt: AssembledPrompt,
+      _opts?: { onDelta?: (delta: ModelDelta) => void },
+    ): Promise<ModelResponse> {
       const systemMessage = assembleOpenAISystemMessage(prompt);
       const messages = convertOpenAIMessages(prompt.messages);
       const tools = convertOpenAITools(prompt.tools);
 
-      const allMessages: OpenAI.Chat.ChatCompletionMessageParam[] =
-        systemMessage ? [systemMessage, ...messages] : messages;
+      const allMessages: OpenAI.Chat.ChatCompletionMessageParam[] = systemMessage
+        ? [systemMessage, ...messages]
+        : messages;
 
       const params: OpenAI.Chat.ChatCompletionCreateParamsNonStreaming = {
         model: opts.model,
         max_completion_tokens: maxOutputTokens,
         messages: allMessages,
         ...(tools.length > 0 ? { tools } : {}),
-        ...(opts.reasoningEffort
-          ? { reasoning_effort: opts.reasoningEffort }
-          : {}),
+        ...(opts.reasoningEffort ? { reasoning_effort: opts.reasoningEffort } : {}),
       };
 
       let completion: OpenAI.Chat.ChatCompletion;
@@ -134,7 +136,8 @@ export function createOpenAIEngine(opts: OpenAIEngineOptions): ModelClient {
       const result = priceOpenAIResponse(opts.model, opts.costOverride, {
         prompt_tokens: completion.usage?.prompt_tokens ?? response.inputTokens,
         completion_tokens: completion.usage?.completion_tokens ?? response.outputTokens,
-        reasoning_tokens: (completion.usage as Record<string, unknown> | null | undefined)?.["reasoning_tokens"] as number | undefined,
+        reasoning_tokens: (completion.usage as Record<string, unknown> | null | undefined)
+          ?.reasoning_tokens as number | undefined,
       });
       return result.priced
         ? { ...response, costUsd: result.costUsd }
@@ -174,9 +177,7 @@ export function assembleOpenAISystemMessage(
  *  Returns null defensively on malformed JSON. */
 export function safeParseToolCall(
   content: string,
-):
-  | { name: string; arguments: Record<string, unknown> }
-  | null {
+): { name: string; arguments: Record<string, unknown> } | null {
   try {
     const parsed = JSON.parse(content) as {
       name?: unknown;
@@ -350,9 +351,7 @@ function coalesceConsecutiveUsers(
 /** Convert Auggy ToolDefinitions to OpenAI Chat Completions tool format.
  *  Schema normalization strips JSON Schema metadata keys (`$schema`, `$id`)
  *  that the API ignores or rejects. */
-export function convertOpenAITools(
-  toolDefs: ToolDefinition[],
-): OpenAI.Chat.ChatCompletionTool[] {
+export function convertOpenAITools(toolDefs: ToolDefinition[]): OpenAI.Chat.ChatCompletionTool[] {
   return toolDefs.map((td) => ({
     type: "function",
     function: {
@@ -413,14 +412,10 @@ export function buildOpenAIModelResponse(
       }
       return null;
     })
-    .filter(
-      (x): x is { name: string; arguments: Record<string, unknown> } =>
-        x !== null,
-    );
+    .filter((x): x is { name: string; arguments: Record<string, unknown> } => x !== null);
 
   const finishReason: ModelResponse["finishReason"] =
-    choice.finish_reason === "tool_calls" ||
-    choice.finish_reason === "function_call"
+    choice.finish_reason === "tool_calls" || choice.finish_reason === "function_call"
       ? "tool_use"
       : choice.finish_reason === "length"
         ? "max_tokens"

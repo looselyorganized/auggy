@@ -11,8 +11,8 @@
  * telemetry-exporter daemon).
  */
 
-import { readFileSync, existsSync } from "fs";
-import { resolve, dirname } from "path";
+import { readFileSync, existsSync } from "node:fs";
+import { resolve, dirname } from "node:path";
 import { parse as parseYaml } from "yaml";
 import type { ParsedConfig, AugmentConfig, EngineConfig, AgentSettings } from "./types";
 
@@ -69,18 +69,12 @@ export function interpolateEnvVars(obj: unknown, path = ""): unknown {
   const missing: string[] = [];
   const result = walkAndInterpolate(obj, path, missing);
   if (missing.length > 0) {
-    throw new Error(
-      `Missing environment variables:\n${missing.map((m) => `  - ${m}`).join("\n")}`,
-    );
+    throw new Error(`Missing environment variables:\n${missing.map((m) => `  - ${m}`).join("\n")}`);
   }
   return result;
 }
 
-function walkAndInterpolate(
-  obj: unknown,
-  path: string,
-  missing: string[],
-): unknown {
+function walkAndInterpolate(obj: unknown, path: string, missing: string[]): unknown {
   if (typeof obj === "string") {
     return obj.replace(ENV_VAR_RE, (_match, varName: string) => {
       const value = process.env[varName];
@@ -92,9 +86,7 @@ function walkAndInterpolate(
     });
   }
   if (Array.isArray(obj)) {
-    return obj.map((item, i) =>
-      walkAndInterpolate(item, `${path}[${i}]`, missing),
-    );
+    return obj.map((item, i) => walkAndInterpolate(item, `${path}[${i}]`, missing));
   }
   if (obj !== null && typeof obj === "object") {
     const out: Record<string, unknown> = {};
@@ -126,14 +118,7 @@ const BUILTIN_TYPES = new Set([
   "budgets",
 ]);
 const KNOWN_PROVIDERS = new Set(["anthropic", "openai", "openrouter"]);
-const VALID_REASONING_EFFORTS = new Set([
-  "none",
-  "minimal",
-  "low",
-  "medium",
-  "high",
-  "xhigh",
-]);
+const VALID_REASONING_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh"]);
 const VALID_ROUTING_SORTS = new Set(["price", "throughput", "latency"]);
 
 // ---------------------------------------------------------------------------
@@ -144,11 +129,7 @@ const VALID_ROUTING_SORTS = new Set(["price", "throughput", "latency"]);
  * Validate a BudgetCaps object (used for agent, public.anonymous, public.recognized).
  * Each field must be a positive number when present.
  */
-function validateBudgetCaps(
-  caps: Record<string, unknown>,
-  path: string,
-  errors: string[],
-): void {
+function validateBudgetCaps(caps: Record<string, unknown>, path: string, errors: string[]): void {
   const numericFields = [
     "maxTurnsPerThread",
     "maxTurnsPerDay",
@@ -190,22 +171,14 @@ function validateBudgetsOptions(
   }
 
   if (opts.caps !== undefined) {
-    if (
-      typeof opts.caps !== "object" ||
-      opts.caps === null ||
-      Array.isArray(opts.caps)
-    ) {
+    if (typeof opts.caps !== "object" || opts.caps === null || Array.isArray(opts.caps)) {
       errors.push(`${prefix}.options.caps: must be an object`);
       return;
     }
     const caps = opts.caps as Record<string, unknown>;
 
     if (caps.agent !== undefined) {
-      if (
-        typeof caps.agent !== "object" ||
-        caps.agent === null ||
-        Array.isArray(caps.agent)
-      ) {
+      if (typeof caps.agent !== "object" || caps.agent === null || Array.isArray(caps.agent)) {
         errors.push(`${prefix}.options.caps.agent: must be an object`);
       } else {
         validateBudgetCaps(
@@ -217,11 +190,7 @@ function validateBudgetsOptions(
     }
 
     if (caps.public !== undefined) {
-      if (
-        typeof caps.public !== "object" ||
-        caps.public === null ||
-        Array.isArray(caps.public)
-      ) {
+      if (typeof caps.public !== "object" || caps.public === null || Array.isArray(caps.public)) {
         errors.push(`${prefix}.options.caps.public: must be an object`);
       } else {
         const pub = caps.public as Record<string, unknown>;
@@ -232,9 +201,7 @@ function validateBudgetsOptions(
               pub[substate] === null ||
               Array.isArray(pub[substate])
             ) {
-              errors.push(
-                `${prefix}.options.caps.public.${substate}: must be an object`,
-              );
+              errors.push(`${prefix}.options.caps.public.${substate}: must be an object`);
             } else {
               validateBudgetCaps(
                 pub[substate] as Record<string, unknown>,
@@ -259,7 +226,9 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
   if (typeof raw.name !== "string" || raw.name.length === 0) {
     errors.push("name: required, non-empty string");
   } else if (!VALID_NAME_RE.test(raw.name)) {
-    errors.push(`name: must be lowercase alphanumeric with hyphens/underscores (got "${raw.name}")`);
+    errors.push(
+      `name: must be lowercase alphanumeric with hyphens/underscores (got "${raw.name}")`,
+    );
   }
 
   // Engine.
@@ -295,9 +264,7 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
       ) {
         errors.push("engine.providerRouting: must be an object");
       } else if (engine.provider !== "openrouter") {
-        errors.push(
-          "engine.providerRouting: only valid for provider 'openrouter'",
-        );
+        errors.push("engine.providerRouting: only valid for provider 'openrouter'");
       } else {
         const r = engine.providerRouting as Record<string, unknown>;
         if (r.only !== undefined) {
@@ -306,9 +273,7 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
             r.only.length === 0 ||
             !r.only.every((v) => typeof v === "string")
           ) {
-            errors.push(
-              "engine.providerRouting.only: must be a non-empty array of strings",
-            );
+            errors.push("engine.providerRouting.only: must be a non-empty array of strings");
           }
         }
         if (r.ignore !== undefined) {
@@ -317,9 +282,7 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
             r.ignore.length === 0 ||
             !r.ignore.every((v) => typeof v === "string")
           ) {
-            errors.push(
-              "engine.providerRouting.ignore: must be a non-empty array of strings",
-            );
+            errors.push("engine.providerRouting.ignore: must be a non-empty array of strings");
           }
         }
         if (
@@ -339,21 +302,14 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
             errors.push("engine.providerRouting.max_price: must be an object");
           } else {
             const mp = r.max_price as Record<string, unknown>;
-            if (
-              mp.prompt !== undefined &&
-              (typeof mp.prompt !== "number" || mp.prompt <= 0)
-            ) {
-              errors.push(
-                "engine.providerRouting.max_price.prompt: must be a positive number",
-              );
+            if (mp.prompt !== undefined && (typeof mp.prompt !== "number" || mp.prompt <= 0)) {
+              errors.push("engine.providerRouting.max_price.prompt: must be a positive number");
             }
             if (
               mp.completion !== undefined &&
               (typeof mp.completion !== "number" || mp.completion <= 0)
             ) {
-              errors.push(
-                "engine.providerRouting.max_price.completion: must be a positive number",
-              );
+              errors.push("engine.providerRouting.max_price.completion: must be a positive number");
             }
           }
         }
@@ -370,21 +326,17 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
         const co = engine.costOverride as Record<string, unknown>;
         if (
           typeof co.inputUsdPerMtok !== "number" ||
-          !isFinite(co.inputUsdPerMtok) ||
+          !Number.isFinite(co.inputUsdPerMtok) ||
           co.inputUsdPerMtok < 0
         ) {
-          errors.push(
-            "engine.costOverride.inputUsdPerMtok: must be a finite non-negative number",
-          );
+          errors.push("engine.costOverride.inputUsdPerMtok: must be a finite non-negative number");
         }
         if (
           typeof co.outputUsdPerMtok !== "number" ||
-          !isFinite(co.outputUsdPerMtok) ||
+          !Number.isFinite(co.outputUsdPerMtok) ||
           co.outputUsdPerMtok < 0
         ) {
-          errors.push(
-            "engine.costOverride.outputUsdPerMtok: must be a finite non-negative number",
-          );
+          errors.push("engine.costOverride.outputUsdPerMtok: must be a finite non-negative number");
         }
       }
     }
@@ -403,7 +355,9 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
       if (typeof aug.name !== "string" || aug.name.length === 0) {
         errors.push(`${prefix}.name: required, non-empty string`);
       } else if (!VALID_NAME_RE.test(aug.name)) {
-        errors.push(`${prefix}.name: must be lowercase alphanumeric with hyphens/underscores (got "${aug.name}")`);
+        errors.push(
+          `${prefix}.name: must be lowercase alphanumeric with hyphens/underscores (got "${aug.name}")`,
+        );
       } else if (names.has(aug.name)) {
         errors.push(`${prefix}.name: duplicate name "${aug.name}"`);
       } else {
@@ -431,13 +385,8 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
 
   // Settings.
   const settings = (raw.settings ?? {}) as Record<string, unknown>;
-  if (
-    settings.compactionStrategy &&
-    !VALID_COMPACTION.has(settings.compactionStrategy as string)
-  ) {
-    errors.push(
-      `settings.compactionStrategy: must be one of ${[...VALID_COMPACTION].join(", ")}`,
-    );
+  if (settings.compactionStrategy && !VALID_COMPACTION.has(settings.compactionStrategy as string)) {
+    errors.push(`settings.compactionStrategy: must be one of ${[...VALID_COMPACTION].join(", ")}`);
   }
   if (
     settings.maxInferenceLoops !== undefined &&
@@ -447,9 +396,7 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
   }
 
   if (errors.length > 0) {
-    throw new Error(
-      `Invalid agent.yaml:\n${errors.map((e) => `  - ${e}`).join("\n")}`,
-    );
+    throw new Error(`Invalid agent.yaml:\n${errors.map((e) => `  - ${e}`).join("\n")}`);
   }
 
   return {

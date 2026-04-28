@@ -20,7 +20,9 @@ function startTestServer() {
 
       // Store received headers for inspection.
       const h: Record<string, string> = {};
-      req.headers.forEach((value, key) => { h[key] = value; });
+      req.headers.forEach((value, key) => {
+        h[key] = value;
+      });
       receivedHeaders[path] = h;
 
       // --- Redirect scenarios ---
@@ -119,7 +121,9 @@ function startCrossOriginServer() {
     fetch(req) {
       const url = new URL(req.url);
       const h: Record<string, string> = {};
-      req.headers.forEach((value, key) => { h[key] = value; });
+      req.headers.forEach((value, key) => {
+        h[key] = value;
+      });
       receivedHeaders[`cross:${url.pathname}`] = h;
       return new Response("cross-origin destination");
     },
@@ -148,7 +152,7 @@ describe("http client — redirect header stripping", () => {
     expect(res.status).toBe(200);
     expect(res.body).toBe("final destination");
     // Auth header should reach /final since it's same origin.
-    expect(receivedHeaders["/final"]!["authorization"]).toBe("Bearer secret-token");
+    expect(receivedHeaders["/final"]!.authorization).toBe("Bearer secret-token");
   });
 
   test("strips auth headers on cross-origin redirect", async () => {
@@ -181,8 +185,8 @@ describe("http client — redirect header stripping", () => {
 
       // Auth headers should NOT reach the cross-origin target.
       const targetHeaders = receivedHeaders["cross:/target"]!;
-      expect(targetHeaders["authorization"]).toBeUndefined();
-      expect(targetHeaders["cookie"]).toBeUndefined();
+      expect(targetHeaders.authorization).toBeUndefined();
+      expect(targetHeaders.cookie).toBeUndefined();
       expect(targetHeaders["proxy-authorization"]).toBeUndefined();
       // Non-sensitive headers should still be present.
       expect(targetHeaders["user-agent"]).toBeDefined();
@@ -268,9 +272,9 @@ describe("http client — redirect behavior", () => {
 
   test("throws on redirect limit exceeded", async () => {
     const client = createHttpClient({ maxRedirects: 3 });
-    expect(
-      client.get(`http://localhost:${serverPort}/redirect-loop`),
-    ).rejects.toThrow("exceeded redirect limit");
+    expect(client.get(`http://localhost:${serverPort}/redirect-loop`)).rejects.toThrow(
+      "exceeded redirect limit",
+    );
   });
 
   test("downgrades POST to GET on 303 redirect", async () => {
@@ -295,9 +299,7 @@ describe("http client — timeout", () => {
 
     try {
       const client = createHttpClient({ timeoutMs: 200 });
-      expect(
-        client.get(`http://localhost:${slowServer.port}/`),
-      ).rejects.toThrow();
+      expect(client.get(`http://localhost:${slowServer.port}/`)).rejects.toThrow();
     } finally {
       slowServer.stop(true);
     }
@@ -322,15 +324,11 @@ describe("rejectUnsafeUrl helper", () => {
   });
 
   test("rejects link-local / cloud metadata 169.254/16", () => {
-    expect(rejectUnsafeUrl("http://169.254.169.254/")).toMatch(
-      /link-local|metadata/i,
-    );
+    expect(rejectUnsafeUrl("http://169.254.169.254/")).toMatch(/link-local|metadata/i);
   });
 
   test("rejects cloud metadata FQDNs", () => {
-    expect(rejectUnsafeUrl("http://metadata.google.internal/")).toMatch(
-      /metadata/i,
-    );
+    expect(rejectUnsafeUrl("http://metadata.google.internal/")).toMatch(/metadata/i);
     expect(rejectUnsafeUrl("http://metadata/")).toMatch(/metadata/i);
   });
 
@@ -359,9 +357,7 @@ describe("rejectUnsafeUrl helper", () => {
     // Both fc and fd prefixes are in fc00::/7.
     expect(rejectUnsafeUrl("http://[fc00::1]/")).toMatch(/unique-local/i);
     expect(rejectUnsafeUrl("http://[fd00::1]/")).toMatch(/unique-local/i);
-    expect(rejectUnsafeUrl("http://[fd12:3456:789a::1]/")).toMatch(
-      /unique-local/i,
-    );
+    expect(rejectUnsafeUrl("http://[fd12:3456:789a::1]/")).toMatch(/unique-local/i);
   });
 
   test("rejects bracketed IPv6 link-local across full fe80::/10 range", () => {
@@ -379,13 +375,9 @@ describe("rejectUnsafeUrl helper", () => {
     // IPv4-mapped form: ::ffff:a.b.c.d should re-run IPv4 range checks.
     expect(rejectUnsafeUrl("http://[::ffff:10.0.0.1]/")).toMatch(/RFC 1918/i);
     expect(rejectUnsafeUrl("http://[::ffff:127.0.0.1]/")).toMatch(/loopback/i);
-    expect(rejectUnsafeUrl("http://[::ffff:169.254.169.254]/")).toMatch(
-      /link-local|metadata/i,
-    );
+    expect(rejectUnsafeUrl("http://[::ffff:169.254.169.254]/")).toMatch(/link-local|metadata/i);
     // And should note it came from v6-mapping
-    expect(rejectUnsafeUrl("http://[::ffff:10.0.0.1]/")).toMatch(
-      /IPv4-mapped IPv6/i,
-    );
+    expect(rejectUnsafeUrl("http://[::ffff:10.0.0.1]/")).toMatch(/IPv4-mapped IPv6/i);
   });
 
   test("rejects localhost. (trailing-dot FQDN form)", () => {
@@ -409,23 +401,19 @@ describe("http client — SSRF guard", () => {
 
   test("guard on rejects direct loopback request", async () => {
     const client = createHttpClient({ rejectUnsafeUrls: true });
-    expect(
-      client.get(`http://localhost:${serverPort}/small-body`),
-    ).rejects.toThrow(/unsafe URL.*loopback/i);
+    expect(client.get(`http://localhost:${serverPort}/small-body`)).rejects.toThrow(
+      /unsafe URL.*loopback/i,
+    );
   });
 
   test("guard on rejects direct RFC 1918 request", async () => {
     const client = createHttpClient({ rejectUnsafeUrls: true });
-    expect(client.get("http://10.0.0.5/internal")).rejects.toThrow(
-      /unsafe URL.*RFC 1918/i,
-    );
+    expect(client.get("http://10.0.0.5/internal")).rejects.toThrow(/unsafe URL.*RFC 1918/i);
   });
 
   test("guard on rejects file:// scheme", async () => {
     const client = createHttpClient({ rejectUnsafeUrls: true });
-    expect(client.get("file:///etc/passwd")).rejects.toThrow(
-      /unsafe URL.*scheme/i,
-    );
+    expect(client.get("file:///etc/passwd")).rejects.toThrow(/unsafe URL.*scheme/i);
   });
 
   test("guard on rejects redirect to 169.254 metadata endpoint", async () => {
@@ -439,9 +427,9 @@ describe("http client — SSRF guard", () => {
     // hop, this test exercises that the initial hop is caught first. (The
     // redirect-hop check is exercised below via the helper test.)
     const client = createHttpClient({ rejectUnsafeUrls: true });
-    expect(
-      client.get(`http://localhost:${serverPort}/redirect-to-metadata`),
-    ).rejects.toThrow(/unsafe URL.*loopback/i);
+    expect(client.get(`http://localhost:${serverPort}/redirect-to-metadata`)).rejects.toThrow(
+      /unsafe URL.*loopback/i,
+    );
   });
 
   test("guard on permits a public-looking URL (no network — expect DNS/connect failure, not SSRF block)", async () => {

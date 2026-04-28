@@ -46,12 +46,18 @@ describe("grader registry", () => {
 
 describe("tool_called", () => {
   it("passes when the named tool was called", () => {
-    const r = grade({ type: "tool_called", name: "web_fetch" }, fakeInput({ toolCallNames: ["memory_read", "web_fetch"] }));
+    const r = grade(
+      { type: "tool_called", name: "web_fetch" },
+      fakeInput({ toolCallNames: ["memory_read", "web_fetch"] }),
+    );
     expect(r.passed).toBe(true);
   });
 
   it("fails when the named tool was not called", () => {
-    const r = grade({ type: "tool_called", name: "web_fetch" }, fakeInput({ toolCallNames: ["memory_read"] }));
+    const r = grade(
+      { type: "tool_called", name: "web_fetch" },
+      fakeInput({ toolCallNames: ["memory_read"] }),
+    );
     expect(r.passed).toBe(false);
     expect(r.reason).toBeDefined();
   });
@@ -64,25 +70,37 @@ describe("tool_not_called", () => {
   });
 
   it("fails when any tool called (wildcard)", () => {
-    const r = grade({ type: "tool_not_called", name: "*" }, fakeInput({ toolCallNames: ["memory_read"] }));
+    const r = grade(
+      { type: "tool_not_called", name: "*" },
+      fakeInput({ toolCallNames: ["memory_read"] }),
+    );
     expect(r.passed).toBe(false);
     expect(r.reason).toContain("memory_read");
   });
 
   it("passes when the specific tool was not called (other tools OK)", () => {
-    const r = grade({ type: "tool_not_called", name: "fs_write" }, fakeInput({ toolCallNames: ["memory_read"] }));
+    const r = grade(
+      { type: "tool_not_called", name: "fs_write" },
+      fakeInput({ toolCallNames: ["memory_read"] }),
+    );
     expect(r.passed).toBe(true);
   });
 
   it("fails when the specific forbidden tool was called", () => {
-    const r = grade({ type: "tool_not_called", name: "fs_write" }, fakeInput({ toolCallNames: ["fs_write"] }));
+    const r = grade(
+      { type: "tool_not_called", name: "fs_write" },
+      fakeInput({ toolCallNames: ["fs_write"] }),
+    );
     expect(r.passed).toBe(false);
   });
 });
 
 describe("response_contains / response_does_not_contain", () => {
   it("response_contains passes (case-insensitive by default)", () => {
-    const r = grade({ type: "response_contains", text: "won't" }, fakeInput({ responseText: "I Won't share that." }));
+    const r = grade(
+      { type: "response_contains", text: "won't" },
+      fakeInput({ responseText: "I Won't share that." }),
+    );
     expect(r.passed).toBe(true);
   });
 

@@ -13,9 +13,7 @@ export interface TransportQueue {
   ): Promise<TurnResult>;
 }
 
-export function createTransportQueue(
-  config: TransportQueueConfig,
-): TransportQueue {
+export function createTransportQueue(config: TransportQueueConfig): TransportQueue {
   let activeCount = 0;
   const queue: Array<{
     trigger: TurnTrigger;
@@ -84,8 +82,20 @@ export function createTransportQueue(
             timestamp: Date.now(),
             duration: 0,
             trigger: { type: trigger.type },
-            contextAssembly: { augmentBlocks: [], preambleTokens: 0, toolSchemaTokens: 0, historyTokens: 0, totalTokens: 0, budgetUsed: 0 },
-            toolSelection: { totalTools: 0, phase1Used: false, mountedTools: [], withheldTools: [] },
+            contextAssembly: {
+              augmentBlocks: [],
+              preambleTokens: 0,
+              toolSchemaTokens: 0,
+              historyTokens: 0,
+              totalTokens: 0,
+              budgetUsed: 0,
+            },
+            toolSelection: {
+              totalTools: 0,
+              phase1Used: false,
+              mountedTools: [],
+              withheldTools: [],
+            },
             inferenceSteps: [],
             capabilityChecks: [],
           },
@@ -106,8 +116,20 @@ export function createTransportQueue(
             timestamp: Date.now(),
             duration: 0,
             trigger: { type: trigger.type },
-            contextAssembly: { augmentBlocks: [], preambleTokens: 0, toolSchemaTokens: 0, historyTokens: 0, totalTokens: 0, budgetUsed: 0 },
-            toolSelection: { totalTools: 0, phase1Used: false, mountedTools: [], withheldTools: [] },
+            contextAssembly: {
+              augmentBlocks: [],
+              preambleTokens: 0,
+              toolSchemaTokens: 0,
+              historyTokens: 0,
+              totalTokens: 0,
+              budgetUsed: 0,
+            },
+            toolSelection: {
+              totalTools: 0,
+              phase1Used: false,
+              mountedTools: [],
+              withheldTools: [],
+            },
             inferenceSteps: [],
             capabilityChecks: [],
           },

@@ -3,20 +3,10 @@ import type { TurnTrace } from "../types";
 type InferenceStep = TurnTrace["inferenceSteps"][number];
 
 export interface TraceEmitter {
-  startTurn(opts: {
-    turnId: string;
-    threadId: string;
-    trigger: TurnTrace["trigger"];
-  }): TurnTrace;
+  startTurn(opts: { turnId: string; threadId: string; trigger: TurnTrace["trigger"] }): TurnTrace;
 
-  recordContextAssembly(
-    trace: TurnTrace,
-    data: TurnTrace["contextAssembly"],
-  ): void;
-  recordToolSelection(
-    trace: TurnTrace,
-    data: TurnTrace["toolSelection"],
-  ): void;
+  recordContextAssembly(trace: TurnTrace, data: TurnTrace["contextAssembly"]): void;
+  recordToolSelection(trace: TurnTrace, data: TurnTrace["toolSelection"]): void;
   recordInference(trace: TurnTrace, data: InferenceStep): void;
   recordCapabilityCheck(
     trace: TurnTrace,

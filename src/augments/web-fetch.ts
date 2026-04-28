@@ -70,7 +70,7 @@ function htmlToText(html: string): string {
   let text = "";
   let inTag = false;
   let tagBuffer = "";
-  let skipUntilClose = "";   // non-empty when inside a skip-content tag
+  let skipUntilClose = ""; // non-empty when inside a skip-content tag
   let previousWasSpace = false;
 
   for (const ch of html) {
@@ -143,7 +143,10 @@ function decodeHtmlEntities(input: string): string {
 }
 
 function collapseWhitespace(input: string): string {
-  return input.split(/\s+/).filter((token) => token.length > 0).join(" ");
+  return input
+    .split(/\s+/)
+    .filter((token) => token.length > 0)
+    .join(" ");
 }
 
 /**
@@ -155,7 +158,7 @@ function collapseWhitespace(input: string): string {
 function previewText(input: string, maxChars: number): string {
   const chars = Array.from(input);
   if (chars.length <= maxChars) return input;
-  return chars.slice(0, maxChars).join("").trimEnd() + "…";
+  return `${chars.slice(0, maxChars).join("").trimEnd()}…`;
 }
 
 function isJsonContentType(contentType: string): boolean {
@@ -172,11 +175,7 @@ function normalizeFetchedContent(body: string, contentType: string): string {
 // Prompt-aware summarization
 // =========================================================================
 
-function extractTitle(
-  content: string,
-  rawBody: string,
-  contentType: string,
-): string | null {
+function extractTitle(content: string, rawBody: string, contentType: string): string | null {
   if (contentType.includes("html")) {
     const lowered = rawBody.toLowerCase();
     const start = lowered.indexOf("<title>");
@@ -223,10 +222,7 @@ function summarizeWebFetch(args: {
   if (lowerPrompt.includes("title")) {
     const title = extractTitle(args.content, args.rawBody, args.contentType);
     detail = title !== null ? `Title: ${title}` : previewText(compact, 600);
-  } else if (
-    lowerPrompt.includes("summary") ||
-    lowerPrompt.includes("summarize")
-  ) {
+  } else if (lowerPrompt.includes("summary") || lowerPrompt.includes("summarize")) {
     detail = previewText(compact, 900);
   } else {
     const preview = previewText(compact, 900);
@@ -271,13 +267,11 @@ export interface WebFetchResult {
 export function webFetch(opts: WebFetchOptions = {}): Augment {
   // SSRF guard is on by default — web_fetch ingests model-supplied URLs.
   // Operators can still override by passing an explicit client.
-  const client =
-    opts.client ?? createHttpClient({ rejectUnsafeUrls: true, ...opts });
+  const client = opts.client ?? createHttpClient({ rejectUnsafeUrls: true, ...opts });
 
   const webFetchTool = defineTool({
     name: "web_fetch",
-    description:
-      "Fetch a URL, convert it into readable text, and answer a prompt about it.",
+    description: "Fetch a URL, convert it into readable text, and answer a prompt about it.",
     category: "search",
     input: z.object({
       url: z.string().url(),
@@ -308,10 +302,7 @@ export function webFetch(opts: WebFetchOptions = {}): Augment {
         });
       }
 
-      const normalized = normalizeFetchedContent(
-        response.body,
-        response.contentType,
-      );
+      const normalized = normalizeFetchedContent(response.body, response.contentType);
       const result = summarizeWebFetch({
         url: response.finalUrl,
         prompt,

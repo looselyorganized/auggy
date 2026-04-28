@@ -2,8 +2,8 @@
  * Shared config path resolution logic for CLI commands.
  */
 
-import { existsSync } from "fs";
-import { resolve } from "path";
+import { existsSync } from "node:fs";
+import { resolve } from "node:path";
 
 /**
  * Resolve the config file path from explicit flag, convention, or CWD.

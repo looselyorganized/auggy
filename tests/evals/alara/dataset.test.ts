@@ -56,9 +56,7 @@ describe("generateTasks", () => {
     let totalDistractors = 0;
 
     for (const task of tasks) {
-      const correctSpec = task.toolSpecs.find(
-        (s) => s.name === task.expectedTool,
-      );
+      const correctSpec = task.toolSpecs.find((s) => s.name === task.expectedTool);
       if (!correctSpec) continue;
       for (const spec of task.toolSpecs) {
         if (spec.name === task.expectedTool) continue;

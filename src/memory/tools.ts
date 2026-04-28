@@ -1,10 +1,5 @@
 import { z } from "zod";
-import type {
-  Tool,
-  NamespaceMemoryProvider,
-  ToolExecuteContext,
-  ContextOrigin,
-} from "../types";
+import type { Tool, NamespaceMemoryProvider, ToolExecuteContext, ContextOrigin } from "../types";
 import { defineTool } from "../helpers";
 import { lookupProvider } from "./registry";
 import type { MemoryRegistry } from "./types";
@@ -115,8 +110,7 @@ export function createMemoryTools(
 
   const memoryWrite = defineTool({
     name: "memory_write",
-    description:
-      "Write content to a memory block by label. Only mutable labels can be written.",
+    description: "Write content to a memory block by label. Only mutable labels can be written.",
     category: "memory",
     input: z.object({
       label: z.string().describe("The label to write to"),
@@ -151,15 +145,11 @@ export function createMemoryTools(
 
   const memorySearch = defineTool({
     name: "memory_search",
-    description:
-      "Search across namespace memory providers. Returns ranked results.",
+    description: "Search across namespace memory providers. Returns ranked results.",
     category: "memory",
     input: z.object({
       query: z.string().describe("The search query"),
-      providers: z
-        .array(z.string())
-        .optional()
-        .describe("Optional provider name filter"),
+      providers: z.array(z.string()).optional().describe("Optional provider name filter"),
     }),
     execute: async ({ query, providers: restrictTo }, context?) => {
       const budgetErr = checkBudget(context?.turnId ?? "unknown");
@@ -175,8 +165,7 @@ export function createMemoryTools(
         .filter((ns) => !restrictTo || restrictTo.includes(ns.augment.name))
         .filter(
           (ns) =>
-            assertMemoryAccess("search", ns.augment.memory!.defaults.origin, context) ===
-            null,
+            assertMemoryAccess("search", ns.augment.memory!.defaults.origin, context) === null,
         )
         .map((ns) => ns.augment);
 
@@ -208,8 +197,7 @@ export function createMemoryTools(
 
   const memoryList = defineTool({
     name: "memory_list",
-    description:
-      "List all available memory labels and namespace prefixes for this agent.",
+    description: "List all available memory labels and namespace prefixes for this agent.",
     category: "memory",
     input: z.object({}),
     execute: async (_input, context?) => {
@@ -223,16 +211,13 @@ export function createMemoryTools(
 
       const staticLabels = Array.from(registry.static.entries())
         .filter(
-          ([, aug]) =>
-            assertMemoryAccess("list", aug.memory!.defaults.origin, context) === null,
+          ([, aug]) => assertMemoryAccess("list", aug.memory!.defaults.origin, context) === null,
         )
         .map(([label]) => label);
 
       const namespaces = registry.namespaces
         .filter(
-          (ns) =>
-            assertMemoryAccess("list", ns.augment.memory!.defaults.origin, context) ===
-            null,
+          (ns) => assertMemoryAccess("list", ns.augment.memory!.defaults.origin, context) === null,
         )
         .map((ns) => `${ns.prefix}*`);
 
@@ -272,9 +257,7 @@ export function createMemoryTools(
           try {
             totalDeleted += await spec.forget(targetPeerId);
           } catch (err) {
-            errors.push(
-              `${ns.augment.name}: ${err instanceof Error ? err.message : String(err)}`,
-            );
+            errors.push(`${ns.augment.name}: ${err instanceof Error ? err.message : String(err)}`);
           }
         }
       }

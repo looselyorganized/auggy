@@ -9,10 +9,7 @@ describe("withTimeout", () => {
 
   it("throws TimeoutError when the call exceeds the timeout", async () => {
     await expect(
-      withTimeout(
-        () => new Promise((resolve) => setTimeout(resolve, 500)),
-        50,
-      ),
+      withTimeout(() => new Promise((resolve) => setTimeout(resolve, 500)), 50),
     ).rejects.toThrow(TimeoutError);
   });
 

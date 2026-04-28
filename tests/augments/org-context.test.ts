@@ -69,7 +69,9 @@ describe("org_escalate rate limiting", () => {
       });
       const tool = aug.tools!.find((t) => t.name === "org_escalate")!;
       await tool.execute({ summary: "from visitor 1" }, makeContext(makePeer("visitor-1")));
-      const result = JSON.parse(await tool.execute({ summary: "from visitor 2" }, makeContext(makePeer("visitor-2"))));
+      const result = JSON.parse(
+        await tool.execute({ summary: "from visitor 2" }, makeContext(makePeer("visitor-2"))),
+      );
       expect(result.status).toBe("sent");
     });
   });
@@ -82,11 +84,16 @@ describe("org_escalate rate limiting", () => {
         escalation: { cooldownMs: 0, dedupWindowMs: 60_000, dedupThreshold: 0.6 },
       });
       const tool = aug.tools!.find((t) => t.name === "org_escalate")!;
-      await tool.execute({ summary: "visitor wants to discuss partnership opportunity" }, makeContext(makePeer("v1")));
-      const result = JSON.parse(await tool.execute(
-        { summary: "visitor wants to discuss partnership opportunity with the facility" },
-        makeContext(makePeer("v2")),
-      ));
+      await tool.execute(
+        { summary: "visitor wants to discuss partnership opportunity" },
+        makeContext(makePeer("v1")),
+      );
+      const result = JSON.parse(
+        await tool.execute(
+          { summary: "visitor wants to discuss partnership opportunity with the facility" },
+          makeContext(makePeer("v2")),
+        ),
+      );
       expect(result.status).toBe("rate_limited");
       expect(result.message).toContain("similar");
     });
@@ -98,11 +105,16 @@ describe("org_escalate rate limiting", () => {
         escalation: { cooldownMs: 0, dedupWindowMs: 60_000, dedupThreshold: 0.6 },
       });
       const tool = aug.tools!.find((t) => t.name === "org_escalate")!;
-      await tool.execute({ summary: "visitor wants to discuss partnership" }, makeContext(makePeer("v1")));
-      const result = JSON.parse(await tool.execute(
-        { summary: "security incident detected in the logs" },
-        makeContext(makePeer("v2")),
-      ));
+      await tool.execute(
+        { summary: "visitor wants to discuss partnership" },
+        makeContext(makePeer("v1")),
+      );
+      const result = JSON.parse(
+        await tool.execute(
+          { summary: "security incident detected in the logs" },
+          makeContext(makePeer("v2")),
+        ),
+      );
       expect(result.status).toBe("sent");
     });
   });
@@ -117,7 +129,9 @@ describe("org_escalate rate limiting", () => {
       const tool = aug.tools!.find((t) => t.name === "org_escalate")!;
       await tool.execute({ summary: "escalation 1" }, makeContext(makePeer("v1")));
       await tool.execute({ summary: "escalation 2" }, makeContext(makePeer("v2")));
-      const result = JSON.parse(await tool.execute({ summary: "escalation 3" }, makeContext(makePeer("v3"))));
+      const result = JSON.parse(
+        await tool.execute({ summary: "escalation 3" }, makeContext(makePeer("v3"))),
+      );
       expect(result.status).toBe("rate_limited");
       expect(result.message).toContain("global limit");
     });
@@ -132,7 +146,9 @@ describe("org_escalate rate limiting", () => {
       });
       const tool = aug.tools!.find((t) => t.name === "org_escalate")!;
       await tool.execute({ summary: "first" }, makeContext(makePeer("v1")));
-      const result = JSON.parse(await tool.execute({ summary: "first" }, makeContext(makePeer("op", "creator"))));
+      const result = JSON.parse(
+        await tool.execute({ summary: "first" }, makeContext(makePeer("op", "creator"))),
+      );
       expect(result.status).toBe("sent");
     });
   });

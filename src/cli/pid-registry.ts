@@ -15,9 +15,9 @@ import {
   readdirSync,
   unlinkSync,
   writeFileSync,
-} from "fs";
-import { homedir } from "os";
-import { join } from "path";
+} from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import type { PidManifest } from "./types";
 
 const AUGGY_DIR = join(homedir(), ".auggy");
@@ -101,11 +101,15 @@ export function listPidManifests(): PidManifest[] {
         manifests.push(manifest);
       } else {
         // Dead process — clean up the stale manifest.
-        try { unlinkSync(path); } catch {}
+        try {
+          unlinkSync(path);
+        } catch {}
       }
     } catch {
       // Corrupt manifest — remove it.
-      try { unlinkSync(path); } catch {}
+      try {
+        unlinkSync(path);
+      } catch {}
     }
   }
 

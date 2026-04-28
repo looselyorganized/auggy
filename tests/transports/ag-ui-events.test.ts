@@ -168,9 +168,7 @@ describe("translateKernelEvent", () => {
     };
     const events = translateKernelEvent(ke);
     expect(events[0]!.type).toBe("TOOL_CALL_ARGS");
-    expect((events[0] as { delta: string }).delta).toBe(
-      JSON.stringify({ query: "hello" }),
-    );
+    expect((events[0] as { delta: string }).delta).toBe(JSON.stringify({ query: "hello" }));
   });
 
   it("translates tool_call_result to TOOL_CALL_END + TOOL_CALL_RESULT", () => {
@@ -218,8 +216,6 @@ describe("serializeSSE", () => {
       threadId: "th1",
       runId: "r1",
     });
-    expect(out).toBe(
-      `data: {"type":"RUN_STARTED","threadId":"th1","runId":"r1"}\n\n`,
-    );
+    expect(out).toBe(`data: {"type":"RUN_STARTED","threadId":"th1","runId":"r1"}\n\n`);
   });
 });

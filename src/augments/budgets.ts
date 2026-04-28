@@ -26,10 +26,7 @@ export interface BudgetsAugmentOptions extends BudgetsConfig {
  *
  * A null peer (internal/scheduled trigger) also bypasses.
  */
-function resolveCaps(
-  peer: PeerIdentity | null,
-  config: BudgetsConfig,
-): BudgetCaps | null {
+function resolveCaps(peer: PeerIdentity | null, config: BudgetsConfig): BudgetCaps | null {
   if (!peer) return null;
   switch (peer.trustLevel) {
     case "creator":

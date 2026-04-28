@@ -10,14 +10,13 @@ import { runStop } from "./stop";
 import { runStart } from "./start";
 import { runDev } from "./dev";
 
-export async function runRestart(
-  name: string,
-  opts: { config?: string },
-): Promise<void> {
+export async function runRestart(name: string, opts: { config?: string }): Promise<void> {
   const manifest = readPidManifest(name);
 
   if (!manifest) {
-    console.log(`Agent "${name}" is not running. Use "aug1 dev ${name}" or "aug1 start ${name}" to start it.`);
+    console.log(
+      `Agent "${name}" is not running. Use "aug1 dev ${name}" or "aug1 start ${name}" to start it.`,
+    );
     return;
   }
 

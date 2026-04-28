@@ -26,24 +26,15 @@ export interface MockQueryBuilder {
   gt(column: string, value: number): MockQueryBuilder;
   or(filterExpr: string): MockQueryBuilder;
   ilike(column: string, value: string): MockQueryBuilder;
-  order(
-    column: string,
-    opts?: { ascending?: boolean },
-  ): MockQueryBuilder;
+  order(column: string, opts?: { ascending?: boolean }): MockQueryBuilder;
   limit(n: number): MockQueryBuilder;
   maybeSingle(): Promise<{ data: MockRow | null; error: Error | null }>;
   then<TResult1 = { data: unknown[]; error: Error | null }, TResult2 = never>(
     onfulfilled?:
-      | ((value: {
-          data: unknown[];
-          error: Error | null;
-        }) => TResult1 | PromiseLike<TResult1>)
+      | ((value: { data: unknown[]; error: Error | null }) => TResult1 | PromiseLike<TResult1>)
       | null
       | undefined,
-    onrejected?:
-      | ((reason: unknown) => TResult2 | PromiseLike<TResult2>)
-      | null
-      | undefined,
+    onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null | undefined,
   ): PromiseLike<TResult1 | TResult2>;
 }
 
@@ -89,9 +80,7 @@ export function createMockSupabase(): MockSupabaseClient {
         return builder;
       },
       is(column, value) {
-        filters.push(
-          (r) => (r as Record<string, unknown>)[column] === value,
-        );
+        filters.push((r) => (r as Record<string, unknown>)[column] === value);
         return builder;
       },
       gt(column, value) {
@@ -150,6 +139,7 @@ export function createMockSupabase(): MockSupabaseClient {
         const first = (result.data as MockRow[])[0] ?? null;
         return { data: first, error: result.error };
       },
+      // biome-ignore lint/suspicious/noThenProperty: Supabase query builders are intentionally thenable; this mock matches that contract.
       then(onfulfilled) {
         const all = rows.get(table)!;
         const matched = all.filter((r) => filters.every((f) => f(r)));
@@ -173,8 +163,7 @@ export function createMockSupabase(): MockSupabaseClient {
             results = [...results].sort((a, b) => {
               const av = a[orderBy!.column];
               const bv = b[orderBy!.column];
-              const cmp =
-                (av as string | number) < (bv as string | number) ? -1 : 1;
+              const cmp = (av as string | number) < (bv as string | number) ? -1 : 1;
               return orderBy!.ascending ? cmp : -cmp;
             });
           }

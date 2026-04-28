@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { writeFileSync, mkdirSync, rmSync } from "fs";
-import { join } from "path";
+import { writeFileSync, mkdirSync, rmSync } from "node:fs";
+import { join } from "node:path";
 import { resolveAugments } from "../../src/cli/augment-resolver";
 import type { AugmentConfig } from "../../src/cli/types";
 
@@ -217,7 +217,15 @@ describe("resolveAugments — multiple", () => {
       {
         name: "identity",
         type: "fileMemory",
-        options: { label: "self", source: "./identity.md", mutable: false, origin: "operator", priority: "required", placement: "system", eviction: "never" },
+        options: {
+          label: "self",
+          source: "./identity.md",
+          mutable: false,
+          origin: "operator",
+          priority: "required",
+          placement: "system",
+          eviction: "never",
+        },
       },
       {
         name: "fetch",

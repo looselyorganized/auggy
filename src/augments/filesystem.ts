@@ -1,14 +1,5 @@
 import { z } from "zod";
-import {
-  readFile,
-  writeFile,
-  readdir,
-  mkdir,
-  rm,
-  realpath,
-  stat,
-  lstat,
-} from "node:fs/promises";
+import { readFile, writeFile, readdir, mkdir, rm, realpath, stat, lstat } from "node:fs/promises";
 import { resolve, join, relative, extname, isAbsolute, sep } from "node:path";
 import { Glob } from "bun";
 import type { Augment, ContextBlock } from "../types";
@@ -72,12 +63,41 @@ const DEFAULT_MAX_WRITE = 1024 * 1024; // 1MB
 const DEFAULT_SEARCH_EXCLUDES = [".git", "node_modules", ".next", "__pycache__", ".DS_Store"];
 
 const BINARY_EXTENSIONS = new Set([
-  ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".ico", ".webp", ".svg",
-  ".pdf", ".zip", ".gz", ".tar", ".bz2", ".7z", ".rar",
-  ".mp3", ".mp4", ".avi", ".mov", ".wav", ".flac",
-  ".woff", ".woff2", ".ttf", ".otf", ".eot",
-  ".exe", ".dll", ".so", ".dylib", ".o", ".a",
-  ".wasm", ".pyc", ".class",
+  ".png",
+  ".jpg",
+  ".jpeg",
+  ".gif",
+  ".bmp",
+  ".ico",
+  ".webp",
+  ".svg",
+  ".pdf",
+  ".zip",
+  ".gz",
+  ".tar",
+  ".bz2",
+  ".7z",
+  ".rar",
+  ".mp3",
+  ".mp4",
+  ".avi",
+  ".mov",
+  ".wav",
+  ".flac",
+  ".woff",
+  ".woff2",
+  ".ttf",
+  ".otf",
+  ".eot",
+  ".exe",
+  ".dll",
+  ".so",
+  ".dylib",
+  ".o",
+  ".a",
+  ".wasm",
+  ".pyc",
+  ".class",
 ]);
 
 /**
@@ -94,13 +114,10 @@ const BINARY_EXTENSIONS = new Set([
  * root-mount case and the prefix-collision case (mount `/var/data/work`
  * vs sibling `/var/data/workspace`) uniformly. Exported for testability.
  */
-export function isWithinMount(
-  realTarget: string,
-  mountRoot: string,
-): boolean {
+export function isWithinMount(realTarget: string, mountRoot: string): boolean {
   const rel = relative(mountRoot, realTarget);
   if (rel === "") return true;
-  if (rel === ".." || rel.startsWith(".." + sep)) return false;
+  if (rel === ".." || rel.startsWith(`..${sep}`)) return false;
   if (isAbsolute(rel)) return false;
   return true;
 }
@@ -127,9 +144,7 @@ export function filesystem(opts: FilesystemOptions): Augment {
       throw new Error(`filesystem: duplicate mount name "${m.name}"`);
     }
     if (m.name.includes("/") || m.name.includes("\\")) {
-      throw new Error(
-        `filesystem: mount name "${m.name}" must not contain path separators`,
-      );
+      throw new Error(`filesystem: mount name "${m.name}" must not contain path separators`);
     }
     if (m.deletable && !m.writable) {
       throw new Error(
@@ -207,9 +222,7 @@ export function filesystem(opts: FilesystemOptions): Augment {
     }
 
     if (!isWithinMount(realTarget, mountRoot)) {
-      throw new Error(
-        `Path "${logicalPath}" resolves outside mount "${mountName}" boundary`,
-      );
+      throw new Error(`Path "${logicalPath}" resolves outside mount "${mountName}" boundary`);
     }
 
     return { physicalPath: realTarget, mount };
@@ -223,9 +236,7 @@ export function filesystem(opts: FilesystemOptions): Augment {
       "Read file contents from a mounted directory. Path format: mount-name/path/to/file. Use fs_list first to check file sizes before reading large files.",
     category: "meta",
     input: z.object({
-      path: z
-        .string()
-        .describe("Logical path: mount-name/path/to/file"),
+      path: z.string().describe("Logical path: mount-name/path/to/file"),
     }),
     execute: async ({ path: logicalPath }) => {
       const { physicalPath, mount } = await resolveAndValidate(logicalPath);
@@ -274,10 +285,8 @@ export function filesystem(opts: FilesystemOptions): Augment {
       content: z.string().describe("File content to write"),
     }),
     execute: async ({ path: logicalPath, content }) => {
-      const { physicalPath, mount } = await resolveAndValidate(
-        logicalPath,
-        (m) =>
-          m.writable ? null : `Mount "${m.name}" is read-only`,
+      const { physicalPath, mount } = await resolveAndValidate(logicalPath, (m) =>
+        m.writable ? null : `Mount "${m.name}" is read-only`,
       );
 
       const maxWrite = mount.maxWriteSize ?? DEFAULT_MAX_WRITE;
@@ -286,10 +295,7 @@ export function filesystem(opts: FilesystemOptions): Augment {
       }
 
       // Ensure parent directory exists
-      const parentDir = physicalPath.slice(
-        0,
-        physicalPath.lastIndexOf("/"),
-      );
+      const parentDir = physicalPath.slice(0, physicalPath.lastIndexOf("/"));
       await mkdir(parentDir, { recursive: true });
 
       await writeFile(physicalPath, content, "utf-8");
@@ -303,11 +309,7 @@ export function filesystem(opts: FilesystemOptions): Augment {
       "List directory contents with file sizes and types. Path format: mount-name/path/to/dir. Omit the path after mount name to list the mount root.",
     category: "meta",
     input: z.object({
-      path: z
-        .string()
-        .describe(
-          "Logical path: mount-name or mount-name/path/to/dir",
-        ),
+      path: z.string().describe("Logical path: mount-name or mount-name/path/to/dir"),
     }),
     execute: async ({ path: logicalPath }) => {
       const { physicalPath } = await resolveAndValidate(logicalPath);
@@ -336,9 +338,7 @@ export function filesystem(opts: FilesystemOptions): Augment {
                 name: entry.name,
                 type: entry.isDirectory() ? "dir" : "file",
                 size: entry.isDirectory() ? undefined : s.size,
-                sizeFormatted: entry.isDirectory()
-                  ? undefined
-                  : formatSize(s.size),
+                sizeFormatted: entry.isDirectory() ? undefined : formatSize(s.size),
                 modified: s.mtime.toISOString(),
               };
             } catch {
@@ -370,10 +370,8 @@ export function filesystem(opts: FilesystemOptions): Augment {
       path: z.string().describe("Logical path for the new directory"),
     }),
     execute: async ({ path: logicalPath }) => {
-      const { physicalPath } = await resolveAndValidate(
-        logicalPath,
-        (m) =>
-          m.writable ? null : `Mount "${m.name}" is read-only`,
+      const { physicalPath } = await resolveAndValidate(logicalPath, (m) =>
+        m.writable ? null : `Mount "${m.name}" is read-only`,
       );
       await mkdir(physicalPath, { recursive: true });
       return `Created directory "${logicalPath}"`;
@@ -386,20 +384,14 @@ export function filesystem(opts: FilesystemOptions): Augment {
       "Delete a file or empty directory in a deletable mount. Path format: mount-name/path/to/target. Will not delete non-empty directories.",
     category: "meta",
     input: z.object({
-      path: z
-        .string()
-        .describe("Logical path to the file or empty directory to remove"),
+      path: z.string().describe("Logical path to the file or empty directory to remove"),
     }),
     execute: async ({ path: logicalPath }) => {
-      const { physicalPath, mount } = await resolveAndValidate(
-        logicalPath,
-        (m) => {
-          if (!m.writable) return `Mount "${m.name}" is read-only`;
-          if (!m.deletable)
-            return `Mount "${m.name}" does not allow deletion`;
-          return null;
-        },
-      );
+      const { physicalPath, mount } = await resolveAndValidate(logicalPath, (m) => {
+        if (!m.writable) return `Mount "${m.name}" is read-only`;
+        if (!m.deletable) return `Mount "${m.name}" does not allow deletion`;
+        return null;
+      });
 
       const stats = await stat(physicalPath);
       if (stats.isDirectory()) {
@@ -429,23 +421,15 @@ export function filesystem(opts: FilesystemOptions): Augment {
       "Search for files matching a glob pattern within a mount. Returns up to 100 results. Excludes .git and node_modules by default. Path format: mount-name or mount-name/subdir.",
     category: "meta",
     input: z.object({
-      path: z
-        .string()
-        .describe("Mount name or mount-name/subdir to search within"),
-      pattern: z
-        .string()
-        .describe('Glob pattern (e.g. "*.md", "**/*.ts", "config.*")'),
-      maxResults: z
-        .number()
-        .optional()
-        .describe("Max results to return (default 100)"),
+      path: z.string().describe("Mount name or mount-name/subdir to search within"),
+      pattern: z.string().describe('Glob pattern (e.g. "*.md", "**/*.ts", "config.*")'),
+      maxResults: z.number().optional().describe("Max results to return (default 100)"),
     }),
     execute: async ({ path: logicalPath, pattern, maxResults }) => {
       const { physicalPath, mount } = await resolveAndValidate(logicalPath);
       const cap = Math.min(maxResults ?? 100, 1000);
 
-      const excludes =
-        mount.searchExcludes ?? DEFAULT_SEARCH_EXCLUDES;
+      const excludes = mount.searchExcludes ?? DEFAULT_SEARCH_EXCLUDES;
 
       const glob = new Glob(pattern);
       const results: string[] = [];
@@ -457,10 +441,7 @@ export function filesystem(opts: FilesystemOptions): Augment {
       })) {
         // Check excludes
         const shouldExclude = excludes.some(
-          (ex) =>
-            entry.includes(`/${ex}/`) ||
-            entry.startsWith(`${ex}/`) ||
-            entry === ex,
+          (ex) => entry.includes(`/${ex}/`) || entry.startsWith(`${ex}/`) || entry === ex,
         );
         if (shouldExclude) continue;
 
@@ -518,29 +499,28 @@ export function filesystem(opts: FilesystemOptions): Augment {
         } catch (err) {
           // SKILL.md is optional — missing file is not a boot failure,
           // but log so the operator knows the teaching layer is absent.
-          console.warn(
-            `filesystem: failed to load SKILL.md from "${opts.skillFile}": ${err}`,
-          );
+          console.warn(`filesystem: failed to load SKILL.md from "${opts.skillFile}": ${err}`);
         }
       }
     },
 
-    context: cachedSkill !== null || opts.skillFile
-      ? async (): Promise<ContextBlock[]> => {
-          if (!cachedSkill) return [];
-          return [
-            {
-              source: "filesystem",
-              content: cachedSkill,
-              placement: "preamble",
-              provenance: "augment",
-              priority: "evictable",
-              eviction: "drop",
-              origin: "operator",
-            },
-          ];
-        }
-      : undefined,
+    context:
+      cachedSkill !== null || opts.skillFile
+        ? async (): Promise<ContextBlock[]> => {
+            if (!cachedSkill) return [];
+            return [
+              {
+                source: "filesystem",
+                content: cachedSkill,
+                placement: "preamble",
+                provenance: "augment",
+                priority: "evictable",
+                eviction: "drop",
+                origin: "operator",
+              },
+            ];
+          }
+        : undefined,
   };
 }
 

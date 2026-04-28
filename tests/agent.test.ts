@@ -3,10 +3,7 @@ import { z } from "zod";
 import { defineAgent } from "@/agent";
 import { extractText } from "@/parts";
 import { createMockModel } from "@tests/fixtures/mock-model";
-import {
-  createMockTransport,
-  createIdentityAugment,
-} from "@tests/fixtures/mock-augment";
+import { createMockTransport, createIdentityAugment } from "@tests/fixtures/mock-augment";
 
 describe("defineAgent", () => {
   it("creates an agent that can start and stop", async () => {
@@ -34,10 +31,7 @@ describe("defineAgent", () => {
       {
         name: "test-agent",
         model: "mock",
-        augments: [
-          createIdentityAugment("You are a helpful test agent."),
-          transport.augment,
-        ],
+        augments: [createIdentityAugment("You are a helpful test agent."), transport.augment],
       },
       model,
     );
@@ -48,9 +42,7 @@ describe("defineAgent", () => {
     expect(extractText(result.response?.parts ?? [])).toBe("I am a test agent.");
 
     expect(transport.outboundMessages).toHaveLength(1);
-    expect(extractText(transport.outboundMessages[0]!.message.parts)).toBe(
-      "I am a test agent.",
-    );
+    expect(extractText(transport.outboundMessages[0]!.message.parts)).toBe("I am a test agent.");
 
     await agent.stop();
   });
@@ -76,8 +68,7 @@ describe("defineAgent", () => {
           description: "Add two numbers",
           category: "meta" as const,
           input: z.object({ a: z.number(), b: z.number() }),
-          execute: async ({ a, b }: { a: number; b: number }) =>
-            String(a + b),
+          execute: async ({ a, b }: { a: number; b: number }) => String(a + b),
         },
       ],
     };
@@ -102,10 +93,7 @@ describe("defineAgent", () => {
   it("provides inject() for test-mode triggers", async () => {
     const model = createMockModel({ response: "Injected response" });
 
-    const agent = defineAgent(
-      { name: "test-agent", model: "mock", augments: [] },
-      model,
-    );
+    const agent = defineAgent({ name: "test-agent", model: "mock", augments: [] }, model);
 
     await agent.start();
     const result = await agent.inject({

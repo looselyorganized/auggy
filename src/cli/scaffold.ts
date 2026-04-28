@@ -13,9 +13,9 @@
  *     .gitignore         Ignores .env, workspace/, *.log
  */
 
-import { existsSync, mkdirSync, writeFileSync, cpSync } from "fs";
-import { join, resolve } from "path";
-import { randomUUID } from "crypto";
+import { existsSync, mkdirSync, writeFileSync, cpSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { randomUUID } from "node:crypto";
 import { scanSkillManifest, renderSkillManifest } from "./skill-manifest";
 
 export interface ScaffoldOptions {
@@ -54,25 +54,16 @@ export function scaffoldAgent(opts: ScaffoldOptions): string {
   }
 
   // Write template skill files.
-  writeFileSync(
-    join(dir, "skills", "memory", "SKILL.md"),
-    MEMORY_SKILL_TEMPLATE,
-  );
+  writeFileSync(join(dir, "skills", "memory", "SKILL.md"), MEMORY_SKILL_TEMPLATE);
   mkdirSync(join(dir, "skills", "web-fetch"), { recursive: true });
-  writeFileSync(
-    join(dir, "skills", "web-fetch", "SKILL.md"),
-    WEB_FETCH_SKILL_TEMPLATE,
-  );
+  writeFileSync(join(dir, "skills", "web-fetch", "SKILL.md"), WEB_FETCH_SKILL_TEMPLATE);
 
   // Scan skills and generate manifest.
   const skillEntries = scanSkillManifest(join(dir, "skills"));
   const skillManifest = renderSkillManifest(skillEntries);
 
   // Write identity.md with skill manifest.
-  writeFileSync(
-    join(dir, "identity.md"),
-    identityTemplate(opts.name, purpose, skillManifest),
-  );
+  writeFileSync(join(dir, "identity.md"), identityTemplate(opts.name, purpose, skillManifest));
 
   // Write learned.md (empty).
   writeFileSync(join(dir, "learned.md"), "");
@@ -190,11 +181,7 @@ augments:
 `;
 }
 
-function identityTemplate(
-  name: string,
-  purpose: string,
-  skillManifest: string,
-): string {
+function identityTemplate(name: string, purpose: string, skillManifest: string): string {
   return `# ${name}
 
 You are ${name}, an Auggy agent. ${purpose}.

@@ -108,9 +108,7 @@ describe("BudgetStore", () => {
   });
 
   it("deny + rollback is idempotent (double-rollback no-op)", async () => {
-    const ticket = await store.prepare(
-      baseInput({ caps: { maxTurnsPerThread: 0 } }),
-    );
+    const ticket = await store.prepare(baseInput({ caps: { maxTurnsPerThread: 0 } }));
     expect(ticket.decision.allow).toBe(false);
     await ticket.rollback();
     // Second rollback must not throw.
@@ -118,9 +116,7 @@ describe("BudgetStore", () => {
   });
 
   it("deny + confirm is harmless (acts like rollback — no write)", async () => {
-    const ticket = await store.prepare(
-      baseInput({ caps: { maxTurnsPerThread: 0 } }),
-    );
+    const ticket = await store.prepare(baseInput({ caps: { maxTurnsPerThread: 0 } }));
     expect(ticket.decision.allow).toBe(false);
     // confirm() on a deny ticket must not throw and must not commit a row.
     await ticket.confirm();
@@ -215,12 +211,12 @@ describe("BudgetStore", () => {
 
   it("dailyBudgetUsd cap hit → deny with reason mentioning $", async () => {
     // Commit a priced turn that saturates the cap.
-    const t1 = await store.prepare(baseInput({ turnId: "t1", dailyBudgetUsd: 1.00 }));
+    const t1 = await store.prepare(baseInput({ turnId: "t1", dailyBudgetUsd: 1.0 }));
     await t1.confirm();
-    await store.commit("t1", "peer-1", { priced: true, costUsd: 1.00 });
+    await store.commit("t1", "peer-1", { priced: true, costUsd: 1.0 });
 
     // Next prepare should be denied.
-    const t2 = await store.prepare(baseInput({ turnId: "t2", dailyBudgetUsd: 1.00 }));
+    const t2 = await store.prepare(baseInput({ turnId: "t2", dailyBudgetUsd: 1.0 }));
     expect(t2.decision.allow).toBe(false);
     if (!t2.decision.allow) {
       expect(t2.decision.reason).toMatch(/dailyBudgetUsd reached \(\$/);
@@ -231,11 +227,11 @@ describe("BudgetStore", () => {
   // ── Per-peer USD cap ─────────────────────────────────────
 
   it("per-peer maxUsdPerDay cap hit → deny", async () => {
-    const caps = { maxUsdPerDay: 0.50 };
+    const caps = { maxUsdPerDay: 0.5 };
 
     const t1 = await store.prepare(baseInput({ turnId: "t1", caps }));
     await t1.confirm();
-    await store.commit("t1", "peer-1", { priced: true, costUsd: 0.50 });
+    await store.commit("t1", "peer-1", { priced: true, costUsd: 0.5 });
 
     const t2 = await store.prepare(baseInput({ turnId: "t2", caps }));
     expect(t2.decision.allow).toBe(false);
@@ -251,7 +247,7 @@ describe("BudgetStore", () => {
 
     const t1 = await store.prepare(baseInput({ turnId: "t1", caps }));
     await t1.confirm();
-    await store.commit("t1", "peer-1", { priced: true, costUsd: 0.30 });
+    await store.commit("t1", "peer-1", { priced: true, costUsd: 0.3 });
 
     // Under cap — should allow.
     const t2 = await store.prepare(baseInput({ turnId: "t2", caps }));
@@ -333,12 +329,12 @@ describe("BudgetStore", () => {
     const ticket = await store.prepare(baseInput());
     await ticket.confirm();
 
-    await store.commit("turn-1", "peer-1", { priced: true, costUsd: 0.10 });
+    await store.commit("turn-1", "peer-1", { priced: true, costUsd: 0.1 });
     // Second commit must not throw and must not add another $0.10.
-    await store.commit("turn-1", "peer-1", { priced: true, costUsd: 0.10 });
+    await store.commit("turn-1", "peer-1", { priced: true, costUsd: 0.1 });
 
     const usage = await store.getPeerUsage("peer-1", "thread-1");
-    expect(usage.costUsd).toBeCloseTo(0.10, 5);
+    expect(usage.costUsd).toBeCloseTo(0.1, 5);
   });
 
   // ── getPeerUsage ─────────────────────────────────────────
@@ -352,12 +348,10 @@ describe("BudgetStore", () => {
     // Turn 2: thread-1 same peer
     const t2 = await store.prepare(baseInput({ turnId: "t2" }));
     await t2.confirm();
-    await store.commit("t2", "peer-1", { priced: true, costUsd: 0.10 });
+    await store.commit("t2", "peer-1", { priced: true, costUsd: 0.1 });
 
     // Turn 3: thread-2 same peer (different thread)
-    const t3 = await store.prepare(
-      baseInput({ turnId: "t3", threadId: "thread-2" }),
-    );
+    const t3 = await store.prepare(baseInput({ turnId: "t3", threadId: "thread-2" }));
     await t3.confirm();
 
     const usageThread1 = await store.getPeerUsage("peer-1", "thread-1");
@@ -456,7 +450,10 @@ describe("BudgetStore", () => {
     async function run(turnId: string): Promise<void> {
       try {
         const ticket = await store.prepare(baseInput({ turnId, caps }));
-        results.push({ allow: ticket.decision.allow, reason: (ticket.decision as { allow: false; reason: string }).reason });
+        results.push({
+          allow: ticket.decision.allow,
+          reason: (ticket.decision as { allow: false; reason: string }).reason,
+        });
         if (ticket.decision.allow) {
           await ticket.confirm();
         } else {
@@ -503,13 +500,25 @@ describe("BudgetStore", () => {
          (turn_id, peer_id, thread_id, day, trust_level, public_substate,
           reserved_at, committed_at, cost_usd, priced, decision, reason)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      ["cross-day-turn", "peer-x", "thread-x", reservationDay,
-       "public", null, Date.now() - 86400_000, null, null, 0, "allow", null],
+      [
+        "cross-day-turn",
+        "peer-x",
+        "thread-x",
+        reservationDay,
+        "public",
+        null,
+        Date.now() - 86400_000,
+        null,
+        null,
+        0,
+        "allow",
+        null,
+      ],
     );
     db2.close();
 
     // Commit today (different day from reservation).
-    await store.commit("cross-day-turn", "peer-x", { priced: true, costUsd: 0.50 });
+    await store.commit("cross-day-turn", "peer-x", { priced: true, costUsd: 0.5 });
 
     // The cost MUST appear in the reservation's day, not today's day.
     const db3 = new Database(dbPath, { readwrite: true });
@@ -526,7 +535,7 @@ describe("BudgetStore", () => {
     db3.close();
 
     // The reservation's day gets $0.50.
-    expect(pastRow?.total_cost_usd).toBeCloseTo(0.50, 5);
+    expect(pastRow?.total_cost_usd).toBeCloseTo(0.5, 5);
     // Today's global total must NOT have the $0.50 from this turn.
     // (It may have other values from other tests if dbPath is shared, but
     // since each test gets a fresh temp dir, todayRow should be null or 0.)

@@ -20,9 +20,15 @@ describe("SupabaseStore", () => {
   it("writes and reads back an entry", async () => {
     const now = Date.now();
     await store.write({
-      label: "ep:vis_a:1", content: "test content", peerId: "vis_a",
-      trustLevel: "public", createdAt: now, supersededBy: null,
-      retentionClass: "operational", isVerbatim: false, expiresAt: null,
+      label: "ep:vis_a:1",
+      content: "test content",
+      peerId: "vis_a",
+      trustLevel: "public",
+      createdAt: now,
+      supersededBy: null,
+      retentionClass: "operational",
+      isVerbatim: false,
+      expiresAt: null,
     });
 
     const fetched = await store.read("ep:vis_a:1");
@@ -33,14 +39,26 @@ describe("SupabaseStore", () => {
   it("peer-scoped search filters by peer_id", async () => {
     const now = Date.now();
     await store.write({
-      label: "ep:vis_a:1", content: "espresso", peerId: "vis_a",
-      trustLevel: "public", createdAt: now, supersededBy: null,
-      retentionClass: "operational", isVerbatim: false, expiresAt: null,
+      label: "ep:vis_a:1",
+      content: "espresso",
+      peerId: "vis_a",
+      trustLevel: "public",
+      createdAt: now,
+      supersededBy: null,
+      retentionClass: "operational",
+      isVerbatim: false,
+      expiresAt: null,
     });
     await store.write({
-      label: "ep:vis_b:1", content: "espresso", peerId: "vis_b",
-      trustLevel: "public", createdAt: now, supersededBy: null,
-      retentionClass: "operational", isVerbatim: false, expiresAt: null,
+      label: "ep:vis_b:1",
+      content: "espresso",
+      peerId: "vis_b",
+      trustLevel: "public",
+      createdAt: now,
+      supersededBy: null,
+      retentionClass: "operational",
+      isVerbatim: false,
+      expiresAt: null,
     });
 
     const results = await store.search("espresso", "vis_a");
@@ -51,14 +69,26 @@ describe("SupabaseStore", () => {
   it("forget deletes peer entries and returns count", async () => {
     const now = Date.now();
     await store.write({
-      label: "ep:vis_a:1", content: "x", peerId: "vis_a",
-      trustLevel: "public", createdAt: now, supersededBy: null,
-      retentionClass: "operational", isVerbatim: false, expiresAt: null,
+      label: "ep:vis_a:1",
+      content: "x",
+      peerId: "vis_a",
+      trustLevel: "public",
+      createdAt: now,
+      supersededBy: null,
+      retentionClass: "operational",
+      isVerbatim: false,
+      expiresAt: null,
     });
     await store.write({
-      label: "ep:vis_a:2", content: "y", peerId: "vis_a",
-      trustLevel: "public", createdAt: now, supersededBy: null,
-      retentionClass: "operational", isVerbatim: false, expiresAt: null,
+      label: "ep:vis_a:2",
+      content: "y",
+      peerId: "vis_a",
+      trustLevel: "public",
+      createdAt: now,
+      supersededBy: null,
+      retentionClass: "operational",
+      isVerbatim: false,
+      expiresAt: null,
     });
 
     const deleted = await store.forget("vis_a");
@@ -136,14 +166,28 @@ describe("SupabaseStore", () => {
   it("supersede excludes superseded entries from search", async () => {
     const now = Date.now();
     await store.write({
-      id: "old-id", label: "ep:vis_a:1", content: "old fact", peerId: "vis_a",
-      trustLevel: "public", createdAt: now, supersededBy: null,
-      retentionClass: "operational", isVerbatim: false, expiresAt: null,
+      id: "old-id",
+      label: "ep:vis_a:1",
+      content: "old fact",
+      peerId: "vis_a",
+      trustLevel: "public",
+      createdAt: now,
+      supersededBy: null,
+      retentionClass: "operational",
+      isVerbatim: false,
+      expiresAt: null,
     });
     await store.write({
-      id: "new-id", label: "ep:vis_a:1b", content: "fresh fact", peerId: "vis_a",
-      trustLevel: "public", createdAt: now + 1, supersededBy: null,
-      retentionClass: "operational", isVerbatim: false, expiresAt: null,
+      id: "new-id",
+      label: "ep:vis_a:1b",
+      content: "fresh fact",
+      peerId: "vis_a",
+      trustLevel: "public",
+      createdAt: now + 1,
+      supersededBy: null,
+      retentionClass: "operational",
+      isVerbatim: false,
+      expiresAt: null,
     });
     await store.supersede("old-id", "new-id");
 

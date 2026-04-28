@@ -15,14 +15,14 @@
  *   8. Wait for signal → agent.stop() → cleanup
  */
 
-import { resolve, dirname } from "path";
+import { resolve, dirname } from "node:path";
 import { defineAgent } from "../../agent";
 import { parseConfig } from "../config-parser";
 import { resolveEngine } from "../engine-resolver";
 import { resolveAugments } from "../augment-resolver";
 import { writePidManifest, removePidManifest } from "../pid-registry";
 import { resolveConfigPath } from "../resolve-config";
-import type { AgentConfig } from "../../types";
+import type { AgentConfig, Augment, ModelClient } from "../../types";
 
 /**
  * Extract the webTransport port from augment configs (for the PID manifest).
@@ -42,7 +42,7 @@ export async function runDev(
 ): Promise<void> {
   const configPath = resolveConfigPath(name, opts.config);
   const agentDir = dirname(configPath);
-  const mode = opts.internalMode === "launchd" ? "launchd" as const : "dev" as const;
+  const mode = opts.internalMode === "launchd" ? ("launchd" as const) : ("dev" as const);
 
   // Parse and validate config.
   const config = parseConfig(configPath);
@@ -78,8 +78,8 @@ export async function runDev(
   }
 
   // From here on, clean up the PID manifest on any failure.
-  let model;
-  let augments;
+  let model: ModelClient;
+  let augments: Augment[];
   let agentConfig: AgentConfig;
   try {
     model = resolveEngine(config.engine);

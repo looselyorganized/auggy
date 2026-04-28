@@ -6,12 +6,7 @@ import {
   convertOpenAITools,
 } from "./openai";
 import { resolveSlug, priceOpenRouterResponse } from "./openrouter/pricing";
-import type {
-  AssembledPrompt,
-  ModelClient,
-  ModelDelta,
-  ModelResponse,
-} from "../types";
+import type { AssembledPrompt, ModelClient, ModelDelta, ModelResponse } from "../types";
 
 /**
  * OpenRouter engine — wraps the official `openai` SDK with the OpenRouter
@@ -77,15 +72,12 @@ const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
 /** Local extension of the SDK request type with OpenRouter-specific extras.
  *  These fields don't exist in the SDK's typed surface — OpenRouter's
  *  server reads them when present and the SDK forwards them unchanged. */
-type OpenRouterChatParams =
-  OpenAI.Chat.ChatCompletionCreateParamsNonStreaming & {
-    reasoning?: { effort: OpenAI.Chat.ChatCompletionReasoningEffort };
-    provider?: OpenRouterProviderRouting;
-  };
+type OpenRouterChatParams = OpenAI.Chat.ChatCompletionCreateParamsNonStreaming & {
+  reasoning?: { effort: OpenAI.Chat.ChatCompletionReasoningEffort };
+  provider?: OpenRouterProviderRouting;
+};
 
-export function createOpenRouterEngine(
-  opts: OpenRouterEngineOptions,
-): ModelClient {
+export function createOpenRouterEngine(opts: OpenRouterEngineOptions): ModelClient {
   const apiKey = opts.apiKey ?? process.env.OPENROUTER_API_KEY;
   if (!apiKey) {
     throw new Error(
@@ -110,15 +102,15 @@ export function createOpenRouterEngine(
       // eslint-disable-next-line no-console
       console.warn(
         `[engines/openrouter] No pricing entry for slug "${opts.model}" and no costOverride configured. ` +
-        `OpenRouter v0 cost estimation is limited to anthropic/* and openai/* slugs. ` +
-        `For other providers, configure engine.costOverride in agent.yaml.`,
+          `OpenRouter v0 cost estimation is limited to anthropic/* and openai/* slugs. ` +
+          `For other providers, configure engine.costOverride in agent.yaml.`,
       );
     } else if (resolved.freshness.stale) {
       // Freshness binds to the resolved provider's verifiedAt, not OpenRouter's own table.
       // eslint-disable-next-line no-console
       console.warn(
         `[engines/openrouter] Pricing table verifiedAt ${resolved.freshness.verifiedAt} is more than 90 days old. ` +
-        `Cost estimates may be drifting from actual billing. Verify rates and update src/engines/${resolved.resolvedProvider}/pricing.ts.`,
+          `Cost estimates may be drifting from actual billing. Verify rates and update src/engines/${resolved.resolvedProvider}/pricing.ts.`,
       );
     }
   }
@@ -130,13 +122,17 @@ export function createOpenRouterEngine(
       return Math.ceil(text.length / 4);
     },
 
-    async complete(prompt: AssembledPrompt, _opts?: { onDelta?: (delta: ModelDelta) => void }): Promise<ModelResponse> {
+    async complete(
+      prompt: AssembledPrompt,
+      _opts?: { onDelta?: (delta: ModelDelta) => void },
+    ): Promise<ModelResponse> {
       const systemMessage = assembleOpenAISystemMessage(prompt);
       const messages = convertOpenAIMessages(prompt.messages);
       const tools = convertOpenAITools(prompt.tools);
 
-      const allMessages: OpenAI.Chat.ChatCompletionMessageParam[] =
-        systemMessage ? [systemMessage, ...messages] : messages;
+      const allMessages: OpenAI.Chat.ChatCompletionMessageParam[] = systemMessage
+        ? [systemMessage, ...messages]
+        : messages;
 
       // The TS SDK has no extra_body field; OpenRouter-specific keys
       // (`reasoning`, `provider`) go directly on the params object via a
@@ -147,9 +143,7 @@ export function createOpenRouterEngine(
         max_completion_tokens: maxOutputTokens,
         messages: allMessages,
         ...(tools.length > 0 ? { tools } : {}),
-        ...(opts.reasoningEffort
-          ? { reasoning: { effort: opts.reasoningEffort } }
-          : {}),
+        ...(opts.reasoningEffort ? { reasoning: { effort: opts.reasoningEffort } } : {}),
         ...(opts.providerRouting ? { provider: opts.providerRouting } : {}),
       };
 
@@ -163,10 +157,7 @@ export function createOpenRouterEngine(
         // upstream error (e.g. provider 502) reads identically to an
         // OpenAI direct-call error in logs.
         const msg = err instanceof Error ? err.message : String(err);
-        throw new Error(
-          `OpenRouter engine (${opts.model}) failed: ${msg}`,
-          { cause: err },
-        );
+        throw new Error(`OpenRouter engine (${opts.model}) failed: ${msg}`, { cause: err });
       }
       const response = buildOpenAIModelResponse(completion, `openrouter:${opts.model}`);
       const result = priceOpenRouterResponse(opts.model, opts.costOverride, {

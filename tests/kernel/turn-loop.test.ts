@@ -4,12 +4,7 @@ import { createTurnLoop } from "@/kernel/turn-loop";
 import { createMockModel } from "@tests/fixtures/mock-model";
 import { createTokenizer } from "@/tokenizer";
 import { extractText } from "@/parts";
-import type {
-  Augment,
-  TurnTrigger,
-  PeerIdentity,
-  InboundMessage,
-} from "@/types";
+import type { Augment, TurnTrigger, PeerIdentity, InboundMessage } from "@/types";
 
 function makeTrigger(text: string): TurnTrigger {
   const peer: PeerIdentity = {
@@ -221,7 +216,7 @@ describe("TurnLoop", () => {
       config: { name: "test", model: "mock", augments: [] },
     });
 
-    const result = await loop.executeTurn(makeTrigger("Do it"), "thread-c2");
+    const _result = await loop.executeTurn(makeTrigger("Do it"), "thread-c2");
     // 1st call: model sends invalid → fail #1
     // 2nd call: model sends invalid → fail #2 → terminate message
     // 3rd call: model sees termination → gives up
@@ -267,9 +262,7 @@ describe("TurnLoop", () => {
     const history = hm.getHistory(100000);
     const assistantMessages = history.filter((m) => m.role === "assistant");
     expect(assistantMessages.length).toBe(2);
-    expect(assistantMessages[0]!.content).toBe(
-      "Let me check that for you.",
-    );
+    expect(assistantMessages[0]!.content).toBe("Let me check that for you.");
   });
 
   it("executes multiple tool calls in parallel", async () => {
@@ -301,11 +294,7 @@ describe("TurnLoop", () => {
 
     const augment: Augment = {
       name: "slow-aug",
-      tools: [
-        makeSlowTool("slow1"),
-        makeSlowTool("slow2"),
-        makeSlowTool("slow3"),
-      ],
+      tools: [makeSlowTool("slow1"), makeSlowTool("slow2"), makeSlowTool("slow3")],
     };
 
     const loop = createTurnLoop({

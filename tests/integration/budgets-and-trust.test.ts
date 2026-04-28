@@ -260,9 +260,7 @@ describe("budgets + trust integration", () => {
       // Verify: creator bypass path writes NO reservation rows to SQLite
       const db = new Database(dbPath, { readonly: true });
       const row = db
-        .prepare<{ n: number }, []>(
-          "SELECT COUNT(*) AS n FROM turn_reservations",
-        )
+        .prepare<{ n: number }, []>("SELECT COUNT(*) AS n FROM turn_reservations")
         .get();
       db.close();
 
@@ -304,32 +302,24 @@ describe("budgets + trust integration", () => {
       const threadId = "thread-t4";
 
       // First request with idempotency key "my-key-123" → success (consumes slot 1)
-      const r1 = await agent.inject(
-        makeTrigger({ turnId: "my-key-123", peer, threadId }),
-      );
+      const r1 = await agent.inject(makeTrigger({ turnId: "my-key-123", peer, threadId }));
       expect(r1.success).toBe(true);
       expect(r1.status).toBe("completed");
 
       // Second request with SAME idempotency key → deduped.
       // The store sees the existing turn_id row and returns the same allow decision.
       // This does NOT consume a new slot.
-      const r2 = await agent.inject(
-        makeTrigger({ turnId: "my-key-123", peer, threadId }),
-      );
+      const r2 = await agent.inject(makeTrigger({ turnId: "my-key-123", peer, threadId }));
       expect(r2.success).toBe(true);
       expect(r2.status).toBe("completed");
 
       // Third request with a DIFFERENT key → success (consumes slot 2)
-      const r3 = await agent.inject(
-        makeTrigger({ turnId: "my-key-456", peer, threadId }),
-      );
+      const r3 = await agent.inject(makeTrigger({ turnId: "my-key-456", peer, threadId }));
       expect(r3.success).toBe(true);
       expect(r3.status).toBe("completed");
 
       // Fourth request with another fresh key → denied (cap of 2 is reached)
-      const r4 = await agent.inject(
-        makeTrigger({ turnId: "my-key-789", peer, threadId }),
-      );
+      const r4 = await agent.inject(makeTrigger({ turnId: "my-key-789", peer, threadId }));
       expect(r4.success).toBe(false);
       expect(r4.status).toBe("rejected");
       expect(r4.errorClass).toBe("cap-denied");
@@ -338,9 +328,7 @@ describe("budgets + trust integration", () => {
       // (my-key-123 once, my-key-456 once — the duplicate was not re-inserted).
       const db = new Database(dbPath, { readonly: true });
       const row = db
-        .prepare<{ n: number }, []>(
-          "SELECT COUNT(*) AS n FROM turn_reservations",
-        )
+        .prepare<{ n: number }, []>("SELECT COUNT(*) AS n FROM turn_reservations")
         .get();
       db.close();
       expect(row?.n ?? 0).toBe(2);
@@ -571,10 +559,7 @@ describe("budgets + trust integration", () => {
       const db = new Database(dbPath, { readonly: true });
       const today = new Date().toISOString().slice(0, 10);
       const costRow = db
-        .prepare<
-          { cost_usd: number; unpriced_turns: number },
-          [string, string]
-        >(
+        .prepare<{ cost_usd: number; unpriced_turns: number }, [string, string]>(
           "SELECT cost_usd, unpriced_turns FROM peer_daily_costs WHERE peer_id = ? AND day = ?",
         )
         .get(peer.id, today);

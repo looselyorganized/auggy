@@ -76,7 +76,10 @@ describe("synthesizeContextFor static provider", () => {
     };
 
     const wrapped = synthesizeContextFor(aug);
-    const blocks = (await wrapped.context!(makeMessageTurnState("hi"), undefined)) as ContextBlock[];
+    const blocks = (await wrapped.context!(
+      makeMessageTurnState("hi"),
+      undefined,
+    )) as ContextBlock[];
 
     expect(blocks).toHaveLength(2);
     expect(blocks[0]!.source).toBe("identity");
@@ -90,15 +93,15 @@ describe("synthesizeContextFor static provider", () => {
       memory: {
         owns: { kind: "static", labels: ["self", "missing"] },
         defaults,
-        read: async (label) =>
-          label === "self"
-            ? { label: "self", content: "hello" }
-            : null,
+        read: async (label) => (label === "self" ? { label: "self", content: "hello" } : null),
       },
     };
 
     const wrapped = synthesizeContextFor(aug);
-    const blocks = (await wrapped.context!(makeMessageTurnState("hi"), undefined)) as ContextBlock[];
+    const blocks = (await wrapped.context!(
+      makeMessageTurnState("hi"),
+      undefined,
+    )) as ContextBlock[];
     expect(blocks).toHaveLength(1);
   });
 
@@ -136,9 +139,9 @@ describe("synthesizeContextFor static provider", () => {
       },
     };
     const wrapped = synthesizeContextFor(aug);
-    await expect(
-      wrapped.context!(makeMessageTurnState("hi"), undefined),
-    ).rejects.toThrow("disk error");
+    await expect(wrapped.context!(makeMessageTurnState("hi"), undefined)).rejects.toThrow(
+      "disk error",
+    );
   });
 
   it("swallows read() errors when augment is NOT required", async () => {
@@ -154,10 +157,7 @@ describe("synthesizeContextFor static provider", () => {
       },
     };
     const wrapped = synthesizeContextFor(aug);
-    const blocks = await wrapped.context!(
-      makeMessageTurnState("hi"),
-      undefined,
-    );
+    const blocks = await wrapped.context!(makeMessageTurnState("hi"), undefined);
     expect(blocks).toEqual([]);
   });
 });
@@ -222,9 +222,9 @@ describe("synthesizeContextFor namespace provider", () => {
       },
     };
     const wrapped = synthesizeContextFor(aug);
-    await expect(
-      wrapped.context!(makeMessageTurnState("hi"), undefined),
-    ).rejects.toThrow("db down");
+    await expect(wrapped.context!(makeMessageTurnState("hi"), undefined)).rejects.toThrow(
+      "db down",
+    );
   });
 
   it("passes peerId from turn.peer to namespace search()", async () => {
