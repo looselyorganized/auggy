@@ -6,7 +6,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/version-0.2.0-blue" alt="Version" />
-  <img src="https://img.shields.io/badge/tests-600%20passing-brightgreen" alt="Tests" />
+  <img src="https://img.shields.io/badge/tests-863%20passing-brightgreen" alt="Tests" />
   <img src="https://img.shields.io/badge/runtime-Bun-black?logo=bun" alt="Bun" />
   <img src="https://img.shields.io/badge/language-TypeScript-3178C6?logo=typescript" alt="TypeScript" />
   <img src="https://img.shields.io/badge/powered%20by-LORF-red" alt="LORF" />
@@ -14,7 +14,7 @@
 
 Auggy (augment-1) is a modular agent runtime in TypeScript/Bun, purpose-built for **persistent organizational interface agents** — long-running, memory-rich, organization-facing. Agents are composed from swappable **augments**; the kernel manages context, tools, permissions, and lifecycle. Open source, multi-engine, self-hostable.
 
-**v0.2.0** — 7 augments, 3 engines, 600 tests. Agents boot from YAML, chat via AG-UI SSE, remember across restarts, fetch URLs, pull org knowledge, escalate to the operator, and run scoped shell commands.
+**v0.2.0** — 9 augments, 3 engines, 863 tests. Agents boot from YAML, chat via AG-UI SSE, remember across restarts (peer-scoped layered memory), fetch URLs, pull org knowledge, escalate to the operator, run scoped shell commands, and enforce per-trust-level turn budgets + dollar ceilings via a 2PC turn-gate kernel capability.
 
 ## Quick start
 
@@ -91,12 +91,14 @@ augments:
 | Augment | What it provides |
 |---------|-----------------|
 | `fileMemory` | File-backed static memory (identity, notes, learned behaviors) |
-| `supabaseMemory` | Supabase-backed namespace memory (episodic, visitor profiles) |
+| `supabaseMemory` | Supabase-backed namespace memory (frozen — kept for migration; replaced by `layeredMemory`) |
+| `layeredMemory` | Peer-scoped episodic memory with provenance (L0-L3 layers, SQLite or Supabase backend) |
 | `filesystem` | Multi-mount scoped file access (6 tools, realpath security) |
-| `webTransport` | AG-UI SSE chat transport (HTTP, bearer auth, CORS, rate limiting) |
+| `webTransport` | AG-UI SSE chat transport (HTTP, four-path identity resolution, CORS, rate limiting, Idempotency-Key dedup) |
 | `webFetch` | URL fetch with HTML-to-text and JSON passthrough |
 | `orgContext` | Org knowledge via manifest API (org_fetch + org_escalate tools) |
-| `bash` | Scoped shell execution (allowlist, cwd, timeout) |
+| `bash` | Scoped shell execution (allowlist, cwd, timeout; default `perTrustLevel` blocks `shell_exec`/`run_script` for public + agent) |
+| `budgets` | Per-trust-level turn budgets + per-peer dollar ceiling via 2PC turn-gate (BATS-style budget-aware preamble + post-hoc cost commit) |
 
 ## Engines
 
