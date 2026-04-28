@@ -18,7 +18,7 @@ Auggy is pre-1.0. Breaking changes between minor versions are possible. Pin to a
 Use one of these private channels instead:
 
 1. **GitHub Private Vulnerability Reporting** (preferred) — open a report from the [Security tab](https://github.com/looselyorganized/augment-1/security/advisories/new) of this repo.
-2. **Email** — `security@lorf.dev`. Encrypt with PGP if the vulnerability is sensitive (key on request).
+2. **Email** — `michael@looselyorganized.xyz`.
 
 Please include:
 
