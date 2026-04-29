@@ -1028,8 +1028,15 @@ describe("webTransport HTTP server", () => {
     // We verify by attaching a budgets augment with an anonymous-only cap of 1
     // and confirming it fires (i.e., the request was treated as anonymous, not
     // as recognized which would have no cap).
+    //
+    // Ports 18960-18962 below were bumped from 18950-18952 to avoid colliding
+    // with `tests/integration/full-agent.test.ts`, which also uses 18950+18951.
+    // bun:test runs files in parallel; whichever bound second got EADDRINUSE
+    // and the test died in ~2ms with a misleading expect(200) failure. Proper
+    // fix is `port: 0` + read the bound port from Bun.serve, but the augment
+    // doesn't expose that today — bump for now, refactor later.
     const model = createMockModel({ response: "hi" });
-    const port = 18950;
+    const port = 18960;
     const aug = webTransport({
       port,
       auth: { type: "bearer", token: "test-token" },
@@ -1087,7 +1094,7 @@ describe("webTransport HTTP server", () => {
     // resolves to anonymous. This test verifies that a first-contact request
     // with a present-but-invalid token issues a token AND stays anonymous.
     const model = createMockModel({ response: "hi" });
-    const port = 18951;
+    const port = 18961;
     const aug = webTransport({
       port,
       auth: { type: "bearer", token: "test-token" },
@@ -1134,7 +1141,7 @@ describe("webTransport HTTP server", () => {
   it("Fix 1: valid visitor token classifies request as public:recognized", async () => {
     // Regression guard: valid tokens must still produce recognized trust.
     const model = createMockModel({ response: "hi" });
-    const port = 18952;
+    const port = 18962;
     const aug = webTransport({
       port,
       auth: { type: "bearer", token: "test-token" },
