@@ -78,3 +78,63 @@ describe("resolveTelegramIdentity", () => {
     // creator path wins by spec ordering — verify ordering matches item 5's web-transport
   });
 });
+
+import { validateAdmittedAgents } from "../../src/augments/telegram-transport";
+import type { TelegramBotClient } from "../../src/telegram-client";
+
+function mockClient(behavior: Record<number, "ok" | "fail">): TelegramBotClient {
+  return {
+    sendMessage: async (cId) => ({ messageId: 1, chatId: cId }),
+    getUpdates: async () => [],
+    setWebhook: async () => {},
+    deleteWebhook: async () => {},
+    getChat: async (chatId) => {
+      const id = Number(chatId);
+      if (behavior[id] === "ok") return { id, type: "private", first_name: "Agent" };
+      throw new Error("user not found");
+    },
+  };
+}
+
+describe("validateAdmittedAgents", () => {
+  it("logs info for each admittedAgent that resolves successfully", async () => {
+    const logs: string[] = [];
+    const log = {
+      info: (msg: string) => logs.push(`info: ${msg}`),
+      warn: (msg: string) => logs.push(`warn: ${msg}`),
+    };
+    await validateAdmittedAgents(
+      [
+        { id: "scheduler", telegramUserId: 100 },
+        { id: "billing", telegramUserId: 200 },
+      ],
+      mockClient({ 100: "ok", 200: "ok" }),
+      log,
+    );
+    expect(logs.filter((l) => l.startsWith("info"))).toHaveLength(2);
+  });
+
+  it("logs warning for each admittedAgent that fails to resolve, naming id and telegramUserId", async () => {
+    const logs: string[] = [];
+    const log = { info: () => {}, warn: (msg: string) => logs.push(msg) };
+    await validateAdmittedAgents(
+      [
+        { id: "scheduler", telegramUserId: 100 },
+        { id: "typo-bot", telegramUserId: 999 },
+      ],
+      mockClient({ 100: "ok", 999: "fail" }),
+      log,
+    );
+    expect(logs.length).toBe(1);
+    expect(logs[0]).toContain("typo-bot");
+    expect(logs[0]).toContain("999");
+  });
+
+  it("does nothing if admittedAgents is empty or undefined", async () => {
+    const logs: string[] = [];
+    const log = { info: (m: string) => logs.push(m), warn: (m: string) => logs.push(m) };
+    await validateAdmittedAgents(undefined, mockClient({}), log);
+    await validateAdmittedAgents([], mockClient({}), log);
+    expect(logs).toHaveLength(0);
+  });
+});
