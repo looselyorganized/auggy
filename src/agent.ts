@@ -129,7 +129,7 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
               return agentCard;
             },
           };
-          await aug.transport.register(transportKernel);
+          await aug.transport.register(transportKernel, aug.name);
         }
       }
 

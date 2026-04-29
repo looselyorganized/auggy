@@ -220,7 +220,7 @@ describe("telegramTransport — polling lifecycle", () => {
       _clientFactory: () => client,
     } as any);
     // Wire the kernel into the transport before booting receivers.
-    await aug.transport!.register(kernel);
+    await aug.transport!.register(kernel, "telegram-transport");
     await aug.onBoot?.();
     await new Promise((r) => setTimeout(r, 30));
     await aug.onShutdown?.();
@@ -251,7 +251,7 @@ describe("telegramTransport — polling lifecycle", () => {
       auth: { anonymousIdentityMode: "ephemeral" },
       _clientFactory: () => client,
     } as any);
-    await aug.transport!.register(kernel);
+    await aug.transport!.register(kernel, "telegram-transport");
     await aug.onBoot?.();
     await new Promise((r) => setTimeout(r, 30));
     // The kernel would invoke the outbound callback with an OutboundMessage
@@ -282,7 +282,7 @@ describe("telegramTransport — polling lifecycle", () => {
       auth: {},
       _clientFactory: () => client,
     } as any);
-    await aug.transport!.register(kernel);
+    await aug.transport!.register(kernel, "telegram-transport");
     await aug.onBoot?.();
     await new Promise((r) => setTimeout(r, 30));
     await aug.onShutdown?.();
