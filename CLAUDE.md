@@ -93,7 +93,7 @@ src/
 │   ├── filesystem.ts       # Multi-mount scoped file access (6 tools, realpath security)
 │   ├── filesystem-skill/   # SKILL.md + references/ for the filesystem augment
 │   ├── web-fetch.ts        # URL fetch with HTML→text, JSON passthrough
-│   ├── org-context.ts      # Org knowledge (manifest + org_fetch + org_escalate)
+│   ├── org-context.ts      # Org knowledge (manifest + org_fetch)
 │   ├── bash.ts             # Scoped shell execution (allowlist, cwd, timeout)
 │   ├── budgets.ts          # Per-trust-level turn budgets + dollar ceiling (turn-gate 2PC)
 │   └── budgets/            # Budget store (SQLite), BATS preamble builder, types
