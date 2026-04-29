@@ -46,3 +46,5 @@ docs/*
 docs/**/
 !docs/02-architecture-overview.md
 !docs/todos.md
+!docs/13-notify.md
+!docs/14-telegram-transport.md
