@@ -254,7 +254,10 @@ function validateNotifyOptions(
       if (typeof dest.botToken !== "string" || !dest.botToken) {
         errors.push(`${dPrefix}.botToken: required string for telegram transport`);
       }
-      if (dest.chatId == null || (typeof dest.chatId !== "string" && typeof dest.chatId !== "number")) {
+      if (
+        dest.chatId == null ||
+        (typeof dest.chatId !== "string" && typeof dest.chatId !== "number")
+      ) {
         errors.push(`${dPrefix}.chatId: required string or number for telegram transport`);
       }
     } else {
@@ -264,7 +267,13 @@ function validateNotifyOptions(
 
   if (opts.rateLimit !== undefined) {
     const rl = opts.rateLimit as Record<string, unknown>;
-    const numericFields = ["cooldownMs", "globalMaxPerHour", "dedupWindowMs", "dedupThreshold", "perPeerCooldownMs"] as const;
+    const numericFields = [
+      "cooldownMs",
+      "globalMaxPerHour",
+      "dedupWindowMs",
+      "dedupThreshold",
+      "perPeerCooldownMs",
+    ] as const;
     for (const field of numericFields) {
       if (rl[field] !== undefined && (typeof rl[field] !== "number" || (rl[field] as number) < 0)) {
         errors.push(`${prefix}.rateLimit.${field}: must be a non-negative number`);

@@ -10,14 +10,22 @@ import type {
 } from "../../src/types";
 
 function makePeer(id: string, trustLevel: PeerIdentity["trustLevel"] = "public"): PeerIdentity {
-  return { id, kind: "human", trustLevel, sourceAugment: "web", ...(trustLevel === "public" ? { publicSubstate: "anonymous" as const } : {}) };
+  return {
+    id,
+    kind: "human",
+    trustLevel,
+    sourceAugment: "web",
+    ...(trustLevel === "public" ? { publicSubstate: "anonymous" as const } : {}),
+  };
 }
 
 function makeContext(peer: PeerIdentity | null = null): ToolExecuteContext {
   return { turnId: `turn-${crypto.randomUUID()}`, peer, threadId: "thread-1" };
 }
 
-function mockAdapter(deliveries: Array<{ destination: string; result: "sent" | "failed" }> = []): NotifyAdapter {
+function mockAdapter(
+  deliveries: Array<{ destination: string; result: "sent" | "failed" }> = [],
+): NotifyAdapter {
   return {
     deliver: async (destination: NotifyDestination, _payload: NotifyPayload) => {
       deliveries.push({ destination: destination.name, result: "sent" });
@@ -49,7 +57,10 @@ describe("notify augment", () => {
   });
 
   it("returns error when destination name not configured", async () => {
-    const aug = notify({ ...baseOpts, adapters: { webhook: mockAdapter(), telegram: mockAdapter() } });
+    const aug = notify({
+      ...baseOpts,
+      adapters: { webhook: mockAdapter(), telegram: mockAdapter() },
+    });
     const tool = aug.tools!.find((t) => t.name === "notify")!;
     const ctx = makeContext(makePeer("v1"));
     const result = JSON.parse(await tool.execute({ to: "nope", summary: "x" }, ctx));
@@ -79,7 +90,9 @@ describe("notify augment", () => {
     });
     const tool = aug.tools!.find((t) => t.name === "notify")!;
     await tool.execute({ to: "creator", summary: "first" }, makeContext(makePeer("v1")));
-    const result = JSON.parse(await tool.execute({ to: "creator", summary: "second" }, makeContext(makePeer("v2"))));
+    const result = JSON.parse(
+      await tool.execute({ to: "creator", summary: "second" }, makeContext(makePeer("v2"))),
+    );
     expect(result.status).toBe("sent");
   });
 
@@ -90,11 +103,16 @@ describe("notify augment", () => {
       adapters: { webhook: mockAdapter(), telegram: mockAdapter() },
     });
     const tool = aug.tools!.find((t) => t.name === "notify")!;
-    await tool.execute({ to: "creator", summary: "visitor wants partnership opportunity" }, makeContext(makePeer("v1")));
-    const result = JSON.parse(await tool.execute(
-      { to: "creator", summary: "visitor wants partnership opportunity discussion" },
-      makeContext(makePeer("v2")),
-    ));
+    await tool.execute(
+      { to: "creator", summary: "visitor wants partnership opportunity" },
+      makeContext(makePeer("v1")),
+    );
+    const result = JSON.parse(
+      await tool.execute(
+        { to: "creator", summary: "visitor wants partnership opportunity discussion" },
+        makeContext(makePeer("v2")),
+      ),
+    );
     expect(result.status).toBe("rate_limited");
   });
 
@@ -107,7 +125,9 @@ describe("notify augment", () => {
     const tool = aug.tools!.find((t) => t.name === "notify")!;
     await tool.execute({ to: "creator", summary: "1" }, makeContext(makePeer("v1")));
     await tool.execute({ to: "creator", summary: "2" }, makeContext(makePeer("v2")));
-    const result = JSON.parse(await tool.execute({ to: "creator", summary: "3" }, makeContext(makePeer("v3"))));
+    const result = JSON.parse(
+      await tool.execute({ to: "creator", summary: "3" }, makeContext(makePeer("v3"))),
+    );
     expect(result.status).toBe("rate_limited");
     expect(result.message).toContain("global");
   });
@@ -115,20 +135,30 @@ describe("notify augment", () => {
   it("creator-class peer bypasses all rate limits", async () => {
     const aug = notify({
       ...baseOpts,
-      rateLimit: { cooldownMs: 60_000, globalMaxPerHour: 1, dedupThreshold: 0.9, perPeerCooldownMs: 30_000 },
+      rateLimit: {
+        cooldownMs: 60_000,
+        globalMaxPerHour: 1,
+        dedupThreshold: 0.9,
+        perPeerCooldownMs: 30_000,
+      },
       adapters: { webhook: mockAdapter(), telegram: mockAdapter() },
     });
     const tool = aug.tools!.find((t) => t.name === "notify")!;
     await tool.execute({ to: "creator", summary: "first" }, makeContext(makePeer("v1")));
-    const result = JSON.parse(await tool.execute(
-      { to: "creator", summary: "first" },
-      makeContext(makePeer("op", "creator")),
-    ));
+    const result = JSON.parse(
+      await tool.execute(
+        { to: "creator", summary: "first" },
+        makeContext(makePeer("op", "creator")),
+      ),
+    );
     expect(result.status).toBe("sent");
   });
 
   it("returns error when ToolExecuteContext is missing", async () => {
-    const aug = notify({ ...baseOpts, adapters: { webhook: mockAdapter(), telegram: mockAdapter() } });
+    const aug = notify({
+      ...baseOpts,
+      adapters: { webhook: mockAdapter(), telegram: mockAdapter() },
+    });
     const tool = aug.tools!.find((t) => t.name === "notify")!;
     const result = JSON.parse(await tool.execute({ to: "creator", summary: "x" }));
     expect(result.status).toBe("failed");

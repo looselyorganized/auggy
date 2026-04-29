@@ -14,7 +14,8 @@ export interface CreateTelegramAdapterOptions {
 }
 
 export function createTelegramAdapter(opts: CreateTelegramAdapterOptions = {}): NotifyAdapter {
-  const factory = opts.clientFactory ?? ((botToken: string) => createTelegramBotClient({ botToken }));
+  const factory =
+    opts.clientFactory ?? ((botToken: string) => createTelegramBotClient({ botToken }));
   const cache = new Map<string, TelegramBotClient>();
 
   function getClient(botToken: string): TelegramBotClient {
@@ -34,9 +35,15 @@ export function createTelegramAdapter(opts: CreateTelegramAdapterOptions = {}): 
   }
 
   return {
-    async deliver(destination: NotifyDestination, payload: NotifyPayload): Promise<NotifyDeliveryResult> {
+    async deliver(
+      destination: NotifyDestination,
+      payload: NotifyPayload,
+    ): Promise<NotifyDeliveryResult> {
       if (destination.transport !== "telegram") {
-        return { status: "failed", detail: `telegramAdapter received non-telegram destination: ${destination.transport}` };
+        return {
+          status: "failed",
+          detail: `telegramAdapter received non-telegram destination: ${destination.transport}`,
+        };
       }
       const dest = destination as TelegramNotifyDestination;
       try {

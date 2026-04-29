@@ -58,13 +58,13 @@ const DEFAULT_CACHE_TTL = 60 * 60 * 1000; // 1 hour
 
 export function orgContext(opts: OrgContextOptions): Augment {
   const baseUrl = opts.baseUrl.replace(/\/$/, "");
-  const client = opts.client ?? createHttpClient({
-    timeoutMs: 10_000,
-    userAgent: "auggy-org-context/0.2",
-    defaultHeaders: opts.token
-      ? { authorization: `Bearer ${opts.token}` }
-      : {},
-  });
+  const client =
+    opts.client ??
+    createHttpClient({
+      timeoutMs: 10_000,
+      userAgent: "auggy-org-context/0.2",
+      defaultHeaders: opts.token ? { authorization: `Bearer ${opts.token}` } : {},
+    });
   const cacheTtl = opts.cacheTtlMs ?? DEFAULT_CACHE_TTL;
 
   let cachedManifest: OrgManifest | null = null;
@@ -99,12 +99,7 @@ export function orgContext(opts: OrgContextOptions): Augment {
   // ---------------------------------------------------------------------------
 
   function buildContextBlock(manifest: OrgManifest): string {
-    const lines = [
-      `# ${manifest.org} — Organization Context`,
-      "",
-      manifest.purpose,
-      "",
-    ];
+    const lines = [`# ${manifest.org} — Organization Context`, "", manifest.purpose, ""];
 
     if (manifest.operator) {
       lines.push(`**Operator:** ${manifest.operator}`);
@@ -143,10 +138,7 @@ export function orgContext(opts: OrgContextOptions): Augment {
       endpoint: z
         .string()
         .describe("The endpoint path (e.g. '/vision', '/initiatives', '/solutions/architecture')"),
-      prompt: z
-        .string()
-        .optional()
-        .describe("Optional: what you want to know from the content"),
+      prompt: z.string().optional().describe("Optional: what you want to know from the content"),
     }),
     execute: async ({ endpoint, prompt }) => {
       const path = endpoint.startsWith("/") ? endpoint : `/${endpoint}`;
@@ -167,9 +159,10 @@ export function orgContext(opts: OrgContextOptions): Augment {
               .join("\n\n---\n\n");
 
             const maxChars = 20_000;
-            const truncated = content.length > maxChars
-              ? content.slice(0, maxChars) + `\n\n[truncated — ${content.length} total chars]`
-              : content;
+            const truncated =
+              content.length > maxChars
+                ? content.slice(0, maxChars) + `\n\n[truncated — ${content.length} total chars]`
+                : content;
 
             return JSON.stringify({
               endpoint: path,
@@ -231,14 +224,20 @@ export function orgContext(opts: OrgContextOptions): Augment {
         manifest = await fetchManifest(true);
         if (manifest) break;
         if (i < delays.length - 1) {
-          console.warn(`[org-context] manifest fetch failed, retrying in ${delays[i + 1]! / 1000}s...`);
+          console.warn(
+            `[org-context] manifest fetch failed, retrying in ${delays[i + 1]! / 1000}s...`,
+          );
         }
       }
 
       if (manifest) {
-        console.log(`[org-context] loaded manifest for ${manifest.org} (${manifest.endpoints.length} endpoints)`);
+        console.log(
+          `[org-context] loaded manifest for ${manifest.org} (${manifest.endpoints.length} endpoints)`,
+        );
       } else {
-        console.warn("[org-context] org API unreachable — running without org context. Will retry on first org_fetch call.");
+        console.warn(
+          "[org-context] org API unreachable — running without org context. Will retry on first org_fetch call.",
+        );
       }
     },
   };

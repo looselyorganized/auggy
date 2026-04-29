@@ -28,7 +28,10 @@ describe("createTelegramBotClient", () => {
       botToken: "TESTTOKEN",
       client: mockHttp((method, url, body) => {
         captured = { url, body };
-        return { status: 200, body: JSON.stringify({ ok: true, result: { message_id: 99, chat: { id: 42 } } }) };
+        return {
+          status: 200,
+          body: JSON.stringify({ ok: true, result: { message_id: 99, chat: { id: 42 } } }),
+        };
       }),
     });
     const result = await client.sendMessage(42, "hello");
@@ -70,7 +73,10 @@ describe("createTelegramBotClient", () => {
     let url = "";
     const client = createTelegramBotClient({
       botToken: "T",
-      client: mockHttp((m, u) => { url = u; return { status: 200, body: JSON.stringify({ ok: true, result: true }) }; }),
+      client: mockHttp((m, u) => {
+        url = u;
+        return { status: 200, body: JSON.stringify({ ok: true, result: true }) };
+      }),
     });
     await client.deleteWebhook();
     expect(url).toBe("https://api.telegram.org/botT/deleteWebhook");
@@ -79,7 +85,10 @@ describe("createTelegramBotClient", () => {
   it("getChat returns chat info on success", async () => {
     const client = createTelegramBotClient({
       botToken: "T",
-      client: mockHttp(() => ({ status: 200, body: JSON.stringify({ ok: true, result: { id: 555, type: "private", first_name: "Op" } }) })),
+      client: mockHttp(() => ({
+        status: 200,
+        body: JSON.stringify({ ok: true, result: { id: 555, type: "private", first_name: "Op" } }),
+      })),
     });
     const chat = await client.getChat(555);
     expect(chat.id).toBe(555);
@@ -89,7 +98,10 @@ describe("createTelegramBotClient", () => {
   it("sendMessage 4xx surfaces structured error", async () => {
     const client = createTelegramBotClient({
       botToken: "T",
-      client: mockHttp(() => ({ status: 400, body: JSON.stringify({ ok: false, description: "chat not found" }) })),
+      client: mockHttp(() => ({
+        status: 400,
+        body: JSON.stringify({ ok: false, description: "chat not found" }),
+      })),
     });
     await expect(client.sendMessage(0, "x")).rejects.toThrow(/chat not found/);
   });
@@ -97,7 +109,10 @@ describe("createTelegramBotClient", () => {
   it("getChat throws on bot-API error", async () => {
     const client = createTelegramBotClient({
       botToken: "T",
-      client: mockHttp(() => ({ status: 400, body: JSON.stringify({ ok: false, description: "user not found" }) })),
+      client: mockHttp(() => ({
+        status: 400,
+        body: JSON.stringify({ ok: false, description: "user not found" }),
+      })),
     });
     await expect(client.getChat(999)).rejects.toThrow(/user not found/);
   });
