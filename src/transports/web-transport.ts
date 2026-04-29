@@ -216,7 +216,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
   };
 
   const transport: TransportSpec = {
-    async register(k: TransportKernel) {
+    async register(k: TransportKernel, _augmentName: string) {
       kernel = k;
     },
     identify,

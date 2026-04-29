@@ -463,7 +463,13 @@ export interface TransportKernel {
 }
 
 export interface TransportSpec {
-  register(kernel: TransportKernel): Promise<void>;
+  /**
+   * Called once at agent boot. The kernel handle is captured for handleInbound
+   * dispatch; the augmentName is the operator-chosen runtime name (e.g. "telegram"),
+   * which the transport SHOULD use as trigger.source so kernel-emitted outbound
+   * messages route back through the agent's outboundHandlers map (keyed by aug.name).
+   */
+  register(kernel: TransportKernel, augmentName: string): Promise<void>;
   identify(raw: unknown): PeerIdentity | null;
   concurrency?: number;
   maxQueueDepth?: number;

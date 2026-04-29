@@ -144,6 +144,7 @@ export function telegramTransport(opts: TelegramTransportOptions): Augment {
   let pollHandle: PollLoopHandle | null = null;
   let webhookHandle: WebhookServerHandle | null = null;
   let kernel: TransportKernel | null = null;
+  let registeredName: string | null = null;
 
   /**
    * Per-thread chat_id map. Populated when an inbound update arrives, read
@@ -168,8 +169,9 @@ export function telegramTransport(opts: TelegramTransportOptions): Augment {
   };
 
   const transport: TransportSpec = {
-    async register(k: TransportKernel) {
+    async register(k: TransportKernel, augmentName: string) {
       kernel = k;
+      registeredName = augmentName;
       // Wire the outbound callback once. The kernel invokes this for every
       // outbound text message during a turn — we look up the chat_id by
       // threadId (set when the inbound arrived) and call sendMessage.
@@ -233,7 +235,7 @@ export function telegramTransport(opts: TelegramTransportOptions): Augment {
       threadId,
       contextId: threadId,
       timestamp: Date.now(),
-      source: "telegram-transport",
+      source: registeredName ?? "telegram-transport",
       peer,
       payload: inbound,
     };
