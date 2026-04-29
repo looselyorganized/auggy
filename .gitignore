@@ -53,6 +53,7 @@ docs/**/
 !docs/07-built-in-augments.md
 !docs/13-notify.md
 !docs/14-telegram-transport.md
+!docs/15-chat.md
 
 # Local git worktrees (subagent-driven-development)
 .worktrees/
