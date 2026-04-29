@@ -46,6 +46,14 @@ export interface WebTransportOptions {
   maxQueueDepth?: number;
   rateLimitPerPeer?: { maxPerMinute: number };
   visitorTokens?: { enabled?: boolean; ttlSeconds?: number; signingKey?: string };
+  /**
+   * Optional URL to redirect GET / to. When set, `GET /` returns 302 to this URL.
+   * When unset, `GET /` returns 404. All other routes are unaffected.
+   *
+   * Used by operators to point visitors arriving at the agent's bare URL toward
+   * a polished frontend (LORF platform/chat, future spine visitor chat, custom).
+   */
+  publicFrontendUrl?: string;
 }
 
 interface AGUIRunRequestBody {
@@ -508,6 +516,14 @@ export function webTransport(opts: WebTransportOptions): Augment {
           // CORS preflight — required for browser-based AG-UI clients
           if (req.method === "OPTIONS") {
             return handleCorsPreFlight();
+          }
+
+          // GET / — optional redirect to operator-configured publicFrontendUrl
+          if (req.method === "GET" && url.pathname === "/") {
+            if (opts.publicFrontendUrl) {
+              return Response.redirect(opts.publicFrontendUrl, 302);
+            }
+            return new Response("Not Found", { status: 404 });
           }
 
           if (req.method === "POST" && url.pathname === "/agent/run") {

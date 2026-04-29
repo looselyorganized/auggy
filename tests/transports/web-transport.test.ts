@@ -1222,7 +1222,6 @@ describe("webTransport / (root) route", () => {
     const aug = webTransport({
       port,
       auth: { type: "bearer", token: "test-token" },
-      // @ts-expect-error — publicFrontendUrl not yet in WebTransportOptions; added in Task A2
       publicFrontendUrl: "https://example.com/chat",
     });
     const agent = defineAgent({ name: "test", model: "mock", augments: [aug] }, model);
@@ -1247,7 +1246,6 @@ describe("webTransport / (root) route", () => {
     const aug = webTransport({
       port,
       auth: { type: "bearer", token: "test-token" },
-      // @ts-expect-error — publicFrontendUrl not yet in WebTransportOptions; added in Task A2
       publicFrontendUrl: "https://example.com/chat",
     });
     const agent = defineAgent({ name: "test", model: "mock", augments: [aug] }, model);
@@ -1271,7 +1269,6 @@ describe("webTransport / (root) route", () => {
     const aug = webTransport({
       port,
       auth: { type: "bearer", token: "test-token" },
-      // @ts-expect-error — publicFrontendUrl not yet in WebTransportOptions; added in Task A2
       publicFrontendUrl: "https://example.com/chat",
     });
     const agent = defineAgent(
@@ -1305,7 +1302,6 @@ describe("webTransport / (root) route", () => {
     const aug = webTransport({
       port,
       auth: { type: "bearer", token: "test-token" },
-      // @ts-expect-error — publicFrontendUrl not yet in WebTransportOptions; added in Task A2
       publicFrontendUrl: "https://example.com/chat",
     });
     const agent = defineAgent({ name: "test", model: "mock", augments: [aug] }, model);
