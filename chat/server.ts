@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { homedir } from "node:os";
 import { createLocalPidSource } from "./src/adapters/local-pid-source";
 import { extractBearerFromEnv } from "./src/lib/bearer";
@@ -34,10 +34,9 @@ export interface GuiServerOptions {
   cardFetchTimeoutMs?: number;
 }
 
-interface BearerEntry {
+interface AgentEntry {
   port: number;
   agentDir: string;
-  bearer: string | null;
 }
 
 export function createGuiServer(opts: GuiServerOptions) {
@@ -54,25 +53,23 @@ export function createGuiServer(opts: GuiServerOptions) {
     cardFetchTimeoutMs: opts.cardFetchTimeoutMs,
   });
 
-  // Bearer cache — keyed by agent name. Refreshed on /api/chat/<id> miss + on fs.watch.
-  const bearerCache = new Map<string, BearerEntry>();
+  // Agent metadata cache — keyed by agent name. Holds (port, agentDir) only;
+  // bearer is re-read fresh on every /api/chat/<id> call to avoid stale-cache
+  // races against .env edits and against the subscribe-driven refresh path.
+  const agentCache = new Map<string, AgentEntry>();
 
-  function refreshBearerCache(refs: AgentRef[]) {
-    bearerCache.clear();
+  function refreshAgentCache(refs: AgentRef[]) {
+    agentCache.clear();
     for (const r of refs) {
       const md = r.metadata as { port: number | null; agentDir: string };
       if (!md.port || !md.agentDir) continue;
-      bearerCache.set(r.id, {
-        port: md.port,
-        agentDir: md.agentDir,
-        bearer: extractBearerFromEnv(md.agentDir),
-      });
+      agentCache.set(r.id, { port: md.port, agentDir: md.agentDir });
     }
   }
 
   const unsubscribe = source.subscribe?.(async () => {
     const refs = await source.list();
-    refreshBearerCache(refs);
+    refreshAgentCache(refs);
   });
 
   function jsonResponse(body: unknown, status = 200): Response {
@@ -85,8 +82,10 @@ export function createGuiServer(opts: GuiServerOptions) {
   function serveStatic(pathname: string): Response | null {
     if (!staticDir) return null;
     const filePath = pathname === "/" ? join(staticDir, "index.html") : join(staticDir, pathname);
-    // Path traversal guard
-    if (!filePath.startsWith(staticDir)) return new Response("forbidden", { status: 403 });
+    // Path traversal guard — append the platform separator so a sibling dir
+    // like "/tmp/dist-evil" can't satisfy a "/tmp/dist" prefix check.
+    const staticDirWithSep = staticDir.endsWith(sep) ? staticDir : staticDir + sep;
+    if (!filePath.startsWith(staticDirWithSep)) return new Response("forbidden", { status: 403 });
     if (!existsSync(filePath)) return null;
     if (!statSync(filePath).isFile()) return null;
     const content = readFileSync(filePath);
@@ -107,7 +106,7 @@ export function createGuiServer(opts: GuiServerOptions) {
     if (!csrf.ok) return new Response(JSON.stringify({ error: csrf.reason }), { status: 403 });
 
     const refs = await source.list();
-    refreshBearerCache(refs);
+    refreshAgentCache(refs);
     // Strip metadata that may include bearer-adjacent info
     const safe = refs.map(r => ({
       id: r.id, name: r.name, description: r.description,
@@ -121,15 +120,20 @@ export function createGuiServer(opts: GuiServerOptions) {
     const csrf = validateCsrf(req, port);
     if (!csrf.ok) return new Response(JSON.stringify({ error: csrf.reason }), { status: 403 });
 
-    let entry = bearerCache.get(agentId);
+    let entry = agentCache.get(agentId);
     if (!entry) {
       // Miss — refresh and retry once
       const refs = await source.list();
-      refreshBearerCache(refs);
-      entry = bearerCache.get(agentId);
+      refreshAgentCache(refs);
+      entry = agentCache.get(agentId);
     }
     if (!entry) return jsonResponse({ error: "agent not found" }, 404);
-    if (!entry.bearer) {
+
+    // Always re-read bearer fresh from disk to avoid stale-cache races against
+    // .env edits or against an in-flight subscribe-driven refresh that may have
+    // mutated the cache while this handler was running. One sync read = ~µs.
+    const freshBearer = extractBearerFromEnv(entry.agentDir);
+    if (!freshBearer) {
       return jsonResponse({
         error: `no WEB_BEARER_TOKEN in ${entry.agentDir}/.env`,
         hint: "Add WEB_BEARER_TOKEN to the agent's .env and reload the picker.",
@@ -149,14 +153,21 @@ export function createGuiServer(opts: GuiServerOptions) {
         method: "POST",
         headers: {
           "content-type": "application/json",
-          authorization: `Bearer ${entry.bearer}`,
+          authorization: `Bearer ${freshBearer}`,
         },
         body: JSON.stringify({
           messages: [{ role: "user", content: body.message }],
           threadId: body.threadId,
         }),
+        // Propagate client disconnects to the upstream agent — when the
+        // browser closes the SSE stream, req.signal aborts and we cancel the
+        // upstream fetch, stopping the agent from burning further budget.
+        signal: req.signal,
       });
     } catch (err) {
+      if ((err as Error).name === "AbortError") {
+        return new Response(null, { status: 499 });
+      }
       return jsonResponse({ error: `upstream connect failed: ${(err as Error).message}` }, 502);
     }
 
