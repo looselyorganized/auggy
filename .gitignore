@@ -39,5 +39,10 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 zip/
 
 
-# Internal docs — keep local, do not publish.
-docs/
+# Internal docs — keep local, do not publish (most files are red-team
+# notes, raw planning, dated research). Carve-outs allow specific public-
+# ready reference docs to stay tracked.
+docs/*
+docs/**/
+!docs/02-architecture-overview.md
+!docs/todos.md
