@@ -682,3 +682,50 @@ export interface NotifyDeliveryResult {
 export interface NotifyAdapter {
   deliver(destination: NotifyDestination, payload: NotifyPayload): Promise<NotifyDeliveryResult>;
 }
+
+// ---------------------------------------------------------------------------
+// Telegram transport
+// ---------------------------------------------------------------------------
+
+export type TelegramInboundMode = "polling" | "webhook";
+
+export interface TelegramPollingOptions {
+  timeoutSec?: number;
+}
+
+export interface TelegramWebhookOptions {
+  publicUrl: string;
+  port?: number;
+  secretToken: string;
+  allowedUpdates?: string[];
+}
+
+export interface TelegramAdmittedAgent {
+  id: string;
+  telegramUserId: number;
+}
+
+export type TelegramAnonymousIdentityMode = "ephemeral" | "durable";
+
+export interface TelegramAuthOptions {
+  creatorUserIds?: number[];
+  admittedAgents?: TelegramAdmittedAgent[];
+  recognizedUserIds?: number[];
+  /**
+   * peer.id durability for anonymous Telegram peers. Default "ephemeral"
+   * matches web's anonymous-ephemeral semantics — peer.id is `tg_anon_<threadId>`,
+   * memory dies with thread. "durable" uses `tg_user_<userId>` for cross-session
+   * recall; operators opt into this consciously.
+   */
+  anonymousIdentityMode?: TelegramAnonymousIdentityMode;
+}
+
+export interface TelegramTransportOptions {
+  botToken: string;
+  inbound: {
+    mode: TelegramInboundMode;
+    polling?: TelegramPollingOptions;
+    webhook?: TelegramWebhookOptions;
+  };
+  auth: TelegramAuthOptions;
+}
