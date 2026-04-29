@@ -27,6 +27,9 @@ button, input, select, textarea {
   padding: 0.75rem 1rem;
   border-bottom: 1px solid #e5e5e5;
   background: #fff;
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
 }
 
 .app-header h1 {
@@ -35,9 +38,27 @@ button, input, select, textarea {
   font-weight: 600;
 }
 
+.app-header__hint {
+  font-size: 0.75rem;
+  color: #888;
+}
+
 .app-main {
-  padding: 1rem;
-  overflow-y: auto;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  overflow: hidden;
+}
+
+.app-main__picker { display: contents; }
+.app-main__chat { overflow: hidden; }
+
+.app-main__empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: #888;
+  font-style: italic;
 }
 
 /* AgentPicker */
