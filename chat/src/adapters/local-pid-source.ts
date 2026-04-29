@@ -78,13 +78,19 @@ export function createLocalPidSource(opts: LocalPidSourceOptions = {}): AgentSou
       }));
     },
     subscribe(onChange) {
+      let watcher: ReturnType<typeof watch> | null = null;
       try {
-        const w = watch(auggyDir, { persistent: false }, () => onChange());
-        return () => { try { w.close(); } catch { /* already closed */ } };
+        watcher = watch(auggyDir, { persistent: false }, () => onChange());
       } catch {
-        const interval = setInterval(onChange, pollMs);
-        return () => clearInterval(interval);
+        // fs.watch unavailable; poll only.
       }
+      // Always run polling as a backstop — fs.watch latency varies by platform
+      // (FSEvents can be 50-500ms on macOS) and isn't reliable enough alone.
+      const interval = setInterval(onChange, pollMs);
+      return () => {
+        if (watcher) { try { watcher.close(); } catch { /* already closed */ } }
+        clearInterval(interval);
+      };
     },
   };
 }

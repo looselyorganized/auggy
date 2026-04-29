@@ -119,7 +119,7 @@ describe("createLocalPidSource", () => {
   });
 
   it("subscribe() invokes onChange when manifest is added", async () => {
-    const src = createLocalPidSource({ auggyDir: tempDir });
+    const src = createLocalPidSource({ auggyDir: tempDir, pollIntervalMs: 50 });
     let calls = 0;
     const unsub = src.subscribe!(() => { calls++; });
 
