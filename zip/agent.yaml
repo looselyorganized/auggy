@@ -65,3 +65,16 @@ augments:
     type: orgContext
     options:
       baseUrl: ${ORG_CONTEXT_URL}
+  - name: notify
+    type: notify
+    options:
+      destinations:
+        - name: creator
+          transport: webhook
+          url: ${ORG_CONTEXT_URL}/notify
+      rateLimit:
+        cooldownMs: 120000
+        dedupWindowMs: 300000
+        dedupThreshold: 0.6
+        globalMaxPerHour: 5
+        perPeerCooldownMs: 30000
