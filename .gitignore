@@ -46,5 +46,7 @@ docs/*
 docs/**/
 !docs/02-architecture-overview.md
 !docs/todos.md
+!docs/06-transports.md
+!docs/07-built-in-augments.md
 !docs/13-notify.md
 !docs/14-telegram-transport.md

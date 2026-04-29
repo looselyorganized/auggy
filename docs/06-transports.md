@@ -1,0 +1,576 @@
+# 06 — Transports
+
+> The transport contract, the AG-UI event protocol, kernel→AG-UI translation, and how the web transport actually streams events. Everything in `src/transports/`.
+
+## What a transport is
+
+A transport is the boundary between Auggy and the outside world. It is responsible for:
+
+1. **Listening for inbound requests** in some protocol (HTTP, WebSocket, queue subscription, IPC, in-process, ...).
+2. **Identifying the peer** behind the request — turning protocol-specific credentials into a `PeerIdentity`.
+3. **Translating wire-format input into a `TurnTrigger`** — extracting the message content (as `Part[]`), context/task IDs, and any other metadata the kernel expects.
+4. **Calling `kernel.handleInbound(trigger, { onEvent })`** to run the turn.
+5. **Translating kernel events back into the wire format** as they arrive (e.g. SSE frames, A2A task updates, A2A messages).
+6. **Returning the final response** to the peer in whatever shape the protocol expects.
+
+A transport is just an augment with a `transport` field set to a `TransportSpec`. The runtime knows nothing about HTTP, AG-UI, A2A, MCP, or any other protocol — those are the transport's job.
+
+In v1 there is exactly **one built-in transport**: `webTransport`, which speaks the AG-UI SSE protocol. Future plans add a `spineTransport` (Plan 4 — internal A2A bus) and an `mcpTransport` (Plan 6 — MCP server).
+
+## The contract: `TransportSpec` and `TransportKernel`
+
+### `TransportSpec` — what an augment provides
+
+```ts
+export interface TransportSpec {
+  register(kernel: TransportKernel, augmentName: string): Promise<void>;
+  identify(raw: unknown): PeerIdentity | null;
+  concurrency?: number;
+  maxQueueDepth?: number;
+  rateLimitPerPeer?: { maxPerMinute: number };
+}
+```
+
+**`register(kernel, augmentName)`** is called once at agent startup. The transport receives a `TransportKernel` view onto the runtime — a small interface with three methods (`handleInbound`, `onOutbound`, `getAgentCard`). The transport also receives `augmentName`, the operator-chosen runtime name for this augment instance (e.g. `"web"`, `"telegram"`). The transport stores both references and uses them to feed inbound requests.
+
+The `augmentName` parameter was added in commit `0710e2f` (Phase B) to support correct outbound dispatch. See the multi-transport composition section below for why this matters.
+
+**`identify(raw)`** is a pure function from "whatever the transport's wire format hands you" to `PeerIdentity | null`. It runs once per inbound request, before the request enters the queue. Returning `null` means "I cannot identify this peer" — the transport is responsible for what to do with that (the web transport returns a 400 error).
+
+The web transport's `identify()` reads `x-peer-id`, `x-peer-kind`, `x-peer-name`, and `x-org-id` headers from a request and returns a `PeerIdentity` with `trustLevel` set from `opts.trustLevel` (default `"public"`). A future spine transport would read auth tokens from a different envelope and probably set `trustLevel: "agent"`.
+
+**`concurrency`**, **`maxQueueDepth`**, and **`rateLimitPerPeer`** are configuration for the per-transport queue that the runtime constructs when the agent starts. Defaults: `1`, `50`, none. See [04-kernel.md § transport-queue.ts](./04-kernel.md#srckerneltransport-queuets--per-transport-queue) for details.
+
+### `TransportKernel` — what the runtime gives back
+
+```ts
+export interface TransportKernel {
+  handleInbound(
+    trigger: TurnTrigger,
+    options?: { onEvent?: KernelEventHandler },
+  ): Promise<TurnResult>;
+  onOutbound(
+    callback: (peer: PeerIdentity, message: OutboundMessage) => Promise<void>,
+  ): void;
+  getAgentCard(): AgentCard;
+}
+```
+
+**`handleInbound(trigger, options)`** is the function the transport calls to run a turn. The trigger is built by the transport from whatever its wire format is. The optional `onEvent` callback is the streaming hook — the kernel calls it with `KernelEvent`s as they happen, before `handleInbound` resolves.
+
+The function returns a `Promise<TurnResult>` that resolves when the turn is complete. The `TurnResult.status` is one of `completed`, `failed`, `canceled`, or `rejected` — the transport should check it and react appropriately (the web transport synthesizes `RUN_ERROR` events for `rejected` status, since the kernel emits no events for those).
+
+**`onOutbound(callback)`** registers a callback that fires when the kernel wants to send a message *out* to a peer through this transport. The callback receives `(peer, message)`. This is used for proactive communication — when an agent decides on its own to send a follow-up message, not in response to an inbound. The web transport doesn't actively use `onOutbound` (every web turn returns its response synchronously), but a spine transport would.
+
+**`getAgentCard()`** returns the agent card. Used by the web transport to serve `/.well-known/agent-card.json`.
+
+## The AG-UI event protocol
+
+AG-UI is an open protocol for streaming agent execution to user interfaces. It's complementary to MCP (which exposes tools to LLM clients) and A2A (which lets agents talk to other agents). The official spec is at https://docs.ag-ui.com.
+
+Auggy implements **a minimal subset of AG-UI** in v1 — enough to drive a chat UI, but not the full spec. What we implement:
+
+- `RUN_STARTED`
+- `RUN_FINISHED`
+- `RUN_ERROR`
+- `TEXT_MESSAGE_START`
+- `TEXT_MESSAGE_CONTENT`
+- `TEXT_MESSAGE_END`
+- `TOOL_CALL_START`
+- `TOOL_CALL_ARGS`
+- `TOOL_CALL_END`
+- `TOOL_CALL_RESULT`
+
+What we don't implement (deferred to a future enhancement):
+
+- Token-level model streaming (the `TEXT_MESSAGE_CONTENT` delta is a single chunk, not per-token)
+- `STATE_SNAPSHOT` / `STATE_DELTA` — state sync
+- `REASONING_*` — reasoning visibility
+- Activity messages, generative UI
+- Full `RunAgentInput` request body parsing (we use a simplified shape)
+- Binary protocol (AG-UI has SSE and binary bindings; we implement SSE only)
+- Client-side cancellation (the client closing the stream doesn't cancel the turn — yet)
+
+The subset we ship is enough to drive any AG-UI-compatible client (CopilotKit, custom AG-UI consumers, etc.) for basic chat with tool use. The deferred features are upgrade paths on the same transport.
+
+## `src/transports/ag-ui-events.ts` — Event types and translation
+
+This file has three sections.
+
+### Section 1 — AG-UI event type definitions
+
+Every AG-UI event has a base shape:
+
+```ts
+export interface AGUIBaseEvent {
+  type: string;
+  timestamp?: number;
+}
+```
+
+And ten subtypes, one per event we emit. They follow the AG-UI spec field names:
+
+```ts
+export interface AGUIRunStarted extends AGUIBaseEvent {
+  type: "RUN_STARTED";
+  threadId: string;
+  runId: string;
+  parentRunId?: string;
+}
+
+export interface AGUITextMessageContent extends AGUIBaseEvent {
+  type: "TEXT_MESSAGE_CONTENT";
+  messageId: string;
+  delta: string;
+}
+
+// ... etc for all 10 event types
+```
+
+The full union is `AGUIEvent`, which is what `serializeSSE` accepts.
+
+### Section 2 — Constructor helpers
+
+For each event type, a small helper function:
+
+```ts
+export function runStarted(opts: { threadId; runId }): AGUIRunStarted {
+  return { type: "RUN_STARTED", ...opts };
+}
+
+export function textMessageContent(opts: { messageId; delta }): AGUITextMessageContent {
+  return { type: "TEXT_MESSAGE_CONTENT", ...opts };
+}
+
+// ... etc
+```
+
+These exist purely for ergonomics — they let `translateKernelEvent` (and the web transport's error handling) construct events without repeating the `type:` literal everywhere.
+
+### Section 3 — `translateKernelEvent`
+
+The translator from internal `KernelEvent` to wire-format `AGUIEvent[]`:
+
+```ts
+export function translateKernelEvent(event: KernelEvent): AGUIEvent[] {
+  switch (event.kind) {
+    case "run_started":
+      return [runStarted({ threadId: event.threadId, runId: event.turnId })];
+
+    case "tool_call_started":
+      return [toolCallStart({ toolCallId: event.toolCallId, toolCallName: event.toolName })];
+
+    case "tool_call_args":
+      return [toolCallArgs({ toolCallId: event.toolCallId, delta: JSON.stringify(event.args) })];
+
+    case "tool_call_result":
+      return [
+        toolCallEnd({ toolCallId: event.toolCallId }),
+        toolCallResult({
+          messageId: `${event.toolCallId}-result`,
+          toolCallId: event.toolCallId,
+          content: event.output,
+        }),
+      ];
+
+    case "text_message":
+      return [
+        textMessageStart({ messageId: event.messageId, role: event.role }),
+        textMessageContent({ messageId: event.messageId, delta: event.text }),
+        textMessageEnd({ messageId: event.messageId }),
+      ];
+
+    case "run_finished":
+      return [runFinished({ threadId: "", runId: event.turnId })];
+
+    case "run_error":
+      // Only emit RUN_ERROR — the turn loop emits a separate run_finished.
+      return [runError({ message: event.message, code: event.source })];
+  }
+}
+```
+
+A few translations expand 1→N:
+
+- **`text_message`** → `TEXT_MESSAGE_START` + `TEXT_MESSAGE_CONTENT` + `TEXT_MESSAGE_END`. v1 doesn't stream tokens, so these three arrive in one batch (one `text_message` event from the kernel becomes three AG-UI events emitted back-to-back). When token streaming lands, the kernel will start emitting separate `text_chunk` events that translate to multiple `TEXT_MESSAGE_CONTENT`s.
+
+- **`tool_call_result`** → `TOOL_CALL_END` + `TOOL_CALL_RESULT`. AG-UI separates "the tool call ended" from "here's its result" — the END marks the boundary, the RESULT carries the content.
+
+The `run_error` case used to also emit `RUN_FINISHED`, but that caused **double terminal events** because the turn loop *also* emits a `run_finished` event after `run_error` on aborts and required-augment failures. Codex caught this in review; the fix was to drop the synthetic `RUN_FINISHED` from the translator and rely on the turn loop's emission.
+
+### Section 4 — `serializeSSE`
+
+```ts
+export function serializeSSE(event: AGUIEvent): string {
+  return `data: ${JSON.stringify(event)}\n\n`;
+}
+```
+
+Standard SSE frame format. The trailing `\n\n` is what marks the frame as complete to the client — without it, the client buffers waiting for more.
+
+## `src/transports/web-transport.ts` — The built-in HTTP transport
+
+The reference transport implementation. ~250 LOC. Speaks AG-UI over SSE on three endpoints.
+
+### Configuration
+
+```ts
+export interface WebTransportOptions {
+  port: number;
+  auth: { type: "bearer"; token: string };
+  cors?: { origins: string[] };
+  maxMessageLength?: number;     // default 4000
+  access?: { agents?: AgentAccessEntry[] };  // admitted agent list
+  concurrency?: number;          // default 1
+  maxQueueDepth?: number;        // default 50
+  rateLimitPerPeer?: { maxPerMinute: number };
+  visitorTokens?: {
+    enabled?: boolean;       // default true
+    ttlSeconds?: number;     // default 30 days
+    signingKey?: string;     // derive from VISITOR_SIGNING_KEY; ephemeral if absent
+  };
+}
+```
+
+### Endpoints
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `POST` | `/agent/run` | AG-UI SSE endpoint. Streams events for one turn. |
+| `GET` | `/health` | Liveness check. Returns `{status: "healthy"}`. |
+| `GET` | `/.well-known/agent-card.json` | Agent card discovery. |
+| (anything else) | `404 Not Found` |
+
+### `POST /agent/run` — the main path
+
+The handler does this in order:
+
+#### 1. Authenticate
+
+```ts
+if (!timingSafeEqual(authHeader, `Bearer ${opts.auth.token}`)) {
+  return json({ error: "unauthorized" }, 401);
+}
+```
+
+The bearer token is validated with a timing-safe comparison to prevent extraction via timing side-channel. It is configured at construction time (a single operator token). All four identity paths below require a valid bearer token — the token authenticates the *connection*; the identity headers determine the *peer*.
+
+#### 2. Idempotency-Key
+
+If the `Idempotency-Key` header is present, it is validated and used as `turnId`:
+
+```ts
+// Valid: 1–128 chars matching [A-Za-z0-9_-]
+turnId = idempotencyKey;    // used as trigger.turnId
+```
+
+Malformed key → HTTP 400. Absent → fresh `crypto.randomUUID()`.
+
+When the budgets augment is mounted, `turnId` is also the primary key of `turn_reservations`. Retrying with the same `Idempotency-Key` hits the store's PK conflict path — the reservation already exists and the store returns the cached decision rather than re-evaluating caps. This is what makes retries safe under budget caps.
+
+#### 3. Identity resolution — four paths
+
+Identity is resolved in a fixed priority order:
+
+**Path 1 — Creator:** bearer token valid AND no `x-agent-id`/`x-agent-secret` headers AND no `x-visitor-token` header. Mints `{ trustLevel: "creator", id: "creator" }`.
+
+**Path 2 — Agent:** `x-agent-id` and `x-agent-secret` headers both present. Looks up the agent ID in `opts.access.agents`; performs a timing-safe secret comparison. If the secret matches, mints `{ trustLevel: "agent", id: "agent:<agentId>" }`. Wrong secret → HTTP 401 immediately — no silent downgrade to public trust.
+
+**Path 3 — Public recognized:** `x-visitor-token` header present and HMAC-verified. Mints `{ trustLevel: "public", publicSubstate: "recognized", id: "<visitorId from token>" }`. The visitor's ID is durable across sessions — memory writes attach to it.
+
+**Path 4 — Public anonymous:** default path. Mints `{ trustLevel: "public", publicSubstate: "anonymous", id: "anon-<threadId>" }`. For fresh anonymous visitors, the transport issues a new visitor token in the `x-visitor-token` response header so subsequent requests can become "recognized."
+
+Path 2 is evaluated before Path 1 — if agent headers are present, they determine the outcome regardless of whether the bearer token is also valid.
+
+#### 3. Validate the body
+
+```ts
+const body = await req.json();
+if (!Array.isArray(body.messages) || body.messages.length === 0) {
+  return json({ error: "messages array is required" }, 400);
+}
+const lastMessage = body.messages[body.messages.length - 1];
+const text = lastMessage.content ?? "";
+if (text.length > maxMessageLength) {
+  return json({ error: "message too long", limit: maxMessageLength }, 413);
+}
+```
+
+The body must have a `messages: [{ role, content }, ...]` array. v1 only uses the last message — the rest are reserved for future use (the AG-UI spec uses the array to pass conversation history, but Auggy maintains its own per-thread history server-side, so this is currently informational).
+
+`maxMessageLength` is enforced at the boundary (default 4000 chars). This is input sanitization against the obvious DoS vector — a peer that sends 10MB of text would otherwise eat tokenization cost trying to fit it in the prompt.
+
+#### 4. Build the trigger
+
+```ts
+const threadId = body.threadId ?? body.contextId ?? crypto.randomUUID();
+const parts: Part[] = [{ kind: "text", text }];
+const inbound: InboundMessage = { parts, sourceAugment: "web", peer, timestamp: Date.now(), contextId: body.contextId, taskId: body.taskId };
+const trigger: TurnTrigger = { type: "message", turnId: crypto.randomUUID(), threadId, contextId: body.contextId, taskId: body.taskId, timestamp: Date.now(), source: "web", peer, payload: inbound };
+```
+
+The `threadId` is taken from the request if present, otherwise minted fresh. This is what makes a new conversation actually new — clients that don't pass a `threadId` get a per-request thread, which means the agent's history doesn't carry across requests.
+
+#### 5. Open the SSE stream
+
+This is the **streaming part** — the part that the original implementation got wrong (buffered → fixed in post-review).
+
+```ts
+const stream = new ReadableStream<Uint8Array>({
+  start(controller) {
+    const encoder = new TextEncoder();
+
+    const writeEvent = (e: AGUIEvent) => {
+      controller.enqueue(encoder.encode(serializeSSE(patchThreadId(e))));
+    };
+
+    const onEvent = (kernelEvent: KernelEvent) => {
+      for (const e of translateKernelEvent(kernelEvent)) {
+        writeEvent(e);
+      }
+    };
+
+    (async () => {
+      try {
+        const result = await k.handleInbound(trigger, { onEvent });
+        if (result.status === "rejected") {
+          writeEvent(runError({ message: result.errorResponse ?? "...", code: "REJECTED" }));
+          writeEvent(runFinished({ threadId, runId: trigger.turnId }));
+        }
+      } catch (err) {
+        writeEvent(runError({ message: String(err), code: "INTERNAL" }));
+        writeEvent(runFinished({ threadId, runId: trigger.turnId }));
+      } finally {
+        controller.close();
+      }
+    })();
+  },
+});
+
+return new Response(stream, { status: 200, headers: { "content-type": "text/event-stream", "cache-control": "no-cache", "connection": "keep-alive" }});
+```
+
+What this does:
+1. **Opens a `ReadableStream`** — a web-standard streaming primitive. The `start` function runs synchronously and is given a `controller` that lets us push chunks into the stream.
+2. **Wraps the kernel call in an immediately-invoked async function** — this is what lets the response return *before* the kernel finishes. The `(async () => { ... })()` runs in the background; the `Response` is returned immediately with the stream as its body.
+3. **Pushes events as they arrive** — the `onEvent` callback fires for every kernel event. Each one gets translated, optionally patched (see below), serialized as an SSE frame, and enqueued onto the controller. The controller flushes to the client immediately.
+4. **Handles three terminal cases** in the IIFE:
+   - **Normal completion:** the kernel emits its own terminal events. `result.status === "completed"` and we just close the stream.
+   - **Queue rejection:** the kernel returned `status: "rejected"` *without* emitting any events (because the queue rejected the turn before it ran). We synthesize `RUN_ERROR` (code: `REJECTED`) + `RUN_FINISHED` so the client always sees a terminal event.
+   - **Exception:** something threw out of `handleInbound`. Same fallback — synthesize `RUN_ERROR` (code: `INTERNAL`) + `RUN_FINISHED`.
+5. **Always closes the stream** in the `finally` block.
+
+#### `patchThreadId`
+
+```ts
+const patchThreadId = (e: AGUIEvent): AGUIEvent => {
+  if (e.type === "RUN_FINISHED" && !e.threadId) {
+    return runFinished({ threadId, runId: trigger.turnId });
+  }
+  return e;
+};
+```
+
+The kernel emits `run_finished` with no `threadId` (because the kernel doesn't know the transport's notion of threadId — `threadId` is a transport-level concept). The translator passes that through as a `RUN_FINISHED` with `threadId: ""`. The transport patches it before serialization, since the transport *does* know the threadId for this particular turn.
+
+This is a small, ugly bit of layering — the alternative is to pass `threadId` into the kernel, but threadId is a wire-protocol concept (each transport mints them differently) so it doesn't belong in the kernel's vocabulary.
+
+### Why ReadableStream and not buffered
+
+The original implementation collected all events into an array and returned them as a single string Response after the turn finished. Codex's review caught this as "P1: Return an actual SSE stream instead of a buffered string." The reasoning:
+
+1. **AG-UI's whole purpose is streaming.** Clients expect to see `RUN_STARTED` immediately, `TOOL_CALL_*` events as tools execute, `TEXT_MESSAGE_CONTENT` as text arrives. Buffering until the turn completes destroys all of that.
+2. **For non-trivial turns the latency adds up.** A turn with multiple model inferences and tool calls can take 5-30 seconds. Buffered, the client sees nothing for that whole time. Streaming, the client sees activity from the first 100ms.
+3. **It's the difference between "demo of AG-UI" and "actually AG-UI."** Anyone who tried to consume the buffered version with a real AG-UI client (CopilotKit etc.) would find the experience indistinguishable from a non-streaming endpoint.
+
+The fix was small: replace the `collected` array with a `ReadableStream`, replace `return new Response(sseBody)` with `return new Response(stream)`, run the kernel call inside an IIFE so the response can return early. The test for it stands up a real model client gated on a `Promise<void>`, makes the request, reads the first chunk (which contains `RUN_STARTED`), then releases the gate and drains the rest. Without true streaming, the read would block forever waiting for the gate.
+
+### Rejection mapping — error codes in SSE
+
+When a turn is rejected (queue full, rate limit, or turn-gate denial), the transport synthesizes `RUN_ERROR` + `RUN_FINISHED` events — the kernel emits no events for turns that don't run. The `code` field on `RUN_ERROR` is:
+
+| Rejection source | `errorClass` | SSE `code` |
+|---|---|---|
+| Turn-gate cap denied | `"cap-denied"` | `"CAP_DENIED"` |
+| Turn-gate confirm error | `"admission-state-failed"` | `"ADMISSION_FAILED"` |
+| Queue full / rate limit | _(none)_ | `"REJECTED"` |
+| Unhandled exception | _(none)_ | `"INTERNAL"` |
+
+**HTTP status remains 200** for the SSE stream in v0. The gate decision is embedded in the stream rather than in the HTTP status because the Response must be opened before the kernel's 2PC result is known (the stream starts synchronously; the turn runs inside the async IIFE). A future enhancement (T5) adds a synchronous gate-decision API that would allow the transport to return 429 or 503 before opening the stream at all.
+
+### Why the rejection events are synthesized in the transport
+
+The transport-queue rejects requests without ever calling the turn loop. That means **no kernel events fire** — the turn loop never ran. The kernel can't emit events for a turn that didn't happen.
+
+The transport has to detect this case (by checking `result.status === "rejected"`) and synthesize the error event itself. This is a layering choice: we could have made the transport-queue emit a kernel event when it rejects, but kernel events are scoped to a turn that's running, and a rejected turn doesn't have a running turn loop. Putting the synthesis in the transport is cleaner.
+
+### `GET /health`
+
+```ts
+function handleHealth(): Response {
+  return json({ status: "healthy" }, 200);
+}
+```
+
+Trivial. Used by load balancers / orchestrators to know the agent is up. v1 doesn't ask the lifecycle manager for richer health — that would be an easy enhancement.
+
+### `GET /.well-known/agent-card.json`
+
+```ts
+function handleAgentCard(): Response {
+  return json(kernel.getAgentCard(), 200);
+}
+```
+
+Returns the JSON-encoded `AgentCard`. The card was generated once at `defineAgent` time and cached.
+
+The path `/.well-known/agent-card.json` is an A2A convention — A2A discovery clients know to check this path on any agent host.
+
+### Lifecycle hooks
+
+```ts
+return {
+  name: "web",
+  capabilities: ["transport"],
+  transport,
+  async onBoot() {
+    server = Bun.serve({ port: opts.port, async fetch(req) { /* route */ } });
+  },
+  async onShutdown() {
+    if (server) { server.stop(); server = null; }
+  },
+};
+```
+
+The web transport uses `onBoot` to start the HTTP server (Bun.serve) and `onShutdown` to stop it. Failures in `onBoot` abort agent startup (lifecycle manager throws). The 5-second shutdown timeout from the lifecycle manager applies to `onShutdown`.
+
+## Per-transport concurrency and queueing
+
+When `defineAgent.start()` registers a transport, it constructs a `TransportQueue` around it:
+
+```ts
+const queue = createTransportQueue({
+  concurrency: aug.transport.concurrency ?? 1,
+  maxQueueDepth: aug.transport.maxQueueDepth ?? 50,
+  rateLimitPerPeer: aug.transport.rateLimitPerPeer,
+});
+```
+
+The `TransportKernel`'s `handleInbound` method wraps the actual turn-loop call in `queue.enqueue(trigger, handler)`. This means **every inbound request goes through the queue** before reaching the kernel. The queue enforces:
+
+- **Rate limit per peer** — sliding 60-second window, configurable max.
+- **Max queue depth** — if more than `maxQueueDepth` requests are waiting, new ones get rejected immediately.
+- **Concurrency cap** — only `concurrency` turns run at once. Excess requests wait.
+
+For the web transport, the default concurrency is 1 (one turn at a time) which is appropriate for an agent that expects to be talked to by one peer at a time. Bumping concurrency lets multiple peers' turns run in parallel — which is safe because each turn has its own `TurnState`, history is per-thread, and the kernel doesn't share mutable state across turns.
+
+## Why the kernel doesn't speak protocols
+
+Every protocol decision in Auggy is in the transport, not the kernel:
+- **AG-UI event names** — `web-transport.ts` and `ag-ui-events.ts` only.
+- **HTTP routing, status codes, headers** — `web-transport.ts` only.
+- **SSE frame format** — `ag-ui-events.ts` only.
+- **Bearer token auth** — `web-transport.ts` only.
+- **Rate limiting policy** — `transport-queue.ts` (kernel-side, but configured per transport).
+- **`threadId` minting** — `web-transport.ts` only.
+- **Agent Card serving** — `web-transport.ts` only.
+
+This is what makes adding a new transport (Plan 4 spine, Plan 6 MCP) a self-contained change. Each new transport needs its own file in `src/transports/`, its own `TransportSpec`, its own translation layer for whatever protocol it speaks. The kernel and the rest of `src/` stay the same.
+
+## What testing transports looks like
+
+### Unit tests for ag-ui-events
+`tests/transports/ag-ui-events.test.ts` (18 tests):
+- One test per constructor helper (10 tests)
+- One test per `translateKernelEvent` case (7 tests)
+- One test for `serializeSSE` format (1 test)
+
+### Integration tests for the web transport
+`tests/transports/web-transport.test.ts` (13 tests):
+- 4 structure tests — `webTransport()` returns the right augment shape, `identify()` produces the right `PeerIdentity`
+- 9 HTTP server tests — actually start the server on a real port, hit it with `fetch`, assert on the responses:
+  - `/health`
+  - 401 on missing/wrong bearer
+  - 400 on missing peer ID
+  - 413 on oversize message
+  - End-to-end SSE for a basic chat turn (asserts `RUN_STARTED`, `TEXT_MESSAGE_*`, `RUN_FINISHED` are all present)
+  - End-to-end SSE for a tool-call turn (asserts `TOOL_CALL_*` events present)
+  - Agent card served at the well-known URL
+  - **Progressive streaming** — uses a gated mock model to prove `RUN_STARTED` is observable before the turn finishes
+  - **Rate-limit rejection** — fires two requests, asserts the second gets `RUN_ERROR` (code: `REJECTED`) + `RUN_FINISHED`
+
+Plus the full integration test in `tests/integration/full-agent.test.ts` which exercises the web transport with a real `defineAgent`, real `fileMemory`, real `supabaseMemory` (mocked client), and asserts identity context reaches the model and episodic memory shows up in the prompt's `contextBlocks`.
+
+## What's not in v0/v1
+
+These are deferred to future plans or future improvements:
+
+- **Token-level streaming** — the `text_message` kernel event arrives as one chunk; future work splits it.
+- **Full A2A wire format** — the spine transport (Plan 4) will speak A2A natively.
+- **MCP server transport** — Plan 6.
+- **Cancellation from the client side** — the client closing the SSE stream doesn't currently abort the kernel turn.
+- **Synchronous gate-decision API (T5)** — would allow returning 429/503 before opening the stream, replacing the current in-stream error code approach.
+- **CORS preflight handling** — the `cors` option exists; OPTIONS requests return 204 with allowed headers. Full CORS negotiation (multiple origins, credentials) is not implemented.
+- **WebSocket transport** — SSE only.
+- **Outbound dispatch via web** — the `onOutbound` callback exists but the web transport doesn't have a way to push messages to the peer (one-shot HTTP request/response). A WebSocket version would.
+
+## Multi-transport composition
+
+Auggy's kernel multiplexes turns from N mounted transports into shared agent state. Each transport is a separate augment with its own queue, its own identity resolver, and its own boot lifecycle. The kernel never talks directly to individual transports — everything flows through the `TransportSpec`/`TransportKernel` interface described above.
+
+### How the kernel handles multiple transports
+
+When `defineAgent` boots an agent with multiple transport augments, each transport calls `register(kernel, augmentName)` independently. The `kernel` handle passed to each transport is backed by the same turn loop, the same history manager, and the same memory bus — but each transport gets its own `TransportQueue` (independent concurrency, depth, and rate-limit counters).
+
+Inbound updates from any transport reach the shared turn loop via `kernel.handleInbound(trigger)`. The trigger includes `trigger.source`, which is the `augmentName` the transport received at registration time. After the turn runs, any `OutboundMessage`s the kernel emits are dispatched via `agent.outboundHandlers`, which is keyed by augment name — so replies route back to the originating transport automatically.
+
+### The `TransportSpec.register` signature change (Phase B, commit `0710e2f`)
+
+The original `register(kernel)` signature gave the transport no way to know its operator-assigned runtime name. This worked for a single transport, but broke outbound dispatch for multi-transport setups: `telegramTransport` hardcoded `"telegram-transport"` as `trigger.source`, while `outboundHandlers` was keyed by the operator-chosen name (e.g. `"telegram"`). The mismatch caused every kernel-emitted reply to be silently dropped.
+
+The fix: `register(kernel, augmentName)` passes the operator-assigned name at registration time. Transports SHOULD use this value as `trigger.source` so the outbound dispatch loop finds the right handler. `webTransport` accepts the parameter but currently ignores it — its `onOutbound` is unused since the web transport's response path is synchronous.
+
+### `peer.id` namespacing across transports
+
+Each transport uses a distinct `peer.id` prefix. This ensures no peer identity collisions across transport boundaries even if the same human uses both Telegram and the web chat:
+
+| Transport | Recognized / agent peers | Anonymous peers |
+|---|---|---|
+| `webTransport` | `vis_<uuid>` (visitor token) or `agent:<agentId>` | `anon-<threadId>` |
+| `telegramTransport` | `tg_user_<userId>` (creator/agent/recognized) | `tg_anon_<threadId>` (ephemeral) or `tg_user_<userId>` (durable) |
+
+The prefixes are chosen to be non-overlapping by construction. A visitor token `vis_` UUID cannot coincide with a Telegram `tg_user_` ID. Memory writes, budget counters, and layered-memory scoping all key on `peer.id` — the prefix isolation means each transport's peers are fully independent.
+
+### Example `agent.yaml` — mounting both transports
+
+```yaml
+augments:
+  - name: web
+    type: webTransport
+    options:
+      port: 8080
+      auth:
+        type: bearer
+        token: ${WEB_AUTH_TOKEN}
+      visitorTokens:
+        enabled: true
+
+  - name: telegram
+    type: telegramTransport
+    options:
+      botToken: ${TELEGRAM_BOT_TOKEN}
+      inbound:
+        mode: polling
+        polling:
+          timeoutSec: 30
+      auth:
+        creatorUserIds:
+          - 123456789
+        anonymousIdentityMode: ephemeral
+```
+
+Both augments start at the same time. The `web` transport serves the AG-UI HTTP endpoint; the `telegram` transport polls for Telegram updates. Turns from either transport run through the same kernel, share history per thread, and share the same memory, tools, and budget counters.
+
+For full configuration options, see:
+- [docs/13-notify.md](./13-notify.md) — the `notify` augment for proactive outbound messages across both transports
+- [docs/14-telegram-transport.md](./14-telegram-transport.md) — `telegramTransport` full operator reference
