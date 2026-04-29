@@ -5,7 +5,12 @@ export interface ParseOptions {
 }
 
 /**
- * Parses an SSE response body into an async iterable of AG-UI events.
+ * Parses an SSE response body from Auggy's webTransport into an async iterable
+ * of AG-UI events.
+ *
+ * Scoped to single-line `data:` events (Auggy webTransport contract). Multi-line
+ * `data:` continuation per HTML SSE spec is NOT supported — would be logged as
+ * malformed JSON if encountered.
  *
  * Tolerant of:
  *  - UTF-8 split across chunks (TextDecoder stream mode)
