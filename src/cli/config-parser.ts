@@ -117,6 +117,7 @@ const BUILTIN_TYPES = new Set([
   "bash",
   "budgets",
   "notify",
+  "telegramTransport",
 ]);
 const KNOWN_PROVIDERS = new Set(["anthropic", "openai", "openrouter"]);
 const VALID_REASONING_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh"]);
@@ -281,6 +282,97 @@ function validateNotifyOptions(
     }
     if (rl.enabled !== undefined && typeof rl.enabled !== "boolean") {
       errors.push(`${prefix}.rateLimit.enabled: must be a boolean`);
+    }
+  }
+}
+
+/**
+ * Validate the options block for a telegramTransport augment.
+ * Enforces mode mutual exclusion: polling block is forbidden when mode=webhook
+ * and vice versa.
+ */
+function validateTelegramTransportOptions(
+  opts: Record<string, unknown>,
+  prefix: string,
+  errors: string[],
+): void {
+  if (typeof opts.botToken !== "string" || !opts.botToken) {
+    errors.push(`${prefix}.botToken: required string`);
+  }
+
+  const inbound = opts.inbound as Record<string, unknown> | undefined;
+  if (!inbound || typeof inbound !== "object") {
+    errors.push(`${prefix}.inbound: required object`);
+    return;
+  }
+  const mode = inbound.mode;
+  if (mode !== "polling" && mode !== "webhook") {
+    errors.push(`${prefix}.inbound.mode: must be "polling" or "webhook"`);
+  } else if (mode === "polling") {
+    if (inbound.polling !== undefined) {
+      const polling = inbound.polling as Record<string, unknown>;
+      if (
+        polling.timeoutSec !== undefined &&
+        (typeof polling.timeoutSec !== "number" || polling.timeoutSec <= 0)
+      ) {
+        errors.push(`${prefix}.inbound.polling.timeoutSec: must be a positive number`);
+      }
+    }
+    if (inbound.webhook !== undefined) {
+      errors.push(`${prefix}.inbound: cannot set webhook block when mode is "polling"`);
+    }
+  } else if (mode === "webhook") {
+    if (inbound.polling !== undefined) {
+      errors.push(`${prefix}.inbound: cannot set polling block when mode is "webhook"`);
+    }
+    const webhook = inbound.webhook as Record<string, unknown> | undefined;
+    if (!webhook || typeof webhook !== "object") {
+      errors.push(`${prefix}.inbound.webhook: required object when mode is "webhook"`);
+    } else {
+      if (typeof webhook.publicUrl !== "string" || !webhook.publicUrl) {
+        errors.push(`${prefix}.inbound.webhook.publicUrl: required string`);
+      }
+      if (typeof webhook.secretToken !== "string" || !webhook.secretToken) {
+        errors.push(`${prefix}.inbound.webhook.secretToken: required string`);
+      }
+      if (
+        webhook.port !== undefined &&
+        (typeof webhook.port !== "number" || webhook.port <= 0 || webhook.port > 65535)
+      ) {
+        errors.push(`${prefix}.inbound.webhook.port: must be a positive number ≤ 65535`);
+      }
+    }
+  }
+
+  const auth = opts.auth as Record<string, unknown> | undefined;
+  if (auth !== undefined && typeof auth === "object") {
+    if (auth.creatorUserIds !== undefined && !Array.isArray(auth.creatorUserIds)) {
+      errors.push(`${prefix}.auth.creatorUserIds: must be an array of numbers`);
+    }
+    if (auth.recognizedUserIds !== undefined && !Array.isArray(auth.recognizedUserIds)) {
+      errors.push(`${prefix}.auth.recognizedUserIds: must be an array of numbers`);
+    }
+    if (auth.admittedAgents !== undefined) {
+      if (!Array.isArray(auth.admittedAgents)) {
+        errors.push(`${prefix}.auth.admittedAgents: must be an array`);
+      } else {
+        for (let i = 0; i < auth.admittedAgents.length; i++) {
+          const a = auth.admittedAgents[i] as Record<string, unknown>;
+          if (typeof a.id !== "string" || !a.id) {
+            errors.push(`${prefix}.auth.admittedAgents[${i}].id: required string`);
+          }
+          if (typeof a.telegramUserId !== "number") {
+            errors.push(`${prefix}.auth.admittedAgents[${i}].telegramUserId: required number`);
+          }
+        }
+      }
+    }
+    if (
+      auth.anonymousIdentityMode !== undefined &&
+      auth.anonymousIdentityMode !== "ephemeral" &&
+      auth.anonymousIdentityMode !== "durable"
+    ) {
+      errors.push(`${prefix}.auth.anonymousIdentityMode: must be "ephemeral" or "durable"`);
     }
   }
 }
@@ -451,6 +543,9 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
       } else if (aug.type === "notify") {
         const notifyOpts = (aug.options ?? {}) as Record<string, unknown>;
         validateNotifyOptions(notifyOpts, `${prefix}.options`, errors);
+      } else if (aug.type === "telegramTransport") {
+        const tgOpts = (aug.options ?? {}) as Record<string, unknown>;
+        validateTelegramTransportOptions(tgOpts, `${prefix}.options`, errors);
       }
     }
   }

@@ -21,7 +21,8 @@ export type BuiltinAugmentType =
   | "orgContext"
   | "bash"
   | "budgets"
-  | "notify";
+  | "notify"
+  | "telegramTransport";
 
 /** A single augment entry from the `augments:` array in agent.yaml. */
 export interface AugmentConfig {
