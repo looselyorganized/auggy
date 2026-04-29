@@ -94,4 +94,60 @@ describe("chat-store", () => {
     (globalThis as any).localStorage.setItem("aug1-chat:zip@local", JSON.stringify({ schema: 999, threadId: "t" }));
     expect(loadAgentHistory("zip", "local")).toBeNull();
   });
+
+  it("truncates tool-call args/result over 10KB on persist", () => {
+    const bigArgs = "x".repeat(50 * 1024);
+    const bigResult = "y".repeat(50 * 1024);
+    const msg: ChatMessage = {
+      id: "m1",
+      role: "assistant",
+      content: "ran a tool",
+      createdAt: new Date().toISOString(),
+      toolCalls: [{ id: "tc1", name: "bash", args: bigArgs, result: bigResult, status: "completed" }],
+    };
+    saveAgentHistory("zip", "local", {
+      threadId: "t",
+      messages: [msg],
+      lastUpdated: "",
+      agentMetadata: { name: "zip" },
+    });
+    const loaded = loadAgentHistory("zip", "local");
+    const tc = loaded?.messages[0]!.toolCalls![0]!;
+    expect(tc.args!.length).toBeLessThanOrEqual(10 * 1024 + 32);
+    expect(tc.args!.endsWith("…[truncated]")).toBe(true);
+    expect(tc.result!.length).toBeLessThanOrEqual(10 * 1024 + 32);
+    expect(tc.result!.endsWith("…[truncated]")).toBe(true);
+  });
+
+  it("leaves tool-call args/result under 10KB unchanged", () => {
+    const args = "a".repeat(5 * 1024);
+    const result = "b".repeat(5 * 1024);
+    const msg: ChatMessage = {
+      id: "m1",
+      role: "assistant",
+      content: "ran a tool",
+      createdAt: new Date().toISOString(),
+      toolCalls: [{ id: "tc1", name: "bash", args, result, status: "completed" }],
+    };
+    saveAgentHistory("zip", "local", {
+      threadId: "t",
+      messages: [msg],
+      lastUpdated: "",
+      agentMetadata: { name: "zip" },
+    });
+    const loaded = loadAgentHistory("zip", "local");
+    const tc = loaded?.messages[0]!.toolCalls![0]!;
+    expect(tc.args).toBe(args);
+    expect(tc.result).toBe(result);
+  });
+
+  it("clearAllHistory leaves non-aug1-chat keys intact", () => {
+    saveAgentHistory("a", "local", { threadId: "t", messages: [], lastUpdated: "", agentMetadata: { name: "a" } });
+    (globalThis as any).localStorage.setItem("other-app:foo", "preserve me");
+    saveAgentHistory("b", "myNetwork", { threadId: "t", messages: [], lastUpdated: "", agentMetadata: { name: "b" } });
+    clearAllHistory();
+    expect(loadAgentHistory("a", "local")).toBeNull();
+    expect(loadAgentHistory("b", "myNetwork")).toBeNull();
+    expect((globalThis as any).localStorage.getItem("other-app:foo")).toBe("preserve me");
+  });
 });
