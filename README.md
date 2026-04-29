@@ -15,7 +15,7 @@
 
 Auggy (augment-1) is a modular agent runtime in TypeScript/Bun, purpose-built for **persistent organizational interface agents** — long-running, memory-rich, organization-facing. Agents are composed from swappable **augments**; the kernel manages context, tools, permissions, and lifecycle. Open source, multi-engine, self-hostable.
 
-**v0.2.0** — 9 augments, 3 engines, 863 tests. Agents boot from YAML, chat via AG-UI SSE, remember across restarts (peer-scoped layered memory), fetch URLs, pull org knowledge, escalate to the operator, run scoped shell commands, and enforce per-trust-level turn budgets + dollar ceilings via a 2PC turn-gate kernel capability.
+**v0.2.0** — 10 augments, 3 engines. Agents boot from YAML, chat via AG-UI SSE, remember across restarts (peer-scoped layered memory), fetch URLs, pull org knowledge, escalate to the operator, run scoped shell commands, and enforce per-trust-level turn budgets + dollar ceilings via a 2PC turn-gate kernel capability.
 
 ## Quick start
 
@@ -92,7 +92,6 @@ augments:
 | Augment | What it provides |
 |---------|-----------------|
 | `fileMemory` | File-backed static memory (identity, notes, learned behaviors) |
-| `supabaseMemory` | Supabase-backed namespace memory (frozen — kept for migration; replaced by `layeredMemory`) |
 | `layeredMemory` | Peer-scoped episodic memory with provenance (L0-L3 layers, SQLite or Supabase backend) |
 | `filesystem` | Multi-mount scoped file access (6 tools, realpath security) |
 | `webTransport` | AG-UI SSE chat transport (HTTP, four-path identity resolution, CORS, rate limiting, Idempotency-Key dedup) |
