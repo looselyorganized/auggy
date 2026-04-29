@@ -20,6 +20,7 @@ import { runStart } from "./commands/start";
 import { runStop } from "./commands/stop";
 import { runRestart } from "./commands/restart";
 import { runStatus } from "./commands/status";
+import { chatCommand } from "./commands/chat";
 
 const program = new Command();
 
@@ -114,5 +115,7 @@ program
       process.exit(1);
     }
   });
+
+program.addCommand(chatCommand());
 
 program.parse();
