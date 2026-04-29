@@ -78,3 +78,15 @@ augments:
         dedupThreshold: 0.6
         globalMaxPerHour: 5
         perPeerCooldownMs: 30000
+  # Optional: enable inbound Telegram DMs to Zip.
+  # Uncomment and set TELEGRAM_BOT_TOKEN_ZIP + OPERATOR_TELEGRAM_USER_ID env vars.
+  # - name: telegram
+  #   type: telegramTransport
+  #   options:
+  #     botToken: ${TELEGRAM_BOT_TOKEN_ZIP}
+  #     inbound:
+  #       mode: polling
+  #       polling: { timeoutSec: 30 }
+  #     auth:
+  #       creatorUserIds: [${OPERATOR_TELEGRAM_USER_ID}]
+  #       anonymousIdentityMode: ephemeral
