@@ -214,19 +214,32 @@ async function executeCommand(opts: {
     stdin: "ignore", // No interactive input — prevents cat/read from hanging
     stdout: "pipe",
     stderr: "pipe",
+    // Make the child its own process group leader so we can SIGTERM the entire
+    // group, not just the shell wrapper. Without this, on Linux, killing
+    // `sh -c "sleep 60"` kills sh but orphans sleep — the orphan keeps the
+    // stdout/stderr pipes open and the readStreamWithCap awaits below hang
+    // until sleep exits naturally (60s). macOS happens to propagate; Linux
+    // doesn't. See `tests/augments/bash.test.ts` "kills long-running commands
+    // after timeout" — it caught this on GitHub Actions ubuntu-latest.
+    detached: true,
   });
 
-  // Timeout with SIGTERM → SIGKILL escalation
+  // Timeout with SIGTERM → SIGKILL escalation, sent to the whole process group
+  // (negative PID) so children spawned by the shell die with their parent.
   let killed = false;
   let killTimer: ReturnType<typeof setTimeout> | undefined;
   const timer = setTimeout(() => {
     killed = true;
-    proc.kill("SIGTERM");
+    try {
+      process.kill(-proc.pid, "SIGTERM");
+    } catch {
+      // Group may have already exited.
+    }
     killTimer = setTimeout(() => {
       try {
-        proc.kill("SIGKILL");
+        process.kill(-proc.pid, "SIGKILL");
       } catch {
-        // Process may have already exited after SIGTERM
+        // Already dead after SIGTERM, or never started.
       }
     }, SIGKILL_GRACE_MS);
   }, opts.timeout);
