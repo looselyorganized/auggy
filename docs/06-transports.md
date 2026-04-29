@@ -445,7 +445,7 @@ When set, `GET /` returns `302 Location: <publicFrontendUrl>`:
     publicFrontendUrl: https://your-frontend.example/chat
 ```
 
-Use this to point visitors at whichever polished frontend you've stood up — a `platform/chat`-style chat widget, a marketing page, a third-party chat surface, or a future spine-visitor-chat URL. The agent itself stays headless; presentation lives one layer up.
+Use this to point visitors at whichever polished frontend you've stood up — your own chat widget, a marketing page, a third-party chat surface, or a future spine-visitor-chat URL. The agent itself stays headless; presentation lives one layer up.
 
 Only `GET /` is redirected. `POST /`, `HEAD /`, and other methods on `/` still return 404. `/agent/run`, `/health`, and `/.well-known/agent-card.json` are unaffected.
 
