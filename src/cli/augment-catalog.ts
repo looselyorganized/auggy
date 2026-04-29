@@ -383,6 +383,29 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
     hasSkill: true,
     skillTemplate: NOTIFY_SKILL,
   },
+  {
+    label: "telegramTransport",
+    description: "Bidirectional Telegram I/O — long-poll OR webhook inbound, four-path identity",
+    type: "telegramTransport",
+    defaultName: "telegram",
+    defaultOptions: {
+      botToken: "${TELEGRAM_BOT_TOKEN}",
+      inbound: {
+        mode: "polling",
+        polling: { timeoutSec: 30 },
+        // To switch to webhook mode, replace the polling block with:
+        // mode: "webhook"
+        // webhook: { publicUrl: "${TELEGRAM_WEBHOOK_URL}", port: 8081, secretToken: "${TELEGRAM_WEBHOOK_SECRET}" }
+      },
+      auth: {
+        creatorUserIds: [],
+        anonymousIdentityMode: "ephemeral",
+      },
+    },
+    required: false,
+    envVars: ["TELEGRAM_BOT_TOKEN"],
+    hasSkill: false,
+  },
 ];
 
 /** Get catalog entries that are not yet installed (by type + defaultName). */
