@@ -172,6 +172,42 @@ Scripts are pre-defined by the operator. Check the tool description for availabl
 | Running commands that prompt for input | Only run non-interactive commands |
 `;
 
+const NOTIFY_SKILL = `---
+name: notify
+description: Send notifications to operator-defined destinations using the notify tool.
+---
+
+# Notify
+
+You have a \`notify\` tool that sends messages to destinations the operator has configured.
+
+## When to use
+
+| Situation | Example |
+|---|---|
+| Visitor asks to speak with a human | \`notify({ to: "creator", summary: "Visitor wants partnership discussion", reason: "Outside my scope" })\` |
+| You completed a long-running task | \`notify({ to: "creator", summary: "Daily report ready", reason: "End of day summary attached" })\` |
+| Something needs human approval | \`notify({ to: "creator", summary: "Permission requested for X", reason: "Visitor requested Y" })\` |
+
+Use named destinations from your agent's configuration. Common destinations: \`creator\` (the agent's owner), \`ops\` (operations channel), \`alerts\` (urgent issues).
+
+## Tool surface
+
+\`\`\`
+notify({ to: "<destination-name>", summary: "...", reason?: "...", visitor?: "..." })
+\`\`\`
+
+Returns \`{ status: "sent" | "rate_limited" | "failed", message?: string }\`.
+
+## Common mistakes
+
+| Wrong | Correct |
+|-------|---------|
+| Sending raw chat IDs as \`to:\` | Use the destination NAME from config |
+| Calling notify in a loop | Each call counts against rate limits |
+| Calling notify for routine acknowledgments | Reserve for things needing operator awareness |
+`;
+
 export const AUGMENT_CATALOG: CatalogEntry[] = [
   {
     label: "fileMemory (identity)",
@@ -325,6 +361,28 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
     },
     required: false,
     hasSkill: false,
+  },
+  {
+    label: "notify",
+    description: "Outbound messaging to operator-defined destinations (webhook + telegram adapters)",
+    type: "notify",
+    defaultName: "notify",
+    defaultOptions: {
+      destinations: [
+        { name: "creator", transport: "webhook", url: "${ORG_NOTIFY_URL}" },
+      ],
+      rateLimit: {
+        cooldownMs: 120_000,
+        globalMaxPerHour: 5,
+        dedupWindowMs: 300_000,
+        dedupThreshold: 0.6,
+        perPeerCooldownMs: 30_000,
+      },
+    },
+    required: false,
+    envVars: ["ORG_NOTIFY_URL"],
+    hasSkill: true,
+    skillTemplate: NOTIFY_SKILL,
   },
 ];
 

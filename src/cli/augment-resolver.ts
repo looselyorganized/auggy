@@ -22,7 +22,8 @@ import { webTransport } from "../transports/web-transport";
 import { webFetch } from "../augments/web-fetch";
 import { orgContext } from "../augments/org-context";
 import { bash } from "../augments/bash";
-import type { Augment } from "../types";
+import { notify } from "../augments/notify";
+import type { Augment, NotifyAugmentOptions } from "../types";
 import type { AugmentConfig } from "./types";
 import type { BudgetsAugmentOptions } from "../augments/budgets";
 
@@ -271,6 +272,13 @@ export async function resolveAugments(
           anonymousGlobalLimit: opts.anonymousGlobalLimit as number | undefined,
           dailyBudgetUsd: opts.dailyBudgetUsd as number | undefined,
           cleanupWindowMs: opts.cleanupWindowMs as number | undefined,
+        });
+        break;
+      }
+      case "notify": {
+        augment = notify({
+          destinations: opts.destinations as NotifyAugmentOptions["destinations"],
+          rateLimit: opts.rateLimit as NotifyAugmentOptions["rateLimit"],
         });
         break;
       }

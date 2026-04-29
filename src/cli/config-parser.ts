@@ -116,6 +116,7 @@ const BUILTIN_TYPES = new Set([
   "orgContext",
   "bash",
   "budgets",
+  "notify",
 ]);
 const KNOWN_PROVIDERS = new Set(["anthropic", "openai", "openrouter"]);
 const VALID_REASONING_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh"]);
@@ -212,6 +213,65 @@ function validateBudgetsOptions(
           }
         }
       }
+    }
+  }
+}
+
+/**
+ * Validate the options block for a notify augment.
+ */
+function validateNotifyOptions(
+  opts: Record<string, unknown>,
+  prefix: string,
+  errors: string[],
+): void {
+  if (!Array.isArray(opts.destinations)) {
+    errors.push(`${prefix}.destinations: required array`);
+    return;
+  }
+  if (opts.destinations.length === 0) {
+    errors.push(`${prefix}.destinations: must have at least one destination`);
+  }
+
+  const seenNames = new Set<string>();
+  for (let i = 0; i < opts.destinations.length; i++) {
+    const dest = opts.destinations[i] as Record<string, unknown>;
+    const dPrefix = `${prefix}.destinations[${i}]`;
+    if (typeof dest.name !== "string" || !dest.name) {
+      errors.push(`${dPrefix}.name: required string`);
+      continue;
+    }
+    if (seenNames.has(dest.name)) {
+      errors.push(`${dPrefix}.name: duplicate name "${dest.name}"`);
+    }
+    seenNames.add(dest.name);
+
+    if (dest.transport === "webhook") {
+      if (typeof dest.url !== "string" || !dest.url) {
+        errors.push(`${dPrefix}.url: required string for webhook transport`);
+      }
+    } else if (dest.transport === "telegram") {
+      if (typeof dest.botToken !== "string" || !dest.botToken) {
+        errors.push(`${dPrefix}.botToken: required string for telegram transport`);
+      }
+      if (dest.chatId == null || (typeof dest.chatId !== "string" && typeof dest.chatId !== "number")) {
+        errors.push(`${dPrefix}.chatId: required string or number for telegram transport`);
+      }
+    } else {
+      errors.push(`${dPrefix}.transport: must be "webhook" or "telegram"`);
+    }
+  }
+
+  if (opts.rateLimit !== undefined) {
+    const rl = opts.rateLimit as Record<string, unknown>;
+    const numericFields = ["cooldownMs", "globalMaxPerHour", "dedupWindowMs", "dedupThreshold", "perPeerCooldownMs"] as const;
+    for (const field of numericFields) {
+      if (rl[field] !== undefined && (typeof rl[field] !== "number" || (rl[field] as number) < 0)) {
+        errors.push(`${prefix}.rateLimit.${field}: must be a non-negative number`);
+      }
+    }
+    if (rl.enabled !== undefined && typeof rl.enabled !== "boolean") {
+      errors.push(`${prefix}.rateLimit.enabled: must be a boolean`);
     }
   }
 }
@@ -379,6 +439,9 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
       if (aug.type === "budgets") {
         const opts = (aug.options ?? {}) as Record<string, unknown>;
         validateBudgetsOptions(opts, prefix, errors);
+      } else if (aug.type === "notify") {
+        const notifyOpts = (aug.options ?? {}) as Record<string, unknown>;
+        validateNotifyOptions(notifyOpts, `${prefix}.options`, errors);
       }
     }
   }
