@@ -23,7 +23,8 @@ import { webFetch } from "../augments/web-fetch";
 import { orgContext } from "../augments/org-context";
 import { bash } from "../augments/bash";
 import { notify } from "../augments/notify";
-import type { Augment, NotifyAugmentOptions } from "../types";
+import { telegramTransport } from "../augments/telegram-transport";
+import type { Augment, NotifyAugmentOptions, TelegramTransportOptions } from "../types";
 import type { AugmentConfig } from "./types";
 import type { BudgetsAugmentOptions } from "../augments/budgets";
 
@@ -282,6 +283,9 @@ export async function resolveAugments(
         });
         break;
       }
+      case "telegramTransport":
+        augment = telegramTransport(opts as unknown as TelegramTransportOptions);
+        break;
       case "custom":
         augment = await resolveCustom(config, agentDir);
         break;
