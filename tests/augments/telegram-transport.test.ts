@@ -1,6 +1,14 @@
 import { describe, it, expect } from "bun:test";
 import { resolveTelegramIdentity } from "../../src/augments/telegram-transport";
-import type { TelegramAuthOptions } from "../../src/types";
+import type {
+  AgentCard,
+  OutboundMessage,
+  PeerIdentity,
+  TelegramAuthOptions,
+  TransportKernel,
+  TurnResult,
+  TurnTrigger,
+} from "../../src/types";
 
 const baseAuth: TelegramAuthOptions = {
   creatorUserIds: [12345678],
@@ -79,8 +87,9 @@ describe("resolveTelegramIdentity", () => {
   });
 });
 
-import { validateAdmittedAgents } from "../../src/augments/telegram-transport";
+import { validateAdmittedAgents, telegramTransport } from "../../src/augments/telegram-transport";
 import type { TelegramBotClient } from "../../src/telegram-client";
+import type { TelegramUpdate } from "../../src/telegram-client";
 
 function mockClient(behavior: Record<number, "ok" | "fail">): TelegramBotClient {
   return {
@@ -136,5 +145,172 @@ describe("validateAdmittedAgents", () => {
     await validateAdmittedAgents(undefined, mockClient({}), log);
     await validateAdmittedAgents([], mockClient({}), log);
     expect(logs).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T14: telegramTransport lifecycle — polling mode
+// ---------------------------------------------------------------------------
+
+function makeMockClient(updates: TelegramUpdate[][]) {
+  const sent: Array<{ chatId: number | string; text: string }> = [];
+  const client: TelegramBotClient = {
+    sendMessage: async (chatId, text) => {
+      sent.push({ chatId, text });
+      return { messageId: 1, chatId };
+    },
+    getUpdates: async () => {
+      const batch = updates.shift() ?? [];
+      return batch as TelegramUpdate[];
+    },
+    setWebhook: async () => {},
+    deleteWebhook: async () => {},
+    getChat: async (chatId) => ({ id: Number(chatId), type: "private" }),
+  };
+  return { client, sent };
+}
+
+/**
+ * Mock TransportKernel for testing. Records every handleInbound call and
+ * captures the registered onOutbound callback so tests can simulate the
+ * kernel emitting an outbound reply.
+ */
+function makeMockKernel() {
+  const handleInboundCalls: Array<{ trigger: TurnTrigger }> = [];
+  const outboundCallbacks: Array<(peer: PeerIdentity, msg: OutboundMessage) => Promise<void>> = [];
+  const kernel: TransportKernel = {
+    handleInbound: async (trigger) => {
+      handleInboundCalls.push({ trigger });
+      return {
+        turnId: trigger.turnId,
+        success: true,
+        status: "completed",
+        toolCalls: [],
+        trace: {} as TurnResult["trace"],
+      };
+    },
+    onOutbound: (cb) => {
+      outboundCallbacks.push(cb);
+    },
+    getAgentCard: () => ({}) as AgentCard,
+  };
+  return { kernel, handleInboundCalls, outboundCallbacks };
+}
+
+describe("telegramTransport — polling lifecycle", () => {
+  it("starts polling on boot; dispatches turn for each text update via kernel.handleInbound", async () => {
+    const updates: TelegramUpdate[] = [
+      {
+        update_id: 1,
+        message: {
+          message_id: 1,
+          chat: { id: 100, type: "private" },
+          from: { id: 100, is_bot: false },
+          date: 0,
+          text: "hello",
+        },
+      },
+    ];
+    const { client } = makeMockClient([updates, []]);
+    const { kernel, handleInboundCalls } = makeMockKernel();
+    const aug = telegramTransport({
+      botToken: "T",
+      inbound: { mode: "polling", polling: { timeoutSec: 0 } },
+      auth: { creatorUserIds: [100] },
+      _clientFactory: () => client,
+    } as any);
+    // Wire the kernel into the transport before booting receivers.
+    await aug.transport!.register(kernel);
+    await aug.onBoot?.();
+    await new Promise((r) => setTimeout(r, 30));
+    await aug.onShutdown?.();
+    expect(handleInboundCalls).toHaveLength(1);
+    expect(handleInboundCalls[0]?.trigger.peer?.trustLevel).toBe("creator");
+    expect(handleInboundCalls[0]?.trigger.threadId).toBe("tg-chat-100");
+    expect(handleInboundCalls[0]?.trigger.type).toBe("message");
+  });
+
+  it("inbound text → registered outbound callback → sendMessage to original chat_id", async () => {
+    const updates: TelegramUpdate[] = [
+      {
+        update_id: 1,
+        message: {
+          message_id: 1,
+          chat: { id: 555, type: "private" },
+          from: { id: 555, is_bot: false },
+          date: 0,
+          text: "hi",
+        },
+      },
+    ];
+    const { client, sent } = makeMockClient([updates, []]);
+    const { kernel, handleInboundCalls, outboundCallbacks } = makeMockKernel();
+    const aug = telegramTransport({
+      botToken: "T",
+      inbound: { mode: "polling", polling: { timeoutSec: 0 } },
+      auth: { anonymousIdentityMode: "ephemeral" },
+      _clientFactory: () => client,
+    } as any);
+    await aug.transport!.register(kernel);
+    await aug.onBoot?.();
+    await new Promise((r) => setTimeout(r, 30));
+    // The kernel would invoke the outbound callback with an OutboundMessage
+    // during a real turn. Simulate that here. The transport reads
+    // contextId from the message to look up the chat_id.
+    expect(handleInboundCalls).toHaveLength(1);
+    expect(outboundCallbacks).toHaveLength(1);
+    const peer = handleInboundCalls[0]!.trigger.peer!;
+    await outboundCallbacks[0]!(peer, {
+      parts: [{ kind: "text", text: "response text" }],
+      contextId: "tg-chat-555",
+    });
+    await aug.onShutdown?.();
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.chatId).toBe(555);
+    expect(sent[0]?.text).toBe("response text");
+  });
+
+  it("ignores updates with no text (no kernel.handleInbound call)", async () => {
+    const updates: TelegramUpdate[] = [
+      { update_id: 1, message: { message_id: 1, chat: { id: 1, type: "private" }, date: 0 } },
+    ];
+    const { client } = makeMockClient([updates, []]);
+    const { kernel, handleInboundCalls } = makeMockKernel();
+    const aug = telegramTransport({
+      botToken: "T",
+      inbound: { mode: "polling", polling: { timeoutSec: 0 } },
+      auth: {},
+      _clientFactory: () => client,
+    } as any);
+    await aug.transport!.register(kernel);
+    await aug.onBoot?.();
+    await new Promise((r) => setTimeout(r, 30));
+    await aug.onShutdown?.();
+    expect(handleInboundCalls).toHaveLength(0);
+  });
+
+  it("transport.identify() resolves PeerIdentity from raw {userId,threadId}", () => {
+    const { client } = makeMockClient([[]]);
+    const aug = telegramTransport({
+      botToken: "T",
+      inbound: { mode: "polling", polling: { timeoutSec: 0 } },
+      auth: { creatorUserIds: [42] },
+      _clientFactory: () => client,
+    } as any);
+    const peer = aug.transport!.identify({ userId: 42, threadId: "tg-chat-42" });
+    expect(peer?.trustLevel).toBe("creator");
+    expect(peer?.id).toBe("tg_user_42");
+  });
+
+  it("transport.identify() returns null for malformed raw input", () => {
+    const { client } = makeMockClient([[]]);
+    const aug = telegramTransport({
+      botToken: "T",
+      inbound: { mode: "polling", polling: { timeoutSec: 0 } },
+      auth: {},
+      _clientFactory: () => client,
+    } as any);
+    expect(aug.transport!.identify({})).toBeNull();
+    expect(aug.transport!.identify(null)).toBeNull();
   });
 });
