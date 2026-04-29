@@ -598,7 +598,7 @@ export function createTurnLoop(opts: {
             success: true,
             status: "completed",
             response: response.content
-              ? { parts: [{ kind: "text", text: response.content }] }
+              ? { parts: [{ kind: "text", text: response.content }], contextId: trigger.contextId }
               : undefined,
             toolCalls: toolCallRecords,
             trace,
@@ -822,7 +822,10 @@ export function createTurnLoop(opts: {
             success: true,
             status: "completed",
             response: finalResponse.content
-              ? { parts: [{ kind: "text", text: finalResponse.content }] }
+              ? {
+                  parts: [{ kind: "text", text: finalResponse.content }],
+                  contextId: trigger.contextId,
+                }
               : undefined,
             toolCalls: toolCallRecords,
             trace,
@@ -863,6 +866,7 @@ export function createTurnLoop(opts: {
         status: "completed",
         response: {
           parts: [{ kind: "text", text: "I've completed the available actions." }],
+          contextId: trigger.contextId,
         },
         toolCalls: toolCallRecords,
         trace,
