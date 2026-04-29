@@ -38,3 +38,6 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 # identity, learned memory, and workspace are runtime state, not code.
 zip/
 
+
+# Internal docs — keep local, do not publish.
+docs/
