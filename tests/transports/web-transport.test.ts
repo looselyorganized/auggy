@@ -1196,7 +1196,7 @@ describe("webTransport HTTP server", () => {
 describe("webTransport / (root) route", () => {
   it("GET / returns 404 when publicFrontendUrl is not configured", async () => {
     const model = createMockModel();
-    const port = 18950;
+    const port = 18965;
     const aug = webTransport({
       port,
       auth: { type: "bearer", token: "test-token" },
@@ -1218,7 +1218,7 @@ describe("webTransport / (root) route", () => {
 
   it("GET / returns 302 with Location: <publicFrontendUrl> when configured", async () => {
     const model = createMockModel();
-    const port = 18951;
+    const port = 18966;
     const aug = webTransport({
       port,
       auth: { type: "bearer", token: "test-token" },
@@ -1243,7 +1243,7 @@ describe("webTransport / (root) route", () => {
 
   it("GET on a non-/ path still returns 404 even when publicFrontendUrl is configured", async () => {
     const model = createMockModel();
-    const port = 18952;
+    const port = 18967;
     const aug = webTransport({
       port,
       auth: { type: "bearer", token: "test-token" },
@@ -1267,7 +1267,7 @@ describe("webTransport / (root) route", () => {
 
   it("/health and /.well-known/agent-card.json are unaffected by publicFrontendUrl", async () => {
     const model = createMockModel();
-    const port = 18953;
+    const port = 18968;
     const aug = webTransport({
       port,
       auth: { type: "bearer", token: "test-token" },
@@ -1301,7 +1301,7 @@ describe("webTransport / (root) route", () => {
 
   it("POST / returns 404 even when publicFrontendUrl is configured (only GET redirects)", async () => {
     const model = createMockModel();
-    const port = 18954;
+    const port = 18969;
     const aug = webTransport({
       port,
       auth: { type: "bearer", token: "test-token" },
