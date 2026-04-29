@@ -3,7 +3,12 @@ import { createTelegramAdapter } from "../../../../src/augments/notify/adapters/
 import type { TelegramNotifyDestination } from "../../../../src/types";
 import type { TelegramBotClient as Tbc } from "../../../../src/telegram-client";
 
-function mockClient(handler: (chatId: number | string, text: string) => Promise<{ messageId: number; chatId: number | string }>) {
+function mockClient(
+  handler: (
+    chatId: number | string,
+    text: string,
+  ) => Promise<{ messageId: number; chatId: number | string }>,
+) {
   const c: Tbc = {
     sendMessage: async (chatId, text) => handler(chatId, text),
     getUpdates: async () => [],
@@ -29,7 +34,10 @@ describe("telegramAdapter", () => {
       return { messageId: 1, chatId };
     });
     const adapter = createTelegramAdapter({ clientFactory: () => client });
-    const result = await adapter.deliver(dest, { summary: "Important alert", reason: "test reason" });
+    const result = await adapter.deliver(dest, {
+      summary: "Important alert",
+      reason: "test reason",
+    });
     expect(captured.chatId).toBe(555);
     expect(captured.text).toContain("Important alert");
     expect(captured.text).toContain("test reason");
@@ -38,14 +46,19 @@ describe("telegramAdapter", () => {
 
   it("includes visitor in formatted text when provided", async () => {
     let text = "";
-    const client = mockClient(async (c, t) => { text = t; return { messageId: 1, chatId: c }; });
+    const client = mockClient(async (c, t) => {
+      text = t;
+      return { messageId: 1, chatId: c };
+    });
     const adapter = createTelegramAdapter({ clientFactory: () => client });
     await adapter.deliver(dest, { summary: "x", visitor: "alice" });
     expect(text).toContain("alice");
   });
 
   it("returns failed when sendMessage throws", async () => {
-    const client = mockClient(async () => { throw new Error("API error: chat not found"); });
+    const client = mockClient(async () => {
+      throw new Error("API error: chat not found");
+    });
     const adapter = createTelegramAdapter({ clientFactory: () => client });
     const result = await adapter.deliver(dest, { summary: "x" });
     expect(result.status).toBe("failed");
@@ -66,7 +79,7 @@ describe("telegramAdapter", () => {
   });
 
   it("creates separate clients for different botTokens", async () => {
-    let tokens: string[] = [];
+    const tokens: string[] = [];
     const adapter = createTelegramAdapter({
       clientFactory: (token: string) => {
         tokens.push(token);

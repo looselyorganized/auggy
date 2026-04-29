@@ -364,13 +364,12 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
   },
   {
     label: "notify",
-    description: "Outbound messaging to operator-defined destinations (webhook + telegram adapters)",
+    description:
+      "Outbound messaging to operator-defined destinations (webhook + telegram adapters)",
     type: "notify",
     defaultName: "notify",
     defaultOptions: {
-      destinations: [
-        { name: "creator", transport: "webhook", url: "${ORG_NOTIFY_URL}" },
-      ],
+      destinations: [{ name: "creator", transport: "webhook", url: "${ORG_NOTIFY_URL}" }],
       rateLimit: {
         cooldownMs: 120_000,
         globalMaxPerHour: 5,

@@ -31,9 +31,7 @@ describe("notify integration", () => {
     writeFileSync(join(tmp.path, "id.md"), "# Test agent");
 
     const notifyAugment = notify({
-      destinations: [
-        { name: "creator", transport: "webhook", url: "https://example.com/notify" },
-      ],
+      destinations: [{ name: "creator", transport: "webhook", url: "https://example.com/notify" }],
     });
 
     const model = createMockModel({ response: "ok" });

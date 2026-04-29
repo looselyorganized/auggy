@@ -13,12 +13,19 @@ export interface CreateWebhookAdapterOptions {
 }
 
 export function createWebhookAdapter(opts: CreateWebhookAdapterOptions = {}): NotifyAdapter {
-  const http = opts.client ?? createHttpClient({ timeoutMs: 10_000, userAgent: "auggy-notify-webhook/0.1" });
+  const http =
+    opts.client ?? createHttpClient({ timeoutMs: 10_000, userAgent: "auggy-notify-webhook/0.1" });
 
   return {
-    async deliver(destination: NotifyDestination, payload: NotifyPayload): Promise<NotifyDeliveryResult> {
+    async deliver(
+      destination: NotifyDestination,
+      payload: NotifyPayload,
+    ): Promise<NotifyDeliveryResult> {
       if (destination.transport !== "webhook") {
-        return { status: "failed", detail: `webhookAdapter received non-webhook destination: ${destination.transport}` };
+        return {
+          status: "failed",
+          detail: `webhookAdapter received non-webhook destination: ${destination.transport}`,
+        };
       }
       const dest = destination as WebhookNotifyDestination;
       const body = JSON.stringify({
@@ -34,7 +41,10 @@ export function createWebhookAdapter(opts: CreateWebhookAdapterOptions = {}): No
           body,
         });
         if (res.status < 200 || res.status >= 300) {
-          return { status: "failed", detail: `webhook ${dest.url} returned ${res.status}: ${res.body.slice(0, 200)}` };
+          return {
+            status: "failed",
+            detail: `webhook ${dest.url} returned ${res.status}: ${res.body.slice(0, 200)}`,
+          };
         }
         return { status: "sent" };
       } catch (err) {

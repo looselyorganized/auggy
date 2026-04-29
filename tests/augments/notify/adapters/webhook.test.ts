@@ -4,7 +4,11 @@ import type { WebhookNotifyDestination } from "../../../../src/types";
 import type { HttpResponse, HttpRequestInit } from "../../../../src/http";
 
 function mockHttp(
-  handler: (url: string, body: unknown, headers?: Record<string, string>) => { status: number; body: string },
+  handler: (
+    url: string,
+    body: unknown,
+    headers?: Record<string, string>,
+  ) => { status: number; body: string },
 ) {
   return {
     post: async (url: string, opts?: Omit<HttpRequestInit, "method">): Promise<HttpResponse> => {
@@ -48,17 +52,26 @@ describe("webhookAdapter", () => {
   it("includes optional visitor field when provided", async () => {
     let body: any;
     const adapter = createWebhookAdapter({
-      client: mockHttp((u, b) => { body = b; return { status: 200, body: "{}" }; }),
+      client: mockHttp((u, b) => {
+        body = b;
+        return { status: 200, body: "{}" };
+      }),
     });
     await adapter.deliver(dest, { summary: "x", visitor: "v1" });
     expect(body.visitor).toBe("v1");
   });
 
   it("forwards configured headers", async () => {
-    const destWithHeaders: WebhookNotifyDestination = { ...dest, headers: { authorization: "Bearer T" } };
+    const destWithHeaders: WebhookNotifyDestination = {
+      ...dest,
+      headers: { authorization: "Bearer T" },
+    };
     let capturedHeaders: Record<string, string> | undefined;
     const adapter = createWebhookAdapter({
-      client: mockHttp((u, b, h) => { capturedHeaders = h; return { status: 200, body: "{}" }; }),
+      client: mockHttp((u, b, h) => {
+        capturedHeaders = h;
+        return { status: 200, body: "{}" };
+      }),
     });
     await adapter.deliver(destWithHeaders, { summary: "x" });
     expect(capturedHeaders?.authorization).toBe("Bearer T");

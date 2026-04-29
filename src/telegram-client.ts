@@ -57,7 +57,11 @@ export interface TelegramChat {
 }
 
 export interface TelegramBotClient {
-  sendMessage(chatId: number | string, text: string, opts?: SendMessageOptions): Promise<SendMessageResult>;
+  sendMessage(
+    chatId: number | string,
+    text: string,
+    opts?: SendMessageOptions,
+  ): Promise<SendMessageResult>;
   getUpdates(opts: GetUpdatesOptions): Promise<TelegramUpdate[]>;
   setWebhook(url: string, secretToken: string, opts?: SetWebhookOptions): Promise<void>;
   deleteWebhook(): Promise<void>;
@@ -80,7 +84,8 @@ interface BotApiResponse<T> {
 export function createTelegramBotClient(opts: CreateTelegramBotClientOptions): TelegramBotClient {
   const baseUrl = opts.baseUrl ?? "https://api.telegram.org";
   const url = (method: string) => `${baseUrl}/bot${opts.botToken}/${method}`;
-  const http = opts.client ?? createHttpClient({ timeoutMs: 60_000, userAgent: "auggy-telegram/0.1" });
+  const http =
+    opts.client ?? createHttpClient({ timeoutMs: 60_000, userAgent: "auggy-telegram/0.1" });
 
   async function call<T>(method: string, body: Record<string, unknown>): Promise<T> {
     const res = await http.post(url(method), {
@@ -94,7 +99,9 @@ export function createTelegramBotClient(opts: CreateTelegramBotClientOptions): T
       throw new Error(`Telegram bot API ${method}: non-JSON response (${res.status})`);
     }
     if (!parsed.ok) {
-      throw new Error(`Telegram bot API ${method}: ${parsed.description ?? "unknown error"} (${res.status})`);
+      throw new Error(
+        `Telegram bot API ${method}: ${parsed.description ?? "unknown error"} (${res.status})`,
+      );
     }
     return parsed.result as T;
   }
@@ -105,7 +112,10 @@ export function createTelegramBotClient(opts: CreateTelegramBotClientOptions): T
       if (sendOpts?.parseMode) body.parse_mode = sendOpts.parseMode;
       if (sendOpts?.replyToMessageId != null) body.reply_to_message_id = sendOpts.replyToMessageId;
       if (sendOpts?.disableNotification) body.disable_notification = true;
-      const result = await call<{ message_id: number; chat: { id: number | string } }>("sendMessage", body);
+      const result = await call<{ message_id: number; chat: { id: number | string } }>(
+        "sendMessage",
+        body,
+      );
       return { messageId: result.message_id, chatId: result.chat.id };
     },
 
