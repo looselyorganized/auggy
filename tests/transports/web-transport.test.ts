@@ -1188,3 +1188,143 @@ describe("webTransport HTTP server", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// webTransport / (root) route — publicFrontendUrl option (Task A1: failing)
+// ---------------------------------------------------------------------------
+
+describe("webTransport / (root) route", () => {
+  it("GET / returns 404 when publicFrontendUrl is not configured", async () => {
+    const model = createMockModel();
+    const port = 18950;
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: "test-token" },
+    });
+    const agent = defineAgent({ name: "test", model: "mock", augments: [aug] }, model);
+    await agent.start();
+
+    try {
+      const resp = await fetch(`http://localhost:${port}/`, {
+        method: "GET",
+        redirect: "manual",
+      });
+      expect(resp.status).toBe(404);
+      await resp.text();
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("GET / returns 302 with Location: <publicFrontendUrl> when configured", async () => {
+    const model = createMockModel();
+    const port = 18951;
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: "test-token" },
+      // @ts-expect-error — publicFrontendUrl not yet in WebTransportOptions; added in Task A2
+      publicFrontendUrl: "https://example.com/chat",
+    });
+    const agent = defineAgent({ name: "test", model: "mock", augments: [aug] }, model);
+    await agent.start();
+
+    try {
+      const resp = await fetch(`http://localhost:${port}/`, {
+        method: "GET",
+        redirect: "manual",
+      });
+      expect(resp.status).toBe(302);
+      expect(resp.headers.get("location")).toBe("https://example.com/chat");
+      await resp.text();
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("GET on a non-/ path still returns 404 even when publicFrontendUrl is configured", async () => {
+    const model = createMockModel();
+    const port = 18952;
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: "test-token" },
+      // @ts-expect-error — publicFrontendUrl not yet in WebTransportOptions; added in Task A2
+      publicFrontendUrl: "https://example.com/chat",
+    });
+    const agent = defineAgent({ name: "test", model: "mock", augments: [aug] }, model);
+    await agent.start();
+
+    try {
+      const resp = await fetch(`http://localhost:${port}/some-other-path`, {
+        method: "GET",
+        redirect: "manual",
+      });
+      expect(resp.status).toBe(404);
+      await resp.text();
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("/health and /.well-known/agent-card.json are unaffected by publicFrontendUrl", async () => {
+    const model = createMockModel();
+    const port = 18953;
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: "test-token" },
+      // @ts-expect-error — publicFrontendUrl not yet in WebTransportOptions; added in Task A2
+      publicFrontendUrl: "https://example.com/chat",
+    });
+    const agent = defineAgent(
+      { name: "researcher", purpose: "testing", model: "mock", augments: [aug] },
+      model,
+    );
+    await agent.start();
+
+    try {
+      // /health still 200 + healthy
+      const health = await fetch(`http://localhost:${port}/health`, { redirect: "manual" });
+      expect(health.status).toBe(200);
+      const healthBody = (await health.json()) as { status: string };
+      expect(healthBody.status).toBe("healthy");
+
+      // /.well-known/agent-card.json still 200 + valid card
+      const card = await fetch(`http://localhost:${port}/.well-known/agent-card.json`, {
+        redirect: "manual",
+      });
+      expect(card.status).toBe(200);
+      const cardBody = (await card.json()) as { provider: { name: string } };
+      expect(cardBody.provider.name).toBe("researcher");
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("POST / returns 404 even when publicFrontendUrl is configured (only GET redirects)", async () => {
+    const model = createMockModel();
+    const port = 18954;
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: "test-token" },
+      // @ts-expect-error — publicFrontendUrl not yet in WebTransportOptions; added in Task A2
+      publicFrontendUrl: "https://example.com/chat",
+    });
+    const agent = defineAgent({ name: "test", model: "mock", augments: [aug] }, model);
+    await agent.start();
+
+    try {
+      const resp = await fetch(`http://localhost:${port}/`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: "Bearer test-token",
+        },
+        body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
+        redirect: "manual",
+      });
+      expect(resp.status).toBe(404);
+      await resp.text();
+    } finally {
+      await agent.stop();
+    }
+  });
+});
