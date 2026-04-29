@@ -632,3 +632,53 @@ export interface AgentHandle {
   card(): AgentCard;
   inject(trigger: TurnTrigger): Promise<TurnResult>;
 }
+
+// === Notify augment ===
+
+export type NotifyAdapterKind = "webhook" | "telegram";
+
+export interface WebhookNotifyDestination {
+  name: string;
+  transport: "webhook";
+  url: string;
+  headers?: Record<string, string>;
+}
+
+export interface TelegramNotifyDestination {
+  name: string;
+  transport: "telegram";
+  botToken: string;
+  chatId: number | string;
+  parseMode?: "Markdown" | "HTML" | "MarkdownV2";
+}
+
+export type NotifyDestination = WebhookNotifyDestination | TelegramNotifyDestination;
+
+export interface NotifyRateLimitOptions {
+  enabled?: boolean;
+  cooldownMs?: number;
+  globalMaxPerHour?: number;
+  dedupWindowMs?: number;
+  dedupThreshold?: number;
+  perPeerCooldownMs?: number;
+}
+
+export interface NotifyAugmentOptions {
+  destinations: NotifyDestination[];
+  rateLimit?: NotifyRateLimitOptions;
+}
+
+export interface NotifyPayload {
+  summary: string;
+  reason?: string;
+  visitor?: string;
+}
+
+export interface NotifyDeliveryResult {
+  status: "sent" | "failed";
+  detail?: string;
+}
+
+export interface NotifyAdapter {
+  deliver(destination: NotifyDestination, payload: NotifyPayload): Promise<NotifyDeliveryResult>;
+}
