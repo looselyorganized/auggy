@@ -4,7 +4,7 @@
 
 Auggy (`augment-1`) is a modular agent runtime in TypeScript/Bun. Agents are composed from swappable augments; the kernel manages context, tools, permissions, and lifecycle. Framework-agnostic by design — **not LORF-locked**.
 
-**Status: v0.2.0 (2026-04-27, visitor-economics complete).** Plans 1 (kernel) + 2 (built-in augments) + 3 (CLI & manifest) complete. Layer 1 trust-aware capability table, security + quality eval suites, bashAugment, SSE token streaming, layeredMemory (peer-scoped episodic memory with provenance). Visitor-economics work (Phase 1b+1c+D1): three-level trust model (creator/agent/public + publicSubstate), TurnGateProvider 2PC contract, budgets augment (per-trust-level turn caps + dollar ceiling + BATS preamble), four-path identity resolution in web transport, Idempotency-Key dedup, bash defaults block shell_exec/run_script for public AND agent. 9 augments, 3 engines, 863 tests across 60+ files. See `lo/docs/auggy-plans-detail.md` (outside this repo) for the plan-by-plan roadmap.
+**Status: v0.2.0 (2026-04-27, visitor-economics complete).** Plans 1 (kernel) + 2 (built-in augments) + 3 (CLI & manifest) complete. Layer 1 trust-aware capability table, security + quality eval suites, bashAugment, SSE token streaming, layeredMemory (peer-scoped episodic memory with provenance). Visitor-economics work (Phase 1b+1c+D1): three-level trust model (creator/agent/public + publicSubstate), TurnGateProvider 2PC contract, budgets augment (per-trust-level turn caps + dollar ceiling + BATS preamble), four-path identity resolution in web transport, Idempotency-Key dedup, bash defaults block shell_exec/run_script for public AND agent. 9 augments, 3 engines, 863 tests across 60+ files. The `chat/` package ships the Auggy Local GUI (`aug1 chat`) — a Vite/React SPA with a Bun proxy server that discovers running agents via PID manifests and proxies chat through to each agent's `/agent/run`; distributed as a versioned GitHub release artifact with first-run download + SHA256 verification. See `lo/docs/auggy-plans-detail.md` (outside this repo) for the plan-by-plan roadmap.
 
 ## Commands
 
@@ -17,6 +17,7 @@ aug1 start <name>               # Install as launchd service (always-on)
 aug1 stop <name>                # Stop agent (either mode)
 aug1 restart <name>             # Stop + start
 aug1 status [name]              # Show running agents
+aug1 chat [--port N]            # Launch Local GUI for talking to running agents
 
 # Development
 bun test                         # Run full test suite (863 tests across 60+ files)
@@ -138,6 +139,19 @@ tests/                    # 863 tests across 60+ files
 ├── evals/                # Security eval harness (grader pipeline)
 ├── http.test.ts          # HTTP client tests (redirects, body size, auth stripping)
 └── (augments/web-fetch.test.ts — entity decoding, script strip, JSON pass)
+
+chat/                     # Auggy Local GUI (aug1 chat) — Vite/React SPA + Bun proxy server
+├── server.ts             # Bun.serve proxy: /api/agents discovery, /api/chat/<id> bearer-attaching forwarder, CSRF guard
+├── src/
+│   ├── App.tsx           # Root composition (picker + ChatWidget, Cmd+K / Esc shortcuts)
+│   ├── main.tsx          # React entry
+│   ├── components/       # AgentPicker, ChatWidget, MessageList, ToolCallView, ErrorBanner
+│   ├── adapters/         # Source/Connection adapters (localPidSource, httpProxyConnection)
+│   ├── lib/              # chat-store (localStorage history), parser (AG-UI SSE), bearer
+│   └── state/            # React state hooks
+├── tests/                # 70 tests (server, adapters, lib, state, integration)
+├── index.html, vite.config.ts, tsconfig.json, eslint.config.js, package.json
+└── dist/                 # Vite build output (gitignored; published as GitHub release artifact)
 
 scripts/
 ├── hello.ts              # Hello-world composition (real Claude, file identity, web transport)
