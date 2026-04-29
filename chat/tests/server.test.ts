@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, basename } from "node:path";
 import { tmpdir } from "node:os";
+import { createConnection } from "node:net";
 import { createGuiServer, type GuiServerOptions } from "../server";
 
 let tempAuggyDir: string;
@@ -191,5 +192,64 @@ describe("Local GUI server", () => {
     expect(await res.text()).toContain("hi");
 
     rmSync(distDir, { recursive: true, force: true });
+  });
+
+  it("does not leak files from a sibling directory whose name string-prefixes staticDir", async () => {
+    // End-to-end safety property: with staticDir = "/tmp/dist-<id>" and a
+    // sibling = "/tmp/dist-<id>-evil", a request that tries to escape the
+    // staticDir boundary must NEVER return the sibling's contents.
+    //
+    // Defense in depth comes from two layers: (1) Bun.serve normalizes "/.."
+    // and "%2e%2e" in URL pathnames before our handler sees them, so the
+    // attack can't reach serveStatic via HTTP; (2) our serveStatic guard
+    // appends the platform separator to staticDir before the prefix check,
+    // so even if a future code path passed a non-normalized pathname through,
+    // the sibling-prefix collision (sibling absolute path string-starts-with
+    // staticDir but isn't actually inside it) wouldn't pass.
+    //
+    // We exercise (1) here via raw TCP (fetch() also normalizes URLs client
+    // side, so we can't even put "/.." on the wire with fetch). Both encoded
+    // and dot-segment forms are tried.
+    const tag = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const distDir = join(tmpdir(), `dist-${tag}`);
+    const evilDir = join(tmpdir(), `dist-${tag}-evil`);
+    mkdirSync(distDir, { recursive: true });
+    mkdirSync(evilDir, { recursive: true });
+    writeFileSync(join(distDir, "index.html"), "<html>safe</html>", "utf8");
+    writeFileSync(join(evilDir, "leak.txt"), "SECRET-MARKER-9F2A", "utf8");
+
+    const port = await bootServer({ staticDir: distDir });
+
+    async function rawGet(path: string): Promise<string> {
+      return new Promise<string>((resolve, reject) => {
+        const sock = createConnection({ host: "127.0.0.1", port }, () => {
+          sock.write(
+            `GET ${path} HTTP/1.1\r\n` +
+            `Host: localhost:${port}\r\n` +
+            `Origin: http://localhost:${port}\r\n` +
+            `Connection: close\r\n\r\n`,
+          );
+        });
+        const chunks: Buffer[] = [];
+        sock.on("data", c => chunks.push(c as Buffer));
+        sock.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+        sock.on("error", reject);
+      });
+    }
+
+    const sibling = basename(evilDir);
+    const probes = [
+      `/../${sibling}/leak.txt`,
+      `/%2e%2e/${sibling}/leak.txt`,
+      `/foo/../../${sibling}/leak.txt`,
+    ];
+
+    for (const probe of probes) {
+      const body = await rawGet(probe);
+      expect(body).not.toContain("SECRET-MARKER-9F2A");
+    }
+
+    rmSync(distDir, { recursive: true, force: true });
+    rmSync(evilDir, { recursive: true, force: true });
   });
 });
