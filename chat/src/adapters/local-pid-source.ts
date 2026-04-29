@@ -40,7 +40,7 @@ async function fetchAgentCard(baseUrl: string, timeoutMs: number) {
 
 export function createLocalPidSource(opts: LocalPidSourceOptions = {}): AgentSource {
   const auggyDir = opts.auggyDir ?? join(homedir(), ".auggy");
-  const pollMs = opts.pollIntervalMs ?? 5000;
+  const pollMs = opts.pollIntervalMs ?? 1000;
   const cardTimeoutMs = opts.cardFetchTimeoutMs ?? 1000;
 
   function readManifests(): PidManifest[] {
