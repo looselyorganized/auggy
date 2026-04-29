@@ -18,7 +18,15 @@ export const httpProxyConnection: AgentConnection = {
     });
     if (!res.ok) {
       let detail = "";
-      try { detail = JSON.stringify(await res.json()); } catch { /* ignore */ }
+      try {
+        detail = JSON.stringify(await res.json());
+      } catch {
+        try {
+          detail = (await res.text()).slice(0, 500);
+        } catch {
+          /* both attempts failed — body unreadable, fall through with empty detail */
+        }
+      }
       throw new Error(`Chat request failed: ${res.status} ${res.statusText} ${detail}`.trim());
     }
     if (!res.body) throw new Error("Empty response body");
