@@ -229,6 +229,7 @@ export interface WebTransportOptions {
     ttlSeconds?: number;     // default 30 days
     signingKey?: string;     // derive from VISITOR_SIGNING_KEY; ephemeral if absent
   };
+  publicFrontendUrl?: string;    // optional 302 redirect target for GET /
 }
 ```
 
@@ -237,6 +238,7 @@ export interface WebTransportOptions {
 | Method | Path | Purpose |
 |--------|------|---------|
 | `POST` | `/agent/run` | AG-UI SSE endpoint. Streams events for one turn. |
+| `GET` | `/` | Optional 302 redirect to `publicFrontendUrl` (default 404). |
 | `GET` | `/health` | Liveness check. Returns `{status: "healthy"}`. |
 | `GET` | `/.well-known/agent-card.json` | Agent card discovery. |
 | (anything else) | `404 Not Found` |
@@ -425,6 +427,33 @@ function handleAgentCard(): Response {
 Returns the JSON-encoded `AgentCard`. The card was generated once at `defineAgent` time and cached.
 
 The path `/.well-known/agent-card.json` is an A2A convention — A2A discovery clients know to check this path on any agent host.
+
+### `GET /` — optional redirect to a frontend
+
+When `publicFrontendUrl` is unset (default), `GET /` returns `404 Not Found` and the agent's bare URL is silently inert — visitors who land there see nothing useful.
+
+When set, `GET /` returns `302 Location: <publicFrontendUrl>`:
+
+```yaml
+- name: web
+  type: webTransport
+  options:
+    port: 8080
+    auth:
+      type: bearer
+      token: ${WEB_BEARER_TOKEN}
+    publicFrontendUrl: https://your-frontend.example/chat
+```
+
+Use this to point visitors at whichever polished frontend you've stood up — a `platform/chat`-style chat widget, a marketing page, a third-party chat surface, or a future spine-visitor-chat URL. The agent itself stays headless; presentation lives one layer up.
+
+Only `GET /` is redirected. `POST /`, `HEAD /`, and other methods on `/` still return 404. `/agent/run`, `/health`, and `/.well-known/agent-card.json` are unaffected.
+
+For local operator testing, run `aug1 chat` instead — it provides a polished
+chat surface against agents you've started with `aug1 dev`, without exposing a
+public URL.
+
+**Uptime / health checks:** point them at `/health`, not `/`. The `/` route is for visitors; `/health` is for monitoring.
 
 ### Lifecycle hooks
 
