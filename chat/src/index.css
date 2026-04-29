@@ -112,3 +112,107 @@ button, input, select, textarea {
   color: #888;
 }
 .agent-picker__error { color: #b91c1c; }
+
+/* MessageList */
+.message-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  padding: 1rem;
+  overflow-y: auto;
+}
+
+.message {
+  display: grid;
+  grid-template-columns: 60px 1fr;
+  gap: 0.75rem;
+  align-items: start;
+}
+
+.message__role {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #666;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding-top: 0.25rem;
+}
+
+.message__content { line-height: 1.5; }
+.message__content p { margin: 0 0 0.5rem 0; white-space: pre-wrap; }
+.message__error { color: #b91c1c; font-style: italic; margin-top: 0.5rem !important; }
+
+.message-list__cursor {
+  font-family: ui-monospace, monospace;
+  color: #999;
+  animation: blink 1s steps(2, start) infinite;
+  margin-left: 60px;
+  padding-left: 0.75rem;
+}
+
+@keyframes blink { to { visibility: hidden; } }
+
+/* ToolCallView */
+.message__tool-calls { display: flex; flex-direction: column; gap: 0.25rem; margin-top: 0.5rem; }
+
+.tool-call {
+  border: 1px solid #e5e5e5;
+  border-radius: 4px;
+  font-size: 0.85rem;
+  background: #fafafa;
+}
+
+.tool-call--running { border-color: #fbbf24; }
+.tool-call--error { border-color: #b91c1c; }
+
+.tool-call__header {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 0.5rem;
+  align-items: center;
+  padding: 0.4rem 0.6rem;
+  border: none;
+  background: transparent;
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+}
+
+.tool-call__name { font-family: ui-monospace, monospace; font-weight: 500; }
+.tool-call__status { font-size: 0.75rem; color: #666; }
+.tool-call__chevron { font-size: 0.75rem; color: #888; }
+
+.tool-call__body { padding: 0 0.6rem 0.6rem 0.6rem; }
+
+.tool-call__pre {
+  background: #f3f3f3;
+  padding: 0.5rem;
+  margin: 0.25rem 0;
+  border-radius: 3px;
+  font-size: 0.8rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+/* ErrorBanner */
+.error-banner {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.5rem 0.75rem;
+  background: #fef2f2;
+  color: #b91c1c;
+  border: 1px solid #fecaca;
+  border-radius: 4px;
+  margin-bottom: 0.75rem;
+}
+
+.error-banner button {
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  padding: 0.25rem;
+}
