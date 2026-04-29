@@ -44,7 +44,10 @@ export function chatCommand(): Command {
       try {
         server = createGuiServer({ port, staticDir: distDir });
       } catch (err) {
-        console.error(`[aug1 chat] Failed to start server on port ${port}:`, (err as Error).message);
+        console.error(
+          `[aug1 chat] Failed to start server on port ${port}:`,
+          (err as Error).message,
+        );
         process.exit(1);
       }
 
@@ -58,7 +61,9 @@ export function chatCommand(): Command {
 
       const shutdown = (signal: string) => {
         console.log(`\n[aug1 chat] Received ${signal}, shutting down...`);
-        try { server.stop(); } catch {}
+        try {
+          server.stop();
+        } catch {}
         process.exit(0);
       };
       process.on("SIGINT", () => shutdown("SIGINT"));
@@ -71,7 +76,7 @@ export function chatCommand(): Command {
 function runVite(cwd: string): Promise<void> {
   return new Promise((resolveP, rejectP) => {
     const child = spawn("bun", ["run", "build"], { cwd, stdio: "inherit" });
-    child.on("exit", code => {
+    child.on("exit", (code) => {
       if (code === 0) resolveP();
       else rejectP(new Error(`Vite build failed with exit code ${code}`));
     });
