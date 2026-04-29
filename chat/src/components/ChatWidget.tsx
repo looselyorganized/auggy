@@ -31,6 +31,11 @@ export function ChatWidget({ agent, sourceName, connection }: ChatWidgetProps) {
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
   // When operator switches to a different agent, reload that agent's history.
+  // Dep array is identity-stable: agent.id + sourceName uniquely identify the
+  // agent. agent.capabilities is a fresh `string[]` on every /api/agents poll
+  // (JSON.parse), so including it would re-fire this effect every poll
+  // interval — aborting in-flight streams every 2s. Visual metadata can stale-
+  // update on the next genuine agent switch.
   useEffect(() => {
     const loaded = loadAgentHistory(agent.id, sourceName);
     setHistory(
@@ -43,11 +48,19 @@ export function ChatWidget({ agent, sourceName, connection }: ChatWidgetProps) {
     );
     setBannerError(null);
     abortRef.current?.abort();
-  }, [agent.id, sourceName, agent.name, agent.description, agent.capabilities]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- agent.id+sourceName uniquely identify the agent; metadata changes don't warrant abort+reload
+  }, [agent.id, sourceName]);
 
-  // Persist history on every change.
+  // Persist history on every change. localStorage.setItem can throw
+  // (QuotaExceededError, Safari private mode, third-party iframe with storage
+  // disabled) — catch synchronously to avoid crashing the widget mid-stream.
   useEffect(() => {
-    saveAgentHistory(agent.id, sourceName, history);
+    try {
+      saveAgentHistory(agent.id, sourceName, history);
+    } catch (err) {
+      console.warn(`[chat-widget] localStorage save failed:`, err);
+      setBannerError(`Couldn't save chat history: ${(err as Error).message}`);
+    }
   }, [agent.id, sourceName, history]);
 
   // Cleanup on unmount.
@@ -161,7 +174,14 @@ export function ChatWidget({ agent, sourceName, connection }: ChatWidgetProps) {
           break;
         case "TOOL_CALL_ARGS": {
           const tc = toolCallsLocal.get(ev.toolCallId);
-          if (tc) tc.args = (tc.args ?? "") + (ev.delta ?? "");
+          if (tc) {
+            tc.args = (tc.args ?? "") + (ev.delta ?? "");
+            // Without this rAF, a long-running tool that emits args followed
+            // by a stall (no text deltas) would leave the args block empty
+            // until the next event arrives. tick() spreads toolCallsLocal
+            // when it calls updateAssistant, so it picks up the new args.
+            if (!rafId) rafId = requestAnimationFrame(tick);
+          }
           break;
         }
         case "TOOL_CALL_RESULT": {
