@@ -111,8 +111,19 @@ export async function* parseSSEStream(
       }
     }
 
-    // EOF — flush any remaining accumulator (handles streams that close
-    // without a trailing blank line).
+    // EOF — finalize the decoder (flush any pending UTF-8 bytes) and process
+    // any remaining buffer content as a final line before flushing the
+    // accumulator. Without this, a stream ending mid-line (e.g. `data: {...}`
+    // with no trailing newline) silently drops its final event.
+    buffer += decoder.decode();
+    const tail = buffer.trim();
+    if (tail) {
+      if (tail.startsWith("data:")) {
+        dataAccumulator.push(tail.slice("data:".length).trim());
+      }
+      // Other field types (`event:`, `id:`, `retry:`, `:`-comments) are
+      // intentionally dropped — same as in the main loop.
+    }
     yield* flushAccumulator();
   } finally {
     if (opts.signal) opts.signal.removeEventListener("abort", onAbort);
