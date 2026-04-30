@@ -1,5 +1,4 @@
 import { Command } from "commander";
-import { createGuiServer } from "../../../chat/server";
 import { existsSync, mkdirSync, createWriteStream, createReadStream } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve, dirname } from "node:path";
@@ -45,6 +44,24 @@ export function chatCommand(): Command {
       const version = packageJson.version;
       const cacheDistDir = join(homedir(), ".auggy", "chat", version, "dist");
 
+      // Lazy-load the chat server so a missing chat/ package (e.g. from an npm
+      // install that omits the chat/ directory) surfaces as a recoverable error
+      // instead of crashing the whole aug1 CLI at module-load time.
+      let createGuiServer: typeof import("../../../chat/server").createGuiServer;
+      try {
+        ({ createGuiServer } = await import("../../../chat/server"));
+      } catch (err) {
+        console.error(
+          `[aug1 chat] chat package not available: ${(err as Error).message}\n` +
+            `\n` +
+            `Recovery options:\n` +
+            `  • If you are running from source: cd ${guiPackageDir} && bun install\n` +
+            `  • If aug1 was installed via npm and chat/ is missing, this is a\n` +
+            `    packaging bug — please file an issue.`,
+        );
+        process.exit(1);
+      }
+
       let distDir: string;
       try {
         if (opts.rebuild) {
@@ -58,18 +75,18 @@ export function chatCommand(): Command {
         });
       } catch (err) {
         console.error(
-          `[aug1 chat] chat dist not found or failed to resolve: ${(err as Error).message}.\n` +
+          `[aug1 chat] chat dist not found or failed to resolve: ${(err as Error).message}\n` +
             `\n` +
             `Recovery options:\n` +
             `  • If you are running from source: cd ${guiPackageDir} && bun install && bun run build\n` +
             `  • Or pass --rebuild to do that automatically: aug1 chat --rebuild\n` +
-            `  • If aug1 was installed via npm and chat/ is missing, this is a packaging\n` +
-            `    bug — please file an issue.`,
+            `  • If aug1 was installed via npm and chat/ is missing, this is a\n` +
+            `    packaging bug — please file an issue.`,
         );
         process.exit(1);
       }
 
-      let server: ReturnType<typeof createGuiServer>;
+      let server: Awaited<ReturnType<typeof createGuiServer>>;
       try {
         server = createGuiServer({ port, staticDir: distDir });
       } catch (err) {

@@ -207,4 +207,19 @@ describe("parseSSEStream", () => {
     ])));
     expect(events).toEqual([{ type: "RUN_FINISHED" }]);
   });
+
+  it("isolates a throwing onMalformed callback — stream continues yielding valid events", async () => {
+    // Contract: malformed JSON is skipped and never thrown. A throwing
+    // onMalformed reporter must not abort the stream.
+    const events = await collect(parseSSEStream(
+      streamFrom([
+        `data: {"type":"RUN_STARTED"}\n\n`,
+        `data: not valid json\n\n`,
+        `data: {"type":"RUN_FINISHED"}\n\n`,
+      ]),
+      { onMalformed: () => { throw new Error("reporter blew up"); } },
+    ));
+    // Both valid events must still be yielded; the throw is swallowed inside emitMalformed.
+    expect(events.map(e => e.type)).toEqual(["RUN_STARTED", "RUN_FINISHED"]);
+  });
 });
