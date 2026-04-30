@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { extractBearerFromEnv } from "../../src/lib/bearer";
@@ -7,8 +7,9 @@ import { extractBearerFromEnv } from "../../src/lib/bearer";
 let dir: string;
 
 beforeEach(() => {
-  dir = join(tmpdir(), `bearer-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-  mkdirSync(dir, { recursive: true });
+  // mkdtempSync uses kernel-generated suffix → atomic, unpredictable, no
+  // CodeQL js/insecure-temporary-file warnings on writes inside.
+  dir = mkdtempSync(join(tmpdir(), "bearer-test-"));
 });
 
 afterEach(() => {

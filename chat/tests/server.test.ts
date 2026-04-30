@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join, basename } from "node:path";
 import { tmpdir } from "node:os";
 import { createConnection } from "node:net";
@@ -11,10 +11,10 @@ let mockAgent: ReturnType<typeof Bun.serve> | null = null;
 let server: { stop: () => void; port: number } | null = null;
 
 beforeEach(() => {
-  tempAuggyDir = join(tmpdir(), `auggy-srv-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-  tempAgentDir = join(tmpdir(), `agent-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-  mkdirSync(tempAuggyDir, { recursive: true });
-  mkdirSync(tempAgentDir, { recursive: true });
+  // mkdtempSync — kernel-generated suffix; writes inside are not flagged by
+  // CodeQL js/insecure-temporary-file.
+  tempAuggyDir = mkdtempSync(join(tmpdir(), "auggy-srv-"));
+  tempAgentDir = mkdtempSync(join(tmpdir(), "agent-"));
 });
 
 afterEach(() => {
@@ -180,8 +180,7 @@ describe("Local GUI server", () => {
   });
 
   it("serves static files at / from a build directory if provided", async () => {
-    const distDir = join(tmpdir(), `dist-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-    mkdirSync(distDir, { recursive: true });
+    const distDir = mkdtempSync(join(tmpdir(), "dist-"));
     writeFileSync(join(distDir, "index.html"), "<html>hi</html>", "utf8");
 
     const port = await bootServer({ staticDir: distDir });
@@ -210,9 +209,13 @@ describe("Local GUI server", () => {
     // We exercise (1) here via raw TCP (fetch() also normalizes URLs client
     // side, so we can't even put "/.." on the wire with fetch). Both encoded
     // and dot-segment forms are tried.
-    const tag = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    const distDir = join(tmpdir(), `dist-${tag}`);
-    const evilDir = join(tmpdir(), `dist-${tag}-evil`);
+    // Allocate an unpredictable holder under tmpdir, then create the two
+    // siblings inside it — sibling-prefix relationship preserved (basename of
+    // evilDir starts with basename of distDir) but the parent is randomly
+    // named, so writes inside the holder don't trip CodeQL.
+    const holder = mkdtempSync(join(tmpdir(), "trav-"));
+    const distDir = join(holder, "dist");
+    const evilDir = join(holder, "dist-evil");
     mkdirSync(distDir, { recursive: true });
     mkdirSync(evilDir, { recursive: true });
     writeFileSync(join(distDir, "index.html"), "<html>safe</html>", "utf8");
@@ -249,7 +252,6 @@ describe("Local GUI server", () => {
       expect(body).not.toContain("SECRET-MARKER-9F2A");
     }
 
-    rmSync(distDir, { recursive: true, force: true });
-    rmSync(evilDir, { recursive: true, force: true });
+    rmSync(holder, { recursive: true, force: true });
   });
 });
