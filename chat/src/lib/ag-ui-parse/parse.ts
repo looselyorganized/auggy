@@ -25,7 +25,9 @@ export interface ParseOptions {
  *  - Multi-line `data:` events per HTML Living Standard §9.2.6 — adjacent
  *    `data:` lines belonging to a single event are joined with "\n" before
  *    JSON.parse
- *  - "[DONE]" sentinel
+ *  - "[DONE]" sentinel (single-line standalone event; ignored)
+ *  - Other SSE field types (`event:`, `id:`, `retry:`) — silently ignored;
+ *    the parser only consumes `data:` per Auggy's webTransport contract
  *  - CRLF line endings — `.trim()` on each line + `data:` prefix strip absorbs
  *    a trailing `\r`. Documented invariant.
  *  - Malformed JSON (skipped; reported via opts.onMalformed if provided,

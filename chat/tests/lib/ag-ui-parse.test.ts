@@ -222,4 +222,44 @@ describe("parseSSEStream", () => {
     // Both valid events must still be yielded; the throw is swallowed inside emitMalformed.
     expect(events.map(e => e.type)).toEqual(["RUN_STARTED", "RUN_FINISHED"]);
   });
+
+  it("does not call console.warn when opts.onMalformed is provided", async () => {
+    // Defensive contract: onMalformed REPLACES the default console.warn,
+    // doesn't supplement it. A buggy reporter shouldn't ALSO produce
+    // log spam.
+    const original = console.warn;
+    let warnCalls = 0;
+    console.warn = () => { warnCalls += 1; };
+    try {
+      await collect(parseSSEStream(
+        streamFrom([`data: bad json\n\n`]),
+        { onMalformed: () => { /* swallow */ } },
+      ));
+    } finally {
+      console.warn = original;
+    }
+    expect(warnCalls).toBe(0);
+  });
+
+  it("falls back to console.warn when opts.onMalformed is absent", async () => {
+    // Mirror of the previous test — verifies the default path still logs.
+    const original = console.warn;
+    let warnCalls = 0;
+    console.warn = () => { warnCalls += 1; };
+    try {
+      await collect(parseSSEStream(streamFrom([`data: bad json\n\n`])));
+    } finally {
+      console.warn = original;
+    }
+    expect(warnCalls).toBe(1);
+  });
+
+  it("ignores `event:`, `id:`, and `retry:` SSE field types", async () => {
+    // The parser only consumes `data:` per Auggy's webTransport contract.
+    // Other SSE field types must be silently dropped.
+    const events = await collect(parseSSEStream(streamFrom([
+      `event: ping\nid: abc-123\nretry: 1000\ndata: {"type":"RUN_STARTED"}\n\n`,
+    ])));
+    expect(events).toEqual([{ type: "RUN_STARTED" }]);
+  });
 });
