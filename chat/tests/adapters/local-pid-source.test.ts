@@ -20,9 +20,11 @@ function writeManifest(name: string, m: Record<string, unknown>) {
   writeFileSync(join(tempDir, `${name}.json`), JSON.stringify(m), "utf8");
 }
 
-function bootMockAgent(port: number, card: object | null = null) {
+// Port allocation: use port: 0 (OS-assigned) and read the bound port back.
+// Avoids the random-port-collision flake.
+function bootMockAgent(card: object | null = null) {
   return Bun.serve({
-    port,
+    port: 0,
     fetch(req) {
       const url = new URL(req.url);
       if (url.pathname === "/.well-known/agent-card.json") {
@@ -36,8 +38,6 @@ function bootMockAgent(port: number, card: object | null = null) {
   });
 }
 
-function nextPort() { return 19000 + Math.floor(Math.random() * 1000); }
-
 describe("createLocalPidSource", () => {
   it("returns empty when no manifests exist", async () => {
     const src = createLocalPidSource({ auggyDir: tempDir });
@@ -45,14 +45,13 @@ describe("createLocalPidSource", () => {
   });
 
   it("returns one online agent for live PID + reachable port + AgentCard", async () => {
-    const port = nextPort();
-    mockServer = bootMockAgent(port, {
+    mockServer = bootMockAgent({
       name: "zip",
       provider: { description: "front-door" },
       skills: [{ name: "chat" }],
     });
     writeManifest("zip", {
-      pid: process.pid, name: "zip", port, configPath: "/x", agentDir: "/x",
+      pid: process.pid, name: "zip", port: mockServer.port, configPath: "/x", agentDir: "/x",
       startedAt: new Date().toISOString(), mode: "dev",
     });
 
@@ -83,9 +82,8 @@ describe("createLocalPidSource", () => {
   });
 
   it("returns multiple agents with mixed status", async () => {
-    const port = nextPort();
-    mockServer = bootMockAgent(port, { name: "a" });
-    writeManifest("a", { pid: process.pid, name: "a", port, configPath: "/", agentDir: "/", startedAt: "", mode: "dev" });
+    mockServer = bootMockAgent({ name: "a" });
+    writeManifest("a", { pid: process.pid, name: "a", port: mockServer.port, configPath: "/", agentDir: "/", startedAt: "", mode: "dev" });
     writeManifest("b", { pid: 999999, name: "b", port: 8082, configPath: "/", agentDir: "/", startedAt: "", mode: "dev" });
 
     const refs = await createLocalPidSource({ auggyDir: tempDir }).list();
@@ -103,9 +101,8 @@ describe("createLocalPidSource", () => {
 
   it("tolerates malformed manifest JSON", async () => {
     writeFileSync(join(tempDir, "broken.json"), "{not json");
-    const port = nextPort();
-    mockServer = bootMockAgent(port, { name: "a" });
-    writeManifest("a", { pid: process.pid, name: "a", port, configPath: "/", agentDir: "/", startedAt: "", mode: "dev" });
+    mockServer = bootMockAgent({ name: "a" });
+    writeManifest("a", { pid: process.pid, name: "a", port: mockServer.port, configPath: "/", agentDir: "/", startedAt: "", mode: "dev" });
 
     const refs = await createLocalPidSource({ auggyDir: tempDir }).list();
     expect(refs).toHaveLength(1);
