@@ -21,17 +21,13 @@ afterEach(() => {
   rmSync(tempAgentDir, { recursive: true, force: true });
 });
 
-function nextPort() { return 19500 + Math.floor(Math.random() * 500); }
+// Port allocation: use port: 0 (OS-assigned) and read the bound port back.
+// Avoids the random-port-collision flake.
 
-function setupMockAgent(port: number, bearer: string) {
+function setupMockAgent(bearer: string) {
   writeFileSync(join(tempAgentDir, ".env"), `WEB_BEARER_TOKEN=${bearer}\n`);
-  writeFileSync(join(tempAuggyDir, "tester.json"), JSON.stringify({
-    pid: process.pid, name: "tester", port,
-    configPath: "/x", agentDir: tempAgentDir,
-    startedAt: new Date().toISOString(), mode: "dev",
-  }));
-  return Bun.serve({
-    port,
+  const handle = Bun.serve({
+    port: 0,
     async fetch(req) {
       const url = new URL(req.url);
       if (url.pathname === "/.well-known/agent-card.json") {
@@ -54,19 +50,24 @@ function setupMockAgent(port: number, bearer: string) {
       return new Response("nope", { status: 404 });
     },
   });
+  // Manifest written AFTER bind succeeds so the port reflects the OS-assigned value.
+  writeFileSync(join(tempAuggyDir, "tester.json"), JSON.stringify({
+    pid: process.pid, name: "tester", port: handle.port,
+    configPath: "/x", agentDir: tempAgentDir,
+    startedAt: new Date().toISOString(), mode: "dev",
+  }));
+  return handle;
 }
 
 async function bootGui() {
-  const port = nextPort();
-  const s = createGuiServer({ port, auggyDir: tempAuggyDir });
-  server = { stop: () => s.stop(), port };
-  return port;
+  const s = createGuiServer({ port: 0, auggyDir: tempAuggyDir });
+  server = { stop: () => s.stop(), port: s.port };
+  return s.port;
 }
 
 describe("Full chat flow integration", () => {
   it("end-to-end: discovery → agents list → chat → SSE events received", async () => {
-    const agentPort = nextPort();
-    mockAgent = setupMockAgent(agentPort, "secret-bearer");
+    mockAgent = setupMockAgent("secret-bearer");
     const guiPort = await bootGui();
 
     const agentsRes = await fetch(`http://localhost:${guiPort}/api/agents`, {
@@ -94,8 +95,7 @@ describe("Full chat flow integration", () => {
   });
 
   it("rejects POST /api/chat with cross-origin Origin (CSRF guard)", async () => {
-    const agentPort = nextPort();
-    mockAgent = setupMockAgent(agentPort, "x");
+    mockAgent = setupMockAgent("x");
     const guiPort = await bootGui();
 
     const res = await fetch(`http://localhost:${guiPort}/api/chat/tester`, {
@@ -117,13 +117,12 @@ describe("Full chat flow integration", () => {
   });
 
   it("returns 412 when agent has no bearer in .env", async () => {
-    const agentPort = nextPort();
+    mockAgent = Bun.serve({ port: 0, fetch: () => new Response("ok") });
     writeFileSync(join(tempAuggyDir, "noenv.json"), JSON.stringify({
-      pid: process.pid, name: "noenv", port: agentPort,
+      pid: process.pid, name: "noenv", port: mockAgent.port,
       configPath: "/x", agentDir: tempAgentDir,
       startedAt: "", mode: "dev",
     }));
-    mockAgent = Bun.serve({ port: agentPort, fetch: () => new Response("ok") });
     const guiPort = await bootGui();
 
     const res = await fetch(`http://localhost:${guiPort}/api/chat/noenv`, {

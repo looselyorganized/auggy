@@ -42,11 +42,16 @@ interface AgentEntry {
 export function createGuiServer(opts: GuiServerOptions) {
   const auggyDir = opts.auggyDir ?? join(homedir(), ".auggy");
   const staticDir = opts.staticDir;
-  const port = opts.port;
+  // `port` starts as the requested port; if opts.port === 0 (OS-assigned),
+  // it's overwritten with the actual bound port AFTER Bun.serve returns.
+  // The fetch handlers below close over this `let` binding, so they see the
+  // resolved port when validating CSRF Origin headers.
+  let port = opts.port;
 
   // Pre-flight: confirm the port is free before any state (fs.watch, polling)
-  // is allocated. See preflightPortCheck for the BSD-socket reasoning.
-  preflightPortCheck(port);
+  // is allocated. Skip for port 0 (OS-assigned) — there's no specific port
+  // to check, and the OS will pick a free one in Bun.serve below.
+  if (port !== 0) preflightPortCheck(port);
 
   const source = createLocalPidSource({
     auggyDir,
@@ -178,7 +183,7 @@ export function createGuiServer(opts: GuiServerOptions) {
   }
 
   const server = Bun.serve({
-    port,
+    port: opts.port,
     hostname: "127.0.0.1",
     async fetch(req: Request): Promise<Response> {
       const url = new URL(req.url);
@@ -206,8 +211,19 @@ export function createGuiServer(opts: GuiServerOptions) {
     },
   });
 
+  // Resolve the actual bound port for the fetch handlers' CSRF guard. When
+  // opts.port === 0, server.port is the OS-assigned port; the `let port`
+  // binding above closes over this value in handleAgents / handleChatProxy /
+  // the static GET branch. Bun.serve types `.port` as `number | undefined`,
+  // but it's always defined post-bind for an HTTP listener.
+  if (server.port === undefined) {
+    throw new Error("Bun.serve did not return a bound port");
+  }
+  port = server.port;
+  const boundPort = server.port;
+
   return {
-    port: server.port,
+    port: boundPort,
     stop() {
       try { unsubscribe?.(); } catch { /* swallow */ }
       server.stop();

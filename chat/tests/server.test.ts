@@ -24,17 +24,15 @@ afterEach(() => {
   rmSync(tempAgentDir, { recursive: true, force: true });
 });
 
-function nextPort() { return 19000 + Math.floor(Math.random() * 1000); }
+// Port allocation: use port: 0 (OS-assigned) for all helpers and read the
+// bound port back. Avoids the random-port-collision flake. The deliberate
+// "refuses to start if port is in use" test below allocates a fixed-port
+// blocker via port: 0 + readback to coordinate the conflict reliably.
 
-function setupAgent(port: number, bearerToken: string, opts: { card?: object; runResponse?: string } = {}) {
+function setupAgent(bearerToken: string, opts: { card?: object; runResponse?: string } = {}) {
   writeFileSync(join(tempAgentDir, ".env"), `WEB_BEARER_TOKEN=${bearerToken}\n`);
-  writeFileSync(join(tempAuggyDir, "zip.json"), JSON.stringify({
-    pid: process.pid, name: "zip", port,
-    configPath: "/x", agentDir: tempAgentDir,
-    startedAt: new Date().toISOString(), mode: "dev",
-  }));
-  return Bun.serve({
-    port,
+  const handle = Bun.serve({
+    port: 0,
     async fetch(req) {
       const url = new URL(req.url);
       if (url.pathname === "/.well-known/agent-card.json") {
@@ -51,23 +49,28 @@ function setupAgent(port: number, bearerToken: string, opts: { card?: object; ru
       return new Response("nope", { status: 404 });
     },
   });
+  // Write manifest with the OS-assigned port AFTER bind succeeds.
+  writeFileSync(join(tempAuggyDir, "zip.json"), JSON.stringify({
+    pid: process.pid, name: "zip", port: handle.port,
+    configPath: "/x", agentDir: tempAgentDir,
+    startedAt: new Date().toISOString(), mode: "dev",
+  }));
+  return handle;
 }
 
 async function bootServer(overrides: Partial<GuiServerOptions> = {}) {
-  const port = nextPort();
   const s = createGuiServer({
-    port,
+    port: 0,
     auggyDir: tempAuggyDir,
     ...overrides,
   });
-  server = { stop: () => s.stop(), port };
-  return port;
+  server = { stop: () => s.stop(), port: s.port };
+  return s.port;
 }
 
 describe("Local GUI server", () => {
   it("GET /api/agents returns the agent list (no bearers in response)", async () => {
-    const agentPort = nextPort();
-    mockAgent = setupAgent(agentPort, "abc123", {
+    mockAgent = setupAgent("abc123", {
       card: { name: "zip", provider: { description: "z" }, skills: [{ name: "chat" }] },
     });
     const port = await bootServer();
@@ -83,8 +86,7 @@ describe("Local GUI server", () => {
   });
 
   it("POST /api/chat/<id> proxies to agent with bearer attached", async () => {
-    const agentPort = nextPort();
-    mockAgent = setupAgent(agentPort, "secret", {
+    mockAgent = setupAgent("secret", {
       runResponse: `data: {"type":"RUN_STARTED"}\n\ndata: {"type":"TEXT_MESSAGE_CONTENT","delta":"hi"}\n\ndata: {"type":"RUN_FINISHED"}\n\n`,
     });
     const port = await bootServer();
@@ -113,10 +115,9 @@ describe("Local GUI server", () => {
   });
 
   it("POST /api/chat/<id> with no bearer in agent .env returns 412", async () => {
-    const agentPort = nextPort();
-    mockAgent = Bun.serve({ port: agentPort, fetch: () => new Response("ok") });
+    mockAgent = Bun.serve({ port: 0, fetch: () => new Response("ok") });
     writeFileSync(join(tempAuggyDir, "noenv.json"), JSON.stringify({
-      pid: process.pid, name: "noenv", port: agentPort,
+      pid: process.pid, name: "noenv", port: mockAgent.port,
       configPath: "/x", agentDir: tempAgentDir,
       startedAt: "", mode: "dev",
     }));
@@ -131,8 +132,7 @@ describe("Local GUI server", () => {
   });
 
   it("rejects POST with cross-origin Origin header (403)", async () => {
-    const agentPort = nextPort();
-    mockAgent = setupAgent(agentPort, "x");
+    mockAgent = setupAgent("x");
     const port = await bootServer();
 
     const res = await fetch(`http://localhost:${port}/api/chat/zip`, {
@@ -144,8 +144,7 @@ describe("Local GUI server", () => {
   });
 
   it("rejects POST with non-JSON content-type", async () => {
-    const agentPort = nextPort();
-    mockAgent = setupAgent(agentPort, "x");
+    mockAgent = setupAgent("x");
     const port = await bootServer();
 
     const res = await fetch(`http://localhost:${port}/api/chat/zip`, {
@@ -163,12 +162,14 @@ describe("Local GUI server", () => {
   });
 
   it("refuses to start if port is in use", async () => {
-    const port = nextPort();
-    const blocker = Bun.serve({ port, fetch: () => new Response("blocked") });
+    // Allocate the blocker on an OS-assigned port so we get a guaranteed-bound
+    // port to deliberately collide on (no random-port flake).
+    const blocker = Bun.serve({ port: 0, fetch: () => new Response("blocked") });
+    const conflictPort = blocker.port;
     try {
       let threw = false;
       try {
-        const s = createGuiServer({ port, auggyDir: tempAuggyDir });
+        const s = createGuiServer({ port: conflictPort, auggyDir: tempAuggyDir });
         s.stop();
       } catch {
         threw = true;
