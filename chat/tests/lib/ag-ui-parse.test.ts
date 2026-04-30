@@ -123,4 +123,61 @@ describe("parseSSEStream", () => {
     expect(seen.map(e => e.type)).toEqual(["RUN_STARTED"]);
     expect(caught?.name).toBe("AbortError");
   });
+
+  it("parses multi-line data: as a single joined event payload", async () => {
+    // Per HTML Living Standard §9.2.6, multiple `data:` lines belonging to a
+    // single event are concatenated with "\n" before JSON.parse.
+    // Today: each `data:` line is treated as a complete JSON document, so
+    //   line 1 ("{...,") fails parse (missing closing brace) and is skipped,
+    //   line 2 ('"message":"hi"}') fails parse (not a JSON value) and is skipped.
+    //   Net: 0 events.
+    // After fix: parser accumulates content lines until blank-line boundary,
+    //   joins with "\n" (valid JSON whitespace between fields), parses once.
+    const events = await collect(parseSSEStream(streamFrom([
+      `data: {"type":"RUN_ERROR",\ndata: "message":"hi"}\n\n`,
+    ])));
+    expect(events).toEqual([{ type: "RUN_ERROR", message: "hi" }]);
+  });
+
+  it("invokes opts.onMalformed when a data: line fails JSON.parse", async () => {
+    const malformed: string[] = [];
+    const events = await collect(parseSSEStream(
+      streamFrom([
+        `data: {"type":"RUN_STARTED"}\n\n`,
+        `data: not valid json\n\n`,
+        `data: {"type":"RUN_FINISHED"}\n\n`,
+      ]),
+      { onMalformed: (raw) => { malformed.push(raw); } },
+    ));
+    expect(events.map(e => e.type)).toEqual(["RUN_STARTED", "RUN_FINISHED"]);
+    expect(malformed).toEqual(["not valid json"]);
+  });
+
+  it("pre-aborted signal throws cleanly without leaking the reader lock", async () => {
+    const ctrl = new AbortController();
+    ctrl.abort();
+    const stream = streamFrom([`data: {"type":"RUN_STARTED"}\n\n`]);
+
+    let caught: Error | null = null;
+    try {
+      for await (const _e of parseSSEStream(stream, { signal: ctrl.signal })) {
+        /* should not yield anything */
+      }
+    } catch (err) {
+      caught = err as Error;
+    }
+    expect(caught?.name).toBe("AbortError");
+
+    // After the throw, the stream's reader lock should be released so a second
+    // consumer can acquire it. Confirm by acquiring a reader directly —
+    // getReader() throws TypeError if the lock is still held.
+    let lockReleased = true;
+    try {
+      const reader = stream.getReader();
+      reader.releaseLock();
+    } catch {
+      lockReleased = false;
+    }
+    expect(lockReleased).toBe(true);
+  });
 });
