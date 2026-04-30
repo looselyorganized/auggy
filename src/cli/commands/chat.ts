@@ -2,14 +2,30 @@ import { Command } from "commander";
 import { createGuiServer } from "../../../chat/server";
 import { existsSync, mkdirSync, createWriteStream, createReadStream } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, resolve, dirname } from "node:path";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { pipeline } from "node:stream/promises";
+import { fileURLToPath } from "node:url";
 import packageJson from "../../../package.json" with { type: "json" };
 
 const DEFAULT_PORT = 8090;
 const RELEASE_REPO = "looselyorganized/augment-1";
+
+// Resolve the chat package directory relative to THIS module's location.
+// Uses import.meta.url so it works under both source-tree Bun runs and
+// future ESM-published builds.
+//
+// TODO(npm-packaging): when this CLI is published to npm, the chat/ package
+// won't be a sibling of src/cli/commands/. Two paths:
+//   a) Bundle chat/dist/ as a static asset in the published CLI tarball
+//      and point at the asset path here.
+//   b) Publish @auggy/chat as a separate npm package and use
+//      `require.resolve("@auggy/chat/server")` (after also exposing server.js
+//      as a package "exports" entry).
+// For now, the source-tree relative resolution is the only supported path.
+const MODULE_DIR = dirname(fileURLToPath(import.meta.url));
+const CHAT_PACKAGE_DIR = resolve(MODULE_DIR, "../../../chat");
 
 export function chatCommand(): Command {
   const cmd = new Command("chat")
@@ -24,7 +40,7 @@ export function chatCommand(): Command {
         process.exit(1);
       }
 
-      const guiPackageDir = resolve(__dirname, "../../../chat");
+      const guiPackageDir = CHAT_PACKAGE_DIR;
       const localDistDir = join(guiPackageDir, "dist");
       const version = packageJson.version;
       const cacheDistDir = join(homedir(), ".auggy", "chat", version, "dist");
@@ -41,7 +57,15 @@ export function chatCommand(): Command {
           version,
         });
       } catch (err) {
-        console.error(`[aug1 chat] Failed to resolve dist: ${(err as Error).message}`);
+        console.error(
+          `[aug1 chat] chat dist not found or failed to resolve: ${(err as Error).message}.\n` +
+            `\n` +
+            `Recovery options:\n` +
+            `  • If you are running from source: cd ${guiPackageDir} && bun install && bun run build\n` +
+            `  • Or pass --rebuild to do that automatically: aug1 chat --rebuild\n` +
+            `  • If aug1 was installed via npm and chat/ is missing, this is a packaging\n` +
+            `    bug — please file an issue.`,
+        );
         process.exit(1);
       }
 
