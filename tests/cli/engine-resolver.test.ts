@@ -2,6 +2,7 @@ import { describe, test, expect, beforeEach, afterAll } from "bun:test";
 import { resolveEngine } from "../../src/cli/engine-resolver";
 
 const ORIGINAL_OPENROUTER = process.env.OPENROUTER_API_KEY;
+const ORIGINAL_OPENAI = process.env.OPENAI_API_KEY;
 
 describe("resolveEngine", () => {
   test("creates an Anthropic engine from config", () => {
@@ -25,6 +26,7 @@ describe("resolveEngine", () => {
   });
 
   test("creates an OpenAI engine from config", () => {
+    process.env.OPENAI_API_KEY = "sk-test-resolver";
     const engine = resolveEngine({
       provider: "openai",
       model: "gpt-5",
@@ -36,6 +38,7 @@ describe("resolveEngine", () => {
   });
 
   test("uses OpenAI default maxContextTokens of 128_000", () => {
+    process.env.OPENAI_API_KEY = "sk-test-resolver";
     const engine = resolveEngine({ provider: "openai", model: "gpt-5" });
     expect(engine.maxContextTokens).toBe(128_000);
   });
@@ -117,10 +120,14 @@ describe("resolveEngine", () => {
 afterAll(() => {
   if (ORIGINAL_OPENROUTER === undefined) delete process.env.OPENROUTER_API_KEY;
   else process.env.OPENROUTER_API_KEY = ORIGINAL_OPENROUTER;
+  if (ORIGINAL_OPENAI === undefined) delete process.env.OPENAI_API_KEY;
+  else process.env.OPENAI_API_KEY = ORIGINAL_OPENAI;
 });
 
 beforeEach(() => {
   // Default to env clean unless a test explicitly sets it.
   if (ORIGINAL_OPENROUTER === undefined) delete process.env.OPENROUTER_API_KEY;
   else process.env.OPENROUTER_API_KEY = ORIGINAL_OPENROUTER;
+  if (ORIGINAL_OPENAI === undefined) delete process.env.OPENAI_API_KEY;
+  else process.env.OPENAI_API_KEY = ORIGINAL_OPENAI;
 });
