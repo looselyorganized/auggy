@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createLocalPidSource } from "../../src/adapters/local-pid-source";
@@ -8,8 +8,7 @@ let tempDir: string;
 let mockServer: ReturnType<typeof Bun.serve> | null = null;
 
 beforeEach(() => {
-  tempDir = join(tmpdir(), `auggy-pidsrc-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-  mkdirSync(tempDir, { recursive: true });
+  tempDir = mkdtempSync(join(tmpdir(), "auggy-pidsrc-"));
 });
 
 afterEach(() => {

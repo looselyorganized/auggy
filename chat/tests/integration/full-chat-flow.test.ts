@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createGuiServer } from "../../server";
@@ -10,10 +10,8 @@ let mockAgent: ReturnType<typeof Bun.serve> | null = null;
 let server: { stop: () => void; port: number } | null = null;
 
 beforeEach(() => {
-  tempAuggyDir = join(tmpdir(), `auggy-int-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-  tempAgentDir = join(tmpdir(), `agent-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-  mkdirSync(tempAuggyDir, { recursive: true });
-  mkdirSync(tempAgentDir, { recursive: true });
+  tempAuggyDir = mkdtempSync(join(tmpdir(), "auggy-int-"));
+  tempAgentDir = mkdtempSync(join(tmpdir(), "agent-"));
 });
 
 afterEach(() => {
