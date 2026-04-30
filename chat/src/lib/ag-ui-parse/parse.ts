@@ -29,7 +29,8 @@ export interface ParseOptions {
  *  - CRLF line endings — `.trim()` on each line + `data:` prefix strip absorbs
  *    a trailing `\r`. Documented invariant.
  *  - Malformed JSON (skipped; reported via opts.onMalformed if provided,
- *    otherwise via console.warn; never thrown)
+ *    otherwise via console.warn; never thrown — including if the
+ *    onMalformed callback itself throws, which is suppressed)
  */
 export async function* parseSSEStream(
   body: ReadableStream<Uint8Array>,
@@ -53,8 +54,21 @@ export async function* parseSSEStream(
   let dataAccumulator: string[] = [];
 
   const emitMalformed = (raw: string): void => {
-    if (opts.onMalformed) opts.onMalformed(raw);
-    else console.warn("[ag-ui-parse] malformed event:", raw);
+    if (opts.onMalformed) {
+      try {
+        opts.onMalformed(raw);
+      } catch (cbErr) {
+        // Reporter callback failures must not propagate — the parser contract
+        // is "malformed JSON is skipped and never thrown." Log a secondary
+        // warning so the failure is visible to the operator.
+        console.warn(
+          "[ag-ui-parse] onMalformed callback threw; suppressing:",
+          cbErr,
+        );
+      }
+    } else {
+      console.warn("[ag-ui-parse] malformed event:", raw);
+    }
   };
 
   function* flushAccumulator(): Generator<AGUIEvent> {
