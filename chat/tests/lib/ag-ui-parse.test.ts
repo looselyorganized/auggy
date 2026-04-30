@@ -180,4 +180,31 @@ describe("parseSSEStream", () => {
     }
     expect(lockReleased).toBe(true);
   });
+
+  it("yields final single-line data: event when stream ends without trailing newline", async () => {
+    // Regression for the EOF-tail bug Codex caught: a stream ending as
+    // `data: {...}` (no trailing \n or \n\n) must still yield the event.
+    const events = await collect(parseSSEStream(streamFrom([
+      `data: {"type":"RUN_FINISHED","threadId":"t1"}`,
+    ])));
+    expect(events).toEqual([{ type: "RUN_FINISHED", threadId: "t1" }]);
+  });
+
+  it("yields final multi-line data: event when stream ends without trailing blank line", async () => {
+    // Multi-line variant — accumulator has both lines, but no blank-line
+    // boundary fires; EOF must flush.
+    const events = await collect(parseSSEStream(streamFrom([
+      `data: {"type":"RUN_ERROR",\ndata: "message":"bye"}`,
+    ])));
+    expect(events).toEqual([{ type: "RUN_ERROR", message: "bye" }]);
+  });
+
+  it("yields final event when stream ends with single trailing newline (no blank line)", async () => {
+    // The middle case: one \n closes the line but no blank-line boundary.
+    // Both should still yield.
+    const events = await collect(parseSSEStream(streamFrom([
+      `data: {"type":"RUN_FINISHED"}\n`,
+    ])));
+    expect(events).toEqual([{ type: "RUN_FINISHED" }]);
+  });
 });
