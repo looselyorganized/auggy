@@ -74,15 +74,20 @@ export async function runAdd(name: string, opts: { config?: string }): Promise<v
   }
 
   // Update identity.md skill manifest.
+  // Read up-front so a missing file doesn't race a concurrent process between
+  // the existence check and the read (CodeQL js/file-system-race).
   const identityPath = join(agentDir, "identity.md");
-  if (existsSync(identityPath)) {
-    const identity = readFileSync(identityPath, "utf-8");
+  let identity: string | null = null;
+  try {
+    identity = readFileSync(identityPath, "utf-8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+  }
+
+  if (identity !== null) {
     const skillEntries = scanSkillManifest(join(agentDir, "skills"));
     const newManifest = renderSkillManifest(skillEntries);
-
-    // Replace the existing skill manifest section.
     const updated = identity.replace(/## Available skills[\s\S]*$/, newManifest);
-
     if (updated !== identity) {
       writeFileSync(identityPath, updated);
       console.log("  \u2713 Updated identity.md skill manifest");
