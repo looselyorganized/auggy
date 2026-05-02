@@ -133,6 +133,44 @@ export interface PidManifest {
   mode: "dev" | "launchd";
 }
 
+/**
+ * Cloud deployment record for an agent.
+ *
+ * v0: only `null` is written. Cloud fields populated by `aug1 deploy` (separate PR).
+ */
+export type CloudRecord = null | {
+  provider: "railway";
+  projectId: string;
+  serviceId: string;
+  url: string;
+  volumeId: string;
+  deployedAt: string;
+};
+
+/**
+ * One agent's entry in `~/.auggy/agents.json`.
+ */
+export interface IndexEntry {
+  /** Absolute path to the agent directory. */
+  localDir: string;
+  /** ISO-8601 timestamp of when the entry was created. */
+  createdAt: string;
+  /** Cloud deployment state (null when not deployed). */
+  cloud: CloudRecord;
+}
+
+/**
+ * Schema for `~/.auggy/agents.json`.
+ *
+ * `version` is gated on read — unknown versions throw rather than risk data
+ * loss. Bump when adding required fields; keep readers backward-compatible
+ * for purely additive changes.
+ */
+export interface IndexFile {
+  version: 1;
+  agents: Record<string, IndexEntry>;
+}
+
 // ---------------------------------------------------------------------------
 // Skill manifest types
 // ---------------------------------------------------------------------------
