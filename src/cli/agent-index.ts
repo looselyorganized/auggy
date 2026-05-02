@@ -8,13 +8,7 @@
  * recovery on corruption, no in-memory caching across invocations.
  */
 
-import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  renameSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { IndexFile, IndexEntry } from "./types";
@@ -59,7 +53,7 @@ export function readIndex(opts: IndexOptions = {}): IndexFile {
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
-  } catch (err) {
+  } catch (_err) {
     const ts = new Date().toISOString().replace(/[:.]/g, "-");
     const backupPath = join(getAuggyDir(opts), `agents.json.corrupt-${ts}`);
     renameSync(path, backupPath);
@@ -99,11 +93,7 @@ export function writeIndex(idx: IndexFile, opts: IndexOptions = {}): void {
 /**
  * Add an agent to the index. Throws if `name` is already registered.
  */
-export function addAgent(
-  name: string,
-  localDir: string,
-  opts: IndexOptions = {},
-): void {
+export function addAgent(name: string, localDir: string, opts: IndexOptions = {}): void {
   const idx = readIndex(opts);
   if (idx.agents[name]) {
     throw new Error(
@@ -132,10 +122,7 @@ export function removeAgent(name: string, opts: IndexOptions = {}): void {
 /**
  * Look up an agent by name. Returns null if not registered.
  */
-export function getAgent(
-  name: string,
-  opts: IndexOptions = {},
-): IndexEntry | null {
+export function getAgent(name: string, opts: IndexOptions = {}): IndexEntry | null {
   const idx = readIndex(opts);
   return idx.agents[name] ?? null;
 }
@@ -143,9 +130,7 @@ export function getAgent(
 /**
  * List all registered agents with their names.
  */
-export function listAgents(
-  opts: IndexOptions = {},
-): Array<IndexEntry & { name: string }> {
+export function listAgents(opts: IndexOptions = {}): Array<IndexEntry & { name: string }> {
   const idx = readIndex(opts);
   return Object.entries(idx.agents).map(([name, entry]) => ({
     name,
