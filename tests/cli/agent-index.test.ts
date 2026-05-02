@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -45,10 +45,7 @@ describe("readIndex", () => {
   });
 
   test("rejects unknown schema versions", () => {
-    writeFileSync(
-      join(auggyDir, "agents.json"),
-      JSON.stringify({ version: 99, agents: {} }),
-    );
+    writeFileSync(join(auggyDir, "agents.json"), JSON.stringify({ version: 99, agents: {} }));
     expect(() => readIndex({ auggyDir })).toThrow(/version/i);
   });
 
@@ -57,7 +54,7 @@ describe("readIndex", () => {
     const idx = readIndex({ auggyDir });
     expect(idx).toEqual({ version: 1, agents: {} });
     // backup file should exist
-    const files = require("node:fs").readdirSync(auggyDir);
+    const files = readdirSync(auggyDir);
     expect(files.some((f: string) => f.startsWith("agents.json.corrupt-"))).toBe(true);
   });
 });
