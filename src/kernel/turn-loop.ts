@@ -15,6 +15,7 @@ import type {
   CostResult,
   TurnGateProvider,
   TurnGateTicket,
+  ToolResult,
 } from "../types";
 import type { Tokenizer } from "../tokenizer";
 import { extractText } from "../parts";
@@ -719,10 +720,13 @@ export function createTurnLoop(opts: {
                 peer: peer ?? null,
                 threadId,
               };
-              output = await withTimeout(
+              const raw: string | ToolResult = await withTimeout(
                 () => entry.reg.tool.execute(entry.validatedInput, toolContext),
                 timeout,
               );
+              // Normalize: flatten ToolResult to its content string for now.
+              // Task 2 will inspect raw.terminate to drive turn lifecycle.
+              output = typeof raw === "string" ? raw : raw.content;
             } catch (err) {
               output = `Error: ${String(err)}`;
               isError = true;

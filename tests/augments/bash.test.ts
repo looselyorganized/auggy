@@ -9,10 +9,13 @@ import type { TurnState } from "@/types";
 // Helpers
 // ---------------------------------------------------------------------------
 
-function getTool(augment: ReturnType<typeof bash>, name: string) {
+type BashTool = { execute: (input: unknown, ctx?: unknown) => Promise<string> };
+
+function getTool(augment: ReturnType<typeof bash>, name: string): BashTool {
   const tool = augment.tools?.find((t) => t.name === name);
   if (!tool) throw new Error(`Tool ${name} not found`);
-  return tool;
+  // All bash tools return plain strings; cast execute for test convenience.
+  return tool as unknown as BashTool;
 }
 
 function turnWithTrust(level: "creator" | "agent" | "public"): TurnState {

@@ -42,6 +42,16 @@ const baseOpts: NotifyAugmentOptions = {
   rateLimit: { cooldownMs: 60_000, dedupThreshold: 0, globalMaxPerHour: 100 },
 };
 
+type StringTool = { execute: (input: unknown, ctx?: unknown) => Promise<string> };
+
+/** Return the notify tool with execute typed as string-returning for test convenience. */
+function getNotifyTool(aug: ReturnType<typeof notify>): StringTool {
+  const tool = aug.tools!.find((t) => t.name === "notify");
+  if (!tool) throw new Error("notify tool not found");
+  // notify always returns plain strings; cast for test convenience.
+  return tool as unknown as StringTool;
+}
+
 describe("notify augment", () => {
   it("delivers to named destination", async () => {
     const deliveries: Array<{ destination: string; result: any }> = [];
@@ -49,7 +59,7 @@ describe("notify augment", () => {
       ...baseOpts,
       adapters: { webhook: mockAdapter(deliveries), telegram: mockAdapter([]) },
     });
-    const tool = aug.tools!.find((t) => t.name === "notify")!;
+    const tool = getNotifyTool(aug);
     const ctx = makeContext(makePeer("v1"));
     const result = JSON.parse(await tool.execute({ to: "creator", summary: "test" }, ctx));
     expect(result.status).toBe("sent");
@@ -61,7 +71,7 @@ describe("notify augment", () => {
       ...baseOpts,
       adapters: { webhook: mockAdapter(), telegram: mockAdapter() },
     });
-    const tool = aug.tools!.find((t) => t.name === "notify")!;
+    const tool = getNotifyTool(aug);
     const ctx = makeContext(makePeer("v1"));
     const result = JSON.parse(await tool.execute({ to: "nope", summary: "x" }, ctx));
     expect(result.status).toBe("failed");
@@ -74,7 +84,7 @@ describe("notify augment", () => {
       rateLimit: { cooldownMs: 60_000, dedupThreshold: 0, perPeerCooldownMs: 30_000 },
       adapters: { webhook: mockAdapter(), telegram: mockAdapter() },
     });
-    const tool = aug.tools!.find((t) => t.name === "notify")!;
+    const tool = getNotifyTool(aug);
     const ctx = makeContext(makePeer("v1"));
     await tool.execute({ to: "creator", summary: "first" }, ctx);
     const result = JSON.parse(await tool.execute({ to: "creator", summary: "second" }, ctx));
@@ -88,7 +98,7 @@ describe("notify augment", () => {
       rateLimit: { cooldownMs: 60_000, dedupThreshold: 0, perPeerCooldownMs: 30_000 },
       adapters: { webhook: mockAdapter(), telegram: mockAdapter() },
     });
-    const tool = aug.tools!.find((t) => t.name === "notify")!;
+    const tool = getNotifyTool(aug);
     await tool.execute({ to: "creator", summary: "first" }, makeContext(makePeer("v1")));
     const result = JSON.parse(
       await tool.execute({ to: "creator", summary: "second" }, makeContext(makePeer("v2"))),
@@ -102,7 +112,7 @@ describe("notify augment", () => {
       rateLimit: { cooldownMs: 0, dedupWindowMs: 60_000, dedupThreshold: 0.6 },
       adapters: { webhook: mockAdapter(), telegram: mockAdapter() },
     });
-    const tool = aug.tools!.find((t) => t.name === "notify")!;
+    const tool = getNotifyTool(aug);
     await tool.execute(
       { to: "creator", summary: "visitor wants partnership opportunity" },
       makeContext(makePeer("v1")),
@@ -122,7 +132,7 @@ describe("notify augment", () => {
       rateLimit: { cooldownMs: 0, globalMaxPerHour: 2, dedupThreshold: 0 },
       adapters: { webhook: mockAdapter(), telegram: mockAdapter() },
     });
-    const tool = aug.tools!.find((t) => t.name === "notify")!;
+    const tool = getNotifyTool(aug);
     await tool.execute({ to: "creator", summary: "1" }, makeContext(makePeer("v1")));
     await tool.execute({ to: "creator", summary: "2" }, makeContext(makePeer("v2")));
     const result = JSON.parse(
@@ -143,7 +153,7 @@ describe("notify augment", () => {
       },
       adapters: { webhook: mockAdapter(), telegram: mockAdapter() },
     });
-    const tool = aug.tools!.find((t) => t.name === "notify")!;
+    const tool = getNotifyTool(aug);
     await tool.execute({ to: "creator", summary: "first" }, makeContext(makePeer("v1")));
     const result = JSON.parse(
       await tool.execute(
@@ -159,7 +169,7 @@ describe("notify augment", () => {
       ...baseOpts,
       adapters: { webhook: mockAdapter(), telegram: mockAdapter() },
     });
-    const tool = aug.tools!.find((t) => t.name === "notify")!;
+    const tool = getNotifyTool(aug);
     const result = JSON.parse(await tool.execute({ to: "creator", summary: "x" }));
     expect(result.status).toBe("failed");
     expect(result.message).toContain("context");
@@ -171,7 +181,7 @@ describe("notify augment", () => {
       rateLimit: { enabled: false },
       adapters: { webhook: mockAdapter(), telegram: mockAdapter() },
     });
-    const tool = aug.tools!.find((t) => t.name === "notify")!;
+    const tool = getNotifyTool(aug);
     const ctx = makeContext(makePeer("v1"));
     await tool.execute({ to: "creator", summary: "1" }, ctx);
     const result = JSON.parse(await tool.execute({ to: "creator", summary: "1" }, ctx));

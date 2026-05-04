@@ -85,14 +85,17 @@ afterAll(() => server.stop(true));
 // The test HTTP server runs on localhost, which the SSRF guard blocks by
 // default. Tests disable the guard and re-enable it explicitly in the SSRF
 // describe block below.
-function getWebFetchTool() {
+type StringTool = { execute: (input: unknown, ctx?: unknown) => Promise<string> };
+
+function getWebFetchTool(): StringTool {
   const augment = webFetch({
     timeoutMs: 5000,
     rejectUnsafeUrls: false,
   });
   const tool = augment.tools?.find((t) => t.name === "web_fetch");
   if (!tool) throw new Error("web_fetch tool not found");
-  return tool;
+  // web_fetch always returns a string; cast for test convenience.
+  return tool as unknown as StringTool;
 }
 
 // ---------------------------------------------------------------------------
@@ -280,12 +283,12 @@ describe("web_fetch output structure", () => {
 // ---------------------------------------------------------------------------
 
 describe("SSRF filter", () => {
-  function getGuardedTool() {
+  function getGuardedTool(): StringTool {
     // No rejectUnsafeUrls override → default (true)
     const augment = webFetch({ timeoutMs: 5000 });
     const tool = augment.tools?.find((t) => t.name === "web_fetch");
     if (!tool) throw new Error("web_fetch tool not found");
-    return tool;
+    return tool as unknown as StringTool;
   }
 
   const blockedUrls: [string, RegExp][] = [

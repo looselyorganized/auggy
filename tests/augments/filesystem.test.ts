@@ -67,7 +67,7 @@ describe("filesystem augment", () => {
     await aug.onBoot!();
     const tool = aug.tools!.find((t) => t.name === toolName);
     if (!tool) throw new Error(`Tool ${toolName} not found`);
-    return tool.execute(input);
+    return tool.execute(input) as Promise<string>;
   }
 
   // === Structure ===
