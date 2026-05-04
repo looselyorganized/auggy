@@ -572,7 +572,7 @@ describe("createMemoryTools", () => {
       const registry = buildRegistry(providers);
       const { tools } = createMemoryTools(registry);
       const listTool = tools.find((t) => t.name === "memory_list")!;
-      const result = await listTool.execute({}, DEFAULT_CTX);
+      const result = await listTool.execute({}, DEFAULT_CTX) as string;
       const parsed = JSON.parse(result);
       expect(parsed.static).toContain("self");
       expect(parsed.static).toContain("notes");
@@ -626,7 +626,7 @@ describe("createMemoryTools", () => {
           peer: { id: "vis_1", kind: "human", trustLevel: "public", sourceAugment: "web" },
           threadId: "th1",
         },
-      );
+      ) as string;
       const parsed = JSON.parse(result);
       expect(parsed.static).not.toContain("self");
       expect(parsed.static).not.toContain("learned");
@@ -664,7 +664,7 @@ describe("createMemoryTools", () => {
           peer: { id: "op", kind: "human", trustLevel: "creator", sourceAugment: "web" },
           threadId: "th1",
         },
-      );
+      ) as string;
       const parsed = JSON.parse(result);
       expect(parsed.static).toContain("self");
       expect(parsed.namespaces).toContain("sys:*");
@@ -960,7 +960,7 @@ describe("createMemoryTools", () => {
           threadId: "th",
           peer: { id: "op", kind: "human", trustLevel: "creator", sourceAugment: "cli" },
         },
-      );
+      ) as string;
       const parsed = JSON.parse(result);
       expect(parsed.deleted).toBe(5);
     });
@@ -1003,7 +1003,7 @@ describe("createMemoryTools", () => {
           threadId: "th",
           peer: { id: "op", kind: "human", trustLevel: "creator", sourceAugment: "cli" },
         },
-      );
+      ) as string;
       const parsed = JSON.parse(result);
       expect(parsed.deleted).toBe(4);
     });
@@ -1025,7 +1025,7 @@ describe("createMemoryTools", () => {
       const result = await forgetTool.execute(
         { peerId: "vis_a" },
         { turnId: "t1", threadId: "th", peer: null },
-      );
+      ) as string;
       const parsed = JSON.parse(result);
       expect(parsed.deleted).toBe(5);
     });

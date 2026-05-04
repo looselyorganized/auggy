@@ -111,7 +111,26 @@ export interface Tool<TInput = any> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   input: z.ZodType<TInput, any, any>;
   inputJsonSchema?: Record<string, unknown>;
-  execute: (input: TInput, context?: ToolExecuteContext) => Promise<string>;
+  execute: (input: TInput, context?: ToolExecuteContext) => Promise<string | ToolResult>;
+}
+
+/**
+ * Structured tool return shape. Augments may return either a plain string
+ * (back-compat with all existing tools) OR a ToolResult that lets the tool
+ * influence turn lifecycle.
+ *
+ * The narrowed `terminate.status` union is a type-level guarantee that
+ * augments cannot spoof kernel-controlled states (failed/canceled/rejected/
+ * auth-required). Those remain owned by the kernel.
+ */
+export interface ToolResult {
+  /** What the model sees as the tool's output. Replaces the plain-string return. */
+  content: string;
+  /** Optional turn-termination directive. */
+  terminate?: {
+    status: Extract<TaskState, "input-required" | "completed">;
+    message?: string;
+  };
 }
 
 // === Peer Identity (spec §4) ===
