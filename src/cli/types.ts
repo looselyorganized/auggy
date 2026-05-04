@@ -22,7 +22,8 @@ export type BuiltinAugmentType =
   | "bash"
   | "budgets"
   | "notify"
-  | "telegramTransport";
+  | "telegramTransport"
+  | "turnControl";
 
 /** A single augment entry from the `augments:` array in agent.yaml. */
 export interface AugmentConfig {

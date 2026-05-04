@@ -1,4 +1,4 @@
-import type { KernelEvent } from "../types";
+import type { KernelEvent, TaskState } from "../types";
 
 // === AG-UI event shapes (subset we emit in v1) ===
 // These match the AG-UI spec at https://docs.ag-ui.com/concepts/events.md
@@ -19,7 +19,15 @@ export interface AGUIRunFinished extends AGUIBaseEvent {
   type: "RUN_FINISHED";
   threadId: string;
   runId: string;
-  result?: unknown;
+  /**
+   * Optional structured result. v1 carries the terminal status discriminator
+   * so consumers can distinguish "agent finished" from "agent waiting for
+   * user input." Old AG-UI clients that ignore `result` keep working.
+   */
+  result?: {
+    status: TaskState;
+    message?: string;
+  };
 }
 
 export interface AGUIRunError extends AGUIBaseEvent {
@@ -89,8 +97,23 @@ export function runStarted(opts: { threadId: string; runId: string }): AGUIRunSt
   return { type: "RUN_STARTED", ...opts };
 }
 
-export function runFinished(opts: { threadId: string; runId: string }): AGUIRunFinished {
-  return { type: "RUN_FINISHED", ...opts };
+export function runFinished(opts: {
+  threadId: string;
+  runId: string;
+  status?: TaskState;
+  message?: string;
+}): AGUIRunFinished {
+  const base: AGUIRunFinished = {
+    type: "RUN_FINISHED",
+    threadId: opts.threadId,
+    runId: opts.runId,
+  };
+  if (opts.status !== undefined) {
+    base.result = opts.message
+      ? { status: opts.status, message: opts.message }
+      : { status: opts.status };
+  }
+  return base;
 }
 
 export function runError(opts: { message: string; code?: string }): AGUIRunError {
@@ -200,7 +223,7 @@ export function translateKernelEvent(event: KernelEvent): AGUIEvent[] {
       return [textMessageEnd({ messageId: event.messageId })];
 
     case "run_finished":
-      return [runFinished({ threadId: "", runId: event.turnId })];
+      return [runFinished({ threadId: "", runId: event.turnId, status: event.status })];
 
     case "run_error":
       // Only emit RUN_ERROR here. The turn loop always emits a separate

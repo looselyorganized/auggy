@@ -169,6 +169,9 @@ augments:
     options:
       timeoutMs: 15000
 
+  - name: turn-control
+    type: turnControl
+
   - name: web
     type: webTransport
     options:

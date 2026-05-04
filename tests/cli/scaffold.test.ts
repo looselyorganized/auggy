@@ -128,4 +128,22 @@ describe("scaffoldAgent", () => {
     delete process.env.AUGGY_WEB_TOKEN;
     delete process.env.VISITOR_SIGNING_KEY;
   });
+
+  test("scaffold includes turnControl by default", () => {
+    const dir = scaffoldAgent({ name: "zip", targetDir: join(TMP, "zip-turnctl") });
+    const yaml = readFileSync(join(dir, "agent.yaml"), "utf-8");
+    expect(yaml).toContain("type: turnControl");
+  });
+
+  test("generated agent.yaml with turnControl parses through the config parser", () => {
+    const dir = scaffoldAgent({ name: "zip", targetDir: join(TMP, "zip-turnctl-parse") });
+    process.env.AUGGY_WEB_TOKEN = "test-token";
+    process.env.VISITOR_SIGNING_KEY = "test-signing-key";
+    const config = parseConfig(join(dir, "agent.yaml"));
+    const turnCtl = config.augments.find((a) => a.type === "turnControl");
+    expect(turnCtl).toBeDefined();
+    expect(turnCtl!.name).toBe("turn-control");
+    delete process.env.AUGGY_WEB_TOKEN;
+    delete process.env.VISITOR_SIGNING_KEY;
+  });
 });

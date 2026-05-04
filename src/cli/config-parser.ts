@@ -118,6 +118,7 @@ const BUILTIN_TYPES = new Set([
   "budgets",
   "notify",
   "telegramTransport",
+  "turnControl",
 ]);
 const KNOWN_PROVIDERS = new Set(["anthropic", "openai", "openrouter"]);
 const VALID_REASONING_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh"]);
