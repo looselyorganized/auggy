@@ -787,15 +787,35 @@ export function createTurnLoop(opts: {
 
         // Capture first non-error terminate directive from this batch.
         // Reset per-iteration so a directive from one batch doesn't leak forward.
+        // Runtime allowlist: although the type narrows status to "input-required" |
+        // "completed", custom augments using JS or `as` casts could return any
+        // string. Reject anything outside the allowlist — kernel-controlled states
+        // (failed/canceled/rejected/auth-required) must not be augment-spoofable.
         let pendingTerminate: ToolResult["terminate"] | undefined;
         for (const r of execResults) {
           if (!r.isError && r.terminate && !pendingTerminate) {
-            pendingTerminate = r.terminate;
-            break;
+            const s = r.terminate.status;
+            if (s === "input-required" || s === "completed") {
+              pendingTerminate = r.terminate;
+              break;
+            }
           }
         }
 
         if (pendingTerminate) {
+          // Emit the directive's message as a normal assistant text message so
+          // chat widgets render it in the message bubble (not just the tool-call
+          // panel) and old AG-UI consumers see something. Skip when message is
+          // empty — emitting an empty text_message produces a blank bubble.
+          if (pendingTerminate.message) {
+            emitEvent({
+              kind: "text_message",
+              turnId: trigger.turnId,
+              messageId: crypto.randomUUID(),
+              role: "assistant",
+              text: pendingTerminate.message,
+            });
+          }
           emitEvent({
             kind: "run_finished",
             turnId: trigger.turnId,

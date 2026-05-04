@@ -425,11 +425,11 @@ export function webTransport(opts: WebTransportOptions): Augment {
                   code,
                 }),
               );
-              writeEvent(runFinished({ threadId, runId: trigger.turnId }));
+              writeEvent(runFinished({ threadId, runId: trigger.turnId, status: result.status }));
             }
           } catch (err) {
             writeEvent(runError({ message: String(err), code: "INTERNAL" }));
-            writeEvent(runFinished({ threadId, runId: trigger.turnId }));
+            writeEvent(runFinished({ threadId, runId: trigger.turnId, status: "failed" }));
           } finally {
             streamClosed = true;
             try {

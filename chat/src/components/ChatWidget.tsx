@@ -48,6 +48,7 @@ export function ChatWidget({ agent, sourceName, connection }: ChatWidgetProps) {
       }
     );
     setBannerError(null);
+    setAwaitingUser(false);
     abortRef.current?.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- agent.id+sourceName uniquely identify the agent; metadata changes don't warrant abort+reload
   }, [agent.id, sourceName]);
@@ -232,6 +233,7 @@ export function ChatWidget({ agent, sourceName, connection }: ChatWidgetProps) {
       lastUpdated: new Date().toISOString(),
       agentMetadata: { name: agent.name, description: agent.description, capabilities: agent.capabilities },
     });
+    setAwaitingUser(false);
   };
 
   const handleAbort = () => abortRef.current?.abort();
