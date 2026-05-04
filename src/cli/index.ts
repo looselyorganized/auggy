@@ -10,6 +10,9 @@
  *   aug1 stop <name>                Stop a running agent
  *   aug1 restart <name>             Stop + start
  *   aug1 status [name]              Show running agents
+ *   aug1 ls                         List registered agents
+ *   aug1 remove <name> [--yes]      Delete an agent (dir + index entry)
+ *   aug1 chat                       Launch local GUI
  */
 
 import { Command } from "commander";
@@ -21,6 +24,8 @@ import { runStop } from "./commands/stop";
 import { runRestart } from "./commands/restart";
 import { runStatus } from "./commands/status";
 import { chatCommand } from "./commands/chat";
+import { runRemove } from "./commands/remove";
+import { runLs } from "./commands/ls";
 
 const program = new Command();
 
@@ -110,6 +115,31 @@ program
   .action(async (name?: string) => {
     try {
       await runStatus(name);
+    } catch (err) {
+      console.error(`Error: ${(err as Error).message}`);
+      process.exit(1);
+    }
+  });
+
+program
+  .command("remove <name>")
+  .description("Remove an agent (delete dir + clear index entry)")
+  .option("--yes", "skip the confirmation prompt")
+  .action(async (name: string, opts: { yes?: boolean }) => {
+    try {
+      await runRemove(name, { yes: opts.yes });
+    } catch (err) {
+      console.error(`Error: ${(err as Error).message}`);
+      process.exit(1);
+    }
+  });
+
+program
+  .command("ls")
+  .description("List registered agents with their status")
+  .action(async () => {
+    try {
+      await runLs();
     } catch (err) {
       console.error(`Error: ${(err as Error).message}`);
       process.exit(1);
