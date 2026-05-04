@@ -10,11 +10,9 @@
 
 import {
   closeSync,
-  existsSync,
   fstatSync,
   mkdirSync,
   openSync,
-  readFileSync,
   readSync,
   renameSync,
   unlinkSync,
@@ -182,9 +180,34 @@ function acquireLock(opts: IndexOptions = {}): LockHandle {
  */
 export function readIndex(opts: IndexOptions = {}): IndexFile {
   const path = indexPath(opts);
-  if (!existsSync(path)) return emptyIndex();
 
-  const raw = readFileSync(path, "utf-8");
+  // Open via fd to avoid existsSync+readFileSync TOCTOU.
+  let fd: number;
+  try {
+    fd = openSync(path, "r");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+      return emptyIndex();
+    }
+    throw err;
+  }
+
+  let raw: string;
+  try {
+    const stats = fstatSync(fd);
+    const buf = Buffer.alloc(stats.size);
+    if (stats.size > 0) {
+      readSync(fd, buf, 0, stats.size, 0);
+    }
+    raw = buf.toString("utf-8");
+  } finally {
+    try {
+      closeSync(fd);
+    } catch {
+      // best-effort
+    }
+  }
+
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
