@@ -3,7 +3,7 @@ import type { BudgetCaps } from "./types";
 
 export interface BuildBudgetPreambleInput {
   caps: BudgetCaps | null;
-  used: { thread: number; day: number; costUsd: number };
+  used: { thread: number; day: number; costUsd: number; unpricedTurns: number };
 }
 
 /**
@@ -62,6 +62,9 @@ export function buildBudgetPreamble(input: BuildBudgetPreambleInput): ContextBlo
     lines.push(
       `Estimated spend today: $${input.used.costUsd.toFixed(2)} of $${input.caps.maxUsdPerDay.toFixed(2)}`,
     );
+  }
+  if (input.used.unpricedTurns > 0) {
+    lines.push(`Unpriced turns today: ${input.used.unpricedTurns}`);
   }
   lines.push("");
   lines.push(`Behavioral guidance (budgetRatio = ${ratio.toFixed(2)}): ${bucketGuidance(ratio)}`);
