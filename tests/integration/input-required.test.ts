@@ -35,9 +35,7 @@ describe("integration: input-required via web-transport", () => {
     const model = createMockModel();
     model.pushResponse({
       content: "",
-      toolCalls: [
-        { name: "request_input", arguments: { prompt: "What is your name?" } },
-      ],
+      toolCalls: [{ name: "request_input", arguments: { prompt: "What is your name?" } }],
       finishReason: "tool_use",
     });
 

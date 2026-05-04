@@ -702,7 +702,6 @@ describe("budgets augment", () => {
     augment = budgets({ dbPath, cleanupWindowMs: 100 });
 
     // Insert a stale reservation directly into the DB.
-    const { Database } = await import("bun:sqlite");
     const { join } = await import("node:path");
     // Use a fresh db for this test to avoid polluting the shared store.
     const freshDir = await (await import("@tests/fixtures/temp-dir")).createTempDir();

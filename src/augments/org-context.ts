@@ -161,7 +161,7 @@ export function orgContext(opts: OrgContextOptions): Augment {
             const maxChars = 20_000;
             const truncated =
               content.length > maxChars
-                ? content.slice(0, maxChars) + `\n\n[truncated — ${content.length} total chars]`
+                ? `${content.slice(0, maxChars)}\n\n[truncated — ${content.length} total chars]`
                 : content;
 
             return JSON.stringify({

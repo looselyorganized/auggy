@@ -166,6 +166,7 @@ describe("Local GUI server", () => {
     // port to deliberately collide on (no random-port flake).
     const blocker = Bun.serve({ port: 0, fetch: () => new Response("blocked") });
     const conflictPort = blocker.port;
+    if (conflictPort === undefined) throw new Error("blocker did not bind a port");
     try {
       let threw = false;
       try {
