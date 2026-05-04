@@ -431,3 +431,57 @@ describe("createAnthropicEngine — startup warnings", () => {
     }
   });
 });
+
+import { priceAnthropicResponse } from "@/engines/anthropic/pricing";
+
+describe("Anthropic costOverride — cache rates", () => {
+  it("uses override cache rates when provided", () => {
+    const result = priceAnthropicResponse(
+      "unknown-model",
+      {
+        inputUsdPerMtok: 5.0,
+        outputUsdPerMtok: 25.0,
+        cacheWriteUsdPerMtok: 6.25,
+        cacheReadUsdPerMtok: 0.5,
+      },
+      {
+        input_tokens: 1_000_000,
+        output_tokens: 100_000,
+        cache_creation_input_tokens: 500_000,
+        cache_read_input_tokens: 2_000_000,
+      },
+    );
+    expect(result.priced).toBe(true);
+    if (!result.priced) throw new Error("expected priced");
+    // input: 1M × $5 = $5
+    // output: 0.1M × $25 = $2.5
+    // cache write: 0.5M × $6.25 = $3.125
+    // cache read: 2M × $0.5 = $1
+    // total: $11.625
+    expect(result.costUsd).toBeCloseTo(11.625, 6);
+  });
+
+  it("falls back to undefined cache cost when override omits cache rates (back-compat)", () => {
+    const result = priceAnthropicResponse(
+      "unknown-model",
+      {
+        inputUsdPerMtok: 5.0,
+        outputUsdPerMtok: 25.0,
+        // no cache rates — back-compat with legacy 2-field overrides
+      },
+      {
+        input_tokens: 1_000_000,
+        output_tokens: 100_000,
+        cache_creation_input_tokens: 500_000,
+        cache_read_input_tokens: 2_000_000,
+      },
+    );
+    expect(result.priced).toBe(true);
+    if (!result.priced) throw new Error("expected priced");
+    // input: 1M × $5 = $5
+    // output: 0.1M × $25 = $2.5
+    // cache: 0 (no rates configured)
+    // total: $7.5
+    expect(result.costUsd).toBeCloseTo(7.5, 6);
+  });
+});
