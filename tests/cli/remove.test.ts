@@ -1,10 +1,20 @@
-import { describe, test, expect, beforeEach, afterEach } from "bun:test";
+import { describe, test, expect, beforeEach, afterEach, mock } from "bun:test";
 import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { runRemove } from "../../src/cli/commands/remove";
-import { addAgent } from "../../src/cli/agent-index";
-import { writePidManifest, removePidManifest } from "../../src/cli/pid-registry";
+
+// Mock @inquirer/prompts so we can drive the confirm() return value per-test.
+// Default is `true` (accept) — only the decline test flips this to `false`.
+// The mock must be registered BEFORE remove.ts is imported so its bound
+// `confirm` reference points at our mock.
+let confirmAnswer = true;
+mock.module("@inquirer/prompts", () => ({
+  confirm: async () => confirmAnswer,
+}));
+
+const { runRemove } = await import("../../src/cli/commands/remove");
+const { addAgent, getAgent } = await import("../../src/cli/agent-index");
+const { writePidManifest, removePidManifest } = await import("../../src/cli/pid-registry");
 
 let auggyDir: string;
 let agentParent: string;
@@ -85,5 +95,19 @@ describe("runRemove", () => {
     await runRemove("zip", { yes: true, auggyDir });
     const { getAgent } = await import("../../src/cli/agent-index");
     expect(getAgent("zip", { auggyDir })).toBeNull();
+  });
+
+  test("without --yes, prompt rejection (n) leaves dir and index entry intact", async () => {
+    const dir = setupAgent("zip");
+    // Drive the mocked confirm() to return false (operator declines).
+    confirmAnswer = false;
+    try {
+      await runRemove("zip", { auggyDir });
+      expect(existsSync(dir)).toBe(true);
+      expect(getAgent("zip", { auggyDir })).not.toBeNull();
+    } finally {
+      // Restore default so any subsequent tests aren't affected.
+      confirmAnswer = true;
+    }
   });
 });
