@@ -8,16 +8,6 @@ import { createMockModel } from "@tests/fixtures/mock-model";
 import { createTempDir } from "@tests/fixtures/temp-dir";
 
 // ──────────────────────────────────────────────────────────────────────────────
-// Port registry — each test that uses a webTransport gets a unique port so
-// tests don't conflict if Bun runs them concurrently.
-// ──────────────────────────────────────────────────────────────────────────────
-
-let nextPort = 19200;
-function allocPort(): number {
-  return nextPort++;
-}
-
-// ──────────────────────────────────────────────────────────────────────────────
 // Helpers
 // ──────────────────────────────────────────────────────────────────────────────
 
@@ -115,7 +105,7 @@ describe("budgets + trust integration", () => {
   it("Test 1: recognized peer is denied on the 3rd request when maxTurnsPerThread: 2", async () => {
     const dbPath = join(tmp.path, "t1.db");
     const model = createMockModel({ response: "ok" });
-    const port = allocPort();
+    const port = 0;
 
     const agent = defineAgent(
       {
@@ -156,14 +146,14 @@ describe("budgets + trust integration", () => {
     } finally {
       await agent.stop();
     }
-  });
+  }, 30000);
 
   // ── Test 2: Anonymous global ceiling ──────────────────────────────────────
 
   it("Test 2: 4th anonymous request denied with anonymous global rate limit reason", async () => {
     const dbPath = join(tmp.path, "t2.db");
     const model = createMockModel({ response: "ok" });
-    const port = allocPort();
+    const port = 0;
 
     const agent = defineAgent(
       {
@@ -211,14 +201,14 @@ describe("budgets + trust integration", () => {
     } finally {
       await agent.stop();
     }
-  });
+  }, 30000);
 
   // ── Test 3: Creator bypasses caps ─────────────────────────────────────────
 
   it("Test 3: creator bypasses all caps; no reservation rows written", async () => {
     const dbPath = join(tmp.path, "t3.db");
     const model = createMockModel({ response: "ok" });
-    const port = allocPort();
+    const port = 0;
 
     const agent = defineAgent(
       {
@@ -268,14 +258,14 @@ describe("budgets + trust integration", () => {
     } finally {
       await agent.stop();
     }
-  });
+  }, 30000);
 
   // ── Test 4: Idempotency-Key retry deduplication ───────────────────────────
 
   it("Test 4: Idempotency-Key retries don't consume extra turn slots", async () => {
     const dbPath = join(tmp.path, "t4.db");
     const model = createMockModel({ response: "ok" });
-    const port = allocPort();
+    const port = 0;
 
     const agent = defineAgent(
       {
@@ -335,14 +325,14 @@ describe("budgets + trust integration", () => {
     } finally {
       await agent.stop();
     }
-  });
+  }, 30000);
 
   // ── Test 5: Confirm-phase failure → admission-state-failed ────────────────
 
   it("Test 5: confirm-phase failure rolls back all tickets and returns admission-state-failed", async () => {
     const dbPath = join(tmp.path, "t5.db");
     const model = createMockModel({ response: "ok" });
-    const port = allocPort();
+    const port = 0;
 
     const agent = defineAgent(
       {
@@ -402,7 +392,7 @@ describe("budgets + trust integration", () => {
     } finally {
       await agent.stop();
     }
-  });
+  }, 30000);
 
   // ── Test 6: Cost commit happens on success ────────────────────────────────
 
@@ -420,7 +410,7 @@ describe("budgets + trust integration", () => {
       finishReason: "end_turn",
     });
 
-    const port = allocPort();
+    const port = 0;
 
     const agent = defineAgent(
       {
@@ -465,14 +455,14 @@ describe("budgets + trust integration", () => {
     } finally {
       await agent.stop();
     }
-  });
+  }, 30000);
 
   // ── Test 8: Budget preamble block injected into context ──────────────────
 
   it("Test 8: recognized peer with caps gets a budget preamble block in the model's contextBlocks", async () => {
     const dbPath = join(tmp.path, "t8.db");
     const model = createMockModel({ response: "ok" });
-    const port = allocPort();
+    const port = 0;
 
     const agent = defineAgent(
       {
@@ -518,7 +508,7 @@ describe("budgets + trust integration", () => {
     } finally {
       await agent.stop();
     }
-  });
+  }, 30000);
 
   // ── Test 7: Unpriced cost commit is honest ────────────────────────────────
 
@@ -527,7 +517,7 @@ describe("budgets + trust integration", () => {
     // Default createMockModel returns costUsd: undefined → priced: false path in kernel
     const model = createMockModel({ response: "Unpriced response" });
 
-    const port = allocPort();
+    const port = 0;
 
     const agent = defineAgent(
       {
@@ -573,5 +563,5 @@ describe("budgets + trust integration", () => {
     } finally {
       await agent.stop();
     }
-  });
+  }, 30000);
 });
