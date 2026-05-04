@@ -1,5 +1,6 @@
 import { describe, test, expect, afterAll } from "bun:test";
 import { webFetch, normalizeFetchUrl } from "../../src/augments/web-fetch";
+import { asStringTool } from "../fixtures/tool-helpers";
 
 // ---------------------------------------------------------------------------
 // Test HTTP server — serves controlled HTML, JSON, and edge-case responses.
@@ -85,17 +86,14 @@ afterAll(() => server.stop(true));
 // The test HTTP server runs on localhost, which the SSRF guard blocks by
 // default. Tests disable the guard and re-enable it explicitly in the SSRF
 // describe block below.
-type StringTool = { execute: (input: unknown, ctx?: unknown) => Promise<string> };
-
-function getWebFetchTool(): StringTool {
+function getWebFetchTool() {
   const augment = webFetch({
     timeoutMs: 5000,
     rejectUnsafeUrls: false,
   });
   const tool = augment.tools?.find((t) => t.name === "web_fetch");
   if (!tool) throw new Error("web_fetch tool not found");
-  // web_fetch always returns a string; cast for test convenience.
-  return tool as unknown as StringTool;
+  return asStringTool(tool);
 }
 
 // ---------------------------------------------------------------------------
@@ -283,12 +281,12 @@ describe("web_fetch output structure", () => {
 // ---------------------------------------------------------------------------
 
 describe("SSRF filter", () => {
-  function getGuardedTool(): StringTool {
+  function getGuardedTool() {
     // No rejectUnsafeUrls override → default (true)
     const augment = webFetch({ timeoutMs: 5000 });
     const tool = augment.tools?.find((t) => t.name === "web_fetch");
     if (!tool) throw new Error("web_fetch tool not found");
-    return tool as unknown as StringTool;
+    return asStringTool(tool);
   }
 
   const blockedUrls: [string, RegExp][] = [
