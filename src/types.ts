@@ -365,6 +365,13 @@ export type KernelEvent =
       kind: "run_finished";
       turnId: string;
       status: TaskState;
+      /**
+       * Optional human-visible message that explains the terminal status.
+       * Today this is populated only when a tool's `ToolResult.terminate`
+       * carries a `message` (e.g. the prompt from `request_input`). The
+       * AG-UI translator forwards it as `RUN_FINISHED.result.message`.
+       */
+      message?: string;
     }
   | {
       kind: "run_error";

@@ -800,6 +800,9 @@ export function createTurnLoop(opts: {
             kind: "run_finished",
             turnId: trigger.turnId,
             status: pendingTerminate.status,
+            ...(pendingTerminate.message !== undefined && {
+              message: pendingTerminate.message,
+            }),
           });
           traceEmitter.finalize(trace);
           await runCostCommit();
