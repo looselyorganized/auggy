@@ -81,8 +81,10 @@ export interface BudgetStore {
   commit(turnId: string, peerId: string, cost: CostResult): Promise<void>;
 
   /**
-   * Read-only accessor for context() preamble (Phase 1c). Returns current
-   * usage so the BATS preamble can compute a budgetRatio.
+   * Read-only accessor for context() preamble. Returns current usage so the
+   * BATS preamble can compute a budgetRatio AND surface unpriced turns —
+   * the schema's unpriced_turns counter (already collected per peer/day)
+   * is exposed here so operators see when budget enforcement is degraded.
    */
   getPeerUsage(
     peerId: string,
@@ -92,6 +94,7 @@ export interface BudgetStore {
     thread: number;
     day: number;
     costUsd: number;
+    unpricedTurns: number;
   }>;
 
   /**
@@ -149,6 +152,10 @@ export function createBudgetStore(config: BudgetStoreConfig): BudgetStore {
 
   const selectPeerCostStmt = db.prepare<{ cost_usd: number }, [string, string]>(
     `SELECT cost_usd FROM peer_daily_costs WHERE peer_id = ? AND day = ?`,
+  );
+
+  const selectPeerUnpricedTurnsStmt = db.prepare<{ unpriced_turns: number }, [string, string]>(
+    `SELECT unpriced_turns FROM peer_daily_costs WHERE peer_id = ? AND day = ?`,
   );
 
   const countAnonRequestsSinceStmt = db.prepare<{ n: number }, [number]>(
@@ -465,17 +472,19 @@ export function createBudgetStore(config: BudgetStoreConfig): BudgetStore {
     peerId: string,
     threadId: string,
     day?: string,
-  ): Promise<{ thread: number; day: number; costUsd: number }> {
+  ): Promise<{ thread: number; day: number; costUsd: number; unpricedTurns: number }> {
     const dayKey = day ?? ymdUtc(Date.now());
 
     const threadRow = countActiveThreadStmt.get(peerId, threadId, dayKey);
     const dayRow = countActiveDayStmt.get(peerId, dayKey);
     const costRow = selectPeerCostStmt.get(peerId, dayKey);
+    const unpricedRow = selectPeerUnpricedTurnsStmt.get(peerId, dayKey);
 
     return {
       thread: threadRow?.n ?? 0,
       day: dayRow?.n ?? 0,
       costUsd: costRow?.cost_usd ?? 0,
+      unpricedTurns: unpricedRow?.unpriced_turns ?? 0,
     };
   }
 

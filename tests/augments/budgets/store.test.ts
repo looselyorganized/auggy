@@ -364,6 +364,42 @@ describe("BudgetStore", () => {
     expect(usageThread2.day).toBe(3);
   });
 
+  it("getPeerUsage returns unpricedTurns count from peer_daily_costs", async () => {
+    // Mixed priced + unpriced commits for the same peer.
+    const t1 = await store.prepare(baseInput({ turnId: "tu1", peerId: "peer-mixed" }));
+    await t1.confirm();
+    await store.commit("tu1", "peer-mixed", { priced: true, costUsd: 0.01 });
+
+    const t2 = await store.prepare(baseInput({ turnId: "tu2", peerId: "peer-mixed" }));
+    await t2.confirm();
+    await store.commit("tu2", "peer-mixed", { priced: false, reason: "service_tier=batch" });
+
+    const usage = await store.getPeerUsage("peer-mixed", "thread-1");
+    expect(usage.thread).toBe(2);
+    expect(usage.day).toBe(2);
+    expect(usage.costUsd).toBeCloseTo(0.01, 6);
+    expect(usage.unpricedTurns).toBe(1);
+  });
+
+  it("getPeerUsage returns unpricedTurns=0 when no unpriced commits", async () => {
+    const ticket = await store.prepare(
+      baseInput({ turnId: "tu-priced", peerId: "peer-priced", threadId: "thread-x" }),
+    );
+    await ticket.confirm();
+    await store.commit("tu-priced", "peer-priced", { priced: true, costUsd: 0.005 });
+
+    const usage = await store.getPeerUsage("peer-priced", "thread-x");
+    expect(usage.unpricedTurns).toBe(0);
+  });
+
+  it("getPeerUsage returns unpricedTurns=0 for a peer with no commits at all", async () => {
+    const usage = await store.getPeerUsage("peer-never-seen", "thread-z");
+    expect(usage.thread).toBe(0);
+    expect(usage.day).toBe(0);
+    expect(usage.costUsd).toBe(0);
+    expect(usage.unpricedTurns).toBe(0);
+  });
+
   // ── sweepIncompleteReservations ──────────────────────────
 
   it("sweepIncompleteReservations marks stale pending rows as allow:incomplete", async () => {
