@@ -92,6 +92,20 @@ export function createOpenAIEngine(opts: OpenAIEngineOptions): ModelClient {
         );
       }
     }
+  } else if (
+    opts.costOverride.cacheWriteUsdPerMtok !== undefined ||
+    opts.costOverride.cacheReadUsdPerMtok !== undefined
+  ) {
+    // Operator set cache rates on OpenAI override. Today's adapter does not
+    // parse cache tokens from OpenAI Chat Completions responses, so cache
+    // rates would be silently ignored. Warn loudly rather than silently
+    // under-report — operators provisioning these rates should know they
+    // don't take effect.
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[engines/openai] costOverride.cacheWriteUsdPerMtok/cacheReadUsdPerMtok set but ignored — ` +
+        `the OpenAI adapter does not parse cache tokens from upstream responses. Cache rates will not contribute to costUsd.`,
+    );
   }
 
   return {

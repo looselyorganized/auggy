@@ -65,10 +65,17 @@ export interface EngineConfig {
    * Override pricing for cost estimation. If set, the adapter uses these rates
    * instead of the built-in pricing table. Useful for unknown models or custom
    * pricing arrangements. USD per million tokens.
+   *
+   * Accepts the full Pricing shape (input + output + optional cache write/read).
+   * Cache fields are honored by the Anthropic adapter; OpenAI/OpenRouter accept
+   * them for type symmetry but warn at boot if set, since their adapters don't
+   * parse cache tokens from upstream responses.
    */
   costOverride?: {
     inputUsdPerMtok: number;
     outputUsdPerMtok: number;
+    cacheWriteUsdPerMtok?: number;
+    cacheReadUsdPerMtok?: number;
   };
 }
 

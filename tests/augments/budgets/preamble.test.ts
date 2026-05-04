@@ -194,18 +194,24 @@ describe("buildBudgetPreamble", () => {
     expect(block!.content).toContain("budgetRatio = 0.67");
   });
 
-  // ── 12. Unpriced turns surfacing ──────────────────────────────────────────
+  // ── 12. Unpriced turns NOT surfaced to the model ─────────────────────────
+  // Codex adversarial review (2026-05-04) flagged that exposing the unpriced
+  // count via the BATS preamble lets a misaligned model infer when budget
+  // enforcement is degraded. The counter is collected in the store and
+  // exposed via getPeerUsage() for operator tooling, but NOT rendered into
+  // the model-visible preamble.
 
-  it("renders 'Unpriced turns today' line when unpricedTurns > 0", () => {
+  it("does NOT render 'Unpriced turns today' line even when unpricedTurns > 0", () => {
     const block = buildBudgetPreamble({
       caps: { maxTurnsPerThread: 10, maxUsdPerDay: 1.0 },
       used: { thread: 3, day: 5, costUsd: 0.4, unpricedTurns: 2 },
     });
     expect(block).not.toBeNull();
-    expect(block!.content).toContain("Unpriced turns today: 2");
+    expect(block!.content).not.toContain("Unpriced turns today");
+    expect(block!.content).not.toContain("unpriced");
   });
 
-  it("omits unpriced line when unpricedTurns === 0 (no noise)", () => {
+  it("does NOT render 'Unpriced turns today' line when unpricedTurns === 0", () => {
     const block = buildBudgetPreamble({
       caps: { maxTurnsPerThread: 10, maxUsdPerDay: 1.0 },
       used: { thread: 3, day: 5, costUsd: 0.4, unpricedTurns: 0 },

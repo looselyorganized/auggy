@@ -241,4 +241,71 @@ describe("runCostCommit — multi-iteration sum", () => {
     if (cost.priced) throw new Error("expected unpriced");
     expect(cost.reason).toBe("first-step-unpriced");
   });
+
+  it("counts the final inference on the consecutive-failure-completion path", async () => {
+    // Codex High finding: when a tool fails validation 2+ times consecutively,
+    // the kernel terminates the tool loop and runs ONE more inference to let
+    // the model respond to the failure. That final inference was previously
+    // never recorded into trace.inferenceSteps[], so its cost was dropped
+    // from runCostCommit's sum AND its unpriced reason couldn't propagate.
+    //
+    // This test forces the consecutive-failure path: model emits two
+    // bad-validation tool calls in a row (each fails validation 2x against
+    // the same tool name), kernel runs the terminator inference, expected
+    // commit sums all three inference costs.
+    const model = createMockModel();
+    // Iteration 1: tool call with bad args (fails validation once)
+    model.pushResponse({
+      content: "",
+      toolCalls: [{ name: "strict", arguments: { wrong: true } }],
+      finishReason: "tool_use",
+      costUsd: 0.001,
+    });
+    // Iteration 2: tool call with bad args (fails validation second time → terminateToolLoop)
+    model.pushResponse({
+      content: "",
+      toolCalls: [{ name: "strict", arguments: { wrong: true } }],
+      finishReason: "tool_use",
+      costUsd: 0.002,
+    });
+    // Iteration 3: terminator inference — model responds to the validation errors
+    model.pushResponse({
+      content: "Sorry, I couldn't complete that.",
+      finishReason: "end_turn",
+      costUsd: 0.003,
+    });
+
+    const strictAug: Augment = {
+      name: "strict-aug",
+      capabilities: ["tools"],
+      tools: [
+        {
+          name: "strict",
+          description: "rejects all input",
+          category: "meta",
+          input: z.object({ required: z.string() }),
+          execute: async () => "should never run",
+        },
+      ],
+    };
+    const gate = captureGate();
+
+    const loop = createTurnLoop({
+      augments: [identityAugment(), strictAug, gate.augment],
+      model,
+      tokenizer: createTokenizer(),
+      config: { name: "test", model: "mock", augments: [] },
+    });
+
+    await loop.executeTurn(makeTrigger("hi"), "thread-1");
+
+    expect(gate.committedCosts).toHaveLength(1);
+    const cost = gate.committedCosts[0]!;
+    expect(cost.priced).toBe(true);
+    if (!cost.priced) throw new Error("expected priced");
+    // 0.001 + 0.002 + 0.003 = 0.006 — the third inference (terminator)
+    // must be included or this assertion fails at 0.003.
+    expect(cost.costUsd).toBeCloseTo(0.006, 9);
+    expect(model.calls).toHaveLength(3);
+  });
 });
