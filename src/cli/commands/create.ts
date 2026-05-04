@@ -1,23 +1,26 @@
 /**
- * aug1 create <name> — scaffold a new agent directory with interactive
- * engine + augment selection.
+ * aug1 create <name> — scaffold a new agent directory.
  *
- * Flow:
- *   1. Name from CLI arg
- *   2. Interactive engine selection (provider + model)
- *   3. Interactive augment selection (required ones pre-checked)
- *   4. Scaffold directory, agent.yaml, identity.md, skills, .env.example
+ * Default location: ~/.auggy/agents/<name>/. Override with --dir <path>
+ * for git-tracked / project-folder layouts. Writes an entry to the
+ * agent index (~/.auggy/agents.json) on success.
+ *
+ * Refuses if:
+ *   - CWD contains agent.yaml (operator likely meant `cd ..` first)
+ *   - <name> already in the index
+ *   - target dir already exists on disk
  */
 
-import { existsSync, mkdirSync, writeFileSync, cpSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync, cpSync } from "node:fs";
+import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { checkbox, select, input } from "@inquirer/prompts";
 import { stringify } from "yaml";
 import { AUGMENT_CATALOG, type CatalogEntry } from "../augment-catalog";
 import { scanSkillManifest, renderSkillManifest } from "../skill-manifest";
-
-type Provider = "anthropic" | "openai" | "openrouter";
+import { addAgent, getAgent } from "../agent-index";
+import { getModelChoices, formatChoiceLabel, type Provider } from "../model-picker";
 
 const PROVIDER_DEFAULTS: Record<Provider, { model: string; envVar: string }> = {
   anthropic: { model: "claude-sonnet-4-6", envVar: "ANTHROPIC_API_KEY" },
@@ -38,7 +41,27 @@ const cream = (s: string): string => ansi("38;2;251;247;235", s);
 const green = (s: string): string => ansi("32", s);
 
 export async function runCreate(name: string, opts: { dir?: string }): Promise<void> {
-  const dir = resolve(opts.dir ?? `./${name}`);
+  // Wrong-dir guard: refuse if CWD has agent.yaml.
+  const cwdAgentYaml = resolve("./agent.yaml");
+  if (existsSync(cwdAgentYaml)) {
+    throw new Error(
+      `You appear to be inside an agent directory.\n\n` +
+        `  Found: ${cwdAgentYaml}\n\n` +
+        `Run \`cd ..\` first, or pass --dir <path> to scaffold elsewhere.`,
+    );
+  }
+
+  // Refuse if name already registered in the index.
+  const existing = getAgent(name);
+  if (existing) {
+    throw new Error(
+      `Agent "${name}" already exists at ${existing.localDir}.\n\n` +
+        `  Use a different name, or remove the existing one with \`aug1 remove ${name}\`.`,
+    );
+  }
+
+  // Resolve target directory.
+  const dir = opts.dir ? resolve(opts.dir) : join(homedir(), ".auggy", "agents", name);
 
   if (existsSync(dir)) {
     throw new Error(`Directory already exists: ${dir}`);
@@ -57,10 +80,25 @@ export async function runCreate(name: string, opts: { dir?: string }): Promise<v
     default: "anthropic",
   });
 
-  const model = await input({
+  // Model selection: dropdown of priced models + Custom escape hatch.
+  const CUSTOM_SENTINEL = "__custom__";
+  const choices = getModelChoices(provider);
+  const modelSelection = await select<string>({
     message: "Model:",
-    default: PROVIDER_DEFAULTS[provider].model,
+    choices: [
+      ...choices.map((c) => ({ name: formatChoiceLabel(c), value: c.id })),
+      { name: "Custom — type your own model ID", value: CUSTOM_SENTINEL },
+    ],
   });
+
+  let model: string;
+  if (modelSelection === CUSTOM_SENTINEL) {
+    model = await input({ message: "Custom model ID:" });
+    printCustomModelWarning(model);
+    await Bun.sleep(2000);
+  } else {
+    model = modelSelection;
+  }
 
   // Interactive augment selection.
   const selected = await checkbox({
@@ -73,7 +111,7 @@ export async function runCreate(name: string, opts: { dir?: string }): Promise<v
     })),
   });
 
-  // Ensure required augments are included even if prompt is skipped.
+  // Ensure required augments are included.
   const augments = AUGMENT_CATALOG.filter((e) => e.required);
   for (const entry of selected) {
     if (!augments.includes(entry)) {
@@ -83,49 +121,67 @@ export async function runCreate(name: string, opts: { dir?: string }): Promise<v
 
   const id = `aug1_${randomUUID()}`;
 
-  // Create directory structure.
-  mkdirSync(dir, { recursive: true });
-  mkdirSync(join(dir, "skills"), { recursive: true });
-  mkdirSync(join(dir, "workspace"), { recursive: true });
-  mkdirSync(join(dir, "augments"), { recursive: true });
+  // Scaffold the directory.
+  let scaffoldComplete = false;
+  try {
+    mkdirSync(dir, { recursive: true });
+    mkdirSync(join(dir, "skills"), { recursive: true });
+    mkdirSync(join(dir, "workspace"), { recursive: true });
+    mkdirSync(join(dir, "augments"), { recursive: true });
 
-  // Install each augment's skill.
-  console.log();
-  console.log(dim(" Installing augments..."));
-  console.log();
-  for (const entry of augments) {
-    installAugmentSkill(entry, dir);
-    console.log(`   ${green("\u2713")} ${cream(entry.defaultName)} ${dim(`(${entry.type})`)}`);
-  }
+    console.log();
+    console.log(dim(" Installing augments..."));
+    console.log();
+    for (const entry of augments) {
+      installAugmentSkill(entry, dir);
+      console.log(`   ${green("\u2713")} ${cream(entry.defaultName)} ${dim(`(${entry.type})`)}`);
+    }
 
-  // Copy built-in filesystem skill if available and filesystem is selected.
-  if (augments.some((e) => e.type === "filesystem")) {
-    const fsSkillSrc = resolve(import.meta.dir, "../../augments/filesystem-skill");
-    if (existsSync(fsSkillSrc)) {
-      cpSync(fsSkillSrc, join(dir, "skills", "filesystem"), { recursive: true });
+    if (augments.some((e) => e.type === "filesystem")) {
+      const fsSkillSrc = resolve(import.meta.dir, "../../augments/filesystem-skill");
+      if (existsSync(fsSkillSrc)) {
+        cpSync(fsSkillSrc, join(dir, "skills", "filesystem"), { recursive: true });
+      }
+    }
+
+    const config = buildAgentYaml(id, name, augments, { provider, model });
+    writeFileSync(join(dir, "agent.yaml"), config);
+
+    const skillEntries = scanSkillManifest(join(dir, "skills"));
+    const skillManifest = renderSkillManifest(skillEntries);
+    writeFileSync(join(dir, "identity.md"), buildIdentity(name, skillManifest));
+
+    if (augments.some((e) => e.defaultName === "learned")) {
+      writeFileSync(join(dir, "learned.md"), "");
+    }
+
+    const envVars = collectEnvVars(augments, provider);
+    writeFileSync(join(dir, ".env.example"), buildEnvExample(envVars));
+    writeFileSync(join(dir, ".gitignore"), GITIGNORE);
+
+    scaffoldComplete = true;
+  } finally {
+    // Best-effort cleanup if scaffolding partially failed.
+    if (!scaffoldComplete && existsSync(dir)) {
+      try {
+        rmSync(dir, { recursive: true, force: true });
+      } catch {
+        // best-effort
+      }
     }
   }
 
-  // Generate agent.yaml.
-  const config = buildAgentYaml(id, name, augments, { provider, model });
-  writeFileSync(join(dir, "agent.yaml"), config);
-
-  // Generate identity.md with skill manifest.
-  const skillEntries = scanSkillManifest(join(dir, "skills"));
-  const skillManifest = renderSkillManifest(skillEntries);
-  writeFileSync(join(dir, "identity.md"), buildIdentity(name, skillManifest));
-
-  // Generate learned.md (empty).
-  if (augments.some((e) => e.defaultName === "learned")) {
-    writeFileSync(join(dir, "learned.md"), "");
+  // Register in the index. If this fails, clean up the scaffolded dir.
+  try {
+    addAgent(name, dir);
+  } catch (err) {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch {
+      // best-effort
+    }
+    throw err;
   }
-
-  // Generate .env.example.
-  const envVars = collectEnvVars(augments, provider);
-  writeFileSync(join(dir, ".env.example"), buildEnvExample(envVars));
-
-  // Generate .gitignore.
-  writeFileSync(join(dir, ".gitignore"), GITIGNORE);
 
   const envVar = PROVIDER_DEFAULTS[provider].envVar;
 
@@ -141,6 +197,25 @@ export async function runCreate(name: string, opts: { dir?: string }): Promise<v
   console.log(`   ${cream("2.")}  Add your ${bold(envVar)} to ${dir}/.env`);
   console.log(`   ${cream("3.")}  Edit ${dir}/identity.md`);
   console.log(`   ${cream("4.")}  aug1 dev ${name}`);
+  console.log();
+}
+
+function printCustomModelWarning(modelId: string): void {
+  console.log();
+  console.log(`⚠ Warning: "${modelId}" is not in the pricing table.`);
+  console.log();
+  console.log(`  - Budgets augment cannot enforce dailyBudgetUsd or maxUsdPerDay for this model.`);
+  console.log(`  - Eval cost-per-task tracking will report unpriced.`);
+  console.log(`  - Future facility cost rollups will not include this agent.`);
+  console.log();
+  console.log(`Restore cost tracking by adding engine.costOverride to agent.yaml:`);
+  console.log();
+  console.log(`  engine:`);
+  console.log(`    costOverride:`);
+  console.log(`      inputUsdPerMtok: <number>`);
+  console.log(`      outputUsdPerMtok: <number>`);
+  console.log();
+  console.log(`Press Ctrl+C now if this is unintended. Otherwise, continuing in 2s...`);
   console.log();
 }
 
