@@ -54,6 +54,7 @@ docs/**/
 !docs/13-notify.md
 !docs/14-telegram-transport.md
 !docs/15-chat.md
+!docs/16-storage-layout.md
 
 # Local git worktrees (subagent-driven-development)
 .worktrees/
