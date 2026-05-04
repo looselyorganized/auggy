@@ -1,5 +1,6 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { writeFileSync, mkdirSync, rmSync } from "node:fs";
+import { writeFileSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { stringify } from "yaml";
 import { parseConfig, interpolateEnvVars, loadEnvFile } from "../../src/cli/config-parser";
@@ -694,17 +695,15 @@ describe("budgets augment options validation", () => {
 describe("parseConfig — augmented missing-env-var error", () => {
   let dir: string;
   beforeEach(() => {
-    dir = require("node:fs").mkdtempSync(
-      require("node:path").join(require("node:os").tmpdir(), "env-error-test-"),
-    );
+    dir = mkdtempSync(join(tmpdir(), "env-error-test-"));
   });
   afterEach(() => {
-    require("node:fs").rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true });
   });
 
-  function writeYaml(): string {
-    const yamlPath = require("node:path").join(dir, "agent.yaml");
-    require("node:fs").writeFileSync(
+  function writeAgentYaml(): string {
+    const yamlPath = join(dir, "agent.yaml");
+    writeFileSync(
       yamlPath,
       [
         "id: aug1_00000000-0000-0000-0000-000000000000",
@@ -727,22 +726,18 @@ describe("parseConfig — augmented missing-env-var error", () => {
   }
 
   test("includes .env path and cp suggestion when only .env.example exists", () => {
-    const yamlPath = writeYaml();
-    const fs = require("node:fs");
-    fs.writeFileSync(require("node:path").join(dir, ".env.example"), "MISSING_TOKEN=\n");
-    expect(() => require("../../src/cli/config-parser").parseConfig(yamlPath)).toThrow(
-      /\.env.*\n.*cp .*\.env\.example .*\.env/s,
-    );
+    const yamlPath = writeAgentYaml();
+    writeFileSync(join(dir, ".env.example"), "MISSING_TOKEN=\n");
+    expect(() => parseConfig(yamlPath)).toThrow(/\.env.*\n.*cp .*\.env\.example .*\.env/s);
   });
 
   test("includes .env path only when .env exists", () => {
-    const yamlPath = writeYaml();
-    const fs = require("node:fs");
-    fs.writeFileSync(require("node:path").join(dir, ".env"), "");
-    fs.writeFileSync(require("node:path").join(dir, ".env.example"), "");
+    const yamlPath = writeAgentYaml();
+    writeFileSync(join(dir, ".env"), "");
+    writeFileSync(join(dir, ".env.example"), "");
     let caught: Error | null = null;
     try {
-      require("../../src/cli/config-parser").parseConfig(yamlPath);
+      parseConfig(yamlPath);
     } catch (err) {
       caught = err as Error;
     }
@@ -752,10 +747,10 @@ describe("parseConfig — augmented missing-env-var error", () => {
   });
 
   test("includes .env path only (no cp) when neither file exists", () => {
-    const yamlPath = writeYaml();
+    const yamlPath = writeAgentYaml();
     let caught: Error | null = null;
     try {
-      require("../../src/cli/config-parser").parseConfig(yamlPath);
+      parseConfig(yamlPath);
     } catch (err) {
       caught = err as Error;
     }
@@ -765,11 +760,11 @@ describe("parseConfig — augmented missing-env-var error", () => {
   });
 
   test("non-env-var errors are NOT augmented", () => {
-    const yamlPath = require("node:path").join(dir, "agent.yaml");
-    require("node:fs").writeFileSync(yamlPath, "not: valid: yaml: at: all");
+    const yamlPath = join(dir, "agent.yaml");
+    writeFileSync(yamlPath, "not: valid: yaml: at: all");
     let caught: Error | null = null;
     try {
-      require("../../src/cli/config-parser").parseConfig(yamlPath);
+      parseConfig(yamlPath);
     } catch (err) {
       caught = err as Error;
     }
