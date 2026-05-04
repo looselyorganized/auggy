@@ -491,12 +491,33 @@ export function createTurnLoop(opts: {
       // Phase 5 helper: cost commit (post-response, fail-safe).
       // Called after each successful engine exit. Errors are logged; they
       // do NOT fail the turn because the response already exists.
+      //
+      // Multi-iteration semantics: a single turn may invoke the model
+      // multiple times (tool-use loop). We commit the SUM of all inference
+      // steps' priced costs. If any step is unpriced, the whole turn
+      // commits as unpriced — partial-priced sums would mislead the budget
+      // store and silently suppress unpriced_turns counters.
       async function runCostCommit(): Promise<void> {
-        const lastInferenceStep = trace.inferenceSteps[trace.inferenceSteps.length - 1];
-        const cost: CostResult = lastInferenceStep?.cost ?? {
-          priced: false,
-          reason: "no inference recorded",
-        };
+        const steps = trace.inferenceSteps;
+        let cost: CostResult;
+        if (steps.length === 0) {
+          cost = { priced: false, reason: "no inference recorded" };
+        } else {
+          let totalCostUsd = 0;
+          let unpricedReason: string | null = null;
+          for (const step of steps) {
+            if (step.cost.priced) {
+              totalCostUsd += step.cost.costUsd;
+            } else {
+              unpricedReason = step.cost.reason;
+              break; // any unpriced step → whole turn unpriced
+            }
+          }
+          cost =
+            unpricedReason !== null
+              ? { priced: false, reason: unpricedReason }
+              : { priced: true, costUsd: totalCostUsd };
+        }
         for (const gate of turnGates) {
           if (!gate.turnGate.commit) continue;
           try {
