@@ -11,9 +11,11 @@
 import {
   closeSync,
   existsSync,
+  fstatSync,
   mkdirSync,
   openSync,
   readFileSync,
+  readSync,
   renameSync,
   unlinkSync,
   writeFileSync,
@@ -121,14 +123,30 @@ function acquireLock(opts: IndexOptions = {}): LockHandle {
       const code = (err as NodeJS.ErrnoException).code;
       if (code !== "EEXIST") throw err;
 
-      // Inspect the existing lock. If the holder is dead, take it over.
+      // Inspect the existing lock through a file descriptor to avoid a
+      // TOCTOU race against the path. If the holder is dead, take it over.
       let holderPid: number | null = null;
+      let readFd: number | null = null;
       try {
-        const raw = readFileSync(path, "utf-8");
-        const parsed = JSON.parse(raw) as Partial<LockFileContents>;
+        readFd = openSync(path, "r");
+        const stats = fstatSync(readFd);
+        const buf = Buffer.alloc(stats.size);
+        if (stats.size > 0) {
+          readSync(readFd, buf, 0, stats.size, 0);
+        }
+        const parsed = JSON.parse(buf.toString("utf-8")) as Partial<LockFileContents>;
         if (typeof parsed.pid === "number") holderPid = parsed.pid;
       } catch {
-        // Unreadable / unparseable lock file — treat as stale.
+        // Lock was unlinked between EEXIST and our read, OR content was
+        // unparseable. Either way, treat as stale.
+      } finally {
+        if (readFd !== null) {
+          try {
+            closeSync(readFd);
+          } catch {
+            // best-effort
+          }
+        }
       }
 
       if (holderPid === null || !isProcessAlive(holderPid)) {
