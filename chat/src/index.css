@@ -284,6 +284,14 @@ button, input, select, textarea {
   gap: 0.5rem;
 }
 
+.chat-widget__awaiting-hint {
+  grid-column: 1 / -1;
+  margin: 0;
+  font-size: 0.8rem;
+  color: #888;
+  font-style: italic;
+}
+
 .chat-widget__footer textarea {
   resize: vertical;
   border: 1px solid #e5e5e5;
