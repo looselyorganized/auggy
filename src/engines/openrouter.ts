@@ -46,11 +46,12 @@ export interface OpenRouterEngineOptions {
    * Override pricing for cost estimation. If set, the adapter uses these rates
    * instead of the built-in pricing table. Useful for unknown models or custom
    * pricing arrangements. USD per million tokens.
+   *
+   * Accepts the full Pricing shape; cache fields are accepted for type symmetry
+   * with Anthropic but not used by the OpenRouter adapter today (no cache-token
+   * usage is parsed from OpenRouter responses).
    */
-  costOverride?: {
-    inputUsdPerMtok: number;
-    outputUsdPerMtok: number;
-  };
+  costOverride?: import("./_shared/cost").Pricing;
 }
 
 /** OpenRouter provider routing config (forwarded as the `provider` body field).

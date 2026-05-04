@@ -43,11 +43,14 @@ export interface AnthropicEngineOptions {
    * Override pricing for cost estimation. If set, the adapter uses these rates
    * instead of the built-in pricing table. Useful for unknown models or custom
    * pricing arrangements. USD per million tokens.
+   *
+   * Accepts the full Pricing shape (input + output + optional cache write/read).
+   * Legacy 2-field overrides still typecheck — cache rates are optional and
+   * default to undefined (no cache cost contribution). Anthropic operators with
+   * cache-heavy workloads should set both `cacheWriteUsdPerMtok` and
+   * `cacheReadUsdPerMtok` to avoid under-reporting cached responses.
    */
-  costOverride?: {
-    inputUsdPerMtok: number;
-    outputUsdPerMtok: number;
-  };
+  costOverride?: import("./_shared/cost").Pricing;
 }
 
 export function createAnthropicEngine(opts: AnthropicEngineOptions): ModelClient {
