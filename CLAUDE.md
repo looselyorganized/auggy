@@ -10,13 +10,15 @@ Auggy (`augment-1`) is a modular agent runtime in TypeScript/Bun. Agents are com
 
 ```bash
 # CLI
-aug1 create <name>              # Scaffold a new agent directory
+aug1 create <name>              # Scaffold a new agent (default: ~/.auggy/agents/<name>/)
 aug1 add <name>                 # Add augments to an existing agent
 aug1 dev <name> [--config path] # Run agent in foreground (Ctrl-C stops)
 aug1 start <name>               # Install as launchd service (always-on)
 aug1 stop <name>                # Stop agent (either mode)
 aug1 restart <name>             # Stop + start
 aug1 status [name]              # Show running agents
+aug1 ls                         # List registered agents with status
+aug1 remove <name> [--yes]      # Delete an agent dir + clear index entry
 aug1 chat [--port N]            # Launch Local GUI for talking to running agents
 
 # Development
@@ -46,6 +48,7 @@ To use the CLI globally: `bun link` in this directory makes `auggy` available as
 | `docs/09-testing.md` | Test strategy, fixtures, what to mock |
 | `docs/10-system-diagrams.md` | Visual maps: three primitives, full architecture, data flow, filesystem layout |
 | `docs/11-skills.md` | How skills work: progressive disclosure, filesystem-as-loader, SKILL.md convention |
+| `docs/16-storage-layout.md` | Where agents live on disk: ~/.auggy/agents/, the index file, --dir override |
 
 `docs/research/` holds dated research artifacts (e.g. `eval-landscape-2026-04-08.md`) that inform design decisions but aren't kept in sync with code.
 
