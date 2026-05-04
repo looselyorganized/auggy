@@ -710,6 +710,7 @@ export function createTurnLoop(opts: {
             const execStart = Date.now();
             let output: string;
             let isError = false;
+            let terminate: ToolResult["terminate"] | undefined;
             try {
               const augForTool = augments.find((a) =>
                 a.tools?.some((t) => t.name === entry.reg.tool.name),
@@ -724,9 +725,12 @@ export function createTurnLoop(opts: {
                 () => entry.reg.tool.execute(entry.validatedInput, toolContext),
                 timeout,
               );
-              // Normalize: flatten ToolResult to its content string for now.
-              // Task 2 will inspect raw.terminate to drive turn lifecycle.
-              output = typeof raw === "string" ? raw : raw.content;
+              if (typeof raw === "string") {
+                output = raw;
+              } else {
+                output = raw.content;
+                terminate = raw.terminate;
+              }
             } catch (err) {
               output = `Error: ${String(err)}`;
               isError = true;
@@ -746,6 +750,7 @@ export function createTurnLoop(opts: {
               durationMs: Date.now() - execStart,
               isError,
               toolCallId,
+              terminate,
             };
           }),
         );
@@ -778,6 +783,39 @@ export function createTurnLoop(opts: {
             });
             capabilityTable.recordToolCall(call.name);
           }
+        }
+
+        // Capture first non-error terminate directive from this batch.
+        // Reset per-iteration so a directive from one batch doesn't leak forward.
+        let pendingTerminate: ToolResult["terminate"] | undefined;
+        for (const r of execResults) {
+          if (!r.isError && r.terminate && !pendingTerminate) {
+            pendingTerminate = r.terminate;
+            break;
+          }
+        }
+
+        if (pendingTerminate) {
+          emitEvent({
+            kind: "run_finished",
+            turnId: trigger.turnId,
+            status: pendingTerminate.status,
+          });
+          traceEmitter.finalize(trace);
+          await runCostCommit();
+          return {
+            turnId: trigger.turnId,
+            success: true,
+            status: pendingTerminate.status,
+            response: pendingTerminate.message
+              ? {
+                  parts: [{ kind: "text", text: pendingTerminate.message }],
+                  contextId: trigger.contextId,
+                }
+              : undefined,
+            toolCalls: toolCallRecords,
+            trace,
+          };
         }
 
         // If consecutive failures terminated tool use, let model see the error and respond
