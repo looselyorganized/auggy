@@ -35,6 +35,14 @@ const TABLE: Record<string, Pricing> = {
   },
 };
 
+/**
+ * Enumerate the model IDs in the pricing table. Used by the model picker
+ * to derive UI choices without exposing the table's internal shape.
+ */
+export function listModels(): string[] {
+  return Object.keys(TABLE);
+}
+
 const VERIFIED_AT = "2026-04-27";
 
 export function lookup(model: string): Pricing | null {

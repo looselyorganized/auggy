@@ -24,20 +24,10 @@ interface PricingTableEntry {
 }
 
 /**
- * Read raw pricing tables. We import the modules and inspect their `lookup`
- * functions to enumerate keys. Since the tables aren't exported directly,
- * we list known IDs per provider and look each up — keeping this module
- * decoupled from internal table shape.
+ * Read raw pricing tables. We import each provider's pricing module and
+ * call `listModels()` + `lookup()` to enumerate priced choices without
+ * coupling to the internal table shape.
  */
-const ANTHROPIC_IDS = [
-  "claude-haiku-4-5",
-  "claude-sonnet-4-6",
-  "claude-opus-4-6",
-  "claude-opus-4-7",
-];
-
-const OPENAI_IDS = ["gpt-5-mini", "gpt-5"];
-
 function readEntry(provider: Provider, id: string): PricingTableEntry | null {
   if (provider === "anthropic") return anthropicPricing.lookup(id);
   if (provider === "openai") return openaiPricing.lookup(id);
@@ -51,21 +41,21 @@ export function getModelChoices(provider: Provider): ModelChoice[] {
   let pairs: Array<{ id: string; entry: PricingTableEntry }> = [];
 
   if (provider === "anthropic") {
-    pairs = ANTHROPIC_IDS.map((id) => ({
-      id,
-      entry: readEntry(provider, id)!,
-    })).filter((p) => p.entry !== null);
+    const ids = anthropicPricing.listModels();
+    pairs = ids
+      .map((id) => ({ id, entry: readEntry(provider, id) }))
+      .filter((p): p is { id: string; entry: PricingTableEntry } => p.entry !== null);
   } else if (provider === "openai") {
-    pairs = OPENAI_IDS.map((id) => ({
-      id,
-      entry: readEntry(provider, id)!,
-    })).filter((p) => p.entry !== null);
+    const ids = openaiPricing.listModels();
+    pairs = ids
+      .map((id) => ({ id, entry: readEntry(provider, id) }))
+      .filter((p): p is { id: string; entry: PricingTableEntry } => p.entry !== null);
   } else if (provider === "openrouter") {
-    const anthropicSlugs = ANTHROPIC_IDS.map((id) => ({
+    const anthropicSlugs = anthropicPricing.listModels().map((id) => ({
       id: `anthropic/${id}`,
       entry: readEntry("anthropic", id),
     }));
-    const openaiSlugs = OPENAI_IDS.map((id) => ({
+    const openaiSlugs = openaiPricing.listModels().map((id) => ({
       id: `openai/${id}`,
       entry: readEntry("openai", id),
     }));
