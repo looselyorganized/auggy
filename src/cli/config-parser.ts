@@ -12,7 +12,7 @@
  */
 
 import { readFileSync, existsSync } from "node:fs";
-import { resolve, dirname } from "node:path";
+import { resolve, dirname, join } from "node:path";
 import { parse as parseYaml } from "yaml";
 import type { ParsedConfig, AugmentConfig, EngineConfig, AgentSettings } from "./types";
 
@@ -600,6 +600,39 @@ export function parseConfig(yamlPath: string): ParsedConfig {
     throw new Error(`${yamlPath}: not a valid YAML document`);
   }
 
-  const interpolated = interpolateEnvVars(parsed) as Record<string, unknown>;
+  let interpolated: Record<string, unknown>;
+  try {
+    interpolated = interpolateEnvVars(parsed) as Record<string, unknown>;
+  } catch (err) {
+    const msg = (err as Error).message;
+    if (msg.startsWith("Missing environment variables:")) {
+      throw new Error(augmentMissingEnvError(msg, agentDir));
+    }
+    throw err;
+  }
   return validateConfig(interpolated);
+}
+
+function augmentMissingEnvError(originalMsg: string, agentDir: string): string {
+  const envPath = join(agentDir, ".env");
+  const envExamplePath = join(agentDir, ".env.example");
+
+  const lines: string[] = [
+    originalMsg.replace(
+      /^Missing environment variables:/,
+      "Missing environment variables in agent.yaml:",
+    ),
+    "",
+    "Set them in the agent's .env file:",
+    `  ${envPath}`,
+  ];
+
+  // Suggest cp ONLY when .env.example exists and .env doesn't.
+  if (existsSync(envExamplePath) && !existsSync(envPath)) {
+    lines.push("");
+    lines.push("Or copy from the template:");
+    lines.push(`  cp ${envExamplePath} ${envPath}`);
+  }
+
+  return lines.join("\n");
 }
