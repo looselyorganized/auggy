@@ -690,3 +690,91 @@ describe("budgets augment options validation", () => {
     expect(config.augments[0]!.type).toBe("budgets");
   });
 });
+
+describe("parseConfig — augmented missing-env-var error", () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = require("node:fs").mkdtempSync(
+      require("node:path").join(require("node:os").tmpdir(), "env-error-test-"),
+    );
+  });
+  afterEach(() => {
+    require("node:fs").rmSync(dir, { recursive: true, force: true });
+  });
+
+  function writeYaml(): string {
+    const yamlPath = require("node:path").join(dir, "agent.yaml");
+    require("node:fs").writeFileSync(
+      yamlPath,
+      [
+        "id: aug1_00000000-0000-0000-0000-000000000000",
+        "name: test",
+        "engine:",
+        "  provider: anthropic",
+        "  model: claude-sonnet-4-6",
+        "augments:",
+        "  - name: web",
+        "    type: webTransport",
+        "    options:",
+        "      port: 8080",
+        "      auth:",
+        "        type: bearer",
+        "        token: ${MISSING_TOKEN}",
+        "",
+      ].join("\n"),
+    );
+    return yamlPath;
+  }
+
+  test("includes .env path and cp suggestion when only .env.example exists", () => {
+    const yamlPath = writeYaml();
+    const fs = require("node:fs");
+    fs.writeFileSync(require("node:path").join(dir, ".env.example"), "MISSING_TOKEN=\n");
+    expect(() => require("../../src/cli/config-parser").parseConfig(yamlPath)).toThrow(
+      /\.env.*\n.*cp .*\.env\.example .*\.env/s,
+    );
+  });
+
+  test("includes .env path only when .env exists", () => {
+    const yamlPath = writeYaml();
+    const fs = require("node:fs");
+    fs.writeFileSync(require("node:path").join(dir, ".env"), "");
+    fs.writeFileSync(require("node:path").join(dir, ".env.example"), "");
+    let caught: Error | null = null;
+    try {
+      require("../../src/cli/config-parser").parseConfig(yamlPath);
+    } catch (err) {
+      caught = err as Error;
+    }
+    expect(caught).not.toBeNull();
+    expect(caught!.message).toMatch(/\.env/);
+    expect(caught!.message).not.toMatch(/cp .*\.env\.example/);
+  });
+
+  test("includes .env path only (no cp) when neither file exists", () => {
+    const yamlPath = writeYaml();
+    let caught: Error | null = null;
+    try {
+      require("../../src/cli/config-parser").parseConfig(yamlPath);
+    } catch (err) {
+      caught = err as Error;
+    }
+    expect(caught).not.toBeNull();
+    expect(caught!.message).toMatch(/\.env/);
+    expect(caught!.message).not.toMatch(/cp .*\.env\.example/);
+  });
+
+  test("non-env-var errors are NOT augmented", () => {
+    const yamlPath = require("node:path").join(dir, "agent.yaml");
+    require("node:fs").writeFileSync(yamlPath, "not: valid: yaml: at: all");
+    let caught: Error | null = null;
+    try {
+      require("../../src/cli/config-parser").parseConfig(yamlPath);
+    } catch (err) {
+      caught = err as Error;
+    }
+    expect(caught).not.toBeNull();
+    // Should NOT contain the .env-suggestion suffix.
+    expect(caught!.message).not.toMatch(/Set them in the agent's \.env file/);
+  });
+});
