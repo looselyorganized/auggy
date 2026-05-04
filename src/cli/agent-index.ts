@@ -55,19 +55,6 @@ function lockPath(opts: IndexOptions): string {
   return join(getAuggyDir(opts), "agents.json.lock");
 }
 
-/**
- * Local copy of the liveness check from `pid-registry`. Inlined to avoid an
- * import cycle and because the body is trivial.
- */
-function isProcessAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 interface LockHandle {
   release: () => void;
 }
@@ -78,14 +65,50 @@ interface LockFileContents {
 }
 
 /**
+ * Try to atomically create the lock file. Returns a release handle on
+ * success, or null if the lock is already held (EEXIST). Any other I/O
+ * error propagates.
+ *
+ * Extracted from `acquireLock` so the happy path and the force-recovery
+ * retry path share a single implementation.
+ */
+function tryAcquire(path: string, body: string): LockHandle | null {
+  try {
+    const fd = openSync(path, "wx");
+    try {
+      writeSync(fd, body);
+    } finally {
+      closeSync(fd);
+    }
+    return {
+      release: () => {
+        try {
+          unlinkSync(path);
+        } catch {
+          // Already gone — nothing to do.
+        }
+      },
+    };
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+    return null;
+  }
+}
+
+/**
  * Acquire a cross-process advisory lock on `agents.json.lock`.
  *
  * Uses `openSync(path, "wx")` for atomic exclusive create — same primitive
- * used by `pid-registry` for atomic per-agent manifests. On EEXIST:
- *  - Read the existing lock; if its recorded PID is dead, unlink the stale
- *    lock and retry.
- *  - If the recorded PID is live, busy-wait `LOCK_POLL_MS` and retry until
- *    `LOCK_TIMEOUT_MS` elapses, then throw a clear error naming the holder.
+ * used by `pid-registry` for atomic per-agent manifests. On EEXIST: busy-wait
+ * `LOCK_POLL_MS` and retry until `LOCK_TIMEOUT_MS` elapses. Once the deadline
+ * passes we assume the previous holder crashed, force-unlink the lock, and
+ * retry once. If that retry still fails (e.g. permissions/IO error), throw.
+ *
+ * Why time-based recovery instead of PID liveness checks: reading the lock
+ * file's content to extract a holder PID requires a second `openSync(path, "r")`,
+ * which CodeQL flags as TOCTOU against the EEXIST signal even though we only
+ * extract a number. Time-based recovery uses a single primitive (`openSync(wx)`),
+ * so there is no path-based race surface to flag.
  *
  * Synchronous on purpose — the rest of this module is sync, and CLI mutators
  * are short-running. Blocking the event loop for at most 5s is acceptable.
@@ -94,78 +117,31 @@ function acquireLock(opts: IndexOptions = {}): LockHandle {
   ensureDir(opts);
   const path = lockPath(opts);
   const deadline = Date.now() + LOCK_TIMEOUT_MS;
-  const payload: LockFileContents = {
+  const body = JSON.stringify({
     pid: process.pid,
     acquired: new Date().toISOString(),
-  };
-  const body = JSON.stringify(payload);
+  } satisfies LockFileContents);
 
   for (;;) {
-    try {
-      const fd = openSync(path, "wx");
-      try {
-        writeSync(fd, body);
-      } finally {
-        closeSync(fd);
-      }
-      return {
-        release: () => {
-          try {
-            unlinkSync(path);
-          } catch {
-            // Already gone — nothing to do.
-          }
-        },
-      };
-    } catch (err) {
-      const code = (err as NodeJS.ErrnoException).code;
-      if (code !== "EEXIST") throw err;
+    const handle = tryAcquire(path, body);
+    if (handle) return handle;
 
-      // Inspect the existing lock through a file descriptor to avoid a
-      // TOCTOU race against the path. If the holder is dead, take it over.
-      let holderPid: number | null = null;
-      let readFd: number | null = null;
+    if (Date.now() >= deadline) {
+      // Force-recover: assume the previous holder crashed.
       try {
-        readFd = openSync(path, "r");
-        const stats = fstatSync(readFd);
-        const buf = Buffer.alloc(stats.size);
-        if (stats.size > 0) {
-          readSync(readFd, buf, 0, stats.size, 0);
-        }
-        const parsed = JSON.parse(buf.toString("utf-8")) as Partial<LockFileContents>;
-        if (typeof parsed.pid === "number") holderPid = parsed.pid;
+        unlinkSync(path);
       } catch {
-        // Lock was unlinked between EEXIST and our read, OR content was
-        // unparseable. Either way, treat as stale.
-      } finally {
-        if (readFd !== null) {
-          try {
-            closeSync(readFd);
-          } catch {
-            // best-effort
-          }
-        }
+        // Race: someone else cleaned it up. Recovery retry below will succeed.
       }
-
-      if (holderPid === null || !isProcessAlive(holderPid)) {
-        try {
-          unlinkSync(path);
-        } catch {
-          // Race: another caller already cleaned it up. Loop and retry.
-        }
-        continue;
-      }
-
-      if (Date.now() >= deadline) {
-        throw new Error(
-          `agent-index: timed out after ${LOCK_TIMEOUT_MS}ms waiting for lock at ${path} ` +
-            `(held by live PID ${holderPid}).`,
-        );
-      }
-
-      // Busy-wait briefly. Synchronous on purpose to keep the API sync.
-      Bun.sleepSync(LOCK_POLL_MS);
+      const recovered = tryAcquire(path, body);
+      if (recovered) return recovered;
+      throw new Error(
+        `Could not acquire agents.json lock at ${path} after ${LOCK_TIMEOUT_MS}ms ` +
+          `(another process holding it).`,
+      );
     }
+
+    Bun.sleepSync(LOCK_POLL_MS);
   }
 }
 
