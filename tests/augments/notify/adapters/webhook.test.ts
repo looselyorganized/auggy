@@ -52,7 +52,7 @@ describe("webhookAdapter", () => {
   it("includes optional visitor field when provided", async () => {
     let body: any;
     const adapter = createWebhookAdapter({
-      client: mockHttp((u, b) => {
+      client: mockHttp((_u, b) => {
         body = b;
         return { status: 200, body: "{}" };
       }),
@@ -68,7 +68,7 @@ describe("webhookAdapter", () => {
     };
     let capturedHeaders: Record<string, string> | undefined;
     const adapter = createWebhookAdapter({
-      client: mockHttp((u, b, h) => {
+      client: mockHttp((_u, _b, h) => {
         capturedHeaders = h;
         return { status: 200, body: "{}" };
       }),

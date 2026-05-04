@@ -26,7 +26,7 @@ describe("createTelegramBotClient", () => {
     let captured: { url?: string; body?: any } = {};
     const client = createTelegramBotClient({
       botToken: "TESTTOKEN",
-      client: mockHttp((method, url, body) => {
+      client: mockHttp((_method, url, body) => {
         captured = { url, body };
         return {
           status: 200,
@@ -45,7 +45,7 @@ describe("createTelegramBotClient", () => {
     let captured: any = {};
     const client = createTelegramBotClient({
       botToken: "T",
-      client: mockHttp((m, u, b) => {
+      client: mockHttp((_m, u, b) => {
         captured = { url: u, body: b };
         return { status: 200, body: JSON.stringify({ ok: true, result: [] }) };
       }),
@@ -59,7 +59,7 @@ describe("createTelegramBotClient", () => {
     let captured: any = {};
     const client = createTelegramBotClient({
       botToken: "T",
-      client: mockHttp((m, u, b) => {
+      client: mockHttp((_m, u, b) => {
         captured = { url: u, body: b };
         return { status: 200, body: JSON.stringify({ ok: true, result: true }) };
       }),
@@ -73,7 +73,7 @@ describe("createTelegramBotClient", () => {
     let url = "";
     const client = createTelegramBotClient({
       botToken: "T",
-      client: mockHttp((m, u) => {
+      client: mockHttp((_m, u) => {
         url = u;
         return { status: 200, body: JSON.stringify({ ok: true, result: true }) };
       }),

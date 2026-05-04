@@ -3,13 +3,7 @@ import { z } from "zod";
 import { createTurnLoop } from "@/kernel/turn-loop";
 import { createMockModel } from "@tests/fixtures/mock-model";
 import { createTokenizer } from "@/tokenizer";
-import type {
-  Augment,
-  TurnTrigger,
-  PeerIdentity,
-  InboundMessage,
-  ToolResult,
-} from "@/types";
+import type { Augment, TurnTrigger, PeerIdentity, InboundMessage, ToolResult } from "@/types";
 
 function makeTrigger(text: string): TurnTrigger {
   const peer: PeerIdentity = {
