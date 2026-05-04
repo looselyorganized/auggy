@@ -381,7 +381,9 @@ export function webTransport(opts: WebTransportOptions): Augment {
 
         const patchThreadId = (e: AGUIEvent): AGUIEvent => {
           if (e.type === "RUN_FINISHED" && !e.threadId) {
-            return runFinished({ threadId, runId: trigger.turnId });
+            // Spread to preserve `result` (and any future fields) the
+            // translator attaches; only the threadId needs patching.
+            return { ...e, threadId };
           }
           return e;
         };

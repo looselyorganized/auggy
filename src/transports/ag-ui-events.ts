@@ -223,7 +223,14 @@ export function translateKernelEvent(event: KernelEvent): AGUIEvent[] {
       return [textMessageEnd({ messageId: event.messageId })];
 
     case "run_finished":
-      return [runFinished({ threadId: "", runId: event.turnId, status: event.status })];
+      return [
+        runFinished({
+          threadId: "",
+          runId: event.turnId,
+          status: event.status,
+          ...(event.message !== undefined && { message: event.message }),
+        }),
+      ];
 
     case "run_error":
       // Only emit RUN_ERROR here. The turn loop always emits a separate
