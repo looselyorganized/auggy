@@ -110,4 +110,41 @@ describe("runRemove", () => {
       confirmAnswer = true;
     }
   });
+
+  test("refuses delete when localDir lacks agent.yaml (corrupt-index protection)", async () => {
+    const dir = setupAgent("zip");
+    // Remove the agent.yaml but keep the dir.
+    rmSync(join(dir, "agent.yaml"), { force: true });
+    await expect(runRemove("zip", { yes: true, auggyDir })).rejects.toThrow(
+      /Refusing to delete|does not contain agent\.yaml/i,
+    );
+    // Dir should still exist (we refused).
+    expect(existsSync(dir)).toBe(true);
+    // Index entry should still exist (we refused before touching it).
+    const { getAgent } = await import("../../src/cli/agent-index");
+    expect(getAgent("zip", { auggyDir })).not.toBeNull();
+  });
+
+  test("refuses delete when agent.yaml's name is alive under different PID manifest key (Codex I3)", async () => {
+    const dir = setupAgent("zip");
+    // Edit agent.yaml so config.name differs from the index key
+    writeFileSync(join(dir, "agent.yaml"), "id: aug1_test\nname: zippy\n");
+    // Plant a live PID manifest under config.name "zippy"
+    writePidManifest({
+      pid: process.pid,
+      name: "zippy",
+      port: 8081,
+      configPath: join(dir, "agent.yaml"),
+      agentDir: dir,
+      startedAt: new Date().toISOString(),
+      mode: "dev",
+    });
+    try {
+      await expect(runRemove("zip", { yes: true, auggyDir })).rejects.toThrow(
+        /running|stop it first/i,
+      );
+    } finally {
+      removePidManifest("zippy");
+    }
+  });
 });
