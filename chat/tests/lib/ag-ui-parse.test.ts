@@ -263,3 +263,39 @@ describe("parseSSEStream", () => {
     expect(events).toEqual([{ type: "RUN_STARTED" }]);
   });
 });
+
+describe("RunFinished.result", () => {
+  it("parses RUN_FINISHED.result.status when present", async () => {
+    const sse =
+      `data: {"type":"RUN_FINISHED","threadId":"t1","runId":"r1","result":{"status":"input-required","message":"What date?"}}\n\n`;
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(sse));
+        controller.close();
+      },
+    });
+    const events: AGUIEvent[] = [];
+    for await (const e of parseSSEStream(stream)) events.push(e);
+    expect(events).toHaveLength(1);
+    const ev = events[0]!;
+    if (ev.type !== "RUN_FINISHED") throw new Error("expected RUN_FINISHED");
+    expect(ev.result?.status).toBe("input-required");
+    expect(ev.result?.message).toBe("What date?");
+  });
+
+  it("parses RUN_FINISHED with no result (back-compat)", async () => {
+    const sse = `data: {"type":"RUN_FINISHED","threadId":"t1","runId":"r1"}\n\n`;
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(sse));
+        controller.close();
+      },
+    });
+    const events: AGUIEvent[] = [];
+    for await (const e of parseSSEStream(stream)) events.push(e);
+    expect(events).toHaveLength(1);
+    const ev = events[0]!;
+    if (ev.type !== "RUN_FINISHED") throw new Error("expected RUN_FINISHED");
+    expect(ev.result).toBeUndefined();
+  });
+});

@@ -27,6 +27,7 @@ export function ChatWidget({ agent, sourceName, connection }: ChatWidgetProps) {
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
   const [bannerError, setBannerError] = useState<string | null>(null);
+  const [awaitingUser, setAwaitingUser] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -103,6 +104,7 @@ export function ChatWidget({ agent, sourceName, connection }: ChatWidgetProps) {
     setInput("");
     setStreaming(true);
     setBannerError(null);
+    setAwaitingUser(false);
 
     const ctrl = new AbortController();
     abortRef.current = ctrl;
@@ -198,9 +200,14 @@ export function ChatWidget({ agent, sourceName, connection }: ChatWidgetProps) {
           if (tc && tc.status === "running") tc.status = "completed";
           break;
         }
-        case "RUN_FINISHED":
+        case "RUN_FINISHED": {
           flushNow();
+          // Render the "waiting for you" hint when the runtime ends a turn
+          // with status input-required (the request_input tool was called).
+          // Unknown statuses fall through — treat as completed for back-compat.
+          setAwaitingUser(ev.result?.status === "input-required");
           break;
+        }
         case "RUN_ERROR":
           flushNow();
           updateAssistant(assistantMsg.id, { error: ev.message ?? "Agent error" });
@@ -246,6 +253,11 @@ export function ChatWidget({ agent, sourceName, connection }: ChatWidgetProps) {
       {bannerError && <ErrorBanner message={bannerError} onDismiss={() => setBannerError(null)} />}
       <MessageList messages={history.messages} streaming={streaming} />
       <footer className="chat-widget__footer">
+        {awaitingUser && !streaming && (
+          <p className="chat-widget__awaiting-hint" aria-live="polite">
+            Waiting for your reply…
+          </p>
+        )}
         <textarea
           ref={inputRef}
           value={input}

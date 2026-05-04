@@ -20,7 +20,31 @@ export type AGUIEventType =
 interface Base { type: AGUIEventType }
 
 export interface RunStarted extends Base { type: "RUN_STARTED"; threadId?: string; runId?: string; }
-export interface RunFinished extends Base { type: "RUN_FINISHED"; threadId?: string; runId?: string; }
+
+/**
+ * Status discriminator on RUN_FINISHED.result. Mirrors a subset of TaskState
+ * in `augment-1/src/types.ts:35`. Cross-package; keep in sync if new states
+ * are added on the runtime side. The chat widget only branches on
+ * "input-required"; unknown states fall through to the default "completed" UX.
+ */
+export type RunFinishedStatus =
+  | "working"
+  | "input-required"
+  | "auth-required"
+  | "completed"
+  | "failed"
+  | "canceled"
+  | "rejected";
+
+export interface RunFinished extends Base {
+  type: "RUN_FINISHED";
+  threadId?: string;
+  runId?: string;
+  result?: {
+    status?: RunFinishedStatus;
+    message?: string;
+  };
+}
 export interface RunError extends Base { type: "RUN_ERROR"; message: string; code?: string; }
 export interface TextMessageStart extends Base { type: "TEXT_MESSAGE_START"; messageId?: string; role?: "assistant"; }
 export interface TextMessageContent extends Base { type: "TEXT_MESSAGE_CONTENT"; messageId?: string; delta: string; }
