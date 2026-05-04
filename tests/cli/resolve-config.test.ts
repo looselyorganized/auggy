@@ -26,9 +26,9 @@ describe("resolveConfigPath", () => {
   });
 
   test("explicit --config to nonexistent path throws", () => {
-    expect(() =>
-      resolveConfigPath("zip", "/nonexistent/agent.yaml", { auggyDir }),
-    ).toThrow(/not found/i);
+    expect(() => resolveConfigPath("zip", "/nonexistent/agent.yaml", { auggyDir })).toThrow(
+      /not found/i,
+    );
   });
 
   test("index hit returns indexed agent.yaml path", () => {
@@ -36,9 +36,7 @@ describe("resolveConfigPath", () => {
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, "agent.yaml"), "id: aug1_test\n");
     addAgent("zip", dir, { auggyDir });
-    expect(resolveConfigPath("zip", undefined, { auggyDir })).toBe(
-      join(dir, "agent.yaml"),
-    );
+    expect(resolveConfigPath("zip", undefined, { auggyDir })).toBe(join(dir, "agent.yaml"));
   });
 
   test("index hit but agent.yaml missing throws helpful error", () => {
