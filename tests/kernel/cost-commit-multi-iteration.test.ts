@@ -195,4 +195,50 @@ describe("runCostCommit — multi-iteration sum", () => {
     if (!cost.priced) throw new Error("expected priced");
     expect(cost.costUsd).toBeCloseTo(0.001, 9);
   });
+
+  it("breaks on first unpriced step and ignores subsequent priced steps", async () => {
+    // Locks the load-bearing invariant: if a future refactor moved the
+    // `break` to `continue`, tests 1-3 would still pass but a 0.999-priced
+    // step after an unpriced step would silently survive in the committed
+    // total. This test fails fast in that case.
+    const model = createMockModel();
+    // Step 0: UNPRICED
+    model.pushResponse({
+      content: "",
+      toolCalls: [{ name: "echo", arguments: { input: "x" } }],
+      finishReason: "tool_use",
+      costUsd: undefined,
+      unpricedReason: "first-step-unpriced",
+    });
+    // Step 1: priced — must be ignored by commit because step 0 was unpriced.
+    model.pushResponse({ content: "done", finishReason: "end_turn", costUsd: 0.999 });
+
+    const echoAug: Augment = {
+      name: "echo-aug",
+      capabilities: ["tools"],
+      tools: [
+        {
+          name: "echo",
+          description: "echoes input",
+          category: "meta",
+          input: z.object({ input: z.string() }),
+          execute: async ({ input }) => input,
+        },
+      ],
+    };
+    const gate = captureGate();
+    const loop = createTurnLoop({
+      augments: [identityAugment(), echoAug, gate.augment],
+      model,
+      tokenizer: createTokenizer(),
+      config: { name: "test", model: "mock", augments: [] },
+    });
+    await loop.executeTurn(makeTrigger("hi"), "thread-1");
+
+    expect(gate.committedCosts).toHaveLength(1);
+    const cost = gate.committedCosts[0]!;
+    expect(cost.priced).toBe(false);
+    if (cost.priced) throw new Error("expected unpriced");
+    expect(cost.reason).toBe("first-step-unpriced");
+  });
 });
