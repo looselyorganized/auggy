@@ -138,26 +138,16 @@ describe("agent-index — concurrency", () => {
     expect(existsSync(join(auggyDir, "agents.json.lock"))).toBe(false);
   });
 
-  test("acquireLock cleans up stale lock with dead PID", () => {
-    // Manually plant a stale lock with a guaranteed-dead PID.
+  test("acquireLock force-recovers from a stale lock after timeout", () => {
+    // Plant a stale lock (content is irrelevant — recovery is time-based, not
+    // PID-based, after the CodeQL refactor).
     writeFileSync(
       join(auggyDir, "agents.json.lock"),
       JSON.stringify({ pid: 99999999, acquired: "2026-05-04T00:00:00Z" }),
     );
-    // addAgent should detect the stale lock and proceed.
+    // addAgent should wait LOCK_TIMEOUT_MS (~5s), then force-unlink and acquire.
     addAgent("zip", "/tmp/zip", { auggyDir });
     expect(getAgent("zip", { auggyDir })?.localDir).toBe("/tmp/zip");
     expect(existsSync(join(auggyDir, "agents.json.lock"))).toBe(false);
-  });
-
-  test("acquireLock throws when held by a live PID and timeout expires", async () => {
-    // Hold the lock with the current process's own PID — it'll always be alive.
-    writeFileSync(
-      join(auggyDir, "agents.json.lock"),
-      JSON.stringify({ pid: process.pid, acquired: new Date().toISOString() }),
-    );
-    // addAgent should retry up to ~5s then throw.
-    // Reduce assertion time by NOT waiting full 5s; just check the throw.
-    expect(() => addAgent("zip", "/tmp/zip", { auggyDir })).toThrow(/lock|timeout|held/i);
-  }, 10000); // generous test timeout
+  }, 10000);
 });
