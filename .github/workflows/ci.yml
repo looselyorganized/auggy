@@ -38,6 +38,9 @@ jobs:
       - name: Typecheck
         run: bun run typecheck
 
+      - name: Pricing freshness check
+        run: bun run scripts/check-pricing-freshness.ts
+
       - name: Run tests
         run: bun test
         env:
