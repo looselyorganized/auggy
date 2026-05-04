@@ -406,6 +406,16 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
     envVars: ["TELEGRAM_BOT_TOKEN"],
     hasSkill: false,
   },
+  {
+    label: "Turn Control",
+    description:
+      "Lets the agent pause and request input from the user. Recommended for chat-shaped agents (web/telegram).",
+    type: "turnControl",
+    defaultName: "turn-control",
+    defaultOptions: {},
+    required: false,
+    hasSkill: false,
+  },
 ];
 
 /** Get catalog entries that are not yet installed (by type + defaultName). */

@@ -24,6 +24,7 @@ import { orgContext } from "../augments/org-context";
 import { bash } from "../augments/bash";
 import { notify } from "../augments/notify";
 import { telegramTransport } from "../augments/telegram-transport";
+import { turnControl, type TurnControlOptions } from "../augments/turn-control";
 import type { Augment, NotifyAugmentOptions, TelegramTransportOptions } from "../types";
 import type { AugmentConfig } from "./types";
 import type { BudgetsAugmentOptions } from "../augments/budgets";
@@ -285,6 +286,9 @@ export async function resolveAugments(
       }
       case "telegramTransport":
         augment = telegramTransport(opts as unknown as TelegramTransportOptions);
+        break;
+      case "turnControl":
+        augment = turnControl(opts as TurnControlOptions);
         break;
       case "custom":
         augment = await resolveCustom(config, agentDir);

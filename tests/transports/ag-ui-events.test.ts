@@ -13,6 +13,7 @@ import {
   translateKernelEvent,
   serializeSSE,
 } from "@/transports/ag-ui-events";
+import type { AGUIRunFinished } from "@/transports/ag-ui-events";
 import type { KernelEvent } from "@/types";
 
 describe("AG-UI event constructors", () => {
@@ -206,6 +207,41 @@ describe("translateKernelEvent", () => {
     expect(events).toHaveLength(1);
     expect(events[0]!.type).toBe("RUN_ERROR");
     expect((events[0] as { message: string }).message).toBe("boom");
+  });
+});
+
+describe("AG-UI translator — RUN_FINISHED.result", () => {
+  it("propagates status to result.status when KernelEvent.run_finished carries one", () => {
+    const ev: KernelEvent = {
+      kind: "run_finished",
+      turnId: "t1",
+      status: "input-required",
+    };
+    const out = translateKernelEvent(ev);
+    expect(out).toHaveLength(1);
+    const finished = out[0] as AGUIRunFinished;
+    expect(finished.type).toBe("RUN_FINISHED");
+    expect(finished.result?.status).toBe("input-required");
+  });
+
+  it("emits each TaskState verbatim on result.status", () => {
+    const states = ["completed", "failed", "canceled", "rejected", "input-required"] as const;
+    for (const status of states) {
+      const out = translateKernelEvent({ kind: "run_finished", turnId: "t", status });
+      const finished = out[0] as AGUIRunFinished;
+      expect(finished.result?.status).toBe(status);
+    }
+  });
+
+  it("omits result entirely when status is missing (back-compat)", () => {
+    // Defensive: today every kernel run_finished sets status, but if a future
+    // path emits run_finished without status, the translator must not crash
+    // and must produce no result field.
+    const ev = { kind: "run_finished", turnId: "t1" } as unknown as KernelEvent;
+    const out = translateKernelEvent(ev);
+    const finished = out[0] as AGUIRunFinished;
+    expect(finished.type).toBe("RUN_FINISHED");
+    expect(finished.result).toBeUndefined();
   });
 });
 
