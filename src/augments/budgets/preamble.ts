@@ -63,9 +63,13 @@ export function buildBudgetPreamble(input: BuildBudgetPreambleInput): ContextBlo
       `Estimated spend today: $${input.used.costUsd.toFixed(2)} of $${input.caps.maxUsdPerDay.toFixed(2)}`,
     );
   }
-  if (input.used.unpricedTurns > 0) {
-    lines.push(`Unpriced turns today: ${input.used.unpricedTurns}`);
-  }
+  // Note: `input.used.unpricedTurns` is intentionally NOT rendered into the
+  // BATS preamble. Codex adversarial review (2026-05-04) flagged that
+  // exposing "Unpriced turns today: N" to the model lets a misaligned agent
+  // infer when budget enforcement is degraded — exactly the moment more
+  // spend can fly under the cap. The counter remains accessible via
+  // store.getPeerUsage() for operator-side tooling (deferred — see ROADMAP
+  // "Cost: operator cost-read API").
   lines.push("");
   lines.push(`Behavioral guidance (budgetRatio = ${ratio.toFixed(2)}): ${bucketGuidance(ratio)}`);
 

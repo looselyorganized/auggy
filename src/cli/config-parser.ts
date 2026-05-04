@@ -500,6 +500,31 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
         ) {
           errors.push("engine.costOverride.outputUsdPerMtok: must be a finite non-negative number");
         }
+        // Optional cache rates — accepted for the Anthropic adapter (where they
+        // contribute to costUsd) and for OpenAI/OpenRouter (where they're
+        // accepted for type symmetry; those adapters warn at boot when set).
+        if (co.cacheWriteUsdPerMtok !== undefined) {
+          if (
+            typeof co.cacheWriteUsdPerMtok !== "number" ||
+            !Number.isFinite(co.cacheWriteUsdPerMtok) ||
+            co.cacheWriteUsdPerMtok < 0
+          ) {
+            errors.push(
+              "engine.costOverride.cacheWriteUsdPerMtok: must be a finite non-negative number",
+            );
+          }
+        }
+        if (co.cacheReadUsdPerMtok !== undefined) {
+          if (
+            typeof co.cacheReadUsdPerMtok !== "number" ||
+            !Number.isFinite(co.cacheReadUsdPerMtok) ||
+            co.cacheReadUsdPerMtok < 0
+          ) {
+            errors.push(
+              "engine.costOverride.cacheReadUsdPerMtok: must be a finite non-negative number",
+            );
+          }
+        }
       }
     }
   }

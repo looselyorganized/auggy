@@ -872,11 +872,34 @@ export function createTurnLoop(opts: {
             toolChoiceOpt,
           );
 
+          const termInferStart = Date.now();
           const {
             response: finalResponse,
             streamed: termStreamed,
             messageId: termMessageId,
           } = await streamingInference(model, currentPrompt, trigger.turnId, emitEvent);
+          const termInferDuration = Date.now() - termInferStart;
+
+          // Record this final inference so its cost lands in trace.inferenceSteps[]
+          // and runCostCommit() sees it. Without this, the consecutive-failure
+          // completion path silently drops the final API call from cost
+          // accounting — and an unpriced final step would never trigger the
+          // any-unpriced→whole-turn-unpriced rule.
+          const termCost: CostResult =
+            finalResponse.costUsd !== undefined
+              ? { priced: true, costUsd: finalResponse.costUsd }
+              : {
+                  priced: false,
+                  reason: finalResponse.unpricedReason ?? "engine returned no costUsd",
+                };
+          traceEmitter.recordInference(trace, {
+            model: config.model,
+            inputTokens: finalResponse.inputTokens,
+            outputTokens: finalResponse.outputTokens,
+            durationMs: termInferDuration,
+            toolCalls: [],
+            cost: termCost,
+          });
 
           if (finalResponse.content) {
             history.append({
