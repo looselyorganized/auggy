@@ -606,7 +606,7 @@ export function parseConfig(yamlPath: string): ParsedConfig {
   } catch (err) {
     const msg = (err as Error).message;
     if (msg.startsWith("Missing environment variables:")) {
-      throw new Error(augmentMissingEnvError(msg, agentDir));
+      throw new Error(augmentMissingEnvError(msg, agentDir), { cause: err });
     }
     throw err;
   }
