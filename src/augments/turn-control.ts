@@ -26,10 +26,10 @@ const DEFAULT_REQUEST_INPUT_DESCRIPTION =
   "Pause this turn and ask the user for more information. " +
   "Use this when you need an answer to proceed and cannot reasonably guess. " +
   "The `prompt` argument is shown to the user as your reply; the conversation " +
-  "resumes on their next message. Do not use this as a closing pleasantry — " +
-  "only when you are actually blocked on missing input.";
+  "resumes on their next message. The turn ends with status 'input-required'. " +
+  "Do not use this as a closing pleasantry — only when you are actually blocked on missing input.";
 
-export function createTurnControl(opts: TurnControlOptions = {}): Augment {
+export function turnControl(opts: TurnControlOptions = {}): Augment {
   const requestInput = defineTool({
     name: "request_input",
     description: opts.requestInputDescription ?? DEFAULT_REQUEST_INPUT_DESCRIPTION,
