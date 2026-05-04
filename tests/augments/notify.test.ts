@@ -8,6 +8,7 @@ import type {
   PeerIdentity,
   ToolExecuteContext,
 } from "../../src/types";
+import { asStringTool } from "../fixtures/tool-helpers";
 
 function makePeer(id: string, trustLevel: PeerIdentity["trustLevel"] = "public"): PeerIdentity {
   return {
@@ -42,14 +43,11 @@ const baseOpts: NotifyAugmentOptions = {
   rateLimit: { cooldownMs: 60_000, dedupThreshold: 0, globalMaxPerHour: 100 },
 };
 
-type StringTool = { execute: (input: unknown, ctx?: unknown) => Promise<string> };
-
 /** Return the notify tool with execute typed as string-returning for test convenience. */
-function getNotifyTool(aug: ReturnType<typeof notify>): StringTool {
+function getNotifyTool(aug: ReturnType<typeof notify>) {
   const tool = aug.tools!.find((t) => t.name === "notify");
   if (!tool) throw new Error("notify tool not found");
-  // notify always returns plain strings; cast for test convenience.
-  return tool as unknown as StringTool;
+  return asStringTool(tool);
 }
 
 describe("notify augment", () => {

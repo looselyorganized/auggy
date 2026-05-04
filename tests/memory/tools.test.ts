@@ -2,6 +2,7 @@ import { describe, it, expect } from "bun:test";
 import { createMemoryTools } from "@/memory/tools";
 import { buildRegistry } from "@/memory/registry";
 import type { Augment, MemoryDefaults, ToolExecuteContext } from "@/types";
+import { asStringTool } from "@tests/fixtures/tool-helpers";
 
 const defaults: MemoryDefaults = {
   mutable: true,
@@ -571,8 +572,8 @@ describe("createMemoryTools", () => {
       ];
       const registry = buildRegistry(providers);
       const { tools } = createMemoryTools(registry);
-      const listTool = tools.find((t) => t.name === "memory_list")!;
-      const result = await listTool.execute({}, DEFAULT_CTX) as string;
+      const listTool = asStringTool(tools.find((t) => t.name === "memory_list")!);
+      const result = await listTool.execute({}, DEFAULT_CTX);
       const parsed = JSON.parse(result);
       expect(parsed.static).toContain("self");
       expect(parsed.static).toContain("notes");
@@ -618,7 +619,7 @@ describe("createMemoryTools", () => {
       ];
       const registry = buildRegistry(providers);
       const { tools } = createMemoryTools(registry);
-      const listTool = tools.find((t) => t.name === "memory_list")!;
+      const listTool = asStringTool(tools.find((t) => t.name === "memory_list")!);
       const result = await listTool.execute(
         {},
         {
@@ -626,7 +627,7 @@ describe("createMemoryTools", () => {
           peer: { id: "vis_1", kind: "human", trustLevel: "public", sourceAugment: "web" },
           threadId: "th1",
         },
-      ) as string;
+      );
       const parsed = JSON.parse(result);
       expect(parsed.static).not.toContain("self");
       expect(parsed.static).not.toContain("learned");
@@ -656,7 +657,7 @@ describe("createMemoryTools", () => {
       ];
       const registry = buildRegistry(providers);
       const { tools } = createMemoryTools(registry);
-      const listTool = tools.find((t) => t.name === "memory_list")!;
+      const listTool = asStringTool(tools.find((t) => t.name === "memory_list")!);
       const result = await listTool.execute(
         {},
         {
@@ -664,7 +665,7 @@ describe("createMemoryTools", () => {
           peer: { id: "op", kind: "human", trustLevel: "creator", sourceAugment: "web" },
           threadId: "th1",
         },
-      ) as string;
+      );
       const parsed = JSON.parse(result);
       expect(parsed.static).toContain("self");
       expect(parsed.namespaces).toContain("sys:*");
@@ -952,7 +953,7 @@ describe("createMemoryTools", () => {
       const b = makeAug("b", 2, "other:");
       const registry = buildRegistry([a, b]);
       const { tools } = createMemoryTools(registry);
-      const forgetTool = tools.find((t) => t.name === "memory_forget")!;
+      const forgetTool = asStringTool(tools.find((t) => t.name === "memory_forget")!);
       const result = await forgetTool.execute(
         { peerId: "vis_a" },
         {
@@ -960,7 +961,7 @@ describe("createMemoryTools", () => {
           threadId: "th",
           peer: { id: "op", kind: "human", trustLevel: "creator", sourceAugment: "cli" },
         },
-      ) as string;
+      );
       const parsed = JSON.parse(result);
       expect(parsed.deleted).toBe(5);
     });
@@ -995,7 +996,7 @@ describe("createMemoryTools", () => {
       const withForget = makeAug("with", 4, "ep:");
       const registry = buildRegistry([noForget, withForget]);
       const { tools } = createMemoryTools(registry);
-      const forgetTool = tools.find((t) => t.name === "memory_forget")!;
+      const forgetTool = asStringTool(tools.find((t) => t.name === "memory_forget")!);
       const result = await forgetTool.execute(
         { peerId: "vis_a" },
         {
@@ -1003,7 +1004,7 @@ describe("createMemoryTools", () => {
           threadId: "th",
           peer: { id: "op", kind: "human", trustLevel: "creator", sourceAugment: "cli" },
         },
-      ) as string;
+      );
       const parsed = JSON.parse(result);
       expect(parsed.deleted).toBe(4);
     });
@@ -1021,11 +1022,11 @@ describe("createMemoryTools", () => {
       const a = makeAug("a", 5, "ep:");
       const registry = buildRegistry([a]);
       const { tools } = createMemoryTools(registry);
-      const forgetTool = tools.find((t) => t.name === "memory_forget")!;
+      const forgetTool = asStringTool(tools.find((t) => t.name === "memory_forget")!);
       const result = await forgetTool.execute(
         { peerId: "vis_a" },
         { turnId: "t1", threadId: "th", peer: null },
-      ) as string;
+      );
       const parsed = JSON.parse(result);
       expect(parsed.deleted).toBe(5);
     });

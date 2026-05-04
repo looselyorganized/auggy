@@ -3,6 +3,7 @@ import { writeFile, mkdir, symlink, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { filesystem, isWithinMount } from "@/augments/filesystem";
 import { createTempDir } from "@tests/fixtures/temp-dir";
+import { asStringTool } from "@tests/fixtures/tool-helpers";
 
 describe("filesystem augment", () => {
   let tmp: { path: string; cleanup: () => Promise<void> };
@@ -67,7 +68,7 @@ describe("filesystem augment", () => {
     await aug.onBoot!();
     const tool = aug.tools!.find((t) => t.name === toolName);
     if (!tool) throw new Error(`Tool ${toolName} not found`);
-    return tool.execute(input) as Promise<string>;
+    return asStringTool(tool).execute(input);
   }
 
   // === Structure ===

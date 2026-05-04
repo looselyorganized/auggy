@@ -4,18 +4,16 @@ import { join } from "node:path";
 import { bash } from "@/augments/bash";
 import { createCapabilityTable } from "@/kernel/capability-table";
 import type { TurnState } from "@/types";
+import { asStringTool } from "@tests/fixtures/tool-helpers";
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-type BashTool = { execute: (input: unknown, ctx?: unknown) => Promise<string> };
-
-function getTool(augment: ReturnType<typeof bash>, name: string): BashTool {
+function getTool(augment: ReturnType<typeof bash>, name: string) {
   const tool = augment.tools?.find((t) => t.name === name);
   if (!tool) throw new Error(`Tool ${name} not found`);
-  // All bash tools return plain strings; cast execute for test convenience.
-  return tool as unknown as BashTool;
+  return asStringTool(tool);
 }
 
 function turnWithTrust(level: "creator" | "agent" | "public"): TurnState {

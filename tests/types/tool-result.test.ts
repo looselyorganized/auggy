@@ -36,6 +36,9 @@ describe("ToolResult", () => {
   });
 
   it("ToolResult.terminate.status is narrowed to input-required | completed", () => {
+    // Type-level assertion via TS — if the Extract<> narrowing breaks,
+    // this file fails to compile. The runtime assertion below just exercises
+    // the value at runtime.
     const r: ToolResult = { content: "x", terminate: { status: "completed" } };
     expect(r.terminate?.status).toBe("completed");
   });
