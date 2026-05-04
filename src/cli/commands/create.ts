@@ -15,7 +15,7 @@ import { existsSync, mkdirSync, rmSync, writeFileSync, cpSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
-import { checkbox, select, input } from "@inquirer/prompts";
+import { checkbox, confirm, select, input } from "@inquirer/prompts";
 import { stringify } from "yaml";
 import { AUGMENT_CATALOG, type CatalogEntry } from "../augment-catalog";
 import { scanSkillManifest, renderSkillManifest } from "../skill-manifest";
@@ -41,14 +41,17 @@ const cream = (s: string): string => ansi("38;2;251;247;235", s);
 const green = (s: string): string => ansi("32", s);
 
 export async function runCreate(name: string, opts: { dir?: string }): Promise<void> {
-  // Wrong-dir guard: refuse if CWD has agent.yaml.
-  const cwdAgentYaml = resolve("./agent.yaml");
-  if (existsSync(cwdAgentYaml)) {
-    throw new Error(
-      `You appear to be inside an agent directory.\n\n` +
-        `  Found: ${cwdAgentYaml}\n\n` +
-        `Run \`cd ..\` first, or pass --dir <path> to scaffold elsewhere.`,
-    );
+  // Wrong-dir guard: refuse if CWD has agent.yaml. Skip when --dir is provided
+  // (operator has explicitly chosen the target, so CWD is irrelevant).
+  if (!opts.dir) {
+    const cwdAgentYaml = resolve("./agent.yaml");
+    if (existsSync(cwdAgentYaml)) {
+      throw new Error(
+        `You appear to be inside an agent directory.\n\n` +
+          `  Found: ${cwdAgentYaml}\n\n` +
+          `Run \`cd ..\` first, or pass --dir <path> to scaffold elsewhere.`,
+      );
+    }
   }
 
   // Refuse if name already registered in the index.
@@ -95,7 +98,15 @@ export async function runCreate(name: string, opts: { dir?: string }): Promise<v
   if (modelSelection === CUSTOM_SENTINEL) {
     model = await input({ message: "Custom model ID:" });
     printCustomModelWarning(model);
-    await Bun.sleep(2000);
+    const proceed = await confirm({
+      message: "Continue with unpriced model? Budget caps will not enforce.",
+      default: false,
+    });
+    if (!proceed) {
+      throw new Error(
+        "Aborted by operator. Pick a priced model or add `engine.costOverride` to agent.yaml after scaffolding.",
+      );
+    }
   } else {
     model = modelSelection;
   }
@@ -171,10 +182,28 @@ export async function runCreate(name: string, opts: { dir?: string }): Promise<v
     }
   }
 
+  // SIGINT handler scoped to the post-scaffold/pre-index window.
+  // Without this, Ctrl+C between scaffold completion and addAgent leaves
+  // an orphan dir with no index entry — neither create nor remove can recover.
+  const sigintHandler = (): void => {
+    if (existsSync(dir)) {
+      try {
+        rmSync(dir, { recursive: true, force: true });
+      } catch {
+        // best-effort
+      }
+    }
+    console.log();
+    console.log("Aborted. Cleaned up partially-scaffolded directory.");
+    process.exit(130); // 128 + SIGINT(2)
+  };
+  process.once("SIGINT", sigintHandler);
+
   // Register in the index. If this fails, clean up the scaffolded dir.
   try {
     addAgent(name, dir);
   } catch (err) {
+    process.removeListener("SIGINT", sigintHandler);
     try {
       rmSync(dir, { recursive: true, force: true });
     } catch {
@@ -182,6 +211,7 @@ export async function runCreate(name: string, opts: { dir?: string }): Promise<v
     }
     throw err;
   }
+  process.removeListener("SIGINT", sigintHandler);
 
   const envVar = PROVIDER_DEFAULTS[provider].envVar;
 
@@ -215,7 +245,7 @@ function printCustomModelWarning(modelId: string): void {
   console.log(`      inputUsdPerMtok: <number>`);
   console.log(`      outputUsdPerMtok: <number>`);
   console.log();
-  console.log(`Press Ctrl+C now if this is unintended. Otherwise, continuing in 2s...`);
+  console.log(`Confirm at the next prompt to proceed, or decline to abort.`);
   console.log();
 }
 
