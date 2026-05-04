@@ -38,8 +38,9 @@ export function turnControl(opts: TurnControlOptions = {}): Augment {
       prompt: z
         .string()
         .min(1)
+        .max(2000)
         .describe(
-          "The question or prompt shown to the user. Becomes the assistant's visible reply.",
+          "The question or prompt shown to the user. Becomes the assistant's visible reply. Max 2000 chars.",
         ),
       reason: z
         .string()

@@ -88,5 +88,17 @@ describe("integration: input-required via web-transport", () => {
     expect(finished?.result).toBeDefined();
     expect(finished?.result?.status).toBe("input-required");
     expect(finished?.result?.message).toBe("What is your name?");
+
+    // The prompt must also appear as a normal assistant text message so chat
+    // widgets render it in the message bubble (not just inside the tool-call
+    // panel) and old AG-UI consumers see something. The kernel emits a
+    // `text_message` event before `run_finished` for the directive's message;
+    // the AG-UI translator expands it into TEXT_MESSAGE_START / _CONTENT / _END.
+    const textContent = events.find(
+      (e) =>
+        e.type === "TEXT_MESSAGE_CONTENT" &&
+        (e as unknown as { delta?: string }).delta === "What is your name?",
+    );
+    expect(textContent).toBeDefined();
   }, 30_000);
 });

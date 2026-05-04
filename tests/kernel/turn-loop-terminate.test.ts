@@ -183,4 +183,105 @@ describe("TurnLoop — terminate directive", () => {
     expect(result.toolCalls).toHaveLength(2);
     expect(model.calls).toHaveLength(1); // turn ended after the batch
   });
+
+  it("rejects spoofed terminate.status outside the input-required|completed allowlist", async () => {
+    // A custom JS augment (or a TS one using `as` casts) could try to set
+    // terminate.status to a kernel-controlled state like "failed" / "rejected".
+    // The kernel must runtime-validate and ignore such directives.
+    const model = createMockModel();
+    model.pushResponse({
+      content: "",
+      toolCalls: [{ name: "spoof", arguments: {} }],
+      finishReason: "tool_use",
+    });
+    // After the spoof is rejected, the kernel falls through to the next
+    // inference iteration. Provide a follow-up response so the turn ends.
+    model.pushResponse({ content: "ok", finishReason: "end_turn" });
+
+    const spoofAugment: Augment = {
+      name: "spoofer",
+      capabilities: ["tools"],
+      tools: [
+        {
+          name: "spoof",
+          description: "tries to spoof a kernel-controlled status",
+          category: "meta",
+          input: z.object({}),
+          // biome-ignore lint/suspicious/noExplicitAny: deliberately
+          // bypasses the compile-time narrowing to exercise the runtime
+          // allowlist.
+          execute: async (): Promise<ToolResult> => ({
+            content: "spoofed",
+            terminate: { status: "failed" as any, message: "should be ignored" },
+          }),
+        },
+      ],
+    };
+
+    const loop = createTurnLoop({
+      augments: [identityAugment(), spoofAugment],
+      model,
+      tokenizer: createTokenizer(),
+      config: { name: "test", model: "mock", augments: [] },
+    });
+
+    const result = await loop.executeTurn(makeTrigger("hi"), "thread-1");
+
+    // Kernel rejected the spoof; turn continued to the second model response
+    // and ended normally as "completed".
+    expect(result.status).toBe("completed");
+    expect(model.calls).toHaveLength(2);
+  });
+
+  it("emits the directive's message as a normal text_message before run_finished", async () => {
+    // Codex Critical finding: without a text_message event, the prompt is only
+    // visible inside the (collapsed by default) tool-call panel and old AG-UI
+    // consumers see literally nothing. The kernel must emit the message as a
+    // normal assistant text event before the terminal run_finished.
+    const model = createMockModel();
+    model.pushResponse({
+      content: "",
+      toolCalls: [{ name: "ask_user", arguments: { prompt: "What date?" } }],
+      finishReason: "tool_use",
+    });
+
+    const askAugment: Augment = {
+      name: "asker",
+      capabilities: ["tools"],
+      tools: [
+        {
+          name: "ask_user",
+          description: "ask the user something",
+          category: "meta",
+          input: z.object({ prompt: z.string() }),
+          execute: async ({ prompt }): Promise<ToolResult> => ({
+            content: prompt,
+            terminate: { status: "input-required", message: prompt },
+          }),
+        },
+      ],
+    };
+
+    const events: Array<{ kind: string; text?: string; status?: string }> = [];
+    const loop = createTurnLoop({
+      augments: [identityAugment(), askAugment],
+      model,
+      tokenizer: createTokenizer(),
+      config: { name: "test", model: "mock", augments: [] },
+    });
+
+    await loop.executeTurn(makeTrigger("hi"), "thread-1", {
+      onEvent: (ev) => events.push(ev as { kind: string; text?: string; status?: string }),
+    });
+
+    const textMsg = events.find((e) => e.kind === "text_message" && e.text === "What date?");
+    const runFinished = events.find((e) => e.kind === "run_finished");
+    expect(textMsg).toBeDefined();
+    expect(runFinished).toBeDefined();
+    // Order: text_message must appear before run_finished so consumers see the
+    // assistant's reply before the terminal event.
+    const textIdx = events.findIndex((e) => e.kind === "text_message" && e.text === "What date?");
+    const finishedIdx = events.findIndex((e) => e.kind === "run_finished");
+    expect(textIdx).toBeLessThan(finishedIdx);
+  });
 });
