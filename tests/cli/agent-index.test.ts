@@ -125,3 +125,39 @@ describe("listAgents", () => {
     expect(list.map((a) => a.name).sort()).toEqual(["concierge", "zip"]);
   });
 });
+
+describe("agent-index — concurrency", () => {
+  test("addAgent acquires and releases the lock file", () => {
+    addAgent("zip", "/tmp/zip", { auggyDir });
+    // After addAgent returns, the lock file should NOT exist.
+    expect(existsSync(join(auggyDir, "agents.json.lock"))).toBe(false);
+  });
+
+  test("removeAgent releases the lock even if no entry exists", () => {
+    removeAgent("ghost", { auggyDir });
+    expect(existsSync(join(auggyDir, "agents.json.lock"))).toBe(false);
+  });
+
+  test("acquireLock cleans up stale lock with dead PID", () => {
+    // Manually plant a stale lock with a guaranteed-dead PID.
+    writeFileSync(
+      join(auggyDir, "agents.json.lock"),
+      JSON.stringify({ pid: 99999999, acquired: "2026-05-04T00:00:00Z" }),
+    );
+    // addAgent should detect the stale lock and proceed.
+    addAgent("zip", "/tmp/zip", { auggyDir });
+    expect(getAgent("zip", { auggyDir })?.localDir).toBe("/tmp/zip");
+    expect(existsSync(join(auggyDir, "agents.json.lock"))).toBe(false);
+  });
+
+  test("acquireLock throws when held by a live PID and timeout expires", async () => {
+    // Hold the lock with the current process's own PID — it'll always be alive.
+    writeFileSync(
+      join(auggyDir, "agents.json.lock"),
+      JSON.stringify({ pid: process.pid, acquired: new Date().toISOString() }),
+    );
+    // addAgent should retry up to ~5s then throw.
+    // Reduce assertion time by NOT waiting full 5s; just check the throw.
+    expect(() => addAgent("zip", "/tmp/zip", { auggyDir })).toThrow(/lock|timeout|held/i);
+  }, 10000); // generous test timeout
+});
