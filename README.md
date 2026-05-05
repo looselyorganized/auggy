@@ -15,7 +15,27 @@
 
 Auggy (augment-1) is a modular agent runtime in TypeScript/Bun, purpose-built for **persistent organizational interface agents** — long-running, memory-rich, organization-facing. Agents are composed from swappable **augments**; the kernel manages context, tools, permissions, and lifecycle. Open source, multi-engine, self-hostable.
 
-**v0.2.0** — 10 augments, 3 engines. Agents boot from YAML, chat via AG-UI SSE, remember across restarts (peer-scoped layered memory), fetch URLs, pull org knowledge, escalate to the operator, run scoped shell commands, and enforce per-trust-level turn budgets + dollar ceilings via a 2PC turn-gate kernel capability.
+**v0.2.0** — 11 augments, 3 engines, 1091+ tests. Agents boot from YAML, chat via AG-UI SSE, remember across restarts (peer-scoped layered memory), fetch URLs, pull org knowledge, escalate to the operator over webhooks or Telegram, run scoped shell commands, signal task completion, and enforce per-trust-level turn budgets + dollar ceilings via a 2PC turn-gate kernel capability.
+
+## Where Auggy runs
+
+Both local and cloud, first-class:
+
+- **Local** — the default DX path. `aug1 dev <name>` for foreground; `aug1 start <name>` installs as a launchd service for always-on.
+- **Cloud (Railway)** — for operators who don't want to own hardware. Per-service deployment with persistent volume (designed; ships at v1.0).
+
+The runtime is the same in both topologies. Pick based on whether you want to run the agent on your own machine or on someone else's.
+
+## Communication surfaces
+
+| Direction | Mechanism |
+|---|---|
+| Visitor browser ↔ aug1 | `webTransport` — AG-UI SSE, four-path identity resolution, CORS, rate limiting |
+| Operator/visitor ↔ aug1 (Telegram) | `telegramTransport` — bidirectional, polling or webhook |
+| Operator ↔ aug1 (local GUI) | `aug1 chat` — Vite/React SPA + Bun proxy, discovers your running agents |
+| aug1 → external systems | `notify` augment — webhook + Telegram adapters, rate-limited, named destinations |
+
+aug1 ↔ aug1 (cross-agent A2A) is in active development. The destination network layer is **the Mesh** — a federated communication fabric for autonomous agents. The v1 entry ships as the **`link` augment** (peer-to-peer over AG-UI, mutual bearer auth, no central service). See [ADR-022](../docs/solutions/architecture/adr-022-mesh-destination-link-entry.md) for the destination + sequencing commitments. Operators can also build their own task or A2A protocols as augments.
 
 ## Quick start
 
@@ -79,13 +99,16 @@ augments:
 
 | Command | What it does |
 |---------|-------------|
-| `aug1 create <name>` | Scaffold agent directory (interactive augment selection) |
+| `aug1 create <name>` | Scaffold agent directory (interactive augment selection) — defaults to `~/.auggy/agents/<name>/` |
 | `aug1 add <name>` | Add augments to an existing agent |
 | `aug1 dev <name>` | Run in foreground (Ctrl-C stops) |
 | `aug1 start <name>` | Install as launchd service (always-on) |
 | `aug1 stop <name>` | Stop a running agent |
 | `aug1 restart <name>` | Stop and restart |
 | `aug1 status [name]` | Show running agents |
+| `aug1 ls` | List registered agents with status |
+| `aug1 remove <name>` | Delete agent dir + clear index entry (refuses if running) |
+| `aug1 chat [--port N]` | Launch the Local GUI to talk to running agents |
 
 ## Built-in augments
 
@@ -96,10 +119,12 @@ augments:
 | `filesystem` | Multi-mount scoped file access (6 tools, realpath security) |
 | `webTransport` | AG-UI SSE chat transport (HTTP, four-path identity resolution, CORS, rate limiting, Idempotency-Key dedup) |
 | `webFetch` | URL fetch with HTML-to-text and JSON passthrough |
-| `orgContext` | Org knowledge via manifest API (org_fetch tool) |
-| `notify` | Outbound operator messaging (webhook + Telegram adapters, per-peer rate limits) |
+| `orgContext` | Org knowledge via manifest API (org_fetch tool, read-only) |
+| `notify` | Outbound operator messaging (webhook + Telegram adapters, per-peer rate limits, severity routing) |
+| `telegramTransport` | Bidirectional Telegram chat transport (polling or webhook, four-path identity, ephemeral or durable peers) |
 | `bash` | Scoped shell execution (allowlist, cwd, timeout; default `perTrustLevel` blocks `shell_exec`/`run_script` for public + agent) |
 | `budgets` | Per-trust-level turn budgets + per-peer dollar ceiling via 2PC turn-gate (BATS-style budget-aware preamble + post-hoc cost commit) |
+| `turnControl` | Task-completion signaling (`request_input` tool + `ToolResult.terminate` directive surfaced as `RUN_FINISHED.result.status`) |
 
 ## Engines
 

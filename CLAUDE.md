@@ -2,9 +2,11 @@
 
 ## What this is
 
-Auggy (`augment-1`) is a modular agent runtime in TypeScript/Bun. Agents are composed from swappable augments; the kernel manages context, tools, permissions, and lifecycle. Framework-agnostic by design — **not LORF-locked**.
+Auggy (`augment-1`) is a modular agent runtime in TypeScript/Bun, **purpose-built for persistent organization-facing agents** (per [ADR-019](../docs/solutions/architecture/adr-019-auggy-task-realm.md)). Agents are composed from swappable augments; the kernel manages context, tools, permissions, and lifecycle. Framework-agnostic by design — **not LORF-locked**.
 
-**Status: v0.2.0 (2026-04-27, visitor-economics complete).** Plans 1 (kernel) + 2 (built-in augments) + 3 (CLI & manifest) complete. Layer 1 trust-aware capability table, security + quality eval suites, bashAugment, SSE token streaming, layeredMemory (peer-scoped episodic memory with provenance). Visitor-economics work (Phase 1b+1c+D1): three-level trust model (creator/agent/public + publicSubstate), TurnGateProvider 2PC contract, budgets augment (per-trust-level turn caps + dollar ceiling + BATS preamble), four-path identity resolution in web transport, Idempotency-Key dedup, bash defaults block shell_exec/run_script for public AND agent. 9 augments, 3 engines, 863 tests across 60+ files. The `chat/` package ships the Auggy Local GUI (`aug1 chat`) — a Vite/React SPA with a Bun proxy server that discovers running agents via PID manifests and proxies chat through to each agent's `/agent/run`; distributed as a versioned GitHub release artifact with first-run download + SHA256 verification. See `lo/docs/auggy-plans-detail.md` (outside this repo) for the plan-by-plan roadmap.
+**Status: v0.2.0 shipped 2026-04-27. Next milestone: v1.0 (open-source release).** Plans 1 (kernel) + 2 (built-in augments) + 3 (CLI & manifest) complete. Layer 1 trust-aware capability table, security + quality eval suites, bashAugment, SSE token streaming, layeredMemory (peer-scoped episodic memory with provenance). Visitor-economics work (Phase 1b+1c+D1): three-level trust model (creator/agent/public + publicSubstate), TurnGateProvider 2PC contract, budgets augment (per-trust-level turn caps + dollar ceiling + BATS preamble), four-path identity resolution in web transport, Idempotency-Key dedup, bash defaults block shell_exec/run_script for public AND agent. **11 augments, 3 engines, 1091+ tests across 92+ files.** The `chat/` package ships the Auggy Local GUI (`aug1 chat`) — a Vite/React SPA with a Bun proxy server that discovers running agents via PID manifests and proxies chat through to each agent's `/agent/run`; distributed as a versioned GitHub release artifact with first-run download + SHA256 verification. See [`lo/docs/ROADMAP.md`](../docs/ROADMAP.md) for active priorities and the v1.0 launch checklist; [`lo/docs/auggy-plans-detail.md`](../docs/auggy-plans-detail.md) for plan-level historical detail.
+
+**v1.0 ships as an OSS runtime for a single org-facing agent**, deployable both locally (launchd) and on Railway. Communication surfaces at v1.0: web (AG-UI SSE), Telegram (bidirectional), local operator GUI (`aug1 chat`), outbound `notify` (webhooks + Telegram). **aug1 ↔ aug1 ships imminently via the `link` augment** — peer-to-peer over AG-UI, mutual bearer auth, no central service required. The destination network layer is **the Mesh** (channels + federation + knowledge capture + observability) — see [ADR-022](../docs/solutions/architecture/adr-022-mesh-destination-link-entry.md) for the sequencing. Continuous sprint, not staged wait.
 
 ## Commands
 
@@ -22,7 +24,7 @@ aug1 remove <name> [--yes]      # Delete an agent dir + clear index entry
 aug1 chat [--port N]            # Launch Local GUI for talking to running agents
 
 # Development
-bun test                         # Run full test suite (863 tests across 60+ files)
+bun test                         # Run full test suite (1091 tests across 92 files)
 bun test --watch                 # Watch mode
 bunx tsc --noEmit                # Typecheck (must pass before committing)
 bun run scripts/hello.ts         # Hello-world agent (requires ANTHROPIC_API_KEY)
@@ -130,7 +132,7 @@ src/
         ├── restart.ts      # aug1 restart (stop + start)
         └── status.ts       # aug1 status (list or detail)
 
-tests/                    # 863 tests across 60+ files
+tests/                    # 1091 tests across 92 files
 ├── fixtures/             # mock-model, mock-augment, mock-supabase, temp-dir
 ├── kernel/               # Per-kernel-component unit tests
 ├── memory/               # Memory subsystem tests
@@ -166,7 +168,7 @@ scripts/
 1. **The kernel is finished.** Behavior changes go in augments, not in `src/kernel/`. Bug fixes to kernel files are fine; adding new kernel features requires explicit justification.
 2. **Every shared type lives in `src/types.ts`** — do not scatter types across modules. One file is deliberate.
 3. **Every module is a `create*` factory returning an object** — no classes, no `this`.
-4. **Test gate before committing:** `bun test` (863 passing) + `bunx tsc --noEmit` (clean) must both pass.
+4. **Test gate before committing:** `bun test` (1091 passing) + `bunx tsc --noEmit` (clean) must both pass.
 5. **A2A-shaped types are load-bearing** — `Part[]`, `TaskState`, `AgentCard` follow A2A's shapes even though v1 doesn't speak A2A on the wire. Do not deviate.
 6. **Never use `vitest`** — we migrated to `bun:test` in Plan 2. The import is `from "bun:test"`.
 7. **Model adapters go in `src/engines/`** — not `src/models/` (see philosophy: the adapter is the reasoning engine, not the model itself).
