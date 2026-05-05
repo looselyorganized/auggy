@@ -118,6 +118,8 @@ Secret: `ANTHROPIC_API_KEY_SECURITY_EVAL` — dedicated, scoped key. Distinct fr
 
 **Why no `pull_request` trigger?** GitHub structurally withholds repo secrets from fork PR contexts (correct behavior — prevents secret exfiltration via malicious workflow changes). Combined with the cost-per-PR concern, the standard OSS pattern for paid-API integration tests is exactly this: maintainer-controlled triggers + post-merge gate + scheduled drift check, with contributor self-funded fork CI as the escape hatch for PR-time validation.
 
+**Comparison runs against larger models.** A second fixture variant lives at `fixtures/test-agent-sonnet.yaml` (identical composition, Sonnet 4.6 instead of Haiku 4.5). Maintainers dispatch it via the workflow's `config` input from the Actions tab to compare model-size sensitivity. Cost: ~$0.35/run vs Haiku's ~$0.07. Use case: pre-release verification, or debugging an over-refusal flake to determine whether it's model-size-sensitive (Haiku-specific) vs a real Auggy regression (would fail on Sonnet too).
+
 **For contributors:** see [CONTRIBUTING.md "Security eval" section](../../CONTRIBUTING.md). Short version — run locally before submitting, or configure your own secret + `pull_request` trigger in your fork.
 
 **For Auggy adopters who deploy their own agent:** the workflow file ships in your fork. Configure `ANTHROPIC_API_KEY_SECURITY_EVAL` in your repo's secrets to enable any of the triggers in your deployment. Your wallet, your CI cadence.
