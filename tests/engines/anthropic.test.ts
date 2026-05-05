@@ -513,8 +513,10 @@ describe("createAnthropicEngine — provider cost-cap error rewrap", () => {
     await expect(engine.complete(emptyPrompt())).rejects.toThrow(
       /provider spend cap reached \(HTTP 402\)/,
     );
+    // Literal substring match (toThrow with string) — stricter than regex
+    // and avoids CodeQL's "missing regex anchor" finding for URL-like regexes.
     await expect(engine.complete(emptyPrompt())).rejects.toThrow(
-      /console\.anthropic\.com\/settings\/limits/,
+      "console.anthropic.com/settings/limits",
     );
   });
 
@@ -556,8 +558,9 @@ describe("createAnthropicEngine — provider cost-cap error rewrap", () => {
     };
 
     await expect(engine.complete(emptyPrompt())).rejects.toThrow(/Too many concurrent requests/);
-    // Importantly should NOT include the rewrapped console pointer.
-    await expect(engine.complete(emptyPrompt())).rejects.not.toThrow(/console\.anthropic\.com/);
+    // Importantly should NOT include the rewrapped console pointer (literal
+    // substring match, no regex — CodeQL flagged the unanchored regex form).
+    await expect(engine.complete(emptyPrompt())).rejects.not.toThrow("console.anthropic.com");
   });
 
   it("passes 500 server errors through unchanged", async () => {
