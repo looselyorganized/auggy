@@ -812,6 +812,20 @@ The budgets augment is a turn-gate (see [03-types.md § Section 7b](./03-types.m
 
 Omit any field to leave that dimension unconstrained.
 
+### Cost-cap architecture: provider hard cap + runtime soft cap
+
+The `budgets` augment enforces a **runtime soft cap** — `dailyBudgetUsd` denies the next turn after a turn finishes that pushes the cumulative day spend over the threshold. This is post-hoc: the offending turn completes; the next turn is rejected. Worst-case overshoot at the cap boundary is one turn (≈ $0.05 on Haiku, ≈ $0.50 on Sonnet for typical usage).
+
+The runtime soft cap is **not the hard limit on agent spend**. The hard limit is your provider-side spend cap, configured in your provider's console:
+
+- Anthropic: <https://console.anthropic.com/settings/limits>
+- OpenAI: <https://platform.openai.com/settings/organization/limits>
+- OpenRouter: <https://openrouter.ai/settings/credits>
+
+**For unattended cloud-deployed agents, configuring a provider-side spend cap is required, not optional.** The runtime soft cap is the friendly first line of defense; the provider hard cap is the backstop that fires regardless of any Auggy-level configuration error or runtime bug. The engine adapters surface a clear operator-actionable message when the provider cap is reached (see `src/engines/anthropic.ts` `rewrapCostCapError`).
+
+This is the v1.0 cost-cap architecture per [ADR-024](../../lo/docs/solutions/architecture/adr-024-kernel-surface-v1-lock.md). Pre-call cost estimation (a third architectural layer that gates the engine call before any spend) is explicitly deferred — provider caps are exact where pre-call estimation would only approximate.
+
 ### 2PC semantics
 
 On every non-creator turn:

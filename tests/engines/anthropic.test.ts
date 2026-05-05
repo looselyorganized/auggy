@@ -139,6 +139,7 @@ describe("Anthropic message coalescing", () => {
 // ---------------------------------------------------------------------------
 
 let nextAnthropicResponse: Record<string, unknown> | null = null;
+let nextAnthropicError: { status: number; message: string } | null = null;
 
 mock.module("@anthropic-ai/sdk", () => {
   const makeResponse = (overrides?: Record<string, unknown>) =>
@@ -156,6 +157,12 @@ mock.module("@anthropic-ai/sdk", () => {
   class FakeAnthropic {
     messages = {
       create: async (_params: Record<string, unknown>) => {
+        if (nextAnthropicError !== null) {
+          // Mimic the shape of `Anthropic.APIError` (has `status` and `message`).
+          throw Object.assign(new Error(nextAnthropicError.message), {
+            status: nextAnthropicError.status,
+          });
+        }
         return nextAnthropicResponse !== null ? nextAnthropicResponse : makeResponse();
       },
       stream: (_params: Record<string, unknown>) => {
@@ -197,6 +204,7 @@ function anthropicMsg(partial: Partial<Message>): Message {
 
 beforeEach(() => {
   nextAnthropicResponse = null;
+  nextAnthropicError = null;
 });
 
 describe("createAnthropicEngine — costUsd", () => {
@@ -483,5 +491,98 @@ describe("Anthropic costOverride — cache rates", () => {
     // cache: 0 (no rates configured)
     // total: $7.5
     expect(result.costUsd).toBeCloseTo(7.5, 6);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// createAnthropicEngine — cost-cap error rewrap (ADR-024)
+//
+// When the Anthropic SDK throws an error indicating the operator's provider-
+// side spend cap has been reached, rewrap with a clear operator-actionable
+// message pointing at the Anthropic console. Other errors pass through.
+// ---------------------------------------------------------------------------
+
+describe("createAnthropicEngine — provider cost-cap error rewrap", () => {
+  it("rewraps 402 Payment Required with console-pointer message", async () => {
+    const engine = createAnthropicEngine({
+      apiKey: "test-key",
+      model: "claude-sonnet-4-6",
+    });
+    nextAnthropicError = { status: 402, message: "Payment required" };
+
+    await expect(engine.complete(emptyPrompt())).rejects.toThrow(
+      /provider spend cap reached \(HTTP 402\)/,
+    );
+    // Literal substring match (toThrow with string) — stricter than regex
+    // and avoids CodeQL's "missing regex anchor" finding for URL-like regexes.
+    await expect(engine.complete(emptyPrompt())).rejects.toThrow(
+      "console.anthropic.com/settings/limits",
+    );
+  });
+
+  it("rewraps 429 with cap-related text", async () => {
+    const engine = createAnthropicEngine({
+      apiKey: "test-key",
+      model: "claude-sonnet-4-6",
+    });
+    nextAnthropicError = {
+      status: 429,
+      message: "Your project has exceeded its monthly spend limit.",
+    };
+
+    await expect(engine.complete(emptyPrompt())).rejects.toThrow(
+      /provider spend cap reached \(HTTP 429\)/,
+    );
+  });
+
+  it("preserves the original SDK message in parentheses", async () => {
+    const engine = createAnthropicEngine({
+      apiKey: "test-key",
+      model: "claude-sonnet-4-6",
+    });
+    nextAnthropicError = { status: 402, message: "Payment required: insufficient credit balance" };
+
+    await expect(engine.complete(emptyPrompt())).rejects.toThrow(
+      /Original error: Payment required: insufficient credit balance/,
+    );
+  });
+
+  it("passes 429 without cap-related text through unchanged (true rate limit, not cap)", async () => {
+    const engine = createAnthropicEngine({
+      apiKey: "test-key",
+      model: "claude-sonnet-4-6",
+    });
+    nextAnthropicError = {
+      status: 429,
+      message: "Too many concurrent requests, please retry.",
+    };
+
+    await expect(engine.complete(emptyPrompt())).rejects.toThrow(/Too many concurrent requests/);
+    // Importantly should NOT include the rewrapped console pointer (literal
+    // substring match, no regex — CodeQL flagged the unanchored regex form).
+    await expect(engine.complete(emptyPrompt())).rejects.not.toThrow("console.anthropic.com");
+  });
+
+  it("passes 500 server errors through unchanged", async () => {
+    const engine = createAnthropicEngine({
+      apiKey: "test-key",
+      model: "claude-sonnet-4-6",
+    });
+    nextAnthropicError = { status: 500, message: "Internal server error" };
+
+    await expect(engine.complete(emptyPrompt())).rejects.toThrow(/Internal server error/);
+    await expect(engine.complete(emptyPrompt())).rejects.not.toThrow(/provider spend cap/);
+  });
+
+  it("passes errors without a status field through unchanged", async () => {
+    const engine = createAnthropicEngine({
+      apiKey: "test-key",
+      model: "claude-sonnet-4-6",
+    });
+    // Simulate a non-APIError thrown from somewhere in the call chain.
+    const original = new Error("unexpected JSON parse error");
+    nextAnthropicError = original as unknown as { status: number; message: string };
+
+    await expect(engine.complete(emptyPrompt())).rejects.toThrow(/unexpected JSON parse error/);
   });
 });
