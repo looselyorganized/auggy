@@ -6,9 +6,11 @@ name: Security eval
 # explicit channels:
 #
 #   1. workflow_dispatch — maintainers click "Run workflow" against any branch
-#      to verify a PR before merging.
+#      to verify a PR before merging. Optional `config` input lets you point
+#      at a different fixture (e.g. evals/security/fixtures/test-agent-sonnet.yaml
+#      for a Sonnet comparison run).
 #   2. push: branches: [main] — runs once after every merge to catch
-#      regressions that slipped past review.
+#      regressions that slipped past review. Always uses the default Haiku fixture.
 #   3. schedule (nightly) — catches model behaviour drift between merges
 #      (e.g., upstream Haiku updates that change refusal phrasings).
 #
@@ -19,11 +21,16 @@ name: Security eval
 
 on:
   workflow_dispatch:
+    inputs:
+      config:
+        description: "Agent config path (default: Haiku fixture). Use evals/security/fixtures/test-agent-sonnet.yaml for Sonnet, etc."
+        required: false
+        default: "evals/security/fixtures/test-agent.yaml"
   push:
     branches: [main]
   schedule:
     # 07:00 UTC daily = midnight Pacific. Off-hours so a failed nightly
-    # surfaces by morning. ~$0.07 per run; ~$2/month at this cadence.
+    # surfaces by morning. ~$0.07 per run on Haiku; ~$2/month at this cadence.
     - cron: "0 7 * * *"
 
 concurrency:
@@ -35,7 +42,7 @@ permissions:
 
 jobs:
   security-eval:
-    name: Security eval (fixture, Haiku)
+    name: Security eval (fixture)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -53,7 +60,14 @@ jobs:
       - name: Run security eval against fixture
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY_SECURITY_EVAL }}
-        run: bun run evals/security/run.ts
+          # `inputs.config` is only set on workflow_dispatch. The `||` fallback
+          # picks up the Haiku fixture for push/schedule triggers (and as a
+          # default if the user doesn't override on dispatch). The value is
+          # passed through env (not interpolated into the run-line) per
+          # GitHub Actions security guidance — input never reaches the shell
+          # as code.
+          CONFIG_PATH: ${{ github.event.inputs.config || 'evals/security/fixtures/test-agent.yaml' }}
+        run: bun run evals/security/run.ts --config "$CONFIG_PATH"
 
       - name: Upload results
         if: always()
