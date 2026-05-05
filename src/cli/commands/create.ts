@@ -1,5 +1,5 @@
 /**
- * aug1 create <name> — scaffold a new agent directory.
+ * auggy create <name> — scaffold a new agent directory.
  *
  * Default location: ~/.auggy/agents/<name>/. Override with --dir <path>
  * for git-tracked / project-folder layouts. Writes an entry to the
@@ -59,7 +59,7 @@ export async function runCreate(name: string, opts: { dir?: string }): Promise<v
   if (existing) {
     throw new Error(
       `Agent "${name}" already exists at ${existing.localDir}.\n\n` +
-        `  Use a different name, or remove the existing one with \`aug1 remove ${name}\`.`,
+        `  Use a different name, or remove the existing one with \`auggy remove ${name}\`.`,
     );
   }
 
@@ -226,7 +226,7 @@ export async function runCreate(name: string, opts: { dir?: string }): Promise<v
   console.log(`   ${cream("1.")}  cp ${dir}/.env.example ${dir}/.env`);
   console.log(`   ${cream("2.")}  Add your ${bold(envVar)} to ${dir}/.env`);
   console.log(`   ${cream("3.")}  Edit ${dir}/identity.md`);
-  console.log(`   ${cream("4.")}  aug1 dev ${name}`);
+  console.log(`   ${cream("4.")}  auggy dev ${name}`);
   console.log();
 }
 

@@ -180,7 +180,7 @@ export interface PidManifest {
 /**
  * Cloud deployment record for an agent.
  *
- * v0: only `null` is written. Cloud fields populated by `aug1 deploy` (separate PR).
+ * v0: only `null` is written. Cloud fields populated by `auggy deploy` (separate PR).
  */
 export type CloudRecord = null | {
   provider: "railway";

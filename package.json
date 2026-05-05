@@ -37,7 +37,7 @@
     "./cli": "./src/cli/index.ts"
   },
   "bin": {
-    "aug1": "src/cli/index.ts"
+    "auggy": "src/cli/index.ts"
   },
   "files": [
     "src",

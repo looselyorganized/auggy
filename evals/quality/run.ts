@@ -237,7 +237,7 @@ async function main() {
   const configPath =
     configFlag !== -1 && args[configFlag + 1]
       ? resolve(args[configFlag + 1]!)
-      : resolve(import.meta.dir, "../../zip/agent.yaml");
+      : resolve(import.meta.dir, "../security/fixtures/test-agent.yaml");
 
   const trialsFlag = args.indexOf("--trials");
   const trialsOverride =

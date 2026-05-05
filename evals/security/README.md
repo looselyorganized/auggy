@@ -8,17 +8,27 @@ First-party security testing for any Auggy agent. Seeded from a 2026-04-16 red-t
 
 ```bash
 cd augment-1
-bun run evals/security/run.ts
+auggy eval                                  # against the bundled fixture (default)
+auggy eval my-agent                         # against a registered agent (looked up via `auggy ls`)
+auggy eval --config path/to/agent.yaml      # against a one-off path
 ```
 
 Default: loads `evals/security/fixtures/test-agent.yaml` (the canonical fixture), runs `suite.yaml` (attacks) + `benign.yaml` (counterparts), writes JSONL to `results/`, exits non-zero on any failure.
 
 Flags:
 ```bash
-bun run evals/security/run.ts --config path/to/agent.yaml   # run against a different agent
-bun run evals/security/run.ts --suite security-only         # skip benign
-bun run evals/security/run.ts --suite benign-only           # skip attacks
-bun run evals/security/run.ts --trials 5                    # override Pass^k
+auggy eval --suite security-only            # skip benign
+auggy eval --suite benign-only              # skip attacks
+auggy eval --trials 5                       # override Pass^k
+```
+
+`auggy eval` is a thin wrapper around the underlying runner script. The runner is also directly invocable for advanced use (CI, scripting, no `auggy` on PATH):
+
+```bash
+bun run evals/security/run.ts                                # same defaults
+bun run evals/security/run.ts --config path/to/agent.yaml
+bun run evals/security/run.ts --suite security-only
+bun run evals/security/run.ts --trials 5
 ```
 
 Env: needs `ANTHROPIC_API_KEY` (or `OPENAI_API_KEY` / `OPENROUTER_API_KEY` depending on the engine in agent.yaml).
@@ -57,14 +67,14 @@ Substitution mechanics:
 ### Operator override (optional)
 
 ```yaml
-# zip/agent.yaml
+# In your agent.yaml
 securityEval:
-  operatorName: "Michael"                  # default: operators[0]
-  agentName: "Zip"                         # default: name
+  operatorName: "Sam"                      # default: operators[0]
+  agentName: "ConciergeBot"                # default: name
   refusalPhrasings: ["I cannot assist"]    # appended to defaults
-  systemPromptLeakMarkers: ["I am Zip"]    # appended to auto-derived
-  identitySelfClaimKeywords: ["Zip", "auggy"]
-  secretLeakMarkers: ["LORF_INTERNAL_"]
+  systemPromptLeakMarkers: ["I am ConciergeBot"]  # appended to auto-derived
+  identitySelfClaimKeywords: ["ConciergeBot", "concierge"]
+  secretLeakMarkers: ["YOUR_INTERNAL_PREFIX_"]
   fixtureEnvPath: "/path/to/real/.env"     # if you want attacks to target your real exposure surface
   # ... fixtureInternalUrl, fixtureShellInitPath, fixtureWorkspaceRoot, fixtureAwsCredentialsPath
 ```
@@ -124,7 +134,7 @@ Secret: `ANTHROPIC_API_KEY_SECURITY_EVAL` — dedicated, scoped key. Distinct fr
 
 **For Auggy adopters who deploy their own agent:** the workflow file ships in your fork. Configure `ANTHROPIC_API_KEY_SECURITY_EVAL` in your repo's secrets to enable any of the triggers in your deployment. Your wallet, your CI cadence.
 
-The Zip nightly run remains separate — runs locally via launchd against Zip's full agent config (see [`zip/agent.yaml`](../../zip/agent.yaml)): `bun run evals/security/run.ts --config zip/agent.yaml`.
+For local nightly runs against your own agent: `auggy eval <agent-name>` (or `bun run evals/security/run.ts --config path/to/agent.yaml` if `auggy` isn't on PATH for the launchd context).
 
 ## Metrics
 
@@ -139,12 +149,12 @@ The OSS deployment story is clone-and-fork: edit `suite.yaml` and `benign.yaml` 
 
 1. Write a YAML block in `suite.yaml` with a unique `id`, `category`, `severity`, `source`, `threat` tags, `messages`, and ≥2 `graders`. Use `${var}` substitution where the case references operator name, agent name, or fixture paths — see the variable inventory above.
 2. Add a counterpart in `benign.yaml` with `counterpart_of: <your-id>` — something that looks similar but should succeed.
-3. Run `bun run evals/security/run.ts`. New case appears in the summary.
+3. Run `auggy eval`. New case appears in the summary.
 4. Commit both YAML files with a message naming the new attack.
 
 No code changes required. This is the primary extensibility mechanism.
 
-A near-term `aug1 eval` CLI command will wrap the runner; case-scaffolding (`aug1 eval add`) is post-v1.0.
+The `auggy eval` CLI command wraps the runner with agent-name lookup; case-scaffolding (`auggy eval add`) is post-v1.0.
 
 ## Add a new grader
 
@@ -164,7 +174,7 @@ Removing a grader is a breaking change — bump `version` in suite.yaml and writ
 |---------|----------|
 | Every PR | CI runs the suite against the fixture. Merge blocked on failure. |
 | Every augment change | Run the suite manually against the fixture. "Did I break anything?" |
-| Nightly (Zip) | `bun run evals/security/run.ts --config zip/agent.yaml` via launchd → `/notify` Telegram on any fail. Mirrors `telemetry-exporter`. |
+| Nightly (operator-side) | `auggy eval <agent-name>` via launchd → `/notify` Telegram on any fail. Mirrors `telemetry-exporter`. |
 | **Weekly** | **Read the transcripts.** Open the most recent JSONL, read 5–10 full conversations. Automated pass/fail misses shapes a human notices immediately (chatty leaks, tone drift). |
 | Model bump | Full suite + a brief exploratory red-team session before promoting. |
 | Quarterly | Audit stale cases (Pass^3 = 100% for 90 days → candidate for archival or mutation). |
@@ -182,7 +192,7 @@ Removing a grader is a breaking change — bump `version` in suite.yaml and writ
 - LLM-as-judge grader type + calibration workflow (`graders/llm-rubric.ts` already implemented, ungated)
 - Multi-turn case support
 - Red-team agent for mutation-based corpus growth
-- `aug1 eval add` interactive case scaffolder
+- `auggy eval add` interactive case scaffolder
 - Supabase sink for results + dashboard
 - Public benchmark adapters (HarmBench, AgentDojo, JailbreakBench)
 

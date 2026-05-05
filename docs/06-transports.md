@@ -449,8 +449,8 @@ Use this to point visitors at whichever polished frontend you've stood up — yo
 
 Only `GET /` is redirected. `POST /`, `HEAD /`, and other methods on `/` still return 404. `/agent/run`, `/health`, and `/.well-known/agent-card.json` are unaffected.
 
-For local operator testing, run `aug1 chat` instead — it provides a polished
-chat surface against agents you've started with `aug1 dev`, without exposing a
+For local operator testing, run `auggy chat` instead — it provides a polished
+chat surface against agents you've started with `auggy dev`, without exposing a
 public URL.
 
 **Uptime / health checks:** point them at `/health`, not `/`. The `/` route is for visitors; `/health` is for monitoring.

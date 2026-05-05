@@ -38,7 +38,9 @@ export async function runStart(name: string, opts: { config?: string }): Promise
 
   // Check if already running.
   if (!tryClaimName(agentName)) {
-    throw new Error(`Agent "${agentName}" is already running. Use "aug1 stop ${agentName}" first.`);
+    throw new Error(
+      `Agent "${agentName}" is already running. Use "auggy stop ${agentName}" first.`,
+    );
   }
 
   // Unload existing plist if present.
@@ -108,8 +110,8 @@ export async function runStart(name: string, opts: { config?: string }): Promise
       }
       console.log(`  Logs:    ${logDir()}/${agentName}.{log,err}`);
       console.log();
-      console.log(`  To stop:   aug1 stop ${agentName}`);
-      console.log(`  To status: aug1 status ${agentName}`);
+      console.log(`  To stop:   auggy stop ${agentName}`);
+      console.log(`  To status: auggy status ${agentName}`);
       console.log(`  To logs:   tail -f ${logDir()}/${agentName}.log`);
       return;
     }

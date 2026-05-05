@@ -39,8 +39,8 @@ export function resolveConfigPath(
   if (!entry) {
     throw new Error(
       `Agent "${name}" is not registered.\n\n` +
-        `  Run \`aug1 create ${name}\` to scaffold a new agent,\n` +
-        `  or \`aug1 ls\` to see registered agents.`,
+        `  Run \`auggy create ${name}\` to scaffold a new agent,\n` +
+        `  or \`auggy ls\` to see registered agents.`,
     );
   }
 
@@ -49,7 +49,7 @@ export function resolveConfigPath(
     throw new Error(
       `agent.yaml missing at indexed path: ${cfg}\n\n` +
         `  The agent directory may have been deleted or moved manually.\n` +
-        `  Run \`aug1 remove ${name}\` to clean up the index entry.`,
+        `  Run \`auggy remove ${name}\` to clean up the index entry.`,
     );
   }
   return cfg;

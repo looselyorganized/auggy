@@ -175,7 +175,7 @@ export function createAnthropicEngine(opts: AnthropicEngineOptions): ModelClient
  * spend. When they fire, Anthropic returns a 402 (Payment Required) or a
  * 429 with cap-related text in the message body. We surface a concise
  * pointer to the console rather than the raw SDK error string, so an
- * operator who sees this in logs / `aug1 dev` output knows exactly where
+ * operator who sees this in logs / `auggy dev` output knows exactly where
  * to go.
  *
  * Detected by structural shape (`status` field on the thrown object) rather

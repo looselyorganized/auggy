@@ -86,12 +86,12 @@ describe("chat-store", () => {
   });
 
   it("survives malformed JSON in localStorage (returns null)", () => {
-    (globalThis as any).localStorage.setItem("aug1-chat:zip@local", "not json");
+    (globalThis as any).localStorage.setItem("auggy-chat:zip@local", "not json");
     expect(loadAgentHistory("zip", "local")).toBeNull();
   });
 
   it("survives schema-version mismatch (returns null)", () => {
-    (globalThis as any).localStorage.setItem("aug1-chat:zip@local", JSON.stringify({ schema: 999, threadId: "t" }));
+    (globalThis as any).localStorage.setItem("auggy-chat:zip@local", JSON.stringify({ schema: 999, threadId: "t" }));
     expect(loadAgentHistory("zip", "local")).toBeNull();
   });
 
@@ -141,7 +141,7 @@ describe("chat-store", () => {
     expect(tc.result).toBe(result);
   });
 
-  it("clearAllHistory leaves non-aug1-chat keys intact", () => {
+  it("clearAllHistory leaves non-auggy-chat keys intact", () => {
     saveAgentHistory("a", "local", { threadId: "t", messages: [], lastUpdated: "", agentMetadata: { name: "a" } });
     (globalThis as any).localStorage.setItem("other-app:foo", "preserve me");
     saveAgentHistory("b", "myNetwork", { threadId: "t", messages: [], lastUpdated: "", agentMetadata: { name: "b" } });

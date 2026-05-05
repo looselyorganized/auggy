@@ -6,9 +6,9 @@ Lets the agent **pause a turn and request input from the user** via a single too
 
 ## When to load it
 
-`aug1 create` includes `turnControl` in the default scaffold (any agent generated via the standard scaffold ships with it enabled). It is recommended for chat-shaped agents — anything that uses `webTransport` or `telegramTransport`. Headless / scripted agents (no human transport) can safely remove it.
+`auggy create` includes `turnControl` in the default scaffold (any agent generated via the standard scaffold ships with it enabled). It is recommended for chat-shaped agents — anything that uses `webTransport` or `telegramTransport`. Headless / scripted agents (no human transport) can safely remove it.
 
-To opt out, remove the `turnControl` entry from the agent's `augments` array in `agent.yaml`. To add it later, run `aug1 add turnControl <agent-name>`.
+To opt out, remove the `turnControl` entry from the agent's `augments` array in `agent.yaml`. To add it later, run `auggy add turnControl <agent-name>`.
 
 ## The `request_input` tool
 

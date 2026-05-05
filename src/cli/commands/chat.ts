@@ -46,17 +46,17 @@ export function chatCommand(): Command {
 
       // Lazy-load the chat server so a missing chat/ package (e.g. from an npm
       // install that omits the chat/ directory) surfaces as a recoverable error
-      // instead of crashing the whole aug1 CLI at module-load time.
+      // instead of crashing the whole auggy CLI at module-load time.
       let createGuiServer: typeof import("../../../chat/server").createGuiServer;
       try {
         ({ createGuiServer } = await import("../../../chat/server"));
       } catch (err) {
         console.error(
-          `[aug1 chat] chat package not available: ${(err as Error).message}\n` +
+          `[auggy chat] chat package not available: ${(err as Error).message}\n` +
             `\n` +
             `Recovery options:\n` +
             `  • If you are running from source: cd ${guiPackageDir} && bun install\n` +
-            `  • If aug1 was installed via npm and chat/ is missing, this is a\n` +
+            `  • If auggy was installed via npm and chat/ is missing, this is a\n` +
             `    packaging bug — please file an issue.`,
         );
         process.exit(1);
@@ -65,7 +65,7 @@ export function chatCommand(): Command {
       let distDir: string;
       try {
         if (opts.rebuild) {
-          console.log("[aug1 chat] Rebuilding chat/dist via Vite...");
+          console.log("[auggy chat] Rebuilding chat/dist via Vite...");
           await runVite(guiPackageDir);
         }
         distDir = await resolveDistDir({
@@ -75,12 +75,12 @@ export function chatCommand(): Command {
         });
       } catch (err) {
         console.error(
-          `[aug1 chat] chat dist not found or failed to resolve: ${(err as Error).message}\n` +
+          `[auggy chat] chat dist not found or failed to resolve: ${(err as Error).message}\n` +
             `\n` +
             `Recovery options:\n` +
             `  • If you are running from source: cd ${guiPackageDir} && bun install && bun run build\n` +
-            `  • Or pass --rebuild to do that automatically: aug1 chat --rebuild\n` +
-            `  • If aug1 was installed via npm and chat/ is missing, this is a\n` +
+            `  • Or pass --rebuild to do that automatically: auggy chat --rebuild\n` +
+            `  • If auggy was installed via npm and chat/ is missing, this is a\n` +
             `    packaging bug — please file an issue.`,
         );
         process.exit(1);
@@ -91,20 +91,20 @@ export function chatCommand(): Command {
         server = createGuiServer({ port, staticDir: distDir });
       } catch (err) {
         console.error(
-          `[aug1 chat] Failed to start server on port ${port}: ${(err as Error).message}\n` +
-            `Try a different port: aug1 chat --port ${port + 1}`,
+          `[auggy chat] Failed to start server on port ${port}: ${(err as Error).message}\n` +
+            `Try a different port: auggy chat --port ${port + 1}`,
         );
         process.exit(1);
       }
 
       const url = `http://localhost:${port}`;
-      console.log(`[aug1 chat] Local GUI ready at ${url}`);
-      console.log("[aug1 chat] Ctrl-C to stop.");
+      console.log(`[auggy chat] Local GUI ready at ${url}`);
+      console.log("[auggy chat] Ctrl-C to stop.");
 
       if (opts.open) openBrowser(url);
 
       const shutdown = (signal: string) => {
-        console.log(`\n[aug1 chat] Received ${signal}, shutting down...`);
+        console.log(`\n[auggy chat] Received ${signal}, shutting down...`);
         try {
           server.stop();
         } catch {
@@ -128,7 +128,7 @@ async function resolveDistDir(opts: {
   if (existsSync(join(opts.cacheDistDir, "index.html"))) return opts.cacheDistDir;
 
   console.log(
-    `[aug1 chat] No cached dist for version ${opts.version}; downloading from GitHub release...`,
+    `[auggy chat] No cached dist for version ${opts.version}; downloading from GitHub release...`,
   );
   await downloadAndCache(opts.version, opts.cacheDistDir);
   if (!existsSync(join(opts.cacheDistDir, "index.html"))) {

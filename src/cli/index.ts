@@ -1,18 +1,19 @@
 #!/usr/bin/env bun
 /**
- * aug1 — CLI for the Auggy agent runtime.
+ * auggy — CLI for the Auggy agent runtime.
  *
  * Commands:
- *   aug1 create <name>              Scaffold a new agent (interactive)
- *   aug1 add <name>                 Add augments to an existing agent
- *   aug1 dev <name> [--config]      Run agent in foreground
- *   aug1 start <name> [--config]    Install as launchd service (always-on)
- *   aug1 stop <name>                Stop a running agent
- *   aug1 restart <name>             Stop + start
- *   aug1 status [name]              Show running agents
- *   aug1 ls                         List registered agents
- *   aug1 remove <name> [--yes]      Delete an agent (dir + index entry)
- *   aug1 chat                       Launch local GUI
+ *   auggy create <name>              Scaffold a new agent (interactive)
+ *   auggy add <name>                 Add augments to an existing agent
+ *   auggy dev <name> [--config]      Run agent in foreground
+ *   auggy start <name> [--config]    Install as launchd service (always-on)
+ *   auggy stop <name>                Stop a running agent
+ *   auggy restart <name>             Stop + start
+ *   auggy status [name]              Show running agents
+ *   auggy ls                         List registered agents
+ *   auggy remove <name> [--yes]      Delete an agent (dir + index entry)
+ *   auggy chat                       Launch local GUI
+ *   auggy eval [name]                Run portable security eval suite
  */
 
 import { Command } from "commander";
@@ -24,12 +25,13 @@ import { runStop } from "./commands/stop";
 import { runRestart } from "./commands/restart";
 import { runStatus } from "./commands/status";
 import { chatCommand } from "./commands/chat";
+import { evalCommand } from "./commands/eval";
 import { runRemove } from "./commands/remove";
 import { runLs } from "./commands/ls";
 
 const program = new Command();
 
-program.name("aug1").description("Auggy agent runtime CLI").version("0.1.0");
+program.name("auggy").description("Auggy agent runtime CLI").version("0.1.0");
 
 program
   .command("create <name>")
@@ -147,5 +149,6 @@ program
   });
 
 program.addCommand(chatCommand());
+program.addCommand(evalCommand());
 
 program.parse();

@@ -24,14 +24,14 @@ Auggy (augment-1) is a modular agent runtime in TypeScript/Bun, purpose-built fo
 bun install
 
 # Create an agent (interactive augment selection)
-aug1 create zip
+auggy create zip
 
 # Configure secrets
 cp zip/.env.example zip/.env
 # Add your API key to zip/.env
 
 # Run it
-aug1 dev zip
+auggy dev zip
 ```
 
 ## How it works
@@ -79,13 +79,13 @@ augments:
 
 | Command | What it does |
 |---------|-------------|
-| `aug1 create <name>` | Scaffold agent directory (interactive augment selection) |
-| `aug1 add <name>` | Add augments to an existing agent |
-| `aug1 dev <name>` | Run in foreground (Ctrl-C stops) |
-| `aug1 start <name>` | Install as launchd service (always-on) |
-| `aug1 stop <name>` | Stop a running agent |
-| `aug1 restart <name>` | Stop and restart |
-| `aug1 status [name]` | Show running agents |
+| `auggy create <name>` | Scaffold agent directory (interactive augment selection) |
+| `auggy add <name>` | Add augments to an existing agent |
+| `auggy dev <name>` | Run in foreground (Ctrl-C stops) |
+| `auggy start <name>` | Install as launchd service (always-on) |
+| `auggy stop <name>` | Stop a running agent |
+| `auggy restart <name>` | Stop and restart |
+| `auggy status [name]` | Show running agents |
 
 ## Built-in augments
 

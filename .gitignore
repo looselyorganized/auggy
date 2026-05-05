@@ -36,12 +36,6 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 # Finder (MacOS) folder config
 .DS_Store
 
-# Agent runtime directories (operator-created, not source)
-# Individual agents scaffolded with `aug1 create <name>` — their config,
-# identity, learned memory, and workspace are runtime state, not code.
-zip/
-
-
 # Internal docs — keep local, do not publish (most files are red-team
 # notes, raw planning, dated research). Carve-outs allow specific public-
 # ready reference docs to stay tracked.

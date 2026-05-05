@@ -42,7 +42,7 @@ async function showAll(): Promise<void> {
 
   if (manifests.length === 0) {
     console.log("No agents running.");
-    console.log('Run "aug1 create <name>" to create one.');
+    console.log('Run "auggy create <name>" to create one.');
     return;
   }
 

@@ -1,5 +1,5 @@
 /**
- * aug1 remove <name> — delete an agent directory and clear the index entry.
+ * auggy remove <name> — delete an agent directory and clear the index entry.
  *
  * Refuses if the agent is running. Prompts before deletion (skipped with
  * --yes). Tolerates missing localDir (still cleans the index entry).
@@ -34,14 +34,14 @@ export async function runRemove(name: string, opts: RemoveOptions = {}): Promise
   const entry = getAgent(name, { auggyDir: opts.auggyDir });
   if (!entry) {
     throw new Error(
-      `Agent "${name}" is not registered.\n\n  Run \`aug1 ls\` to see registered agents.`,
+      `Agent "${name}" is not registered.\n\n  Run \`auggy ls\` to see registered agents.`,
     );
   }
 
   // Refuse if the agent is running. Stale manifests (dead PID) are tolerated
   // — we clean them up below. Check under both the CLI-arg name AND the
   // agent.yaml's config.name (operator may have edited the yaml after create,
-  // in which case `aug1 dev` writes the manifest under config.name).
+  // in which case `auggy dev` writes the manifest under config.name).
   const pidByCli = readPidManifest(name);
   const configName = readConfigName(entry.localDir);
   const pidByConfig = configName && configName !== name ? readPidManifest(configName) : null;
@@ -51,7 +51,7 @@ export async function runRemove(name: string, opts: RemoveOptions = {}): Promise
 
   if (aliveCli || aliveConfig) {
     const liveName = aliveCli ? name : configName!;
-    throw new Error(`Agent "${liveName}" is running. Stop it first:\n\n  aug1 stop ${liveName}`);
+    throw new Error(`Agent "${liveName}" is running. Stop it first:\n\n  auggy stop ${liveName}`);
   }
 
   if (!opts.yes) {
@@ -76,7 +76,7 @@ export async function runRemove(name: string, opts: RemoveOptions = {}): Promise
       throw new Error(
         `Refusing to delete "${entry.localDir}" — it does not contain agent.yaml.\n\n` +
           `  This may indicate a tampered or stale index entry. If the agent dir was\n` +
-          `  modified outside aug1, clean up manually and re-run \`aug1 remove\` to\n` +
+          `  modified outside auggy, clean up manually and re-run \`auggy remove\` to\n` +
           `  clear the index entry.`,
       );
     }

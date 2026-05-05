@@ -48,9 +48,19 @@ interface Args {
   trialsOverride?: number;
 }
 
+/**
+ * Resolve the canonical fixture agent.yaml path bundled with the eval suite.
+ * Used as the default config when `auggy eval` is invoked without an agent
+ * argument or `--config` flag, and by `parseArgs` when the runner is invoked
+ * via `bun run evals/security/run.ts`.
+ */
+export function getDefaultFixtureConfigPath(): string {
+  return resolve(import.meta.dir, "fixtures/test-agent.yaml");
+}
+
 function parseArgs(argv: string[]): Args {
   const args: Args = {
-    configPath: resolve(import.meta.dir, "fixtures/test-agent.yaml"),
+    configPath: getDefaultFixtureConfigPath(),
     runSecurity: true,
     runBenign: true,
   };
@@ -642,8 +652,21 @@ async function runSuite(args: {
   return { trials: out, summary, failureReasons };
 }
 
-async function main(): Promise<void> {
-  const args = parseArgs(process.argv.slice(2));
+/**
+ * Orchestrate a full eval run: boot the agent, run security and/or benign
+ * suites, write JSONL, print a summary, and return the exit code (0 = pass,
+ * 1 = at least one suite below target).
+ *
+ * Exported so the `auggy eval` CLI command can wrap the runner without
+ * spawning a child process or duplicating the boot/run/teardown sequence.
+ * The CLI-mode `main()` below is now a thin wrapper around this function.
+ */
+export async function runEvalSuite(args: {
+  configPath: string;
+  runSecurity: boolean;
+  runBenign: boolean;
+  trialsOverride?: number;
+}): Promise<{ exitCode: number }> {
   const commit = tryGitCommit();
 
   console.log(`Security eval runner — agent config: ${args.configPath}`);
@@ -699,6 +722,17 @@ async function main(): Promise<void> {
     await agent.stop();
   }
 
+  return { exitCode };
+}
+
+async function main(): Promise<void> {
+  const args = parseArgs(process.argv.slice(2));
+  const { exitCode } = await runEvalSuite({
+    configPath: args.configPath,
+    runSecurity: args.runSecurity,
+    runBenign: args.runBenign,
+    trialsOverride: args.trialsOverride,
+  });
   process.exit(exitCode);
 }
 

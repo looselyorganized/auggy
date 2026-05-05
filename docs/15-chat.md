@@ -1,14 +1,14 @@
-# `aug1 chat` — Operator chat surface (Local GUI)
+# `auggy chat` — Operator chat surface (Local GUI)
 
-The polished chat UI for talking to local agents. Boots a Bun-served Vite/React app on `localhost`, discovers running aug1s via PID manifests, and proxies messages through to each agent's `/agent/run` with the agent's bearer token attached server-side.
+The polished chat UI for talking to local agents. Boots a Bun-served Vite/React app on `localhost`, discovers running auggies via PID manifests, and proxies messages through to each agent's `/agent/run` with the agent's bearer token attached server-side.
 
-> **Mental model:** `aug1 dev <name>` runs an agent. `aug1 chat` lets you talk to it. They are separate processes — you can boot the GUI any time after the agent is up.
+> **Mental model:** `auggy dev <name>` runs an agent. `auggy chat` lets you talk to it. They are separate processes — you can boot the GUI any time after the agent is up.
 
 ## Quick start
 
 ```bash
-aug1 dev zip            # one terminal: boots the agent
-aug1 chat               # another terminal: opens the chat UI in your browser
+auggy dev zip            # one terminal: boots the agent
+auggy chat               # another terminal: opens the chat UI in your browser
 ```
 
 The GUI appears on `http://localhost:8090` with `zip` listed in the picker. Click `zip`, type a message, get streamed AG-UI events back.
@@ -16,7 +16,7 @@ The GUI appears on `http://localhost:8090` with `zip` listed in the picker. Clic
 ## Command surface
 
 ```
-aug1 chat [options]
+auggy chat [options]
 
 Options:
   -p, --port <port>   GUI server port (default: 8090)
@@ -40,7 +40,7 @@ Options:
 The chat package lives at `augment-1/chat/` — Vite/React SPA with a Bun.serve server. v1 ships one source (`localPidSource` reading PID manifests on the server, exposed to the browser as `/api/agents`) and one connection (`httpProxyConnection` posting to the GUI proxy). When spine ships, a `spineRegistrySource` + `spineRoutedConnection` pair plug into the same UI without rewrite.
 
 ```
-[browser]  →  [aug1 chat server, 127.0.0.1:8090]  →  [aug1 webTransport, 127.0.0.1:8080]
+[browser]  →  [auggy chat server, 127.0.0.1:8090]  →  [auggy webTransport, 127.0.0.1:8080]
               GET /api/agents → discovery               GET /.well-known/agent-card.json
               POST /api/chat/<id> → proxy               POST /agent/run (Authorization: Bearer ...)
 ```
@@ -65,7 +65,7 @@ Each agent's conversation is keyed by `<agent-name>@<source-name>` and persisted
 
 ## Distribution
 
-The `chat/dist/` build is published as a GitHub release artifact (`chat-dist-vX.Y.Z.tar.gz` + `.sha256`). On first run, `aug1 chat`:
+The `chat/dist/` build is published as a GitHub release artifact (`chat-dist-vX.Y.Z.tar.gz` + `.sha256`). On first run, `auggy chat`:
 
 1. Looks for `augment-1/chat/dist/` (developer working copy)
 2. Then `~/.auggy/chat/<version>/dist/` (downloaded cache)
@@ -82,9 +82,9 @@ Use `--rebuild` to build from source (developer mode; requires Bun + Vite).
 
 ## Troubleshooting
 
-- **"No agents detected on this machine"** — run `aug1 dev <name>` first; check `aug1 status` for live PIDs
+- **"No agents detected on this machine"** — run `auggy dev <name>` first; check `auggy status` for live PIDs
 - **"agent not found" (404)** — the PID manifest exists but the PID is dead; restart the agent
-- **"no WEB_BEARER_TOKEN in <agentDir>/.env" (412)** — set `WEB_BEARER_TOKEN=…` in the agent's `.env` and run `aug1 dev` again
+- **"no WEB_BEARER_TOKEN in <agentDir>/.env" (412)** — set `WEB_BEARER_TOKEN=…` in the agent's `.env` and run `auggy dev` again
 - **"upstream connect failed" (502)** — agent is alive per PID but unreachable on its port; check the agent's logs
 - **Port 8090 in use** — pass `--port` with a free port
 

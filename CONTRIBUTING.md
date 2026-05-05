@@ -22,7 +22,7 @@ cd augment-1
 bun install
 
 # 2. Local CLI
-bun link                 # makes `aug1` available globally
+bun link                 # makes `auggy` available globally
 
 # 3. Tests + typecheck
 bun test                 # 863+ tests across 60+ files
@@ -92,8 +92,11 @@ The portable security suite at `evals/security/` runs against a real Anthropic A
 
 1. **Run the suite locally before opening the PR:**
    ```bash
-   ANTHROPIC_API_KEY=... bun run evals/security/run.ts
+   ANTHROPIC_API_KEY=... auggy eval                            # default fixture, full suite
+   ANTHROPIC_API_KEY=... auggy eval --suite security-only      # skip benign counterparts
+   ANTHROPIC_API_KEY=... auggy eval my-agent                   # against a registered agent
    ```
+   The underlying script is still `bun run evals/security/run.ts`; `auggy eval` is a thin wrapper that resolves the agent.yaml path from the agent index (or the bundled fixture) and forwards the same flags.
 2. **Or:** configure `ANTHROPIC_API_KEY_SECURITY_EVAL` in your fork's GitHub repo secrets (Settings → Secrets and variables → Actions), and add a `pull_request:` entry to the trigger list in your fork's copy of `.github/workflows/security-eval.yml`. Your fork, your CI, your spend.
 3. Mention in your PR description that you've run the suite and it passes.
 

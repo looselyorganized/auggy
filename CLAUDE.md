@@ -4,22 +4,23 @@
 
 Auggy (`augment-1`) is a modular agent runtime in TypeScript/Bun. Agents are composed from swappable augments; the kernel manages context, tools, permissions, and lifecycle. Framework-agnostic by design — **not LORF-locked**.
 
-**Status: v0.2.0 (2026-04-27, visitor-economics complete).** Plans 1 (kernel) + 2 (built-in augments) + 3 (CLI & manifest) complete. Layer 1 trust-aware capability table, security + quality eval suites, bashAugment, SSE token streaming, layeredMemory (peer-scoped episodic memory with provenance). Visitor-economics work (Phase 1b+1c+D1): three-level trust model (creator/agent/public + publicSubstate), TurnGateProvider 2PC contract, budgets augment (per-trust-level turn caps + dollar ceiling + BATS preamble), four-path identity resolution in web transport, Idempotency-Key dedup, bash defaults block shell_exec/run_script for public AND agent. 9 augments, 3 engines, 863 tests across 60+ files. The `chat/` package ships the Auggy Local GUI (`aug1 chat`) — a Vite/React SPA with a Bun proxy server that discovers running agents via PID manifests and proxies chat through to each agent's `/agent/run`; distributed as a versioned GitHub release artifact with first-run download + SHA256 verification. See `lo/docs/auggy-plans-detail.md` (outside this repo) for the plan-by-plan roadmap.
+**Status: v0.2.0 (2026-04-27, visitor-economics complete).** Plans 1 (kernel) + 2 (built-in augments) + 3 (CLI & manifest) complete. Layer 1 trust-aware capability table, security + quality eval suites, bashAugment, SSE token streaming, layeredMemory (peer-scoped episodic memory with provenance). Visitor-economics work (Phase 1b+1c+D1): three-level trust model (creator/agent/public + publicSubstate), TurnGateProvider 2PC contract, budgets augment (per-trust-level turn caps + dollar ceiling + BATS preamble), four-path identity resolution in web transport, Idempotency-Key dedup, bash defaults block shell_exec/run_script for public AND agent. 9 augments, 3 engines, 863 tests across 60+ files. The `chat/` package ships the Auggy Local GUI (`auggy chat`) — a Vite/React SPA with a Bun proxy server that discovers running agents via PID manifests and proxies chat through to each agent's `/agent/run`; distributed as a versioned GitHub release artifact with first-run download + SHA256 verification. See `lo/docs/auggy-plans-detail.md` (outside this repo) for the plan-by-plan roadmap.
 
 ## Commands
 
 ```bash
 # CLI
-aug1 create <name>              # Scaffold a new agent (default: ~/.auggy/agents/<name>/)
-aug1 add <name>                 # Add augments to an existing agent
-aug1 dev <name> [--config path] # Run agent in foreground (Ctrl-C stops)
-aug1 start <name>               # Install as launchd service (always-on)
-aug1 stop <name>                # Stop agent (either mode)
-aug1 restart <name>             # Stop + start
-aug1 status [name]              # Show running agents
-aug1 ls                         # List registered agents with status
-aug1 remove <name> [--yes]      # Delete an agent dir + clear index entry
-aug1 chat [--port N]            # Launch Local GUI for talking to running agents
+auggy create <name>              # Scaffold a new agent (default: ~/.auggy/agents/<name>/)
+auggy add <name>                 # Add augments to an existing agent
+auggy dev <name> [--config path] # Run agent in foreground (Ctrl-C stops)
+auggy start <name>               # Install as launchd service (always-on)
+auggy stop <name>                # Stop agent (either mode)
+auggy restart <name>             # Stop + start
+auggy status [name]              # Show running agents
+auggy ls                         # List registered agents with status
+auggy remove <name> [--yes]      # Delete an agent dir + clear index entry
+auggy chat [--port N]            # Launch Local GUI for talking to running agents
+auggy eval [name]                # Run portable security eval suite (default: bundled fixture)
 
 # Development
 bun test                         # Run full test suite (863 tests across 60+ files)
@@ -109,7 +110,7 @@ src/
 │   └── _shared/
 │       └── schema-normalize.ts  # Zod→JSON Schema normalization
 │
-└── cli/                  # aug1 CLI (Plan 3)
+└── cli/                  # auggy CLI (Plan 3)
     ├── index.ts            # Commander.js entrypoint
     ├── types.ts            # ParsedConfig, PidManifest, AugmentConfig
     ├── config-parser.ts    # YAML → env interpolation → validation → ParsedConfig
@@ -119,16 +120,16 @@ src/
     ├── resolve-config.ts   # Shared config path resolution
     ├── pid-registry.ts     # ~/.auggy/<name>.json atomic PID manifests
     ├── plist-generator.ts  # macOS launchd plist generation
-    ├── scaffold.ts         # aug1 create directory + template generation
+    ├── scaffold.ts         # auggy create directory + template generation
     ├── skill-manifest.ts   # Scan skills/*/SKILL.md → identity manifest
     └── commands/
-        ├── create.ts       # aug1 create <name>
-        ├── add.ts          # aug1 add <name> (add augments to existing agent)
-        ├── dev.ts          # aug1 dev (foreground runner, core lifecycle)
-        ├── start.ts        # aug1 start (launchd install)
-        ├── stop.ts         # aug1 stop (SIGTERM or launchctl unload)
-        ├── restart.ts      # aug1 restart (stop + start)
-        └── status.ts       # aug1 status (list or detail)
+        ├── create.ts       # auggy create <name>
+        ├── add.ts          # auggy add <name> (add augments to existing agent)
+        ├── dev.ts          # auggy dev (foreground runner, core lifecycle)
+        ├── start.ts        # auggy start (launchd install)
+        ├── stop.ts         # auggy stop (SIGTERM or launchctl unload)
+        ├── restart.ts      # auggy restart (stop + start)
+        └── status.ts       # auggy status (list or detail)
 
 tests/                    # 863 tests across 60+ files
 ├── fixtures/             # mock-model, mock-augment, mock-supabase, temp-dir
@@ -143,7 +144,7 @@ tests/                    # 863 tests across 60+ files
 ├── http.test.ts          # HTTP client tests (redirects, body size, auth stripping)
 └── (augments/web-fetch.test.ts — entity decoding, script strip, JSON pass)
 
-chat/                     # Auggy Local GUI (aug1 chat) — Vite/React SPA + Bun proxy server
+chat/                     # Auggy Local GUI (auggy chat) — Vite/React SPA + Bun proxy server
 ├── server.ts             # Bun.serve proxy: /api/agents discovery, /api/chat/<id> bearer-attaching forwarder, CSRF guard
 ├── src/
 │   ├── App.tsx           # Root composition (picker + ChatWidget, Cmd+K / Esc shortcuts)
