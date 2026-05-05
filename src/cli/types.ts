@@ -101,6 +101,40 @@ export interface AgentSettings {
   maxInferenceLoops?: number;
 }
 
+/**
+ * Optional per-agent overrides for the portable security eval suite.
+ *
+ * Consumed by the suite's eval-context module to resolve `${var}` interpolation
+ * in `evals/security/suite.yaml`. Scalars replace defaults; lists are appended
+ * to defaults / auto-derived values. See
+ * `docs/superpowers/specs/2026-05-05-portable-security-eval-suite.md` for the
+ * full variable inventory.
+ */
+export interface SecurityEvalOverride {
+  /** Replaces the operator-name scalar (default: `operators[0]` or `"the operator"`). */
+  operatorName?: string;
+  /** Replaces the agent-name scalar (default: `name`). */
+  agentName?: string;
+  /** Appended to default refusal phrasings. */
+  refusalPhrasings?: string[];
+  /** Appended to auto-derived system-prompt leak markers. */
+  systemPromptLeakMarkers?: string[];
+  /** Appended to auto-derived identity self-claim keywords. */
+  identitySelfClaimKeywords?: string[];
+  /** Appended to default secret-leak markers. */
+  secretLeakMarkers?: string[];
+  /** Replaces the `${fixture_env_path}` scalar. */
+  fixtureEnvPath?: string;
+  /** Replaces the `${fixture_internal_url}` scalar. */
+  fixtureInternalUrl?: string;
+  /** Replaces the `${fixture_shell_init_path}` scalar. */
+  fixtureShellInitPath?: string;
+  /** Replaces the `${fixture_workspace_root}` scalar. */
+  fixtureWorkspaceRoot?: string;
+  /** Replaces the `${fixture_aws_credentials_path}` scalar. */
+  fixtureAwsCredentialsPath?: string;
+}
+
 /** The fully parsed and validated agent.yaml content. */
 export interface ParsedConfig {
   /** Stable agent identifier (aug1_ prefix + UUID). */
@@ -117,6 +151,8 @@ export interface ParsedConfig {
   operators?: string[];
   /** Augment declarations. */
   augments: AugmentConfig[];
+  /** Optional per-agent overrides for the portable security eval suite. */
+  securityEval?: SecurityEvalOverride;
 }
 
 // ---------------------------------------------------------------------------

@@ -14,7 +14,13 @@
 import { readFileSync, existsSync } from "node:fs";
 import { resolve, dirname, join } from "node:path";
 import { parse as parseYaml } from "yaml";
-import type { ParsedConfig, AugmentConfig, EngineConfig, AgentSettings } from "./types";
+import type {
+  ParsedConfig,
+  AugmentConfig,
+  EngineConfig,
+  AgentSettings,
+  SecurityEvalOverride,
+} from "./types";
 
 // ---------------------------------------------------------------------------
 // .env loading
@@ -588,6 +594,10 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
     errors.push("settings.maxInferenceLoops: must be a positive integer");
   }
 
+  // Security eval overrides (optional). Per-agent context for the portable
+  // security eval suite — consumed by evals/security/eval-context.ts.
+  const securityEval = validateSecurityEval(raw.securityEval, errors);
+
   if (errors.length > 0) {
     throw new Error(`Invalid agent.yaml:\n${errors.map((e) => `  - ${e}`).join("\n")}`);
   }
@@ -600,7 +610,64 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
     settings: settings as AgentSettings,
     operators: raw.operators as string[] | undefined,
     augments: (augments as unknown[]).map((a) => a as AugmentConfig),
+    securityEval,
   };
+}
+
+/** Scalar fields on `securityEval` (each must be a string when present). */
+const SECURITY_EVAL_SCALAR_FIELDS = [
+  "operatorName",
+  "agentName",
+  "fixtureEnvPath",
+  "fixtureInternalUrl",
+  "fixtureShellInitPath",
+  "fixtureWorkspaceRoot",
+  "fixtureAwsCredentialsPath",
+] as const;
+
+/** List fields on `securityEval` (each must be a string array when present). */
+const SECURITY_EVAL_LIST_FIELDS = [
+  "refusalPhrasings",
+  "systemPromptLeakMarkers",
+  "identitySelfClaimKeywords",
+  "secretLeakMarkers",
+] as const;
+
+/**
+ * Validate the optional `securityEval` block. Returns the parsed value when
+ * present and well-formed, or `undefined` when absent. Pushes informative
+ * errors onto `errors` for any malformed fields; does not throw.
+ */
+function validateSecurityEval(raw: unknown, errors: string[]): SecurityEvalOverride | undefined {
+  if (raw === undefined) return undefined;
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    errors.push("securityEval: must be an object");
+    return undefined;
+  }
+  const block = raw as Record<string, unknown>;
+  const out: SecurityEvalOverride = {};
+
+  for (const field of SECURITY_EVAL_SCALAR_FIELDS) {
+    const value = block[field];
+    if (value === undefined) continue;
+    if (typeof value !== "string") {
+      errors.push(`securityEval.${field}: must be a string`);
+      continue;
+    }
+    out[field] = value;
+  }
+
+  for (const field of SECURITY_EVAL_LIST_FIELDS) {
+    const value = block[field];
+    if (value === undefined) continue;
+    if (!Array.isArray(value) || !value.every((v) => typeof v === "string")) {
+      errors.push(`securityEval.${field}: must be an array of strings`);
+      continue;
+    }
+    out[field] = value as string[];
+  }
+
+  return out;
 }
 
 // ---------------------------------------------------------------------------

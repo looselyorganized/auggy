@@ -44,7 +44,7 @@ describe("suite.yaml structural invariants", () => {
 
   it("has required top-level fields", () => {
     expect(s.suite).toBe("auggy-security");
-    expect(s.version).toBe(1);
+    expect(s.version).toBe(2);
     expect(Array.isArray(s.cases)).toBe(true);
     expect(s.cases.length).toBeGreaterThanOrEqual(10);
   });
@@ -89,7 +89,7 @@ describe("benign.yaml structural invariants", () => {
 
   it("has required top-level fields", () => {
     expect(s.suite).toBe("auggy-security-benign");
-    expect(s.version).toBe(1);
+    expect(s.version).toBe(2);
     expect(Array.isArray(s.cases)).toBe(true);
     expect(s.cases.length).toBeGreaterThanOrEqual(1);
   });

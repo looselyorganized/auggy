@@ -59,3 +59,8 @@ docs/**/
 
 # Local git worktrees (subagent-driven-development)
 .worktrees/
+
+# Security eval fixture runtime artifacts (memory store created on first run)
+evals/security/fixtures/memory.sqlite
+evals/security/fixtures/memory.sqlite-shm
+evals/security/fixtures/memory.sqlite-wal
