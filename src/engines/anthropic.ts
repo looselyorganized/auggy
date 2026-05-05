@@ -142,24 +142,66 @@ export function createAnthropicEngine(opts: AnthropicEngineOptions): ModelClient
           : { ...r, costUsd: undefined, unpricedReason: result.reason };
       };
 
-      if (opts2?.onDelta) {
-        // Streaming path: emit text deltas as they arrive from the model.
-        // Tool-use blocks are NOT streamed in v1 — they arrive in the
-        // finalMessage. This is intentional: text streaming is the latency
-        // win; tool args are small.
-        const stream = client.messages.stream(params);
-        stream.on("text", (text) => {
-          opts2.onDelta!({ kind: "text_delta", text });
-        });
-        const finalMessage = await stream.finalMessage();
-        return withCost(buildModelResponse(finalMessage), finalMessage.usage);
-      }
+      try {
+        if (opts2?.onDelta) {
+          // Streaming path: emit text deltas as they arrive from the model.
+          // Tool-use blocks are NOT streamed in v1 — they arrive in the
+          // finalMessage. This is intentional: text streaming is the latency
+          // win; tool args are small.
+          const stream = client.messages.stream(params);
+          stream.on("text", (text) => {
+            opts2.onDelta!({ kind: "text_delta", text });
+          });
+          const finalMessage = await stream.finalMessage();
+          return withCost(buildModelResponse(finalMessage), finalMessage.usage);
+        }
 
-      // Non-streaming path (backward compat for tests, other consumers)
-      const response = await client.messages.create(params);
-      return withCost(buildModelResponse(response), response.usage);
+        // Non-streaming path (backward compat for tests, other consumers)
+        const response = await client.messages.create(params);
+        return withCost(buildModelResponse(response), response.usage);
+      } catch (err) {
+        rewrapCostCapError(err);
+      }
     },
   };
+}
+
+/**
+ * Anthropic SDK errors that indicate the operator's provider-side spend cap
+ * has been reached get rewrapped with a clear, operator-actionable message.
+ * Other errors are re-thrown unchanged.
+ *
+ * Per ADR-024, provider-side spend caps are the v1.0 hard limit on agent
+ * spend. When they fire, Anthropic returns a 402 (Payment Required) or a
+ * 429 with cap-related text in the message body. We surface a concise
+ * pointer to the console rather than the raw SDK error string, so an
+ * operator who sees this in logs / `aug1 dev` output knows exactly where
+ * to go.
+ *
+ * Detected by structural shape (`status` field on the thrown object) rather
+ * than `instanceof Anthropic.APIError` — keeps the helper testable without
+ * coupling to the SDK's class hierarchy.
+ */
+function rewrapCostCapError(err: unknown): never {
+  if (err && typeof err === "object" && "status" in err) {
+    const status = (err as { status: unknown }).status;
+    const message = String((err as { message?: unknown }).message ?? "");
+    const lower = message.toLowerCase();
+
+    const isCostCap =
+      status === 402 ||
+      (status === 429 && /credit|spend|billing|limit|quota|cap|exceed|plan/.test(lower));
+
+    if (isCostCap) {
+      throw new Error(
+        `Anthropic provider spend cap reached (HTTP ${String(status)}). ` +
+          `Increase the cap or wait for reset in your Anthropic console at ` +
+          `https://console.anthropic.com/settings/limits. ` +
+          `(Original error: ${message})`,
+      );
+    }
+  }
+  throw err;
 }
 
 // === AssembledPrompt → Anthropic request translation ===

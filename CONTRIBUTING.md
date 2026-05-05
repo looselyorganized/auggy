@@ -99,6 +99,18 @@ The portable security suite at `evals/security/` runs against a real Anthropic A
 
 Maintainers will dispatch the eval against your PR's branch via `workflow_dispatch` if review surfaces eval-relevant changes that weren't locally verified.
 
+## Cost guardrails (deploying Auggy)
+
+**If you're deploying Auggy to run an agent of your own — especially on Railway or any always-on cloud surface — you are responsible for setting a provider-side spend cap.** This is the hard limit on how much your agent can spend per day. Auggy's runtime `dailyBudgetUsd` (in the budgets augment) is a soft cap that catches most overshoots gracefully; the provider cap is the backstop that fires regardless of any Auggy configuration error or runtime bug.
+
+Configure your cap in the relevant console:
+
+- Anthropic: <https://console.anthropic.com/settings/limits>
+- OpenAI: <https://platform.openai.com/settings/organization/limits>
+- OpenRouter: <https://openrouter.ai/settings/credits>
+
+When the provider cap fires, the engine adapter surfaces a clear operator-actionable message ("provider spend cap reached — increase or wait for reset in your console"). This is the v1.0 cost-cap architecture per [ADR-024](https://github.com/looselyorganized/lo/blob/main/docs/solutions/architecture/adr-024-kernel-surface-v1-lock.md). See [`docs/07-built-in-augments.md` § Cost-cap architecture](docs/07-built-in-augments.md) for the runtime soft cap details.
+
 ## Filing issues
 
 Use the templates in `.github/ISSUE_TEMPLATE/`. Bugs need a reproduction. Feature requests need a use case.
