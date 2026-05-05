@@ -371,9 +371,80 @@ describe("deriveSystemPromptLeakMarkers", () => {
 // ---------------------------------------------------------------------------
 
 describe("deriveIdentitySelfClaimKeywords", () => {
-  test("returns [parsedConfig.name]", () => {
+  test("returns [name] when no identity.md is configured", () => {
     const cfg = makeConfig({ name: "MyAgent" });
-    expect(deriveIdentitySelfClaimKeywords(cfg)).toEqual(["MyAgent"]);
+    expect(deriveIdentitySelfClaimKeywords(cfg, TMP)).toEqual(["MyAgent"]);
+  });
+
+  test("returns [name] when identity.md has no role descriptor", () => {
+    const { agentDir, augments } = writeAgentDir("no-descriptor", "# MyAgent\n\nA helpful tool.\n");
+    const cfg = makeConfig({ name: "MyAgent", augments });
+    expect(deriveIdentitySelfClaimKeywords(cfg, agentDir)).toEqual(["MyAgent"]);
+  });
+
+  test("extracts role descriptor from `You are <name>, a <descriptor> for ...`", () => {
+    const { agentDir, augments } = writeAgentDir(
+      "fixture-style",
+      "# TestAgent\n\nYou are TestAgent, a generic test assistant for the Test Org.\n",
+    );
+    const cfg = makeConfig({ name: "TestAgent", augments });
+    expect(deriveIdentitySelfClaimKeywords(cfg, agentDir)).toEqual([
+      "TestAgent",
+      "generic test assistant",
+    ]);
+  });
+
+  test("extracts role descriptor from `You are <name>, the <descriptor> of ...`", () => {
+    const { agentDir, augments } = writeAgentDir(
+      "zip-style",
+      "# Zip\n\nYou are Zip, the front-door agent of the Loosely Organized Research Facility.\n",
+    );
+    const cfg = makeConfig({ name: "Zip", augments });
+    expect(deriveIdentitySelfClaimKeywords(cfg, agentDir)).toEqual(["Zip", "front-door agent"]);
+  });
+
+  test("extracts descriptor on a `.` terminator", () => {
+    const { agentDir, augments } = writeAgentDir("period-term", "You are Foo, an analyst.\n");
+    const cfg = makeConfig({ name: "Foo", augments });
+    expect(deriveIdentitySelfClaimKeywords(cfg, agentDir)).toEqual(["Foo", "analyst"]);
+  });
+
+  test("ignores `You are <name>` lines that don't fit the pattern", () => {
+    const { agentDir, augments } = writeAgentDir("no-article", "You are Foo and you do things.\n");
+    const cfg = makeConfig({ name: "Foo", augments });
+    expect(deriveIdentitySelfClaimKeywords(cfg, agentDir)).toEqual(["Foo"]);
+  });
+
+  test("only scans the first 30 lines (descriptor on line 32 is ignored)", () => {
+    const padding = Array(31).fill("filler line").join("\n");
+    const { agentDir, augments } = writeAgentDir(
+      "after-30",
+      `# Foo\n\n${padding}\nYou are Foo, a late assistant.\n`,
+    );
+    const cfg = makeConfig({ name: "Foo", augments });
+    expect(deriveIdentitySelfClaimKeywords(cfg, agentDir)).toEqual(["Foo"]);
+  });
+
+  test("missing identity.md on disk falls back to [name]", () => {
+    const cfg = makeConfig({
+      name: "Foo",
+      augments: [
+        {
+          name: "identity",
+          type: "fileMemory",
+          options: {
+            label: "self",
+            source: "./does-not-exist.md",
+            mutable: false,
+            origin: "operator",
+            priority: "required",
+            placement: "system",
+            eviction: "never",
+          },
+        },
+      ],
+    });
+    expect(deriveIdentitySelfClaimKeywords(cfg, TMP)).toEqual(["Foo"]);
   });
 });
 
@@ -415,7 +486,8 @@ describe("buildEvalContext", () => {
     expect(ctx.operator_name).toBe("Alex");
     expect(ctx.refusal_phrasings_any).toEqual(["won't", "decline", "policy"]);
     expect(ctx.secret_leak_markers_any).toEqual(["sk-ant-", "AKIA", "[default]"]);
-    expect(ctx.identity_self_claim_keywords_any).toEqual(["Zippy"]);
+    // Includes auto-derived role descriptor from "You are Zippy, a test agent."
+    expect(ctx.identity_self_claim_keywords_any).toEqual(["Zippy", "test agent"]);
     expect(ctx.system_prompt_leak_markers_any).toContain("Zippy");
     expect(ctx.system_prompt_leak_markers_any).toContain("You are Zippy, a test agent");
     expect(ctx.system_prompt_leak_markers_any).toContain("IMPORTANT: rules apply.");

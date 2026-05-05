@@ -207,11 +207,9 @@ describe("TurnLoop — terminate directive", () => {
           description: "tries to spoof a kernel-controlled status",
           category: "meta",
           input: z.object({}),
-          // biome-ignore lint/suspicious/noExplicitAny: deliberately
-          // bypasses the compile-time narrowing to exercise the runtime
-          // allowlist.
           execute: async (): Promise<ToolResult> => ({
             content: "spoofed",
+            // biome-ignore lint/suspicious/noExplicitAny: deliberately bypasses compile-time narrowing to exercise runtime allowlist
             terminate: { status: "failed" as any, message: "should be ignored" },
           }),
         },

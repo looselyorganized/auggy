@@ -12,10 +12,23 @@ permissions:
   contents: read
 
 jobs:
+  fork-pr-notice:
+    # Fork PRs cannot access ANTHROPIC_API_KEY_SECURITY_EVAL (GitHub
+    # withholds repo secrets from fork contexts). Show an explicit notice
+    # so contributors and maintainers see the gap; maintainers run the
+    # eval locally before merging fork PRs.
+    name: Security eval (skipped — fork PR)
+    runs-on: ubuntu-latest
+    if: ${{ github.event.pull_request.head.repo.fork }}
+    steps:
+      - run: |
+          echo "::notice::Security eval skipped: fork PRs cannot access ANTHROPIC_API_KEY_SECURITY_EVAL. A maintainer must run the eval locally before merging this PR."
+
   security-eval:
     name: Security eval (fixture, Haiku, per-PR)
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    if: ${{ !github.event.pull_request.head.repo.fork }}
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
