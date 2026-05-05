@@ -1,8 +1,30 @@
 name: Security eval
 
+# This workflow runs Auggy's portable security eval suite against the test
+# fixture using a real Anthropic API call per case. To keep maintainer costs
+# bounded, it does not auto-trigger on pull requests — it runs on three
+# explicit channels:
+#
+#   1. workflow_dispatch — maintainers click "Run workflow" against any branch
+#      to verify a PR before merging.
+#   2. push: branches: [main] — runs once after every merge to catch
+#      regressions that slipped past review.
+#   3. schedule (nightly) — catches model behaviour drift between merges
+#      (e.g., upstream Haiku updates that change refusal phrasings).
+#
+# Contributors who want PR-time validation in their own fork: configure
+# ANTHROPIC_API_KEY_SECURITY_EVAL in your fork's repo secrets, then add
+# `pull_request:` to this trigger list in your fork's workflow file. Your
+# fork, your CI, your spend. See CONTRIBUTING.md.
+
 on:
-  pull_request:
+  workflow_dispatch:
+  push:
     branches: [main]
+  schedule:
+    # 07:00 UTC daily = midnight Pacific. Off-hours so a failed nightly
+    # surfaces by morning. ~$0.07 per run; ~$2/month at this cadence.
+    - cron: "0 7 * * *"
 
 concurrency:
   group: security-eval-${{ github.ref }}
@@ -12,23 +34,10 @@ permissions:
   contents: read
 
 jobs:
-  fork-pr-notice:
-    # Fork PRs cannot access ANTHROPIC_API_KEY_SECURITY_EVAL (GitHub
-    # withholds repo secrets from fork contexts). Show an explicit notice
-    # so contributors and maintainers see the gap; maintainers run the
-    # eval locally before merging fork PRs.
-    name: Security eval (skipped — fork PR)
-    runs-on: ubuntu-latest
-    if: ${{ github.event.pull_request.head.repo.fork }}
-    steps:
-      - run: |
-          echo "::notice::Security eval skipped: fork PRs cannot access ANTHROPIC_API_KEY_SECURITY_EVAL. A maintainer must run the eval locally before merging this PR."
-
   security-eval:
-    name: Security eval (fixture, Haiku, per-PR)
+    name: Security eval (fixture, Haiku)
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    if: ${{ !github.event.pull_request.head.repo.fork }}
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4

@@ -104,17 +104,25 @@ The fixture at `fixtures/test-agent.yaml` is the canonical "any Auggy agent" tar
 
 ## CI integration
 
-`.github/workflows/security-eval.yml` runs on every PR to `main`:
+`.github/workflows/security-eval.yml` runs on three explicit channels — **not on every PR**:
 
-- Default fixture (no operator-specific config), Haiku, 3 trials per case
-- Cost ≈ $0.07/run on Haiku 4.5
-- 15-minute timeout; suite typically completes in 3–5 minutes
-- Results uploaded as a 30-day artifact for inspection
-- Exit non-zero ⇒ PR can't merge
+| Trigger | When | Who pays | What it catches |
+|---|---|---|---|
+| `workflow_dispatch` | Maintainer clicks "Run workflow" in the Actions tab against any branch | Maintainer | Pre-merge verification on demand |
+| `push: branches: [main]` | Every merge to `main` | Maintainer | Regressions that slipped past review — revert if it fails |
+| `schedule: cron: "0 7 * * *"` | Daily at 07:00 UTC (midnight Pacific) | Maintainer | Model behavior drift between merges (Haiku updates, etc.) |
 
-Secret: `ANTHROPIC_API_KEY_SECURITY_EVAL` (separate from any other Anthropic key — limits blast radius of secret leakage).
+Each run uses the default fixture (no operator-specific config), Haiku, 3 trials per case. Cost ≈ $0.07/run; ~$2/month at this cadence. 15-minute timeout. Results uploaded as a 30-day artifact for inspection.
 
-The Zip nightly run is **not** gated in CI — it depends on Zip-specific paths and a webhook the fixture doesn't use. Run locally: `bun run evals/security/run.ts --config zip/agent.yaml`.
+Secret: `ANTHROPIC_API_KEY_SECURITY_EVAL` — dedicated, scoped key. Distinct from any other Anthropic key in the same project, so a leak limits blast radius.
+
+**Why no `pull_request` trigger?** GitHub structurally withholds repo secrets from fork PR contexts (correct behavior — prevents secret exfiltration via malicious workflow changes). Combined with the cost-per-PR concern, the standard OSS pattern for paid-API integration tests is exactly this: maintainer-controlled triggers + post-merge gate + scheduled drift check, with contributor self-funded fork CI as the escape hatch for PR-time validation.
+
+**For contributors:** see [CONTRIBUTING.md "Security eval" section](../../CONTRIBUTING.md). Short version — run locally before submitting, or configure your own secret + `pull_request` trigger in your fork.
+
+**For Auggy adopters who deploy their own agent:** the workflow file ships in your fork. Configure `ANTHROPIC_API_KEY_SECURITY_EVAL` in your repo's secrets to enable any of the triggers in your deployment. Your wallet, your CI cadence.
+
+The Zip nightly run remains separate — runs locally via launchd against Zip's full agent config (see [`zip/agent.yaml`](../../zip/agent.yaml)): `bun run evals/security/run.ts --config zip/agent.yaml`.
 
 ## Metrics
 

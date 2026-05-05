@@ -70,13 +70,34 @@ Scopes match top-level source areas: `kernel`, `memory`, `transport`, `engines`,
 
 Before requesting review:
 
-- [ ] `bun test` passes (all 863+).
+- [ ] `bun test` passes (all 1100+).
 - [ ] `bunx tsc --noEmit` is clean.
 - [ ] If you changed behavior documented in `docs/01-12-*.md`, the doc is updated in the same PR.
 - [ ] If the change crosses a public surface (new augment, new tool, new engine), a test exercises it.
 - [ ] Commit messages follow the convention above.
 
 We squash-merge by default. Keep your PR description sharp — that's what becomes the merged commit.
+
+## Security eval (paid integration tests)
+
+The portable security suite at `evals/security/` runs against a real Anthropic API call per case (see [`evals/security/README.md`](evals/security/README.md) for the full contract). Each run costs roughly $0.07 on Haiku.
+
+**The CI workflow does NOT auto-trigger on pull requests.** This is deliberate — to avoid burning maintainer API budget on every contributor push. The workflow runs on three explicit channels:
+
+- `workflow_dispatch` — maintainers click "Run workflow" against any branch from the Actions tab to verify a PR before merging.
+- `push: main` — runs once after every merge to catch regressions.
+- `schedule` (nightly, 07:00 UTC) — catches model behavior drift between merges.
+
+**If your PR touches eval-relevant code** (kernel turn-loop, augment refusal logic, identity preamble, fixture composition, suite YAML, eval-context module):
+
+1. **Run the suite locally before opening the PR:**
+   ```bash
+   ANTHROPIC_API_KEY=... bun run evals/security/run.ts
+   ```
+2. **Or:** configure `ANTHROPIC_API_KEY_SECURITY_EVAL` in your fork's GitHub repo secrets (Settings → Secrets and variables → Actions), and add a `pull_request:` entry to the trigger list in your fork's copy of `.github/workflows/security-eval.yml`. Your fork, your CI, your spend.
+3. Mention in your PR description that you've run the suite and it passes.
+
+Maintainers will dispatch the eval against your PR's branch via `workflow_dispatch` if review surfaces eval-relevant changes that weren't locally verified.
 
 ## Filing issues
 
