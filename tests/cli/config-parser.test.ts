@@ -773,3 +773,102 @@ describe("parseConfig — augmented missing-env-var error", () => {
     expect(caught!.message).not.toMatch(/Set them in the agent's \.env file/);
   });
 });
+
+// ---------------------------------------------------------------------------
+// securityEval overrides — portable security eval suite per-agent context
+// ---------------------------------------------------------------------------
+
+describe("securityEval", () => {
+  test("parses fine and returns undefined when block is omitted", () => {
+    const path = writeYaml("agent.yaml", minimalConfig());
+    const config = parseConfig(path);
+    expect(config.securityEval).toBeUndefined();
+  });
+
+  test("parses fine when block is empty; all subfields undefined", () => {
+    const path = writeYaml("agent.yaml", minimalConfig({ securityEval: {} }));
+    const config = parseConfig(path);
+    expect(config.securityEval).toEqual({});
+    expect(config.securityEval?.operatorName).toBeUndefined();
+    expect(config.securityEval?.refusalPhrasings).toBeUndefined();
+  });
+
+  test("parses fine when all fields are populated correctly", () => {
+    const securityEval = {
+      operatorName: "Alice",
+      agentName: "TestAgent",
+      refusalPhrasings: ["won't", "can't"],
+      systemPromptLeakMarkers: ["<system>", "# System"],
+      identitySelfClaimKeywords: ["TestAgent", "assistant"],
+      secretLeakMarkers: ["sk-ant-", "BEGIN PRIVATE KEY"],
+      fixtureEnvPath: "/private/.env.fixture",
+      fixtureInternalUrl: "http://localhost:4000/admin",
+      fixtureShellInitPath: "/private/.zshrc-fixture",
+      fixtureWorkspaceRoot: "/private/",
+      fixtureAwsCredentialsPath: "/private/.aws-fixture/credentials",
+    };
+    const path = writeYaml("agent.yaml", minimalConfig({ securityEval }));
+    const config = parseConfig(path);
+    expect(config.securityEval).toEqual(securityEval);
+  });
+
+  test("rejects non-object securityEval", () => {
+    const path = writeYaml("agent.yaml", minimalConfig({ securityEval: "not-an-object" }));
+    expect(() => parseConfig(path)).toThrow(/securityEval: must be an object/);
+  });
+
+  test("rejects array securityEval", () => {
+    const path = writeYaml("agent.yaml", minimalConfig({ securityEval: ["bad"] }));
+    expect(() => parseConfig(path)).toThrow(/securityEval: must be an object/);
+  });
+
+  test("rejects list field given a string", () => {
+    const path = writeYaml(
+      "agent.yaml",
+      minimalConfig({ securityEval: { refusalPhrasings: "not-an-array" } }),
+    );
+    expect(() => parseConfig(path)).toThrow(
+      /securityEval\.refusalPhrasings: must be an array of strings/,
+    );
+  });
+
+  test("rejects list field with non-string entries", () => {
+    const path = writeYaml(
+      "agent.yaml",
+      minimalConfig({ securityEval: { systemPromptLeakMarkers: ["ok", 42] } }),
+    );
+    expect(() => parseConfig(path)).toThrow(
+      /securityEval\.systemPromptLeakMarkers: must be an array of strings/,
+    );
+  });
+
+  test("rejects scalar field given a number", () => {
+    const path = writeYaml("agent.yaml", minimalConfig({ securityEval: { operatorName: 123 } }));
+    expect(() => parseConfig(path)).toThrow(/securityEval\.operatorName: must be a string/);
+  });
+
+  test("mixed valid + invalid: surfaces the offending field", () => {
+    const path = writeYaml(
+      "agent.yaml",
+      minimalConfig({
+        securityEval: {
+          operatorName: "Alice", // valid
+          refusalPhrasings: ["won't", "can't"], // valid
+          fixtureEnvPath: 999, // invalid scalar
+          identitySelfClaimKeywords: "nope", // invalid list
+        },
+      }),
+    );
+    let caught: Error | null = null;
+    try {
+      parseConfig(path);
+    } catch (err) {
+      caught = err as Error;
+    }
+    expect(caught).not.toBeNull();
+    expect(caught!.message).toMatch(/securityEval\.fixtureEnvPath: must be a string/);
+    expect(caught!.message).toMatch(
+      /securityEval\.identitySelfClaimKeywords: must be an array of strings/,
+    );
+  });
+});

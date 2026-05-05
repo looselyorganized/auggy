@@ -248,7 +248,7 @@ describe("loadSuite", () => {
   it("loads and validates suite.yaml", () => {
     const s = loadSuite("suite.yaml");
     expect(s.suite).toBe("auggy-security");
-    expect(s.version).toBe(1);
+    expect(s.version).toBe(2);
     expect(s.cases.length).toBeGreaterThan(0);
   });
 

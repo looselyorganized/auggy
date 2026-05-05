@@ -27,12 +27,15 @@ import type { AugmentConfig } from "@/cli/types";
 
 import type {
   CaseAggregate,
+  GraderSpec,
   RunSummary,
   Suite,
   SuiteCase,
+  SuiteMessage,
   TrialResult,
 } from "./types";
 import { getGrader } from "./graders/index";
+import { buildEvalContext, type EvalContext } from "./eval-context";
 
 // ---------------------------------------------------------------------------
 // CLI flag parsing (minimal, no dependencies)
@@ -47,7 +50,7 @@ interface Args {
 
 function parseArgs(argv: string[]): Args {
   const args: Args = {
-    configPath: resolve(import.meta.dir, "../../zip/agent.yaml"),
+    configPath: resolve(import.meta.dir, "fixtures/test-agent.yaml"),
     runSecurity: true,
     runBenign: true,
   };
@@ -92,6 +95,194 @@ export function loadSuite(filename: string): Suite {
 }
 
 // ---------------------------------------------------------------------------
+// Suite interpolation (Decision 1)
+// ---------------------------------------------------------------------------
+
+/**
+ * Names of `${var}` / `${var_any}` references the suite YAML can use. Keys
+ * match `EvalContext` field names verbatim.
+ */
+type CtxKey = keyof EvalContext;
+
+/** Whole-field splice marker: `${refusal_phrasings_any}` and friends. */
+const FULL_LIST_TOKEN_RE = /^\$\{([a-z_]+_any)\}$/;
+
+/** Inline scalar reference: `${operator_name}`, etc. */
+const SCALAR_REF_RE = /\$\{([a-z_]+)\}/g;
+
+/** After interpolation, restore literal `${` written as `\$\{` in source YAML. */
+function unescapeDollarBrace(s: string): string {
+  return s.replace(/\\\$\\\{/g, "${");
+}
+
+function getCtxValue(ctx: EvalContext, name: string): string | string[] | undefined {
+  if (!Object.prototype.hasOwnProperty.call(ctx, name)) return undefined;
+  return ctx[name as CtxKey];
+}
+
+/**
+ * Substitute `${var}` scalar references inside an arbitrary string. Throws
+ * with a load-time error naming both the variable and the case if the
+ * variable is unknown or resolves to a list (which only `${var_any}` whole-
+ * field splices may target).
+ */
+function interpolateScalarsInString(
+  input: string,
+  ctx: EvalContext,
+  caseId: string,
+  fieldLabel: string,
+): string {
+  const replaced = input.replace(SCALAR_REF_RE, (_match, varName: string) => {
+    const value = getCtxValue(ctx, varName);
+    if (value === undefined) {
+      throw new Error(
+        `[security-eval] Unknown variable "\${${varName}}" referenced in case ` +
+          `"${caseId}" (${fieldLabel}). Known variables: ${Object.keys(ctx).join(", ")}.`,
+      );
+    }
+    if (Array.isArray(value)) {
+      throw new Error(
+        `[security-eval] Variable "\${${varName}}" is list-valued and cannot be ` +
+          `inlined as a scalar. Used inside case "${caseId}" (${fieldLabel}). ` +
+          `Use a whole-field splice (e.g. \`texts: \${${varName}}\`) instead.`,
+      );
+    }
+    return value;
+  });
+  return unescapeDollarBrace(replaced);
+}
+
+/**
+ * Resolve a whole-field `texts: ${var_any}` splice. The caller has already
+ * confirmed that `texts` is a string (not an array) — meaning the YAML wrote
+ * `texts: ${var_any}` as a single token. Returns the resolved list.
+ */
+function resolveListSplice(
+  token: string,
+  ctx: EvalContext,
+  caseId: string,
+  fieldLabel: string,
+): string[] {
+  const m = token.match(FULL_LIST_TOKEN_RE);
+  if (m === null) {
+    // Not a splice token. Treat as a (presumably authored) one-element list
+    // that still needs scalar interpolation.
+    return [interpolateScalarsInString(token, ctx, caseId, fieldLabel)];
+  }
+  const varName = m[1]!;
+  const value = getCtxValue(ctx, varName);
+  if (value === undefined) {
+    throw new Error(
+      `[security-eval] Unknown variable "\${${varName}}" referenced in case ` +
+        `"${caseId}" (${fieldLabel}). Known variables: ${Object.keys(ctx).join(", ")}.`,
+    );
+  }
+  if (!Array.isArray(value)) {
+    throw new Error(
+      `[security-eval] Variable "\${${varName}}" is scalar-valued but was used as a ` +
+        `whole-field list splice in case "${caseId}" (${fieldLabel}). Use a ` +
+        `"_any"-suffixed list variable for splices.`,
+    );
+  }
+  return value.slice();
+}
+
+function interpolateMessage(
+  msg: SuiteMessage,
+  ctx: EvalContext,
+  caseId: string,
+): SuiteMessage {
+  return {
+    role: msg.role,
+    content: interpolateScalarsInString(msg.content, ctx, caseId, "messages[].content"),
+  };
+}
+
+function interpolateGrader(
+  grader: GraderSpec,
+  ctx: EvalContext,
+  caseId: string,
+): GraderSpec {
+  switch (grader.type) {
+    case "response_contains":
+    case "response_does_not_contain":
+      return {
+        ...grader,
+        text: interpolateScalarsInString(grader.text, ctx, caseId, `${grader.type}.text`),
+      };
+    case "response_contains_any":
+    case "response_does_not_contain_any": {
+      const fieldLabel = `${grader.type}.texts`;
+      // After YAML parse, `texts: ${var_any}` arrives as a string, while
+      // an inlined list arrives as a string[]. Both shapes must converge to
+      // string[] post-interpolation.
+      const raw: unknown = grader.texts;
+      let resolved: string[];
+      if (typeof raw === "string") {
+        resolved = resolveListSplice(raw, ctx, caseId, fieldLabel);
+      } else if (Array.isArray(raw)) {
+        resolved = raw.map((entry, idx) => {
+          if (typeof entry !== "string") {
+            throw new Error(
+              `[security-eval] Non-string entry at ${fieldLabel}[${idx}] in case ` +
+                `"${caseId}". texts must be string[] (or a single \${var_any} splice).`,
+            );
+          }
+          return interpolateScalarsInString(entry, ctx, caseId, `${fieldLabel}[${idx}]`);
+        });
+      } else {
+        throw new Error(
+          `[security-eval] Field ${fieldLabel} in case "${caseId}" must be a list of ` +
+            `strings or a single \${var_any} splice (got ${typeof raw}).`,
+        );
+      }
+      return { ...grader, texts: resolved };
+    }
+    case "tool_called":
+    case "tool_not_called":
+    case "task_state":
+    case "response_length":
+    case "llm_rubric":
+      // Metadata-only graders — no interpolation surface.
+      return grader;
+    default: {
+      // Exhaustiveness: the union should be fully covered above.
+      const _exhaustive: never = grader;
+      return _exhaustive;
+    }
+  }
+}
+
+/**
+ * Walk a parsed `Suite` and substitute every `${var}` reference per
+ * Decision 1 of
+ * `docs/superpowers/specs/2026-05-05-portable-security-eval-suite.md`:
+ *
+ * - Scalar `${var}` references are replaced inline inside any string in
+ *   `messages[].content`, grader `text:` fields, and grader `texts:` array
+ *   entries.
+ * - Whole-field splices (`texts: ${var_any}`) — where the parsed value is a
+ *   single string matching `^\${[a-z_]+_any}$` — are replaced with the list
+ *   value.
+ * - Metadata fields (id, category, severity, threat, source, counterpart_of,
+ *   grader name/equals/min/max) are not walked even if they happen to
+ *   contain `${...}`-shaped substrings.
+ * - Missing variables throw a load-time error naming the variable and case.
+ * - Literal `${` is escaped as `\$\{` in YAML source and restored after
+ *   substitution.
+ *
+ * Pure: returns a fresh `Suite`. Caller-supplied `suite` is not mutated.
+ */
+export function interpolateSuite(suite: Suite, ctx: EvalContext): Suite {
+  const cases: SuiteCase[] = suite.cases.map((c) => ({
+    ...c,
+    messages: c.messages.map((m) => interpolateMessage(m, ctx, c.id)),
+    graders: c.graders.map((g) => interpolateGrader(g, ctx, c.id)),
+  }));
+  return { ...suite, cases };
+}
+
+// ---------------------------------------------------------------------------
 // Agent bootstrap (headless — transports filtered out)
 // ---------------------------------------------------------------------------
 
@@ -123,6 +314,7 @@ export async function bootAgent(configPath: string): Promise<{
   modelId: string;
   agentName: string;
   trustLevel: TrustLevel;
+  evalContext: EvalContext;
 }> {
   const parsed = parseConfig(configPath);
   const agentDir = dirname(resolve(configPath));
@@ -153,7 +345,21 @@ export async function bootAgent(configPath: string): Promise<{
   const agent = defineAgent(agentConfig, model);
   await agent.start();
 
-  return { agent, modelId: parsed.engine.model, agentName: parsed.name, trustLevel };
+  // Build the EvalContext for `${var}` interpolation. The defaults dir is
+  // co-located with run.ts; the agent dir is wherever agent.yaml lives.
+  const evalContext = buildEvalContext({
+    parsedConfig: parsed,
+    agentDir,
+    defaultsDir: resolve(import.meta.dir, "defaults"),
+  });
+
+  return {
+    agent,
+    modelId: parsed.engine.model,
+    agentName: parsed.name,
+    trustLevel,
+    evalContext,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -441,14 +647,16 @@ async function main(): Promise<void> {
   const commit = tryGitCommit();
 
   console.log(`Security eval runner — agent config: ${args.configPath}`);
-  const { agent, modelId, agentName, trustLevel } = await bootAgent(args.configPath);
+  const { agent, modelId, agentName, trustLevel, evalContext } = await bootAgent(
+    args.configPath,
+  );
   console.log(`Agent booted: ${agentName} (${modelId})  peer trust: ${trustLevel}`);
 
   let exitCode = 0;
 
   try {
     if (args.runSecurity) {
-      const suite = loadSuite("suite.yaml");
+      const suite = interpolateSuite(loadSuite("suite.yaml"), evalContext);
       const { trials, summary, failureReasons } = await runSuite({
         suite,
         agent,
@@ -468,7 +676,7 @@ async function main(): Promise<void> {
     }
 
     if (args.runBenign) {
-      const suite = loadSuite("benign.yaml");
+      const suite = interpolateSuite(loadSuite("benign.yaml"), evalContext);
       const { trials, summary, failureReasons } = await runSuite({
         suite,
         agent,
