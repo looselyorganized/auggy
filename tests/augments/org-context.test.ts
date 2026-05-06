@@ -79,12 +79,50 @@ function defaultManifest(): Record<string, unknown> {
   };
 }
 
+/**
+ * Construct a manifest that intentionally lists traversal-shaped /
+ * suspicious paths. Used by the High-2 defense-in-depth tests: a manifest
+ * that lists `/../etc/passwd` would bypass the High-1 allowlist, so we
+ * MUST also reject the path at the safeResolveUnderBase layer.
+ */
+function suspiciousManifest(extra: ManifestEntry[]): Record<string, unknown> {
+  return {
+    org: "Test Org",
+    purpose: "for testing only",
+    operator: "the operator",
+    phase: "active",
+    endpoints: [
+      { path: "/mission", description: "Org mission and active focus" },
+      { path: "/team", description: "People and roles" },
+      ...extra,
+    ],
+  };
+}
+
+interface ManifestEntry {
+  path: string;
+  description: string;
+  method?: string;
+}
+
 /** Write a fully-stocked example org-context dir under `baseDir`. */
 async function writeExampleOrgContext(baseDir: string): Promise<void> {
   await mkdir(baseDir, { recursive: true });
   await writeFile(join(baseDir, "manifest"), `${JSON.stringify(defaultManifest(), null, 2)}\n`);
   await writeFile(join(baseDir, "mission.md"), "# Test Org — Mission\n\nfor testing only\n");
   await writeFile(join(baseDir, "team.md"), "# Test Org — Team\n\n- the operator (operator)\n");
+}
+
+/**
+ * Overwrite the manifest at `<baseDir>/manifest` with the given suspicious
+ * entries appended. Used by High-2 defense-in-depth tests to force the
+ * allowlist past traversal-shaped paths so the lower-layer rejection fires.
+ */
+async function writeManifestWithEntries(baseDir: string, extra: ManifestEntry[]): Promise<void> {
+  await writeFile(
+    join(baseDir, "manifest"),
+    `${JSON.stringify(suspiciousManifest(extra), null, 2)}\n`,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -232,26 +270,33 @@ describe("orgContext file:// scheme", () => {
 
   // The augment treats endpoint paths as `/`-rooted under the configured
   // base dir (the URL-style convention the manifest uses: `/mission`,
-  // `/team`, etc.). Inputs that look like absolute traversals
-  // (`/../etc/passwd`, `/foo/../../etc/passwd`) are normalized BEFORE
-  // resolution: `path.normalize("/../etc/passwd")` collapses to
-  // `/etc/passwd`, which then re-roots to `<base>/etc/passwd`. The leak
-  // is neutralized at normalize time and the read produces a clean ENOENT
-  // — never reading from outside the base.
+  // `/team`, etc.). The augment now enforces TWO independent defenses:
   //
-  // The realpath/relative boundary check is the load-bearing defense for
-  // cases that DO escape after normalize: the symlink-escape test below
-  // is the canonical one; relative-form requests would also exercise it
-  // if the augment ever accepted them (it doesn't — `/`-rooted convention
-  // is enforced).
+  // High-1: manifest allowlist. Every requested path must match
+  // `manifest.endpoints[].path` exactly. Unlisted paths (including
+  // /etc/passwd, /../etc/passwd, /no-such-endpoint, etc.) are refused
+  // before any filesystem call. The default test manifest lists only
+  // /mission and /team, so all the traversal-shape inputs in this section
+  // hit the allowlist refusal first — and that refusal IS a rejection.
   //
-  // Each of these cases asserts the security property directly: no
-  // outside-base content leaks into the tool result.
+  // High-2: fail-closed traversal rejection inside safeResolveUnderBase.
+  // Defense-in-depth in case the manifest ever lists a traversal-shape
+  // path. Tests below at "high-2 defense-in-depth" intentionally allowlist
+  // suspicious paths so the lower layer fires.
+  //
+  // Each of these cases asserts the security property directly: the
+  // response is an error envelope of rejection class, and no outside-base
+  // content leaks into the tool result.
 
-  /** Asserts that the response is an error envelope with no /etc/passwd leak. */
+  /** Asserts that the response is a rejection-shaped error envelope with no /etc/passwd leak. */
   function expectNoLeak(res: Record<string, unknown>): void {
     expect(res.error).toBeDefined();
     expect(typeof res.error).toBe("string");
+    // The error message must explicitly indicate rejection — either by the
+    // High-1 allowlist ("refused") or by the High-2 traversal layer
+    // ("rejected" / "traversal"). The test names say "rejects X (no leak)";
+    // the assertion now matches the test name.
+    expect(res.error as string).toMatch(/refused|rejected|traversal/i);
     // /etc/passwd lines start with "root:" on POSIX — load-bearing canary.
     expect(JSON.stringify(res)).not.toContain("root:");
     // No content field should be present on an error envelope.
@@ -322,6 +367,9 @@ describe("orgContext file:// scheme", () => {
   });
 
   it("rejects null-byte injection \\0bad", async () => {
+    // Allowlist the path so the High-1 check passes; defense-in-depth at
+    // the null-byte layer in safeResolveUnderBase must still fire.
+    await writeManifestWithEntries(baseDir, [{ path: "/\0bad", description: "test" }]);
     const aug = orgContext({ baseUrl });
     await getManifestBlock(aug);
     const res = await callOrgFetch(aug, "/\0bad");
@@ -329,6 +377,9 @@ describe("orgContext file:// scheme", () => {
   });
 
   it("rejects URL-encoded null byte %00", async () => {
+    // Same defense-in-depth posture: allowlist the literal request path so
+    // the null-byte-after-decode rejection inside safeResolveUnderBase fires.
+    await writeManifestWithEntries(baseDir, [{ path: "/safe%00.md", description: "test" }]);
     const aug = orgContext({ baseUrl });
     await getManifestBlock(aug);
     const res = await callOrgFetch(aug, "/safe%00.md");
@@ -342,6 +393,11 @@ describe("orgContext file:// scheme", () => {
     // /etc exists on macOS/Linux; on Windows we'd need a different target.
     // The augment / Auggy targets POSIX-only at v1.0 so this is fine.
     await symlink("/etc", evilLink);
+    // Allowlist `/evil-link/passwd` so the High-1 allowlist passes — this
+    // test is exercising the realpath boundary check (defense-in-depth).
+    await writeManifestWithEntries(baseDir, [
+      { path: "/evil-link/passwd", description: "deliberately suspicious" },
+    ]);
 
     const aug = orgContext({ baseUrl });
     await getManifestBlock(aug);
@@ -350,7 +406,193 @@ describe("orgContext file:// scheme", () => {
     // realpath resolves the symlink → `/etc/passwd`, which is OUTSIDE
     // realBase. The boundary check rejects.
     const res = await callOrgFetch(aug, "/evil-link/passwd");
-    expect(res.error as string).toMatch(/traversal rejected/i);
+    expect(res.error as string).toMatch(/rejected|traversal/i);
+  });
+
+  // ---------------------------------------------------------------------------
+  // High-1: manifest allowlist (file:// branch)
+  //
+  // Per spec §Decision 9, the manifest is the authoritative endpoint
+  // contract. org_fetch must refuse any path that isn't listed in
+  // manifest.endpoints[].path (strict equality, no prefix matching). When
+  // no manifest is loaded at all (file unreadable / HTTP 404 / network
+  // failure) every fetch must be refused with a clear error so the model
+  // doesn't fall through to filesystem reads on an undefined contract.
+  // ---------------------------------------------------------------------------
+
+  it("allowlist (file://): org_fetch refuses an unlisted path", async () => {
+    const aug = orgContext({ baseUrl });
+    await getManifestBlock(aug);
+    const res = await callOrgFetch(aug, "/unlisted");
+    expect(res.error as string).toMatch(/not in the manifest/i);
+    expect(res.content).toBeUndefined();
+  });
+
+  it("allowlist (file://): org_fetch allows a listed path", async () => {
+    const aug = orgContext({ baseUrl });
+    await getManifestBlock(aug);
+    const res = await callOrgFetch(aug, "/mission");
+    expect(res.error).toBeUndefined();
+    expect(res.endpoint).toBe("/mission");
+    expect(res.content as string).toContain("Test Org — Mission");
+  });
+
+  it("allowlist (file://): org_fetch refuses when no manifest is loaded", async () => {
+    // Empty base dir — manifest file doesn't exist; fetchManifest returns null.
+    const emptyDir = join(tmp.path, "empty-org");
+    await mkdir(emptyDir, { recursive: true });
+    const aug = orgContext({ baseUrl: pathToFileURL(emptyDir).href });
+    // Don't call getManifestBlock — leave cachedManifest null.
+    const res = await callOrgFetch(aug, "/mission");
+    expect(res.error as string).toMatch(/no manifest loaded/i);
+    expect(res.content).toBeUndefined();
+  });
+
+  // ---------------------------------------------------------------------------
+  // High-1: manifest allowlist (HTTP branch)
+  // ---------------------------------------------------------------------------
+
+  it("allowlist (HTTP): org_fetch refuses an unlisted path", async () => {
+    function fakeResponse(body: string, status = 200): HttpResponse {
+      return {
+        finalUrl: "https://example.com/x",
+        status,
+        statusText: status === 200 ? "OK" : "Not Found",
+        contentType: "application/json",
+        headers: new Headers(),
+        body,
+      };
+    }
+    const fakeClient: HttpClient = {
+      request: async () => fakeResponse(""),
+      get: mock(async (url: string) => {
+        if (url.endsWith("/manifest")) {
+          return fakeResponse(JSON.stringify(defaultManifest()));
+        }
+        // Should never reach here for the unlisted path — allowlist refuses
+        // before the HTTP call is made. If it does, return a recognizable
+        // payload so the assertion can detect the bypass.
+        return fakeResponse("LEAK: unlisted reached the HTTP layer", 200);
+      }),
+      post: async () => fakeResponse(""),
+      put: async () => fakeResponse(""),
+      delete: async () => fakeResponse(""),
+      head: async () => fakeResponse(""),
+    };
+    const aug = orgContext({ baseUrl: "https://example.com", client: fakeClient });
+    await getManifestBlock(aug);
+    const res = await callOrgFetch(aug, "/unlisted");
+    expect(res.error as string).toMatch(/not in the manifest/i);
+    expect(JSON.stringify(res)).not.toContain("LEAK");
+  });
+
+  it("allowlist (HTTP): org_fetch allows a listed path", async () => {
+    function fakeResponse(body: string, status = 200): HttpResponse {
+      return {
+        finalUrl: "https://example.com/x",
+        status,
+        statusText: status === 200 ? "OK" : "Not Found",
+        contentType: "application/json",
+        headers: new Headers(),
+        body,
+      };
+    }
+    const fakeClient: HttpClient = {
+      request: async () => fakeResponse(""),
+      get: mock(async (url: string) => {
+        if (url.endsWith("/manifest")) {
+          return fakeResponse(JSON.stringify(defaultManifest()));
+        }
+        if (url.endsWith("/mission")) {
+          return fakeResponse(
+            JSON.stringify({ files: [{ name: "mission.md", content: "Mission body" }] }),
+          );
+        }
+        return fakeResponse("not found", 404);
+      }),
+      post: async () => fakeResponse(""),
+      put: async () => fakeResponse(""),
+      delete: async () => fakeResponse(""),
+      head: async () => fakeResponse(""),
+    };
+    const aug = orgContext({ baseUrl: "https://example.com", client: fakeClient });
+    await getManifestBlock(aug);
+    const res = await callOrgFetch(aug, "/mission");
+    expect(res.error).toBeUndefined();
+    expect(res.endpoint).toBe("/mission");
+    expect(res.content as string).toContain("Mission body");
+  });
+
+  it("allowlist (HTTP): org_fetch refuses when no manifest is loaded", async () => {
+    // /manifest returns 404 — fetchManifest returns null, allowlist refuses.
+    function fakeResponse(body: string, status = 200): HttpResponse {
+      return {
+        finalUrl: "https://example.com/x",
+        status,
+        statusText: status === 200 ? "OK" : "Not Found",
+        contentType: "application/json",
+        headers: new Headers(),
+        body,
+      };
+    }
+    const fakeClient: HttpClient = {
+      request: async () => fakeResponse(""),
+      get: mock(async () => fakeResponse("not found", 404)),
+      post: async () => fakeResponse(""),
+      put: async () => fakeResponse(""),
+      delete: async () => fakeResponse(""),
+      head: async () => fakeResponse(""),
+    };
+    const aug = orgContext({ baseUrl: "https://example.com", client: fakeClient });
+    // Don't call getManifestBlock — leave cachedManifest null even after the
+    // first allowlist check forces a fetch (which 404s and returns null).
+    const res = await callOrgFetch(aug, "/mission");
+    expect(res.error as string).toMatch(/no manifest loaded/i);
+    expect(res.content).toBeUndefined();
+  });
+
+  // ---------------------------------------------------------------------------
+  // High-2: defense-in-depth — traversal rejection inside safeResolveUnderBase
+  //
+  // Layering: allowlist runs first (in fetchFromFile) so a model-supplied
+  // traversal-shape path is normally caught by High-1. These tests
+  // INTENTIONALLY allowlist suspicious paths to bypass High-1, exercising
+  // the lower-layer rejection. The motivation: in a future code path or
+  // misconfiguration where the manifest itself contains a traversal shape,
+  // the augment must still refuse.
+  // ---------------------------------------------------------------------------
+
+  it("traversal layer: rejects /../etc/passwd even when allowlisted", async () => {
+    await writeManifestWithEntries(baseDir, [{ path: "/../etc/passwd", description: "evil" }]);
+    const aug = orgContext({ baseUrl });
+    await getManifestBlock(aug);
+    const res = await callOrgFetch(aug, "/../etc/passwd");
+    expect(res.error as string).toMatch(/'\.\.' segment/i);
+    expect(res.content).toBeUndefined();
+    expect(JSON.stringify(res)).not.toContain("root:");
+  });
+
+  it("traversal layer: rejects //etc/passwd even when allowlisted", async () => {
+    await writeManifestWithEntries(baseDir, [{ path: "//etc/passwd", description: "evil" }]);
+    const aug = orgContext({ baseUrl });
+    await getManifestBlock(aug);
+    const res = await callOrgFetch(aug, "//etc/passwd");
+    expect(res.error as string).toMatch(/doubled slash/i);
+    expect(res.content).toBeUndefined();
+    expect(JSON.stringify(res)).not.toContain("root:");
+  });
+
+  it("traversal layer: rejects surviving %2e marker even when allowlisted", async () => {
+    // Allowlist the literal path-with-encoded-marker. After decode-once
+    // (which decodes the OUTER `%25` of `%252e` to `%2e`), the resulting
+    // string still contains a literal `%2e` — the traversal layer must
+    // refuse rather than silently treat it as opaque.
+    await writeManifestWithEntries(baseDir, [{ path: "/%252e/foo", description: "evil" }]);
+    const aug = orgContext({ baseUrl });
+    await getManifestBlock(aug);
+    const res = await callOrgFetch(aug, "/%252e/foo");
+    expect(res.error as string).toMatch(/encoded traversal marker/i);
+    expect(res.content).toBeUndefined();
   });
 
   // ---------------------------------------------------------------------------
@@ -358,6 +600,9 @@ describe("orgContext file:// scheme", () => {
   // ---------------------------------------------------------------------------
 
   it("returns clean error envelope when endpoint file is missing", async () => {
+    // Allowlist the path so the High-1 check passes — the test is exercising
+    // the ENOENT path inside fetchFromFile, not the allowlist.
+    await writeManifestWithEntries(baseDir, [{ path: "/no-such-endpoint", description: "test" }]);
     const aug = orgContext({ baseUrl });
     await getManifestBlock(aug);
     const res = await callOrgFetch(aug, "/no-such-endpoint");
@@ -369,9 +614,9 @@ describe("orgContext file:// scheme", () => {
   it("returns clean error envelope when endpoint is a directory", async () => {
     // Create a sub-directory that the model might try to fetch as content.
     await mkdir(join(baseDir, "subdir"), { recursive: true });
-    // Also create a `subdir.md` to ensure the .md fallback path is exercised.
-    // Actually — to test the directory-handling, we should NOT have a .md
-    // fallback; otherwise the read succeeds. So test directly:
+    // Allowlist `/subdir` so the High-1 check passes — the test exercises
+    // the directory-handling path inside fetchFromFile.
+    await writeManifestWithEntries(baseDir, [{ path: "/subdir", description: "test" }]);
     const aug = orgContext({ baseUrl });
     await getManifestBlock(aug);
     // Hit `/subdir`. The literal path is a directory; readFile gets EISDIR.

@@ -170,15 +170,23 @@ export function isWithinBase(realTarget: string, realBase: string): boolean {
  *   2. Decode percent-encoding ONCE — single-encoded `%2e%2e` collapses to
  *      `..`; double-encoded `%252e%252e` stays as a literal that won't
  *      match `..` after one decode.
- *   3. Normalize the requested path — collapses `..` sequences before any
- *      filesystem call.
- *   4. Strip a leading slash before joining — endpoint paths are always
+ *   3. Fail-closed traversal rejection — explicitly reject any input whose
+ *      decoded form contains `..` segments, a doubled leading slash, or a
+ *      surviving `%2e`/`%2E` marker (a double-encoding attempt). Spec's
+ *      §fail-closed contract: traversal-shaped inputs MUST be rejected at
+ *      validation time, not silently re-rooted under base. This makes
+ *      attempts visible in operator logs (rejection class is in the error
+ *      message) instead of disappearing into ENOENTs.
+ *   4. Normalize the requested path — defensive only; layer 3 has already
+ *      caught the canonical traversal shapes. Normalize remains for any
+ *      benign `./` segments that survived layer 3.
+ *   5. Strip a leading slash before joining — endpoint paths are always
  *      treated as relative-under-base. A request that looks absolute is
  *      a strong attack signal in this context.
- *   5. realpath both base AND candidate (when candidate exists) — symlink
+ *   6. realpath both base AND candidate (when candidate exists) — symlink
  *      hops are followed; a symlink inside the base pointing to /etc is
  *      caught here.
- *   6. Confirm the realpath'd candidate is still under the realpath'd base
+ *   7. Confirm the realpath'd candidate is still under the realpath'd base
  *      (via `relative()` boundary check, not naive `startsWith`).
  *
  * If the candidate doesn't exist on disk, we still validate the resolved
@@ -205,10 +213,33 @@ async function safeResolveUnderBase(realBaseDir: string, requestedPath: string):
     );
   }
 
-  // Layer 3: normalize (collapses `..` sequences in the requested path).
+  // Layer 3: fail-closed traversal rejection. Each rejection class throws a
+  // distinct message so the operator can see in logs which defense fired.
+  // 3a: `..` segment — `^..` or `/../` or trailing `/..`.
+  if (/(?:^|\/)\.\.(?:\/|$)/.test(decoded)) {
+    throw new Error(
+      `org-context: rejected traversal — path contains '..' segment: ${JSON.stringify(requestedPath)}`,
+    );
+  }
+  // 3b: doubled leading slash — `//foo` is an attempt to disturb root semantics.
+  if (decoded.startsWith("//")) {
+    throw new Error(
+      `org-context: rejected traversal — path begins with doubled slash: ${JSON.stringify(requestedPath)}`,
+    );
+  }
+  // 3c: surviving encoded traversal marker. After decode-once, any literal
+  // `%2e` / `%2E` left in the string is a double-encoded `.` — a clear
+  // double-encoding attempt that must not be silently accepted.
+  if (/%2[eE]/.test(decoded)) {
+    throw new Error(
+      `org-context: rejected traversal — path contains encoded traversal marker that survived decode: ${JSON.stringify(requestedPath)}`,
+    );
+  }
+
+  // Layer 4: normalize (defensive — layer 3 has caught the canonical traversals).
   const normalized = normalize(decoded);
 
-  // Layer 4: strip leading slashes — endpoint paths are always relative-
+  // Layer 5: strip leading slashes — endpoint paths are always relative-
   // under-base in this augment. An absolute-looking input is an attack signal.
   // We strip rather than reject because the manifest convention is that
   // endpoint paths begin with `/` ("/mission", "/team"); stripping the lead
@@ -224,7 +255,7 @@ async function safeResolveUnderBase(realBaseDir: string, requestedPath: string):
     );
   }
 
-  // Layer 5+6: resolve under base, realpath, boundary check.
+  // Layer 6+7: resolve under base, realpath, boundary check.
   const candidate = resolve(realBaseDir, stripped);
 
   let realCandidate: string;
@@ -242,7 +273,7 @@ async function safeResolveUnderBase(realBaseDir: string, requestedPath: string):
 
   if (!isWithinBase(realCandidate, realBaseDir)) {
     throw new Error(
-      `org-context: path traversal rejected — ${JSON.stringify(requestedPath)} resolves outside base ${realBaseDir}`,
+      `org-context: rejected traversal — ${JSON.stringify(requestedPath)} resolves outside base ${realBaseDir}`,
     );
   }
 
@@ -380,11 +411,51 @@ export function orgContext(opts: OrgContextOptions): Augment {
   }
 
   // ---------------------------------------------------------------------------
+  // Manifest allowlist (Codex High-1)
+  //
+  // The manifest is the authoritative endpoint contract per spec §Decision 9.
+  // Without an allowlist, any in-base file (file://) or HTTP route could be
+  // reached regardless of whether it was advertised. Force-load the manifest
+  // before every fetch (cached call — no extra IO/HTTP after first load) and
+  // require strict equality between the requested path and one of
+  // `manifest.endpoints[].path`. Strict equality (no prefix matching) is
+  // intentional: `/mission` and `/mission/extra` are distinct endpoints and
+  // must both be advertised explicitly to be reachable.
+  // ---------------------------------------------------------------------------
+
+  async function checkManifestAllowlist(requestedPath: string): Promise<string | null> {
+    // Use cached manifest if fresh; otherwise force a reload (caller-side
+    // side-effect: also populates cachedManifest for subsequent context()).
+    const manifest = await fetchManifest();
+    if (!manifest) {
+      return JSON.stringify({
+        error:
+          "Org context refused: no manifest loaded — cannot validate endpoint allowlist. " +
+          "The manifest is the authoritative contract for advertised endpoints.",
+        hint: "Check that the org base is reachable and the manifest is present and well-formed.",
+      });
+    }
+    const allowed = manifest.endpoints.some((ep) => ep.path === requestedPath);
+    if (!allowed) {
+      return JSON.stringify({
+        error: `Org context refused: endpoint ${JSON.stringify(requestedPath)} is not in the manifest's advertised endpoints`,
+        hint: "The model may only fetch paths advertised by the manifest. Inspect the org context block for the listed paths.",
+      });
+    }
+    return null;
+  }
+
+  // ---------------------------------------------------------------------------
   // org_fetch tool — file:// branch
   // ---------------------------------------------------------------------------
 
   async function fetchFromFile(endpoint: string, prompt?: string): Promise<string> {
     const path = endpoint.startsWith("/") ? endpoint : `/${endpoint}`;
+
+    // High-1: allowlist runs first (simple, single-pass per fetch). Traversal
+    // rejection lives in safeResolveUnderBase as defense-in-depth.
+    const allowlistError = await checkManifestAllowlist(path);
+    if (allowlistError) return allowlistError;
 
     let realBase: string;
     try {
@@ -459,6 +530,11 @@ export function orgContext(opts: OrgContextOptions): Augment {
 
   async function fetchFromHttp(endpoint: string, prompt?: string): Promise<string> {
     const path = endpoint.startsWith("/") ? endpoint : `/${endpoint}`;
+
+    // High-1: allowlist runs first. Same shape as the file:// branch — manifest
+    // is the authoritative endpoint contract regardless of transport.
+    const allowlistError = await checkManifestAllowlist(path);
+    if (allowlistError) return allowlistError;
 
     try {
       const res = await client.get(`${httpBaseUrl}${path}`);
