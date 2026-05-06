@@ -1,17 +1,18 @@
 /**
  * auggy add — add augments to an existing agent.
  *
- * Lists currently installed vs available augments. User selects
- * from available. Updates agent.yaml, creates SKILL.md files,
- * updates identity.md manifest.
+ * Lists currently installed vs available augments. User selects from
+ * available. Updates agent.yaml, copies bundled `src/augments/<name>/skill/`
+ * folders into the agent dir, and refreshes identity.md's skill manifest.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync, cpSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { checkbox } from "@inquirer/prompts";
 import { getAvailableAugments, type CatalogEntry } from "../augment-catalog";
 import { scanSkillManifest, renderSkillManifest } from "../skill-manifest";
+import { copyBundledSkill } from "../scaffold-skills";
 import { resolveConfigPath } from "../resolve-config";
 
 export async function runAdd(name: string, opts: { config?: string }): Promise<void> {
@@ -58,19 +59,12 @@ export async function runAdd(name: string, opts: { config?: string }): Promise<v
 
   writeFileSync(configPath, `# Agent configuration\n\n${stringifyYaml(raw)}`);
 
-  // Install skills.
+  // Install skills — copy the bundled `src/augments/<name>/skill/` folder
+  // for each selected augment that ships one. Idempotent.
   console.log();
   for (const entry of selected) {
-    installAugmentSkill(entry, agentDir);
-    console.log(`  \u2713 ${entry.defaultName} (${entry.type})`);
-  }
-
-  // Copy filesystem skill if filesystem was just added.
-  if (selected.some((e) => e.type === "filesystem")) {
-    const fsSkillSrc = resolve(import.meta.dir, "../../augments/filesystem/skill");
-    if (existsSync(fsSkillSrc)) {
-      cpSync(fsSkillSrc, join(agentDir, "skills", "filesystem"), { recursive: true });
-    }
+    copyBundledSkill(entry.type, agentDir);
+    console.log(`  ✓ ${entry.defaultName} (${entry.type})`);
   }
 
   // Update identity.md skill manifest.
@@ -90,7 +84,7 @@ export async function runAdd(name: string, opts: { config?: string }): Promise<v
     const updated = identity.replace(/## Available skills[\s\S]*$/, newManifest);
     if (updated !== identity) {
       writeFileSync(identityPath, updated);
-      console.log("  \u2713 Updated identity.md skill manifest");
+      console.log("  ✓ Updated identity.md skill manifest");
     }
   }
 
@@ -106,15 +100,4 @@ export async function runAdd(name: string, opts: { config?: string }): Promise<v
 
   console.log();
   console.log(`Restart to apply: auggy restart ${name}`);
-}
-
-function installAugmentSkill(entry: CatalogEntry, agentDir: string): void {
-  if (!entry.hasSkill || !entry.skillTemplate) return;
-
-  const skillDirName =
-    entry.type === "fileMemory" ? "memory" : entry.type === "webFetch" ? "web-fetch" : entry.type;
-
-  const skillDir = join(agentDir, "skills", skillDirName);
-  mkdirSync(skillDir, { recursive: true });
-  writeFileSync(join(skillDir, "SKILL.md"), entry.skillTemplate);
 }

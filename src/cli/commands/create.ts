@@ -11,14 +11,14 @@
  *   - target dir already exists on disk
  */
 
-import { existsSync, mkdirSync, rmSync, writeFileSync, cpSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { checkbox, confirm, select, input } from "@inquirer/prompts";
 import { stringify } from "yaml";
 import { AUGMENT_CATALOG, type CatalogEntry } from "../augment-catalog";
-import { scanSkillManifest, renderSkillManifest } from "../skill-manifest";
+import { copyBundledSkill, renderIdentityFromTemplate } from "../scaffold-skills";
 import { addAgent, getAgent } from "../agent-index";
 import { getModelChoices, formatChoiceLabel, type Provider } from "../model-picker";
 
@@ -30,6 +30,18 @@ const PROVIDER_DEFAULTS: Record<Provider, { model: string; envVar: string }> = {
     envVar: "OPENROUTER_API_KEY",
   },
 };
+
+/**
+ * Default values surfaced when an operator skips the interactive prompts
+ * (Ctrl+D, non-TTY stdin, etc.). The operator-name default matches the
+ * security-eval test fixture's fallback so non-interactive scaffolding stays
+ * compatible with the canonical eval suite (see evals/security/eval-context.ts
+ * deriveOperatorName fallback).
+ */
+const DEFAULT_OPERATOR_NAME = "the operator";
+const DEFAULT_PURPOSE = "a helpful assistant";
+const DEFAULT_ORG_NAME = "Test Org";
+const DEFAULT_ORG_PURPOSE = "for testing only";
 
 // ANSI color helpers. Truecolor #FBF7EB ("cream") matches the facility palette.
 // Strips to plain text when stdout is not a TTY so piped output stays clean.
@@ -111,6 +123,17 @@ export async function runCreate(name: string, opts: { dir?: string }): Promise<v
     model = modelSelection;
   }
 
+  // Operator + purpose prompts. Used to populate identity.md security rules
+  // (operator-name reference) and the agent.yaml `operators[]` array.
+  const operatorName = await input({
+    message: "Operator name (your name; appears in identity.md security rule):",
+    default: DEFAULT_OPERATOR_NAME,
+  });
+  const purpose = await input({
+    message: "Agent purpose (one sentence):",
+    default: DEFAULT_PURPOSE,
+  });
+
   // Interactive augment selection.
   const selected = await checkbox({
     message: "Select augments:",
@@ -130,6 +153,21 @@ export async function runCreate(name: string, opts: { dir?: string }): Promise<v
     }
   }
 
+  // Conditional org prompts — only ask when orgContext is selected.
+  const orgContextSelected = augments.some((e) => e.type === "orgContext");
+  let orgName = DEFAULT_ORG_NAME;
+  let orgPurpose = DEFAULT_ORG_PURPOSE;
+  if (orgContextSelected) {
+    orgName = await input({
+      message: "Org name:",
+      default: DEFAULT_ORG_NAME,
+    });
+    orgPurpose = await input({
+      message: "Org purpose (one sentence):",
+      default: DEFAULT_ORG_PURPOSE,
+    });
+  }
+
   const id = `aug1_${randomUUID()}`;
 
   // Scaffold the directory.
@@ -144,26 +182,44 @@ export async function runCreate(name: string, opts: { dir?: string }): Promise<v
     console.log(dim(" Installing augments..."));
     console.log();
     for (const entry of augments) {
-      installAugmentSkill(entry, dir);
-      console.log(`   ${green("\u2713")} ${cream(entry.defaultName)} ${dim(`(${entry.type})`)}`);
+      // Copy bundled skill folder if the augment has one — overrides any
+      // legacy inline skillTemplate from the catalog. Idempotent.
+      copyBundledSkill(entry.type, dir);
+      console.log(`   ${green("✓")} ${cream(entry.defaultName)} ${dim(`(${entry.type})`)}`);
     }
 
-    if (augments.some((e) => e.type === "filesystem")) {
-      const fsSkillSrc = resolve(import.meta.dir, "../../augments/filesystem/skill");
-      if (existsSync(fsSkillSrc)) {
-        cpSync(fsSkillSrc, join(dir, "skills", "filesystem"), { recursive: true });
-      }
-    }
+    // Build the augment-types list used to render the skill manifest in
+    // identity.md. Includes every selected augment so the manifest stays in
+    // sync with what's actually mounted.
+    const augmentTypes = augments.map((e) => e.type);
 
-    const config = buildAgentYaml(id, name, augments, { provider, model });
+    const config = buildAgentYaml(id, name, augments, {
+      provider,
+      model,
+      operatorName,
+      purpose,
+    });
     writeFileSync(join(dir, "agent.yaml"), config);
 
-    const skillEntries = scanSkillManifest(join(dir, "skills"));
-    const skillManifest = renderSkillManifest(skillEntries);
-    writeFileSync(join(dir, "identity.md"), buildIdentity(name, skillManifest));
+    writeFileSync(
+      join(dir, "identity.md"),
+      renderIdentityFromTemplate({
+        agentName: name,
+        purpose,
+        operatorName,
+        augmentTypes,
+      }),
+    );
 
     if (augments.some((e) => e.defaultName === "learned")) {
       writeFileSync(join(dir, "learned.md"), "");
+    }
+
+    // Scaffold an example org-context/ directory when orgContext is selected
+    // (per spec §Decision 9). The orgContext augment's file:// scheme support
+    // (α-6) lets this work without standing up an HTTP server.
+    if (orgContextSelected) {
+      writeOrgContextExample(dir, { orgName, orgPurpose, operatorName });
     }
 
     const envVars = collectEnvVars(augments, provider);
@@ -218,7 +274,7 @@ export async function runCreate(name: string, opts: { dir?: string }): Promise<v
   console.log();
   console.log(dim(" ─────────────────────────────────────────────"));
   console.log();
-  console.log(` ${green("\u2713")} ${bold(cream(`Agent "${name}" created`))}`);
+  console.log(` ${green("✓")} ${bold(cream(`Agent "${name}" created`))}`);
   console.log(`   ${dim(dir)}`);
   console.log();
   console.log(` ${bold("Next steps:")}`);
@@ -282,27 +338,21 @@ function printWelcome(): void {
   console.log();
 }
 
-function installAugmentSkill(entry: CatalogEntry, agentDir: string): void {
-  if (!entry.hasSkill || !entry.skillTemplate) return;
-
-  // Derive skill directory name from the type.
-  const skillDirName =
-    entry.type === "fileMemory" ? "memory" : entry.type === "webFetch" ? "web-fetch" : entry.type;
-
-  const skillDir = join(agentDir, "skills", skillDirName);
-  mkdirSync(skillDir, { recursive: true });
-  writeFileSync(join(skillDir, "SKILL.md"), entry.skillTemplate);
-}
-
 function buildAgentYaml(
   id: string,
   name: string,
   augments: CatalogEntry[],
-  engine: { provider: Provider; model: string },
+  engine: { provider: Provider; model: string; operatorName: string; purpose: string },
 ): string {
   const config: Record<string, unknown> = {
     id,
     name,
+    purpose: engine.purpose,
+    operators: [engine.operatorName],
+    // identity shorthand — synthesizes the fileMemory@system entry at parse
+    // time (per α-5). Operators wanting non-default options should drop the
+    // shorthand and add an explicit fileMemory augment instead.
+    identity: "./identity.md",
     engine: {
       provider: engine.provider,
       model: engine.model,
@@ -313,29 +363,31 @@ function buildAgentYaml(
       compactionStrategy: "truncate",
       maxInferenceLoops: 10,
     },
-    augments: augments.map((entry) => ({
-      name: entry.defaultName,
-      type: entry.type,
-      options: entry.defaultOptions,
-    })),
+    augments: augments.map((entry) => {
+      const options = layeredMemoryNamespaceFor(entry, name) ?? entry.defaultOptions;
+      return {
+        name: entry.defaultName,
+        type: entry.type,
+        options,
+      };
+    }),
   };
 
   return `# Agent configuration\n\n${stringify(config)}`;
 }
 
-function buildIdentity(name: string, skillManifest: string): string {
-  return `# ${name}
-
-You are ${name}, an Auggy agent.
-
-## Core behaviors
-
-- Be helpful and concise.
-- Use your tools when appropriate.
-- Read skill guides before using unfamiliar tools.
-
-${skillManifest}
-`;
+/**
+ * For a layeredMemory catalog entry, substitute the agent name for the
+ * placeholder namespace so each scaffolded agent gets its own logical
+ * storage namespace out of the box. Returns `null` for non-layeredMemory
+ * entries so the caller can fall back to defaults.
+ */
+function layeredMemoryNamespaceFor(
+  entry: CatalogEntry,
+  agentName: string,
+): Record<string, unknown> | null {
+  if (entry.type !== "layeredMemory") return null;
+  return { ...entry.defaultOptions, namespace: agentName };
 }
 
 function collectEnvVars(augments: CatalogEntry[], provider: Provider): string[] {
@@ -356,10 +408,59 @@ function buildEnvExample(vars: string[]): string {
   return `${lines.join("\n")}\n`;
 }
 
+/**
+ * Write a minimal example `org-context/` directory the orgContext augment
+ * can read with `baseUrl: file://./org-context` (α-6). Lets the operator
+ * see the augment work end-to-end without standing up an HTTP service.
+ */
+function writeOrgContextExample(
+  agentDir: string,
+  values: { orgName: string; orgPurpose: string; operatorName: string },
+): void {
+  const orgDir = join(agentDir, "org-context");
+  mkdirSync(orgDir, { recursive: true });
+
+  const manifest = {
+    org: values.orgName,
+    purpose: values.orgPurpose,
+    operator: values.operatorName,
+    phase: "active",
+    endpoints: [
+      { path: "/mission", description: "Org mission and active focus" },
+      { path: "/team", description: "People and roles" },
+    ],
+  };
+  writeFileSync(join(orgDir, "manifest"), `${JSON.stringify(manifest, null, 2)}\n`);
+  writeFileSync(
+    join(orgDir, "mission.md"),
+    `# ${values.orgName} — Mission\n\n${values.orgPurpose}\n`,
+  );
+  writeFileSync(
+    join(orgDir, "team.md"),
+    `# ${values.orgName} — Team\n\n- ${values.operatorName} (operator)\n`,
+  );
+  writeFileSync(
+    join(orgDir, "README.md"),
+    `# Org context (example)\n\nThis directory backs the orgContext augment via the\n\`baseUrl: file://./org-context\` config in agent.yaml.\n\n- \`manifest\` — JSON listing endpoints the augment exposes\n- \`mission.md\`, \`team.md\` — endpoint targets the manifest references\n\nReplace these files with your real org content, or change \`baseUrl\` in\n\`agent.yaml\` to point at an HTTP-served manifest if you'd rather host\nyour org context elsewhere.\n`,
+  );
+}
+
 const GITIGNORE = `.env
 .env.local
 workspace/
 *.log
 *.err
 node_modules/
+memory.sqlite
+memory.sqlite-journal
+memory.sqlite-wal
+memory.sqlite-shm
+memory.db
+memory.db-journal
+memory.db-wal
+memory.db-shm
+budgets.db
+budgets.db-journal
+budgets.db-wal
+budgets.db-shm
 `;

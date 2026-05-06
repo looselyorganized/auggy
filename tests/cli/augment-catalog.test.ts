@@ -7,7 +7,8 @@ describe("augment catalog", () => {
     expect(entry).toBeDefined();
     expect(entry?.label).toMatch(/turn[- ]control/i);
     expect(entry?.required).toBe(false);
-    expect(entry?.hasSkill).toBe(false);
+    // After ADR-025 + PR α task 2, turnControl ships a bundled skill folder.
+    expect(entry?.hasSkill).toBe(true);
   });
 
   it("turnControl uses the conventional defaultName", () => {
