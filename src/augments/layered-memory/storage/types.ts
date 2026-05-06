@@ -1,5 +1,5 @@
-import type { TrustLevel } from "../../types";
-import type { SupabaseLikeClient } from "../supabase-memory";
+import type { TrustLevel } from "../../../types";
+import type { SupabaseLikeClient } from "../../supabase-memory";
 
 export type RetentionClass = "operational" | "lesson";
 

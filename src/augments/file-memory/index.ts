@@ -6,7 +6,7 @@ import type {
   ContextPriority,
   ContextPlacement,
   EvictionPolicy,
-} from "../types";
+} from "../../types";
 
 export interface FileMemoryOptions {
   label: string;

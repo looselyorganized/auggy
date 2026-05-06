@@ -30,11 +30,11 @@ import type {
   TransportKernel,
   TransportSpec,
   TurnTrigger,
-} from "../types";
-import type { TelegramBotClient, TelegramUpdate } from "../telegram-client";
-import { createTelegramBotClient } from "../telegram-client";
-import { runPollLoop, type PollLoopHandle } from "./telegram-transport/polling";
-import { startWebhookServer, type WebhookServerHandle } from "./telegram-transport/webhook";
+} from "../../types";
+import type { TelegramBotClient, TelegramUpdate } from "../../telegram-client";
+import { createTelegramBotClient } from "../../telegram-client";
+import { runPollLoop, type PollLoopHandle } from "./polling";
+import { startWebhookServer, type WebhookServerHandle } from "./webhook";
 
 // ---------------------------------------------------------------------------
 // Boot-time validation

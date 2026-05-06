@@ -1,8 +1,8 @@
 import { z } from "zod";
-import type { Augment } from "../types";
-import { defineTool } from "../helpers";
-import { createHttpClient } from "../http";
-import type { HttpClient, HttpClientOptions, HttpResponse } from "../http";
+import type { Augment } from "../../types";
+import { defineTool } from "../../helpers";
+import { createHttpClient } from "../../http";
+import type { HttpClient, HttpClientOptions, HttpResponse } from "../../http";
 
 /**
  * webFetch augment — fetch a URL, strip HTML to text, and render a

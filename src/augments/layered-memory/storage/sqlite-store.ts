@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import type { MemoryStore, RetentionClass, SqliteStoreConfig, StoreEntry } from "./types";
-import type { TrustLevel } from "../../types";
+import type { TrustLevel } from "../../../types";
 
 // Each statement run individually to keep the SQL surface explicit.
 const SCHEMA_STATEMENTS = [

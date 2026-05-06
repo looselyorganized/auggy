@@ -1,7 +1,7 @@
-import type { Augment, MemoryEntry, MemoryQueryOpts, MemoryWriteOpts } from "../types";
-import { createSqliteStore } from "./layered-memory/sqlite-store";
-import { createSupabaseStore, type LayeredSupabaseClient } from "./layered-memory/supabase-store";
-import type { MemoryStore, StoreEntry } from "./layered-memory/types";
+import type { Augment, MemoryEntry, MemoryQueryOpts, MemoryWriteOpts } from "../../types";
+import { createSqliteStore } from "./storage/sqlite-store";
+import { createSupabaseStore, type LayeredSupabaseClient } from "./storage/supabase-store";
+import type { MemoryStore, StoreEntry } from "./storage/types";
 
 export interface LayeredMemoryOptions {
   backend: "sqlite" | "supabase";

@@ -32,7 +32,7 @@ mount-name/path/to/file
 
 <example name="path-examples">
 ```
-skills/facility-brain/SKILL.md           → reads from the "skills" mount
+skills/memory/SKILL.md                   → reads from the "skills" mount
 workspace/notes/2026-04-10.md            → writes to the "workspace" mount
 repo/src/components/Header.tsx           → reads from the "repo" mount
 ```

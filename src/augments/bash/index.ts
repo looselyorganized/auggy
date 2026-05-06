@@ -1,8 +1,8 @@
 import { z } from "zod";
 import { resolve } from "node:path";
-import type { Augment, TrustLevel } from "../types";
-import { defineTool } from "../helpers";
-import { readStreamWithCap } from "../http";
+import type { Augment, TrustLevel } from "../../types";
+import { defineTool } from "../../helpers";
+import { readStreamWithCap } from "../../http";
 
 // ---------------------------------------------------------------------------
 // Types

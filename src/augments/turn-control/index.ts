@@ -1,6 +1,6 @@
 import { z } from "zod";
-import type { Augment, ToolResult } from "../types";
-import { defineAugment, defineTool } from "../helpers";
+import type { Augment, ToolResult } from "../../types";
+import { defineAugment, defineTool } from "../../helpers";
 
 /**
  * turnControl augment — turn-lifecycle directive tools.

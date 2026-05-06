@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeEach } from "bun:test";
-import { createSupabaseStore } from "@/augments/layered-memory/supabase-store";
+import { createSupabaseStore } from "@/augments/layered-memory/storage/supabase-store";
 import { createMockSupabase } from "@tests/fixtures/mock-supabase";
-import type { MemoryStore } from "@/augments/layered-memory/types";
-import type { LayeredSupabaseClient } from "@/augments/layered-memory/supabase-store";
+import type { MemoryStore } from "@/augments/layered-memory/storage/types";
+import type { LayeredSupabaseClient } from "@/augments/layered-memory/storage/supabase-store";
 
 describe("SupabaseStore", () => {
   let store: MemoryStore;

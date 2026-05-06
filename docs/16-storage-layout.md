@@ -9,14 +9,22 @@ Operator reference for where Auggy puts agents on disk.
 ├── agents.json                     # the index — name → localDir → cloud-state
 ├── agents/                         # default home for scaffolded agents
 │   └── <name>/
-│       ├── agent.yaml              # source-of-truth config
-│       ├── identity.md             # who the agent is
+│       ├── agent.yaml              # source-of-truth config (uses `identity:` shorthand)
+│       ├── identity.md             # who the agent is — security rules + skill manifest
 │       ├── learned.md              # mutable learnings
-│       ├── memory.db               # SQLite (layeredMemory)
+│       ├── memory.sqlite           # SQLite (layeredMemory, default scaffold)
 │       ├── budgets.db              # SQLite (budgets)
 │       ├── .env                    # secrets (gitignored)
 │       ├── .env.example            # template
-│       ├── skills/
+│       ├── skills/                 # bundled-skill copies (one folder per tool-providing augment)
+│       │   ├── layered-memory/SKILL.md
+│       │   ├── filesystem/SKILL.md (+ references/)
+│       │   └── ...                 # web-fetch, org-context, bash, notify, turn-control as configured
+│       ├── org-context/            # scaffolded if orgContext is selected (file:// example)
+│       │   ├── manifest            # JSON manifest consumed by orgContext
+│       │   ├── mission.md
+│       │   ├── team.md
+│       │   └── README.md
 │       ├── workspace/
 │       └── augments/
 ├── <name>.json                     # PID manifest (per running agent)
@@ -24,6 +32,14 @@ Operator reference for where Auggy puts agents on disk.
 ```
 
 `auggy create <name>` scaffolds at `~/.auggy/agents/<name>/` by default.
+
+### Default-scaffold details (post-PR α)
+
+- `agent.yaml` uses the top-level `identity: ./identity.md` shorthand (parsed to a synthetic `fileMemory@placement:system` entry); `augments:` enumerates the rest.
+- `identity.md` is rendered from `src/scaffold-templates/identity.md` and ships with four baked-in security rules and a `## Available skills` manifest enumerating each tool-providing augment selected at scaffold time.
+- `skills/<augment>/` directories hold byte-for-byte copies of each augment's bundled `src/augments/<augment>/skill/` folder — copied at `auggy create`/`auggy add` time and (re-)installable via `auggy add-skill <augment>`. The boot-time validator warns at startup if a tool-providing augment has no skill folder mounted.
+- `memory.sqlite` is the default `layeredMemory` backend (SQLite, namespace-scoped). The scaffold includes the augment by default; remove from `agent.yaml` if not needed.
+- `org-context/` is scaffolded only when `orgContext` is selected; the example `manifest` + endpoint files plus `baseUrl: file://./org-context` give a working local config without needing to stand up an HTTP server.
 
 ## Custom location with `--dir`
 

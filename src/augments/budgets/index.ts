@@ -5,10 +5,10 @@ import type {
   TurnGateTicket,
   ContextBlock,
   TurnState,
-} from "../types";
-import { createBudgetStore, type BudgetStore } from "./budgets/budget-store";
-import type { BudgetsConfig, BudgetCaps } from "./budgets/types";
-import { buildBudgetPreamble } from "./budgets/preamble";
+} from "../../types";
+import { createBudgetStore, type BudgetStore } from "./budget-store";
+import type { BudgetsConfig, BudgetCaps } from "./types";
+import { buildBudgetPreamble } from "./preamble";
 
 export interface BudgetsAugmentOptions extends BudgetsConfig {
   /** Storage backend. Only "sqlite" is supported in v0. */
