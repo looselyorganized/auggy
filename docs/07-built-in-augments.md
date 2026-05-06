@@ -375,6 +375,81 @@ The `ttl: "session"` is hardcoded by `synthesizeContextFor` for namespace provid
 
 The `origin: "peer-derived"` is critical for security. Episodic memory contains content the model produced or the peer sent, and it's been written into a database. Marking it as `peer-derived` ensures it gets the `[PEER-DERIVED]` marker in the prompt and the model knows to treat it with caution.
 
+## `layeredMemory` — Peer-scoped episodic memory
+
+```yaml
+augments:
+  - name: memory
+    type: layeredMemory
+    options:
+      backend: sqlite
+      namespace: ${AGENT_NAME}
+      dbPath: ./memory.sqlite
+      retentionDays: 90
+      autoSave:
+        enabled: true
+        extractionFrequency:
+          creator: every-turn
+          agent: every-N-turns
+          public:
+            recognized: every-turn
+            anonymous: session-end-only
+        everyNTurns: 3
+        confidenceThreshold: 0.5
+```
+
+### What it is
+
+`layeredMemory` is the primary peer-scoped episodic memory augment. Every entry is bound to the peer who is talking in the current turn — peers cannot read each other's entries. Storage is pluggable: SQLite (default, runs locally with WAL mode and prepared statements) or Supabase (for cloud deployments). All eleven day-one mitigations (provenance, supersession, verbatim flags, embedding versioning, retention classes) are present in the schema from the first write.
+
+`layeredMemory` registers as a namespace memory provider. The kernel's memory bus synthesizes four model-callable tools automatically: `memory_search`, `memory_write`, `memory_list`, and `memory_forget`.
+
+### Auto-save capability
+
+Auto-save is a capability of `layeredMemory` itself, not a separate augment. When enabled (the default), a background process runs after each user-facing turn, extracts structured facts from the completed conversation transcript, and writes them to the peer's namespace with `origin: "agent-derived"`.
+
+The model never invokes auto-save directly. The only visible effect is that `memory_search` results sometimes include entries marked `[AGENT-DERIVED]`.
+
+#### Configuration
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `autoSave.enabled` | `boolean` | `true` | Set `false` for explicit-only memory — model must call `memory_write` manually. |
+| `autoSave.extractionFrequency.creator` | frequency | `every-turn` | Extraction cadence for creator-trust peers. |
+| `autoSave.extractionFrequency.agent` | frequency | `every-N-turns` | Extraction cadence for agent-trust peers (conservative default; agent-to-agent volume may be high). |
+| `autoSave.extractionFrequency.public.recognized` | frequency | `every-turn` | Extraction cadence for recognized public peers. |
+| `autoSave.extractionFrequency.public.anonymous` | frequency | `session-end-only` | Extraction cadence for anonymous visitors. Keeps per-visitor extraction cost to one batched call at session end rather than every turn. |
+| `autoSave.everyNTurns` | `number` | `3` | N for `every-N-turns` frequency. |
+| `autoSave.confidenceThreshold` | `number` | `0.5` | Facts with confidence below this threshold are written but flagged low-confidence. |
+| `autoSave.engine` | engine config | (agent primary) | Optional: use a different (cheaper) model for extraction. Omit to use the agent's primary engine. |
+
+**Frequency values:** `every-turn` | `every-N-turns` | `session-end-only` | `never`.
+
+#### Per-trust-level defaults
+
+| Trust | Default | Typical cost per 20-turn conversation |
+|-------|---------|---------------------------------------|
+| `creator` | `every-turn` | ~$0.20 (low volume; operator chatting with their own agent) |
+| `agent` | `every-N-turns` (N=3) | ~$0.07 (conservative; agent-to-agent caps may not be provisioned for every-turn extraction) |
+| `public.recognized` | `every-turn` | ~$0.20 (returning identified peer; relationship-relevant) |
+| `public.anonymous` | `session-end-only` | ~$0.05 (visitor traffic dominates cost; one batched call at session end) |
+
+Cost estimates are order-of-magnitude based on Haiku pricing × ~500 input tokens + ~200 output tokens per extraction call.
+
+#### `[AGENT-DERIVED]` origin marker
+
+Entries written by auto-save carry `origin: "agent-derived"`. When the context allocator renders these entries into context or `memory_search` returns them, they appear with an `[AGENT-DERIVED]` provenance marker. The model's bundled skill teaches it to treat these as paraphrases, not verbatim records, and to prefer `[PEER-DERIVED]` entries when they conflict.
+
+Auto-save never overwrites a verbatim peer entry. Explicit `memory_write` calls from the model and auto-save writes coexist; the trust hierarchy (verbatim peer statements outrank LLM paraphrases) applies at retrieval time.
+
+#### Cost flows through existing budgets
+
+Auto-save extraction runs as an admitted internal turn — it flows through the same `budgets` augment turn-gate and `dailyBudgetUsd` cap as user-facing turns. There is no separate extraction cost surface; operators see one daily-spend total. When the daily budget cap is reached, further extraction turns are denied exactly like user-facing turns.
+
+#### Bundled skill
+
+The bundled `src/augments/layered-memory/skill/SKILL.md` teaches the model when and how to use `memory_write`, `memory_search`, `memory_list`, and `memory_forget`, plus a section on interpreting `[AGENT-DERIVED]` entries and the privacy boundaries that apply to both manual and auto-saved writes. Copied into `<agent-dir>/skills/layered-memory/SKILL.md` at `auggy create`/`auggy add` time; install retroactively with `auggy add-skill layered-memory`.
+
 ## How they compose
 
 A typical agent setup uses both:
