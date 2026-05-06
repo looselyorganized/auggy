@@ -227,7 +227,7 @@ Peers with `trustLevel === "creator"` and null peers (internal/scheduled trigger
 
 The `org_escalate` tool was removed in v0.2.0 and replaced by `notify`. For agents using the old tool, the migration is a rename with one structural change: the destination is now declared in config rather than the tool call.
 
-**Zip's migration (actual `zip/agent.yaml`):**
+**Example migration (operator-supplied `agent.yaml`):**
 
 ```yaml
 - name: notify
@@ -257,7 +257,7 @@ instead of the old:
 org_escalate({ summary: "...", reason: "...", visitor: "..." })
 ```
 
-The `org_escalate` skill file in agent skills directories can be replaced with the `notify` skill scaffolded by `aug1 add notify`.
+The `org_escalate` skill file in agent skills directories can be replaced with the `notify` skill scaffolded by `auggy add notify`.
 
 ## 7. Common operator mistakes
 

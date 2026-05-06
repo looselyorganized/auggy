@@ -51,7 +51,7 @@ describe("resolveConfigPath", () => {
 
   test("index miss throws clear 'not registered' error", () => {
     expect(() => resolveConfigPath("ghost", undefined, { auggyDir })).toThrow(
-      /not registered|aug1 create/i,
+      /not registered|auggy create/i,
     );
   });
 });

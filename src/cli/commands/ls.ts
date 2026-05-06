@@ -1,5 +1,5 @@
 /**
- * aug1 ls — list all registered agents with their location and status.
+ * auggy ls — list all registered agents with their location and status.
  *
  * Status is derived from PID manifests + filesystem: running, stopped, or
  * missing-dir (indexed but localDir gone).
@@ -43,7 +43,7 @@ export async function runLs(opts: LsOptions = {}): Promise<void> {
   if (agents.length === 0) {
     console.log("No agents registered.");
     console.log();
-    console.log("Run `aug1 create <name>` to scaffold one.");
+    console.log("Run `auggy create <name>` to scaffold one.");
     return;
   }
 

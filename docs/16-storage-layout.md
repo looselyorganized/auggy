@@ -23,17 +23,17 @@ Operator reference for where Auggy puts agents on disk.
 └── chat/                           # chat dist cache
 ```
 
-`aug1 create <name>` scaffolds at `~/.auggy/agents/<name>/` by default.
+`auggy create <name>` scaffolds at `~/.auggy/agents/<name>/` by default.
 
 ## Custom location with `--dir`
 
 For git-tracked agents or project-folder layouts:
 
 ```bash
-aug1 create concierge --dir ~/projects/concierge
+auggy create concierge --dir ~/projects/concierge
 ```
 
-The agent dir lives wherever you point `--dir`; the index records the absolute path. Subsequent `aug1 dev concierge`, `aug1 stop concierge`, etc. work from any CWD.
+The agent dir lives wherever you point `--dir`; the index records the absolute path. Subsequent `auggy dev concierge`, `auggy stop concierge`, etc. work from any CWD.
 
 ## The index file
 
@@ -57,14 +57,14 @@ The CLI writes atomically (temp+rename), recovers from corruption (backs up to `
 ## Inspecting and removing
 
 ```bash
-aug1 ls                             # list registered agents
-aug1 remove <name>                  # delete dir + clear index entry
-aug1 remove <name> --yes            # skip the confirmation prompt
+auggy ls                            # list registered agents
+auggy remove <name>                 # delete dir + clear index entry
+auggy remove <name> --yes           # skip the confirmation prompt
 ```
 
-`aug1 remove` refuses if the agent is running — `aug1 stop` it first.
+`auggy remove` refuses if the agent is running — `auggy stop` it first.
 
-If you delete an agent's directory manually (e.g., `rm -rf ~/.auggy/agents/zip`), the index entry is left orphaned. `aug1 ls` flags it as `missing-dir`; `aug1 remove zip` will then clean up the index entry without trying to re-delete the dir.
+If you delete an agent's directory manually (e.g., `rm -rf ~/.auggy/agents/zip`), the index entry is left orphaned. `auggy ls` flags it as `missing-dir`; `auggy remove zip` will then clean up the index entry without trying to re-delete the dir.
 
 ## Cloud (forward-looking)
 

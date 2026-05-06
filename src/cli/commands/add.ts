@@ -1,5 +1,5 @@
 /**
- * aug1 add — add augments to an existing agent.
+ * auggy add — add augments to an existing agent.
  *
  * Lists currently installed vs available augments. User selects
  * from available. Updates agent.yaml, creates SKILL.md files,
@@ -105,7 +105,7 @@ export async function runAdd(name: string, opts: { config?: string }): Promise<v
   }
 
   console.log();
-  console.log(`Restart to apply: aug1 restart ${name}`);
+  console.log(`Restart to apply: auggy restart ${name}`);
 }
 
 function installAugmentSkill(entry: CatalogEntry, agentDir: string): void {

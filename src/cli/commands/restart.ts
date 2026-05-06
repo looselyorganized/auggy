@@ -1,5 +1,5 @@
 /**
- * aug1 restart <name> — stop + start in one command.
+ * auggy restart <name> — stop + start in one command.
  *
  * Reads the PID manifest to determine mode (dev vs launchd),
  * stops the agent, then restarts it in the same mode.
@@ -15,7 +15,7 @@ export async function runRestart(name: string, opts: { config?: string }): Promi
 
   if (!manifest) {
     console.log(
-      `Agent "${name}" is not running. Use "aug1 dev ${name}" or "aug1 start ${name}" to start it.`,
+      `Agent "${name}" is not running. Use "auggy dev ${name}" or "auggy start ${name}" to start it.`,
     );
     return;
   }

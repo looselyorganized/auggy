@@ -1,5 +1,5 @@
 /**
- * Model picker — derives `aug1 create` model choices from per-provider
+ * Model picker — derives `auggy create` model choices from per-provider
  * pricing tables. Single source of truth for "models we can cost-track."
  *
  * The Custom escape hatch is handled in `commands/create.ts`, not here —

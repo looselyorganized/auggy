@@ -205,7 +205,7 @@ export function readIndex(opts: IndexOptions = {}): IndexFile {
     const got = (parsed as { version?: number } | null)?.version;
     throw new Error(
       `agents.json has unknown schema version ${got} (expected ${SCHEMA_VERSION}). ` +
-        `This file may be from a newer version of aug1.`,
+        `This file may be from a newer version of auggy.`,
     );
   }
 
@@ -237,7 +237,7 @@ export function addAgent(name: string, localDir: string, opts: IndexOptions = {}
     if (idx.agents[name]) {
       throw new Error(
         `Agent "${name}" already registered at ${idx.agents[name].localDir}. ` +
-          `Choose a different name or remove the existing one with \`aug1 remove ${name}\`.`,
+          `Choose a different name or remove the existing one with \`auggy remove ${name}\`.`,
       );
     }
     idx.agents[name] = {

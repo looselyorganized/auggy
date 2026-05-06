@@ -1,7 +1,7 @@
 import { describe, it, expect } from "bun:test";
 import { chatCommand } from "../../../src/cli/commands/chat";
 
-describe("aug1 chat command", () => {
+describe("auggy chat command", () => {
   it("registers the chat subcommand with name and description", () => {
     const cmd = chatCommand();
     expect(cmd.name()).toBe("chat");

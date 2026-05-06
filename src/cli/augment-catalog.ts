@@ -1,7 +1,7 @@
 /**
  * Augment catalog — metadata for all built-in augments.
  *
- * Used by `aug1 create` (interactive selection) and `aug1 add`
+ * Used by `auggy create` (interactive selection) and `auggy add`
  * (add to existing agent). Each entry describes what the augment
  * does, its default config, and whether it has a skill file.
  */

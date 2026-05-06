@@ -15,10 +15,10 @@ Format: `- [ ] [category] description (context: where/when found)`
 ## UX
 
 - [ ] **[CLI]** Scaffold should create `.env` directly instead of `.env.example` + copy step. Two-step copy is friction; users hit "env var missing" errors on first boot.
-- [ ] **[CLI]** `aug1 create` from wrong directory (e.g. `platform/`) scaffolds `platform/zip/` without warning. Should detect or ask "create zip here?".
-- [ ] **[CLI]** Missing `aug1 remove <name>` command. Today you have to `rm -rf` the directory manually after a failed `aug1 create`.
+- [ ] **[CLI]** `auggy create` from wrong directory (e.g. a sibling project's checkout) scaffolds `<wrong-dir>/<name>/` without warning. Should detect or ask "create here?".
+- [ ] **[CLI]** Missing `auggy remove <name>` command. Today you have to `rm -rf` the directory manually after a failed `auggy create`.
 - [ ] **[CLI]** Env var error messages list missing vars but don't say "add these to your .env" or show the file path.
-- [ ] **[CLI]** `aug1 create` — replace the free-text model input with a `select()` dropdown of known models per provider (Claude Sonnet/Opus/Haiku, GPT-5/o3, OpenRouter top models), with "custom" option for typing a model slug. Currently operators have to know the exact model string.
+- [ ] **[CLI]** `auggy create` — replace the free-text model input with a `select()` dropdown of known models per provider (Claude Sonnet/Opus/Haiku, GPT-5/o3, OpenRouter top models), with "custom" option for typing a model slug. Currently operators have to know the exact model string.
 
 ## Polish
 

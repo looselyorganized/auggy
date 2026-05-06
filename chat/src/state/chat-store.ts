@@ -1,5 +1,5 @@
 const SCHEMA_VERSION = 1;
-const KEY_PREFIX = "aug1-chat:";
+const KEY_PREFIX = "auggy-chat:";
 const DEFAULT_MAX_MESSAGES = 200;
 const TOOL_CALL_FIELD_MAX_BYTES = 10 * 1024;
 

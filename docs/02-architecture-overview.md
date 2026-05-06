@@ -147,29 +147,29 @@ Model client adapters. Each engine is a `createXxxModel(opts) → ModelClient` f
 
 Engines are a reasoning-engine concern, not a model-metadata concern — see [01-philosophy.md](./01-philosophy.md) for why the directory is named `engines/` and not `models/`.
 
-### `src/cli/` — the `aug1` CLI (Plan 3)
-Turns Auggy from "write a `main.ts`" into "configure a YAML file and run `aug1 start`." Each file is one concern.
+### `src/cli/` — the `auggy` CLI (Plan 3)
+Turns Auggy from "write a `main.ts`" into "configure a YAML file and run `auggy start`." Each file is one concern.
 
 | File | Responsibility |
 |------|---------------|
 | `index.ts` | Commander.js entrypoint. |
 | `types.ts` | `ParsedConfig`, `PidManifest`, `AugmentConfig`, etc. |
 | `config-parser.ts` | YAML → env interpolation → validation → `ParsedConfig`. |
-| `augment-catalog.ts` | Registry of built-in augments available to `aug1 create / add`. |
+| `augment-catalog.ts` | Registry of built-in augments available to `auggy create / add`. |
 | `augment-resolver.ts` | `AugmentConfig[]` → `Augment[]` (built-in + custom). |
 | `engine-resolver.ts` | `EngineConfig` → `ModelClient`. |
 | `resolve-config.ts` | Shared config path resolution. |
 | `pid-registry.ts` | `~/.auggy/<name>.json` atomic PID manifests. |
 | `plist-generator.ts` | macOS launchd plist generation. |
-| `scaffold.ts` | `aug1 create` directory + template generation. |
+| `scaffold.ts` | `auggy create` directory + template generation. |
 | `skill-manifest.ts` | Scans `skills/*/SKILL.md` → identity manifest. |
-| `commands/create.ts` | `aug1 create <name>` — interactive scaffold. |
-| `commands/add.ts` | `aug1 add <name>` — add augments to an existing agent. |
-| `commands/dev.ts` | `aug1 dev <name>` — foreground runner (core lifecycle). |
-| `commands/start.ts` | `aug1 start <name>` — install as launchd service. |
-| `commands/stop.ts` | `aug1 stop <name>` — SIGTERM or `launchctl unload`. |
-| `commands/restart.ts` | `aug1 restart <name>` — stop + start. |
-| `commands/status.ts` | `aug1 status [name]` — list or detail view. |
+| `commands/create.ts` | `auggy create <name>` — interactive scaffold. |
+| `commands/add.ts` | `auggy add <name>` — add augments to an existing agent. |
+| `commands/dev.ts` | `auggy dev <name>` — foreground runner (core lifecycle). |
+| `commands/start.ts` | `auggy start <name>` — install as launchd service. |
+| `commands/stop.ts` | `auggy stop <name>` — SIGTERM or `launchctl unload`. |
+| `commands/restart.ts` | `auggy restart <name>` — stop + start. |
+| `commands/status.ts` | `auggy status [name]` — list or detail view. |
 
 ### `src/parts.ts`, `src/helpers.ts`, `src/tokenizer.ts`, `src/http.ts`
 Small utility modules.

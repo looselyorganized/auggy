@@ -19,7 +19,7 @@ export interface AgentRef {
 
 /**
  * A source of agents. Picker calls `list()` to populate; optional `subscribe()`
- * notifies the picker when the source changes (e.g., a new aug1 booted, or a
+ * notifies the picker when the source changes (e.g., a new auggy booted, or a
  * spine participant came online).
  */
 export interface AgentSource {

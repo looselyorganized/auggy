@@ -103,7 +103,7 @@ export function AgentPicker({ sources, selectedKey, onSelect }: AgentPickerProps
                     aria-current={isSelected ? "true" : undefined}
                     title={
                       disabled
-                        ? `offline — start with \`aug1 dev ${agent.name}\``
+                        ? `offline — start with \`auggy dev ${agent.name}\``
                         : agent.description ?? agent.name
                     }
                   >

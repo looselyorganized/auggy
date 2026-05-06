@@ -10,19 +10,19 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 describe("plist naming", () => {
-  test("plistLabel produces com.aug1.agent.<name>", () => {
-    expect(plistLabel("zip")).toBe("com.aug1.agent.zip");
+  test("plistLabel produces com.auggy.agent.<name>", () => {
+    expect(plistLabel("zip")).toBe("com.auggy.agent.zip");
   });
 
   test("plistStorePath is in ~/.auggy/plists/", () => {
     expect(plistStorePath("zip")).toBe(
-      join(homedir(), ".auggy", "plists", "com.aug1.agent.zip.plist"),
+      join(homedir(), ".auggy", "plists", "com.auggy.agent.zip.plist"),
     );
   });
 
   test("plistInstallPath is in ~/Library/LaunchAgents/", () => {
     expect(plistInstallPath("zip")).toBe(
-      join(homedir(), "Library", "LaunchAgents", "com.aug1.agent.zip.plist"),
+      join(homedir(), "Library", "LaunchAgents", "com.auggy.agent.zip.plist"),
     );
   });
 
@@ -47,7 +47,7 @@ describe("generatePlist", () => {
   });
 
   test("sets the correct label", () => {
-    expect(plist).toContain("<string>com.aug1.agent.zip</string>");
+    expect(plist).toContain("<string>com.auggy.agent.zip</string>");
   });
 
   test("invokes auggy dev with --config flag", () => {
