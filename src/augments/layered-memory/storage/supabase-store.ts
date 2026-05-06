@@ -1,5 +1,11 @@
 import { randomUUID } from "node:crypto";
-import type { MemoryStore, OriginValue, RetentionClass, StoreEntry, SupabaseStoreConfig } from "./types";
+import type {
+  MemoryStore,
+  OriginValue,
+  RetentionClass,
+  StoreEntry,
+  SupabaseStoreConfig,
+} from "./types";
 import type { TrustLevel } from "../../../types";
 
 /**

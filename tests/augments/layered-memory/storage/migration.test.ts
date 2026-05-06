@@ -110,9 +110,10 @@ describe("SQLite migration — fact-fields", () => {
     await store.close();
 
     const db2 = new Database(dbPath);
-    const row = db2
-      .prepare("SELECT * FROM entries WHERE label = ?")
-      .get("legacy") as Record<string, unknown> | null;
+    const row = db2.prepare("SELECT * FROM entries WHERE label = ?").get("legacy") as Record<
+      string,
+      unknown
+    > | null;
     db2.close();
 
     expect(row).not.toBeNull();
