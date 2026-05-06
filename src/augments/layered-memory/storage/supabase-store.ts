@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { MemoryStore, RetentionClass, StoreEntry, SupabaseStoreConfig } from "./types";
+import type { MemoryStore, OriginValue, RetentionClass, StoreEntry, SupabaseStoreConfig } from "./types";
 import type { TrustLevel } from "../../../types";
 
 /**
@@ -52,10 +52,16 @@ interface Row {
   retention_class: string;
   is_verbatim: boolean | number;
   expires_at: number | null;
+  // Phase 2 fact-fields (nullable)
+  subject: string | null;
+  predicate: string | null;
+  object: string | null;
+  source_turn_id: string | null;
+  origin: string | null;
 }
 
 function rowToEntry(row: Row): StoreEntry {
-  return {
+  const entry: StoreEntry = {
     id: row.id,
     label: row.label,
     content: row.content,
@@ -67,6 +73,13 @@ function rowToEntry(row: Row): StoreEntry {
     isVerbatim: !!row.is_verbatim,
     expiresAt: row.expires_at,
   };
+  // Phase 2 fact-fields: only populate if non-null to keep entries clean
+  if (row.subject != null) entry.subject = row.subject;
+  if (row.predicate != null) entry.predicate = row.predicate;
+  if (row.object != null) entry.object = row.object;
+  if (row.source_turn_id != null) entry.sourceTurnId = row.source_turn_id;
+  if (row.origin != null) entry.origin = row.origin as OriginValue;
+  return entry;
 }
 
 export function createSupabaseStore(
@@ -93,6 +106,12 @@ export function createSupabaseStore(
       retention_class: input.retentionClass,
       is_verbatim: input.isVerbatim,
       expires_at: expiresAt,
+      // Phase 2 fact-fields
+      subject: input.subject ?? null,
+      predicate: input.predicate ?? null,
+      object: input.object ?? null,
+      source_turn_id: input.sourceTurnId ?? null,
+      origin: input.origin ?? null,
     };
 
     const { error } = await config.client.from(config.table).insert(row);
@@ -115,7 +134,7 @@ export function createSupabaseStore(
     let builder: SearchBuilder = config.client
       .from(config.table)
       .select(
-        "id, label, content, peer_id, trust_level, created_at, superseded_by, retention_class, is_verbatim, expires_at",
+        "id, label, content, peer_id, trust_level, created_at, superseded_by, retention_class, is_verbatim, expires_at, subject, predicate, object, source_turn_id, origin",
       );
 
     if (peerId) {
@@ -141,7 +160,7 @@ export function createSupabaseStore(
     const { data, error } = await config.client
       .from(config.table)
       .select(
-        "id, label, content, peer_id, trust_level, created_at, superseded_by, retention_class, is_verbatim, expires_at",
+        "id, label, content, peer_id, trust_level, created_at, superseded_by, retention_class, is_verbatim, expires_at, subject, predicate, object, source_turn_id, origin",
       )
       .eq("label", label)
       .maybeSingle();
