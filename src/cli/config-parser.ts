@@ -384,6 +384,47 @@ function validateTelegramTransportOptions(
   }
 }
 
+/**
+ * Validate the optional top-level `identity` shorthand field. Returns the
+ * trimmed string when present and well-formed, undefined when absent. Any
+ * malformed value (non-string, empty string) pushes an error and returns
+ * undefined.
+ */
+function validateIdentityShorthand(raw: unknown, errors: string[]): string | undefined {
+  if (raw === undefined) return undefined;
+  if (typeof raw !== "string") {
+    errors.push(
+      `identity: must be a non-empty string path to a markdown file (got ${Array.isArray(raw) ? "array" : raw === null ? "null" : typeof raw})`,
+    );
+    return undefined;
+  }
+  if (raw.length === 0) {
+    errors.push("identity: must be a non-empty string path to a markdown file (got empty string)");
+    return undefined;
+  }
+  return raw;
+}
+
+/**
+ * Build the synthetic fileMemory entry equivalent to the `identity:`
+ * shorthand. Per spec §Decision 4 of the PR α foundation spec.
+ */
+function synthesizeIdentityAugment(source: string): AugmentConfig {
+  return {
+    name: "identity",
+    type: "fileMemory",
+    options: {
+      label: "self",
+      source,
+      mutable: false,
+      origin: "operator",
+      priority: "required",
+      placement: "system",
+      eviction: "never",
+    },
+  };
+}
+
 function validateConfig(raw: Record<string, unknown>): ParsedConfig {
   const errors: string[] = [];
 
@@ -398,6 +439,11 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
       `name: must be lowercase alphanumeric with hyphens/underscores (got "${raw.name}")`,
     );
   }
+
+  // identity shorthand (optional) — synthesizes an equivalent fileMemory
+  // entry prepended to augments[]. Conflict detection happens after the
+  // augments array is validated below.
+  const identityShorthand = validateIdentityShorthand(raw.identity, errors);
 
   // Engine.
   const engine = raw.engine as Record<string, unknown> | undefined;
@@ -598,18 +644,66 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
   // security eval suite — consumed by evals/security/eval-context.ts.
   const securityEval = validateSecurityEval(raw.securityEval, errors);
 
+  // Identity shorthand conflict detection. If both `identity:` and an
+  // explicit fileMemory augment with placement:system are present, the
+  // config is ambiguous — operator must pick one form. The conflict only
+  // fires for placement:system; fileMemory entries with other placements
+  // (e.g. "context") coexist with the shorthand without issue.
+  //
+  // Separately, the synthesized augment is always named "identity", so the
+  // shorthand also reserves that name — an explicit augment also named
+  // "identity" would produce a duplicate after synthesis.
+  if (identityShorthand !== undefined && Array.isArray(augments)) {
+    const hasExplicitSystemFileMemory = (augments as unknown[]).some((a) => {
+      if (typeof a !== "object" || a === null) return false;
+      const aug = a as Record<string, unknown>;
+      if (aug.type !== "fileMemory") return false;
+      const opts = aug.options as Record<string, unknown> | undefined;
+      return opts?.placement === "system";
+    });
+    if (hasExplicitSystemFileMemory) {
+      errors.push(
+        "agent.yaml has both 'identity' shorthand and an explicit fileMemory augment with placement:system — pick one.",
+      );
+    } else {
+      // Only check the name collision when there's no placement:system
+      // conflict, to avoid stacking errors for the same operator mistake.
+      const hasExplicitIdentityName = (augments as unknown[]).some((a) => {
+        if (typeof a !== "object" || a === null) return false;
+        const aug = a as Record<string, unknown>;
+        return aug.name === "identity";
+      });
+      if (hasExplicitIdentityName) {
+        errors.push(
+          "agent.yaml has 'identity' shorthand and an explicit augment named 'identity' — rename the explicit augment or remove the shorthand.",
+        );
+      }
+    }
+  }
+
   if (errors.length > 0) {
     throw new Error(`Invalid agent.yaml:\n${errors.map((e) => `  - ${e}`).join("\n")}`);
   }
+
+  // Build the final augments list. When the identity shorthand is set and
+  // no conflict was detected, prepend the synthesized fileMemory entry so
+  // identity loads first (matches the convention of operators putting it
+  // at the top of agents.yaml manually today).
+  const parsedAugments = (augments as unknown[]).map((a) => a as AugmentConfig);
+  const finalAugments =
+    identityShorthand !== undefined
+      ? [synthesizeIdentityAugment(identityShorthand), ...parsedAugments]
+      : parsedAugments;
 
   return {
     id: raw.id as string,
     name: raw.name as string,
     purpose: raw.purpose as string | undefined,
+    identity: identityShorthand,
     engine: engine as unknown as EngineConfig,
     settings: settings as AgentSettings,
     operators: raw.operators as string[] | undefined,
-    augments: (augments as unknown[]).map((a) => a as AugmentConfig),
+    augments: finalAugments,
     securityEval,
   };
 }
