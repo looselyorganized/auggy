@@ -2,12 +2,15 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type {
   Augment,
+  CostResult,
+  InternalTurnContext,
   MemoryEntry,
   MemoryQueryOpts,
   MemoryWriteOpts,
   SchedulerContext,
   Transcript,
   TurnResult,
+  TurnTrigger,
 } from "../../types";
 import { createBuffer, type ExtractionBuffer } from "./extractor/buffer";
 import { type ExtractionFrequencyConfig, shouldExtract } from "./extractor/frequency";
@@ -18,19 +21,19 @@ import type { MemoryStore, StoreEntry } from "./storage/types";
 
 /**
  * Optional auto-save block (PR β / ADR-018 Phase 2). When `enabled` is
- * true (the default), the augment registers a `scheduleAfterTurn` hook
- * (per ADR-027) that runs the per-trust-level frequency dispatcher, then
- * either skips, buffers, or runs extraction for the just-completed turn.
+ * true (the default), the augment registers two hooks per ADR-027:
  *
- * Phase 2b note (this commit): when the dispatcher returns "extract",
- * the augment calls `handleExtractionTurn` directly using the configured
- * extraction engine — see "Architectural decision" in the PR β plan +
- * spec Decision 5. The spec's preferred path routes the extraction call
- * through `ctx.inject` (option a) so cost flows through the existing
- * budgets path; that requires kernel surface beyond ADR-027 (an
- * internal-trigger handler registry). Phase 2b ships option (b) — the
- * inline path — and logs `console.warn` to surface the deferred
- * cost-attribution. Option (a) is a future Phase 2c upgrade.
+ *  - `scheduleAfterTurn`: fires after every user-facing turn, runs the
+ *    per-trust-level frequency dispatcher, and either skips, buffers,
+ *    or admits an internal extraction turn via `ctx.inject(...)`.
+ *  - `handleInternalTurn`: claims triggers whose `source ===
+ *    "layered-memory.autoSave"` and runs the extraction LLM call inside
+ *    the admitted turn, so cost flows through the standard turn-loop
+ *    machinery (turn-gate prepare/confirm + commit) — closing the
+ *    cost-attribution gap Codex Critical-2 flagged. The handler returns
+ *    a TurnResult whose `trace.inferenceSteps[]` carries the priced
+ *    cost the engine reported; `runCostCommit` aggregates and the
+ *    budgets augment commits identically to a user-facing turn.
  */
 export interface LayeredMemoryAutoSaveOptions {
   enabled?: boolean;
@@ -45,12 +48,11 @@ export interface LayeredMemoryAutoSaveOptions {
    */
   promptTemplate?: string;
   /**
-   * Optional dedicated extraction engine. When absent in Phase 2b, the
-   * `decision === "extract"` branch logs a warning and skips —
-   * extraction has no cost-flow path yet without an engine wired
-   * through scheduleAfterTurn's context. Phase 2c surfaces the agent's
-   * primary engine on `SchedulerContext` (or via ctx.inject path) so
-   * this option becomes a true override rather than a hard requirement.
+   * Dedicated extraction engine. Required for auto-save to perform
+   * extraction. Memorist Decision 6 anticipates this engine being a
+   * cheaper Haiku-priced adapter while the user-facing agent runs on
+   * Sonnet — keep this knob explicit so operators don't accidentally
+   * route extraction through the (more expensive) primary engine.
    */
   engine?: ExtractionEngine;
 }
@@ -69,6 +71,13 @@ export interface LayeredMemoryOptions {
 }
 
 /**
+ * Trigger source string used by both the auto-save scheduler and the
+ * internal-turn handler. Kept as a constant so the dispatch routing
+ * key has exactly one definition site.
+ */
+const AUTO_SAVE_TRIGGER_SOURCE = "layered-memory.autoSave";
+
+/**
  * Default per-trust-level frequency config — Decision 3 of the memorist
  * design with Codex 2nd-pass Important-2 calibration applied (`agent`
  * defaults to `every-N-turns` rather than `every-turn`).
@@ -81,6 +90,14 @@ const DEFAULT_FREQUENCY_CONFIG: ExtractionFrequencyConfig = {
 
 const DEFAULT_EVERY_N_TURNS = 3;
 const DEFAULT_CONFIDENCE_THRESHOLD = 0.5;
+
+/**
+ * Synthetic model label that surfaces in the trace's inference-step
+ * record for an extraction turn. Distinct from the user-facing agent's
+ * model so trace consumers can differentiate extraction spend from
+ * primary spend.
+ */
+const EXTRACTION_MODEL_LABEL = "layered-memory.extraction-engine";
 
 function storeEntryToMemoryEntry(e: StoreEntry): MemoryEntry {
   return {
@@ -130,20 +147,15 @@ function loadPromptTemplate(overridePath?: string): string | null {
 
 /**
  * Detect that a TurnResult corresponds to an auto-save extraction turn
- * the augment itself injected. Used as the recursion guard so a future
- * option-(a) wiring (extraction via `ctx.inject`) does not recurse.
- *
- * Phase 2b ships option (b) — extraction runs synchronously inside
- * `scheduleAfterTurn` without going through `ctx.inject`, so no
- * additional turn is created and no recursion is possible. The guard is
- * kept as defense-in-depth: it costs nothing and protects future
- * Phase 2c upgrades from accidentally creating an extraction-on-
- * extraction loop.
+ * the augment itself injected. Used as the recursion guard so the
+ * scheduleAfterTurn hook (which fires on EVERY turn, including the
+ * extraction turn the augment injected) does not re-enter and trigger
+ * extraction-on-extraction loops.
  */
 function isAutoSaveTurn(result: TurnResult): boolean {
   return (
     result.trace.trigger.type === "internal" &&
-    result.trace.trigger.sourceAugment === "layered-memory.autoSave"
+    result.trace.trigger.sourceAugment === AUTO_SAVE_TRIGGER_SOURCE
   );
 }
 
@@ -162,16 +174,122 @@ function buildAutoSaveLabel(
 }
 
 /**
- * Extraction execution path (option b). Calls the extraction engine,
- * parses the response, and writes each fact via the store's
- * `writeAutoSavedEntry`. Best-effort — engine errors, parse errors, and
- * individual write errors are logged and swallowed.
- *
- * Phase 2c will route this through `ctx.inject` so cost flows into the
- * budgets store via `turnGate.commit`. Phase 2b logs a one-time warning
- * to surface the deferral.
+ * Payload shape carried on the internal trigger from `scheduleAfterTurn`
+ * to `handleInternalTurn`. Kept structural (no class) so the kernel's
+ * generic `TurnTrigger.payload: Record<string, unknown>` type accepts it.
  */
-async function runInlineExtraction(args: {
+interface AutoSaveTriggerPayload extends Record<string, unknown> {
+  transcript: Transcript;
+  sourceTurnId: string;
+  promptTemplate: string;
+  confidenceThreshold: number;
+  prefix: string;
+  peerId: string;
+}
+
+function isAutoSaveTriggerPayload(
+  payload: TurnTrigger["payload"],
+): payload is AutoSaveTriggerPayload {
+  if (!payload || typeof payload !== "object") return false;
+  const p = payload as Record<string, unknown>;
+  return (
+    typeof p.sourceTurnId === "string" &&
+    typeof p.promptTemplate === "string" &&
+    typeof p.confidenceThreshold === "number" &&
+    typeof p.prefix === "string" &&
+    typeof p.peerId === "string" &&
+    p.transcript !== undefined
+  );
+}
+
+/**
+ * Build the TurnResult the kernel turn-loop folds into the kernel
+ * trace. The `trace.inferenceSteps[]` carries the priced (or unpriced)
+ * extraction cost; the kernel's runCostCommit aggregates this and
+ * turnGate.commit observes it (this is the cost-flow path that closes
+ * Codex Critical-2).
+ *
+ * The trace is a stub — the kernel preserves its own trace fields
+ * (turnId, threadId, trigger metadata, timestamps) and only consumes
+ * `inferenceSteps[]` from the handler-returned trace. We populate the
+ * other trace fields with zero/empty defaults so the type checks.
+ */
+function buildExtractionTurnResult(args: {
+  trigger: TurnTrigger;
+  status: "completed" | "failed";
+  cost: CostResult;
+  inferenceDurationMs: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  errorMessage?: string;
+  responseText?: string;
+}): TurnResult {
+  const turnId = args.trigger.turnId;
+  const threadId = args.trigger.threadId ?? turnId;
+  return {
+    turnId,
+    success: args.status === "completed",
+    status: args.status,
+    response: args.responseText
+      ? { parts: [{ kind: "text", text: args.responseText }] }
+      : undefined,
+    toolCalls: [],
+    error: args.errorMessage
+      ? { message: args.errorMessage, source: AUTO_SAVE_TRIGGER_SOURCE }
+      : undefined,
+    trace: {
+      turnId,
+      threadId,
+      timestamp: Date.now(),
+      duration: 0,
+      trigger: {
+        type: "internal",
+        sourceAugment: AUTO_SAVE_TRIGGER_SOURCE,
+      },
+      contextAssembly: {
+        augmentBlocks: [],
+        preambleTokens: 0,
+        toolSchemaTokens: 0,
+        historyTokens: 0,
+        totalTokens: 0,
+        budgetUsed: 0,
+      },
+      toolSelection: {
+        totalTools: 0,
+        phase1Used: false,
+        mountedTools: [],
+        withheldTools: [],
+      },
+      inferenceSteps: [
+        {
+          model: EXTRACTION_MODEL_LABEL,
+          inputTokens: args.inputTokens ?? 0,
+          outputTokens: args.outputTokens ?? 0,
+          durationMs: args.inferenceDurationMs,
+          toolCalls: [],
+          cost: args.cost,
+        },
+      ],
+      capabilityChecks: [],
+    },
+  };
+}
+
+/**
+ * Run the extraction body for a single internal turn. Calls the engine,
+ * parses the response, writes facts via the store's writeAutoSavedEntry,
+ * and returns a TurnResult whose trace.inferenceSteps[] carries the
+ * priced cost the kernel turn-loop's runCostCommit will surface to
+ * turnGate.commit (cost-flow contract per ADR-027 Decision 5).
+ *
+ * Best-effort. Engine errors and parse errors map to a failed
+ * TurnResult that STILL carries the engine's reported cost (when an
+ * engine billed for a malformed response, suppressing it in budgets
+ * would silently break daily-cap accounting). Per-fact write failures
+ * are logged and swallowed.
+ */
+async function runExtractionInsideTurn(args: {
+  trigger: TurnTrigger;
   transcript: Transcript;
   engine: ExtractionEngine;
   promptTemplate: string;
@@ -179,31 +297,46 @@ async function runInlineExtraction(args: {
   prefix: string;
   peerId: string;
   confidenceThreshold: number;
-  modelLabel: string;
-}): Promise<void> {
+  sourceTurnId: string;
+}): Promise<TurnResult> {
+  const inferenceStart = Date.now();
   const result = await handleExtractionTurn({
     transcript: args.transcript,
     engine: args.engine,
     promptTemplate: args.promptTemplate,
   });
+  const inferenceDurationMs = Date.now() - inferenceStart;
+  const cost: CostResult =
+    result.costUsd > 0
+      ? { priced: true, costUsd: result.costUsd }
+      : { priced: false, reason: "extraction engine reported zero cost" };
+
   if (!result.success) {
     console.warn(
-      `[layered-memory.autoSave] extraction failed (turn=${args.transcript.turnId}): ${result.error}`,
+      `[layered-memory.autoSave] extraction failed (sourceTurn=${args.sourceTurnId}): ${result.error}`,
     );
-    return;
+    return buildExtractionTurnResult({
+      trigger: args.trigger,
+      status: "failed",
+      cost,
+      inferenceDurationMs,
+      errorMessage: result.error,
+    });
   }
+
+  let written = 0;
   for (const [idx, fact] of result.facts.entries()) {
     if (fact.confidence < args.confidenceThreshold) {
-      // Below threshold: log + skip rather than write a low-signal
-      // entry. Spec Decision 7 leaves a knob for "write but flag" — at
-      // Phase 2b we err on the side of fewer writes; future calibration
-      // can revisit once eval data exists.
+      // Below threshold: skip rather than write a low-signal entry.
+      // Spec Decision 7 leaves a knob for "write but flag" — at v1.0
+      // we err on the side of fewer writes; future calibration can
+      // revisit once eval data exists.
       continue;
     }
     try {
       await args.store.writeAutoSavedEntry({
         peerId: args.peerId,
-        label: buildAutoSaveLabel(args.prefix, args.peerId, args.transcript.turnId, idx),
+        label: buildAutoSaveLabel(args.prefix, args.peerId, args.sourceTurnId, idx),
         content: fact.object,
         subject: fact.subject,
         predicate: fact.predicate,
@@ -211,15 +344,24 @@ async function runInlineExtraction(args: {
         confidence: fact.confidence,
         retentionClass: "operational",
         isVerbatim: fact.isVerbatim,
-        sourceTurnId: args.transcript.turnId,
-        model: args.modelLabel,
+        sourceTurnId: args.sourceTurnId,
+        model: EXTRACTION_MODEL_LABEL,
       });
+      written++;
     } catch (err) {
       console.warn(
         `[layered-memory.autoSave] writeAutoSavedEntry failed for fact ${idx}: ${(err as Error).message}`,
       );
     }
   }
+
+  return buildExtractionTurnResult({
+    trigger: args.trigger,
+    status: "completed",
+    cost,
+    inferenceDurationMs,
+    responseText: `extracted ${written} fact(s) from turn ${args.sourceTurnId}`,
+  });
 }
 
 export async function layeredMemory(opts: LayeredMemoryOptions): Promise<Augment> {
@@ -266,18 +408,6 @@ export async function layeredMemory(opts: LayeredMemoryOptions): Promise<Augment
   const everyNTurns = opts.autoSave?.everyNTurns ?? DEFAULT_EVERY_N_TURNS;
   const confidenceThreshold = opts.autoSave?.confidenceThreshold ?? DEFAULT_CONFIDENCE_THRESHOLD;
   const extractionEngine = opts.autoSave?.engine;
-
-  // Phase 2b deferral notice. Surface once at boot (rather than per-turn)
-  // so operators see the cost-attribution gap clearly without flooding
-  // logs. Phase 2c upgrades to option (a) and removes this warning.
-  let warnedDeferralOnce = false;
-  function warnDeferralOnce(): void {
-    if (warnedDeferralOnce) return;
-    warnedDeferralOnce = true;
-    console.warn(
-      "[layered-memory.autoSave] running in Phase 2b inline mode — extraction calls bypass the turn-loop budgets path; cost-attribution-through-budgets is deferred to Phase 2c (see ADR-027 + PR β plan)",
-    );
-  }
 
   const search = async (query: string, queryOpts?: MemoryQueryOpts): Promise<MemoryEntry[]> => {
     const results = await store.search(query, queryOpts?.peerId);
@@ -337,15 +467,23 @@ export async function layeredMemory(opts: LayeredMemoryOptions): Promise<Augment
 
   /**
    * Post-turn auto-save dispatcher. ADR-027 delivers `result` + `ctx`
-   * after every user-facing turn (and after every injected turn,
-   * including any future option-(a) extraction injection). The hook is
-   * best-effort — errors are caught and logged, never propagated.
+   * after every turn (including the extraction turns this augment
+   * itself injects — those are skipped by `isAutoSaveTurn` to prevent
+   * recursion).
+   *
+   * For decision === "extract", this hook calls `ctx.inject(...)` with
+   * an internal trigger; the kernel routes that trigger to this same
+   * augment's `handleInternalTurn`, which runs the extraction LLM call
+   * inside the admitted turn so cost flows through `turnGate.commit`.
+   * Errors during inject are caught and logged — best-effort per
+   * ADR-027 Decision 2.
    */
   async function scheduleAfterTurn(result: TurnResult, ctx: SchedulerContext): Promise<void> {
     if (!autoSaveEnabled) return;
     if (!promptTemplate) return;
-    // Recursion guard: skip extraction-initiated turns (defense-in-depth
-    // for a future option-(a) wiring; see isAutoSaveTurn comment).
+    // Recursion guard: skip extraction-initiated turns. Without this,
+    // every injected extraction turn would itself fire scheduleAfterTurn
+    // and synthesize another extraction trigger ad infinitum.
     if (isAutoSaveTurn(result)) return;
 
     const transcript = await ctx.getCompletedTranscript();
@@ -374,25 +512,101 @@ export async function layeredMemory(opts: LayeredMemoryOptions): Promise<Augment
 
     // decision === "extract"
     if (!extractionEngine) {
-      // No engine wired yet — Phase 2c will surface the agent's primary
-      // engine. For Phase 2b, log once and skip. The frequency dispatcher
-      // already advanced the turnIndex above, so subsequent turns still
-      // honor the cadence even when extraction itself is a no-op.
+      // No engine configured — log once-per-turn and skip. The frequency
+      // dispatcher already advanced the turnIndex above so subsequent
+      // turns still honor the cadence even when extraction itself is a
+      // no-op.
       console.warn(
         `[layered-memory.autoSave] no extraction engine configured; skipping extraction for turn ${transcript.turnId}`,
       );
       return;
     }
-    warnDeferralOnce();
-    await runInlineExtraction({
+
+    // Inject an internal trigger; the kernel routes back to this
+    // augment's handleInternalTurn (option a — extraction admits as its
+    // own turn, cost flows through turnGate.commit).
+    const sourceTurnId = transcript.turnId;
+    const payload: AutoSaveTriggerPayload = {
       transcript,
-      engine: extractionEngine,
+      sourceTurnId,
       promptTemplate,
-      store,
+      confidenceThreshold,
       prefix,
       peerId,
-      confidenceThreshold,
-      modelLabel: "extraction-engine",
+    };
+    const trigger: TurnTrigger = {
+      type: "internal",
+      turnId: `auto-save-${sourceTurnId}`,
+      threadId: transcript.threadId,
+      timestamp: Date.now(),
+      source: AUTO_SAVE_TRIGGER_SOURCE,
+      peer: transcript.peer,
+      payload,
+    };
+    try {
+      await ctx.inject(trigger);
+    } catch (err) {
+      // ctx.inject failures are best-effort per ADR-027 — log and move
+      // on. The user-facing turn already succeeded; extraction loss is
+      // operationally low-stakes (next turn will retry on cadence).
+      console.warn(
+        `[layered-memory.autoSave] ctx.inject failed for sourceTurn=${sourceTurnId}: ${(err as Error).message}`,
+      );
+    }
+  }
+
+  /**
+   * ADR-027 Decision 5 internal-trigger handler. Claims triggers whose
+   * `source === "layered-memory.autoSave"` and runs the extraction LLM
+   * call inside the kernel's admitted turn. The returned TurnResult's
+   * `trace.inferenceSteps[]` carries the priced cost; the kernel
+   * turn-loop's `runCostCommit` aggregates and `turnGate.commit`
+   * observes — closing Codex Critical-2.
+   *
+   * Returns null for any trigger this augment does not own; the kernel
+   * then offers the trigger to the next augment's handleInternalTurn
+   * (or falls through to the standard inference loop if no augment
+   * claims).
+   */
+  async function handleInternalTurn(
+    trigger: TurnTrigger,
+    _ctx: InternalTurnContext,
+  ): Promise<TurnResult | null> {
+    if (trigger.source !== AUTO_SAVE_TRIGGER_SOURCE) return null;
+    if (!isAutoSaveTriggerPayload(trigger.payload)) {
+      // Defensive — a stray internal trigger named auto-save without
+      // the expected payload shape. Don't try to extract; surface as a
+      // failed turn so the misuse is visible in trace.
+      return buildExtractionTurnResult({
+        trigger,
+        status: "failed",
+        cost: { priced: false, reason: "auto-save trigger missing required payload fields" },
+        inferenceDurationMs: 0,
+        errorMessage: "auto-save trigger missing required payload fields",
+      });
+    }
+    if (!extractionEngine) {
+      // Configuration drifted between scheduleAfterTurn-time and here
+      // (e.g. operator hot-reloaded the engine to undefined). Best-effort
+      // — surface as a failed turn so the trace shows it.
+      return buildExtractionTurnResult({
+        trigger,
+        status: "failed",
+        cost: { priced: false, reason: "no extraction engine configured" },
+        inferenceDurationMs: 0,
+        errorMessage: "no extraction engine configured",
+      });
+    }
+    return runExtractionInsideTurn({
+      trigger,
+      transcript: trigger.payload.transcript as Transcript,
+      engine: extractionEngine,
+      promptTemplate: trigger.payload.promptTemplate,
+      store,
+      prefix: trigger.payload.prefix,
+      peerId: trigger.payload.peerId,
+      confidenceThreshold: trigger.payload.confidenceThreshold,
+      sourceTurnId: trigger.payload.sourceTurnId,
     });
   }
 
@@ -413,7 +627,7 @@ export async function layeredMemory(opts: LayeredMemoryOptions): Promise<Augment
       write,
       forget,
     },
-    ...(autoSaveEnabled ? { scheduleAfterTurn } : {}),
+    ...(autoSaveEnabled ? { scheduleAfterTurn, handleInternalTurn } : {}),
     onShutdown: async () => {
       await store.close();
     },
