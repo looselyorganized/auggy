@@ -5,6 +5,7 @@
  * Commands:
  *   auggy create <name>              Scaffold a new agent (interactive)
  *   auggy add <name>                 Add augments to an existing agent
+ *   auggy add-skill <augment>        Install a bundled skill into an agent
  *   auggy dev <name> [--config]      Run agent in foreground
  *   auggy start <name> [--config]    Install as launchd service (always-on)
  *   auggy stop <name>                Stop a running agent
@@ -19,6 +20,7 @@
 import { Command } from "commander";
 import { runCreate } from "./commands/create";
 import { runAdd } from "./commands/add";
+import { addSkillCommand } from "./commands/add-skill";
 import { runDev } from "./commands/dev";
 import { runStart } from "./commands/start";
 import { runStop } from "./commands/stop";
@@ -58,6 +60,8 @@ program
       process.exit(1);
     }
   });
+
+program.addCommand(addSkillCommand());
 
 program
   .command("dev <name>")
