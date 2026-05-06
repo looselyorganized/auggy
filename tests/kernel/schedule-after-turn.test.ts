@@ -168,3 +168,44 @@ describe("SchedulerContext.getCompletedTranscript", () => {
     expect(typeof ctx.getCompletedTranscript).toBe("function");
   });
 });
+
+describe("TurnTriggerType: internal", () => {
+  test("admits internal trigger via inject", async () => {
+    const agent = defineAgent(
+      { name: "test", model: "mock", augments: [] },
+      createMockModel({ response: "ok" }),
+    );
+    await agent.start();
+    const result = await agent.inject({
+      type: "internal",
+      turnId: "internal-1",
+      threadId: "th-internal",
+      timestamp: Date.now(),
+      source: "test.internal",
+      payload: { kind: "test" },
+    });
+    expect(result.success).toBe(true);
+    expect(result.turnId).toBe("internal-1");
+    expect(result.status).toBe("completed");
+    await agent.stop();
+  });
+
+  test("internal trigger surfaces type in trace", async () => {
+    const agent = defineAgent(
+      { name: "test", model: "mock", augments: [] },
+      createMockModel({ response: "ok" }),
+    );
+    await agent.start();
+    const result = await agent.inject({
+      type: "internal",
+      turnId: "internal-2",
+      threadId: "th-internal-2",
+      timestamp: Date.now(),
+      source: "auto-save",
+      payload: { kind: "auto-save-extraction" },
+    });
+    expect(result.trace.trigger.type).toBe("internal");
+    expect(result.trace.trigger.sourceAugment).toBe("auto-save");
+    await agent.stop();
+  });
+});
