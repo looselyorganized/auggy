@@ -721,6 +721,20 @@ export interface Augment {
    * Augment authors MUST guard against re-entry — a handler should
    * never synthesize a trigger that re-routes back to itself during
    * the same execution.
+   *
+   * **Throw contract — load-bearing for budget accuracy.** Handlers
+   * MUST NOT throw with side effects. Failure modes (engine error,
+   * malformed response, transient network failure) MUST be caught
+   * inside the handler and returned as a failed TurnResult that still
+   * carries any priced inference steps in `trace.inferenceSteps[]`.
+   *
+   * If a handler throws after incurring LLM spend, the kernel's
+   * catch-block will commit a turn with no recorded cost — budgets
+   * sees zero spend for a turn that actually burned money. The kernel
+   * logs a structured warning (`[kernel] handleInternalTurn for
+   * augment "X" threw; cost may be undercounted ...`) so a misbehaving
+   * handler is operator-visible, but the cap-accuracy invariant
+   * depends on handlers honoring this contract.
    */
   handleInternalTurn?: (
     trigger: TurnTrigger,

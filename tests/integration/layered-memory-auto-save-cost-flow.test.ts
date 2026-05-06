@@ -270,4 +270,88 @@ describe("layered-memory auto-save cost-flow (option a)", () => {
     expect(commits.length).toBe(1);
     expect(commits[0]?.turnId).toBe("u1");
   });
+
+  test("layered-memory's handleInternalTurn never throws on engine failure (ADR-027 D5 throw-contract regression guard)", async () => {
+    // ADR-027 Decision 5: handlers MUST NOT throw with side effects.
+    // If they do, the kernel's catch-block commits a turn with no cost
+    // recorded — budgets undercounts. Layered-memory's handler must
+    // catch every engine failure mode internally and return a failed
+    // TurnResult with priced inference steps. This test locks that
+    // contract for the layered-memory implementation specifically;
+    // future custom handlers must satisfy the same contract per the
+    // JSDoc on `Augment.handleInternalTurn`.
+    const dir = await createTempDir();
+    cleanup = dir.cleanup;
+    const dbPath = join(dir.path, "memory.db");
+
+    // Engine throws synchronously — simulates network failure, rate
+    // limit, transient backend error.
+    const throwingEngine = {
+      complete: async () => {
+        throw new Error("simulated engine failure");
+      },
+    };
+
+    const lm = await layeredMemory({
+      backend: "sqlite",
+      dbPath,
+      namespace: "ep",
+      retentionDays: 90,
+      autoSave: {
+        enabled: true,
+        extractionFrequency: { agent: "every-turn" },
+        engine: throwingEngine,
+      },
+    });
+    const commits: RecordedCommit[] = [];
+    const agent = defineAgent(
+      {
+        name: "test-agent",
+        model: "mock",
+        augments: [recordingBudgetGate(commits), lm],
+      },
+      createMockModel({ response: "ack" }),
+    );
+
+    // Spy on console.warn to detect the kernel's "handler threw" warning
+    // — if this fires, the handler regressed and is now throwing.
+    const originalWarn = console.warn;
+    const warnings: string[] = [];
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args.map((a) => String(a)).join(" "));
+    };
+
+    try {
+      await agent.start();
+      try {
+        const peer: PeerIdentity = {
+          id: "agent-peer-throw",
+          kind: "agent",
+          trustLevel: "agent",
+          sourceAugment: "test-transport",
+        };
+        // The user-facing turn must succeed; auto-save's failure must
+        // not propagate.
+        await agent.inject(makeMessageTrigger("user-turn-throw", "th-throw", peer));
+      } finally {
+        await agent.stop();
+      }
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    // The kernel-level "handler threw" warning must NOT have fired —
+    // proves the handler caught the engine failure internally.
+    const handlerThrewWarning = warnings.find(
+      (w) => w.includes("handleInternalTurn") && w.includes("threw"),
+    );
+    expect(handlerThrewWarning).toBeUndefined();
+
+    // Both turns committed (user-facing + extraction); the extraction
+    // commit fired even though extraction failed.
+    expect(commits.length).toBe(2);
+    expect(commits.find((c) => c.turnId === "user-turn-throw")).toBeDefined();
+    const extractionCommit = commits.find((c) => c.turnId !== "user-turn-throw");
+    expect(extractionCommit).toBeDefined();
+  });
 });

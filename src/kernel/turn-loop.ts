@@ -439,8 +439,23 @@ export function createTurnLoop(opts: {
             });
           } catch (err) {
             // Handler threw — surface as a failed turn so the augment
-            // author can debug, and so cost-commit still fires (the
-            // handler may have already incurred LLM spend before throwing).
+            // author can debug, and so cost-commit still fires.
+            //
+            // BUDGET-ACCOUNTING WARNING: when a handler throws, it has no
+            // way to merge already-incurred LLM cost into trace.inferenceSteps.
+            // runCostCommit() will fire with no inference recorded, and
+            // budgets will see this turn as zero-cost — undercounting if the
+            // handler burned LLM spend before throwing. Per ADR-027 Decision 5,
+            // the contract is: handlers MUST NOT throw with side effects.
+            // Failure modes (engine error, parse error, etc.) MUST be caught
+            // inside the handler and returned as a failed TurnResult with
+            // accumulated trace.inferenceSteps. Surface a warning so the
+            // misbehaving handler is observable to operators.
+            console.warn(
+              `[kernel] handleInternalTurn for augment "${aug.name}" threw; ` +
+                `cost may be undercounted (handler should return failed TurnResult ` +
+                `instead of throwing — see ADR-027 Decision 5).`,
+            );
             emitEvent({
               kind: "run_error",
               turnId: trigger.turnId,
