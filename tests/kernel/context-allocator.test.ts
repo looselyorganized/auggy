@@ -145,6 +145,85 @@ describe("ContextAllocator", () => {
     expect(identityBlock).not.toContain("[AGENT-DERIVED]");
   });
 
+  it("renders mixed per-entry origins with correct markers (Phase 1b Task 8)", () => {
+    const allocator = createContextAllocator({
+      maxTokens: 10000,
+      historyPercent: 40,
+      toolSchemaPercent: 10,
+      tokenizer,
+      preamble: "P",
+    });
+
+    // Memory providers can attach a per-entry origin (Phase 1a's
+    // storage layer uses OriginValue: "operator" | "peer-derived" |
+    // "agent-derived" | "agent"). When synthesizeContextFor maps
+    // those entries into ContextBlocks, each block carries its own
+    // origin — this test verifies the allocator marks each block
+    // independently, not all by a single provider default.
+    const blocks: ContextBlock[] = [
+      {
+        ...block("episodic", "agent paraphrase fact"),
+        origin: "agent-derived" as ContextBlock["origin"],
+      },
+      { ...block("episodic", "verbatim peer statement"), origin: "peer-derived" },
+      { ...block("episodic", "agent self-note"), origin: "agent" },
+      { ...block("identity", "operator-curated identity"), origin: "operator" },
+    ];
+
+    const prompt = allocator.assemble(blocks, [], []);
+
+    // "agent-derived" (storage value) and "agent" (kernel value) both
+    // render as [AGENT-DERIVED]. The skill teaches the model to treat
+    // both as paraphrases / self-notes — distinguishing them further
+    // is operator-only signal, not a model-facing concern at v1.0.
+    const paraphrase = prompt.contextBlocks.find((b) => b.includes("agent paraphrase fact"));
+    expect(paraphrase).toContain("[AGENT-DERIVED]");
+    expect(paraphrase).not.toContain("[PEER-DERIVED]");
+
+    const verbatim = prompt.contextBlocks.find((b) => b.includes("verbatim peer statement"));
+    expect(verbatim).toContain("[PEER-DERIVED]");
+    expect(verbatim).not.toContain("[AGENT-DERIVED]");
+
+    const selfNote = prompt.contextBlocks.find((b) => b.includes("agent self-note"));
+    expect(selfNote).toContain("[AGENT-DERIVED]");
+    expect(selfNote).not.toContain("[PEER-DERIVED]");
+
+    // Operator-origin remains unmarked at v1.0 — preamble teaches
+    // the model only [PEER-DERIVED] and [AGENT-DERIVED]. Anything
+    // not flagged is treated as facility-trusted by default.
+    const identity = prompt.contextBlocks.find((b) => b.includes("operator-curated identity"));
+    expect(identity).not.toContain("[PEER-DERIVED]");
+    expect(identity).not.toContain("[AGENT-DERIVED]");
+  });
+
+  it("treats unknown origin values as unmarked (defensive default)", () => {
+    const allocator = createContextAllocator({
+      maxTokens: 10000,
+      historyPercent: 40,
+      toolSchemaPercent: 10,
+      tokenizer,
+      preamble: "P",
+    });
+
+    // Spec contract: origin values the kernel doesn't recognize render
+    // without a provenance marker rather than mis-attributing the
+    // content. This is the fail-safe for forward-compatibility (a
+    // future OriginValue extension would ship preamble guidance and
+    // a marker-map update together).
+    const blocks: ContextBlock[] = [
+      {
+        ...block("future", "tomorrow's content"),
+        origin: "synthetic-future" as ContextBlock["origin"],
+      },
+    ];
+
+    const prompt = allocator.assemble(blocks, [], []);
+    const future = prompt.contextBlocks.find((b) => b.includes("tomorrow's content"));
+    expect(future).toBeDefined();
+    expect(future).not.toContain("[PEER-DERIVED]");
+    expect(future).not.toContain("[AGENT-DERIVED]");
+  });
+
   it("includes history within its budget slice", () => {
     const allocator = createContextAllocator({
       maxTokens: 1000,
