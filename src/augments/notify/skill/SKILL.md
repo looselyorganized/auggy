@@ -104,7 +104,7 @@ If the operator needs the full context they can come into the conversation; the 
 | Pasting raw error blobs, stack traces, or large transcripts into `summary` | Summarize; the operator can ask for detail in chat if they want it |
 | Including secrets a peer pasted into chat | Strip them; never propagate |
 | Calling `notify` to ask the operator a question they could answer in chat | Use `request_input` when YOU need an answer mid-turn from the person you're already talking to; use `notify` only when the right person is somewhere else |
-| Hard-coding a destination name like `"michael"` or `"slack"` instead of using one the operator configured | If the destination is unknown, the call returns a list of valid names — use one of those |
+| Hard-coding a destination name like `"alice"` or `"slack"` instead of using one the operator configured | If the destination is unknown, the call returns a list of valid names — use one of those |
 
 ## Examples
 

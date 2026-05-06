@@ -75,6 +75,38 @@ interface OrgManifest {
   endpoints: ManifestEndpoint[];
 }
 
+/**
+ * Validate that parsed JSON has the OrgManifest shape. Returns the manifest
+ * cast to OrgManifest if valid, null if not. Hand-rolled (not zod) to avoid
+ * a runtime-validation dependency for a single shape; the schema is small.
+ *
+ * Rationale: `JSON.parse(body) as OrgManifest` is a TypeScript cast that
+ * lies at runtime — a body of `{}` or `{"endpoints": null}` parses
+ * successfully but breaks downstream (the allowlist check throws on
+ * `undefined.endpoints`; `onBoot` crashes on `manifest.endpoints.length`).
+ * Validating at the cache boundary is the natural fail-closed point: if
+ * the manifest doesn't match the contract, treat it as "no manifest
+ * loaded" (warn + return prior cache, keeping the augment's graceful-boot
+ * contract intact).
+ */
+function validateManifest(raw: unknown): OrgManifest | null {
+  if (raw === null || typeof raw !== "object") return null;
+  const m = raw as Record<string, unknown>;
+  if (typeof m.org !== "string") return null;
+  if (typeof m.purpose !== "string") return null;
+  if (!Array.isArray(m.endpoints)) return null;
+  for (const ep of m.endpoints) {
+    if (ep === null || typeof ep !== "object") return null;
+    const e = ep as Record<string, unknown>;
+    if (typeof e.path !== "string") return null;
+    if (typeof e.description !== "string") return null;
+    if (e.method !== undefined && typeof e.method !== "string") return null;
+  }
+  if (m.operator !== undefined && typeof m.operator !== "string") return null;
+  if (m.phase !== undefined && typeof m.phase !== "string") return null;
+  return m as unknown as OrgManifest;
+}
+
 // ---------------------------------------------------------------------------
 // URL scheme handling
 // ---------------------------------------------------------------------------
@@ -353,7 +385,15 @@ export function orgContext(opts: OrgContextOptions): Augment {
         const realBase = await resolveRealBase();
         const manifestPath = await safeResolveUnderBase(realBase, "manifest");
         const body = await readFile(manifestPath, "utf-8");
-        cachedManifest = JSON.parse(body) as OrgManifest;
+        const parsed: unknown = JSON.parse(body);
+        const validated = validateManifest(parsed);
+        if (validated === null) {
+          console.warn(
+            `[org-context] manifest at ${fileBasePath}/manifest has invalid shape — running without org context. Will retry on next fetch.`,
+          );
+          return cachedManifest;
+        }
+        cachedManifest = validated;
         cacheExpiresAt = Date.now() + cacheTtl;
         return cachedManifest;
       } catch (err) {
@@ -370,7 +410,15 @@ export function orgContext(opts: OrgContextOptions): Augment {
         console.warn(`[org-context] manifest returned ${res.status}: ${res.body.slice(0, 200)}`);
         return cachedManifest;
       }
-      cachedManifest = JSON.parse(res.body) as OrgManifest;
+      const parsed: unknown = JSON.parse(res.body);
+      const validated = validateManifest(parsed);
+      if (validated === null) {
+        console.warn(
+          `[org-context] manifest at ${httpBaseUrl}/manifest has invalid shape — running without org context. Will retry on next fetch.`,
+        );
+        return cachedManifest;
+      }
+      cachedManifest = validated;
       cacheExpiresAt = Date.now() + cacheTtl;
       return cachedManifest;
     } catch (err) {

@@ -722,3 +722,125 @@ describe("orgContext construction", () => {
     expect(() => orgContext({ baseUrl: "https://example.com" })).not.toThrow();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Manifest shape validation (Codex 2nd-pass High finding)
+// ---------------------------------------------------------------------------
+// Per Codex 2nd-pass review: `JSON.parse(body) as OrgManifest` lies at runtime.
+// A body of `{}` or `{"endpoints": null}` parses successfully but breaks
+// downstream — allowlist throws on `undefined.endpoints`; onBoot crashes on
+// `manifest.endpoints.length`. Validator at the cache boundary fails closed:
+// invalid manifests are not cached; warn + treat as "no manifest loaded";
+// org_fetch returns a clean refusal envelope.
+
+describe("orgContext manifest shape validation", () => {
+  let tmp: { path: string; cleanup: () => Promise<void> };
+  let baseDir: string;
+  let baseUrl: string;
+
+  const originalWarn = console.warn;
+  const originalLog = console.log;
+
+  beforeEach(async () => {
+    tmp = await createTempDir();
+    baseDir = join(tmp.path, "org-context");
+    baseUrl = pathToFileURL(baseDir).href;
+    await mkdir(baseDir, { recursive: true });
+    console.warn = mock(() => {});
+    console.log = mock(() => {});
+  });
+
+  afterEach(async () => {
+    console.warn = originalWarn;
+    console.log = originalLog;
+    await tmp.cleanup();
+  });
+
+  it("rejects empty-object manifest (no org/purpose/endpoints fields)", async () => {
+    await writeFile(join(baseDir, "manifest"), "{}");
+    const aug = orgContext({ baseUrl });
+    // No manifest = the augment treats it as "no org context loaded".
+    const block = await getManifestBlock(aug);
+    expect(block).toBeNull();
+    // org_fetch should produce the manifest-refusal envelope, not crash.
+    const res = await callOrgFetch(aug, "/anything");
+    expect(res.error).toBeDefined();
+    expect(typeof res.error).toBe("string");
+    expect((res.error as string).toLowerCase()).toMatch(/manifest|no manifest|unavailable/);
+  });
+
+  it("rejects manifest with endpoints: null (downstream would crash)", async () => {
+    await writeFile(
+      join(baseDir, "manifest"),
+      JSON.stringify({ org: "Test", purpose: "test", endpoints: null }),
+    );
+    const aug = orgContext({ baseUrl });
+    const block = await getManifestBlock(aug);
+    expect(block).toBeNull();
+    const res = await callOrgFetch(aug, "/anything");
+    expect(res.error).toBeDefined();
+    expect((res.error as string).toLowerCase()).toMatch(/manifest|no manifest|unavailable/);
+  });
+
+  it("rejects manifest with endpoint entry missing path", async () => {
+    await writeFile(
+      join(baseDir, "manifest"),
+      JSON.stringify({
+        org: "Test",
+        purpose: "test",
+        endpoints: [{ description: "missing path field" }],
+      }),
+    );
+    const aug = orgContext({ baseUrl });
+    const block = await getManifestBlock(aug);
+    expect(block).toBeNull();
+    const res = await callOrgFetch(aug, "/anything");
+    expect(res.error).toBeDefined();
+    expect((res.error as string).toLowerCase()).toMatch(/manifest|no manifest|unavailable/);
+  });
+
+  it("rejects manifest with non-string org field", async () => {
+    await writeFile(
+      join(baseDir, "manifest"),
+      JSON.stringify({ org: 42, purpose: "test", endpoints: [] }),
+    );
+    const aug = orgContext({ baseUrl });
+    const block = await getManifestBlock(aug);
+    expect(block).toBeNull();
+  });
+
+  it("rejects manifest with endpoint entry missing description", async () => {
+    await writeFile(
+      join(baseDir, "manifest"),
+      JSON.stringify({
+        org: "Test",
+        purpose: "test",
+        endpoints: [{ path: "/foo" }],
+      }),
+    );
+    const aug = orgContext({ baseUrl });
+    const block = await getManifestBlock(aug);
+    expect(block).toBeNull();
+  });
+
+  it("accepts a valid manifest with optional fields present", async () => {
+    await writeFile(
+      join(baseDir, "manifest"),
+      JSON.stringify({
+        org: "Test",
+        purpose: "test",
+        operator: "the operator",
+        phase: "active",
+        endpoints: [{ path: "/foo", description: "test", method: "GET" }],
+      }),
+    );
+    await writeFile(join(baseDir, "foo"), "foo-content");
+    const aug = orgContext({ baseUrl });
+    const block = await getManifestBlock(aug);
+    expect(block).not.toBeNull();
+    expect(block!.content).toContain("Test");
+    const res = await callOrgFetch(aug, "/foo");
+    expect(res.error).toBeUndefined();
+    expect(res.content).toContain("foo-content");
+  });
+});

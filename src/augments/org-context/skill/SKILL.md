@@ -93,4 +93,4 @@ The manifest in your system context lists the endpoints available — read it be
 
 ### The org API is unreachable
 
-If the boot-time manifest fetch failed, your system context will not include the manifest, and `org_fetch` calls will return an error envelope (`{"error": "Failed to fetch <path>: ..."}`). Surface that honestly to the peer — say the org knowledge base is temporarily unavailable; don't fabricate answers about the org.
+If the manifest is unavailable (boot-time fetch failed, or the manifest's contents are invalid), your system context will not include it and `org_fetch` calls will return an error envelope (typically `{"error": "Org context unavailable: no manifest loaded; cannot validate endpoint allowlist"}` or similar). Surface that honestly to the peer — say the org knowledge base is temporarily unavailable; don't fabricate answers about the org.

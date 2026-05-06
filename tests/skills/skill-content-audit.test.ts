@@ -94,15 +94,24 @@ describe("bundled-skill content audit", () => {
   });
 
   test("no forbidden substrings (factory names, internal helpers, internal config file, LORF concepts, operator refs)", () => {
+    // Case-insensitive matching: a lowercase variant ("michael" vs "Michael")
+    // would otherwise slip past — Codex 2nd-pass review caught this on a prior
+    // skill content sweep. Matching against a normalized haystack closes the gap.
     const failures: string[] = [];
     for (const skill of skills) {
+      const haystack = skill.content.toLowerCase();
       for (const forbidden of FORBIDDEN_SUBSTRINGS) {
-        const idx = skill.content.indexOf(forbidden);
+        const needle = forbidden.toLowerCase();
+        const idx = haystack.indexOf(needle);
         if (idx >= 0) {
+          // Surrounding context from the ORIGINAL casing, not the lowercased
+          // haystack — so the failure message reads naturally.
           const start = Math.max(0, idx - 30);
           const end = Math.min(skill.content.length, idx + forbidden.length + 30);
           const snippet = skill.content.slice(start, end).replace(/\n/g, "\\n");
-          failures.push(`${skill.augmentName}: forbidden "${forbidden}" near …${snippet}…`);
+          failures.push(
+            `${skill.augmentName}: forbidden "${forbidden}" (case-insensitive) near …${snippet}…`,
+          );
         }
       }
     }
