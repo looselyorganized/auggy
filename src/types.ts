@@ -174,7 +174,7 @@ export interface PeerIdentity {
 
 // === Turn Types (spec §4) ===
 
-export type TurnTriggerType = "message" | "scheduled" | "event" | "continuation";
+export type TurnTriggerType = "message" | "scheduled" | "event" | "continuation" | "internal";
 
 export interface InboundMessage {
   parts: Part[];
@@ -305,6 +305,44 @@ export interface TurnResult {
    * rejection sites may not yet set this.
    */
   errorClass?: string;
+}
+
+// === Transcript + Scheduler (ADR-027) ===
+
+/**
+ * Snapshot of a completed turn, captured by the kernel and exposed via
+ * SchedulerContext.getCompletedTranscript() for background-work augments.
+ *
+ * Returned by history-manager's kernel-internal getTranscript(turnId).
+ * Returns null when the turn was already compacted before retrieval.
+ */
+export interface Transcript {
+  turnId: string;
+  threadId: string;
+  peer: PeerIdentity | null;
+  parts: Part[];
+  toolCalls: ToolCallRecord[];
+  startedAt: number;
+  endedAt: number;
+}
+
+/**
+ * Context handed to `Augment.scheduleAfterTurn` (ADR-027). Exposes the
+ * narrow surface needed for post-turn background work:
+ *
+ *   - inject(trigger): admit a follow-up turn through the normal turn
+ *     loop. The follow-up gets its own turnId, runs admission/budgets,
+ *     fires lifecycle hooks, and surfaces in cost accounting like any
+ *     other turn.
+ *   - getCompletedTranscript(): retrieve the just-completed turn's
+ *     transcript snapshot. Closure-bound to the just-completed turnId;
+ *     no turnId argument by design (per ADR-027 Decision 3 — arbitrary
+ *     turnId reads stay kernel-internal at v1.0). Returns null when the
+ *     turn was already compacted before the hook ran.
+ */
+export interface SchedulerContext {
+  inject(trigger: TurnTrigger): Promise<TurnResult>;
+  getCompletedTranscript(): Promise<Transcript | null>;
 }
 
 // === Kernel Events (internal — emitted by turn loop, consumed by transports) ===
@@ -615,6 +653,21 @@ export interface Augment {
   onTurnStart?: (turn: TurnState) => Promise<void>;
   onTurnEnd?: (turn: TurnResult) => Promise<void>;
   onIdle?: () => Promise<void>;
+  /**
+   * ADR-027: post-turn background-work hook. Fires after `onTurnEnd` for
+   * the just-completed user-facing turn. Receives a `SchedulerContext`
+   * with `inject` (admit a follow-up turn through the normal turn loop)
+   * and `getCompletedTranscript` (retrieve the just-completed turn's
+   * transcript snapshot).
+   *
+   * Errors thrown from this hook are caught and logged; they NEVER block
+   * the user-facing turn or affect the response delivered to the peer.
+   * Background work is best-effort by design.
+   *
+   * Multiple augments registering the hook execute sequentially in
+   * declaration order (ADR-027 Decision 2).
+   */
+  scheduleAfterTurn?: (result: TurnResult, ctx: SchedulerContext) => Promise<void>;
   /**
    * Pre-dispatch admission gate. Kernel calls prepare/confirm/rollback
    * before executing the turn. See TurnGateProvider for the 2PC contract.

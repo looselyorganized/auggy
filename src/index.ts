@@ -40,6 +40,9 @@ export type {
   Message,
   MessageRole,
   ToolCallRecord,
+  // ADR-027 — post-turn background work
+  Transcript,
+  SchedulerContext,
   // Kernel events
   KernelEvent,
   KernelEventHandler,
