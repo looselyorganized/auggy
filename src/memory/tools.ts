@@ -1,11 +1,41 @@
 import { z } from "zod";
-import type { Tool, NamespaceMemoryProvider, ToolExecuteContext, ContextOrigin } from "../types";
+import type {
+  ContextOrigin,
+  MemoryEntry,
+  NamespaceMemoryProvider,
+  Tool,
+  ToolExecuteContext,
+} from "../types";
 import { defineTool } from "../helpers";
 import { lookupProvider } from "./registry";
 import type { MemoryRegistry } from "./types";
 
 const DEFAULT_MAX_MEMORY_OPS_PER_TURN = 20;
 const EMERGENCY_CLEANUP_THRESHOLD = 1000;
+
+/**
+ * Phase 1b Task 7: explicit serializer for memory_search results.
+ *
+ * Memory providers may attach a per-entry `origin` field (the storage layer
+ * uses the canonical OriginValue union — "operator" | "peer-derived" |
+ * "agent-derived" | "agent" — added in Phase 1a). The MemoryEntry public
+ * surface does not declare this field, but providers that track it pass
+ * it through as an excess property; this helper surfaces it explicitly on
+ * the search response so the model (and the context-allocator at render
+ * time) can distinguish `[AGENT-DERIVED]` paraphrases from `[PEER-DERIVED]`
+ * verbatim captures.
+ *
+ * No default fabrication: if the entry has no origin, the field stays
+ * absent and the context-allocator falls back to provider defaults
+ * (Task 8). Other excess properties on the entry are preserved as-is.
+ */
+function serializeEntryWithOrigin(entry: MemoryEntry): MemoryEntry & { origin?: string } {
+  const maybeOrigin = (entry as MemoryEntry & { origin?: unknown }).origin;
+  if (typeof maybeOrigin === "string") {
+    return { ...entry, origin: maybeOrigin };
+  }
+  return entry;
+}
 
 /**
  * Unified trust gate for memory operations. Returns an error string
@@ -176,9 +206,20 @@ export function createMemoryTools(
       const results = await Promise.allSettled(
         candidates.map(async (aug) => {
           const spec = aug.memory! as NamespaceMemoryProvider;
+          const entries = await spec.search(query, { peerId: context.peer?.id });
+          // Phase 1b Task 7: explicit per-entry origin pass-through. Memory
+          // providers may carry an `origin` field on individual entries
+          // (Phase 1a's storage layer added it as an OriginValue) so the
+          // model can distinguish `[AGENT-DERIVED]` paraphrases from
+          // `[PEER-DERIVED]` verbatim peer statements at retrieval time.
+          // We surface the field explicitly rather than relying on JSON
+          // pass-through so a future MemoryEntry refactor can't silently
+          // drop it. We do NOT fabricate a default — if an entry has no
+          // origin, the field stays undefined and the context-allocator
+          // (Task 8) handles fallback at render time.
           return {
             provider: aug.name,
-            entries: await spec.search(query, { peerId: context.peer?.id }),
+            entries: entries.map(serializeEntryWithOrigin),
           };
         }),
       );
