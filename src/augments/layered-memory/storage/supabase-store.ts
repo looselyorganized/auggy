@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { MemoryStore, RetentionClass, StoreEntry, SupabaseStoreConfig } from "./types";
-import type { TrustLevel } from "../../types";
+import type { TrustLevel } from "../../../types";
 
 /**
  * Wider Supabase client interface for layeredMemory.

@@ -48,7 +48,7 @@ export function scaffoldAgent(opts: ScaffoldOptions): string {
   mkdirSync(join(dir, "augments"), { recursive: true });
 
   // Copy built-in filesystem skill if available.
-  const fsSkillSrc = resolve(import.meta.dir, "../augments/filesystem-skill");
+  const fsSkillSrc = resolve(import.meta.dir, "../augments/filesystem/skill");
   if (existsSync(fsSkillSrc)) {
     cpSync(fsSkillSrc, join(dir, "skills", "filesystem"), { recursive: true });
   }

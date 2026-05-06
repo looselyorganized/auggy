@@ -19,10 +19,10 @@ import type {
   NotifyDeliveryResult,
   NotifyDestination,
   ToolExecuteContext,
-} from "../types";
-import { defineTool } from "../helpers";
-import { createWebhookAdapter } from "./notify/adapters/webhook";
-import { createTelegramAdapter } from "./notify/adapters/telegram";
+} from "../../types";
+import { defineTool } from "../../helpers";
+import { createWebhookAdapter } from "./adapters/webhook";
+import { createTelegramAdapter } from "./adapters/telegram";
 
 export interface NotifyAugmentInternalOptions extends NotifyAugmentOptions {
   /** Test-only adapter override. Production code does not pass this. */

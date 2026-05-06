@@ -67,7 +67,7 @@ export async function runAdd(name: string, opts: { config?: string }): Promise<v
 
   // Copy filesystem skill if filesystem was just added.
   if (selected.some((e) => e.type === "filesystem")) {
-    const fsSkillSrc = resolve(import.meta.dir, "../../augments/filesystem-skill");
+    const fsSkillSrc = resolve(import.meta.dir, "../../augments/filesystem/skill");
     if (existsSync(fsSkillSrc)) {
       cpSync(fsSkillSrc, join(agentDir, "skills", "filesystem"), { recursive: true });
     }

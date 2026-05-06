@@ -2,8 +2,8 @@ import { z } from "zod";
 import { readFile, writeFile, readdir, mkdir, rm, realpath, stat, lstat } from "node:fs/promises";
 import { resolve, join, relative, extname, isAbsolute, sep } from "node:path";
 import { Glob } from "bun";
-import type { Augment, ContextBlock } from "../types";
-import { defineTool } from "../helpers";
+import type { Augment, ContextBlock } from "../../types";
+import { defineTool } from "../../helpers";
 
 /**
  * Filesystem augment — scoped, multi-mount file access for Auggy agents.

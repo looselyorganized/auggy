@@ -149,7 +149,7 @@ export async function runCreate(name: string, opts: { dir?: string }): Promise<v
     }
 
     if (augments.some((e) => e.type === "filesystem")) {
-      const fsSkillSrc = resolve(import.meta.dir, "../../augments/filesystem-skill");
+      const fsSkillSrc = resolve(import.meta.dir, "../../augments/filesystem/skill");
       if (existsSync(fsSkillSrc)) {
         cpSync(fsSkillSrc, join(dir, "skills", "filesystem"), { recursive: true });
       }

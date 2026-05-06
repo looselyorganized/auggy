@@ -16,10 +16,10 @@
  */
 
 import { z } from "zod";
-import type { Augment, ContextBlock } from "../types";
-import { defineTool } from "../helpers";
-import { createHttpClient } from "../http";
-import type { HttpClient } from "../http";
+import type { Augment, ContextBlock } from "../../types";
+import { defineTool } from "../../helpers";
+import { createHttpClient } from "../../http";
+import type { HttpClient } from "../../http";
 
 // ---------------------------------------------------------------------------
 // Types

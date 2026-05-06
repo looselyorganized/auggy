@@ -5,7 +5,7 @@ import type {
   ContextPriority,
   ContextPlacement,
   EvictionPolicy,
-} from "../types";
+} from "../../types";
 
 /**
  * Minimal Supabase client interface used by supabaseMemory. Compatible

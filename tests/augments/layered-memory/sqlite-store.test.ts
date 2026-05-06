@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { join } from "node:path";
-import { createSqliteStore } from "@/augments/layered-memory/sqlite-store";
+import { createSqliteStore } from "@/augments/layered-memory/storage/sqlite-store";
 import { createTempDir } from "@tests/fixtures/temp-dir";
-import type { MemoryStore } from "@/augments/layered-memory/types";
+import type { MemoryStore } from "@/augments/layered-memory/storage/types";
 
 describe("SqliteStore", () => {
   let store: MemoryStore;
