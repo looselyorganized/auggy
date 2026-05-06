@@ -29,6 +29,7 @@ import { turnControl, type TurnControlOptions } from "../augments/turn-control";
 import type { Augment, NotifyAugmentOptions, TelegramTransportOptions } from "../types";
 import type { AugmentConfig } from "./types";
 import type { BudgetsAugmentOptions } from "../augments/budgets";
+import { validateBundledSkills } from "./skill-validator";
 
 // ---------------------------------------------------------------------------
 // Path resolution helper
@@ -349,6 +350,12 @@ export async function resolveAugments(
     augment = { ...augment, name: config.name };
     augments.push(augment);
   }
+
+  // Boot-time validation: warn (not error) for any tool-providing augment
+  // whose bundled skill is not mounted at <agent-dir>/skills/<folder>/SKILL.md.
+  // Per ADR-025 Decision 5 + spec §H. Runs after every factory has produced
+  // its tool surface so the discriminator (`tools.length > 0`) is final.
+  validateBundledSkills(configs, augments, agentDir);
 
   return augments;
 }
