@@ -2,27 +2,40 @@
  * Boot-time skill validator.
  *
  * Per ADR-025 Decision 5 + PR α foundation spec §H. After augments are
- * resolved at agent boot, scan: for each augment that exposes tools but
- * lacks a corresponding `<agent-dir>/skills/<augment-folder>/SKILL.md`,
- * emit a one-line warning. Operators see the gap at startup, not in
- * production-failure mode where the model guesses at tool usage.
+ * resolved at agent boot, scan: for each augment that contributes tools
+ * to the model but lacks a corresponding `<agent-dir>/skills/<augment-
+ * folder>/SKILL.md`, emit a one-line warning. Operators see the gap at
+ * startup, not in production-failure mode where the model guesses.
  *
- * Discriminator: `augment.tools.length > 0`. Tool-less augments
- * (fileMemory, supabaseMemory, transports, budgets) intentionally do
- * NOT trigger the warning — they contribute only `context()` blocks
- * or memory providers, no model-callable tools.
+ * Discriminator (model-perspective): an augment contributes tools if EITHER
+ *  (a) `augment.tools.length > 0` — tools declared on the factory return,
+ *  (b) `augment.memory?.owns?.kind === "namespace"` — namespace memory
+ *      provider; the kernel-synthesized memory-bus exposes 5 generic
+ *      tools (memory_read / memory_write / memory_search / memory_list /
+ *      memory_forget — see src/memory/tools.ts) keyed off its prefix.
+ *
+ * The model can't tell where the tools came from; from its perspective
+ * both routes produce model-callable tools that need teaching. The strict
+ * spec wording ("non-empty tools[]") would have missed (b), and (b) is
+ * the most common real case — layered-memory is the default-scaffold
+ * memory augment.
+ *
+ * Tool-less augments (fileMemory + supabaseMemory static providers,
+ * transports, budgets) intentionally do NOT trigger the warning — they
+ * contribute only `context()` blocks or admission gates, no model-
+ * callable tools.
  *
  * Warning, not error. The agent still boots successfully. An opt-out
  * flag is deferred per spec §Decision 7.
- *
- * Note on layered-memory: layeredMemory exposes its tools through the
- * kernel-synthesized memory-bus, NOT through its own `tools[]` array.
- * The strict spec discriminator therefore does not flag a missing
- * layered-memory skill. This is a known gap caught by other paths
- * (the scaffold copy step + manual `auggy add-skill`); broadening the
- * discriminator to memory namespaces is deferred until the gap surfaces
- * in real adopter feedback.
  */
+
+/**
+ * Number of tools the kernel memory-bus synthesizes for a namespace
+ * memory provider. Source: src/memory/tools.ts (memory_read / memory_write
+ * / memory_search / memory_list / memory_forget). If that surface changes,
+ * update this constant — tests asserting the count will catch drift.
+ */
+const NAMESPACE_MEMORY_TOOL_COUNT = 5;
 
 import { statSync } from "node:fs";
 import { join } from "node:path";
@@ -87,7 +100,9 @@ export function validateBundledSkills(
     const aug = augments[i]!;
     const cfg = configs[i]!;
 
-    const toolCount = aug.tools?.length ?? 0;
+    const factoryToolCount = aug.tools?.length ?? 0;
+    const isNamespaceMemory = aug.memory?.owns?.kind === "namespace";
+    const toolCount = factoryToolCount + (isNamespaceMemory ? NAMESPACE_MEMORY_TOOL_COUNT : 0);
     if (toolCount === 0) continue;
 
     // Custom augments (operator-authored) do not have a bundled skill folder

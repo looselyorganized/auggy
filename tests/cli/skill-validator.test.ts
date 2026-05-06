@@ -234,6 +234,63 @@ describe("skill-validator — folder name vs operator name", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Case 8: namespace memory provider (layered-memory) — kernel-synthesized
+// memory-bus tools count too. Operator-perspective: the model gets
+// memory_read / memory_write / memory_search / memory_list / memory_forget
+// regardless of where the tools were factored from. A missing skill is
+// the same UX problem.
+// ---------------------------------------------------------------------------
+
+describe("skill-validator — namespace memory provider validation", () => {
+  test("layered-memory with no skill → warning names augment + memory tool count + remediation", async () => {
+    const configs: AugmentConfig[] = [
+      {
+        name: "memory",
+        type: "layeredMemory",
+        options: {
+          backend: "sqlite",
+          namespace: "test",
+          dbPath: join(TMP, "memory.sqlite"),
+          retentionDays: 90,
+        },
+      },
+    ];
+
+    await resolveAugments(configs, TMP);
+
+    expect(warningCount()).toBe(1);
+    const warnings = allWarnings();
+    expect(warnings).toContain("[augment-resolver]");
+    expect(warnings).toContain('augment "layered-memory"');
+    // 5 kernel-synthesized memory tools (memory_read/write/search/list/forget)
+    expect(warnings).toContain("5 tools");
+    expect(warnings).toContain(join(TMP, "skills", "layered-memory", "SKILL.md"));
+    expect(warnings).toContain("auggy add-skill layered-memory");
+  });
+
+  test("layered-memory WITH skill mounted → silent (no warning)", async () => {
+    writeSkillFile("layered-memory");
+
+    const configs: AugmentConfig[] = [
+      {
+        name: "memory",
+        type: "layeredMemory",
+        options: {
+          backend: "sqlite",
+          namespace: "test",
+          dbPath: join(TMP, "memory.sqlite"),
+          retentionDays: 90,
+        },
+      },
+    ];
+
+    await resolveAugments(configs, TMP);
+
+    expect(warningCount()).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Bonus: idempotence — repeat resolutions produce repeat (consistent) warnings
 // ---------------------------------------------------------------------------
 
