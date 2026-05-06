@@ -9,6 +9,7 @@ import type {
   TransportKernel,
   PeerIdentity,
   OutboundMessage,
+  SchedulerContext,
 } from "./types";
 import { createTokenizer } from "./tokenizer";
 import { generateAgentCard } from "./agent-card";
@@ -183,12 +184,37 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
         .getHistoryManager(threadId)
         .compact(historyBudget, config.compactionStrategy ?? "truncate");
 
-      // Run onTurnEnd hooks (non-blocking, same as transport path)
+      // Run onTurnEnd hooks. Awaited sequentially in declaration order so
+      // that ADR-027's lifecycle ordering guarantee holds — scheduleAfterTurn
+      // must observe a fully-settled onTurnEnd. Errors are caught/logged so
+      // a single failing hook never propagates out of the inject path.
       for (const a of effectiveAugments) {
         if (a.onTurnEnd) {
-          a.onTurnEnd(result).catch((err) => {
+          try {
+            await a.onTurnEnd(result);
+          } catch (err) {
             console.warn(`onTurnEnd hook "${a.name}" failed: ${err}`);
-          });
+          }
+        }
+      }
+
+      // ADR-027: dispatch scheduleAfterTurn for augments that registered it.
+      // SchedulerContext closes over inject (this handle's method) +
+      // getCompletedTranscript (closure-bound to the just-completed turn id;
+      // arbitrary-turnId reads stay kernel-internal at v1.0). Sequential
+      // execution in declaration order per ADR-027 Decision 2; errors are
+      // caught + logged, never propagated — background work is best-effort.
+      const ctx: SchedulerContext = {
+        inject: (t) => handle.inject(t),
+        getCompletedTranscript: async () => null,
+      };
+      for (const a of effectiveAugments) {
+        if (a.scheduleAfterTurn) {
+          try {
+            await a.scheduleAfterTurn(result, ctx);
+          } catch (err) {
+            console.warn(`scheduleAfterTurn hook "${a.name}" threw: ${(err as Error).message}`);
+          }
         }
       }
 
