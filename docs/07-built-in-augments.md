@@ -4,7 +4,7 @@
 
 ## Why these specifically
 
-Nine augments ship with v0.2.0:
+Eleven augments ship in `src/augments/` (plus `webTransport` under `src/transports/`):
 - **`fileMemory`** — file-backed static memory provider
 - **`supabaseMemory`** — Supabase-backed namespace memory provider
 - **`layeredMemory`** — peer-scoped episodic memory with L0–L3 provenance tiers (SQLite-backed)
@@ -12,14 +12,21 @@ Nine augments ship with v0.2.0:
 - **`telegramTransport`** — bidirectional Telegram bot transport
 - **`filesystem`** — multi-mount scoped file access
 - **`webFetch`** — URL fetch with HTML→text rendering
-- **`orgContext`** — read-only org knowledge manifest
+- **`orgContext`** — read-only org knowledge manifest (HTTP or `file://` baseUrl)
 - **`bash`** — scoped shell execution
 - **`budgets`** — per-trust-level turn budgets + dollar ceiling
 - **`notify`** — outbound messaging to operator-configured destinations
+- **`turnControl`** — `request_input` for hand-off prompts
 
-The selection is deliberate. Together they cover: identity, episodic memory, web chat, Telegram chat, filesystem access, external knowledge, shell execution, cost management, and operator alerting. Anything beyond this (model routing, evals, retrieval over special data sources) belongs in application-specific augments that live in the application's repo, not in Auggy itself.
+The selection is deliberate. Together they cover: identity, episodic memory, web chat, Telegram chat, filesystem access, external knowledge, shell execution, cost management, operator alerting, and turn-end input requests. Anything beyond this (model routing, evals, retrieval over special data sources) belongs in application-specific augments that live in the application's repo, not in Auggy itself.
 
 The principle: Auggy ships the *contracts* (`MemoryProviderSpec`, `TransportSpec`) and a small set of *reference implementations* that prove the contracts work. Domain-specific augments are the user's responsibility.
+
+### Augment-as-folder + bundled-skill convention
+
+Every built-in augment lives at `src/augments/<name>/index.ts` (folder shape, per [ADR-025](../../docs/solutions/architecture/adr-025-augment-folder-and-skill-bundling.md)). Augments that contribute model-callable tools ship a bundled `<name>/skill/SKILL.md` colocated in the same folder; `auggy create` and `auggy add` copy it to `<agent-dir>/skills/<name>/SKILL.md`, and `auggy add-skill <name>` installs it retroactively. A boot-time validator warns at agent startup if a tool-providing augment is mounted without a skill — applies to both factory-declared `tools[]` and namespace memory providers (kernel-synthesized `memory_*` tools). Tool-less augments (transports, static memory providers, admission gates) skip the skill folder.
+
+Augments shipping a bundled skill at v1.0: `filesystem`, `layeredMemory`, `webFetch`, `orgContext`, `bash`, `notify`, `turnControl`.
 
 ## `fileMemory` — File-backed static memory provider
 
@@ -451,7 +458,7 @@ A multi-mount filesystem augment following the Docker volumes model. The operato
 
 Two primary use cases:
 
-**1. Skill folder access.** The agent needs to read SKILL.md files and their supporting references on demand. This is the **progressive disclosure** pattern described in [11-skills.md](./11-skills.md) — the model reads skills via `fs_read` when it decides the conversation needs guidance. The filesystem augment IS the skill loader.
+**1. Skill folder access.** The agent needs to read SKILL.md files and their supporting references on demand. This is **progressive disclosure** — the model reads skills via `fs_read` when it decides the conversation needs guidance. The filesystem augment IS the skill loader. Bundled skill folders for each tool-providing augment are copied into `<agent-dir>/skills/<augment-name>/` at scaffold time (see ADR-025).
 
 **2. Agent workspace.** The agent needs to create, read, and manage files as part of its work — drafts, notes, reports, intermediate outputs.
 
@@ -509,18 +516,18 @@ Three permission tiers: **read-only** (default) → **writable** → **writable 
 
 **Filesystem mount paths must not overlap with `fileMemory` source paths.** If the same file is owned by `fileMemory` (cached at boot) and accessible via a writable filesystem mount, writes through the filesystem augment won't invalidate `fileMemory`'s cache, causing stale context. This is an operator responsibility in v1.
 
-### Ships with a skill folder
+### Bundled skill
 
-The filesystem augment is the first augment to ship with its own SKILL.md + references:
+The filesystem augment ships a bundled skill folder colocated under its augment directory:
 
 ```
-src/augments/filesystem-skill/
+src/augments/filesystem/skill/
 ├── SKILL.md                        # teaches when/how to use the 6 fs tools
 └── references/
     └── mount-permissions.md        # full permission matrix + security details
 ```
 
-This skill is loaded by the model on demand via `fs_read`, following the progressive disclosure pattern.
+Copied into `<agent-dir>/skills/filesystem/` at `auggy create`/`auggy add` time; install retroactively with `auggy add-skill filesystem`. The model loads it on demand via `fs_read`.
 
 ## `notify` — Outbound messaging to operator-configured destinations
 
@@ -576,6 +583,10 @@ Creator-class senders (and null peers / scheduled triggers) bypass all rate limi
 
 For the full operator reference, see [docs/13-notify.md](./13-notify.md).
 
+### Bundled skill
+
+This augment ships `src/augments/notify/skill/SKILL.md` with model teaching on the `notify` tool — destination semantics, when to escalate vs answer in-thread, dedup awareness. Copied into `<agent-dir>/skills/notify/SKILL.md` at `auggy create`/`auggy add` time; install retroactively with `auggy add-skill notify`.
+
 ## `orgContext` — Read-only org knowledge manifest
 
 ```ts
@@ -612,16 +623,24 @@ The manifest lists all available paths. The agent reads the descriptions and dec
 
 ```ts
 export interface OrgContextOptions {
-  baseUrl: string;        // Base URL of the org API (e.g. "http://localhost:3000")
-  token?: string;         // Optional auth token for the org API
+  baseUrl: string;        // Base URL: "http://...", "https://...", or "file://<dir>"
+  token?: string;         // Optional auth token (HTTP only)
   cacheTtlMs?: number;    // Manifest cache TTL in ms. Default 1 hour.
   client?: HttpClient;    // Optional pre-built HTTP client (for testing)
 }
 ```
 
+### `file://` baseUrl
+
+`baseUrl` accepts a `file://` URL (relative or absolute) for local-filesystem-backed manifests. `auggy create` scaffolds an `org-context/` example dir + `baseUrl: file://./org-context` so an adopter has a working orgContext config without standing up an HTTP server. Manifest fetch and `org_fetch` resolve paths under the configured base directory; realpath validation rejects any path that escapes (mirrors the filesystem augment's defense). HTTP/HTTPS baseUrls retain their original semantics.
+
 ### Boot behavior
 
-Boot is graceful: if the org API is unreachable at startup, the agent starts without org context and logs a warning. `org_fetch` will return clear error messages until the API becomes reachable. This prevents a temporarily unavailable knowledge API from taking down a running agent.
+Boot is graceful: if the org API is unreachable at startup (HTTP) or the configured directory is missing (`file://`), the agent starts without org context and logs a warning. `org_fetch` will return clear error messages until the API becomes reachable. This prevents a temporarily unavailable knowledge API from taking down a running agent.
+
+### Bundled skill
+
+This augment ships `src/augments/org-context/skill/SKILL.md` with model teaching on the `org_fetch` tool — manifest semantics, when to fetch endpoints, progressive-disclosure rationale. Copied into `<agent-dir>/skills/org-context/SKILL.md` at `auggy create`/`auggy add` time; install retroactively with `auggy add-skill org-context`.
 
 ## `telegramTransport` — Bidirectional Telegram bot transport
 
@@ -705,6 +724,10 @@ Rejected URLs throw from the http client and are caught by the `web_fetch` tool,
 
 The SSRF filter lives in `src/http.ts` as the exported helper `rejectUnsafeUrl(url)` so other augments can adopt it with `createHttpClient({ rejectUnsafeUrls: true })`.
 
+### Bundled skill
+
+This augment ships `src/augments/web-fetch/skill/SKILL.md` with model teaching on the `web_fetch` tool — when to fetch vs ask, prompt-aware summarization, blocked-URL handling. Copied into `<agent-dir>/skills/web-fetch/SKILL.md` at `auggy create`/`auggy add` time; install retroactively with `auggy add-skill web-fetch`.
+
 ## `bash` — Scoped shell execution
 
 ```ts
@@ -764,6 +787,10 @@ Passing `perTrustLevel: {}` would expose bash to everyone. Operators are respons
 |------|-------------|
 | `onBoot` | Verifies `cwd` exists. Throws if missing (to catch misconfiguration early). |
 | `onShutdown` | None. |
+
+### Bundled skill
+
+This augment ships `src/augments/bash/skill/SKILL.md` with model teaching on `shell_exec` and `run_script` — allowlist semantics, risk-tier framing, and per-trust-level defaults. Copied into `<agent-dir>/skills/bash/SKILL.md` at `auggy create`/`auggy add` time; install retroactively with `auggy add-skill bash`.
 
 ## `budgets` — Per-trust-level turn budgets
 

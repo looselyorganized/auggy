@@ -7,8 +7,8 @@ Thanks for taking a look. This document covers what you need to know to land a c
 Read these in order:
 
 1. [`README.md`](README.md) — what Auggy is and how to run an agent.
-2. [`docs/01-philosophy.md`](docs/01-philosophy.md) — the design constraints. Most "is this a good change?" questions are answered here.
-3. [`docs/02-architecture-overview.md`](docs/02-architecture-overview.md) — module map and turn data-flow.
+2. [`docs/02-architecture-overview.md`](docs/02-architecture-overview.md) — module map and turn data-flow.
+3. [`docs/07-built-in-augments.md`](docs/07-built-in-augments.md) — what each built-in augment does and the bundled-skill convention.
 4. [`CLAUDE.md`](CLAUDE.md) — repo rules. Particularly the **kernel-is-finished** rule.
 
 ## Development setup
@@ -25,7 +25,7 @@ bun install
 bun link                 # makes `auggy` available globally
 
 # 3. Tests + typecheck
-bun test                 # 863+ tests across 60+ files
+bun test                 # 1279 tests across 100 files
 bunx tsc --noEmit        # must be clean
 
 # 4. Run the demo agent (requires ANTHROPIC_API_KEY)
@@ -52,6 +52,25 @@ Required versions: **Bun ≥ 1.2.0**, **TypeScript ≥ 5**.
 
 If you've read the rule list in [CLAUDE.md](CLAUDE.md), you've seen all of this.
 
+## Bundled skills convention
+
+Per [ADR-025](https://github.com/looselyorganized/lo/blob/main/docs/solutions/architecture/adr-025-augment-folder-and-skill-bundling.md), every built-in augment is a folder under `src/augments/<name>/`. If your augment contributes model-callable tools, ship a bundled skill alongside the factory:
+
+```
+src/augments/<name>/
+├── index.ts                # the augment factory
+└── skill/
+    ├── SKILL.md            # YAML frontmatter (name, description) + body
+    └── references/         # optional deep docs the model loads on demand
+```
+
+- **Frontmatter is required** (`name`, `description`) — matches the [agentskills.io](https://agentskills.io/home) OSS convention so the skill is byte-for-byte interchangeable with third-party skill folders.
+- **SKILL.md content:** tool inventory + when-to-use guidance + common pitfalls. Roughly 100–200 lines per skill is the norm — `src/augments/filesystem/skill/SKILL.md` is the template shape.
+- **Operator-friendly framing.** No internal type names, kernel hooks, or factory function names exposed in skill content. Identity.md security rule 3 ("don't disclose internal architecture") applies — skills get loaded by the model and must read like operator docs, not implementation notes.
+- **Scaffold copies it.** `auggy create` and `auggy add` walk the augment list and copy `src/augments/<name>/skill/` into `<agent-dir>/skills/<name>/`. `auggy add-skill <name>` re-installs it post-scaffold.
+- **Boot-time validator.** `src/cli/skill-validator.ts` warns at agent startup if a tool-providing augment is mounted without a skill — applies to factory-declared `tools[]` AND namespace memory providers (kernel-synthesized `memory_*` tools).
+- **Tool-less augments may skip the skill folder.** Memory providers without tools, transports, and admission gates contribute only `context()` blocks — no model-callable tools, no skill required.
+
 ## Commit style
 
 We use [Conventional Commits](https://www.conventionalcommits.org/). The recent log is the source of truth for examples:
@@ -72,7 +91,7 @@ Before requesting review:
 
 - [ ] `bun test` passes (all 1100+).
 - [ ] `bunx tsc --noEmit` is clean.
-- [ ] If you changed behavior documented in `docs/01-12-*.md`, the doc is updated in the same PR.
+- [ ] If you changed behavior documented in `docs/`, the doc is updated in the same PR.
 - [ ] If the change crosses a public surface (new augment, new tool, new engine), a test exercises it.
 - [ ] Commit messages follow the convention above.
 
