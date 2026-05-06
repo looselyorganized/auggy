@@ -15,6 +15,7 @@
  */
 
 import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { fileMemory } from "../augments/file-memory";
 import { supabaseMemory } from "../augments/supabase-memory";
 import { filesystem } from "../augments/filesystem";
@@ -36,6 +37,53 @@ import type { BudgetsAugmentOptions } from "../augments/budgets";
 function resolvePath(path: string, agentDir: string): string {
   if (path.startsWith("/")) return path;
   return resolve(agentDir, path);
+}
+
+/**
+ * Resolve an orgContext baseUrl, normalizing relative `file://...` shapes
+ * against the agent dir so the augment factory only ever sees absolute
+ * file:// URLs.
+ *
+ * Accepted inputs:
+ *   - `http://...` / `https://...` — passed through unchanged
+ *   - `file:///abs/path`           — passed through unchanged (already absolute)
+ *   - `file://./relative/path`     — resolved against agentDir, returned as
+ *     an absolute file:// URL via `pathToFileURL`
+ *   - `file://relative/path`       — same; tolerated for ergonomics. The two-
+ *     slash relative form mirrors how operators tend to write `file://`-style
+ *     URLs in YAML config (`file://./org-context`).
+ *
+ * Rationale: keeping the relative→absolute conversion in the resolver avoids
+ * threading an `agentDir` construction parameter through to the augment
+ * factory (per ADR-024 — no new kernel surface; per the org-context augment's
+ * design — the factory accepts only absolute file:// URLs).
+ */
+function resolveOrgContextBaseUrl(baseUrl: string, agentDir: string): string {
+  if (!/^file:/i.test(baseUrl)) return baseUrl;
+
+  // Distinguishing absolute vs relative after stripping the `file:` scheme
+  // is ambiguous — both forms can produce a leading slash. So we count
+  // leading slashes BEFORE stripping:
+  //   - `file:///abs/path` (three slashes) — POSIX-form absolute URL
+  //   - `file:/abs/path`   (one slash, no `//`) — uncommon but valid absolute
+  //   - `file://./rel`     (two slashes + `.`) — relative; this codebase's
+  //     convention for "relative to agent dir"
+  //   - `file://rel/path`  (two slashes, no `.`) — also relative; tolerated
+  //     for ergonomics (mirrors how operators write the URL in YAML config)
+  const afterScheme = baseUrl.replace(/^file:/i, "");
+  const isAbsoluteFileUrl =
+    afterScheme.startsWith("///") || (afterScheme.startsWith("/") && !afterScheme.startsWith("//"));
+
+  if (isAbsoluteFileUrl) {
+    // Already absolute — pass through unchanged.
+    return baseUrl;
+  }
+
+  // Relative form. Compute the absolute path against agentDir and return as a
+  // proper file:// URL.
+  const relPath = afterScheme.replace(/^\/+/, "");
+  const absPath = resolve(agentDir, relPath);
+  return pathToFileURL(absPath).href;
 }
 
 // ---------------------------------------------------------------------------
@@ -257,7 +305,7 @@ export async function resolveAugments(
         break;
       case "orgContext":
         augment = orgContext({
-          baseUrl: opts.baseUrl as string,
+          baseUrl: resolveOrgContextBaseUrl(opts.baseUrl as string, agentDir),
           token: opts.token as string | undefined,
           cacheTtlMs: opts.cacheTtlMs as number | undefined,
         });
