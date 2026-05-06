@@ -80,6 +80,33 @@ export function createSqliteStore(config: SqliteStoreConfig): MemoryStore {
     db.run(stmt);
   }
 
+  // Phase 2 migration: add structured-fact + provenance columns idempotently.
+  // PRAGMA table_info detects which columns already exist; ALTER TABLE adds
+  // only the absent ones. Existing rows survive with NULLs in the new columns.
+  // is_verbatim + retention_class are already in SCHEMA_STATEMENTS above;
+  // they appear in the list so the migration is self-documenting and safe to
+  // re-run if applied to a DB that predates them (legacy schema path).
+  function ensureMigrations(): void {
+    const cols = db.prepare("PRAGMA table_info(entries)").all() as { name: string }[];
+    const colNames = new Set(cols.map((c) => c.name));
+
+    const additions: Array<{ name: string; ddl: string }> = [
+      { name: "subject", ddl: "ALTER TABLE entries ADD COLUMN subject TEXT" },
+      { name: "predicate", ddl: "ALTER TABLE entries ADD COLUMN predicate TEXT" },
+      { name: "object", ddl: "ALTER TABLE entries ADD COLUMN object TEXT" },
+      { name: "source_turn_id", ddl: "ALTER TABLE entries ADD COLUMN source_turn_id TEXT" },
+      { name: "origin", ddl: "ALTER TABLE entries ADD COLUMN origin TEXT" },
+      { name: "is_verbatim", ddl: "ALTER TABLE entries ADD COLUMN is_verbatim INTEGER" },
+      { name: "retention_class", ddl: "ALTER TABLE entries ADD COLUMN retention_class TEXT" },
+    ];
+
+    for (const { name, ddl } of additions) {
+      if (!colNames.has(name)) db.run(ddl);
+    }
+  }
+
+  ensureMigrations();
+
   const retentionMs = config.retentionDays * 24 * 60 * 60 * 1000;
 
   // Pre-compiled statements live as long as the connection.

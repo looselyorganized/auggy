@@ -3,6 +3,8 @@ import type { SupabaseLikeClient } from "../../supabase-memory";
 
 export type RetentionClass = "operational" | "lesson";
 
+export type OriginValue = "operator" | "peer-derived" | "agent-derived" | "agent";
+
 export interface StoreEntry {
   id: string;
   label: string;
@@ -14,6 +16,12 @@ export interface StoreEntry {
   retentionClass: RetentionClass;
   isVerbatim: boolean;
   expiresAt: number | null;
+  // Phase 2 — structured-fact + provenance fields (all optional; nullable in storage)
+  subject?: string;
+  predicate?: string;
+  object?: string;
+  sourceTurnId?: string;
+  origin?: OriginValue;
 }
 
 export interface MemoryStore {
