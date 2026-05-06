@@ -226,6 +226,120 @@ function validateBudgetsOptions(
 }
 
 /**
+ * Valid extraction-frequency values for layered-memory's autoSave block.
+ * Aligned with `ExtractionFrequency` in
+ * `src/augments/layered-memory/extractor/frequency.ts` — kept duplicated
+ * here to avoid pulling augment runtime imports into the CLI parser.
+ */
+const VALID_EXTRACTION_FREQUENCIES = new Set([
+  "every-turn",
+  "every-N-turns",
+  "session-end-only",
+  "never",
+]);
+
+/**
+ * Validate the per-trust-level extractionFrequency map. Rejects flat
+ * `"public.recognized"`-style keys (per Codex 2nd-pass High-2 — the
+ * runtime taxonomy is two fields, never a colon/dot-joined string) and
+ * unknown frequency values. The nested shape mirrors Decision 3 of the
+ * memorist design.
+ */
+function validateExtractionFrequency(ef: unknown, prefix: string, errors: string[]): void {
+  if (ef === null || typeof ef !== "object" || Array.isArray(ef)) {
+    errors.push(`${prefix}: must be an object`);
+    return;
+  }
+  const e = ef as Record<string, unknown>;
+
+  // Reject flat keys like "public.recognized" — they look like nested
+  // accessors but the runtime trust enum has two distinct fields. A flat
+  // key would silently fall through validation since the code below only
+  // checks the recognized top-level keys.
+  for (const key of Object.keys(e)) {
+    if (key.includes(".")) {
+      errors.push(
+        `${prefix}: flat key "${key}" not supported; use nested shape (public: { recognized: ..., anonymous: ... })`,
+      );
+    }
+  }
+
+  for (const k of ["creator", "agent"] as const) {
+    if (e[k] !== undefined && !VALID_EXTRACTION_FREQUENCIES.has(e[k] as string)) {
+      errors.push(
+        `${prefix}.${k}: invalid frequency "${String(e[k])}" (expected one of: ${[...VALID_EXTRACTION_FREQUENCIES].join(", ")})`,
+      );
+    }
+  }
+
+  if (e.public !== undefined) {
+    if (e.public === null || typeof e.public !== "object" || Array.isArray(e.public)) {
+      errors.push(`${prefix}.public: must be an object with recognized + anonymous keys`);
+    } else {
+      const p = e.public as Record<string, unknown>;
+      for (const sub of ["recognized", "anonymous"] as const) {
+        if (p[sub] !== undefined && !VALID_EXTRACTION_FREQUENCIES.has(p[sub] as string)) {
+          errors.push(
+            `${prefix}.public.${sub}: invalid frequency "${String(p[sub])}" (expected one of: ${[...VALID_EXTRACTION_FREQUENCIES].join(", ")})`,
+          );
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Validate the options block for a layeredMemory augment.
+ *
+ * Currently scoped to the optional `autoSave` block (PR β / ADR-018
+ * Phase 2). Other layered-memory options (backend, namespace, dbPath,
+ * retentionDays) are validated only by the augment factory at boot —
+ * adding parser-level checks for them is out of PR β's scope.
+ */
+function validateLayeredMemoryOptions(
+  opts: Record<string, unknown>,
+  prefix: string,
+  errors: string[],
+): void {
+  if (opts.autoSave === undefined) return;
+  if (opts.autoSave === null || typeof opts.autoSave !== "object" || Array.isArray(opts.autoSave)) {
+    errors.push(`${prefix}.options.autoSave: must be an object`);
+    return;
+  }
+  const a = opts.autoSave as Record<string, unknown>;
+
+  if (a.enabled !== undefined && typeof a.enabled !== "boolean") {
+    errors.push(`${prefix}.options.autoSave.enabled: must be a boolean`);
+  }
+  if (a.everyNTurns !== undefined) {
+    if (typeof a.everyNTurns !== "number" || a.everyNTurns <= 0) {
+      errors.push(`${prefix}.options.autoSave.everyNTurns: must be a positive number`);
+    }
+  }
+  if (a.confidenceThreshold !== undefined) {
+    if (
+      typeof a.confidenceThreshold !== "number" ||
+      a.confidenceThreshold < 0 ||
+      a.confidenceThreshold > 1
+    ) {
+      errors.push(
+        `${prefix}.options.autoSave.confidenceThreshold: must be a number between 0 and 1`,
+      );
+    }
+  }
+  if (a.promptTemplate !== undefined && typeof a.promptTemplate !== "string") {
+    errors.push(`${prefix}.options.autoSave.promptTemplate: must be a string (path to file)`);
+  }
+  if (a.extractionFrequency !== undefined) {
+    validateExtractionFrequency(
+      a.extractionFrequency,
+      `${prefix}.options.autoSave.extractionFrequency`,
+      errors,
+    );
+  }
+}
+
+/**
  * Validate the options block for a notify augment.
  */
 function validateNotifyOptions(
@@ -635,6 +749,9 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
       } else if (aug.type === "telegramTransport") {
         const tgOpts = (aug.options ?? {}) as Record<string, unknown>;
         validateTelegramTransportOptions(tgOpts, `${prefix}.options`, errors);
+      } else if (aug.type === "layeredMemory") {
+        const lmOpts = (aug.options ?? {}) as Record<string, unknown>;
+        validateLayeredMemoryOptions(lmOpts, prefix, errors);
       }
     }
   }
