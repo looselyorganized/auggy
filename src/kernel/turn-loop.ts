@@ -412,6 +412,110 @@ export function createTurnLoop(opts: {
         taskId: trigger.taskId,
       });
 
+      // ADR-027 Decision 5: internal-trigger handler dispatch.
+      // When the trigger type is "internal", walk the augment list in
+      // declaration order and offer the trigger to each augment's
+      // handleInternalTurn. The first non-null return owns the turn —
+      // its TurnResult replaces the standard inference loop's output.
+      // The handler-supplied trace.inferenceSteps[] are merged into the
+      // kernel trace so runCostCommit aggregates them and turnGate.commit
+      // observes the full priced/unpriced cost (this is the path that
+      // closes the cost-attribution gap Codex Critical-2 flagged for
+      // PR β's option-(b) inline-extraction shortcut).
+      //
+      // If no handler claims, fall through to the standard inference loop.
+      // This preserves the existing behavior where an internal trigger
+      // with no augment-side handler runs through the normal model-engine
+      // path — useful for kernel-driven internal events that need
+      // lifecycle/budgets but no augment-specific execution.
+      if (trigger.type === "internal") {
+        for (const aug of augments) {
+          if (!aug.handleInternalTurn) continue;
+          let handlerResult: TurnResult | null;
+          try {
+            handlerResult = await aug.handleInternalTurn(trigger, {
+              threadId,
+              peer,
+            });
+          } catch (err) {
+            // Handler threw — surface as a failed turn so the augment
+            // author can debug, and so cost-commit still fires (the
+            // handler may have already incurred LLM spend before throwing).
+            emitEvent({
+              kind: "run_error",
+              turnId: trigger.turnId,
+              message: err instanceof Error ? err.message : String(err),
+              source: aug.name,
+            });
+            emitEvent({
+              kind: "run_finished",
+              turnId: trigger.turnId,
+              status: "failed",
+            });
+            traceEmitter.finalize(trace);
+            await runCostCommit();
+            recordTurnSnapshot();
+            return {
+              turnId: trigger.turnId,
+              success: false,
+              status: "failed",
+              toolCalls: toolCallRecords,
+              trace,
+              error: {
+                message: err instanceof Error ? err.message : String(err),
+                source: aug.name,
+              },
+            };
+          }
+          if (handlerResult === null || handlerResult === undefined) {
+            // Augment did not claim — try the next handler.
+            continue;
+          }
+          // Handler claimed. Merge its inference-step costs into the
+          // kernel trace so runCostCommit observes them. Other trace
+          // fields (turnId, threadId, trigger metadata, timestamps)
+          // stay kernel-authoritative; handler-supplied artifacts
+          // (response, toolCalls, status) flow through to the caller.
+          for (const step of handlerResult.trace?.inferenceSteps ?? []) {
+            traceEmitter.recordInference(trace, step);
+          }
+          // Forward kernel events for run_finished — the handler returned
+          // a complete result; the transport-side observer needs a
+          // close-of-stream event regardless of whether the handler
+          // emitted any text.
+          emitEvent({
+            kind: "run_finished",
+            turnId: trigger.turnId,
+            status: handlerResult.status,
+          });
+          traceEmitter.finalize(trace);
+          await runCostCommit();
+          // Record any handler-supplied transcript text into the snapshot
+          // so SchedulerContext.getCompletedTranscript sees it.
+          if (handlerResult.response?.parts) {
+            for (const part of handlerResult.response.parts) {
+              if (part.kind === "text") {
+                transcriptParts.push(part);
+              }
+            }
+          }
+          recordTurnSnapshot();
+          return {
+            turnId: trigger.turnId,
+            success: handlerResult.success,
+            status: handlerResult.status,
+            response: handlerResult.response,
+            responses: handlerResult.responses,
+            errorResponse: handlerResult.errorResponse,
+            toolCalls: handlerResult.toolCalls ?? toolCallRecords,
+            trace,
+            error: handlerResult.error,
+            errorClass: handlerResult.errorClass,
+          };
+        }
+        // No handler claimed; fall through to the standard inference loop.
+      }
+
       // Run augment context pipeline
       const contextBlocks: ContextBlock[] = [];
       for (const aug of augments) {

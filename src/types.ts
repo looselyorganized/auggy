@@ -361,6 +361,17 @@ export interface SchedulerContext {
   getCompletedTranscript(): Promise<Transcript | null>;
 }
 
+/**
+ * Context handed to `Augment.handleInternalTurn` (ADR-027 Decision 5).
+ * Exposes the kernel-resolved threadId + peer for the internal turn so
+ * the handler can propagate them when writing to memory or recording
+ * side-effects.
+ */
+export interface InternalTurnContext {
+  threadId: string;
+  peer: PeerIdentity | null;
+}
+
 // === Kernel Events (internal — emitted by turn loop, consumed by transports) ===
 
 export type KernelEvent =
@@ -684,6 +695,37 @@ export interface Augment {
    * declaration order (ADR-027 Decision 2).
    */
   scheduleAfterTurn?: (result: TurnResult, ctx: SchedulerContext) => Promise<void>;
+  /**
+   * ADR-027 Decision 5: internal-trigger handler dispatch. When the
+   * kernel admits a turn whose `trigger.type === "internal"`, the
+   * turn-loop walks the augment list in declaration order and calls
+   * each augment's `handleInternalTurn` (if present) with the trigger.
+   * Augments that do not recognize the trigger MUST return null —
+   * dispatch then continues to the next augment. The first augment to
+   * return a non-null TurnResult owns the turn; the standard
+   * model-engine + tool-execution path is bypassed and the returned
+   * result is the turn's outcome.
+   *
+   * Augments use trigger.source as the authoritative routing key
+   * (e.g. `"layered-memory.autoSave"`). Augments emitting and consuming
+   * triggers SHOULD use a dotted prefix matching their augment name to
+   * avoid cross-augment collisions.
+   *
+   * The handler runs WITHIN the admitted turn — turn-gate prepare /
+   * confirm, onTurnStart, onTurnEnd, scheduleAfterTurn, and history
+   * recording all fire as for any standard turn. The handler is
+   * responsible for any LLM call its work needs; cost flows through
+   * `runCostCommit` via the standard trace pipeline (push priced
+   * inference steps onto `TurnResult.trace.inferenceSteps[]`).
+   *
+   * Augment authors MUST guard against re-entry — a handler should
+   * never synthesize a trigger that re-routes back to itself during
+   * the same execution.
+   */
+  handleInternalTurn?: (
+    trigger: TurnTrigger,
+    ctx: InternalTurnContext,
+  ) => Promise<TurnResult | null>;
   /**
    * Pre-dispatch admission gate. Kernel calls prepare/confirm/rollback
    * before executing the turn. See TurnGateProvider for the 2PC contract.
