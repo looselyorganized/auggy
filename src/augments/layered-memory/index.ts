@@ -394,10 +394,13 @@ export async function layeredMemory(opts: LayeredMemoryOptions): Promise<Augment
 
   // Auto-save state (per-augment-instance — process-local). The buffer
   // accumulates session-end-only transcripts; turnIndexes drives the
-  // every-N-turns dispatcher.
+  // every-N-turns dispatcher; threadPeerHistory tracks the most-recent
+  // peerId observed on each threadId so the scheduler can detect an
+  // anonymous→recognized promotion (Decision 5 of the memorist design).
   const autoSaveEnabled = opts.autoSave?.enabled ?? true;
   const buffer: ExtractionBuffer = createBuffer();
   const turnIndexes = new Map<string, number>();
+  const threadPeerHistory = new Map<string, string>();
   const promptTemplate = autoSaveEnabled ? loadPromptTemplate(opts.autoSave?.promptTemplate) : null;
   if (autoSaveEnabled && promptTemplate === null) {
     console.warn(
@@ -466,6 +469,83 @@ export async function layeredMemory(opts: LayeredMemoryOptions): Promise<Augment
   // "does not support reading by label", which is the desired behavior.
 
   /**
+   * Detect that an anonymous→recognized promotion has just happened on
+   * `threadId` and, if so, flush the buffered anonymous-bound
+   * transcripts by injecting an extraction trigger bound to the OLD
+   * anonymous peer-id. Per Decision 5 of the memorist design: facts
+   * extracted from anonymous-bound transcripts must land under the OLD
+   * `anon-<threadId>` peer-id namespace; the recognized peer's own
+   * subsequent turns auto-save under the NEW peer-id.
+   *
+   * The detection rule is:
+   *   - the previously-observed peerId for this threadId is `anon-<threadId>`,
+   *   - the current peerId is different, AND
+   *   - there are buffered transcripts under the prior anonymous peerId.
+   *
+   * Best-effort. ctx.inject failures are caught and logged; the buffered
+   * transcripts are dropped on failure (the prior identity has no durable
+   * binding the agent can return to — see spec table risk row).
+   */
+  async function maybeFlushOnPromotion(
+    threadId: string,
+    currentPeerId: string,
+    ctx: SchedulerContext,
+  ): Promise<void> {
+    const priorPeerId = threadPeerHistory.get(threadId);
+    if (!priorPeerId) return; // first turn on this thread
+    if (priorPeerId === currentPeerId) return; // same peer, no promotion
+    if (priorPeerId !== `anon-${threadId}`) return; // not an anonymous→other transition
+    const buffered = buffer.flush(priorPeerId);
+    if (buffered.length === 0) return; // nothing to flush
+    if (!extractionEngine || !promptTemplate) return; // can't extract
+
+    // Synthesize a single combined transcript from the buffered turns
+    // so one extraction call covers the whole anonymous batch (per
+    // session-end-only semantics). The flush's source turnId is the
+    // last buffered turn's id — that's the most recent context the
+    // anonymous peer contributed before promotion.
+    const last = buffered[buffered.length - 1];
+    if (!last) return;
+    const combinedParts = buffered.flatMap((t) => t.parts);
+    const combinedTranscript: Transcript = {
+      turnId: last.turnId,
+      threadId: last.threadId,
+      peer: last.peer,
+      parts: combinedParts,
+      toolCalls: buffered.flatMap((t) => t.toolCalls),
+      startedAt: buffered[0]?.startedAt ?? last.startedAt,
+      endedAt: last.endedAt,
+    };
+
+    const flushSourceTurnId = last.turnId;
+    const flushPeer = last.peer;
+    const payload: AutoSaveTriggerPayload = {
+      transcript: combinedTranscript,
+      sourceTurnId: flushSourceTurnId,
+      promptTemplate,
+      confidenceThreshold,
+      prefix,
+      peerId: priorPeerId,
+    };
+    const trigger: TurnTrigger = {
+      type: "internal",
+      turnId: `auto-save-flush-${priorPeerId}-${flushSourceTurnId}`,
+      threadId,
+      timestamp: Date.now(),
+      source: AUTO_SAVE_TRIGGER_SOURCE,
+      peer: flushPeer,
+      payload,
+    };
+    try {
+      await ctx.inject(trigger);
+    } catch (err) {
+      console.warn(
+        `[layered-memory.autoSave] promotion-flush ctx.inject failed for prior peer=${priorPeerId}: ${(err as Error).message}`,
+      );
+    }
+  }
+
+  /**
    * Post-turn auto-save dispatcher. ADR-027 delivers `result` + `ctx`
    * after every turn (including the extraction turns this augment
    * itself injects — those are skipped by `isAutoSaveTurn` to prevent
@@ -477,6 +557,13 @@ export async function layeredMemory(opts: LayeredMemoryOptions): Promise<Augment
    * inside the admitted turn so cost flows through `turnGate.commit`.
    * Errors during inject are caught and logged — best-effort per
    * ADR-027 Decision 2.
+   *
+   * Decision 5 (anonymous→recognized promotion): before applying the
+   * standard frequency dispatch, check whether the just-completed turn's
+   * peerId differs from the prior peerId for the same threadId AND the
+   * prior peerId was the anonymous form (`anon-<threadId>`). If so,
+   * inject a one-off extraction-flush trigger bound to the OLD
+   * anonymous peer so buffered facts land under the prior identity.
    */
   async function scheduleAfterTurn(result: TurnResult, ctx: SchedulerContext): Promise<void> {
     if (!autoSaveEnabled) return;
@@ -491,6 +578,17 @@ export async function layeredMemory(opts: LayeredMemoryOptions): Promise<Augment
     if (!transcript.peer) return; // no peer, no scoped namespace to write under
 
     const peerId = transcript.peer.id;
+    const threadId = transcript.threadId;
+
+    // Decision 5: detect anonymous→recognized promotion and flush
+    // anonymous-bound buffer to the OLD peer-id BEFORE we apply the
+    // current peer's cadence.
+    await maybeFlushOnPromotion(threadId, peerId, ctx);
+
+    // Update thread→peer history AFTER promotion detection so the
+    // detector compares against the prior turn's identity.
+    threadPeerHistory.set(threadId, peerId);
+
     const turnIndex = turnIndexes.get(peerId) ?? 0;
     turnIndexes.set(peerId, turnIndex + 1);
 
