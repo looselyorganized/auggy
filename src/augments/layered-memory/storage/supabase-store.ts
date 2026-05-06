@@ -5,6 +5,7 @@ import type {
   RetentionClass,
   StoreEntry,
   SupabaseStoreConfig,
+  WriteAutoSavedArgs,
 } from "./types";
 import type { TrustLevel } from "../../../types";
 
@@ -200,6 +201,49 @@ export function createSupabaseStore(
     return 0;
   }
 
+  // Internal-to-layered-memory write path used by the extractor. See
+  // sqlite-store's writeAutoSavedEntry for the full contract; the
+  // Supabase implementation mirrors it: enforce namespace prefix,
+  // hardcode origin='agent-derived', persist the structured-fact +
+  // provenance fields. NOT exposed on any augment-public surface.
+  async function writeAutoSavedEntry(args: WriteAutoSavedArgs): Promise<void> {
+    if (!config.namespace) {
+      throw new Error(
+        "writeAutoSavedEntry: store has no namespace configured; auto-save requires namespace-prefix discipline",
+      );
+    }
+    const prefix = config.namespace.endsWith(":") ? config.namespace : `${config.namespace}:`;
+    if (!args.label.startsWith(prefix)) {
+      throw new Error(
+        `writeAutoSavedEntry: label "${args.label}" does not start with namespace prefix "${prefix}"`,
+      );
+    }
+    const id = randomUUID();
+    const createdAt = Date.now();
+    const expiresAt = createdAt + retentionMs;
+    const row: Row & { provenance_model: string | null; confidence: number | null } = {
+      id,
+      label: args.label,
+      content: args.content,
+      peer_id: args.peerId,
+      trust_level: null,
+      created_at: createdAt,
+      superseded_by: null,
+      retention_class: args.retentionClass,
+      is_verbatim: args.isVerbatim,
+      expires_at: expiresAt,
+      subject: args.subject ?? null,
+      predicate: args.predicate ?? null,
+      object: args.object ?? null,
+      source_turn_id: args.sourceTurnId,
+      origin: "agent-derived",
+      provenance_model: args.model,
+      confidence: args.confidence,
+    };
+    const { error } = await config.client.from(config.table).insert(row);
+    if (error) throw error;
+  }
+
   async function close(): Promise<void> {
     // No-op for Supabase.
   }
@@ -207,6 +251,7 @@ export function createSupabaseStore(
   return {
     initialize,
     write,
+    writeAutoSavedEntry,
     search,
     read,
     list,
