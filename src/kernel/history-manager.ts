@@ -1,4 +1,30 @@
-import type { Message, Storage, CompactionStrategy } from "../types";
+import type {
+  Message,
+  Storage,
+  CompactionStrategy,
+  Transcript,
+  PeerIdentity,
+  Part,
+  ToolCallRecord,
+} from "../types";
+
+/**
+ * Per-turn snapshot recorded by the kernel at turn completion. Used by
+ * SchedulerContext.getCompletedTranscript() (ADR-027). Kept distinct from
+ * the running Message[] history because the snapshot's identity boundary
+ * is the turn, not the message — and downstream consumers (post-turn
+ * extraction) want a self-contained record they can hand to a focused
+ * extraction model without traversing the message log.
+ */
+export interface TurnSnapshot {
+  turnId: string;
+  threadId: string;
+  peer: PeerIdentity | null;
+  parts: Part[];
+  toolCalls: ToolCallRecord[];
+  startedAt: number;
+  endedAt: number;
+}
 
 export interface HistoryManager {
   append(message: Message): void;
@@ -7,17 +33,68 @@ export interface HistoryManager {
   save(storage: Storage): Promise<void>;
   restore(storage: Storage): Promise<void>;
   totalTokens(): number;
+  /**
+   * Record a per-turn snapshot at turn completion. Called by the turn-loop
+   * before the SchedulerContext closure binds (ADR-027). Multiple snapshots
+   * for the same turnId overwrite (idempotent on retry).
+   */
+  recordTurn(snapshot: TurnSnapshot): void;
+  /**
+   * Retrieve a previously-recorded turn snapshot. Returns null if the
+   * snapshot was never recorded (e.g. turn errored before recording) or
+   * has been evicted by retention. Kernel-internal: SchedulerContext
+   * exposes only the just-completed turn via a closure-bound wrapper.
+   */
+  getTranscript(turnId: string): Transcript | null;
 }
+
+/**
+ * Cap on retained per-turn snapshots. ADR-027 only requires retaining the
+ * just-completed turn; we keep the last N to absorb scheduleAfterTurn
+ * hooks that may take a brief moment to read after the next turn admits.
+ * Bounded to prevent unbounded growth on long threads.
+ */
+const MAX_TURN_SNAPSHOTS = 32;
 
 export function createHistoryManager(opts: { threadId: string }): HistoryManager {
   let messages: Message[] = [];
   let runningTokens = 0;
   const storageKey = `history:${opts.threadId}`;
+  // Insertion-ordered snapshot store. JS Map preserves insertion order;
+  // we evict oldest when capacity is exceeded.
+  const turnSnapshots = new Map<string, TurnSnapshot>();
 
   return {
     append(message: Message) {
       messages.push(message);
       runningTokens += message.tokenCount;
+    },
+
+    recordTurn(snapshot: TurnSnapshot) {
+      // Re-recording the same turnId moves it to most-recent without
+      // increasing capacity pressure.
+      if (turnSnapshots.has(snapshot.turnId)) {
+        turnSnapshots.delete(snapshot.turnId);
+      } else if (turnSnapshots.size >= MAX_TURN_SNAPSHOTS) {
+        // Evict oldest insertion-order entry.
+        const oldestKey = turnSnapshots.keys().next().value;
+        if (oldestKey !== undefined) turnSnapshots.delete(oldestKey);
+      }
+      turnSnapshots.set(snapshot.turnId, snapshot);
+    },
+
+    getTranscript(turnId: string): Transcript | null {
+      const snap = turnSnapshots.get(turnId);
+      if (!snap) return null;
+      return {
+        turnId: snap.turnId,
+        threadId: snap.threadId,
+        peer: snap.peer,
+        parts: snap.parts,
+        toolCalls: snap.toolCalls,
+        startedAt: snap.startedAt,
+        endedAt: snap.endedAt,
+      };
     },
 
     getHistory(tokenBudget: number): Message[] {

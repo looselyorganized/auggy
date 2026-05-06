@@ -7,6 +7,8 @@ import type {
   SchedulerContext,
   TurnTrigger,
   InboundMessage,
+  Transcript,
+  PeerIdentity,
 } from "../../src/types";
 
 function makeMessageTrigger(turnId: string, threadId: string): TurnTrigger {
@@ -109,5 +111,60 @@ describe("scheduleAfterTurn lifecycle hook", () => {
   });
 });
 
-// Re-exported for Task 3 to extend without re-importing.
-export type { Augment, TurnResult, SchedulerContext };
+describe("SchedulerContext.getCompletedTranscript", () => {
+  test("returns the just-completed turn's transcript with peer + parts", async () => {
+    let captured: Transcript | null = null;
+    const aug: Augment = {
+      name: "capture",
+      scheduleAfterTurn: async (_result: TurnResult, ctx: SchedulerContext) => {
+        captured = await ctx.getCompletedTranscript();
+      },
+    };
+    const peer: PeerIdentity = {
+      id: "test-peer",
+      kind: "human",
+      trustLevel: "creator",
+      sourceAugment: "test",
+    };
+    const agent = defineAgent(
+      { name: "test", model: "mock", augments: [aug] },
+      createMockModel({ response: "hello world" }),
+    );
+    await agent.start();
+    await agent.inject({
+      type: "message",
+      turnId: "t-capture-1",
+      threadId: "th1",
+      timestamp: Date.now(),
+      source: "test",
+      peer,
+      payload: {
+        parts: [{ kind: "text", text: "hi" }],
+        sourceAugment: "test",
+        peer,
+        timestamp: Date.now(),
+      } satisfies InboundMessage,
+    });
+    await agent.stop();
+    expect(captured).not.toBeNull();
+    const t = captured as unknown as Transcript;
+    expect(t.turnId).toBe("t-capture-1");
+    expect(t.threadId).toBe("th1");
+    expect(t.peer?.id).toBe("test-peer");
+    expect(t.parts.length).toBeGreaterThan(0);
+    expect(t.startedAt).toBeGreaterThan(0);
+    expect(t.endedAt).toBeGreaterThanOrEqual(t.startedAt);
+  });
+
+  test("getCompletedTranscript exposes no turnId argument (closure-bound only)", () => {
+    // Compile-time only: SchedulerContext.getCompletedTranscript must
+    // accept zero arguments. ADR-027 Decision 3.
+    const ctx: SchedulerContext = {
+      inject: async () => ({}) as unknown as TurnResult,
+      getCompletedTranscript: async () => null,
+    };
+    // @ts-expect-error — must reject argument
+    void ctx.getCompletedTranscript("some-turn-id");
+    expect(typeof ctx.getCompletedTranscript).toBe("function");
+  });
+});

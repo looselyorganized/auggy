@@ -16,6 +16,7 @@ import type {
   TurnGateProvider,
   TurnGateTicket,
   ToolResult,
+  Part,
 } from "../types";
 import type { Tokenizer } from "../tokenizer";
 import { extractText } from "../parts";
@@ -174,6 +175,16 @@ export function createTurnLoop(opts: {
 
       const toolCallRecords: ToolCallRecord[] = [];
 
+      // Per-turn transcript parts (ADR-027). Accumulates inbound user parts
+      // + outbound assistant text as the turn progresses. The snapshot is
+      // recorded into history-manager at every terminal return path so
+      // SchedulerContext.getCompletedTranscript() finds it.
+      const transcriptParts: Part[] = [];
+      if (trigger.type === "message" && trigger.payload && "parts" in trigger.payload) {
+        const inbound = trigger.payload as InboundMessage;
+        transcriptParts.push(...inbound.parts);
+      }
+
       const trace = traceEmitter.startTurn({
         turnId: trigger.turnId,
         threadId,
@@ -184,6 +195,21 @@ export function createTurnLoop(opts: {
           trustLevel: peer?.trustLevel,
         },
       });
+
+      // ADR-027: record a per-turn snapshot before returning. Called at
+      // every terminal return path; idempotent on retry. The snapshot is
+      // what SchedulerContext.getCompletedTranscript() reads.
+      function recordTurnSnapshot() {
+        getOrCreateHistory(threadId).recordTurn({
+          turnId: trigger.turnId,
+          threadId,
+          peer,
+          parts: [...transcriptParts],
+          toolCalls: [...toolCallRecords],
+          startedAt: turnState.turnStartedAt,
+          endedAt: Date.now(),
+        });
+      }
 
       function makeAbortResult(): TurnResult {
         emitEvent({
@@ -198,6 +224,7 @@ export function createTurnLoop(opts: {
           status: "canceled",
         });
         traceEmitter.finalize(trace);
+        recordTurnSnapshot();
         return {
           turnId: trigger.turnId,
           success: false,
@@ -242,6 +269,7 @@ export function createTurnLoop(opts: {
             }
           }
           traceEmitter.finalize(trace);
+          recordTurnSnapshot();
           return {
             turnId: trigger.turnId,
             success: false,
@@ -271,6 +299,7 @@ export function createTurnLoop(opts: {
           }
         }
         traceEmitter.finalize(trace);
+        recordTurnSnapshot();
         return {
           turnId: trigger.turnId,
           success: false,
@@ -304,6 +333,7 @@ export function createTurnLoop(opts: {
           }
         }
         traceEmitter.finalize(trace);
+        recordTurnSnapshot();
         return {
           turnId: trigger.turnId,
           success: false,
@@ -357,6 +387,7 @@ export function createTurnLoop(opts: {
                 status: "failed",
               });
               traceEmitter.finalize(trace);
+              recordTurnSnapshot();
               return {
                 turnId: trigger.turnId,
                 success: false,
@@ -416,6 +447,7 @@ export function createTurnLoop(opts: {
               status: "failed",
             });
             traceEmitter.finalize(trace);
+            recordTurnSnapshot();
             return {
               turnId: trigger.turnId,
               success: false,
@@ -573,6 +605,9 @@ export function createTurnLoop(opts: {
             timestamp: Date.now(),
             tokenCount: tokenizer.count(response.content),
           });
+          // ADR-027 transcript capture — assistant content is part of the
+          // turn's two-way exchange and must surface to scheduleAfterTurn.
+          transcriptParts.push({ kind: "text", text: response.content });
         }
 
         // No tool calls or context window exhausted — we're done.
@@ -615,6 +650,7 @@ export function createTurnLoop(opts: {
 
           traceEmitter.finalize(trace);
           await runCostCommit();
+          recordTurnSnapshot();
           return {
             turnId: trigger.turnId,
             success: true,
@@ -845,8 +881,12 @@ export function createTurnLoop(opts: {
               message: pendingTerminate.message,
             }),
           });
+          if (pendingTerminate.message) {
+            transcriptParts.push({ kind: "text", text: pendingTerminate.message });
+          }
           traceEmitter.finalize(trace);
           await runCostCommit();
+          recordTurnSnapshot();
           return {
             turnId: trigger.turnId,
             success: true,
@@ -909,6 +949,7 @@ export function createTurnLoop(opts: {
               timestamp: Date.now(),
               tokenCount: tokenizer.count(finalResponse.content),
             });
+            transcriptParts.push({ kind: "text", text: finalResponse.content });
             if (!termStreamed) {
               emitEvent({
                 kind: "text_message",
@@ -926,6 +967,7 @@ export function createTurnLoop(opts: {
           });
           traceEmitter.finalize(trace);
           await runCostCommit();
+          recordTurnSnapshot();
           return {
             turnId: trigger.turnId,
             success: true,
@@ -967,8 +1009,10 @@ export function createTurnLoop(opts: {
         turnId: trigger.turnId,
         status: "completed",
       });
+      transcriptParts.push({ kind: "text", text: "I've completed the available actions." });
       traceEmitter.finalize(trace);
       await runCostCommit();
+      recordTurnSnapshot();
       return {
         turnId: trigger.turnId,
         success: true,
