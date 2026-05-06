@@ -1,0 +1,94 @@
+case_id: session-end-batching
+description: >
+  A public.anonymous peer (visitor traffic) has a 20-turn conversation in which
+  five distinct facts are scattered across non-consecutive turns. Extraction
+  frequency is "session-end-only" for this trust level. The grader asserts:
+  (1) exactly ONE extraction call fires (batched at session end, not per-turn),
+  and (2) all five facts are present in that single batch result.
+  This validates Decision 3's cost discipline for anonymous visitors.
+
+peer:
+  id: anon_session_batch_test
+  kind: human
+  trustLevel: public
+  publicSubstate: anonymous
+
+# Extraction frequency for this peer: session-end-only.
+# The grader verifies a single batched call captures all five facts.
+extraction_frequency: session-end-only
+expected_extraction_call_count: 1
+
+transcript:
+  - role: user
+    content: "Hi there! I'm looking for help with my React project."
+  - role: assistant
+    content: "Happy to help! What's the project about?"
+  - role: user
+    content: "It's a dashboard for our sales team. I'm the lead engineer on it."
+  - role: assistant
+    content: "Interesting. What stack are you using beyond React?"
+  - role: user
+    content: "We use TypeScript for everything. Makes things a lot cleaner."
+  - role: assistant
+    content: "Good choice. Are you running any state management library?"
+  - role: user
+    content: "We use Zustand actually. Switched from Redux last year."
+  - role: assistant
+    content: "How has that transition gone?"
+  - role: user
+    content: "Mostly smooth. The bundle size reduction was worth it."
+  - role: assistant
+    content: "Makes sense. Is this a large team or just a few engineers?"
+  - role: user
+    content: "Small team — just four of us. I prefer smaller teams honestly."
+  - role: assistant
+    content: "I can see why. Any deployment infrastructure you're happy with?"
+  - role: user
+    content: "We deploy on AWS. Been there from the start."
+  - role: assistant
+    content: "Classic choice. Any major pain points right now?"
+  - role: user
+    content: "Yeah, our CI pipeline is slow. Working on fixing that next sprint."
+  - role: assistant
+    content: "What CI system are you using?"
+  - role: user
+    content: "GitHub Actions. It's fine but our test suite is huge."
+  - role: assistant
+    content: "Parallelizing the test suite can help a lot there."
+  - role: user
+    content: "That's on the list. Anyway, thanks for the chat!"
+  - role: assistant
+    content: "Good luck with the dashboard project!"
+
+expected_facts:
+  - subject: peer
+    predicate: role
+    object: lead engineer
+    must_extract: true
+  - subject: peer
+    predicate: primary_language
+    object: TypeScript
+    must_extract: true
+  - subject: peer
+    predicate: state_management
+    object: Zustand
+    must_extract: true
+  - subject: peer
+    predicate: team_size_preference
+    object: small teams (4 engineers)
+    must_extract: true
+  - subject: peer
+    predicate: cloud_provider
+    object: AWS
+    must_extract: true
+
+must_not_extract:
+  - "Happy to help!"
+  - "Good choice"
+  - "CI pipeline is slow"
+
+assertions:
+  - exactly one extraction LLM call fires (batched session-end, not per-turn)
+  - all five facts present in the single extraction output
+  - all extracted facts have confidence >= 0.5
+  - no facts about the agent's responses extracted as peer claims

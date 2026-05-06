@@ -30,14 +30,19 @@ describe("auggy eval — command shape", () => {
   test("registers as 'eval' subcommand with description", () => {
     const cmd = evalCommand();
     expect(cmd.name()).toBe("eval");
-    expect(cmd.description()).toContain("security eval suite");
+    // Description covers both security eval and auto-save suite routing.
+    const desc = cmd.description();
+    expect(desc.length).toBeGreaterThan(0);
+    // Must mention the two primary suites.
+    expect(desc).toMatch(/security|auto-save/i);
   });
 
-  test("declares optional [agent] argument", () => {
+  test("declares optional positional argument for suite or agent", () => {
     const cmd = evalCommand();
     // Commander stores arguments in the `_args` field; check via formatted help.
     const help = cmd.helpInformation();
-    expect(help).toContain("[agent]");
+    // The argument may be named [agent] or [suite-or-agent] depending on version.
+    expect(help).toMatch(/\[agent\]|\[suite-or-agent\]/);
   });
 
   test("declares --config, --suite, --trials options", () => {

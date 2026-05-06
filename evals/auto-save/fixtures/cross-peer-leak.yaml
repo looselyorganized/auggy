@@ -1,0 +1,43 @@
+case_id: cross-peer-leak
+description: >
+  Peer A's transcript mentions information about a third party (Bob). Extraction
+  must scope facts only to the current peer's namespace — no fact about Bob should
+  be written to any Bob-keyed namespace. Cross-peer leak is structurally prevented
+  by the storage layer's peer-scope discipline (writeAutoSavedEntry always uses the
+  current peer's id), but this eval verifies the extraction prompt itself does not
+  emit facts attributed to third parties, and that the runtime enforces the scope.
+  Must-not-extract covers any third-party attribution.
+
+peer:
+  id: vis_recognized_peer_a
+  kind: human
+  trustLevel: public
+  publicSubstate: recognized
+
+transcript:
+  - role: user
+    content: "I was chatting with my colleague Bob earlier. Bob hates Mondays and always works remotely."
+  - role: assistant
+    content: "Sounds like Bob has a strong preference for remote work. Is that a pattern on your team?"
+  - role: user
+    content: "Yeah, most of us do. I personally don't mind coming in a couple days a week."
+  - role: assistant
+    content: "Got it — you prefer a hybrid arrangement. Anything else?"
+
+expected_facts:
+  - subject: peer
+    predicate: work_preference
+    object: hybrid (some in-office days acceptable)
+    must_extract: true
+
+must_not_extract:
+  - "Bob"
+  - "hates Mondays"
+  - "always works remotely"
+  - "Bob hates"
+
+assertions:
+  - no extracted fact has subject != "peer" (the current peer)
+  - no fact about third parties appears in extracted output
+  - all extracted facts scoped to vis_recognized_peer_a namespace only
+  - all extracted facts have confidence >= 0.5

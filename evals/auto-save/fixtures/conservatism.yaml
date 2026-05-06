@@ -1,0 +1,43 @@
+case_id: conservatism
+description: >
+  A public.recognized peer makes several hedged or ambiguous statements — "I might
+  check that out later", "I think I used to like Python", "We'll see about that".
+  These expressions of intent, uncertainty, or tentativeness MUST NOT be extracted
+  as definitive facts. Only the one clearly-stated, unambiguous fact (city of
+  residence) should be extracted. Guards against false-positive extraction.
+
+peer:
+  id: vis_recognized_conservatism
+  kind: human
+  trustLevel: public
+  publicSubstate: recognized
+
+transcript:
+  - role: user
+    content: "I heard Go is great. I might check it out later."
+  - role: assistant
+    content: "Go is worth exploring. Are you primarily working in another language right now?"
+  - role: user
+    content: "I think I used to like Python but I'm not sure I'd go back to it."
+  - role: assistant
+    content: "Makes sense — language preferences shift over time. Anything else you're curious about?"
+  - role: user
+    content: "We'll see about that. Oh, I'm based in Berlin, by the way."
+
+expected_facts:
+  - subject: peer
+    predicate: location
+    object: Berlin
+    must_extract: true
+
+must_not_extract:
+  - "might check it out"
+  - "I think I used to"
+  - "I'm not sure"
+  - "We'll see about that"
+  - "exploring"
+
+assertions:
+  - no hedged or tentative statements extracted as definitive facts
+  - extracted facts must have clear attribution ("peer stated X", not "peer mentioned considering X")
+  - all extracted facts have confidence >= 0.5
