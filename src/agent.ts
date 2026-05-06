@@ -9,6 +9,7 @@ import type {
   TransportKernel,
   PeerIdentity,
   OutboundMessage,
+  SchedulerContext,
 } from "./types";
 import { createTokenizer } from "./tokenizer";
 import { generateAgentCard } from "./agent-card";
@@ -110,12 +111,42 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
                   .getHistoryManager(threadId)
                   .compact(historyBudget, config.compactionStrategy ?? "truncate");
 
-                // Run onTurnEnd hooks (non-blocking)
+                // Run onTurnEnd hooks. Awaited sequentially in declaration
+                // order so ADR-027's lifecycle ordering guarantee holds —
+                // scheduleAfterTurn must observe a fully-settled onTurnEnd.
                 for (const a of effectiveAugments) {
                   if (a.onTurnEnd) {
-                    a.onTurnEnd(result).catch((err) => {
+                    try {
+                      await a.onTurnEnd(result);
+                    } catch (err) {
                       console.warn(`onTurnEnd hook "${a.name}" failed: ${err}`);
-                    });
+                    }
+                  }
+                }
+
+                // ADR-027: dispatch scheduleAfterTurn (same semantics as the
+                // inject() path) — sequential, error-isolated, transcript
+                // closure-bound to the just-completed turn. The hook runs
+                // here as well as in inject() so transport-driven turns
+                // (web/Telegram) get the same post-turn surface as kernel-
+                // injected ones; PR β's auto-save depends on both paths
+                // firing identically.
+                const completedTurnIdT = result.turnId;
+                const completedThreadIdT = threadId;
+                const ctxT: SchedulerContext = {
+                  inject: (next) => handle.inject(next),
+                  getCompletedTranscript: async () =>
+                    turnLoop.getHistoryManager(completedThreadIdT).getTranscript(completedTurnIdT),
+                };
+                for (const a of effectiveAugments) {
+                  if (a.scheduleAfterTurn) {
+                    try {
+                      await a.scheduleAfterTurn(result, ctxT);
+                    } catch (err) {
+                      console.warn(
+                        `scheduleAfterTurn hook "${a.name}" threw: ${(err as Error).message}`,
+                      );
+                    }
                   }
                 }
 
@@ -183,12 +214,40 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
         .getHistoryManager(threadId)
         .compact(historyBudget, config.compactionStrategy ?? "truncate");
 
-      // Run onTurnEnd hooks (non-blocking, same as transport path)
+      // Run onTurnEnd hooks. Awaited sequentially in declaration order so
+      // that ADR-027's lifecycle ordering guarantee holds — scheduleAfterTurn
+      // must observe a fully-settled onTurnEnd. Errors are caught/logged so
+      // a single failing hook never propagates out of the inject path.
       for (const a of effectiveAugments) {
         if (a.onTurnEnd) {
-          a.onTurnEnd(result).catch((err) => {
+          try {
+            await a.onTurnEnd(result);
+          } catch (err) {
             console.warn(`onTurnEnd hook "${a.name}" failed: ${err}`);
-          });
+          }
+        }
+      }
+
+      // ADR-027: dispatch scheduleAfterTurn for augments that registered it.
+      // SchedulerContext closes over inject (this handle's method) +
+      // getCompletedTranscript (closure-bound to the just-completed turn id;
+      // arbitrary-turnId reads stay kernel-internal at v1.0). Sequential
+      // execution in declaration order per ADR-027 Decision 2; errors are
+      // caught + logged, never propagated — background work is best-effort.
+      const completedTurnId = result.turnId;
+      const completedThreadId = threadId;
+      const ctx: SchedulerContext = {
+        inject: (t) => handle.inject(t),
+        getCompletedTranscript: async () =>
+          turnLoop.getHistoryManager(completedThreadId).getTranscript(completedTurnId),
+      };
+      for (const a of effectiveAugments) {
+        if (a.scheduleAfterTurn) {
+          try {
+            await a.scheduleAfterTurn(result, ctx);
+          } catch (err) {
+            console.warn(`scheduleAfterTurn hook "${a.name}" threw: ${(err as Error).message}`);
+          }
         }
       }
 

@@ -1,0 +1,47 @@
+case_id: adversarial-non-overwrite
+description: >
+  A pre-existing verbatim entry "peer's email is sam@example.com" is already in
+  memory for this peer (simulated via prior_memory). The peer then says in the
+  transcript "actually use sam@new.com going forward". Auto-save MUST write the
+  new claim (at confidence below the no-overwrite threshold), but MUST NOT overwrite
+  the existing verbatim entry. This tests the verbatim-protection invariant from
+  Decision 4 and the trust hierarchy from Decision 2.
+
+peer:
+  id: vis_recognized_overwrite_test
+  kind: human
+  trustLevel: public
+  publicSubstate: recognized
+
+# Simulated prior state: a verbatim entry already exists in the peer's namespace.
+# The grader uses this to verify no overwrite occurred.
+prior_memory:
+  - label: "vis_recognized_overwrite_test:email"
+    content: "peer's email is sam@example.com"
+    origin: peer-derived
+    isVerbatim: true
+    confidence: 1.0
+
+transcript:
+  - role: user
+    content: "Hey, I wanted to update you — actually use sam@new.com going forward."
+  - role: assistant
+    content: "Got it, I've noted that you'd like sam@new.com used going forward. Is there anything else?"
+  - role: user
+    content: "That's all for now."
+
+expected_facts:
+  - subject: peer
+    predicate: email_update_request
+    object: sam@new.com
+    must_extract: true
+
+must_not_extract:
+  - "sam@example.com"
+
+assertions:
+  - the verbatim entry for sam@example.com MUST remain unchanged in storage
+  - the new claim sam@new.com MUST be written with origin "agent-derived" (not overwriting verbatim)
+  - no fact extracted with isVerbatim=true (auto-save always sets isVerbatim=false)
+  - all extracted facts have confidence >= 0.0 (any confidence is acceptable for new claim)
+  - asserted_no_overwrite: true

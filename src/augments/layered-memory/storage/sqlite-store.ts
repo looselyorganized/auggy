@@ -1,6 +1,12 @@
 import { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
-import type { MemoryStore, RetentionClass, SqliteStoreConfig, StoreEntry } from "./types";
+import type {
+  MemoryStore,
+  RetentionClass,
+  SqliteStoreConfig,
+  StoreEntry,
+  WriteAutoSavedArgs,
+} from "./types";
 import type { TrustLevel } from "../../../types";
 
 // Each statement run individually to keep the SQL surface explicit.
@@ -47,10 +53,16 @@ interface Row {
   retention_class: string;
   is_verbatim: number;
   expires_at: number | null;
+  // Phase 2 fact-fields (nullable; populated by writeAutoSavedEntry)
+  subject: string | null;
+  predicate: string | null;
+  object: string | null;
+  source_turn_id: string | null;
+  origin: string | null;
 }
 
 function rowToEntry(row: Row): StoreEntry {
-  return {
+  const entry: StoreEntry = {
     id: row.id,
     label: row.label,
     content: row.content,
@@ -62,6 +74,14 @@ function rowToEntry(row: Row): StoreEntry {
     isVerbatim: row.is_verbatim === 1,
     expiresAt: row.expires_at,
   };
+  // Read path: populate fact-fields only when present in storage. Legacy
+  // rows (pre-Phase-2) carry NULLs and stay clean on the way out.
+  if (row.subject != null) entry.subject = row.subject;
+  if (row.predicate != null) entry.predicate = row.predicate;
+  if (row.object != null) entry.object = row.object;
+  if (row.source_turn_id != null) entry.sourceTurnId = row.source_turn_id;
+  if (row.origin != null) entry.origin = row.origin as StoreEntry["origin"];
+  return entry;
 }
 
 // Sampled cleanup: every ~Nth write triggers a bounded DELETE so write
@@ -79,6 +99,33 @@ export function createSqliteStore(config: SqliteStoreConfig): MemoryStore {
   for (const stmt of SCHEMA_STATEMENTS) {
     db.run(stmt);
   }
+
+  // Phase 2 migration: add structured-fact + provenance columns idempotently.
+  // PRAGMA table_info detects which columns already exist; ALTER TABLE adds
+  // only the absent ones. Existing rows survive with NULLs in the new columns.
+  // is_verbatim + retention_class are already in SCHEMA_STATEMENTS above;
+  // they appear in the list so the migration is self-documenting and safe to
+  // re-run if applied to a DB that predates them (legacy schema path).
+  function ensureMigrations(): void {
+    const cols = db.prepare("PRAGMA table_info(entries)").all() as { name: string }[];
+    const colNames = new Set(cols.map((c) => c.name));
+
+    const additions: Array<{ name: string; ddl: string }> = [
+      { name: "subject", ddl: "ALTER TABLE entries ADD COLUMN subject TEXT" },
+      { name: "predicate", ddl: "ALTER TABLE entries ADD COLUMN predicate TEXT" },
+      { name: "object", ddl: "ALTER TABLE entries ADD COLUMN object TEXT" },
+      { name: "source_turn_id", ddl: "ALTER TABLE entries ADD COLUMN source_turn_id TEXT" },
+      { name: "origin", ddl: "ALTER TABLE entries ADD COLUMN origin TEXT" },
+      { name: "is_verbatim", ddl: "ALTER TABLE entries ADD COLUMN is_verbatim INTEGER" },
+      { name: "retention_class", ddl: "ALTER TABLE entries ADD COLUMN retention_class TEXT" },
+    ];
+
+    for (const { name, ddl } of additions) {
+      if (!colNames.has(name)) db.run(ddl);
+    }
+  }
+
+  ensureMigrations();
 
   const retentionMs = config.retentionDays * 24 * 60 * 60 * 1000;
 
@@ -231,6 +278,61 @@ export function createSqliteStore(config: SqliteStoreConfig): MemoryStore {
     return result.changes;
   }
 
+  // Internal-to-layered-memory write path used by the extractor. NOT
+  // exposed on any augment-public surface — Phase 2 of ADR-018,
+  // Decision 4 of the memorist design. `origin` is hardcoded to
+  // `"agent-derived"` here rather than accepted as an argument so a
+  // misbehaving extraction prompt cannot forge `operator` or
+  // `peer-derived`. Namespace prefix is enforced when configured;
+  // when absent, this function refuses entirely (the augment factory
+  // must always pass a namespace).
+  async function writeAutoSavedEntry(args: WriteAutoSavedArgs): Promise<void> {
+    if (!config.namespace) {
+      throw new Error(
+        "writeAutoSavedEntry: store has no namespace configured; auto-save requires namespace-prefix discipline",
+      );
+    }
+    const prefix = config.namespace.endsWith(":") ? config.namespace : `${config.namespace}:`;
+    if (!args.label.startsWith(prefix)) {
+      throw new Error(
+        `writeAutoSavedEntry: label "${args.label}" does not start with namespace prefix "${prefix}"`,
+      );
+    }
+    const id = randomUUID();
+    const createdAt = Date.now();
+    const expiresAt = createdAt + retentionMs;
+    db.prepare(
+      `INSERT INTO entries
+        (id, label, content, peer_id, trust_level, created_at, superseded_by,
+         retention_class, is_verbatim, expires_at,
+         subject, predicate, object, source_turn_id, origin,
+         provenance_model, confidence)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'agent-derived', ?, ?)`,
+    ).run(
+      id,
+      args.label,
+      args.content,
+      args.peerId,
+      null,
+      createdAt,
+      null,
+      args.retentionClass,
+      args.isVerbatim ? 1 : 0,
+      expiresAt,
+      args.subject ?? null,
+      args.predicate ?? null,
+      args.object ?? null,
+      args.sourceTurnId,
+      args.model,
+      args.confidence,
+    );
+    logEvent(id, "auto-save", args.peerId, {
+      sourceTurnId: args.sourceTurnId,
+      model: args.model,
+      confidence: args.confidence,
+    });
+  }
+
   async function close(): Promise<void> {
     db.close();
   }
@@ -238,6 +340,7 @@ export function createSqliteStore(config: SqliteStoreConfig): MemoryStore {
   return {
     initialize,
     write,
+    writeAutoSavedEntry,
     search,
     read,
     list,

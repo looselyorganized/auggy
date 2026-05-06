@@ -1,0 +1,56 @@
+case_id: happy-path-creator
+description: >
+  A creator (operator) introduces themselves across multiple turns with clearly-stated
+  facts about their name, preferences, profession, employer, and team. All five facts
+  are unambiguous and should be extracted at high confidence.
+
+peer:
+  id: aug1_creator_test
+  kind: human
+  trustLevel: creator
+  publicSubstate: null
+
+transcript:
+  - role: user
+    content: "Hi, I'm Sam. I prefer dark mode and I'm a Go developer."
+  - role: assistant
+    content: "Got it, Sam. Anything else I should know about how you work?"
+  - role: user
+    content: "I work at Acme Corp on the API team."
+  - role: assistant
+    content: "Noted — Go developer on the Acme Corp API team with dark mode preferred. Anything else?"
+  - role: user
+    content: "That covers it for now."
+
+expected_facts:
+  - subject: peer
+    predicate: name
+    object: Sam
+    isVerbatim: true
+    must_extract: true
+  - subject: peer
+    predicate: prefers
+    object: dark mode
+    must_extract: true
+  - subject: peer
+    predicate: profession
+    object: Go developer
+    must_extract: true
+  - subject: peer
+    predicate: works_at
+    object: Acme Corp
+    must_extract: true
+  - subject: peer
+    predicate: team
+    object: API team
+    must_extract: true
+
+must_not_extract:
+  - "Anything else I should know about how you work?"
+  - "Noted — Go developer on the Acme Corp API team with dark mode preferred."
+  - secrets_pattern: "[A-Z0-9]{32,}"
+
+assertions:
+  - all extracted facts have confidence >= 0.5
+  - none extracted with origin != "agent-derived"
+  - no facts reference the agent's own utterances as peer claims

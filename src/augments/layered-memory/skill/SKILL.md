@@ -102,3 +102,52 @@ Use when you want to know what labels already exist for the current peer before 
 1. Confirm once that they want all their stored memory deleted
 2. If you have the trust level for it, call `memory_forget(peerId)` and confirm the count returned
 3. If you don't have the trust level, tell them you're flagging the request for the operator
+
+## Auto-saved entries — `[AGENT-DERIVED]` provenance
+
+### What auto-save does
+
+A background process extracts facts after each turn (or per the operator's configured cadence) and writes them to your peer-scoped memory. **You never invoke this process directly — it runs on its own.** The only observable effect is that `memory_search` results sometimes include entries carrying the `[AGENT-DERIVED]` marker.
+
+When you call `memory_search` and see an entry like:
+
+```
+[AGENT-DERIVED] Sam prefers concise replies and works at Acme Corp.
+```
+
+that entry came from the background process, not from a `memory_write` call you made.
+
+### `[AGENT-DERIVED]` entries are paraphrases, not verbatim
+
+When you see an entry with that marker, treat the content as an extracted paraphrase — a best-effort summary of what the peer said — **not** the peer's exact words. If precision matters (operator agreements, technical specifications, contact details, verbatim commitments), prefer entries marked `[PEER-DERIVED]` or entries you wrote explicitly with `memory_write` when the peer stated something exactly.
+
+### Trust hierarchy on conflict
+
+If two entries about the same fact conflict, trust them in this order:
+
+1. `[PEER-DERIVED]` entries (or operator-set verbatim entries) — authoritative; the peer's own words or an operator-confirmed record
+2. `[AGENT-DERIVED]` entries — useful background; defer to the above when they contradict
+
+**Never overwrite a `[PEER-DERIVED]` entry with an extracted paraphrase.** If a peer corrects something that the background process extracted incorrectly, write the correction via `memory_write` — the new entry coexists with the old one and the trust hierarchy ensures the peer's explicit statement is preferred. If the conflict is meaningful, surface it to the peer briefly.
+
+### When to call `memory_write` directly anyway
+
+The background process runs after each turn. You do not need to wait for it. Call `memory_write` mid-turn when:
+
+- The peer explicitly asks to be remembered ("save my email as foo@example.com")
+- You want to capture the peer's exact phrasing verbatim (commitments, technical specs, contact details)
+- You are correcting a fact you know to be wrong from a prior extraction
+- The signal is high enough that you do not want to risk it being missed
+
+Both writes coexist in memory. The background process does not overwrite your explicit `memory_write` calls, and your calls do not overwrite background-extracted entries — they accumulate and retrieval ranks them by the trust hierarchy above.
+
+### Privacy boundaries
+
+Some content should never reach memory, regardless of who writes it:
+
+- Secrets and credentials (API keys, passwords, tokens)
+- Content the peer explicitly marked as confidential
+- Sensitive personal information outside what the agent's purpose warrants
+- Anything the peer asked to be forgotten
+
+The background extraction process embeds a privacy guard in its prompt template, but you are also responsible for respecting the same boundary in your own `memory_write` calls. If a peer shares a secret mid-turn, do not save it.

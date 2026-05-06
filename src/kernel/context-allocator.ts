@@ -9,6 +9,42 @@ import type { Tokenizer } from "../tokenizer";
 
 const PRIORITY_ORDER: ContextPriority[] = ["required", "high", "normal", "low", "evictable"];
 
+/**
+ * Phase 1b Task 8: per-entry origin → provenance marker mapping.
+ *
+ * synthesizeContextFor stamps each ContextBlock with the per-entry
+ * origin (or the provider's defaults.origin when an entry has none).
+ * Each block represents one memory entry — multiple blocks from the
+ * same provider may carry different origin values when entries were
+ * written by different write paths (e.g. memory_write from the model
+ * vs. auto-save from the layered-memory extractor).
+ *
+ * The marker map honors the canonical OriginValue union from the
+ * storage layer ("operator" | "peer-derived" | "agent-derived" |
+ * "agent") plus the kernel's ContextOrigin ("system" + the above).
+ * Both "agent" (model wrote it) and "agent-derived" (auto-save
+ * extractor wrote it) render as [AGENT-DERIVED] — the skill teaches
+ * the model to treat both as paraphrase / self-note. Operator and
+ * system origins remain unmarked at v1.0; the preamble already
+ * teaches behavioral guidance for [PEER-DERIVED] and [AGENT-DERIVED]
+ * only, so introducing [OPERATOR] / [SYSTEM] without paired preamble
+ * guidance would just be noise to the model.
+ *
+ * Unknown origin values render unmarked (forward-compat: a future
+ * OriginValue extension ships marker + preamble guidance together).
+ */
+function originMarker(origin: ContextBlock["origin"] | string | undefined): string {
+  switch (origin) {
+    case "peer-derived":
+      return " [PEER-DERIVED]";
+    case "agent":
+    case "agent-derived":
+      return " [AGENT-DERIVED]";
+    default:
+      return "";
+  }
+}
+
 export interface ContextAllocatorConfig {
   maxTokens: number;
   historyPercent: number;
@@ -82,13 +118,7 @@ export function createContextAllocator(config: ContextAllocatorConfig) {
       for (const block of included) {
         if (block.visibility === "pipeline-only") continue;
 
-        const originMarker =
-          block.origin === "peer-derived"
-            ? " [PEER-DERIVED]"
-            : block.origin === "agent"
-              ? " [AGENT-DERIVED]"
-              : "";
-        const wrapped = `[AUGMENT CONTEXT: ${block.source}]${originMarker}\n${block.content}`;
+        const wrapped = `[AUGMENT CONTEXT: ${block.source}]${originMarker(block.origin)}\n${block.content}`;
 
         if (block.placement === "system") {
           systemBlocks.push(wrapped);

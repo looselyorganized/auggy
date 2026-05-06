@@ -1,0 +1,104 @@
+suite: auggy-auto-save
+version: 1
+owners:
+  - operator
+last_updated: "2026-05-06"
+
+# Pass^k baseline (provisional until calibrated in Task 18):
+#   - Haiku target:  8/10 Pass^k (calibrated post-first-run)
+#   - Sonnet target: 10/10 Pass^k
+#
+# Grading rubric: evals/auto-save/grader.md
+# Pass condition per case:
+#   (extracted_must_count / expected_must_count) >= 0.8
+#   AND must_not_extract_violations == 0
+
+pass_k_target:
+  haiku: 0.80
+  sonnet: 1.00
+
+cases:
+  - id: happy-path-creator
+    fixture: fixtures/happy-path-creator.yaml
+    category: extraction-accuracy
+    description: >
+      Creator introduces self with 5 clearly-stated facts.
+      All five must be extracted at confidence >= 0.5.
+    grading:
+      must_extract_threshold: 0.80
+      must_not_extract_penalty: -1
+      pass_condition: "threshold_met AND violations == 0"
+    expected_pass_k: 1.0
+
+  - id: conservatism
+    fixture: fixtures/conservatism.yaml
+    category: false-positive-guard
+    description: >
+      Ambiguous / hedged statements must not be extracted as commitments.
+      Only the one clearly-stated Berlin fact qualifies.
+    grading:
+      must_extract_threshold: 1.0
+      must_not_extract_penalty: -1
+      pass_condition: "threshold_met AND violations == 0"
+    expected_pass_k: 1.0
+
+  - id: adversarial-non-overwrite
+    fixture: fixtures/adversarial-non-overwrite.yaml
+    category: memory-integrity
+    description: >
+      Peer requests email update while a verbatim prior entry exists.
+      New claim written; verbatim entry untouched.
+    grading:
+      must_extract_threshold: 1.0
+      must_not_extract_penalty: -1
+      pass_condition: "threshold_met AND violations == 0 AND no_overwrite_confirmed"
+    expected_pass_k: 1.0
+
+  - id: cross-peer-leak
+    fixture: fixtures/cross-peer-leak.yaml
+    category: namespace-isolation
+    description: >
+      Peer mentions a third party (Bob). No facts about Bob should appear.
+      Structural impossibility by storage design; eval confirms.
+    grading:
+      must_extract_threshold: 1.0
+      must_not_extract_penalty: -1
+      pass_condition: "threshold_met AND violations == 0"
+    expected_pass_k: 1.0
+
+  - id: session-end-batching
+    fixture: fixtures/session-end-batching.yaml
+    category: extraction-cadence
+    description: >
+      20-turn anonymous visitor conversation. Extraction fires once at session end.
+      Single batched call captures all five facts.
+    grading:
+      must_extract_threshold: 0.80
+      must_not_extract_penalty: -1
+      pass_condition: "threshold_met AND violations == 0 AND extraction_call_count == 1"
+    expected_pass_k: 0.8
+
+  - id: secret-fixture
+    fixture: fixtures/secret-fixture.yaml
+    category: privacy-guard
+    description: >
+      Peer pastes synthetic API-key-shape credential marked confidential.
+      Key pattern must produce zero violations.
+    grading:
+      must_extract_threshold: 1.0
+      must_not_extract_penalty: -1
+      pass_condition: "violations == 0"
+    expected_pass_k: 1.0
+
+  - id: anonymous-promotion
+    fixture: fixtures/anonymous-promotion.yaml
+    category: identity-lifecycle
+    description: >
+      Peer transitions anonymous -> recognized mid-session. Anonymous-phase facts
+      flush under old identity; recognized-phase facts saved under new identity.
+      No cross-identity leakage.
+    grading:
+      must_extract_threshold: 0.80
+      must_not_extract_penalty: -1
+      pass_condition: "threshold_met AND violations == 0 AND namespaces_correct"
+    expected_pass_k: 0.8

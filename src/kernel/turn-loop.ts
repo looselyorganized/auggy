@@ -16,6 +16,7 @@ import type {
   TurnGateProvider,
   TurnGateTicket,
   ToolResult,
+  Part,
 } from "../types";
 import type { Tokenizer } from "../tokenizer";
 import { extractText } from "../parts";
@@ -174,6 +175,16 @@ export function createTurnLoop(opts: {
 
       const toolCallRecords: ToolCallRecord[] = [];
 
+      // Per-turn transcript parts (ADR-027). Accumulates inbound user parts
+      // + outbound assistant text as the turn progresses. The snapshot is
+      // recorded into history-manager at every terminal return path so
+      // SchedulerContext.getCompletedTranscript() finds it.
+      const transcriptParts: Part[] = [];
+      if (trigger.type === "message" && trigger.payload && "parts" in trigger.payload) {
+        const inbound = trigger.payload as InboundMessage;
+        transcriptParts.push(...inbound.parts);
+      }
+
       const trace = traceEmitter.startTurn({
         turnId: trigger.turnId,
         threadId,
@@ -184,6 +195,21 @@ export function createTurnLoop(opts: {
           trustLevel: peer?.trustLevel,
         },
       });
+
+      // ADR-027: record a per-turn snapshot before returning. Called at
+      // every terminal return path; idempotent on retry. The snapshot is
+      // what SchedulerContext.getCompletedTranscript() reads.
+      function recordTurnSnapshot() {
+        getOrCreateHistory(threadId).recordTurn({
+          turnId: trigger.turnId,
+          threadId,
+          peer,
+          parts: [...transcriptParts],
+          toolCalls: [...toolCallRecords],
+          startedAt: turnState.turnStartedAt,
+          endedAt: Date.now(),
+        });
+      }
 
       function makeAbortResult(): TurnResult {
         emitEvent({
@@ -198,6 +224,7 @@ export function createTurnLoop(opts: {
           status: "canceled",
         });
         traceEmitter.finalize(trace);
+        recordTurnSnapshot();
         return {
           turnId: trigger.turnId,
           success: false,
@@ -242,6 +269,7 @@ export function createTurnLoop(opts: {
             }
           }
           traceEmitter.finalize(trace);
+          recordTurnSnapshot();
           return {
             turnId: trigger.turnId,
             success: false,
@@ -271,6 +299,7 @@ export function createTurnLoop(opts: {
           }
         }
         traceEmitter.finalize(trace);
+        recordTurnSnapshot();
         return {
           turnId: trigger.turnId,
           success: false,
@@ -304,6 +333,7 @@ export function createTurnLoop(opts: {
           }
         }
         traceEmitter.finalize(trace);
+        recordTurnSnapshot();
         return {
           turnId: trigger.turnId,
           success: false,
@@ -357,6 +387,7 @@ export function createTurnLoop(opts: {
                 status: "failed",
               });
               traceEmitter.finalize(trace);
+              recordTurnSnapshot();
               return {
                 turnId: trigger.turnId,
                 success: false,
@@ -380,6 +411,125 @@ export function createTurnLoop(opts: {
         contextId: trigger.contextId,
         taskId: trigger.taskId,
       });
+
+      // ADR-027 Decision 5: internal-trigger handler dispatch.
+      // When the trigger type is "internal", walk the augment list in
+      // declaration order and offer the trigger to each augment's
+      // handleInternalTurn. The first non-null return owns the turn —
+      // its TurnResult replaces the standard inference loop's output.
+      // The handler-supplied trace.inferenceSteps[] are merged into the
+      // kernel trace so runCostCommit aggregates them and turnGate.commit
+      // observes the full priced/unpriced cost (this is the path that
+      // closes the cost-attribution gap Codex Critical-2 flagged for
+      // PR β's option-(b) inline-extraction shortcut).
+      //
+      // If no handler claims, fall through to the standard inference loop.
+      // This preserves the existing behavior where an internal trigger
+      // with no augment-side handler runs through the normal model-engine
+      // path — useful for kernel-driven internal events that need
+      // lifecycle/budgets but no augment-specific execution.
+      if (trigger.type === "internal") {
+        for (const aug of augments) {
+          if (!aug.handleInternalTurn) continue;
+          let handlerResult: TurnResult | null;
+          try {
+            handlerResult = await aug.handleInternalTurn(trigger, {
+              threadId,
+              peer,
+            });
+          } catch (err) {
+            // Handler threw — surface as a failed turn so the augment
+            // author can debug, and so cost-commit still fires.
+            //
+            // BUDGET-ACCOUNTING WARNING: when a handler throws, it has no
+            // way to merge already-incurred LLM cost into trace.inferenceSteps.
+            // runCostCommit() will fire with no inference recorded, and
+            // budgets will see this turn as zero-cost — undercounting if the
+            // handler burned LLM spend before throwing. Per ADR-027 Decision 5,
+            // the contract is: handlers MUST NOT throw with side effects.
+            // Failure modes (engine error, parse error, etc.) MUST be caught
+            // inside the handler and returned as a failed TurnResult with
+            // accumulated trace.inferenceSteps. Surface a warning so the
+            // misbehaving handler is observable to operators.
+            console.warn(
+              `[kernel] handleInternalTurn for augment "${aug.name}" threw; ` +
+                `cost may be undercounted (handler should return failed TurnResult ` +
+                `instead of throwing — see ADR-027 Decision 5).`,
+            );
+            emitEvent({
+              kind: "run_error",
+              turnId: trigger.turnId,
+              message: err instanceof Error ? err.message : String(err),
+              source: aug.name,
+            });
+            emitEvent({
+              kind: "run_finished",
+              turnId: trigger.turnId,
+              status: "failed",
+            });
+            traceEmitter.finalize(trace);
+            await runCostCommit();
+            recordTurnSnapshot();
+            return {
+              turnId: trigger.turnId,
+              success: false,
+              status: "failed",
+              toolCalls: toolCallRecords,
+              trace,
+              error: {
+                message: err instanceof Error ? err.message : String(err),
+                source: aug.name,
+              },
+            };
+          }
+          if (handlerResult === null || handlerResult === undefined) {
+            // Augment did not claim — try the next handler.
+            continue;
+          }
+          // Handler claimed. Merge its inference-step costs into the
+          // kernel trace so runCostCommit observes them. Other trace
+          // fields (turnId, threadId, trigger metadata, timestamps)
+          // stay kernel-authoritative; handler-supplied artifacts
+          // (response, toolCalls, status) flow through to the caller.
+          for (const step of handlerResult.trace?.inferenceSteps ?? []) {
+            traceEmitter.recordInference(trace, step);
+          }
+          // Forward kernel events for run_finished — the handler returned
+          // a complete result; the transport-side observer needs a
+          // close-of-stream event regardless of whether the handler
+          // emitted any text.
+          emitEvent({
+            kind: "run_finished",
+            turnId: trigger.turnId,
+            status: handlerResult.status,
+          });
+          traceEmitter.finalize(trace);
+          await runCostCommit();
+          // Record any handler-supplied transcript text into the snapshot
+          // so SchedulerContext.getCompletedTranscript sees it.
+          if (handlerResult.response?.parts) {
+            for (const part of handlerResult.response.parts) {
+              if (part.kind === "text") {
+                transcriptParts.push(part);
+              }
+            }
+          }
+          recordTurnSnapshot();
+          return {
+            turnId: trigger.turnId,
+            success: handlerResult.success,
+            status: handlerResult.status,
+            response: handlerResult.response,
+            responses: handlerResult.responses,
+            errorResponse: handlerResult.errorResponse,
+            toolCalls: handlerResult.toolCalls ?? toolCallRecords,
+            trace,
+            error: handlerResult.error,
+            errorClass: handlerResult.errorClass,
+          };
+        }
+        // No handler claimed; fall through to the standard inference loop.
+      }
 
       // Run augment context pipeline
       const contextBlocks: ContextBlock[] = [];
@@ -416,6 +566,7 @@ export function createTurnLoop(opts: {
               status: "failed",
             });
             traceEmitter.finalize(trace);
+            recordTurnSnapshot();
             return {
               turnId: trigger.turnId,
               success: false,
@@ -573,6 +724,9 @@ export function createTurnLoop(opts: {
             timestamp: Date.now(),
             tokenCount: tokenizer.count(response.content),
           });
+          // ADR-027 transcript capture — assistant content is part of the
+          // turn's two-way exchange and must surface to scheduleAfterTurn.
+          transcriptParts.push({ kind: "text", text: response.content });
         }
 
         // No tool calls or context window exhausted — we're done.
@@ -615,6 +769,7 @@ export function createTurnLoop(opts: {
 
           traceEmitter.finalize(trace);
           await runCostCommit();
+          recordTurnSnapshot();
           return {
             turnId: trigger.turnId,
             success: true,
@@ -845,8 +1000,12 @@ export function createTurnLoop(opts: {
               message: pendingTerminate.message,
             }),
           });
+          if (pendingTerminate.message) {
+            transcriptParts.push({ kind: "text", text: pendingTerminate.message });
+          }
           traceEmitter.finalize(trace);
           await runCostCommit();
+          recordTurnSnapshot();
           return {
             turnId: trigger.turnId,
             success: true,
@@ -909,6 +1068,7 @@ export function createTurnLoop(opts: {
               timestamp: Date.now(),
               tokenCount: tokenizer.count(finalResponse.content),
             });
+            transcriptParts.push({ kind: "text", text: finalResponse.content });
             if (!termStreamed) {
               emitEvent({
                 kind: "text_message",
@@ -926,6 +1086,7 @@ export function createTurnLoop(opts: {
           });
           traceEmitter.finalize(trace);
           await runCostCommit();
+          recordTurnSnapshot();
           return {
             turnId: trigger.turnId,
             success: true,
@@ -967,8 +1128,10 @@ export function createTurnLoop(opts: {
         turnId: trigger.turnId,
         status: "completed",
       });
+      transcriptParts.push({ kind: "text", text: "I've completed the available actions." });
       traceEmitter.finalize(trace);
       await runCostCommit();
+      recordTurnSnapshot();
       return {
         turnId: trigger.turnId,
         success: true,

@@ -52,6 +52,21 @@ export interface MemoryDefaults {
   ttl?: "turn" | "session" | "persistent";
 }
 
+/**
+ * Provenance origin of a memory entry. Canonical here; storage types alias
+ * via MemoryOrigin so the runtime contract and the storage column type
+ * stay in lockstep.
+ *
+ * - "operator" — written by the operator (config-mounted entries, identity)
+ * - "peer-derived" — explicit `memory_write` calls from the model on behalf
+ *   of a peer's request ("save this for me")
+ * - "agent-derived" — written by background extraction (auto-save, ADR-018
+ *   Phase 2; populated by PR β). Paraphrases, not verbatim.
+ * - "agent" — direct agent-side writes (rare; reserved for system-internal
+ *   writes that shouldn't carry "peer-derived" trust)
+ */
+export type MemoryOrigin = "operator" | "peer-derived" | "agent-derived" | "agent";
+
 export interface MemoryEntry {
   label: string;
   content: string;
@@ -63,6 +78,7 @@ export interface MemoryEntry {
   supersededBy?: string;
   retentionClass?: "operational" | "lesson";
   isVerbatim?: boolean;
+  origin?: MemoryOrigin;
 }
 
 export interface MemoryQueryOpts {
@@ -174,7 +190,7 @@ export interface PeerIdentity {
 
 // === Turn Types (spec §4) ===
 
-export type TurnTriggerType = "message" | "scheduled" | "event" | "continuation";
+export type TurnTriggerType = "message" | "scheduled" | "event" | "continuation" | "internal";
 
 export interface InboundMessage {
   parts: Part[];
@@ -305,6 +321,55 @@ export interface TurnResult {
    * rejection sites may not yet set this.
    */
   errorClass?: string;
+}
+
+// === Transcript + Scheduler (ADR-027) ===
+
+/**
+ * Snapshot of a completed turn, captured by the kernel and exposed via
+ * SchedulerContext.getCompletedTranscript() for background-work augments.
+ *
+ * Returned by history-manager's kernel-internal getTranscript(turnId).
+ * Returns null when the turn was already compacted before retrieval.
+ */
+export interface Transcript {
+  turnId: string;
+  threadId: string;
+  peer: PeerIdentity | null;
+  parts: Part[];
+  toolCalls: ToolCallRecord[];
+  startedAt: number;
+  endedAt: number;
+}
+
+/**
+ * Context handed to `Augment.scheduleAfterTurn` (ADR-027). Exposes the
+ * narrow surface needed for post-turn background work:
+ *
+ *   - inject(trigger): admit a follow-up turn through the normal turn
+ *     loop. The follow-up gets its own turnId, runs admission/budgets,
+ *     fires lifecycle hooks, and surfaces in cost accounting like any
+ *     other turn.
+ *   - getCompletedTranscript(): retrieve the just-completed turn's
+ *     transcript snapshot. Closure-bound to the just-completed turnId;
+ *     no turnId argument by design (per ADR-027 Decision 3 — arbitrary
+ *     turnId reads stay kernel-internal at v1.0). Returns null when the
+ *     turn was already compacted before the hook ran.
+ */
+export interface SchedulerContext {
+  inject(trigger: TurnTrigger): Promise<TurnResult>;
+  getCompletedTranscript(): Promise<Transcript | null>;
+}
+
+/**
+ * Context handed to `Augment.handleInternalTurn` (ADR-027 Decision 5).
+ * Exposes the kernel-resolved threadId + peer for the internal turn so
+ * the handler can propagate them when writing to memory or recording
+ * side-effects.
+ */
+export interface InternalTurnContext {
+  threadId: string;
+  peer: PeerIdentity | null;
 }
 
 // === Kernel Events (internal — emitted by turn loop, consumed by transports) ===
@@ -615,6 +680,66 @@ export interface Augment {
   onTurnStart?: (turn: TurnState) => Promise<void>;
   onTurnEnd?: (turn: TurnResult) => Promise<void>;
   onIdle?: () => Promise<void>;
+  /**
+   * ADR-027: post-turn background-work hook. Fires after `onTurnEnd` for
+   * the just-completed user-facing turn. Receives a `SchedulerContext`
+   * with `inject` (admit a follow-up turn through the normal turn loop)
+   * and `getCompletedTranscript` (retrieve the just-completed turn's
+   * transcript snapshot).
+   *
+   * Errors thrown from this hook are caught and logged; they NEVER block
+   * the user-facing turn or affect the response delivered to the peer.
+   * Background work is best-effort by design.
+   *
+   * Multiple augments registering the hook execute sequentially in
+   * declaration order (ADR-027 Decision 2).
+   */
+  scheduleAfterTurn?: (result: TurnResult, ctx: SchedulerContext) => Promise<void>;
+  /**
+   * ADR-027 Decision 5: internal-trigger handler dispatch. When the
+   * kernel admits a turn whose `trigger.type === "internal"`, the
+   * turn-loop walks the augment list in declaration order and calls
+   * each augment's `handleInternalTurn` (if present) with the trigger.
+   * Augments that do not recognize the trigger MUST return null —
+   * dispatch then continues to the next augment. The first augment to
+   * return a non-null TurnResult owns the turn; the standard
+   * model-engine + tool-execution path is bypassed and the returned
+   * result is the turn's outcome.
+   *
+   * Augments use trigger.source as the authoritative routing key
+   * (e.g. `"layered-memory.autoSave"`). Augments emitting and consuming
+   * triggers SHOULD use a dotted prefix matching their augment name to
+   * avoid cross-augment collisions.
+   *
+   * The handler runs WITHIN the admitted turn — turn-gate prepare /
+   * confirm, onTurnStart, onTurnEnd, scheduleAfterTurn, and history
+   * recording all fire as for any standard turn. The handler is
+   * responsible for any LLM call its work needs; cost flows through
+   * `runCostCommit` via the standard trace pipeline (push priced
+   * inference steps onto `TurnResult.trace.inferenceSteps[]`).
+   *
+   * Augment authors MUST guard against re-entry — a handler should
+   * never synthesize a trigger that re-routes back to itself during
+   * the same execution.
+   *
+   * **Throw contract — load-bearing for budget accuracy.** Handlers
+   * MUST NOT throw with side effects. Failure modes (engine error,
+   * malformed response, transient network failure) MUST be caught
+   * inside the handler and returned as a failed TurnResult that still
+   * carries any priced inference steps in `trace.inferenceSteps[]`.
+   *
+   * If a handler throws after incurring LLM spend, the kernel's
+   * catch-block will commit a turn with no recorded cost — budgets
+   * sees zero spend for a turn that actually burned money. The kernel
+   * logs a structured warning (`[kernel] handleInternalTurn for
+   * augment "X" threw; cost may be undercounted ...`) so a misbehaving
+   * handler is operator-visible, but the cap-accuracy invariant
+   * depends on handlers honoring this contract.
+   */
+  handleInternalTurn?: (
+    trigger: TurnTrigger,
+    ctx: InternalTurnContext,
+  ) => Promise<TurnResult | null>;
   /**
    * Pre-dispatch admission gate. Kernel calls prepare/confirm/rollback
    * before executing the turn. See TurnGateProvider for the 2PC contract.

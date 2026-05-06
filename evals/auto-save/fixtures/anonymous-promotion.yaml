@@ -1,0 +1,106 @@
+case_id: anonymous-promotion
+description: >
+  A peer starts as public.anonymous and accumulates session-end-only buffered
+  facts across the first three turns. At turn 4, a visitor token arrives and
+  the peer transitions to public.recognized with a new durable ID. Decision 5
+  specifies: the buffered anonymous-bound extraction MUST flush on the next turn
+  after promotion (facts written under the OLD anon identity); subsequent turns
+  auto-save under the NEW recognized identity; no facts cross identities.
+  This fixture captures both phases and the identity boundary assertion.
+
+# Phase 1: anonymous peer
+peer_before_promotion:
+  id: anon_abc123threadId
+  kind: human
+  trustLevel: public
+  publicSubstate: anonymous
+
+# Phase 2: recognized peer (after token arrives at turn 4)
+peer_after_promotion:
+  id: vis_durable_promoted_001
+  kind: human
+  trustLevel: public
+  publicSubstate: recognized
+
+# Promotion event occurs between turn 3 and turn 4 (simulated mid-session)
+promotion_at_turn: 4
+
+transcript:
+  # Anonymous phase (turns 1-3): facts buffered, not yet extracted
+  - role: user
+    content: "Hi, I'm interested in your research tools."
+  - role: assistant
+    content: "Great! We have several. Are you looking for something specific?"
+  - role: user
+    content: "I focus on machine learning research, specifically NLP."
+  - role: assistant
+    content: "NLP is a great area. Are you more on the applied or theoretical side?"
+  - role: user
+    content: "Applied mostly. I work at a university research lab."
+  - role: assistant
+    content: "That's interesting. Are you working on any particular projects right now?"
+  # Promotion event: anonymous → recognized (vis_durable_promoted_001)
+  # On next turn, the buffer MUST flush under anon_abc123threadId
+  - role: user
+    content: "Yes, a paper on retrieval-augmented generation. I'm the first author."
+  - role: assistant
+    content: "That's exciting work. What aspects of RAG are you focusing on?"
+  - role: user
+    content: "Mostly improving recall at longer context lengths."
+  - role: assistant
+    content: "A very active area. Happy to discuss further."
+
+# Facts from the anonymous phase (should be written under anon_abc123threadId)
+expected_facts_anonymous_phase:
+  - subject: peer
+    predicate: research_domain
+    object: NLP (applied machine learning research)
+    namespace: anon_abc123threadId
+    must_extract: true
+  - subject: peer
+    predicate: affiliation
+    object: university research lab
+    namespace: anon_abc123threadId
+    must_extract: true
+
+# Facts from the recognized phase (should be written under vis_durable_promoted_001)
+expected_facts_recognized_phase:
+  - subject: peer
+    predicate: current_project
+    object: paper on retrieval-augmented generation
+    namespace: vis_durable_promoted_001
+    must_extract: true
+  - subject: peer
+    predicate: role
+    object: first author
+    namespace: vis_durable_promoted_001
+    must_extract: true
+
+# Convenience alias for grader: all facts that must appear somewhere
+expected_facts:
+  - subject: peer
+    predicate: research_domain
+    object: NLP (applied machine learning research)
+    must_extract: true
+  - subject: peer
+    predicate: affiliation
+    object: university research lab
+    must_extract: true
+  - subject: peer
+    predicate: current_project
+    object: paper on retrieval-augmented generation
+    must_extract: true
+  - subject: peer
+    predicate: role
+    object: first author
+    must_extract: true
+
+must_not_extract:
+  - "Happy to discuss further"
+
+assertions:
+  - anonymous-phase facts flushed under anon_abc123threadId on the turn after promotion
+  - recognized-phase facts saved under vis_durable_promoted_001
+  - no fact from anon_abc123threadId namespace copied to vis_durable_promoted_001 (identities stay separate)
+  - no fact from vis_durable_promoted_001 namespace copied to anon_abc123threadId
+  - all extracted facts have confidence >= 0.5

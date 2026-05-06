@@ -1,8 +1,11 @@
 /**
- * auggy eval [agent] — run the portable security eval suite against an agent.
+ * auggy eval [suite|agent] — run an eval suite.
  *
- * Wraps `evals/security/run.ts` so operators get the production-DX shape:
+ * Suite routing:
+ *   auggy eval auto-save                # auto-save fixture validation (dry-run)
+ *   auggy eval auto-save --dry-run      # explicit dry-run (same as above)
  *
+ * Security eval (default when no suite name is given):
  *   auggy eval                          # default fixture (canonical test agent)
  *   auggy eval zip                      # registered agent
  *   auggy eval --config path/to/agent.yaml
@@ -19,7 +22,12 @@ import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { Command } from "commander";
 import { runEvalSuite, getDefaultFixtureConfigPath } from "../../../evals/security/run";
+import { runAutoSaveEval } from "../../../evals/auto-save/run";
 import { getAgent } from "../agent-index";
+
+/** Known suite names that route to specialized runners (not the security runner). */
+const NAMED_SUITES = ["auto-save"] as const;
+type NamedSuite = (typeof NAMED_SUITES)[number];
 
 interface ResolveEvalConfigOptions {
   /** Override `~/.auggy/` for tests. */
@@ -69,9 +77,11 @@ export function resolveEvalConfigPath(
   return fixtureResolver();
 }
 
-interface EvalCommandDeps {
+export interface EvalCommandDeps {
   /** Inject for tests so we don't make real API calls. */
   runEvalSuite?: typeof runEvalSuite;
+  /** Inject auto-save runner for tests. */
+  runAutoSaveEval?: typeof runAutoSaveEval;
   /** Override exit so tests can assert the exit code without crashing the runner. */
   exit?: (code: number) => void;
   /** Override `~/.auggy/` for tests. */
@@ -80,19 +90,49 @@ interface EvalCommandDeps {
 
 export function evalCommand(deps: EvalCommandDeps = {}): Command {
   const runner = deps.runEvalSuite ?? runEvalSuite;
+  const autoSaveRunner = deps.runAutoSaveEval ?? runAutoSaveEval;
   const exit = deps.exit ?? ((code: number) => process.exit(code));
 
   return new Command("eval")
-    .description("Run the portable security eval suite against an agent")
-    .argument("[agent]", "registered agent name (defaults to the bundled fixture)")
-    .option("--config <path>", "explicit agent.yaml path (overrides agent name lookup)")
-    .option("--suite <which>", "security-only | benign-only | all (default)", "all")
-    .option("--trials <n>", "trials per case (default: 3)")
+    .description("Run an eval suite: auto-save (fixture validation) or security (default)")
+    .argument(
+      "[suite-or-agent]",
+      "suite name (auto-save) or registered agent name for security eval (defaults to the bundled fixture)",
+    )
+    .option(
+      "--config <path>",
+      "explicit agent.yaml path (overrides agent name lookup; security eval only)",
+    )
+    .option(
+      "--suite <which>",
+      "security-only | benign-only | all (default; security eval only)",
+      "all",
+    )
+    .option("--trials <n>", "trials per case (default: 3; security eval only)")
+    .option("--dry-run", "validate auto-save fixtures without LLM calls (auto-save suite only)")
     .action(
       async (
-        agentName: string | undefined,
-        opts: { config?: string; suite: string; trials?: string },
+        suiteOrAgent: string | undefined,
+        opts: { config?: string; suite: string; trials?: string; dryRun?: boolean },
       ) => {
+        // Route named suites to their own runners.
+        if (suiteOrAgent != null && NAMED_SUITES.includes(suiteOrAgent as NamedSuite)) {
+          const suiteName = suiteOrAgent as NamedSuite;
+
+          if (suiteName === "auto-save") {
+            const result = await autoSaveRunner({ dryRun: opts.dryRun !== false });
+            exit(result.exitCode);
+            return;
+          }
+
+          // Future named suites routed here.
+          console.error(`Error: unknown suite "${suiteName}"`);
+          exit(1);
+          return;
+        }
+
+        // Security eval path (default when no named suite is given).
+        const agentName = suiteOrAgent;
         let configPath: string;
         try {
           configPath = resolveEvalConfigPath(

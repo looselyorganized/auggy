@@ -1,5 +1,12 @@
 import { randomUUID } from "node:crypto";
-import type { MemoryStore, RetentionClass, StoreEntry, SupabaseStoreConfig } from "./types";
+import type {
+  MemoryStore,
+  OriginValue,
+  RetentionClass,
+  StoreEntry,
+  SupabaseStoreConfig,
+  WriteAutoSavedArgs,
+} from "./types";
 import type { TrustLevel } from "../../../types";
 
 /**
@@ -52,10 +59,16 @@ interface Row {
   retention_class: string;
   is_verbatim: boolean | number;
   expires_at: number | null;
+  // Phase 2 fact-fields (nullable)
+  subject: string | null;
+  predicate: string | null;
+  object: string | null;
+  source_turn_id: string | null;
+  origin: string | null;
 }
 
 function rowToEntry(row: Row): StoreEntry {
-  return {
+  const entry: StoreEntry = {
     id: row.id,
     label: row.label,
     content: row.content,
@@ -67,6 +80,13 @@ function rowToEntry(row: Row): StoreEntry {
     isVerbatim: !!row.is_verbatim,
     expiresAt: row.expires_at,
   };
+  // Phase 2 fact-fields: only populate if non-null to keep entries clean
+  if (row.subject != null) entry.subject = row.subject;
+  if (row.predicate != null) entry.predicate = row.predicate;
+  if (row.object != null) entry.object = row.object;
+  if (row.source_turn_id != null) entry.sourceTurnId = row.source_turn_id;
+  if (row.origin != null) entry.origin = row.origin as OriginValue;
+  return entry;
 }
 
 export function createSupabaseStore(
@@ -93,6 +113,12 @@ export function createSupabaseStore(
       retention_class: input.retentionClass,
       is_verbatim: input.isVerbatim,
       expires_at: expiresAt,
+      // Phase 2 fact-fields
+      subject: input.subject ?? null,
+      predicate: input.predicate ?? null,
+      object: input.object ?? null,
+      source_turn_id: input.sourceTurnId ?? null,
+      origin: input.origin ?? null,
     };
 
     const { error } = await config.client.from(config.table).insert(row);
@@ -115,7 +141,7 @@ export function createSupabaseStore(
     let builder: SearchBuilder = config.client
       .from(config.table)
       .select(
-        "id, label, content, peer_id, trust_level, created_at, superseded_by, retention_class, is_verbatim, expires_at",
+        "id, label, content, peer_id, trust_level, created_at, superseded_by, retention_class, is_verbatim, expires_at, subject, predicate, object, source_turn_id, origin",
       );
 
     if (peerId) {
@@ -141,7 +167,7 @@ export function createSupabaseStore(
     const { data, error } = await config.client
       .from(config.table)
       .select(
-        "id, label, content, peer_id, trust_level, created_at, superseded_by, retention_class, is_verbatim, expires_at",
+        "id, label, content, peer_id, trust_level, created_at, superseded_by, retention_class, is_verbatim, expires_at, subject, predicate, object, source_turn_id, origin",
       )
       .eq("label", label)
       .maybeSingle();
@@ -175,6 +201,49 @@ export function createSupabaseStore(
     return 0;
   }
 
+  // Internal-to-layered-memory write path used by the extractor. See
+  // sqlite-store's writeAutoSavedEntry for the full contract; the
+  // Supabase implementation mirrors it: enforce namespace prefix,
+  // hardcode origin='agent-derived', persist the structured-fact +
+  // provenance fields. NOT exposed on any augment-public surface.
+  async function writeAutoSavedEntry(args: WriteAutoSavedArgs): Promise<void> {
+    if (!config.namespace) {
+      throw new Error(
+        "writeAutoSavedEntry: store has no namespace configured; auto-save requires namespace-prefix discipline",
+      );
+    }
+    const prefix = config.namespace.endsWith(":") ? config.namespace : `${config.namespace}:`;
+    if (!args.label.startsWith(prefix)) {
+      throw new Error(
+        `writeAutoSavedEntry: label "${args.label}" does not start with namespace prefix "${prefix}"`,
+      );
+    }
+    const id = randomUUID();
+    const createdAt = Date.now();
+    const expiresAt = createdAt + retentionMs;
+    const row: Row & { provenance_model: string | null; confidence: number | null } = {
+      id,
+      label: args.label,
+      content: args.content,
+      peer_id: args.peerId,
+      trust_level: null,
+      created_at: createdAt,
+      superseded_by: null,
+      retention_class: args.retentionClass,
+      is_verbatim: args.isVerbatim,
+      expires_at: expiresAt,
+      subject: args.subject ?? null,
+      predicate: args.predicate ?? null,
+      object: args.object ?? null,
+      source_turn_id: args.sourceTurnId,
+      origin: "agent-derived",
+      provenance_model: args.model,
+      confidence: args.confidence,
+    };
+    const { error } = await config.client.from(config.table).insert(row);
+    if (error) throw error;
+  }
+
   async function close(): Promise<void> {
     // No-op for Supabase.
   }
@@ -182,6 +251,7 @@ export function createSupabaseStore(
   return {
     initialize,
     write,
+    writeAutoSavedEntry,
     search,
     read,
     list,

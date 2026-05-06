@@ -25,7 +25,7 @@ bun install
 bun link                 # makes `auggy` available globally
 
 # 3. Tests + typecheck
-bun test                 # 1279 tests across 100 files
+bun test                 # 1458 tests across 114 files
 bunx tsc --noEmit        # must be clean
 
 # 4. Run the demo agent (requires ANTHROPIC_API_KEY)
@@ -71,6 +71,63 @@ src/augments/<name>/
 - **Boot-time validator.** `src/cli/skill-validator.ts` warns at agent startup if a tool-providing augment is mounted without a skill — applies to factory-declared `tools[]` AND namespace memory providers (kernel-synthesized `memory_*` tools).
 - **Tool-less augments may skip the skill folder.** Memory providers without tools, transports, and admission gates contribute only `context()` blocks — no model-callable tools, no skill required.
 
+## Background work hooks (ADR-027)
+
+Two optional augment fields enable post-turn background work. Use these when your augment needs to do something after a user-facing turn completes — extraction, consolidation, outbox sync — and that work may itself need to run an LLM call or write to storage.
+
+### `Augment.scheduleAfterTurn?(result, ctx)`
+
+Fires after `onTurnEnd` has run for the just-completed user-facing turn. Receives:
+
+- `result: TurnResult` — the outcome of the turn (success/failure, turnId).
+- `ctx: SchedulerContext` — two capabilities:
+  - `ctx.inject(trigger)` — admit a follow-up internal turn through the full turn-loop machinery (admission, budgets, lifecycle hooks, cost commit). Returns the resulting `TurnResult`.
+  - `ctx.getCompletedTranscript()` — retrieve the just-completed turn's transcript snapshot (peer, parts, tool calls). Returns `null` if the turn was compacted before the hook ran.
+
+Errors from this hook are caught and logged; they never block the user-facing turn or affect the peer's response. Background work is best-effort.
+
+**When to use:** post-turn work that reads the just-completed transcript and may need to inject a follow-up internal turn. Examples: fact extraction after a conversation turn, outbox flush triggered by turn completion.
+
+```ts
+const myAugment: Augment = {
+  name: "my-augment",
+  scheduleAfterTurn: async (result, ctx) => {
+    const transcript = await ctx.getCompletedTranscript();
+    if (!transcript) return; // compacted — skip gracefully
+    // decide whether to act, then optionally inject a follow-up turn
+    await ctx.inject({
+      type: "internal",
+      source: "my-augment.some-work",
+      peer: transcript.peer,
+      // ... other fields
+    });
+  },
+};
+```
+
+### `Augment.handleInternalTurn?(trigger, ctx)`
+
+When the kernel dispatches a turn whose `trigger.type === "internal"`, it walks the augment list in declaration order calling `handleInternalTurn` on each augment that defines it. The **first augment to return a non-null `TurnResult`** owns the turn — the standard model-engine inference loop is bypassed and the returned result is the turn's outcome. Augments that do not recognize the trigger **must return `null`** so dispatch continues to the next augment.
+
+Use `trigger.source` as the routing key — by convention use a dotted prefix matching your augment name (e.g. `"my-augment.some-work"`) to avoid cross-augment collisions.
+
+**Cost-flow contract:** if your handler makes an LLM call, the cost of that call must flow through the turn's `TurnResult.trace.inferenceSteps[]` so `runCostCommit` aggregates it into the budgets store. In-handler costs that bypass this path silently break daily-budget accounting. See [ADR-027](https://github.com/looselyorganized/lo/blob/main/docs/solutions/architecture/adr-027-internal-turn-admission.md) Decision 5 for the two valid cost-reporting shapes.
+
+**When to use:** when your augment emits internal triggers via `ctx.inject` and needs to run a custom execution body for those triggers (a different prompt, a different model, specialized output handling) rather than the standard model-engine inference loop.
+
+```ts
+const myAugment: Augment = {
+  name: "my-augment",
+  handleInternalTurn: async (trigger, ctx) => {
+    if (trigger.source !== "my-augment.some-work") return null; // not ours
+    // run the work; build and return a TurnResult with cost in trace
+    return { turnId: trigger.turnId, success: true, /* ... */ };
+  },
+};
+```
+
+**Recursion guard:** a handler for `"my-augment.some-work"` must not emit another `"my-augment.some-work"` trigger via `ctx.inject` during its own execution.
+
 ## Commit style
 
 We use [Conventional Commits](https://www.conventionalcommits.org/). The recent log is the source of truth for examples:
@@ -89,7 +146,7 @@ Scopes match top-level source areas: `kernel`, `memory`, `transport`, `engines`,
 
 Before requesting review:
 
-- [ ] `bun test` passes (all 1100+).
+- [ ] `bun test` passes (all 1458).
 - [ ] `bunx tsc --noEmit` is clean.
 - [ ] If you changed behavior documented in `docs/`, the doc is updated in the same PR.
 - [ ] If the change crosses a public surface (new augment, new tool, new engine), a test exercises it.
