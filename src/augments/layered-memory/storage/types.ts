@@ -1,9 +1,14 @@
-import type { TrustLevel } from "../../../types";
+import type { MemoryOrigin, TrustLevel } from "../../../types";
 import type { SupabaseLikeClient } from "../../supabase-memory";
 
 export type RetentionClass = "operational" | "lesson";
 
-export type OriginValue = "operator" | "peer-derived" | "agent-derived" | "agent";
+/**
+ * Re-export of the canonical MemoryOrigin from `src/types.ts`. The storage
+ * layer's `origin` column matches the runtime MemoryEntry contract one-for-one;
+ * having a single canonical type prevents drift.
+ */
+export type OriginValue = MemoryOrigin;
 
 export interface StoreEntry {
   id: string;

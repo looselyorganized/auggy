@@ -24,6 +24,7 @@ function storeEntryToMemoryEntry(e: StoreEntry): MemoryEntry {
     supersededBy: e.supersededBy ?? undefined,
     retentionClass: e.retentionClass,
     isVerbatim: e.isVerbatim,
+    origin: e.origin,
   };
 }
 

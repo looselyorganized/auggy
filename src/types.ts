@@ -52,6 +52,21 @@ export interface MemoryDefaults {
   ttl?: "turn" | "session" | "persistent";
 }
 
+/**
+ * Provenance origin of a memory entry. Canonical here; storage types alias
+ * via MemoryOrigin so the runtime contract and the storage column type
+ * stay in lockstep.
+ *
+ * - "operator" — written by the operator (config-mounted entries, identity)
+ * - "peer-derived" — explicit `memory_write` calls from the model on behalf
+ *   of a peer's request ("save this for me")
+ * - "agent-derived" — written by background extraction (auto-save, ADR-018
+ *   Phase 2; populated by PR β). Paraphrases, not verbatim.
+ * - "agent" — direct agent-side writes (rare; reserved for system-internal
+ *   writes that shouldn't carry "peer-derived" trust)
+ */
+export type MemoryOrigin = "operator" | "peer-derived" | "agent-derived" | "agent";
+
 export interface MemoryEntry {
   label: string;
   content: string;
@@ -63,6 +78,7 @@ export interface MemoryEntry {
   supersededBy?: string;
   retentionClass?: "operational" | "lesson";
   isVerbatim?: boolean;
+  origin?: MemoryOrigin;
 }
 
 export interface MemoryQueryOpts {
