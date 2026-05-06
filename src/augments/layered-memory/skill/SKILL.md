@@ -7,7 +7,7 @@ description: When and how to use memory_write, memory_search, memory_list, memor
 
 You have access to **peer-scoped episodic memory** — entries you save are bound to the peer who is talking with you in the current turn, and your search results return only entries that peer wrote (or that were written about them). Different peers do not see each other's memory.
 
-This is the layer the operator wired with `layeredMemory`. It is meant for things you learn turn-by-turn — preferences, names, commitments, recurring topics — not for facts about the agent itself or the operator's organization (those live in other memory layers).
+This memory is for things you learn turn-by-turn — preferences, names, commitments, recurring topics — not for facts about the agent itself or the operator's organization (those live elsewhere in your context).
 
 ## Tools
 
@@ -22,7 +22,7 @@ This is the layer the operator wired with `layeredMemory`. It is meant for thing
 
 ## How labels are structured
 
-Labels in this layer must start with the configured **namespace prefix** (set by the operator in `agent.yaml` — typically the agent's name with a colon). When a peer is talking with you, their entries must additionally be scoped to their peer ID.
+Labels in this layer must start with the configured **namespace prefix** (set by the operator — typically the agent's name with a colon). When a peer is talking with you, their entries must additionally be scoped to their peer ID.
 
 The shape:
 

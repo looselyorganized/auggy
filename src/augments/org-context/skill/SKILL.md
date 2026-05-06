@@ -15,7 +15,7 @@ The manifest is small (~200 tokens, always loaded). The endpoint contents are la
 |------|--------------|
 | `org_fetch(endpoint)` | Retrieve the content of one endpoint listed in the org context manifest |
 
-Only `org_fetch` is exposed by this augment. If you need to alert the operator out-of-band about something (escalate a request you can't handle, flag urgent input, ask for human approval), that lives in a separate `notify` augment with its own skill — not here.
+Only `org_fetch` is exposed here. If you need to alert the operator out-of-band about something (escalate a request you can't handle, flag urgent input, ask for human approval), that's a separate capability — see the `notify` skill if it's mounted in this agent. Don't try to use `org_fetch` for it.
 
 ## How to call it
 

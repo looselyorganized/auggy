@@ -250,4 +250,23 @@ describe("identity field validation", () => {
       "identity: must be a non-empty string path to a markdown file (got empty string)",
     );
   });
+
+  test("rejects identity: whitespace-only string (Codex Imp-2)", () => {
+    // A whitespace-only path slips past the length-zero gate but produces
+    // a useless file path. Validator now trims and rejects.
+    const path = writeYaml("agent.yaml", configWithoutIdentity({ identity: "   " }));
+    expect(() => parseConfig(path)).toThrow(
+      "identity: must be a non-empty string path to a markdown file (got whitespace-only string)",
+    );
+  });
+
+  test("trims surrounding whitespace from a valid identity path", () => {
+    // A valid path with leading/trailing whitespace should be accepted but
+    // trimmed at parse — preserving the canonical form for downstream use.
+    const path = writeYaml("agent.yaml", configWithoutIdentity({ identity: "  ./identity.md  " }));
+    const parsed = parseConfig(path);
+    const identityAug = parsed.augments.find((a) => a.name === "identity");
+    expect(identityAug).toBeDefined();
+    expect((identityAug?.options as { source?: string }).source).toBe("./identity.md");
+  });
 });

@@ -33,15 +33,17 @@ describe("scaffoldAgent", () => {
   test("generates a valid aug1_ UUID in agent.yaml", () => {
     const dir = scaffoldAgent({ name: "test-agent", targetDir: join(TMP, "test-agent") });
     const yaml = readFileSync(join(dir, "agent.yaml"), "utf-8");
+    // Optional quotes — scaffold YAML-escapes scalars defensively.
     expect(yaml).toMatch(
-      /^id: aug1_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/m,
+      /^id: "?aug1_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"?$/m,
     );
   });
 
   test("agent.yaml contains the agent name", () => {
     const dir = scaffoldAgent({ name: "zip", targetDir: join(TMP, "zip") });
     const yaml = readFileSync(join(dir, "agent.yaml"), "utf-8");
-    expect(yaml).toContain("name: zip");
+    // Optional quotes per yamlScalar.
+    expect(yaml).toMatch(/^name: "?zip"?$/m);
   });
 
   test("agent.yaml does not set trustLevel on webTransport (trust is per-request)", () => {
@@ -247,7 +249,8 @@ describe("scaffoldAgent", () => {
     test("agent.yaml namespace for layeredMemory matches the agent name", () => {
       const dir = scaffoldAgent({ name: "concierge", targetDir: join(TMP, "concierge-ns") });
       const yaml = readFileSync(join(dir, "agent.yaml"), "utf-8");
-      expect(yaml).toContain("namespace: concierge");
+      // Optional quotes per yamlScalar.
+      expect(yaml).toMatch(/namespace: "?concierge"?\b/);
     });
 
     test(".gitignore excludes memory.sqlite (layeredMemory's default DB path)", () => {
@@ -296,6 +299,46 @@ describe("scaffoldAgent", () => {
 
       const dir2 = scaffoldAgent({ name: "zip", targetDir: dir1 });
       expect(existsSync(join(dir2, "skills", "filesystem", "SKILL.md"))).toBe(true);
+    });
+  });
+
+  describe("YAML-safe scalar escaping (Codex Imp-4)", () => {
+    test("operatorName containing quotes produces well-formed YAML", async () => {
+      const tricky = 'Sam "the boss" Smith';
+      const dir = scaffoldAgent({
+        name: "test-quotes",
+        operatorName: tricky,
+        targetDir: join(TMP, "test-quotes"),
+      });
+      const yaml = readFileSync(join(dir, "agent.yaml"), "utf-8");
+      // Round-trip via the YAML parser to confirm the string survives intact.
+      const { parse } = await import("yaml");
+      const parsed = parse(yaml) as { operators: string[] };
+      expect(parsed.operators[0]).toBe(tricky);
+    });
+
+    test("purpose containing newlines and special chars produces well-formed YAML", async () => {
+      const tricky = 'A multi-line\npurpose with "quotes" and \\backslashes';
+      const dir = scaffoldAgent({
+        name: "test-newlines",
+        purpose: tricky,
+        targetDir: join(TMP, "test-newlines"),
+      });
+      const yaml = readFileSync(join(dir, "agent.yaml"), "utf-8");
+      const { parse } = await import("yaml");
+      const parsed = parse(yaml) as { purpose: string };
+      expect(parsed.purpose).toBe(tricky);
+    });
+
+    test("agent name containing colons (which would break unquoted YAML) is escaped", async () => {
+      const dir = scaffoldAgent({
+        name: "weird:name:with:colons",
+        targetDir: join(TMP, "test-colons"),
+      });
+      const yaml = readFileSync(join(dir, "agent.yaml"), "utf-8");
+      const { parse } = await import("yaml");
+      const parsed = parse(yaml) as { name: string };
+      expect(parsed.name).toBe("weird:name:with:colons");
     });
   });
 });

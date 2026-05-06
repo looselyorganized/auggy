@@ -402,7 +402,18 @@ function validateIdentityShorthand(raw: unknown, errors: string[]): string | und
     errors.push("identity: must be a non-empty string path to a markdown file (got empty string)");
     return undefined;
   }
-  return raw;
+  // Trim before length check: a whitespace-only value would pass the
+  // length-zero gate but produce a useless source path. Catch it at parse
+  // time with a clear error rather than letting it fail later at boot
+  // with an opaque file-memory load error.
+  const trimmed = raw.trim();
+  if (trimmed.length === 0) {
+    errors.push(
+      "identity: must be a non-empty string path to a markdown file (got whitespace-only string)",
+    );
+    return undefined;
+  }
+  return trimmed;
 }
 
 /**

@@ -122,6 +122,22 @@ export function scaffoldAgent(opts: ScaffoldOptions): string {
 // Templates
 // ---------------------------------------------------------------------------
 
+/**
+ * Render a string as a YAML-safe scalar. Operator-supplied free-text values
+ * (purpose, operatorName) reach this function; without escaping, a value
+ * containing a quote, newline, or backslash would corrupt the generated
+ * agent.yaml. JSON-encoded strings are valid YAML scalars in flow shape,
+ * so JSON.stringify produces a double-quoted, escaped form that YAML parses
+ * back to the original string.
+ *
+ * The interactive `auggy create` flow already routes operator input through
+ * yaml.stringify; this helper closes the parallel gap in `scaffoldAgent`,
+ * the programmatic entry point used by tests and any third-party scaffolder.
+ */
+function yamlScalar(s: string): string {
+  return JSON.stringify(s);
+}
+
 function agentYamlTemplate(
   id: string,
   name: string,
@@ -131,11 +147,11 @@ function agentYamlTemplate(
   return `# Agent configuration — the source of truth for this Auggy agent.
 # See docs at augment-1/docs/ for field reference.
 
-id: ${id}
-name: ${name}
-purpose: "${purpose}"
+id: ${yamlScalar(id)}
+name: ${yamlScalar(name)}
+purpose: ${yamlScalar(purpose)}
 operators:
-  - "${operatorName}"
+  - ${yamlScalar(operatorName)}
 
 # identity shorthand — synthesizes a fileMemory@system entry from ./identity.md
 # at parse time. Operators wanting non-default options (e.g. mutable: true)
@@ -172,7 +188,7 @@ augments:
     type: layeredMemory
     options:
       backend: sqlite
-      namespace: ${name}
+      namespace: ${yamlScalar(name)}
       dbPath: ./memory.sqlite
       retentionDays: 90
 

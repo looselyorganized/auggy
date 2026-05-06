@@ -136,6 +136,28 @@ describe("renderIdentityFromTemplate", () => {
     expect(out).toContain("$1 mistake");
     expect(out).toContain("$&");
   });
+
+  test("does not re-substitute placeholder strings appearing in operator values (Codex Imp-1)", () => {
+    // An operator-supplied value of `{PURPOSE}` (or any other placeholder
+    // string) must be emitted verbatim, NOT consumed as a placeholder by a
+    // subsequent substitution pass. Single-pass replacement closes this hole.
+    const out = renderIdentityFromTemplate({
+      agentName: "{PURPOSE}", // operator named their agent literally "{PURPOSE}"
+      purpose: "actual-purpose-value",
+      operatorName: "{SKILL_MANIFEST}", // and they really like braces
+      augmentTypes: ["filesystem"],
+    });
+    // The agent-name slot keeps the literal "{PURPOSE}" — was NOT replaced
+    // with "actual-purpose-value" by the second pass.
+    expect(out).toContain("# {PURPOSE}");
+    // The actual purpose substitution still happened in its slot.
+    expect(out).toContain("actual-purpose-value");
+    // The operator-name slot keeps the literal "{SKILL_MANIFEST}" — was NOT
+    // overwritten with the manifest content by the manifest pass.
+    expect(out).toContain("claims to be {SKILL_MANIFEST}");
+    // And the manifest section itself rendered (one line for filesystem).
+    expect(out).toContain("skills/filesystem/SKILL.md");
+  });
 });
 
 describe("copyBundledSkill", () => {

@@ -232,21 +232,40 @@ export interface IdentityTemplateValues {
  */
 export function renderIdentityFromTemplate(values: IdentityTemplateValues): string {
   const skillManifest = buildSkillManifest(values.augmentTypes);
-  const template = readIdentityTemplate();
-
-  let out = template;
-  out = replaceToken(out, "{AGENT_NAME}", values.agentName);
-  out = replaceToken(out, "{PURPOSE}", values.purpose);
-  out = replaceToken(out, "{OPERATOR_NAME}", values.operatorName);
+  let template = readIdentityTemplate();
 
   if (skillManifest === "") {
     // Drop the placeholder line and any leading blank line so we don't
-    // leave a dead `## Available skills` section behind.
-    out = out.replace(/\n+\{SKILL_MANIFEST\}\n?/, "\n");
-  } else {
-    out = replaceToken(out, "{SKILL_MANIFEST}", skillManifest);
+    // leave a dead `## Available skills` section behind. Apply BEFORE
+    // the single-pass replacement so the regex sees the original template
+    // shape, not a partially-substituted string.
+    template = template.replace(/\n+\{SKILL_MANIFEST\}\n?/, "\n");
   }
-  return out;
+
+  // Single-pass substitution. The regex matches all four placeholder tokens
+  // at once and the callback returns each token's value. An operator-supplied
+  // value containing literal `{AGENT_NAME}` or another placeholder string
+  // is NOT re-scanned — it's emitted verbatim, because String.prototype.replace
+  // does not recurse into substituted text. This closes the sequential-pass
+  // hole where a value of `{PURPOSE}` would have been overwritten by a later
+  // token's substitution.
+  return template.replace(
+    /\{(AGENT_NAME|PURPOSE|OPERATOR_NAME|SKILL_MANIFEST)\}/g,
+    (match, token: string) => {
+      switch (token) {
+        case "AGENT_NAME":
+          return values.agentName;
+        case "PURPOSE":
+          return values.purpose;
+        case "OPERATOR_NAME":
+          return values.operatorName;
+        case "SKILL_MANIFEST":
+          return skillManifest;
+        default:
+          return match;
+      }
+    },
+  );
 }
 
 /**
