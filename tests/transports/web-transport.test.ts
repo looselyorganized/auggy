@@ -1333,7 +1333,7 @@ describe("webTransport / (root) route", () => {
 describe("webTransport augment-registered routes", () => {
   it("dispatches GET requests to augment-registered routes", async () => {
     const model = createMockModel();
-    const port = 18950;
+    const port = 18970;
     const aug = webTransport({ port, auth: { type: "bearer", token: "test-token" } });
     const fixture = routeFixtureAugment();
     const agent = defineAgent(
@@ -1355,7 +1355,7 @@ describe("webTransport augment-registered routes", () => {
 
   it("auth: bearer route rejects request without bearer token", async () => {
     const model = createMockModel();
-    const port = 18951;
+    const port = 18971;
     const aug = webTransport({ port, auth: { type: "bearer", token: "test-token" } });
     const fixture = routeFixtureAugment({ auth: "bearer" });
     const agent = defineAgent(
@@ -1373,7 +1373,7 @@ describe("webTransport augment-registered routes", () => {
 
   it("auth: bearer route rejects wrong bearer token", async () => {
     const model = createMockModel();
-    const port = 18952;
+    const port = 18972;
     const aug = webTransport({ port, auth: { type: "bearer", token: "test-token" } });
     const fixture = routeFixtureAugment({ auth: "bearer" });
     const agent = defineAgent(
@@ -1393,7 +1393,7 @@ describe("webTransport augment-registered routes", () => {
 
   it("auth: none route accepts request without any bearer token", async () => {
     const model = createMockModel();
-    const port = 18953;
+    const port = 18973;
     const aug = webTransport({ port, auth: { type: "bearer", token: "test-token" } });
     const fixture = routeFixtureAugment({ auth: "none" });
     const agent = defineAgent(
@@ -1413,7 +1413,7 @@ describe("webTransport augment-registered routes", () => {
 
   it("handler that throws returns 500 with opaque body", async () => {
     const model = createMockModel();
-    const port = 18954;
+    const port = 18974;
     const aug = webTransport({ port, auth: { type: "bearer", token: "test-token" } });
     const fixture = routeFixtureAugment({
       auth: "none",
@@ -1440,7 +1440,7 @@ describe("webTransport augment-registered routes", () => {
 
   it("handler that exceeds timeoutMs returns 504", async () => {
     const model = createMockModel();
-    const port = 18955;
+    const port = 18975;
     const aug = webTransport({ port, auth: { type: "bearer", token: "test-token" } });
     const fixture = routeFixtureAugment({
       auth: "none",
@@ -1465,7 +1465,7 @@ describe("webTransport augment-registered routes", () => {
 
   it("POST request exceeding maxBodyBytes returns 413", async () => {
     const model = createMockModel();
-    const port = 18956;
+    const port = 18976;
     const aug = webTransport({ port, auth: { type: "bearer", token: "test-token" } });
     const fixture = routeFixtureAugment({
       method: "POST",
@@ -1493,7 +1493,7 @@ describe("webTransport augment-registered routes", () => {
 
   it("POST request without content-length is allowed under default cap", async () => {
     const model = createMockModel();
-    const port = 18957;
+    const port = 18977;
     const aug = webTransport({ port, auth: { type: "bearer", token: "test-token" } });
     const fixture = routeFixtureAugment({
       method: "POST",
@@ -1519,7 +1519,7 @@ describe("webTransport augment-registered routes", () => {
 
   it("GET request to a POST-only route returns 405 with Allow header", async () => {
     const model = createMockModel();
-    const port = 18958;
+    const port = 18978;
     const aug = webTransport({ port, auth: { type: "bearer", token: "test-token" } });
     const fixture = routeFixtureAugment({ method: "POST", auth: "none" });
     const agent = defineAgent(
@@ -1538,7 +1538,7 @@ describe("webTransport augment-registered routes", () => {
 
   it("per-route rate limit returns 429 after maxPerMinute exceeded", async () => {
     const model = createMockModel();
-    const port = 18959;
+    const port = 18979;
     const aug = webTransport({ port, auth: { type: "bearer", token: "test-token" } });
     const fixture = routeFixtureAugment({
       auth: "none",

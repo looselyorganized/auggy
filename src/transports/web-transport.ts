@@ -650,14 +650,16 @@ export function webTransport(opts: WebTransportOptions): Augment {
           }
 
           // Method-mismatch detection: if any registered augment route matches
-          // the path but a different method, return 405 with Allow header.
-          for (const r of augmentRoutes) {
-            if (r.path === url.pathname && r.method !== req.method) {
-              return new Response("Method Not Allowed", {
-                status: 405,
-                headers: { allow: r.method },
-              });
-            }
+          // the path but a different method, return 405 with Allow header listing
+          // all methods supported for that path (RFC 9110 §15.5.6).
+          const allowedMethods = augmentRoutes
+            .filter((r) => r.path === url.pathname && r.method !== req.method)
+            .map((r) => r.method);
+          if (allowedMethods.length > 0) {
+            return new Response("Method Not Allowed", {
+              status: 405,
+              headers: { allow: allowedMethods.join(", ") },
+            });
           }
 
           return new Response("Not Found", { status: 404 });
