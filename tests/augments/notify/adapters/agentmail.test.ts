@@ -1,29 +1,14 @@
 import { describe, it, expect } from "bun:test";
 import { createAgentMailAdapter } from "../../../../src/augments/notify/adapters/agentmail";
 import type { AgentMailNotifyDestination } from "../../../../src/types";
-import type { HttpResponse, HttpRequestInit } from "../../../../src/http";
+import type { SendMessageInput, SendMessageResult, SendMessageError } from "../../../../src/agentmail-client";
 
-function mockHttp(
-  handler: (
-    url: string,
-    body: unknown,
-    headers?: Record<string, string>,
-  ) => { status: number; body: string },
+function mockClient(
+  handler: (input: SendMessageInput) => SendMessageResult | SendMessageError,
 ) {
-  return {
-    post: async (url: string, opts?: Omit<HttpRequestInit, "method">): Promise<HttpResponse> => {
-      const body = typeof opts?.body === "string" ? JSON.parse(opts.body) : undefined;
-      const result = handler(url, body, opts?.headers);
-      return {
-        finalUrl: url,
-        status: result.status,
-        statusText: result.status >= 200 && result.status < 300 ? "OK" : "Error",
-        contentType: "application/json",
-        headers: new Headers({ "content-type": "application/json" }),
-        body: result.body,
-      };
-    },
-  };
+  return (_apiKey: string, _baseUrl?: string) => ({
+    send: async (input: SendMessageInput) => handler(input),
+  });
 }
 
 const dest: AgentMailNotifyDestination = {
@@ -35,72 +20,75 @@ const dest: AgentMailNotifyDestination = {
 };
 
 describe("agentMailAdapter", () => {
-  it("POSTs to /inboxes/{inboxId}/messages with bearer auth and structured body", async () => {
-    let capturedUrl = "";
-    let capturedBody: any = null;
-    let capturedAuth = "";
+  it("delegates to AgentMail client and returns sent on success", async () => {
+    let captured: SendMessageInput | null = null;
+    let capturedApiKey = "";
     const adapter = createAgentMailAdapter({
-      client: mockHttp((url, body, headers) => {
-        capturedUrl = url;
-        capturedBody = body;
-        capturedAuth = headers?.["authorization"] ?? "";
-        return { status: 200, body: JSON.stringify({ message_id: "msg_1", thread_id: "thd_1" }) };
-      }),
+      clientFactory: (apiKey, _baseUrl) => {
+        capturedApiKey = apiKey;
+        return {
+          send: async (input) => {
+            captured = input;
+            return { status: "sent", messageId: "msg_1", threadId: "thd_1" };
+          },
+        };
+      },
     });
     const result = await adapter.deliver(dest, {
       summary: "Visitor wants to talk",
       reason: "Outside scope",
       visitor: "Sarah",
     });
-    expect(capturedUrl).toBe("https://api.agentmail.to/v0/inboxes/inb_test123/messages");
-    expect(capturedAuth).toBe("Bearer am_test_key");
-    expect(capturedBody.to).toEqual(["operator@example.com"]);
-    expect(capturedBody.subject).toBe("Visitor wants to talk");
-    expect(typeof capturedBody.text).toBe("string");
-    expect(capturedBody.text).toContain("Visitor wants to talk");
-    expect(capturedBody.text).toContain("Outside scope");
-    expect(capturedBody.text).toContain("Sarah");
+    expect(capturedApiKey).toBe("am_test_key");
+    expect(captured!.inboxId).toBe("inb_test123");
+    expect(captured!.to).toEqual(["operator@example.com"]);
+    expect(captured!.subject).toBe("Visitor wants to talk");
+    expect(typeof captured!.text).toBe("string");
+    expect(captured!.text).toContain("Visitor wants to talk");
+    expect(captured!.text).toContain("Outside scope");
+    expect(captured!.text).toContain("Sarah");
     expect(result.status).toBe("sent");
   });
 
   it("applies subjectPrefix when configured", async () => {
-    let captured: any = null;
+    let captured: SendMessageInput | null = null;
     const adapter = createAgentMailAdapter({
-      client: mockHttp((_url, body) => {
-        captured = body;
-        return { status: 200, body: JSON.stringify({ message_id: "m1", thread_id: "t1" }) };
+      clientFactory: mockClient((input) => {
+        captured = input;
+        return { status: "sent", messageId: "m1", threadId: "t1" };
       }),
     });
     await adapter.deliver(
       { ...dest, subjectPrefix: "[Auggy] " },
       { summary: "Daily digest" },
     );
-    expect(captured.subject).toBe("[Auggy] Daily digest");
+    expect(captured!.subject).toBe("[Auggy] Daily digest");
   });
 
   it("normalizes string `to` to single-element array; passes array through", async () => {
-    let captured: any = null;
+    let captured: SendMessageInput | null = null;
     const adapter = createAgentMailAdapter({
-      client: mockHttp((_url, body) => {
-        captured = body;
-        return { status: 200, body: JSON.stringify({ message_id: "m1", thread_id: "t1" }) };
+      clientFactory: mockClient((input) => {
+        captured = input;
+        return { status: "sent", messageId: "m1", threadId: "t1" };
       }),
     });
     await adapter.deliver(dest, { summary: "x" });
-    expect(captured.to).toEqual(["operator@example.com"]);
+    expect(captured!.to).toEqual(["operator@example.com"]);
 
     await adapter.deliver(
       { ...dest, to: ["a@example.com", "b@example.com"] },
       { summary: "x" },
     );
-    expect(captured.to).toEqual(["a@example.com", "b@example.com"]);
+    expect(captured!.to).toEqual(["a@example.com", "b@example.com"]);
   });
 
-  it("returns failed with status + body excerpt on 4xx", async () => {
+  it("returns failed with detail on 4xx", async () => {
     const adapter = createAgentMailAdapter({
-      client: mockHttp(() => ({
-        status: 401,
-        body: JSON.stringify({ error: "invalid api key" }),
+      clientFactory: mockClient(() => ({
+        status: "failed",
+        detail: "agentmail returned 401: {\"error\":\"invalid api key\"}",
+        httpStatus: 401,
       })),
     });
     const result = await adapter.deliver(dest, { summary: "x" });
@@ -109,11 +97,12 @@ describe("agentMailAdapter", () => {
     expect(result.detail).toContain("invalid api key");
   });
 
-  it("returns failed with status excerpt on 5xx", async () => {
+  it("returns failed with detail on 5xx", async () => {
     const adapter = createAgentMailAdapter({
-      client: mockHttp(() => ({
-        status: 503,
-        body: "Service Unavailable",
+      clientFactory: mockClient(() => ({
+        status: "failed",
+        detail: "agentmail returned 503: Service Unavailable",
+        httpStatus: 503,
       })),
     });
     const result = await adapter.deliver(dest, { summary: "x" });
@@ -121,28 +110,28 @@ describe("agentMailAdapter", () => {
     expect(result.detail).toContain("503");
   });
 
-  it("returns failed when the http client throws", async () => {
+  it("returns failed when the client throws (network error)", async () => {
     const adapter = createAgentMailAdapter({
-      client: {
-        post: async () => {
+      clientFactory: (_apiKey, _baseUrl) => ({
+        send: async () => {
           throw new Error("ECONNREFUSED");
         },
-      },
+      }),
     });
     const result = await adapter.deliver(dest, { summary: "x" });
     expect(result.status).toBe("failed");
     expect(result.detail).toContain("ECONNREFUSED");
   });
 
-  it("rejects non-agentmail destinations without calling http", async () => {
+  it("rejects non-agentmail destinations without calling client", async () => {
     let called = false;
     const adapter = createAgentMailAdapter({
-      client: {
-        post: async () => {
+      clientFactory: (_apiKey, _baseUrl) => ({
+        send: async () => {
           called = true;
           throw new Error("should not be called");
         },
-      },
+      }),
     });
     const result = await adapter.deliver(
       { name: "wrong", transport: "webhook", url: "https://x" },

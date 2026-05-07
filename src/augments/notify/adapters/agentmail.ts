@@ -1,5 +1,5 @@
-import { createHttpClient } from "../../../http";
-import type { HttpClient } from "../../../http";
+import { createAgentMailClient } from "../../../agentmail-client";
+import type { AgentMailClient } from "../../../agentmail-client";
 import type {
   NotifyAdapter,
   NotifyDestination,
@@ -8,15 +8,25 @@ import type {
   AgentMailNotifyDestination,
 } from "../../../types";
 
-const DEFAULT_BASE_URL = "https://api.agentmail.to/v0";
-
 export interface CreateAgentMailAdapterOptions {
-  client?: Pick<HttpClient, "post">;
+  /** Test-only client override; production constructs from destination's apiKey. */
+  clientFactory?: (apiKey: string, baseUrl?: string) => AgentMailClient;
 }
 
 export function createAgentMailAdapter(opts: CreateAgentMailAdapterOptions = {}): NotifyAdapter {
-  const http =
-    opts.client ?? createHttpClient({ timeoutMs: 15_000, userAgent: "auggy-notify-agentmail/0.1" });
+  const factory =
+    opts.clientFactory ?? ((apiKey, baseUrl) => createAgentMailClient({ apiKey, apiBaseUrl: baseUrl }));
+  const cache = new Map<string, AgentMailClient>();
+
+  function getClient(apiKey: string, baseUrl?: string): AgentMailClient {
+    const cacheKey = `${apiKey}:${baseUrl ?? ""}`;
+    let client = cache.get(cacheKey);
+    if (!client) {
+      client = factory(apiKey, baseUrl);
+      cache.set(cacheKey, client);
+    }
+    return client;
+  }
 
   function formatBody(payload: NotifyPayload): string {
     const lines = [payload.summary];
@@ -37,35 +47,22 @@ export function createAgentMailAdapter(opts: CreateAgentMailAdapterOptions = {})
         };
       }
       const dest = destination as AgentMailNotifyDestination;
-      const baseUrl = dest.apiBaseUrl ?? DEFAULT_BASE_URL;
-      const url = `${baseUrl}/inboxes/${dest.inboxId}/messages`;
+      const client = getClient(dest.apiKey, dest.apiBaseUrl);
       const subject = `${dest.subjectPrefix ?? ""}${payload.summary}`;
-      const body = JSON.stringify({
-        to: Array.isArray(dest.to) ? dest.to : [dest.to],
-        subject,
-        text: formatBody(payload),
-        ...(dest.labels && dest.labels.length > 0 ? { labels: dest.labels } : {}),
-      });
       try {
-        const res = await http.post(url, {
-          headers: {
-            "content-type": "application/json",
-            authorization: `Bearer ${dest.apiKey}`,
-          },
-          body,
+        const result = await client.send({
+          inboxId: dest.inboxId,
+          to: Array.isArray(dest.to) ? dest.to : [dest.to],
+          subject,
+          text: formatBody(payload),
+          labels: dest.labels,
         });
-        if (res.status < 200 || res.status >= 300) {
-          return {
-            status: "failed",
-            detail: `agentmail ${url} returned ${res.status}: ${res.body.slice(0, 200)}`,
-          };
+        if (result.status === "sent") {
+          return { status: "sent" };
         }
-        return { status: "sent" };
+        return { status: "failed", detail: result.detail };
       } catch (err) {
-        return {
-          status: "failed",
-          detail: `agentmail ${url} error: ${(err as Error).message}`,
-        };
+        return { status: "failed", detail: `agentmail error: ${(err as Error).message}` };
       }
     },
   };
