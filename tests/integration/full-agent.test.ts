@@ -5,6 +5,7 @@ import { defineAgent, fileMemory, supabaseMemory, webTransport } from "@/index";
 import { createMockModel } from "@tests/fixtures/mock-model";
 import { createMockSupabase } from "@tests/fixtures/mock-supabase";
 import { createTempDir } from "@tests/fixtures/temp-dir";
+import { routeFixtureAugment } from "@tests/fixtures/route-fixture-augment";
 
 /**
  * End-to-end smoke test that wires the public API the way a real
@@ -250,5 +251,66 @@ describe("full agent integration", () => {
     } finally {
       await agent.stop();
     }
+  });
+});
+
+describe("full-agent: augment HTTP route extension", () => {
+  it("bound webTransport serves a fixture augment route end-to-end", async () => {
+    const model = createMockModel();
+    const port = 19500;
+    const agent = defineAgent(
+      {
+        name: "route-test",
+        model: "mock",
+        augments: [
+          routeFixtureAugment({ auth: "none" }),
+          webTransport({ port, auth: { type: "bearer", token: "t" } }),
+        ],
+      },
+      model,
+    );
+
+    await agent.start();
+    try {
+      const res = await fetch(`http://localhost:${port}/test/echo?msg=integration`);
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { echo: string };
+      expect(body.echo).toBe("integration");
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("agent.start() rejects when two augments register the same route", async () => {
+    const model = createMockModel();
+    const port = 19501;
+    const agent = defineAgent(
+      {
+        name: "collision",
+        model: "mock",
+        augments: [
+          routeFixtureAugment({ name: "a", path: "/dup" }),
+          routeFixtureAugment({ name: "b", path: "/dup" }),
+          webTransport({ port, auth: { type: "bearer", token: "t" } }),
+        ],
+      },
+      model,
+    );
+
+    await expect(agent.start()).rejects.toThrow(/both registered HTTP route/);
+
+    // Verify the port did NOT bind — a follow-up agent on the same port
+    // should succeed without "address in use" errors. This proves
+    // collision-throw runs lifecycle.shutdown() and releases the port.
+    const followup = defineAgent(
+      {
+        name: "ok",
+        model: "mock",
+        augments: [webTransport({ port, auth: { type: "bearer", token: "t" } })],
+      },
+      model,
+    );
+    await followup.start();
+    await followup.stop();
   });
 });
