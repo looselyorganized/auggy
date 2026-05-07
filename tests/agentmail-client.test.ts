@@ -13,7 +13,10 @@ function mockHttp(
     post: async (url: string, opts?: Omit<HttpRequestInit, "method">): Promise<HttpResponse> => {
       const body = typeof opts?.body === "string" ? JSON.parse(opts.body) : undefined;
       const result = handler(url, body, opts?.headers);
-      const respHeaders = new Headers({ "content-type": "application/json", ...(result.headers ?? {}) });
+      const respHeaders = new Headers({
+        "content-type": "application/json",
+        ...(result.headers ?? {}),
+      });
       return {
         finalUrl: url,
         status: result.status,

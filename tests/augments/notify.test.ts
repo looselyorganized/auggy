@@ -209,10 +209,7 @@ describe("notify augment", () => {
     const tool = getNotifyTool(aug);
     const ctx = makeContext(makePeer("creator-1", "creator"));
     const result = JSON.parse(
-      await tool.execute(
-        { to: "creator-mail", summary: "Mail test", reason: "test reason" },
-        ctx,
-      ),
+      await tool.execute({ to: "creator-mail", summary: "Mail test", reason: "test reason" }, ctx),
     );
     expect(result.status).toBe("sent");
     expect(captured).toHaveLength(1);
@@ -255,7 +252,12 @@ describe("notify augment", () => {
   test("per-destination cap surface in rate_limited message names the destination", async () => {
     const aug = notify({
       destinations: [
-        { name: "verify-out", transport: "webhook", url: "https://x", rateLimit: { maxPerHour: 1, cooldownMs: 0 } },
+        {
+          name: "verify-out",
+          transport: "webhook",
+          url: "https://x",
+          rateLimit: { maxPerHour: 1, cooldownMs: 0 },
+        },
       ],
       rateLimit: { dedupThreshold: 0, cooldownMs: 0 },
       adapters: { webhook: mockAdapter(), telegram: mockAdapter() },

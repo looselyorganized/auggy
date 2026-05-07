@@ -15,7 +15,8 @@ export interface CreateAgentMailAdapterOptions {
 
 export function createAgentMailAdapter(opts: CreateAgentMailAdapterOptions = {}): NotifyAdapter {
   const factory =
-    opts.clientFactory ?? ((apiKey, baseUrl) => createAgentMailClient({ apiKey, apiBaseUrl: baseUrl }));
+    opts.clientFactory ??
+    ((apiKey, baseUrl) => createAgentMailClient({ apiKey, apiBaseUrl: baseUrl }));
   const cache = new Map<string, AgentMailClient>();
 
   function getClient(apiKey: string, baseUrl?: string): AgentMailClient {

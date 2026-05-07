@@ -160,7 +160,12 @@ export function notify(opts: NotifyAugmentInternalOptions): Augment {
     return matches / smaller.size;
   }
 
-  function recordNotification(peerId: string, summary: string, destName: string, destHasExplicitLimit: boolean): void {
+  function recordNotification(
+    peerId: string,
+    summary: string,
+    destName: string,
+    destHasExplicitLimit: boolean,
+  ): void {
     const now = Date.now();
 
     if (destHasExplicitLimit) {
@@ -209,7 +214,10 @@ export function notify(opts: NotifyAugmentInternalOptions): Augment {
 
       // Null peer = internal trigger (scheduled, system) — treated as creator, bypasses rate limits.
       const trustLevel = context.peer?.trustLevel ?? "creator";
-      const destHasExplicitLimit = !!(destination.rateLimit?.maxPerHour !== undefined || destination.rateLimit?.cooldownMs !== undefined);
+      const destHasExplicitLimit = !!(
+        destination.rateLimit?.maxPerHour !== undefined ||
+        destination.rateLimit?.cooldownMs !== undefined
+      );
       if (enabled && trustLevel !== "creator" && context.peer) {
         const peerId = context.peer.id;
 

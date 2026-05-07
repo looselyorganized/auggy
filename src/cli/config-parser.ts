@@ -389,10 +389,7 @@ function validateNotifyOptions(
       if (typeof dest.inboxId !== "string" || !dest.inboxId) {
         errors.push(`${dPrefix}.inboxId: required string for agentmail transport`);
       }
-      if (
-        dest.to == null ||
-        (typeof dest.to !== "string" && !Array.isArray(dest.to))
-      ) {
+      if (dest.to == null || (typeof dest.to !== "string" && !Array.isArray(dest.to))) {
         errors.push(`${dPrefix}.to: required string or array for agentmail transport`);
       }
     } else {

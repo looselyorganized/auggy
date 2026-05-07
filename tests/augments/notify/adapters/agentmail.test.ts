@@ -1,11 +1,13 @@
 import { describe, it, expect } from "bun:test";
 import { createAgentMailAdapter } from "../../../../src/augments/notify/adapters/agentmail";
 import type { AgentMailNotifyDestination } from "../../../../src/types";
-import type { SendMessageInput, SendMessageResult, SendMessageError } from "../../../../src/agentmail-client";
+import type {
+  SendMessageInput,
+  SendMessageResult,
+  SendMessageError,
+} from "../../../../src/agentmail-client";
 
-function mockClient(
-  handler: (input: SendMessageInput) => SendMessageResult | SendMessageError,
-) {
+function mockClient(handler: (input: SendMessageInput) => SendMessageResult | SendMessageError) {
   return (_apiKey: string, _baseUrl?: string) => ({
     send: async (input: SendMessageInput) => handler(input),
   });
@@ -58,10 +60,7 @@ describe("agentMailAdapter", () => {
         return { status: "sent", messageId: "m1", threadId: "t1" };
       }),
     });
-    await adapter.deliver(
-      { ...dest, subjectPrefix: "[Auggy] " },
-      { summary: "Daily digest" },
-    );
+    await adapter.deliver({ ...dest, subjectPrefix: "[Auggy] " }, { summary: "Daily digest" });
     expect(captured!.subject).toBe("[Auggy] Daily digest");
   });
 
@@ -76,10 +75,7 @@ describe("agentMailAdapter", () => {
     await adapter.deliver(dest, { summary: "x" });
     expect(captured!.to).toEqual(["operator@example.com"]);
 
-    await adapter.deliver(
-      { ...dest, to: ["a@example.com", "b@example.com"] },
-      { summary: "x" },
-    );
+    await adapter.deliver({ ...dest, to: ["a@example.com", "b@example.com"] }, { summary: "x" });
     expect(captured!.to).toEqual(["a@example.com", "b@example.com"]);
   });
 
@@ -87,7 +83,7 @@ describe("agentMailAdapter", () => {
     const adapter = createAgentMailAdapter({
       clientFactory: mockClient(() => ({
         status: "failed",
-        detail: "agentmail returned 401: {\"error\":\"invalid api key\"}",
+        detail: 'agentmail returned 401: {"error":"invalid api key"}',
         httpStatus: 401,
       })),
     });
