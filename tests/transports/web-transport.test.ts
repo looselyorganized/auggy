@@ -1410,4 +1410,31 @@ describe("webTransport augment-registered routes", () => {
       await agent.stop();
     }
   });
+
+  it("handler that throws returns 500 with opaque body", async () => {
+    const model = createMockModel();
+    const port = 18954;
+    const aug = webTransport({ port, auth: { type: "bearer", token: "test-token" } });
+    const fixture = routeFixtureAugment({
+      auth: "none",
+      handler: async () => {
+        throw new Error("internal kaboom");
+      },
+    });
+    const agent = defineAgent(
+      { name: "test", model: "mock", augments: [fixture, aug] },
+      model,
+    );
+    await agent.start();
+    try {
+      const resp = await fetch(`http://localhost:${port}/test/echo`);
+      expect(resp.status).toBe(500);
+      const body = (await resp.json()) as { error: string };
+      expect(body).toEqual({ error: "internal" });
+      // The actual error message must NOT leak in the response body.
+      expect(JSON.stringify(body)).not.toContain("kaboom");
+    } finally {
+      await agent.stop();
+    }
+  });
 });

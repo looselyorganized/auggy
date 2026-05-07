@@ -572,7 +572,19 @@ export function webTransport(opts: WebTransportOptions): Augment {
               }
             }
             // auth: "none" — no check; fall through to handler
-            return augmentRoute.handler(req);
+
+            try {
+              return await augmentRoute.handler(req);
+            } catch (err) {
+              const augmentName = (augmentRoute as { augmentName?: string }).augmentName ?? "unknown";
+              console.error(
+                `[web-transport] augment "${augmentName}" handler ${augmentRoute.method} ${augmentRoute.path} threw: ${(err as Error).message}`,
+              );
+              return new Response(JSON.stringify({ error: "internal" }), {
+                status: 500,
+                headers: { "content-type": "application/json" },
+              });
+            }
           }
 
           // Method-mismatch detection: if any registered augment route matches
