@@ -147,6 +147,29 @@ export function webTransport(opts: WebTransportOptions): Augment {
   let augmentRoutes: readonly import("../types").AugmentHttpRoute[] = [];
   let augmentRouteMap: Map<string, import("../types").AugmentHttpRoute> = new Map();
 
+  // PR γ.1 — per-route rate-limit state. Sliding-window timestamps keyed by
+  // "<METHOD> <path>". NOT per-peer — auth-none routes have no peer.
+  const routeHits = new Map<string, number[]>();
+
+  function checkRouteRateLimit(
+    routeKey: string,
+    max: number,
+  ): { allowed: true } | { allowed: false; retryAfterSec: number } {
+    const now = Date.now();
+    const windowStart = now - 60_000;
+    const hits = (routeHits.get(routeKey) ?? []).filter((t) => t > windowStart);
+    if (hits.length >= max) {
+      const oldestInWindow = hits[0]!;
+      const retryAfterMs = oldestInWindow + 60_000 - now;
+      // Don't update the map — failed attempt doesn't count toward future limits.
+      routeHits.set(routeKey, hits);
+      return { allowed: false, retryAfterSec: Math.max(1, Math.ceil(retryAfterMs / 1000)) };
+    }
+    hits.push(now);
+    routeHits.set(routeKey, hits);
+    return { allowed: true };
+  }
+
   const maxMessageLength = opts.maxMessageLength ?? 4000;
   const visitorTokensEnabled = opts.visitorTokens?.enabled !== false;
   const visitorTokenTtl = opts.visitorTokens?.ttlSeconds ?? 30 * 24 * 3600;
@@ -583,6 +606,22 @@ export function webTransport(opts: WebTransportOptions): Augment {
                 status: 413,
                 headers: { "content-type": "application/json" },
               });
+            }
+
+            // PR γ.1 — per-route rate limit (429). Sliding-window per route.
+            // Independent from transport queue's per-peer limit (queue gates /agent/run only).
+            if (augmentRoute.rateLimit) {
+              const routeKey = `${augmentRoute.method} ${augmentRoute.path}`;
+              const rl = checkRouteRateLimit(routeKey, augmentRoute.rateLimit.maxPerMinute);
+              if (!rl.allowed) {
+                return new Response(JSON.stringify({ error: "rate-limited" }), {
+                  status: 429,
+                  headers: {
+                    "content-type": "application/json",
+                    "retry-after": String(rl.retryAfterSec),
+                  },
+                });
+              }
             }
 
             try {

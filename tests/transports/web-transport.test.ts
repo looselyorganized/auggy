@@ -1535,4 +1535,30 @@ describe("webTransport augment-registered routes", () => {
       await agent.stop();
     }
   });
+
+  it("per-route rate limit returns 429 after maxPerMinute exceeded", async () => {
+    const model = createMockModel();
+    const port = 18959;
+    const aug = webTransport({ port, auth: { type: "bearer", token: "test-token" } });
+    const fixture = routeFixtureAugment({
+      auth: "none",
+      rateLimit: { maxPerMinute: 2 },
+    });
+    const agent = defineAgent(
+      { name: "test", model: "mock", augments: [fixture, aug] },
+      model,
+    );
+    await agent.start();
+    try {
+      const res1 = await fetch(`http://localhost:${port}/test/echo?msg=1`);
+      expect(res1.status).toBe(200);
+      const res2 = await fetch(`http://localhost:${port}/test/echo?msg=2`);
+      expect(res2.status).toBe(200);
+      const res3 = await fetch(`http://localhost:${port}/test/echo?msg=3`);
+      expect(res3.status).toBe(429);
+      expect(res3.headers.get("retry-after")).toMatch(/^\d+$/);
+    } finally {
+      await agent.stop();
+    }
+  });
 });
