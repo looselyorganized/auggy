@@ -62,4 +62,37 @@ describe("agentMailAdapter", () => {
     expect(capturedBody.text).toContain("Sarah");
     expect(result.status).toBe("sent");
   });
+
+  it("applies subjectPrefix when configured", async () => {
+    let captured: any = null;
+    const adapter = createAgentMailAdapter({
+      client: mockHttp((_url, body) => {
+        captured = body;
+        return { status: 200, body: JSON.stringify({ message_id: "m1", thread_id: "t1" }) };
+      }),
+    });
+    await adapter.deliver(
+      { ...dest, subjectPrefix: "[Auggy] " },
+      { summary: "Daily digest" },
+    );
+    expect(captured.subject).toBe("[Auggy] Daily digest");
+  });
+
+  it("normalizes string `to` to single-element array; passes array through", async () => {
+    let captured: any = null;
+    const adapter = createAgentMailAdapter({
+      client: mockHttp((_url, body) => {
+        captured = body;
+        return { status: 200, body: JSON.stringify({ message_id: "m1", thread_id: "t1" }) };
+      }),
+    });
+    await adapter.deliver(dest, { summary: "x" });
+    expect(captured.to).toEqual(["operator@example.com"]);
+
+    await adapter.deliver(
+      { ...dest, to: ["a@example.com", "b@example.com"] },
+      { summary: "x" },
+    );
+    expect(captured.to).toEqual(["a@example.com", "b@example.com"]);
+  });
 });

@@ -39,9 +39,10 @@ export function createAgentMailAdapter(opts: CreateAgentMailAdapterOptions = {})
       const dest = destination as AgentMailNotifyDestination;
       const baseUrl = dest.apiBaseUrl ?? DEFAULT_BASE_URL;
       const url = `${baseUrl}/inboxes/${dest.inboxId}/messages`;
+      const subject = `${dest.subjectPrefix ?? ""}${payload.summary}`;
       const body = JSON.stringify({
         to: Array.isArray(dest.to) ? dest.to : [dest.to],
-        subject: payload.summary,
+        subject,
         text: formatBody(payload),
         ...(dest.labels && dest.labels.length > 0 ? { labels: dest.labels } : {}),
       });
