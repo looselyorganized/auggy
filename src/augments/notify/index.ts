@@ -2,13 +2,13 @@
  * Notify augment — outbound messaging primitive.
  *
  * Routes the agent's `notify({to, summary, ...})` calls to operator-defined
- * destinations via internal adapter modules (webhook, telegram). Owns the
+ * destinations via internal adapter modules (webhook, telegram, agentmail). Owns the
  * rate-limit state lifted from org-context.ts (cooldown, dedup, global cap,
  * per-peer cooldown). Creator-class senders bypass rate limits.
  *
  * NOT a transport. NOT cross-augment-coupled. Internal adapters call the
- * shared src/telegram-client.ts (telegram adapter only) or POST directly
- * (webhook adapter).
+ * shared src/telegram-client.ts (telegram adapter) or src/agentmail-client.ts
+ * (agentmail adapter), or POST directly (webhook adapter).
  */
 
 import { z } from "zod";
@@ -23,17 +23,27 @@ import type {
 import { defineTool } from "../../helpers";
 import { createWebhookAdapter } from "./adapters/webhook";
 import { createTelegramAdapter } from "./adapters/telegram";
+import { createAgentMailAdapter } from "./adapters/agentmail";
 
 export interface NotifyAugmentInternalOptions extends NotifyAugmentOptions {
-  /** Test-only adapter override. Production code does not pass this. */
-  adapters?: { webhook: NotifyAdapter; telegram: NotifyAdapter };
+  /**
+   * Test-only adapter override. Production code does not pass this.
+   * Partial — missing keys fall back to default adapters.
+   */
+  adapters?: Partial<{
+    webhook: NotifyAdapter;
+    telegram: NotifyAdapter;
+    agentmail: NotifyAdapter;
+  }>;
 }
 
 export function notify(opts: NotifyAugmentInternalOptions): Augment {
-  const adapters = opts.adapters ?? {
+  const defaults = {
     webhook: createWebhookAdapter(),
     telegram: createTelegramAdapter(),
+    agentmail: createAgentMailAdapter(),
   };
+  const adapters = { ...defaults, ...(opts.adapters ?? {}) };
 
   const destinationsByName = new Map<string, NotifyDestination>();
   for (const d of opts.destinations) destinationsByName.set(d.name, d);
@@ -51,8 +61,13 @@ export function notify(opts: NotifyAugmentInternalOptions): Augment {
   let globalCountThisHour = 0;
   let globalHourStart = Date.now();
 
-  function checkPeerCooldown(peerId: string): string | null {
-    const last = peerLastNotify.get(peerId);
+  // Per-destination rate-limit state
+  const destinationCountsThisHour = new Map<string, number[]>();
+  const destinationLastNotify = new Map<string, number>();
+
+  function checkPeerCooldown(peerId: string, destName: string): string | null {
+    const key = `${peerId}:${destName}`;
+    const last = peerLastNotify.get(key);
     if (!last) return null;
     const elapsed = Date.now() - last;
     if (elapsed < perPeerCooldownMs) {
@@ -71,6 +86,40 @@ export function notify(opts: NotifyAugmentInternalOptions): Augment {
     if (globalCountThisHour >= globalMaxPerHour) {
       return `Notification suppressed — global limit reached (${globalMaxPerHour} per hour).`;
     }
+    return null;
+  }
+
+  function checkDestinationLimit(destination: NotifyDestination): string | null {
+    const destRl = destination.rateLimit;
+    if (!destRl) return null;
+
+    const destName = destination.name;
+    const now = Date.now();
+
+    // Per-destination cooldown
+    if (destRl.cooldownMs !== undefined) {
+      const last = destinationLastNotify.get(destName);
+      if (last !== undefined) {
+        const elapsed = now - last;
+        if (elapsed < destRl.cooldownMs) {
+          const remainingSec = Math.ceil((destRl.cooldownMs - elapsed) / 1000);
+          return `Notification suppressed — per-destination cooldown active for '${destName}'. Next available in ${remainingSec} seconds.`;
+        }
+      }
+    }
+
+    // Per-destination hourly cap
+    if (destRl.maxPerHour !== undefined) {
+      const windowStart = now - 3_600_000;
+      const timestamps = destinationCountsThisHour.get(destName) ?? [];
+      // Prune timestamps outside the sliding window
+      const recent = timestamps.filter((t) => t > windowStart);
+      destinationCountsThisHour.set(destName, recent);
+      if (recent.length >= destRl.maxPerHour) {
+        return `Notification suppressed — per-destination cap reached for '${destName}' (${destRl.maxPerHour}/hr).`;
+      }
+    }
+
     return null;
   }
 
@@ -111,10 +160,24 @@ export function notify(opts: NotifyAugmentInternalOptions): Augment {
     return matches / smaller.size;
   }
 
-  function recordNotification(peerId: string, summary: string): void {
-    peerLastNotify.set(peerId, Date.now());
-    recentSummaries.push({ summary, timestamp: Date.now() });
-    globalCountThisHour++;
+  function recordNotification(peerId: string, summary: string, destName: string, destHasExplicitLimit: boolean): void {
+    const now = Date.now();
+
+    if (destHasExplicitLimit) {
+      // Destination governs itself — only update per-destination counters.
+      // Per-peer cooldown and global counter are not used for this destination,
+      // so don't update peerLastNotify or globalCountThisHour (avoids cross-destination pollution).
+      const timestamps = destinationCountsThisHour.get(destName) ?? [];
+      timestamps.push(now);
+      destinationCountsThisHour.set(destName, timestamps);
+      destinationLastNotify.set(destName, now);
+    } else {
+      // No explicit per-destination limit — update per-peer cooldown and global counter.
+      // Key is per (peerId, destName) so activity on one destination doesn't bleed into others.
+      peerLastNotify.set(`${peerId}:${destName}`, now);
+      recentSummaries.push({ summary, timestamp: now });
+      globalCountThisHour++;
+    }
   }
 
   const notifyTool = defineTool({
@@ -146,16 +209,30 @@ export function notify(opts: NotifyAugmentInternalOptions): Augment {
 
       // Null peer = internal trigger (scheduled, system) — treated as creator, bypasses rate limits.
       const trustLevel = context.peer?.trustLevel ?? "creator";
+      const destHasExplicitLimit = !!(destination.rateLimit?.maxPerHour !== undefined || destination.rateLimit?.cooldownMs !== undefined);
       if (enabled && trustLevel !== "creator" && context.peer) {
         const peerId = context.peer.id;
-        const peerMsg = checkPeerCooldown(peerId);
-        if (peerMsg) {
-          return JSON.stringify({ status: "rate_limited", message: peerMsg });
+
+        // Per-destination cap checked first — more specific than peer cooldown or global limit.
+        // When a destination has an explicit rateLimit, it governs itself; peer cooldown and
+        // global cap are skipped for that destination.
+        if (destHasExplicitLimit) {
+          const destMsg = checkDestinationLimit(destination);
+          if (destMsg) {
+            return JSON.stringify({ status: "rate_limited", message: destMsg });
+          }
+        } else {
+          // No per-destination limit — apply per-peer cooldown and global cap
+          const peerMsg = checkPeerCooldown(peerId, destination.name);
+          if (peerMsg) {
+            return JSON.stringify({ status: "rate_limited", message: peerMsg });
+          }
+          const globalMsg = checkGlobalLimit();
+          if (globalMsg) {
+            return JSON.stringify({ status: "rate_limited", message: globalMsg });
+          }
         }
-        const globalMsg = checkGlobalLimit();
-        if (globalMsg) {
-          return JSON.stringify({ status: "rate_limited", message: globalMsg });
-        }
+
         const dedupMsg = checkDedup(summary);
         if (dedupMsg) {
           return JSON.stringify({ status: "rate_limited", message: dedupMsg });
@@ -181,7 +258,7 @@ export function notify(opts: NotifyAugmentInternalOptions): Augment {
       }
 
       if (result.status === "sent" && trustLevel !== "creator" && context.peer) {
-        recordNotification(context.peer.id, summary);
+        recordNotification(context.peer.id, summary, destination.name, destHasExplicitLimit);
       }
 
       return JSON.stringify({
