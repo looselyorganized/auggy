@@ -95,4 +95,29 @@ describe("agentMailAdapter", () => {
     );
     expect(captured.to).toEqual(["a@example.com", "b@example.com"]);
   });
+
+  it("returns failed with status + body excerpt on 4xx", async () => {
+    const adapter = createAgentMailAdapter({
+      client: mockHttp(() => ({
+        status: 401,
+        body: JSON.stringify({ error: "invalid api key" }),
+      })),
+    });
+    const result = await adapter.deliver(dest, { summary: "x" });
+    expect(result.status).toBe("failed");
+    expect(result.detail).toContain("401");
+    expect(result.detail).toContain("invalid api key");
+  });
+
+  it("returns failed with status excerpt on 5xx", async () => {
+    const adapter = createAgentMailAdapter({
+      client: mockHttp(() => ({
+        status: 503,
+        body: "Service Unavailable",
+      })),
+    });
+    const result = await adapter.deliver(dest, { summary: "x" });
+    expect(result.status).toBe("failed");
+    expect(result.detail).toContain("503");
+  });
 });
