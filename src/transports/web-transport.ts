@@ -65,6 +65,77 @@ interface AGUIRunRequestBody {
 }
 
 // ---------------------------------------------------------------------------
+// Body-size cap helper (Finding 2: byte-counted enforcement)
+// ---------------------------------------------------------------------------
+
+/**
+ * Read a ReadableStream up to `cap` bytes. Returns the buffered Uint8Array on
+ * success, or `null` if the stream exceeded the cap. Throws on stream errors.
+ *
+ * This is the byte-counted body cap enforcement (vs. trusting content-length).
+ */
+async function readBodyWithCap(
+  body: ReadableStream<Uint8Array>,
+  cap: number,
+): Promise<Uint8Array | null> {
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value) {
+        total += value.byteLength;
+        if (total > cap) {
+          await reader.cancel();
+          return null;
+        }
+        chunks.push(value);
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const c of chunks) {
+    out.set(c, offset);
+    offset += c.byteLength;
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Caller-IP helper (Finding 3: per-IP rate limiting)
+// ---------------------------------------------------------------------------
+
+/**
+ * Extract the caller's IP for rate-limit keying. Honors `x-forwarded-for`
+ * (first hop) when present (typical when behind a proxy like Railway), else
+ * falls back to the connection's remote address. Returns "unknown" if neither
+ * is available — operators are expected to deploy behind a known proxy chain.
+ */
+function getCallerIp(
+  req: Request,
+  server: { requestIP?: (req: Request) => { address?: string } | null } | undefined,
+): string {
+  const xff = req.headers.get("x-forwarded-for");
+  if (xff) {
+    const first = xff.split(",")[0]?.trim();
+    if (first) return first;
+  }
+  const realIp = req.headers.get("x-real-ip");
+  if (realIp) return realIp.trim();
+  try {
+    return server?.requestIP?.(req)?.address ?? "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Idempotency-Key validation
 // ---------------------------------------------------------------------------
 
@@ -153,20 +224,21 @@ export function webTransport(opts: WebTransportOptions): Augment {
 
   function checkRouteRateLimit(
     routeKey: string,
+    ip: string,
     max: number,
   ): { allowed: true } | { allowed: false; retryAfterSec: number } {
+    const fullKey = `${routeKey}|${ip}`;
     const now = Date.now();
     const windowStart = now - 60_000;
-    const hits = (routeHits.get(routeKey) ?? []).filter((t) => t > windowStart);
+    const hits = (routeHits.get(fullKey) ?? []).filter((t) => t > windowStart);
     if (hits.length >= max) {
       const oldestInWindow = hits[0]!;
       const retryAfterMs = oldestInWindow + 60_000 - now;
-      // Don't update the map — failed attempt doesn't count toward future limits.
-      routeHits.set(routeKey, hits);
+      routeHits.set(fullKey, hits);
       return { allowed: false, retryAfterSec: Math.max(1, Math.ceil(retryAfterMs / 1000)) };
     }
     hits.push(now);
-    routeHits.set(routeKey, hits);
+    routeHits.set(fullKey, hits);
     return { allowed: true };
   }
 
@@ -557,7 +629,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
       server = Bun.serve({
         port: opts.port,
         idleTimeout: 120, // 120s — covers long model calls + tool chains
-        async fetch(req) {
+        async fetch(req, server) {
           const url = new URL(req.url);
 
           // CORS preflight — required for browser-based AG-UI clients
@@ -586,7 +658,10 @@ export function webTransport(opts: WebTransportOptions): Augment {
           // PR γ.1 — augment-registered routes. Dispatched by exact (method, path).
           const augmentRoute = augmentRouteMap.get(`${req.method} ${url.pathname}`);
           if (augmentRoute) {
-            if (augmentRoute.auth === "bearer") {
+            // Finding 4: Default-deny — anything not explicitly "none" requires bearer.
+            // The collector rejects unknown auth values at boot, but defense in depth
+            // keeps dispatch fail-closed against runtime mutations.
+            if (augmentRoute.auth !== "none") {
               const authHeader = req.headers.get("authorization") ?? "";
               if (!isValidAuth(authHeader)) {
                 return new Response(JSON.stringify({ error: "unauthorized" }), {
@@ -595,24 +670,45 @@ export function webTransport(opts: WebTransportOptions): Augment {
                 });
               }
             }
-            // auth: "none" — no check; fall through to handler
+            // auth: "none" — no check; fall through to body cap
 
-            // PR γ.1 — body-size cap (413). Check content-length BEFORE handler.
-            // Default 1 MiB. Operators set per-route maxBodyBytes for tighter limits.
+            // Finding 2 — body-size cap. Buffer the request body up to maxBodyBytes
+            // bytes, enforcing actual byte-count (not just content-length header).
+            // Adversarial clients can omit content-length or use chunked encoding
+            // to bypass a header-only check.
             const maxBodyBytes = augmentRoute.maxBodyBytes ?? 1_048_576;
-            const contentLength = Number.parseInt(req.headers.get("content-length") ?? "0", 10);
-            if (contentLength > maxBodyBytes) {
-              return new Response(JSON.stringify({ error: "payload-too-large" }), {
-                status: 413,
-                headers: { "content-type": "application/json" },
-              });
+            let dispatchReq: Request = req;
+            if (req.method !== "GET" && req.method !== "HEAD" && req.body) {
+              try {
+                const buffered = await readBodyWithCap(req.body, maxBodyBytes);
+                if (buffered === null) {
+                  return new Response(JSON.stringify({ error: "payload-too-large" }), {
+                    status: 413,
+                    headers: { "content-type": "application/json" },
+                  });
+                }
+                // Reconstruct the Request with the buffered body so the handler
+                // sees the same bytes (and can call req.text(), req.json(), etc).
+                dispatchReq = new Request(req.url, {
+                  method: req.method,
+                  headers: req.headers,
+                  body: buffered,
+                });
+              } catch (err) {
+                // Body read errors are 400 — caller's problem, not ours.
+                return new Response(JSON.stringify({ error: "bad-body" }), {
+                  status: 400,
+                  headers: { "content-type": "application/json" },
+                });
+              }
             }
 
-            // PR γ.1 — per-route rate limit (429). Sliding-window per route.
-            // Independent from transport queue's per-peer limit (queue gates /agent/run only).
+            // Finding 3 — per-route rate limit keyed by route + caller IP.
+            // Prevents one client from exhausting the bucket for everyone.
             if (augmentRoute.rateLimit) {
               const routeKey = `${augmentRoute.method} ${augmentRoute.path}`;
-              const rl = checkRouteRateLimit(routeKey, augmentRoute.rateLimit.maxPerMinute);
+              const ip = getCallerIp(req, server);
+              const rl = checkRouteRateLimit(routeKey, ip, augmentRoute.rateLimit.maxPerMinute);
               if (!rl.allowed) {
                 return new Response(JSON.stringify({ error: "rate-limited" }), {
                   status: 429,
@@ -625,12 +721,20 @@ export function webTransport(opts: WebTransportOptions): Augment {
             }
 
             try {
-              // Race the handler against a timeout. Note: if the timeout fires,
-              // the handler's promise is NOT cancelled — Bun.serve does not expose
-              // an AbortSignal here. Background work in the handler continues but
-              // its eventual response is dropped; the client receives 504 instead.
+              // Finding 1 — AbortController for cooperative cancellation on timeout.
+              // The controller fires on timeout so handlers that listen to the signal
+              // can bail out of side-effecting work instead of continuing after 504.
               const timeoutMs = augmentRoute.timeoutMs ?? 30_000;
-              return await withTimeout(() => augmentRoute.handler(req), timeoutMs);
+              const controller = new AbortController();
+              const timer = setTimeout(() => controller.abort(), timeoutMs);
+              try {
+                return await withTimeout(
+                  () => augmentRoute.handler(dispatchReq, { signal: controller.signal }),
+                  timeoutMs,
+                );
+              } finally {
+                clearTimeout(timer);
+              }
             } catch (err) {
               if (err instanceof TimeoutError) {
                 return new Response(JSON.stringify({ error: "timeout" }), {

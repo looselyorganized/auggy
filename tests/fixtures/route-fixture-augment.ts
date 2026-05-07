@@ -14,7 +14,7 @@ export interface RouteFixtureOptions {
   method?: HttpMethod;
   path?: string;
   auth?: AugmentHttpRouteAuth;
-  handler?: (req: Request) => Promise<Response>;
+  handler?: (req: Request, opts: { signal: AbortSignal }) => Promise<Response>;
   rateLimit?: { maxPerMinute: number };
   timeoutMs?: number;
   maxBodyBytes?: number;
@@ -32,7 +32,7 @@ export function routeFixtureAugment(opts: RouteFixtureOptions = {}): Augment {
     auth: opts.auth ?? "bearer",
     handler:
       opts.handler ??
-      (async (req: Request) => {
+      (async (req: Request, _opts: { signal: AbortSignal }) => {
         const url = new URL(req.url);
         const msg = url.searchParams.get("msg") ?? "";
         return new Response(JSON.stringify({ echo: msg }), {

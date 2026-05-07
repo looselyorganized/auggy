@@ -86,4 +86,22 @@ describe("collectAugmentRoutes", () => {
     const result = collectAugmentRoutes([aug("a", [route("GET", "/x")])]);
     expect(Object.isFrozen(result.routes)).toBe(true);
   });
+
+  test("rejects routes with invalid auth values", () => {
+    const r = (path: string, auth: any): AugmentHttpRoute => ({
+      method: "GET",
+      path,
+      auth,
+      handler: async () => new Response("ok"),
+    });
+    const result = collectAugmentRoutes([
+      aug("a", [r("/a", "Bearer")]), // wrong case
+      aug("b", [r("/b", "")]),
+      aug("c", [r("/c", undefined)]),
+    ]);
+    expect(result.errors.length).toBeGreaterThanOrEqual(3);
+    for (const e of result.errors) {
+      expect(e).toContain("invalid auth");
+    }
+  });
 });

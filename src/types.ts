@@ -624,7 +624,9 @@ export interface AugmentHttpRoute {
   timeoutMs?: number;
   /**
    * Optional max body bytes the dispatcher will accept. Default 1_048_576 (1 MB).
-   * Over cap → 413 before the handler runs (checked via `content-length` header).
+   * Over cap → 413 before the handler runs. Enforced by counting actual bytes
+   * read from req.body (not trusting content-length, which is bypassable via
+   * chunked encoding or omission).
    */
   maxBodyBytes?: number;
   /**
@@ -635,11 +637,14 @@ export interface AugmentHttpRoute {
     maxPerMinute: number;
   };
   /**
-   * The handler. Receives the raw Request, returns a Response. Errors thrown
-   * are caught by the dispatcher and surfaced as 500 with an opaque body;
-   * the actual error is logged with the route path for triage.
+   * The handler. Receives the raw Request and an options bag carrying an
+   * AbortSignal that fires on timeout. Handlers SHOULD listen for the
+   * signal and short-circuit side-effecting work to avoid duplicate effects
+   * after a 504. Errors thrown are caught by the dispatcher and surfaced
+   * as 500 with an opaque body; the actual error is logged with the route
+   * path for triage.
    */
-  handler: (req: Request) => Promise<Response>;
+  handler: (req: Request, opts: { signal: AbortSignal }) => Promise<Response>;
 }
 
 // === Turn Gate (2PC admission) ===

@@ -1561,4 +1561,117 @@ describe("webTransport augment-registered routes", () => {
       await agent.stop();
     }
   });
+
+  // ---------------------------------------------------------------------------
+  // Finding 1: AbortSignal fires on timeout
+  // ---------------------------------------------------------------------------
+
+  it("handler receives an AbortSignal that fires when timeoutMs elapses", async () => {
+    const model = createMockModel();
+    const port = 18980;
+    const aug = webTransport({ port, auth: { type: "bearer", token: "test-token" } });
+    let signalAborted = false;
+    const fixture = routeFixtureAugment({
+      auth: "none",
+      timeoutMs: 50,
+      handler: async (_req, { signal }) => {
+        signal.addEventListener("abort", () => {
+          signalAborted = true;
+        });
+        await new Promise((r) => setTimeout(r, 200));
+        return new Response("late");
+      },
+    });
+    const agent = defineAgent(
+      { name: "test", model: "mock", augments: [fixture, aug] },
+      model,
+    );
+    await agent.start();
+    try {
+      const resp = await fetch(`http://localhost:${port}/test/echo`);
+      expect(resp.status).toBe(504);
+      // Allow the abort event to fire on the handler's side.
+      await new Promise((r) => setTimeout(r, 50));
+      expect(signalAborted).toBe(true);
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  // Finding 2: Body-size cap enforced via actual byte-count (chunked bypass)
+  // ---------------------------------------------------------------------------
+
+  it("body-size cap rejects chunked/large requests without content-length header", async () => {
+    const model = createMockModel();
+    const port = 18981;
+    const aug = webTransport({ port, auth: { type: "bearer", token: "test-token" } });
+    const fixture = routeFixtureAugment({
+      method: "POST",
+      auth: "none",
+      maxBodyBytes: 100,
+      handler: async () => new Response("ok"),
+    });
+    const agent = defineAgent(
+      { name: "test", model: "mock", augments: [fixture, aug] },
+      model,
+    );
+    await agent.start();
+    try {
+      // Build a chunked-encoded request via a manual ReadableStream — the
+      // resulting fetch won't set content-length.
+      const big = "x".repeat(200);
+      const stream = new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode(big));
+          controller.close();
+        },
+      });
+      const resp = await fetch(`http://localhost:${port}/test/echo`, {
+        method: "POST",
+        body: stream,
+        duplex: "half",
+      } as RequestInit);
+      expect(resp.status).toBe(413);
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  // Finding 3: Per-IP rate limit isolation
+  // ---------------------------------------------------------------------------
+
+  it("rate limit isolates callers — different x-forwarded-for IPs get independent buckets", async () => {
+    const model = createMockModel();
+    const port = 18982;
+    const aug = webTransport({ port, auth: { type: "bearer", token: "test-token" } });
+    const fixture = routeFixtureAugment({
+      auth: "none",
+      rateLimit: { maxPerMinute: 1 },
+    });
+    const agent = defineAgent(
+      { name: "test", model: "mock", augments: [fixture, aug] },
+      model,
+    );
+    await agent.start();
+    try {
+      // Caller A — first request allowed, second 429.
+      const a1 = await fetch(`http://localhost:${port}/test/echo?msg=a`, {
+        headers: { "x-forwarded-for": "10.0.0.1" },
+      });
+      expect(a1.status).toBe(200);
+      const a2 = await fetch(`http://localhost:${port}/test/echo?msg=a2`, {
+        headers: { "x-forwarded-for": "10.0.0.1" },
+      });
+      expect(a2.status).toBe(429);
+      // Caller B — different IP, gets a fresh bucket.
+      const b1 = await fetch(`http://localhost:${port}/test/echo?msg=b`, {
+        headers: { "x-forwarded-for": "10.0.0.2" },
+      });
+      expect(b1.status).toBe(200);
+    } finally {
+      await agent.stop();
+    }
+  });
 });
