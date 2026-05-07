@@ -120,4 +120,17 @@ describe("agentMailAdapter", () => {
     expect(result.status).toBe("failed");
     expect(result.detail).toContain("503");
   });
+
+  it("returns failed when the http client throws", async () => {
+    const adapter = createAgentMailAdapter({
+      client: {
+        post: async () => {
+          throw new Error("ECONNREFUSED");
+        },
+      },
+    });
+    const result = await adapter.deliver(dest, { summary: "x" });
+    expect(result.status).toBe("failed");
+    expect(result.detail).toContain("ECONNREFUSED");
+  });
 });
