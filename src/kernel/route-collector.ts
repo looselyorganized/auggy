@@ -48,9 +48,7 @@ export function collectAugmentRoutes(augments: readonly Augment[]): CollectAugme
     for (const r of aug.httpRoutes) {
       // Path shape validation
       if (typeof r.path !== "string" || r.path.length === 0) {
-        errors.push(
-          `Augment "${aug.name}" registered an HTTP route with empty path.`,
-        );
+        errors.push(`Augment "${aug.name}" registered an HTTP route with empty path.`);
         continue;
       }
       if (!r.path.startsWith("/")) {

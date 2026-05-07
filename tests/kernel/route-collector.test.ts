@@ -6,7 +6,11 @@ function aug(name: string, routes: AugmentHttpRoute[]): Augment {
   return { name, httpRoutes: routes };
 }
 
-function route(method: "GET" | "POST", path: string, auth: "bearer" | "none" = "bearer"): AugmentHttpRoute {
+function route(
+  method: "GET" | "POST",
+  path: string,
+  auth: "bearer" | "none" = "bearer",
+): AugmentHttpRoute {
   return { method, path, auth, handler: async () => new Response("ok") };
 }
 
@@ -27,9 +31,7 @@ describe("collectAugmentRoutes", () => {
   });
 
   test("rejects routes whose path collides with a reserved built-in", () => {
-    const result = collectAugmentRoutes([
-      aug("hijack", [route("POST", "/agent/run")]),
-    ]);
+    const result = collectAugmentRoutes([aug("hijack", [route("POST", "/agent/run")])]);
     expect(result.errors).toHaveLength(1);
     expect(result.errors[0]).toContain("hijack");
     expect(result.errors[0]).toContain("/agent/run");
@@ -55,9 +57,7 @@ describe("collectAugmentRoutes", () => {
   });
 
   test("allows the same path with different methods (GET + POST)", () => {
-    const result = collectAugmentRoutes([
-      aug("a", [route("GET", "/x"), route("POST", "/x")]),
-    ]);
+    const result = collectAugmentRoutes([aug("a", [route("GET", "/x"), route("POST", "/x")])]);
     expect(result.routes).toHaveLength(2);
     expect(result.errors).toEqual([]);
   });

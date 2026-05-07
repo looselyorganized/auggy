@@ -742,7 +742,8 @@ export function webTransport(opts: WebTransportOptions): Augment {
                   headers: { "content-type": "application/json" },
                 });
               }
-              const augmentName = (augmentRoute as { augmentName?: string }).augmentName ?? "unknown";
+              const augmentName =
+                (augmentRoute as { augmentName?: string }).augmentName ?? "unknown";
               console.error(
                 `[web-transport] augment "${augmentName}" handler ${augmentRoute.method} ${augmentRoute.path} threw: ${(err as Error).message}`,
               );

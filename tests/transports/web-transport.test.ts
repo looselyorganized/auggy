@@ -1336,10 +1336,7 @@ describe("webTransport augment-registered routes", () => {
     const port = 18970;
     const aug = webTransport({ port, auth: { type: "bearer", token: "test-token" } });
     const fixture = routeFixtureAugment();
-    const agent = defineAgent(
-      { name: "test", model: "mock", augments: [fixture, aug] },
-      model,
-    );
+    const agent = defineAgent({ name: "test", model: "mock", augments: [fixture, aug] }, model);
     await agent.start();
     try {
       const resp = await fetch(`http://localhost:${port}/test/echo?msg=hello`, {
@@ -1358,10 +1355,7 @@ describe("webTransport augment-registered routes", () => {
     const port = 18971;
     const aug = webTransport({ port, auth: { type: "bearer", token: "test-token" } });
     const fixture = routeFixtureAugment({ auth: "bearer" });
-    const agent = defineAgent(
-      { name: "test", model: "mock", augments: [fixture, aug] },
-      model,
-    );
+    const agent = defineAgent({ name: "test", model: "mock", augments: [fixture, aug] }, model);
     await agent.start();
     try {
       const resp = await fetch(`http://localhost:${port}/test/echo?msg=x`); // no Authorization
@@ -1376,10 +1370,7 @@ describe("webTransport augment-registered routes", () => {
     const port = 18972;
     const aug = webTransport({ port, auth: { type: "bearer", token: "test-token" } });
     const fixture = routeFixtureAugment({ auth: "bearer" });
-    const agent = defineAgent(
-      { name: "test", model: "mock", augments: [fixture, aug] },
-      model,
-    );
+    const agent = defineAgent({ name: "test", model: "mock", augments: [fixture, aug] }, model);
     await agent.start();
     try {
       const resp = await fetch(`http://localhost:${port}/test/echo?msg=x`, {
@@ -1396,10 +1387,7 @@ describe("webTransport augment-registered routes", () => {
     const port = 18973;
     const aug = webTransport({ port, auth: { type: "bearer", token: "test-token" } });
     const fixture = routeFixtureAugment({ auth: "none" });
-    const agent = defineAgent(
-      { name: "test", model: "mock", augments: [fixture, aug] },
-      model,
-    );
+    const agent = defineAgent({ name: "test", model: "mock", augments: [fixture, aug] }, model);
     await agent.start();
     try {
       const resp = await fetch(`http://localhost:${port}/test/echo?msg=hi`); // no auth
@@ -1421,10 +1409,7 @@ describe("webTransport augment-registered routes", () => {
         throw new Error("internal kaboom");
       },
     });
-    const agent = defineAgent(
-      { name: "test", model: "mock", augments: [fixture, aug] },
-      model,
-    );
+    const agent = defineAgent({ name: "test", model: "mock", augments: [fixture, aug] }, model);
     await agent.start();
     try {
       const resp = await fetch(`http://localhost:${port}/test/echo`);
@@ -1450,10 +1435,7 @@ describe("webTransport augment-registered routes", () => {
         return new Response("late");
       },
     });
-    const agent = defineAgent(
-      { name: "test", model: "mock", augments: [fixture, aug] },
-      model,
-    );
+    const agent = defineAgent({ name: "test", model: "mock", augments: [fixture, aug] }, model);
     await agent.start();
     try {
       const resp = await fetch(`http://localhost:${port}/test/echo`);
@@ -1473,10 +1455,7 @@ describe("webTransport augment-registered routes", () => {
       maxBodyBytes: 100,
       handler: async () => new Response("ok"),
     });
-    const agent = defineAgent(
-      { name: "test", model: "mock", augments: [fixture, aug] },
-      model,
-    );
+    const agent = defineAgent({ name: "test", model: "mock", augments: [fixture, aug] }, model);
     await agent.start();
     try {
       const big = "x".repeat(200);
@@ -1500,10 +1479,7 @@ describe("webTransport augment-registered routes", () => {
       auth: "none",
       handler: async (req) => new Response(await req.text()),
     });
-    const agent = defineAgent(
-      { name: "test", model: "mock", augments: [fixture, aug] },
-      model,
-    );
+    const agent = defineAgent({ name: "test", model: "mock", augments: [fixture, aug] }, model);
     await agent.start();
     try {
       const resp = await fetch(`http://localhost:${port}/test/echo`, {
@@ -1522,10 +1498,7 @@ describe("webTransport augment-registered routes", () => {
     const port = 18978;
     const aug = webTransport({ port, auth: { type: "bearer", token: "test-token" } });
     const fixture = routeFixtureAugment({ method: "POST", auth: "none" });
-    const agent = defineAgent(
-      { name: "test", model: "mock", augments: [fixture, aug] },
-      model,
-    );
+    const agent = defineAgent({ name: "test", model: "mock", augments: [fixture, aug] }, model);
     await agent.start();
     try {
       const resp = await fetch(`http://localhost:${port}/test/echo`); // GET on POST-only route
@@ -1544,10 +1517,7 @@ describe("webTransport augment-registered routes", () => {
       auth: "none",
       rateLimit: { maxPerMinute: 2 },
     });
-    const agent = defineAgent(
-      { name: "test", model: "mock", augments: [fixture, aug] },
-      model,
-    );
+    const agent = defineAgent({ name: "test", model: "mock", augments: [fixture, aug] }, model);
     await agent.start();
     try {
       const res1 = await fetch(`http://localhost:${port}/test/echo?msg=1`);
@@ -1582,10 +1552,7 @@ describe("webTransport augment-registered routes", () => {
         return new Response("late");
       },
     });
-    const agent = defineAgent(
-      { name: "test", model: "mock", augments: [fixture, aug] },
-      model,
-    );
+    const agent = defineAgent({ name: "test", model: "mock", augments: [fixture, aug] }, model);
     await agent.start();
     try {
       const resp = await fetch(`http://localhost:${port}/test/echo`);
@@ -1612,10 +1579,7 @@ describe("webTransport augment-registered routes", () => {
       maxBodyBytes: 100,
       handler: async () => new Response("ok"),
     });
-    const agent = defineAgent(
-      { name: "test", model: "mock", augments: [fixture, aug] },
-      model,
-    );
+    const agent = defineAgent({ name: "test", model: "mock", augments: [fixture, aug] }, model);
     await agent.start();
     try {
       // Build a chunked-encoded request via a manual ReadableStream — the
@@ -1650,10 +1614,7 @@ describe("webTransport augment-registered routes", () => {
       auth: "none",
       rateLimit: { maxPerMinute: 1 },
     });
-    const agent = defineAgent(
-      { name: "test", model: "mock", augments: [fixture, aug] },
-      model,
-    );
+    const agent = defineAgent({ name: "test", model: "mock", augments: [fixture, aug] }, model);
     await agent.start();
     try {
       // Caller A — first request allowed, second 429.

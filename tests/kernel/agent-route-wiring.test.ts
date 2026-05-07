@@ -52,10 +52,7 @@ describe("agent.start() route wiring", () => {
       {
         name: "test",
         model: "mock",
-        augments: [
-          routeAug("a", [r("GET", "/agent/run")]),
-          routeAug("b", [r("GET", "/health")]),
-        ],
+        augments: [routeAug("a", [r("GET", "/agent/run")]), routeAug("b", [r("GET", "/health")])],
       },
       mockModel(),
     );
@@ -71,10 +68,7 @@ describe("agent.start() route wiring", () => {
   });
 
   test("no augments with httpRoutes — start succeeds", async () => {
-    const agent = defineAgent(
-      { name: "test", model: "mock", augments: [] },
-      mockModel(),
-    );
+    const agent = defineAgent({ name: "test", model: "mock", augments: [] }, mockModel());
     await agent.start();
     await agent.stop();
   });
