@@ -181,7 +181,7 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
   {
     label: "notify",
     description:
-      "Outbound messaging to operator-defined destinations (webhook + telegram adapters)",
+      "Outbound messaging to operator-defined destinations (webhook + telegram + agentmail adapters)",
     type: "notify",
     defaultName: "notify",
     defaultOptions: {
