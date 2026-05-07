@@ -1,4 +1,4 @@
-import { describe, it, expect } from "bun:test";
+import { describe, it, test, expect } from "bun:test";
 import { notify } from "../../src/augments/notify";
 import type {
   NotifyAdapter,
@@ -184,5 +184,103 @@ describe("notify augment", () => {
     await tool.execute({ to: "creator", summary: "1" }, ctx);
     const result = JSON.parse(await tool.execute({ to: "creator", summary: "1" }, ctx));
     expect(result.status).toBe("sent");
+  });
+
+  it("dispatches to agentmail adapter for agentmail destinations", async () => {
+    const captured: Array<{ destination: NotifyDestination; payload: NotifyPayload }> = [];
+    const agentmailMock: NotifyAdapter = {
+      deliver: async (destination, payload) => {
+        captured.push({ destination, payload });
+        return { status: "sent" };
+      },
+    };
+    const aug = notify({
+      destinations: [
+        {
+          name: "creator-mail",
+          transport: "agentmail",
+          apiKey: "am_x",
+          inboxId: "inb_x",
+          to: "creator@example.com",
+        },
+      ],
+      adapters: { agentmail: agentmailMock },
+    });
+    const tool = getNotifyTool(aug);
+    const ctx = makeContext(makePeer("creator-1", "creator"));
+    const result = JSON.parse(
+      await tool.execute({ to: "creator-mail", summary: "Mail test", reason: "test reason" }, ctx),
+    );
+    expect(result.status).toBe("sent");
+    expect(captured).toHaveLength(1);
+    expect(captured[0]!.destination.transport).toBe("agentmail");
+    expect(captured[0]!.destination.name).toBe("creator-mail");
+    expect(captured[0]!.payload.summary).toBe("Mail test");
+    expect(captured[0]!.payload.reason).toBe("test reason");
+  });
+
+  test("per-destination cap allows verify-out 50/hr while creator stays at global default", async () => {
+    const aug = notify({
+      destinations: [
+        { name: "creator", transport: "webhook", url: "https://example.com/c" },
+        {
+          name: "verify-out",
+          transport: "webhook",
+          url: "https://example.com/v",
+          rateLimit: { maxPerHour: 50, cooldownMs: 0 },
+        },
+      ],
+      rateLimit: { globalMaxPerHour: 5, dedupThreshold: 0, cooldownMs: 0 },
+      adapters: { webhook: mockAdapter(), telegram: mockAdapter() },
+    });
+    const tool = getNotifyTool(aug);
+    const ctx = makeContext(makePeer("v1"));
+    // Fire 10 to verify-out — all should succeed (under 50)
+    for (let i = 0; i < 10; i++) {
+      const r = JSON.parse(await tool.execute({ to: "verify-out", summary: `msg ${i}` }, ctx));
+      expect(r.status).toBe("sent");
+    }
+    // Fire 6 to creator — 6th should be rate-limited (over 5)
+    for (let i = 0; i < 5; i++) {
+      const r = JSON.parse(await tool.execute({ to: "creator", summary: `alert ${i}` }, ctx));
+      expect(r.status).toBe("sent");
+    }
+    const sixth = JSON.parse(await tool.execute({ to: "creator", summary: "alert 6" }, ctx));
+    expect(sixth.status).toBe("rate_limited");
+  });
+
+  test("per-destination cap surface in rate_limited message names the destination", async () => {
+    const aug = notify({
+      destinations: [
+        {
+          name: "verify-out",
+          transport: "webhook",
+          url: "https://x",
+          rateLimit: { maxPerHour: 1, cooldownMs: 0 },
+        },
+      ],
+      rateLimit: { dedupThreshold: 0, cooldownMs: 0 },
+      adapters: { webhook: mockAdapter(), telegram: mockAdapter() },
+    });
+    const tool = getNotifyTool(aug);
+    const ctx = makeContext(makePeer("v1"));
+    await tool.execute({ to: "verify-out", summary: "1" }, ctx);
+    const r = JSON.parse(await tool.execute({ to: "verify-out", summary: "2" }, ctx));
+    expect(r.status).toBe("rate_limited");
+    expect(r.message).toContain("verify-out");
+  });
+
+  test("destination without explicit rateLimit falls back to global cap", async () => {
+    const aug = notify({
+      destinations: [{ name: "creator", transport: "webhook", url: "https://x" }],
+      rateLimit: { globalMaxPerHour: 2, dedupThreshold: 0, cooldownMs: 0 },
+      adapters: { webhook: mockAdapter(), telegram: mockAdapter() },
+    });
+    const tool = getNotifyTool(aug);
+    const ctx = makeContext(makePeer("v1"));
+    await tool.execute({ to: "creator", summary: "1" }, ctx);
+    await tool.execute({ to: "creator", summary: "2" }, ctx);
+    const third = JSON.parse(await tool.execute({ to: "creator", summary: "3" }, ctx));
+    expect(third.status).toBe("rate_limited");
   });
 });

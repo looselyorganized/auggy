@@ -382,8 +382,18 @@ function validateNotifyOptions(
       ) {
         errors.push(`${dPrefix}.chatId: required string or number for telegram transport`);
       }
+    } else if (dest.transport === "agentmail") {
+      if (typeof dest.apiKey !== "string" || !dest.apiKey) {
+        errors.push(`${dPrefix}.apiKey: required string for agentmail transport`);
+      }
+      if (typeof dest.inboxId !== "string" || !dest.inboxId) {
+        errors.push(`${dPrefix}.inboxId: required string for agentmail transport`);
+      }
+      if (dest.to == null || (typeof dest.to !== "string" && !Array.isArray(dest.to))) {
+        errors.push(`${dPrefix}.to: required string or array for agentmail transport`);
+      }
     } else {
-      errors.push(`${dPrefix}.transport: must be "webhook" or "telegram"`);
+      errors.push(`${dPrefix}.transport: must be "webhook", "telegram", or "agentmail"`);
     }
   }
 

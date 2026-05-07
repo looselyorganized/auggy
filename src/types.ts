@@ -792,13 +792,18 @@ export interface AgentHandle {
 
 // === Notify augment ===
 
-export type NotifyAdapterKind = "webhook" | "telegram";
+export type NotifyAdapterKind = "webhook" | "telegram" | "agentmail";
 
 export interface WebhookNotifyDestination {
   name: string;
   transport: "webhook";
   url: string;
   headers?: Record<string, string>;
+  /** Optional per-destination rate limit. Falls back to the augment-level global cap when absent. */
+  rateLimit?: {
+    maxPerHour?: number;
+    cooldownMs?: number;
+  };
 }
 
 export interface TelegramNotifyDestination {
@@ -807,9 +812,39 @@ export interface TelegramNotifyDestination {
   botToken: string;
   chatId: number | string;
   parseMode?: "Markdown" | "HTML" | "MarkdownV2";
+  /** Optional per-destination rate limit. Falls back to the augment-level global cap when absent. */
+  rateLimit?: {
+    maxPerHour?: number;
+    cooldownMs?: number;
+  };
 }
 
-export type NotifyDestination = WebhookNotifyDestination | TelegramNotifyDestination;
+export interface AgentMailNotifyDestination {
+  name: string;
+  transport: "agentmail";
+  /** AgentMail API key (Bearer token, prefix `am_`). Resolve via env interpolation in agent.yaml. */
+  apiKey: string;
+  /** AgentMail inbox ID this notification is sent FROM. */
+  inboxId: string;
+  /** Recipient email address(es). String or array; adapter normalizes to array. */
+  to: string | string[];
+  /** Optional subject prefix prepended to the notify summary. e.g. "[Auggy] ". */
+  subjectPrefix?: string;
+  /** Optional labels applied to the sent message in AgentMail. */
+  labels?: string[];
+  /** Override the AgentMail API base URL (testing/sandbox). Default: https://api.agentmail.to/v0 */
+  apiBaseUrl?: string;
+  /** Optional per-destination rate limit. Falls back to the augment-level global cap when absent. */
+  rateLimit?: {
+    maxPerHour?: number;
+    cooldownMs?: number;
+  };
+}
+
+export type NotifyDestination =
+  | WebhookNotifyDestination
+  | TelegramNotifyDestination
+  | AgentMailNotifyDestination;
 
 export interface NotifyRateLimitOptions {
   enabled?: boolean;
