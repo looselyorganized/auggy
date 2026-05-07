@@ -133,4 +133,23 @@ describe("agentMailAdapter", () => {
     expect(result.status).toBe("failed");
     expect(result.detail).toContain("ECONNREFUSED");
   });
+
+  it("rejects non-agentmail destinations without calling http", async () => {
+    let called = false;
+    const adapter = createAgentMailAdapter({
+      client: {
+        post: async () => {
+          called = true;
+          throw new Error("should not be called");
+        },
+      },
+    });
+    const result = await adapter.deliver(
+      { name: "wrong", transport: "webhook", url: "https://x" },
+      { summary: "x" },
+    );
+    expect(called).toBe(false);
+    expect(result.status).toBe("failed");
+    expect(result.detail).toContain("non-agentmail destination");
+  });
 });
