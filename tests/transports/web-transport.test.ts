@@ -4,6 +4,7 @@ import { webTransport } from "@/transports/web-transport";
 import { defineAgent } from "@/agent";
 import { createMockModel } from "@tests/fixtures/mock-model";
 import { createIdentityAugment } from "@tests/fixtures/mock-augment";
+import { routeFixtureAugment } from "@tests/fixtures/route-fixture-augment";
 import type { Augment } from "@/types";
 
 // ---------------------------------------------------------------------------
@@ -1319,6 +1320,317 @@ describe("webTransport / (root) route", () => {
       });
       expect(resp.status).toBe(404);
       await resp.text();
+    } finally {
+      await agent.stop();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// webTransport augment-registered routes (PR γ.1 Task 5)
+// ---------------------------------------------------------------------------
+
+describe("webTransport augment-registered routes", () => {
+  it("dispatches GET requests to augment-registered routes", async () => {
+    const model = createMockModel();
+    const port = 18970;
+    const aug = webTransport({ port, auth: { type: "bearer", token: "test-token" } });
+    const fixture = routeFixtureAugment();
+    const agent = defineAgent({ name: "test", model: "mock", augments: [fixture, aug] }, model);
+    await agent.start();
+    try {
+      const resp = await fetch(`http://localhost:${port}/test/echo?msg=hello`, {
+        headers: { authorization: "Bearer test-token" },
+      });
+      expect(resp.status).toBe(200);
+      const body = (await resp.json()) as { echo: string };
+      expect(body.echo).toBe("hello");
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("auth: bearer route rejects request without bearer token", async () => {
+    const model = createMockModel();
+    const port = 18971;
+    const aug = webTransport({ port, auth: { type: "bearer", token: "test-token" } });
+    const fixture = routeFixtureAugment({ auth: "bearer" });
+    const agent = defineAgent({ name: "test", model: "mock", augments: [fixture, aug] }, model);
+    await agent.start();
+    try {
+      const resp = await fetch(`http://localhost:${port}/test/echo?msg=x`); // no Authorization
+      expect(resp.status).toBe(401);
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("auth: bearer route rejects wrong bearer token", async () => {
+    const model = createMockModel();
+    const port = 18972;
+    const aug = webTransport({ port, auth: { type: "bearer", token: "test-token" } });
+    const fixture = routeFixtureAugment({ auth: "bearer" });
+    const agent = defineAgent({ name: "test", model: "mock", augments: [fixture, aug] }, model);
+    await agent.start();
+    try {
+      const resp = await fetch(`http://localhost:${port}/test/echo?msg=x`, {
+        headers: { authorization: "Bearer wrong-token" },
+      });
+      expect(resp.status).toBe(401);
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("auth: none route accepts request without any bearer token", async () => {
+    const model = createMockModel();
+    const port = 18973;
+    const aug = webTransport({ port, auth: { type: "bearer", token: "test-token" } });
+    const fixture = routeFixtureAugment({ auth: "none" });
+    const agent = defineAgent({ name: "test", model: "mock", augments: [fixture, aug] }, model);
+    await agent.start();
+    try {
+      const resp = await fetch(`http://localhost:${port}/test/echo?msg=hi`); // no auth
+      expect(resp.status).toBe(200);
+      const body = (await resp.json()) as { echo: string };
+      expect(body.echo).toBe("hi");
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("handler that throws returns 500 with opaque body", async () => {
+    const model = createMockModel();
+    const port = 18974;
+    const aug = webTransport({ port, auth: { type: "bearer", token: "test-token" } });
+    const fixture = routeFixtureAugment({
+      auth: "none",
+      handler: async () => {
+        throw new Error("internal kaboom");
+      },
+    });
+    const agent = defineAgent({ name: "test", model: "mock", augments: [fixture, aug] }, model);
+    await agent.start();
+    try {
+      const resp = await fetch(`http://localhost:${port}/test/echo`);
+      expect(resp.status).toBe(500);
+      const body = (await resp.json()) as { error: string };
+      expect(body).toEqual({ error: "internal" });
+      // The actual error message must NOT leak in the response body.
+      expect(JSON.stringify(body)).not.toContain("kaboom");
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("handler that exceeds timeoutMs returns 504", async () => {
+    const model = createMockModel();
+    const port = 18975;
+    const aug = webTransport({ port, auth: { type: "bearer", token: "test-token" } });
+    const fixture = routeFixtureAugment({
+      auth: "none",
+      timeoutMs: 50,
+      handler: async () => {
+        await new Promise((r) => setTimeout(r, 200));
+        return new Response("late");
+      },
+    });
+    const agent = defineAgent({ name: "test", model: "mock", augments: [fixture, aug] }, model);
+    await agent.start();
+    try {
+      const resp = await fetch(`http://localhost:${port}/test/echo`);
+      expect(resp.status).toBe(504);
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("POST request exceeding maxBodyBytes returns 413", async () => {
+    const model = createMockModel();
+    const port = 18976;
+    const aug = webTransport({ port, auth: { type: "bearer", token: "test-token" } });
+    const fixture = routeFixtureAugment({
+      method: "POST",
+      auth: "none",
+      maxBodyBytes: 100,
+      handler: async () => new Response("ok"),
+    });
+    const agent = defineAgent({ name: "test", model: "mock", augments: [fixture, aug] }, model);
+    await agent.start();
+    try {
+      const big = "x".repeat(200);
+      const resp = await fetch(`http://localhost:${port}/test/echo`, {
+        method: "POST",
+        body: big,
+        headers: { "content-type": "text/plain" },
+      });
+      expect(resp.status).toBe(413);
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("POST request without content-length is allowed under default cap", async () => {
+    const model = createMockModel();
+    const port = 18977;
+    const aug = webTransport({ port, auth: { type: "bearer", token: "test-token" } });
+    const fixture = routeFixtureAugment({
+      method: "POST",
+      auth: "none",
+      handler: async (req) => new Response(await req.text()),
+    });
+    const agent = defineAgent({ name: "test", model: "mock", augments: [fixture, aug] }, model);
+    await agent.start();
+    try {
+      const resp = await fetch(`http://localhost:${port}/test/echo`, {
+        method: "POST",
+        body: "small",
+      });
+      expect(resp.status).toBe(200);
+      expect(await resp.text()).toBe("small");
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("GET request to a POST-only route returns 405 with Allow header", async () => {
+    const model = createMockModel();
+    const port = 18978;
+    const aug = webTransport({ port, auth: { type: "bearer", token: "test-token" } });
+    const fixture = routeFixtureAugment({ method: "POST", auth: "none" });
+    const agent = defineAgent({ name: "test", model: "mock", augments: [fixture, aug] }, model);
+    await agent.start();
+    try {
+      const resp = await fetch(`http://localhost:${port}/test/echo`); // GET on POST-only route
+      expect(resp.status).toBe(405);
+      expect(resp.headers.get("allow")).toBe("POST");
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("per-route rate limit returns 429 after maxPerMinute exceeded", async () => {
+    const model = createMockModel();
+    const port = 18979;
+    const aug = webTransport({ port, auth: { type: "bearer", token: "test-token" } });
+    const fixture = routeFixtureAugment({
+      auth: "none",
+      rateLimit: { maxPerMinute: 2 },
+    });
+    const agent = defineAgent({ name: "test", model: "mock", augments: [fixture, aug] }, model);
+    await agent.start();
+    try {
+      const res1 = await fetch(`http://localhost:${port}/test/echo?msg=1`);
+      expect(res1.status).toBe(200);
+      const res2 = await fetch(`http://localhost:${port}/test/echo?msg=2`);
+      expect(res2.status).toBe(200);
+      const res3 = await fetch(`http://localhost:${port}/test/echo?msg=3`);
+      expect(res3.status).toBe(429);
+      expect(res3.headers.get("retry-after")).toMatch(/^\d+$/);
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  // Finding 1: AbortSignal fires on timeout
+  // ---------------------------------------------------------------------------
+
+  it("handler receives an AbortSignal that fires when timeoutMs elapses", async () => {
+    const model = createMockModel();
+    const port = 18980;
+    const aug = webTransport({ port, auth: { type: "bearer", token: "test-token" } });
+    let signalAborted = false;
+    const fixture = routeFixtureAugment({
+      auth: "none",
+      timeoutMs: 50,
+      handler: async (_req, { signal }) => {
+        signal.addEventListener("abort", () => {
+          signalAborted = true;
+        });
+        await new Promise((r) => setTimeout(r, 200));
+        return new Response("late");
+      },
+    });
+    const agent = defineAgent({ name: "test", model: "mock", augments: [fixture, aug] }, model);
+    await agent.start();
+    try {
+      const resp = await fetch(`http://localhost:${port}/test/echo`);
+      expect(resp.status).toBe(504);
+      // Allow the abort event to fire on the handler's side.
+      await new Promise((r) => setTimeout(r, 50));
+      expect(signalAborted).toBe(true);
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  // Finding 2: Body-size cap enforced via actual byte-count (chunked bypass)
+  // ---------------------------------------------------------------------------
+
+  it("body-size cap rejects chunked/large requests without content-length header", async () => {
+    const model = createMockModel();
+    const port = 18981;
+    const aug = webTransport({ port, auth: { type: "bearer", token: "test-token" } });
+    const fixture = routeFixtureAugment({
+      method: "POST",
+      auth: "none",
+      maxBodyBytes: 100,
+      handler: async () => new Response("ok"),
+    });
+    const agent = defineAgent({ name: "test", model: "mock", augments: [fixture, aug] }, model);
+    await agent.start();
+    try {
+      // Build a chunked-encoded request via a manual ReadableStream — the
+      // resulting fetch won't set content-length.
+      const big = "x".repeat(200);
+      const stream = new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode(big));
+          controller.close();
+        },
+      });
+      const resp = await fetch(`http://localhost:${port}/test/echo`, {
+        method: "POST",
+        body: stream,
+        duplex: "half",
+      } as RequestInit);
+      expect(resp.status).toBe(413);
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  // Finding 3: Per-IP rate limit isolation
+  // ---------------------------------------------------------------------------
+
+  it("rate limit isolates callers — different x-forwarded-for IPs get independent buckets", async () => {
+    const model = createMockModel();
+    const port = 18982;
+    const aug = webTransport({ port, auth: { type: "bearer", token: "test-token" } });
+    const fixture = routeFixtureAugment({
+      auth: "none",
+      rateLimit: { maxPerMinute: 1 },
+    });
+    const agent = defineAgent({ name: "test", model: "mock", augments: [fixture, aug] }, model);
+    await agent.start();
+    try {
+      // Caller A — first request allowed, second 429.
+      const a1 = await fetch(`http://localhost:${port}/test/echo?msg=a`, {
+        headers: { "x-forwarded-for": "10.0.0.1" },
+      });
+      expect(a1.status).toBe(200);
+      const a2 = await fetch(`http://localhost:${port}/test/echo?msg=a2`, {
+        headers: { "x-forwarded-for": "10.0.0.1" },
+      });
+      expect(a2.status).toBe(429);
+      // Caller B — different IP, gets a fresh bucket.
+      const b1 = await fetch(`http://localhost:${port}/test/echo?msg=b`, {
+        headers: { "x-forwarded-for": "10.0.0.2" },
+      });
+      expect(b1.status).toBe(200);
     } finally {
       await agent.stop();
     }

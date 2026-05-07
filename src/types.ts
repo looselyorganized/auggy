@@ -551,6 +551,12 @@ export interface TransportKernel {
   ): Promise<TurnResult>;
   onOutbound(callback: (peer: PeerIdentity, message: OutboundMessage) => Promise<void>): void;
   getAgentCard(): AgentCard;
+  /**
+   * Cross-augment HTTP routes collected at `agent.start()` after
+   * `lifecycle.boot()`. Returns a frozen array — transports MUST NOT mutate.
+   * Transports that don't speak HTTP simply ignore this method.
+   */
+  getAugmentRoutes(): readonly AugmentHttpRoute[];
 }
 
 export interface TransportSpec {
@@ -565,6 +571,80 @@ export interface TransportSpec {
   concurrency?: number;
   maxQueueDepth?: number;
   rateLimitPerPeer?: { maxPerMinute: number };
+}
+
+// === Augment HTTP routes (PR γ.1) ===
+
+/**
+ * HTTP methods supported by augment-registered routes.
+ *
+ * v1 limits to GET + POST. PUT/DELETE/PATCH deferred — no current consumer
+ * needs them, and a smaller surface reduces audit cost. Add on demand.
+ */
+export type HttpMethod = "GET" | "POST";
+
+/**
+ * Authentication mode for an augment-registered HTTP route.
+ *
+ * - `"bearer"` — the route inherits webTransport's bearer-token check (same
+ *   token that gates `/agent/run`). Recommended default for any route that
+ *   represents creator-driven action.
+ * - `"none"` — the route accepts any caller. Opt-in only; required for
+ *   public callbacks like email magic-link clicks (PR γ.2 visitorAuth) where
+ *   the visitor can't supply a bearer token. Boot logs a warning per
+ *   `auth: "none"` route so operators can't miss them.
+ */
+export type AugmentHttpRouteAuth = "bearer" | "none";
+
+/**
+ * One HTTP route registered by an augment. Routes are collected at
+ * `agent.start()` AFTER `lifecycle.boot()` succeeds (so `onBoot`-populated
+ * route lists are visible) and BEFORE any transport binds a port. Path
+ * collisions (vs built-in paths or across augments) throw at `agent.start()`,
+ * never silently override.
+ */
+export interface AugmentHttpRoute {
+  method: HttpMethod;
+  /**
+   * Exact-match path. v1 does not support patterns or parameters.
+   * Must start with `/`. Reserved paths (cannot be registered):
+   *   - "/"
+   *   - "/agent/run"
+   *   - "/health"
+   *   - "/.well-known/agent-card.json"
+   * Convention: scope under `/<augment-name>/...` to make collisions unlikely.
+   */
+  path: string;
+  /** Auth mode is required — no implicit default; forces deliberate choice. */
+  auth: AugmentHttpRouteAuth;
+  /**
+   * Optional per-route handler timeout in milliseconds. Default 30_000.
+   * Times out → 504. Independent from Bun.serve's connection idleTimeout.
+   */
+  timeoutMs?: number;
+  /**
+   * Optional max body bytes the dispatcher will accept. Default 1_048_576 (1 MB).
+   * Over cap → 413 before the handler runs. Enforced by counting actual bytes
+   * read from req.body (not trusting content-length, which is bypassable via
+   * chunked encoding or omission).
+   */
+  maxBodyBytes?: number;
+  /**
+   * Optional sliding-window rate limit per route (NOT per peer — auth-none
+   * routes have no peer). Returns 429 with `Retry-After` when triggered.
+   */
+  rateLimit?: {
+    maxPerMinute: number;
+  };
+  /**
+   * The handler. Receives the raw Request and an options bag carrying an
+   * AbortSignal that fires on timeout. Handlers SHOULD listen for the
+   * signal and short-circuit side-effecting work to avoid duplicate effects
+   * after a 504. Errors thrown are caught by the dispatcher and surfaced
+   * as 500 with an opaque body; the actual error is logged with the route
+   * path for triage.
+   */
+  handler: (req: Request, opts: { signal: AbortSignal }) => Promise<Response>;
 }
 
 // === Turn Gate (2PC admission) ===
@@ -673,6 +753,12 @@ export interface Augment {
   receivesPriorContext?: boolean;
   tools?: Tool[];
   transport?: TransportSpec;
+  /**
+   * HTTP routes the augment serves on any HTTP-capable transport (today: webTransport).
+   * Collected at `agent.start()` after `onBoot` runs; immutable thereafter.
+   * See `AugmentHttpRoute` for the contract.
+   */
+  httpRoutes?: AugmentHttpRoute[];
   memory?: MemoryProviderSpec;
   constraints?: AugmentConstraints;
   onBoot?: () => Promise<void>;

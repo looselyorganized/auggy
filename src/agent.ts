@@ -17,6 +17,8 @@ import { wireMemoryBus } from "./memory/memory-bus";
 import { createTurnLoop } from "./kernel/turn-loop";
 import { createLifecycleManager } from "./kernel/lifecycle-manager";
 import { createTransportQueue } from "./kernel/transport-queue";
+import { collectAugmentRoutes } from "./kernel/route-collector";
+import type { CollectedRoute } from "./kernel/route-collector";
 
 export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandle {
   const tokenizer = createTokenizer();
@@ -79,6 +81,25 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
     async start() {
       if (started) throw new Error("Agent already started. Call stop() first.");
       await lifecycle.boot();
+
+      // PR γ.1 — collect augment-registered HTTP routes AFTER boot so
+      // onBoot-populated route lists are visible, BEFORE any transport
+      // binds a port so a collision can't leave the agent half-bound.
+      const collected = collectAugmentRoutes(effectiveAugments);
+      if (collected.errors.length > 0) {
+        // Run shutdown to undo the boot side-effects we just performed
+        // (otherwise SQLite handles, file watchers, etc. leak).
+        try {
+          await lifecycle.shutdown();
+        } catch {
+          // best-effort; the original validation error wins
+        }
+        throw new Error(
+          `Cannot start agent — augment HTTP route validation failed:\n  ` +
+            collected.errors.join("\n  "),
+        );
+      }
+      const augmentRoutes: readonly CollectedRoute[] = collected.routes;
 
       // Register transport augments
       for (const aug of effectiveAugments) {
@@ -158,6 +179,9 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
             },
             getAgentCard() {
               return agentCard;
+            },
+            getAugmentRoutes() {
+              return augmentRoutes;
             },
           };
           await aug.transport.register(transportKernel, aug.name);

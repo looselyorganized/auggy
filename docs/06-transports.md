@@ -543,6 +543,83 @@ These are deferred to future plans or future improvements:
 - **WebSocket transport** — SSE only.
 - **Outbound dispatch via web** — the `onOutbound` callback exists but the web transport doesn't have a way to push messages to the peer (one-shot HTTP request/response). A WebSocket version would.
 
+## Augment-registered HTTP routes (PR γ.1)
+
+Augments can register HTTP routes that `webTransport` serves alongside its built-in paths. Routes are collected at `agent.start()` after every augment's `onBoot` runs and before any port binds — collisions throw early, never silently override.
+
+### Declaring a route
+
+In your augment, set the optional `httpRoutes` field:
+
+```ts
+import type { Augment } from "auggy";
+
+export function myAugment(): Augment {
+  return {
+    name: "my-augment",
+    httpRoutes: [
+      {
+        method: "GET",
+        path: "/my-augment/status",
+        auth: "bearer",
+        handler: async (req) =>
+          new Response(JSON.stringify({ ok: true }), {
+            headers: { "content-type": "application/json" },
+          }),
+      },
+    ],
+  };
+}
+```
+
+### Auth modes
+
+`auth` is **required** — no implicit default.
+
+- `"bearer"` — the route inherits webTransport's bearer-token check. Use for any route that represents a creator-authenticated action.
+- `"none"` — the route accepts any caller. Use ONLY for genuinely public callbacks (email click-backs, OAuth redirects). The boot log emits a `console.warn` per `auth: "none"` route so operators see the unauthenticated surfaces.
+
+### Reserved paths
+
+Augments cannot register these paths (collision throws at `agent.start()`):
+
+- `/`
+- `/agent/run`
+- `/health`
+- `/.well-known/agent-card.json`
+
+Convention: scope routes under `/<augment-name>/...` to make collisions across third-party augments extremely unlikely.
+
+### Per-route safety knobs
+
+| Field | Default | Behavior |
+|---|---|---|
+| `timeoutMs` | 30,000 | Handler exceeding this returns 504. The handler's promise is not cancelled (continues running; result discarded). |
+| `maxBodyBytes` | 1,048,576 (1 MB) | Request with `content-length` over the cap returns 413 before the handler runs. |
+| `rateLimit.maxPerMinute` | (no limit) | Per-route sliding-window counter. Not per-peer — auth-none routes have no peer. Returns 429 with `Retry-After`. |
+
+### Status codes
+
+| Status | Trigger |
+|---|---|
+| 200 | Handler returned a 2xx Response. |
+| 401 | `auth: "bearer"` route, missing/wrong bearer token. |
+| 404 | No augment route matches the requested (method, path). |
+| 405 | Augment registered the path for a different method. `Allow:` header lists the registered method. |
+| 413 | Request `content-length` exceeded `maxBodyBytes`. |
+| 429 | Per-route rate limit triggered. `Retry-After:` header set. |
+| 500 | Handler threw. Body is opaque `{"error":"internal"}`; the actual error is logged to stderr with the route path. |
+| 504 | Handler exceeded `timeoutMs`. |
+
+### Limits
+
+- HTTP only — no WebSocket route registration at v1.
+- Methods: `GET` and `POST`. PUT/DELETE/PATCH not supported (no consumer needs them; smaller surface).
+- Exact path match — no patterns (`/items/:id`) or prefix routes.
+- No streaming response support — handlers return discrete `Response` objects. AG-UI's SSE stays exclusive to `/agent/run`.
+- Routes are frozen at `agent.start()` — no dynamic add/remove during runtime.
+- Per-route auth schemes are `bearer | none` only. For OAuth/HMAC/custom schemes, augments wrap their handler with the additional check.
+
 ## Multi-transport composition
 
 Auggy's kernel multiplexes turns from N mounted transports into shared agent state. Each transport is a separate augment with its own queue, its own identity resolver, and its own boot lifecycle. The kernel never talks directly to individual transports — everything flows through the `TransportSpec`/`TransportKernel` interface described above.
