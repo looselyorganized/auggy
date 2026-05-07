@@ -193,6 +193,7 @@ function makeMockKernel() {
       outboundCallbacks.push(cb);
     },
     getAgentCard: () => ({}) as AgentCard,
+    getAugmentRoutes: () => [],
   };
   return { kernel, handleInboundCalls, outboundCallbacks };
 }
