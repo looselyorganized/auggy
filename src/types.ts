@@ -648,6 +648,11 @@ export interface WebhookNotifyDestination {
   transport: "webhook";
   url: string;
   headers?: Record<string, string>;
+  /** Optional per-destination rate limit. Falls back to the augment-level global cap when absent. */
+  rateLimit?: {
+    maxPerHour?: number;
+    cooldownMs?: number;
+  };
 }
 
 export interface TelegramNotifyDestination {
@@ -656,6 +661,11 @@ export interface TelegramNotifyDestination {
   botToken: string;
   chatId: number | string;
   parseMode?: "Markdown" | "HTML" | "MarkdownV2";
+  /** Optional per-destination rate limit. Falls back to the augment-level global cap when absent. */
+  rateLimit?: {
+    maxPerHour?: number;
+    cooldownMs?: number;
+  };
 }
 
 export interface AgentMailNotifyDestination {
@@ -673,6 +683,11 @@ export interface AgentMailNotifyDestination {
   labels?: string[];
   /** Override the AgentMail API base URL (testing/sandbox). Default: https://api.agentmail.to/v0 */
   apiBaseUrl?: string;
+  /** Optional per-destination rate limit. Falls back to the augment-level global cap when absent. */
+  rateLimit?: {
+    maxPerHour?: number;
+    cooldownMs?: number;
+  };
 }
 
 export type NotifyDestination =
