@@ -139,6 +139,13 @@ export function webTransport(opts: WebTransportOptions): Augment {
   let server: ReturnType<typeof Bun.serve> | null = null;
   let kernel: TransportKernel | null = null;
 
+  // PR γ.1 — augment-registered routes captured at register() time.
+  // Empty until register fires; once populated, immutable for the server's lifetime.
+  // Type matches TransportKernel.getAugmentRoutes(); runtime values are CollectedRoute
+  // (which extends AugmentHttpRoute with augmentName) — we cast where needed.
+  let augmentRoutes: readonly import("../types").AugmentHttpRoute[] = [];
+  let augmentRouteMap: Map<string, import("../types").AugmentHttpRoute> = new Map();
+
   const maxMessageLength = opts.maxMessageLength ?? 4000;
   const visitorTokensEnabled = opts.visitorTokens?.enabled !== false;
   const visitorTokenTtl = opts.visitorTokens?.ttlSeconds ?? 30 * 24 * 3600;
@@ -226,6 +233,20 @@ export function webTransport(opts: WebTransportOptions): Augment {
   const transport: TransportSpec = {
     async register(k: TransportKernel, _augmentName: string) {
       kernel = k;
+      augmentRoutes = k.getAugmentRoutes();
+      augmentRouteMap = new Map();
+      for (const r of augmentRoutes) {
+        augmentRouteMap.set(`${r.method} ${r.path}`, r);
+        // Operator-visible audit: log every auth: "none" route so an operator
+        // grepping the boot log can spot unauthenticated surfaces.
+        // Runtime values are CollectedRoute (extends AugmentHttpRoute with augmentName).
+        if (r.auth === "none") {
+          const augmentName = (r as { augmentName?: string }).augmentName ?? "(unknown)";
+          console.warn(
+            `[web-transport] augment "${augmentName}" registered ${r.method} ${r.path} with auth: "none" — public, unauthenticated.`,
+          );
+        }
+      }
     },
     identify,
     concurrency: opts.concurrency ?? 1,
@@ -537,6 +558,24 @@ export function webTransport(opts: WebTransportOptions): Augment {
           if (req.method === "GET" && url.pathname === "/.well-known/agent-card.json") {
             return handleAgentCard();
           }
+
+          // PR γ.1 — augment-registered routes. Dispatched by exact (method, path).
+          const augmentRoute = augmentRouteMap.get(`${req.method} ${url.pathname}`);
+          if (augmentRoute) {
+            return augmentRoute.handler(req);
+          }
+
+          // Method-mismatch detection: if any registered augment route matches
+          // the path but a different method, return 405 with Allow header.
+          for (const r of augmentRoutes) {
+            if (r.path === url.pathname && r.method !== req.method) {
+              return new Response("Method Not Allowed", {
+                status: 405,
+                headers: { allow: r.method },
+              });
+            }
+          }
+
           return new Response("Not Found", { status: 404 });
         },
       });

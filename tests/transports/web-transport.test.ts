@@ -4,6 +4,7 @@ import { webTransport } from "@/transports/web-transport";
 import { defineAgent } from "@/agent";
 import { createMockModel } from "@tests/fixtures/mock-model";
 import { createIdentityAugment } from "@tests/fixtures/mock-augment";
+import { routeFixtureAugment } from "@tests/fixtures/route-fixture-augment";
 import type { Augment } from "@/types";
 
 // ---------------------------------------------------------------------------
@@ -1319,6 +1320,34 @@ describe("webTransport / (root) route", () => {
       });
       expect(resp.status).toBe(404);
       await resp.text();
+    } finally {
+      await agent.stop();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// webTransport augment-registered routes (PR γ.1 Task 5)
+// ---------------------------------------------------------------------------
+
+describe("webTransport augment-registered routes", () => {
+  it("dispatches GET requests to augment-registered routes", async () => {
+    const model = createMockModel();
+    const port = 18950;
+    const aug = webTransport({ port, auth: { type: "bearer", token: "test-token" } });
+    const fixture = routeFixtureAugment();
+    const agent = defineAgent(
+      { name: "test", model: "mock", augments: [fixture, aug] },
+      model,
+    );
+    await agent.start();
+    try {
+      const resp = await fetch(`http://localhost:${port}/test/echo?msg=hello`, {
+        headers: { authorization: "Bearer test-token" },
+      });
+      expect(resp.status).toBe(200);
+      const body = (await resp.json()) as { echo: string };
+      expect(body.echo).toBe("hello");
     } finally {
       await agent.stop();
     }
