@@ -23,17 +23,27 @@ import type {
 import { defineTool } from "../helpers";
 import { createWebhookAdapter } from "./notify/adapters/webhook";
 import { createTelegramAdapter } from "./notify/adapters/telegram";
+import { createAgentMailAdapter } from "./notify/adapters/agentmail";
 
 export interface NotifyAugmentInternalOptions extends NotifyAugmentOptions {
-  /** Test-only adapter override. Production code does not pass this. */
-  adapters?: { webhook: NotifyAdapter; telegram: NotifyAdapter };
+  /**
+   * Test-only adapter override. Production code does not pass this.
+   * Partial — missing keys fall back to default adapters.
+   */
+  adapters?: Partial<{
+    webhook: NotifyAdapter;
+    telegram: NotifyAdapter;
+    agentmail: NotifyAdapter;
+  }>;
 }
 
 export function notify(opts: NotifyAugmentInternalOptions): Augment {
-  const adapters = opts.adapters ?? {
+  const defaults = {
     webhook: createWebhookAdapter(),
     telegram: createTelegramAdapter(),
+    agentmail: createAgentMailAdapter(),
   };
+  const adapters = { ...defaults, ...(opts.adapters ?? {}) };
 
   const destinationsByName = new Map<string, NotifyDestination>();
   for (const d of opts.destinations) destinationsByName.set(d.name, d);
