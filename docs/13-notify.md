@@ -198,6 +198,55 @@ Fields are only included when present. `reason` and `visitor` lines are omitted 
 
 > **Why not cross-augment coupling?** The Telegram adapter does not import from `telegramTransport`. Both share `src/telegram-client.ts` as a utility. This means `notify` can use a Telegram destination independently of whether `telegramTransport` is installed, and adding `notify` to an agent with no Telegram transport is safe.
 
+### AgentMail adapter
+
+Sends outbound email via [AgentMail](https://docs.agentmail.to). Each destination carries the API key, source inbox, and recipient — multiple `agentmail` destinations may share an API key (the adapter caches the http client per key implicitly via the shared `createHttpClient`).
+
+````yaml
+augments:
+  - name: notify
+    type: notify
+    options:
+      destinations:
+        - name: creator-mail
+          transport: agentmail
+          apiKey: ${AGENTMAIL_API_KEY}
+          inboxId: ${AGENTMAIL_INBOX_ID}
+          to: operator@example.com
+          subjectPrefix: "[Zip] "
+          labels: ["alert"]
+````
+
+Required env vars:
+
+- `AGENTMAIL_API_KEY` — bearer token from AgentMail (prefix `am_`). Use a per-inbox key with the minimum permission set: `message_send`. Org-scoped keys are over-broad — see [security note](#agentmail-key-scoping).
+- `AGENTMAIL_INBOX_ID` — the AgentMail inbox the message is sent **from**.
+
+Optional fields on the destination:
+
+- `to` — recipient email. String or array. The adapter normalizes both to an array on the wire.
+- `subjectPrefix` — prepended to `payload.summary` to form the subject line.
+- `labels` — applied to the sent message in AgentMail (visible in `messages.list`).
+- `apiBaseUrl` — overrides the AgentMail API base URL (default `https://api.agentmail.to/v0`).
+
+#### Delivery result mapping
+
+| AgentMail response | `notify` result |
+|---|---|
+| 2xx with `{message_id, thread_id}` | `{status: "sent"}` |
+| 4xx (auth, validation, invalid recipient) | `{status: "failed", detail: "agentmail ... returned 4xx: <body excerpt>"}` |
+| 5xx (transient) | `{status: "failed", detail: "agentmail ... returned 5xx: <body excerpt>"}` — caller's responsibility to retry; the adapter does not retry. |
+| Network exception | `{status: "failed", detail: "agentmail ... error: <message>"}` |
+| 429 (rate-limited at AgentMail tier) | Surfaced as `failed` with the 429 body. The notify augment's own rate-limit machinery is the primary defense; AgentMail's quota is the second layer. |
+
+#### AgentMail-specific gotchas {#agentmail-key-scoping}
+
+- **Suppression list is permanent.** A bounced or complained address is suppressed by AgentMail with no documented removal API. Test with a real recipient before pinning a destination in production.
+- **Key scoping.** The OTP-issued key from `agent.sign_up` is org-scoped (full access). Mint an inbox-scoped key with whitelist permissions (`message_send` only) and use that in `.env`. The org-scoped key should be rotated or kept for console use only.
+- **No idempotency on send.** AgentMail's `messages.send` does not accept an idempotency key as of this writing. Duplicate sends are possible if a network blip lands during the request. For high-stakes messages, rely on the notify augment's existing dedup window (`rateLimit.dedupThreshold`).
+- **Free tier hard cap.** 100 emails/day. The runtime's `dailyBudgetUsd` does not model AgentMail tier limits — the operator should be aware that AgentMail can refuse delivery independently of runtime budgets.
+- **Tier-side WebSocket and webhook inbound** are **not** part of this adapter. This is outbound-only. For bidirectional email (visitors emailing the agent), see the planned `emailTransport` augment.
+
 ## 5. Rate limiting
 
 Rate limiting is stateful and in-memory. State resets on agent restart. All checks apply only when `rateLimit.enabled !== false`.
