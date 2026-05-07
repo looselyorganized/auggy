@@ -562,6 +562,16 @@ export function webTransport(opts: WebTransportOptions): Augment {
           // PR γ.1 — augment-registered routes. Dispatched by exact (method, path).
           const augmentRoute = augmentRouteMap.get(`${req.method} ${url.pathname}`);
           if (augmentRoute) {
+            if (augmentRoute.auth === "bearer") {
+              const authHeader = req.headers.get("authorization") ?? "";
+              if (!isValidAuth(authHeader)) {
+                return new Response(JSON.stringify({ error: "unauthorized" }), {
+                  status: 401,
+                  headers: { "content-type": "application/json" },
+                });
+              }
+            }
+            // auth: "none" — no check; fall through to handler
             return augmentRoute.handler(req);
           }
 

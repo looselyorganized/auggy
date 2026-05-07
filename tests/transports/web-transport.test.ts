@@ -1352,4 +1352,62 @@ describe("webTransport augment-registered routes", () => {
       await agent.stop();
     }
   });
+
+  it("auth: bearer route rejects request without bearer token", async () => {
+    const model = createMockModel();
+    const port = 18951;
+    const aug = webTransport({ port, auth: { type: "bearer", token: "test-token" } });
+    const fixture = routeFixtureAugment({ auth: "bearer" });
+    const agent = defineAgent(
+      { name: "test", model: "mock", augments: [fixture, aug] },
+      model,
+    );
+    await agent.start();
+    try {
+      const resp = await fetch(`http://localhost:${port}/test/echo?msg=x`); // no Authorization
+      expect(resp.status).toBe(401);
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("auth: bearer route rejects wrong bearer token", async () => {
+    const model = createMockModel();
+    const port = 18952;
+    const aug = webTransport({ port, auth: { type: "bearer", token: "test-token" } });
+    const fixture = routeFixtureAugment({ auth: "bearer" });
+    const agent = defineAgent(
+      { name: "test", model: "mock", augments: [fixture, aug] },
+      model,
+    );
+    await agent.start();
+    try {
+      const resp = await fetch(`http://localhost:${port}/test/echo?msg=x`, {
+        headers: { authorization: "Bearer wrong-token" },
+      });
+      expect(resp.status).toBe(401);
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("auth: none route accepts request without any bearer token", async () => {
+    const model = createMockModel();
+    const port = 18953;
+    const aug = webTransport({ port, auth: { type: "bearer", token: "test-token" } });
+    const fixture = routeFixtureAugment({ auth: "none" });
+    const agent = defineAgent(
+      { name: "test", model: "mock", augments: [fixture, aug] },
+      model,
+    );
+    await agent.start();
+    try {
+      const resp = await fetch(`http://localhost:${port}/test/echo?msg=hi`); // no auth
+      expect(resp.status).toBe(200);
+      const body = (await resp.json()) as { echo: string };
+      expect(body.echo).toBe("hi");
+    } finally {
+      await agent.stop();
+    }
+  });
 });
