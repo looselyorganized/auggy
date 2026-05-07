@@ -1,0 +1,99 @@
+/**
+ * Type definitions for the visitorAuth augment.
+ *
+ * Exposed to the auggy resolver (consumes VisitorAuthOptions) and to the
+ * augment's internal modules. All shapes here are stable contracts; storage
+ * record shapes live in storage/types.ts (a deliberate split — operator-facing
+ * config is separate from on-disk representation).
+ */
+
+/**
+ * AgentMail delivery configuration. visitorAuth uses src/agentmail-client.ts
+ * directly (see Plan §"Spec deviation"). Operator wires apiKey + inboxId via
+ * env-var interpolation in agent.yaml.
+ */
+export interface AgentMailConfig {
+  /** Bearer token (`am_*` prefix). Resolve via `${AGENTMAIL_API_KEY}` in agent.yaml. */
+  apiKey: string;
+  /** AgentMail inbox the verify email is sent FROM. */
+  inboxId: string;
+  /** Optional subject prefix prepended to the templated subject. Default: `[Verify] `. */
+  subjectPrefix?: string;
+  /** Optional override for the AgentMail API base URL (testing/sandbox). */
+  apiBaseUrl?: string;
+}
+
+/**
+ * Per-anonymous-peer rate-limit caps for `request_auth` calls. Defaults:
+ * 1 send per hour, 3 sends per 24 hours. State is in-memory (resets on
+ * restart — documented behavior; the verified_visitors UNIQUE-on-email
+ * constraint catches accidental double-verification).
+ */
+export interface VisitorAuthRateLimit {
+  perHour: number;
+  perDay: number;
+}
+
+/**
+ * Operator notification fired the FIRST time an email verifies on this agent.
+ * Optional; when set, visitorAuth uses agentmail-client to send a one-line
+ * note from inboxId TO the operator address. Independent from `notify`.
+ */
+export interface NotifyOnFirstVerifyConfig {
+  to: string;
+  /** Optional subject prefix (default `[New verified visitor] `). */
+  subjectPrefix?: string;
+}
+
+export interface VisitorAuthOptions {
+  /**
+   * Public-facing base URL for the magic link, e.g. `https://zip.lorf.dev`.
+   * Must be a valid URL with `http://` or `https://` scheme. Required because
+   * the magic-link URL embedded in the email is `<publicUrl>/visitor-auth/verify?token=<uuid>`.
+   */
+  publicUrl: string;
+  /** Path to the visitor-auth SQLite database. Default: `./visitor-auth.db` (relative to agent dir). */
+  dbPath: string;
+  /** AgentMail delivery config. Required. */
+  agentMail: AgentMailConfig;
+  /**
+   * HMAC signing key for minting `vis_<uuid>` visitor tokens after a successful
+   * verify. MUST match webTransport's `visitorTokens.signingKey`. Resolve via
+   * `${VISITOR_SIGNING_KEY}` in agent.yaml (same env var both augments read).
+   */
+  signingKey: string;
+  /** Optional rate-limit caps. Defaults: { perHour: 1, perDay: 3 }. */
+  rateLimit?: VisitorAuthRateLimit;
+  /** Days before reverification is required. Default: 90. */
+  reverifyAfterDays?: number;
+  /** Token TTL in minutes. Default: 15. */
+  tokenTtlMinutes?: number;
+  /** Optional operator-notification on first verify per email. */
+  notifyOnFirstVerify?: NotifyOnFirstVerifyConfig;
+  /**
+   * Path to the layeredMemory SQLite database for the anonymous→recognized
+   * peer-id migration on successful verify. Default: `./memory.db` (relative
+   * to agent dir). Set to `null` to disable migration (anonymous history will
+   * be orphaned but still queryable by threadId).
+   */
+  layeredMemoryDbPath?: string | null;
+}
+
+/** Return shape of `request_auth({...})`. JSON-stringified by the tool. */
+export interface RequestAuthResult {
+  status: "sent" | "rejected" | "failed";
+  message: string;
+  /** Present iff status === "sent". TTL of the issued token. */
+  expiresInSec?: number;
+}
+
+/**
+ * Snapshot of the most-recent visitor message text the augment uses for
+ * the email-in-recent-message validation. The transcript itself lives
+ * in the kernel; visitorAuth only needs the visitor's recent text.
+ */
+export interface RecentVisitorMessage {
+  text: string;
+  /** Optional message id; recorded with the token for audit. */
+  messageId?: string;
+}
