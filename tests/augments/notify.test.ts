@@ -177,4 +177,40 @@ describe("notify augment", () => {
     const result = JSON.parse(await tool.execute({ to: "creator", summary: "1" }, ctx));
     expect(result.status).toBe("sent");
   });
+
+  it("dispatches to agentmail adapter for agentmail destinations", async () => {
+    const captured: Array<{ destination: NotifyDestination; payload: NotifyPayload }> = [];
+    const agentmailMock: NotifyAdapter = {
+      deliver: async (destination, payload) => {
+        captured.push({ destination, payload });
+        return { status: "sent" };
+      },
+    };
+    const aug = notify({
+      destinations: [
+        {
+          name: "creator-mail",
+          transport: "agentmail",
+          apiKey: "am_x",
+          inboxId: "inb_x",
+          to: "creator@example.com",
+        },
+      ],
+      adapters: { agentmail: agentmailMock },
+    });
+    const tool = aug.tools!.find((t) => t.name === "notify")!;
+    const ctx = makeContext(makePeer("creator-1", "creator"));
+    const result = JSON.parse(
+      await tool.execute(
+        { to: "creator-mail", summary: "Mail test", reason: "test reason" },
+        ctx,
+      ),
+    );
+    expect(result.status).toBe("sent");
+    expect(captured).toHaveLength(1);
+    expect(captured[0]!.destination.transport).toBe("agentmail");
+    expect(captured[0]!.destination.name).toBe("creator-mail");
+    expect(captured[0]!.payload.summary).toBe("Mail test");
+    expect(captured[0]!.payload.reason).toBe("test reason");
+  });
 });
