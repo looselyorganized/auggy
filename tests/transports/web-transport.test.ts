@@ -1437,4 +1437,29 @@ describe("webTransport augment-registered routes", () => {
       await agent.stop();
     }
   });
+
+  it("handler that exceeds timeoutMs returns 504", async () => {
+    const model = createMockModel();
+    const port = 18955;
+    const aug = webTransport({ port, auth: { type: "bearer", token: "test-token" } });
+    const fixture = routeFixtureAugment({
+      auth: "none",
+      timeoutMs: 50,
+      handler: async () => {
+        await new Promise((r) => setTimeout(r, 200));
+        return new Response("late");
+      },
+    });
+    const agent = defineAgent(
+      { name: "test", model: "mock", augments: [fixture, aug] },
+      model,
+    );
+    await agent.start();
+    try {
+      const resp = await fetch(`http://localhost:${port}/test/echo`);
+      expect(resp.status).toBe(504);
+    } finally {
+      await agent.stop();
+    }
+  });
 });

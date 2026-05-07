@@ -21,6 +21,7 @@ import {
   verifyVisitorToken,
   type VisitorTokenPayload,
 } from "./visitor-token";
+import { withTimeout, TimeoutError } from "../kernel/timeout";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -574,8 +575,19 @@ export function webTransport(opts: WebTransportOptions): Augment {
             // auth: "none" — no check; fall through to handler
 
             try {
-              return await augmentRoute.handler(req);
+              // Race the handler against a timeout. Note: if the timeout fires,
+              // the handler's promise is NOT cancelled — Bun.serve does not expose
+              // an AbortSignal here. Background work in the handler continues but
+              // its eventual response is dropped; the client receives 504 instead.
+              const timeoutMs = augmentRoute.timeoutMs ?? 30_000;
+              return await withTimeout(() => augmentRoute.handler(req), timeoutMs);
             } catch (err) {
+              if (err instanceof TimeoutError) {
+                return new Response(JSON.stringify({ error: "timeout" }), {
+                  status: 504,
+                  headers: { "content-type": "application/json" },
+                });
+              }
               const augmentName = (augmentRoute as { augmentName?: string }).augmentName ?? "unknown";
               console.error(
                 `[web-transport] augment "${augmentName}" handler ${augmentRoute.method} ${augmentRoute.path} threw: ${(err as Error).message}`,
