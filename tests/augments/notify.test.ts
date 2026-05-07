@@ -225,7 +225,7 @@ describe("notify augment", () => {
           rateLimit: { maxPerHour: 50 },
         },
       ],
-      rateLimit: { globalMaxPerHour: 5, dedupThreshold: 0 },
+      rateLimit: { globalMaxPerHour: 5, dedupThreshold: 0, cooldownMs: 0 },
       adapters: { webhook: mockAdapter(), telegram: mockAdapter() },
     });
     const tool = aug.tools!.find((t) => t.name === "notify")!;
@@ -249,7 +249,7 @@ describe("notify augment", () => {
       destinations: [
         { name: "verify-out", transport: "webhook", url: "https://x", rateLimit: { maxPerHour: 1 } },
       ],
-      rateLimit: { dedupThreshold: 0 },
+      rateLimit: { dedupThreshold: 0, cooldownMs: 0 },
       adapters: { webhook: mockAdapter(), telegram: mockAdapter() },
     });
     const tool = aug.tools!.find((t) => t.name === "notify")!;
@@ -263,7 +263,7 @@ describe("notify augment", () => {
   test("destination without explicit rateLimit falls back to global cap", async () => {
     const aug = notify({
       destinations: [{ name: "creator", transport: "webhook", url: "https://x" }],
-      rateLimit: { globalMaxPerHour: 2, dedupThreshold: 0 },
+      rateLimit: { globalMaxPerHour: 2, dedupThreshold: 0, cooldownMs: 0 },
       adapters: { webhook: mockAdapter(), telegram: mockAdapter() },
     });
     const tool = aug.tools!.find((t) => t.name === "notify")!;

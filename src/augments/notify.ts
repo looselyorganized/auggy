@@ -50,7 +50,7 @@ export function notify(opts: NotifyAugmentInternalOptions): Augment {
 
   const rl = opts.rateLimit ?? {};
   const enabled = rl.enabled !== false;
-  const cooldownMs = rl.cooldownMs ?? 0;
+  const cooldownMs = rl.cooldownMs ?? 120_000;
   const globalMaxPerHour = rl.globalMaxPerHour ?? 5;
   const dedupWindowMs = rl.dedupWindowMs ?? 300_000;
   const dedupThreshold = rl.dedupThreshold ?? 0.6;
