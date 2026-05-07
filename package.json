@@ -1,5 +1,5 @@
 {
-  "name": "augment-1",
+  "name": "auggy",
   "version": "0.2.0",
   "description": "Modular agent runtime — composable augments, multi-engine, SQLite-first memory.",
   "keywords": [
@@ -48,7 +48,7 @@
   "engines": {
     "bun": ">=1.2.0"
   },
-  "private": true,
+  "private": false,
   "scripts": {
     "test": "bun test",
     "test:watch": "bun test --watch",
