@@ -11,7 +11,7 @@ Destinations are declared in config, not in the agent prompt. The agent always r
 What it does:
 
 - **Named destinations** — operator declares webhook and/or Telegram targets in `agent.yaml`; the agent calls `notify({ to: "<name>", ... })`.
-- **Two adapters** — `webhook` (HTTP POST) and `telegram` (sendMessage via `src/telegram-client.ts`).
+- **Three adapters** — `webhook` (HTTP POST), `telegram` (sendMessage via `src/telegram-client.ts`), and `agentmail` (HTTP POST via `src/agentmail-client.ts`).
 - **Rate limiting** — cooldown, dedup, global hourly cap, per-peer cooldown. Creator-class senders bypass all limits.
 
 What it does **not** do:

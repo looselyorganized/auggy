@@ -2,13 +2,13 @@
  * Notify augment — outbound messaging primitive.
  *
  * Routes the agent's `notify({to, summary, ...})` calls to operator-defined
- * destinations via internal adapter modules (webhook, telegram). Owns the
+ * destinations via internal adapter modules (webhook, telegram, agentmail). Owns the
  * rate-limit state lifted from org-context.ts (cooldown, dedup, global cap,
  * per-peer cooldown). Creator-class senders bypass rate limits.
  *
  * NOT a transport. NOT cross-augment-coupled. Internal adapters call the
- * shared src/telegram-client.ts (telegram adapter only) or POST directly
- * (webhook adapter).
+ * shared src/telegram-client.ts (telegram adapter) or src/agentmail-client.ts
+ * (agentmail adapter), or POST directly (webhook adapter).
  */
 
 import { z } from "zod";

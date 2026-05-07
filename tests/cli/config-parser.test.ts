@@ -773,3 +773,87 @@ describe("parseConfig — augmented missing-env-var error", () => {
     expect(caught!.message).not.toMatch(/Set them in the agent's \.env file/);
   });
 });
+
+describe("notify augment agentmail transport validation", () => {
+  test("accepts a valid agentmail destination with apiKey, inboxId, and to", () => {
+    const path = writeYaml(
+      "agent.yaml",
+      minimalConfig({
+        augments: [
+          {
+            name: "identity",
+            type: "fileMemory",
+            options: {
+              label: "self",
+              source: "./identity.md",
+              mutable: false,
+              origin: "operator",
+              priority: "required",
+              placement: "system",
+              eviction: "never",
+            },
+          },
+          {
+            name: "notify",
+            type: "notify",
+            options: {
+              destinations: [
+                {
+                  name: "agentmail-dest",
+                  transport: "agentmail",
+                  apiKey: "key_12345",
+                  inboxId: "inbox_abc123",
+                  to: "operator@example.com",
+                },
+              ],
+            },
+          },
+        ],
+      }),
+    );
+    const config = parseConfig(path);
+    expect(config.augments).toHaveLength(2);
+    const notifyAugment = config.augments.find((a) => a.type === "notify");
+    expect(notifyAugment).toBeDefined();
+    expect((notifyAugment?.options as any).destinations).toHaveLength(1);
+    expect((notifyAugment?.options as any).destinations[0].transport).toBe("agentmail");
+  });
+
+  test("rejects agentmail destination missing apiKey", () => {
+    const path = writeYaml(
+      "agent.yaml",
+      minimalConfig({
+        augments: [
+          {
+            name: "identity",
+            type: "fileMemory",
+            options: {
+              label: "self",
+              source: "./identity.md",
+              mutable: false,
+              origin: "operator",
+              priority: "required",
+              placement: "system",
+              eviction: "never",
+            },
+          },
+          {
+            name: "notify",
+            type: "notify",
+            options: {
+              destinations: [
+                {
+                  name: "agentmail-dest",
+                  transport: "agentmail",
+                  inboxId: "inbox_abc123",
+                  to: "operator@example.com",
+                },
+              ],
+            },
+          },
+        ],
+      }),
+    );
+    expect(() => parseConfig(path)).toThrow("apiKey: required string for agentmail transport");
+  });
+});
