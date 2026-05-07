@@ -574,6 +574,17 @@ export function webTransport(opts: WebTransportOptions): Augment {
             }
             // auth: "none" — no check; fall through to handler
 
+            // PR γ.1 — body-size cap (413). Check content-length BEFORE handler.
+            // Default 1 MiB. Operators set per-route maxBodyBytes for tighter limits.
+            const maxBodyBytes = augmentRoute.maxBodyBytes ?? 1_048_576;
+            const contentLength = Number.parseInt(req.headers.get("content-length") ?? "0", 10);
+            if (contentLength > maxBodyBytes) {
+              return new Response(JSON.stringify({ error: "payload-too-large" }), {
+                status: 413,
+                headers: { "content-type": "application/json" },
+              });
+            }
+
             try {
               // Race the handler against a timeout. Note: if the timeout fires,
               // the handler's promise is NOT cancelled — Bun.serve does not expose

@@ -1462,4 +1462,77 @@ describe("webTransport augment-registered routes", () => {
       await agent.stop();
     }
   });
+
+  it("POST request exceeding maxBodyBytes returns 413", async () => {
+    const model = createMockModel();
+    const port = 18956;
+    const aug = webTransport({ port, auth: { type: "bearer", token: "test-token" } });
+    const fixture = routeFixtureAugment({
+      method: "POST",
+      auth: "none",
+      maxBodyBytes: 100,
+      handler: async () => new Response("ok"),
+    });
+    const agent = defineAgent(
+      { name: "test", model: "mock", augments: [fixture, aug] },
+      model,
+    );
+    await agent.start();
+    try {
+      const big = "x".repeat(200);
+      const resp = await fetch(`http://localhost:${port}/test/echo`, {
+        method: "POST",
+        body: big,
+        headers: { "content-type": "text/plain" },
+      });
+      expect(resp.status).toBe(413);
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("POST request without content-length is allowed under default cap", async () => {
+    const model = createMockModel();
+    const port = 18957;
+    const aug = webTransport({ port, auth: { type: "bearer", token: "test-token" } });
+    const fixture = routeFixtureAugment({
+      method: "POST",
+      auth: "none",
+      handler: async (req) => new Response(await req.text()),
+    });
+    const agent = defineAgent(
+      { name: "test", model: "mock", augments: [fixture, aug] },
+      model,
+    );
+    await agent.start();
+    try {
+      const resp = await fetch(`http://localhost:${port}/test/echo`, {
+        method: "POST",
+        body: "small",
+      });
+      expect(resp.status).toBe(200);
+      expect(await resp.text()).toBe("small");
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("GET request to a POST-only route returns 405 with Allow header", async () => {
+    const model = createMockModel();
+    const port = 18958;
+    const aug = webTransport({ port, auth: { type: "bearer", token: "test-token" } });
+    const fixture = routeFixtureAugment({ method: "POST", auth: "none" });
+    const agent = defineAgent(
+      { name: "test", model: "mock", augments: [fixture, aug] },
+      model,
+    );
+    await agent.start();
+    try {
+      const resp = await fetch(`http://localhost:${port}/test/echo`); // GET on POST-only route
+      expect(resp.status).toBe(405);
+      expect(resp.headers.get("allow")).toBe("POST");
+    } finally {
+      await agent.stop();
+    }
+  });
 });
