@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { visitorAuth } from "../../../src/augments/visitor-auth";
 import type { AgentMailClient } from "../../../src/agentmail-client";
+import type { TurnState, ToolExecuteContext } from "../../../src/types";
 
 let tmp: string;
 let dbPath: string;
@@ -145,6 +146,172 @@ describe("visitorAuth (skeleton)", () => {
     } as never;
     const result = await aug.context?.(turn);
     expect(result).toEqual([]);
+    await aug.onShutdown?.();
+  });
+});
+
+describe("request_auth tool", () => {
+  function buildAug(overrides?: {
+    sendImpl?: AgentMailClient["send"];
+    rateLimit?: { perHour: number; perDay: number };
+    nowFn?: () => number;
+  }) {
+    const sendCalls: Array<Parameters<AgentMailClient["send"]>[0]> = [];
+    const aug = visitorAuth({
+      publicUrl: "https://zip.test",
+      dbPath,
+      agentMail: { apiKey: "am_x", inboxId: "ibx_x" },
+      signingKey: "sig",
+      rateLimit: overrides?.rateLimit ?? { perHour: 1, perDay: 3 },
+      _now: overrides?.nowFn,
+      _agentMailClient: fakeAgentMail({
+        send: async (input) => {
+          sendCalls.push(input);
+          if (overrides?.sendImpl) return overrides.sendImpl(input);
+          return { status: "sent", messageId: "m1", threadId: "t1" };
+        },
+      }),
+    });
+    return { aug, sendCalls };
+  }
+
+  function turnWithVisitor(text: string, peerId = "anon-thread1") {
+    return {
+      turnId: "tu",
+      threadId: "thread1",
+      trigger: {
+        type: "message",
+        turnId: "tu",
+        timestamp: 0,
+        peer: { id: peerId, kind: "anonymous", trustLevel: "public", publicSubstate: "anonymous", sourceAugment: "web" },
+        payload: {
+          parts: [{ kind: "text", text }],
+          sourceAugment: "web",
+          peer: { id: peerId, kind: "anonymous", trustLevel: "public", publicSubstate: "anonymous", sourceAugment: "web" },
+          timestamp: 0,
+        },
+      },
+      peer: { id: peerId, kind: "anonymous", trustLevel: "public", publicSubstate: "anonymous", sourceAugment: "web" },
+      toolCallsSoFar: 0,
+      turnStartedAt: 0,
+      metadata: {},
+    } as never;
+  }
+
+  test("rejects non-email methods", async () => {
+    const { aug } = buildAug();
+    await aug.onBoot?.();
+    const tool = aug.tools![0]!;
+    const raw = await tool.execute(
+      { method: "sms" as never, email: "alice@example.com" },
+      { turnId: "t1", threadId: "th1", peer: { id: "anon-th1", kind: "anonymous", trustLevel: "public", publicSubstate: "anonymous", sourceAugment: "web" } },
+    );
+    const result = JSON.parse(raw as string);
+    expect(result.status).toBe("rejected");
+    expect(result.message).toMatch(/method/);
+    await aug.onShutdown?.();
+  });
+
+  test("rejects malformed email", async () => {
+    const { aug } = buildAug();
+    await aug.onBoot?.();
+    await aug.onTurnStart?.(turnWithVisitor("hi"));
+    const raw = await aug.tools![0]!.execute(
+      { method: "email", email: "not-an-email" },
+      { turnId: "t1", threadId: "thread1", peer: { id: "anon-thread1", kind: "anonymous", trustLevel: "public", publicSubstate: "anonymous", sourceAugment: "web" } },
+    );
+    expect(JSON.parse(raw as string).status).toBe("rejected");
+    await aug.onShutdown?.();
+  });
+
+  test("rejects when email did not appear in recent messages (fix #4)", async () => {
+    const { aug } = buildAug();
+    await aug.onBoot?.();
+    await aug.onTurnStart?.(turnWithVisitor("hi I'm here"));
+    const raw = await aug.tools![0]!.execute(
+      { method: "email", email: "alice@example.com" },
+      { turnId: "t1", threadId: "thread1", peer: { id: "anon-thread1", kind: "anonymous", trustLevel: "public", publicSubstate: "anonymous", sourceAugment: "web" } },
+    );
+    const result = JSON.parse(raw as string);
+    expect(result.status).toBe("rejected");
+    expect(result.message).toMatch(/recent|message/i);
+    await aug.onShutdown?.();
+  });
+
+  test("happy path: returns status 'sent', calls AgentMail with verify URL", async () => {
+    const { aug, sendCalls } = buildAug();
+    await aug.onBoot?.();
+    await aug.onTurnStart?.(turnWithVisitor("my email is alice@example.com"));
+    const raw = await aug.tools![0]!.execute(
+      { method: "email", email: "alice@example.com" },
+      { turnId: "t1", threadId: "thread1", peer: { id: "anon-thread1", kind: "anonymous", trustLevel: "public", publicSubstate: "anonymous", sourceAugment: "web" } },
+    );
+    const result = JSON.parse(raw as string);
+    expect(result.status).toBe("sent");
+    expect(result.expiresInSec).toBeGreaterThan(0);
+    expect(sendCalls).toHaveLength(1);
+    expect(sendCalls[0]?.to).toEqual(["alice@example.com"]);
+    expect(sendCalls[0]?.text).toMatch(/https:\/\/zip\.test\/visitor-auth\/verify\?token=/);
+    expect(sendCalls[0]?.subject).toMatch(/verify/i);
+    await aug.onShutdown?.();
+  });
+
+  test("rate-limit blocks 2nd send within the hour", async () => {
+    const { aug } = buildAug({ rateLimit: { perHour: 1, perDay: 3 } });
+    await aug.onBoot?.();
+    await aug.onTurnStart?.(turnWithVisitor("alice@example.com"));
+    const ctx: ToolExecuteContext = { turnId: "t", threadId: "thread1", peer: { id: "anon-thread1", kind: "anonymous", trustLevel: "public", publicSubstate: "anonymous", sourceAugment: "web" } };
+    const first = JSON.parse(
+      (await aug.tools![0]!.execute({ method: "email", email: "alice@example.com" }, ctx)) as string,
+    );
+    expect(first.status).toBe("sent");
+    const second = JSON.parse(
+      (await aug.tools![0]!.execute({ method: "email", email: "alice@example.com" }, ctx)) as string,
+    );
+    expect(second.status).toBe("rejected");
+    expect(second.message).toMatch(/limit|wait/i);
+    await aug.onShutdown?.();
+  });
+
+  test("AgentMail send failure returns status 'failed' with detail (fix #7)", async () => {
+    const { aug } = buildAug({
+      sendImpl: async () => ({ status: "failed", detail: "smtp blew up", httpStatus: 500 }),
+    });
+    await aug.onBoot?.();
+    await aug.onTurnStart?.(turnWithVisitor("alice@example.com"));
+    const raw = await aug.tools![0]!.execute(
+      { method: "email", email: "alice@example.com" },
+      { turnId: "t", threadId: "thread1", peer: { id: "anon-thread1", kind: "anonymous" as const, trustLevel: "public" as const, publicSubstate: "anonymous" as const, sourceAugment: "web" } },
+    );
+    const result = JSON.parse(raw as string);
+    expect(result.status).toBe("failed");
+    expect(result.message).toMatch(/smtp blew up/);
+    await aug.onShutdown?.();
+  });
+
+  test("issuing a new token invalidates a prior open token for the same peer", async () => {
+    const { aug, sendCalls } = buildAug({ rateLimit: { perHour: 5, perDay: 10 } });
+    await aug.onBoot?.();
+    await aug.onTurnStart?.(turnWithVisitor("alice@example.com"));
+    const ctx: ToolExecuteContext = { turnId: "t", threadId: "thread1", peer: { id: "anon-thread1", kind: "anonymous", trustLevel: "public", publicSubstate: "anonymous", sourceAugment: "web" } };
+    await aug.tools![0]!.execute({ method: "email", email: "alice@example.com" }, ctx);
+    await aug.tools![0]!.execute({ method: "email", email: "alice@example.com" }, ctx);
+    expect(sendCalls).toHaveLength(2);
+    expect(sendCalls[0]?.text).not.toEqual(sendCalls[1]?.text); // tokens differ
+    await aug.onShutdown?.();
+  });
+
+  test("requires a peer in tool context (defense)", async () => {
+    const { aug } = buildAug();
+    await aug.onBoot?.();
+    await aug.onTurnStart?.(turnWithVisitor("alice@example.com"));
+    const raw = await aug.tools![0]!.execute(
+      { method: "email", email: "alice@example.com" },
+      { turnId: "t", threadId: "thread1", peer: null },
+    );
+    const result = JSON.parse(raw as string);
+    expect(result.status).toBe("failed");
+    expect(result.message).toMatch(/peer/i);
     await aug.onShutdown?.();
   });
 });
