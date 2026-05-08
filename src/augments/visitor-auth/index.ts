@@ -245,12 +245,65 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment {
         path: VERIFY_PATH,
         auth: "none",
         rateLimit: { maxPerMinute: 60 },
-        handler: async (_req, _opts) => {
-          // Filled in by Task 8.
-          return new Response(buildVerifyFailurePage({ reason: "unknown" }), {
-            status: 501,
-            headers: { "content-type": "text/html; charset=utf-8" },
-          });
+        handler: async (req, _opts) => {
+          if (!booted || !signingCryptoKey) {
+            return new Response(buildVerifyFailurePage({ reason: "unknown" }), {
+              status: 503,
+              headers: { "content-type": "text/html; charset=utf-8" },
+            });
+          }
+          const url = new URL(req.url);
+          const token = url.searchParams.get("token");
+          // UUID-shape validation — the augment only mints v4 UUIDs.
+          if (!token || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(token)) {
+            return new Response(buildVerifyFailurePage({ reason: "malformed" }), {
+              status: 400,
+              headers: { "content-type": "text/html; charset=utf-8" },
+            });
+          }
+          const t = now();
+          const consume = store.consumeToken(token, t);
+          if (!consume.consumed) {
+            // Task 9 will replace this branch with tokenStatus() lookup to
+            // disambiguate 404-unknown vs 410-expired vs 410-consumed. For now,
+            // every non-consumed path returns 410 "expired".
+            return new Response(buildVerifyFailurePage({ reason: "expired" }), {
+              status: 410,
+              headers: { "content-type": "text/html; charset=utf-8" },
+            });
+          }
+
+          // Mint a fresh visitor token bound to the verified email's peer.
+          // Uses the SAME signing key webTransport derives from VISITOR_SIGNING_KEY,
+          // so the token will verify cleanly on the next /agent/run request.
+          const ttlSec = reverifyDays * 86_400;
+          const minted = await createVisitorToken(signingCryptoKey, "auggy", ttlSec);
+
+          // Record the verified-visitor row (idempotent on email — if a row exists
+          // and is not revoked, we just touch lastSeenAt instead of inserting).
+          const existing = store.findVerifiedByEmail(consume.email!);
+          if (existing && !existing.revoked) {
+            store.touchVerifiedVisitor(consume.email!, t);
+          } else {
+            store.recordVerifiedVisitor({
+              visitorId: minted.payload.visitorId,
+              email: consume.email!,
+              verifiedAt: t,
+              lastSeenAt: t,
+              reverifyDueAt: t + ttlSec * 1000,
+              revoked: false,
+              revokedAt: null,
+              revokedReason: null,
+            });
+          }
+
+          return new Response(
+            buildVerifySuccessPage({ visitorToken: minted.token, email: consume.email! }),
+            {
+              status: 200,
+              headers: { "content-type": "text/html; charset=utf-8" },
+            },
+          );
         },
       },
     ],
