@@ -53,6 +53,15 @@ const SCHEMA_STATEMENTS = [
     email            TEXT PRIMARY KEY,
     notified_at      INTEGER NOT NULL
   )`,
+  // Permanent denylist of revoked visitor_ids. Survives unrevokeAndRotate which
+  // rewrites the row's visitor_id — the old id disappears from verified_visitors
+  // but must still be rejected at webTransport ingress.
+  `CREATE TABLE IF NOT EXISTS revoked_visitor_ids (
+    visitor_id     TEXT PRIMARY KEY,
+    email          TEXT NOT NULL,
+    revoked_at     INTEGER NOT NULL,
+    revoked_reason TEXT
+  )`,
 ];
 
 interface VerifiedRow {
@@ -108,6 +117,8 @@ export function createSqliteVisitorAuthStore(
   let hasNotifiedStmt: Statement | null = null;
   let markNotifiedStmt: Statement | null = null;
   let findByIdStmt: Statement | null = null;
+  let addRevokedStmt: Statement | null = null;
+  let isRevokedIdStmt: Statement | null = null;
 
   function ensurePrepared(): void {
     if (issueStmt) return;
@@ -183,6 +194,10 @@ export function createSqliteVisitorAuthStore(
       `INSERT OR IGNORE INTO first_verify_notifications (email, notified_at) VALUES (?, ?)`,
     );
     findByIdStmt = db.prepare(`SELECT * FROM verified_visitors WHERE visitor_id = ?`);
+    addRevokedStmt = db.prepare(
+      `INSERT OR IGNORE INTO revoked_visitor_ids (visitor_id, email, revoked_at, revoked_reason) VALUES (?, ?, ?, ?)`,
+    );
+    isRevokedIdStmt = db.prepare(`SELECT 1 FROM revoked_visitor_ids WHERE visitor_id = ?`);
   }
 
   return {
@@ -293,10 +308,17 @@ export function createSqliteVisitorAuthStore(
     },
     revokeByEmail(email: string, reason: string, now: number): string | null {
       ensurePrepared();
-      const visRow = revokeReadStmt!.get(email) as { visitor_id: string } | undefined;
-      if (!visRow) return null;
-      revokeStmt!.run(now, reason, email);
-      return visRow.visitor_id;
+      let result: string | null = null;
+      db.transaction(() => {
+        const visRow = revokeReadStmt!.get(email) as { visitor_id: string } | undefined;
+        if (!visRow) return;
+        revokeStmt!.run(now, reason, email);
+        // Permanently record the old visitor_id in the denylist so it stays
+        // rejected even after unrevokeAndRotate rewrites the row's visitor_id.
+        addRevokedStmt!.run(visRow.visitor_id, email, now, reason);
+        result = visRow.visitor_id;
+      })();
+      return result;
     },
     findVisitorById(visitorId: string): VerifiedVisitorRow | null {
       ensurePrepared();
@@ -310,14 +332,46 @@ export function createSqliteVisitorAuthStore(
       reverifyDueAt: number,
     ): boolean {
       ensurePrepared();
-      const result = unrevokeAndRotateStmt!.run(
-        newVisitorId,
-        verifiedAt,
-        verifiedAt, // last_seen_at = verifiedAt
-        reverifyDueAt,
-        email,
-      );
-      return result.changes === 1;
+      let rotated = false;
+      db.transaction(() => {
+        // Capture the current (old) visitor_id BEFORE overwriting it.
+        // If the row exists and is revoked, its old id must go into the denylist
+        // so that stale tokens carrying the old id remain rejected after rotation.
+        const oldRow = db
+          .prepare(`SELECT visitor_id, email FROM verified_visitors WHERE email = ? AND revoked = 1`)
+          .get(email) as { visitor_id: string; email: string } | undefined;
+
+        const result = unrevokeAndRotateStmt!.run(
+          newVisitorId,
+          verifiedAt,
+          verifiedAt, // last_seen_at = verifiedAt
+          reverifyDueAt,
+          email,
+        );
+
+        if (result.changes === 1 && oldRow) {
+          // The old visitor_id is now gone from verified_visitors; persist it in
+          // the denylist so isVisitorIdRevoked() catches it forever.
+          addRevokedStmt!.run(
+            oldRow.visitor_id,
+            oldRow.email,
+            verifiedAt,
+            "rotated-on-reverify",
+          );
+          rotated = true;
+        } else if (result.changes === 1) {
+          rotated = true;
+        }
+      })();
+      return rotated;
+    },
+    addRevokedVisitorId(visitorId: string, email: string, reason: string, now: number): void {
+      ensurePrepared();
+      addRevokedStmt!.run(visitorId, email, now, reason);
+    },
+    isVisitorIdRevoked(visitorId: string): boolean {
+      ensurePrepared();
+      return isRevokedIdStmt!.get(visitorId) !== null;
     },
     hasNotifiedFirstVerifyFor(email: string): boolean {
       ensurePrepared();

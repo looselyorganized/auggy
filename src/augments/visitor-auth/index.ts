@@ -251,6 +251,12 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
    */
   function isVisitorRevoked(visitorId: string): boolean {
     if (!booted) return false; // store not initialized; fail-open to avoid boot-order deadlock
+    // Check the permanent denylist first — this catches OLD vis_ids that have
+    // been rotated away by unrevokeAndRotate (their row no longer exists under
+    // that id, so findVisitorById would return null and we'd incorrectly admit
+    // them as "not revoked").
+    if (store.isVisitorIdRevoked(visitorId)) return true;
+    // Then check the current verified_visitors row state.
     const row = store.findVisitorById(visitorId);
     return !!(row?.revoked);
   }
