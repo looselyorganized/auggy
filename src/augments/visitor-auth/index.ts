@@ -64,13 +64,14 @@ function validateOptions(opts: VisitorAuthInternalOptions): void {
   if (!opts.publicUrl || typeof opts.publicUrl !== "string") {
     throw new Error("visitorAuth: publicUrl is required");
   }
+  let parsedPublicUrl: URL;
   try {
-    const url = new URL(opts.publicUrl);
-    if (!/^https?:$/.test(url.protocol)) {
-      throw new Error("visitorAuth: publicUrl must use http:// or https://");
-    }
+    parsedPublicUrl = new URL(opts.publicUrl);
   } catch {
     throw new Error(`visitorAuth: publicUrl "${opts.publicUrl}" is not a valid URL`);
+  }
+  if (!/^https?:$/.test(parsedPublicUrl.protocol)) {
+    throw new Error("visitorAuth: publicUrl must use http:// or https://");
   }
   if (!opts.agentMail?.apiKey || !opts.agentMail?.inboxId) {
     throw new Error("visitorAuth: agentMail.apiKey and agentMail.inboxId are required");
