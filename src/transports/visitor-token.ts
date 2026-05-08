@@ -27,9 +27,17 @@ export async function createVisitorToken(
   key: CryptoKey,
   agentId: string,
   ttlSeconds: number,
+  /**
+   * Optional pre-existing visitorId. When omitted (the common case for first
+   * verification or anonymous-recognized issuance), a fresh `vis_<uuid>` is
+   * minted. When provided (re-verification of an already-known email), the
+   * existing identifier is preserved so peer-scoped state in layered-memory
+   * remains continuous across re-verifications.
+   */
+  existingVisitorId?: string,
 ): Promise<{ token: string; payload: VisitorTokenPayload }> {
   const payload: VisitorTokenPayload = {
-    visitorId: `vis_${crypto.randomUUID()}`,
+    visitorId: existingVisitorId ?? `vis_${crypto.randomUUID()}`,
     agentId,
     issuedAt: Date.now(),
     expiresAt: Date.now() + ttlSeconds * 1000,
