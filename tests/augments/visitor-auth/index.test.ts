@@ -188,7 +188,7 @@ describe("buildVerifyUrl (F6) — URL-spec-compliant construction", () => {
   // up inside the email body sent via agentMail.send.  Each matrix entry varies
   // publicUrl; the captured URL must be well-formed and carry exactly one
   // `token` query parameter.
-  const uuidToken = "00000000-0000-4000-8000-000000000001";
+  const _uuidToken = "00000000-0000-4000-8000-000000000001";
 
   const cases: Array<{ label: string; publicUrl: string }> = [
     { label: "no trailing slash", publicUrl: "https://zip.test" },
