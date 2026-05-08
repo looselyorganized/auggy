@@ -324,9 +324,9 @@ describe("scaffoldAgent", () => {
       };
       const webTransportAugment = parsed.augments.find((a) => a.type === "webTransport");
       expect(webTransportAugment).toBeDefined();
-      const vtBlock = (
-        webTransportAugment!.options?.visitorTokens as Record<string, unknown> | undefined
-      );
+      const vtBlock = webTransportAugment!.options?.visitorTokens as
+        | Record<string, unknown>
+        | undefined;
       // signingKey must NOT be present in webTransport's visitorTokens.
       // It belongs to visitorAuth's config exclusively.
       expect(vtBlock?.signingKey).toBeUndefined();
