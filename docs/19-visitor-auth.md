@@ -21,9 +21,10 @@ augments:
       port: 8080
       auth: { type: bearer, token: ${AUGGY_WEB_TOKEN} }
       visitorTokens:
-        enabled: true
-        signingKey: ${VISITOR_SIGNING_KEY}        # MUST match visitorAuth's signingKey
         ttlSeconds: 7776000                       # 90 days
+        # signingKey is auto-injected from visitorAuth by the resolver —
+        # do NOT set it here. Duplicate keys trigger a warning and visitorAuth
+        # wins. enabled is also forced to true automatically.
 
   - type: visitorAuth
     name: visitor-auth
@@ -34,7 +35,7 @@ augments:
         apiKey: ${AGENTMAIL_API_KEY}
         inboxId: ${AGENTMAIL_INBOX_ID}
         subjectPrefix: "[Verify] "
-      signingKey: ${VISITOR_SIGNING_KEY}          # SAME value webTransport uses
+      signingKey: ${VISITOR_SIGNING_KEY}          # also auto-wired into webTransport's visitorTokens
       rateLimit: { perHour: 1, perDay: 3 }        # per anonymous peer
       reverifyAfterDays: 90
       tokenTtlMinutes: 15
@@ -52,12 +53,12 @@ augments:
 | `AGENTMAIL_API_KEY` | AgentMail bearer token (`am_*`) |
 | `AGENTMAIL_INBOX_ID` | Inbox the verify email is sent FROM |
 | `AUGGY_PUBLIC_URL` | Base URL operators reach the agent at; embedded in the magic link |
-| `VISITOR_SIGNING_KEY` | HMAC key for visitor tokens; **MUST match** webTransport's value |
+| `VISITOR_SIGNING_KEY` | HMAC key for visitor tokens; set only in `visitorAuth` — auto-injected into webTransport |
 | `AUGGY_AGENT_ID` | Stable per-agent identifier; binds visitor tokens to this agent. MUST match between visitorAuth and webTransport. Default unset (no binding check). |
 
 ## Key constraints
 
-- `visitorAuth.signingKey` and `webTransport.visitorTokens.signingKey` MUST be the same value. If they drift, visitor tokens minted by visitorAuth will fail webTransport's verification on the next request.
+- Set `signingKey` only in `visitorAuth`. The augment-resolver auto-injects it into `webTransport.visitorTokens` at boot. Setting it in both places triggers a warning and `visitorAuth`'s value takes precedence. If they differ, visitor tokens minted by visitorAuth will fail webTransport's verification.
 - `publicUrl` MUST point to a host where the agent's `/visitor-auth/verify` route is reachable from the public internet. If you're running behind a tunnel (ngrok, Cloudflare), use the tunnel URL; if you're running on Railway, use the Railway domain.
 - Per-anonymous-peer rate limits are **in-memory only** — restart resets state. The verified_visitors UNIQUE-on-email constraint catches accidental double-verification.
 

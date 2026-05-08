@@ -503,3 +503,91 @@ describe("resolveAugments — cross-augment agentBinding validation (fix H3)", (
     expect(augments).toHaveLength(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// F2: single-source signingKey + auto-disable visitor tokens when absent
+// ---------------------------------------------------------------------------
+
+describe("resolveAugments — single-source signingKey injection (fix F2)", () => {
+  function vaConfigWithKey(signingKey: string): AugmentConfig {
+    return {
+      type: "visitorAuth",
+      name: "visitor-auth",
+      options: {
+        publicUrl: "https://zip.test",
+        agentMail: { apiKey: "am_x", inboxId: "ibx_x" },
+        signingKey,
+        layeredMemoryDbPath: null,
+      },
+    };
+  }
+
+  function wtConfigBase(extra?: Record<string, unknown>): AugmentConfig {
+    return {
+      type: "webTransport",
+      name: "web",
+      options: {
+        port: 9124,
+        auth: { type: "bearer", token: "tok" },
+        ...extra,
+      },
+    };
+  }
+
+  test("auto-disables visitorTokens when visitorAuth is absent", async () => {
+    // webTransport declares visitorTokens.enabled: true but no visitorAuth is
+    // mounted. The resolver must force-disable visitor tokens so webTransport's
+    // onBoot does not throw (signingKey would be absent otherwise).
+    const configs: AugmentConfig[] = [
+      wtConfigBase({ visitorTokens: { enabled: true } }),
+    ];
+    // Should resolve without throwing (the force-disabled flag prevents the
+    // onBoot signingKey guard from firing).
+    const augments = await resolveAugments(configs, TMP);
+    expect(augments).toHaveLength(1);
+    // The injected flag is on the config object (mutated in place before loop).
+    // Verify indirectly: resolution did not throw, meaning enabled was set to false.
+    const wtCfg = configs[0]!;
+    const vt = ((wtCfg.options as Record<string, unknown>).visitorTokens ?? {}) as Record<
+      string,
+      unknown
+    >;
+    expect(vt.enabled).toBe(false);
+  });
+
+  test("auto-injects signingKey from visitorAuth into webTransport", async () => {
+    // When both are mounted, visitorAuth's signingKey must be injected into
+    // webTransport's visitorTokens so operators don't have to set it twice.
+    const vaKey = "my-secret-signing-key";
+    const configs: AugmentConfig[] = [
+      vaConfigWithKey(vaKey),
+      wtConfigBase(), // no signingKey — should be injected
+    ];
+    await resolveAugments(configs, TMP);
+    const wtCfg = configs[1]!;
+    const vt = ((wtCfg.options as Record<string, unknown>).visitorTokens ?? {}) as Record<
+      string,
+      unknown
+    >;
+    expect(vt.signingKey).toBe(vaKey);
+    expect(vt.enabled).toBe(true);
+  });
+
+  test("warns when both augments specify a different signingKey", async () => {
+    const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const configs: AugmentConfig[] = [
+        vaConfigWithKey("key-from-va"),
+        wtConfigBase({ visitorTokens: { signingKey: "key-from-wt" } }), // different key
+      ];
+      await resolveAugments(configs, TMP);
+      const warnCalls = warnSpy.mock.calls;
+      const signingKeyWarn = warnCalls.find(
+        (args) => typeof args[0] === "string" && /signingKey/.test(args[0]),
+      );
+      expect(signingKeyWarn).toBeDefined();
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+});
