@@ -48,6 +48,8 @@ describe("visitorAuth verify route", () => {
   test("GET returns 200 confirm page for unknown-but-valid UUID (does not touch store)", async () => {
     // GET must NOT consume the token — it just shows the confirmation page.
     // Even a valid UUID that doesn't exist in the store should return 200+confirm.
+    // Assertion is on confirm-page-specific markup so a regression that returns
+    // the failure page instead (which also contains "verify") is caught.
     const aug = await setupAug(join(tmp, "va.db"));
     const res = await aug.httpRoutes![0]!.handler(
       new Request(
@@ -56,7 +58,11 @@ describe("visitorAuth verify route", () => {
       { signal: new AbortController().signal },
     );
     expect(res.status).toBe(200);
-    expect((await res.text()).toLowerCase()).toContain("verify");
+    const html = await res.text();
+    // The confirm page has a form with method="POST" — the failure page does not.
+    expect(html).toMatch(/<form[^>]+method="POST"/i);
+    // The confirm page has a specific CTA button — the failure page does not.
+    expect(html).toContain("Verify my email");
     await aug.onShutdown?.();
   });
 
@@ -115,7 +121,10 @@ describe("visitorAuth verify route", () => {
       signal: new AbortController().signal,
     });
     expect(get1.status).toBe(200);
-    expect((await get1.text()).toLowerCase()).toContain("verify");
+    const get1Html = await get1.text();
+    // Confirm-page specific markup — the failure page lacks both.
+    expect(get1Html).toMatch(/<form[^>]+method="POST"/i);
+    expect(get1Html).toContain("Verify my email");
 
     // Second GET — token still not consumed, still returns confirm page.
     const get2 = await aug.httpRoutes![0]!.handler(new Request(verifyUrl), {
