@@ -453,19 +453,28 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
           if (opts.notifyOnFirstVerify) {
             const cfg = opts.notifyOnFirstVerify;
             if (!store.hasNotifiedFirstVerifyFor(consume.email!)) {
-              // Mark BEFORE the send so a transient AgentMail outage doesn't
-              // result in repeated notifications.
-              store.markNotifiedFirstVerifyFor(consume.email!, t);
+              // F5: mark-after-send — only record the ledger entry when the send
+              // actually succeeds.  Trade-off: if the agent crashes between
+              // send-success and markNotifiedFirstVerifyFor, the operator gets a
+              // duplicate notification on the next verify retry.  Accepted —
+              // a duplicate ops note is preferable to a permanently dropped one.
               const subject = `${cfg.subjectPrefix ?? "[New verified visitor] "}${consume.email}`;
               const text = `A new visitor verified their email: ${consume.email!} (vis_id: ${minted.payload.visitorId}).`;
               try {
-                await agentMail.send({
+                const notifyResult = await agentMail.send({
                   inboxId: opts.agentMail.inboxId,
                   to: [cfg.to],
                   subject,
                   text,
                   labels: ["visitor-auth", "first-verify-operator-note"],
                 });
+                if (notifyResult.status === "sent") {
+                  store.markNotifiedFirstVerifyFor(consume.email!, t);
+                } else {
+                  console.warn(
+                    `[visitor-auth] first-verify notification to ${cfg.to} failed: ${(notifyResult as { detail?: string }).detail ?? "unknown"}. Will retry on next verify.`,
+                  );
+                }
               } catch (err) {
                 console.warn(
                   `[visitor-auth] first-verify operator notification failed: ${(err as Error).message}`,
