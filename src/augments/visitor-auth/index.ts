@@ -331,6 +331,7 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
 
           // Read token from form-encoded body or JSON body.
           let token: string | null = null;
+          let bodyParseFailed = false;
           try {
             const ct = req.headers.get("content-type") ?? "";
             if (ct.includes("application/x-www-form-urlencoded")) {
@@ -344,24 +345,30 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
               token = typeof body.token === "string" ? body.token : null;
             }
           } catch {
-            // Malformed body — fall through to UUID validation below (token stays null).
+            // Body could not be parsed (non-JSON, binary, etc.).
+            bodyParseFailed = true;
           }
 
-          // UUID-shape validation.
-          if (
-            !token ||
-            !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(token)
-          ) {
-            return new Response(buildVerifyFailurePage({ reason: "malformed" }), {
+          // UUID-shape validation — distinguish parse failure from malformed UUID.
+          const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+          const postReason = bodyParseFailed
+            ? "bad-body"
+            : !token || !uuidRegex.test(token)
+              ? "malformed"
+              : null;
+          if (postReason) {
+            return new Response(buildVerifyFailurePage({ reason: postReason }), {
               status: 400,
               headers: { "content-type": "text/html; charset=utf-8" },
             });
           }
+          // postReason is null ⟹ parse succeeded AND token is a valid UUID string.
+          const validToken = token!;
 
           const t = now();
-          const consume = store.consumeToken(token, t);
+          const consume = store.consumeToken(validToken, t);
           if (!consume.consumed) {
-            const status = store.tokenStatus(token, t);
+            const status = store.tokenStatus(validToken, t);
             const reason: "unknown" | "expired" | "consumed" =
               status === "unknown" ? "unknown" : status === "expired" ? "expired" : "consumed";
             const httpStatus = status === "unknown" ? 404 : 410;
