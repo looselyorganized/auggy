@@ -105,3 +105,95 @@ describe("auggy visitors <agent> (list)", () => {
     ).rejects.toThrow();
   });
 });
+
+import { runVisitorsRevoke } from "../../../src/cli/commands/visitors-revoke";
+import { Database } from "bun:sqlite";
+
+function seedMemoryDb(memDbPath: string, peerId: string, n: number): void {
+  const db = new Database(memDbPath, { create: true });
+  db.run(
+    `CREATE TABLE IF NOT EXISTS entries (
+       id TEXT PRIMARY KEY, label TEXT NOT NULL, content TEXT NOT NULL,
+       peer_id TEXT, trust_level TEXT, created_at INTEGER NOT NULL,
+       superseded_by TEXT, retention_class TEXT NOT NULL DEFAULT 'operational',
+       is_verbatim INTEGER NOT NULL DEFAULT 0,
+       provenance_model TEXT, confidence REAL, embedding_model TEXT,
+       scope TEXT NOT NULL DEFAULT 'peer', expires_at INTEGER,
+       subject TEXT, predicate TEXT, object TEXT, source_turn_id TEXT, origin TEXT
+     )`,
+  );
+  const stmt = db.prepare(
+    `INSERT INTO entries (id, label, content, peer_id, created_at) VALUES (?, ?, ?, ?, ?)`,
+  );
+  for (let i = 0; i < n; i++) {
+    stmt.run(`r-${i}`, `ep:${peerId}:${i}`, `c${i}`, peerId, Date.now());
+  }
+  db.close();
+}
+
+describe("auggy visitors <agent> --revoke <email>", () => {
+  test("hard-revokes the row + cascades memory_forget", async () => {
+    seed([{ visitorId: "vis_rev1", email: "revoke@x", verifiedAt: 1000 }]);
+    seedMemoryDb(join(agentDir, "memory.db"), "vis_rev1", 4);
+    const lines: string[] = [];
+    await runVisitorsRevoke("zip", "revoke@x", {
+      auggyDir,
+      confirm: false,
+      log: (l) => lines.push(l),
+    });
+    const out = lines.join("\n");
+    expect(out).toMatch(/revoked/i);
+    expect(out).toMatch(/4/);
+
+    // Verify memory.db rows are gone:
+    const db = new Database(join(agentDir, "memory.db"));
+    const c = db.prepare(`SELECT COUNT(*) AS c FROM entries WHERE peer_id = ?`).get("vis_rev1") as
+      | { c: number }
+      | undefined;
+    db.close();
+    expect(c?.c).toBe(0);
+  });
+
+  test("errors with clear message when email is not a verified visitor", async () => {
+    const lines: string[] = [];
+    await expect(
+      runVisitorsRevoke("zip", "unknown@x", {
+        auggyDir,
+        confirm: false,
+        log: (l) => lines.push(l),
+      }),
+    ).rejects.toThrow(/not.*found|unknown/i);
+  });
+
+  test("skips memory cascade with a warning when memory.db is missing", async () => {
+    seed([{ visitorId: "vis_no_mem", email: "nomem@x", verifiedAt: 1000 }]);
+    const lines: string[] = [];
+    await runVisitorsRevoke("zip", "nomem@x", {
+      auggyDir,
+      confirm: false,
+      log: (l) => lines.push(l),
+    });
+    const out = lines.join("\n");
+    expect(out).toMatch(/revoked/i);
+    expect(out).toMatch(/skipping|not found/i);
+  });
+
+  test("with confirm:true and decline, makes no changes", async () => {
+    seed([{ visitorId: "vis_safe", email: "safe@x", verifiedAt: 1000 }]);
+    seedMemoryDb(join(agentDir, "memory.db"), "vis_safe", 2);
+    const lines: string[] = [];
+    await runVisitorsRevoke("zip", "safe@x", {
+      auggyDir,
+      confirm: true,
+      _confirmAnswer: () => false, // user said "no"
+      log: (l) => lines.push(l),
+    });
+    const out = lines.join("\n");
+    expect(out).toMatch(/cancel/i);
+    // Verify nothing got revoked:
+    const store = createSqliteVisitorAuthStore({ dbPath: join(agentDir, "visitor-auth.db") });
+    store.initialize();
+    expect(store.findVerifiedByEmail("safe@x")?.revoked).toBe(false);
+    store.close();
+  });
+});
