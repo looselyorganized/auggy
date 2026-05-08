@@ -38,8 +38,8 @@ export interface VerifiedVisitorRow {
 export interface OpenTokenForPeer {
   token: string;
   email: string;
-  expiresAt: number;
-  issuedAt: number;
+  expiresAt: number;          // epoch ms
+  issuedAt: number;           // epoch ms
 }
 
 export interface VisitorAuthStore {
