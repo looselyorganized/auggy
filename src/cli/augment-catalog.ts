@@ -97,9 +97,13 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
     defaultOptions: {
       port: 8080,
       auth: { type: "bearer", token: "${AUGGY_WEB_TOKEN}" },
+      visitorTokens: {
+        signingKey: "${VISITOR_SIGNING_KEY}",
+        agentBinding: "${AUGGY_AGENT_ID}",
+      },
     },
     required: false,
-    envVars: ["AUGGY_WEB_TOKEN"],
+    envVars: ["AUGGY_WEB_TOKEN", "VISITOR_SIGNING_KEY", "AUGGY_AGENT_ID"],
     hasSkill: false,
   },
   {

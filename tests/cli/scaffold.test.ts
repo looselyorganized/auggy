@@ -67,12 +67,14 @@ describe("scaffoldAgent", () => {
     const dir = scaffoldAgent({ name: "zip", targetDir: join(TMP, "zip") });
     process.env.AUGGY_WEB_TOKEN = "test-token";
     process.env.VISITOR_SIGNING_KEY = "test-signing-key";
+    process.env.AUGGY_AGENT_ID = "zip";
     const config = parseConfig(join(dir, "agent.yaml"));
     expect(config.name).toBe("zip");
     expect(config.id).toMatch(/^aug1_/);
     expect(config.augments.length).toBeGreaterThanOrEqual(3);
     delete process.env.AUGGY_WEB_TOKEN;
     delete process.env.VISITOR_SIGNING_KEY;
+    delete process.env.AUGGY_AGENT_ID;
   });
 
   test("throws if target directory already exists", () => {
@@ -129,6 +131,7 @@ describe("scaffoldAgent", () => {
     const dir = scaffoldAgent({ name: "zip", targetDir: join(TMP, "zip-budgets") });
     process.env.AUGGY_WEB_TOKEN = "test-token";
     process.env.VISITOR_SIGNING_KEY = "test-signing-key";
+    process.env.AUGGY_AGENT_ID = "zip";
     const config = parseConfig(join(dir, "agent.yaml"));
     const budgetsAugment = config.augments.find((a) => a.type === "budgets");
     expect(budgetsAugment).toBeDefined();
@@ -136,6 +139,7 @@ describe("scaffoldAgent", () => {
     expect(budgetsAugment!.options!.dbPath).toBe("./budgets.db");
     delete process.env.AUGGY_WEB_TOKEN;
     delete process.env.VISITOR_SIGNING_KEY;
+    delete process.env.AUGGY_AGENT_ID;
   });
 
   test("scaffold includes turnControl by default", () => {
@@ -148,12 +152,14 @@ describe("scaffoldAgent", () => {
     const dir = scaffoldAgent({ name: "zip", targetDir: join(TMP, "zip-turnctl-parse") });
     process.env.AUGGY_WEB_TOKEN = "test-token";
     process.env.VISITOR_SIGNING_KEY = "test-signing-key";
+    process.env.AUGGY_AGENT_ID = "zip";
     const config = parseConfig(join(dir, "agent.yaml"));
     const turnCtl = config.augments.find((a) => a.type === "turnControl");
     expect(turnCtl).toBeDefined();
     expect(turnCtl!.name).toBe("turn-control");
     delete process.env.AUGGY_WEB_TOKEN;
     delete process.env.VISITOR_SIGNING_KEY;
+    delete process.env.AUGGY_AGENT_ID;
   });
 
   // ---------------------------------------------------------------------
@@ -269,6 +275,7 @@ describe("scaffoldAgent", () => {
       const dir = scaffoldAgent({ name: "zip", targetDir: join(TMP, "zip-noconflict") });
       process.env.AUGGY_WEB_TOKEN = "test-token";
       process.env.VISITOR_SIGNING_KEY = "test-signing-key";
+      process.env.AUGGY_AGENT_ID = "zip";
 
       // parseConfig throws if both forms are present (per α-5).
       expect(() => parseConfig(join(dir, "agent.yaml"))).not.toThrow();
@@ -281,6 +288,7 @@ describe("scaffoldAgent", () => {
 
       delete process.env.AUGGY_WEB_TOKEN;
       delete process.env.VISITOR_SIGNING_KEY;
+      delete process.env.AUGGY_AGENT_ID;
     });
   });
 
