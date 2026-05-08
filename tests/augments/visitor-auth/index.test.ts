@@ -346,11 +346,16 @@ describe("request_auth tool", () => {
     await aug.onShutdown?.();
   });
 
-  test("rate-limit blocks 2nd send within the hour", async () => {
+  test("rate-limit blocks 2nd send within the hour (keyed to email, not peer.id)", async () => {
+    // Fix H1: the rate limit is now keyed to the EMAIL address, not the peer.id.
+    // This test proves threadId rotation no longer bypasses the limit:
+    // the second call uses a DIFFERENT peer.id but the SAME email — and is rejected.
     const { aug } = buildAug({ rateLimit: { perHour: 1, perDay: 3 } });
     await aug.onBoot?.();
-    await aug.onTurnStart?.(turnWithVisitor("alice@example.com"));
-    const ctx: ToolExecuteContext = {
+
+    // First call from peer anon-thread1.
+    await aug.onTurnStart?.(turnWithVisitor("alice@example.com", "anon-thread1"));
+    const ctx1: ToolExecuteContext = {
       turnId: "t",
       threadId: "thread1",
       peer: {
@@ -364,18 +369,66 @@ describe("request_auth tool", () => {
     const first = JSON.parse(
       (await aug.tools![0]!.execute(
         { method: "email", email: "alice@example.com" },
-        ctx,
+        ctx1,
       )) as string,
     );
     expect(first.status).toBe("sent");
+
+    // Second call from a DIFFERENT peer (rotated threadId) — same email → rejected.
+    await aug.onTurnStart?.(turnWithVisitor("alice@example.com", "anon-thread-ROTATED"));
+    const ctx2: ToolExecuteContext = {
+      turnId: "t2",
+      threadId: "thread-ROTATED",
+      peer: {
+        id: "anon-thread-ROTATED",
+        kind: "anonymous",
+        trustLevel: "public",
+        publicSubstate: "anonymous",
+        sourceAugment: "web",
+      },
+    };
     const second = JSON.parse(
       (await aug.tools![0]!.execute(
         { method: "email", email: "alice@example.com" },
-        ctx,
+        ctx2,
       )) as string,
     );
     expect(second.status).toBe("rejected");
     expect(second.message).toMatch(/limit|wait/i);
+    await aug.onShutdown?.();
+  });
+
+  test("different emails from the same peer don't share rate-limit quota", async () => {
+    // Fix H1: per-email keying means alice and bob each get their own quota.
+    // The same peer can send to two different emails without hitting the limit
+    // (as long as each email is within its own per-email budget).
+    const { aug, sendCalls } = buildAug({ rateLimit: { perHour: 1, perDay: 3 } });
+    await aug.onBoot?.();
+    const ctx: ToolExecuteContext = {
+      turnId: "t",
+      threadId: "thread1",
+      peer: {
+        id: "anon-thread1",
+        kind: "anonymous",
+        trustLevel: "public",
+        publicSubstate: "anonymous",
+        sourceAugment: "web",
+      },
+    };
+
+    // First email: alice. Include both addresses in the recent messages.
+    await aug.onTurnStart?.(turnWithVisitor("alice@example.com bob@example.com"));
+    const r1 = JSON.parse(
+      (await aug.tools![0]!.execute({ method: "email", email: "alice@example.com" }, ctx)) as string,
+    );
+    expect(r1.status).toBe("sent");
+
+    // Second email: bob (different address, same peer). Also within bob's own hourly quota.
+    const r2 = JSON.parse(
+      (await aug.tools![0]!.execute({ method: "email", email: "bob@example.com" }, ctx)) as string,
+    );
+    expect(r2.status).toBe("sent");
+    expect(sendCalls).toHaveLength(2);
     await aug.onShutdown?.();
   });
 
@@ -689,6 +742,11 @@ function makeAugWithFirstVerify(dbPath: string) {
     dbPath,
     agentMail: { apiKey: "am_x", inboxId: "ibx_x" },
     signingKey: "sig",
+    // Open rate limit so two verifications of the same email (from different
+    // peers / threadIds) can proceed in the same test. Fix H1 keys the
+    // rate-limiter to the EMAIL, so both sends count against the same email
+    // quota — bump the cap to 5/10 to allow the multi-verify scenario.
+    rateLimit: { perHour: 5, perDay: 10 },
     notifyOnFirstVerify: { to: "ops@x.com", subjectPrefix: "[New verified] " },
     _agentMailClient: {
       send: async (i: { to: string[]; subject: string; text: string; inboxId: string }) => {
