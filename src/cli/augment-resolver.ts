@@ -499,14 +499,16 @@ export async function resolveAugments(
     lateBindings.revocationCheck = va.isVisitorRevoked.bind(va);
   }
 
-  // Fix F18: warn when multiple visitorAuth augments are declared.
-  // Only the first (by index) is wired into webTransport's revocation check;
-  // tokens issued by any additional instance will not be subject to revocation
-  // enforcement. Operators must declare a single visitorAuth augment.
+  // Fix F18: throw when multiple visitorAuth augments are declared.
+  // Both would attempt to register GET/POST /visitor-auth/verify routes
+  // (the route-collector hard-fails on duplicate registration anyway), and
+  // only the first's revocation state would be visible to webTransport.
+  // A hard error here is more honest than a warning for a state that's
+  // unreachable at runtime.
   const vaCount = configs.filter((c) => c.type === "visitorAuth").length;
   if (vaCount > 1) {
-    console.warn(
-      `[augment-resolver] Multiple visitorAuth augments detected (${vaCount}). Only the first is wired into webTransport's revocation check; tokens issued by additional instances will not be subject to revocation enforcement. This is unsupported — declare a single visitorAuth augment.`,
+    throw new Error(
+      `[augment-resolver] Multiple visitorAuth augments declared (${vaCount}). visitorAuth is supported as a single instance per agent — both would attempt to register GET/POST /visitor-auth/verify routes (rejected by route-collector) and only the first's revocation state would be visible to webTransport. Declare exactly one visitorAuth augment.`,
     );
   }
 
