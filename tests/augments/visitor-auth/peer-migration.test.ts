@@ -98,9 +98,16 @@ describe("anonymous → recognized peer-id migration on verify", () => {
       { turnId: "t", threadId: "th-mig", peer },
     );
     const verifyUrl = sendCalls[0]!.text.match(/(https:\/\/[^\s]+)/)![1]!;
-    const res = await aug.httpRoutes![0]!.handler(new Request(verifyUrl), {
-      signal: new AbortController().signal,
-    });
+    const tokenParam = new URL(verifyUrl).searchParams.get("token")!;
+    // POST (route index 1) consumes the token and triggers peer-id migration.
+    const res = await aug.httpRoutes![1]!.handler(
+      new Request(verifyUrl, {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: `token=${encodeURIComponent(tokenParam)}`,
+      }),
+      { signal: new AbortController().signal },
+    );
     expect(res.status).toBe(200);
     // Rows under the OLD anon peer-id are gone:
     expect(countRowsForPeer(memPath, "anon-th-mig")).toBe(0);

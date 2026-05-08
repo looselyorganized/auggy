@@ -38,10 +38,15 @@ describe("visitorAuth (skeleton)", () => {
     expect(aug.name).toBe("visitor-auth");
     expect(aug.capabilities).toContain("tools");
     expect(aug.capabilities).toContain("context");
-    expect(aug.httpRoutes).toHaveLength(1);
+    expect(aug.httpRoutes).toHaveLength(2);
+    // GET route: confirm page (does not consume token — survives mail-scanner prefetch).
     expect(aug.httpRoutes?.[0]?.path).toBe("/visitor-auth/verify");
     expect(aug.httpRoutes?.[0]?.auth).toBe("none");
     expect(aug.httpRoutes?.[0]?.method).toBe("GET");
+    // POST route: consumes the token and mints the vis_ visitor token.
+    expect(aug.httpRoutes?.[1]?.path).toBe("/visitor-auth/verify");
+    expect(aug.httpRoutes?.[1]?.auth).toBe("none");
+    expect(aug.httpRoutes?.[1]?.method).toBe("POST");
   });
 
   test("factory throws for missing publicUrl", () => {
@@ -728,11 +733,18 @@ async function flowThroughVerify(
     threadId,
     peer,
   } as ToolExecuteContext);
-  // sends[0] is the visitor's magic-link mail; pull the URL out of its body.
+  // sends[0] is the visitor's magic-link mail; pull the token out of the URL.
   const verifyUrl = sends[0]!.text.match(/(https:\/\/[^\s]+)/)![1]!;
-  return aug.httpRoutes![0]!.handler(new Request(verifyUrl), {
-    signal: new AbortController().signal,
-  });
+  const tokenParam = new URL(verifyUrl).searchParams.get("token")!;
+  // POST route (index 1) consumes the token and mints the vis_ visitor token.
+  return aug.httpRoutes![1]!.handler(
+    new Request(verifyUrl, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: `token=${encodeURIComponent(tokenParam)}`,
+    }),
+    { signal: new AbortController().signal },
+  );
 }
 
 describe("notifyOnFirstVerify", () => {

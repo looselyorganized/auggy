@@ -11,6 +11,11 @@
  *   - The email is rendered via document.createTextNode (innerText), not innerHTML
  */
 
+export interface VerifyConfirmPageInput {
+  token: string;
+  publicUrl: string;
+}
+
 export interface VerifySuccessPageInput {
   visitorToken: string;
   email: string;
@@ -56,6 +61,57 @@ p { margin: 0.5rem 0; color: #555; }
 }
 </style>
 </head>`;
+
+/**
+ * Confirmation page returned by GET /visitor-auth/verify.
+ *
+ * Mail scanners follow links passively (GET); they do NOT auto-submit forms.
+ * Returning this page on GET means the scanner harmlessly receives the
+ * confirmation page without consuming the one-time token. The human clicks
+ * "Verify my email" which triggers a form POST that actually consumes it.
+ *
+ * Security notes:
+ *   - <meta name="referrer" content="no-referrer"> prevents the token from
+ *     leaking in Referer headers to third parties.
+ *   - The form POSTs to an absolute URL (publicUrl) to guarantee same-site
+ *     submission even if the user opened the link on a different device.
+ *   - Inline JS disables the button after click to prevent accidental double-
+ *     submit within the same page load.
+ *   - NO localStorage write, NO history.replaceState — those happen on the
+ *     success page served after the POST.
+ */
+export function buildVerifyConfirmPage(input: VerifyConfirmPageInput): string {
+  const base = input.publicUrl.endsWith("/")
+    ? input.publicUrl.slice(0, -1)
+    : input.publicUrl;
+  const actionUrl = `${base}/visitor-auth/verify`;
+  // Token comes from validated UUID input — safe to embed as a hidden field value.
+  // htmlEscape is applied for correctness even though UUIDs are [0-9a-f-] only.
+  const safeToken = htmlEscape(input.token);
+  return `${COMMON_HEAD}
+<body>
+<h1>Verify your email</h1>
+<p>Click the button below to complete email verification. This link can only be used once.</p>
+<form method="POST" action="${htmlEscape(actionUrl)}" id="vf">
+  <input type="hidden" name="token" value="${safeToken}">
+  <button type="submit" id="btn" style="font-size:1rem;padding:0.6rem 1.4rem;cursor:pointer;">Verify my email</button>
+</form>
+<script>
+(function(){
+  var btn = document.getElementById('btn');
+  var form = document.getElementById('vf');
+  if (form && btn) {
+    form.addEventListener('submit', function(){
+      btn.disabled = true;
+      btn.textContent = 'Verifying…';
+    });
+  }
+})();
+</script>
+<noscript><p>Submit the form above to verify your email.</p></noscript>
+</body>
+</html>`;
+}
 
 export function buildVerifySuccessPage(input: VerifySuccessPageInput): string {
   const tokenLit = jsStringLiteral(input.visitorToken);

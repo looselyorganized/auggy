@@ -45,7 +45,9 @@ describe("visitorAuth verify route", () => {
     await aug.onShutdown?.();
   });
 
-  test("returns 404 for unknown token", async () => {
+  test("GET returns 200 confirm page for unknown-but-valid UUID (does not touch store)", async () => {
+    // GET must NOT consume the token — it just shows the confirmation page.
+    // Even a valid UUID that doesn't exist in the store should return 200+confirm.
     const aug = await setupAug(join(tmp, "va.db"));
     const res = await aug.httpRoutes![0]!.handler(
       new Request(
@@ -53,7 +55,86 @@ describe("visitorAuth verify route", () => {
       ),
       { signal: new AbortController().signal },
     );
+    expect(res.status).toBe(200);
+    expect((await res.text()).toLowerCase()).toContain("verify");
+    await aug.onShutdown?.();
+  });
+
+  test("POST returns 404 for unknown token", async () => {
+    const aug = await setupAug(join(tmp, "va2.db"));
+    const res = await aug.httpRoutes![1]!.handler(
+      new Request("https://zip.test/visitor-auth/verify", {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: "token=00000000-0000-4000-8000-000000000000",
+      }),
+      { signal: new AbortController().signal },
+    );
     expect(res.status).toBe(404);
+    await aug.onShutdown?.();
+  });
+
+  test("GET does not consume the token — POST still works after a GET", async () => {
+    const dbPath = join(tmp, "va-nodrain.db");
+    const sendCalls: { text: string }[] = [];
+    const aug = visitorAuth({
+      publicUrl: "https://zip.test",
+      dbPath,
+      agentMail: { apiKey: "am_x", inboxId: "ibx_x" },
+      signingKey: "shared-key",
+      _agentMailClient: {
+        send: async (i: { text: string }) => {
+          sendCalls.push({ text: i.text });
+          return { status: "sent" as const, messageId: "m", threadId: "t" };
+        },
+        getInbox: async () => ({ inboxId: "ibx_x", status: "ok" as const }),
+      } as never,
+    });
+    await aug.onBoot?.();
+    const peer = {
+      id: "anon-nodrain",
+      kind: "anonymous" as const,
+      trustLevel: "public" as const,
+      publicSubstate: "anonymous" as const,
+      sourceAugment: "web",
+    };
+    await aug.onTurnStart?.({
+      turnId: "t", threadId: "th-nd",
+      trigger: { type: "message", turnId: "t", timestamp: 0, payload: { parts: [{ kind: "text", text: "nodrain@example.com" }], sourceAugment: "web", peer, timestamp: 0 } },
+      peer, toolCallsSoFar: 0, turnStartedAt: 0, metadata: {},
+    } as never);
+    await aug.tools![0]!.execute(
+      { method: "email", email: "nodrain@example.com" },
+      { turnId: "t", threadId: "th-nd", peer },
+    );
+    const verifyUrl = sendCalls[0]!.text.match(/(https:\/\/[^\s]+)/)![1]!;
+    const token = new URL(verifyUrl).searchParams.get("token")!;
+
+    // First GET — should return confirm page (200), NOT consume the token.
+    const get1 = await aug.httpRoutes![0]!.handler(new Request(verifyUrl), {
+      signal: new AbortController().signal,
+    });
+    expect(get1.status).toBe(200);
+    expect((await get1.text()).toLowerCase()).toContain("verify");
+
+    // Second GET — token still not consumed, still returns confirm page.
+    const get2 = await aug.httpRoutes![0]!.handler(new Request(verifyUrl), {
+      signal: new AbortController().signal,
+    });
+    expect(get2.status).toBe(200);
+
+    // POST — now consumes and returns success page with vis_ token.
+    const post = await aug.httpRoutes![1]!.handler(
+      new Request(verifyUrl, {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: `token=${encodeURIComponent(token)}`,
+      }),
+      { signal: new AbortController().signal },
+    );
+    expect(post.status).toBe(200);
+    expect((await post.text()).toLowerCase()).toContain("verified");
+
     await aug.onShutdown?.();
   });
 
@@ -105,9 +186,16 @@ describe("visitorAuth verify route", () => {
       { turnId: "t", threadId: "th2", peer },
     );
     const verifyUrl = sendCalls[0]!.text.match(/(https:\/\/[^\s]+)/)![1]!;
-    const res = await aug.httpRoutes![0]!.handler(new Request(verifyUrl), {
-      signal: new AbortController().signal,
-    });
+    const tokenParam = new URL(verifyUrl).searchParams.get("token")!;
+    // POST consumes the token and returns the success page.
+    const res = await aug.httpRoutes![1]!.handler(
+      new Request(verifyUrl, {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: `token=${encodeURIComponent(tokenParam)}`,
+      }),
+      { signal: new AbortController().signal },
+    );
     expect(res.status).toBe(200);
     const html = await res.text();
     expect(html).toContain("auggy-visitor-token");
@@ -174,13 +262,19 @@ describe("visitorAuth verify route", () => {
       { turnId: "t", threadId: "th3", peer },
     );
     const verifyUrl = sendCalls[0]!.text.match(/(https:\/\/[^\s]+)/)![1]!;
-    const r1 = await aug.httpRoutes![0]!.handler(new Request(verifyUrl), {
-      signal: new AbortController().signal,
-    });
+    const tokenParam = new URL(verifyUrl).searchParams.get("token")!;
+    const makePost = () =>
+      aug.httpRoutes![1]!.handler(
+        new Request(verifyUrl, {
+          method: "POST",
+          headers: { "content-type": "application/x-www-form-urlencoded" },
+          body: `token=${encodeURIComponent(tokenParam)}`,
+        }),
+        { signal: new AbortController().signal },
+      );
+    const r1 = await makePost();
     expect(r1.status).toBe(200);
-    const r2 = await aug.httpRoutes![0]!.handler(new Request(verifyUrl), {
-      signal: new AbortController().signal,
-    });
+    const r2 = await makePost();
     expect(r2.status).toBe(410);
     expect((await r2.text()).toLowerCase()).toContain("used");
     await aug.onShutdown?.();
@@ -238,9 +332,15 @@ describe("visitorAuth verify route", () => {
     );
     clock += 5 * 60_000; // advance past the 1-minute TTL
     const verifyUrl = sendCalls[0]!.text.match(/(https:\/\/[^\s]+)/)![1]!;
-    const res = await aug.httpRoutes![0]!.handler(new Request(verifyUrl), {
-      signal: new AbortController().signal,
-    });
+    const tokenParam = new URL(verifyUrl).searchParams.get("token")!;
+    const res = await aug.httpRoutes![1]!.handler(
+      new Request(verifyUrl, {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: `token=${encodeURIComponent(tokenParam)}`,
+      }),
+      { signal: new AbortController().signal },
+    );
     expect(res.status).toBe(410);
     expect((await res.text()).toLowerCase()).toContain("expired");
     await aug.onShutdown?.();
@@ -312,9 +412,15 @@ describe("visitorAuth verify route", () => {
       { turnId: "t1", threadId: "thUR-A", peer: peerA },
     );
     const url1 = sendCalls[0]!.text.match(/(https:\/\/[^\s]+)/)![1]!;
-    const r1 = await aug.httpRoutes![0]!.handler(new Request(url1), {
-      signal: new AbortController().signal,
-    });
+    const token1 = new URL(url1).searchParams.get("token")!;
+    const r1 = await aug.httpRoutes![1]!.handler(
+      new Request(url1, {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: `token=${encodeURIComponent(token1)}`,
+      }),
+      { signal: new AbortController().signal },
+    );
     expect(r1.status).toBe(200);
     const html1 = await r1.text();
     const tokJson1 = html1.match(/var token = ("(?:\\.|[^"\\])*");/)![1]!;
@@ -360,9 +466,15 @@ describe("visitorAuth verify route", () => {
       { turnId: "t2", threadId: "thUR-B", peer: peerB },
     );
     const url2 = sendCalls[1]!.text.match(/(https:\/\/[^\s]+)/)![1]!;
-    const r2 = await aug.httpRoutes![0]!.handler(new Request(url2), {
-      signal: new AbortController().signal,
-    });
+    const token2 = new URL(url2).searchParams.get("token")!;
+    const r2 = await aug.httpRoutes![1]!.handler(
+      new Request(url2, {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: `token=${encodeURIComponent(token2)}`,
+      }),
+      { signal: new AbortController().signal },
+    );
     // Must succeed (not 500 from UNIQUE constraint) and issue a different visitorId.
     expect(r2.status).toBe(200);
     const html2 = await r2.text();
@@ -430,9 +542,15 @@ describe("visitorAuth verify route", () => {
       { turnId: "t", threadId: "thA", peer: peerA },
     );
     const url1 = sendCalls[0]!.text.match(/(https:\/\/[^\s]+)/)![1]!;
-    const r1 = await aug.httpRoutes![0]!.handler(new Request(url1), {
-      signal: new AbortController().signal,
-    });
+    const token1 = new URL(url1).searchParams.get("token")!;
+    const r1 = await aug.httpRoutes![1]!.handler(
+      new Request(url1, {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: `token=${encodeURIComponent(token1)}`,
+      }),
+      { signal: new AbortController().signal },
+    );
     expect(r1.status).toBe(200);
     const html1 = await r1.text();
     const tokJson1 = html1.match(/var token = ("(?:\\.|[^"\\])*");/)![1]!;
@@ -476,9 +594,15 @@ describe("visitorAuth verify route", () => {
       { turnId: "t2", threadId: "thB", peer: peerB },
     );
     const url2 = sendCalls[1]!.text.match(/(https:\/\/[^\s]+)/)![1]!;
-    const r2 = await aug.httpRoutes![0]!.handler(new Request(url2), {
-      signal: new AbortController().signal,
-    });
+    const token2 = new URL(url2).searchParams.get("token")!;
+    const r2 = await aug.httpRoutes![1]!.handler(
+      new Request(url2, {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: `token=${encodeURIComponent(token2)}`,
+      }),
+      { signal: new AbortController().signal },
+    );
     expect(r2.status).toBe(200);
     const html2 = await r2.text();
     const tokJson2 = html2.match(/var token = ("(?:\\.|[^"\\])*");/)![1]!;
