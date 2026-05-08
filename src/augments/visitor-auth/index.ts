@@ -198,7 +198,9 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment {
         peerId: ctx.peer.id,
         threadId: ctx.threadId,
         expiresAt: t + ttlMs,
-        sourceMessageId: match.messageId ?? null,
+        // `||` (not `??`) so empty-string from emailAppearsInRecentMessages
+        // (when the recent message had no messageId) becomes null, not "".
+        sourceMessageId: match.messageId || null,
       });
       const verifyUrl = buildVerifyUrl(token);
       const { subject, text } = buildEmailBody(verifyUrl, tokenTtlMin);
