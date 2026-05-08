@@ -395,7 +395,9 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
           const existing = store.findVerifiedByEmail(consume.email!);
           // Revoked rows must NOT reuse the old visitorId — that identity was destroyed.
           const reuseVisitorId = existing && !existing.revoked ? existing.visitorId : undefined;
-          const minted = await createVisitorToken(
+          // Use `let` so the race-loser path can reassign minted to carry the
+          // winner's visitorId (see F4 UNIQUE catch below).
+          let minted = await createVisitorToken(
             signingCryptoKey,
             agentBinding,
             ttlSec,
@@ -427,15 +429,32 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
               // F4: concurrent first-verifies UNIQUE race — two requests for the
               // same email both pass `existing === null` and both attempt INSERT.
               // The second throws a SQLite UNIQUE constraint error on the email
-              // column. Treat as "already verified": re-fetch and touch.
+              // column. Re-fetch the WINNER's row and RE-MINT a token carrying
+              // the winner's visitorId. Without this, the loser's user receives a
+              // token with a vis_id not in the verified_visitors table, which
+              // causes webTransport's revocation check (findVisitorById) to return
+              // null and silently admit the loser as a different identity — breaking
+              // identity-continuity with layered-memory's peer-scoped storage.
               const isUniqueViolation =
                 err instanceof Error && /UNIQUE constraint failed/i.test(err.message);
               if (!isUniqueViolation) throw err;
-              const justInserted = store.findVerifiedByEmail(consume.email!);
-              if (justInserted && !justInserted.revoked) {
+              const winner = store.findVerifiedByEmail(consume.email!);
+              if (winner && !winner.revoked) {
                 store.touchVerifiedVisitor(consume.email!, t);
+                // RE-MINT with the winner's visitorId so the token payload matches
+                // the row in verified_visitors — identity-continuity preserved.
+                minted = await createVisitorToken(
+                  signingCryptoKey,
+                  agentBinding,
+                  ttlSec,
+                  winner.visitorId,
+                );
+              } else {
+                // Defensive: winner row vanished or is revoked between INSERT failure
+                // and re-fetch. Surface the original error rather than issue a token
+                // that nobody in the table will recognize.
+                throw err;
               }
-              // Continue to mint and return success — don't fail the verify.
             }
           }
 
