@@ -408,6 +408,28 @@ export async function resolveAugments(
     lateBindings.revocationCheck = va.isVisitorRevoked.bind(va);
   }
 
+  // Fix H3: cross-augment validation — visitorAuth.agentBinding MUST match
+  // webTransport.visitorTokens.agentBinding when both are configured. A mismatch
+  // silently strands visitors: the magic-link flow succeeds, but the next request
+  // rejects the minted token because the agentBinding field won't match.
+  const vaConfig = configs.find((c) => c.type === "visitorAuth");
+  const wtConfig = configs.find((c) => c.type === "webTransport");
+  if (vaConfig && wtConfig) {
+    const vaBinding = (vaConfig.options as Record<string, unknown> | undefined)
+      ?.agentBinding as string | undefined;
+    const wtBinding = (
+      (wtConfig.options as Record<string, unknown> | undefined)
+        ?.visitorTokens as Record<string, unknown> | undefined
+    )?.agentBinding as string | undefined;
+    if (vaBinding !== wtBinding) {
+      throw new Error(
+        `Cross-augment config mismatch: visitorAuth.agentBinding (${vaBinding ?? "unset"}) ` +
+        `must match webTransport.visitorTokens.agentBinding (${wtBinding ?? "unset"}). ` +
+        `Set them both to the same value (e.g., \${AUGGY_AGENT_ID}) in agent.yaml.`,
+      );
+    }
+  }
+
   // Boot-time validation: warn (not error) for any tool-providing augment
   // whose bundled skill is not mounted at <agent-dir>/skills/<folder>/SKILL.md.
   // Per ADR-025 Decision 5 + spec §H. Runs after every factory has produced
