@@ -235,7 +235,9 @@ augments:
         type: bearer
         token: \${AUGGY_WEB_TOKEN}
       visitorTokens:
-        signingKey: \${VISITOR_SIGNING_KEY}
+        # signingKey is NOT set here — visitorAuth is the single source of truth
+        # and the resolver injects it at boot. Setting it here would trigger the
+        # duplicate-key warning on every start.
         agentBinding: \${AUGGY_AGENT_ID}
 `;
 }
@@ -248,7 +250,9 @@ ANTHROPIC_API_KEY=
 # OPENAI_API_KEY=
 # OPENROUTER_API_KEY=
 AUGGY_WEB_TOKEN=
-VISITOR_SIGNING_KEY=
+# Uncomment when visitorAuth augment is added (signingKey is owned by visitorAuth,
+# injected into webTransport at boot — no need to set it in webTransport's config).
+# VISITOR_SIGNING_KEY=
 # Stable identifier for visitor-auth tokens — must be unique per agent
 # if multiple agents share VISITOR_SIGNING_KEY (otherwise tokens are
 # cross-replayable). Pattern: short slug or the agent's id.

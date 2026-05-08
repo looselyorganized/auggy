@@ -98,12 +98,14 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
       port: 8080,
       auth: { type: "bearer", token: "${AUGGY_WEB_TOKEN}" },
       visitorTokens: {
-        signingKey: "${VISITOR_SIGNING_KEY}",
+        // signingKey is NOT set here — visitorAuth is the single source of truth
+        // and the resolver injects it. Setting it here would trigger the
+        // duplicate-key warning on every boot.
         agentBinding: "${AUGGY_AGENT_ID}",
       },
     },
     required: false,
-    envVars: ["AUGGY_WEB_TOKEN", "VISITOR_SIGNING_KEY", "AUGGY_AGENT_ID"],
+    envVars: ["AUGGY_WEB_TOKEN", "AUGGY_AGENT_ID"],
     hasSkill: false,
   },
   {
