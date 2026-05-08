@@ -236,6 +236,7 @@ augments:
         token: \${AUGGY_WEB_TOKEN}
       visitorTokens:
         signingKey: \${VISITOR_SIGNING_KEY}
+        agentBinding: \${AUGGY_AGENT_ID}
 `;
 }
 
