@@ -754,4 +754,126 @@ describe("visitorAuth verify route", () => {
     expect(html.toLowerCase()).not.toMatch(/could not parse/);
     await aug.onShutdown?.();
   });
+
+  // F4: concurrent first-verifies UNIQUE race
+  test("concurrent first-verifies for same email both return 200 (UNIQUE race guard, F4)", async () => {
+    // Issue two distinct tokens for the same email (one per anonymous peer),
+    // then fire both POSTs concurrently via Promise.all.  The handler has an
+    // `await createVisitorToken()` between findVerifiedByEmail and
+    // recordVerifiedVisitor, so both may observe existing===null before either
+    // commits the INSERT, triggering the UNIQUE constraint on the second.
+    // The fix must catch that and treat it as a successful concurrent verify.
+    const dbPath = join(tmp, "va-race.db");
+    const sendCalls: { text: string }[] = [];
+    const aug = visitorAuth({
+      publicUrl: "https://zip.test",
+      dbPath,
+      agentMail: { apiKey: "am_x", inboxId: "ibx_x" },
+      signingKey: "shared-key",
+      rateLimit: { perHour: 10, perDay: 20 },
+      _agentMailClient: {
+        send: async (i: { text: string }) => {
+          sendCalls.push({ text: i.text });
+          return { status: "sent" as const, messageId: "m", threadId: "t" };
+        },
+        getInbox: async () => ({ inboxId: "ibx_x", status: "ok" as const }),
+      } as never,
+    });
+    await aug.onBoot?.();
+
+    // Issue token for peer A
+    const peerA = {
+      id: "anon-race-A",
+      kind: "anonymous" as const,
+      trustLevel: "public" as const,
+      publicSubstate: "anonymous" as const,
+      sourceAugment: "web",
+    };
+    await aug.onTurnStart?.({
+      turnId: "t1",
+      threadId: "th-race-A",
+      trigger: {
+        type: "message",
+        turnId: "t1",
+        timestamp: 0,
+        payload: {
+          parts: [{ kind: "text", text: "race@example.com" }],
+          sourceAugment: "web",
+          peer: peerA,
+          timestamp: 0,
+        },
+      },
+      peer: peerA,
+      toolCallsSoFar: 0,
+      turnStartedAt: 0,
+      metadata: {},
+    } as never);
+    await aug.tools![0]!.execute(
+      { method: "email", email: "race@example.com" },
+      { turnId: "t1", threadId: "th-race-A", peer: peerA },
+    );
+
+    // Issue token for peer B (same email — rate limit is generous)
+    const peerB = {
+      id: "anon-race-B",
+      kind: "anonymous" as const,
+      trustLevel: "public" as const,
+      publicSubstate: "anonymous" as const,
+      sourceAugment: "web",
+    };
+    await aug.onTurnStart?.({
+      turnId: "t2",
+      threadId: "th-race-B",
+      trigger: {
+        type: "message",
+        turnId: "t2",
+        timestamp: 0,
+        payload: {
+          parts: [{ kind: "text", text: "race@example.com" }],
+          sourceAugment: "web",
+          peer: peerB,
+          timestamp: 0,
+        },
+      },
+      peer: peerB,
+      toolCallsSoFar: 0,
+      turnStartedAt: 0,
+      metadata: {},
+    } as never);
+    await aug.tools![0]!.execute(
+      { method: "email", email: "race@example.com" },
+      { turnId: "t2", threadId: "th-race-B", peer: peerB },
+    );
+
+    // Extract the two distinct tokens
+    const urlA = sendCalls[0]!.text.match(/(https:\/\/[^\s]+)/)![1]!;
+    const urlB = sendCalls[1]!.text.match(/(https:\/\/[^\s]+)/)![1]!;
+    const tokenA = new URL(urlA).searchParams.get("token")!;
+    const tokenB = new URL(urlB).searchParams.get("token")!;
+
+    const makePost = (token: string) =>
+      aug.httpRoutes![1]!.handler(
+        new Request("https://zip.test/visitor-auth/verify", {
+          method: "POST",
+          headers: { "content-type": "application/x-www-form-urlencoded" },
+          body: `token=${encodeURIComponent(token)}`,
+        }),
+        { signal: new AbortController().signal },
+      );
+
+    // Fire both concurrently — the `await createVisitorToken()` inside the
+    // handler is the interleave point where both may observe existing===null
+    // before either commits.  Both must return 200 (no 500 from UNIQUE error).
+    const [r1, r2] = await Promise.all([makePost(tokenA), makePost(tokenB)]);
+    expect(r1.status).toBe(200);
+    expect(r2.status).toBe(200);
+
+    // Both responses must be success pages
+    const html1 = await r1.text();
+    const html2 = await r2.text();
+    expect(html1.toLowerCase()).toMatch(/verified/);
+    expect(html2.toLowerCase()).toMatch(/verified/);
+
+    await aug.onShutdown?.();
+  });
 });

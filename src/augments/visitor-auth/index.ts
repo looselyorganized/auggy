@@ -406,22 +406,37 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
           //   - Active (non-revoked) row: touch lastSeenAt, preserve visitorId.
           //   - Revoked row: un-revoke + rotate to new visitorId (avoids INSERT
           //     UNIQUE-constraint collision on email).
-          //   - No row: fresh INSERT.
+          //   - No row: fresh INSERT, with UNIQUE-race guard (see F4 fix below).
           if (existing && !existing.revoked) {
             store.touchVerifiedVisitor(consume.email!, t);
           } else if (existing?.revoked) {
             store.unrevokeAndRotate(consume.email!, minted.payload.visitorId, t, t + ttlSec * 1000);
           } else {
-            store.recordVerifiedVisitor({
-              visitorId: minted.payload.visitorId,
-              email: consume.email!,
-              verifiedAt: t,
-              lastSeenAt: t,
-              reverifyDueAt: t + ttlSec * 1000,
-              revoked: false,
-              revokedAt: null,
-              revokedReason: null,
-            });
+            try {
+              store.recordVerifiedVisitor({
+                visitorId: minted.payload.visitorId,
+                email: consume.email!,
+                verifiedAt: t,
+                lastSeenAt: t,
+                reverifyDueAt: t + ttlSec * 1000,
+                revoked: false,
+                revokedAt: null,
+                revokedReason: null,
+              });
+            } catch (err) {
+              // F4: concurrent first-verifies UNIQUE race — two requests for the
+              // same email both pass `existing === null` and both attempt INSERT.
+              // The second throws a SQLite UNIQUE constraint error on the email
+              // column. Treat as "already verified": re-fetch and touch.
+              const isUniqueViolation =
+                err instanceof Error && /UNIQUE constraint failed/i.test(err.message);
+              if (!isUniqueViolation) throw err;
+              const justInserted = store.findVerifiedByEmail(consume.email!);
+              if (justInserted && !justInserted.revoked) {
+                store.touchVerifiedVisitor(consume.email!, t);
+              }
+              // Continue to mint and return success — don't fail the verify.
+            }
           }
 
           // Anonymous→recognized peer-id migration. The verify route knows the
