@@ -281,7 +281,14 @@ describe("auto-save end-to-end", () => {
     }
   });
 
-  test("anonymous→recognized promotion flushes anonymous-bound buffer to OLD peer-id", async () => {
+  test("anonymous→recognized promotion flushes anonymous-bound buffer to NEW (recognized) peer-id", async () => {
+    // F1 regression guard: the promotion flush must target currentPeerId (the
+    // NEW recognized id), not priorPeerId (the OLD anonymous id). By the time
+    // the flush fires, visitorAuth has already migrated existing DB rows from
+    // anon-<threadId> to vis_<uuid>. If the flush wrote new facts under the
+    // old anon id, it would recreate the orphaned-history regression. See
+    // augments/layered-memory/index.ts maybeFlushOnPromotion comment for full
+    // rationale.
     const dir = await createTempDir();
     cleanup = dir.cleanup;
     const dbPath = join(dir.path, "memory.db");
@@ -382,35 +389,26 @@ describe("auto-save end-to-end", () => {
 
       const search = searchOf(lm);
 
-      // Anonymous namespace: at least one entry with origin=agent-derived
-      // under the OLD anon-<threadId> peer-id (the buffered flush wrote
-      // here).
+      // Anonymous namespace: NO agent-derived entries. The promotion flush
+      // now writes to the NEW peer-id (currentPeerId), not the old anon id.
+      // Pre-F1, facts were written here; post-F1, they go to the recognized
+      // namespace instead to match what visitorAuth's migratePeerIdOnVerify
+      // does to existing rows.
       const anonResults = await search("", { peerId: ANON_PEER_ID });
       const anonDerived: MemoryEntry[] = anonResults.filter((e) => e.origin === "agent-derived");
-      expect(anonDerived.length).toBeGreaterThanOrEqual(1);
-      // Every fact under the anon namespace must be bound to the anon id.
-      for (const e of anonDerived) {
-        expect(e.peerId).toBe(ANON_PEER_ID);
-      }
+      expect(anonDerived.length).toBe(0);
 
-      // Recognized namespace: at least one entry under the NEW peer-id.
+      // Recognized namespace: at least TWO entries — one from the anon-buffer
+      // promotion flush (now targeting currentPeerId) and one from the
+      // recognized turn's own extraction (every-turn cadence).
       const recognizedResults = await search("", { peerId: RECOGNIZED_PEER_ID });
       const recognizedDerived: MemoryEntry[] = recognizedResults.filter(
         (e) => e.origin === "agent-derived",
       );
-      expect(recognizedDerived.length).toBeGreaterThanOrEqual(1);
+      // At least the flush + the recognized-turn extraction.
+      expect(recognizedDerived.length).toBeGreaterThanOrEqual(2);
       for (const e of recognizedDerived) {
         expect(e.peerId).toBe(RECOGNIZED_PEER_ID);
-      }
-
-      // Cross-contamination guard: labels must not overlap across the
-      // two id namespaces. The peer-scoped search() already enforces
-      // peer_id discipline at the store layer; this is a defense-in-
-      // depth check that the label-prefix logic also held.
-      const anonLabels = new Set(anonDerived.map((e) => e.label));
-      const recognizedLabels = new Set(recognizedDerived.map((e) => e.label));
-      for (const lbl of anonLabels) {
-        expect(recognizedLabels.has(lbl)).toBe(false);
       }
     } finally {
       await agent.stop();

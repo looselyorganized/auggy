@@ -525,7 +525,16 @@ export async function layeredMemory(opts: LayeredMemoryOptions): Promise<Augment
       promptTemplate,
       confidenceThreshold,
       prefix,
-      peerId: priorPeerId,
+      // Use the NEW recognized peer-id, not the old anonymous one. By the time
+      // this flush fires, visitorAuth's verify-route has already migrated
+      // existing memory rows from anon-<threadId> to vis_<uuid> via
+      // migratePeerIdOnVerify. If we wrote new facts under priorPeerId, we'd
+      // recreate the orphaned-history regression that migration was designed
+      // to prevent. Pragmatic deviation from "Decision 5" of the memorist
+      // design (which said anonymous facts should remain anonymous): once a
+      // visitor proves identity, they own the conversation history they
+      // participated in.
+      peerId: currentPeerId,
     };
     const trigger: TurnTrigger = {
       type: "internal",
