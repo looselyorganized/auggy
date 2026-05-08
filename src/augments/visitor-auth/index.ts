@@ -272,8 +272,14 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment {
           // EXISTING visitorId so peer-scoped state in layered-memory remains
           // continuous. Minting a fresh visitorId here would orphan the
           // visitor's prior conversation history under the old id.
+          //
+          // EXCEPTION: if the row is revoked, the operator destroyed that identity.
+          // Re-verify must establish a NEW identity (fresh vis_<uuid>); the revoked
+          // row is un-revoked and rotated to the new id via unrevokeAndRotate so
+          // the UNIQUE-email constraint is not violated by a second INSERT.
           const ttlSec = reverifyDays * 86_400;
           const existing = store.findVerifiedByEmail(consume.email!);
+          // Revoked rows must NOT reuse the old visitorId — that identity was destroyed.
           const reuseVisitorId = existing && !existing.revoked ? existing.visitorId : undefined;
           const minted = await createVisitorToken(
             signingCryptoKey,
@@ -282,11 +288,20 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment {
             reuseVisitorId,
           );
 
-          // Record / touch the verified-visitor row. Re-verification keeps
-          // the original visitorId; fresh verification (or re-verifying after
-          // revoke) writes a new row with the freshly-minted id.
+          // Record / touch the verified-visitor row:
+          //   - Active (non-revoked) row: touch lastSeenAt, preserve visitorId.
+          //   - Revoked row: un-revoke + rotate to new visitorId (avoids INSERT
+          //     UNIQUE-constraint collision on email).
+          //   - No row: fresh INSERT.
           if (existing && !existing.revoked) {
             store.touchVerifiedVisitor(consume.email!, t);
+          } else if (existing && existing.revoked) {
+            store.unrevokeAndRotate(
+              consume.email!,
+              minted.payload.visitorId,
+              t,
+              t + ttlSec * 1000,
+            );
           } else {
             store.recordVerifiedVisitor({
               visitorId: minted.payload.visitorId,

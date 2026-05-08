@@ -266,6 +266,117 @@ describe("visitorAuth verify route", () => {
     await aug.onShutdown?.();
   });
 
+  test("re-verify after revoke: un-revokes the row and issues a NEW visitorId", async () => {
+    const dbPath = join(tmp, "va-unrevoke.db");
+    const sendCalls: { text: string }[] = [];
+    const aug = visitorAuth({
+      publicUrl: "https://zip.test",
+      dbPath,
+      agentMail: { apiKey: "am_x", inboxId: "ibx_x" },
+      signingKey: "shared-key",
+      rateLimit: { perHour: 5, perDay: 10 },
+      _agentMailClient: {
+        send: async (i: { text: string }) => {
+          sendCalls.push({ text: i.text });
+          return { status: "sent" as const, messageId: "m", threadId: "t" };
+        },
+        getInbox: async () => ({ inboxId: "ibx_x", status: "ok" as const }),
+      } as never,
+    });
+    await aug.onBoot?.();
+
+    // Step 1: First verify — establishes identity.
+    const peerA = {
+      id: "anon-unrevoke-A",
+      kind: "anonymous" as const,
+      trustLevel: "public" as const,
+      publicSubstate: "anonymous" as const,
+      sourceAugment: "web",
+    };
+    await aug.onTurnStart?.({
+      turnId: "t1",
+      threadId: "thUR-A",
+      trigger: {
+        type: "message",
+        turnId: "t1",
+        timestamp: 0,
+        payload: { parts: [{ kind: "text", text: "revokeme@example.com" }], sourceAugment: "web", peer: peerA, timestamp: 0 },
+      },
+      peer: peerA,
+      toolCallsSoFar: 0,
+      turnStartedAt: 0,
+      metadata: {},
+    } as never);
+    await aug.tools![0]!.execute(
+      { method: "email", email: "revokeme@example.com" },
+      { turnId: "t1", threadId: "thUR-A", peer: peerA },
+    );
+    const url1 = sendCalls[0]!.text.match(/(https:\/\/[^\s]+)/)![1]!;
+    const r1 = await aug.httpRoutes![0]!.handler(new Request(url1), {
+      signal: new AbortController().signal,
+    });
+    expect(r1.status).toBe(200);
+    const html1 = await r1.text();
+    const tokJson1 = html1.match(/var token = ("(?:\\.|[^"\\])*");/)![1]!;
+    const firstVisToken = JSON.parse(tokJson1) as string;
+    const sigKey = await deriveSigningKey("shared-key");
+    const firstPayload = await verifyVisitorToken(sigKey, firstVisToken);
+    const firstVisitorId = firstPayload!.visitorId;
+    expect(firstVisitorId).toMatch(/^vis_/);
+
+    // Step 2: Operator revokes.
+    const { createSqliteVisitorAuthStore } = await import(
+      "../../../src/augments/visitor-auth/storage/sqlite-store"
+    );
+    const seedStore = createSqliteVisitorAuthStore({ dbPath });
+    seedStore.initialize();
+    seedStore.revokeByEmail("revokeme@example.com", "operator", Date.now());
+    seedStore.close();
+
+    // Step 3: Visitor re-verifies after revoke — must get a NEW visitorId.
+    const peerB = {
+      id: "anon-unrevoke-B",
+      kind: "anonymous" as const,
+      trustLevel: "public" as const,
+      publicSubstate: "anonymous" as const,
+      sourceAugment: "web",
+    };
+    await aug.onTurnStart?.({
+      turnId: "t2",
+      threadId: "thUR-B",
+      trigger: {
+        type: "message",
+        turnId: "t2",
+        timestamp: 0,
+        payload: { parts: [{ kind: "text", text: "revokeme@example.com" }], sourceAugment: "web", peer: peerB, timestamp: 0 },
+      },
+      peer: peerB,
+      toolCallsSoFar: 0,
+      turnStartedAt: 0,
+      metadata: {},
+    } as never);
+    await aug.tools![0]!.execute(
+      { method: "email", email: "revokeme@example.com" },
+      { turnId: "t2", threadId: "thUR-B", peer: peerB },
+    );
+    const url2 = sendCalls[1]!.text.match(/(https:\/\/[^\s]+)/)![1]!;
+    const r2 = await aug.httpRoutes![0]!.handler(new Request(url2), {
+      signal: new AbortController().signal,
+    });
+    // Must succeed (not 500 from UNIQUE constraint) and issue a different visitorId.
+    expect(r2.status).toBe(200);
+    const html2 = await r2.text();
+    const tokJson2 = html2.match(/var token = ("(?:\\.|[^"\\])*");/)![1]!;
+    const secondVisToken = JSON.parse(tokJson2) as string;
+    const secondPayload = await verifyVisitorToken(sigKey, secondVisToken);
+    expect(secondPayload).not.toBeNull();
+    expect(secondPayload!.visitorId).toMatch(/^vis_/);
+    // NEW identity — must differ from the revoked one.
+    expect(secondPayload!.visitorId).not.toBe(firstVisitorId);
+
+    await aug.onShutdown?.();
+  });
+
   test("re-verification of an existing email reuses the original visitorId", async () => {
     const dbPath = join(tmp, "va-rev.db");
     const sendCalls: { text: string }[] = [];
