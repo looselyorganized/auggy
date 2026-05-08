@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach, afterEach } from "bun:test";
+import { describe, test, expect, beforeEach, afterEach, spyOn } from "bun:test";
 import { writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { resolveAugments } from "../../src/cli/augment-resolver";
@@ -387,6 +387,56 @@ describe("resolveAugments — C1 wiring (fix F17)", () => {
     // looked up by name and missed — lateBindings would stay null.
     const va = augments[0] as typeof augments[0] & { isVisitorRevoked?: (id: string) => boolean };
     expect(typeof va?.isVisitorRevoked).toBe("function");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Multi-instance visitorAuth warning (fix F18)
+// ---------------------------------------------------------------------------
+
+describe("resolveAugments — multi-instance visitorAuth warning (fix F18)", () => {
+  test("warns when multiple visitorAuth augments declared", async () => {
+    const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      // Two visitorAuth blocks — unsupported; only first is wired into
+      // webTransport's revocation check. Resolver must warn loudly.
+      const augments = await resolveAugments(
+        [
+          {
+            type: "visitorAuth",
+            name: "auth-1",
+            options: {
+              publicUrl: "https://zip.test",
+              agentMail: { apiKey: "am_x", inboxId: "ibx_x" },
+              signingKey: "sig-x",
+              layeredMemoryDbPath: null,
+            },
+          },
+          {
+            type: "visitorAuth",
+            name: "auth-2",
+            options: {
+              publicUrl: "https://zip.test",
+              agentMail: { apiKey: "am_y", inboxId: "ibx_y" },
+              signingKey: "sig-y",
+              layeredMemoryDbPath: null,
+            },
+          },
+        ],
+        TMP,
+      );
+      expect(augments).toHaveLength(2);
+      // console.warn must have been called at least once with a message
+      // containing "Multiple visitorAuth augments".
+      const warnCalls = warnSpy.mock.calls;
+      const multiWarnCall = warnCalls.find(
+        (args) =>
+          typeof args[0] === "string" && args[0].includes("Multiple visitorAuth augments"),
+      );
+      expect(multiWarnCall).toBeDefined();
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 });
 
