@@ -23,7 +23,8 @@ export type BuiltinAugmentType =
   | "budgets"
   | "notify"
   | "telegramTransport"
-  | "turnControl";
+  | "turnControl"
+  | "visitorAuth";
 
 /** A single augment entry from the `augments:` array in agent.yaml. */
 export interface AugmentConfig {

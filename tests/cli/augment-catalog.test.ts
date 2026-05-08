@@ -15,4 +15,18 @@ describe("augment catalog", () => {
     const entry = AUGMENT_CATALOG.find((e) => e.type === "turnControl");
     expect(entry?.defaultName).toBe("turn-control");
   });
+
+  it("catalog includes a visitorAuth entry with required env vars", () => {
+    const entry = AUGMENT_CATALOG.find((e) => e.type === "visitorAuth");
+    expect(entry).toBeTruthy();
+    expect(entry!.envVars).toEqual(
+      expect.arrayContaining([
+        "AGENTMAIL_API_KEY",
+        "AGENTMAIL_INBOX_ID",
+        "AUGGY_PUBLIC_URL",
+        "VISITOR_SIGNING_KEY",
+      ]),
+    );
+    expect(entry!.hasSkill).toBe(true);
+  });
 });

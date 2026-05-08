@@ -306,3 +306,50 @@ describe("resolveAugments — budgets", () => {
     await expect(augments[0]!.onShutdown!()).resolves.toBeUndefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// visitorAuth
+// ---------------------------------------------------------------------------
+
+describe("resolveAugments — visitorAuth", () => {
+  test("resolves visitorAuth augment with absolute paths", async () => {
+    const augments = await resolveAugments(
+      [
+        {
+          type: "visitorAuth",
+          name: "visitor-auth",
+          options: {
+            publicUrl: "https://zip.test",
+            dbPath: "./va.db",
+            agentMail: { apiKey: "am_x", inboxId: "ibx_x" },
+            signingKey: "sig-x",
+            layeredMemoryDbPath: "./mem.db",
+          },
+        },
+      ],
+      TMP,
+    );
+    expect(augments).toHaveLength(1);
+    expect(augments[0]?.name).toBe("visitor-auth");
+    expect(augments[0]?.httpRoutes?.[0]?.path).toBe("/visitor-auth/verify");
+  });
+
+  test("resolveVisitorAuth honors layeredMemoryDbPath: null to disable migration", async () => {
+    const augments = await resolveAugments(
+      [
+        {
+          type: "visitorAuth",
+          name: "visitor-auth",
+          options: {
+            publicUrl: "https://zip.test",
+            agentMail: { apiKey: "am_x", inboxId: "ibx_x" },
+            signingKey: "sig-x",
+            layeredMemoryDbPath: null,
+          },
+        },
+      ],
+      TMP,
+    );
+    expect(augments).toHaveLength(1);
+  });
+});

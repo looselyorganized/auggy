@@ -231,6 +231,29 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
     required: false,
     hasSkill: true,
   },
+  {
+    label: "Visitor Auth",
+    description: "Email magic-link verification — promotes anonymous visitors to recognized identity",
+    type: "visitorAuth",
+    defaultName: "visitor-auth",
+    defaultOptions: {
+      publicUrl: "${AUGGY_PUBLIC_URL}",
+      dbPath: "./visitor-auth.db",
+      agentMail: {
+        apiKey: "${AGENTMAIL_API_KEY}",
+        inboxId: "${AGENTMAIL_INBOX_ID}",
+        subjectPrefix: "[Verify] ",
+      },
+      signingKey: "${VISITOR_SIGNING_KEY}",
+      rateLimit: { perHour: 1, perDay: 3 },
+      reverifyAfterDays: 90,
+      tokenTtlMinutes: 15,
+      layeredMemoryDbPath: "./memory.db",
+    },
+    required: false,
+    envVars: ["AGENTMAIL_API_KEY", "AGENTMAIL_INBOX_ID", "AUGGY_PUBLIC_URL", "VISITOR_SIGNING_KEY"],
+    hasSkill: true,
+  },
 ];
 
 /** Get catalog entries that are not yet installed (by type + defaultName). */
