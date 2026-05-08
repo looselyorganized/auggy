@@ -324,42 +324,81 @@ export async function resolveAugments(
     revocationCheck: null,
   };
 
-  // Fix F2 — single-source signingKey + auto-disable visitor tokens when
-  // visitorAuth is absent.
+  // Fix F2 — single-source signingKey + conservative handling of operator's
+  // explicit `enabled` setting.
   //
   // visitorAuth is the sole authority for signingKey: it mints tokens so it
   // MUST own the key. webTransport only verifies them; receiving the key via
   // injection avoids operators having to duplicate the secret across two
   // config blocks (where a mismatch silently breaks the flow).
+  //
+  // Auto-defaulting rules:
+  //  - When visitorAuth is absent: auto-disable ONLY when operator left enabled
+  //    unset. Explicit enabled: true is respected (custom minter scenario).
+  //  - When visitorAuth is present: inject signingKey + auto-enable ONLY when
+  //    operator did not explicitly set enabled: false. Explicit false is
+  //    respected (unusual but legal).
+  //
+  // Iterates ALL webTransport configs (not just the first) so a multi-
+  // transport setup gets consistent injection (fixes Codex C-H2).
   {
     const vaConfig = configs.find((c) => c.type === "visitorAuth");
-    const wtConfig = configs.find((c) => c.type === "webTransport");
+    const wtConfigs = configs.filter((c) => c.type === "webTransport");
 
-    if (wtConfig && !vaConfig) {
-      // visitorAuth absent: visitor tokens can never be minted, so enabling
-      // them in webTransport is meaningless and would leave signingKey unset
-      // (which now causes a hard error at onBoot). Force-disable.
+    for (const wtConfig of wtConfigs) {
       const wtOpts = (wtConfig.options ?? {}) as Record<string, unknown>;
       const vt = (wtOpts.visitorTokens ?? {}) as Record<string, unknown>;
-      vt.enabled = false;
-      wtOpts.visitorTokens = vt;
-      wtConfig.options = wtOpts;
-    }
 
-    if (wtConfig && vaConfig) {
-      const wtOpts = (wtConfig.options ?? {}) as Record<string, unknown>;
-      const vt = (wtOpts.visitorTokens ?? {}) as Record<string, unknown>;
+      // Track whether operator explicitly set `enabled` (truthy or false) vs left it undefined.
+      const enabledExplicit = "enabled" in vt;
+
+      if (!vaConfig) {
+        // No visitorAuth mounted.
+        // If signingKey is set, warn about potential identity loss (operator
+        // may have removed visitorAuth between boots, stranding issued tokens).
+        if (vt.signingKey !== undefined) {
+          console.warn(
+            `[augment-resolver] webTransport.visitorTokens.signingKey is set but no visitorAuth augment is mounted. Pre-existing visitor tokens may not be verified (no minter is registered). If you previously had visitorAuth mounted and removed it, all verified visitors will revert to anonymous on next request.`,
+          );
+        }
+
+        if (!enabledExplicit) {
+          // Operator left enabled unset → auto-disable (no minter mounted).
+          vt.enabled = false;
+          wtOpts.visitorTokens = vt;
+          wtConfig.options = wtOpts;
+        } else if (vt.enabled === true) {
+          // Operator explicitly opted in without visitorAuth. Warn — likely a
+          // misconfig that previously silently worked via ephemeral fallback.
+          console.warn(
+            `[augment-resolver] webTransport.visitorTokens.enabled is true but no visitorAuth augment is mounted. Tokens will not be minted by visitorAuth; if you have a custom token-minter, set visitorTokens.signingKey explicitly. Otherwise, set enabled: false or mount visitorAuth.`,
+          );
+        }
+        // else: enabled: false explicitly set — nothing to do.
+        continue;
+      }
+
+      // visitorAuth IS mounted.
       const vaSigningKey = (vaConfig.options as Record<string, unknown> | undefined)
         ?.signingKey as string | undefined;
 
-      if (vt.signingKey && vt.signingKey !== vaSigningKey) {
+      if (vt.enabled === false) {
+        // Operator explicitly disabled visitor tokens despite mounting visitorAuth.
+        // Respect — visitorAuth's request_auth tool still works, but webTransport
+        // won't honor any minted token. Unusual but legal.
+        console.warn(
+          `[augment-resolver] visitorAuth is mounted but webTransport.visitorTokens.enabled is explicitly false. Verified visitors will not be recognized at the wire. Remove the explicit false to enable visitor recognition.`,
+        );
+        continue;
+      }
+
+      // Normal path: visitorAuth mounted, enabled is true (or undefined → default to true).
+      if (vt.signingKey !== undefined && vt.signingKey !== vaSigningKey) {
         console.warn(
           "[augment-resolver] webTransport.visitorTokens.signingKey is set but visitorAuth.signingKey takes precedence. Remove the duplicate from webTransport's config.",
         );
       }
-      // Inject visitorAuth's signingKey and force-enable visitor tokens.
-      // The enabled=true here is required: without visitorAuth there is no
-      // minter; with visitorAuth, tokens MUST be enabled for it to function.
+      // Inject visitorAuth's signingKey and enable visitor tokens.
       vt.signingKey = vaSigningKey;
       vt.enabled = true;
       wtOpts.visitorTokens = vt;
