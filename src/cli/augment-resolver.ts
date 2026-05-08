@@ -401,9 +401,18 @@ export async function resolveAugments(
   // deferred closure. The closure was passed to webTransport during the loop
   // (before visitorAuth was necessarily resolved); populating lateBindings
   // now makes the check active for all subsequent requests.
-  const va = augments.find((a) => a.name === "visitor-auth") as
-    | (Augment & VisitorAuthAugmentExtras)
-    | undefined;
+  //
+  // Use index-based lookup (configs[i] → augments[i]) instead of name-based
+  // search so that operator-renamed visitorAuth augments (e.g. `name: my-auth`
+  // in agent.yaml) still get wired correctly. The `.name` property is
+  // overwritten with the config name at line 396 after each factory returns,
+  // so `augments.find(a => a.name === "visitor-auth")` would fail for any
+  // non-default name and silently disable revocation.
+  const vaIdx = configs.findIndex((c) => c.type === "visitorAuth");
+  const va =
+    vaIdx >= 0
+      ? (augments[vaIdx] as Augment & VisitorAuthAugmentExtras)
+      : undefined;
   if (va?.isVisitorRevoked) {
     lateBindings.revocationCheck = va.isVisitorRevoked.bind(va);
   }

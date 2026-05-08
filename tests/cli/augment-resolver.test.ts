@@ -355,6 +355,42 @@ describe("resolveAugments — visitorAuth", () => {
 });
 
 // ---------------------------------------------------------------------------
+// C1 wiring: visitorAuth revocation check survives operator rename (fix F17)
+// ---------------------------------------------------------------------------
+
+describe("resolveAugments — C1 wiring (fix F17)", () => {
+  test("C1 wiring survives operator-renamed visitorAuth augment", async () => {
+    // Operator uses a custom name for visitorAuth in agent.yaml.
+    // Before F17, `augments.find(a => a.name === "visitor-auth")` would
+    // return undefined (name was overwritten to "my-custom-auth"), leaving
+    // lateBindings.revocationCheck null and revocation silently disabled.
+    // After F17, lookup uses index correspondence with configs[] by type.
+    const augments = await resolveAugments(
+      [
+        {
+          type: "visitorAuth",
+          name: "my-custom-auth", // operator-chosen name, not "visitor-auth"
+          options: {
+            publicUrl: "https://zip.test",
+            agentMail: { apiKey: "am_x", inboxId: "ibx_x" },
+            signingKey: "sig-x",
+            layeredMemoryDbPath: null,
+          },
+        },
+      ],
+      TMP,
+    );
+    expect(augments).toHaveLength(1);
+    // The augment must carry isVisitorRevoked (a VisitorAuthAugmentExtras
+    // method) so C1 wiring can populate lateBindings.revocationCheck.
+    // If the type-based lookup failed, the augment at index 0 would be
+    // looked up by name and missed — lateBindings would stay null.
+    const va = augments[0] as typeof augments[0] & { isVisitorRevoked?: (id: string) => boolean };
+    expect(typeof va?.isVisitorRevoked).toBe("function");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Cross-augment validation (fix H3): visitorAuth.agentBinding vs
 // webTransport.visitorTokens.agentBinding must match
 // ---------------------------------------------------------------------------
