@@ -186,9 +186,27 @@ describe("integration: visitorAuth full flow — anon → verify → recognized"
     expect(verifyUrl).toContain("token=");
 
     // -----------------------------------------------------------------------
-    // Step 4: GET the verify URL — must return 200 and the success page.
+    // Step 4a: GET the verify URL — must return 200 and the CONFIRMATION page
+    // (does NOT consume the token — mail-scanner-safe).
     // -----------------------------------------------------------------------
-    const verifyResp = await fetch(verifyUrl);
+    const verifyGetResp = await fetch(verifyUrl);
+    expect(verifyGetResp.status).toBe(200);
+    const verifyGetHtml = await verifyGetResp.text();
+    // Confirm page contains a form with the token — but NOT a localStorage write.
+    expect(verifyGetHtml.toLowerCase()).toContain("verify");
+    expect(verifyGetHtml).not.toContain("auggy-visitor-token");
+
+    // -----------------------------------------------------------------------
+    // Step 4b: POST the token — human clicks the form button.
+    // This is the step that atomically consumes the token and mints the
+    // vis_<uuid> visitor token in the success page.
+    // -----------------------------------------------------------------------
+    const tokenParam = new URL(verifyUrl).searchParams.get("token")!;
+    const verifyResp = await fetch(verifyUrl, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: `token=${encodeURIComponent(tokenParam)}`,
+    });
     expect(verifyResp.status).toBe(200);
     const verifyHtml = await verifyResp.text();
     expect(verifyHtml.toLowerCase()).toContain("verified");

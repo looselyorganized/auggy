@@ -26,7 +26,11 @@ import {
 import type { VisitorAuthStore } from "./storage/types";
 import { emailAppearsInRecentMessages, isWellFormedEmail } from "./email-validation";
 import { createVisitorAuthRateLimiter, type VisitorAuthRateLimiter } from "./rate-limiter";
-import { buildVerifyFailurePage, buildVerifySuccessPage } from "./verify-page";
+import {
+  buildVerifyConfirmPage,
+  buildVerifyFailurePage,
+  buildVerifySuccessPage,
+} from "./verify-page";
 
 const DEFAULT_TOKEN_TTL_MIN = 15;
 const DEFAULT_REVERIFY_DAYS = 90;
@@ -227,6 +231,15 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment {
     capabilities: ["tools", "context"],
     tools: [requestAuthTool],
     httpRoutes: [
+      // -----------------------------------------------------------------------
+      // GET /visitor-auth/verify?token=<uuid>
+      //
+      // Returns a CONFIRMATION page — does NOT consume the token.
+      // Mail-scanner AV bots follow GET links passively; returning a confirm
+      // page here (rather than consuming) means prefetch is harmless. The human
+      // clicks "Verify my email" which submits a form POST that atomically
+      // consumes the token. Design: fix H2 (GET prefetch burns tokens).
+      // -----------------------------------------------------------------------
       {
         method: "GET",
         path: VERIFY_PATH,
@@ -241,7 +254,8 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment {
           }
           const url = new URL(req.url);
           const token = url.searchParams.get("token");
-          // UUID-shape validation — the augment only mints v4 UUIDs.
+          // UUID-shape validation — still reject malformed tokens early so the
+          // confirm page is never shown for obviously wrong inputs.
           if (
             !token ||
             !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(token)
@@ -251,6 +265,65 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment {
               headers: { "content-type": "text/html; charset=utf-8" },
             });
           }
+          // Do NOT touch the store — token is consumed only by POST.
+          return new Response(
+            buildVerifyConfirmPage({ token, publicUrl: opts.publicUrl }),
+            {
+              status: 200,
+              headers: { "content-type": "text/html; charset=utf-8" },
+            },
+          );
+        },
+      },
+      // -----------------------------------------------------------------------
+      // POST /visitor-auth/verify
+      //
+      // Consumes the token and mints a vis_<uuid> visitor token.
+      // Accepts token either as a form-encoded body field or as JSON.
+      // Mail scanners do not auto-submit POSTs, so this path is human-only.
+      // -----------------------------------------------------------------------
+      {
+        method: "POST",
+        path: VERIFY_PATH,
+        auth: "none",
+        rateLimit: { maxPerMinute: 60 },
+        handler: async (req, _opts) => {
+          if (!booted || !signingCryptoKey) {
+            return new Response(buildVerifyFailurePage({ reason: "unknown" }), {
+              status: 503,
+              headers: { "content-type": "text/html; charset=utf-8" },
+            });
+          }
+
+          // Read token from form-encoded body or JSON body.
+          let token: string | null = null;
+          try {
+            const ct = req.headers.get("content-type") ?? "";
+            if (ct.includes("application/x-www-form-urlencoded")) {
+              const text = await req.text();
+              const params = new URLSearchParams(text);
+              token = params.get("token");
+            } else {
+              // Treat anything else as JSON (including application/json and
+              // the default browser fetch content-type).
+              const body = (await req.json()) as Record<string, unknown>;
+              token = typeof body.token === "string" ? body.token : null;
+            }
+          } catch {
+            // Malformed body — fall through to UUID validation below (token stays null).
+          }
+
+          // UUID-shape validation.
+          if (
+            !token ||
+            !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(token)
+          ) {
+            return new Response(buildVerifyFailurePage({ reason: "malformed" }), {
+              status: 400,
+              headers: { "content-type": "text/html; charset=utf-8" },
+            });
+          }
+
           const t = now();
           const consume = store.consumeToken(token, t);
           if (!consume.consumed) {
