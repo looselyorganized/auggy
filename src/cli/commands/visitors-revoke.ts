@@ -94,9 +94,17 @@ export async function runVisitorsRevoke(
     store.close();
     throw new Error(`No verified visitor found for "${email}".`);
   }
+
+  // Already-revoked branch: re-run the memory cascade to recover from a
+  // previously-interrupted revoke (e.g. operator hit Ctrl-C between the
+  // visitor-auth UPDATE and the memory.db DELETE). DELETE is idempotent —
+  // a no-op when there are no orphan rows.
   if (existing.revoked) {
-    log(`Visitor "${email}" is already revoked (${existing.revokedReason ?? "unspecified"}).`);
     store.close();
+    const memDeleted = cascadeMemoryDelete(paths.memoryDb, existing.visitorId, log);
+    log(
+      `Visitor "${email}" was already revoked (${existing.revokedReason ?? "unspecified"}). ${memDeleted} stale memory row(s) cleaned up.`,
+    );
     return;
   }
 
@@ -114,26 +122,41 @@ export async function runVisitorsRevoke(
   const visitorId = store.revokeByEmail(email, "operator", Date.now())!;
   store.close();
 
-  let memDeleted = 0;
-  if (paths.memoryDb && existsSync(paths.memoryDb)) {
-    let db: Database | null = null;
-    try {
-      db = new Database(paths.memoryDb, { readwrite: true });
-      const r = db.prepare(`DELETE FROM entries WHERE peer_id = ?`).run(visitorId);
-      memDeleted = r.changes;
-    } catch (err) {
-      log(`Memory cascade failed: ${(err as Error).message}. Operator should retry manually.`);
-    } finally {
-      if (db) {
-        try {
-          db.close();
-        } catch {
-          // ignore close errors
-        }
+  const memDeleted = cascadeMemoryDelete(paths.memoryDb, visitorId, log);
+  log(`Revoked "${email}" (${visitorId}). ${memDeleted} memory row(s) removed.`);
+}
+
+/**
+ * DELETE memory rows for a peer-id from the layeredMemory SQLite file.
+ * Best-effort — exceptions are logged and swallowed; the visitor-auth row
+ * has already been revoked at the call site, so partial-success state is
+ * acceptable. Returns the row count (0 if missing-file/null-path).
+ */
+function cascadeMemoryDelete(
+  memoryDb: string | null,
+  visitorId: string,
+  log: (line: string) => void,
+): number {
+  if (!memoryDb) return 0;
+  if (!existsSync(memoryDb)) {
+    log(`memory.db not found at ${memoryDb} — skipping memory cascade.`);
+    return 0;
+  }
+  let db: Database | null = null;
+  try {
+    db = new Database(memoryDb, { readwrite: true });
+    const r = db.prepare(`DELETE FROM entries WHERE peer_id = ?`).run(visitorId);
+    return r.changes;
+  } catch (err) {
+    log(`Memory cascade failed: ${(err as Error).message}. Operator should retry manually.`);
+    return 0;
+  } finally {
+    if (db) {
+      try {
+        db.close();
+      } catch {
+        // ignore close errors
       }
     }
-  } else if (paths.memoryDb) {
-    log(`memory.db not found at ${paths.memoryDb} — skipping memory cascade.`);
   }
-  log(`Revoked "${email}" (${visitorId}). ${memDeleted} memory row(s) removed.`);
 }

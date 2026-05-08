@@ -196,4 +196,27 @@ describe("auggy visitors <agent> --revoke <email>", () => {
     expect(store.findVerifiedByEmail("safe@x")?.revoked).toBe(false);
     store.close();
   });
+
+  test("re-running revoke on an already-revoked email cleans up orphan memory rows", async () => {
+    // Simulate an interrupted revoke: visitor-auth row is already revoked, but
+    // memory.db still has rows under that visitorId (operator hit Ctrl-C
+    // between the two operations, or the cascade threw mid-DELETE).
+    seed([{ visitorId: "vis_orph", email: "orphan@x", verifiedAt: 1000, revoked: true }]);
+    seedMemoryDb(join(agentDir, "memory.db"), "vis_orph", 3);
+    const lines: string[] = [];
+    await runVisitorsRevoke("zip", "orphan@x", {
+      auggyDir,
+      confirm: false,
+      log: (l) => lines.push(l),
+    });
+    const out = lines.join("\n");
+    expect(out).toMatch(/already revoked/i);
+    expect(out).toMatch(/3/); // 3 stale rows cleaned up
+    const db = new Database(join(agentDir, "memory.db"));
+    const c = db.prepare(`SELECT COUNT(*) AS c FROM entries WHERE peer_id = ?`).get("vis_orph") as
+      | { c: number }
+      | undefined;
+    db.close();
+    expect(c?.c).toBe(0);
+  });
 });
