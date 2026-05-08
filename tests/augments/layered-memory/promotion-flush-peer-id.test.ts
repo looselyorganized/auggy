@@ -120,13 +120,20 @@ describe("layeredMemory — promotion-flush trigger.peer fix (fix F2 Codex H3)",
     // Simulate two anonymous turns buffered, then call scheduleAfterTurn
     // with the recognized peer to trigger maybeFlushOnPromotion.
     // We access scheduleAfterTurn via the augment's returned hook.
-    const scheduleAfterTurn = (lm as unknown as { scheduleAfterTurn?: (r: import("@/types").TurnResult, ctx: import("@/types").SchedulerContext) => Promise<void> }).scheduleAfterTurn;
+    const scheduleAfterTurn = (
+      lm as unknown as {
+        scheduleAfterTurn?: (
+          r: import("@/types").TurnResult,
+          ctx: import("@/types").SchedulerContext,
+        ) => Promise<void>;
+      }
+    ).scheduleAfterTurn;
     if (!scheduleAfterTurn) {
       throw new Error("scheduleAfterTurn hook not found on layeredMemory augment");
     }
 
     // Helper to build a minimal TurnResult for testing.
-    function makeTurnResult(turnId: string, peer: PeerIdentity): import("@/types").TurnResult {
+    function makeTurnResult(turnId: string, _peer: PeerIdentity): import("@/types").TurnResult {
       return {
         turnId,
         success: true,
@@ -138,7 +145,14 @@ describe("layeredMemory — promotion-flush trigger.peer fix (fix F2 Codex H3)",
           timestamp: Date.now(),
           duration: 10,
           trigger: { type: "message", sourceAugment: "web" },
-          contextAssembly: { augmentBlocks: [], preambleTokens: 0, toolSchemaTokens: 0, historyTokens: 0, totalTokens: 0, budgetUsed: 0 },
+          contextAssembly: {
+            augmentBlocks: [],
+            preambleTokens: 0,
+            toolSchemaTokens: 0,
+            historyTokens: 0,
+            totalTokens: 0,
+            budgetUsed: 0,
+          },
           toolSelection: { totalTools: 0, phase1Used: false, mountedTools: [], withheldTools: [] },
           inferenceSteps: [],
           capabilityChecks: [],
@@ -176,8 +190,20 @@ describe("layeredMemory — promotion-flush trigger.peer fix (fix F2 Codex H3)",
               timestamp: Date.now(),
               duration: 0,
               trigger: { type: "internal", sourceAugment: "stub" },
-              contextAssembly: { augmentBlocks: [], preambleTokens: 0, toolSchemaTokens: 0, historyTokens: 0, totalTokens: 0, budgetUsed: 0 },
-              toolSelection: { totalTools: 0, phase1Used: false, mountedTools: [], withheldTools: [] },
+              contextAssembly: {
+                augmentBlocks: [],
+                preambleTokens: 0,
+                toolSchemaTokens: 0,
+                historyTokens: 0,
+                totalTokens: 0,
+                budgetUsed: 0,
+              },
+              toolSelection: {
+                totalTools: 0,
+                phase1Used: false,
+                mountedTools: [],
+                withheldTools: [],
+              },
               inferenceSteps: [],
               capabilityChecks: [],
             },

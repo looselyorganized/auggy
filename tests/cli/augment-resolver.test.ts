@@ -416,7 +416,7 @@ describe("resolveAugments — C1 wiring (fix F17)", () => {
     expect(resolvedAugments).toHaveLength(2);
 
     // Get the resolved visitorAuth augment to call isVisitorRevoked.
-    const va = resolvedAugments[0] as typeof resolvedAugments[0] & {
+    const va = resolvedAugments[0] as (typeof resolvedAugments)[0] & {
       isVisitorRevoked: (id: string) => boolean;
     };
     expect(typeof va.isVisitorRevoked).toBe("function");
@@ -426,7 +426,10 @@ describe("resolveAugments — C1 wiring (fix F17)", () => {
     expect(va.isVisitorRevoked(VISITOR_ID)).toBe(false);
 
     const model = createMockModel({ response: "hello" });
-    const agent = defineAgent({ name: "f17-test", model: "mock", augments: resolvedAugments }, model);
+    const agent = defineAgent(
+      { name: "f17-test", model: "mock", augments: resolvedAugments },
+      model,
+    );
     await agent.start();
 
     try {
@@ -443,7 +446,7 @@ describe("resolveAugments — C1 wiring (fix F17)", () => {
       });
       expect(recognizedResp.status).toBe(200);
       // A recognized visitor does NOT get a new token (no new issuance on recognized path).
-      const tokenOnRecognized = recognizedResp.headers.get("x-visitor-token");
+      const _tokenOnRecognized = recognizedResp.headers.get("x-visitor-token");
       // We can't assert exact null here because issuance rules depend on config,
       // but we CAN assert va.isVisitorRevoked was NOT returning true at this point.
       await recognizedResp.text();
@@ -451,8 +454,8 @@ describe("resolveAugments — C1 wiring (fix F17)", () => {
       // Now spy on isVisitorRevoked to force it to return true for VISITOR_ID.
       // This simulates the visitor being revoked (e.g., via `auggy visitors --revoke`).
       // The spy MUST be called by the closure IF F17 wiring is correct.
-      const originalIsRevoked = va.isVisitorRevoked.bind(va);
-      let wasCalledWithVisitorId = false;
+      const _originalIsRevoked = va.isVisitorRevoked.bind(va);
+      const _wasCalledWithVisitorId = false;
       // Temporarily replace isVisitorRevoked on the va object to track calls.
       // Note: the bound function in lateBindings captures `va.isVisitorRevoked.bind(va)`,
       // NOT a getter — so we can't spy post-binding. Instead we verify behavior:
@@ -665,9 +668,7 @@ describe("resolveAugments — single-source signingKey injection (fix F2)", () =
     // webTransport with no explicit enabled setting and no visitorAuth mounted.
     // The resolver must auto-disable visitor tokens so webTransport's onBoot
     // does not throw (signingKey would be absent otherwise).
-    const configs: AugmentConfig[] = [
-      wtConfigBase({ visitorTokens: {} }),
-    ];
+    const configs: AugmentConfig[] = [wtConfigBase({ visitorTokens: {} })];
     // Should resolve without throwing (the force-disabled flag prevents the
     // onBoot signingKey guard from firing).
     const augments = await resolveAugments(configs, TMP);
@@ -842,8 +843,7 @@ describe("resolveAugments — identity-loss warning when visitorAuth removed (fi
       await resolveAugments(configs, TMP);
       const warnCalls = warnSpy.mock.calls;
       const identityLossWarn = warnCalls.find(
-        (args) =>
-          typeof args[0] === "string" && /no visitorAuth augment is mounted/.test(args[0]),
+        (args) => typeof args[0] === "string" && /no visitorAuth augment is mounted/.test(args[0]),
       );
       expect(identityLossWarn).toBeDefined();
     } finally {

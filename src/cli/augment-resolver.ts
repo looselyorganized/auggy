@@ -379,8 +379,9 @@ export async function resolveAugments(
       }
 
       // visitorAuth IS mounted.
-      const vaSigningKey = (vaConfig.options as Record<string, unknown> | undefined)
-        ?.signingKey as string | undefined;
+      const vaSigningKey = (vaConfig.options as Record<string, unknown> | undefined)?.signingKey as
+        | string
+        | undefined;
 
       if (vt.enabled === false) {
         // Operator explicitly disabled visitor tokens despite mounting visitorAuth.
@@ -491,10 +492,7 @@ export async function resolveAugments(
   // so `augments.find(a => a.name === "visitor-auth")` would fail for any
   // non-default name and silently disable revocation.
   const vaIdx = configs.findIndex((c) => c.type === "visitorAuth");
-  const va =
-    vaIdx >= 0
-      ? (augments[vaIdx] as Augment & VisitorAuthAugmentExtras)
-      : undefined;
+  const va = vaIdx >= 0 ? (augments[vaIdx] as Augment & VisitorAuthAugmentExtras) : undefined;
   if (va?.isVisitorRevoked) {
     lateBindings.revocationCheck = va.isVisitorRevoked.bind(va);
   }
