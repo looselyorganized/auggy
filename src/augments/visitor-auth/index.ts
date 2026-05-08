@@ -11,6 +11,8 @@
  * notify adapter — see plan §"Spec deviation".
  */
 
+import { existsSync } from "node:fs";
+import { Database } from "bun:sqlite";
 import { z } from "zod";
 import { defineTool } from "../../helpers";
 import { createAgentMailClient, type AgentMailClient } from "../../agentmail-client";
@@ -311,6 +313,16 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment {
             });
           }
 
+          // Anonymous→recognized peer-id migration. The verify route knows the
+          // OLD peer-id (consume.peerId from the token row) and the NEW vis_<uuid>
+          // (minted above; reuses existing visitorId on re-verify). Best-effort;
+          // failures are logged and don't block success.
+          migratePeerIdOnVerify(
+            opts.layeredMemoryDbPath === undefined ? "./memory.db" : opts.layeredMemoryDbPath,
+            consume.peerId!,
+            minted.payload.visitorId,
+          );
+
           return new Response(
             buildVerifySuccessPage({ visitorToken: minted.token, email: consume.email! }),
             {
@@ -446,6 +458,47 @@ function humanRelativeMs(ms: number): string {
   if (hr < 24) return `${hr}h ago`;
   const day = Math.floor(hr / 24);
   return `${day}d ago`;
+}
+
+/**
+ * Best-effort anonymous→recognized peer-id migration on the layeredMemory
+ * SQLite file. Runs ONE UPDATE statement; logs + continues on any error so
+ * verify-success is not blocked by an unrelated DB issue. Skipped when
+ * `dbPath` is null/undefined or the file does not exist.
+ */
+function migratePeerIdOnVerify(
+  dbPath: string | null | undefined,
+  oldPeerId: string,
+  newPeerId: string,
+): void {
+  if (!dbPath) return;
+  if (!existsSync(dbPath)) {
+    console.warn(
+      `[visitor-auth] layeredMemory db "${dbPath}" not found; skipping peer-id migration for ${oldPeerId}`,
+    );
+    return;
+  }
+  // No-op when ids are identical (re-verify after token-expiry where peer
+  // already arrives as vis_*; nothing to migrate).
+  if (oldPeerId === newPeerId) return;
+  try {
+    const db = new Database(dbPath, { readwrite: true });
+    db.run("PRAGMA journal_mode = WAL");
+    const result = db.prepare(`UPDATE entries SET peer_id = ? WHERE peer_id = ?`).run(
+      newPeerId,
+      oldPeerId,
+    );
+    if (result.changes > 0) {
+      console.info(
+        `[visitor-auth] migrated ${result.changes} memory row(s) ${oldPeerId} → ${newPeerId}`,
+      );
+    }
+    db.close();
+  } catch (err) {
+    console.warn(
+      `[visitor-auth] peer-id migration failed for ${oldPeerId} → ${newPeerId}: ${(err as Error).message}`,
+    );
+  }
 }
 
 // Internal-only re-exports for Task 7+ (avoid duplicating types in tests).
