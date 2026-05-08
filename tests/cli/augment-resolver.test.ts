@@ -3,6 +3,9 @@ import { writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { resolveAugments } from "../../src/cli/augment-resolver";
 import type { AugmentConfig } from "../../src/cli/types";
+import { createVisitorToken, deriveSigningKey } from "../../src/transports/visitor-token";
+import { defineAgent } from "../../src/agent";
+import { createMockModel } from "../fixtures/mock-model";
 
 const TMP = join(import.meta.dir, ".tmp-resolver-test");
 
@@ -359,34 +362,169 @@ describe("resolveAugments — visitorAuth", () => {
 // ---------------------------------------------------------------------------
 
 describe("resolveAugments — C1 wiring (fix F17)", () => {
-  test("C1 wiring survives operator-renamed visitorAuth augment", async () => {
-    // Operator uses a custom name for visitorAuth in agent.yaml.
-    // Before F17, `augments.find(a => a.name === "visitor-auth")` would
-    // return undefined (name was overwritten to "my-custom-auth"), leaving
-    // lateBindings.revocationCheck null and revocation silently disabled.
-    // After F17, lookup uses index correspondence with configs[] by type.
-    const augments = await resolveAugments(
-      [
-        {
-          type: "visitorAuth",
-          name: "my-custom-auth", // operator-chosen name, not "visitor-auth"
-          options: {
-            publicUrl: "https://zip.test",
-            agentMail: { apiKey: "am_x", inboxId: "ibx_x" },
-            signingKey: "sig-x",
-            layeredMemoryDbPath: null,
-          },
-        },
-      ],
-      TMP,
+  test("C1 wiring survives operator-renamed visitorAuth augment — revocation closure actually works", async () => {
+    // Before F17: `augments.find(a => a.name === "visitor-auth")` returns undefined
+    // for a renamed augment, leaving lateBindings.revocationCheck null. The closure
+    // passed to webTransport always returns false. Revoked visitors still authenticate.
+    //
+    // After F17: lookup uses type-index correspondence. lateBindings.revocationCheck
+    // is set to va.isVisitorRevoked. Revoked visitors return 401 / stay anonymous.
+    //
+    // This test mints a real visitor token, starts an agent, makes an HTTP request
+    // with that token, and asserts that revocation is enforced. If F17 is reverted,
+    // the revocationCheck closure is null → revoked visitors still get recognized →
+    // no new x-visitor-token is issued → the assertion at the end fails.
+    const SIGNING_KEY = "f17-regression-test-signing-key";
+    const PORT = 19987;
+
+    // Mint a visitor token using the shared signing key.
+    const cryptoKey = await deriveSigningKey(SIGNING_KEY);
+    const VISITOR_ID = `vis_f17_regression_${Date.now()}`;
+    const { token: visitorToken } = await createVisitorToken(
+      cryptoKey,
+      "", // no agentBinding
+      86_400, // 24h TTL
+      VISITOR_ID,
     );
-    expect(augments).toHaveLength(1);
-    // The augment must carry isVisitorRevoked (a VisitorAuthAugmentExtras
-    // method) so C1 wiring can populate lateBindings.revocationCheck.
-    // If the type-based lookup failed, the augment at index 0 would be
-    // looked up by name and missed — lateBindings would stay null.
-    const va = augments[0] as typeof augments[0] & { isVisitorRevoked?: (id: string) => boolean };
-    expect(typeof va?.isVisitorRevoked).toBe("function");
+
+    const configs: AugmentConfig[] = [
+      {
+        type: "visitorAuth",
+        name: "my-custom-auth", // operator-chosen name — NOT "visitor-auth"
+        options: {
+          publicUrl: "https://zip.test",
+          agentMail: { apiKey: "am_x", inboxId: "ibx_x" },
+          signingKey: SIGNING_KEY,
+          layeredMemoryDbPath: null,
+          // Use the test's TMP dir for the VA DB.
+          dbPath: join(TMP, "f17-va.db"),
+        },
+      },
+      {
+        type: "webTransport",
+        name: "web",
+        options: {
+          port: PORT,
+          auth: { type: "bearer", token: "tok-f17" },
+          // visitorTokens.enabled is intentionally left unset → auto-enabled
+          // by the resolver when visitorAuth is present.
+        },
+      },
+    ];
+
+    const resolvedAugments = await resolveAugments(configs, TMP);
+    expect(resolvedAugments).toHaveLength(2);
+
+    // Get the resolved visitorAuth augment to call isVisitorRevoked.
+    const va = resolvedAugments[0] as typeof resolvedAugments[0] & {
+      isVisitorRevoked: (id: string) => boolean;
+    };
+    expect(typeof va.isVisitorRevoked).toBe("function");
+
+    // The VISITOR_ID is NOT in the va DB yet → isVisitorRevoked returns false.
+    // (No row = unknown visitor = not revoked.)
+    expect(va.isVisitorRevoked(VISITOR_ID)).toBe(false);
+
+    const model = createMockModel({ response: "hello" });
+    const agent = defineAgent({ name: "f17-test", model: "mock", augments: resolvedAugments }, model);
+    await agent.start();
+
+    try {
+      // Request with a valid visitor token for VISITOR_ID (not yet revoked).
+      // A recognized visitor does NOT get a new x-visitor-token header.
+      const recognizedResp = await fetch(`http://localhost:${PORT}/agent/run`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: "Bearer tok-f17",
+          "x-visitor-token": visitorToken,
+        },
+        body: JSON.stringify({ messages: [{ role: "user", content: "hello" }] }),
+      });
+      expect(recognizedResp.status).toBe(200);
+      // A recognized visitor does NOT get a new token (no new issuance on recognized path).
+      const tokenOnRecognized = recognizedResp.headers.get("x-visitor-token");
+      // We can't assert exact null here because issuance rules depend on config,
+      // but we CAN assert va.isVisitorRevoked was NOT returning true at this point.
+      await recognizedResp.text();
+
+      // Now spy on isVisitorRevoked to force it to return true for VISITOR_ID.
+      // This simulates the visitor being revoked (e.g., via `auggy visitors --revoke`).
+      // The spy MUST be called by the closure IF F17 wiring is correct.
+      const originalIsRevoked = va.isVisitorRevoked.bind(va);
+      let wasCalledWithVisitorId = false;
+      // Temporarily replace isVisitorRevoked on the va object to track calls.
+      // Note: the bound function in lateBindings captures `va.isVisitorRevoked.bind(va)`,
+      // NOT a getter — so we can't spy post-binding. Instead we verify behavior:
+      // with F17's fix, the revocationCheck closure calls the va method via lateBindings.
+      // We test this indirectly: for a REVOKED visitor, an HTTP request must treat
+      // them as anonymous (new token issued = anonymous path).
+      //
+      // To revoke, we use a second va instance backed by the SAME DB file and call
+      // its isVisitorRevoked to verify the revoking works — but for the HTTP assertion,
+      // we rely on the actual revocation being persisted to the DB. Since VISITOR_ID
+      // was never inserted into the verified_visitors table (we minted the token
+      // directly, bypassing the magic-link flow), visitorAuth's isVisitorRevoked
+      // reads from the DB and finds no row → returns false → visitor is recognized.
+      //
+      // The key assertion for F17: the revocationCheck closure was wired (not null).
+      // We confirm this via the first request above succeeding with recognized path.
+      // If F17 was reverted (lateBindings.revocationCheck is null), the revocation
+      // check would be skipped entirely — same behavior as "not revoked".
+      //
+      // For a definitive gate: insert the visitor into the DB as revoked, then make
+      // a second request, and assert a new token IS issued (= anonymous path).
+      // This requires DB-level access. Use createSqliteVisitorAuthStore from the store.
+      const { createSqliteVisitorAuthStore } = await import(
+        "../../src/augments/visitor-auth/storage/sqlite-store"
+      );
+      const seedStore = createSqliteVisitorAuthStore({
+        dbPath: join(TMP, "f17-va.db"),
+      });
+      seedStore.initialize();
+      // Insert and immediately revoke the visitor row.
+      const now = Date.now();
+      seedStore.recordVerifiedVisitor({
+        email: "f17-test@example.com",
+        visitorId: VISITOR_ID,
+        verifiedAt: now,
+        lastSeenAt: now,
+        reverifyDueAt: now + 86_400_000 * 90,
+        revoked: false,
+        revokedAt: null,
+        revokedReason: null,
+      });
+      seedStore.revokeByEmail("f17-test@example.com", "test", now);
+      seedStore.close();
+
+      // VISITOR_ID is now revoked in the DB. isVisitorRevoked must return true.
+      expect(va.isVisitorRevoked(VISITOR_ID)).toBe(true);
+
+      // Second request with the same token for REVOKED visitor.
+      // With F17 wired: revocationCheck returns true → visitorPayload = null →
+      //   visitor stays anonymous → new x-visitor-token header IS issued.
+      // Without F17 wired (reverted): revocationCheck is null → visitor is
+      //   STILL recognized (wrong!) → new token NOT issued → assertion fails.
+      const revokedResp = await fetch(`http://localhost:${PORT}/agent/run`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: "Bearer tok-f17",
+          "x-visitor-token": visitorToken,
+        },
+        body: JSON.stringify({ messages: [{ role: "user", content: "revoked" }] }),
+      });
+      expect(revokedResp.status).toBe(200);
+      // A new visitor token is issued — proves the revoked visitor landed on the
+      // anonymous path (revocationCheck returned true, visitorPayload set to null).
+      // If F17 is reverted (lateBindings.revocationCheck is null), revocation is
+      // skipped and the visitor stays recognized → no new token → this assertion fails.
+      const newToken = revokedResp.headers.get("x-visitor-token");
+      expect(newToken).not.toBeNull();
+      await revokedResp.text();
+    } finally {
+      await agent.stop();
+    }
   });
 });
 
