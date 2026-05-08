@@ -4,7 +4,7 @@
 
 Auggy (`augment-1`) is a modular agent runtime in TypeScript/Bun. Agents are composed from swappable augments; the kernel manages context, tools, permissions, and lifecycle. Framework-agnostic by design — **not LORF-locked**.
 
-**Status: v0.2.0 base + PR α + PR β shipped.** Plans 1 (kernel) + 2 (built-in augments) + 3 (CLI & manifest) complete. **PR α (DX foundation):** augment-as-folder pattern, bundled skills, secure scaffold, `identity:` shorthand, `auggy add-skill`, boot-time skill validator ([ADR-025](../docs/solutions/architecture/adr-025-augment-folder-and-skill-bundling.md)). **PR β (auto-save / ADR-018 Phase 2 / ADR-027):** `layeredMemory` gains post-turn fact extraction (`autoSave` capability) — background process runs after each turn per trust-level cadence, writes `[AGENT-DERIVED]`-marked facts to peer-scoped storage via an internal turn admitted through normal cost machinery; kernel gains `Augment.scheduleAfterTurn` + `Augment.handleInternalTurn` hooks ([ADR-027](../docs/solutions/architecture/adr-027-internal-turn-admission.md)); SQLite + Supabase schema migrated (+7 columns); auto-save eval suite (6 fixtures); security-eval extended (+3 cases). Sequencing: single-agent excellence (PR α/β/γ) ships before the multi-agent network layer per [ADR-026](../docs/solutions/architecture/adr-026-v1-single-agent-excellence-reorder.md). **12 built-in augments, 3 engines, 1458 tests across 114 files.** The `chat/` package ships the Auggy Local GUI (`auggy chat`) — a Vite/React SPA with a Bun proxy server that discovers running agents via PID manifests and proxies chat through to each agent's `/agent/run`; distributed as a versioned GitHub release artifact with first-run download + SHA256 verification. See `lo/docs/auggy-plans-detail.md` (outside this repo) for the plan-by-plan roadmap.
+**Status: v0.2.0 base + PR α + PR β shipped.** Plans 1 (kernel) + 2 (built-in augments) + 3 (CLI & manifest) complete. **PR α (DX foundation):** augment-as-folder pattern, bundled skills, secure scaffold, `identity:` shorthand, `auggy add-skill`, boot-time skill validator ([ADR-025](../docs/solutions/architecture/adr-025-augment-folder-and-skill-bundling.md)). **PR β (auto-save / ADR-018 Phase 2 / ADR-027):** `layeredMemory` gains post-turn fact extraction (`autoSave` capability) — background process runs after each turn per trust-level cadence, writes `[AGENT-DERIVED]`-marked facts to peer-scoped storage via an internal turn admitted through normal cost machinery; kernel gains `Augment.scheduleAfterTurn` + `Augment.handleInternalTurn` hooks ([ADR-027](../docs/solutions/architecture/adr-027-internal-turn-admission.md)); SQLite + Supabase schema migrated (+7 columns); auto-save eval suite (6 fixtures); security-eval extended (+3 cases). Sequencing: single-agent excellence (PR α/β/γ) ships before the multi-agent network layer per [ADR-026](../docs/solutions/architecture/adr-026-v1-single-agent-excellence-reorder.md). **12 built-in augments, 3 engines, 1617 tests across 128 files.** The `chat/` package ships the Auggy Local GUI (`auggy chat`) — a Vite/React SPA with a Bun proxy server that discovers running agents via PID manifests and proxies chat through to each agent's `/agent/run`; distributed as a versioned GitHub release artifact with first-run download + SHA256 verification. See `lo/docs/auggy-plans-detail.md` (outside this repo) for the plan-by-plan roadmap.
 
 ## Commands
 
@@ -24,7 +24,7 @@ auggy chat [--port N]            # Launch Local GUI for talking to running agent
 auggy eval [name]                # Run portable security eval suite (default: bundled fixture)
 
 # Development
-bun test                         # Run full test suite (1458 tests across 114 files)
+bun test                         # Run full test suite (1617 tests across 128 files)
 bun test --watch                 # Watch mode
 bunx tsc --noEmit                # Typecheck (must pass before committing)
 bun run scripts/hello.ts         # Hello-world agent (requires ANTHROPIC_API_KEY)
@@ -167,7 +167,7 @@ src/
         ├── status.ts       # auggy status (list or detail)
         └── stop.ts         # auggy stop (SIGTERM or launchctl unload)
 
-tests/                    # 1458 tests across 114 files
+tests/                    # 1617 tests across 128 files
 ├── fixtures/             # mock-model, mock-augment, mock-supabase, temp-dir
 ├── kernel/               # Per-kernel-component unit tests
 ├── memory/               # Memory subsystem tests
@@ -203,7 +203,7 @@ scripts/
 1. **The kernel is finished.** Behavior changes go in augments, not in `src/kernel/`. Bug fixes to kernel files are fine; adding new kernel features requires explicit justification.
 2. **Every shared type lives in `src/types.ts`** — do not scatter types across modules. One file is deliberate.
 3. **Every module is a `create*` factory returning an object** — no classes, no `this`.
-4. **Test gate before committing:** `bun test` (1458 passing) + `bunx tsc --noEmit` (clean) must both pass.
+4. **Test gate before committing:** `bun test` (1617 passing) + `bunx tsc --noEmit` (clean) must both pass.
 5. **A2A-shaped types are load-bearing** — `Part[]`, `TaskState`, `AgentCard` follow A2A's shapes even though v1 doesn't speak A2A on the wire. Do not deviate.
 6. **Never use `vitest`** — we migrated to `bun:test` in Plan 2. The import is `from "bun:test"`.
 7. **Model adapters go in `src/engines/`** — not `src/models/` (see philosophy: the adapter is the reasoning engine, not the model itself).
