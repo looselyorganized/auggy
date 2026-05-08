@@ -384,10 +384,70 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment {
     async context(turn: TurnState): Promise<ContextBlock[]> {
       if (!booted) return [];
       if (!turn.peer) return [];
-      // Filled in by Task 10 (context block).
-      return [];
+
+      const t = now();
+
+      // Verified-by-id branch: peer.id starts with vis_ → look up by visitor id.
+      // Walk listVerifiedVisitors (small at operator scale) to find the row.
+      if (turn.peer.id.startsWith("vis_")) {
+        const all = store.listVerifiedVisitors();
+        const row = all.find((r) => r.visitorId === turn.peer!.id);
+        if (!row || row.revoked) return [];
+        store.touchVerifiedVisitor(row.email, t);
+        const verifiedAgo = humanRelativeMs(t - row.verifiedAt);
+        if (row.reverifyDueAt <= t) {
+          return [
+            block(`Verified email: ${row.email} — reverification due. Visitor should reverify.`),
+          ];
+        }
+        return [block(`Verified email: ${row.email} (verified ${verifiedAgo}).`)];
+      }
+
+      // Anonymous branch: peer.id ~ anon-<threadId> → look up by token.
+      const recent = store.findMostRecentTokenForPeer(turn.peer.id, t);
+      if (!recent) return [];
+      if (recent.consumed) {
+        // Edge case: peer.id is still anon-* but token was consumed —
+        // verification happened but the chat tab hasn't applied the new
+        // token yet. No block; the next request will arrive as vis_*.
+        return [];
+      }
+      if (recent.expiresAt <= t) {
+        return [
+          block(`Verification email to ${recent.email} expired. Visitor may request a new one.`),
+        ];
+      }
+      const sentMin = Math.max(0, Math.floor((t - recent.issuedAt) / 60_000));
+      const expiresMin = Math.max(1, Math.ceil((recent.expiresAt - t) / 60_000));
+      return [
+        block(
+          `Verification email sent to ${recent.email} (sent ${sentMin}m ago, expires in ${expiresMin}m). Awaiting click.`,
+        ),
+      ];
     },
   };
+}
+
+function block(content: string): ContextBlock {
+  return {
+    source: "visitor-auth",
+    content,
+    placement: "preamble",
+    provenance: "augment",
+    priority: "normal",
+    eviction: "drop",
+    origin: "system",
+    ttl: "session",
+  };
+}
+
+function humanRelativeMs(ms: number): string {
+  const min = Math.floor(ms / 60_000);
+  if (min < 60) return `${min}m ago`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr}h ago`;
+  const day = Math.floor(hr / 24);
+  return `${day}d ago`;
 }
 
 // Internal-only re-exports for Task 7+ (avoid duplicating types in tests).
