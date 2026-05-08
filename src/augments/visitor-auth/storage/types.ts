@@ -74,6 +74,17 @@ export interface VisitorAuthStore {
    */
   findOpenTokenForPeer(peerId: string, now: number): OpenTokenForPeer | null;
   /**
+   * The most-recent token for this peer regardless of consumed/expired status.
+   * Used by context() to surface "verification expired" state. Returns null
+   * if the peer has never had a token issued.
+   */
+  findMostRecentTokenForPeer(peerId: string, now: number): {
+    email: string;
+    expiresAt: number;
+    issuedAt: number;
+    consumed: boolean;
+  } | null;
+  /**
    * Mark every open token for this peer as consumed (without minting a
    * visitor token). Used when a peer requests a new email; the prior code
    * goes dead.

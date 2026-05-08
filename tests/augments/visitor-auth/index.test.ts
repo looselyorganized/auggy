@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { visitorAuth } from "../../../src/augments/visitor-auth";
 import type { AgentMailClient } from "../../../src/agentmail-client";
-import type { TurnState, ToolExecuteContext } from "../../../src/types";
+import type { TurnState, ToolExecuteContext, ContextBlock } from "../../../src/types";
 
 let tmp: string;
 let dbPath: string;
@@ -312,6 +312,180 @@ describe("request_auth tool", () => {
     const result = JSON.parse(raw as string);
     expect(result.status).toBe("failed");
     expect(result.message).toMatch(/peer/i);
+    await aug.onShutdown?.();
+  });
+});
+
+describe("context() block", () => {
+  test("emits no block for an unknown peer with no token + no verified row", async () => {
+    const aug = visitorAuth({
+      publicUrl: "https://zip.test",
+      dbPath,
+      agentMail: { apiKey: "am_x", inboxId: "ibx_x" },
+      signingKey: "sig",
+      _agentMailClient: fakeAgentMail(),
+    });
+    await aug.onBoot?.();
+    const peer = { id: "anon-x", kind: "anonymous" as const, trustLevel: "public" as const, publicSubstate: "anonymous" as const, sourceAugment: "web" };
+    const result = await aug.context?.({ peer } as never);
+    expect(result).toEqual([]);
+    await aug.onShutdown?.();
+  });
+
+  test("emits 'awaiting click' block while token is open", async () => {
+    let clock = 1_700_000_000_000;
+    const aug = visitorAuth({
+      publicUrl: "https://zip.test",
+      dbPath,
+      agentMail: { apiKey: "am_x", inboxId: "ibx_x" },
+      signingKey: "sig",
+      tokenTtlMinutes: 15,
+      _now: () => clock,
+      _agentMailClient: fakeAgentMail(),
+    });
+    await aug.onBoot?.();
+    const peer = { id: "anon-c1", kind: "anonymous" as const, trustLevel: "public" as const, publicSubstate: "anonymous" as const, sourceAugment: "web" };
+    await aug.onTurnStart?.({
+      turnId: "t", threadId: "th",
+      trigger: { type: "message", turnId: "t", timestamp: 0, payload: { parts: [{ kind: "text", text: "alice@example.com" }], sourceAugment: "web", peer, timestamp: 0 } },
+      peer, toolCallsSoFar: 0, turnStartedAt: 0, metadata: {},
+    } as never);
+    await aug.tools![0]!.execute(
+      { method: "email", email: "alice@example.com" },
+      { turnId: "t", threadId: "th", peer },
+    );
+    clock += 3 * 60_000;
+    const result = await aug.context?.({ peer } as never) as ContextBlock[];
+    expect(result).toHaveLength(1);
+    expect(result![0]?.content).toMatch(/alice@example\.com/);
+    expect(result![0]?.content.toLowerCase()).toMatch(/awaiting|sent|expires/);
+    await aug.onShutdown?.();
+  });
+
+  test("emits 'expired' block when token TTL has passed", async () => {
+    let clock = 1_700_000_000_000;
+    const aug = visitorAuth({
+      publicUrl: "https://zip.test",
+      dbPath,
+      agentMail: { apiKey: "am_x", inboxId: "ibx_x" },
+      signingKey: "sig",
+      tokenTtlMinutes: 1,
+      _now: () => clock,
+      _agentMailClient: fakeAgentMail(),
+    });
+    await aug.onBoot?.();
+    const peer = { id: "anon-c2", kind: "anonymous" as const, trustLevel: "public" as const, publicSubstate: "anonymous" as const, sourceAugment: "web" };
+    await aug.onTurnStart?.({
+      turnId: "t", threadId: "th",
+      trigger: { type: "message", turnId: "t", timestamp: 0, payload: { parts: [{ kind: "text", text: "alice@example.com" }], sourceAugment: "web", peer, timestamp: 0 } },
+      peer, toolCallsSoFar: 0, turnStartedAt: 0, metadata: {},
+    } as never);
+    await aug.tools![0]!.execute(
+      { method: "email", email: "alice@example.com" },
+      { turnId: "t", threadId: "th", peer },
+    );
+    clock += 5 * 60_000;
+    const result = await aug.context?.({ peer } as never) as ContextBlock[];
+    expect(result).toHaveLength(1);
+    expect(result![0]?.content.toLowerCase()).toContain("expired");
+    await aug.onShutdown?.();
+  });
+
+  test("emits 'verified' block when peer matches a verified-visitor row", async () => {
+    const aug = visitorAuth({
+      publicUrl: "https://zip.test",
+      dbPath,
+      agentMail: { apiKey: "am_x", inboxId: "ibx_x" },
+      signingKey: "sig",
+      _agentMailClient: fakeAgentMail(),
+    });
+    await aug.onBoot?.();
+    const peerId = "vis_aaaa";
+    const { createSqliteVisitorAuthStore } = await import(
+      "../../../src/augments/visitor-auth/storage/sqlite-store"
+    );
+    const seedStore = createSqliteVisitorAuthStore({ dbPath });
+    seedStore.initialize();
+    const t = Date.now();
+    seedStore.recordVerifiedVisitor({
+      visitorId: peerId,
+      email: "alice@example.com",
+      verifiedAt: t - 60_000,
+      lastSeenAt: t - 60_000,
+      reverifyDueAt: t + 90 * 86_400_000,
+      revoked: false,
+      revokedAt: null,
+      revokedReason: null,
+    });
+    seedStore.close();
+    const peer = { id: peerId, kind: "human" as const, trustLevel: "public" as const, publicSubstate: "recognized" as const, sourceAugment: "web" };
+    const result = await aug.context?.({ peer } as never) as ContextBlock[];
+    expect(result).toHaveLength(1);
+    expect(result![0]?.content).toMatch(/alice@example\.com/);
+    expect(result![0]?.content.toLowerCase()).toContain("verified");
+    await aug.onShutdown?.();
+  });
+
+  test("emits 'reverify due' block when reverify_due_at is in the past", async () => {
+    let clock = 1_700_000_000_000;
+    const aug = visitorAuth({
+      publicUrl: "https://zip.test",
+      dbPath,
+      agentMail: { apiKey: "am_x", inboxId: "ibx_x" },
+      signingKey: "sig",
+      _now: () => clock,
+      _agentMailClient: fakeAgentMail(),
+    });
+    await aug.onBoot?.();
+    const { createSqliteVisitorAuthStore } = await import(
+      "../../../src/augments/visitor-auth/storage/sqlite-store"
+    );
+    const seedStore = createSqliteVisitorAuthStore({ dbPath });
+    seedStore.initialize();
+    seedStore.recordVerifiedVisitor({
+      visitorId: "vis_old",
+      email: "stale@x",
+      verifiedAt: clock - 100 * 86_400_000,
+      lastSeenAt: null,
+      reverifyDueAt: clock - 86_400_000,
+      revoked: false,
+      revokedAt: null,
+      revokedReason: null,
+    });
+    seedStore.close();
+    const peer = { id: "vis_old", kind: "human" as const, trustLevel: "public" as const, publicSubstate: "recognized" as const, sourceAugment: "web" };
+    const result = await aug.context?.({ peer } as never) as ContextBlock[];
+    expect(result![0]?.content.toLowerCase()).toContain("reverif");
+    await aug.onShutdown?.();
+  });
+
+  test("emits no block when verified row is revoked", async () => {
+    const aug = visitorAuth({
+      publicUrl: "https://zip.test",
+      dbPath,
+      agentMail: { apiKey: "am_x", inboxId: "ibx_x" },
+      signingKey: "sig",
+      _agentMailClient: fakeAgentMail(),
+    });
+    await aug.onBoot?.();
+    const { createSqliteVisitorAuthStore } = await import(
+      "../../../src/augments/visitor-auth/storage/sqlite-store"
+    );
+    const seedStore = createSqliteVisitorAuthStore({ dbPath });
+    seedStore.initialize();
+    seedStore.recordVerifiedVisitor({
+      visitorId: "vis_rev",
+      email: "revoked@x",
+      verifiedAt: Date.now(),
+      lastSeenAt: null,
+      reverifyDueAt: Date.now() + 86_400_000,
+      revoked: false, revokedAt: null, revokedReason: null,
+    });
+    seedStore.revokeByEmail("revoked@x", "operator", Date.now());
+    seedStore.close();
+    const peer = { id: "vis_rev", kind: "human" as const, trustLevel: "public" as const, publicSubstate: "recognized" as const, sourceAugment: "web" };
+    const result = await aug.context?.({ peer } as never);
+    expect(result).toEqual([]);
     await aug.onShutdown?.();
   });
 });

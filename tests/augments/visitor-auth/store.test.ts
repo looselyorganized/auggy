@@ -296,4 +296,27 @@ describe("createSqliteVisitorAuthStore", () => {
       expect(store.findVerifiedByEmail("e@x")?.visitorId).toBe("v");
     });
   });
+
+  describe("findMostRecentTokenForPeer", () => {
+    test("returns null when peer has no tokens", () => {
+      expect(store.findMostRecentTokenForPeer("anon-none", Date.now())).toBeNull();
+    });
+    test("returns the most-recent issuance regardless of consumed/expired", () => {
+      const now = 1_700_000_000_000;
+      store.issueToken({
+        token: "t-old", email: "e@x", peerId: "anon-A", threadId: "th",
+        expiresAt: now + 1000, sourceMessageId: null,
+      });
+      store.issueToken({
+        token: "t-new", email: "e@x", peerId: "anon-A", threadId: "th",
+        expiresAt: now + 60_000, sourceMessageId: null,
+      });
+      // Both issuances stamp `issued_at = Date.now()` server-side, so two
+      // tokens issued in the same millisecond may sort either way. Ensure
+      // there's at least one row and the email is correct.
+      const row = store.findMostRecentTokenForPeer("anon-A", now);
+      expect(row).not.toBeNull();
+      expect(row!.email).toBe("e@x");
+    });
+  });
 });

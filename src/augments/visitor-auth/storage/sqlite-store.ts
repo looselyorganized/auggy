@@ -103,6 +103,7 @@ export function createSqliteVisitorAuthStore(
   let listVerifiedStmt: Statement | null = null;
   let revokeStmt: Statement | null = null;
   let revokeReadStmt: Statement | null = null;
+  let findMostRecentStmt: Statement | null = null;
   let hasNotifiedStmt: Statement | null = null;
   let markNotifiedStmt: Statement | null = null;
 
@@ -163,6 +164,10 @@ export function createSqliteVisitorAuthStore(
     // `revokeByEmail(...) !== null` as the "did this revoke happen?" signal).
     revokeReadStmt = db.prepare(
       `SELECT visitor_id FROM verified_visitors WHERE email = ? AND revoked = 0`,
+    );
+    findMostRecentStmt = db.prepare(
+      `SELECT email, expires_at, issued_at, consumed FROM visitor_auth_tokens
+        WHERE peer_id = ? ORDER BY issued_at DESC LIMIT 1`,
     );
     hasNotifiedStmt = db.prepare(
       `SELECT email FROM first_verify_notifications WHERE email = ?`,
@@ -231,6 +236,19 @@ export function createSqliteVisitorAuthStore(
         email: row.email,
         expiresAt: row.expires_at,
         issuedAt: row.issued_at,
+      };
+    },
+    findMostRecentTokenForPeer(peerId: string, _now: number) {
+      ensurePrepared();
+      const row = findMostRecentStmt!.get(peerId) as
+        | { email: string; expires_at: number; issued_at: number; consumed: number }
+        | undefined;
+      if (!row) return null;
+      return {
+        email: row.email,
+        expiresAt: row.expires_at,
+        issuedAt: row.issued_at,
+        consumed: row.consumed === 1,
       };
     },
     invalidateOpenTokensForPeer(peerId: string, now: number): number {
