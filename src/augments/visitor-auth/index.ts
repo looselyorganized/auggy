@@ -166,9 +166,13 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment {
         );
       }
 
-      // Per-anonymous-peer rate limit (fix #1).
+      // Per-email rate limit (fix H1: threadId rotation bypass).
+      // Keying on email prevents an attacker from rotating peer.id / threadId
+      // to escape the rate limit. The "email:" prefix namespaces the key so
+      // future per-IP keying (e.g. "ip:...") can coexist without collision.
       const t = now();
-      const rl = rateLimiter.check(ctx.peer.id, t);
+      const rlKey = `email:${email}`;
+      const rl = rateLimiter.check(rlKey, t);
       if (!rl.allowed) {
         const wait = Math.ceil(rl.retryAfterSec / 60);
         return fail(
@@ -215,8 +219,8 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment {
         );
       }
 
-      // Record the rate-limit tick AFTER successful send.
-      rateLimiter.record(ctx.peer.id, t);
+      // Record the rate-limit tick AFTER successful send (keyed to email, not peer).
+      rateLimiter.record(rlKey, t);
 
       return JSON.stringify({
         status: "sent",
