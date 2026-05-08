@@ -41,6 +41,7 @@ const TYPE_TO_AUGMENT_FOLDER: Record<string, string> = {
   bash: "bash",
   notify: "notify",
   turnControl: "turn-control",
+  visitorAuth: "visitor-auth",
   // Augments below intentionally have no skill folder today (no model-callable
   // tools, transport-only, or legacy). Listed for completeness so a lookup
   // never silently returns undefined for a known type.
@@ -64,6 +65,7 @@ const TOOL_INVENTORY: Record<string, string> = {
   bash: "shell_exec, run_script",
   notify: "notify",
   "turn-control": "request_input",
+  "visitor-auth": "request_auth",
 };
 
 /** Return the augment folder name for a YAML `type:` value, or `null` if unknown. */
