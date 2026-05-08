@@ -874,6 +874,41 @@ describe("visitorAuth verify route", () => {
     expect(html1.toLowerCase()).toMatch(/verified/);
     expect(html2.toLowerCase()).toMatch(/verified/);
 
+    // F4 contract: both tokens must carry the SAME visitorId so the race-loser
+    // is not silently issued an identity that doesn't exist in verified_visitors.
+    // A regression to the original code (loser returns its own minted.token)
+    // would cause this assertion to fail — the winner's vis_A and loser's vis_B
+    // would differ.
+    const sigKey = await deriveSigningKey("shared-key");
+
+    const tokJson1 = html1.match(/var token = ("(?:\\.|[^"\\])*");/)?.[1];
+    expect(tokJson1).toBeTruthy();
+    const visToken1 = JSON.parse(tokJson1!) as string;
+    const payload1 = await verifyVisitorToken(sigKey, visToken1);
+    expect(payload1).not.toBeNull();
+    expect(payload1!.visitorId).toMatch(/^vis_/);
+
+    const tokJson2 = html2.match(/var token = ("(?:\\.|[^"\\])*");/)?.[1];
+    expect(tokJson2).toBeTruthy();
+    const visToken2 = JSON.parse(tokJson2!) as string;
+    const payload2 = await verifyVisitorToken(sigKey, visToken2);
+    expect(payload2).not.toBeNull();
+    expect(payload2!.visitorId).toMatch(/^vis_/);
+
+    // The core assertion: both tokens must agree on the same visitorId.
+    expect(payload1!.visitorId).toBe(payload2!.visitorId);
+
+    // And the row in verified_visitors must match both tokens' visitorId.
+    const { createSqliteVisitorAuthStore } = await import(
+      "../../../src/augments/visitor-auth/storage/sqlite-store"
+    );
+    const checkStore = createSqliteVisitorAuthStore({ dbPath });
+    checkStore.initialize();
+    const row = checkStore.findVerifiedByEmail("race@example.com");
+    expect(row).not.toBeNull();
+    expect(row!.visitorId).toBe(payload1!.visitorId);
+    checkStore.close();
+
     await aug.onShutdown?.();
   });
 });
