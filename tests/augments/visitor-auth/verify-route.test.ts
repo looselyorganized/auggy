@@ -717,4 +717,41 @@ describe("visitorAuth verify route", () => {
     expect(payload.agentId).toBe("test-binding");
     await aug.onShutdown?.();
   });
+
+  // F14: distinguish bad-body from malformed-UUID
+  test("POST with non-JSON binary body returns 400 with bad-body copy (F14)", async () => {
+    const aug = await setupAug(join(tmp, "va-badbody.db"));
+    const res = await aug.httpRoutes![1]!.handler(
+      new Request("https://zip.test/visitor-auth/verify", {
+        method: "POST",
+        headers: { "content-type": "application/octet-stream" },
+        body: new Uint8Array([0x80, 0x81, 0x82, 0x83]), // non-UTF-8 binary
+      }),
+      { signal: new AbortController().signal },
+    );
+    expect(res.status).toBe(400);
+    const html = await res.text();
+    // Should use "bad-body" copy — mentions parse failure
+    expect(html.toLowerCase()).toMatch(/could not parse|request body/);
+    await aug.onShutdown?.();
+  });
+
+  test("POST with valid JSON but no token field returns 400 with malformed copy (F14)", async () => {
+    const aug = await setupAug(join(tmp, "va-notoken.db"));
+    const res = await aug.httpRoutes![1]!.handler(
+      new Request("https://zip.test/visitor-auth/verify", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ other: "field" }),
+      }),
+      { signal: new AbortController().signal },
+    );
+    expect(res.status).toBe(400);
+    const html = await res.text();
+    // No token field → "malformed" (not "bad-body"), since parse succeeded
+    expect(html.toLowerCase()).toContain("malformed");
+    // Must NOT mention parse failure (that's for bad-body)
+    expect(html.toLowerCase()).not.toMatch(/could not parse/);
+    await aug.onShutdown?.();
+  });
 });

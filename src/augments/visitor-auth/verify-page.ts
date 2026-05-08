@@ -149,6 +149,8 @@ const FAILURE_COPY: Record<string, string> = {
     "This verification link has already been used. If you didn't expect this, request a new link.",
   unknown: "We don't recognize this verification link. It may be malformed or out of date.",
   malformed: "This verification link is malformed.",
+  "bad-body":
+    "The verification request was malformed (could not parse the request body).",
 };
 
 export function buildVerifyFailurePage(input: VerifyFailurePageInput): string {
