@@ -264,11 +264,12 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment {
           const t = now();
           const consume = store.consumeToken(token, t);
           if (!consume.consumed) {
-            // Task 9 will replace this branch with tokenStatus() lookup to
-            // disambiguate 404-unknown vs 410-expired vs 410-consumed. For now,
-            // every non-consumed path returns 410 "expired".
-            return new Response(buildVerifyFailurePage({ reason: "expired" }), {
-              status: 410,
+            const status = store.tokenStatus(token, t);
+            const reason: "unknown" | "expired" | "consumed" =
+              status === "unknown" ? "unknown" : status === "expired" ? "expired" : "consumed";
+            const httpStatus = status === "unknown" ? 404 : 410;
+            return new Response(buildVerifyFailurePage({ reason }), {
+              status: httpStatus,
               headers: { "content-type": "text/html; charset=utf-8" },
             });
           }

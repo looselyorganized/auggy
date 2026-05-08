@@ -44,7 +44,7 @@ describe("visitorAuth verify route", () => {
     await aug.onShutdown?.();
   });
 
-  test("returns 410 for unknown token (until Task 9 refines to 404)", async () => {
+  test("returns 404 for unknown token", async () => {
     const aug = await setupAug(join(tmp, "va.db"));
     const res = await aug.httpRoutes![0]!.handler(
       new Request(
@@ -52,8 +52,7 @@ describe("visitorAuth verify route", () => {
       ),
       { signal: new AbortController().signal },
     );
-    // Task 8: every non-consumed branch returns 410. Task 9 refines to 404.
-    expect(res.status).toBe(410);
+    expect(res.status).toBe(404);
     await aug.onShutdown?.();
   });
 
@@ -140,6 +139,46 @@ describe("visitorAuth verify route", () => {
       signal: new AbortController().signal,
     });
     expect(r2.status).toBe(410);
+    expect((await r2.text()).toLowerCase()).toContain("used");
+    await aug.onShutdown?.();
+  });
+
+  test("returns 410 'expired' for a token whose TTL has passed", async () => {
+    const dbPath = join(tmp, "va-exp.db");
+    let clock = 1_700_000_000_000;
+    const sendCalls: { text: string }[] = [];
+    const aug = visitorAuth({
+      publicUrl: "https://zip.test",
+      dbPath,
+      agentMail: { apiKey: "am_x", inboxId: "ibx_x" },
+      signingKey: "shared-key",
+      tokenTtlMinutes: 1,
+      _now: () => clock,
+      _agentMailClient: {
+        send: async (i: { text: string }) => {
+          sendCalls.push({ text: i.text });
+          return { status: "sent" as const, messageId: "m", threadId: "t" };
+        },
+      } as never,
+    });
+    await aug.onBoot?.();
+    const peer = { id: "anon-th-exp", kind: "anonymous" as const, trustLevel: "public" as const, publicSubstate: "anonymous" as const, sourceAugment: "web" };
+    await aug.onTurnStart?.({
+      turnId: "t", threadId: "th-exp",
+      trigger: { type: "message", turnId: "t", timestamp: 0, payload: { parts: [{ kind: "text", text: "exp@x.com" }], sourceAugment: "web", peer, timestamp: 0 } },
+      peer, toolCallsSoFar: 0, turnStartedAt: 0, metadata: {},
+    } as never);
+    await aug.tools![0]!.execute(
+      { method: "email", email: "exp@x.com" },
+      { turnId: "t", threadId: "th-exp", peer },
+    );
+    clock += 5 * 60_000; // advance past the 1-minute TTL
+    const verifyUrl = sendCalls[0]!.text.match(/(https:\/\/[^\s]+)/)![1]!;
+    const res = await aug.httpRoutes![0]!.handler(new Request(verifyUrl), {
+      signal: new AbortController().signal,
+    });
+    expect(res.status).toBe(410);
+    expect((await res.text()).toLowerCase()).toContain("expired");
     await aug.onShutdown?.();
   });
 

@@ -247,6 +247,37 @@ describe("createSqliteVisitorAuthStore", () => {
     });
   });
 
+  describe("tokenStatus", () => {
+    test("returns 'unknown' for tokens that were never issued", () => {
+      expect(store.tokenStatus("nope", Date.now())).toBe("unknown");
+    });
+    test("returns 'open' for an unconsumed, unexpired token", () => {
+      const now = 1_700_000_000_000;
+      store.issueToken({
+        token: "tk-open", email: "e@x", peerId: "p", threadId: "th",
+        expiresAt: now + 60_000, sourceMessageId: null,
+      });
+      expect(store.tokenStatus("tk-open", now)).toBe("open");
+    });
+    test("returns 'consumed' after a successful consume", () => {
+      const now = 1_700_000_000_000;
+      store.issueToken({
+        token: "tk-c", email: "e@x", peerId: "p", threadId: "th",
+        expiresAt: now + 60_000, sourceMessageId: null,
+      });
+      store.consumeToken("tk-c", now);
+      expect(store.tokenStatus("tk-c", now + 1)).toBe("consumed");
+    });
+    test("returns 'expired' for an unconsumed token past its TTL", () => {
+      const now = 1_700_000_000_000;
+      store.issueToken({
+        token: "tk-e", email: "e@x", peerId: "p", threadId: "th",
+        expiresAt: now + 1000, sourceMessageId: null,
+      });
+      expect(store.tokenStatus("tk-e", now + 5000)).toBe("expired");
+    });
+  });
+
   describe("schema migration", () => {
     test("initialize() is idempotent", () => {
       store.initialize();
