@@ -481,8 +481,9 @@ function migratePeerIdOnVerify(
   // No-op when ids are identical (re-verify after token-expiry where peer
   // already arrives as vis_*; nothing to migrate).
   if (oldPeerId === newPeerId) return;
+  let db: Database | null = null;
   try {
-    const db = new Database(dbPath, { readwrite: true });
+    db = new Database(dbPath, { readwrite: true });
     db.run("PRAGMA journal_mode = WAL");
     const result = db.prepare(`UPDATE entries SET peer_id = ? WHERE peer_id = ?`).run(
       newPeerId,
@@ -493,11 +494,19 @@ function migratePeerIdOnVerify(
         `[visitor-auth] migrated ${result.changes} memory row(s) ${oldPeerId} → ${newPeerId}`,
       );
     }
-    db.close();
   } catch (err) {
     console.warn(
       `[visitor-auth] peer-id migration failed for ${oldPeerId} → ${newPeerId}: ${(err as Error).message}`,
     );
+  } finally {
+    // Guarantee close on every path (success, mid-statement throw, anything).
+    if (db) {
+      try {
+        db.close();
+      } catch {
+        // Ignore close errors — db is already in an unrecoverable state.
+      }
+    }
   }
 }
 
