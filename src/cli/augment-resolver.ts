@@ -26,6 +26,8 @@ import { bash } from "../augments/bash";
 import { notify } from "../augments/notify";
 import { telegramTransport } from "../augments/telegram-transport";
 import { turnControl, type TurnControlOptions } from "../augments/turn-control";
+import { visitorAuth } from "../augments/visitor-auth";
+import type { VisitorAuthOptions } from "../augments/visitor-auth/types";
 import type { Augment, NotifyAugmentOptions, TelegramTransportOptions } from "../types";
 import type { AugmentConfig } from "./types";
 import type { BudgetsAugmentOptions } from "../augments/budgets";
@@ -270,6 +272,30 @@ function resolveBash(opts: Record<string, unknown>, agentDir: string): Augment {
   });
 }
 
+function resolveVisitorAuth(opts: Record<string, unknown>, agentDir: string): Augment {
+  const dbPath = (opts.dbPath as string | undefined) ?? "./visitor-auth.db";
+  // CRITICAL: distinguish `null` (operator opt-out) from `undefined` (defaults to ./memory.db).
+  // Using ?? would coerce both to the default string — wrong for opt-out semantics.
+  const layeredMemoryDbPath =
+    opts.layeredMemoryDbPath === null
+      ? null
+      : (opts.layeredMemoryDbPath as string | undefined) ?? "./memory.db";
+
+  const config: VisitorAuthOptions = {
+    publicUrl: opts.publicUrl as string,
+    dbPath: resolvePath(dbPath, agentDir),
+    agentMail: opts.agentMail as VisitorAuthOptions["agentMail"],
+    signingKey: opts.signingKey as string,
+    rateLimit: opts.rateLimit as VisitorAuthOptions["rateLimit"],
+    reverifyAfterDays: opts.reverifyAfterDays as number | undefined,
+    tokenTtlMinutes: opts.tokenTtlMinutes as number | undefined,
+    notifyOnFirstVerify: opts.notifyOnFirstVerify as VisitorAuthOptions["notifyOnFirstVerify"],
+    layeredMemoryDbPath:
+      layeredMemoryDbPath === null ? null : resolvePath(layeredMemoryDbPath, agentDir),
+  };
+  return visitorAuth(config);
+}
+
 /**
  * Resolve an array of augment configs into concrete Augment objects.
  * Built-in types dispatch to their factory functions; custom types
@@ -338,6 +364,9 @@ export async function resolveAugments(
         break;
       case "turnControl":
         augment = turnControl(opts as TurnControlOptions);
+        break;
+      case "visitorAuth":
+        augment = resolveVisitorAuth(opts, agentDir);
         break;
       case "custom":
         augment = await resolveCustom(config, agentDir);
