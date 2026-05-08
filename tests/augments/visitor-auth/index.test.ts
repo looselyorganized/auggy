@@ -922,6 +922,84 @@ describe("notifyOnFirstVerify", () => {
     expect(sends[0]?.to).toEqual(["bob@example.com"]);
     await aug.onShutdown?.();
   });
+
+  // F5: mark-after-send tests
+  test("does NOT mark the ledger when AgentMail returns failed (F5)", async () => {
+    // Stub: first send (visitor magic-link) succeeds; second send (operator note) fails.
+    const sends: { to: string[]; subject: string; text: string; inboxId: string }[] = [];
+    let sendCount = 0;
+    const aug = visitorAuth({
+      publicUrl: "https://zip.test",
+      dbPath,
+      agentMail: { apiKey: "am_x", inboxId: "ibx_x" },
+      signingKey: "sig",
+      rateLimit: { perHour: 5, perDay: 10 },
+      notifyOnFirstVerify: { to: "ops@x.com" },
+      _agentMailClient: {
+        send: async (i: { to: string[]; subject: string; text: string; inboxId: string }) => {
+          sends.push(i);
+          sendCount++;
+          if (sendCount === 1) {
+            // visitor magic-link send succeeds
+            return { status: "sent" as const, messageId: "m", threadId: "t" };
+          }
+          // operator notification send fails
+          return { status: "failed" as const, detail: "503 unavailable" };
+        },
+        getInbox: async () => ({ inboxId: "ibx_x", status: "ok" as const }),
+      } as never,
+    });
+    await aug.onBoot?.();
+    // First verify: operator notification send fails → ledger must NOT be marked.
+    const res = await flowThroughVerify(aug, "fail-notify@example.com", "th-fn1", sends);
+    expect(res.status).toBe(200); // verify itself must still succeed
+
+    // Probe the ledger directly to confirm it was NOT marked.
+    const { createSqliteVisitorAuthStore: makeStore } = await import(
+      "../../../src/augments/visitor-auth/storage/sqlite-store"
+    );
+    const probeStore = makeStore({ dbPath });
+    probeStore.initialize();
+    const marked = probeStore.hasNotifiedFirstVerifyFor("fail-notify@example.com");
+    probeStore.close();
+    expect(marked).toBe(false); // NOT marked — will retry on next verify
+
+    await aug.onShutdown?.();
+  });
+
+  test("marks the ledger when AgentMail returns sent (F5)", async () => {
+    const sends: { to: string[]; subject: string; text: string; inboxId: string }[] = [];
+    const aug = visitorAuth({
+      publicUrl: "https://zip.test",
+      dbPath,
+      agentMail: { apiKey: "am_x", inboxId: "ibx_x" },
+      signingKey: "sig",
+      rateLimit: { perHour: 5, perDay: 10 },
+      notifyOnFirstVerify: { to: "ops@x.com" },
+      _agentMailClient: {
+        send: async (i: { to: string[]; subject: string; text: string; inboxId: string }) => {
+          sends.push(i);
+          return { status: "sent" as const, messageId: "m", threadId: "t" };
+        },
+        getInbox: async () => ({ inboxId: "ibx_x", status: "ok" as const }),
+      } as never,
+    });
+    await aug.onBoot?.();
+    const res = await flowThroughVerify(aug, "mark-after-send@example.com", "th-mas", sends);
+    expect(res.status).toBe(200);
+
+    // Probe the ledger: must be marked now that send succeeded.
+    const { createSqliteVisitorAuthStore: makeStore } = await import(
+      "../../../src/augments/visitor-auth/storage/sqlite-store"
+    );
+    const probeStore = makeStore({ dbPath });
+    probeStore.initialize();
+    const marked = probeStore.hasNotifiedFirstVerifyFor("mark-after-send@example.com");
+    probeStore.close();
+    expect(marked).toBe(true);
+
+    await aug.onShutdown?.();
+  });
 });
 
 describe("isVisitorRevoked (fix C1)", () => {
