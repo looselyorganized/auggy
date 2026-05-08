@@ -58,7 +58,7 @@ function pad(s: string, w: number): string {
 
 function formatTs(ms: number | null): string {
   if (!ms) return "—";
-  return new Date(ms).toISOString().replace("T", " ").slice(0, 19) + " UTC";
+  return `${new Date(ms).toISOString().replace("T", " ").slice(0, 19)} UTC`;
 }
 
 function statusLabel(row: {

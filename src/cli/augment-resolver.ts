@@ -415,17 +415,19 @@ export async function resolveAugments(
   const vaConfig = configs.find((c) => c.type === "visitorAuth");
   const wtConfig = configs.find((c) => c.type === "webTransport");
   if (vaConfig && wtConfig) {
-    const vaBinding = (vaConfig.options as Record<string, unknown> | undefined)
-      ?.agentBinding as string | undefined;
+    const vaBinding = (vaConfig.options as Record<string, unknown> | undefined)?.agentBinding as
+      | string
+      | undefined;
     const wtBinding = (
-      (wtConfig.options as Record<string, unknown> | undefined)
-        ?.visitorTokens as Record<string, unknown> | undefined
+      (wtConfig.options as Record<string, unknown> | undefined)?.visitorTokens as
+        | Record<string, unknown>
+        | undefined
     )?.agentBinding as string | undefined;
     if (vaBinding !== wtBinding) {
       throw new Error(
         `Cross-augment config mismatch: visitorAuth.agentBinding (${vaBinding ?? "unset"}) ` +
-        `must match webTransport.visitorTokens.agentBinding (${wtBinding ?? "unset"}). ` +
-        `Set them both to the same value (e.g., \${AUGGY_AGENT_ID}) in agent.yaml.`,
+          `must match webTransport.visitorTokens.agentBinding (${wtBinding ?? "unset"}). ` +
+          `Set them both to the same value (e.g., \${AUGGY_AGENT_ID}) in agent.yaml.`,
       );
     }
   }

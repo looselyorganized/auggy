@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { visitorAuth } from "../../../src/augments/visitor-auth";
 import { createSqliteVisitorAuthStore } from "../../../src/augments/visitor-auth/storage/sqlite-store";
 import type { AgentMailClient } from "../../../src/agentmail-client";
-import type { TurnState, ToolExecuteContext, ContextBlock } from "../../../src/types";
+import type { ToolExecuteContext, ContextBlock } from "../../../src/types";
 
 let tmp: string;
 let dbPath: string;
@@ -420,7 +420,10 @@ describe("request_auth tool", () => {
     // First email: alice. Include both addresses in the recent messages.
     await aug.onTurnStart?.(turnWithVisitor("alice@example.com bob@example.com"));
     const r1 = JSON.parse(
-      (await aug.tools![0]!.execute({ method: "email", email: "alice@example.com" }, ctx)) as string,
+      (await aug.tools![0]!.execute(
+        { method: "email", email: "alice@example.com" },
+        ctx,
+      )) as string,
     );
     expect(r1.status).toBe("sent");
 
@@ -860,7 +863,10 @@ describe("isVisitorRevoked (fix C1)", () => {
       agentMail: { apiKey: "am_x", inboxId: "ibx_x" },
       signingKey: "sig",
       _agentMailClient: {
-        send: async (i: { text: string }) => { sends.push({ text: i.text }); return { status: "sent" as const, messageId: "m", threadId: "t" }; },
+        send: async (i: { text: string }) => {
+          sends.push({ text: i.text });
+          return { status: "sent" as const, messageId: "m", threadId: "t" };
+        },
         getInbox: async () => ({ inboxId: "i", status: "ok" as const }),
       } as AgentMailClient,
     });
@@ -878,7 +884,10 @@ describe("isVisitorRevoked (fix C1)", () => {
       agentMail: { apiKey: "am_x", inboxId: "ibx_x" },
       signingKey: "sig",
       _agentMailClient: {
-        send: async (i: { text: string }) => { sends.push({ text: i.text }); return { status: "sent" as const, messageId: "m", threadId: "t" }; },
+        send: async (i: { text: string }) => {
+          sends.push({ text: i.text });
+          return { status: "sent" as const, messageId: "m", threadId: "t" };
+        },
         getInbox: async () => ({ inboxId: "i", status: "ok" as const }),
       } as AgentMailClient,
     });
@@ -905,7 +914,10 @@ describe("isVisitorRevoked (fix C1)", () => {
       agentMail: { apiKey: "am_x", inboxId: "ibx_x" },
       signingKey: "sig",
       _agentMailClient: {
-        send: async (i: { text: string }) => { sends.push({ text: i.text }); return { status: "sent" as const, messageId: "m", threadId: "t" }; },
+        send: async (i: { text: string }) => {
+          sends.push({ text: i.text });
+          return { status: "sent" as const, messageId: "m", threadId: "t" };
+        },
         getInbox: async () => ({ inboxId: "i", status: "ok" as const }),
       } as AgentMailClient,
     });

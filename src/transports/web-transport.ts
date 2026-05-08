@@ -446,9 +446,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
           // This ensures the anon-token and the visitorAuth-minted token agree on
           // the agentId embedded in the payload, enabling the agentBinding check below.
           const agentName =
-            opts.visitorTokens?.agentBinding ??
-            kernel?.getAgentCard()?.provider?.name ??
-            "auggy";
+            opts.visitorTokens?.agentBinding ?? kernel?.getAgentCard()?.provider?.name ?? "auggy";
           const issued = await createVisitorToken(signingKey, agentName, visitorTokenTtl);
           newToken = issued.token;
           // visitorPayload intentionally left null — this request is anonymous.
@@ -739,7 +737,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
                   headers: req.headers,
                   body: buffered,
                 });
-              } catch (err) {
+              } catch (_err) {
                 // Body read errors are 400 — caller's problem, not ours.
                 return new Response(JSON.stringify({ error: "bad-body" }), {
                   status: 400,
