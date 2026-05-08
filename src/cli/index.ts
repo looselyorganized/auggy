@@ -152,6 +152,26 @@ program
     }
   });
 
+program
+  .command("visitors <agent>")
+  .description("list verified visitors for an agent")
+  .option("--revoke <email>", "revoke a verified visitor by email")
+  .option("--yes", "skip the confirmation prompt for --revoke")
+  .action(async (agentName: string, options: { revoke?: string; yes?: boolean }) => {
+    try {
+      if (options.revoke) {
+        const { runVisitorsRevoke } = await import("./commands/visitors-revoke");
+        await runVisitorsRevoke(agentName, options.revoke, { confirm: options.yes !== true });
+        return;
+      }
+      const { runVisitorsList } = await import("./commands/visitors");
+      await runVisitorsList(agentName);
+    } catch (err) {
+      console.error(`Error: ${(err as Error).message}`);
+      process.exit(1);
+    }
+  });
+
 program.addCommand(chatCommand());
 program.addCommand(evalCommand());
 
