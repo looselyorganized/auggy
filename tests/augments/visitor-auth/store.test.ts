@@ -215,6 +215,21 @@ describe("createSqliteVisitorAuthStore", () => {
     test("revokeByEmail returns null for unknown email", () => {
       expect(store.revokeByEmail("unknown@x", "operator", Date.now())).toBeNull();
     });
+
+    test("revokeByEmail returns null on a second call for the same email", () => {
+      const now = 1_700_000_000_000;
+      store.recordVerifiedVisitor({
+        visitorId: "vis_dr",
+        email: "double@x",
+        verifiedAt: now,
+        lastSeenAt: null,
+        reverifyDueAt: now + 86_400_000,
+        revoked: false, revokedAt: null, revokedReason: null,
+      });
+      expect(store.revokeByEmail("double@x", "operator", now + 1000)).toBe("vis_dr");
+      // Second call: row already revoked → null, not a false-positive visitorId.
+      expect(store.revokeByEmail("double@x", "operator", now + 2000)).toBeNull();
+    });
   });
 
   describe("first-verify notification ledger", () => {
