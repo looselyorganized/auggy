@@ -612,4 +612,76 @@ describe("visitorAuth verify route", () => {
 
     await aug.onShutdown?.();
   });
+
+  test("agentBinding: minted token carries the configured agentId (fix C2)", async () => {
+    // When visitorAuth is configured with agentBinding: "test-binding", the
+    // visitor token embedded in the success page must have agentId === "test-binding".
+    const dbPath = join(tmp, "va-binding.db");
+    const sendCalls: { to: string[]; text: string }[] = [];
+    const aug = visitorAuth({
+      publicUrl: "https://zip.test",
+      dbPath,
+      agentMail: { apiKey: "am_x", inboxId: "ibx_x" },
+      signingKey: "shared-key",
+      agentBinding: "test-binding",
+      _agentMailClient: {
+        send: async (input: { to: string[]; text: string; subject: string; inboxId: string }) => {
+          sendCalls.push({ to: input.to, text: input.text });
+          return { status: "sent" as const, messageId: "m", threadId: "t" };
+        },
+        getInbox: async () => ({ inboxId: "ibx_x", status: "ok" as const }),
+      } as never,
+    });
+    await aug.onBoot?.();
+    const peer = {
+      id: "anon-th-binding",
+      kind: "anonymous" as const,
+      trustLevel: "public" as const,
+      publicSubstate: "anonymous" as const,
+      sourceAugment: "web",
+    };
+    await aug.onTurnStart?.({
+      turnId: "t",
+      threadId: "th-binding",
+      trigger: {
+        type: "message",
+        turnId: "t",
+        timestamp: 0,
+        payload: {
+          parts: [{ kind: "text", text: "binding@example.com" }],
+          sourceAugment: "web",
+          peer,
+          timestamp: 0,
+        },
+      },
+      peer,
+      toolCallsSoFar: 0,
+      turnStartedAt: 0,
+      metadata: {},
+    } as never);
+    await aug.tools![0]!.execute(
+      { method: "email", email: "binding@example.com" },
+      { turnId: "t", threadId: "th-binding", peer },
+    );
+    const verifyUrl = sendCalls[0]!.text.match(/(https:\/\/[^\s]+)/)![1]!;
+    const tokenParam = new URL(verifyUrl).searchParams.get("token")!;
+    const res = await aug.httpRoutes![1]!.handler(
+      new Request(verifyUrl, {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: `token=${encodeURIComponent(tokenParam)}`,
+      }),
+      { signal: new AbortController().signal },
+    );
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    const tokenJson = html.match(/var token = ("(?:\\.|[^"\\])*");/)?.[1];
+    expect(tokenJson).toBeTruthy();
+    const visToken = JSON.parse(tokenJson!) as string;
+    // Decode the payload without signature verification to check agentId.
+    const payloadB64 = visToken.split(".")[0]!;
+    const payload = JSON.parse(atob(payloadB64)) as { agentId: string; visitorId: string };
+    expect(payload.agentId).toBe("test-binding");
+    await aug.onShutdown?.();
+  });
 });

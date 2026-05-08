@@ -62,6 +62,16 @@ export interface VisitorAuthOptions {
    * `${VISITOR_SIGNING_KEY}` in agent.yaml (same env var both augments read).
    */
   signingKey: string;
+  /**
+   * Stable identifier this agent uses for visitor tokens (fix C2). MUST match
+   * webTransport's `visitorTokens.agentBinding`. Default: `"auggy"`.
+   *
+   * When two agents share the same signing key, setting distinct `agentBinding`
+   * values on each prevents cross-agent replay: a token minted for agent A
+   * will be rejected by agent B because the embedded agentId will not match
+   * agent B's expected binding.
+   */
+  agentBinding?: string;
   /** Optional rate-limit caps. Defaults: { perHour: 1, perDay: 3 }. */
   rateLimit?: VisitorAuthRateLimit;
   /** Days before reverification is required. Default: 90. */

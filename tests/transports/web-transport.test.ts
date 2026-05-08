@@ -5,6 +5,7 @@ import { defineAgent } from "@/agent";
 import { createMockModel } from "@tests/fixtures/mock-model";
 import { createIdentityAugment } from "@tests/fixtures/mock-augment";
 import { routeFixtureAugment } from "@tests/fixtures/route-fixture-augment";
+import { createVisitorToken, deriveSigningKey } from "@/transports/visitor-token";
 import type { Augment } from "@/types";
 
 // ---------------------------------------------------------------------------
@@ -1631,6 +1632,63 @@ describe("webTransport augment-registered routes", () => {
         headers: { "x-forwarded-for": "10.0.0.2" },
       });
       expect(b1.status).toBe(200);
+    } finally {
+      await agent.stop();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fix C2: agentBinding — cross-agent replay prevention
+// ---------------------------------------------------------------------------
+
+describe("webTransport agentBinding (fix C2)", () => {
+  it("rejects a token minted for a different agentBinding even with the same signing key", async () => {
+    // Agent A mints a token with agentBinding "agent-a".
+    // Agent B is configured with agentBinding "agent-b" and the SAME signing key.
+    // Agent B must reject A's token — it should stay anonymous.
+    const SHARED_SIGNING_KEY = "shared-key-for-c2-test";
+    const sigKey = await deriveSigningKey(SHARED_SIGNING_KEY);
+
+    // Mint a token as agent-a would (agentId = "agent-a").
+    const { token: agentAToken } = await createVisitorToken(sigKey, "agent-a", 86_400);
+    expect(agentAToken).toBeTruthy();
+
+    // Boot agent B with agentBinding: "agent-b" and the same signing key.
+    const model = createMockModel({ response: "hello" });
+    const port = 18983;
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: "test-token" },
+      visitorTokens: {
+        enabled: true,
+        signingKey: SHARED_SIGNING_KEY,
+        agentBinding: "agent-b",
+      },
+    });
+    const agent = defineAgent(
+      { name: "agent-b", model: "mock", augments: [aug] },
+      model,
+    );
+    await agent.start();
+
+    try {
+      // Present agent-a's token to agent-b: must stay anonymous.
+      // When anonymous + invalid-ish token, webTransport issues a NEW anon token.
+      const resp = await fetch(`http://localhost:${port}/agent/run`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: "Bearer test-token",
+          "x-visitor-token": agentAToken,
+        },
+        body: JSON.stringify({ messages: [{ role: "user", content: "hi from agent-a replay" }] }),
+      });
+      expect(resp.status).toBe(200);
+      // A new visitor token is issued — proves the request landed on anonymous path,
+      // not recognized (recognized requests do NOT get a new token).
+      expect(resp.headers.get("x-visitor-token")).not.toBeNull();
+      await resp.text();
     } finally {
       await agent.stop();
     }

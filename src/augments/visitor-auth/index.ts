@@ -86,6 +86,7 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
   const reverifyDays = opts.reverifyAfterDays ?? DEFAULT_REVERIFY_DAYS;
   const rateLimitCaps = opts.rateLimit ?? DEFAULT_RATE_LIMIT;
   const subjectPrefix = opts.agentMail.subjectPrefix ?? "[Verify] ";
+  const agentBinding = opts.agentBinding ?? "auggy";
 
   const storeConfig: SqliteVisitorAuthStoreConfig = { dbPath: opts.dbPath };
   const store: VisitorAuthStore = createSqliteVisitorAuthStore(storeConfig);
@@ -385,7 +386,7 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
           const reuseVisitorId = existing && !existing.revoked ? existing.visitorId : undefined;
           const minted = await createVisitorToken(
             signingCryptoKey,
-            "auggy",
+            agentBinding,
             ttlSec,
             reuseVisitorId,
           );
