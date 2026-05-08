@@ -9,22 +9,29 @@ function mockHttp(
     headers?: Record<string, string>,
   ) => { status: number; body: string; headers?: Record<string, string> },
 ) {
+  function makeResponse(url: string, status: number, body: string, extraHeaders?: Record<string, string>): HttpResponse {
+    const respHeaders = new Headers({
+      "content-type": "application/json",
+      ...(extraHeaders ?? {}),
+    });
+    return {
+      finalUrl: url,
+      status,
+      statusText: status >= 200 && status < 300 ? "OK" : "Error",
+      contentType: "application/json",
+      headers: respHeaders,
+      body,
+    };
+  }
   return {
     post: async (url: string, opts?: Omit<HttpRequestInit, "method">): Promise<HttpResponse> => {
       const body = typeof opts?.body === "string" ? JSON.parse(opts.body) : undefined;
       const result = handler(url, body, opts?.headers);
-      const respHeaders = new Headers({
-        "content-type": "application/json",
-        ...(result.headers ?? {}),
-      });
-      return {
-        finalUrl: url,
-        status: result.status,
-        statusText: result.status >= 200 && result.status < 300 ? "OK" : "Error",
-        contentType: "application/json",
-        headers: respHeaders,
-        body: result.body,
-      };
+      return makeResponse(url, result.status, result.body, result.headers);
+    },
+    get: async (url: string, opts?: Omit<HttpRequestInit, "method">): Promise<HttpResponse> => {
+      const result = handler(url, undefined, opts?.headers as Record<string, string> | undefined);
+      return makeResponse(url, result.status, result.body, result.headers);
     },
   };
 }
@@ -76,9 +83,54 @@ describe("createAgentMailClient", () => {
         post: async () => {
           throw new Error("ECONNREFUSED");
         },
+        get: async () => {
+          throw new Error("ECONNREFUSED");
+        },
       },
     });
     const r = await client.send({ inboxId: "inb_x", to: ["a@b.com"], subject: "s", text: "t" });
+    expect(r.status).toBe("failed");
+    if (r.status === "failed") expect(r.detail).toContain("ECONNREFUSED");
+  });
+});
+
+describe("createAgentMailClient.getInbox", () => {
+  test("returns ok when inbox exists (2xx)", async () => {
+    const client = createAgentMailClient({
+      apiKey: "am_test",
+      http: mockHttp((url, _body, headers) => {
+        expect(url).toBe("https://api.agentmail.to/v0/inboxes/inb_x");
+        expect(headers?.["authorization"]).toBe("Bearer am_test");
+        return { status: 200, body: JSON.stringify({ inbox_id: "inb_x" }) };
+      }),
+    });
+    const r = await client.getInbox("inb_x");
+    expect(r.status).toBe("ok");
+    if (r.status === "ok") expect(r.inboxId).toBe("inb_x");
+  });
+
+  test("returns failed with httpStatus on non-2xx", async () => {
+    const client = createAgentMailClient({
+      apiKey: "am_test",
+      http: mockHttp(() => ({ status: 404, body: JSON.stringify({ error: "not found" }) })),
+    });
+    const r = await client.getInbox("inb_missing");
+    expect(r.status).toBe("failed");
+    if (r.status === "failed") {
+      expect(r.httpStatus).toBe(404);
+      expect(r.detail).toContain("404");
+    }
+  });
+
+  test("returns failed on network throw", async () => {
+    const client = createAgentMailClient({
+      apiKey: "am_test",
+      http: {
+        post: async () => { throw new Error("ECONNREFUSED"); },
+        get: async () => { throw new Error("ECONNREFUSED"); },
+      },
+    });
+    const r = await client.getInbox("inb_x");
     expect(r.status).toBe("failed");
     if (r.status === "failed") expect(r.detail).toContain("ECONNREFUSED");
   });

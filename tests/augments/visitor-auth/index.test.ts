@@ -21,6 +21,7 @@ afterEach(() => {
 function fakeAgentMail(overrides: Partial<AgentMailClient> = {}): AgentMailClient {
   return {
     send: async () => ({ status: "sent", messageId: "m", threadId: "t" }),
+    getInbox: async () => ({ inboxId: "i", status: "ok" }),
     ...overrides,
   } as AgentMailClient;
 }
@@ -103,15 +104,41 @@ describe("visitorAuth (skeleton)", () => {
     ).toThrow(/signingKey/);
   });
 
-  test("onBoot opens the store and warns when AgentMail healthcheck fails (does not throw)", async () => {
+  test("onBoot calls AgentMail.getInbox; warns on failure but does not throw", async () => {
+    let getInboxCalls = 0;
     const aug = visitorAuth({
       publicUrl: "https://example.com",
       dbPath,
       agentMail: { apiKey: "am_x", inboxId: "ibx_x" },
       signingKey: "sig",
-      _agentMailClient: fakeAgentMail(),
+      _agentMailClient: fakeAgentMail({
+        getInbox: async () => {
+          getInboxCalls++;
+          return { status: "failed", detail: "503 unavailable", httpStatus: 503 };
+        },
+      }),
     });
     await aug.onBoot?.();
+    expect(getInboxCalls).toBe(1);
+    await aug.onShutdown?.();
+  });
+
+  test("onBoot succeeds when AgentMail.getInbox returns ok", async () => {
+    let calls = 0;
+    const aug = visitorAuth({
+      publicUrl: "https://example.com",
+      dbPath,
+      agentMail: { apiKey: "am_x", inboxId: "ibx_x" },
+      signingKey: "sig",
+      _agentMailClient: fakeAgentMail({
+        getInbox: async () => {
+          calls++;
+          return { inboxId: "ibx_x", status: "ok" };
+        },
+      }),
+    });
+    await aug.onBoot?.();
+    expect(calls).toBe(1);
     await aug.onShutdown?.();
   });
 

@@ -17,6 +17,7 @@ afterEach(() => {
 function fakeAgentMail() {
   return {
     send: async () => ({ status: "sent" as const, messageId: "m", threadId: "t" }),
+    getInbox: async () => ({ inboxId: "ibx_x", status: "ok" as const }),
   };
 }
 
@@ -69,6 +70,7 @@ describe("visitorAuth verify route", () => {
           sendCalls.push({ to: input.to, text: input.text });
           return { status: "sent" as const, messageId: "m", threadId: "t" };
         },
+        getInbox: async () => ({ inboxId: "ibx_x", status: "ok" as const }),
       } as never,
     });
     await aug.onBoot?.();
@@ -117,6 +119,7 @@ describe("visitorAuth verify route", () => {
           sendCalls.push({ text: i.text });
           return { status: "sent" as const, messageId: "m", threadId: "t" };
         },
+        getInbox: async () => ({ inboxId: "ibx_x", status: "ok" as const }),
       } as never,
     });
     await aug.onBoot?.();
@@ -159,6 +162,7 @@ describe("visitorAuth verify route", () => {
           sendCalls.push({ text: i.text });
           return { status: "sent" as const, messageId: "m", threadId: "t" };
         },
+        getInbox: async () => ({ inboxId: "ibx_x", status: "ok" as const }),
       } as never,
     });
     await aug.onBoot?.();
@@ -216,6 +220,7 @@ describe("visitorAuth verify route", () => {
           sendCalls.push({ text: i.text });
           return { status: "sent" as const, messageId: "m", threadId: "t" };
         },
+        getInbox: async () => ({ inboxId: "ibx_x", status: "ok" as const }),
       } as never,
     });
     await aug.onBoot?.();

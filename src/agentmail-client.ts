@@ -18,7 +18,20 @@ export interface AgentMailClientOptions {
   /** Timeout per request. Default 15s. */
   timeoutMs?: number;
   /** Test-only HTTP client override. */
-  http?: Pick<HttpClient, "post">;
+  http?: Pick<HttpClient, "post" | "get">;
+}
+
+export interface AgentMailInboxInfo {
+  inboxId: string;
+  /** Echoed back when the inbox exists. */
+  status: "ok";
+}
+
+export interface AgentMailInboxError {
+  status: "failed";
+  detail: string;
+  /** HTTP status if the failure originated from AgentMail (vs. network). */
+  httpStatus?: number;
 }
 
 export interface SendMessageInput {
@@ -47,6 +60,14 @@ export interface SendMessageError {
 
 export interface AgentMailClient {
   send(input: SendMessageInput): Promise<SendMessageResult | SendMessageError>;
+  /**
+   * Best-effort healthcheck. Pings AgentMail's `inboxes.get` endpoint to
+   * confirm the inbox exists and the API key has access. Used by visitorAuth
+   * onBoot. Caller should warn-and-continue on failure: a transient AgentMail
+   * outage shouldn't block agent startup; the first real send will surface
+   * the same error.
+   */
+  getInbox(inboxId: string): Promise<AgentMailInboxInfo | AgentMailInboxError>;
 }
 
 export function createAgentMailClient(opts: AgentMailClientOptions): AgentMailClient {
@@ -91,6 +112,26 @@ export function createAgentMailClient(opts: AgentMailClientOptions): AgentMailCl
         return { status: "sent", messageId: parsed.message_id, threadId: parsed.thread_id };
       } catch (err) {
         return { status: "failed", detail: `agentmail error: ${(err as Error).message}` };
+      }
+    },
+    async getInbox(inboxId: string) {
+      const url = `${baseUrl}/inboxes/${inboxId}`;
+      try {
+        const res = await http.get(url, {
+          headers: {
+            authorization: `Bearer ${opts.apiKey}`,
+          },
+        });
+        if (res.status < 200 || res.status >= 300) {
+          return {
+            status: "failed" as const,
+            detail: `agentmail returned ${res.status}: ${res.body.slice(0, 200)}`,
+            httpStatus: res.status,
+          };
+        }
+        return { inboxId, status: "ok" as const };
+      } catch (err) {
+        return { status: "failed" as const, detail: `agentmail error: ${(err as Error).message}` };
       }
     },
   };

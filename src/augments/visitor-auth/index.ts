@@ -344,13 +344,11 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment {
 
       // Best-effort AgentMail healthcheck — a transient outage shouldn't
       // prevent boot, but surface it loudly so the operator notices.
-      try {
-        // The agentmail-client doesn't expose inboxes.get yet. Task 11 wires
-        // a real call when we extend the client. For the skeleton we do a
-        // benign no-op.
-      } catch (err) {
+      const health = await agentMail.getInbox(opts.agentMail.inboxId);
+      if (health.status !== "ok") {
         console.warn(
-          `[visitor-auth] AgentMail healthcheck failed: ${(err as Error).message}. First send will surface the real error.`,
+          `[visitor-auth] AgentMail inbox "${opts.agentMail.inboxId}" healthcheck failed: ${health.detail}. ` +
+            `First send will surface the real error.`,
         );
       }
 

@@ -10,6 +10,7 @@ import type {
 function mockClient(handler: (input: SendMessageInput) => SendMessageResult | SendMessageError) {
   return (_apiKey: string, _baseUrl?: string) => ({
     send: async (input: SendMessageInput) => handler(input),
+    getInbox: async () => ({ inboxId: "i", status: "ok" as const }),
   });
 }
 
@@ -33,6 +34,7 @@ describe("agentMailAdapter", () => {
             captured = input;
             return { status: "sent", messageId: "msg_1", threadId: "thd_1" };
           },
+          getInbox: async () => ({ inboxId: "i", status: "ok" as const }),
         };
       },
     });
@@ -112,6 +114,7 @@ describe("agentMailAdapter", () => {
         send: async () => {
           throw new Error("ECONNREFUSED");
         },
+        getInbox: async () => ({ inboxId: "i", status: "ok" as const }),
       }),
     });
     const result = await adapter.deliver(dest, { summary: "x" });
@@ -127,6 +130,7 @@ describe("agentMailAdapter", () => {
           called = true;
           throw new Error("should not be called");
         },
+        getInbox: async () => ({ inboxId: "i", status: "ok" as const }),
       }),
     });
     const result = await adapter.deliver(
