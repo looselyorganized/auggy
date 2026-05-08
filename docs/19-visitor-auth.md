@@ -53,6 +53,7 @@ augments:
 | `AGENTMAIL_INBOX_ID` | Inbox the verify email is sent FROM |
 | `AUGGY_PUBLIC_URL` | Base URL operators reach the agent at; embedded in the magic link |
 | `VISITOR_SIGNING_KEY` | HMAC key for visitor tokens; **MUST match** webTransport's value |
+| `AUGGY_AGENT_ID` | Stable per-agent identifier; binds visitor tokens to this agent. MUST match between visitorAuth and webTransport. Default unset (no binding check). |
 
 ## Key constraints
 
