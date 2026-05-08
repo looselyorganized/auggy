@@ -491,7 +491,7 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
                   store.markNotifiedFirstVerifyFor(consume.email!, t);
                 } else {
                   console.warn(
-                    `[visitor-auth] first-verify notification to ${cfg.to} failed: ${(notifyResult as { detail?: string }).detail ?? "unknown"}. Will retry on next verify.`,
+                    `[visitor-auth] first-verify operator notification failed (destination redacted): ${(notifyResult as { detail?: string }).detail ?? "unknown"}. Will retry on next verify.`,
                   );
                 }
               } catch (err) {
