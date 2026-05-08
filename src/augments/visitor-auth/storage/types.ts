@@ -4,6 +4,8 @@
  * a Postgres-backed store later without touching the augment.
  */
 
+export type TokenStatus = "open" | "consumed" | "expired" | "unknown";
+
 export interface IssueTokenArgs {
   token: string;
   email: string;
@@ -61,6 +63,11 @@ export interface VisitorAuthStore {
    * Per spec fix #8 — the entire decision lives in `changes()`, no race.
    */
   consumeToken(token: string, now: number): ConsumeTokenResult;
+  /**
+   * Read-only status query. Used by the verify route to disambiguate
+   * 410 (consumed/expired) from 404 (unknown) after a failed consumeToken.
+   */
+  tokenStatus(token: string, now: number): TokenStatus;
   /**
    * The most-recent OPEN (unconsumed, unexpired) token for this peer, if any.
    * Used by `request_auth` to invalidate prior open tokens before issuing a new one.

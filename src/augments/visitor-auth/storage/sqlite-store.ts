@@ -19,6 +19,7 @@ import type {
   ConsumeTokenResult,
   IssueTokenArgs,
   OpenTokenForPeer,
+  TokenStatus,
   VerifiedVisitorRow,
   VisitorAuthStore,
 } from "./types";
@@ -93,6 +94,7 @@ export function createSqliteVisitorAuthStore(
   let issueStmt: Statement | null = null;
   let consumeStmt: Statement | null = null;
   let consumeReadStmt: Statement | null = null;
+  let tokenStatusStmt: Statement | null = null;
   let findOpenStmt: Statement | null = null;
   let invalidateStmt: Statement | null = null;
   let recordVerifiedStmt: Statement | null = null;
@@ -122,6 +124,9 @@ export function createSqliteVisitorAuthStore(
     );
     consumeReadStmt = db.prepare(
       `SELECT email, peer_id, thread_id FROM visitor_auth_tokens WHERE token = ?`,
+    );
+    tokenStatusStmt = db.prepare(
+      `SELECT consumed, expires_at FROM visitor_auth_tokens WHERE token = ?`,
     );
     findOpenStmt = db.prepare(
       `SELECT token, email, expires_at, issued_at FROM visitor_auth_tokens
@@ -204,6 +209,16 @@ export function createSqliteVisitorAuthStore(
         peerId: row.peer_id,
         threadId: row.thread_id,
       };
+    },
+    tokenStatus(token: string, now: number): TokenStatus {
+      ensurePrepared();
+      const row = tokenStatusStmt!.get(token) as
+        | { consumed: number; expires_at: number }
+        | undefined;
+      if (!row) return "unknown";
+      if (row.consumed === 1) return "consumed";
+      if (row.expires_at <= now) return "expired";
+      return "open";
     },
     findOpenTokenForPeer(peerId: string, now: number): OpenTokenForPeer | null {
       ensurePrepared();
