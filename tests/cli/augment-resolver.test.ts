@@ -391,16 +391,16 @@ describe("resolveAugments — C1 wiring (fix F17)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Multi-instance visitorAuth warning (fix F18)
+// Multi-instance visitorAuth hard error (fix F18)
 // ---------------------------------------------------------------------------
 
-describe("resolveAugments — multi-instance visitorAuth warning (fix F18)", () => {
-  test("warns when multiple visitorAuth augments declared", async () => {
-    const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
-    try {
-      // Two visitorAuth blocks — unsupported; only first is wired into
-      // webTransport's revocation check. Resolver must warn loudly.
-      const augments = await resolveAugments(
+describe("resolveAugments — multi-instance visitorAuth hard error (fix F18)", () => {
+  test("throws when multiple visitorAuth augments declared", async () => {
+    // Two visitorAuth blocks — unsupported. Both would register GET/POST
+    // /visitor-auth/verify routes (route-collector would reject the duplicate),
+    // so the resolver must throw a hard error before runtime begins.
+    await expect(
+      resolveAugments(
         [
           {
             type: "visitorAuth",
@@ -424,19 +424,8 @@ describe("resolveAugments — multi-instance visitorAuth warning (fix F18)", () 
           },
         ],
         TMP,
-      );
-      expect(augments).toHaveLength(2);
-      // console.warn must have been called at least once with a message
-      // containing "Multiple visitorAuth augments".
-      const warnCalls = warnSpy.mock.calls;
-      const multiWarnCall = warnCalls.find(
-        (args) =>
-          typeof args[0] === "string" && args[0].includes("Multiple visitorAuth augments"),
-      );
-      expect(multiWarnCall).toBeDefined();
-    } finally {
-      warnSpy.mockRestore();
-    }
+      ),
+    ).rejects.toThrow(/Multiple visitorAuth/);
   });
 });
 
