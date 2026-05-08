@@ -324,6 +324,49 @@ export async function resolveAugments(
     revocationCheck: null,
   };
 
+  // Fix F2 — single-source signingKey + auto-disable visitor tokens when
+  // visitorAuth is absent.
+  //
+  // visitorAuth is the sole authority for signingKey: it mints tokens so it
+  // MUST own the key. webTransport only verifies them; receiving the key via
+  // injection avoids operators having to duplicate the secret across two
+  // config blocks (where a mismatch silently breaks the flow).
+  {
+    const vaConfig = configs.find((c) => c.type === "visitorAuth");
+    const wtConfig = configs.find((c) => c.type === "webTransport");
+
+    if (wtConfig && !vaConfig) {
+      // visitorAuth absent: visitor tokens can never be minted, so enabling
+      // them in webTransport is meaningless and would leave signingKey unset
+      // (which now causes a hard error at onBoot). Force-disable.
+      const wtOpts = (wtConfig.options ?? {}) as Record<string, unknown>;
+      const vt = (wtOpts.visitorTokens ?? {}) as Record<string, unknown>;
+      vt.enabled = false;
+      wtOpts.visitorTokens = vt;
+      wtConfig.options = wtOpts;
+    }
+
+    if (wtConfig && vaConfig) {
+      const wtOpts = (wtConfig.options ?? {}) as Record<string, unknown>;
+      const vt = (wtOpts.visitorTokens ?? {}) as Record<string, unknown>;
+      const vaSigningKey = (vaConfig.options as Record<string, unknown> | undefined)
+        ?.signingKey as string | undefined;
+
+      if (vt.signingKey && vt.signingKey !== vaSigningKey) {
+        console.warn(
+          "[augment-resolver] webTransport.visitorTokens.signingKey is set but visitorAuth.signingKey takes precedence. Remove the duplicate from webTransport's config.",
+        );
+      }
+      // Inject visitorAuth's signingKey and force-enable visitor tokens.
+      // The enabled=true here is required: without visitorAuth there is no
+      // minter; with visitorAuth, tokens MUST be enabled for it to function.
+      vt.signingKey = vaSigningKey;
+      vt.enabled = true;
+      wtOpts.visitorTokens = vt;
+      wtConfig.options = wtOpts;
+    }
+  }
+
   for (const config of configs) {
     const opts = config.options ?? {};
     let augment: Augment;

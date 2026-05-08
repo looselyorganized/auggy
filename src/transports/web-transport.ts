@@ -264,7 +264,13 @@ export function webTransport(opts: WebTransportOptions): Augment {
   }
 
   const maxMessageLength = opts.maxMessageLength ?? 4000;
-  const visitorTokensEnabled = opts.visitorTokens?.enabled !== false;
+  // F2: visitor tokens are opt-in (enabled === true) rather than opt-out
+  // (enabled !== false). Requiring an explicit signingKey at onBoot prevents
+  // the silent mismatch where webTransport boots with an ephemeral key that
+  // differs from the one visitorAuth uses to mint tokens. When configured via
+  // the augment-resolver, visitorAuth's signingKey is auto-injected and
+  // enabled is set to true. Direct callers must pass both explicitly.
+  const visitorTokensEnabled = opts.visitorTokens?.enabled === true;
   const visitorTokenTtl = opts.visitorTokens?.ttlSeconds ?? 30 * 24 * 3600;
   let signingKey: CryptoKey | null = null;
 
@@ -659,15 +665,14 @@ export function webTransport(opts: WebTransportOptions): Augment {
     async onBoot() {
       if (visitorTokensEnabled) {
         const keySource = opts.visitorTokens?.signingKey;
-        if (keySource) {
-          signingKey = await deriveSigningKey(keySource);
-        } else {
-          const ephemeral = crypto.randomUUID() + crypto.randomUUID();
-          signingKey = await deriveSigningKey(ephemeral);
-          console.warn(
-            "[web-transport] No VISITOR_SIGNING_KEY configured — using ephemeral key. Visitor tokens will not survive agent restart. Set VISITOR_SIGNING_KEY in .env for persistent visitor identity.",
+        if (!keySource) {
+          throw new Error(
+            "[web-transport] visitorTokens.enabled is true but signingKey is not set. " +
+              "If visitorAuth is mounted, the resolver should inject this automatically — file an issue if you see this. " +
+              "Otherwise, mount visitorAuth (which is the augment that mints visitor tokens) or set visitorTokens.enabled: false explicitly.",
           );
         }
+        signingKey = await deriveSigningKey(keySource);
       }
       server = Bun.serve({
         port: opts.port,

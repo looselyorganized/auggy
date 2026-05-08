@@ -261,6 +261,9 @@ describe("webTransport HTTP server", () => {
     const aug = webTransport({
       port,
       auth: { type: "bearer", token: "test-token" },
+      // F2: visitorTokens must now be explicitly enabled with a signingKey;
+      // the ephemeral-fallback path has been removed.
+      visitorTokens: { enabled: true, signingKey: "test-signing-key" },
     });
     const agent = defineAgent(
       { name: "test", model: "mock", augments: [createIdentityAugment("test"), aug] },
@@ -758,6 +761,8 @@ describe("webTransport HTTP server", () => {
     const aug = webTransport({
       port,
       auth: { type: "bearer", token: "test-token" },
+      // F2: explicit signingKey required; ephemeral fallback removed.
+      visitorTokens: { enabled: true, signingKey: "test-signing-key" },
     });
     const agent = defineAgent(
       {
@@ -1042,6 +1047,8 @@ describe("webTransport HTTP server", () => {
     const aug = webTransport({
       port,
       auth: { type: "bearer", token: "test-token" },
+      // F2: explicit signingKey required; ephemeral fallback removed.
+      visitorTokens: { enabled: true, signingKey: "test-signing-key" },
     });
     const agent = defineAgent(
       { name: "test", model: "mock", augments: [createIdentityAugment("test"), aug] },
@@ -1100,6 +1107,8 @@ describe("webTransport HTTP server", () => {
     const aug = webTransport({
       port,
       auth: { type: "bearer", token: "test-token" },
+      // F2: explicit signingKey required; ephemeral fallback removed.
+      visitorTokens: { enabled: true, signingKey: "test-signing-key" },
     });
     const agent = defineAgent(
       { name: "test", model: "mock", augments: [createIdentityAugment("test"), aug] },
@@ -1147,6 +1156,8 @@ describe("webTransport HTTP server", () => {
     const aug = webTransport({
       port,
       auth: { type: "bearer", token: "test-token" },
+      // F2: explicit signingKey required; ephemeral fallback removed.
+      visitorTokens: { enabled: true, signingKey: "test-signing-key" },
     });
     const agent = defineAgent(
       { name: "test", model: "mock", augments: [createIdentityAugment("test"), aug] },
@@ -1188,6 +1199,27 @@ describe("webTransport HTTP server", () => {
     } finally {
       await agent.stop();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// F2: throws when visitorTokens.enabled=true but signingKey unset
+// ---------------------------------------------------------------------------
+
+describe("webTransport visitorTokens.enabled guard (fix F2)", () => {
+  it("throws if visitorTokens.enabled is true but signingKey is unset", async () => {
+    // The ephemeral fallback has been removed. A misconfigured agent (enabled
+    // without a signingKey) must fail loudly at boot rather than silently
+    // minting tokens that don't survive a restart.
+    const model = createMockModel({ response: "ok" });
+    const port = 18964;
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: "test-token" },
+      visitorTokens: { enabled: true }, // signingKey intentionally absent
+    });
+    const agent = defineAgent({ name: "test", model: "mock", augments: [aug] }, model);
+    await expect(agent.start()).rejects.toThrow(/signingKey/);
   });
 });
 
