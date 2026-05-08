@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { visitorAuth } from "../../../src/augments/visitor-auth";
+import { createSqliteVisitorAuthStore } from "../../../src/augments/visitor-auth/storage/sqlite-store";
 import type { AgentMailClient } from "../../../src/agentmail-client";
 import type { TurnState, ToolExecuteContext, ContextBlock } from "../../../src/types";
 
@@ -829,6 +830,105 @@ describe("notifyOnFirstVerify", () => {
     // Second flow contains ONLY the visitor's magic-link mail; no operator note.
     expect(sends).toHaveLength(1);
     expect(sends[0]?.to).toEqual(["bob@example.com"]);
+    await aug.onShutdown?.();
+  });
+});
+
+describe("isVisitorRevoked (fix C1)", () => {
+  test("returns false before onBoot completes (fail-open)", () => {
+    const aug = visitorAuth({
+      publicUrl: "https://example.com",
+      dbPath,
+      agentMail: { apiKey: "am_x", inboxId: "ibx_x" },
+      signingKey: "sig",
+      _agentMailClient: {
+        send: async () => ({ status: "sent" as const, messageId: "m", threadId: "t" }),
+        getInbox: async () => ({ inboxId: "i", status: "ok" as const }),
+      } as AgentMailClient,
+    });
+    // isVisitorRevoked is accessible via the VisitorAuthAugmentExtras surface.
+    const augWithExtras = aug as typeof aug & { isVisitorRevoked: (id: string) => boolean };
+    // Not yet booted — fail-open: returns false rather than erroring.
+    expect(augWithExtras.isVisitorRevoked("vis_anything")).toBe(false);
+  });
+
+  test("returns false for an unknown visitorId after boot", async () => {
+    const sends: { text: string }[] = [];
+    const aug = visitorAuth({
+      publicUrl: "https://example.com",
+      dbPath,
+      agentMail: { apiKey: "am_x", inboxId: "ibx_x" },
+      signingKey: "sig",
+      _agentMailClient: {
+        send: async (i: { text: string }) => { sends.push({ text: i.text }); return { status: "sent" as const, messageId: "m", threadId: "t" }; },
+        getInbox: async () => ({ inboxId: "i", status: "ok" as const }),
+      } as AgentMailClient,
+    });
+    await aug.onBoot?.();
+    const augWithExtras = aug as typeof aug & { isVisitorRevoked: (id: string) => boolean };
+    expect(augWithExtras.isVisitorRevoked("vis_no_such_id")).toBe(false);
+    await aug.onShutdown?.();
+  });
+
+  test("returns false for an active (non-revoked) visitor", async () => {
+    const sends: { text: string }[] = [];
+    const aug = visitorAuth({
+      publicUrl: "https://example.com",
+      dbPath,
+      agentMail: { apiKey: "am_x", inboxId: "ibx_x" },
+      signingKey: "sig",
+      _agentMailClient: {
+        send: async (i: { text: string }) => { sends.push({ text: i.text }); return { status: "sent" as const, messageId: "m", threadId: "t" }; },
+        getInbox: async () => ({ inboxId: "i", status: "ok" as const }),
+      } as AgentMailClient,
+    });
+    await aug.onBoot?.();
+    // Go through verify flow to get a vis_<uuid> visitor id.
+    const resp = await flowThroughVerify(aug, "active@example.com", "th-active", sends);
+    expect(resp.status).toBe(200);
+    const html = await resp.text();
+    const tokenJsonMatch = html.match(/var token = ("(?:\\.|[^"\\])*");/);
+    const visToken = JSON.parse(tokenJsonMatch![1]!) as string;
+    const visitorId = JSON.parse(atob(visToken.split(".")[0]!)).visitorId as string;
+
+    const augWithExtras = aug as typeof aug & { isVisitorRevoked: (id: string) => boolean };
+    // Active visitor: not revoked.
+    expect(augWithExtras.isVisitorRevoked(visitorId)).toBe(false);
+    await aug.onShutdown?.();
+  });
+
+  test("returns true after revokeByEmail is called on the visitor's email", async () => {
+    const sends: { text: string }[] = [];
+    const aug = visitorAuth({
+      publicUrl: "https://example.com",
+      dbPath,
+      agentMail: { apiKey: "am_x", inboxId: "ibx_x" },
+      signingKey: "sig",
+      _agentMailClient: {
+        send: async (i: { text: string }) => { sends.push({ text: i.text }); return { status: "sent" as const, messageId: "m", threadId: "t" }; },
+        getInbox: async () => ({ inboxId: "i", status: "ok" as const }),
+      } as AgentMailClient,
+    });
+    await aug.onBoot?.();
+    const resp = await flowThroughVerify(aug, "revoke@example.com", "th-revoke", sends);
+    expect(resp.status).toBe(200);
+    const html = await resp.text();
+    const tokenJsonMatch = html.match(/var token = ("(?:\\.|[^"\\])*");/);
+    const visToken = JSON.parse(tokenJsonMatch![1]!) as string;
+    const visitorId = JSON.parse(atob(visToken.split(".")[0]!)).visitorId as string;
+
+    const augWithExtras = aug as typeof aug & { isVisitorRevoked: (id: string) => boolean };
+    // Not yet revoked.
+    expect(augWithExtras.isVisitorRevoked(visitorId)).toBe(false);
+
+    // Revoke directly via the store (simulating `auggy visitors --revoke`).
+    const seedStore = createSqliteVisitorAuthStore({ dbPath });
+    seedStore.initialize();
+    seedStore.revokeByEmail("revoke@example.com", "operator", Date.now());
+    seedStore.close();
+
+    // isVisitorRevoked reads from the live DB — must now return true.
+    expect(augWithExtras.isVisitorRevoked(visitorId)).toBe(true);
     await aug.onShutdown?.();
   });
 });

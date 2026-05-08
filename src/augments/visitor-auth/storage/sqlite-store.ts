@@ -107,6 +107,7 @@ export function createSqliteVisitorAuthStore(
   let findMostRecentStmt: Statement | null = null;
   let hasNotifiedStmt: Statement | null = null;
   let markNotifiedStmt: Statement | null = null;
+  let findByIdStmt: Statement | null = null;
 
   function ensurePrepared(): void {
     if (issueStmt) return;
@@ -181,6 +182,7 @@ export function createSqliteVisitorAuthStore(
     markNotifiedStmt = db.prepare(
       `INSERT OR IGNORE INTO first_verify_notifications (email, notified_at) VALUES (?, ?)`,
     );
+    findByIdStmt = db.prepare(`SELECT * FROM verified_visitors WHERE visitor_id = ?`);
   }
 
   return {
@@ -295,6 +297,11 @@ export function createSqliteVisitorAuthStore(
       if (!visRow) return null;
       revokeStmt!.run(now, reason, email);
       return visRow.visitor_id;
+    },
+    findVisitorById(visitorId: string): VerifiedVisitorRow | null {
+      ensurePrepared();
+      const row = findByIdStmt!.get(visitorId) as VerifiedRow | undefined;
+      return row ? rowToVerified(row) : null;
     },
     unrevokeAndRotate(
       email: string,

@@ -372,6 +372,50 @@ describe("createSqliteVisitorAuthStore", () => {
     });
   });
 
+  describe("findVisitorById", () => {
+    test("returns null for an unknown visitorId", () => {
+      expect(store.findVisitorById("vis_does_not_exist")).toBeNull();
+    });
+
+    test("returns the row for a known non-revoked visitor", () => {
+      const now = 1_700_000_000_000;
+      store.recordVerifiedVisitor({
+        visitorId: "vis_known",
+        email: "known@example.com",
+        verifiedAt: now,
+        lastSeenAt: null,
+        reverifyDueAt: now + 90 * 86_400_000,
+        revoked: false,
+        revokedAt: null,
+        revokedReason: null,
+      });
+      const row = store.findVisitorById("vis_known");
+      expect(row).not.toBeNull();
+      expect(row?.visitorId).toBe("vis_known");
+      expect(row?.email).toBe("known@example.com");
+      expect(row?.revoked).toBe(false);
+    });
+
+    test("returns the row for a known revoked visitor (revoked=true)", () => {
+      const now = 1_700_000_000_000;
+      store.recordVerifiedVisitor({
+        visitorId: "vis_revoked",
+        email: "revoked@example.com",
+        verifiedAt: now,
+        lastSeenAt: null,
+        reverifyDueAt: now + 90 * 86_400_000,
+        revoked: false,
+        revokedAt: null,
+        revokedReason: null,
+      });
+      store.revokeByEmail("revoked@example.com", "operator", now + 1000);
+      const row = store.findVisitorById("vis_revoked");
+      expect(row).not.toBeNull();
+      expect(row?.revoked).toBe(true);
+      expect(row?.revokedReason).toBe("operator");
+    });
+  });
+
   describe("findMostRecentTokenForPeer", () => {
     test("returns null when peer has no tokens", () => {
       expect(store.findMostRecentTokenForPeer("anon-none", Date.now())).toBeNull();
