@@ -488,9 +488,10 @@ export async function layeredMemory(opts: LayeredMemoryOptions): Promise<Augment
    */
   async function maybeFlushOnPromotion(
     threadId: string,
-    currentPeerId: string,
+    currentPeer: import("../../types").PeerIdentity,
     ctx: SchedulerContext,
   ): Promise<void> {
+    const currentPeerId = currentPeer.id;
     const priorPeerId = threadPeerHistory.get(threadId);
     if (!priorPeerId) return; // first turn on this thread
     if (priorPeerId === currentPeerId) return; // same peer, no promotion
@@ -507,6 +508,9 @@ export async function layeredMemory(opts: LayeredMemoryOptions): Promise<Augment
     const last = buffered[buffered.length - 1];
     if (!last) return;
     const combinedParts = buffered.flatMap((t) => t.parts);
+    // The buffered transcripts were recorded under the OLD anonymous identity —
+    // preserve that in the combined transcript (historical record of what
+    // the peer said while anonymous).
     const combinedTranscript: Transcript = {
       turnId: last.turnId,
       threadId: last.threadId,
@@ -518,7 +522,6 @@ export async function layeredMemory(opts: LayeredMemoryOptions): Promise<Augment
     };
 
     const flushSourceTurnId = last.turnId;
-    const flushPeer = last.peer;
     const payload: AutoSaveTriggerPayload = {
       transcript: combinedTranscript,
       sourceTurnId: flushSourceTurnId,
@@ -542,7 +545,10 @@ export async function layeredMemory(opts: LayeredMemoryOptions): Promise<Augment
       threadId,
       timestamp: Date.now(),
       source: AUTO_SAVE_TRIGGER_SOURCE,
-      peer: flushPeer,
+      // Use the NEW recognized peer identity, not the old anon peer.
+      // Budget caps and turn gates key off trigger.peer, so the flush
+      // must target the recognized peer to get correct accounting.
+      peer: currentPeer,
       payload,
     };
     try {
@@ -590,9 +596,10 @@ export async function layeredMemory(opts: LayeredMemoryOptions): Promise<Augment
     const threadId = transcript.threadId;
 
     // Decision 5: detect anonymous→recognized promotion and flush
-    // anonymous-bound buffer to the OLD peer-id BEFORE we apply the
-    // current peer's cadence.
-    await maybeFlushOnPromotion(threadId, peerId, ctx);
+    // anonymous-bound buffer BEFORE we apply the current peer's cadence.
+    // Pass the full peer object so trigger.peer targets the recognized
+    // identity (budget caps and turn gates key off trigger.peer).
+    await maybeFlushOnPromotion(threadId, transcript.peer, ctx);
 
     // Update thread→peer history AFTER promotion detection so the
     // detector compares against the prior turn's identity.

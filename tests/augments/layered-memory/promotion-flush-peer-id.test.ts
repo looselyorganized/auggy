@@ -20,6 +20,7 @@ import type {
   MemoryEntry,
   NamespaceMemoryProvider,
   PeerIdentity,
+  Transcript,
   TurnTrigger,
 } from "@/types";
 import { createMockModel } from "@tests/fixtures/mock-model";
@@ -55,6 +56,165 @@ function searchOf(augment: Augment): NamespaceMemoryProvider["search"] {
   }
   return (provider as NamespaceMemoryProvider).search;
 }
+
+describe("layeredMemory — promotion-flush trigger.peer fix (fix F2 Codex H3)", () => {
+  let cleanup: (() => Promise<void>) | null = null;
+
+  afterEach(async () => {
+    if (cleanup) await cleanup();
+    cleanup = null;
+  });
+
+  test("promotion flush trigger.peer targets the NEW recognized peer-id (budget/gate accounting)", async () => {
+    const dir = await createTempDir();
+    cleanup = dir.cleanup;
+    const dbPath = join(dir.path, "memory-trigger-peer.db");
+
+    const THREAD_ID = "th-trigger-peer-fix";
+    const ANON_PEER_ID = `anon-${THREAD_ID}`;
+    const RECOGNIZED_PEER_ID = "vis_trigger_test_uuid";
+
+    // Capture injected triggers so we can assert on trigger.peer.id.
+    const injectedTriggers: TurnTrigger[] = [];
+
+    const mockEngine = {
+      complete: async (_prompt: string) => ({
+        text: `[{"subject":"p","predicate":"q","object":"r","confidence":0.9,"isVerbatim":false}]`,
+        costUsd: 0.001,
+      }),
+    };
+
+    const lm = await layeredMemory({
+      backend: "sqlite",
+      dbPath,
+      namespace: "ep",
+      retentionDays: 90,
+      autoSave: {
+        enabled: true,
+        extractionFrequency: {
+          public: {
+            anonymous: "session-end-only",
+            recognized: "every-turn",
+          },
+        },
+        engine: mockEngine,
+      },
+    });
+
+    // Build a mock SchedulerContext that captures injected triggers.
+    const anonPeer: PeerIdentity = {
+      id: ANON_PEER_ID,
+      kind: "human",
+      trustLevel: "public",
+      publicSubstate: "anonymous",
+      sourceAugment: "web",
+    };
+    const recognizedPeer: PeerIdentity = {
+      id: RECOGNIZED_PEER_ID,
+      kind: "human",
+      trustLevel: "public",
+      publicSubstate: "recognized",
+      sourceAugment: "web",
+    };
+
+    // Simulate two anonymous turns buffered, then call scheduleAfterTurn
+    // with the recognized peer to trigger maybeFlushOnPromotion.
+    // We access scheduleAfterTurn via the augment's returned hook.
+    const scheduleAfterTurn = (lm as unknown as { scheduleAfterTurn?: (r: import("@/types").TurnResult, ctx: import("@/types").SchedulerContext) => Promise<void> }).scheduleAfterTurn;
+    if (!scheduleAfterTurn) {
+      throw new Error("scheduleAfterTurn hook not found on layeredMemory augment");
+    }
+
+    // Helper to build a minimal TurnResult for testing.
+    function makeTurnResult(turnId: string, peer: PeerIdentity): import("@/types").TurnResult {
+      return {
+        turnId,
+        success: true,
+        status: "completed",
+        toolCalls: [],
+        trace: {
+          turnId,
+          threadId: THREAD_ID,
+          timestamp: Date.now(),
+          duration: 10,
+          trigger: { type: "message", sourceAugment: "web" },
+          contextAssembly: { augmentBlocks: [], preambleTokens: 0, toolSchemaTokens: 0, historyTokens: 0, totalTokens: 0, budgetUsed: 0 },
+          toolSelection: { totalTools: 0, phase1Used: false, mountedTools: [], withheldTools: [] },
+          inferenceSteps: [],
+          capabilityChecks: [],
+        },
+      };
+    }
+
+    // Build a mock transcript.
+    function makeTranscript(turnId: string, peer: PeerIdentity): Transcript {
+      return {
+        turnId,
+        threadId: THREAD_ID,
+        peer,
+        parts: [{ kind: "text", text: "hello" }],
+        toolCalls: [],
+        startedAt: Date.now(),
+        endedAt: Date.now(),
+      };
+    }
+
+    function makeCtx(transcript: Transcript): import("@/types").SchedulerContext {
+      return {
+        getCompletedTranscript: async () => transcript,
+        inject: async (trigger: TurnTrigger): Promise<import("@/types").TurnResult> => {
+          injectedTriggers.push(trigger);
+          // Return a minimal stub TurnResult so the type contract is satisfied.
+          return {
+            turnId: trigger.turnId ?? "stub",
+            success: true,
+            status: "completed",
+            toolCalls: [],
+            trace: {
+              turnId: trigger.turnId ?? "stub",
+              threadId: trigger.threadId ?? "stub",
+              timestamp: Date.now(),
+              duration: 0,
+              trigger: { type: "internal", sourceAugment: "stub" },
+              contextAssembly: { augmentBlocks: [], preambleTokens: 0, toolSchemaTokens: 0, historyTokens: 0, totalTokens: 0, budgetUsed: 0 },
+              toolSelection: { totalTools: 0, phase1Used: false, mountedTools: [], withheldTools: [] },
+              inferenceSteps: [],
+              capabilityChecks: [],
+            },
+          };
+        },
+      };
+    }
+
+    // Two anonymous turns to fill the buffer.
+    for (let i = 1; i <= 2; i++) {
+      const tr = makeTranscript(`anon-${i}`, anonPeer);
+      await scheduleAfterTurn.call(lm, makeTurnResult(`anon-${i}`, anonPeer), makeCtx(tr));
+    }
+
+    // No triggers yet (anonymous turns buffer).
+    expect(injectedTriggers).toHaveLength(0);
+
+    // Recognized turn — triggers promotion flush.
+    const recTr = makeTranscript("rec-1", recognizedPeer);
+    await scheduleAfterTurn.call(lm, makeTurnResult("rec-1", recognizedPeer), makeCtx(recTr));
+
+    // At least one trigger injected (the promotion flush).
+    expect(injectedTriggers.length).toBeGreaterThanOrEqual(1);
+
+    // The promotion-flush trigger MUST target the NEW recognized peer-id.
+    // Before Fix 2, trigger.peer was last.peer (the old anon peer), so
+    // budget caps for the anonymous peer applied to the recognized flush.
+    const flushTrigger = injectedTriggers.find(
+      (t) => typeof t.turnId === "string" && t.turnId.startsWith("auto-save-flush-"),
+    );
+    expect(flushTrigger).toBeDefined();
+    expect(flushTrigger!.peer?.id).toBe(RECOGNIZED_PEER_ID);
+    // The payload's peerId must also be the recognized peer.
+    const payload = flushTrigger!.payload as Record<string, unknown>;
+    expect(payload.peerId).toBe(RECOGNIZED_PEER_ID);
+  });
+});
 
 describe("layeredMemory — promotion-flush peerId regression (fix F1)", () => {
   let cleanup: (() => Promise<void>) | null = null;
