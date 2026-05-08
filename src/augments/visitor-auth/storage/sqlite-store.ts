@@ -112,6 +112,9 @@ export function createSqliteVisitorAuthStore(
        VALUES (?, ?, ?, ?, ?, ?, 0, ?)`,
     );
     // Atomic consume — single UPDATE, decision in changes().
+    // Strict `expires_at > ?` (not `>=`) is the security-conservative choice:
+    // a token whose expiry equals `now` is treated as expired, never as valid.
+    // findOpenStmt below uses the same boundary for consistency.
     consumeStmt = db.prepare(
       `UPDATE visitor_auth_tokens
          SET consumed = 1, consumed_at = ?
@@ -125,6 +128,9 @@ export function createSqliteVisitorAuthStore(
         WHERE peer_id = ? AND consumed = 0 AND expires_at > ?
         ORDER BY issued_at DESC LIMIT 1`,
     );
+    // Marks all unconsumed tokens for the peer as consumed, including expired
+    // ones. Sweeping expired-and-open is intentional cleanup — they're already
+    // unredeemable; tidying them keeps the table consistent.
     invalidateStmt = db.prepare(
       `UPDATE visitor_auth_tokens
          SET consumed = 1, consumed_at = ?
@@ -147,8 +153,11 @@ export function createSqliteVisitorAuthStore(
          SET revoked = 1, revoked_at = ?, revoked_reason = ?
        WHERE email = ? AND revoked = 0`,
     );
+    // Filter `revoked = 0` so a second revoke call returns null instead of
+    // re-asserting success on an already-revoked row (callers test
+    // `revokeByEmail(...) !== null` as the "did this revoke happen?" signal).
     revokeReadStmt = db.prepare(
-      `SELECT visitor_id FROM verified_visitors WHERE email = ?`,
+      `SELECT visitor_id FROM verified_visitors WHERE email = ? AND revoked = 0`,
     );
     hasNotifiedStmt = db.prepare(
       `SELECT email FROM first_verify_notifications WHERE email = ?`,
@@ -179,6 +188,12 @@ export function createSqliteVisitorAuthStore(
       ensurePrepared();
       const result = consumeStmt!.run(now, token, now);
       if (result.changes === 0) return { consumed: false };
+      // changes === 1 proves the row exists and we just transitioned it.
+      // The follow-up SELECT reads the row's bound email/peer_id/thread_id
+      // for the caller; the `if (!row)` guard below is defensive against
+      // an impossible-in-practice race (separate connection deleting the
+      // row between UPDATE and SELECT) — Bun's single-connection sync
+      // model rules it out, but the cost of the guard is one branch.
       const row = consumeReadStmt!.get(token) as
         | { email: string; peer_id: string; thread_id: string }
         | undefined;
