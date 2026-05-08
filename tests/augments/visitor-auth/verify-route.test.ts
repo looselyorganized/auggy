@@ -160,4 +160,75 @@ describe("visitorAuth verify route", () => {
     expect(res.status).toBe(503);
     await aug.onShutdown?.();
   });
+
+  test("re-verification of an existing email reuses the original visitorId", async () => {
+    const dbPath = join(tmp, "va-rev.db");
+    const sendCalls: { text: string }[] = [];
+    const aug = visitorAuth({
+      publicUrl: "https://zip.test",
+      dbPath,
+      agentMail: { apiKey: "am_x", inboxId: "ibx_x" },
+      signingKey: "shared-key",
+      // Open per-peer rate budget so we can fire two requests for the same email
+      // from two different anonymous peers in one test.
+      rateLimit: { perHour: 5, perDay: 10 },
+      _agentMailClient: {
+        send: async (i: { text: string }) => {
+          sendCalls.push({ text: i.text });
+          return { status: "sent" as const, messageId: "m", threadId: "t" };
+        },
+      } as never,
+    });
+    await aug.onBoot?.();
+
+    // First verify: visitor arrives anon-A.
+    const peerA = { id: "anon-A", kind: "anonymous" as const, trustLevel: "public" as const, publicSubstate: "anonymous" as const, sourceAugment: "web" };
+    await aug.onTurnStart?.({
+      turnId: "t", threadId: "thA",
+      trigger: { type: "message", turnId: "t", timestamp: 0, payload: { parts: [{ kind: "text", text: "alice@example.com" }], sourceAugment: "web", peer: peerA, timestamp: 0 } },
+      peer: peerA, toolCallsSoFar: 0, turnStartedAt: 0, metadata: {},
+    } as never);
+    await aug.tools![0]!.execute(
+      { method: "email", email: "alice@example.com" },
+      { turnId: "t", threadId: "thA", peer: peerA },
+    );
+    const url1 = sendCalls[0]!.text.match(/(https:\/\/[^\s]+)/)![1]!;
+    const r1 = await aug.httpRoutes![0]!.handler(new Request(url1), {
+      signal: new AbortController().signal,
+    });
+    expect(r1.status).toBe(200);
+    const html1 = await r1.text();
+    const tokJson1 = html1.match(/var token = ("(?:\\.|[^"\\])*");/)![1]!;
+    const tok1 = JSON.parse(tokJson1) as string;
+    const sigKey = await deriveSigningKey("shared-key");
+    const verified1 = await verifyVisitorToken(sigKey, tok1);
+    const firstVisitorId = verified1!.visitorId;
+    expect(firstVisitorId).toMatch(/^vis_/);
+
+    // Second verify: a NEW anonymous peer (anon-B) re-verifies the same email.
+    // The minted token MUST carry the same visitorId as the first verify so
+    // peer-scoped state in layered-memory remains continuous across re-verify.
+    const peerB = { id: "anon-B", kind: "anonymous" as const, trustLevel: "public" as const, publicSubstate: "anonymous" as const, sourceAugment: "web" };
+    await aug.onTurnStart?.({
+      turnId: "t2", threadId: "thB",
+      trigger: { type: "message", turnId: "t2", timestamp: 0, payload: { parts: [{ kind: "text", text: "alice@example.com" }], sourceAugment: "web", peer: peerB, timestamp: 0 } },
+      peer: peerB, toolCallsSoFar: 0, turnStartedAt: 0, metadata: {},
+    } as never);
+    await aug.tools![0]!.execute(
+      { method: "email", email: "alice@example.com" },
+      { turnId: "t2", threadId: "thB", peer: peerB },
+    );
+    const url2 = sendCalls[1]!.text.match(/(https:\/\/[^\s]+)/)![1]!;
+    const r2 = await aug.httpRoutes![0]!.handler(new Request(url2), {
+      signal: new AbortController().signal,
+    });
+    expect(r2.status).toBe(200);
+    const html2 = await r2.text();
+    const tokJson2 = html2.match(/var token = ("(?:\\.|[^"\\])*");/)![1]!;
+    const tok2 = JSON.parse(tokJson2) as string;
+    const verified2 = await verifyVisitorToken(sigKey, tok2);
+    expect(verified2!.visitorId).toBe(firstVisitorId);
+
+    await aug.onShutdown?.();
+  });
 });

@@ -273,15 +273,28 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment {
             });
           }
 
-          // Mint a fresh visitor token bound to the verified email's peer.
+          // Mint a visitor token bound to the verified email's peer.
           // Uses the SAME signing key webTransport derives from VISITOR_SIGNING_KEY,
           // so the token will verify cleanly on the next /agent/run request.
+          //
+          // CRITICAL: on re-verification of an already-known email, reuse the
+          // EXISTING visitorId so peer-scoped state in layered-memory remains
+          // continuous. Minting a fresh visitorId here would orphan the
+          // visitor's prior conversation history under the old id.
           const ttlSec = reverifyDays * 86_400;
-          const minted = await createVisitorToken(signingCryptoKey, "auggy", ttlSec);
-
-          // Record the verified-visitor row (idempotent on email — if a row exists
-          // and is not revoked, we just touch lastSeenAt instead of inserting).
           const existing = store.findVerifiedByEmail(consume.email!);
+          const reuseVisitorId =
+            existing && !existing.revoked ? existing.visitorId : undefined;
+          const minted = await createVisitorToken(
+            signingCryptoKey,
+            "auggy",
+            ttlSec,
+            reuseVisitorId,
+          );
+
+          // Record / touch the verified-visitor row. Re-verification keeps
+          // the original visitorId; fresh verification (or re-verifying after
+          // revoke) writes a new row with the freshly-minted id.
           if (existing && !existing.revoked) {
             store.touchVerifiedVisitor(consume.email!, t);
           } else {
