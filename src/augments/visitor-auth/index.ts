@@ -112,8 +112,9 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
   let booted = false;
 
   function buildVerifyUrl(token: string): string {
-    const base = opts.publicUrl.endsWith("/") ? opts.publicUrl.slice(0, -1) : opts.publicUrl;
-    return `${base}${VERIFY_PATH}?token=${encodeURIComponent(token)}`;
+    const url = new URL(VERIFY_PATH, opts.publicUrl);
+    url.searchParams.set("token", token);
+    return url.href;
   }
 
   function buildEmailBody(

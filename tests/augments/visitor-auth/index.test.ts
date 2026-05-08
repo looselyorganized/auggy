@@ -183,6 +183,93 @@ describe("visitorAuth (skeleton)", () => {
   });
 });
 
+describe("buildVerifyUrl (F6) — URL-spec-compliant construction", () => {
+  // We exercise buildVerifyUrl indirectly by reading the verify URL that ends
+  // up inside the email body sent via agentMail.send.  Each matrix entry varies
+  // publicUrl; the captured URL must be well-formed and carry exactly one
+  // `token` query parameter.
+  const uuidToken = "00000000-0000-4000-8000-000000000001";
+
+  const cases: Array<{ label: string; publicUrl: string }> = [
+    { label: "no trailing slash", publicUrl: "https://zip.test" },
+    { label: "trailing slash", publicUrl: "https://zip.test/" },
+    { label: "publicUrl with query string", publicUrl: "https://zip.test?utm=x" },
+    { label: "publicUrl with fragment", publicUrl: "https://zip.test#frag" },
+    { label: "subpath without trailing slash", publicUrl: "https://zip.test/sub" },
+    { label: "subpath with trailing slash", publicUrl: "https://zip.test/sub/" },
+  ];
+
+  for (const { label, publicUrl } of cases) {
+    test(`well-formed verify URL for: ${label}`, async () => {
+      const sendCalls: Array<{ text: string }> = [];
+      const aug = visitorAuth({
+        publicUrl,
+        dbPath,
+        agentMail: { apiKey: "am_x", inboxId: "ibx_x" },
+        signingKey: "sig",
+        _agentMailClient: fakeAgentMail({
+          send: async (input) => {
+            sendCalls.push({ text: (input as { text: string }).text });
+            return { status: "sent", messageId: "m", threadId: "t" };
+          },
+        }),
+      });
+      await aug.onBoot?.();
+
+      const peer = {
+        id: "anon-urltest",
+        kind: "anonymous" as const,
+        trustLevel: "public" as const,
+        publicSubstate: "anonymous" as const,
+        sourceAugment: "web",
+      };
+      await aug.onTurnStart?.({
+        turnId: "tu",
+        threadId: "th-url",
+        trigger: {
+          type: "message",
+          turnId: "tu",
+          timestamp: 0,
+          payload: {
+            parts: [{ kind: "text", text: "url-test@example.com" }],
+            sourceAugment: "web",
+            peer,
+            timestamp: 0,
+          },
+        },
+        peer,
+        toolCallsSoFar: 0,
+        turnStartedAt: 0,
+        metadata: {},
+      } as never);
+
+      await aug.tools![0]!.execute(
+        { method: "email", email: "url-test@example.com" },
+        { turnId: "tu", threadId: "th-url", peer },
+      );
+
+      const emailText = sendCalls[0]?.text ?? "";
+      const urlMatch = emailText.match(/(https?:\/\/[^\s]+)/);
+      expect(urlMatch).not.toBeNull();
+      const verifyUrl = new URL(urlMatch![1]!);
+
+      // Must route to /visitor-auth/verify
+      expect(verifyUrl.pathname).toBe("/visitor-auth/verify");
+      // Must have exactly one `token` param, with a UUID-shaped value
+      expect(verifyUrl.searchParams.getAll("token")).toHaveLength(1);
+      expect(verifyUrl.searchParams.get("token")).toMatch(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+      );
+      // No stray query-string carry-over from a base URL with ?utm=x etc.
+      for (const key of verifyUrl.searchParams.keys()) {
+        expect(key).toBe("token");
+      }
+
+      await aug.onShutdown?.();
+    });
+  }
+});
+
 describe("request_auth tool", () => {
   function buildAug(overrides?: {
     sendImpl?: AgentMailClient["send"];
