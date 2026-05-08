@@ -74,6 +74,30 @@ describe("buildVerifySuccessPage", () => {
     const html = buildVerifySuccessPage({ visitorToken: "t.s", email: "a@x.com" });
     expect(html.toLowerCase()).toMatch(/verified|success/);
   });
+
+  // F8: localStorage failure detection
+  test("contains both success-path and storage-fallback branches in JS (F8)", () => {
+    const html = buildVerifySuccessPage({ visitorToken: "vis_tok.sig", email: "a@x.com" });
+    // storageWorks conditional must be present
+    expect(html).toContain("storageWorks");
+    // Both branches are represented in the rendered HTML
+    expect(html.toLowerCase()).toMatch(/storage.*(blocked|denied|fallback)|fallback.*storage/);
+    // The manual-token element must exist for the fallback path
+    expect(html).toContain("manual-token");
+  });
+
+  test("storage-fallback element is present but hidden by default (F8)", () => {
+    const html = buildVerifySuccessPage({ visitorToken: "t.s", email: "a@x.com" });
+    // The fallback paragraph is in the DOM with display:none so JS can reveal it
+    expect(html).toMatch(/id="storage-fallback"[^>]*style="display:none"/);
+  });
+
+  test("manual-token element receives token via textContent, not innerHTML (F8)", () => {
+    const html = buildVerifySuccessPage({ visitorToken: "t.s", email: "a@x.com" });
+    // Token must be assigned to textContent (XSS-safe), never innerHTML
+    expect(html).toContain("manualEl.textContent = token");
+    expect(html).not.toContain("manualEl.innerHTML");
+  });
 });
 
 describe("buildVerifyFailurePage", () => {
