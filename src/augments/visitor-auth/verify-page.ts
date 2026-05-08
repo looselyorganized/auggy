@@ -81,9 +81,7 @@ p { margin: 0.5rem 0; color: #555; }
  *     success page served after the POST.
  */
 export function buildVerifyConfirmPage(input: VerifyConfirmPageInput): string {
-  const base = input.publicUrl.endsWith("/")
-    ? input.publicUrl.slice(0, -1)
-    : input.publicUrl;
+  const base = input.publicUrl.endsWith("/") ? input.publicUrl.slice(0, -1) : input.publicUrl;
   const actionUrl = `${base}/visitor-auth/verify`;
   // Token comes from validated UUID input — safe to embed as a hidden field value.
   // htmlEscape is applied for correctness even though UUIDs are [0-9a-f-] only.

@@ -258,7 +258,7 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
     if (store.isVisitorIdRevoked(visitorId)) return true;
     // Then check the current verified_visitors row state.
     const row = store.findVisitorById(visitorId);
-    return !!(row?.revoked);
+    return !!row?.revoked;
   }
 
   const augment: Augment & { isVisitorRevoked: (visitorId: string) => boolean } = {
@@ -302,13 +302,10 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
             });
           }
           // Do NOT touch the store — token is consumed only by POST.
-          return new Response(
-            buildVerifyConfirmPage({ token, publicUrl: opts.publicUrl }),
-            {
-              status: 200,
-              headers: { "content-type": "text/html; charset=utf-8" },
-            },
-          );
+          return new Response(buildVerifyConfirmPage({ token, publicUrl: opts.publicUrl }), {
+            status: 200,
+            headers: { "content-type": "text/html; charset=utf-8" },
+          });
         },
       },
       // -----------------------------------------------------------------------
@@ -404,13 +401,8 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
           //   - No row: fresh INSERT.
           if (existing && !existing.revoked) {
             store.touchVerifiedVisitor(consume.email!, t);
-          } else if (existing && existing.revoked) {
-            store.unrevokeAndRotate(
-              consume.email!,
-              minted.payload.visitorId,
-              t,
-              t + ttlSec * 1000,
-            );
+          } else if (existing?.revoked) {
+            store.unrevokeAndRotate(consume.email!, minted.payload.visitorId, t, t + ttlSec * 1000);
           } else {
             store.recordVerifiedVisitor({
               visitorId: minted.payload.visitorId,

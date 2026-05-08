@@ -338,7 +338,9 @@ export function createSqliteVisitorAuthStore(
         // If the row exists and is revoked, its old id must go into the denylist
         // so that stale tokens carrying the old id remain rejected after rotation.
         const oldRow = db
-          .prepare(`SELECT visitor_id, email FROM verified_visitors WHERE email = ? AND revoked = 1`)
+          .prepare(
+            `SELECT visitor_id, email FROM verified_visitors WHERE email = ? AND revoked = 1`,
+          )
           .get(email) as { visitor_id: string; email: string } | undefined;
 
         const result = unrevokeAndRotateStmt!.run(
@@ -352,12 +354,7 @@ export function createSqliteVisitorAuthStore(
         if (result.changes === 1 && oldRow) {
           // The old visitor_id is now gone from verified_visitors; persist it in
           // the denylist so isVisitorIdRevoked() catches it forever.
-          addRevokedStmt!.run(
-            oldRow.visitor_id,
-            oldRow.email,
-            verifiedAt,
-            "rotated-on-reverify",
-          );
+          addRevokedStmt!.run(oldRow.visitor_id, oldRow.email, verifiedAt, "rotated-on-reverify");
           rotated = true;
         } else if (result.changes === 1) {
           rotated = true;

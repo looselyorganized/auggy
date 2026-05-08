@@ -276,6 +276,6 @@ export function renderIdentityFromTemplate(values: IdentityTemplateValues): stri
  * as a literal and `$` characters in operator-supplied values aren't
  * interpreted as backreferences.
  */
-function replaceToken(source: string, token: string, value: string): string {
+function _replaceToken(source: string, token: string, value: string): string {
   return source.split(token).join(value);
 }

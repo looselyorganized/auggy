@@ -49,7 +49,7 @@ describe("createAgentMailClient", () => {
       apiKey: "am_test",
       http: mockHttp((url, body, headers) => {
         captured = { url, body };
-        capturedAuth = headers?.["authorization"] ?? "";
+        capturedAuth = headers?.authorization ?? "";
         return { status: 200, body: JSON.stringify({ message_id: "msg_1", thread_id: "thd_1" }) };
       }),
     });
@@ -105,7 +105,7 @@ describe("createAgentMailClient.getInbox", () => {
       apiKey: "am_test",
       http: mockHttp((url, _body, headers) => {
         expect(url).toBe("https://api.agentmail.to/v0/inboxes/inb_x");
-        expect(headers?.["authorization"]).toBe("Bearer am_test");
+        expect(headers?.authorization).toBe("Bearer am_test");
         return { status: 200, body: JSON.stringify({ inbox_id: "inb_x" }) };
       }),
     });

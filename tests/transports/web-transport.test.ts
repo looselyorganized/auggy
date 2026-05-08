@@ -1666,10 +1666,7 @@ describe("webTransport agentBinding (fix C2)", () => {
         agentBinding: "agent-b",
       },
     });
-    const agent = defineAgent(
-      { name: "agent-b", model: "mock", augments: [aug] },
-      model,
-    );
+    const agent = defineAgent({ name: "agent-b", model: "mock", augments: [aug] }, model);
     await agent.start();
 
     try {

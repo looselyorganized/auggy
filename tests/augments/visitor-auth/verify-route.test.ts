@@ -105,9 +105,23 @@ describe("visitorAuth verify route", () => {
       sourceAugment: "web",
     };
     await aug.onTurnStart?.({
-      turnId: "t", threadId: "th-nd",
-      trigger: { type: "message", turnId: "t", timestamp: 0, payload: { parts: [{ kind: "text", text: "nodrain@example.com" }], sourceAugment: "web", peer, timestamp: 0 } },
-      peer, toolCallsSoFar: 0, turnStartedAt: 0, metadata: {},
+      turnId: "t",
+      threadId: "th-nd",
+      trigger: {
+        type: "message",
+        turnId: "t",
+        timestamp: 0,
+        payload: {
+          parts: [{ kind: "text", text: "nodrain@example.com" }],
+          sourceAugment: "web",
+          peer,
+          timestamp: 0,
+        },
+      },
+      peer,
+      toolCallsSoFar: 0,
+      turnStartedAt: 0,
+      metadata: {},
     } as never);
     await aug.tools![0]!.execute(
       { method: "email", email: "nodrain@example.com" },
@@ -409,7 +423,12 @@ describe("visitorAuth verify route", () => {
         type: "message",
         turnId: "t1",
         timestamp: 0,
-        payload: { parts: [{ kind: "text", text: "revokeme@example.com" }], sourceAugment: "web", peer: peerA, timestamp: 0 },
+        payload: {
+          parts: [{ kind: "text", text: "revokeme@example.com" }],
+          sourceAugment: "web",
+          peer: peerA,
+          timestamp: 0,
+        },
       },
       peer: peerA,
       toolCallsSoFar: 0,
@@ -463,7 +482,12 @@ describe("visitorAuth verify route", () => {
         type: "message",
         turnId: "t2",
         timestamp: 0,
-        payload: { parts: [{ kind: "text", text: "revokeme@example.com" }], sourceAugment: "web", peer: peerB, timestamp: 0 },
+        payload: {
+          parts: [{ kind: "text", text: "revokeme@example.com" }],
+          sourceAugment: "web",
+          peer: peerB,
+          timestamp: 0,
+        },
       },
       peer: peerB,
       toolCallsSoFar: 0,

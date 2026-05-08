@@ -58,7 +58,7 @@ export function emailAppearsInRecentMessages(
   // Did the email's local-part appear in some message but with different
   // surrounding context? Useful debug hint, never surfaced to the model.
   for (const msg of messages) {
-    if (msg.text && msg.text.toLowerCase().includes(target)) {
+    if (msg.text?.toLowerCase().includes(target)) {
       return { matched: false, hint: "near-match" };
     }
   }

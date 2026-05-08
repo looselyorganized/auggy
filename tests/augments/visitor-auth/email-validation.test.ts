@@ -29,7 +29,7 @@ describe("isWellFormedEmail", () => {
   });
 
   test("rejects addresses longer than 254 chars (RFC 5321)", () => {
-    const tooLong = "a".repeat(250) + "@b.com";
+    const tooLong = `${"a".repeat(250)}@b.com`;
     expect(isWellFormedEmail(tooLong)).toBe(false);
   });
 });
