@@ -534,12 +534,12 @@ describe("resolveAugments — single-source signingKey injection (fix F2)", () =
     };
   }
 
-  test("auto-disables visitorTokens when visitorAuth is absent", async () => {
-    // webTransport declares visitorTokens.enabled: true but no visitorAuth is
-    // mounted. The resolver must force-disable visitor tokens so webTransport's
-    // onBoot does not throw (signingKey would be absent otherwise).
+  test("auto-disables visitorTokens when visitorAuth is absent and enabled is unset", async () => {
+    // webTransport with no explicit enabled setting and no visitorAuth mounted.
+    // The resolver must auto-disable visitor tokens so webTransport's onBoot
+    // does not throw (signingKey would be absent otherwise).
     const configs: AugmentConfig[] = [
-      wtConfigBase({ visitorTokens: { enabled: true } }),
+      wtConfigBase({ visitorTokens: {} }),
     ];
     // Should resolve without throwing (the force-disabled flag prevents the
     // onBoot signingKey guard from firing).
@@ -553,6 +553,94 @@ describe("resolveAugments — single-source signingKey injection (fix F2)", () =
       unknown
     >;
     expect(vt.enabled).toBe(false);
+  });
+
+  test("respects explicit visitorTokens.enabled: true when visitorAuth is absent (custom minter scenario)", async () => {
+    // Operator explicitly set enabled: true without mounting visitorAuth.
+    // The resolver must NOT force-disable — this is the custom-minter scenario.
+    // Instead it should warn but leave enabled: true in place.
+    const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const configs: AugmentConfig[] = [
+        wtConfigBase({ visitorTokens: { enabled: true, signingKey: "custom-minter-key" } }),
+      ];
+      const augments = await resolveAugments(configs, TMP);
+      expect(augments).toHaveLength(1);
+      // enabled must remain true — resolver should not override explicit setting.
+      const wtCfg = configs[0]!;
+      const vt = ((wtCfg.options as Record<string, unknown>).visitorTokens ?? {}) as Record<
+        string,
+        unknown
+      >;
+      expect(vt.enabled).toBe(true);
+      // Must warn about no visitorAuth mounted.
+      const warnCalls = warnSpy.mock.calls;
+      const hasWarn = warnCalls.some(
+        (args) => typeof args[0] === "string" && /no visitorAuth augment is mounted/.test(args[0]),
+      );
+      expect(hasWarn).toBe(true);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  test("respects explicit visitorTokens.enabled: false when visitorAuth is mounted", async () => {
+    // Operator explicitly set enabled: false even though visitorAuth is mounted.
+    // The resolver must NOT force-enable — respect operator intent and warn.
+    const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const vaKey = "my-signing-key";
+      const configs: AugmentConfig[] = [
+        vaConfigWithKey(vaKey),
+        wtConfigBase({ visitorTokens: { enabled: false } }),
+      ];
+      const augments = await resolveAugments(configs, TMP);
+      expect(augments).toHaveLength(2);
+      // enabled must remain false.
+      const wtCfg = configs[1]!;
+      const vt = ((wtCfg.options as Record<string, unknown>).visitorTokens ?? {}) as Record<
+        string,
+        unknown
+      >;
+      expect(vt.enabled).toBe(false);
+      // Must warn about this unusual config.
+      const warnCalls = warnSpy.mock.calls;
+      const hasWarn = warnCalls.some(
+        (args) =>
+          typeof args[0] === "string" &&
+          /visitorAuth is mounted but.*enabled is explicitly false/.test(args[0]),
+      );
+      expect(hasWarn).toBe(true);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  test("iterates all webTransport configs — both get signingKey injection", async () => {
+    // Two webTransport blocks: both should receive the injected signingKey.
+    const vaKey = "shared-signing-key";
+    const configs: AugmentConfig[] = [
+      vaConfigWithKey(vaKey),
+      {
+        type: "webTransport",
+        name: "web-a",
+        options: { port: 9124, auth: { type: "bearer", token: "tok-a" } },
+      },
+      {
+        type: "webTransport",
+        name: "web-b",
+        options: { port: 9125, auth: { type: "bearer", token: "tok-b" } },
+      },
+    ];
+    await resolveAugments(configs, TMP);
+    for (const wtCfg of configs.filter((c) => c.type === "webTransport")) {
+      const vt = ((wtCfg.options as Record<string, unknown>).visitorTokens ?? {}) as Record<
+        string,
+        unknown
+      >;
+      expect(vt.signingKey).toBe(vaKey);
+      expect(vt.enabled).toBe(true);
+    }
   });
 
   test("auto-injects signingKey from visitorAuth into webTransport", async () => {
