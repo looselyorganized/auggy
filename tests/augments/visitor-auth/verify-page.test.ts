@@ -46,9 +46,13 @@ describe("buildVerifySuccessPage", () => {
     const html = buildVerifySuccessPage({ visitorToken: evil, email: "a@x.com" });
     // The evil </script> must NOT terminate our script block. We escape via
     // Unicode `<\/script>` substitution or JSON-encode the slash.
-    const insideOurScript = html.match(/<script>([\s\S]*?)<\/script>/);
+    // Case-insensitive: HTML tag matching MUST be case-insensitive (an
+    // attacker injecting `<SCRIPT>` would terminate the block too) — both
+    // for what we expect inside our script block and for the negative
+    // assertion about `</script>` sequences leaking through.
+    const insideOurScript = html.match(/<script>([\s\S]*?)<\/script>/i);
     expect(insideOurScript).not.toBeNull();
-    expect(insideOurScript?.[1]).not.toContain("</script>");
+    expect(insideOurScript?.[1]).not.toMatch(/<\/script>/i);
   });
 
   test("HTML-escapes the email when displayed", () => {
