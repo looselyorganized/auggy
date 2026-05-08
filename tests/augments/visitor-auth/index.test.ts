@@ -63,7 +63,19 @@ describe("visitorAuth (skeleton)", () => {
         signingKey: "sig",
         _agentMailClient: fakeAgentMail(),
       }),
-    ).toThrow(/publicUrl/);
+    ).toThrow(/is not a valid URL/);
+  });
+
+  test("factory throws with protocol-specific error for non-http(s) publicUrl", () => {
+    expect(() =>
+      visitorAuth({
+        publicUrl: "ftp://example.com",
+        dbPath,
+        agentMail: { apiKey: "am_x", inboxId: "ibx_x" },
+        signingKey: "sig",
+        _agentMailClient: fakeAgentMail(),
+      }),
+    ).toThrow(/must use http:\/\/ or https:\/\//);
   });
 
   test("factory throws for missing AgentMail config", () => {
