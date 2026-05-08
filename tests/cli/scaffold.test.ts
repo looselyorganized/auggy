@@ -310,6 +310,29 @@ describe("scaffoldAgent", () => {
     });
   });
 
+  describe("webTransport scaffold does not duplicate signingKey (post-F2 single-source)", () => {
+    test("scaffolded webTransport visitorTokens block does NOT contain signingKey", async () => {
+      // After Fix 4, signingKey is removed from webTransport's defaults: visitorAuth
+      // owns it, and the resolver injects it at boot. A fresh scaffold must not
+      // emit signingKey in webTransport's visitorTokens, or it would trigger the
+      // duplicate-key warning on every start.
+      const dir = scaffoldAgent({ name: "zip", targetDir: join(TMP, "zip-no-dupkey") });
+      const yaml = readFileSync(join(dir, "agent.yaml"), "utf-8");
+      const { parse } = await import("yaml");
+      const parsed = parse(yaml) as {
+        augments: Array<{ type: string; options?: Record<string, unknown> }>;
+      };
+      const webTransportAugment = parsed.augments.find((a) => a.type === "webTransport");
+      expect(webTransportAugment).toBeDefined();
+      const vtBlock = (
+        webTransportAugment!.options?.visitorTokens as Record<string, unknown> | undefined
+      );
+      // signingKey must NOT be present in webTransport's visitorTokens.
+      // It belongs to visitorAuth's config exclusively.
+      expect(vtBlock?.signingKey).toBeUndefined();
+    });
+  });
+
   describe("YAML-safe scalar escaping (Codex Imp-4)", () => {
     test("operatorName containing quotes produces well-formed YAML", async () => {
       const tricky = 'Sam "the boss" Smith';
