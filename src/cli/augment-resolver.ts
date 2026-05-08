@@ -417,6 +417,17 @@ export async function resolveAugments(
     lateBindings.revocationCheck = va.isVisitorRevoked.bind(va);
   }
 
+  // Fix F18: warn when multiple visitorAuth augments are declared.
+  // Only the first (by index) is wired into webTransport's revocation check;
+  // tokens issued by any additional instance will not be subject to revocation
+  // enforcement. Operators must declare a single visitorAuth augment.
+  const vaCount = configs.filter((c) => c.type === "visitorAuth").length;
+  if (vaCount > 1) {
+    console.warn(
+      `[augment-resolver] Multiple visitorAuth augments detected (${vaCount}). Only the first is wired into webTransport's revocation check; tokens issued by additional instances will not be subject to revocation enforcement. This is unsupported — declare a single visitorAuth augment.`,
+    );
+  }
+
   // Fix H3: cross-augment validation — visitorAuth.agentBinding MUST match
   // webTransport.visitorTokens.agentBinding when both are configured. A mismatch
   // silently strands visitors: the magic-link flow succeeds, but the next request
