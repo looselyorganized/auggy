@@ -59,7 +59,7 @@ function resolvePaths(agentName: string, opts: VisitorsRevokeOptions): ResolvedP
   const memPathRaw =
     o.layeredMemoryDbPath === null
       ? null
-      : (o.layeredMemoryDbPath as string | undefined) ?? "./memory.db";
+      : ((o.layeredMemoryDbPath as string | undefined) ?? "./memory.db");
   return {
     agentDir,
     visitorAuthDb: resolve(agentDir, dbPath),

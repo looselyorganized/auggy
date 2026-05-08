@@ -9,7 +9,12 @@ function mockHttp(
     headers?: Record<string, string>,
   ) => { status: number; body: string; headers?: Record<string, string> },
 ) {
-  function makeResponse(url: string, status: number, body: string, extraHeaders?: Record<string, string>): HttpResponse {
+  function makeResponse(
+    url: string,
+    status: number,
+    body: string,
+    extraHeaders?: Record<string, string>,
+  ): HttpResponse {
     const respHeaders = new Headers({
       "content-type": "application/json",
       ...(extraHeaders ?? {}),
@@ -126,8 +131,12 @@ describe("createAgentMailClient.getInbox", () => {
     const client = createAgentMailClient({
       apiKey: "am_test",
       http: {
-        post: async () => { throw new Error("ECONNREFUSED"); },
-        get: async () => { throw new Error("ECONNREFUSED"); },
+        post: async () => {
+          throw new Error("ECONNREFUSED");
+        },
+        get: async () => {
+          throw new Error("ECONNREFUSED");
+        },
       },
     });
     const r = await client.getInbox("inb_x");

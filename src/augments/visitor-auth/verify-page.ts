@@ -91,7 +91,8 @@ export function buildVerifySuccessPage(input: VerifySuccessPageInput): string {
 
 const FAILURE_COPY: Record<string, string> = {
   expired: "This verification link has expired. Please ask the agent to send a new one.",
-  consumed: "This verification link has already been used. If you didn't expect this, request a new link.",
+  consumed:
+    "This verification link has already been used. If you didn't expect this, request a new link.",
   unknown: "We don't recognize this verification link. It may be malformed or out of date.",
   malformed: "This verification link is malformed.",
 };

@@ -22,10 +22,7 @@ interface ResolvedAgentPaths {
   visitorAuthDb: string;
 }
 
-function resolveAgentPaths(
-  agentName: string,
-  opts: VisitorsCommandOptions,
-): ResolvedAgentPaths {
+function resolveAgentPaths(agentName: string, opts: VisitorsCommandOptions): ResolvedAgentPaths {
   const entry = getAgent(agentName, { auggyDir: opts.auggyDir });
   if (!entry) {
     throw new Error(
@@ -106,9 +103,7 @@ export async function runVisitorsList(
     formatTs(r.lastSeenAt),
     statusLabel(r),
   ]);
-  const widths = headers.map((h, i) =>
-    Math.max(h.length, ...data.map((row) => row[i]!.length)),
-  );
+  const widths = headers.map((h, i) => Math.max(h.length, ...data.map((row) => row[i]!.length)));
   log(headers.map((h, i) => pad(h, widths[i]!)).join("  "));
   for (const row of data) log(row.map((c, i) => pad(c, widths[i]!)).join("  "));
 }

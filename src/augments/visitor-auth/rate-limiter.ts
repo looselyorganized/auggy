@@ -24,9 +24,7 @@ export interface VisitorAuthRateLimiter {
   forget(peerId: string): void;
 }
 
-export function createVisitorAuthRateLimiter(
-  caps: VisitorAuthRateLimit,
-): VisitorAuthRateLimiter {
+export function createVisitorAuthRateLimiter(caps: VisitorAuthRateLimit): VisitorAuthRateLimiter {
   const windows = new Map<string, number[]>();
 
   function pruneAndGet(peerId: string, now: number): number[] {

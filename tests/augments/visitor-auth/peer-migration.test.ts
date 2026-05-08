@@ -67,11 +67,31 @@ describe("anonymous → recognized peer-id migration on verify", () => {
       } as never,
     });
     await aug.onBoot?.();
-    const peer = { id: "anon-th-mig", kind: "anonymous" as const, trustLevel: "public" as const, publicSubstate: "anonymous" as const, sourceAugment: "web" };
+    const peer = {
+      id: "anon-th-mig",
+      kind: "anonymous" as const,
+      trustLevel: "public" as const,
+      publicSubstate: "anonymous" as const,
+      sourceAugment: "web",
+    };
     await aug.onTurnStart?.({
-      turnId: "t", threadId: "th-mig",
-      trigger: { type: "message", turnId: "t", timestamp: 0, payload: { parts: [{ kind: "text", text: "alice@example.com" }], sourceAugment: "web", peer, timestamp: 0 } },
-      peer, toolCallsSoFar: 0, turnStartedAt: 0, metadata: {},
+      turnId: "t",
+      threadId: "th-mig",
+      trigger: {
+        type: "message",
+        turnId: "t",
+        timestamp: 0,
+        payload: {
+          parts: [{ kind: "text", text: "alice@example.com" }],
+          sourceAugment: "web",
+          peer,
+          timestamp: 0,
+        },
+      },
+      peer,
+      toolCallsSoFar: 0,
+      turnStartedAt: 0,
+      metadata: {},
     } as never);
     await aug.tools![0]!.execute(
       { method: "email", email: "alice@example.com" },
@@ -115,11 +135,31 @@ describe("anonymous → recognized peer-id migration on verify", () => {
       } as never,
     });
     await aug.onBoot?.();
-    const peer = { id: "anon-skip", kind: "anonymous" as const, trustLevel: "public" as const, publicSubstate: "anonymous" as const, sourceAugment: "web" };
+    const peer = {
+      id: "anon-skip",
+      kind: "anonymous" as const,
+      trustLevel: "public" as const,
+      publicSubstate: "anonymous" as const,
+      sourceAugment: "web",
+    };
     await aug.onTurnStart?.({
-      turnId: "t", threadId: "th-skip",
-      trigger: { type: "message", turnId: "t", timestamp: 0, payload: { parts: [{ kind: "text", text: "alice@example.com" }], sourceAugment: "web", peer, timestamp: 0 } },
-      peer, toolCallsSoFar: 0, turnStartedAt: 0, metadata: {},
+      turnId: "t",
+      threadId: "th-skip",
+      trigger: {
+        type: "message",
+        turnId: "t",
+        timestamp: 0,
+        payload: {
+          parts: [{ kind: "text", text: "alice@example.com" }],
+          sourceAugment: "web",
+          peer,
+          timestamp: 0,
+        },
+      },
+      peer,
+      toolCallsSoFar: 0,
+      turnStartedAt: 0,
+      metadata: {},
     } as never);
     await aug.tools![0]!.execute(
       { method: "email", email: "alice@example.com" },
@@ -151,11 +191,31 @@ describe("anonymous → recognized peer-id migration on verify", () => {
       } as never,
     });
     await aug.onBoot?.();
-    const peer = { id: "anon-absent", kind: "anonymous" as const, trustLevel: "public" as const, publicSubstate: "anonymous" as const, sourceAugment: "web" };
+    const peer = {
+      id: "anon-absent",
+      kind: "anonymous" as const,
+      trustLevel: "public" as const,
+      publicSubstate: "anonymous" as const,
+      sourceAugment: "web",
+    };
     await aug.onTurnStart?.({
-      turnId: "t", threadId: "th-absent",
-      trigger: { type: "message", turnId: "t", timestamp: 0, payload: { parts: [{ kind: "text", text: "alice@example.com" }], sourceAugment: "web", peer, timestamp: 0 } },
-      peer, toolCallsSoFar: 0, turnStartedAt: 0, metadata: {},
+      turnId: "t",
+      threadId: "th-absent",
+      trigger: {
+        type: "message",
+        turnId: "t",
+        timestamp: 0,
+        payload: {
+          parts: [{ kind: "text", text: "alice@example.com" }],
+          sourceAugment: "web",
+          peer,
+          timestamp: 0,
+        },
+      },
+      peer,
+      toolCallsSoFar: 0,
+      turnStartedAt: 0,
+      metadata: {},
     } as never);
     await aug.tools![0]!.execute(
       { method: "email", email: "alice@example.com" },

@@ -181,14 +181,24 @@ describe("createSqliteVisitorAuthStore", () => {
     test("listVerifiedVisitors orders by verifiedAt DESC", () => {
       const t = 1_700_000_000_000;
       store.recordVerifiedVisitor({
-        visitorId: "v1", email: "older@x", verifiedAt: t,
-        lastSeenAt: null, reverifyDueAt: t + 86_400_000,
-        revoked: false, revokedAt: null, revokedReason: null,
+        visitorId: "v1",
+        email: "older@x",
+        verifiedAt: t,
+        lastSeenAt: null,
+        reverifyDueAt: t + 86_400_000,
+        revoked: false,
+        revokedAt: null,
+        revokedReason: null,
       });
       store.recordVerifiedVisitor({
-        visitorId: "v2", email: "newer@x", verifiedAt: t + 1000,
-        lastSeenAt: null, reverifyDueAt: t + 1000 + 86_400_000,
-        revoked: false, revokedAt: null, revokedReason: null,
+        visitorId: "v2",
+        email: "newer@x",
+        verifiedAt: t + 1000,
+        lastSeenAt: null,
+        reverifyDueAt: t + 1000 + 86_400_000,
+        revoked: false,
+        revokedAt: null,
+        revokedReason: null,
       });
       const rows = store.listVerifiedVisitors();
       expect(rows[0]?.email).toBe("newer@x");
@@ -203,7 +213,9 @@ describe("createSqliteVisitorAuthStore", () => {
         verifiedAt: now,
         lastSeenAt: null,
         reverifyDueAt: now + 86_400_000,
-        revoked: false, revokedAt: null, revokedReason: null,
+        revoked: false,
+        revokedAt: null,
+        revokedReason: null,
       });
       const visId = store.revokeByEmail("revoke@x", "operator", now + 1000);
       expect(visId).toBe("vis_r");
@@ -224,7 +236,9 @@ describe("createSqliteVisitorAuthStore", () => {
         verifiedAt: now,
         lastSeenAt: null,
         reverifyDueAt: now + 86_400_000,
-        revoked: false, revokedAt: null, revokedReason: null,
+        revoked: false,
+        revokedAt: null,
+        revokedReason: null,
       });
       expect(store.revokeByEmail("double@x", "operator", now + 1000)).toBe("vis_dr");
       // Second call: row already revoked → null, not a false-positive visitorId.
@@ -254,16 +268,24 @@ describe("createSqliteVisitorAuthStore", () => {
     test("returns 'open' for an unconsumed, unexpired token", () => {
       const now = 1_700_000_000_000;
       store.issueToken({
-        token: "tk-open", email: "e@x", peerId: "p", threadId: "th",
-        expiresAt: now + 60_000, sourceMessageId: null,
+        token: "tk-open",
+        email: "e@x",
+        peerId: "p",
+        threadId: "th",
+        expiresAt: now + 60_000,
+        sourceMessageId: null,
       });
       expect(store.tokenStatus("tk-open", now)).toBe("open");
     });
     test("returns 'consumed' after a successful consume", () => {
       const now = 1_700_000_000_000;
       store.issueToken({
-        token: "tk-c", email: "e@x", peerId: "p", threadId: "th",
-        expiresAt: now + 60_000, sourceMessageId: null,
+        token: "tk-c",
+        email: "e@x",
+        peerId: "p",
+        threadId: "th",
+        expiresAt: now + 60_000,
+        sourceMessageId: null,
       });
       store.consumeToken("tk-c", now);
       expect(store.tokenStatus("tk-c", now + 1)).toBe("consumed");
@@ -271,8 +293,12 @@ describe("createSqliteVisitorAuthStore", () => {
     test("returns 'expired' for an unconsumed token past its TTL", () => {
       const now = 1_700_000_000_000;
       store.issueToken({
-        token: "tk-e", email: "e@x", peerId: "p", threadId: "th",
-        expiresAt: now + 1000, sourceMessageId: null,
+        token: "tk-e",
+        email: "e@x",
+        peerId: "p",
+        threadId: "th",
+        expiresAt: now + 1000,
+        sourceMessageId: null,
       });
       expect(store.tokenStatus("tk-e", now + 5000)).toBe("expired");
     });
@@ -290,7 +316,9 @@ describe("createSqliteVisitorAuthStore", () => {
         verifiedAt: t,
         lastSeenAt: null,
         reverifyDueAt: t + 86_400_000,
-        revoked: false, revokedAt: null, revokedReason: null,
+        revoked: false,
+        revokedAt: null,
+        revokedReason: null,
       });
       store.initialize();
       expect(store.findVerifiedByEmail("e@x")?.visitorId).toBe("v");
@@ -304,12 +332,20 @@ describe("createSqliteVisitorAuthStore", () => {
     test("returns the most-recent issuance regardless of consumed/expired", () => {
       const now = 1_700_000_000_000;
       store.issueToken({
-        token: "t-old", email: "e@x", peerId: "anon-A", threadId: "th",
-        expiresAt: now + 1000, sourceMessageId: null,
+        token: "t-old",
+        email: "e@x",
+        peerId: "anon-A",
+        threadId: "th",
+        expiresAt: now + 1000,
+        sourceMessageId: null,
       });
       store.issueToken({
-        token: "t-new", email: "e@x", peerId: "anon-A", threadId: "th",
-        expiresAt: now + 60_000, sourceMessageId: null,
+        token: "t-new",
+        email: "e@x",
+        peerId: "anon-A",
+        threadId: "th",
+        expiresAt: now + 60_000,
+        sourceMessageId: null,
       });
       // Both issuances stamp `issued_at = Date.now()` server-side, so two
       // tokens issued in the same millisecond may sort either way. Ensure

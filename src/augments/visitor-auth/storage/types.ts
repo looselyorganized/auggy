@@ -11,7 +11,7 @@ export interface IssueTokenArgs {
   email: string;
   peerId: string;
   threadId: string;
-  expiresAt: number;          // epoch ms
+  expiresAt: number; // epoch ms
   sourceMessageId: string | null;
 }
 
@@ -27,11 +27,11 @@ export interface ConsumeTokenResult {
 }
 
 export interface VerifiedVisitorRow {
-  visitorId: string;          // vis_<uuid>
+  visitorId: string; // vis_<uuid>
   email: string;
-  verifiedAt: number;         // epoch ms
+  verifiedAt: number; // epoch ms
   lastSeenAt: number | null;
-  reverifyDueAt: number;      // epoch ms
+  reverifyDueAt: number; // epoch ms
   revoked: boolean;
   revokedAt: number | null;
   revokedReason: string | null;
@@ -40,8 +40,8 @@ export interface VerifiedVisitorRow {
 export interface OpenTokenForPeer {
   token: string;
   email: string;
-  expiresAt: number;          // epoch ms
-  issuedAt: number;           // epoch ms
+  expiresAt: number; // epoch ms
+  issuedAt: number; // epoch ms
 }
 
 export interface VisitorAuthStore {
@@ -78,7 +78,10 @@ export interface VisitorAuthStore {
    * Used by context() to surface "verification expired" state. Returns null
    * if the peer has never had a token issued.
    */
-  findMostRecentTokenForPeer(peerId: string, now: number): {
+  findMostRecentTokenForPeer(
+    peerId: string,
+    now: number,
+  ): {
     email: string;
     expiresAt: number;
     issuedAt: number;
