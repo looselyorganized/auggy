@@ -4,7 +4,7 @@
 
 ## Why these specifically
 
-Eleven augments ship in `src/augments/` (plus `webTransport` under `src/transports/`):
+Twelve augments ship in `src/augments/` (plus `webTransport` under `src/transports/`):
 - **`fileMemory`** — file-backed static memory provider
 - **`supabaseMemory`** — Supabase-backed namespace memory provider
 - **`layeredMemory`** — peer-scoped episodic memory with L0–L3 provenance tiers (SQLite-backed)
@@ -17,8 +17,9 @@ Eleven augments ship in `src/augments/` (plus `webTransport` under `src/transpor
 - **`budgets`** — per-trust-level turn budgets + dollar ceiling
 - **`notify`** — outbound messaging to operator-configured destinations
 - **`turnControl`** — `request_input` for hand-off prompts
+- **`visitorAuth`** — email magic-link verification; promotes anonymous → recognized
 
-The selection is deliberate. Together they cover: identity, episodic memory, web chat, Telegram chat, filesystem access, external knowledge, shell execution, cost management, operator alerting, and turn-end input requests. Anything beyond this (model routing, evals, retrieval over special data sources) belongs in application-specific augments that live in the application's repo, not in Auggy itself.
+The selection is deliberate. Together they cover: identity, episodic memory, web chat, Telegram chat, filesystem access, external knowledge, shell execution, cost management, operator alerting, turn-end input requests, and visitor email verification. Anything beyond this (model routing, evals, retrieval over special data sources) belongs in application-specific augments that live in the application's repo, not in Auggy itself.
 
 The principle: Auggy ships the *contracts* (`MemoryProviderSpec`, `TransportSpec`) and a small set of *reference implementations* that prove the contracts work. Domain-specific augments are the user's responsibility.
 
@@ -981,6 +982,41 @@ Pre-call cost projection (estimating the turn's cost before running it) is defer
 - **No rebuild path.** If the database is deleted, usage history is lost. The budgets store does not reconstruct from external state.
 
 For a comprehensive operator reference, see [docs/12-budgets.md](./12-budgets.md).
+
+## `visitorAuth` — Email magic-link verification
+
+```yaml
+augments:
+  - type: visitorAuth
+    name: visitor-auth
+    options:
+      publicUrl: ${AUGGY_PUBLIC_URL}
+      dbPath: ./visitor-auth.db
+      agentMail:
+        apiKey: ${AGENTMAIL_API_KEY}
+        inboxId: ${AGENTMAIL_INBOX_ID}
+      signingKey: ${VISITOR_SIGNING_KEY}
+      rateLimit: { perHour: 1, perDay: 3 }
+      reverifyAfterDays: 90
+      tokenTtlMinutes: 15
+      layeredMemoryDbPath: ./memory.db
+```
+
+### What it is
+
+The first member of the auth-augment family. `visitorAuth` lets a public-anonymous visitor verify ownership of an email address and become public-recognized — same `vis_<uuid>` identity returns across sessions, enabling memory continuity and trust elevation.
+
+It adds three things to the agent: a model-callable `request_auth({method: "email", email})` tool that sends the verification email; a public-unauthenticated HTTP route `GET /visitor-auth/verify?token=<uuid>` that mounts on the agent's `webTransport`; and a per-turn context block summarizing the active peer's verification state. Verification state is persisted in `<agent-dir>/visitor-auth.db` (token + verified-visitor tables).
+
+### Key constraint
+
+`visitorAuth.signingKey` and `webTransport.visitorTokens.signingKey` MUST be the same value. If they drift, visitor tokens minted by visitorAuth will fail webTransport's verification on the next request.
+
+### Bundled skill
+
+`visitorAuth` ships `src/augments/visitor-auth/skill/SKILL.md` with model teaching on the `request_auth` tool — when to offer verification, confused-deputy awareness, and rate-limit messaging. Copied into `<agent-dir>/skills/visitor-auth/SKILL.md` at `auggy create`/`auggy add` time; install retroactively with `auggy add-skill visitor-auth`.
+
+For the full operator reference (config, env vars, security posture, ops commands, troubleshooting), see [docs/19-visitor-auth.md](./19-visitor-auth.md).
 
 ## Why these aren't exhaustive
 

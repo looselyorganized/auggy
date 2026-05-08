@@ -132,6 +132,7 @@ Built-in augments. This directory is intentionally small — only augments that 
 | `org-context.ts` | `orgContext(opts)` — org knowledge augment (manifest + `org_fetch`). Pulls from the agent-context-api. |
 | `notify.ts` | `notify(opts)` — outbound messaging augment (webhook + Telegram adapters, per-peer rate limits). Replaces the removed `org_escalate` tool. |
 | `bash.ts` | `bash(opts)` — scoped shell execution (allowlist, working dir, timeout). |
+| `visitor-auth/` | `visitorAuth(opts)` — first auth-augment-family member; email magic-link verification (`request_auth` tool + `/visitor-auth/verify` HTTP route). |
 
 See [07-built-in-augments.md](./07-built-in-augments.md).
 
