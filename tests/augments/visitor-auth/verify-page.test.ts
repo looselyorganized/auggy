@@ -21,7 +21,12 @@ describe("buildVerifySuccessPage", () => {
   test("calls history.replaceState to drop the token from the URL", () => {
     const html = buildVerifySuccessPage({ visitorToken: "tok.sig", email: "alice@example.com" });
     expect(html).toContain("history.replaceState");
-    expect(html).toContain("/visitor-auth/verified");
+    // Must use a relative path so it resolves correctly under subpath deployments.
+    // The current location during verify is <publicUrl>/visitor-auth/verify?token=...
+    // so "./verified" resolves to <publicUrl>/visitor-auth/verified regardless of prefix.
+    expect(html).toContain("'./verified'");
+    // Must NOT use the old root-relative hardcoded path.
+    expect(html).not.toContain("'/visitor-auth/verified'");
   });
 
   test("calls localStorage.setItem with the visitor token", () => {

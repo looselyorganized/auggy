@@ -126,7 +126,7 @@ export function buildVerifySuccessPage(input: VerifySuccessPageInput): string {
     localStorage.setItem('auggy-visitor-token', token);
   } catch (_) { /* storage may be denied; surface manual fallback below */ }
   try {
-    history.replaceState(null, '', '/visitor-auth/verified');
+    history.replaceState(null, '', './verified');
   } catch (_) { /* older browsers — best-effort */ }
   var titleEl = document.getElementById('title');
   var msgEl = document.getElementById('msg');
