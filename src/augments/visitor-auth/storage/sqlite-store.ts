@@ -103,6 +103,7 @@ export function createSqliteVisitorAuthStore(
   let listVerifiedStmt: Statement | null = null;
   let revokeStmt: Statement | null = null;
   let revokeReadStmt: Statement | null = null;
+  let unrevokeAndRotateStmt: Statement | null = null;
   let findMostRecentStmt: Statement | null = null;
   let hasNotifiedStmt: Statement | null = null;
   let markNotifiedStmt: Statement | null = null;
@@ -162,6 +163,15 @@ export function createSqliteVisitorAuthStore(
     // `revokeByEmail(...) !== null` as the "did this revoke happen?" signal).
     revokeReadStmt = db.prepare(
       `SELECT visitor_id FROM verified_visitors WHERE email = ? AND revoked = 0`,
+    );
+    // Un-revoke + rotate: single UPDATE that only matches revoked rows.
+    // Returning false (changes === 0) when the row is not revoked prevents
+    // accidental identity rotation on a live account.
+    unrevokeAndRotateStmt = db.prepare(
+      `UPDATE verified_visitors
+         SET visitor_id = ?, verified_at = ?, last_seen_at = ?, reverify_due_at = ?,
+             revoked = 0, revoked_at = NULL, revoked_reason = NULL
+       WHERE email = ? AND revoked = 1`,
     );
     findMostRecentStmt = db.prepare(
       `SELECT email, expires_at, issued_at, consumed FROM visitor_auth_tokens
@@ -285,6 +295,22 @@ export function createSqliteVisitorAuthStore(
       if (!visRow) return null;
       revokeStmt!.run(now, reason, email);
       return visRow.visitor_id;
+    },
+    unrevokeAndRotate(
+      email: string,
+      newVisitorId: string,
+      verifiedAt: number,
+      reverifyDueAt: number,
+    ): boolean {
+      ensurePrepared();
+      const result = unrevokeAndRotateStmt!.run(
+        newVisitorId,
+        verifiedAt,
+        verifiedAt, // last_seen_at = verifiedAt
+        reverifyDueAt,
+        email,
+      );
+      return result.changes === 1;
     },
     hasNotifiedFirstVerifyFor(email: string): boolean {
       ensurePrepared();

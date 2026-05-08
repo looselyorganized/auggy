@@ -111,6 +111,21 @@ export interface VisitorAuthStore {
    * if the email was unknown. Used by `auggy visitors --revoke`.
    */
   revokeByEmail(email: string, reason: string, now: number): string | null;
+  /**
+   * Un-revoke a previously-revoked row and rotate to a fresh visitorId.
+   * Called by the verify route when a visitor re-verifies after their identity
+   * was revoked. A single UPDATE atomically clears revocation state, writes the
+   * new vis_<uuid>, and updates verifiedAt / lastSeenAt / reverifyDueAt.
+   *
+   * Returns true iff exactly one revoked row was updated. Returns false if the
+   * email is unknown or the row is not revoked (no-op guard).
+   */
+  unrevokeAndRotate(
+    email: string,
+    newVisitorId: string,
+    verifiedAt: number,
+    reverifyDueAt: number,
+  ): boolean;
   /** True iff the augment has emitted notifyOnFirstVerify for this email yet. */
   hasNotifiedFirstVerifyFor(email: string): boolean;
   /** Mark notifyOnFirstVerify as fired for this email. Idempotent. */

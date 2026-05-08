@@ -325,6 +325,53 @@ describe("createSqliteVisitorAuthStore", () => {
     });
   });
 
+  describe("unrevokeAndRotate", () => {
+    test("un-revokes a revoked row and rotates to a new visitorId", () => {
+      const now = 1_700_000_000_000;
+      store.recordVerifiedVisitor({
+        visitorId: "vis_old",
+        email: "revoked@x",
+        verifiedAt: now,
+        lastSeenAt: null,
+        reverifyDueAt: now + 86_400_000,
+        revoked: false,
+        revokedAt: null,
+        revokedReason: null,
+      });
+      store.revokeByEmail("revoked@x", "operator", now + 1000);
+      expect(store.findVerifiedByEmail("revoked@x")?.revoked).toBe(true);
+
+      const ok = store.unrevokeAndRotate("revoked@x", "vis_new", now + 2000, now + 90 * 86_400_000);
+      expect(ok).toBe(true);
+
+      const row = store.findVerifiedByEmail("revoked@x");
+      expect(row?.revoked).toBe(false);
+      expect(row?.visitorId).toBe("vis_new");
+      expect(row?.revokedAt).toBeNull();
+      expect(row?.revokedReason).toBeNull();
+      expect(row?.verifiedAt).toBe(now + 2000);
+      expect(row?.lastSeenAt).toBe(now + 2000);
+    });
+
+    test("unrevokeAndRotate is a no-op on a non-revoked row (returns false)", () => {
+      const now = 1_700_000_000_000;
+      store.recordVerifiedVisitor({
+        visitorId: "vis_live",
+        email: "live@x",
+        verifiedAt: now,
+        lastSeenAt: null,
+        reverifyDueAt: now + 86_400_000,
+        revoked: false,
+        revokedAt: null,
+        revokedReason: null,
+      });
+      const ok = store.unrevokeAndRotate("live@x", "vis_new2", now + 1000, now + 90 * 86_400_000);
+      expect(ok).toBe(false);
+      // Row unchanged
+      expect(store.findVerifiedByEmail("live@x")?.visitorId).toBe("vis_live");
+    });
+  });
+
   describe("findMostRecentTokenForPeer", () => {
     test("returns null when peer has no tokens", () => {
       expect(store.findMostRecentTokenForPeer("anon-none", Date.now())).toBeNull();
