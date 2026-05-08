@@ -470,21 +470,28 @@ export async function layeredMemory(opts: LayeredMemoryOptions): Promise<Augment
 
   /**
    * Detect that an anonymous→recognized promotion has just happened on
-   * `threadId` and, if so, flush the buffered anonymous-bound
-   * transcripts by injecting an extraction trigger bound to the OLD
-   * anonymous peer-id. Per Decision 5 of the memorist design: facts
-   * extracted from anonymous-bound transcripts must land under the OLD
-   * `anon-<threadId>` peer-id namespace; the recognized peer's own
-   * subsequent turns auto-save under the NEW peer-id.
+   * `threadId` and, if so, flush the buffered anonymous-bound transcripts
+   * by injecting an extraction trigger. Per the post-PR-1 fix, the flush
+   * targets the NEW recognized peer-id (currentPeer), NOT the prior
+   * anonymous peer-id — this preserves visitorAuth's verify-time peer-id
+   * migration. Pragmatic deviation from the original "Decision 5" of the
+   * memorist design (which scoped facts to their original identity);
+   * once a visitor verifies, they own the conversation history they
+   * participated in. See inline comment at the payload construction
+   * site for full rationale.
    *
-   * The detection rule is:
+   * The trigger's `peer` field is also set to `currentPeer` (not the old
+   * anon peer) so that budget caps and turn gates apply to the recognized
+   * identity — preventing the anonymous peer's (possibly exhausted) caps
+   * from blocking the flush.
+   *
+   * The detection rule is unchanged:
    *   - the previously-observed peerId for this threadId is `anon-<threadId>`,
    *   - the current peerId is different, AND
    *   - there are buffered transcripts under the prior anonymous peerId.
    *
    * Best-effort. ctx.inject failures are caught and logged; the buffered
-   * transcripts are dropped on failure (the prior identity has no durable
-   * binding the agent can return to — see spec table risk row).
+   * transcripts are dropped on failure.
    */
   async function maybeFlushOnPromotion(
     threadId: string,
@@ -573,12 +580,13 @@ export async function layeredMemory(opts: LayeredMemoryOptions): Promise<Augment
    * Errors during inject are caught and logged — best-effort per
    * ADR-027 Decision 2.
    *
-   * Decision 5 (anonymous→recognized promotion): before applying the
-   * standard frequency dispatch, check whether the just-completed turn's
-   * peerId differs from the prior peerId for the same threadId AND the
-   * prior peerId was the anonymous form (`anon-<threadId>`). If so,
-   * inject a one-off extraction-flush trigger bound to the OLD
-   * anonymous peer so buffered facts land under the prior identity.
+   * Promotion flush (post-PR-1 behavior): before applying the standard
+   * frequency dispatch, check whether the just-completed turn's peerId
+   * differs from the prior peerId for the same threadId AND the prior
+   * peerId was the anonymous form (`anon-<threadId>`). If so, inject a
+   * one-off extraction-flush trigger targeting the NEW recognized peer
+   * (see `maybeFlushOnPromotion` JSDoc for why this deviates from the
+   * original "Decision 5" of the memorist design).
    */
   async function scheduleAfterTurn(result: TurnResult, ctx: SchedulerContext): Promise<void> {
     if (!autoSaveEnabled) return;
