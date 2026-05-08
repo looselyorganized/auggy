@@ -806,3 +806,48 @@ describe("resolveAugments — single-source signingKey injection (fix F2)", () =
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Fix 7 (Opus F5): identity-loss visibility when visitorAuth is removed but
+// webTransport's visitorTokens.signingKey is still set
+// ---------------------------------------------------------------------------
+
+describe("resolveAugments — identity-loss warning when visitorAuth removed (fix F5/Opus)", () => {
+  test("warns when webTransport has signingKey set but visitorAuth is absent", async () => {
+    // Scenario: operator previously had visitorAuth mounted and removed it from
+    // agent.yaml between boots, but forgot to remove signingKey from webTransport's
+    // visitorTokens block. Previously-issued tokens would stop verifying (no minter
+    // registered, and webTransport can't verify tokens it didn't issue), but the
+    // operator gets no signal about this identity loss.
+    //
+    // The resolver must warn loudly so the operator can take corrective action
+    // (either re-mount visitorAuth or remove the stale signingKey).
+    const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const configs: AugmentConfig[] = [
+        {
+          type: "webTransport",
+          name: "web",
+          options: {
+            port: 9124,
+            auth: { type: "bearer", token: "tok" },
+            visitorTokens: {
+              // signingKey is set (operator had visitorAuth before) but no visitorAuth
+              // is mounted in this boot — all previously-issued tokens are stranded.
+              signingKey: "orphaned-signing-key",
+            },
+          },
+        },
+      ];
+      await resolveAugments(configs, TMP);
+      const warnCalls = warnSpy.mock.calls;
+      const identityLossWarn = warnCalls.find(
+        (args) =>
+          typeof args[0] === "string" && /no visitorAuth augment is mounted/.test(args[0]),
+      );
+      expect(identityLossWarn).toBeDefined();
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+});
