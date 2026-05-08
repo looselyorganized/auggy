@@ -353,3 +353,70 @@ describe("resolveAugments — visitorAuth", () => {
     expect(augments).toHaveLength(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Cross-augment validation (fix H3): visitorAuth.agentBinding vs
+// webTransport.visitorTokens.agentBinding must match
+// ---------------------------------------------------------------------------
+
+describe("resolveAugments — cross-augment agentBinding validation (fix H3)", () => {
+  function vaConfig(agentBinding: string | undefined): AugmentConfig {
+    return {
+      type: "visitorAuth",
+      name: "visitor-auth",
+      options: {
+        publicUrl: "https://zip.test",
+        agentMail: { apiKey: "am_x", inboxId: "ibx_x" },
+        signingKey: "sig-x",
+        ...(agentBinding !== undefined ? { agentBinding } : {}),
+      },
+    };
+  }
+
+  function wtConfig(agentBinding: string | undefined): AugmentConfig {
+    return {
+      type: "webTransport",
+      name: "web",
+      options: {
+        port: 9123,
+        auth: { type: "bearer", token: "tok" },
+        visitorTokens: {
+          signingKey: "sig-x",
+          ...(agentBinding !== undefined ? { agentBinding } : {}),
+        },
+      },
+    };
+  }
+
+  test("throws when visitorAuth.agentBinding differs from webTransport.visitorTokens.agentBinding", async () => {
+    await expect(
+      resolveAugments([vaConfig("agent-A"), wtConfig("agent-B")], TMP),
+    ).rejects.toThrow(/agentBinding/);
+  });
+
+  test("succeeds when both agentBindings are the same value", async () => {
+    const augments = await resolveAugments([vaConfig("same-id"), wtConfig("same-id")], TMP);
+    expect(augments).toHaveLength(2);
+  });
+
+  test("throws when visitorAuth has agentBinding but webTransport does not", async () => {
+    await expect(
+      resolveAugments([vaConfig("agent-A"), wtConfig(undefined)], TMP),
+    ).rejects.toThrow(/agentBinding/);
+  });
+
+  test("does not throw when neither augment is present", async () => {
+    // Solo webFetch — no visitorAuth, no webTransport: no validation needed.
+    const augments = await resolveAugments(
+      [{ type: "webFetch", name: "fetch", options: {} }],
+      TMP,
+    );
+    expect(augments).toHaveLength(1);
+  });
+
+  test("does not throw when only one of visitorAuth/webTransport is present", async () => {
+    // visitorAuth alone (no webTransport): no mismatch possible.
+    const augments = await resolveAugments([vaConfig("agent-A")], TMP);
+    expect(augments).toHaveLength(1);
+  });
+});
