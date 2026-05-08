@@ -516,3 +516,88 @@ describe("context() block", () => {
     await aug.onShutdown?.();
   });
 });
+
+function makeAugWithFirstVerify(dbPath: string) {
+  const sends: { to: string[]; subject: string; text: string; inboxId: string }[] = [];
+  const aug = visitorAuth({
+    publicUrl: "https://zip.test",
+    dbPath,
+    agentMail: { apiKey: "am_x", inboxId: "ibx_x" },
+    signingKey: "sig",
+    notifyOnFirstVerify: { to: "ops@x.com", subjectPrefix: "[New verified] " },
+    _agentMailClient: {
+      send: async (i: { to: string[]; subject: string; text: string; inboxId: string }) => {
+        sends.push({ to: i.to, subject: i.subject, text: i.text, inboxId: i.inboxId });
+        return { status: "sent" as const, messageId: "m", threadId: "t" };
+      },
+      getInbox: async () => ({ inboxId: "ibx_x", status: "ok" as const }),
+    } as never,
+  });
+  return { aug, sends };
+}
+
+async function flowThroughVerify(
+  aug: ReturnType<typeof visitorAuth>,
+  email: string,
+  threadId: string,
+  sends: { text: string }[],
+) {
+  const peer = {
+    id: `anon-${threadId}`,
+    kind: "anonymous" as const,
+    trustLevel: "public" as const,
+    publicSubstate: "anonymous" as const,
+    sourceAugment: "web",
+  };
+  await aug.onTurnStart?.({
+    turnId: "t",
+    threadId,
+    trigger: {
+      type: "message",
+      turnId: "t",
+      timestamp: 0,
+      payload: { parts: [{ kind: "text", text: email }], sourceAugment: "web", peer, timestamp: 0 },
+    },
+    peer,
+    toolCallsSoFar: 0,
+    turnStartedAt: 0,
+    metadata: {},
+  } as never);
+  await aug.tools![0]!.execute(
+    { method: "email", email },
+    { turnId: "t", threadId, peer } as ToolExecuteContext,
+  );
+  // sends[0] is the visitor's magic-link mail; pull the URL out of its body.
+  const verifyUrl = sends[0]!.text.match(/(https:\/\/[^\s]+)/)![1]!;
+  return aug.httpRoutes![0]!.handler(new Request(verifyUrl), {
+    signal: new AbortController().signal,
+  });
+}
+
+describe("notifyOnFirstVerify", () => {
+  test("fires AgentMail to operator on first verify per email", async () => {
+    const { aug, sends } = makeAugWithFirstVerify(dbPath);
+    await aug.onBoot?.();
+    const res = await flowThroughVerify(aug, "alice@example.com", "th-fv", sends);
+    expect(res.status).toBe(200);
+    // Two sends: visitor's magic link FIRST, then operator notification SECOND.
+    expect(sends).toHaveLength(2);
+    expect(sends[0]?.to).toEqual(["alice@example.com"]);
+    expect(sends[1]?.to).toEqual(["ops@x.com"]);
+    expect(sends[1]?.subject).toContain("[New verified]");
+    expect(sends[1]?.text).toContain("alice@example.com");
+    await aug.onShutdown?.();
+  });
+
+  test("does not fire on subsequent verifications of the same email", async () => {
+    const { aug, sends } = makeAugWithFirstVerify(dbPath);
+    await aug.onBoot?.();
+    await flowThroughVerify(aug, "bob@example.com", "th-b1", sends);
+    sends.length = 0;
+    await flowThroughVerify(aug, "bob@example.com", "th-b2", sends);
+    // Second flow contains ONLY the visitor's magic-link mail; no operator note.
+    expect(sends).toHaveLength(1);
+    expect(sends[0]?.to).toEqual(["bob@example.com"]);
+    await aug.onShutdown?.();
+  });
+});

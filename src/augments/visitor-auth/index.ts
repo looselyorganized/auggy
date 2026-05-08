@@ -323,6 +323,31 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment {
             minted.payload.visitorId,
           );
 
+          // Operator notification on first verify per email (optional).
+          if (opts.notifyOnFirstVerify) {
+            const cfg = opts.notifyOnFirstVerify;
+            if (!store.hasNotifiedFirstVerifyFor(consume.email!)) {
+              // Mark BEFORE the send so a transient AgentMail outage doesn't
+              // result in repeated notifications.
+              store.markNotifiedFirstVerifyFor(consume.email!, t);
+              const subject = `${cfg.subjectPrefix ?? "[New verified visitor] "}${consume.email}`;
+              const text = `A new visitor verified their email: ${consume.email!} (vis_id: ${minted.payload.visitorId}).`;
+              try {
+                await agentMail.send({
+                  inboxId: opts.agentMail.inboxId,
+                  to: [cfg.to],
+                  subject,
+                  text,
+                  labels: ["visitor-auth", "first-verify-operator-note"],
+                });
+              } catch (err) {
+                console.warn(
+                  `[visitor-auth] first-verify operator notification failed: ${(err as Error).message}`,
+                );
+              }
+            }
+          }
+
           return new Response(
             buildVerifySuccessPage({ visitorToken: minted.token, email: consume.email! }),
             {
