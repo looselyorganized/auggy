@@ -200,7 +200,7 @@ function resolveWebTransport(
   lateBindings: { revocationCheck: ((id: string) => boolean) | null },
 ): Augment {
   const vtBase = opts.visitorTokens as
-    | { enabled?: boolean; ttlSeconds?: number; signingKey?: string }
+    | { enabled?: boolean; ttlSeconds?: number; signingKey?: string; agentBinding?: string }
     | undefined;
   return webTransport({
     port: opts.port as number,
@@ -295,6 +295,7 @@ function resolveVisitorAuth(opts: Record<string, unknown>, agentDir: string): Au
     dbPath: resolvePath(dbPath, agentDir),
     agentMail: opts.agentMail as VisitorAuthOptions["agentMail"],
     signingKey: opts.signingKey as string,
+    agentBinding: opts.agentBinding as string | undefined,
     rateLimit: opts.rateLimit as VisitorAuthOptions["rateLimit"],
     reverifyAfterDays: opts.reverifyAfterDays as number | undefined,
     tokenTtlMinutes: opts.tokenTtlMinutes as number | undefined,

@@ -57,6 +57,16 @@ export interface WebTransportOptions {
      * without waiting for their HMAC TTL to expire.
      */
     revocationCheck?: (visitorId: string) => boolean;
+    /**
+     * Stable identifier for this agent used to scope visitor tokens (fix C2).
+     * MUST match visitorAuth's `agentBinding` option. Default: `"auggy"`.
+     * Tokens minted for a different agentBinding are rejected, preventing
+     * cross-agent replay when two agents share the same signing key.
+     *
+     * Only enforce when explicitly configured — leaving this unset means the
+     * default `"auggy"` is used, which matches the visitorAuth default.
+     */
+    agentBinding?: string;
   };
   /**
    * Optional URL to redirect GET / to. When set, `GET /` returns 302 to this URL.
@@ -407,6 +417,15 @@ export function webTransport(opts: WebTransportOptions): Augment {
             visitorPayload = null;
           }
         }
+        // Fix C2: reject tokens minted for a different agentBinding.
+        // Only enforced when agentBinding is explicitly configured; leaving it
+        // unset skips the check for backward compatibility.
+        if (visitorPayload) {
+          const expectedBinding = opts.visitorTokens?.agentBinding;
+          if (expectedBinding !== undefined && visitorPayload.agentId !== expectedBinding) {
+            visitorPayload = null;
+          }
+        }
       }
       if (!visitorPayload) {
         // Check if this looks like an agent auth attempt — don't issue visitor
@@ -422,7 +441,14 @@ export function webTransport(opts: WebTransportOptions): Augment {
           // NEXT request. Do NOT assign issued.payload to visitorPayload here: the
           // current request presented either no token or a bad one, so it stays
           // public:anonymous. The freshly-issued token is for future requests only.
-          const agentName = kernel?.getAgentCard()?.provider?.name ?? "auggy";
+          //
+          // Fix C2: use agentBinding when configured, else agent-card name.
+          // This ensures the anon-token and the visitorAuth-minted token agree on
+          // the agentId embedded in the payload, enabling the agentBinding check below.
+          const agentName =
+            opts.visitorTokens?.agentBinding ??
+            kernel?.getAgentCard()?.provider?.name ??
+            "auggy";
           const issued = await createVisitorToken(signingKey, agentName, visitorTokenTtl);
           newToken = issued.token;
           // visitorPayload intentionally left null — this request is anonymous.
