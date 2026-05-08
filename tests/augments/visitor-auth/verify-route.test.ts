@@ -74,11 +74,31 @@ describe("visitorAuth verify route", () => {
       } as never,
     });
     await aug.onBoot?.();
-    const peer = { id: "anon-th2", kind: "anonymous" as const, trustLevel: "public" as const, publicSubstate: "anonymous" as const, sourceAugment: "web" };
+    const peer = {
+      id: "anon-th2",
+      kind: "anonymous" as const,
+      trustLevel: "public" as const,
+      publicSubstate: "anonymous" as const,
+      sourceAugment: "web",
+    };
     await aug.onTurnStart?.({
-      turnId: "t", threadId: "th2",
-      trigger: { type: "message", turnId: "t", timestamp: 0, payload: { parts: [{ kind: "text", text: "alice@example.com" }], sourceAugment: "web", peer, timestamp: 0 } },
-      peer, toolCallsSoFar: 0, turnStartedAt: 0, metadata: {},
+      turnId: "t",
+      threadId: "th2",
+      trigger: {
+        type: "message",
+        turnId: "t",
+        timestamp: 0,
+        payload: {
+          parts: [{ kind: "text", text: "alice@example.com" }],
+          sourceAugment: "web",
+          peer,
+          timestamp: 0,
+        },
+      },
+      peer,
+      toolCallsSoFar: 0,
+      turnStartedAt: 0,
+      metadata: {},
     } as never);
     await aug.tools![0]!.execute(
       { method: "email", email: "alice@example.com" },
@@ -123,11 +143,31 @@ describe("visitorAuth verify route", () => {
       } as never,
     });
     await aug.onBoot?.();
-    const peer = { id: "anon-th3", kind: "anonymous" as const, trustLevel: "public" as const, publicSubstate: "anonymous" as const, sourceAugment: "web" };
+    const peer = {
+      id: "anon-th3",
+      kind: "anonymous" as const,
+      trustLevel: "public" as const,
+      publicSubstate: "anonymous" as const,
+      sourceAugment: "web",
+    };
     await aug.onTurnStart?.({
-      turnId: "t", threadId: "th3",
-      trigger: { type: "message", turnId: "t", timestamp: 0, payload: { parts: [{ kind: "text", text: "carol@example.com" }], sourceAugment: "web", peer, timestamp: 0 } },
-      peer, toolCallsSoFar: 0, turnStartedAt: 0, metadata: {},
+      turnId: "t",
+      threadId: "th3",
+      trigger: {
+        type: "message",
+        turnId: "t",
+        timestamp: 0,
+        payload: {
+          parts: [{ kind: "text", text: "carol@example.com" }],
+          sourceAugment: "web",
+          peer,
+          timestamp: 0,
+        },
+      },
+      peer,
+      toolCallsSoFar: 0,
+      turnStartedAt: 0,
+      metadata: {},
     } as never);
     await aug.tools![0]!.execute(
       { method: "email", email: "carol@example.com" },
@@ -166,11 +206,31 @@ describe("visitorAuth verify route", () => {
       } as never,
     });
     await aug.onBoot?.();
-    const peer = { id: "anon-th-exp", kind: "anonymous" as const, trustLevel: "public" as const, publicSubstate: "anonymous" as const, sourceAugment: "web" };
+    const peer = {
+      id: "anon-th-exp",
+      kind: "anonymous" as const,
+      trustLevel: "public" as const,
+      publicSubstate: "anonymous" as const,
+      sourceAugment: "web",
+    };
     await aug.onTurnStart?.({
-      turnId: "t", threadId: "th-exp",
-      trigger: { type: "message", turnId: "t", timestamp: 0, payload: { parts: [{ kind: "text", text: "exp@x.com" }], sourceAugment: "web", peer, timestamp: 0 } },
-      peer, toolCallsSoFar: 0, turnStartedAt: 0, metadata: {},
+      turnId: "t",
+      threadId: "th-exp",
+      trigger: {
+        type: "message",
+        turnId: "t",
+        timestamp: 0,
+        payload: {
+          parts: [{ kind: "text", text: "exp@x.com" }],
+          sourceAugment: "web",
+          peer,
+          timestamp: 0,
+        },
+      },
+      peer,
+      toolCallsSoFar: 0,
+      turnStartedAt: 0,
+      metadata: {},
     } as never);
     await aug.tools![0]!.execute(
       { method: "email", email: "exp@x.com" },
@@ -197,7 +257,9 @@ describe("visitorAuth verify route", () => {
     });
     // Deliberately do NOT call onBoot.
     const res = await aug.httpRoutes![0]!.handler(
-      new Request("https://zip.test/visitor-auth/verify?token=00000000-0000-4000-8000-000000000000"),
+      new Request(
+        "https://zip.test/visitor-auth/verify?token=00000000-0000-4000-8000-000000000000",
+      ),
       { signal: new AbortController().signal },
     );
     expect(res.status).toBe(503);
@@ -226,11 +288,31 @@ describe("visitorAuth verify route", () => {
     await aug.onBoot?.();
 
     // First verify: visitor arrives anon-A.
-    const peerA = { id: "anon-A", kind: "anonymous" as const, trustLevel: "public" as const, publicSubstate: "anonymous" as const, sourceAugment: "web" };
+    const peerA = {
+      id: "anon-A",
+      kind: "anonymous" as const,
+      trustLevel: "public" as const,
+      publicSubstate: "anonymous" as const,
+      sourceAugment: "web",
+    };
     await aug.onTurnStart?.({
-      turnId: "t", threadId: "thA",
-      trigger: { type: "message", turnId: "t", timestamp: 0, payload: { parts: [{ kind: "text", text: "alice@example.com" }], sourceAugment: "web", peer: peerA, timestamp: 0 } },
-      peer: peerA, toolCallsSoFar: 0, turnStartedAt: 0, metadata: {},
+      turnId: "t",
+      threadId: "thA",
+      trigger: {
+        type: "message",
+        turnId: "t",
+        timestamp: 0,
+        payload: {
+          parts: [{ kind: "text", text: "alice@example.com" }],
+          sourceAugment: "web",
+          peer: peerA,
+          timestamp: 0,
+        },
+      },
+      peer: peerA,
+      toolCallsSoFar: 0,
+      turnStartedAt: 0,
+      metadata: {},
     } as never);
     await aug.tools![0]!.execute(
       { method: "email", email: "alice@example.com" },
@@ -252,11 +334,31 @@ describe("visitorAuth verify route", () => {
     // Second verify: a NEW anonymous peer (anon-B) re-verifies the same email.
     // The minted token MUST carry the same visitorId as the first verify so
     // peer-scoped state in layered-memory remains continuous across re-verify.
-    const peerB = { id: "anon-B", kind: "anonymous" as const, trustLevel: "public" as const, publicSubstate: "anonymous" as const, sourceAugment: "web" };
+    const peerB = {
+      id: "anon-B",
+      kind: "anonymous" as const,
+      trustLevel: "public" as const,
+      publicSubstate: "anonymous" as const,
+      sourceAugment: "web",
+    };
     await aug.onTurnStart?.({
-      turnId: "t2", threadId: "thB",
-      trigger: { type: "message", turnId: "t2", timestamp: 0, payload: { parts: [{ kind: "text", text: "alice@example.com" }], sourceAugment: "web", peer: peerB, timestamp: 0 } },
-      peer: peerB, toolCallsSoFar: 0, turnStartedAt: 0, metadata: {},
+      turnId: "t2",
+      threadId: "thB",
+      trigger: {
+        type: "message",
+        turnId: "t2",
+        timestamp: 0,
+        payload: {
+          parts: [{ kind: "text", text: "alice@example.com" }],
+          sourceAugment: "web",
+          peer: peerB,
+          timestamp: 0,
+        },
+      },
+      peer: peerB,
+      toolCallsSoFar: 0,
+      turnStartedAt: 0,
+      metadata: {},
     } as never);
     await aug.tools![0]!.execute(
       { method: "email", email: "alice@example.com" },

@@ -233,7 +233,8 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
   },
   {
     label: "Visitor Auth",
-    description: "Email magic-link verification — promotes anonymous visitors to recognized identity",
+    description:
+      "Email magic-link verification — promotes anonymous visitors to recognized identity",
     type: "visitorAuth",
     defaultName: "visitor-auth",
     defaultOptions: {

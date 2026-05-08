@@ -279,7 +279,7 @@ function resolveVisitorAuth(opts: Record<string, unknown>, agentDir: string): Au
   const layeredMemoryDbPath =
     opts.layeredMemoryDbPath === null
       ? null
-      : (opts.layeredMemoryDbPath as string | undefined) ?? "./memory.db";
+      : ((opts.layeredMemoryDbPath as string | undefined) ?? "./memory.db");
 
   const config: VisitorAuthOptions = {
     publicUrl: opts.publicUrl as string,

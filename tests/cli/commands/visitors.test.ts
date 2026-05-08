@@ -45,7 +45,9 @@ afterEach(() => {
   rmSync(tmp, { recursive: true, force: true });
 });
 
-function seed(rows: Array<{ visitorId: string; email: string; verifiedAt: number; revoked?: boolean }>): void {
+function seed(
+  rows: Array<{ visitorId: string; email: string; verifiedAt: number; revoked?: boolean }>,
+): void {
   const store = createSqliteVisitorAuthStore({ dbPath: join(agentDir, "visitor-auth.db") });
   store.initialize();
   for (const r of rows) {

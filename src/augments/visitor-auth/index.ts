@@ -16,38 +16,17 @@ import { Database } from "bun:sqlite";
 import { z } from "zod";
 import { defineTool } from "../../helpers";
 import { createAgentMailClient, type AgentMailClient } from "../../agentmail-client";
-import {
-  createVisitorToken,
-  deriveSigningKey,
-} from "../../transports/visitor-token";
-import type {
-  Augment,
-  ContextBlock,
-  ToolExecuteContext,
-  TurnState,
-} from "../../types";
-import type {
-  RecentVisitorMessage,
-  RequestAuthResult,
-  VisitorAuthOptions,
-} from "./types";
+import { createVisitorToken, deriveSigningKey } from "../../transports/visitor-token";
+import type { Augment, ContextBlock, ToolExecuteContext, TurnState } from "../../types";
+import type { RecentVisitorMessage, RequestAuthResult, VisitorAuthOptions } from "./types";
 import {
   createSqliteVisitorAuthStore,
   type SqliteVisitorAuthStoreConfig,
 } from "./storage/sqlite-store";
 import type { VisitorAuthStore } from "./storage/types";
-import {
-  emailAppearsInRecentMessages,
-  isWellFormedEmail,
-} from "./email-validation";
-import {
-  createVisitorAuthRateLimiter,
-  type VisitorAuthRateLimiter,
-} from "./rate-limiter";
-import {
-  buildVerifyFailurePage,
-  buildVerifySuccessPage,
-} from "./verify-page";
+import { emailAppearsInRecentMessages, isWellFormedEmail } from "./email-validation";
+import { createVisitorAuthRateLimiter, type VisitorAuthRateLimiter } from "./rate-limiter";
+import { buildVerifyFailurePage, buildVerifySuccessPage } from "./verify-page";
 
 const DEFAULT_TOKEN_TTL_MIN = 15;
 const DEFAULT_REVERIFY_DAYS = 90;
@@ -127,7 +106,10 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment {
     return `${base}${VERIFY_PATH}?token=${encodeURIComponent(token)}`;
   }
 
-  function buildEmailBody(verifyUrl: string, ttlMinutes: number): { subject: string; text: string } {
+  function buildEmailBody(
+    verifyUrl: string,
+    ttlMinutes: number,
+  ): { subject: string; text: string } {
     const subject = `${subjectPrefix}Verify your email`;
     const text =
       `Click the link below to verify your email.\n\n` +
@@ -160,7 +142,10 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment {
         return fail("failed", "request_auth requires turn context with a peer identity.");
       }
       if (input.method !== "email") {
-        return fail("rejected", `method "${input.method}" not supported in this build; only "email" is available.`);
+        return fail(
+          "rejected",
+          `method "${input.method}" not supported in this build; only "email" is available.`,
+        );
       }
       const email = input.email.trim().toLowerCase();
       if (!isWellFormedEmail(email)) {
@@ -257,7 +242,10 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment {
           const url = new URL(req.url);
           const token = url.searchParams.get("token");
           // UUID-shape validation — the augment only mints v4 UUIDs.
-          if (!token || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(token)) {
+          if (
+            !token ||
+            !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(token)
+          ) {
             return new Response(buildVerifyFailurePage({ reason: "malformed" }), {
               status: 400,
               headers: { "content-type": "text/html; charset=utf-8" },
@@ -286,8 +274,7 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment {
           // visitor's prior conversation history under the old id.
           const ttlSec = reverifyDays * 86_400;
           const existing = store.findVerifiedByEmail(consume.email!);
-          const reuseVisitorId =
-            existing && !existing.revoked ? existing.visitorId : undefined;
+          const reuseVisitorId = existing && !existing.revoked ? existing.visitorId : undefined;
           const minted = await createVisitorToken(
             signingCryptoKey,
             "auggy",
@@ -510,10 +497,9 @@ function migratePeerIdOnVerify(
   try {
     db = new Database(dbPath, { readwrite: true });
     db.run("PRAGMA journal_mode = WAL");
-    const result = db.prepare(`UPDATE entries SET peer_id = ? WHERE peer_id = ?`).run(
-      newPeerId,
-      oldPeerId,
-    );
+    const result = db
+      .prepare(`UPDATE entries SET peer_id = ? WHERE peer_id = ?`)
+      .run(newPeerId, oldPeerId);
     if (result.changes > 0) {
       console.info(
         `[visitor-auth] migrated ${result.changes} memory row(s) ${oldPeerId} → ${newPeerId}`,

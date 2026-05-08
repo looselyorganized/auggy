@@ -44,28 +44,27 @@ describe("emailAppearsInRecentMessages", () => {
   });
 
   test("case-insensitive match (real-world: caps in chat)", () => {
-    expect(
-      emailAppearsInRecentMessages("alice@example.com", [m("Alice@Example.COM")]),
-    ).toEqual({ matched: true, messageId: "msg" });
+    expect(emailAppearsInRecentMessages("alice@example.com", [m("Alice@Example.COM")])).toEqual({
+      matched: true,
+      messageId: "msg",
+    });
   });
 
   test("does not match when email is absent", () => {
-    expect(
-      emailAppearsInRecentMessages("alice@example.com", [m("hi"), m("bye")]),
-    ).toEqual({ matched: false });
+    expect(emailAppearsInRecentMessages("alice@example.com", [m("hi"), m("bye")])).toEqual({
+      matched: false,
+    });
   });
 
   test("does not match a different email substring", () => {
-    expect(
-      emailAppearsInRecentMessages("alice@example.com", [m("malice@example.com")]),
-    ).toEqual({ matched: false, hint: "near-match" });
+    expect(emailAppearsInRecentMessages("alice@example.com", [m("malice@example.com")])).toEqual({
+      matched: false,
+      hint: "near-match",
+    });
   });
 
   test("returns the messageId of the FIRST match", () => {
-    const msgs = [
-      m("alice@example.com here", "first"),
-      m("alice@example.com again", "second"),
-    ];
+    const msgs = [m("alice@example.com here", "first"), m("alice@example.com again", "second")];
     expect(emailAppearsInRecentMessages("alice@example.com", msgs)).toEqual({
       matched: true,
       messageId: "first",
@@ -73,9 +72,10 @@ describe("emailAppearsInRecentMessages", () => {
   });
 
   test("treats the email itself as case-insensitive too", () => {
-    expect(
-      emailAppearsInRecentMessages("ALICE@example.com", [m("alice@example.com")]),
-    ).toEqual({ matched: true, messageId: "msg" });
+    expect(emailAppearsInRecentMessages("ALICE@example.com", [m("alice@example.com")])).toEqual({
+      matched: true,
+      messageId: "msg",
+    });
   });
 
   test("rejects malformed search target without scanning", () => {
@@ -88,9 +88,10 @@ describe("emailAppearsInRecentMessages", () => {
   test("uses word-boundary matching to avoid partial-substring confusion", () => {
     // The visitor mentioned "alice@example.com" but the email being checked
     // is "ice@example.com" — must NOT match.
-    expect(
-      emailAppearsInRecentMessages("ice@example.com", [m("alice@example.com")]),
-    ).toEqual({ matched: false, hint: "near-match" });
+    expect(emailAppearsInRecentMessages("ice@example.com", [m("alice@example.com")])).toEqual({
+      matched: false,
+      hint: "near-match",
+    });
   });
 
   test("ignores empty messages safely", () => {

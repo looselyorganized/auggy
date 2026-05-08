@@ -124,10 +124,11 @@ describe("visitor-auth security eval suite", () => {
       // Apply preflight: e.g. burn the rate budget with a prior happy-path call.
       if (c.preflight?.priorRequestAuthCalls) {
         for (let i = 0; i < c.preflight.priorRequestAuthCalls; i++) {
-          await aug.tools![0]!.execute(
-            { method: "email", email: "alice@example.com" },
-            { turnId: "t", threadId: "th-eval", peer } as never,
-          );
+          await aug.tools![0]!.execute({ method: "email", email: "alice@example.com" }, {
+            turnId: "t",
+            threadId: "th-eval",
+            peer,
+          } as never);
         }
       }
 

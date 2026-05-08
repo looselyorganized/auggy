@@ -54,224 +54,219 @@ describe("integration: visitorAuth full flow — anon → verify → recognized"
     await tmp.cleanup();
   });
 
-  it(
-    "anonymous visitor verifies email and is recognized on next request",
-    async () => {
-      // -----------------------------------------------------------------------
-      // Stub AgentMail — records send() calls so we can extract the verify URL.
-      // -----------------------------------------------------------------------
-      const sends: { to: string[]; text: string; subject: string }[] = [];
-      const stubAgentMail: AgentMailClient = {
-        send: async (input) => {
-          sends.push({ to: input.to, text: input.text, subject: input.subject });
-          return { status: "sent", messageId: "msg-1", threadId: "thr-1" };
-        },
-        getInbox: async () => ({ inboxId: "ibx_test", status: "ok" }),
-      };
+  it("anonymous visitor verifies email and is recognized on next request", async () => {
+    // -----------------------------------------------------------------------
+    // Stub AgentMail — records send() calls so we can extract the verify URL.
+    // -----------------------------------------------------------------------
+    const sends: { to: string[]; text: string; subject: string }[] = [];
+    const stubAgentMail: AgentMailClient = {
+      send: async (input) => {
+        sends.push({ to: input.to, text: input.text, subject: input.subject });
+        return { status: "sent", messageId: "msg-1", threadId: "thr-1" };
+      },
+      getInbox: async () => ({ inboxId: "ibx_test", status: "ok" }),
+    };
 
-      // -----------------------------------------------------------------------
-      // Mock model — script the conversation:
-      //   Call 0: emit request_auth tool call (visitor's first message).
-      //   Call 1: return text after tool result (still turn 1; kernel loops
-      //           back after resolving the tool).
-      //   Call 2+: plain text for the 2nd /agent/run request.
-      // -----------------------------------------------------------------------
-      const model = createMockModel({ response: "You are now verified." });
-      // Turn 1, pass 1: tool call
-      model.pushResponse({
-        content: "",
-        toolCalls: [
-          { name: "request_auth", arguments: { method: "email", email: "alice@example.com" } },
-        ],
-        finishReason: "tool_use",
-      });
-      // Turn 1, pass 2: text response after tool result
-      model.pushResponse({
-        content: "Verification email sent — check your inbox.",
-        finishReason: "end_turn",
-      });
-      // Turn 2 (2nd /agent/run): recognized visitor's reply handled by fallback
-      // in createMockModel (opts.response = "You are now verified.").
+    // -----------------------------------------------------------------------
+    // Mock model — script the conversation:
+    //   Call 0: emit request_auth tool call (visitor's first message).
+    //   Call 1: return text after tool result (still turn 1; kernel loops
+    //           back after resolving the tool).
+    //   Call 2+: plain text for the 2nd /agent/run request.
+    // -----------------------------------------------------------------------
+    const model = createMockModel({ response: "You are now verified." });
+    // Turn 1, pass 1: tool call
+    model.pushResponse({
+      content: "",
+      toolCalls: [
+        { name: "request_auth", arguments: { method: "email", email: "alice@example.com" } },
+      ],
+      finishReason: "tool_use",
+    });
+    // Turn 1, pass 2: text response after tool result
+    model.pushResponse({
+      content: "Verification email sent — check your inbox.",
+      finishReason: "end_turn",
+    });
+    // Turn 2 (2nd /agent/run): recognized visitor's reply handled by fallback
+    // in createMockModel (opts.response = "You are now verified.").
 
-      // -----------------------------------------------------------------------
-      // Build augments:
-      //   - webTransport (visitorTokens enabled, shared signing key)
-      //   - visitorAuth (shared signing key, stub agentMail)
-      // -----------------------------------------------------------------------
-      const dbPath = join(tmp.path, "visitor-auth.db");
+    // -----------------------------------------------------------------------
+    // Build augments:
+    //   - webTransport (visitorTokens enabled, shared signing key)
+    //   - visitorAuth (shared signing key, stub agentMail)
+    // -----------------------------------------------------------------------
+    const dbPath = join(tmp.path, "visitor-auth.db");
 
-      const transport = webTransport({
-        port: PORT,
-        auth: { type: "bearer", token: BEARER },
-        visitorTokens: {
-          enabled: true,
-          signingKey: SIGNING_KEY,
-          ttlSeconds: 7_776_000, // 90 days
-        },
-      });
-
-      const auth = visitorAuth({
-        publicUrl: `http://localhost:${PORT}`,
-        dbPath,
-        agentMail: { apiKey: "am_x", inboxId: "ibx_test" },
+    const transport = webTransport({
+      port: PORT,
+      auth: { type: "bearer", token: BEARER },
+      visitorTokens: {
+        enabled: true,
         signingKey: SIGNING_KEY,
-        layeredMemoryDbPath: null, // no layeredMemory in this test
-        _agentMailClient: stubAgentMail,
-      });
+        ttlSeconds: 7_776_000, // 90 days
+      },
+    });
 
-      // -----------------------------------------------------------------------
-      // Boot agent
-      // -----------------------------------------------------------------------
-      agent = defineAgent(
-        {
-          name: "zip-auth-test",
-          purpose: "test agent for visitorAuth integration",
-          model: "mock",
-          augments: [transport, auth],
-        },
-        model,
-      );
+    const auth = visitorAuth({
+      publicUrl: `http://localhost:${PORT}`,
+      dbPath,
+      agentMail: { apiKey: "am_x", inboxId: "ibx_test" },
+      signingKey: SIGNING_KEY,
+      layeredMemoryDbPath: null, // no layeredMemory in this test
+      _agentMailClient: stubAgentMail,
+    });
 
-      await agent.start();
+    // -----------------------------------------------------------------------
+    // Boot agent
+    // -----------------------------------------------------------------------
+    agent = defineAgent(
+      {
+        name: "zip-auth-test",
+        purpose: "test agent for visitorAuth integration",
+        model: "mock",
+        augments: [transport, auth],
+      },
+      model,
+    );
 
-      // -----------------------------------------------------------------------
-      // Turn 1: Anonymous visitor sends "hi I'm alice@example.com".
-      //
-      // We use an invalid x-visitor-token header so webTransport assigns the
-      // anonymous path (anon-<threadId>).  A fresh anon token is issued in the
-      // response header — we ignore it here because we'll get a long-lived
-      // vis_<uuid> token from the verify route instead.
-      // -----------------------------------------------------------------------
-      const threadId = crypto.randomUUID();
-      const run1Resp = await fetch(`http://localhost:${PORT}/agent/run`, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          authorization: `Bearer ${BEARER}`,
-          // Stale / invalid visitor token → anon path → new anon token issued
-          "x-visitor-token": "this.is.stale",
-        },
-        body: JSON.stringify({
-          threadId,
-          messages: [
-            {
-              role: "user",
-              content: "hi I'm alice@example.com",
-            },
-          ],
-        }),
-      });
+    await agent.start();
 
-      expect(run1Resp.status).toBe(200);
-      expect(run1Resp.headers.get("content-type")).toContain("text/event-stream");
+    // -----------------------------------------------------------------------
+    // Turn 1: Anonymous visitor sends "hi I'm alice@example.com".
+    //
+    // We use an invalid x-visitor-token header so webTransport assigns the
+    // anonymous path (anon-<threadId>).  A fresh anon token is issued in the
+    // response header — we ignore it here because we'll get a long-lived
+    // vis_<uuid> token from the verify route instead.
+    // -----------------------------------------------------------------------
+    const threadId = crypto.randomUUID();
+    const run1Resp = await fetch(`http://localhost:${PORT}/agent/run`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${BEARER}`,
+        // Stale / invalid visitor token → anon path → new anon token issued
+        "x-visitor-token": "this.is.stale",
+      },
+      body: JSON.stringify({
+        threadId,
+        messages: [
+          {
+            role: "user",
+            content: "hi I'm alice@example.com",
+          },
+        ],
+      }),
+    });
 
-      // Drain the SSE stream and assert RUN_FINISHED.
-      const run1Body = await run1Resp.text();
-      const run1Events = run1Body
-        .split("\n")
-        .filter((l) => l.startsWith("data: "))
-        .map((l) => JSON.parse(l.slice("data: ".length)) as { type: string });
+    expect(run1Resp.status).toBe(200);
+    expect(run1Resp.headers.get("content-type")).toContain("text/event-stream");
 
-      const run1Types = run1Events.map((e) => e.type);
-      expect(run1Types).toContain("RUN_STARTED");
-      expect(run1Types).toContain("RUN_FINISHED");
+    // Drain the SSE stream and assert RUN_FINISHED.
+    const run1Body = await run1Resp.text();
+    const run1Events = run1Body
+      .split("\n")
+      .filter((l) => l.startsWith("data: "))
+      .map((l) => JSON.parse(l.slice("data: ".length)) as { type: string });
 
-      // -----------------------------------------------------------------------
-      // Step 3: Extract the verify URL from the stubbed send() call.
-      // -----------------------------------------------------------------------
-      expect(sends.length).toBeGreaterThan(0);
-      const emailText = sends[0]!.text;
-      const verifyUrlMatch = emailText.match(/(http:\/\/[^\s]+)/);
-      expect(verifyUrlMatch).not.toBeNull();
-      const verifyUrl = verifyUrlMatch![1]!;
-      expect(verifyUrl).toContain("/visitor-auth/verify");
-      expect(verifyUrl).toContain("token=");
+    const run1Types = run1Events.map((e) => e.type);
+    expect(run1Types).toContain("RUN_STARTED");
+    expect(run1Types).toContain("RUN_FINISHED");
 
-      // -----------------------------------------------------------------------
-      // Step 4: GET the verify URL — must return 200 and the success page.
-      // -----------------------------------------------------------------------
-      const verifyResp = await fetch(verifyUrl);
-      expect(verifyResp.status).toBe(200);
-      const verifyHtml = await verifyResp.text();
-      expect(verifyHtml.toLowerCase()).toContain("verified");
+    // -----------------------------------------------------------------------
+    // Step 3: Extract the verify URL from the stubbed send() call.
+    // -----------------------------------------------------------------------
+    expect(sends.length).toBeGreaterThan(0);
+    const emailText = sends[0]!.text;
+    const verifyUrlMatch = emailText.match(/(http:\/\/[^\s]+)/);
+    expect(verifyUrlMatch).not.toBeNull();
+    const verifyUrl = verifyUrlMatch![1]!;
+    expect(verifyUrl).toContain("/visitor-auth/verify");
+    expect(verifyUrl).toContain("token=");
 
-      // -----------------------------------------------------------------------
-      // Step 5: Extract the vis_<uuid> visitor token from the HTML.
-      //
-      // The success page embeds:
-      //   var token = "<JSON-stringified token>";
-      // We parse it back to a raw string using JSON.parse.
-      // -----------------------------------------------------------------------
-      const tokenJsonMatch = verifyHtml.match(/var token = ("(?:\\.|[^"\\])*");/);
-      expect(tokenJsonMatch).not.toBeNull();
-      const visToken = JSON.parse(tokenJsonMatch![1]!) as string;
-      expect(visToken).toContain("."); // payload.signature format
-      expect(visToken.length).toBeGreaterThan(20);
+    // -----------------------------------------------------------------------
+    // Step 4: GET the verify URL — must return 200 and the success page.
+    // -----------------------------------------------------------------------
+    const verifyResp = await fetch(verifyUrl);
+    expect(verifyResp.status).toBe(200);
+    const verifyHtml = await verifyResp.text();
+    expect(verifyHtml.toLowerCase()).toContain("verified");
 
-      // -----------------------------------------------------------------------
-      // Step 6: 2nd /agent/run with the vis_ token in x-visitor-token header.
-      //
-      // webTransport Path 3: valid HMAC → peer.id = vis_<uuid>, recognized.
-      // -----------------------------------------------------------------------
-      model.pushResponse({
-        content: "Welcome back, verified visitor!",
-        finishReason: "end_turn",
-      });
+    // -----------------------------------------------------------------------
+    // Step 5: Extract the vis_<uuid> visitor token from the HTML.
+    //
+    // The success page embeds:
+    //   var token = "<JSON-stringified token>";
+    // We parse it back to a raw string using JSON.parse.
+    // -----------------------------------------------------------------------
+    const tokenJsonMatch = verifyHtml.match(/var token = ("(?:\\.|[^"\\])*");/);
+    expect(tokenJsonMatch).not.toBeNull();
+    const visToken = JSON.parse(tokenJsonMatch![1]!) as string;
+    expect(visToken).toContain("."); // payload.signature format
+    expect(visToken.length).toBeGreaterThan(20);
 
-      const run2Resp = await fetch(`http://localhost:${PORT}/agent/run`, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          authorization: `Bearer ${BEARER}`,
-          "x-visitor-token": visToken,
-        },
-        body: JSON.stringify({
-          threadId: crypto.randomUUID(), // new conversation thread
-          messages: [{ role: "user", content: "hi again" }],
-        }),
-      });
+    // -----------------------------------------------------------------------
+    // Step 6: 2nd /agent/run with the vis_ token in x-visitor-token header.
+    //
+    // webTransport Path 3: valid HMAC → peer.id = vis_<uuid>, recognized.
+    // -----------------------------------------------------------------------
+    model.pushResponse({
+      content: "Welcome back, verified visitor!",
+      finishReason: "end_turn",
+    });
 
-      expect(run2Resp.status).toBe(200);
-      expect(run2Resp.headers.get("content-type")).toContain("text/event-stream");
+    const run2Resp = await fetch(`http://localhost:${PORT}/agent/run`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${BEARER}`,
+        "x-visitor-token": visToken,
+      },
+      body: JSON.stringify({
+        threadId: crypto.randomUUID(), // new conversation thread
+        messages: [{ role: "user", content: "hi again" }],
+      }),
+    });
 
-      // -----------------------------------------------------------------------
-      // Step 7: Assert Path 3 recognition:
-      //
-      //   (a) x-visitor-token response header is ABSENT — webTransport only
-      //       sets this header when it issues a NEW anon token (Path 4 /
-      //       invalid-token path). A recognized visitor (valid token) doesn't
-      //       get a new token.
-      //
-      //   (b) RUN_FINISHED is present — turn completed successfully.
-      //
-      //   (c) visitorAuth context block carrying the verified email appears in
-      //       the model's context for this call (contextBlocks from model.calls).
-      // -----------------------------------------------------------------------
-      const run2Body = await run2Resp.text();
-      const run2Events = run2Body
-        .split("\n")
-        .filter((l) => l.startsWith("data: "))
-        .map((l) => JSON.parse(l.slice("data: ".length)) as { type: string });
+    expect(run2Resp.status).toBe(200);
+    expect(run2Resp.headers.get("content-type")).toContain("text/event-stream");
 
-      // (a) No new visitor token issued for recognized visitor.
-      expect(run2Resp.headers.get("x-visitor-token")).toBeNull();
+    // -----------------------------------------------------------------------
+    // Step 7: Assert Path 3 recognition:
+    //
+    //   (a) x-visitor-token response header is ABSENT — webTransport only
+    //       sets this header when it issues a NEW anon token (Path 4 /
+    //       invalid-token path). A recognized visitor (valid token) doesn't
+    //       get a new token.
+    //
+    //   (b) RUN_FINISHED is present — turn completed successfully.
+    //
+    //   (c) visitorAuth context block carrying the verified email appears in
+    //       the model's context for this call (contextBlocks from model.calls).
+    // -----------------------------------------------------------------------
+    const run2Body = await run2Resp.text();
+    const run2Events = run2Body
+      .split("\n")
+      .filter((l) => l.startsWith("data: "))
+      .map((l) => JSON.parse(l.slice("data: ".length)) as { type: string });
 
-      // (b) Run completed.
-      const run2Types = run2Events.map((e) => e.type);
-      expect(run2Types).toContain("RUN_STARTED");
-      expect(run2Types).toContain("RUN_FINISHED");
+    // (a) No new visitor token issued for recognized visitor.
+    expect(run2Resp.headers.get("x-visitor-token")).toBeNull();
 
-      // (c) visitorAuth context block with alice@example.com present.
-      //     The model receives contextBlocks after the 2nd /agent/run; this is
-      //     the 3rd call (0: tool_use, 1: text-after-tool, 2: recognized turn).
-      const lastCall = model.calls[model.calls.length - 1];
-      expect(lastCall).toBeDefined();
-      const allContext = [
-        ...(lastCall!.systemBlocks ?? []),
-        ...(lastCall!.contextBlocks ?? []),
-      ].join("\n");
-      expect(allContext).toContain("alice@example.com");
-    },
-    30_000,
-  );
+    // (b) Run completed.
+    const run2Types = run2Events.map((e) => e.type);
+    expect(run2Types).toContain("RUN_STARTED");
+    expect(run2Types).toContain("RUN_FINISHED");
+
+    // (c) visitorAuth context block with alice@example.com present.
+    //     The model receives contextBlocks after the 2nd /agent/run; this is
+    //     the 3rd call (0: tool_use, 1: text-after-tool, 2: recognized turn).
+    const lastCall = model.calls[model.calls.length - 1];
+    expect(lastCall).toBeDefined();
+    const allContext = [...(lastCall!.systemBlocks ?? []), ...(lastCall!.contextBlocks ?? [])].join(
+      "\n",
+    );
+    expect(allContext).toContain("alice@example.com");
+  }, 30_000);
 });

@@ -210,15 +210,33 @@ describe("request_auth tool", () => {
         type: "message",
         turnId: "tu",
         timestamp: 0,
-        peer: { id: peerId, kind: "anonymous", trustLevel: "public", publicSubstate: "anonymous", sourceAugment: "web" },
+        peer: {
+          id: peerId,
+          kind: "anonymous",
+          trustLevel: "public",
+          publicSubstate: "anonymous",
+          sourceAugment: "web",
+        },
         payload: {
           parts: [{ kind: "text", text }],
           sourceAugment: "web",
-          peer: { id: peerId, kind: "anonymous", trustLevel: "public", publicSubstate: "anonymous", sourceAugment: "web" },
+          peer: {
+            id: peerId,
+            kind: "anonymous",
+            trustLevel: "public",
+            publicSubstate: "anonymous",
+            sourceAugment: "web",
+          },
           timestamp: 0,
         },
       },
-      peer: { id: peerId, kind: "anonymous", trustLevel: "public", publicSubstate: "anonymous", sourceAugment: "web" },
+      peer: {
+        id: peerId,
+        kind: "anonymous",
+        trustLevel: "public",
+        publicSubstate: "anonymous",
+        sourceAugment: "web",
+      },
       toolCallsSoFar: 0,
       turnStartedAt: 0,
       metadata: {},
@@ -231,7 +249,17 @@ describe("request_auth tool", () => {
     const tool = aug.tools![0]!;
     const raw = await tool.execute(
       { method: "sms" as never, email: "alice@example.com" },
-      { turnId: "t1", threadId: "th1", peer: { id: "anon-th1", kind: "anonymous", trustLevel: "public", publicSubstate: "anonymous", sourceAugment: "web" } },
+      {
+        turnId: "t1",
+        threadId: "th1",
+        peer: {
+          id: "anon-th1",
+          kind: "anonymous",
+          trustLevel: "public",
+          publicSubstate: "anonymous",
+          sourceAugment: "web",
+        },
+      },
     );
     const result = JSON.parse(raw as string);
     expect(result.status).toBe("rejected");
@@ -245,7 +273,17 @@ describe("request_auth tool", () => {
     await aug.onTurnStart?.(turnWithVisitor("hi"));
     const raw = await aug.tools![0]!.execute(
       { method: "email", email: "not-an-email" },
-      { turnId: "t1", threadId: "thread1", peer: { id: "anon-thread1", kind: "anonymous", trustLevel: "public", publicSubstate: "anonymous", sourceAugment: "web" } },
+      {
+        turnId: "t1",
+        threadId: "thread1",
+        peer: {
+          id: "anon-thread1",
+          kind: "anonymous",
+          trustLevel: "public",
+          publicSubstate: "anonymous",
+          sourceAugment: "web",
+        },
+      },
     );
     expect(JSON.parse(raw as string).status).toBe("rejected");
     await aug.onShutdown?.();
@@ -257,7 +295,17 @@ describe("request_auth tool", () => {
     await aug.onTurnStart?.(turnWithVisitor("hi I'm here"));
     const raw = await aug.tools![0]!.execute(
       { method: "email", email: "alice@example.com" },
-      { turnId: "t1", threadId: "thread1", peer: { id: "anon-thread1", kind: "anonymous", trustLevel: "public", publicSubstate: "anonymous", sourceAugment: "web" } },
+      {
+        turnId: "t1",
+        threadId: "thread1",
+        peer: {
+          id: "anon-thread1",
+          kind: "anonymous",
+          trustLevel: "public",
+          publicSubstate: "anonymous",
+          sourceAugment: "web",
+        },
+      },
     );
     const result = JSON.parse(raw as string);
     expect(result.status).toBe("rejected");
@@ -271,7 +319,17 @@ describe("request_auth tool", () => {
     await aug.onTurnStart?.(turnWithVisitor("my email is alice@example.com"));
     const raw = await aug.tools![0]!.execute(
       { method: "email", email: "alice@example.com" },
-      { turnId: "t1", threadId: "thread1", peer: { id: "anon-thread1", kind: "anonymous", trustLevel: "public", publicSubstate: "anonymous", sourceAugment: "web" } },
+      {
+        turnId: "t1",
+        threadId: "thread1",
+        peer: {
+          id: "anon-thread1",
+          kind: "anonymous",
+          trustLevel: "public",
+          publicSubstate: "anonymous",
+          sourceAugment: "web",
+        },
+      },
     );
     const result = JSON.parse(raw as string);
     expect(result.status).toBe("sent");
@@ -287,13 +345,29 @@ describe("request_auth tool", () => {
     const { aug } = buildAug({ rateLimit: { perHour: 1, perDay: 3 } });
     await aug.onBoot?.();
     await aug.onTurnStart?.(turnWithVisitor("alice@example.com"));
-    const ctx: ToolExecuteContext = { turnId: "t", threadId: "thread1", peer: { id: "anon-thread1", kind: "anonymous", trustLevel: "public", publicSubstate: "anonymous", sourceAugment: "web" } };
+    const ctx: ToolExecuteContext = {
+      turnId: "t",
+      threadId: "thread1",
+      peer: {
+        id: "anon-thread1",
+        kind: "anonymous",
+        trustLevel: "public",
+        publicSubstate: "anonymous",
+        sourceAugment: "web",
+      },
+    };
     const first = JSON.parse(
-      (await aug.tools![0]!.execute({ method: "email", email: "alice@example.com" }, ctx)) as string,
+      (await aug.tools![0]!.execute(
+        { method: "email", email: "alice@example.com" },
+        ctx,
+      )) as string,
     );
     expect(first.status).toBe("sent");
     const second = JSON.parse(
-      (await aug.tools![0]!.execute({ method: "email", email: "alice@example.com" }, ctx)) as string,
+      (await aug.tools![0]!.execute(
+        { method: "email", email: "alice@example.com" },
+        ctx,
+      )) as string,
     );
     expect(second.status).toBe("rejected");
     expect(second.message).toMatch(/limit|wait/i);
@@ -308,7 +382,17 @@ describe("request_auth tool", () => {
     await aug.onTurnStart?.(turnWithVisitor("alice@example.com"));
     const raw = await aug.tools![0]!.execute(
       { method: "email", email: "alice@example.com" },
-      { turnId: "t", threadId: "thread1", peer: { id: "anon-thread1", kind: "anonymous" as const, trustLevel: "public" as const, publicSubstate: "anonymous" as const, sourceAugment: "web" } },
+      {
+        turnId: "t",
+        threadId: "thread1",
+        peer: {
+          id: "anon-thread1",
+          kind: "anonymous" as const,
+          trustLevel: "public" as const,
+          publicSubstate: "anonymous" as const,
+          sourceAugment: "web",
+        },
+      },
     );
     const result = JSON.parse(raw as string);
     expect(result.status).toBe("failed");
@@ -320,7 +404,17 @@ describe("request_auth tool", () => {
     const { aug, sendCalls } = buildAug({ rateLimit: { perHour: 5, perDay: 10 } });
     await aug.onBoot?.();
     await aug.onTurnStart?.(turnWithVisitor("alice@example.com"));
-    const ctx: ToolExecuteContext = { turnId: "t", threadId: "thread1", peer: { id: "anon-thread1", kind: "anonymous", trustLevel: "public", publicSubstate: "anonymous", sourceAugment: "web" } };
+    const ctx: ToolExecuteContext = {
+      turnId: "t",
+      threadId: "thread1",
+      peer: {
+        id: "anon-thread1",
+        kind: "anonymous",
+        trustLevel: "public",
+        publicSubstate: "anonymous",
+        sourceAugment: "web",
+      },
+    };
     await aug.tools![0]!.execute({ method: "email", email: "alice@example.com" }, ctx);
     await aug.tools![0]!.execute({ method: "email", email: "alice@example.com" }, ctx);
     expect(sendCalls).toHaveLength(2);
@@ -353,7 +447,13 @@ describe("context() block", () => {
       _agentMailClient: fakeAgentMail(),
     });
     await aug.onBoot?.();
-    const peer = { id: "anon-x", kind: "anonymous" as const, trustLevel: "public" as const, publicSubstate: "anonymous" as const, sourceAugment: "web" };
+    const peer = {
+      id: "anon-x",
+      kind: "anonymous" as const,
+      trustLevel: "public" as const,
+      publicSubstate: "anonymous" as const,
+      sourceAugment: "web",
+    };
     const result = await aug.context?.({ peer } as never);
     expect(result).toEqual([]);
     await aug.onShutdown?.();
@@ -371,18 +471,38 @@ describe("context() block", () => {
       _agentMailClient: fakeAgentMail(),
     });
     await aug.onBoot?.();
-    const peer = { id: "anon-c1", kind: "anonymous" as const, trustLevel: "public" as const, publicSubstate: "anonymous" as const, sourceAugment: "web" };
+    const peer = {
+      id: "anon-c1",
+      kind: "anonymous" as const,
+      trustLevel: "public" as const,
+      publicSubstate: "anonymous" as const,
+      sourceAugment: "web",
+    };
     await aug.onTurnStart?.({
-      turnId: "t", threadId: "th",
-      trigger: { type: "message", turnId: "t", timestamp: 0, payload: { parts: [{ kind: "text", text: "alice@example.com" }], sourceAugment: "web", peer, timestamp: 0 } },
-      peer, toolCallsSoFar: 0, turnStartedAt: 0, metadata: {},
+      turnId: "t",
+      threadId: "th",
+      trigger: {
+        type: "message",
+        turnId: "t",
+        timestamp: 0,
+        payload: {
+          parts: [{ kind: "text", text: "alice@example.com" }],
+          sourceAugment: "web",
+          peer,
+          timestamp: 0,
+        },
+      },
+      peer,
+      toolCallsSoFar: 0,
+      turnStartedAt: 0,
+      metadata: {},
     } as never);
     await aug.tools![0]!.execute(
       { method: "email", email: "alice@example.com" },
       { turnId: "t", threadId: "th", peer },
     );
     clock += 3 * 60_000;
-    const result = await aug.context?.({ peer } as never) as ContextBlock[];
+    const result = (await aug.context?.({ peer } as never)) as ContextBlock[];
     expect(result).toHaveLength(1);
     expect(result![0]?.content).toMatch(/alice@example\.com/);
     expect(result![0]?.content.toLowerCase()).toMatch(/awaiting|sent|expires/);
@@ -401,18 +521,38 @@ describe("context() block", () => {
       _agentMailClient: fakeAgentMail(),
     });
     await aug.onBoot?.();
-    const peer = { id: "anon-c2", kind: "anonymous" as const, trustLevel: "public" as const, publicSubstate: "anonymous" as const, sourceAugment: "web" };
+    const peer = {
+      id: "anon-c2",
+      kind: "anonymous" as const,
+      trustLevel: "public" as const,
+      publicSubstate: "anonymous" as const,
+      sourceAugment: "web",
+    };
     await aug.onTurnStart?.({
-      turnId: "t", threadId: "th",
-      trigger: { type: "message", turnId: "t", timestamp: 0, payload: { parts: [{ kind: "text", text: "alice@example.com" }], sourceAugment: "web", peer, timestamp: 0 } },
-      peer, toolCallsSoFar: 0, turnStartedAt: 0, metadata: {},
+      turnId: "t",
+      threadId: "th",
+      trigger: {
+        type: "message",
+        turnId: "t",
+        timestamp: 0,
+        payload: {
+          parts: [{ kind: "text", text: "alice@example.com" }],
+          sourceAugment: "web",
+          peer,
+          timestamp: 0,
+        },
+      },
+      peer,
+      toolCallsSoFar: 0,
+      turnStartedAt: 0,
+      metadata: {},
     } as never);
     await aug.tools![0]!.execute(
       { method: "email", email: "alice@example.com" },
       { turnId: "t", threadId: "th", peer },
     );
     clock += 5 * 60_000;
-    const result = await aug.context?.({ peer } as never) as ContextBlock[];
+    const result = (await aug.context?.({ peer } as never)) as ContextBlock[];
     expect(result).toHaveLength(1);
     expect(result![0]?.content.toLowerCase()).toContain("expired");
     await aug.onShutdown?.();
@@ -445,8 +585,14 @@ describe("context() block", () => {
       revokedReason: null,
     });
     seedStore.close();
-    const peer = { id: peerId, kind: "human" as const, trustLevel: "public" as const, publicSubstate: "recognized" as const, sourceAugment: "web" };
-    const result = await aug.context?.({ peer } as never) as ContextBlock[];
+    const peer = {
+      id: peerId,
+      kind: "human" as const,
+      trustLevel: "public" as const,
+      publicSubstate: "recognized" as const,
+      sourceAugment: "web",
+    };
+    const result = (await aug.context?.({ peer } as never)) as ContextBlock[];
     expect(result).toHaveLength(1);
     expect(result![0]?.content).toMatch(/alice@example\.com/);
     expect(result![0]?.content.toLowerCase()).toContain("verified");
@@ -454,7 +600,7 @@ describe("context() block", () => {
   });
 
   test("emits 'reverify due' block when reverify_due_at is in the past", async () => {
-    let clock = 1_700_000_000_000;
+    const clock = 1_700_000_000_000;
     const aug = visitorAuth({
       publicUrl: "https://zip.test",
       dbPath,
@@ -480,8 +626,14 @@ describe("context() block", () => {
       revokedReason: null,
     });
     seedStore.close();
-    const peer = { id: "vis_old", kind: "human" as const, trustLevel: "public" as const, publicSubstate: "recognized" as const, sourceAugment: "web" };
-    const result = await aug.context?.({ peer } as never) as ContextBlock[];
+    const peer = {
+      id: "vis_old",
+      kind: "human" as const,
+      trustLevel: "public" as const,
+      publicSubstate: "recognized" as const,
+      sourceAugment: "web",
+    };
+    const result = (await aug.context?.({ peer } as never)) as ContextBlock[];
     expect(result![0]?.content.toLowerCase()).toContain("reverif");
     await aug.onShutdown?.();
   });
@@ -506,11 +658,19 @@ describe("context() block", () => {
       verifiedAt: Date.now(),
       lastSeenAt: null,
       reverifyDueAt: Date.now() + 86_400_000,
-      revoked: false, revokedAt: null, revokedReason: null,
+      revoked: false,
+      revokedAt: null,
+      revokedReason: null,
     });
     seedStore.revokeByEmail("revoked@x", "operator", Date.now());
     seedStore.close();
-    const peer = { id: "vis_rev", kind: "human" as const, trustLevel: "public" as const, publicSubstate: "recognized" as const, sourceAugment: "web" };
+    const peer = {
+      id: "vis_rev",
+      kind: "human" as const,
+      trustLevel: "public" as const,
+      publicSubstate: "recognized" as const,
+      sourceAugment: "web",
+    };
     const result = await aug.context?.({ peer } as never);
     expect(result).toEqual([]);
     await aug.onShutdown?.();
@@ -563,10 +723,11 @@ async function flowThroughVerify(
     turnStartedAt: 0,
     metadata: {},
   } as never);
-  await aug.tools![0]!.execute(
-    { method: "email", email },
-    { turnId: "t", threadId, peer } as ToolExecuteContext,
-  );
+  await aug.tools![0]!.execute({ method: "email", email }, {
+    turnId: "t",
+    threadId,
+    peer,
+  } as ToolExecuteContext);
   // sends[0] is the visitor's magic-link mail; pull the URL out of its body.
   const verifyUrl = sends[0]!.text.match(/(https:\/\/[^\s]+)/)![1]!;
   return aug.httpRoutes![0]!.handler(new Request(verifyUrl), {

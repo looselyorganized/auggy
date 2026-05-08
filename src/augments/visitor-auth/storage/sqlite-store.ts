@@ -147,9 +147,7 @@ export function createSqliteVisitorAuthStore(
         (visitor_id, email, verified_at, last_seen_at, reverify_due_at, revoked, revoked_at, revoked_reason)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     );
-    findVerifiedStmt = db.prepare(
-      `SELECT * FROM verified_visitors WHERE email = ?`,
-    );
+    findVerifiedStmt = db.prepare(`SELECT * FROM verified_visitors WHERE email = ?`);
     touchVerifiedStmt = db.prepare(
       `UPDATE verified_visitors SET last_seen_at = ? WHERE email = ? AND revoked = 0`,
     );
@@ -169,9 +167,7 @@ export function createSqliteVisitorAuthStore(
       `SELECT email, expires_at, issued_at, consumed FROM visitor_auth_tokens
         WHERE peer_id = ? ORDER BY issued_at DESC LIMIT 1`,
     );
-    hasNotifiedStmt = db.prepare(
-      `SELECT email FROM first_verify_notifications WHERE email = ?`,
-    );
+    hasNotifiedStmt = db.prepare(`SELECT email FROM first_verify_notifications WHERE email = ?`);
     markNotifiedStmt = db.prepare(
       `INSERT OR IGNORE INTO first_verify_notifications (email, notified_at) VALUES (?, ?)`,
     );
