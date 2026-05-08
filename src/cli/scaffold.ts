@@ -249,6 +249,10 @@ ANTHROPIC_API_KEY=
 # OPENROUTER_API_KEY=
 AUGGY_WEB_TOKEN=
 VISITOR_SIGNING_KEY=
+# Stable identifier for visitor-auth tokens — must be unique per agent
+# if multiple agents share VISITOR_SIGNING_KEY (otherwise tokens are
+# cross-replayable). Pattern: short slug or the agent's id.
+AUGGY_AGENT_ID=
 # SUPABASE_URL=
 # SUPABASE_SERVICE_KEY=
 `;
