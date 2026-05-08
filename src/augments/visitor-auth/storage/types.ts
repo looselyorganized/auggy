@@ -132,6 +132,21 @@ export interface VisitorAuthStore {
     verifiedAt: number,
     reverifyDueAt: number,
   ): boolean;
+  /**
+   * Permanently record a visitor_id as revoked. The denylist survives even
+   * when the row is rotated by unrevokeAndRotate (which rewrites visitor_id),
+   * so old tokens cannot bypass the revocation check by returning a row that
+   * no longer carries the old id.
+   *
+   * INSERT OR IGNORE — idempotent; second call with the same id is a no-op.
+   */
+  addRevokedVisitorId(visitorId: string, email: string, reason: string, now: number): void;
+  /**
+   * Returns true iff the given visitor_id appears in the permanent denylist.
+   * Used by isVisitorRevoked in index.ts as the first check before falling
+   * through to the live row lookup.
+   */
+  isVisitorIdRevoked(visitorId: string): boolean;
   /** True iff the augment has emitted notifyOnFirstVerify for this email yet. */
   hasNotifiedFirstVerifyFor(email: string): boolean;
   /** Mark notifyOnFirstVerify as fired for this email. Idempotent. */

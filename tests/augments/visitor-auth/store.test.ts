@@ -205,7 +205,7 @@ describe("createSqliteVisitorAuthStore", () => {
       expect(rows[1]?.email).toBe("older@x");
     });
 
-    test("revokeByEmail returns visitorId, marks row revoked", () => {
+    test("revokeByEmail returns visitorId, marks row revoked, and adds to denylist", () => {
       const now = 1_700_000_000_000;
       store.recordVerifiedVisitor({
         visitorId: "vis_r",
@@ -222,6 +222,8 @@ describe("createSqliteVisitorAuthStore", () => {
       const row = store.findVerifiedByEmail("revoke@x");
       expect(row?.revoked).toBe(true);
       expect(row?.revokedReason).toBe("operator");
+      // The visitor_id must also appear in the permanent denylist.
+      expect(store.isVisitorIdRevoked("vis_r")).toBe(true);
     });
 
     test("revokeByEmail returns null for unknown email", () => {
@@ -369,6 +371,28 @@ describe("createSqliteVisitorAuthStore", () => {
       expect(ok).toBe(false);
       // Row unchanged
       expect(store.findVerifiedByEmail("live@x")?.visitorId).toBe("vis_live");
+    });
+  });
+
+  describe("addRevokedVisitorId / isVisitorIdRevoked", () => {
+    test("returns false for unknown visitor_id", () => {
+      expect(store.isVisitorIdRevoked("vis_unknown")).toBe(false);
+    });
+
+    test("returns true after addRevokedVisitorId", () => {
+      const now = 1_700_000_000_000;
+      store.addRevokedVisitorId("vis_deny1", "deny@x", "operator", now);
+      expect(store.isVisitorIdRevoked("vis_deny1")).toBe(true);
+    });
+
+    test("second addRevokedVisitorId with the same id is a no-op (INSERT OR IGNORE, no throw)", () => {
+      const now = 1_700_000_000_000;
+      store.addRevokedVisitorId("vis_idempotent", "dem@x", "operator", now);
+      // Must not throw on duplicate insert.
+      expect(() =>
+        store.addRevokedVisitorId("vis_idempotent", "dem@x", "operator", now + 1000),
+      ).not.toThrow();
+      expect(store.isVisitorIdRevoked("vis_idempotent")).toBe(true);
     });
   });
 

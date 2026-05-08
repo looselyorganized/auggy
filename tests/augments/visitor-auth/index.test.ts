@@ -931,4 +931,62 @@ describe("isVisitorRevoked (fix C1)", () => {
     expect(augWithExtras.isVisitorRevoked(visitorId)).toBe(true);
     await aug.onShutdown?.();
   });
+
+  test("returns true for OLD visitorId after unrevoke-and-rotate (denylist check, fix H1)", async () => {
+    // Regression guard: after unrevokeAndRotate, the old vis_id no longer exists
+    // as a row in verified_visitors. Without the denylist, isVisitorRevoked would
+    // return false for the old id (row not found → row?.revoked is undefined → false).
+    // The denylist must catch it.
+    const sends: { text: string }[] = [];
+    const aug = visitorAuth({
+      publicUrl: "https://example.com",
+      dbPath,
+      agentMail: { apiKey: "am_x", inboxId: "ibx_x" },
+      signingKey: "sig",
+      // Open rate limit so both verifications (pre- and post-revoke) can proceed.
+      rateLimit: { perHour: 5, perDay: 10 },
+      _agentMailClient: {
+        send: async (i: { text: string }) => {
+          sends.push({ text: i.text });
+          return { status: "sent" as const, messageId: "m", threadId: "t" };
+        },
+        getInbox: async () => ({ inboxId: "i", status: "ok" as const }),
+      } as AgentMailClient,
+    });
+    await aug.onBoot?.();
+
+    // First verify: get vis_OLD.
+    const resp1 = await flowThroughVerify(aug, "rotate@example.com", "th-rot1", sends);
+    expect(resp1.status).toBe(200);
+    const html1 = await resp1.text();
+    const tokenJsonMatch1 = html1.match(/var token = ("(?:\\.|[^"\\])*");/);
+    const visToken1 = JSON.parse(tokenJsonMatch1![1]!) as string;
+    const visOld = JSON.parse(atob(visToken1.split(".")[0]!)).visitorId as string;
+    expect(visOld).toMatch(/^vis_/);
+
+    // Revoke vis_OLD.
+    const seedStore = createSqliteVisitorAuthStore({ dbPath });
+    seedStore.initialize();
+    seedStore.revokeByEmail("rotate@example.com", "operator", Date.now());
+    seedStore.close();
+
+    // Re-verify: unrevokeAndRotate fires, minting vis_NEW. OLD row is gone.
+    sends.length = 0;
+    const resp2 = await flowThroughVerify(aug, "rotate@example.com", "th-rot2", sends);
+    expect(resp2.status).toBe(200);
+    const html2 = await resp2.text();
+    const tokenJsonMatch2 = html2.match(/var token = ("(?:\\.|[^"\\])*");/);
+    const visToken2 = JSON.parse(tokenJsonMatch2![1]!) as string;
+    const visNew = JSON.parse(atob(visToken2.split(".")[0]!)).visitorId as string;
+    expect(visNew).toMatch(/^vis_/);
+    expect(visNew).not.toBe(visOld);
+
+    const augWithExtras = aug as typeof aug & { isVisitorRevoked: (id: string) => boolean };
+    // vis_OLD must still be rejected via the denylist.
+    expect(augWithExtras.isVisitorRevoked(visOld)).toBe(true);
+    // vis_NEW must be admitted.
+    expect(augWithExtras.isVisitorRevoked(visNew)).toBe(false);
+
+    await aug.onShutdown?.();
+  });
 });
