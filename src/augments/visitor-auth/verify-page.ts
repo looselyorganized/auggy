@@ -118,21 +118,36 @@ export function buildVerifySuccessPage(input: VerifySuccessPageInput): string {
 <body>
 <h1 id="title">Verifying…</h1>
 <p id="msg">Please wait.</p>
+<p id="storage-fallback" style="display:none">
+  Verified, but your browser blocked storage access. Copy this token manually to your chat tab:
+  <br><code id="manual-token" style="word-break:break-all"></code>
+  <br><small>(This may happen in private/incognito mode or sandboxed iframes.)</small>
+</p>
 <script>
 (function () {
   var token = ${tokenLit};
   var email = ${emailLit};
+  var storageWorks = false;
   try {
     localStorage.setItem('auggy-visitor-token', token);
-  } catch (_) { /* storage may be denied; surface manual fallback below */ }
+    storageWorks = true;
+  } catch (_) { /* storage may be denied in private/incognito mode or sandboxed iframes */ }
   try {
     history.replaceState(null, '', './verified');
   } catch (_) { /* older browsers — best-effort */ }
   var titleEl = document.getElementById('title');
   var msgEl = document.getElementById('msg');
+  var fallbackEl = document.getElementById('storage-fallback');
+  var manualEl = document.getElementById('manual-token');
   if (titleEl) titleEl.textContent = 'Verified.';
-  if (msgEl) {
-    msgEl.textContent = 'Email verified: ' + email + '. You may close this tab; your chat tab will pick up the new identity on its next message. If you opened this link on a different device, refresh your chat tab.';
+  if (storageWorks) {
+    if (msgEl) {
+      msgEl.textContent = 'Email verified: ' + email + '. You may close this tab; your chat tab will pick up the new identity on its next message. If you opened this link on a different device, refresh your chat tab.';
+    }
+  } else {
+    if (msgEl) msgEl.style.display = 'none';
+    if (fallbackEl) fallbackEl.style.display = '';
+    if (manualEl) manualEl.textContent = token;
   }
 })();
 </script>
