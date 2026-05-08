@@ -18,7 +18,12 @@ import { defineTool } from "../../helpers";
 import { createAgentMailClient, type AgentMailClient } from "../../agentmail-client";
 import { createVisitorToken, deriveSigningKey } from "../../transports/visitor-token";
 import type { Augment, ContextBlock, ToolExecuteContext, TurnState } from "../../types";
-import type { RecentVisitorMessage, RequestAuthResult, VisitorAuthOptions } from "./types";
+import type {
+  RecentVisitorMessage,
+  RequestAuthResult,
+  VisitorAuthAugmentExtras,
+  VisitorAuthOptions,
+} from "./types";
 import {
   createSqliteVisitorAuthStore,
   type SqliteVisitorAuthStoreConfig,
@@ -73,7 +78,7 @@ function looksLikePlaceholder(value: string): boolean {
   return /^\$\{[A-Z0-9_]+\}$/.test(value);
 }
 
-export function visitorAuth(opts: VisitorAuthInternalOptions): Augment {
+export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & VisitorAuthAugmentExtras {
   validateOptions(opts);
 
   const now = opts._now ?? (() => Date.now());
@@ -230,10 +235,30 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment {
     },
   });
 
-  return {
+  /**
+   * Real-time revocation check for webTransport integration (fix C1).
+   *
+   * Returns `true` if the visitorId is known AND its row is marked revoked.
+   * webTransport calls this after HMAC verification succeeds; a `true` return
+   * causes the request to be treated as anonymous, rendering old tokens inert
+   * without waiting for their TTL to expire.
+   *
+   * Exposed as a plain function on the augment object so the augment resolver
+   * can wire it into webTransport's `visitorTokens.revocationCheck` option.
+   * Not part of the `Augment` interface — resolved via type assertion in the
+   * resolver.
+   */
+  function isVisitorRevoked(visitorId: string): boolean {
+    if (!booted) return false; // store not initialized; fail-open to avoid boot-order deadlock
+    const row = store.findVisitorById(visitorId);
+    return !!(row?.revoked);
+  }
+
+  const augment: Augment & { isVisitorRevoked: (visitorId: string) => boolean } = {
     name: "visitor-auth",
     capabilities: ["tools", "context"],
     tools: [requestAuthTool],
+    isVisitorRevoked,
     httpRoutes: [
       // -----------------------------------------------------------------------
       // GET /visitor-auth/verify?token=<uuid>
@@ -540,6 +565,8 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment {
       ];
     },
   };
+
+  return augment;
 }
 
 function block(content: string): ContextBlock {

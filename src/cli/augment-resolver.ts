@@ -27,7 +27,7 @@ import { notify } from "../augments/notify";
 import { telegramTransport } from "../augments/telegram-transport";
 import { turnControl, type TurnControlOptions } from "../augments/turn-control";
 import { visitorAuth } from "../augments/visitor-auth";
-import type { VisitorAuthOptions } from "../augments/visitor-auth/types";
+import type { VisitorAuthOptions, VisitorAuthAugmentExtras } from "../augments/visitor-auth/types";
 import type { Augment, NotifyAugmentOptions, TelegramTransportOptions } from "../types";
 import type { AugmentConfig } from "./types";
 import type { BudgetsAugmentOptions } from "../augments/budgets";
@@ -195,7 +195,13 @@ function resolveFilesystem(opts: Record<string, unknown>, agentDir: string): Aug
   });
 }
 
-function resolveWebTransport(opts: Record<string, unknown>): Augment {
+function resolveWebTransport(
+  opts: Record<string, unknown>,
+  lateBindings: { revocationCheck: ((id: string) => boolean) | null },
+): Augment {
+  const vtBase = opts.visitorTokens as
+    | { enabled?: boolean; ttlSeconds?: number; signingKey?: string }
+    | undefined;
   return webTransport({
     port: opts.port as number,
     auth: opts.auth as { type: "bearer"; token: string },
@@ -205,9 +211,12 @@ function resolveWebTransport(opts: Record<string, unknown>): Augment {
     concurrency: opts.concurrency as number | undefined,
     maxQueueDepth: opts.maxQueueDepth as number | undefined,
     rateLimitPerPeer: opts.rateLimitPerPeer as { maxPerMinute: number } | undefined,
-    visitorTokens: opts.visitorTokens as
-      | { enabled?: boolean; ttlSeconds?: number; signingKey?: string }
-      | undefined,
+    visitorTokens: vtBase
+      ? {
+          ...vtBase,
+          revocationCheck: (id: string) => lateBindings.revocationCheck?.(id) ?? false,
+        }
+      : undefined,
   });
 }
 
@@ -307,6 +316,13 @@ export async function resolveAugments(
 ): Promise<Augment[]> {
   const augments: Augment[] = [];
 
+  // Deferred-closure for C1: webTransport gets a stable callback reference
+  // before visitorAuth is resolved; the callback reads lateBindings.revocationCheck
+  // which is populated after the loop completes.
+  const lateBindings: { revocationCheck: ((id: string) => boolean) | null } = {
+    revocationCheck: null,
+  };
+
   for (const config of configs) {
     const opts = config.options ?? {};
     let augment: Augment;
@@ -325,7 +341,7 @@ export async function resolveAugments(
         augment = resolveFilesystem(opts, agentDir);
         break;
       case "webTransport":
-        augment = resolveWebTransport(opts);
+        augment = resolveWebTransport(opts, lateBindings);
         break;
       case "webFetch":
         augment = resolveWebFetch(opts);
@@ -378,6 +394,17 @@ export async function resolveAugments(
     // Override the auto-generated augment name with the operator's choice.
     augment = { ...augment, name: config.name };
     augments.push(augment);
+  }
+
+  // Fix C1: wire the visitorAuth revocation check into webTransport's
+  // deferred closure. The closure was passed to webTransport during the loop
+  // (before visitorAuth was necessarily resolved); populating lateBindings
+  // now makes the check active for all subsequent requests.
+  const va = augments.find((a) => a.name === "visitor-auth") as
+    | (Augment & VisitorAuthAugmentExtras)
+    | undefined;
+  if (va?.isVisitorRevoked) {
+    lateBindings.revocationCheck = va.isVisitorRevoked.bind(va);
   }
 
   // Boot-time validation: warn (not error) for any tool-providing augment

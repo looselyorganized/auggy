@@ -112,6 +112,12 @@ export interface VisitorAuthStore {
    */
   revokeByEmail(email: string, reason: string, now: number): string | null;
   /**
+   * Lookup a verified-visitor row by visitorId. Returns null if no row with
+   * that id exists. Used by `isVisitorRevoked` to enable real-time revocation
+   * checks at webTransport ingress (fix C1).
+   */
+  findVisitorById(visitorId: string): VerifiedVisitorRow | null;
+  /**
    * Un-revoke a previously-revoked row and rotate to a fresh visitorId.
    * Called by the verify route when a visitor re-verifies after their identity
    * was revoked. A single UPDATE atomically clears revocation state, writes the

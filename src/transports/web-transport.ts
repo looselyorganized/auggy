@@ -46,7 +46,18 @@ export interface WebTransportOptions {
   concurrency?: number;
   maxQueueDepth?: number;
   rateLimitPerPeer?: { maxPerMinute: number };
-  visitorTokens?: { enabled?: boolean; ttlSeconds?: number; signingKey?: string };
+  visitorTokens?: {
+    enabled?: boolean;
+    ttlSeconds?: number;
+    signingKey?: string;
+    /**
+     * Optional real-time revocation check. Called after HMAC verification
+     * succeeds (fix C1). When the callback returns `true` for a visitorId,
+     * the token is treated as anonymous — rendering revoked tokens inert
+     * without waiting for their HMAC TTL to expire.
+     */
+    revocationCheck?: (visitorId: string) => boolean;
+  };
   /**
    * Optional URL to redirect GET / to. When set, `GET /` returns 302 to this URL.
    * When unset, `GET /` returns 404. All other routes are unaffected.
@@ -388,6 +399,14 @@ export function webTransport(opts: WebTransportOptions): Augment {
       const tokenHeader = req.headers.get("x-visitor-token");
       if (tokenHeader) {
         visitorPayload = await verifyVisitorToken(signingKey, tokenHeader);
+        // Fix C1: reject tokens whose visitor has since been revoked.
+        // Called after HMAC verification succeeds so revoked identities cannot
+        // continue to authenticate with old tokens until the HMAC TTL expires.
+        if (visitorPayload) {
+          if (opts.visitorTokens?.revocationCheck?.(visitorPayload.visitorId)) {
+            visitorPayload = null;
+          }
+        }
       }
       if (!visitorPayload) {
         // Check if this looks like an agent auth attempt — don't issue visitor

@@ -79,6 +79,20 @@ export interface VisitorAuthOptions {
   layeredMemoryDbPath?: string | null;
 }
 
+/**
+ * Extra surface exposed by the visitorAuth augment beyond the base Augment
+ * interface. Consumed by the augment resolver to wire the revocation check
+ * into webTransport without requiring a new kernel surface (fix C1).
+ */
+export interface VisitorAuthAugmentExtras {
+  /**
+   * Returns `true` iff the visitor with the given `vis_<uuid>` id has been
+   * revoked. Reads directly from the store — no caching, always current.
+   * Intended to be wired as `webTransport.visitorTokens.revocationCheck`.
+   */
+  isVisitorRevoked(visitorId: string): boolean;
+}
+
 /** Return shape of `request_auth({...})`. JSON-stringified by the tool. */
 export interface RequestAuthResult {
   status: "sent" | "rejected" | "failed";
