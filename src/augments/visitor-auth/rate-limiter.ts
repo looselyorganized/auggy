@@ -22,6 +22,14 @@ export interface VisitorAuthRateLimiter {
   check(peerId: string, now: number): RateLimitDecision;
   record(peerId: string, now: number): void;
   forget(peerId: string): void;
+  /**
+   * Drop entries whose every timestamp is older than the 24h window. Returns
+   * the number of keys evicted. Cheap when called periodically; without it
+   * an entry for an inactive peer/email key sits in `windows` indefinitely
+   * (F11). Per-call check/record paths already prune timestamps in-place,
+   * so the only thing this adds is dropping the empty-list keys.
+   */
+  sweep(now: number): number;
 }
 
 export function createVisitorAuthRateLimiter(caps: VisitorAuthRateLimit): VisitorAuthRateLimiter {
@@ -63,6 +71,20 @@ export function createVisitorAuthRateLimiter(caps: VisitorAuthRateLimit): Visito
     },
     forget(peerId: string): void {
       windows.delete(peerId);
+    },
+    sweep(now: number): number {
+      const cutoff = now - DAY_MS;
+      let evicted = 0;
+      for (const [key, list] of windows) {
+        const live = list.filter((t) => t > cutoff);
+        if (live.length === 0) {
+          windows.delete(key);
+          evicted++;
+        } else if (live.length !== list.length) {
+          windows.set(key, live);
+        }
+      }
+      return evicted;
     },
   };
 }

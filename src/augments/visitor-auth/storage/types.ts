@@ -94,6 +94,15 @@ export interface VisitorAuthStore {
    */
   invalidateOpenTokensForPeer(peerId: string, now: number): number;
   /**
+   * Mark exactly one token as consumed if it is still open. Returns true
+   * if a row was modified (the token existed and was unconsumed), false
+   * otherwise. Used by the request_auth failure-path cleanup so a failed
+   * send only invalidates its OWN token — without this, a concurrent
+   * request_auth call from the same peer could be invalidated as
+   * collateral when the failed call's cleanup runs (F3).
+   */
+  invalidateTokenIfStillOpen(token: string, now: number): boolean;
+  /**
    * Insert a verified-visitor row. Caller has already minted the visitor token.
    * If a row with the same email exists and is not revoked, throws — caller
    * should treat this as "already verified, prefer existing identity"

@@ -106,6 +106,7 @@ export function createSqliteVisitorAuthStore(
   let tokenStatusStmt: Statement | null = null;
   let findOpenStmt: Statement | null = null;
   let invalidateStmt: Statement | null = null;
+  let invalidateOneStmt: Statement | null = null;
   let recordVerifiedStmt: Statement | null = null;
   let findVerifiedStmt: Statement | null = null;
   let touchVerifiedStmt: Statement | null = null;
@@ -154,6 +155,13 @@ export function createSqliteVisitorAuthStore(
       `UPDATE visitor_auth_tokens
          SET consumed = 1, consumed_at = ?
        WHERE peer_id = ? AND consumed = 0`,
+    );
+    // Token-scoped variant — failure-path cleanup that must NOT touch a
+    // sibling concurrent request's token (F3).
+    invalidateOneStmt = db.prepare(
+      `UPDATE visitor_auth_tokens
+         SET consumed = 1, consumed_at = ?
+       WHERE token = ? AND consumed = 0`,
     );
     recordVerifiedStmt = db.prepare(
       `INSERT INTO verified_visitors
@@ -278,6 +286,11 @@ export function createSqliteVisitorAuthStore(
       ensurePrepared();
       const result = invalidateStmt!.run(now, peerId);
       return result.changes;
+    },
+    invalidateTokenIfStillOpen(token: string, now: number): boolean {
+      ensurePrepared();
+      const result = invalidateOneStmt!.run(now, token);
+      return result.changes > 0;
     },
     recordVerifiedVisitor(row: VerifiedVisitorRow): void {
       ensurePrepared();

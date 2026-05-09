@@ -105,11 +105,25 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
   const RECENT_MESSAGES = 4;
   const recentByPeer = new Map<string, RecentVisitorMessage[]>();
 
+  // F10: bound recentByPeer growth under high peer churn (e.g. anon-* ids
+  // change per thread; long-running agents accumulate stale entries forever).
+  // We track the last onTurnStart timestamp per peer, and every
+  // RECENT_PEER_SWEEP_EVERY turns we evict entries older than
+  // RECENT_PEER_TTL_MS. Sweep is amortized — no setInterval needed.
+  const RECENT_PEER_TTL_MS = 24 * 60 * 60_000; // 24h
+  const RECENT_PEER_SWEEP_EVERY = 50; // amortized cost: 1/50 turns
+  const lastSeenByPeer = new Map<string, number>();
+  let onTurnStartCounter = 0;
+
   // Cached HMAC signing key — derived once at boot.
   let signingCryptoKey: CryptoKey | null = null;
 
   // Bootflag — context() and the route handler must noop until onBoot completed.
   let booted = false;
+
+  // F11: rate-limiter background sweep handle.  Set in onBoot; cleared in
+  // onShutdown.
+  let rateLimiterSweepHandle: ReturnType<typeof setInterval> | null = null;
 
   function buildVerifyUrl(token: string): string {
     const url = new URL(VERIFY_PATH, opts.publicUrl);
@@ -217,9 +231,13 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
       });
 
       if (sendResult.status !== "sent") {
-        // Mark the token consumed so it can't be redeemed despite the visitor never receiving it.
-        // (Lower-cost than leaving live tokens for failed sends.)
-        store.invalidateOpenTokensForPeer(ctx.peer.id, t + 1);
+        // Mark THIS token consumed so it can't be redeemed despite the visitor
+        // never receiving it. Use the token-scoped variant (F3): a peer-wide
+        // invalidate would steamroll a sibling concurrent request_auth call's
+        // token if one was issued in between (the line-192 pre-invalidate kills
+        // OUR pending token from the sibling's perspective; OUR failure cleanup
+        // must not return the favor).
+        store.invalidateTokenIfStillOpen(token, t + 1);
         return fail(
           "failed",
           `Failed to send verification email: ${sendResult.detail ?? "unknown error"}`,
@@ -563,11 +581,39 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
         );
       }
 
+      // F11: periodic rate-limiter sweep. Hourly cadence is well below the
+      // 24h window so inactive entries are evicted within a window of their
+      // last activity. unref() so the timer doesn't hold the event loop open
+      // (mirrors how launchd-managed processes shut down on SIGTERM).
+      const RATE_LIMIT_SWEEP_INTERVAL_MS = 60 * 60_000; // 1h
+      rateLimiterSweepHandle = setInterval(() => {
+        rateLimiter.sweep(now());
+      }, RATE_LIMIT_SWEEP_INTERVAL_MS);
+      if (typeof rateLimiterSweepHandle.unref === "function") {
+        rateLimiterSweepHandle.unref();
+      }
+
       booted = true;
     },
     async onTurnStart(turn: TurnState) {
       if (!turn.peer) return;
       const peerId = turn.peer.id;
+      // F10: amortized eviction of stale recentByPeer / lastSeenByPeer entries.
+      // Runs once every RECENT_PEER_SWEEP_EVERY turns to keep the per-turn cost
+      // O(1) on average.
+      onTurnStartCounter++;
+      if (onTurnStartCounter % RECENT_PEER_SWEEP_EVERY === 0) {
+        const cutoff = now() - RECENT_PEER_TTL_MS;
+        for (const [id, lastSeen] of lastSeenByPeer) {
+          if (lastSeen < cutoff) {
+            lastSeenByPeer.delete(id);
+            recentByPeer.delete(id);
+          }
+        }
+      }
+      // Track liveness for the next sweep. Always update — even when there's
+      // no inbound text, the peer is active.
+      lastSeenByPeer.set(peerId, now());
       // Pull the visitor's text from the inbound message payload.
       const payload = turn.trigger.payload as
         | { parts?: Array<{ kind: string; text?: string }> }
@@ -585,6 +631,10 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
       recentByPeer.set(peerId, list);
     },
     async onShutdown() {
+      if (rateLimiterSweepHandle !== null) {
+        clearInterval(rateLimiterSweepHandle);
+        rateLimiterSweepHandle = null;
+      }
       if (booted) {
         store.close();
         booted = false;
