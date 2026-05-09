@@ -9,12 +9,12 @@
  *   2. memory.db: DELETE FROM entries WHERE peer_id = visitorId
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { Database } from "bun:sqlite";
 import { join, resolve } from "node:path";
-import { parse as parseYaml } from "yaml";
 import { getAgent } from "../agent-index";
 import { createSqliteVisitorAuthStore } from "../../augments/visitor-auth/storage/sqlite-store";
+import { parseAugmentConfigOnly } from "../yaml-helpers";
 
 export interface VisitorsRevokeOptions {
   auggyDir?: string;
@@ -40,26 +40,19 @@ function resolvePaths(agentName: string, opts: VisitorsRevokeOptions): ResolvedP
   }
   const agentDir = entry.localDir;
   const yamlPath = join(agentDir, "agent.yaml");
-  if (!existsSync(yamlPath)) {
-    throw new Error(`Agent "${agentName}": agent.yaml not found at ${yamlPath}.`);
-  }
-  // Raw YAML parse (matches src/cli/commands/visitors.ts) — avoids parseConfig's
-  // strict id/name/engine requirements for an operator-only read/write CLI.
-  const raw = parseYaml(readFileSync(yamlPath, "utf-8")) as {
-    augments?: Array<{ type?: string; options?: Record<string, unknown> }>;
-  };
-  const augments = raw?.augments ?? [];
-  const va = augments.find((a) => a?.type === "visitorAuth");
-  if (!va) {
+  // parseAugmentConfigOnly handles env-var interpolation (F15) so that
+  // `dbPath: ${MY_DB_PATH}` / `layeredMemoryDbPath: ${MEMORY_DB}` in
+  // agent.yaml resolves correctly here.
+  const vaOptions = parseAugmentConfigOnly(yamlPath, "visitorAuth");
+  if (!vaOptions) {
     throw new Error(`Agent "${agentName}": visitorAuth is not configured.`);
   }
-  const o = (va.options ?? {}) as Record<string, unknown>;
-  const dbPath = (o.dbPath as string | undefined) ?? "./visitor-auth.db";
+  const dbPath = (vaOptions.dbPath as string | undefined) ?? "./visitor-auth.db";
   // null = explicit opt-out from peer-id migration; undefined = default.
   const memPathRaw =
-    o.layeredMemoryDbPath === null
+    vaOptions.layeredMemoryDbPath === null
       ? null
-      : ((o.layeredMemoryDbPath as string | undefined) ?? "./memory.db");
+      : ((vaOptions.layeredMemoryDbPath as string | undefined) ?? "./memory.db");
   return {
     agentDir,
     visitorAuthDb: resolve(agentDir, dbPath),
