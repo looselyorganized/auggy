@@ -393,7 +393,16 @@ describe("resolveAugments — C1 wiring (fix F17)", () => {
         name: "my-custom-auth", // operator-chosen name — NOT "visitor-auth"
         options: {
           publicUrl: "https://zip.test",
-          agentMail: { apiKey: "am_x", inboxId: "ibx_x" },
+          // Point AgentMail at a closed port so the boot healthcheck (F9) hits
+          // a network-error path (no httpStatus) and warn-and-continues, rather
+          // than reaching the real api.agentmail.to and getting a 403 (which
+          // F9 escalates to a hard error). The healthcheck is incidental to
+          // what this test exercises (F17 closure wiring).
+          agentMail: {
+            apiKey: "am_x",
+            inboxId: "ibx_x",
+            apiBaseUrl: "http://127.0.0.1:1/agentmail-unreachable",
+          },
           signingKey: SIGNING_KEY,
           layeredMemoryDbPath: null,
           // Use the test's TMP dir for the VA DB.

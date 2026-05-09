@@ -529,14 +529,34 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
           "visitorAuth: VISITOR_SIGNING_KEY is unresolved. Set it in .env and restart (the same value webTransport uses).",
         );
       }
+      // F12: an unresolved agentBinding silently degrades token-payload checks
+      // (every minted token's `agent` field becomes the literal "${AGENT_BINDING}",
+      // which still self-consistently verifies — masking the misconfig).
+      // Fail loud at boot instead.
+      if (looksLikePlaceholder(agentBinding)) {
+        throw new Error(
+          `visitorAuth: agentBinding is unresolved (got "${agentBinding}"). Set the referenced env var in .env and restart, or remove the agentBinding option to use the "auggy" default.`,
+        );
+      }
 
       store.initialize();
       signingCryptoKey = await deriveSigningKey(opts.signingKey);
 
-      // Best-effort AgentMail healthcheck — a transient outage shouldn't
-      // prevent boot, but surface it loudly so the operator notices.
+      // AgentMail healthcheck. Severity branches on httpStatus (F9):
+      //   401 / 403 / 404 → operator misconfig (bad API key, missing inbox).
+      //     Throw at boot so the operator notices before the first visitor
+      //     hits a silent send-failure.
+      //   5xx / network errors → transient. Warn and continue; the first
+      //     real send will surface the same error if it persists.
       const health = await agentMail.getInbox(opts.agentMail.inboxId);
       if (health.status !== "ok") {
+        const httpStatus = health.httpStatus;
+        if (httpStatus === 401 || httpStatus === 403 || httpStatus === 404) {
+          throw new Error(
+            `visitorAuth: AgentMail inbox "${opts.agentMail.inboxId}" healthcheck failed with HTTP ${httpStatus}: ${health.detail}. ` +
+              `Check AGENTMAIL_API_KEY and AGENTMAIL_INBOX_ID in .env and restart.`,
+          );
+        }
         console.warn(
           `[visitor-auth] AgentMail inbox "${opts.agentMail.inboxId}" healthcheck failed: ${health.detail}. ` +
             `First send will surface the real error.`,
