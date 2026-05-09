@@ -159,6 +159,111 @@ describe("visitorAuth (skeleton)", () => {
     await expect(aug.onBoot?.()).rejects.toThrow(/AGENTMAIL_API_KEY/);
   });
 
+  // F12 — agentBinding placeholder check. An unresolved agentBinding silently
+  // degrades token validation (every minted token's `agent` field becomes the
+  // literal `${AGENT_BINDING}`, which self-consistently verifies). Fail loud
+  // at boot instead of letting the misconfig pass.
+  test("onBoot throws when agentBinding is an unresolved placeholder", async () => {
+    const aug = visitorAuth({
+      publicUrl: "https://example.com",
+      dbPath,
+      agentMail: { apiKey: "am_x", inboxId: "ibx_x" },
+      signingKey: "sig",
+      agentBinding: "${AGENT_BINDING}",
+      _agentMailClient: fakeAgentMail(),
+    });
+    await expect(aug.onBoot?.()).rejects.toThrow(/agentBinding is unresolved/);
+  });
+
+  test("onBoot succeeds when agentBinding is a real value (not a placeholder)", async () => {
+    const aug = visitorAuth({
+      publicUrl: "https://example.com",
+      dbPath,
+      agentMail: { apiKey: "am_x", inboxId: "ibx_x" },
+      signingKey: "sig",
+      agentBinding: "zip",
+      _agentMailClient: fakeAgentMail(),
+    });
+    await aug.onBoot?.();
+    await aug.onShutdown?.();
+  });
+
+  test("onBoot succeeds when agentBinding is omitted (defaults to 'auggy')", async () => {
+    const aug = visitorAuth({
+      publicUrl: "https://example.com",
+      dbPath,
+      agentMail: { apiKey: "am_x", inboxId: "ibx_x" },
+      signingKey: "sig",
+      _agentMailClient: fakeAgentMail(),
+    });
+    await aug.onBoot?.();
+    await aug.onShutdown?.();
+  });
+
+  // F9 — AgentMail healthcheck severity branches on httpStatus.
+  // 401 / 403 / 404 indicate operator misconfig (bad API key, missing inbox);
+  // throw at boot so it's caught before the first visitor request. 5xx and
+  // network errors stay warn-and-continue (transient).
+  for (const httpStatus of [401, 403, 404] as const) {
+    test(`onBoot throws on AgentMail healthcheck HTTP ${httpStatus} (operator misconfig)`, async () => {
+      const aug = visitorAuth({
+        publicUrl: "https://example.com",
+        dbPath,
+        agentMail: { apiKey: "am_x", inboxId: "ibx_x" },
+        signingKey: "sig",
+        _agentMailClient: fakeAgentMail({
+          getInbox: async () => ({
+            status: "failed",
+            detail: `${httpStatus} bad`,
+            httpStatus,
+          }),
+        }),
+      });
+      await expect(aug.onBoot?.()).rejects.toThrow(
+        new RegExp(`HTTP ${httpStatus}|AGENTMAIL_API_KEY|AGENTMAIL_INBOX_ID`),
+      );
+    });
+  }
+
+  for (const httpStatus of [500, 502, 503, 504, 429] as const) {
+    test(`onBoot warns and continues on AgentMail healthcheck HTTP ${httpStatus} (transient)`, async () => {
+      const aug = visitorAuth({
+        publicUrl: "https://example.com",
+        dbPath,
+        agentMail: { apiKey: "am_x", inboxId: "ibx_x" },
+        signingKey: "sig",
+        _agentMailClient: fakeAgentMail({
+          getInbox: async () => ({
+            status: "failed",
+            detail: `${httpStatus} unavailable`,
+            httpStatus,
+          }),
+        }),
+      });
+      await aug.onBoot?.();
+      await aug.onShutdown?.();
+    });
+  }
+
+  test("onBoot warns and continues on AgentMail healthcheck network error (no httpStatus)", async () => {
+    // No httpStatus field → caller couldn't reach AgentMail at all
+    // (DNS failure, timeout, etc). Treat as transient, like a 5xx.
+    const aug = visitorAuth({
+      publicUrl: "https://example.com",
+      dbPath,
+      agentMail: { apiKey: "am_x", inboxId: "ibx_x" },
+      signingKey: "sig",
+      _agentMailClient: fakeAgentMail({
+        getInbox: async () => ({
+          status: "failed",
+          detail: "agentmail error: ECONNREFUSED",
+        }),
+      }),
+    });
+    await aug.onBoot?.();
+    await aug.onShutdown?.();
+  });
+
   test("context() returns an empty array when no peer is set", async () => {
     const aug = visitorAuth({
       publicUrl: "https://example.com",
