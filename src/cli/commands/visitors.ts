@@ -6,11 +6,11 @@
  * a running agent.
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { parse as parseYaml } from "yaml";
 import { getAgent } from "../agent-index";
 import { createSqliteVisitorAuthStore } from "../../augments/visitor-auth/storage/sqlite-store";
+import { parseAugmentConfigOnly } from "../yaml-helpers";
 
 export interface VisitorsCommandOptions {
   auggyDir?: string;
@@ -31,21 +31,13 @@ function resolveAgentPaths(agentName: string, opts: VisitorsCommandOptions): Res
   }
   const agentDir = entry.localDir;
   const yamlPath = join(agentDir, "agent.yaml");
-  if (!existsSync(yamlPath)) {
-    throw new Error(`Agent "${agentName}": agent.yaml not found at ${yamlPath}.`);
-  }
-  // Use raw YAML parse to extract the visitorAuth augment config without running
-  // full config validation (which requires id/name/engine fields the visitors
-  // command does not need).
-  const raw = readFileSync(yamlPath, "utf-8");
-  const parsed = parseYaml(raw) as Record<string, unknown> | null;
-  const augments = (parsed?.augments ?? []) as Array<Record<string, unknown>>;
-  const va = augments.find((a) => a.type === "visitorAuth");
-  if (!va) {
+  // parseAugmentConfigOnly handles env-var interpolation (F15) so that
+  // `dbPath: ${MY_DB_PATH}` in agent.yaml resolves correctly here.
+  const vaOptions = parseAugmentConfigOnly(yamlPath, "visitorAuth");
+  if (!vaOptions) {
     throw new Error(`Agent "${agentName}": visitorAuth augment is not configured.`);
   }
-  const opts2 = (va.options ?? {}) as Record<string, unknown>;
-  const dbPath = (opts2.dbPath as string | undefined) ?? "./visitor-auth.db";
+  const dbPath = (vaOptions.dbPath as string | undefined) ?? "./visitor-auth.db";
   return {
     agentDir,
     visitorAuthDb: resolve(agentDir, dbPath),
