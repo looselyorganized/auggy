@@ -2,39 +2,70 @@
  * F19 — cross-process SQLite invariant for visitorAuth.
  *
  * The deployment posture for visitor-auth.db is:
- *   - The agent process (long-lived) opens the db read/write via WAL mode.
+ *   - The agent process (long-lived) opens the db read/write.
  *   - The operator runs `auggy visitors --revoke <email>` in a separate
- *     process while the agent is running. That separate process opens the
- *     same db file and writes to it.
+ *     process while the agent is running. That separate process opens
+ *     the same db file and writes to it.
  *
  * Invariant: when the operator's process commits a revoke, the agent's
  * process must observe that revoke on its next isVisitorRevoked() call —
  * with no app-level coordination, no broadcast, no restart.
  *
- * This is purely a SQLite/WAL property: WAL readers see committed writes
- * from other processes after their own statement-cache is invalidated
- * (which `bun:sqlite` handles). Without WAL mode, a long-lived reader
- * could hold an MVCC snapshot and miss the revoke. With WAL mode, every
- * new prepared-statement execution sees the latest committed state.
+ * Two facets, tested separately:
  *
- * The test exercises the invariant by:
- *   1. Spawning a Bun child process that opens the shared db, calls
- *      revokeByEmail(), then exits. (Mimics what `auggy visitors --revoke`
- *      does under the hood — the CLI wrapper isn't on the test path here
- *      because the cross-process invariant lives one layer down at the
- *      store/SQLite level.)
- *   2. Verifying that a long-lived store handle in the test process,
- *      opened BEFORE the child wrote, returns the post-revoke state on
- *      its next read.
+ *  (a) WAL is configured. The store opens the db with `journal_mode = wal`
+ *      so concurrent reader-writer access doesn't block. Without WAL, a
+ *      long-running reader transaction in the agent would block the
+ *      operator's writer (or vice versa) — operations work but degrade.
+ *      Tested by reading `PRAGMA journal_mode` against the same file.
+ *
+ *  (b) bun:sqlite re-reads on each prepared-statement execution. A
+ *      regression where the store caches row results in memory (or a
+ *      future bug where prepared statements bind to a snapshot) would
+ *      cause the long-lived agent to miss the revoke. Tested by spawning
+ *      a Bun child process that revokes against the shared db, then
+ *      re-reading from the long-lived store handle and asserting the
+ *      revoked flag is now true.
+ *
+ * (b) does not on its own require WAL — bun:sqlite would re-read in
+ * rollback-journal mode too. (a) is the WAL guarantee specifically.
+ * Treat the two assertions as complementary, not redundant.
+ *
+ * The CLI wrapper (`auggy visitors --revoke`) is NOT on the test path —
+ * the cross-process invariant lives one layer down at the store/SQLite
+ * level, and the CLI's extra work (memory.db cascade) has its own
+ * dedicated coverage in tests/cli/commands/visitors.test.ts.
  */
 
 import { describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Database } from "bun:sqlite";
 import { createSqliteVisitorAuthStore } from "../../src/augments/visitor-auth/storage/sqlite-store";
 
 describe("visitor-auth cross-process SQLite (F19)", () => {
+  it("the store enables WAL mode (PRAGMA journal_mode = 'wal')", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "va-wal-pragma-"));
+    const dbPath = join(tmp, "visitor-auth.db");
+    try {
+      const store = createSqliteVisitorAuthStore({ dbPath });
+      store.initialize();
+      // Read the journal-mode setting from a separate handle on the same
+      // file. SQLite reports the active WAL configuration globally, not
+      // per-connection — any reader sees the same value once it's set.
+      const probe = new Database(dbPath, { readonly: true });
+      const row = probe.prepare("PRAGMA journal_mode").get() as { journal_mode?: string } | null;
+      probe.close();
+      store.close();
+      // bun:sqlite returns the pragma value lower-cased; SQLite reports it
+      // in lower-case too.
+      expect(row?.journal_mode?.toLowerCase()).toBe("wal");
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   it("running augment instance observes a revoke committed by a separate process", async () => {
     const tmp = mkdtempSync(join(tmpdir(), "va-cross-process-"));
     const dbPath = join(tmp, "visitor-auth.db");
@@ -66,8 +97,6 @@ describe("visitor-auth cross-process SQLite (F19)", () => {
       // Inline script: opens the store, calls revokeByEmail, exits.
       const scriptPath = join(tmp, "revoke-script.ts");
       const repoRoot = join(import.meta.dir, "..", "..");
-      // Convert win32 paths to forward-slash for embedding into the script
-      // (this test runs on macOS but be explicit).
       const storeImport = join(repoRoot, "src/augments/visitor-auth/storage/sqlite-store.ts");
       writeFileSync(
         scriptPath,
@@ -97,8 +126,7 @@ console.log(visitorId);
 
       // ---- 3. Long-lived handle re-reads. Must observe the revoke. ----
       // The prepared statements re-execute and see the latest committed
-      // state from the child. If WAL mode were not enabled (or if the
-      // store cached the row in-memory), this would still return revoked=false.
+      // state from the child.
       const after = longLived.findVerifiedByEmail(EMAIL);
       expect(after).not.toBeNull();
       expect(after?.revoked).toBe(true);
