@@ -152,6 +152,23 @@ async function readBodyWithCap(
 // ---------------------------------------------------------------------------
 
 /**
+ * Normalize an IP string. Strips the IPv4-mapped IPv6 prefix
+ * (`::ffff:1.2.3.4` → `1.2.3.4`) so operators can list `"127.0.0.1"` in
+ * `trustedProxies` without worrying about which form Bun's
+ * `server.requestIP()` happens to return on a given platform/socket.
+ *
+ * Returns the input unchanged for any other shape. Exported for direct
+ * unit testing — the IPv4-mapped form is hard to trigger reliably from
+ * an integration test (Bun's localhost typically returns `::1` or
+ * `127.0.0.1` directly).
+ */
+export function normalizeIp(ip: string | null | undefined): string | null {
+  if (!ip) return null;
+  const m = ip.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/i);
+  return m ? m[1]! : ip;
+}
+
+/**
  * Extract the caller's IP for rate-limit keying.
  *
  * F16 — only honors `x-forwarded-for` / `x-real-ip` when the connection's
@@ -160,10 +177,22 @@ async function readBodyWithCap(
  * limiting. With the empty default `trustedProxies: []`, the headers are
  * always ignored and the connection IP is used directly.
  *
- * The first time an XFF arrives without `trustedProxies` configured, the
- * `xffOnUntrusted` callback is invoked once per startup — operators
- * deploying behind a known proxy (Railway, Fly, Cloudflare) get a clear
- * hint to add the proxy IP rather than silently degrading.
+ * Even WITH a trusted proxy, the leftmost XFF entry cannot be trusted —
+ * an attacker can pre-seed `X-Forwarded-For: spoofed` before connecting,
+ * and an append-style proxy will produce
+ * `X-Forwarded-For: spoofed, attacker-real-ip`. The leftmost is still
+ * attacker-controlled. Standard fix (mirrors nginx, Express `trust proxy`):
+ * walk right-to-left, dropping trusted-proxy hops as we go. The first
+ * NON-trusted entry encountered is the actual client IP. If every entry
+ * is on the trusted list (very unusual chain of internal hops), fall
+ * through to the connection IP.
+ *
+ * The first time an XFF arrives WITHOUT `trustedProxies` configured (or
+ * from a connection IP not on the list), `xffOnUntrusted` fires once per
+ * startup — operators deploying behind a known proxy (Railway, Fly,
+ * Cloudflare) get a clear hint to add the proxy IP rather than silently
+ * degrading. Latched on XFF specifically (not X-Real-IP) so the warning
+ * text matches the trigger.
  *
  * Returns `"unknown"` when no source resolves.
  */
@@ -181,22 +210,41 @@ function getCallerIp(
   } catch {
     connIp = null;
   }
-  // Trust XFF / X-Real-IP only when the connection IP is on the allow-list.
-  const proxyIsTrusted = connIp !== null && trustedProxies.includes(connIp);
-  if ((xff || realIp) && !proxyIsTrusted) {
-    // Notify the operator (warn-once per startup) that XFF arrived from an
-    // untrusted source and is being ignored. They almost certainly meant to
-    // configure trustedProxies.
+  const connIpNorm = normalizeIp(connIp);
+  const proxiesNorm = trustedProxies.map((p) => normalizeIp(p) ?? p);
+  const proxyIsTrusted = connIpNorm !== null && proxiesNorm.includes(connIpNorm);
+
+  if (xff && !proxyIsTrusted) {
+    // Warn-once: XFF arrived from an untrusted source. Almost certainly an
+    // operator that hasn't configured trustedProxies after deploying behind
+    // a proxy. Narrowed to XFF (not X-Real-IP) because the warning copy
+    // names XFF specifically.
     xffOnUntrusted();
   }
-  if (proxyIsTrusted) {
-    if (xff) {
-      const first = xff.split(",")[0]?.trim();
-      if (first) return first;
+
+  if (proxyIsTrusted && xff) {
+    // Right-to-left walk. Drop entries that are themselves trusted proxies
+    // (each such entry was a known intermediate hop). Return the first
+    // non-trusted entry — that's the client IP under the standard
+    // append-style XFF convention.
+    const entries = xff
+      .split(",")
+      .map((s) => normalizeIp(s.trim()) ?? s.trim())
+      .filter(Boolean);
+    for (let i = entries.length - 1; i >= 0; i--) {
+      const entry = entries[i]!;
+      if (!proxiesNorm.includes(entry)) return entry;
     }
-    if (realIp) return realIp.trim();
+    // All XFF entries are themselves trusted proxies — chain consists
+    // entirely of internal hops. Fall through to connIp (the immediate
+    // peer, also a trusted proxy).
   }
-  return connIp ?? "unknown";
+  if (proxyIsTrusted && realIp) {
+    // X-Real-IP is a single value set by the proxy (no append semantics);
+    // trust it directly.
+    return normalizeIp(realIp.trim()) ?? realIp.trim();
+  }
+  return connIpNorm ?? "unknown";
 }
 
 // ---------------------------------------------------------------------------

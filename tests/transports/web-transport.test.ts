@@ -1,6 +1,6 @@
 import { describe, it, expect } from "bun:test";
 import { z } from "zod";
-import { webTransport } from "@/transports/web-transport";
+import { normalizeIp, webTransport } from "@/transports/web-transport";
 import { defineAgent } from "@/agent";
 import { createMockModel } from "@tests/fixtures/mock-model";
 import { createIdentityAugment } from "@tests/fixtures/mock-augment";
@@ -1705,6 +1705,148 @@ describe("webTransport augment-registered routes", () => {
       });
       expect(r2.status).toBe(429);
     } finally {
+      await agent.stop();
+    }
+  });
+
+  // F16 (Codex High) — even with trustedProxies set, the leftmost XFF
+  // entry is attacker-controllable under append-style proxies: a client
+  // pre-seeds `X-Forwarded-For: 8.8.8.8` and the proxy appends the
+  // client's real IP, leaving "8.8.8.8, real-ip" — leftmost-first parsing
+  // would let the attacker pick their bucket key. The right-to-left walk
+  // skips trusted-proxy hops and returns the first non-trusted entry.
+  it("F16 right-to-left XFF parse — pre-seeded leftmost entry cannot spoof bucket key", async () => {
+    const model = createMockModel();
+    const port = 18986;
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: "test-token" },
+      trustedProxies: ["127.0.0.1", "::1"],
+    });
+    const fixture = routeFixtureAugment({
+      auth: "none",
+      rateLimit: { maxPerMinute: 1 },
+    });
+    const agent = defineAgent({ name: "test", model: "mock", augments: [fixture, aug] }, model);
+    await agent.start();
+    try {
+      // Two requests, both pre-seed "8.8.8.8" as the leftmost XFF, but
+      // append a DIFFERENT "real client IP" as the rightmost entry.
+      // Buggy leftmost-first: both reads "8.8.8.8" → share bucket → 2nd 429.
+      // Fixed right-to-left: each reads its own rightmost (different) → both 200.
+      const r1 = await fetch(`http://localhost:${port}/test/echo?msg=a`, {
+        headers: { "x-forwarded-for": "8.8.8.8, 1.1.1.1" },
+      });
+      expect(r1.status).toBe(200);
+      const r2 = await fetch(`http://localhost:${port}/test/echo?msg=b`, {
+        headers: { "x-forwarded-for": "8.8.8.8, 2.2.2.2" },
+      });
+      expect(r2.status).toBe(200);
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  // Same right-to-left logic, dropping trusted-proxy hops. With a 2-hop
+  // chain where one hop is on trustedProxies, the parse should drop the
+  // trusted hop and return the actual client IP further left.
+  it("F16 right-to-left XFF parse — drops trusted-proxy hops, returns first untrusted entry", async () => {
+    const model = createMockModel();
+    const port = 18987;
+    // Trust localhost (the immediate peer) AND a hypothetical inner proxy "10.0.0.7".
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: "test-token" },
+      trustedProxies: ["127.0.0.1", "::1", "10.0.0.7"],
+    });
+    const fixture = routeFixtureAugment({
+      auth: "none",
+      rateLimit: { maxPerMinute: 1 },
+    });
+    const agent = defineAgent({ name: "test", model: "mock", augments: [fixture, aug] }, model);
+    await agent.start();
+    try {
+      // Two clients, each behind the same internal proxy "10.0.0.7".
+      // XFF: <real-client>, <proxy 10.0.0.7> (proxy 10.0.0.7 appended itself)
+      // Right-to-left: drop "10.0.0.7" (trusted), return <real-client>.
+      const r1 = await fetch(`http://localhost:${port}/test/echo?msg=a`, {
+        headers: { "x-forwarded-for": "1.1.1.1, 10.0.0.7" },
+      });
+      expect(r1.status).toBe(200);
+      // Different client behind the same trusted internal proxy → fresh bucket.
+      const r2 = await fetch(`http://localhost:${port}/test/echo?msg=b`, {
+        headers: { "x-forwarded-for": "2.2.2.2, 10.0.0.7" },
+      });
+      expect(r2.status).toBe(200);
+      // Same client repeats → bucket exhausted → 429.
+      const r3 = await fetch(`http://localhost:${port}/test/echo?msg=c`, {
+        headers: { "x-forwarded-for": "1.1.1.1, 10.0.0.7" },
+      });
+      expect(r3.status).toBe(429);
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  // F16 (Codex Medium) — IPv4-mapped IPv6. On some platforms, Bun's
+  // server.requestIP returns "::ffff:127.0.0.1" for an IPv4 client over
+  // an IPv6 socket. trustedProxies ["127.0.0.1"] must still match. Tested
+  // directly against normalizeIp because the mapped form is hard to
+  // trigger reliably from a localhost-fetch integration test.
+  it("F16 normalizeIp strips IPv4-mapped IPv6 prefix (::ffff:1.2.3.4 → 1.2.3.4)", () => {
+    expect(normalizeIp("::ffff:127.0.0.1")).toBe("127.0.0.1");
+    expect(normalizeIp("::ffff:10.0.0.5")).toBe("10.0.0.5");
+    expect(normalizeIp("::FFFF:8.8.8.8")).toBe("8.8.8.8"); // case-insensitive
+  });
+
+  it("F16 normalizeIp passes through non-mapped addresses unchanged", () => {
+    expect(normalizeIp("127.0.0.1")).toBe("127.0.0.1");
+    expect(normalizeIp("::1")).toBe("::1");
+    expect(normalizeIp("2001:db8::1")).toBe("2001:db8::1");
+    expect(normalizeIp("8.8.8.8")).toBe("8.8.8.8");
+  });
+
+  it("F16 normalizeIp returns null for null/undefined/empty input", () => {
+    expect(normalizeIp(null)).toBeNull();
+    expect(normalizeIp(undefined)).toBeNull();
+    expect(normalizeIp("")).toBeNull();
+  });
+
+  // F16 (Codex Low) — warn-once latch is now narrowed to XFF only.
+  // X-Real-IP without XFF must NOT consume the warning slot.
+  it("F16 warn-once latch fires for X-Forwarded-For only, not X-Real-IP", async () => {
+    const model = createMockModel();
+    const port = 18989;
+    const aug = webTransport({ port, auth: { type: "bearer", token: "test-token" } });
+    const fixture = routeFixtureAugment({
+      auth: "none",
+      rateLimit: { maxPerMinute: 100 },
+    });
+    const agent = defineAgent({ name: "test", model: "mock", augments: [fixture, aug] }, model);
+    await agent.start();
+
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args.map((a) => String(a)).join(" "));
+    };
+    try {
+      // X-Real-IP only (no XFF) — must NOT trigger the warning.
+      await fetch(`http://localhost:${port}/test/echo?msg=a`, {
+        headers: { "x-real-ip": "10.0.0.1" },
+      });
+      expect(
+        warnings.filter((w) => w.includes("X-Forwarded-For") && w.includes("trustedProxies")),
+      ).toHaveLength(0);
+      // Now an XFF arrives — warn fires.
+      await fetch(`http://localhost:${port}/test/echo?msg=b`, {
+        headers: { "x-forwarded-for": "10.0.0.1" },
+      });
+      expect(
+        warnings.filter((w) => w.includes("X-Forwarded-For") && w.includes("trustedProxies")),
+      ).toHaveLength(1);
+    } finally {
+      console.warn = originalWarn;
       await agent.stop();
     }
   });
