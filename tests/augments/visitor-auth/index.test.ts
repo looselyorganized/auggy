@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { visitorAuth } from "../../../src/augments/visitor-auth";
 import { createSqliteVisitorAuthStore } from "../../../src/augments/visitor-auth/storage/sqlite-store";
+import { createVisitorAuthRateLimiter } from "../../../src/augments/visitor-auth/rate-limiter";
 import type { AgentMailClient } from "../../../src/agentmail-client";
 import type { ToolExecuteContext, ContextBlock } from "../../../src/types";
 
@@ -688,6 +689,270 @@ describe("request_auth tool", () => {
     expect(result.status).toBe("failed");
     expect(result.message).toMatch(/peer/i);
     await aug.onShutdown?.();
+  });
+
+  // F3 — failure-path token cleanup must be token-scoped, not peer-scoped.
+  //
+  // Race scenario: A and B run in parallel for the same peer.
+  //   1. A: pre-invalidate (no priors), issue tokenA, await send (→ fails).
+  //   2. B: pre-invalidate (kills tokenA — line 192's intentional
+  //      one-open-at-a-time policy), issue tokenB, await send (→ succeeds).
+  //   3. A's send resolves "failed".
+  //   4. A's failure-path cleanup runs.
+  //
+  // Without F3: A's cleanup calls invalidateOpenTokensForPeer(peer) — kills
+  // tokenB as collateral. The visitor never receives a working token even
+  // though B's send succeeded.
+  //
+  // With F3: A's cleanup calls invalidateTokenIfStillOpen(tokenA) — tokenA
+  // is already consumed (killed by B's pre-invalidate), so it's a no-op.
+  // tokenB survives and is consumable by the visitor's verify click.
+  test("failure-path cleanup is token-scoped — does not invalidate sibling concurrent token (F3)", async () => {
+    let sendCallCount = 0;
+    const sendResolvers: Array<(r: { status: "sent" | "failed"; detail?: string }) => void> = [];
+    const { aug, sendCalls } = buildAug({
+      rateLimit: { perHour: 5, perDay: 10 },
+      sendImpl: () =>
+        new Promise<{
+          status: "sent" | "failed";
+          messageId?: string;
+          threadId?: string;
+          detail?: string;
+        }>((resolve) => {
+          sendCallCount++;
+          sendResolvers.push(
+            resolve as (r: { status: "sent" | "failed"; detail?: string }) => void,
+          );
+        }) as unknown as ReturnType<AgentMailClient["send"]>,
+    });
+    await aug.onBoot?.();
+    await aug.onTurnStart?.(turnWithVisitor("alice@example.com"));
+    const ctx: ToolExecuteContext = {
+      turnId: "t",
+      threadId: "thread1",
+      peer: {
+        id: "anon-thread1",
+        kind: "anonymous",
+        trustLevel: "public",
+        publicSubstate: "anonymous",
+        sourceAugment: "web",
+      },
+    };
+
+    // Kick off two parallel calls. Both pass rate-limit and pre-invalidate,
+    // then both await send. Their `execute()` Promises stay pending until
+    // we resolve their corresponding entries in sendResolvers.
+    const callA = aug.tools![0]!.execute({ method: "email", email: "alice@example.com" }, ctx);
+    // Yield so callA has issued tokenA and is awaiting send before callB
+    // pre-invalidates. Without this yield, the relative ordering of
+    // pre-invalidate vs. issueToken can interleave unpredictably.
+    await new Promise((r) => setTimeout(r, 0));
+    const callB = aug.tools![0]!.execute({ method: "email", email: "alice@example.com" }, ctx);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(sendCallCount).toBe(2);
+
+    // Resolve A (loser) first as "failed". This is when A's cleanup runs.
+    // Then resolve B (winner) as "sent".
+    sendResolvers[0]!({ status: "failed", detail: "smtp blew up" });
+    sendResolvers[1]!({
+      status: "sent",
+      messageId: "m",
+      threadId: "t",
+    } as unknown as { status: "sent" });
+    const [resA, resB] = await Promise.all([callA, callB]);
+    const resAJson = JSON.parse(resA as string);
+    const resBJson = JSON.parse(resB as string);
+    expect(resAJson.status).toBe("failed");
+    expect(resBJson.status).toBe("sent");
+
+    // Extract tokens from the verify URLs sent.
+    const extractToken = (text: string): string => {
+      const m = text.match(/token=([0-9a-f-]+)/i);
+      return m?.[1] ?? "";
+    };
+    const tokenA = extractToken(sendCalls[0]?.text ?? "");
+    const tokenB = extractToken(sendCalls[1]?.text ?? "");
+    expect(tokenA).toMatch(/^[0-9a-f-]{36}$/);
+    expect(tokenB).toMatch(/^[0-9a-f-]{36}$/);
+    expect(tokenA).not.toEqual(tokenB);
+
+    // Probe the underlying store. With F3, tokenB (the winner) is still open.
+    // Without F3, tokenB has been wiped by A's failure-path peer-wide invalidate.
+    const probe = createSqliteVisitorAuthStore({ dbPath });
+    probe.initialize();
+    // Probe at a moment well inside the 15-minute default TTL.
+    const t = Date.now() + 100;
+    expect(probe.tokenStatus(tokenB, t)).toBe("open");
+    // tokenA was killed by B's line-192 pre-invalidate; that's the intentional
+    // one-open-at-a-time policy and is unaffected by F3.
+    expect(probe.tokenStatus(tokenA, t)).toBe("consumed");
+    probe.close();
+
+    await aug.onShutdown?.();
+  });
+});
+
+// F10 — recentByPeer eviction. Without this, a long-running agent under high
+// peer churn (anon-* ids change per thread) accumulates per-peer entries
+// forever. The amortized sweep evicts entries that haven't been seen within
+// RECENT_PEER_TTL_MS (24h).
+describe("recentByPeer TTL eviction (F10)", () => {
+  test("evicts stale per-peer recent-message entries after the TTL", async () => {
+    let clock = 1_000_000;
+    const aug = visitorAuth({
+      publicUrl: "https://zip.test",
+      dbPath,
+      agentMail: { apiKey: "am_x", inboxId: "ibx_x" },
+      signingKey: "sig",
+      _now: () => clock,
+      _agentMailClient: fakeAgentMail(),
+    });
+    await aug.onBoot?.();
+
+    // Drive 49 distinct peer ids — below the sweep threshold (50).
+    function turnFor(peerId: string) {
+      return {
+        turnId: "tu",
+        threadId: peerId,
+        trigger: {
+          type: "message",
+          turnId: "tu",
+          timestamp: clock,
+          peer: { id: peerId, kind: "anonymous", trustLevel: "public" },
+          payload: {
+            parts: [{ kind: "text", text: `hello from ${peerId}` }],
+            sourceAugment: "web",
+            peer: { id: peerId, kind: "anonymous", trustLevel: "public" },
+            timestamp: clock,
+          },
+        },
+        peer: { id: peerId, kind: "anonymous", trustLevel: "public" },
+        toolCallsSoFar: 0,
+        turnStartedAt: clock,
+        metadata: {},
+      } as never;
+    }
+
+    for (let i = 0; i < 49; i++) {
+      await aug.onTurnStart?.(turnFor(`anon-burst-${i}`));
+    }
+    // Internal Map state isn't directly observable; we exercise the sweep
+    // indirectly via emailAppearsInRecentMessages by sending a fresh email
+    // request whose recent-message list MUST still hold a stale text. Here
+    // we verify that AFTER advancing the clock past TTL and crossing the
+    // sweep threshold, the stale peer's text is gone.
+    //
+    // Step 1: peer ZERO's text is "hello from anon-burst-0" — verify still
+    // present by attempting a request_auth that expects to see an email
+    // already mentioned.
+    //
+    // We can't directly read recentByPeer; the sweep effect is tested via
+    // request_auth's "Email was not found in the visitor's recent messages"
+    // rejection.
+
+    const ctxFor = (peerId: string): ToolExecuteContext => ({
+      turnId: "t",
+      threadId: peerId,
+      peer: {
+        id: peerId,
+        kind: "anonymous" as const,
+        trustLevel: "public" as const,
+        publicSubstate: "anonymous" as const,
+        sourceAugment: "web",
+      },
+    });
+
+    // Seed peer-0's recent-message buffer with "alice@example.com" so a
+    // later request_auth against that email would normally pass the
+    // email-in-recent-messages check.
+    function seededTurnFor(peerId: string, text: string) {
+      return {
+        turnId: "tu",
+        threadId: peerId,
+        trigger: {
+          type: "message",
+          turnId: "tu",
+          timestamp: clock,
+          peer: { id: peerId, kind: "anonymous", trustLevel: "public" },
+          payload: {
+            parts: [{ kind: "text", text }],
+            sourceAugment: "web",
+            peer: { id: peerId, kind: "anonymous", trustLevel: "public" },
+            timestamp: clock,
+          },
+        },
+        peer: { id: peerId, kind: "anonymous", trustLevel: "public" },
+        toolCallsSoFar: 0,
+        turnStartedAt: clock,
+        metadata: {},
+      } as never;
+    }
+    await aug.onTurnStart?.(seededTurnFor("anon-burst-0", "alice@example.com"));
+
+    // Advance clock past TTL (24h + epsilon).
+    clock += 25 * 60 * 60_000;
+
+    // Drive enough additional onTurnStart calls to cross the sweep threshold
+    // (we already hit 50 above counting peer-0's second turn). Add 50 more
+    // for safety so the modulo-50 sweep definitely fires.
+    for (let i = 0; i < 50; i++) {
+      await aug.onTurnStart?.(turnFor(`anon-late-${i}`));
+    }
+
+    // Now request_auth as peer-0 with the seeded email — it MUST be rejected
+    // because the recentByPeer entry has been evicted (24h+ since last seen).
+    const r = JSON.parse(
+      (await aug.tools![0]!.execute(
+        { method: "email", email: "alice@example.com" },
+        ctxFor("anon-burst-0"),
+      )) as string,
+    );
+    expect(r.status).toBe("rejected");
+    expect(r.message).toMatch(/recent messages/i);
+    await aug.onShutdown?.();
+  });
+});
+
+// F11 — rate-limiter background sweep registers in onBoot, clears in
+// onShutdown. The sweep itself runs hourly under a real clock; we test the
+// sweep() method directly here, plus verify that the augment's lifecycle
+// hooks register/unregister the timer correctly.
+describe("rate-limiter background sweep (F11)", () => {
+  test("sweep() drops keys with no live timestamps", () => {
+    const limiter = createVisitorAuthRateLimiter({ perHour: 5, perDay: 10 });
+    // Seed at t=0.
+    limiter.record("email:alice", 0);
+    limiter.record("email:bob", 0);
+    // Bob keeps firing inside the day window.
+    limiter.record("email:bob", 23 * 60 * 60_000);
+    // 25h later: alice's entry is fully stale; bob's still has the t=23h tick.
+    const evicted = limiter.sweep(25 * 60 * 60_000);
+    expect(evicted).toBe(1);
+  });
+
+  test("onShutdown clears the sweep interval (no leaked timer)", async () => {
+    const aug = visitorAuth({
+      publicUrl: "https://zip.test",
+      dbPath,
+      agentMail: { apiKey: "am_x", inboxId: "ibx_x" },
+      signingKey: "sig",
+      _agentMailClient: fakeAgentMail(),
+    });
+    await aug.onBoot?.();
+    // No direct way to assert the handle is null without introspection; the
+    // shape we verify here is "calling onShutdown twice doesn't throw" and
+    // "calling onShutdown without onBoot doesn't throw".
+    await aug.onShutdown?.();
+    await aug.onShutdown?.();
+
+    const aug2 = visitorAuth({
+      publicUrl: "https://zip.test",
+      dbPath,
+      agentMail: { apiKey: "am_x", inboxId: "ibx_x" },
+      signingKey: "sig",
+      _agentMailClient: fakeAgentMail(),
+    });
+    await aug2.onShutdown?.();
   });
 });
 
