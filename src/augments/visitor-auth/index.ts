@@ -48,6 +48,19 @@ export interface VisitorAuthInternalOptions extends VisitorAuthOptions {
   _agentMailClient?: AgentMailClient;
   /** Test-only clock injection. Production uses Date.now. */
   _now?: () => number;
+  /**
+   * Test-only override for the F11 rate-limit sweep cadence (default 1h).
+   * Tests use a tiny value (e.g., 30ms) to exercise the actual setInterval
+   * wiring rather than just the sweep() unit.
+   */
+  _rateLimitSweepIntervalMs?: number;
+  /**
+   * Test-only callback fired after each rate-limiter sweep tick. Receives
+   * the eviction count returned by sweep(). Lets tests assert that the
+   * setInterval is wired AND that clearInterval stops the cadence on
+   * onShutdown.
+   */
+  _onRateLimitSweep?: (evicted: number, now: number) => void;
 }
 
 function validateOptions(opts: VisitorAuthInternalOptions): void {
@@ -585,9 +598,11 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
       // 24h window so inactive entries are evicted within a window of their
       // last activity. unref() so the timer doesn't hold the event loop open
       // (mirrors how launchd-managed processes shut down on SIGTERM).
-      const RATE_LIMIT_SWEEP_INTERVAL_MS = 60 * 60_000; // 1h
+      const RATE_LIMIT_SWEEP_INTERVAL_MS = opts._rateLimitSweepIntervalMs ?? 60 * 60_000; // 1h
       rateLimiterSweepHandle = setInterval(() => {
-        rateLimiter.sweep(now());
+        const t = now();
+        const evicted = rateLimiter.sweep(t);
+        opts._onRateLimitSweep?.(evicted, t);
       }, RATE_LIMIT_SWEEP_INTERVAL_MS);
       if (typeof rateLimiterSweepHandle.unref === "function") {
         rateLimiterSweepHandle.unref();

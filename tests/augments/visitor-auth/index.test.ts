@@ -797,7 +797,14 @@ describe("request_auth tool", () => {
 // forever. The amortized sweep evicts entries that haven't been seen within
 // RECENT_PEER_TTL_MS (24h).
 describe("recentByPeer TTL eviction (F10)", () => {
-  test("evicts stale per-peer recent-message entries after the TTL", async () => {
+  // Many-peer eviction. Seeds N stale peers (each with an email in their
+  // recent-messages buffer), advances the clock past the 24h TTL, drives the
+  // sweep, and asserts that ALL N peers' buffers are evicted — not just the
+  // first one in the Map's iteration order. Catches a regression where the
+  // sweep loop forgets to fully iterate (e.g., breaks on first match) or
+  // forgets to evict from one of the two coupled Maps (recentByPeer vs.
+  // lastSeenByPeer).
+  test("evicts stale per-peer recent-message entries — all N peers, not just the first", async () => {
     let clock = 1_000_000;
     const aug = visitorAuth({
       publicUrl: "https://zip.test",
@@ -809,63 +816,7 @@ describe("recentByPeer TTL eviction (F10)", () => {
     });
     await aug.onBoot?.();
 
-    // Drive 49 distinct peer ids — below the sweep threshold (50).
-    function turnFor(peerId: string) {
-      return {
-        turnId: "tu",
-        threadId: peerId,
-        trigger: {
-          type: "message",
-          turnId: "tu",
-          timestamp: clock,
-          peer: { id: peerId, kind: "anonymous", trustLevel: "public" },
-          payload: {
-            parts: [{ kind: "text", text: `hello from ${peerId}` }],
-            sourceAugment: "web",
-            peer: { id: peerId, kind: "anonymous", trustLevel: "public" },
-            timestamp: clock,
-          },
-        },
-        peer: { id: peerId, kind: "anonymous", trustLevel: "public" },
-        toolCallsSoFar: 0,
-        turnStartedAt: clock,
-        metadata: {},
-      } as never;
-    }
-
-    for (let i = 0; i < 49; i++) {
-      await aug.onTurnStart?.(turnFor(`anon-burst-${i}`));
-    }
-    // Internal Map state isn't directly observable; we exercise the sweep
-    // indirectly via emailAppearsInRecentMessages by sending a fresh email
-    // request whose recent-message list MUST still hold a stale text. Here
-    // we verify that AFTER advancing the clock past TTL and crossing the
-    // sweep threshold, the stale peer's text is gone.
-    //
-    // Step 1: peer ZERO's text is "hello from anon-burst-0" — verify still
-    // present by attempting a request_auth that expects to see an email
-    // already mentioned.
-    //
-    // We can't directly read recentByPeer; the sweep effect is tested via
-    // request_auth's "Email was not found in the visitor's recent messages"
-    // rejection.
-
-    const ctxFor = (peerId: string): ToolExecuteContext => ({
-      turnId: "t",
-      threadId: peerId,
-      peer: {
-        id: peerId,
-        kind: "anonymous" as const,
-        trustLevel: "public" as const,
-        publicSubstate: "anonymous" as const,
-        sourceAugment: "web",
-      },
-    });
-
-    // Seed peer-0's recent-message buffer with "alice@example.com" so a
-    // later request_auth against that email would normally pass the
-    // email-in-recent-messages check.
-    function seededTurnFor(peerId: string, text: string) {
+    function turnFor(peerId: string, text: string) {
       return {
         turnId: "tu",
         threadId: peerId,
@@ -887,36 +838,77 @@ describe("recentByPeer TTL eviction (F10)", () => {
         metadata: {},
       } as never;
     }
-    await aug.onTurnStart?.(seededTurnFor("anon-burst-0", "alice@example.com"));
 
-    // Advance clock past TTL (24h + epsilon).
-    clock += 25 * 60 * 60_000;
+    const ctxFor = (peerId: string): ToolExecuteContext => ({
+      turnId: "t",
+      threadId: peerId,
+      peer: {
+        id: peerId,
+        kind: "anonymous" as const,
+        trustLevel: "public" as const,
+        publicSubstate: "anonymous" as const,
+        sourceAugment: "web",
+      },
+    });
 
-    // Drive enough additional onTurnStart calls to cross the sweep threshold
-    // (we already hit 50 above counting peer-0's second turn). Add 50 more
-    // for safety so the modulo-50 sweep definitely fires.
-    for (let i = 0; i < 50; i++) {
-      await aug.onTurnStart?.(turnFor(`anon-late-${i}`));
+    // Seed N=10 stale peers, each with a unique email in their
+    // recent-messages buffer. All seeded at the same clock so all expire
+    // simultaneously.
+    const N = 10;
+    const stalePeers = Array.from({ length: N }, (_, i) => ({
+      peerId: `anon-stale-${i}`,
+      email: `stale-${i}@example.com`,
+    }));
+    for (const { peerId, email } of stalePeers) {
+      await aug.onTurnStart?.(turnFor(peerId, email));
     }
 
-    // Now request_auth as peer-0 with the seeded email — it MUST be rejected
-    // because the recentByPeer entry has been evicted (24h+ since last seen).
-    const r = JSON.parse(
-      (await aug.tools![0]!.execute(
-        { method: "email", email: "alice@example.com" },
-        ctxFor("anon-burst-0"),
-      )) as string,
-    );
-    expect(r.status).toBe("rejected");
-    expect(r.message).toMatch(/recent messages/i);
+    // Sanity: while still fresh, request_auth for each peer's email passes
+    // the recent-messages check (proves the buffers were actually seeded).
+    for (const { peerId, email } of stalePeers) {
+      const r = JSON.parse(
+        (await aug.tools![0]!.execute({ method: "email", email }, ctxFor(peerId))) as string,
+      );
+      // Either status: "sent" or rate-limit rejection ("Verification rate
+      // limit reached") — both prove the recent-messages check passed.
+      // What we explicitly should NOT see is "not found in recent messages".
+      expect(r.message).not.toMatch(/recent messages/i);
+    }
+
+    // Advance clock past the 24h TTL.
+    clock += 25 * 60 * 60_000;
+
+    // Drive enough fresh-peer turns to cross the sweep threshold. Need
+    // RECENT_PEER_SWEEP_EVERY (50) onTurnStart calls SINCE the last sweep.
+    // We've done 10 + N*1 (= 20) seed/sanity-probe turns; drive ~50 more
+    // to guarantee the modulo-50 sweep definitely fires after the clock
+    // advance.
+    for (let i = 0; i < 60; i++) {
+      await aug.onTurnStart?.(turnFor(`anon-warm-${i}`, `warm-${i}@example.com`));
+    }
+
+    // Now every stale peer's buffer MUST be evicted. Each one's
+    // request_auth should be rejected with the recent-messages error,
+    // proving recentByPeer.delete fired for each.
+    for (const { peerId, email } of stalePeers) {
+      const r = JSON.parse(
+        (await aug.tools![0]!.execute({ method: "email", email }, ctxFor(peerId))) as string,
+      );
+      expect(r.status).toBe("rejected");
+      expect(r.message).toMatch(/recent messages/i);
+    }
     await aug.onShutdown?.();
   });
 });
 
 // F11 — rate-limiter background sweep registers in onBoot, clears in
-// onShutdown. The sweep itself runs hourly under a real clock; we test the
-// sweep() method directly here, plus verify that the augment's lifecycle
-// hooks register/unregister the timer correctly.
+// onShutdown. The sweep itself runs hourly under a real clock; the tests
+// here cover three claims:
+//   1. sweep() correctness (the unit).
+//   2. setInterval is actually wired in onBoot (the callback fires after
+//      registration).
+//   3. clearInterval in onShutdown stops the cadence (no further callbacks
+//      after shutdown).
 describe("rate-limiter background sweep (F11)", () => {
   test("sweep() drops keys with no live timestamps", () => {
     const limiter = createVisitorAuthRateLimiter({ perHour: 5, perDay: 10 });
@@ -930,7 +922,122 @@ describe("rate-limiter background sweep (F11)", () => {
     expect(evicted).toBe(1);
   });
 
-  test("onShutdown clears the sweep interval (no leaked timer)", async () => {
+  // Guards against a regression where the `setInterval` registration is
+  // accidentally removed (sweep() unit-tests still pass; only this test would
+  // fail). Uses a 30ms test-only sweep cadence + a callback hook to observe
+  // each tick.
+  test("onBoot wires setInterval — sweep callback fires repeatedly under the test cadence", async () => {
+    const ticks: Array<{ evicted: number; now: number }> = [];
+    const clock = 0;
+    const aug = visitorAuth({
+      publicUrl: "https://zip.test",
+      dbPath,
+      agentMail: { apiKey: "am_x", inboxId: "ibx_x" },
+      signingKey: "sig",
+      _now: () => clock,
+      _rateLimitSweepIntervalMs: 30,
+      _onRateLimitSweep: (evicted, now) => {
+        ticks.push({ evicted, now });
+      },
+      _agentMailClient: fakeAgentMail(),
+    });
+    await aug.onBoot?.();
+    // Wait long enough for ~3 ticks at 30ms cadence.
+    await new Promise((r) => setTimeout(r, 110));
+    expect(ticks.length).toBeGreaterThanOrEqual(2);
+    await aug.onShutdown?.();
+  });
+
+  test("onShutdown clears the sweep interval — no further callbacks after shutdown", async () => {
+    const ticks: Array<{ evicted: number; now: number }> = [];
+    const aug = visitorAuth({
+      publicUrl: "https://zip.test",
+      dbPath,
+      agentMail: { apiKey: "am_x", inboxId: "ibx_x" },
+      signingKey: "sig",
+      _rateLimitSweepIntervalMs: 30,
+      _onRateLimitSweep: (evicted, now) => {
+        ticks.push({ evicted, now });
+      },
+      _agentMailClient: fakeAgentMail(),
+    });
+    await aug.onBoot?.();
+    await new Promise((r) => setTimeout(r, 80));
+    expect(ticks.length).toBeGreaterThanOrEqual(1);
+    await aug.onShutdown?.();
+    const post = ticks.length;
+    // After shutdown, no further callbacks should arrive even if we wait
+    // multiple cadences.
+    await new Promise((r) => setTimeout(r, 120));
+    expect(ticks.length).toBe(post);
+  });
+
+  test("the setInterval-driven sweep actually evicts stale entries (end-to-end)", async () => {
+    const ticks: Array<{ evicted: number; now: number }> = [];
+    let clock = 0;
+    const aug = visitorAuth({
+      publicUrl: "https://zip.test",
+      dbPath,
+      agentMail: { apiKey: "am_x", inboxId: "ibx_x" },
+      signingKey: "sig",
+      _now: () => clock,
+      _rateLimitSweepIntervalMs: 30,
+      _onRateLimitSweep: (evicted, now) => {
+        ticks.push({ evicted, now });
+      },
+      _agentMailClient: fakeAgentMail(),
+    });
+    await aug.onBoot?.();
+    // Drive request_auth so the rate limiter has an entry. We exercise the
+    // tool's recent-message path, which records into the limiter via
+    // rateLimiter.record under the hood.
+    await aug.onTurnStart?.({
+      turnId: "tu",
+      threadId: "thread1",
+      trigger: {
+        type: "message",
+        turnId: "tu",
+        timestamp: clock,
+        peer: { id: "anon-thread1", kind: "anonymous", trustLevel: "public" },
+        payload: {
+          parts: [{ kind: "text", text: "alice@example.com" }],
+          sourceAugment: "web",
+          peer: { id: "anon-thread1", kind: "anonymous", trustLevel: "public" },
+          timestamp: clock,
+        },
+      },
+      peer: { id: "anon-thread1", kind: "anonymous", trustLevel: "public" },
+      toolCallsSoFar: 0,
+      turnStartedAt: clock,
+      metadata: {},
+    } as never);
+    await aug.tools![0]!.execute(
+      { method: "email", email: "alice@example.com" },
+      {
+        turnId: "t",
+        threadId: "thread1",
+        peer: {
+          id: "anon-thread1",
+          kind: "anonymous",
+          trustLevel: "public",
+          publicSubstate: "anonymous",
+          sourceAugment: "web",
+        },
+      },
+    );
+    // Advance the injected clock past the limiter's 24h window. The next
+    // sweep tick (real-time 30ms cadence) sees stale entries and evicts
+    // them — observable via the callback's `evicted` count.
+    clock = 25 * 60 * 60_000;
+    // Reset the ticks observed before the clock advance.
+    ticks.length = 0;
+    await new Promise((r) => setTimeout(r, 80));
+    const evictionTicks = ticks.filter((t) => t.evicted > 0);
+    expect(evictionTicks.length).toBeGreaterThanOrEqual(1);
+    await aug.onShutdown?.();
+  });
+
+  test("onShutdown is idempotent — no throw on double-call or shutdown-without-boot", async () => {
     const aug = visitorAuth({
       publicUrl: "https://zip.test",
       dbPath,
@@ -939,9 +1046,6 @@ describe("rate-limiter background sweep (F11)", () => {
       _agentMailClient: fakeAgentMail(),
     });
     await aug.onBoot?.();
-    // No direct way to assert the handle is null without introspection; the
-    // shape we verify here is "calling onShutdown twice doesn't throw" and
-    // "calling onShutdown without onBoot doesn't throw".
     await aug.onShutdown?.();
     await aug.onShutdown?.();
 
