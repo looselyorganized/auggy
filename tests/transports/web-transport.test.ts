@@ -1639,10 +1639,19 @@ describe("webTransport augment-registered routes", () => {
   // Finding 3: Per-IP rate limit isolation
   // ---------------------------------------------------------------------------
 
-  it("rate limit isolates callers — different x-forwarded-for IPs get independent buckets", async () => {
+  it("rate limit isolates callers — different x-forwarded-for IPs get independent buckets (when proxy is trusted)", async () => {
     const model = createMockModel();
     const port = 18982;
-    const aug = webTransport({ port, auth: { type: "bearer", token: "test-token" } });
+    // F16: XFF is only honored when the connection IP is on trustedProxies.
+    // Localhost connects via ::1 / 127.0.0.1 depending on resolver; include
+    // both so the test is deterministic across environments. With these
+    // entries on the allow-list, the test exercises the original
+    // per-client-IP bucket-isolation behavior.
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: "test-token" },
+      trustedProxies: ["127.0.0.1", "::1"],
+    });
     const fixture = routeFixtureAugment({
       auth: "none",
       rateLimit: { maxPerMinute: 1 },
@@ -1665,6 +1674,74 @@ describe("webTransport augment-registered routes", () => {
       });
       expect(b1.status).toBe(200);
     } finally {
+      await agent.stop();
+    }
+  });
+
+  // F16 — when trustedProxies is unset (default), XFF is ignored and all
+  // requests share the connection-IP bucket. Verifies the default-secure
+  // behavior: an untrusted client cannot spoof XFF to skip rate limiting.
+  it("ignores X-Forwarded-For when trustedProxies is unset — all callers share connection-IP bucket (F16)", async () => {
+    const model = createMockModel();
+    const port = 18984;
+    // No trustedProxies → XFF not trusted.
+    const aug = webTransport({ port, auth: { type: "bearer", token: "test-token" } });
+    const fixture = routeFixtureAugment({
+      auth: "none",
+      rateLimit: { maxPerMinute: 1 },
+    });
+    const agent = defineAgent({ name: "test", model: "mock", augments: [fixture, aug] }, model);
+    await agent.start();
+    try {
+      // First request allowed.
+      const r1 = await fetch(`http://localhost:${port}/test/echo?msg=a`, {
+        headers: { "x-forwarded-for": "10.0.0.1" },
+      });
+      expect(r1.status).toBe(200);
+      // Second request from a "different" XFF IP — but XFF is ignored, so
+      // the connection IP (localhost) is used and the bucket is full.
+      const r2 = await fetch(`http://localhost:${port}/test/echo?msg=b`, {
+        headers: { "x-forwarded-for": "10.0.0.2" },
+      });
+      expect(r2.status).toBe(429);
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  // F16 — warn-once latch. The first time XFF arrives without a configured
+  // trustedProxies, console.warn fires once. Subsequent requests do not
+  // re-warn.
+  it("warns once when X-Forwarded-For arrives without trustedProxies (F16)", async () => {
+    const model = createMockModel();
+    const port = 18985;
+    const aug = webTransport({ port, auth: { type: "bearer", token: "test-token" } });
+    const fixture = routeFixtureAugment({
+      auth: "none",
+      rateLimit: { maxPerMinute: 100 },
+    });
+    const agent = defineAgent({ name: "test", model: "mock", augments: [fixture, aug] }, model);
+    await agent.start();
+
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args.map((a) => String(a)).join(" "));
+    };
+    try {
+      // Three requests with XFF — should trigger ONE warning.
+      for (let i = 0; i < 3; i++) {
+        await fetch(`http://localhost:${port}/test/echo?msg=${i}`, {
+          headers: { "x-forwarded-for": "10.0.0.1" },
+        });
+      }
+      const xffWarnings = warnings.filter(
+        (w) => w.includes("X-Forwarded-For") && w.includes("trustedProxies"),
+      );
+      expect(xffWarnings).toHaveLength(1);
+      expect(xffWarnings[0]).toMatch(/trustedProxies is unset/);
+    } finally {
+      console.warn = originalWarn;
       await agent.stop();
     }
   });

@@ -76,6 +76,25 @@ export interface WebTransportOptions {
    * a polished frontend (LORF platform/chat, future spine visitor chat, custom).
    */
   publicFrontendUrl?: string;
+  /**
+   * Allow-list of upstream proxies whose `X-Forwarded-For` / `X-Real-IP`
+   * headers are trusted for per-route per-IP rate limiting (F16).
+   *
+   * Each entry is an exact IP string (CIDR ranges are not yet supported —
+   * v1 keeps it simple). When the connection's remote address matches an
+   * entry, the first XFF / X-Real-IP value is trusted. When it does not,
+   * the headers are IGNORED and the connection IP is used directly.
+   *
+   * Default: `[]` (default-secure). With no trusted proxy list, an
+   * untrusted client could spoof their `X-Forwarded-For` header and
+   * bypass per-IP rate limiting; the empty default forces operators to
+   * declare their proxy chain explicitly. On the first request that
+   * arrives with an XFF header AND no `trustedProxies` configured, a
+   * single `console.warn` per startup nudges the operator with a
+   * config hint (typical when deploying behind Railway / Fly /
+   * Cloudflare for the first time).
+   */
+  trustedProxies?: string[];
 }
 
 interface AGUIRunRequestBody {
@@ -133,27 +152,51 @@ async function readBodyWithCap(
 // ---------------------------------------------------------------------------
 
 /**
- * Extract the caller's IP for rate-limit keying. Honors `x-forwarded-for`
- * (first hop) when present (typical when behind a proxy like Railway), else
- * falls back to the connection's remote address. Returns "unknown" if neither
- * is available — operators are expected to deploy behind a known proxy chain.
+ * Extract the caller's IP for rate-limit keying.
+ *
+ * F16 — only honors `x-forwarded-for` / `x-real-ip` when the connection's
+ * remote address is on the configured `trustedProxies` allow-list. Without
+ * this gate, an untrusted client could spoof XFF and skip per-IP rate
+ * limiting. With the empty default `trustedProxies: []`, the headers are
+ * always ignored and the connection IP is used directly.
+ *
+ * The first time an XFF arrives without `trustedProxies` configured, the
+ * `xffOnUntrusted` callback is invoked once per startup — operators
+ * deploying behind a known proxy (Railway, Fly, Cloudflare) get a clear
+ * hint to add the proxy IP rather than silently degrading.
+ *
+ * Returns `"unknown"` when no source resolves.
  */
 function getCallerIp(
   req: Request,
   server: { requestIP?: (req: Request) => { address?: string } | null } | undefined,
+  trustedProxies: readonly string[],
+  xffOnUntrusted: () => void,
 ): string {
   const xff = req.headers.get("x-forwarded-for");
-  if (xff) {
-    const first = xff.split(",")[0]?.trim();
-    if (first) return first;
-  }
   const realIp = req.headers.get("x-real-ip");
-  if (realIp) return realIp.trim();
+  let connIp: string | null = null;
   try {
-    return server?.requestIP?.(req)?.address ?? "unknown";
+    connIp = server?.requestIP?.(req)?.address ?? null;
   } catch {
-    return "unknown";
+    connIp = null;
   }
+  // Trust XFF / X-Real-IP only when the connection IP is on the allow-list.
+  const proxyIsTrusted = connIp !== null && trustedProxies.includes(connIp);
+  if ((xff || realIp) && !proxyIsTrusted) {
+    // Notify the operator (warn-once per startup) that XFF arrived from an
+    // untrusted source and is being ignored. They almost certainly meant to
+    // configure trustedProxies.
+    xffOnUntrusted();
+  }
+  if (proxyIsTrusted) {
+    if (xff) {
+      const first = xff.split(",")[0]?.trim();
+      if (first) return first;
+    }
+    if (realIp) return realIp.trim();
+  }
+  return connIp ?? "unknown";
 }
 
 // ---------------------------------------------------------------------------
@@ -242,6 +285,34 @@ export function webTransport(opts: WebTransportOptions): Augment {
   // PR γ.1 — per-route rate-limit state. Sliding-window timestamps keyed by
   // "<METHOD> <path>". NOT per-peer — auth-none routes have no peer.
   const routeHits = new Map<string, number[]>();
+
+  // F16 — warn-once latch for "XFF arrived from untrusted connection".
+  // The first time getCallerIp sees this condition without a configured
+  // trustedProxies list (or with the connection IP not on the list), we
+  // emit a single console.warn so operators deploying behind Railway / Fly /
+  // Cloudflare for the first time get a clear hint to configure their
+  // proxy chain. Latched per-instance so the warning isn't spammed every
+  // request.
+  const trustedProxies: readonly string[] = opts.trustedProxies ?? [];
+  let xffUntrustedWarned = false;
+  function xffOnUntrusted(): void {
+    if (xffUntrustedWarned) return;
+    xffUntrustedWarned = true;
+    if (trustedProxies.length === 0) {
+      console.warn(
+        "[web-transport] X-Forwarded-For header received but trustedProxies is unset. " +
+          "Per-IP rate limiting is using the connection IP, NOT the XFF header. " +
+          "If you deploy behind a proxy (Railway, Fly, Cloudflare), set " +
+          "webTransport.trustedProxies to the proxy IP(s) so the header is honored.",
+      );
+    } else {
+      console.warn(
+        "[web-transport] X-Forwarded-For header received from a connection IP that is " +
+          "NOT on trustedProxies. The header is being ignored for rate limiting. " +
+          `Configured trustedProxies: ${trustedProxies.join(", ")}.`,
+      );
+    }
+  }
 
   function checkRouteRateLimit(
     routeKey: string,
@@ -755,7 +826,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
             // Prevents one client from exhausting the bucket for everyone.
             if (augmentRoute.rateLimit) {
               const routeKey = `${augmentRoute.method} ${augmentRoute.path}`;
-              const ip = getCallerIp(req, server);
+              const ip = getCallerIp(req, server, trustedProxies, xffOnUntrusted);
               const rl = checkRouteRateLimit(routeKey, ip, augmentRoute.rateLimit.maxPerMinute);
               if (!rl.allowed) {
                 return new Response(JSON.stringify({ error: "rate-limited" }), {

@@ -596,7 +596,29 @@ Convention: scope routes under `/<augment-name>/...` to make collisions across t
 |---|---|---|
 | `timeoutMs` | 30,000 | Handler exceeding this returns 504. The handler's promise is not cancelled (continues running; result discarded). |
 | `maxBodyBytes` | 1,048,576 (1 MB) | Request with `content-length` over the cap returns 413 before the handler runs. |
-| `rateLimit.maxPerMinute` | (no limit) | Per-route sliding-window counter. Not per-peer — auth-none routes have no peer. Returns 429 with `Retry-After`. |
+| `rateLimit.maxPerMinute` | (no limit) | Per-route sliding-window counter, keyed on caller IP (see "Caller IP & `trustedProxies`" below). Returns 429 with `Retry-After`. |
+
+### Caller IP & `trustedProxies`
+
+The per-route rate limiter keys on the caller's IP. By default, `webTransport` ignores `X-Forwarded-For` / `X-Real-IP` headers and uses the connection's remote address. This is the default-secure behavior: an untrusted client could otherwise spoof those headers and skip rate limiting.
+
+When deploying behind a proxy (Railway, Fly, Cloudflare, an in-house load balancer), set `trustedProxies` to the proxy's IP(s):
+
+```ts
+webTransport({
+  port: 8080,
+  auth: { type: "bearer", token: "..." },
+  trustedProxies: ["10.0.0.5"],  // your proxy's IP
+});
+```
+
+Behavior:
+
+- Connection IP is on `trustedProxies` → first `X-Forwarded-For` value (else `X-Real-IP`) is honored.
+- Connection IP is NOT on `trustedProxies` (or list is empty) → headers ignored, connection IP used directly.
+- The first time an XFF arrives without `trustedProxies` configured, a single `console.warn` per startup nudges operators with a config hint. Latched per-instance — no warning spam.
+
+CIDR ranges are not yet supported (v1 keeps it simple); list the exact IPs.
 
 ### Status codes
 
