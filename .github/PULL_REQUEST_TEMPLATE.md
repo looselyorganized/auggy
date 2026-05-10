@@ -21,6 +21,7 @@ Closes #<!-- issue number, if any -->
 - [ ] New public surface (augment, tool, engine adapter, CLI flag) has tests.
 - [ ] Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/).
 - [ ] If this change has security implications, the threat model is described in the description above.
+- [ ] If this PR touches `src/augments/*`, `src/scaffold-templates/`, `src/cli/scaffold*.ts`, `src/cli/skill-*.ts`, or kernel system-prompt assembly, kicked off `gh workflow run security-eval.yml --ref <branch>` and confirmed green before requesting review. (See ADR-029 — eval is the canary for prompt-shape changes; merging while red disables it.)
 
 ## Notes for reviewers
 

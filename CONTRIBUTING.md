@@ -164,7 +164,7 @@ The portable security suite at `evals/security/` runs against a real Anthropic A
 - `push: main` — runs once after every merge to catch regressions.
 - `schedule` (nightly, 07:00 UTC) — catches model behavior drift between merges.
 
-**If your PR touches eval-relevant code** (kernel turn-loop, augment refusal logic, identity preamble, fixture composition, suite YAML, eval-context module):
+**If your PR touches eval-relevant code** (kernel turn-loop, augment refusal logic, identity preamble, fixture composition, suite YAML, eval-context module, or anything under `src/augments/*`, `src/scaffold-templates/*`, `src/cli/scaffold*.ts`, `src/cli/skill-*.ts`) — see [ADR-029](https://github.com/looselyorganized/lo/blob/main/docs/solutions/architecture/adr-029-eval-as-canary-for-prompt-shape-changes.md) for the full canary discipline:
 
 1. **Run the suite locally before opening the PR:**
    ```bash
