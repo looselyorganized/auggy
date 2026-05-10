@@ -46,7 +46,7 @@ augments:
           path: ./workspace
           writable: true
           deletable: true
-      skillFile: ../../../src/augments/filesystem-skill/SKILL.md
+      skillFile: ../../../src/augments/filesystem/skill/SKILL.md
 
   - name: fetch
     type: webFetch
