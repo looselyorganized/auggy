@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Process
 
-- **Security-eval canary discipline.** PRs touching the agent's prompt-shape surface (`src/augments/*`, `src/scaffold-templates/`, `src/cli/scaffold*.ts`, `src/cli/skill-*.ts`, kernel system-prompt assembly) must dispatch `gh workflow run security-eval.yml --ref <branch>` and confirm green before requesting review. Documented in [ADR-029](https://github.com/looselyorganized/lo/blob/main/docs/solutions/architecture/adr-029-eval-as-canary-for-prompt-shape-changes.md); enforced via the PR template checklist.
+- **Security-eval canary discipline.** PRs touching the agent's prompt-shape surface (`src/augments/*`, `src/scaffold-templates/`, `src/cli/scaffold*.ts`, `src/cli/skill-*.ts`, kernel system-prompt assembly) must dispatch `gh workflow run security-eval.yml --ref <branch>` and confirm green before requesting review. Captured in ADR-029 (`eval-as-canary-for-prompt-shape-changes`); enforced via the PR template checklist.
 
 ### Changed
 
