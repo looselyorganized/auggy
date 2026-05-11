@@ -1,0 +1,28 @@
+{
+  "org": "Acme Test Foundry",
+  "purpose": "A fictional research organization used solely to populate the orgContext eval fixture. Not affiliated with any real entity.",
+  "operator": "TestOperator",
+  "phase": "active",
+  "endpoints": [
+    {
+      "path": "/about",
+      "description": "Mission, history, and headquarters of the foundry"
+    },
+    {
+      "path": "/products",
+      "description": "Catalog of synthetic foundry products: widgets, gizmos, and the training kit"
+    },
+    {
+      "path": "/policies/return-policy",
+      "description": "Return and refund terms for foundry purchases"
+    },
+    {
+      "path": "/policies/pricing-policy",
+      "description": "Pricing tiers and bulk discount structure"
+    },
+    {
+      "path": "/team",
+      "description": "Founders and engineering staff at the foundry"
+    }
+  ]
+}
