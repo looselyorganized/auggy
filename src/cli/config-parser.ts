@@ -126,6 +126,7 @@ const BUILTIN_TYPES = new Set([
   "telegramTransport",
   "turnControl",
   "visitorAuth",
+  "link",
 ]);
 const KNOWN_PROVIDERS = new Set(["anthropic", "openai", "openrouter"]);
 const VALID_REASONING_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh"]);
@@ -337,6 +338,71 @@ function validateLayeredMemoryOptions(
       `${prefix}.options.autoSave.extractionFrequency`,
       errors,
     );
+  }
+}
+
+/**
+ * Validate the options block for a link augment (peer-to-peer A2A v0.2).
+ * Shape:
+ *   { port?, dbPath, agentCard: {...}, peers: { name: {...} } }
+ */
+function validateLinkOptions(
+  opts: Record<string, unknown>,
+  prefix: string,
+  errors: string[],
+): void {
+  if (opts.port !== undefined && (typeof opts.port !== "number" || opts.port < 0)) {
+    errors.push(`${prefix}.options.port: must be a non-negative number`);
+  }
+  if (typeof opts.dbPath !== "string" || opts.dbPath.length === 0) {
+    errors.push(`${prefix}.options.dbPath: required non-empty string`);
+  }
+
+  const card = opts.agentCard;
+  if (!card || typeof card !== "object" || Array.isArray(card)) {
+    errors.push(`${prefix}.options.agentCard: required object`);
+  } else {
+    const c = card as Record<string, unknown>;
+    for (const field of ["id", "name", "description", "endpointUrl"] as const) {
+      if (typeof c[field] !== "string" || (c[field] as string).length === 0) {
+        errors.push(`${prefix}.options.agentCard.${field}: required non-empty string`);
+      }
+    }
+    if (c.capabilities !== undefined) {
+      if (
+        !Array.isArray(c.capabilities) ||
+        (c.capabilities as unknown[]).some((v) => typeof v !== "string")
+      ) {
+        errors.push(`${prefix}.options.agentCard.capabilities: must be an array of strings`);
+      }
+    }
+  }
+
+  const peers = opts.peers;
+  if (peers !== undefined) {
+    if (!peers || typeof peers !== "object" || Array.isArray(peers)) {
+      errors.push(`${prefix}.options.peers: must be an object keyed by peer name`);
+    } else {
+      for (const [name, value] of Object.entries(peers as Record<string, unknown>)) {
+        const peerPrefix = `${prefix}.options.peers.${name}`;
+        if (!value || typeof value !== "object" || Array.isArray(value)) {
+          errors.push(`${peerPrefix}: must be an object`);
+          continue;
+        }
+        const p = value as Record<string, unknown>;
+        for (const field of [
+          "url",
+          "bearer",
+          "participantId",
+          "inboundBearer",
+          "inboundBearerId",
+        ] as const) {
+          if (typeof p[field] !== "string" || (p[field] as string).length === 0) {
+            errors.push(`${peerPrefix}.${field}: required non-empty string`);
+          }
+        }
+      }
+    }
   }
 }
 
@@ -763,6 +829,9 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
       } else if (aug.type === "layeredMemory") {
         const lmOpts = (aug.options ?? {}) as Record<string, unknown>;
         validateLayeredMemoryOptions(lmOpts, prefix, errors);
+      } else if (aug.type === "link") {
+        const linkOpts = (aug.options ?? {}) as Record<string, unknown>;
+        validateLinkOptions(linkOpts, prefix, errors);
       }
     }
   }

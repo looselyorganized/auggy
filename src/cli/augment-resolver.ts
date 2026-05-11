@@ -28,6 +28,8 @@ import { telegramTransport } from "../augments/telegram-transport";
 import { turnControl, type TurnControlOptions } from "../augments/turn-control";
 import { visitorAuth } from "../augments/visitor-auth";
 import type { VisitorAuthOptions, VisitorAuthAugmentExtras } from "../augments/visitor-auth/types";
+import { link } from "../augments/link";
+import type { LinkAugmentAgentCard, LinkAugmentOptions, LinkPeerConfig } from "../augments/link";
 import type { Augment, NotifyAugmentOptions, TelegramTransportOptions } from "../types";
 import type { AugmentConfig } from "./types";
 import type { BudgetsAugmentOptions } from "../augments/budgets";
@@ -281,6 +283,37 @@ function resolveBash(opts: Record<string, unknown>, agentDir: string): Augment {
   });
 }
 
+function resolveLink(opts: Record<string, unknown>, agentDir: string): Augment {
+  const card = opts.agentCard as Record<string, unknown>;
+  const agentCard: LinkAugmentAgentCard = {
+    id: card.id as string,
+    name: card.name as string,
+    description: card.description as string,
+    endpointUrl: card.endpointUrl as string,
+    capabilities: card.capabilities as string[] | undefined,
+  };
+
+  const peersRaw = (opts.peers as Record<string, Record<string, unknown>> | undefined) ?? {};
+  const peers: Record<string, LinkPeerConfig> = {};
+  for (const [name, p] of Object.entries(peersRaw)) {
+    peers[name] = {
+      url: p.url as string,
+      bearer: p.bearer as string,
+      participantId: p.participantId as string,
+      inboundBearer: p.inboundBearer as string,
+      inboundBearerId: p.inboundBearerId as string,
+    };
+  }
+
+  const linkOpts: LinkAugmentOptions = {
+    port: opts.port as number | undefined,
+    dbPath: resolvePath(opts.dbPath as string, agentDir),
+    agentCard,
+    peers,
+  };
+  return link(linkOpts);
+}
+
 function resolveVisitorAuth(opts: Record<string, unknown>, agentDir: string): Augment {
   const dbPath = (opts.dbPath as string | undefined) ?? "./visitor-auth.db";
   // CRITICAL: distinguish `null` (operator opt-out) from `undefined` (defaults to ./memory.db).
@@ -467,6 +500,9 @@ export async function resolveAugments(
         break;
       case "visitorAuth":
         augment = resolveVisitorAuth(opts, agentDir);
+        break;
+      case "link":
+        augment = resolveLink(opts, agentDir);
         break;
       case "custom":
         augment = await resolveCustom(config, agentDir);
