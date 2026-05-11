@@ -238,6 +238,27 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
     hasSkill: true,
   },
   {
+    label: "link",
+    description:
+      "Peer-to-peer A2A v0.2 transport (auggy ↔ auggy / A2A-speaking peers) via @auggy/link",
+    type: "link",
+    defaultName: "link",
+    defaultOptions: {
+      port: 8081,
+      dbPath: "./link.db",
+      agentCard: {
+        id: "${AUGGY_AGENT_ID}",
+        name: "${AUGGY_AGENT_NAME}",
+        description: "augment-1 link endpoint",
+        endpointUrl: "${AUGGY_LINK_PUBLIC_URL}",
+      },
+      peers: {},
+    },
+    required: false,
+    envVars: ["AUGGY_AGENT_ID", "AUGGY_AGENT_NAME", "AUGGY_LINK_PUBLIC_URL"],
+    hasSkill: false,
+  },
+  {
     label: "Visitor Auth",
     description:
       "Email magic-link verification — promotes anonymous visitors to recognized identity",
