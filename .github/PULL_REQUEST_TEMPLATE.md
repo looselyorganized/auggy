@@ -15,7 +15,7 @@ Closes #<!-- issue number, if any -->
 
 ## Checklist
 
-- [ ] `bun test` passes locally (all 863+).
+- [ ] `bun test` passes locally (all 1704+).
 - [ ] `bunx tsc --noEmit` is clean.
 - [ ] Reference docs under `docs/01-12-*.md` updated if behavior they describe changed.
 - [ ] New public surface (augment, tool, engine adapter, CLI flag) has tests.

@@ -25,7 +25,7 @@ bun install
 bun link                 # makes `auggy` available globally
 
 # 3. Tests + typecheck
-bun test                 # 1458 tests across 114 files
+bun test                 # 1704 tests across 131 files
 bunx tsc --noEmit        # must be clean
 
 # 4. Run the demo agent (requires ANTHROPIC_API_KEY)
@@ -54,7 +54,7 @@ If you've read the rule list in [CLAUDE.md](CLAUDE.md), you've seen all of this.
 
 ## Bundled skills convention
 
-Per [ADR-025](https://github.com/looselyorganized/lo/blob/main/docs/solutions/architecture/adr-025-augment-folder-and-skill-bundling.md), every built-in augment is a folder under `src/augments/<name>/`. If your augment contributes model-callable tools, ship a bundled skill alongside the factory:
+Per ADR-025 (`augment-folder-and-skill-bundling`), every built-in augment is a folder under `src/augments/<name>/`. If your augment contributes model-callable tools, ship a bundled skill alongside the factory:
 
 ```
 src/augments/<name>/
@@ -111,7 +111,7 @@ When the kernel dispatches a turn whose `trigger.type === "internal"`, it walks 
 
 Use `trigger.source` as the routing key — by convention use a dotted prefix matching your augment name (e.g. `"my-augment.some-work"`) to avoid cross-augment collisions.
 
-**Cost-flow contract:** if your handler makes an LLM call, the cost of that call must flow through the turn's `TurnResult.trace.inferenceSteps[]` so `runCostCommit` aggregates it into the budgets store. In-handler costs that bypass this path silently break daily-budget accounting. See [ADR-027](https://github.com/looselyorganized/lo/blob/main/docs/solutions/architecture/adr-027-internal-turn-admission.md) Decision 5 for the two valid cost-reporting shapes.
+**Cost-flow contract:** if your handler makes an LLM call, the cost of that call must flow through the turn's `TurnResult.trace.inferenceSteps[]` so `runCostCommit` aggregates it into the budgets store. In-handler costs that bypass this path silently break daily-budget accounting. See ADR-027 (`internal-turn-admission`) Decision 5 for the two valid cost-reporting shapes.
 
 **When to use:** when your augment emits internal triggers via `ctx.inject` and needs to run a custom execution body for those triggers (a different prompt, a different model, specialized output handling) rather than the standard model-engine inference loop.
 
@@ -146,7 +146,7 @@ Scopes match top-level source areas: `kernel`, `memory`, `transport`, `engines`,
 
 Before requesting review:
 
-- [ ] `bun test` passes (all 1458).
+- [ ] `bun test` passes (all 1704+).
 - [ ] `bunx tsc --noEmit` is clean.
 - [ ] If you changed behavior documented in `docs/`, the doc is updated in the same PR.
 - [ ] If the change crosses a public surface (new augment, new tool, new engine), a test exercises it.
@@ -164,7 +164,7 @@ The portable security suite at `evals/security/` runs against a real Anthropic A
 - `push: main` — runs once after every merge to catch regressions.
 - `schedule` (nightly, 07:00 UTC) — catches model behavior drift between merges.
 
-**If your PR touches eval-relevant code** (kernel turn-loop, augment refusal logic, identity preamble, fixture composition, suite YAML, eval-context module, or anything under `src/augments/*`, `src/scaffold-templates/*`, `src/cli/scaffold*.ts`, `src/cli/skill-*.ts`) — see [ADR-029](https://github.com/looselyorganized/lo/blob/main/docs/solutions/architecture/adr-029-eval-as-canary-for-prompt-shape-changes.md) for the full canary discipline:
+**If your PR touches eval-relevant code** (kernel turn-loop, augment refusal logic, identity preamble, fixture composition, suite YAML, eval-context module, or anything under `src/augments/*`, `src/scaffold-templates/*`, `src/cli/scaffold*.ts`, `src/cli/skill-*.ts`) — see ADR-029 (`eval-as-canary-for-prompt-shape-changes`) for the full canary discipline:
 
 1. **Run the suite locally before opening the PR:**
    ```bash
@@ -188,7 +188,7 @@ Configure your cap in the relevant console:
 - OpenAI: <https://platform.openai.com/settings/organization/limits>
 - OpenRouter: <https://openrouter.ai/settings/credits>
 
-When the provider cap fires, the engine adapter surfaces a clear operator-actionable message ("provider spend cap reached — increase or wait for reset in your console"). This is the v1.0 cost-cap architecture per [ADR-024](https://github.com/looselyorganized/lo/blob/main/docs/solutions/architecture/adr-024-kernel-surface-v1-lock.md). See [`docs/07-built-in-augments.md` § Cost-cap architecture](docs/07-built-in-augments.md) for the runtime soft cap details.
+When the provider cap fires, the engine adapter surfaces a clear operator-actionable message ("provider spend cap reached — increase or wait for reset in your console"). This is the v1.0 cost-cap architecture per ADR-024 (`kernel-surface-v1-lock`). See [`docs/07-built-in-augments.md` § Cost-cap architecture](docs/07-built-in-augments.md) for the runtime soft cap details.
 
 ## Filing issues
 

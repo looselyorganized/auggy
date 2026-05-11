@@ -84,4 +84,4 @@ If you delete an agent's directory manually (e.g., `rm -rf ~/.auggy/agents/zip`)
 
 ## Cloud (forward-looking)
 
-Cloud deploys (Railway) are not yet shipped. When they land, the index `cloud` field is populated with provider/projectId/serviceId/url/volumeId. See [ADR-021](../../docs/solutions/architecture/adr-021-agent-storage-and-deployment-locations.md) for the full design.
+Cloud deploys (Railway) are on the roadmap for after v1.0 OSS launch — not yet shipped. When they land, the index `cloud` field is populated with provider/projectId/serviceId/url/volumeId. Design captured in ADR-021 (`agent-storage-and-deployment-locations`).
