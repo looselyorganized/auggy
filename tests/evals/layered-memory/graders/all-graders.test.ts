@@ -182,9 +182,7 @@ describe("prompt-rendering grader", () => {
       },
     });
     const evidence = baseEvidence({
-      extractionPrompts: [
-        { index: 0, prompt: "Hello {{TRANSCRIPT}}", response: "[]", costUsd: 0 },
-      ],
+      extractionPrompts: [{ index: 0, prompt: "Hello {{TRANSCRIPT}}", response: "[]", costUsd: 0 }],
     });
     const result = grader(evidence, fixture);
     expect(result.passed).toBe(false);
@@ -202,7 +200,14 @@ describe("cost-overhead grader", () => {
     const fixture = baseFixture();
     const evidence = baseEvidence({
       userFacingTurns: [{ turnId: "u1", peerId: "p1", costUsd: 0.01 }],
-      extractionTurns: [{ turnId: "e1", triggeringPeerId: "p1", costFromTraceUsd: 0.005, hasExtractionModelLabel: true }],
+      extractionTurns: [
+        {
+          turnId: "e1",
+          triggeringPeerId: "p1",
+          costFromTraceUsd: 0.005,
+          hasExtractionModelLabel: true,
+        },
+      ],
     });
     const result = grader(evidence, fixture);
     expect(result.passed).toBe(true);
@@ -214,7 +219,14 @@ describe("cost-overhead grader", () => {
     const fixture = baseFixture({ expected: { costRatioMax: 0.1 } });
     const evidence = baseEvidence({
       userFacingTurns: [{ turnId: "u1", peerId: "p1", costUsd: 0.01 }],
-      extractionTurns: [{ turnId: "e1", triggeringPeerId: "p1", costFromTraceUsd: 0.005, hasExtractionModelLabel: true }],
+      extractionTurns: [
+        {
+          turnId: "e1",
+          triggeringPeerId: "p1",
+          costFromTraceUsd: 0.005,
+          hasExtractionModelLabel: true,
+        },
+      ],
     });
     const result = grader(evidence, fixture);
     expect(result.passed).toBe(false);
@@ -270,7 +282,9 @@ describe("cross-session-recall grader", () => {
   test("passes when multi-session evidence shows persistence", () => {
     const grader = getGrader("cross-session-recall");
     const fixture = baseFixture({
-      peers: { v1: { id: "v1", kind: "human", trustLevel: "public", publicSubstate: "recognized" } },
+      peers: {
+        v1: { id: "v1", kind: "human", trustLevel: "public", publicSubstate: "recognized" },
+      },
       sessions: [
         { threadId: "s1", turns: [{ user: "x", assistant: "y" }] },
         { threadId: "s2", turns: [{ user: "x", assistant: "y" }] },
@@ -320,13 +334,20 @@ describe("cross-identity-promotion grader", () => {
     const fixture = baseFixture({
       peers: {
         anon: { id: "anon-th", kind: "human", trustLevel: "public", publicSubstate: "anonymous" },
-        recognized: { id: "vis_x", kind: "human", trustLevel: "public", publicSubstate: "recognized" },
+        recognized: {
+          id: "vis_x",
+          kind: "human",
+          trustLevel: "public",
+          publicSubstate: "recognized",
+        },
       },
       sessions: [
         { threadId: "th", turns: [{ user: "x", assistant: "y", peerKey: "anon" }] },
         { threadId: "th", turns: [{ user: "x", assistant: "y", peerKey: "recognized" }] },
       ],
-      expected: { promotion: { anonPeerKey: "anon", recognizedPeerKey: "recognized", minMigratedEntries: 1 } },
+      expected: {
+        promotion: { anonPeerKey: "anon", recognizedPeerKey: "recognized", minMigratedEntries: 1 },
+      },
     });
     const evidence = baseEvidence({
       entriesByPeer: {
@@ -355,10 +376,17 @@ describe("cross-identity-promotion grader", () => {
     const fixture = baseFixture({
       peers: {
         anon: { id: "anon-th", kind: "human", trustLevel: "public", publicSubstate: "anonymous" },
-        recognized: { id: "vis_x", kind: "human", trustLevel: "public", publicSubstate: "recognized" },
+        recognized: {
+          id: "vis_x",
+          kind: "human",
+          trustLevel: "public",
+          publicSubstate: "recognized",
+        },
       },
       sessions: [{ threadId: "th", turns: [{ user: "x", assistant: "y", peerKey: "anon" }] }],
-      expected: { promotion: { anonPeerKey: "anon", recognizedPeerKey: "recognized", minMigratedEntries: 1 } },
+      expected: {
+        promotion: { anonPeerKey: "anon", recognizedPeerKey: "recognized", minMigratedEntries: 1 },
+      },
     });
     const result = grader(baseEvidence(), fixture);
     expect(result.passed).toBe(false);
