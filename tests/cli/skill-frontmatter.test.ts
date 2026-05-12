@@ -52,3 +52,26 @@ describe("readSkillFrontmatter", () => {
     expect(readSkillFrontmatter("/nonexistent/SKILL.md")).toBeNull();
   });
 });
+
+describe("bundled skill frontmatter", () => {
+  const bundledSkills = [
+    ["filesystem", "filesystem"],
+    ["layered-memory", "layered-memory"],
+    ["web-fetch", "web-fetch"],
+    ["org-context", "org-context"],
+    ["bash", "bash"],
+    ["notify", "notify"],
+    ["turn-control", "turn-control"],
+    ["visitor-auth", "visitor-auth"],
+  ] as const;
+
+  for (const [folder, expectedName] of bundledSkills) {
+    it(`${folder}/skill/SKILL.md has parseable frontmatter`, () => {
+      const path = resolve(import.meta.dir, `../../src/augments/${folder}/skill/SKILL.md`);
+      const fm = readSkillFrontmatter(path);
+      expect(fm).not.toBeNull();
+      expect(fm!.name).toBe(expectedName);
+      expect(fm!.description.length).toBeGreaterThan(20);
+    });
+  }
+});
