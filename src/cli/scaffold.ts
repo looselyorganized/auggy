@@ -220,6 +220,14 @@ augments:
           writable: true
           deletable: true
 
+  # ADR-030: surfaces the skill manifest to the model (name + description from
+  # each SKILL.md's YAML frontmatter). Activation is fs_read via the filesystem
+  # mount above. Required for the model to discover its skills.
+  - name: skills
+    type: skills
+    options:
+      dir: ./skills
+
   - name: fetch
     type: webFetch
     options:
