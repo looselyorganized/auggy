@@ -5,7 +5,7 @@
       "name": "augment-1",
       "dependencies": {
         "@anthropic-ai/sdk": "^0.94.0",
-        "@auggy/link": "^0.1.1",
+        "@auggy/link": "^0.1.2",
         "@inquirer/prompts": "^8.4.1",
         "@supabase/supabase-js": "^2.103.0",
         "commander": "^14.0.3",
@@ -24,7 +24,7 @@
   "packages": {
     "@anthropic-ai/sdk": ["@anthropic-ai/sdk@0.94.0", "", { "dependencies": { "json-schema-to-ts": "^3.1.1" }, "peerDependencies": { "zod": "^3.25.0 || ^4.0.0" }, "optionalPeers": ["zod"], "bin": { "anthropic-ai-sdk": "bin/cli" } }, "sha512-OVlCttk5MyeTGtrWX5+F3MJOfEMDuEjK8+rm9aQMDfRPWndVMbhk37QG8WLnVbcc7huyUGngVMjT7iMN2llySA=="],
 
-    "@auggy/link": ["@auggy/link@0.1.1", "", { "dependencies": { "hono": "^4.6.0", "zod": "^3.23.0" } }, "sha512-lImGTe/jKFb7oLUeE+hw79mw0qNHHB9c1i3aYqVBgHfkEe89hDNzrPXxecbeB1xN27rgNtj81cYQrU2N0Cu0ig=="],
+    "@auggy/link": ["@auggy/link@0.1.2", "", { "dependencies": { "hono": "^4.6.0", "zod": "^3.23.0" } }, "sha512-UTIP3fK8jsrJx/8GQPIUMcUbaemlhgFG91oY4HVDRRzK/8c+evPQ3FuSHETKMTP6Ju2jVyECU8VKL58LCYKmuw=="],
 
     "@babel/runtime": ["@babel/runtime@7.29.2", "", {}, "sha512-JiDShH45zKHWyGe4ZNVRrCjBz8Nh9TMmZG1kh4QTK8hCBTWBi8Da+i7s1fJw7/lYpM4ccepSNfqzZ/QvABBi5g=="],
 
