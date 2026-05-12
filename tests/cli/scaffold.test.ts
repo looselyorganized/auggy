@@ -78,6 +78,13 @@ describe("scaffoldAgent", () => {
     delete process.env.AUGGY_AGENT_ID;
   });
 
+  test("ADR-030: default scaffold includes the 'skills' augment", () => {
+    const dir = scaffoldAgent({ name: "zip", targetDir: join(TMP, "zip-skills") });
+    const yaml = readFileSync(join(dir, "agent.yaml"), "utf-8");
+    expect(yaml).toContain("type: skills");
+    expect(yaml).toMatch(/dir:\s*\.\/skills/);
+  });
+
   test("throws if target directory already exists", () => {
     scaffoldAgent({ name: "exists", targetDir: join(TMP, "exists") });
     expect(() => scaffoldAgent({ name: "exists", targetDir: join(TMP, "exists") })).toThrow(
