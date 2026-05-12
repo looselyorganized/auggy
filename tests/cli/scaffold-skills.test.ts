@@ -3,7 +3,6 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { join } from "node:path";
 import {
   augmentFolderForType,
-  buildSkillManifest,
   copyBundledSkill,
   renderIdentityFromTemplate,
 } from "../../src/cli/scaffold-skills";
@@ -34,43 +33,13 @@ describe("augmentFolderForType", () => {
   });
 });
 
-describe("buildSkillManifest", () => {
-  test("emits one bullet per tool-providing augment with its tool inventory", () => {
-    const manifest = buildSkillManifest(["filesystem", "layeredMemory", "webFetch"]);
-    expect(manifest).toContain("## Available skills");
-    expect(manifest).toContain(
-      "- `skills/filesystem/SKILL.md` — fs_read, fs_write, fs_list, fs_mkdir, fs_remove, fs_search",
-    );
-    expect(manifest).toContain(
-      "- `skills/layered-memory/SKILL.md` — memory_read, memory_write, memory_search, memory_list, memory_forget",
-    );
-    expect(manifest).toContain("- `skills/web-fetch/SKILL.md` — web_fetch");
-  });
-
-  test("preserves order of provided types", () => {
-    const manifest = buildSkillManifest(["webFetch", "filesystem"]);
-    const fsIdx = manifest.indexOf("filesystem/SKILL.md");
-    const wfIdx = manifest.indexOf("web-fetch/SKILL.md");
-    expect(wfIdx).toBeGreaterThan(-1);
-    expect(fsIdx).toBeGreaterThan(-1);
-    expect(wfIdx).toBeLessThan(fsIdx);
-  });
-
-  test("dedupes repeated types", () => {
-    const manifest = buildSkillManifest(["filesystem", "filesystem"]);
-    const occurrences = (manifest.match(/skills\/filesystem\/SKILL.md/g) ?? []).length;
-    expect(occurrences).toBe(1);
-  });
-
-  test("skips augment types that have no bundled skill folder", () => {
-    // budgets, fileMemory, webTransport contribute no model-callable tools
-    // and ship no skill folder.
-    const manifest = buildSkillManifest(["budgets", "fileMemory", "webTransport"]);
-    expect(manifest).toBe("");
-  });
-
-  test("returns empty string (no header) when no augments contribute skills", () => {
-    expect(buildSkillManifest([])).toBe("");
+describe("scaffold-skills public surface (post-ADR-030)", () => {
+  test("does not export buildSkillManifest, TOOL_INVENTORY, parseFrontmatterDescription", async () => {
+    const mod = (await import("../../src/cli/scaffold-skills")) as Record<string, unknown>;
+    expect(mod.buildSkillManifest).toBeUndefined();
+    expect(mod.TOOL_INVENTORY).toBeUndefined();
+    expect(mod.parseFrontmatterDescription).toBeUndefined();
+    expect(mod.descriptionForSkill).toBeUndefined();
   });
 });
 
@@ -80,7 +49,6 @@ describe("renderIdentityFromTemplate", () => {
       agentName: "zip",
       purpose: "the front-door agent",
       operatorName: "Sam",
-      augmentTypes: ["filesystem"],
     });
     expect(out).toContain("# zip");
     expect(out).toContain("You are zip, the front-door agent.");
@@ -92,7 +60,6 @@ describe("renderIdentityFromTemplate", () => {
       agentName: "zip",
       purpose: "a helpful assistant",
       operatorName: "the operator",
-      augmentTypes: ["layeredMemory", "filesystem", "webFetch", "orgContext"],
     });
     // Skill listing moved out of identity.md per ADR-030; surface is now the
     // 'skills' augment's emitted context block.
@@ -109,7 +76,6 @@ describe("renderIdentityFromTemplate", () => {
       agentName: "agent",
       purpose: "helps with {} and stuff",
       operatorName: "{Sneaky}",
-      augmentTypes: ["filesystem"],
     });
     expect(out).toContain("{Sneaky}");
     expect(out).toContain("with {} and stuff");
@@ -123,7 +89,6 @@ describe("renderIdentityFromTemplate", () => {
       agentName: "agent",
       purpose: "$1 mistake",
       operatorName: "$&",
-      augmentTypes: ["filesystem"],
     });
     expect(out).toContain("$1 mistake");
     expect(out).toContain("$&");
@@ -137,7 +102,6 @@ describe("renderIdentityFromTemplate", () => {
       agentName: "{PURPOSE}", // operator named their agent literally "{PURPOSE}"
       purpose: "actual-purpose-value",
       operatorName: "{SKILL_MANIFEST}", // and they really like braces
-      augmentTypes: ["filesystem"],
     });
     // The agent-name slot keeps the literal "{PURPOSE}" — was NOT replaced
     // with "actual-purpose-value" by the second pass.
