@@ -5,10 +5,12 @@
  * --yes). Tolerates missing localDir (still cleans the index entry).
  */
 
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { confirm } from "@inquirer/prompts";
-import { getAgent, removeAgent } from "../agent-index";
+import { clearCloud, getAgent, removeAgent } from "../agent-index";
+import { createRailwayCli, type RailwayCli } from "../deploy/railway-cli";
 import { readPidManifest, isProcessAlive, removePidManifest } from "../pid-registry";
 
 function readConfigName(localDir: string): string | null {
@@ -26,8 +28,12 @@ function readConfigName(localDir: string): string | null {
 interface RemoveOptions {
   /** Skip the y/N prompt. */
   yes?: boolean;
+  /** When set with a cloud-deployed agent, also destroy the Railway service. */
+  cloud?: boolean;
   /** Override `~/.auggy/` for tests. */
   auggyDir?: string;
+  /** Inject a RailwayCli for tests (defaults to the real one). */
+  railwayCli?: RailwayCli;
 }
 
 export async function runRemove(name: string, opts: RemoveOptions = {}): Promise<void> {
@@ -87,6 +93,35 @@ export async function runRemove(name: string, opts: RemoveOptions = {}): Promise
   // actually found a manifest at.
   if (pidByCli) removePidManifest(name);
   if (pidByConfig && configName) removePidManifest(configName);
+
+  // --cloud: also destroy the Railway service before clearing the index.
+  // We do this AFTER local cleanup so a failed Railway call doesn't leave
+  // local state in an inconsistent half-deleted shape.
+  if (opts.cloud && entry.cloud) {
+    const cli = opts.railwayCli ?? createRailwayCli();
+    // `railway service delete` needs to be run from a dir linked to the
+    // service. Create a temp dir, link it, then delete.
+    const tmp = mkdtempSync(join(tmpdir(), `auggy-remove-${name}-`));
+    try {
+      await cli.link({
+        projectId: entry.cloud.projectId,
+        serviceName: name,
+        cwd: tmp,
+      });
+      await cli.destroyService({ cwd: tmp });
+      console.log(`Destroyed Railway service "${name}" (project ${entry.cloud.projectId}).`);
+    } catch (err) {
+      console.warn(
+        `warn: Railway service destruction failed: ${(err as Error).message}\n` +
+          `  Local cleanup proceeding; remove the Railway service manually if needed.`,
+      );
+    } finally {
+      try {
+        rmSync(tmp, { recursive: true, force: true });
+      } catch {}
+    }
+    clearCloud(name, { auggyDir: opts.auggyDir });
+  }
 
   // Clear index entry.
   removeAgent(name, { auggyDir: opts.auggyDir });

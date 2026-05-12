@@ -287,3 +287,47 @@ export function listAgents(opts: IndexOptions = {}): Array<IndexEntry & { name: 
     ...entry,
   }));
 }
+
+/**
+ * Attach a cloud deployment record to a registered agent. Throws when the
+ * agent isn't registered — first call `addAgent`, then `setCloud`. Overwrites
+ * any prior cloud record (redeploy case).
+ *
+ * Holds the advisory lock for the read-modify-write window.
+ */
+export function setCloud(
+  name: string,
+  record: NonNullable<import("./types").CloudRecord>,
+  opts: IndexOptions = {},
+): void {
+  const lock = acquireLock(opts);
+  try {
+    const idx = readIndex(opts);
+    const entry = idx.agents[name];
+    if (!entry) {
+      throw new Error(`Agent "${name}" not registered — run \`auggy create ${name}\` first.`);
+    }
+    entry.cloud = record;
+    writeIndex(idx, opts);
+  } finally {
+    lock.release();
+  }
+}
+
+/**
+ * Clear an agent's cloud deployment record. Idempotent — no-op when already
+ * null. Does not throw when the agent isn't registered (matches removeAgent
+ * idempotency).
+ */
+export function clearCloud(name: string, opts: IndexOptions = {}): void {
+  const lock = acquireLock(opts);
+  try {
+    const idx = readIndex(opts);
+    const entry = idx.agents[name];
+    if (!entry) return;
+    entry.cloud = null;
+    writeIndex(idx, opts);
+  } finally {
+    lock.release();
+  }
+}
