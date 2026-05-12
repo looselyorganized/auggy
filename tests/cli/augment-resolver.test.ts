@@ -125,6 +125,74 @@ describe("resolveAugments — webFetch", () => {
 });
 
 // ---------------------------------------------------------------------------
+// skills (ADR-030)
+// ---------------------------------------------------------------------------
+
+describe("resolveAugments — skills", () => {
+  test("resolves the skills augment with a relative dir against agentDir", async () => {
+    mkdirSync(join(TMP, "skills", "filesystem"), { recursive: true });
+    writeFileSync(
+      join(TMP, "skills", "filesystem", "SKILL.md"),
+      `---\nname: filesystem\ndescription: File operations.\n---\n# body`,
+    );
+
+    const configs: AugmentConfig[] = [
+      {
+        name: "skills",
+        type: "skills",
+        options: { dir: "./skills" },
+      },
+    ];
+
+    const augments = await resolveAugments(configs, TMP);
+    expect(augments).toHaveLength(1);
+    expect(augments[0]!.name).toBe("skills");
+    expect(augments[0]!.tools ?? []).toHaveLength(0);
+    expect(augments[0]!.capabilities).toContain("context");
+  });
+
+  test("defaults dir to ./skills when not specified", async () => {
+    mkdirSync(join(TMP, "skills", "memory"), { recursive: true });
+    writeFileSync(
+      join(TMP, "skills", "memory", "SKILL.md"),
+      `---\nname: memory\ndescription: Memory operations.\n---\n# body`,
+    );
+
+    const configs: AugmentConfig[] = [
+      {
+        name: "skills",
+        type: "skills",
+        options: {},
+      },
+    ];
+
+    const augments = await resolveAugments(configs, TMP);
+    expect(augments).toHaveLength(1);
+    expect(augments[0]!.name).toBe("skills");
+  });
+
+  test("accepts an absolute dir path unchanged", async () => {
+    const abs = join(TMP, "external-skills");
+    mkdirSync(join(abs, "demo"), { recursive: true });
+    writeFileSync(
+      join(abs, "demo", "SKILL.md"),
+      `---\nname: demo\ndescription: A demo skill.\n---\n# body`,
+    );
+
+    const configs: AugmentConfig[] = [
+      {
+        name: "skills",
+        type: "skills",
+        options: { dir: abs },
+      },
+    ];
+
+    const augments = await resolveAugments(configs, TMP);
+    expect(augments).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // custom
 // ---------------------------------------------------------------------------
 
