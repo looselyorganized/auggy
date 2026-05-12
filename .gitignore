@@ -52,6 +52,7 @@ docs/**/
 !docs/17-turn-control.md
 !docs/18-deploy.md
 !docs/19-visitor-auth.md
+!docs/RELEASING.md
 
 # Local git worktrees (subagent-driven-development)
 .worktrees/

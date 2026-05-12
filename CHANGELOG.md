@@ -7,9 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.4.0] - 2026-05-12
+## [0.3.1] - 2026-05-12
 
-The deployable-runtime release. First npm-installable Auggy CLI, with end-to-end Railway deployment support and a structural eval suite for the layered-memory autoSave path.
+The deployable-runtime release. First npm-installable Auggy CLI with shipped feature set (0.3.0 was a name-claim publish with no functional changes). End-to-end Railway deployment support and a structural eval suite for the layered-memory autoSave path.
 
 ### Added
 

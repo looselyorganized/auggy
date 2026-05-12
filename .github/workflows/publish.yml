@@ -31,13 +31,33 @@ jobs:
       - name: Install deps
         run: bun install
 
+      # Read-only check: if the tagged version is already on npm, skip the rest.
+      # Makes retroactive tags (e.g. backfilling v0.3.0 after a manual publish)
+      # safe to push without forcing a republish that would fail with EPUBLISHCONFLICT.
+      - name: Check if version already published
+        id: npm-check
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          TAG_VERSION="${REF_NAME#v}"
+          if npm view "auggy@$TAG_VERSION" version >/dev/null 2>&1; then
+            echo "auggy@$TAG_VERSION already on npm; skipping rest of workflow"
+            echo "already_published=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "auggy@$TAG_VERSION not yet on npm; proceeding"
+            echo "already_published=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Typecheck
+        if: steps.npm-check.outputs.already_published == 'false'
         run: bunx tsc --noEmit
 
       - name: Run tests
+        if: steps.npm-check.outputs.already_published == 'false'
         run: bun test
 
       - name: Confirm version matches tag
+        if: steps.npm-check.outputs.already_published == 'false'
         env:
           REF_NAME: ${{ github.ref_name }}
         run: |
@@ -48,7 +68,13 @@ jobs:
             exit 1
           fi
 
+      # Provenance attestation (--provenance) is currently DISABLED because it
+      # requires a public source repo. Re-enable when the augment-1 repo is
+      # made public for OSS launch by adding `--provenance` to the publish
+      # command below. See docs/RELEASING.md § "Provenance gate" for the full
+      # re-enable checklist.
       - name: Publish to npm
-        run: npm publish --provenance --access public
+        if: steps.npm-check.outputs.already_published == 'false'
+        run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
