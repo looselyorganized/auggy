@@ -1,0 +1,62 @@
+suite: layered-memory-integration
+version: 1
+owners:
+  - operator
+last_updated: "2026-05-12"
+
+# This is the INTEGRATION eval suite for the layered-memory augment with
+# autoSave enabled. Complements (does NOT replace):
+#   - evals/auto-save/   — UNIT eval of the extraction prompt in isolation
+#   - evals/security/    — adversarial + benign suites
+#
+# Every grader answers a STRUCTURAL question. No response_contains_any
+# brittleness. See README.md for the unit-vs-integration boundary.
+#
+# Pre-user / pre-OSS stage: the cost-overhead grader REPORTS the ratio; it
+# does not gate. Thresholds get set after the live Haiku smoke test produces
+# real cost data. See ../../docs/solutions/findings/autosave-default-decision-
+# 2026-05-12.md once it lands.
+
+cases:
+  - id: factual-recall-basic
+    fixture: fixtures/factual-recall-basic.yaml
+    graders:
+      - factual-recall
+      - peer-isolation
+      - cost-overhead
+
+  - id: peer-isolation-two-peers
+    fixture: fixtures/peer-isolation-two-peers.yaml
+    graders:
+      - peer-isolation
+      - factual-recall
+
+  - id: prompt-rendering-injection
+    fixture: fixtures/prompt-rendering-injection.yaml
+    graders:
+      - prompt-rendering
+      - peer-isolation
+
+  - id: cost-overhead-baseline
+    fixture: fixtures/cost-overhead-baseline.yaml
+    graders:
+      - cost-overhead
+      - peer-isolation
+
+  - id: no-fact-noise
+    fixture: fixtures/no-fact-noise.yaml
+    graders:
+      - false-extract
+
+  - id: cross-session-recall-multi-day
+    fixture: fixtures/cross-session-recall-multi-day.yaml
+    graders:
+      - cross-session-recall
+      - factual-recall
+      - peer-isolation
+
+  - id: anon-to-recognized-promotion
+    fixture: fixtures/anon-to-recognized-promotion.yaml
+    graders:
+      - cross-identity-promotion
+      - peer-isolation

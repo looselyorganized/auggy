@@ -1,0 +1,64 @@
+case_id: anon-to-recognized-promotion
+description: >
+  An anonymous visitor speaks during a session with session-end-only cadence
+  (facts buffer rather than flush per-turn). On a subsequent turn the same
+  threadId carries a recognized peer identity — layered-memory's
+  maybeFlushOnPromotion detects the change and injects an internal turn that
+  flushes the buffered anon transcript under the recognized peer. Migrated
+  facts land in the recognized peer's namespace; the anon namespace stays
+  empty (facts were never written there — they buffered and migrated).
+
+peers:
+  anon:
+    # The id must match layered-memory's isAnonymousForm detection —
+    # `anon-${threadId}`. Without that, maybeFlushOnPromotion never fires.
+    id: anon-th-promotion
+    kind: human
+    trustLevel: public
+    publicSubstate: anonymous
+  recognized:
+    id: vis_promoted
+    kind: human
+    trustLevel: public
+    publicSubstate: recognized
+
+# Anonymous cadence MUST be session-end-only so anon facts buffer instead of
+# extracting per-turn. Recognized cadence is every-turn so any post-promotion
+# recognized utterances extract immediately.
+extractionFrequency:
+  publicAnonymous: session-end-only
+  publicRecognized: every-turn
+
+sessions:
+  # Session 1: anon visitor speaks; facts buffer rather than extract per-turn.
+  - threadId: th-promotion
+    turns:
+      - peerKey: anon
+        user: "I'm an anonymous visitor and I prefer espresso."
+        assistant: "Welcome."
+
+  # Session 2: same threadId, now recognized. Promotion-flush fires.
+  - threadId: th-promotion
+    turns:
+      - peerKey: recognized
+        user: "Now I'm verified. I work at Acme."
+        assistant: "Welcome back."
+
+mockExtractions:
+  # Index 0: promotion-flush internal turn — recovers the buffered anon
+  # transcript and produces one fact under the recognized peer.
+  - facts:
+      - { subject: peer, predicate: prefers, object: espresso, confidence: 0.85 }
+    costUsd: 0.0005
+  # Index 1: recognized peer's own session-2 utterance.
+  - facts:
+      - { subject: peer, predicate: works_at, object: Acme, confidence: 0.9 }
+    costUsd: 0.0005
+
+userFacingCostPerTurnUsd: 0.001
+
+expected:
+  promotion:
+    anonPeerKey: anon
+    recognizedPeerKey: recognized
+    minMigratedEntries: 1   # at minimum the espresso preference must migrate

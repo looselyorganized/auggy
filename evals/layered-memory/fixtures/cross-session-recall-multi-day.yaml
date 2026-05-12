@@ -1,0 +1,76 @@
+case_id: cross-session-recall-multi-day
+description: >
+  The HEADLINER fixture for memory durability. Four sessions simulating four
+  separate days. Two visitors (V1 and V2) interact in interleaved sessions.
+  Each session = a fresh agent process on the same SQLite dbPath. After all
+  four sessions, V1's facts should still be findable AND distinct from V2's.
+
+peers:
+  v1:
+    id: vis_alpha
+    kind: human
+    trustLevel: public
+    publicSubstate: recognized
+  v2:
+    id: vis_beta
+    kind: human
+    trustLevel: public
+    publicSubstate: recognized
+
+sessions:
+  # Day 1: V1 introduces self
+  - threadId: th-v1-day1
+    turns:
+      - peerKey: v1
+        user: "I'm V1. I love jazz."
+        assistant: "Welcome V1, jazz noted."
+
+  # Day 2: V2 introduces self
+  - threadId: th-v2-day2
+    turns:
+      - peerKey: v2
+        user: "I'm V2. I love rock."
+        assistant: "Welcome V2, rock noted."
+
+  # Day 3: V1 returns — facts from Day 1 must still be in store
+  - threadId: th-v1-day3
+    turns:
+      - peerKey: v1
+        user: "Back again. I also work at Acme."
+        assistant: "Welcome back, Acme noted."
+
+  # Day 4: V2 returns
+  - threadId: th-v2-day4
+    turns:
+      - peerKey: v2
+        user: "Hello again. I also work at Beta Corp."
+        assistant: "Welcome back, Beta Corp noted."
+
+mockExtractions:
+  - facts: [{ subject: peer, predicate: likes, object: jazz, confidence: 0.9 }]
+    costUsd: 0.0005
+  - facts: [{ subject: peer, predicate: likes, object: rock, confidence: 0.9 }]
+    costUsd: 0.0005
+  - facts: [{ subject: peer, predicate: works_at, object: Acme, confidence: 0.9 }]
+    costUsd: 0.0005
+  - facts: [{ subject: peer, predicate: works_at, object: "Beta Corp", confidence: 0.9 }]
+    costUsd: 0.0005
+
+userFacingCostPerTurnUsd: 0.001
+
+expected:
+  crossSession:
+    minEntriesPerPeer:
+      v1: 2  # jazz + Acme
+      v2: 2  # rock + Beta Corp
+  factsPerPeer:
+    v1:
+      - subjectContains: peer
+        recallProbe: jazz
+      - subjectContains: peer
+        recallProbe: Acme
+    v2:
+      - subjectContains: peer
+        recallProbe: rock
+      - subjectContains: peer
+        recallProbe: Beta
