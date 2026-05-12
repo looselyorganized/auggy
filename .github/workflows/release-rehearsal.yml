@@ -1,0 +1,72 @@
+name: Release rehearsal (PR)
+
+# Runs on every PR targeting main. Validates release-readiness BEFORE the
+# tag-driven publish workflow ever fires. Catches:
+#  - tarball packaging errors (npm pack --dry-run)
+#  - version conflicts (package.json version is already on npm)
+#  - lint / typecheck / test regressions
+#
+# No NPM_TOKEN needed (everything is read-only). First line of defense
+# against the publish workflow failing on real tags.
+
+on:
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: release-rehearsal-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  rehearse:
+    name: Release rehearsal
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: latest
+
+      - name: Setup Node (for npm CLI)
+        uses: actions/setup-node@1d0ff469b7ec7b3cb9d8673fde0c81c44821de2a # v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Install deps
+        run: bun install --frozen-lockfile
+
+      - name: Lint
+        run: bun run lint
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Run tests
+        run: bun test
+
+      # Version-conflict check: read-only. Fails if a real publish at this
+      # version would later be rejected with EPUBLISHCONFLICT. Backfill tags
+      # (where the version IS already on npm by design) are out of scope —
+      # those go through the tag workflow's skip-if-published gate.
+      - name: Confirm package.json version is not already on npm
+        run: |
+          PKG_NAME="$(node -p "require('./package.json').name")"
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+          if npm view "${PKG_NAME}@${PKG_VERSION}" version >/dev/null 2>&1; then
+            echo "::error::${PKG_NAME}@${PKG_VERSION} is already on npm. Bump package.json before merging this PR."
+            exit 1
+          fi
+          echo "${PKG_NAME}@${PKG_VERSION} not yet on npm; release-rehearsal passes."
+
+      # Packaging dry-run: validates the tarball would be well-formed without
+      # contacting the registry as a publisher. Catches missing files entries,
+      # broken bin paths, etc.
+      - name: Validate tarball packaging
+        run: npm pack --dry-run
