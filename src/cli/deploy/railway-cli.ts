@@ -166,7 +166,7 @@ export function createRailwayCli(opts: CreateRailwayCliOptions = {}): RailwayCli
     async generateDomain({ cwd }) {
       // Idempotent: first call generates, second returns the existing URL.
       const { stdout } = await runOrThrow(["domain", "--generate"], { cwd });
-      const match = stdout.match(/https:\/\/[a-z0-9.\-]+/i);
+      const match = stdout.match(/https:\/\/[a-z0-9.-]+/i);
       if (!match) {
         throw new Error(`railway domain --generate produced no URL: ${stdout.trim()}`);
       }

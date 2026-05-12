@@ -75,16 +75,15 @@ describe("railway-cli", () => {
     const { factory, calls } = mockSpawn(() => ({ stdout: "", stderr: "", exitCode: 0 }));
     const cli = createRailwayCli({ spawn: factory });
     await cli.setVariable({ key: "ANTHROPIC_API_KEY", value: "sk-secret", cwd: "/tmp/staging" });
-    expect(calls[0]!.cmd).toEqual([
-      "railway",
-      "variables",
-      "--set",
-      "ANTHROPIC_API_KEY=sk-secret",
-    ]);
+    expect(calls[0]!.cmd).toEqual(["railway", "variables", "--set", "ANTHROPIC_API_KEY=sk-secret"]);
   });
 
   test("up runs `railway up --detach`", async () => {
-    const { factory, calls } = mockSpawn(() => ({ stdout: "Build queued\n", stderr: "", exitCode: 0 }));
+    const { factory, calls } = mockSpawn(() => ({
+      stdout: "Build queued\n",
+      stderr: "",
+      exitCode: 0,
+    }));
     const cli = createRailwayCli({ spawn: factory });
     await cli.up({ cwd: "/tmp/staging" });
     expect(calls[0]!.cmd).toEqual(["railway", "up", "--detach"]);

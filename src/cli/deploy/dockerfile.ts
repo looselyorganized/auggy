@@ -57,9 +57,9 @@ ENTRYPOINT ["/app/auggy-entrypoint.sh", "${opts.agentName}"]
 }
 
 export function generateEntrypoint(): string {
-  const symlinks = SQLITE_DB_NAMES.map(
-    (name) => `ln -sf /app/data/${name} /app/${name}`,
-  ).join("\n");
+  const symlinks = SQLITE_DB_NAMES.map((name) => `ln -sf /app/data/${name} /app/${name}`).join(
+    "\n",
+  );
 
   return `#!/bin/sh
 # Auggy Railway entrypoint.
@@ -83,7 +83,7 @@ mkdir -p /app/data
 
 ${symlinks}
 
-# \$1 is the agent name passed by ENTRYPOINT.
-exec auggy dev "\$1" --internal-mode railway
+# $1 is the agent name passed by ENTRYPOINT.
+exec auggy dev "$1" --internal-mode railway
 `;
 }

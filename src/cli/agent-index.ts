@@ -305,9 +305,7 @@ export function setCloud(
     const idx = readIndex(opts);
     const entry = idx.agents[name];
     if (!entry) {
-      throw new Error(
-        `Agent "${name}" not registered — run \`auggy create ${name}\` first.`,
-      );
+      throw new Error(`Agent "${name}" not registered — run \`auggy create ${name}\` first.`);
     }
     entry.cloud = record;
     writeIndex(idx, opts);

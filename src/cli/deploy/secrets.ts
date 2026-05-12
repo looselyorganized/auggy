@@ -66,7 +66,7 @@ export function parseEnvText(text: string): SecretsPlan {
     const line = raw.trim();
     if (line === "" || line.startsWith("#")) continue;
 
-    let rest = line.startsWith("export ") ? line.slice("export ".length).trimStart() : line;
+    const rest = line.startsWith("export ") ? line.slice("export ".length).trimStart() : line;
     const eqIdx = rest.indexOf("=");
     if (eqIdx < 0) {
       warnings.push(`line ${i + 1}: no '=' found, skipped: "${line}"`);

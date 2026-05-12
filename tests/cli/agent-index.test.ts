@@ -181,12 +181,30 @@ describe("setCloud", () => {
 
   test("overwrites an existing cloud record (redeploy)", () => {
     addAgent("zip", "/agents/zip", { auggyDir });
-    setCloud("zip", {
-      provider: "railway", projectId: "p1", serviceId: "s1", url: "u1", volumeId: "v1", deployedAt: "2026-05-01T00:00:00.000Z",
-    }, { auggyDir });
-    setCloud("zip", {
-      provider: "railway", projectId: "p1", serviceId: "s1", url: "u2", volumeId: "v1", deployedAt: "2026-05-12T00:00:00.000Z",
-    }, { auggyDir });
+    setCloud(
+      "zip",
+      {
+        provider: "railway",
+        projectId: "p1",
+        serviceId: "s1",
+        url: "u1",
+        volumeId: "v1",
+        deployedAt: "2026-05-01T00:00:00.000Z",
+      },
+      { auggyDir },
+    );
+    setCloud(
+      "zip",
+      {
+        provider: "railway",
+        projectId: "p1",
+        serviceId: "s1",
+        url: "u2",
+        volumeId: "v1",
+        deployedAt: "2026-05-12T00:00:00.000Z",
+      },
+      { auggyDir },
+    );
     expect(getAgent("zip", { auggyDir })?.cloud?.url).toBe("u2");
     expect(getAgent("zip", { auggyDir })?.cloud?.deployedAt).toBe("2026-05-12T00:00:00.000Z");
   });
@@ -195,7 +213,14 @@ describe("setCloud", () => {
     expect(() =>
       setCloud(
         "ghost",
-        { provider: "railway", projectId: "p", serviceId: "s", url: "u", volumeId: "v", deployedAt: "2026-05-12T00:00:00.000Z" },
+        {
+          provider: "railway",
+          projectId: "p",
+          serviceId: "s",
+          url: "u",
+          volumeId: "v",
+          deployedAt: "2026-05-12T00:00:00.000Z",
+        },
         { auggyDir },
       ),
     ).toThrow(/not registered/);
@@ -205,7 +230,14 @@ describe("setCloud", () => {
     expect(() =>
       setCloud(
         "ghost",
-        { provider: "railway", projectId: "p", serviceId: "s", url: "u", volumeId: "v", deployedAt: "2026-05-12T00:00:00.000Z" },
+        {
+          provider: "railway",
+          projectId: "p",
+          serviceId: "s",
+          url: "u",
+          volumeId: "v",
+          deployedAt: "2026-05-12T00:00:00.000Z",
+        },
         { auggyDir },
       ),
     ).toThrow();
@@ -216,9 +248,18 @@ describe("setCloud", () => {
 describe("clearCloud", () => {
   test("nulls the cloud record; idempotent on already-null", () => {
     addAgent("zip", "/agents/zip", { auggyDir });
-    setCloud("zip", {
-      provider: "railway", projectId: "p", serviceId: "s", url: "u", volumeId: "v", deployedAt: "2026-05-12T00:00:00.000Z",
-    }, { auggyDir });
+    setCloud(
+      "zip",
+      {
+        provider: "railway",
+        projectId: "p",
+        serviceId: "s",
+        url: "u",
+        volumeId: "v",
+        deployedAt: "2026-05-12T00:00:00.000Z",
+      },
+      { auggyDir },
+    );
     clearCloud("zip", { auggyDir });
     expect(getAgent("zip", { auggyDir })?.cloud).toBeNull();
     // Second call: still null, no throw.

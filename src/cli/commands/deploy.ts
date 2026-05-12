@@ -58,7 +58,9 @@ const VOLUME_MOUNT_PATH = "/app/data";
 
 export async function runDeploy(name: string, opts: DeployOptions): Promise<DeployResult> {
   if (opts.to !== "railway") {
-    throw new Error(`Only "railway" is supported in v1.0 (got "${opts.to}"). Other targets: deferred.`);
+    throw new Error(
+      `Only "railway" is supported in v1.0 (got "${opts.to}"). Other targets: deferred.`,
+    );
   }
 
   const entry = getAgent(name, { auggyDir: opts.auggyDir });
@@ -102,10 +104,11 @@ export async function runDeploy(name: string, opts: DeployOptions): Promise<Depl
     for (const w of plan.warnings) opts.logger.warn(w);
   }
   if (!opts.yes) {
-    const summary = plan.variables.length === 0
-      ? `No secrets to push (no .env file or all entries malformed).`
-      : `Push ${plan.variables.length} secret(s) to Railway:\n` +
-        plan.variables.map((v) => `  ${v.key} = ${v.redactedValue}`).join("\n");
+    const summary =
+      plan.variables.length === 0
+        ? `No secrets to push (no .env file or all entries malformed).`
+        : `Push ${plan.variables.length} secret(s) to Railway:\n` +
+          plan.variables.map((v) => `  ${v.key} = ${v.redactedValue}`).join("\n");
     const confirmed = await opts.promptConfirm(`${summary}\n\nProceed?`);
     if (!confirmed) {
       throw new Error("Deploy aborted by operator (declined secrets push).");

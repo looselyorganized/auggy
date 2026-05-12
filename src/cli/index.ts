@@ -130,7 +130,9 @@ program
 
 program
   .command("remove <name>")
-  .description("Remove an agent (delete dir + clear index entry; --cloud also destroys Railway service)")
+  .description(
+    "Remove an agent (delete dir + clear index entry; --cloud also destroys Railway service)",
+  )
   .option("--yes", "skip the confirmation prompt")
   .option("--cloud", "also destroy the agent's Railway service (when cloud-deployed)")
   .action(async (name: string, opts: { yes?: boolean; cloud?: boolean }) => {
