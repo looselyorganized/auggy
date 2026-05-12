@@ -53,14 +53,15 @@ describe("scaffoldAgent", () => {
     expect(yaml).not.toContain("trustLevel");
   });
 
-  test("identity.md contains the agent name and skill manifest", () => {
+  test("identity.md contains the agent name and is free of skill-listing content (ADR-030)", () => {
     const dir = scaffoldAgent({ name: "zip", targetDir: join(TMP, "zip") });
     const identity = readFileSync(join(dir, "identity.md"), "utf-8");
     expect(identity).toContain("# zip");
-    expect(identity).toContain("Available skills");
-    // Bundled skills land at skills/<augment>/SKILL.md per ADR-025 Decision 2.
-    expect(identity).toContain("skills/layered-memory/SKILL.md");
-    expect(identity).toContain("skills/filesystem/SKILL.md");
+    // ADR-030: identity is identity. The skill listing lives in the
+    // 'skills' augment's emitted context block, not in identity.md.
+    expect(identity).not.toContain("Available skills");
+    expect(identity).not.toContain("skills/");
+    expect(identity).not.toContain("{SKILL_MANIFEST}");
   });
 
   test("generated agent.yaml parses through the config parser", () => {
@@ -199,20 +200,16 @@ describe("scaffoldAgent", () => {
       expect(identity).toContain("claims to be the operator");
     });
 
-    test("identity.md skill manifest lists tool inventories per augment", () => {
+    test("identity.md no longer carries a skill manifest (ADR-030: surface moved to 'skills' augment)", () => {
       const dir = scaffoldAgent({ name: "zip", targetDir: join(TMP, "zip-manifest") });
       const identity = readFileSync(join(dir, "identity.md"), "utf-8");
 
-      expect(identity).toContain("## Available skills");
-      // Each tool-providing default augment gets a bullet with its tool list.
-      expect(identity).toContain(
-        "- `skills/filesystem/SKILL.md` — fs_read, fs_write, fs_list, fs_mkdir, fs_remove, fs_search",
-      );
-      expect(identity).toContain(
-        "- `skills/layered-memory/SKILL.md` — memory_read, memory_write, memory_search, memory_list, memory_forget",
-      );
-      expect(identity).toContain("- `skills/web-fetch/SKILL.md` — web_fetch");
-      expect(identity).toContain("- `skills/turn-control/SKILL.md` — request_input");
+      // ADR-030: the skill listing is owned by the 'skills' augment, sourced
+      // from each SKILL.md's YAML frontmatter. Identity is identity.
+      expect(identity).not.toContain("## Available skills");
+      expect(identity).not.toContain("SKILL.md");
+      expect(identity).not.toContain("fs_read");
+      expect(identity).not.toContain("memory_read");
     });
 
     test("identity.md does not leave unsubstituted {AGENT_NAME}/{PURPOSE}/{SKILL_MANIFEST} tokens", () => {

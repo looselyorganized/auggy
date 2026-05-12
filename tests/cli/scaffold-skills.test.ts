@@ -87,26 +87,18 @@ describe("renderIdentityFromTemplate", () => {
     expect(out).toContain("claims to be Sam");
   });
 
-  test("inlines the skill manifest bullet list", () => {
+  test("ADR-030: identity is identity — no skill listing inlined regardless of augment list", () => {
     const out = renderIdentityFromTemplate({
       agentName: "zip",
       purpose: "a helpful assistant",
       operatorName: "the operator",
-      augmentTypes: ["layeredMemory", "filesystem"],
+      augmentTypes: ["layeredMemory", "filesystem", "webFetch", "orgContext"],
     });
-    expect(out).toContain("## Available skills");
-    expect(out).toContain("skills/layered-memory/SKILL.md");
-    expect(out).toContain("skills/filesystem/SKILL.md");
-  });
-
-  test("omits the manifest header entirely when no augments contribute skills", () => {
-    const out = renderIdentityFromTemplate({
-      agentName: "zip",
-      purpose: "a helpful assistant",
-      operatorName: "the operator",
-      augmentTypes: ["budgets"],
-    });
+    // Skill listing moved out of identity.md per ADR-030; surface is now the
+    // 'skills' augment's emitted context block.
     expect(out).not.toContain("## Available skills");
+    expect(out).not.toContain("skills/");
+    expect(out).not.toContain("SKILL.md");
     expect(out).not.toContain("{SKILL_MANIFEST}");
   });
 
@@ -152,11 +144,11 @@ describe("renderIdentityFromTemplate", () => {
     expect(out).toContain("# {PURPOSE}");
     // The actual purpose substitution still happened in its slot.
     expect(out).toContain("actual-purpose-value");
-    // The operator-name slot keeps the literal "{SKILL_MANIFEST}" — was NOT
-    // overwritten with the manifest content by the manifest pass.
+    // The operator-name slot keeps the literal "{SKILL_MANIFEST}" — even though
+    // {SKILL_MANIFEST} is no longer a recognized placeholder post-ADR-030, the
+    // single-pass replace must still NOT touch it (regression guard against a
+    // future re-introduction of the manifest token).
     expect(out).toContain("claims to be {SKILL_MANIFEST}");
-    // And the manifest section itself rendered (one line for filesystem).
-    expect(out).toContain("skills/filesystem/SKILL.md");
   });
 });
 
