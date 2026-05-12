@@ -188,11 +188,6 @@ export async function runCreate(name: string, opts: { dir?: string }): Promise<v
       console.log(`   ${green("✓")} ${cream(entry.defaultName)} ${dim(`(${entry.type})`)}`);
     }
 
-    // Build the augment-types list used to render the skill manifest in
-    // identity.md. Includes every selected augment so the manifest stays in
-    // sync with what's actually mounted.
-    const augmentTypes = augments.map((e) => e.type);
-
     const config = buildAgentYaml(id, name, augments, {
       provider,
       model,
@@ -201,13 +196,14 @@ export async function runCreate(name: string, opts: { dir?: string }): Promise<v
     });
     writeFileSync(join(dir, "agent.yaml"), config);
 
+    // Per ADR-030: identity.md no longer carries a skill manifest. The
+    // runtime `skills` augment surfaces the listing from disk.
     writeFileSync(
       join(dir, "identity.md"),
       renderIdentityFromTemplate({
         agentName: name,
         purpose,
         operatorName,
-        augmentTypes,
       }),
     );
 

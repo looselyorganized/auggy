@@ -60,9 +60,10 @@ export function scaffoldAgent(opts: ScaffoldOptions): string {
   const purpose = opts.purpose ?? DEFAULT_PURPOSE;
   const operatorName = opts.operatorName ?? DEFAULT_OPERATOR_NAME;
 
-  // The augment types this scaffold installs by default. Drives both the
-  // bundled-skill copy and the identity.md skill-manifest entries so the two
-  // surfaces always agree.
+  // The augment types this scaffold installs by default. Drives the bundled-
+  // skill copy (which copies SKILL.md files into <agent>/skills/<augment>/).
+  // The runtime `skills` augment surfaces them to the model from disk at
+  // every context() call — no longer threaded into identity.md per ADR-030.
   const augmentTypes = [
     "fileMemory", // identity (mounted via shorthand) + learned.md
     "filesystem",
@@ -92,14 +93,14 @@ export function scaffoldAgent(opts: ScaffoldOptions): string {
     copyBundledSkill(type, dir);
   }
 
-  // Write identity.md from the new template (security rules + manifest).
+  // Write identity.md from the bundled template (security rules only —
+  // skill manifest moved out per ADR-030).
   writeFileSync(
     join(dir, "identity.md"),
     renderIdentityFromTemplate({
       agentName: opts.name,
       purpose,
       operatorName,
-      augmentTypes,
     }),
   );
 

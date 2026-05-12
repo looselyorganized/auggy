@@ -227,16 +227,3 @@ export interface IndexFile {
   agents: Record<string, IndexEntry>;
 }
 
-// ---------------------------------------------------------------------------
-// Skill manifest types
-// ---------------------------------------------------------------------------
-
-/** A single skill entry extracted from SKILL.md frontmatter in skills directories. */
-export interface SkillEntry {
-  /** Skill name from frontmatter. */
-  name: string;
-  /** Skill description from frontmatter. */
-  description: string;
-  /** Relative path to the SKILL.md file. */
-  path: string;
-}
