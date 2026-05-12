@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import { writeFileSync, mkdirSync, rmSync } from "node:fs";
+import { writeFileSync, mkdtempSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { readSkillFrontmatter, parseSkillFrontmatter } from "@/cli/skill-frontmatter";
@@ -37,11 +37,9 @@ describe("parseSkillFrontmatter", () => {
 
 describe("readSkillFrontmatter", () => {
   it("reads a file and parses it", () => {
-    const dir = join(
-      tmpdir(),
-      `auggy-skill-fm-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-    );
-    mkdirSync(dir, { recursive: true });
+    // mkdtempSync — atomic creation under the OS temp dir (avoids the
+    // predictable-temp-path / TOCTOU class CodeQL flags as js/insecure-temporary-file).
+    const dir = mkdtempSync(join(tmpdir(), "auggy-skill-fm-"));
     const path = join(dir, "SKILL.md");
     writeFileSync(path, `---\nname: ok\ndescription: works\n---\nbody`);
     try {

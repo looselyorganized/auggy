@@ -8,7 +8,7 @@
  */
 
 import { describe, it, expect } from "bun:test";
-import { mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { skills } from "@/augments/skills";
@@ -30,10 +30,9 @@ const stubTurn: TurnState = {
 };
 
 function makeSkillDir(): string {
-  const root = join(
-    tmpdir(),
-    `auggy-skills-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-  );
+  // mkdtempSync — atomic creation under the OS temp dir (avoids the
+  // predictable-temp-path / TOCTOU class CodeQL flags as js/insecure-temporary-file).
+  const root = mkdtempSync(join(tmpdir(), "auggy-skills-"));
   mkdirSync(join(root, "filesystem"), { recursive: true });
   mkdirSync(join(root, "memory"), { recursive: true });
   writeFileSync(
@@ -97,8 +96,7 @@ describe("skills augment", () => {
   });
 
   it("emits no block when no parseable skills are found", async () => {
-    const dir = join(tmpdir(), `auggy-skills-empty-${Date.now()}`);
-    mkdirSync(dir);
+    const dir = mkdtempSync(join(tmpdir(), "auggy-skills-empty-"));
     try {
       const aug = skills({ dir });
       const out = await aug.context!(stubTurn, undefined);
