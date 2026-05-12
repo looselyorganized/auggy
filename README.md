@@ -20,8 +20,8 @@ Auggy (augment-1) is a modular agent runtime in TypeScript/Bun, purpose-built fo
 ## Quick start
 
 ```bash
-# Install dependencies
-bun install
+# Install the CLI globally (requires Bun: https://bun.sh/install)
+npm i -g auggy
 
 # Create an agent (interactive augment selection)
 auggy create zip
@@ -30,9 +30,22 @@ auggy create zip
 cp zip/.env.example zip/.env
 # Add your API key to zip/.env
 
-# Run it
+# Run locally (foreground)
 auggy dev zip
+
+# Or install as a launchd service (macOS, always-on)
+auggy start zip
+
+# Or deploy to the cloud (requires Railway CLI + `railway login`)
+auggy deploy zip --to railway
 ```
+
+The `auggy` binary requires [Bun](https://bun.sh) at runtime. The package
+ships TypeScript sources; Bun executes them directly without a build step.
+
+> Until the package is on npm, use the development install:
+> `git clone …augment-1 && cd augment-1 && bun install && bun link`.
+> The `auggy` binary lands on PATH the same way.
 
 ## How it works
 

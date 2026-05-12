@@ -12,7 +12,8 @@
  *   auggy restart <name>             Stop + start
  *   auggy status [name]              Show running agents
  *   auggy ls                         List registered agents
- *   auggy remove <name> [--yes]      Delete an agent (dir + index entry)
+ *   auggy remove <name> [--yes] [--cloud]  Delete an agent (dir + index, optionally Railway service)
+ *   auggy deploy <name> --to railway       Deploy an agent to Railway
  *   auggy chat                       Launch local GUI
  *   auggy eval [name]                Run portable security eval suite
  */
@@ -129,11 +130,12 @@ program
 
 program
   .command("remove <name>")
-  .description("Remove an agent (delete dir + clear index entry)")
+  .description("Remove an agent (delete dir + clear index entry; --cloud also destroys Railway service)")
   .option("--yes", "skip the confirmation prompt")
-  .action(async (name: string, opts: { yes?: boolean }) => {
+  .option("--cloud", "also destroy the agent's Railway service (when cloud-deployed)")
+  .action(async (name: string, opts: { yes?: boolean; cloud?: boolean }) => {
     try {
-      await runRemove(name, { yes: opts.yes });
+      await runRemove(name, { yes: opts.yes, cloud: opts.cloud });
     } catch (err) {
       console.error(`Error: ${(err as Error).message}`);
       process.exit(1);
@@ -166,6 +168,47 @@ program
       }
       const { runVisitorsList } = await import("./commands/visitors");
       await runVisitorsList(agentName);
+    } catch (err) {
+      console.error(`Error: ${(err as Error).message}`);
+      process.exit(1);
+    }
+  });
+
+program
+  .command("deploy <name>")
+  .description("Deploy an agent to the cloud (--to railway)")
+  .option("--to <provider>", "deploy target (only `railway` supported in v1.0)", "railway")
+  .option("--yes", "skip the secrets-push confirmation prompt")
+  .action(async (name: string, opts: { to: string; yes?: boolean }) => {
+    try {
+      const { runDeploy } = await import("./commands/deploy");
+      const { createRailwayCli } = await import("./deploy/railway-cli");
+      const { input, confirm } = await import("@inquirer/prompts");
+
+      const cli = createRailwayCli();
+      const result = await runDeploy(name, {
+        to: opts.to as "railway",
+        yes: opts.yes ?? false,
+        cli,
+        promptProjectId: () =>
+          input({
+            message:
+              "Railway project ID (find it in the Railway dashboard URL or via `railway list`):",
+            validate: (v) => v.trim().length > 0 || "project ID required",
+          }),
+        promptConfirm: (message) => confirm({ message, default: false }),
+        logger: {
+          info: (msg) => console.log(msg),
+          warn: (msg) => console.warn(`warn: ${msg}`),
+          error: (msg) => console.error(`error: ${msg}`),
+        },
+      });
+      console.log(`\nDeployed ${name} to Railway.`);
+      console.log(`  URL:        ${result.url}`);
+      console.log(`  Project:    ${result.projectId}`);
+      console.log(`  Service:    ${result.serviceId}`);
+      console.log(`  Volume:     ${result.volumeId} (mounted at /app/data)`);
+      console.log(`\nFollow the build in the Railway dashboard or with \`railway logs\`.`);
     } catch (err) {
       console.error(`Error: ${(err as Error).message}`);
       process.exit(1);

@@ -50,6 +50,7 @@ docs/**/
 !docs/15-chat.md
 !docs/16-storage-layout.md
 !docs/17-turn-control.md
+!docs/18-deploy.md
 !docs/19-visitor-auth.md
 
 # Local git worktrees (subagent-driven-development)

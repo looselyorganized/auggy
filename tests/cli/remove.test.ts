@@ -147,4 +147,102 @@ describe("runRemove", () => {
       removePidManifest("zippy");
     }
   });
+
+  test("--cloud destroys the Railway service AND clears the index entry", async () => {
+    const { setCloud } = await import("../../src/cli/agent-index");
+    setupAgent("zip");
+    setCloud(
+      "zip",
+      {
+        provider: "railway",
+        projectId: "proj_abc",
+        serviceId: "svc_def",
+        url: "https://zip.up.railway.app",
+        volumeId: "zip-data",
+        deployedAt: "2026-05-12T00:00:00.000Z",
+      },
+      { auggyDir },
+    );
+
+    const calls: { link: number; destroy: number } = { link: 0, destroy: 0 };
+    const mockCli = {
+      async checkPresence() {
+        return true as const;
+      },
+      async checkAuth() {
+        return "x@y.z";
+      },
+      async link() {
+        calls.link++;
+      },
+      async setVariable() {},
+      async up() {},
+      async generateDomain() {
+        return "https://x";
+      },
+      async addVolume() {},
+      async status() {
+        return {
+          project: { id: "x", name: "x" },
+          service: { id: "x", name: "x" },
+          deployment: { status: "SUCCESS" },
+        };
+      },
+      async destroyService() {
+        calls.destroy++;
+      },
+    };
+
+    await runRemove("zip", { yes: true, cloud: true, auggyDir, railwayCli: mockCli });
+    expect(calls.link).toBe(1);
+    expect(calls.destroy).toBe(1);
+    expect(getAgent("zip", { auggyDir })).toBeNull();
+  });
+
+  test("--cloud surfaces Railway destruction errors as a warning, still clears the local index", async () => {
+    const { setCloud } = await import("../../src/cli/agent-index");
+    setupAgent("zip");
+    setCloud(
+      "zip",
+      {
+        provider: "railway",
+        projectId: "proj_abc",
+        serviceId: "svc_def",
+        url: "https://zip.up.railway.app",
+        volumeId: "zip-data",
+        deployedAt: "2026-05-12T00:00:00.000Z",
+      },
+      { auggyDir },
+    );
+
+    const mockCli = {
+      async checkPresence() {
+        return true as const;
+      },
+      async checkAuth() {
+        return "x@y.z";
+      },
+      async link() {},
+      async setVariable() {},
+      async up() {},
+      async generateDomain() {
+        return "https://x";
+      },
+      async addVolume() {},
+      async status() {
+        return {
+          project: { id: "x", name: "x" },
+          service: { id: "x", name: "x" },
+          deployment: { status: "SUCCESS" },
+        };
+      },
+      async destroyService() {
+        throw new Error("Railway API timeout");
+      },
+    };
+
+    // Should NOT throw — local cleanup proceeds even if Railway destruction fails.
+    await runRemove("zip", { yes: true, cloud: true, auggyDir, railwayCli: mockCli });
+    expect(getAgent("zip", { auggyDir })).toBeNull();
+  });
 });

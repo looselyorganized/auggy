@@ -9,6 +9,8 @@ import {
   removeAgent,
   getAgent,
   listAgents,
+  setCloud,
+  clearCloud,
 } from "../../src/cli/agent-index";
 import type { IndexFile } from "../../src/cli/types";
 
@@ -150,4 +152,81 @@ describe("agent-index — concurrency", () => {
     expect(getAgent("zip", { auggyDir })?.localDir).toBe("/tmp/zip");
     expect(existsSync(join(auggyDir, "agents.json.lock"))).toBe(false);
   }, 10000);
+});
+
+describe("setCloud", () => {
+  test("writes a cloud record on a registered agent", () => {
+    addAgent("zip", "/agents/zip", { auggyDir });
+    setCloud(
+      "zip",
+      {
+        provider: "railway",
+        projectId: "proj_abc",
+        serviceId: "svc_def",
+        url: "https://zip-production.up.railway.app",
+        volumeId: "vol_ghi",
+        deployedAt: "2026-05-12T00:00:00.000Z",
+      },
+      { auggyDir },
+    );
+    expect(getAgent("zip", { auggyDir })?.cloud).toEqual({
+      provider: "railway",
+      projectId: "proj_abc",
+      serviceId: "svc_def",
+      url: "https://zip-production.up.railway.app",
+      volumeId: "vol_ghi",
+      deployedAt: "2026-05-12T00:00:00.000Z",
+    });
+  });
+
+  test("overwrites an existing cloud record (redeploy)", () => {
+    addAgent("zip", "/agents/zip", { auggyDir });
+    setCloud("zip", {
+      provider: "railway", projectId: "p1", serviceId: "s1", url: "u1", volumeId: "v1", deployedAt: "2026-05-01T00:00:00.000Z",
+    }, { auggyDir });
+    setCloud("zip", {
+      provider: "railway", projectId: "p1", serviceId: "s1", url: "u2", volumeId: "v1", deployedAt: "2026-05-12T00:00:00.000Z",
+    }, { auggyDir });
+    expect(getAgent("zip", { auggyDir })?.cloud?.url).toBe("u2");
+    expect(getAgent("zip", { auggyDir })?.cloud?.deployedAt).toBe("2026-05-12T00:00:00.000Z");
+  });
+
+  test("throws when the agent is not registered", () => {
+    expect(() =>
+      setCloud(
+        "ghost",
+        { provider: "railway", projectId: "p", serviceId: "s", url: "u", volumeId: "v", deployedAt: "2026-05-12T00:00:00.000Z" },
+        { auggyDir },
+      ),
+    ).toThrow(/not registered/);
+  });
+
+  test("releases the lock even on throw", () => {
+    expect(() =>
+      setCloud(
+        "ghost",
+        { provider: "railway", projectId: "p", serviceId: "s", url: "u", volumeId: "v", deployedAt: "2026-05-12T00:00:00.000Z" },
+        { auggyDir },
+      ),
+    ).toThrow();
+    expect(existsSync(join(auggyDir, "agents.json.lock"))).toBe(false);
+  });
+});
+
+describe("clearCloud", () => {
+  test("nulls the cloud record; idempotent on already-null", () => {
+    addAgent("zip", "/agents/zip", { auggyDir });
+    setCloud("zip", {
+      provider: "railway", projectId: "p", serviceId: "s", url: "u", volumeId: "v", deployedAt: "2026-05-12T00:00:00.000Z",
+    }, { auggyDir });
+    clearCloud("zip", { auggyDir });
+    expect(getAgent("zip", { auggyDir })?.cloud).toBeNull();
+    // Second call: still null, no throw.
+    clearCloud("zip", { auggyDir });
+    expect(getAgent("zip", { auggyDir })?.cloud).toBeNull();
+  });
+
+  test("no-op on missing agent (does not throw)", () => {
+    expect(() => clearCloud("ghost", { auggyDir })).not.toThrow();
+  });
 });
