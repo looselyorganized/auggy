@@ -19,6 +19,7 @@
  */
 
 import { Command } from "commander";
+import pkg from "../../package.json" with { type: "json" };
 import { runCreate } from "./commands/create";
 import { runAdd } from "./commands/add";
 import { addSkillCommand } from "./commands/add-skill";
@@ -34,7 +35,7 @@ import { runLs } from "./commands/ls";
 
 const program = new Command();
 
-program.name("auggy").description("Auggy agent runtime CLI").version("0.3.0");
+program.name("auggy").description("Auggy agent runtime CLI").version(pkg.version);
 
 program
   .command("create <name>")
