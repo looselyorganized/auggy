@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-05-12
+
+The deployable-runtime release. First npm-installable Auggy CLI, with end-to-end Railway deployment support and a structural eval suite for the layered-memory autoSave path.
+
+### Added
+
+#### Deployment
+
+- **`auggy deploy <name> --to railway` command.** Ships an agent to Railway end-to-end: presence + auth checks, bundle staging with secure exclusions (`.env`, `*.db*`, `workspace/`, `node_modules/`, `.git/`, `.worktrees/`, `.claude/`, `.DS_Store`, `*.tmp`), Dockerfile + entrypoint generation, `railway link`, `railway volume add` (one-time, mounted at `/app/data`), `railway domain --generate`, secrets push including `AUGGY_PUBLIC_URL`, then `railway up`. Redeploys reuse the existing `CloudRecord` from `~/.auggy/agents.json` for idempotency. (See `docs/18-deploy.md`, ADR-021.)
+- **`auggy remove <name> --cloud` flag.** Destroys the Railway service alongside the local index entry. Tolerates Railway destruction failures with a warning — local cleanup proceeds regardless.
+- **`agent-index` cloud mutators.** `setCloud(name, record)` + `clearCloud(name)` with the same atomic-write + advisory-lock discipline as `addAgent` / `removeAgent`. Cloud state persists in `~/.auggy/agents.json` per the existing `CloudRecord` type.
+- **Operator deployment guide** (`docs/18-deploy.md`) — prerequisites, first-deploy + redeploy flows, autoSave cost surface guidance (citing the new eval suite), persistent state contract, visitorAuth's `${AUGGY_PUBLIC_URL}` interpolation, tear-down, troubleshooting.
+- **npm publish workflow** (`.github/workflows/publish.yml`) — publishes `auggy` to npm on `v*.*.*` tag push. Runs tests + typecheck + version-matches-tag check before `npm publish --provenance --access public`. Uses `NPM_TOKEN` secret.
+
+#### Quality
+
+- **`evals/layered-memory/` integration eval suite.** Seven fixtures × seven structural graders measure end-to-end autoSave behavior under real `agent.inject()` machinery: `factual-recall`, `peer-isolation`, `prompt-rendering`, `cost-overhead`, `false-extract`, `cross-session-recall` (multi-session persistence headliner), and `cross-identity-promotion` (anon → recognized flush). Mock-mode runner is deterministic, no API key required, <100ms. Live Haiku smoke (`evals/layered-memory/smoke.ts`) validates end-to-end against a real model with seven pass criteria at ~$0.005 spend. (See `evals/layered-memory/README.md`.)
+- **`extractJsonArray` JSON extractor.** Replaces the strict `JSON.parse` in `src/augments/layered-memory/extractor/parse.ts` with balanced-bracket extraction — structurally robust to any model wrapper style (markdown fences, leading/trailing prose, language tags, single-line layout, CRLF, escaped quotes, nested objects). Closed the 100% extraction-failure rate on Haiku 4.5 caught by the smoke test.
+
+### Changed
+
+- **`auggy --version`** now reads from `package.json` instead of a hardcoded string. Eliminates the drift class that surfaced after the first npm publish.
+
+### Process
+
+- **First npm publish.** `auggy` is now available via `npm i -g auggy`. Distribution pattern matches Wrangler / Vercel: install → create → dev/start/deploy.
+
+## [0.3.0] - 2026-05-12
+
+Name-claim release. Same code as `c15d3cb` + `@auggy/link@0.1.2` bump. Published manually to claim the unscoped `auggy` package name on npm; no functional changes vs. the prior `0.2.0` release.
+
+## [0.2.0-pre] (pre-OSS items, now folded into 0.4.0)
+
+Items below shipped during the pre-OSS phase and are functionally part of 0.4.0 in the OSS distribution. Kept here for historical reference:
+
 ### Architecture
 
 - **ADR-030 — model-facing skill surface separation.** The three Auggy primitives now surface to the engine on three orthogonal channels: **tools** (eager full schema in `tools[]`), **skills** (new built-in `skills` augment emits one system-placement context block sourced from each SKILL.md's YAML frontmatter, body on-demand via `fs_read`), and **augments** (invisible to the model). `{SKILL_MANIFEST}` is gone from `src/scaffold-templates/identity.md`; `scaffold-skills.ts` shed `buildSkillManifest` + `TOOL_INVENTORY`; `src/cli/skill-manifest.ts` is deleted; the kernel context allocator no longer wraps blocks with `[AUGMENT CONTEXT: <source>]` (the augment-name attribution is suppressed pre-send, preserved only in operator-facing trace data). The 8 bundled SKILL.md files already shipped agentskills.io-compatible frontmatter. `auggy create` default-mounts the new `skills` augment.
