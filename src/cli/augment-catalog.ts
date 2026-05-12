@@ -154,6 +154,22 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
     hasSkill: true,
   },
   {
+    // ADR-030: model-facing skill surface. Emits a single system-placement
+    // context block listing each mounted skill's name + description (read
+    // from each SKILL.md's YAML frontmatter, agentskills.io standard).
+    // Activation is fs_read via the filesystem augment.
+    label: "skills",
+    description: "Lists mounted skills for the model (ADR-030 skill surface)",
+    type: "skills",
+    defaultName: "skills",
+    defaultOptions: {
+      dir: "./skills",
+    },
+    required: false,
+    // The augment itself carries no skill — it IS the skill surface.
+    hasSkill: false,
+  },
+  {
     label: "bash",
     description: "Execute shell commands with configurable risk levels",
     type: "bash",

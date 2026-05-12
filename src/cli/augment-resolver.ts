@@ -22,6 +22,7 @@ import { filesystem } from "../augments/filesystem";
 import { webTransport } from "../transports/web-transport";
 import { webFetch } from "../augments/web-fetch";
 import { orgContext } from "../augments/org-context";
+import { skills } from "../augments/skills";
 import { bash } from "../augments/bash";
 import { notify } from "../augments/notify";
 import { telegramTransport } from "../augments/telegram-transport";
@@ -195,6 +196,19 @@ function resolveFilesystem(opts: Record<string, unknown>, agentDir: string): Aug
     mounts,
     skillFile: opts.skillFile ? resolvePath(opts.skillFile as string, agentDir) : undefined,
   });
+}
+
+/**
+ * Resolve the built-in `skills` augment (ADR-030). The `dir` option is
+ * resolved against agentDir using the same relative→absolute pattern as
+ * other agent-dir-relative paths, then handed to the augment factory.
+ *
+ * Default `dir` is `./skills` to match the scaffold layout (`auggy create`
+ * copies bundled skill folders to `<agentDir>/skills/<augment>/`).
+ */
+function resolveSkills(opts: Record<string, unknown>, agentDir: string): Augment {
+  const rawDir = (opts.dir as string | undefined) ?? "./skills";
+  return skills({ dir: resolvePath(rawDir, agentDir) });
 }
 
 function resolveWebTransport(
@@ -469,6 +483,9 @@ export async function resolveAugments(
           token: opts.token as string | undefined,
           cacheTtlMs: opts.cacheTtlMs as number | undefined,
         });
+        break;
+      case "skills":
+        augment = resolveSkills(opts, agentDir);
         break;
       case "bash":
         augment = resolveBash(opts, agentDir);
