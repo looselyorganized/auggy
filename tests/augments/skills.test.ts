@@ -126,10 +126,7 @@ describe("skills augment", () => {
   it("entries are sorted alphabetically for deterministic output", async () => {
     const dir = makeSkillDir();
     mkdirSync(join(dir, "alpha"));
-    writeFileSync(
-      join(dir, "alpha", "SKILL.md"),
-      `---\nname: alpha\ndescription: First.\n---\n`,
-    );
+    writeFileSync(join(dir, "alpha", "SKILL.md"), `---\nname: alpha\ndescription: First.\n---\n`);
     try {
       const aug = skills({ dir });
       const out = await aug.context!(stubTurn, undefined);

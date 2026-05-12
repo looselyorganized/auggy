@@ -226,4 +226,3 @@ export interface IndexFile {
   version: 1;
   agents: Record<string, IndexEntry>;
 }
-

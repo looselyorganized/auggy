@@ -37,7 +37,10 @@ describe("parseSkillFrontmatter", () => {
 
 describe("readSkillFrontmatter", () => {
   it("reads a file and parses it", () => {
-    const dir = join(tmpdir(), `auggy-skill-fm-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`);
+    const dir = join(
+      tmpdir(),
+      `auggy-skill-fm-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    );
     mkdirSync(dir, { recursive: true });
     const path = join(dir, "SKILL.md");
     writeFileSync(path, `---\nname: ok\ndescription: works\n---\nbody`);
