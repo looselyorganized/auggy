@@ -34,7 +34,7 @@ import { runLs } from "./commands/ls";
 
 const program = new Command();
 
-program.name("auggy").description("Auggy agent runtime CLI").version("0.1.0");
+program.name("auggy").description("Auggy agent runtime CLI").version("0.3.0");
 
 program
   .command("create <name>")
