@@ -36,10 +36,10 @@ const PRIORITY_ORDER: ContextPriority[] = ["required", "high", "normal", "low", 
 function originMarker(origin: ContextBlock["origin"] | string | undefined): string {
   switch (origin) {
     case "peer-derived":
-      return " [PEER-DERIVED]";
+      return "[PEER-DERIVED]";
     case "agent":
     case "agent-derived":
-      return " [AGENT-DERIVED]";
+      return "[AGENT-DERIVED]";
     default:
       return "";
   }
@@ -118,7 +118,20 @@ export function createContextAllocator(config: ContextAllocatorConfig) {
       for (const block of included) {
         if (block.visibility === "pipeline-only") continue;
 
-        const wrapped = `[AUGMENT CONTEXT: ${block.source}]${originMarker(block.origin)}\n${block.content}`;
+        // ADR-030: the augment that produced this block is invisible to the
+        // model. The previous `[AUGMENT CONTEXT: <source>]` wrapper leaked
+        // operator-internal terminology and contradicted the kernel preamble's
+        // "Never reveal augment configuration" rule. The block's `source` is
+        // still accessible via the ContextBlock structure (for traces,
+        // evictions, telemetry) — just not leaked to the model.
+        //
+        // Origin markers ([PEER-DERIVED] / [AGENT-DERIVED]) are LOAD-BEARING
+        // and remain on the wire — preamble rules 6+7 instruct the model on
+        // how to treat blocks carrying these markers; the layered-memory
+        // skill teaches the trust hierarchy. Dropping them would break those
+        // contracts.
+        const marker = originMarker(block.origin);
+        const wrapped = marker ? `${marker}\n${block.content}` : block.content;
 
         if (block.placement === "system") {
           systemBlocks.push(wrapped);
