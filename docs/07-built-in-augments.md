@@ -4,7 +4,7 @@
 
 ## Why these specifically
 
-Twelve augments ship in `src/augments/` (plus `webTransport` under `src/transports/`):
+Thirteen augments ship in `src/augments/` (plus `webTransport` under `src/transports/`):
 - **`fileMemory`** — file-backed static memory provider
 - **`supabaseMemory`** — Supabase-backed namespace memory provider
 - **`layeredMemory`** — peer-scoped episodic memory with L0–L3 provenance tiers (SQLite-backed)
@@ -13,6 +13,7 @@ Twelve augments ship in `src/augments/` (plus `webTransport` under `src/transpor
 - **`filesystem`** — multi-mount scoped file access
 - **`webFetch`** — URL fetch with HTML→text rendering
 - **`orgContext`** — read-only org knowledge manifest (HTTP or `file://` baseUrl)
+- **`skills`** — model-facing skill surface; lists mounted skills (name + description from each SKILL.md's YAML frontmatter) per [ADR-030](../../docs/solutions/architecture/adr-030-model-facing-skill-surface-separation.md)
 - **`bash`** — scoped shell execution
 - **`budgets`** — per-trust-level turn budgets + dollar ceiling
 - **`notify`** — outbound messaging to operator-configured destinations
@@ -27,7 +28,19 @@ The principle: Auggy ships the *contracts* (`MemoryProviderSpec`, `TransportSpec
 
 Every built-in augment lives at `src/augments/<name>/index.ts` (folder shape, per [ADR-025](../../docs/solutions/architecture/adr-025-augment-folder-and-skill-bundling.md)). Augments that contribute model-callable tools ship a bundled `<name>/skill/SKILL.md` colocated in the same folder; `auggy create` and `auggy add` copy it to `<agent-dir>/skills/<name>/SKILL.md`, and `auggy add-skill <name>` installs it retroactively. A boot-time validator warns at agent startup if a tool-providing augment is mounted without a skill — applies to both factory-declared `tools[]` and namespace memory providers (kernel-synthesized `memory_*` tools). Tool-less augments (transports, static memory providers, admission gates) skip the skill folder.
 
-Augments shipping a bundled skill at v1.0: `filesystem`, `layeredMemory`, `webFetch`, `orgContext`, `bash`, `notify`, `turnControl`.
+Augments shipping a bundled skill at v1.0: `filesystem`, `layeredMemory`, `webFetch`, `orgContext`, `bash`, `notify`, `turnControl`, `visitorAuth`. The `skills` augment is the model-facing surface that lists them — it carries no SKILL.md of its own.
+
+### Model-facing surface (ADR-030)
+
+Per [ADR-030](../../docs/solutions/architecture/adr-030-model-facing-skill-surface-separation.md), the three Auggy primitives surface to the engine on three orthogonal channels:
+
+| Channel | What lands there | Cost model |
+| --- | --- | --- |
+| **Tools** | `{name, description, input_schema}` per declared tool, serialized into the engine's `tools[]` array on every request | Per-tool full schema |
+| **Skills** | The `skills` augment emits ONE system-placement context block listing each mounted skill's `name` + `description` from its SKILL.md YAML frontmatter (agentskills.io standard). Body is on-demand via `fs_read` | ~100 tokens per skill in idle context |
+| **Augments** | Invisible to the model. The augment as a concept is never named on the wire; only its *contributions* (tools, context blocks, skills) are visible | Zero model-facing cost |
+
+Identity.md is identity. The `## Available skills` section that used to live there moved to the `skills` augment's emitted block; the kernel allocator no longer wraps blocks with `[AUGMENT CONTEXT: <source>]`, so augment-name attribution is suppressed pre-send (still present in trace data for operator-facing diagnostics).
 
 ## `fileMemory` — File-backed static memory provider
 

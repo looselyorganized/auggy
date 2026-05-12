@@ -124,15 +124,19 @@ Built-in augments. This directory is intentionally small — only augments that 
 
 | File | Responsibility |
 |------|---------------|
-| `file-memory.ts` | `fileMemory(opts)` — static memory provider backed by a single file. Loads at boot, optionally writes back. Used for identity (`mutable: false`) and self-notes (`mutable: true`). |
-| `supabase-memory.ts` | `supabaseMemory(opts)` — namespace memory provider backed by a Supabase table. Insert + ILIKE search + label-prefix isolation. Used for episodic memory. |
-| `filesystem.ts` | `filesystem(opts)` — multi-mount scoped file access (6 tools, realpath-based sandbox). Loads skills from mounted skill dirs. |
-| `filesystem-skill/` | SKILL.md + references for the filesystem augment (loaded on demand, not boot-time). |
-| `web-fetch.ts` | `webFetch(opts)` — URL fetch with HTML→text conversion and JSON passthrough. Uses the shared `src/http.ts` client. |
-| `org-context.ts` | `orgContext(opts)` — org knowledge augment (manifest + `org_fetch`). Pulls from the agent-context-api. |
-| `notify.ts` | `notify(opts)` — outbound messaging augment (webhook + Telegram adapters, per-peer rate limits). Replaces the removed `org_escalate` tool. |
-| `bash.ts` | `bash(opts)` — scoped shell execution (allowlist, working dir, timeout). |
-| `visitor-auth/` | `visitorAuth(opts)` — first auth-augment-family member; email magic-link verification (`request_auth` tool + `/visitor-auth/verify` HTTP route). |
+| `file-memory/` | `fileMemory(opts)` — static memory provider backed by a single file. Loads at boot, optionally writes back. Used for identity (`mutable: false`) and self-notes (`mutable: true`). |
+| `supabase-memory/` | `supabaseMemory(opts)` — namespace memory provider backed by a Supabase table. Insert + ILIKE search + label-prefix isolation. |
+| `layered-memory/` | `layeredMemory(opts)` — peer-scoped episodic memory with L0–L3 provenance tiers (SQLite or Supabase backend). Includes background fact-extraction (`autoSave`). |
+| `filesystem/` | `filesystem(opts)` — multi-mount scoped file access (6 tools, realpath-based sandbox). Bundled `skill/SKILL.md` shipped alongside. |
+| `web-fetch/` | `webFetch(opts)` — URL fetch with HTML→text conversion and JSON passthrough. Uses the shared `src/http.ts` client. |
+| `org-context/` | `orgContext(opts)` — org knowledge augment (manifest + `org_fetch`). HTTP or `file://` baseUrl. |
+| `skills/` | `skills(opts)` — model-facing skill surface (ADR-030). Scans a configured `dir:` and emits a single system-placement context block listing each mounted skill from its SKILL.md frontmatter. |
+| `notify/` | `notify(opts)` — outbound messaging augment (webhook + Telegram adapters, per-peer rate limits). |
+| `bash/` | `bash(opts)` — scoped shell execution (allowlist, working dir, timeout). |
+| `turn-control/` | `turnControl(opts)` — `request_input` for hand-off prompts. |
+| `budgets/` | `budgets(opts)` — per-trust-level turn budgets + dollar ceiling (SQLite-backed). |
+| `visitor-auth/` | `visitorAuth(opts)` — email magic-link verification (`request_auth` tool + `/visitor-auth/verify` HTTP route). |
+| `telegram-transport/` | `telegramTransport(opts)` — Telegram bot transport. |
 
 See [07-built-in-augments.md](./07-built-in-augments.md).
 
@@ -163,7 +167,9 @@ Turns Auggy from "write a `main.ts`" into "configure a YAML file and run `auggy 
 | `pid-registry.ts` | `~/.auggy/<name>.json` atomic PID manifests. |
 | `plist-generator.ts` | macOS launchd plist generation. |
 | `scaffold.ts` | `auggy create` directory + template generation. |
-| `skill-manifest.ts` | Scans `skills/*/SKILL.md` → identity manifest. |
+| `scaffold-skills.ts` | Identity-template rendering + bundled-skill copy helpers. |
+| `skill-frontmatter.ts` | YAML frontmatter parser for SKILL.md files (agentskills.io standard). |
+| `skill-validator.ts` | Boot-time validator: warns when a tool-providing augment lacks a mounted skill. |
 | `commands/create.ts` | `auggy create <name>` — interactive scaffold. |
 | `commands/add.ts` | `auggy add <name>` — add augments to an existing agent. |
 | `commands/dev.ts` | `auggy dev <name>` — foreground runner (core lifecycle). |
