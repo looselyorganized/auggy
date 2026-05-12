@@ -143,19 +143,16 @@ export interface IdentityTemplateValues {
 export function renderIdentityFromTemplate(values: IdentityTemplateValues): string {
   const template = readIdentityTemplate();
 
-  return template.replace(
-    /\{(AGENT_NAME|PURPOSE|OPERATOR_NAME)\}/g,
-    (match, token: string) => {
-      switch (token) {
-        case "AGENT_NAME":
-          return values.agentName;
-        case "PURPOSE":
-          return values.purpose;
-        case "OPERATOR_NAME":
-          return values.operatorName;
-        default:
-          return match;
-      }
-    },
-  );
+  return template.replace(/\{(AGENT_NAME|PURPOSE|OPERATOR_NAME)\}/g, (match, token: string) => {
+    switch (token) {
+      case "AGENT_NAME":
+        return values.agentName;
+      case "PURPOSE":
+        return values.purpose;
+      case "OPERATOR_NAME":
+        return values.operatorName;
+      default:
+        return match;
+    }
+  });
 }

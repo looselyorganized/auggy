@@ -22,10 +22,7 @@
 import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { Augment, ContextBlock } from "../../types";
-import {
-  readSkillFrontmatter,
-  type SkillFrontmatter,
-} from "../../cli/skill-frontmatter";
+import { readSkillFrontmatter, type SkillFrontmatter } from "../../cli/skill-frontmatter";
 
 export interface SkillsOptions {
   /**
