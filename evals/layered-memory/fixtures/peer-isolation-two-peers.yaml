@@ -1,0 +1,60 @@
+case_id: peer-isolation-two-peers
+description: >
+  Two distinct peers (Alice, Bob) interact alternately on the same thread.
+  Each turn produces one fact under that peer's namespace. The grader verifies
+  every entry's peerId matches its namespace bucket and no cross-peer label
+  contamination occurs.
+
+peers:
+  alice:
+    id: eval-alice
+    kind: human
+    trustLevel: creator
+  bob:
+    id: eval-bob
+    kind: human
+    trustLevel: creator
+
+sessions:
+  - threadId: th-isolation-1
+    turns:
+      - peerKey: alice
+        user: "I'm Alice. I prefer espresso."
+        assistant: "Got it Alice."
+      - peerKey: bob
+        user: "I'm Bob. I prefer tea."
+        assistant: "Got it Bob."
+      - peerKey: alice
+        user: "I also like jazz."
+        assistant: "Jazz noted."
+      - peerKey: bob
+        user: "I also like rock."
+        assistant: "Rock noted."
+
+mockExtractions:
+  - facts:
+      - { subject: peer, predicate: name, object: Alice, confidence: 0.9 }
+      - { subject: peer, predicate: prefers, object: espresso, confidence: 0.85 }
+    costUsd: 0.0005
+  - facts:
+      - { subject: peer, predicate: name, object: Bob, confidence: 0.9 }
+      - { subject: peer, predicate: prefers, object: tea, confidence: 0.85 }
+    costUsd: 0.0005
+  - facts:
+      - { subject: peer, predicate: likes, object: jazz, confidence: 0.85 }
+    costUsd: 0.0005
+  - facts:
+      - { subject: peer, predicate: likes, object: rock, confidence: 0.85 }
+    costUsd: 0.0005
+
+userFacingCostPerTurnUsd: 0.001
+
+expected:
+  noCrossPeerLeak: true
+  factsPerPeer:
+    alice:
+      - subjectContains: peer
+        recallProbe: Alice
+    bob:
+      - subjectContains: peer
+        recallProbe: Bob

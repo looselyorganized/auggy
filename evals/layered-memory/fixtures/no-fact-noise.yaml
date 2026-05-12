@@ -1,0 +1,34 @@
+case_id: no-fact-noise
+description: >
+  Transcript contains no extractable peer facts (small-talk only). The
+  recording engine returns empty fact arrays. Grader asserts 0 entries written
+  across all peers. Catches the most common adopter bug report: "the agent
+  stored a fact it just hallucinated."
+
+peer:
+  id: eval-noise-1
+  kind: human
+  trustLevel: creator
+
+sessions:
+  - threadId: th-noise-1
+    turns:
+      - user: "Hi there."
+        assistant: "Hi."
+      - user: "How's the weather?"
+        assistant: "Pretty fine."
+      - user: "Cool."
+        assistant: "Indeed."
+
+mockExtractions:
+  - facts: []
+    costUsd: 0.0001
+  - facts: []
+    costUsd: 0.0001
+  - facts: []
+    costUsd: 0.0001
+
+userFacingCostPerTurnUsd: 0.001
+
+expected:
+  totalEntriesExact: 0

@@ -1,0 +1,41 @@
+case_id: cost-overhead-baseline
+description: >
+  Standard happy-path conversation. Mock model reports a fixed cost per turn;
+  recording engine reports a fixed cost per extraction. Cost-overhead grader
+  REPORTS the ratio (no gate at this stage — threshold-setting waits for
+  smoke-test data).
+
+peer:
+  id: eval-cost-1
+  kind: human
+  trustLevel: creator
+
+sessions:
+  - threadId: th-cost-1
+    turns:
+      - user: "I'm Sam."
+        assistant: "Hi Sam."
+      - user: "I like jazz."
+        assistant: "Jazz, noted."
+      - user: "I work at Acme."
+        assistant: "Acme, noted."
+      - user: "I prefer dark mode."
+        assistant: "Dark mode, noted."
+      - user: "That's all."
+        assistant: "Bye!"
+
+mockExtractions:
+  - facts: [{ subject: peer, predicate: name, object: Sam, confidence: 0.9 }]
+    costUsd: 0.0003
+  - facts: [{ subject: peer, predicate: likes, object: jazz, confidence: 0.85 }]
+    costUsd: 0.0003
+  - facts: [{ subject: peer, predicate: works_at, object: Acme, confidence: 0.85 }]
+    costUsd: 0.0003
+  - facts: [{ subject: peer, predicate: prefers, object: "dark mode", confidence: 0.85 }]
+    costUsd: 0.0003
+  - facts: []
+    costUsd: 0.0001
+
+userFacingCostPerTurnUsd: 0.002
+
+expected: {}  # no gate — report-only measurement

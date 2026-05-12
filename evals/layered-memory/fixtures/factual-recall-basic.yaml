@@ -1,0 +1,58 @@
+case_id: factual-recall-basic
+description: >
+  One creator-trust peer introduces themselves over three turns. AutoSave fires
+  every turn (deterministic frequency override in the harness). The recording
+  engine returns one canned fact per call. Post-run, memory.search probes look
+  for each fact under the peer's namespace.
+
+peer:
+  id: eval-creator-1
+  kind: human
+  trustLevel: creator
+
+sessions:
+  - threadId: th-recall-1
+    turns:
+      - user: "Hi, I'm Sam."
+        assistant: "Hello Sam."
+      - user: "I prefer dark mode."
+        assistant: "Noted — dark mode."
+      - user: "I work at Acme."
+        assistant: "Got it, Acme."
+
+mockExtractions:
+  - facts:
+      - subject: peer
+        predicate: name
+        object: Sam
+        confidence: 0.9
+        isVerbatim: true
+    costUsd: 0.0005
+  - facts:
+      - subject: peer
+        predicate: prefers
+        object: "dark mode"
+        confidence: 0.85
+    costUsd: 0.0005
+  - facts:
+      - subject: peer
+        predicate: works_at
+        object: Acme
+        confidence: 0.9
+    costUsd: 0.0005
+
+userFacingCostPerTurnUsd: 0.001
+
+expected:
+  # NOTE: recallProbe is matched against the entry's `content` column, which
+  # stores fact.object verbatim. So "Sam" / "dark" / "Acme" target the OBJECT
+  # of each fact, not the predicate. subjectContains stays "peer" because
+  # extracted facts about the visitor have subject="peer".
+  factsPerPeer:
+    peer:
+      - subjectContains: peer
+        recallProbe: Sam
+      - subjectContains: peer
+        recallProbe: dark
+      - subjectContains: peer
+        recallProbe: Acme
