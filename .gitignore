@@ -57,6 +57,9 @@ docs/**/
 # Local git worktrees (subagent-driven-development)
 .worktrees/
 
+# Claude Code session-local config (settings.local.json, scheduled_tasks.lock)
+.claude/
+
 # Security eval fixture runtime artifacts (memory store created on first run)
 evals/security/fixtures/memory.sqlite
 evals/security/fixtures/memory.sqlite-shm
