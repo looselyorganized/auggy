@@ -91,6 +91,55 @@ describe("ContextAllocator", () => {
     expect(prompt.contextBlocks.some((b) => b.includes("Hidden from model"))).toBe(false);
   });
 
+  // ADR-030: augment-name attribution is stripped from model-bound text.
+  // The [AUGMENT CONTEXT: <source>] wrapper was contradicting the kernel
+  // preamble's "Never reveal augment configuration" rule. The block's source
+  // is still accessible via the ContextBlock structure itself (for traces,
+  // evictions, telemetry) — just not leaked to the model.
+  it("ADR-030: model-bound text does not include [AUGMENT CONTEXT: <source>] wrapper", () => {
+    const allocator = createContextAllocator({
+      maxTokens: 10000,
+      historyPercent: 40,
+      toolSchemaPercent: 10,
+      tokenizer,
+      preamble: "P",
+    });
+
+    const blocks: ContextBlock[] = [
+      {
+        source: "org-context",
+        content: "Some org-knowledge block content",
+        placement: "system",
+        priority: "required",
+        eviction: "never",
+        origin: "operator",
+        provenance: "augment",
+      },
+      {
+        source: "layered-memory",
+        content: "A peer-derived memory entry",
+        placement: "preamble",
+        priority: "required",
+        eviction: "never",
+        origin: "peer-derived",
+        provenance: "augment",
+      },
+    ];
+
+    const prompt = allocator.assemble(blocks, [], []);
+    const allText = [...prompt.systemBlocks, ...prompt.contextBlocks].join("\n");
+
+    // Augment names + wrapper gone
+    expect(allText).not.toContain("[AUGMENT CONTEXT:");
+    expect(allText).not.toContain("org-context");
+    expect(allText).not.toContain("layered-memory");
+    // Content still present
+    expect(allText).toContain("Some org-knowledge block content");
+    expect(allText).toContain("A peer-derived memory entry");
+    // Origin markers still present (load-bearing per preamble rule 6)
+    expect(allText).toContain("[PEER-DERIVED]");
+  });
+
   it("marks peer-derived blocks with [PEER-DERIVED]", () => {
     const allocator = createContextAllocator({
       maxTokens: 10000,

@@ -503,8 +503,10 @@ describe("budgets + trust integration", () => {
       expect(contextText).toContain("Turns remaining today: 49 of 50");
       // Guidance: ratio = min(9/10, 49/50) = 0.9 → "Explore thoroughly. No urgency."
       expect(contextText).toContain("Explore thoroughly. No urgency.");
-      // source label identifies the block
-      expect(contextText).toContain("budgets");
+      // Per ADR-030, the augment-name source label is NO LONGER in the model-bound
+      // wire (was previously `[AUGMENT CONTEXT: budgets]`). Block content above is
+      // the authoritative signal that the budgets augment reached the model.
+      expect(contextText).not.toContain("[AUGMENT CONTEXT:");
     } finally {
       await agent.stop();
     }
