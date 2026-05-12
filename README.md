@@ -6,7 +6,8 @@
 
 <p align="center">
   <a href="https://github.com/looselyorganized/augment-1/actions/workflows/ci.yml"><img src="https://github.com/looselyorganized/augment-1/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
-  <a href="https://github.com/looselyorganized/augment-1/releases/latest"><img src="https://img.shields.io/badge/release-v0.2.0-blue" alt="Latest release" /></a>
+  <a href="https://github.com/looselyorganized/augment-1/releases/latest"><img src="https://img.shields.io/badge/release-v0.3.1-blue" alt="Latest release" /></a>
+  <a href="https://www.npmjs.com/package/auggy"><img src="https://img.shields.io/npm/v/auggy?label=npm" alt="npm" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-green" alt="License" /></a>
   <img src="https://img.shields.io/badge/runtime-Bun-black?logo=bun" alt="Bun" />
   <img src="https://img.shields.io/badge/language-TypeScript-3178C6?logo=typescript" alt="TypeScript" />
@@ -15,7 +16,7 @@
 
 Auggy (augment-1) is a modular agent runtime in TypeScript/Bun, purpose-built for **persistent organizational interface agents** — long-running, memory-rich, organization-facing. Agents are composed from swappable **augments**; the kernel manages context, tools, permissions, and lifecycle. Open source, multi-engine, self-hostable.
 
-**v0.2.0 + PR α + PR β + PR γ.2 shipped** — 12 built-in augments, 3 engines, 1704+ tests. Agents boot from YAML, chat via AG-UI SSE, remember across restarts (peer-scoped layered memory with post-turn fact extraction), verify visitors via email magic links, fetch URLs, pull org knowledge, escalate to the operator, run scoped shell commands, and enforce per-trust-level turn budgets + dollar ceilings via a 2PC turn-gate kernel capability.
+**v0.3.1 on npm (2026-05-12)** — 12 built-in augments, 3 engines, 1840 tests, end-to-end Railway deploy via `auggy deploy <name> --to railway`. Agents boot from YAML, chat via AG-UI SSE, remember across restarts (peer-scoped layered memory with post-turn fact extraction), verify visitors via email magic links, fetch URLs, pull org knowledge, escalate to the operator, run scoped shell commands, and enforce per-trust-level turn budgets + dollar ceilings via a 2PC turn-gate kernel capability.
 
 ## Quick start
 
@@ -43,9 +44,9 @@ auggy deploy zip --to railway
 The `auggy` binary requires [Bun](https://bun.sh) at runtime. The package
 ships TypeScript sources; Bun executes them directly without a build step.
 
-> Until the package is on npm, use the development install:
+> For local development against an in-progress branch, use the workspace install:
 > `git clone …augment-1 && cd augment-1 && bun install && bun link`.
-> The `auggy` binary lands on PATH the same way.
+> The `auggy` binary lands on PATH the same way as the published package.
 
 ## How it works
 
