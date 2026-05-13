@@ -304,4 +304,37 @@ describe("importFromAgent", () => {
     expect(caught?.agentDir).toBe(fixture.path);
     expect((caught as { cause?: unknown }).cause).toBeDefined();
   });
+
+  describe("specifier parsing", () => {
+    // The isolation guard's internal `extractPackageName` rejects malformed
+    // specifiers explicitly rather than probing a path that can never exist.
+    // npm itself rejects these shapes, but the helper guards loud so misuse
+    // surfaces a clear message rather than a silent MissingAgentDependencyError.
+
+    test('rejects "@/foo" (empty scope)', async () => {
+      writeAgentManifest(fixture.path);
+      await expect(importFromAgent(fixture.path, "@/foo")).rejects.toThrow(
+        /Invalid scoped specifier/,
+      );
+    });
+
+    test('rejects "@scope" (no name)', async () => {
+      writeAgentManifest(fixture.path);
+      await expect(importFromAgent(fixture.path, "@scope")).rejects.toThrow(
+        /Invalid scoped specifier/,
+      );
+    });
+
+    test('rejects "@scope/" (empty name)', async () => {
+      writeAgentManifest(fixture.path);
+      await expect(importFromAgent(fixture.path, "@scope/")).rejects.toThrow(
+        /Invalid scoped specifier/,
+      );
+    });
+
+    test('rejects "" (empty specifier)', async () => {
+      writeAgentManifest(fixture.path);
+      await expect(importFromAgent(fixture.path, "")).rejects.toThrow(/empty package name/);
+    });
+  });
 });

@@ -11,6 +11,8 @@
  * pattern as `git push` trusts `git`. No token storage in this codebase.
  */
 
+import { readAllText } from "../_shared/stream";
+
 export class RailwayCliMissingError extends Error {
   constructor() {
     super(
@@ -53,23 +55,6 @@ export interface RailwayStatus {
   deployment: { status: string };
 }
 
-async function readAll(stream: ReadableStream<Uint8Array>): Promise<string> {
-  const reader = stream.getReader();
-  const chunks: Uint8Array[] = [];
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    if (value) chunks.push(value);
-  }
-  const total = chunks.reduce((n, c) => n + c.byteLength, 0);
-  const merged = new Uint8Array(total);
-  let offset = 0;
-  for (const c of chunks) {
-    merged.set(c, offset);
-    offset += c.byteLength;
-  }
-  return new TextDecoder().decode(merged);
-}
 
 const defaultSpawn: RailwaySpawnFactory = (cmd, opts = {}) => {
   const proc = Bun.spawn(cmd, {
@@ -114,8 +99,8 @@ export function createRailwayCli(opts: CreateRailwayCliOptions = {}): RailwayCli
       throw err;
     }
     const [stdout, stderr, exitCode] = await Promise.all([
-      readAll(handle.stdout),
-      readAll(handle.stderr),
+      readAllText(handle.stdout),
+      readAllText(handle.stderr),
       handle.exited,
     ]);
     return { stdout, stderr, exitCode };

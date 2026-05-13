@@ -77,15 +77,19 @@ export async function runAdd(name: string, opts: AddOpts): Promise<void> {
   const pkgPath = join(agentDir, "package.json");
 
   if (hasAdditions && !existsSync(pkgPath)) {
-    console.log();
-    console.log(
+    // Route this to stderr — it's an error condition (matched by the
+    // process.exitCode = 1 below), so operators piping stdout/stderr to
+    // different sinks see it on the right stream. Matches the convention
+    // for thrown errors at src/cli/index.ts.
+    console.error();
+    console.error(
       `Error: ${pkgPath} does not exist. This agent has no per-agent manifest.`,
     );
-    console.log(`Re-scaffold via \`auggy create ${name}\` (or write package.json manually with`);
-    console.log("auggy + your engine adapter as deps, then run `bun install`), then re-run");
-    console.log(`\`auggy add ${name}\`.`);
-    console.log();
-    console.log("(No changes made to agent.yaml — atomic bail.)");
+    console.error(`Re-scaffold via \`auggy create ${name}\` (or write package.json manually with`);
+    console.error("auggy + your engine adapter as deps, then run `bun install`), then re-run");
+    console.error(`\`auggy add ${name}\`.`);
+    console.error();
+    console.error("(No changes made to agent.yaml — atomic bail.)");
     process.exitCode = 1;
     return;
   }

@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeEach, afterEach, mock } from "bun:test";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync } from "node:fs";
-import { join, dirname, resolve } from "node:path";
+import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { parse as parseYaml } from "yaml";
 
@@ -65,27 +65,9 @@ mock.module("@inquirer/prompts", () => ({
 const { runCreate } = await import("../../src/cli/commands/create");
 const { resolveEngine } = await import("../../src/cli/engine-resolver");
 
-// Locate the repo root by walking up from this test file until we hit the
-// auggy package.json (the same algorithm getAuggyVersion uses internally).
-function findRepoRoot(): string {
-  let dir = dirname(new URL(import.meta.url).pathname);
-  for (let i = 0; i < 8; i += 1) {
-    try {
-      const pkg = JSON.parse(readFileSync(join(dir, "package.json"), "utf-8")) as {
-        name?: string;
-      };
-      if (pkg.name === "auggy") return resolve(dir);
-    } catch {
-      // not at this level
-    }
-    const parent = dirname(dir);
-    if (parent === dir) break;
-    dir = parent;
-  }
-  throw new Error("could not locate auggy repo root from test file");
-}
-
-const REPO_ROOT = findRepoRoot();
+// `bun test` runs from the repo root, so cwd IS the auggy repo. Matches the
+// convention in tests/cli/engine-resolver.test.ts (AGENT_DIR = process.cwd()).
+const REPO_ROOT = process.cwd();
 
 /**
  * Fabricate `<agentDir>/node_modules/{auggy, @auggy/<engine>}` as symlinks

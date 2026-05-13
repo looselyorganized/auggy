@@ -19,9 +19,7 @@
  *     scaffolded against, not whatever happens to be globally installed.
  */
 
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import pkg from "../../package.json" with { type: "json" };
 import type { CatalogEntry } from "./augment-catalog";
 import type { Provider } from "./model-picker";
 
@@ -119,36 +117,16 @@ export function mergePackageDeps(
 /**
  * Read the running auggy CLI's own `package.json.version`. Used by create /
  * add to caret-pin scaffolded agents against the runtime they were
- * scaffolded with. Walks up from this module's URL until it finds a
- * `package.json` declaring `"name": "auggy"`.
+ * scaffolded with.
  *
- * Throws if the package.json can't be located or is malformed — that would
- * mean a broken install, and the failure is clearer surfaced loud than
- * silently caret-pinning to an empty string.
+ * Sources from the static JSON import at the top of this module — the same
+ * pattern `src/cli/index.ts` uses to populate `auggy --version` and that
+ * `src/cli/commands/chat.ts` uses for the GUI version. Bun + Node both
+ * include `package.json` in published tarballs by default, so the lookup
+ * is reliable across install layouts (global npm, bun link, workspace).
  */
-export function getAuggyVersion(moduleUrl: string = import.meta.url): string {
-  let dir = dirname(fileURLToPath(moduleUrl));
-  // Walk up at most 8 levels — far more than the legitimate depth in any
-  // install layout we ship to. Past that, treat it as "not found".
-  for (let i = 0; i < 8; i += 1) {
-    const candidate = join(dir, "package.json");
-    try {
-      const raw = readFileSync(candidate, "utf-8");
-      const parsed = JSON.parse(raw) as { name?: unknown; version?: unknown };
-      if (parsed.name === "auggy" && typeof parsed.version === "string") {
-        return parsed.version;
-      }
-    } catch {
-      // Not at this level — keep walking.
-    }
-    const parent = dirname(dir);
-    if (parent === dir) break; // hit filesystem root
-    dir = parent;
-  }
-  throw new Error(
-    `Could not locate auggy's package.json starting from ${moduleUrl}. ` +
-      `This usually means a broken auggy install; reinstall with \`bun install -g auggy\`.`,
-  );
+export function getAuggyVersion(): string {
+  return pkg.version;
 }
 
 /**

@@ -11,6 +11,8 @@
  * caller can include it in the failure message when the install fails.
  */
 
+import { readAllTextTeed } from "./_shared/stream";
+
 export interface BunInstallResult {
   /** True when `bun install` exited 0. */
   ok: boolean;
@@ -58,36 +60,15 @@ export async function runBunInstall(
 ): Promise<BunInstallResult> {
   const proc = spawn(["bun", "install"], { cwd: agentDir });
 
-  // Drain stderr into a buffer while also echoing it to our own stderr so
-  // the operator sees errors live (matches what they'd see from a direct
+  // Drain stderr into a buffer AND echo each chunk live so the operator
+  // sees errors as they happen (matches what they'd see from a direct
   // `bun install` invocation).
-  const stderrChunks: Uint8Array[] = [];
-  const stderrTask = (async (): Promise<void> => {
-    const reader = proc.stderr.getReader();
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (value) {
-        stderrChunks.push(value);
-        process.stderr.write(value);
-      }
-    }
-  })();
+  const stderrTask = readAllTextTeed(proc.stderr, (chunk) => {
+    process.stderr.write(chunk);
+  });
 
   const code = await proc.exited;
-  await stderrTask;
+  const stderr = await stderrTask;
 
-  const stderr = new TextDecoder().decode(concatChunks(stderrChunks));
   return { ok: code === 0, code, stderr };
-}
-
-function concatChunks(chunks: Uint8Array[]): Uint8Array {
-  const total = chunks.reduce((n, c) => n + c.byteLength, 0);
-  const merged = new Uint8Array(total);
-  let offset = 0;
-  for (const c of chunks) {
-    merged.set(c, offset);
-    offset += c.byteLength;
-  }
-  return merged;
 }

@@ -228,18 +228,10 @@ describe("mergePackageDeps", () => {
 });
 
 describe("getAuggyVersion", () => {
-  test("reads version from auggy's own package.json (walks up from caller)", () => {
-    // Called with no argument: walks up from this test file's module URL.
+  test("reads version from auggy's own package.json", () => {
     const version = getAuggyVersion();
     // Must be a semver-shaped string. Specific value depends on package.json
     // state at test time; we assert shape not value to avoid coupling.
     expect(version).toMatch(/^\d+\.\d+\.\d+/);
-  });
-
-  test("throws with a clear message when no auggy package.json is reachable", () => {
-    // Pretend we're a module living in /tmp where no auggy package.json exists.
-    expect(() => getAuggyVersion("file:///tmp/some-detached-module.js")).toThrow(
-      /Could not locate auggy's package\.json/,
-    );
   });
 });

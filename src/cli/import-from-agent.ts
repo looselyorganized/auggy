@@ -143,7 +143,12 @@ function extractPackageName(specifier: string): string {
     const segments = specifier.split("/");
     const scope = segments[0];
     const name = segments[1];
-    if (!scope || !name) {
+    // Reject `@`, `@/foo`, `@scope`, `@scope/` — the scope itself must have
+    // at least one character beyond the leading `@`, and the package name
+    // must be a non-empty segment. npm itself rejects these shapes, but the
+    // helper guards explicitly so misuse fails with a clear message rather
+    // than probing a path that can never exist.
+    if (!scope || scope.length <= 1 || !name) {
       throw new Error(`Invalid scoped specifier "${specifier}": expected @scope/name shape.`);
     }
     return `${scope}/${name}`;
