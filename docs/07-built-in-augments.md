@@ -4,7 +4,7 @@
 
 ## Why these specifically
 
-Thirteen augments ship in `src/augments/` (plus `webTransport` under `src/transports/`):
+Fourteen augments ship in `src/augments/` (plus `webTransport` under `src/transports/`):
 - **`fileMemory`** — file-backed static memory provider
 - **`supabaseMemory`** — Supabase-backed namespace memory provider
 - **`layeredMemory`** — peer-scoped episodic memory with L0–L3 provenance tiers (SQLite-backed)
@@ -19,6 +19,7 @@ Thirteen augments ship in `src/augments/` (plus `webTransport` under `src/transp
 - **`notify`** — outbound messaging to operator-configured destinations
 - **`turnControl`** — `request_input` for hand-off prompts
 - **`visitorAuth`** — email magic-link verification; promotes anonymous → recognized
+- **`link`** — peer-to-peer A2A v0.2 transport (the v1.0 Mesh entry, per [ADR-022](../../docs/solutions/architecture/adr-022-mesh-destination-link-entry.md))
 
 The selection is deliberate. Together they cover: identity, episodic memory, web chat, Telegram chat, filesystem access, external knowledge, shell execution, cost management, operator alerting, turn-end input requests, and visitor email verification. Anything beyond this (model routing, evals, retrieval over special data sources) belongs in application-specific augments that live in the application's repo, not in Auggy itself.
 
@@ -1030,6 +1031,86 @@ It adds three things to the agent: a model-callable `request_auth({method: "emai
 `visitorAuth` ships `src/augments/visitor-auth/skill/SKILL.md` with model teaching on the `request_auth` tool — when to offer verification, confused-deputy awareness, and rate-limit messaging. Copied into `<agent-dir>/skills/visitor-auth/SKILL.md` at `auggy create`/`auggy add` time; install retroactively with `auggy add-skill visitor-auth`.
 
 For the full operator reference (config, env vars, security posture, ops commands, troubleshooting), see [docs/19-visitor-auth.md](./19-visitor-auth.md).
+
+## `link` — Peer-to-peer A2A v0.2 transport
+
+```yaml
+augments:
+  - type: link
+    name: link
+    options:
+      port: 8081
+      dbPath: ./link.db
+      agentCard:
+        id: <agent-uuid>
+        name: zip
+        description: Front-door agent
+        endpointUrl: https://zip.example.org
+        capabilities:
+          - "answers visitor questions about LORF"
+      peers:
+        researcher:
+          url: https://researcher.example.org
+          bearer: ${RESEARCHER_BEARER}
+          participantId: <peer-uuid>
+          inboundBearer: ${RESEARCHER_INBOUND_BEARER}
+          inboundBearerId: <inbound-bearer-uuid>
+          purpose: "Research specialist. Knows recent ML literature."
+          examples:
+            - "What's the state of test-time compute scaling?"
+            - "Find recent papers on agent benchmarks"
+```
+
+### What it is
+
+The v1.0 Mesh entry point. Imports the `@auggy/link` library to expose this agent at an HTTP endpoint speaking A2A v0.2 (JSON-RPC), and to send outbound traffic to configured peers. Peer-to-peer with mutual bearer auth — no central service. Binds its own port, separate from `webTransport`. Per [ADR-022](../../docs/solutions/architecture/adr-022-mesh-destination-link-entry.md), this is the v1.0 stepping stone toward the coordinator service in sequencing item 3.
+
+### When to use it
+
+You're running two or more Auggy agents that need to talk to each other. The other agent can be on the same machine, a different Railway project, a different cloud — anywhere reachable over HTTPS. Configured peers are addressed by short name (`researcher`, `analyst`, etc.) in the LLM-facing tool surface.
+
+### Tools (2)
+
+- **`link_send(to, text)`** — send a text message to a configured peer. Returns the peer's synchronous reply text (when available) or a task id (when the peer chose async handling).
+- **`link_list()`** — enumerate configured peers as `{ peers: [{ name, purpose?, examples? }] }`. The LLM uses this to discover *who* it can reach and *what each peer is good for*. `purpose` and `examples` come from agent.yaml; both are optional. Beware: bad examples mislead the model more than they help — keep them tight or omit.
+
+### Context block — peer roster
+
+The augment surfaces a minimal preamble block on every turn listing only peer **names**:
+
+```
+Peers reachable via link_send: researcher, analyst. Call link_list to see what each peer is good for.
+```
+
+Names only — not purposes or examples — to keep preamble cost ~10 tokens per peer. Rich details are lazily fetched via `link_list` when the model actually needs to route. Empty peers ⇒ no block emitted.
+
+### Peer fields
+
+| Field | Required | Purpose |
+|---|---|---|
+| `url` | yes | Peer's link endpoint (`https://...`). For local-only dev, set `LINK_ALLOW_PLAINTEXT=1` to allow `http://localhost`. |
+| `bearer` | yes | Bearer this agent sends on outbound to the peer. |
+| `participantId` | yes | Peer's UUID. Must match the peer's self-declared id for AddressBook lookup symmetry. |
+| `inboundBearer` | yes | Bearer this agent accepts on inbound *from* the peer. Independent of `bearer`; rotate separately. |
+| `inboundBearerId` | yes | Opaque audit id paired with `inboundBearer`; logged on verify, never on the wire. |
+| `purpose` | no | Natural-language description of what the peer is good for. Surfaced via `link_list`. Semantic, not structural — see [spine-north-star §4 Constraint 6](../../docs/spine-north-star.md). |
+| `examples` | no | 1–2 example asks suitable for delegation. Used by the LLM for few-shot routing. |
+
+### AgentCard fields
+
+The `agentCard` block populates `/.well-known/agent.json` served at this agent's link endpoint. Anyone who can reach the URL can read it — keep descriptions and `capabilities[]` appropriately vague if you're cross-org. `capabilities` is a free-form `string[]` (sanctioned by [spine-north-star §4 Constraint 6](../../docs/spine-north-star.md): semantic, not structural).
+
+### Trust model — important caveat
+
+All admitted peers are minted as `trust: "agent"` at v1.0 — there is no per-peer trust override. If you need to admit a peer at *reduced* privilege, the only downgrade today is `public` (the visitor tier), which has the wrong semantic for "authenticated-but-restricted peer." This is a known authorization gap; see [docs/superpowers/specs/2026-05-13-link-authorization-model.md](../../docs/superpowers/specs/2026-05-13-link-authorization-model.md) for the full problem statement and planned phases.
+
+### Forward-compat with the coordinator
+
+When the coordinator service ships (ADR-022 sequencing item 3), the peer list — and per-peer purpose/examples — move from agent.yaml to a participant registry served by the coordinator. The LLM-facing shape (`link_list` returning `{name, purpose?, examples?}`) stays the same; only the source flips. Today's agent.yaml-described peers are forward-compatible.
+
+### Bundled skill
+
+The `link` augment does not currently ship a bundled `skill/SKILL.md`. The boot-time skill validator will warn at agent startup (cosmetic). A skill teaching delegation patterns + probe-on-pushback is a future addition.
 
 ## Why these aren't exhaustive
 
