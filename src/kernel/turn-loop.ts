@@ -532,16 +532,32 @@ export function createTurnLoop(opts: {
         // No handler claimed; fall through to the standard inference loop.
       }
 
-      // Run augment context pipeline
+      // Run augment context pipeline.
+      //
+      // Parallelization rule: augments with `receivesPriorContext: true`
+      // must observe the cumulative contextBlocks from earlier augments,
+      // so they run sequentially. Augments without that flag depend only
+      // on `turnState` and are order-independent, so consecutive ones are
+      // fanned out via Promise.allSettled. Result handling walks the
+      // settled array in declaration order, so contextBlocks ends up
+      // identical to the previous fully-sequential implementation —
+      // future heavy context() providers (LLM-driven memory ranking,
+      // remote knowledge fetches) get to overlap their I/O for free.
       const contextBlocks: ContextBlock[] = [];
-      for (const aug of augments) {
-        if (!aug.context) continue;
-        try {
-          const timeout = aug.constraints?.contextTimeoutMs ?? 5000;
-          const priorContext = aug.receivesPriorContext ? [...contextBlocks] : undefined;
-          const result = await withTimeout(() => aug.context!(turnState, priorContext), timeout);
-          if (typeof result === "string") {
-            contextBlocks.push({
+      const augmentsWithContext = augments.filter((a) => a.context);
+
+      async function runOneContext(
+        aug: Augment,
+        priorContext: ContextBlock[] | undefined,
+      ): Promise<ContextBlock[]> {
+        const timeout = aug.constraints?.contextTimeoutMs ?? 5000;
+        const result = await withTimeout(
+          () => aug.context!(turnState, priorContext),
+          timeout,
+        );
+        if (typeof result === "string") {
+          return [
+            {
               source: aug.name,
               content: result,
               placement: "preamble",
@@ -549,38 +565,75 @@ export function createTurnLoop(opts: {
               priority: "normal",
               eviction: "drop",
               origin: "system",
-            });
-          } else {
-            contextBlocks.push(...result);
+            },
+          ];
+        }
+        return result;
+      }
+
+      function makeContextFailureResult(failedAug: Augment, err: unknown): TurnResult {
+        emitEvent({
+          kind: "run_error",
+          turnId: trigger.turnId,
+          message: String(err),
+          source: failedAug.name,
+        });
+        emitEvent({
+          kind: "run_finished",
+          turnId: trigger.turnId,
+          status: "failed",
+        });
+        traceEmitter.finalize(trace);
+        recordTurnSnapshot();
+        return {
+          turnId: trigger.turnId,
+          success: false,
+          status: "failed",
+          errorResponse: "An internal error occurred. Please try again.",
+          toolCalls: [],
+          trace,
+          error: { message: String(err), source: failedAug.name },
+        };
+      }
+
+      let pendingBatch: Augment[] = [];
+
+      async function flushBatch(): Promise<TurnResult | null> {
+        if (pendingBatch.length === 0) return null;
+        const batch = pendingBatch;
+        pendingBatch = [];
+        const settled = await Promise.allSettled(
+          batch.map((a) => runOneContext(a, undefined)),
+        );
+        for (let i = 0; i < settled.length; i++) {
+          const result = settled[i]!;
+          const aug = batch[i]!;
+          if (result.status === "fulfilled") {
+            contextBlocks.push(...result.value);
+          } else if (aug.required) {
+            return makeContextFailureResult(aug, result.reason);
           }
-        } catch (err) {
-          if (aug.required) {
-            emitEvent({
-              kind: "run_error",
-              turnId: trigger.turnId,
-              message: String(err),
-              source: aug.name,
-            });
-            emitEvent({
-              kind: "run_finished",
-              turnId: trigger.turnId,
-              status: "failed",
-            });
-            traceEmitter.finalize(trace);
-            recordTurnSnapshot();
-            return {
-              turnId: trigger.turnId,
-              success: false,
-              status: "failed",
-              errorResponse: "An internal error occurred. Please try again.",
-              toolCalls: [],
-              trace,
-              error: { message: String(err), source: aug.name },
-            };
+          // Non-required failures: skip silently, matching the prior loop.
+        }
+        return null;
+      }
+
+      for (const aug of augmentsWithContext) {
+        if (aug.receivesPriorContext) {
+          const flushFailure = await flushBatch();
+          if (flushFailure) return flushFailure;
+          try {
+            const blocks = await runOneContext(aug, [...contextBlocks]);
+            contextBlocks.push(...blocks);
+          } catch (err) {
+            if (aug.required) return makeContextFailureResult(aug, err);
           }
-          // Non-required: skip and continue
+        } else {
+          pendingBatch.push(aug);
         }
       }
+      const finalFlushFailure = await flushBatch();
+      if (finalFlushFailure) return finalFlushFailure;
 
       // Assemble context
       const preamble = buildPreamble({
@@ -604,21 +657,22 @@ export function createTurnLoop(opts: {
       // Select tools
       const toolSelection = selectTools(allTools, turnState, {
         canExpose: (name) => capabilityTable.canExpose(name, turnState),
+        tokenizer,
       });
 
-      const toolChoiceOpt = config.toolChoice ? { toolChoice: config.toolChoice } : undefined;
+      const assembleOpts = {
+        ...(config.toolChoice ? { toolChoice: config.toolChoice } : {}),
+        toolSchemaTokens: toolSelection.schemaTokens,
+      };
       let currentPrompt = allocator.assemble(
         contextBlocks,
         historyMessages,
         toolSelection.definitions,
-        toolChoiceOpt,
+        assembleOpts,
       );
 
       const preambleTokens = currentPrompt.systemBlocks.reduce((s, b) => s + tokenizer.count(b), 0);
-      const toolSchemaTokens = currentPrompt.tools.reduce(
-        (s, t) => s + tokenizer.count(JSON.stringify(t)),
-        0,
-      );
+      const toolSchemaTokens = toolSelection.schemaTokens;
       traceEmitter.recordContextAssembly(trace, {
         augmentBlocks: contextBlocks.map((b) => ({
           source: b.source,
@@ -1024,7 +1078,7 @@ export function createTurnLoop(opts: {
             contextBlocks,
             updatedHistory,
             toolSelection.definitions,
-            toolChoiceOpt,
+            assembleOpts,
           );
 
           const termInferStart = Date.now();
@@ -1100,7 +1154,7 @@ export function createTurnLoop(opts: {
           contextBlocks,
           updatedHistory,
           toolSelection.definitions,
-          toolChoiceOpt,
+          assembleOpts,
         );
       }
 
