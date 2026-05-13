@@ -1,10 +1,24 @@
 name: Release rehearsal (PR)
 
-# Runs on every PR targeting main. Validates release-readiness BEFORE the
-# tag-driven publish workflow ever fires. Catches:
-#  - tarball packaging errors (npm pack --dry-run)
-#  - version conflicts (package.json version is already on npm)
+# Runs on every PR targeting main, but the *release-specific* gates only fire
+# when this PR actually bumps `package.json.version` vs. the base branch.
+#
+# Why split: most feature PRs don't touch the version. Forcing them to bump
+# would conflate "merging code" with "shipping artifacts" — exactly the
+# anti-pattern we want to avoid pre-1.0 (semver §4: "Major version zero is
+# for initial development. Anything MAY change at any time."). Releases are
+# deliberate; feature PRs are not.
+#
+# What still runs on EVERY PR (defense-in-depth — also covered by ci.yml):
 #  - lint / typecheck / test regressions
+#
+# What runs ONLY when version changed (i.e. release PRs):
+#  - version-vs-npm conflict check (would `npm publish` succeed?)
+#  - tarball packaging dry-run (would `npm pack` produce a valid tarball?)
+#
+# Detection: compares `package.json.version` at the PR HEAD against the same
+# field at the PR base. If equal, the release gates short-circuit with a
+# success notice. If different, the gates run normally.
 #
 # No NPM_TOKEN needed (everything is read-only). First line of defense
 # against the publish workflow failing on real tags.
@@ -27,6 +41,9 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          # Need the base commit accessible so we can `git show base:package.json`.
+          fetch-depth: 0
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
@@ -51,22 +68,55 @@ jobs:
       - name: Run tests
         run: bun test
 
+      # Detect whether this PR bumps the package.json version vs. base.
+      # If unchanged, the release-specific gates below short-circuit.
+      #
+      # Uses GITHUB_BASE_REF (auto-set by Actions on pull_request events) and
+      # treats it as a git ref name, NOT shell input — it's quoted everywhere.
+      - name: Detect version change vs base
+        id: version-check
+        run: |
+          set -eu
+          HEAD_VERSION="$(node -p "require('./package.json').version")"
+          # Resolve the base branch's tip to a SHA, then read package.json
+          # from that commit (handles force-pushes + rewrites cleanly).
+          if BASE_SHA="$(git rev-parse "origin/${GITHUB_BASE_REF}" 2>/dev/null)" \
+             && BASE_PKG="$(git show "${BASE_SHA}:package.json" 2>/dev/null)"; then
+            BASE_VERSION="$(printf '%s' "$BASE_PKG" | node -e "process.stdout.write(JSON.parse(require('fs').readFileSync(0,'utf8')).version)")"
+          else
+            BASE_VERSION=""
+          fi
+          echo "head=$HEAD_VERSION" >> "$GITHUB_OUTPUT"
+          echo "base=$BASE_VERSION" >> "$GITHUB_OUTPUT"
+          if [ "$BASE_VERSION" = "$HEAD_VERSION" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::package.json version unchanged ($HEAD_VERSION). Feature PR, not a release — skipping npm-version and tarball gates."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::package.json version bumped: ${BASE_VERSION:-<absent>} -> ${HEAD_VERSION}. Running release-specific gates."
+          fi
+
       # Version-conflict check: read-only. Fails if a real publish at this
       # version would later be rejected with EPUBLISHCONFLICT. Backfill tags
       # (where the version IS already on npm by design) are out of scope —
       # those go through the tag workflow's skip-if-published gate.
+      #
+      # Only fires when this PR actually bumps the version. Feature PRs with
+      # the version unchanged from base skip this step.
       - name: Confirm package.json version is not already on npm
+        if: steps.version-check.outputs.changed == 'true'
         run: |
           PKG_NAME="$(node -p "require('./package.json').name")"
           PKG_VERSION="$(node -p "require('./package.json').version")"
           if npm view "${PKG_NAME}@${PKG_VERSION}" version >/dev/null 2>&1; then
-            echo "::error::${PKG_NAME}@${PKG_VERSION} is already on npm. Bump package.json before merging this PR."
+            echo "::error::${PKG_NAME}@${PKG_VERSION} is already on npm. Bump package.json again before merging this PR."
             exit 1
           fi
-          echo "${PKG_NAME}@${PKG_VERSION} not yet on npm; release-rehearsal passes."
+          echo "${PKG_NAME}@${PKG_VERSION} not yet on npm; release-rehearsal version-gate passes."
 
       # Packaging dry-run: validates the tarball would be well-formed without
       # contacting the registry as a publisher. Catches missing files entries,
-      # broken bin paths, etc.
+      # broken bin paths, etc. Only relevant on release PRs.
       - name: Validate tarball packaging
+        if: steps.version-check.outputs.changed == 'true'
         run: npm pack --dry-run
