@@ -61,24 +61,16 @@ export function createContextAllocator(config: ContextAllocatorConfig) {
       augmentBlocks: ContextBlock[],
       history: Message[],
       tools: ToolDefinition[],
-      opts?: {
-        toolChoice?: AssembledPrompt["toolChoice"];
-        /**
-         * Caller-precomputed tool schema token total. When provided, the
-         * allocator skips its internal JSON.stringify loop. tool-selector
-         * computes this via the Tool→serialized-schema cache, so production
-         * callers should always pass it; tests omit it and fall back to
-         * the local computation for backward compatibility.
-         */
-        toolSchemaTokens?: number;
-      },
+      opts?: { toolChoice?: AssembledPrompt["toolChoice"] },
     ): AssembledPrompt {
       const historyBudget = Math.floor(config.maxTokens * (config.historyPercent / 100));
       const toolBudget = Math.floor(config.maxTokens * (config.toolSchemaPercent / 100));
 
-      const toolSchemaTokens =
-        opts?.toolSchemaTokens ??
-        tools.reduce((sum, t) => sum + config.tokenizer.count(JSON.stringify(t)), 0);
+      // Count actual tool schema tokens
+      const toolSchemaTokens = tools.reduce((sum, t) => {
+        const schemaStr = JSON.stringify(t);
+        return sum + config.tokenizer.count(schemaStr);
+      }, 0);
 
       // If tools exceed their budget, they eat into the context budget
       const effectiveToolTokens = Math.max(toolSchemaTokens, toolBudget);
