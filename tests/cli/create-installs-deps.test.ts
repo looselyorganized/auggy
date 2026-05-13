@@ -1,7 +1,9 @@
-import { describe, test, expect, beforeEach, afterEach, mock } from "bun:test";
+import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { mockInquirerPrompts, type Answers } from "../fixtures/inquirer-mock";
+import { createStubBunInstallSpawn, type SpawnCapture } from "../fixtures/bun-install-stub";
 
 /**
  * Drives `runCreate` non-interactively by stubbing `@inquirer/prompts` and
@@ -17,39 +19,8 @@ import { tmpdir } from "node:os";
  * references resolve to our stubs.
  */
 
-interface Answers {
-  provider?: string;
-  model?: string;
-  operatorName?: string;
-  purpose?: string;
-  augmentTypes?: string[]; // catalog entry types to "select"
-}
-
 let answers: Answers = {};
-
-mock.module("@inquirer/prompts", () => ({
-  select: async (config: { message: string; choices: Array<{ name: string; value: unknown }> }) => {
-    if (config.message.startsWith("Engine provider")) return answers.provider ?? "anthropic";
-    if (config.message.startsWith("Model:")) return answers.model ?? "claude-sonnet-4-6";
-    return config.choices[0]?.value;
-  },
-  input: async (config: { message: string; default?: string }) => {
-    if (config.message.startsWith("Operator name")) return answers.operatorName ?? "tester";
-    if (config.message.startsWith("Agent purpose")) return answers.purpose ?? "testing";
-    return config.default ?? "";
-  },
-  checkbox: async (config: {
-    choices: Array<{ value: { type: string }; checked?: boolean; disabled?: string | boolean }>;
-  }) => {
-    // Required entries are pre-checked + disabled; treat the stub answer as
-    // additional optional selections on top.
-    const wanted = new Set(answers.augmentTypes ?? []);
-    return config.choices
-      .filter((c) => c.checked || wanted.has(c.value.type))
-      .map((c) => c.value);
-  },
-  confirm: async (config: { default?: boolean }) => config.default ?? false,
-}));
+mockInquirerPrompts(() => answers);
 
 const { runCreate } = await import("../../src/cli/commands/create");
 const { getAgent } = await import("../../src/cli/agent-index");
@@ -57,19 +28,7 @@ const { PROVIDER_TO_PACKAGE } = await import("../../src/cli/scaffold-package-jso
 
 let auggyDir: string;
 let agentParent: string;
-let bunInstallCalls: Array<{ cmd: string[]; cwd: string }>;
-
-const stubSpawn = () => {
-  return (cmd: string[], opts: { cwd: string }) => {
-    bunInstallCalls.push({ cmd, cwd: opts.cwd });
-    const stderr = new ReadableStream<Uint8Array>({
-      start(controller) {
-        controller.close();
-      },
-    });
-    return { exited: Promise.resolve(0), stderr };
-  };
-};
+let bunInstallCalls: SpawnCapture[];
 
 beforeEach(() => {
   auggyDir = mkdtempSync(join(tmpdir(), "create-test-auggy-"));
@@ -91,7 +50,7 @@ describe("runCreate writes per-agent package.json", () => {
     await runCreate("demo-anthropic", {
       dir,
       auggyDir,
-      bunInstallSpawn: stubSpawn(),
+      bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
     });
 
     expect(existsSync(join(dir, "package.json"))).toBe(true);
@@ -117,7 +76,7 @@ describe("runCreate writes per-agent package.json", () => {
     await runCreate("demo-openai", {
       dir,
       auggyDir,
-      bunInstallSpawn: stubSpawn(),
+      bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
     });
 
     const pkg = JSON.parse(readFileSync(join(dir, "package.json"), "utf-8"));
@@ -136,7 +95,7 @@ describe("runCreate writes per-agent package.json", () => {
     await runCreate("demo-with-link", {
       dir,
       auggyDir,
-      bunInstallSpawn: stubSpawn(),
+      bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
     });
 
     const pkg = JSON.parse(readFileSync(join(dir, "package.json"), "utf-8"));
@@ -153,7 +112,7 @@ describe("runCreate invokes bun install in agent dir", () => {
     await runCreate("demo-install", {
       dir,
       auggyDir,
-      bunInstallSpawn: stubSpawn(),
+      bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
     });
 
     expect(bunInstallCalls).toHaveLength(1);
@@ -169,7 +128,7 @@ describe("runCreate invokes bun install in agent dir", () => {
       dir,
       auggyDir,
       skipInstall: true,
-      bunInstallSpawn: stubSpawn(),
+      bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
     });
 
     expect(existsSync(join(dir, "package.json"))).toBe(true);
@@ -180,24 +139,13 @@ describe("runCreate invokes bun install in agent dir", () => {
     const dir = join(agentParent, "demo-failsoft");
     answers = { provider: "anthropic", model: "claude-sonnet-4-6" };
 
-    const failingSpawn = () => {
-      return (_cmd: string[], _opts: { cwd: string }) => {
-        const encoder = new TextEncoder();
-        const stderrBytes = encoder.encode("error: network unreachable\n");
-        const stderr = new ReadableStream<Uint8Array>({
-          start(controller) {
-            controller.enqueue(stderrBytes);
-            controller.close();
-          },
-        });
-        return { exited: Promise.resolve(1), stderr };
-      };
-    };
-
     await runCreate("demo-failsoft", {
       dir,
       auggyDir,
-      bunInstallSpawn: failingSpawn(),
+      bunInstallSpawn: createStubBunInstallSpawn({
+        exitCode: 1,
+        stderrText: "error: network unreachable\n",
+      }),
     });
 
     // Agent dir survives (no rollback).
@@ -217,7 +165,7 @@ describe("runCreate scaffolding integration", () => {
     await runCreate("demo-full", {
       dir,
       auggyDir,
-      bunInstallSpawn: stubSpawn(),
+      bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
     });
 
     expect(existsSync(join(dir, "agent.yaml"))).toBe(true);
@@ -236,7 +184,7 @@ describe("runCreate scaffolding integration", () => {
     await runCreate("demo-indexed", {
       dir,
       auggyDir,
-      bunInstallSpawn: stubSpawn(),
+      bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
     });
 
     const entry = getAgent("demo-indexed", { auggyDir });

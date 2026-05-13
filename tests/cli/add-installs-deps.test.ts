@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach, afterEach, mock } from "bun:test";
+import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import {
   existsSync,
   mkdirSync,
@@ -9,6 +9,8 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { mockInquirerPrompts, type Answers } from "../fixtures/inquirer-mock";
+import { createStubBunInstallSpawn, type SpawnCapture } from "../fixtures/bun-install-stub";
 
 /**
  * Verifies `runAdd` (Phase 4 contract):
@@ -19,26 +21,14 @@ import { tmpdir } from "node:os";
  *  - bails clearly when the agent dir has no package.json (pre-v0.3.2 shape)
  */
 
-interface Answers {
-  augmentTypes: string[];
-}
-
 let answers: Answers = { augmentTypes: [] };
-
-mock.module("@inquirer/prompts", () => ({
-  checkbox: async (config: {
-    choices: Array<{ value: { type: string } }>;
-  }) => {
-    const wanted = new Set(answers.augmentTypes);
-    return config.choices.filter((c) => wanted.has(c.value.type)).map((c) => c.value);
-  },
-}));
+mockInquirerPrompts(() => answers);
 
 const { runAdd } = await import("../../src/cli/commands/add");
 
 let auggyDir: string;
 let agentParent: string;
-let bunInstallCalls: Array<{ cmd: string[]; cwd: string }>;
+let bunInstallCalls: SpawnCapture[];
 
 function setupAgent(name: string, augments: Array<{ type: string; name: string }> = []): string {
   const dir = join(agentParent, name);
@@ -63,18 +53,6 @@ function setupAgent(name: string, augments: Array<{ type: string; name: string }
   return dir;
 }
 
-const stubSpawn = () => {
-  return (cmd: string[], opts: { cwd: string }) => {
-    bunInstallCalls.push({ cmd, cwd: opts.cwd });
-    const stderr = new ReadableStream<Uint8Array>({
-      start(controller) {
-        controller.close();
-      },
-    });
-    return { exited: Promise.resolve(0), stderr };
-  };
-};
-
 beforeEach(async () => {
   auggyDir = mkdtempSync(join(tmpdir(), "add-test-auggy-"));
   agentParent = mkdtempSync(join(tmpdir(), "add-test-agents-"));
@@ -95,7 +73,7 @@ describe("runAdd mutates per-agent package.json", () => {
     await runAdd("with-link", {
       config: join(dir, "agent.yaml"),
       auggyDir,
-      bunInstallSpawn: stubSpawn(),
+      bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
     });
 
     const pkg = JSON.parse(readFileSync(join(dir, "package.json"), "utf-8"));
@@ -112,7 +90,7 @@ describe("runAdd mutates per-agent package.json", () => {
     await runAdd("with-supa", {
       config: join(dir, "agent.yaml"),
       auggyDir,
-      bunInstallSpawn: stubSpawn(),
+      bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
     });
 
     const pkg = JSON.parse(readFileSync(join(dir, "package.json"), "utf-8"));
@@ -126,7 +104,7 @@ describe("runAdd mutates per-agent package.json", () => {
     await runAdd("with-link", {
       config: join(dir, "agent.yaml"),
       auggyDir,
-      bunInstallSpawn: stubSpawn(),
+      bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
     });
 
     expect(bunInstallCalls).toHaveLength(1);
@@ -141,7 +119,7 @@ describe("runAdd mutates per-agent package.json", () => {
       config: join(dir, "agent.yaml"),
       auggyDir,
       skipInstall: true,
-      bunInstallSpawn: stubSpawn(),
+      bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
     });
 
     const pkg = JSON.parse(readFileSync(join(dir, "package.json"), "utf-8"));
@@ -158,7 +136,7 @@ describe("runAdd no-op cases", () => {
     await runAdd("with-bash", {
       config: join(dir, "agent.yaml"),
       auggyDir,
-      bunInstallSpawn: stubSpawn(),
+      bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
     });
 
     expect(bunInstallCalls).toHaveLength(0);
@@ -184,7 +162,7 @@ describe("runAdd legacy compatibility (atomicity preflight, §13.3)", () => {
       await runAdd("legacy", {
         config: join(dir, "agent.yaml"),
         auggyDir,
-        bunInstallSpawn: stubSpawn(),
+        bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
       });
 
       // Exit signals failure to the operator.
@@ -217,7 +195,7 @@ describe("runAdd legacy compatibility (atomicity preflight, §13.3)", () => {
     await runAdd("happy-path", {
       config: join(dir, "agent.yaml"),
       auggyDir,
-      bunInstallSpawn: stubSpawn(),
+      bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
     });
 
     // 1. agent.yaml mutation present.

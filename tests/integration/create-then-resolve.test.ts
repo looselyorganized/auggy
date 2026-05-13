@@ -1,8 +1,10 @@
-import { describe, test, expect, beforeEach, afterEach, mock } from "bun:test";
+import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { parse as parseYaml } from "yaml";
+import { mockInquirerPrompts, type Answers } from "../fixtures/inquirer-mock";
+import { createStubBunInstallSpawn } from "../fixtures/bun-install-stub";
 
 /**
  * Phase 4.5 — canonical end-to-end regression test for the v0.3.2 release gate.
@@ -30,37 +32,8 @@ import { parse as parseYaml } from "yaml";
  * class of "engine package not found from agent dir" regressions.
  */
 
-interface Answers {
-  provider?: string;
-  model?: string;
-  operatorName?: string;
-  purpose?: string;
-  augmentTypes?: string[];
-}
-
 let answers: Answers = {};
-
-mock.module("@inquirer/prompts", () => ({
-  select: async (config: { message: string; choices: Array<{ value: unknown }> }) => {
-    if (config.message.startsWith("Engine provider")) return answers.provider ?? "anthropic";
-    if (config.message.startsWith("Model:")) return answers.model ?? "claude-sonnet-4-6";
-    return config.choices[0]?.value;
-  },
-  input: async (config: { message: string; default?: string }) => {
-    if (config.message.startsWith("Operator name")) return answers.operatorName ?? "tester";
-    if (config.message.startsWith("Agent purpose")) return answers.purpose ?? "testing";
-    return config.default ?? "";
-  },
-  checkbox: async (config: {
-    choices: Array<{ value: { type: string }; checked?: boolean }>;
-  }) => {
-    const wanted = new Set(answers.augmentTypes ?? []);
-    return config.choices
-      .filter((c) => c.checked || wanted.has(c.value.type))
-      .map((c) => c.value);
-  },
-  confirm: async (config: { default?: boolean }) => config.default ?? false,
-}));
+mockInquirerPrompts(() => answers);
 
 const { runCreate } = await import("../../src/cli/commands/create");
 const { resolveEngine } = await import("../../src/cli/engine-resolver");
@@ -97,17 +70,6 @@ function fabricateNodeModules(agentDir: string, engineProvider: "anthropic" | "o
 let auggyDir: string;
 let agentParent: string;
 
-const stubSpawn = () => {
-  return () => {
-    const stderr = new ReadableStream<Uint8Array>({
-      start(controller) {
-        controller.close();
-      },
-    });
-    return { exited: Promise.resolve(0), stderr };
-  };
-};
-
 beforeEach(() => {
   auggyDir = mkdtempSync(join(tmpdir(), "e2e-auggy-"));
   agentParent = mkdtempSync(join(tmpdir(), "e2e-agents-"));
@@ -128,7 +90,7 @@ describe("end-to-end: create → fabricate install → resolveEngine", () => {
       dir,
       auggyDir,
       skipInstall: true, // fabricate the install instead
-      bunInstallSpawn: stubSpawn(),
+      bunInstallSpawn: createStubBunInstallSpawn(),
     });
 
     expect(existsSync(join(dir, "package.json"))).toBe(true);
@@ -158,7 +120,7 @@ describe("end-to-end: create → fabricate install → resolveEngine", () => {
       dir,
       auggyDir,
       skipInstall: true,
-      bunInstallSpawn: stubSpawn(),
+      bunInstallSpawn: createStubBunInstallSpawn(),
     });
 
     fabricateNodeModules(dir, "openai");
@@ -186,7 +148,7 @@ describe("end-to-end: create → fabricate install → resolveEngine", () => {
       dir,
       auggyDir,
       skipInstall: true,
-      bunInstallSpawn: stubSpawn(),
+      bunInstallSpawn: createStubBunInstallSpawn(),
     });
 
     fabricateNodeModules(dir, "openrouter");
@@ -210,7 +172,7 @@ describe("end-to-end: create → fabricate install → resolveEngine", () => {
       dir,
       auggyDir,
       skipInstall: true,
-      bunInstallSpawn: stubSpawn(),
+      bunInstallSpawn: createStubBunInstallSpawn(),
     });
 
     const agentYaml = parseYaml(readFileSync(join(dir, "agent.yaml"), "utf-8")) as {

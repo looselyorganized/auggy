@@ -40,7 +40,7 @@ if (!apiKey) {
 
 const model = createAnthropicEngine({
   apiKey,
-  model: "claude-sonnet-4-5",
+  model: process.env.ANTHROPIC_MODEL ?? "claude-sonnet-4-6",
 });
 
 const identity = fileMemory({
