@@ -55,6 +55,25 @@ export function freshness(
 }
 
 /**
+ * Derive a CostResult from a ModelResponse's pricing fields. Used at every
+ * trace-recording site in the turn loop so the priced/unpriced classification
+ * is consistent across the regular inference loop, the consecutive-failure
+ * recovery path, and any future terminal-inference sites.
+ *
+ * Typed loosely on the shape rather than importing ModelResponse to avoid
+ * the dependency cycle (engines/_shared/ is below kernel in the layering).
+ */
+export function costFromResponse(response: {
+  costUsd?: number;
+  unpricedReason?: string;
+}): CostResult {
+  if (response.costUsd !== undefined) {
+    return { priced: true, costUsd: response.costUsd };
+  }
+  return { priced: false, reason: response.unpricedReason ?? "engine returned no costUsd" };
+}
+
+/**
  * Emit a warning when an operator supplies cache-rate overrides for an
  * adapter that doesn't parse cache tokens from the upstream response.
  * No-op when neither cache rate is set. Used by the OpenAI + OpenRouter

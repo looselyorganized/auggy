@@ -113,12 +113,7 @@ export function createHistoryManager(opts: { threadId: string }): HistoryManager
           if (budget - pairCost < 0 && startIndex < messages.length) break;
           budget -= pairCost;
           startIndex = i - 1;
-          i--; // skip the tool_use we just included
-        } else if (
-          msg.role === "tool_use" &&
-          i < messages.length - 1 &&
-          messages[i + 1]!.role === "tool_result"
-        ) {
+          i--; // skip the tool_use we just included — paired tool_use can never reach the else branch
         } else {
           if (budget - msg.tokenCount < 0 && startIndex < messages.length) break;
           budget -= msg.tokenCount;

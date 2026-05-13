@@ -362,6 +362,22 @@ export function webTransport(opts: WebTransportOptions): Augment {
     }
   }
 
+  // Lazy GC: every Nth call to checkRouteRateLimit, scan the routeHits map
+  // and drop entries whose newest timestamp is outside the 60s window.
+  // Bounded work per request keeps unique-caller entries from accumulating
+  // forever. transport-queue.ts:36 evicts the looked-up key in-band; here
+  // the analog needs a sweep because checkRouteRateLimit always touches the
+  // current key, so other stale keys never get their own eviction trigger.
+  let routeHitsTouchCount = 0;
+  const ROUTE_HITS_GC_INTERVAL = 64;
+  function gcStaleRouteHits(cutoff: number): void {
+    for (const [key, hits] of routeHits) {
+      if (hits.length === 0 || hits[hits.length - 1]! <= cutoff) {
+        routeHits.delete(key);
+      }
+    }
+  }
+
   function checkRouteRateLimit(
     routeKey: string,
     ip: string,
@@ -370,6 +386,10 @@ export function webTransport(opts: WebTransportOptions): Augment {
     const fullKey = `${routeKey}|${ip}`;
     const now = Date.now();
     const windowStart = now - 60_000;
+    if (++routeHitsTouchCount >= ROUTE_HITS_GC_INTERVAL) {
+      routeHitsTouchCount = 0;
+      gcStaleRouteHits(windowStart);
+    }
     const hits = (routeHits.get(fullKey) ?? []).filter((t) => t > windowStart);
     if (hits.length >= max) {
       const oldestInWindow = hits[0]!;
@@ -767,9 +787,14 @@ export function webTransport(opts: WebTransportOptions): Augment {
     return json(kernel.getAgentCard(), 200);
   }
 
-  function json(body: unknown, status: number): Response {
+  function json(
+    body: unknown,
+    status: number,
+    extraHeaders?: Record<string, string>,
+  ): Response {
     const headers: Record<string, string> = {
       "content-type": "application/json",
+      ...extraHeaders,
     };
     if (opts.cors) {
       headers["access-control-allow-origin"] = opts.cors.origins.join(",");
@@ -831,10 +856,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
             if (augmentRoute.auth !== "none") {
               const authHeader = req.headers.get("authorization") ?? "";
               if (!isValidAuth(authHeader)) {
-                return new Response(JSON.stringify({ error: "unauthorized" }), {
-                  status: 401,
-                  headers: { "content-type": "application/json" },
-                });
+                return json({ error: "unauthorized" }, 401);
               }
             }
             // auth: "none" — no check; fall through to body cap
@@ -849,10 +871,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
               try {
                 const buffered = await readBodyWithCap(req.body, maxBodyBytes);
                 if (buffered === null) {
-                  return new Response(JSON.stringify({ error: "payload-too-large" }), {
-                    status: 413,
-                    headers: { "content-type": "application/json" },
-                  });
+                  return json({ error: "payload-too-large" }, 413);
                 }
                 // Reconstruct the Request with the buffered body so the handler
                 // sees the same bytes (and can call req.text(), req.json(), etc).
@@ -863,10 +882,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
                 });
               } catch (_err) {
                 // Body read errors are 400 — caller's problem, not ours.
-                return new Response(JSON.stringify({ error: "bad-body" }), {
-                  status: 400,
-                  headers: { "content-type": "application/json" },
-                });
+                return json({ error: "bad-body" }, 400);
               }
             }
 
@@ -877,13 +893,11 @@ export function webTransport(opts: WebTransportOptions): Augment {
               const ip = getCallerIp(req, server, trustedProxies, xffOnUntrusted);
               const rl = checkRouteRateLimit(routeKey, ip, augmentRoute.rateLimit.maxPerMinute);
               if (!rl.allowed) {
-                return new Response(JSON.stringify({ error: "rate-limited" }), {
-                  status: 429,
-                  headers: {
-                    "content-type": "application/json",
-                    "retry-after": String(rl.retryAfterSec),
-                  },
-                });
+                return json(
+                  { error: "rate-limited" },
+                  429,
+                  { "retry-after": String(rl.retryAfterSec) },
+                );
               }
             }
 
@@ -904,20 +918,14 @@ export function webTransport(opts: WebTransportOptions): Augment {
               }
             } catch (err) {
               if (err instanceof TimeoutError) {
-                return new Response(JSON.stringify({ error: "timeout" }), {
-                  status: 504,
-                  headers: { "content-type": "application/json" },
-                });
+                return json({ error: "timeout" }, 504);
               }
               const augmentName =
                 (augmentRoute as { augmentName?: string }).augmentName ?? "unknown";
               console.error(
                 `[web-transport] augment "${augmentName}" handler ${augmentRoute.method} ${augmentRoute.path} threw: ${(err as Error).message}`,
               );
-              return new Response(JSON.stringify({ error: "internal" }), {
-                status: 500,
-                headers: { "content-type": "application/json" },
-              });
+              return json({ error: "internal" }, 500);
             }
           }
 

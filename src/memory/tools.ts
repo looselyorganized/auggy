@@ -7,6 +7,7 @@ import type {
   ToolExecuteContext,
 } from "../types";
 import { defineTool } from "../helpers";
+import { effectiveTrustLevel } from "../kernel/capability-table";
 import { lookupProvider } from "./registry";
 import type { MemoryRegistry } from "./types";
 
@@ -48,7 +49,7 @@ function serializeEntryWithOrigin(entry: MemoryEntry): MemoryEntry & { origin?: 
  *   - otherwise              → DENY (untrusted, authenticated, or any future level)
  *
  * Null peer (internal/scheduled triggers) is treated as operator trust,
- * matching the convention from effectiveTrustLevel in capability-table.ts.
+ * via the shared effectiveTrustLevel helper in capability-table.ts.
  */
 function assertMemoryAccess(
   operation: "read" | "write" | "search" | "list",
@@ -61,7 +62,7 @@ function assertMemoryAccess(
   if (origin === "peer-derived") {
     return null;
   }
-  const trustLevel = context.peer?.trustLevel ?? "creator";
+  const trustLevel = effectiveTrustLevel(context.peer ?? null);
   if (trustLevel === "creator" || trustLevel === "agent") {
     return null;
   }
@@ -284,8 +285,8 @@ export function createMemoryTools(
 
       // Destructive admin action — gated to creator/agent regardless of
       // any individual provider's origin. Null peer (internal trigger) is
-      // treated as creator trust, matching the convention elsewhere.
-      const trustLevel = context.peer?.trustLevel ?? "creator";
+      // treated as creator trust via effectiveTrustLevel.
+      const trustLevel = effectiveTrustLevel(context.peer ?? null);
       if (trustLevel !== "creator" && trustLevel !== "agent") {
         return `Error: memory_forget requires agent or creator trust. Current peer trust: ${trustLevel}.`;
       }

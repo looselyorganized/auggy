@@ -312,16 +312,17 @@ export interface TurnResult {
   /**
    * When status is "rejected", this names the class of rejection so
    * the transport can map to the right HTTP status:
-   *   - "cap-denied"            → HTTP 429 (over budget cap)
+   *   - "cap-denied"             → HTTP 429 (over budget cap)
    *   - "admission-state-failed" → HTTP 5xx (confirm-phase failure)
-   *   - "engine-error"          → HTTP 5xx (engine call threw)
-   *   - other strings           → HTTP 5xx fallback
+   *   - "engine-error"           → HTTP 5xx (engine call threw)
    *
-   * Optional for backward compatibility — older callers and existing
-   * rejection sites may not yet set this.
+   * Optional because success results and non-classed rejections leave it
+   * unset; the transport's default 5xx fallback handles absence.
    */
-  errorClass?: string;
+  errorClass?: TurnRejectionClass;
 }
+
+export type TurnRejectionClass = "cap-denied" | "admission-state-failed" | "engine-error";
 
 // === Transcript + Scheduler (ADR-027) ===
 

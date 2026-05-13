@@ -46,8 +46,10 @@ export function createLifecycleManager(opts: {
           if (aug.onShutdown) {
             await withTimeout(() => aug.onShutdown!(), 5000);
           }
-        } catch {
-          // Best-effort shutdown
+        } catch (err) {
+          // Best-effort: surface the failure so operators can see which
+          // augment hung or threw, but keep iterating so the rest still shut down.
+          console.warn(`[lifecycle] augment "${aug.name}" onShutdown failed:`, err);
         }
       }
     },
@@ -72,8 +74,8 @@ export function createLifecycleManager(opts: {
       idleTimerId = setInterval(async () => {
         try {
           await cb();
-        } catch {
-          // Log and continue
+        } catch (err) {
+          console.warn(`[lifecycle] idle callback failed:`, err);
         }
       }, idleIntervalMs);
     },

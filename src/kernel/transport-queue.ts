@@ -1,4 +1,5 @@
 import type { TurnTrigger, TurnResult } from "../types";
+import { emptyTrace } from "./trace-emitter";
 
 export interface TransportQueueConfig {
   concurrency: number;
@@ -76,29 +77,11 @@ export function createTransportQueue(config: TransportQueueConfig): TransportQue
           status: "rejected",
           errorResponse: "Rate limit exceeded. Please wait before sending more messages.",
           toolCalls: [],
-          trace: {
+          trace: emptyTrace({
             turnId: trigger.turnId,
             threadId: "",
-            timestamp: Date.now(),
-            duration: 0,
             trigger: { type: trigger.type },
-            contextAssembly: {
-              augmentBlocks: [],
-              preambleTokens: 0,
-              toolSchemaTokens: 0,
-              historyTokens: 0,
-              totalTokens: 0,
-              budgetUsed: 0,
-            },
-            toolSelection: {
-              totalTools: 0,
-              phase1Used: false,
-              mountedTools: [],
-              withheldTools: [],
-            },
-            inferenceSteps: [],
-            capabilityChecks: [],
-          },
+          }),
         };
       }
 
@@ -110,29 +93,11 @@ export function createTransportQueue(config: TransportQueueConfig): TransportQue
           status: "rejected",
           errorResponse: "Too many pending messages. Please try again later.",
           toolCalls: [],
-          trace: {
+          trace: emptyTrace({
             turnId: trigger.turnId,
             threadId: "",
-            timestamp: Date.now(),
-            duration: 0,
             trigger: { type: trigger.type },
-            contextAssembly: {
-              augmentBlocks: [],
-              preambleTokens: 0,
-              toolSchemaTokens: 0,
-              historyTokens: 0,
-              totalTokens: 0,
-              budgetUsed: 0,
-            },
-            toolSelection: {
-              totalTools: 0,
-              phase1Used: false,
-              mountedTools: [],
-              withheldTools: [],
-            },
-            inferenceSteps: [],
-            capabilityChecks: [],
-          },
+          }),
         };
       }
 

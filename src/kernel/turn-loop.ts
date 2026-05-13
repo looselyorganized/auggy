@@ -20,6 +20,7 @@ import type {
 } from "../types";
 import type { Tokenizer } from "../tokenizer";
 import { extractText } from "../parts";
+import { costFromResponse } from "../engines/_shared/cost";
 
 // ---------------------------------------------------------------------------
 // Streaming inference helper
@@ -701,18 +702,13 @@ export function createTurnLoop(opts: {
         } = await streamingInference(model, currentPrompt, trigger.turnId, emitEvent);
         const inferDuration = Date.now() - inferStart;
 
-        const cost: CostResult =
-          response.costUsd !== undefined
-            ? { priced: true, costUsd: response.costUsd }
-            : { priced: false, reason: response.unpricedReason ?? "engine returned no costUsd" };
-
         traceEmitter.recordInference(trace, {
           model: config.model,
           inputTokens: response.inputTokens,
           outputTokens: response.outputTokens,
           durationMs: inferDuration,
           toolCalls: [],
-          cost,
+          cost: costFromResponse(response),
         });
 
         // Always append model content to history (even on tool_use turns)
@@ -1044,20 +1040,13 @@ export function createTurnLoop(opts: {
           // completion path silently drops the final API call from cost
           // accounting — and an unpriced final step would never trigger the
           // any-unpriced→whole-turn-unpriced rule.
-          const termCost: CostResult =
-            finalResponse.costUsd !== undefined
-              ? { priced: true, costUsd: finalResponse.costUsd }
-              : {
-                  priced: false,
-                  reason: finalResponse.unpricedReason ?? "engine returned no costUsd",
-                };
           traceEmitter.recordInference(trace, {
             model: config.model,
             inputTokens: finalResponse.inputTokens,
             outputTokens: finalResponse.outputTokens,
             durationMs: termInferDuration,
             toolCalls: [],
-            cost: termCost,
+            cost: costFromResponse(finalResponse),
           });
 
           if (finalResponse.content) {
