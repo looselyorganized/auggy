@@ -1,5 +1,8 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { lookup, getFreshness, priceAnthropicResponse } from "auggy/internal/anthropic-pricing";
+import { normalizeSchema } from "auggy/internal/schema-normalize";
+import { safeParseToolCall } from "auggy/internal/tool-call";
+import { assembleSystemBlocks } from "auggy/internal/prompt-assembly";
 import type {
   AssembledPrompt,
   Message,
@@ -102,7 +105,7 @@ export function createAnthropicEngine(opts: AnthropicEngineOptions): ModelClient
       prompt: AssembledPrompt,
       opts2?: { onDelta?: (delta: ModelDelta) => void },
     ): Promise<ModelResponse> {
-      const system = assembleSystemText(prompt);
+      const system = assembleSystemBlocks(prompt);
       const messages = convertMessages(prompt.messages);
       const tools = convertTools(prompt.tools);
       const toolChoice =
@@ -205,31 +208,13 @@ function rewrapCostCapError(err: unknown): never {
 }
 
 // === AssembledPrompt → Anthropic request translation ===
-
-function assembleSystemText(prompt: AssembledPrompt): string {
-  const parts: string[] = [];
-
-  if (prompt.systemBlocks.length > 0) {
-    parts.push(prompt.systemBlocks.join("\n\n"));
-  }
-
-  // contextBlocks are preamble-placement blocks — content that should
-  // appear before the user message. Anthropic has no "between system
-  // and user" slot, so these fold into system.
-  if (prompt.contextBlocks.length > 0) {
-    parts.push(prompt.contextBlocks.join("\n\n"));
-  }
-
-  // assistantPreamble is typically used for personality reinforcement.
-  // v1 puts it in system too rather than using Anthropic's assistant
-  // prefill (which would force the model to continue from that text
-  // instead of treating it as background).
-  if (prompt.assistantPreamble && prompt.assistantPreamble.length > 0) {
-    parts.push(prompt.assistantPreamble.join("\n\n"));
-  }
-
-  return parts.join("\n\n");
-}
+//
+// System assembly: Anthropic has no "between system and user" slot, so
+// contextBlocks fold into system. assistantPreamble likewise — v1 doesn't
+// use Anthropic's assistant prefill, which would force the model to
+// continue from that text instead of treating it as background. The
+// concatenation logic lives in `auggy/internal/prompt-assembly` since
+// it's identical across providers.
 
 type MessageParam = Anthropic.Messages.MessageParam;
 type ContentBlockParam = Anthropic.Messages.ContentBlockParam;
@@ -363,31 +348,6 @@ function toContentBlocks(content: string | ContentBlockParam[]): ContentBlockPar
   return content;
 }
 
-function safeParseToolCall(
-  content: string,
-): { name: string; arguments: Record<string, unknown> } | null {
-  try {
-    const parsed = JSON.parse(content) as {
-      name?: unknown;
-      arguments?: unknown;
-    };
-    if (
-      parsed &&
-      typeof parsed.name === "string" &&
-      parsed.arguments &&
-      typeof parsed.arguments === "object"
-    ) {
-      return {
-        name: parsed.name,
-        arguments: parsed.arguments as Record<string, unknown>,
-      };
-    }
-  } catch {
-    /* fall through */
-  }
-  return null;
-}
-
 type AnthropicTool = Anthropic.Messages.Tool;
 type AnthropicInputSchema = Anthropic.Messages.Tool.InputSchema;
 
@@ -395,44 +355,8 @@ function convertTools(toolDefs: ToolDefinition[]): AnthropicTool[] {
   return toolDefs.map((td) => ({
     name: td.name,
     description: td.description,
-    input_schema: normalizeSchema(td.inputSchema),
+    input_schema: normalizeSchema(td.inputSchema) as AnthropicInputSchema,
   }));
-}
-
-// JSON Schema keys Anthropic's API accepts for tool input schemas.
-const ALLOWED_SCHEMA_KEYS = new Set([
-  "properties",
-  "required",
-  "description",
-  "enum",
-  "items",
-  "minItems",
-  "maxItems",
-  "minimum",
-  "maximum",
-  "pattern",
-  "format",
-  "default",
-  "anyOf",
-  "oneOf",
-  "allOf",
-  "not",
-  "additionalProperties",
-]);
-
-function normalizeSchema(schema: Record<string, unknown> | undefined): AnthropicInputSchema {
-  if (!schema || Object.keys(schema).length === 0) {
-    return { type: "object", properties: {} };
-  }
-  // Filter to known JSON Schema keys — strip $schema, $id, and other
-  // keys that Anthropic may reject or silently ignore.
-  const filtered: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(schema)) {
-    if (key !== "type" && ALLOWED_SCHEMA_KEYS.has(key)) {
-      filtered[key] = value;
-    }
-  }
-  return { type: "object", ...filtered } as AnthropicInputSchema;
 }
 
 // === Anthropic response → ModelResponse translation ===

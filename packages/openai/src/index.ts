@@ -1,6 +1,9 @@
 import OpenAI from "openai";
 import { normalizeSchema } from "auggy/internal/schema-normalize";
 import { lookup, getFreshness, priceOpenAIResponse } from "auggy/internal/openai-pricing";
+import { safeParseToolCall } from "auggy/internal/tool-call";
+import { assembleSystemBlocks } from "auggy/internal/prompt-assembly";
+import { warnCacheRatesIgnored } from "auggy/internal/cost";
 import type {
   AssembledPrompt,
   Message,
@@ -103,20 +106,11 @@ export function createOpenAIEngine(opts: OpenAIEngineOptions): ModelClient {
         );
       }
     }
-  } else if (
-    opts.costOverride.cacheWriteUsdPerMtok !== undefined ||
-    opts.costOverride.cacheReadUsdPerMtok !== undefined
-  ) {
-    // Operator set cache rates on OpenAI override. Today's adapter does not
-    // parse cache tokens from OpenAI Chat Completions responses, so cache
-    // rates would be silently ignored. Warn loudly rather than silently
-    // under-report — operators provisioning these rates should know they
-    // don't take effect.
-    // eslint-disable-next-line no-console
-    console.warn(
-      `[engines/openai] costOverride.cacheWriteUsdPerMtok/cacheReadUsdPerMtok set but ignored — ` +
-        `the OpenAI adapter does not parse cache tokens from upstream responses. Cache rates will not contribute to costUsd.`,
-    );
+  } else {
+    // Operator set a custom pricing override. Warn if they included cache
+    // rates — the OpenAI adapter doesn't parse cache tokens from upstream
+    // responses, so those rates would be silently ignored.
+    warnCacheRatesIgnored("openai", opts.costOverride);
   }
 
   return {
@@ -183,54 +177,23 @@ export function createOpenAIEngine(opts: OpenAIEngineOptions): ModelClient {
 
 /** Join system + context + assistant-preamble blocks into a single system
  *  message, or return null if there is nothing to say. OpenAI has no
- *  separate slot for context-block content, so it folds into system. */
+ *  separate slot for context-block content, so it folds into system.
+ *  Block assembly lives in `auggy/internal/prompt-assembly` (shared with
+ *  the Anthropic adapter); this wrapper handles the OpenAI-specific
+ *  null-on-empty + message-envelope shape. */
 export function assembleOpenAISystemMessage(
   prompt: AssembledPrompt,
 ): OpenAI.Chat.ChatCompletionSystemMessageParam | null {
-  const parts: string[] = [];
-  if (prompt.systemBlocks.length > 0) {
-    parts.push(prompt.systemBlocks.join("\n\n"));
-  }
-  if (prompt.contextBlocks.length > 0) {
-    parts.push(prompt.contextBlocks.join("\n\n"));
-  }
-  if (prompt.assistantPreamble && prompt.assistantPreamble.length > 0) {
-    parts.push(prompt.assistantPreamble.join("\n\n"));
-  }
-  if (parts.length === 0) return null;
-  return { role: "system", content: parts.join("\n\n") };
+  const content = assembleSystemBlocks(prompt);
+  if (content.length === 0) return null;
+  return { role: "system", content };
 }
 
-/** Parse the JSON-stringified tool-call payload that the kernel writes to
- *  `Message.content` for tool_use messages. The kernel writes
- *  `JSON.stringify({ name, arguments: object })` (see turn-loop.ts:518),
- *  so the recovered shape is `{ name: string, arguments: Record }`.
- *  Returns null defensively on malformed JSON. */
-export function safeParseToolCall(
-  content: string,
-): { name: string; arguments: Record<string, unknown> } | null {
-  try {
-    const parsed = JSON.parse(content) as {
-      name?: unknown;
-      arguments?: unknown;
-    };
-    if (
-      parsed &&
-      typeof parsed.name === "string" &&
-      parsed.arguments &&
-      typeof parsed.arguments === "object" &&
-      !Array.isArray(parsed.arguments)
-    ) {
-      return {
-        name: parsed.name,
-        arguments: parsed.arguments as Record<string, unknown>,
-      };
-    }
-  } catch {
-    /* fall through */
-  }
-  return null;
-}
+/** Re-export of `safeParseToolCall` from `auggy/internal/tool-call`. The
+ *  parser lives in core's `_shared` so the Anthropic adapter can use the
+ *  same defensive shape (incl. the array-rejection guard). External
+ *  consumers can still `import { safeParseToolCall } from "@auggy/openai"`. */
+export { safeParseToolCall } from "auggy/internal/tool-call";
 
 /** Walk Auggy's flat message list and produce OpenAI's grouped format.
  *

@@ -9,11 +9,9 @@
  *
  * `normalizeSchema` strips down to a known-safe subset and ensures the schema
  * is shaped as `{ type: "object", properties, required, ... }` — which is what
- * both Anthropic and OpenAI expect for tool input schemas.
- *
- * The Anthropic engine has its own inline copy that predates this extraction;
- * this module is used by the OpenAI and OpenRouter engines. A future cleanup
- * pass can consolidate the Anthropic engine to import from here.
+ * both Anthropic and OpenAI expect for tool input schemas. All three engine
+ * adapter packages (`@auggy/anthropic`, `@auggy/openai`, `@auggy/openrouter`)
+ * consume this module via the `auggy/internal/schema-normalize` subpath.
  */
 
 /** JSON Schema keys preserved by `normalizeSchema`. Matches what Anthropic's tool

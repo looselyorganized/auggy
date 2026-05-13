@@ -53,3 +53,27 @@ export function freshness(
   const ageDays = (now.getTime() - verified.getTime()) / 86_400_000;
   return { verifiedAt, ageDays, stale: ageDays > staleDays };
 }
+
+/**
+ * Emit a warning when an operator supplies cache-rate overrides for an
+ * adapter that doesn't parse cache tokens from the upstream response.
+ * No-op when neither cache rate is set. Used by the OpenAI + OpenRouter
+ * adapters; Anthropic parses cache tokens natively and doesn't need it.
+ *
+ * `adapterLabel` is the short string used in the engine-warning prefix
+ * (e.g. "openai", "openrouter"). It's interpolated into both the message
+ * prefix and the body so operators see a consistent breadcrumb.
+ */
+export function warnCacheRatesIgnored(adapterLabel: string, override: Pricing): void {
+  if (
+    override.cacheWriteUsdPerMtok === undefined &&
+    override.cacheReadUsdPerMtok === undefined
+  ) {
+    return;
+  }
+  // eslint-disable-next-line no-console
+  console.warn(
+    `[engines/${adapterLabel}] costOverride.cacheWriteUsdPerMtok/cacheReadUsdPerMtok set but ignored — ` +
+      `the ${adapterLabel} adapter does not parse cache tokens from upstream responses. Cache rates will not contribute to costUsd.`,
+  );
+}

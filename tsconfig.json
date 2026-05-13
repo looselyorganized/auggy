@@ -23,6 +23,8 @@
       "auggy": ["./src/index.ts"],
       "auggy/internal/cost": ["./src/engines/_shared/cost.ts"],
       "auggy/internal/schema-normalize": ["./src/engines/_shared/schema-normalize.ts"],
+      "auggy/internal/tool-call": ["./src/engines/_shared/tool-call.ts"],
+      "auggy/internal/prompt-assembly": ["./src/engines/_shared/prompt-assembly.ts"],
       "auggy/internal/anthropic-pricing": ["./src/engines/anthropic/pricing.ts"],
       "auggy/internal/openai-pricing": ["./src/engines/openai/pricing.ts"],
       "auggy/internal/openrouter-pricing": ["./src/engines/openrouter/pricing.ts"]

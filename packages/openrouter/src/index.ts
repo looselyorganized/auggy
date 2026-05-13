@@ -7,6 +7,7 @@ import {
   type ReasoningEffort,
 } from "@auggy/openai";
 import { resolveSlug, priceOpenRouterResponse } from "auggy/internal/openrouter-pricing";
+import { warnCacheRatesIgnored } from "auggy/internal/cost";
 import type { AssembledPrompt, ModelClient, ModelDelta, ModelResponse } from "auggy";
 
 /**
@@ -119,18 +120,11 @@ export function createOpenRouterEngine(opts: OpenRouterEngineOptions): ModelClie
           `Cost estimates may be drifting from actual billing. Verify rates and update src/engines/${resolved.resolvedProvider}/pricing.ts.`,
       );
     }
-  } else if (
-    opts.costOverride.cacheWriteUsdPerMtok !== undefined ||
-    opts.costOverride.cacheReadUsdPerMtok !== undefined
-  ) {
-    // Operator set cache rates on OpenRouter override. Today's adapter does
-    // not parse cache tokens from OpenRouter responses, so cache rates would
-    // be silently ignored. Warn loudly rather than silently under-report.
-    // eslint-disable-next-line no-console
-    console.warn(
-      `[engines/openrouter] costOverride.cacheWriteUsdPerMtok/cacheReadUsdPerMtok set but ignored — ` +
-        `the OpenRouter adapter does not parse cache tokens from upstream responses. Cache rates will not contribute to costUsd.`,
-    );
+  } else {
+    // Operator set a custom pricing override. Warn if they included cache
+    // rates — the OpenRouter adapter doesn't parse cache tokens from
+    // upstream responses, so those rates would be silently ignored.
+    warnCacheRatesIgnored("openrouter", opts.costOverride);
   }
 
   return {

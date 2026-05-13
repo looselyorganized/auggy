@@ -37,6 +37,8 @@
     "./cli": "./src/cli/index.ts",
     "./internal/cost": "./src/engines/_shared/cost.ts",
     "./internal/schema-normalize": "./src/engines/_shared/schema-normalize.ts",
+    "./internal/tool-call": "./src/engines/_shared/tool-call.ts",
+    "./internal/prompt-assembly": "./src/engines/_shared/prompt-assembly.ts",
     "./internal/anthropic-pricing": "./src/engines/anthropic/pricing.ts",
     "./internal/openai-pricing": "./src/engines/openai/pricing.ts",
     "./internal/openrouter-pricing": "./src/engines/openrouter/pricing.ts"
