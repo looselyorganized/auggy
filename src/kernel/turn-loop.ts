@@ -212,7 +212,25 @@ export function createTurnLoop(opts: {
         });
       }
 
-      function makeAbortResult(): TurnResult {
+      // Ritual that MUST run before every terminal return: stamp the
+      // trace's duration, optionally commit accumulated costs, persist
+      // the ADR-027 turn snapshot. Each return site previously inlined
+      // these calls, which made it easy to forget one when adding a new
+      // return path. Wrapping them here makes the contract explicit:
+      // call this before any `return { ... }`. The cost-commit slot is
+      // optional because admission-rejection paths return before any
+      // inference happens (no cost to commit).
+      //
+      // Note: trace.duration is stamped BEFORE runCostCommit so the
+      // reported turn duration excludes the post-turn cost accounting
+      // I/O, matching the existing semantics at every refactored site.
+      async function finalizeReturn(opts?: { withCostCommit?: boolean }): Promise<void> {
+        traceEmitter.finalize(trace);
+        if (opts?.withCostCommit) await runCostCommit();
+        recordTurnSnapshot();
+      }
+
+      async function makeAbortResult(): Promise<TurnResult> {
         emitEvent({
           kind: "run_error",
           turnId: trigger.turnId,
@@ -224,8 +242,7 @@ export function createTurnLoop(opts: {
           turnId: trigger.turnId,
           status: "canceled",
         });
-        traceEmitter.finalize(trace);
-        recordTurnSnapshot();
+        await finalizeReturn();
         return {
           turnId: trigger.turnId,
           success: false,
@@ -269,8 +286,7 @@ export function createTurnLoop(opts: {
               console.error(`[turn-gate ${gate.name}] rollback after prepare-throw failed:`, e);
             }
           }
-          traceEmitter.finalize(trace);
-          recordTurnSnapshot();
+          await finalizeReturn();
           return {
             turnId: trigger.turnId,
             success: false,
@@ -299,8 +315,7 @@ export function createTurnLoop(opts: {
             console.error("[turn-gate] rollback failed:", err);
           }
         }
-        traceEmitter.finalize(trace);
-        recordTurnSnapshot();
+        await finalizeReturn();
         return {
           turnId: trigger.turnId,
           success: false,
@@ -333,8 +348,7 @@ export function createTurnLoop(opts: {
             console.error("[turn-gate] rollback after confirm-throw failed:", err);
           }
         }
-        traceEmitter.finalize(trace);
-        recordTurnSnapshot();
+        await finalizeReturn();
         return {
           turnId: trigger.turnId,
           success: false,
@@ -387,8 +401,7 @@ export function createTurnLoop(opts: {
                 turnId: trigger.turnId,
                 status: "failed",
               });
-              traceEmitter.finalize(trace);
-              recordTurnSnapshot();
+              await finalizeReturn();
               return {
                 turnId: trigger.turnId,
                 success: false,
@@ -468,9 +481,7 @@ export function createTurnLoop(opts: {
               turnId: trigger.turnId,
               status: "failed",
             });
-            traceEmitter.finalize(trace);
-            await runCostCommit();
-            recordTurnSnapshot();
+            await finalizeReturn({ withCostCommit: true });
             return {
               turnId: trigger.turnId,
               success: false,
@@ -504,10 +515,11 @@ export function createTurnLoop(opts: {
             turnId: trigger.turnId,
             status: handlerResult.status,
           });
+          // Inlined instead of finalizeReturn() because the snapshot must
+          // see the handler's response parts merged into transcriptParts —
+          // the merge happens between cost-commit and recordTurnSnapshot.
           traceEmitter.finalize(trace);
           await runCostCommit();
-          // Record any handler-supplied transcript text into the snapshot
-          // so SchedulerContext.getCompletedTranscript sees it.
           if (handlerResult.response?.parts) {
             for (const part of handlerResult.response.parts) {
               if (part.kind === "text") {
@@ -566,8 +578,7 @@ export function createTurnLoop(opts: {
               turnId: trigger.turnId,
               status: "failed",
             });
-            traceEmitter.finalize(trace);
-            recordTurnSnapshot();
+            await finalizeReturn();
             return {
               turnId: trigger.turnId,
               success: false,
@@ -763,9 +774,7 @@ export function createTurnLoop(opts: {
             status: "completed",
           });
 
-          traceEmitter.finalize(trace);
-          await runCostCommit();
-          recordTurnSnapshot();
+          await finalizeReturn({ withCostCommit: true });
           return {
             turnId: trigger.turnId,
             success: true,
@@ -999,9 +1008,7 @@ export function createTurnLoop(opts: {
           if (pendingTerminate.message) {
             transcriptParts.push({ kind: "text", text: pendingTerminate.message });
           }
-          traceEmitter.finalize(trace);
-          await runCostCommit();
-          recordTurnSnapshot();
+          await finalizeReturn({ withCostCommit: true });
           return {
             turnId: trigger.turnId,
             success: true,
@@ -1073,9 +1080,7 @@ export function createTurnLoop(opts: {
             turnId: trigger.turnId,
             status: "completed",
           });
-          traceEmitter.finalize(trace);
-          await runCostCommit();
-          recordTurnSnapshot();
+          await finalizeReturn({ withCostCommit: true });
           return {
             turnId: trigger.turnId,
             success: true,
@@ -1118,9 +1123,7 @@ export function createTurnLoop(opts: {
         status: "completed",
       });
       transcriptParts.push({ kind: "text", text: "I've completed the available actions." });
-      traceEmitter.finalize(trace);
-      await runCostCommit();
-      recordTurnSnapshot();
+      await finalizeReturn({ withCostCommit: true });
       return {
         turnId: trigger.turnId,
         success: true,
