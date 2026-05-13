@@ -49,6 +49,7 @@ export type {
   // Model
   ModelClient,
   ModelResponse,
+  ModelDelta,
   AssembledPrompt,
   // Storage
   Storage,
@@ -116,23 +117,13 @@ export { webTransport } from "./transports/web-transport";
 export type { WebTransportOptions } from "./transports/web-transport";
 
 // === Engines (model client adapters) ===
-export { createAnthropicEngine } from "./engines/anthropic";
-export type { AnthropicEngineOptions } from "./engines/anthropic";
-export { createOpenAIEngine } from "./engines/openai";
-export type { OpenAIEngineOptions } from "./engines/openai";
-export {
-  assembleOpenAISystemMessage,
-  buildOpenAIModelResponse,
-  convertOpenAIMessages,
-  convertOpenAITools,
-  safeParseJson as openaiSafeParseJson,
-  safeParseToolCall as openaiSafeParseToolCall,
-} from "./engines/openai";
-export { createOpenRouterEngine } from "./engines/openrouter";
-export type {
-  OpenRouterEngineOptions,
-  OpenRouterProviderRouting,
-} from "./engines/openrouter";
+// Engine factories live in per-provider packages so `auggy` core ships zero
+// provider SDKs. Consumers must import directly:
+//   import { createAnthropicEngine }  from "@auggy/anthropic";
+//   import { createOpenAIEngine }     from "@auggy/openai";
+//   import { createOpenRouterEngine } from "@auggy/openrouter";
+// The `ModelClient` interface (exported above as a core type) is the
+// cross-package contract every adapter implements.
 
 // === AG-UI event protocol (for custom transports or advanced consumers) ===
 export {

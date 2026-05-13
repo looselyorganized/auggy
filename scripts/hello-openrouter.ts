@@ -25,7 +25,8 @@
  * Stop with Ctrl-C.
  */
 import { join } from "node:path";
-import { defineAgent, fileMemory, webTransport, createOpenRouterEngine } from "../src/index";
+import { defineAgent, fileMemory, webTransport } from "../src/index";
+import { createOpenRouterEngine } from "@auggy/openrouter";
 
 const apiKey = process.env.OPENROUTER_API_KEY;
 if (!apiKey) {

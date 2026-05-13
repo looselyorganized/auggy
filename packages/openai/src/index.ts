@@ -1,6 +1,6 @@
 import OpenAI from "openai";
-import { normalizeSchema } from "./_shared/schema-normalize";
-import { lookup, getFreshness, priceOpenAIResponse } from "./openai/pricing";
+import { normalizeSchema } from "auggy/internal/schema-normalize";
+import { lookup, getFreshness, priceOpenAIResponse } from "auggy/internal/openai-pricing";
 import type {
   AssembledPrompt,
   Message,
@@ -8,7 +8,7 @@ import type {
   ModelDelta,
   ModelResponse,
   ToolDefinition,
-} from "../types";
+} from "auggy";
 
 /**
  * OpenAI engine — a ModelClient adapter that drives the agent's reasoning
@@ -70,7 +70,7 @@ export interface OpenAIEngineOptions {
    * with Anthropic but not used by the OpenAI adapter today (no cache-token
    * usage is parsed from OpenAI Chat Completions responses).
    */
-  costOverride?: import("./_shared/cost").Pricing;
+  costOverride?: import("auggy/internal/cost").Pricing;
 }
 
 export function createOpenAIEngine(opts: OpenAIEngineOptions): ModelClient {

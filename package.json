@@ -34,7 +34,12 @@
   "module": "src/index.ts",
   "exports": {
     ".": "./src/index.ts",
-    "./cli": "./src/cli/index.ts"
+    "./cli": "./src/cli/index.ts",
+    "./internal/cost": "./src/engines/_shared/cost.ts",
+    "./internal/schema-normalize": "./src/engines/_shared/schema-normalize.ts",
+    "./internal/anthropic-pricing": "./src/engines/anthropic/pricing.ts",
+    "./internal/openai-pricing": "./src/engines/openai/pricing.ts",
+    "./internal/openrouter-pricing": "./src/engines/openrouter/pricing.ts"
   },
   "bin": {
     "auggy": "src/cli/index.ts"
@@ -48,6 +53,9 @@
   "engines": {
     "bun": ">=1.2.0"
   },
+  "workspaces": [
+    "packages/*"
+  ],
   "private": false,
   "scripts": {
     "test": "bun test",
@@ -64,12 +72,10 @@
     "typescript": "^5"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.94.0",
     "@auggy/link": "^0.1.2",
     "@inquirer/prompts": "^8.4.1",
     "@supabase/supabase-js": "^2.103.0",
     "commander": "^14.0.3",
-    "openai": "^6.34.0",
     "yaml": "^2.8.3",
     "zod": "^4.3.6"
   }

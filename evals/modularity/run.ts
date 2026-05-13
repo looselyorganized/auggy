@@ -56,7 +56,7 @@ async function bootAgent(configPath: string): Promise<{
   const parsed = parseConfig(configPath);
   const agentDir = dirname(resolve(configPath));
   const headlessConfigs = parsed.augments.filter((a) => a.type !== "webTransport");
-  const model = resolveEngine(parsed.engine);
+  const model = await resolveEngine(parsed.engine, agentDir);
   const augments = await resolveAugments(headlessConfigs, agentDir);
 
   const agentConfig: AgentConfig = {

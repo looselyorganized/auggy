@@ -28,7 +28,8 @@
  * Stop with Ctrl-C.
  */
 import { join } from "node:path";
-import { defineAgent, fileMemory, webTransport, createAnthropicEngine } from "../src/index";
+import { defineAgent, fileMemory, webTransport } from "../src/index";
+import { createAnthropicEngine } from "@auggy/anthropic";
 
 const apiKey = process.env.ANTHROPIC_API_KEY;
 if (!apiKey) {

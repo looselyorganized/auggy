@@ -1,5 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { lookup, getFreshness, priceAnthropicResponse } from "./anthropic/pricing";
+import { lookup, getFreshness, priceAnthropicResponse } from "auggy/internal/anthropic-pricing";
 import type {
   AssembledPrompt,
   Message,
@@ -7,7 +7,7 @@ import type {
   ModelDelta,
   ModelResponse,
   ToolDefinition,
-} from "../types";
+} from "auggy";
 
 /**
  * Anthropic engine — a ModelClient adapter that drives the agent's reasoning
@@ -50,7 +50,7 @@ export interface AnthropicEngineOptions {
    * cache-heavy workloads should set both `cacheWriteUsdPerMtok` and
    * `cacheReadUsdPerMtok` to avoid under-reporting cached responses.
    */
-  costOverride?: import("./_shared/cost").Pricing;
+  costOverride?: import("auggy/internal/cost").Pricing;
 }
 
 export function createAnthropicEngine(opts: AnthropicEngineOptions): ModelClient {

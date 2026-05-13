@@ -45,7 +45,7 @@ mock.module("openai", () => {
   return { default: FakeOpenAI };
 });
 
-const { createOpenRouterEngine } = await import("../../src/engines/openrouter");
+const { createOpenRouterEngine } = await import("@auggy/openrouter");
 
 // Save / restore env between tests so the apiKey guard suite can manipulate it.
 const ORIGINAL_OPENROUTER = process.env.OPENROUTER_API_KEY;
@@ -245,7 +245,7 @@ describe("createOpenRouterEngine — SDK call payload", () => {
     // We can't easily re-stub the per-call response with this mock setup,
     // so we test buildOpenAIModelResponse directly with the openrouter label
     // — same code path as called from createOpenRouterEngine.
-    const { buildOpenAIModelResponse } = await import("../../src/engines/openai");
+    const { buildOpenAIModelResponse } = await import("@auggy/openai");
     expect(() =>
       buildOpenAIModelResponse(
         {

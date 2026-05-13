@@ -82,7 +82,7 @@ export async function runDev(
   let augments: Augment[];
   let agentConfig: AgentConfig;
   try {
-    model = resolveEngine(config.engine);
+    model = await resolveEngine(config.engine, agentDir);
     augments = await resolveAugments(config.augments, agentDir);
     agentConfig = {
       name: agentName,

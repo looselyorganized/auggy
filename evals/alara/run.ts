@@ -9,7 +9,7 @@
  */
 
 import { resolve } from "node:path";
-import { createAnthropicEngine } from "../../src/engines/anthropic";
+import { createAnthropicEngine } from "@auggy/anthropic";
 import { runAblation } from "../harness/runner";
 import { exactToolMatch } from "./graders/exact-tool-match";
 import { generateTasks } from "./dataset";

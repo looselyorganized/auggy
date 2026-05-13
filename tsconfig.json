@@ -19,8 +19,19 @@
     "paths": {
       "@/*": ["./src/*"],
       "@tests/*": ["./tests/*"],
-      "@evals/*": ["./evals/*"]
+      "@evals/*": ["./evals/*"],
+      "auggy": ["./src/index.ts"],
+      "auggy/internal/cost": ["./src/engines/_shared/cost.ts"],
+      "auggy/internal/schema-normalize": ["./src/engines/_shared/schema-normalize.ts"],
+      "auggy/internal/anthropic-pricing": ["./src/engines/anthropic/pricing.ts"],
+      "auggy/internal/openai-pricing": ["./src/engines/openai/pricing.ts"],
+      "auggy/internal/openrouter-pricing": ["./src/engines/openrouter/pricing.ts"]
     }
   },
-  "include": ["src/**/*.ts", "tests/**/*.ts", "evals/**/*.ts"]
+  "include": [
+    "src/**/*.ts",
+    "tests/**/*.ts",
+    "evals/**/*.ts",
+    "packages/**/*.ts"
+  ]
 }

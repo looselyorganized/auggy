@@ -5,9 +5,9 @@ import {
   convertOpenAIMessages,
   convertOpenAITools,
   type ReasoningEffort,
-} from "./openai";
-import { resolveSlug, priceOpenRouterResponse } from "./openrouter/pricing";
-import type { AssembledPrompt, ModelClient, ModelDelta, ModelResponse } from "../types";
+} from "@auggy/openai";
+import { resolveSlug, priceOpenRouterResponse } from "auggy/internal/openrouter-pricing";
+import type { AssembledPrompt, ModelClient, ModelDelta, ModelResponse } from "auggy";
 
 /**
  * OpenRouter engine — wraps the official `openai` SDK with the OpenRouter
@@ -52,7 +52,7 @@ export interface OpenRouterEngineOptions {
    * with Anthropic but not used by the OpenRouter adapter today (no cache-token
    * usage is parsed from OpenRouter responses).
    */
-  costOverride?: import("./_shared/cost").Pricing;
+  costOverride?: import("auggy/internal/cost").Pricing;
 }
 
 /** OpenRouter provider routing config (forwarded as the `provider` body field).

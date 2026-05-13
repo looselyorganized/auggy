@@ -176,7 +176,7 @@ mock.module("@anthropic-ai/sdk", () => {
 });
 
 // Dynamic import AFTER mock.module so the mocked SDK is used.
-const { createAnthropicEngine } = await import("../../src/engines/anthropic");
+const { createAnthropicEngine } = await import("@auggy/anthropic");
 
 function emptyPrompt(over: Partial<AssembledPrompt> = {}): AssembledPrompt {
   return {

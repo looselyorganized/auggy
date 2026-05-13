@@ -60,7 +60,7 @@ const {
   convertOpenAITools,
   safeParseJson,
   buildOpenAIModelResponse,
-} = await import("../../src/engines/openai");
+} = await import("@auggy/openai");
 
 beforeEach(() => {
   lastCreateArgs = null;
