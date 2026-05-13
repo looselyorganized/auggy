@@ -41,7 +41,8 @@ program
   .command("create <name>")
   .description("Scaffold a new agent directory (interactive)")
   .option("--dir <path>", "target directory (defaults to ./<name>)")
-  .action(async (name: string, opts: { dir?: string }) => {
+  .option("--skip-install", "write package.json but don't run bun install")
+  .action(async (name: string, opts: { dir?: string; skipInstall?: boolean }) => {
     try {
       await runCreate(name, opts);
     } catch (err) {
@@ -54,7 +55,8 @@ program
   .command("add <name>")
   .description("Add augments to an existing agent")
   .option("--config <path>", "path to agent.yaml")
-  .action(async (name: string, opts: { config?: string }) => {
+  .option("--skip-install", "mutate package.json but don't run bun install")
+  .action(async (name: string, opts: { config?: string; skipInstall?: boolean }) => {
     try {
       await runAdd(name, opts);
     } catch (err) {

@@ -35,6 +35,17 @@ export interface CatalogEntry {
    * disk; this flag is informational for the create UI.
    */
   hasSkill: boolean;
+  /**
+   * External npm packages this augment requires in the agent's `package.json`.
+   * Written by `auggy create` / `auggy add` and installed via `bun install`.
+   * Built-in augments with no SDK dependency (those satisfied entirely by
+   * auggy core) leave this undefined.
+   *
+   * Per-engine adapter packages (`@auggy/anthropic` etc.) are NOT declared
+   * here — engine selection is keyed off `engine.provider` and mapped via
+   * `PROVIDER_TO_PACKAGE` in `scaffold-package-json.ts`.
+   */
+  packageDeps?: Record<string, string>;
 }
 
 export const AUGMENT_CATALOG: CatalogEntry[] = [
@@ -138,6 +149,7 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
     required: false,
     envVars: ["SUPABASE_URL", "SUPABASE_SERVICE_KEY"],
     hasSkill: false,
+    packageDeps: { "@supabase/supabase-js": "^2.103.0" },
   },
   {
     label: "orgContext",
@@ -276,6 +288,7 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
     required: false,
     envVars: ["AUGGY_AGENT_ID", "AUGGY_AGENT_NAME", "AUGGY_LINK_PUBLIC_URL"],
     hasSkill: false,
+    packageDeps: { "@auggy/link": "^0.1.2" },
   },
   {
     label: "Visitor Auth",

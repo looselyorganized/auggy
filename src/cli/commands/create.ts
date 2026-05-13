@@ -21,6 +21,8 @@ import { AUGMENT_CATALOG, type CatalogEntry } from "../augment-catalog";
 import { copyBundledSkill, renderIdentityFromTemplate } from "../scaffold-skills";
 import { addAgent, getAgent } from "../agent-index";
 import { getModelChoices, formatChoiceLabel, type Provider } from "../model-picker";
+import { buildAgentPackageJson, getAuggyVersion } from "../scaffold-package-json";
+import { runBunInstall, type BunInstallSpawnFactory } from "../bun-install";
 
 const PROVIDER_DEFAULTS: Record<Provider, { model: string; envVar: string }> = {
   anthropic: { model: "claude-sonnet-4-6", envVar: "ANTHROPIC_API_KEY" },
@@ -52,7 +54,28 @@ const dim = (s: string): string => ansi("2", s);
 const cream = (s: string): string => ansi("38;2;251;247;235", s);
 const green = (s: string): string => ansi("32", s);
 
-export async function runCreate(name: string, opts: { dir?: string }): Promise<void> {
+export interface CreateOpts {
+  /** Target directory override (defaults to ~/.auggy/agents/<name>/). */
+  dir?: string;
+  /**
+   * Skip the post-scaffold `bun install` step. The agent's `package.json` is
+   * still written; the operator can run `bun install` later. Useful for CI,
+   * offline scaffolding, and tests.
+   */
+  skipInstall?: boolean;
+  /**
+   * Test seam: inject a custom `bun install` subprocess factory. Production
+   * callers omit this and the helper uses the real `Bun.spawn`.
+   */
+  bunInstallSpawn?: BunInstallSpawnFactory;
+  /**
+   * Test seam: override `~/.auggy/` for index reads/writes. Production
+   * callers omit. Mirrors `IndexOptions.auggyDir` on `agent-index.ts`.
+   */
+  auggyDir?: string;
+}
+
+export async function runCreate(name: string, opts: CreateOpts): Promise<void> {
   // Wrong-dir guard: refuse if CWD has agent.yaml. Skip when --dir is provided
   // (operator has explicitly chosen the target, so CWD is irrelevant).
   if (!opts.dir) {
@@ -67,7 +90,7 @@ export async function runCreate(name: string, opts: { dir?: string }): Promise<v
   }
 
   // Refuse if name already registered in the index.
-  const existing = getAgent(name);
+  const existing = getAgent(name, { auggyDir: opts.auggyDir });
   if (existing) {
     throw new Error(
       `Agent "${name}" already exists at ${existing.localDir}.\n\n` +
@@ -222,6 +245,20 @@ export async function runCreate(name: string, opts: { dir?: string }): Promise<v
     writeFileSync(join(dir, ".env.example"), buildEnvExample(envVars));
     writeFileSync(join(dir, ".gitignore"), GITIGNORE);
 
+    // Per-agent package.json — the engine adapter + auggy + any per-augment
+    // packageDeps. Required for the runtime to resolve via importFromAgent.
+    // See `src/cli/scaffold-package-json.ts` for the build contract.
+    const auggyVersion = getAuggyVersion();
+    writeFileSync(
+      join(dir, "package.json"),
+      buildAgentPackageJson({
+        agentName: name,
+        auggyVersion,
+        provider,
+        augments,
+      }),
+    );
+
     scaffoldComplete = true;
   } finally {
     // Best-effort cleanup if scaffolding partially failed.
@@ -253,7 +290,7 @@ export async function runCreate(name: string, opts: { dir?: string }): Promise<v
 
   // Register in the index. If this fails, clean up the scaffolded dir.
   try {
-    addAgent(name, dir);
+    addAgent(name, dir, { auggyDir: opts.auggyDir });
   } catch (err) {
     process.removeListener("SIGINT", sigintHandler);
     try {
@@ -265,6 +302,31 @@ export async function runCreate(name: string, opts: { dir?: string }): Promise<v
   }
   process.removeListener("SIGINT", sigintHandler);
 
+  // bun install — populates <dir>/node_modules so `auggy dev` can resolve
+  // the engine + augment packages. Skipped under --skip-install; the
+  // operator can run `cd <dir> && bun install` themselves.
+  //
+  // Fail-soft: a failed install leaves the scaffolded dir AND the index
+  // entry intact. The package manager has touched node_modules at this
+  // point; an auto-rollback would surprise the operator more than the
+  // partial state. Print the exact retry command and continue.
+  let installOk = true;
+  if (!opts.skipInstall) {
+    console.log();
+    console.log(dim(" Installing dependencies..."));
+    console.log();
+    const result = await runBunInstall(dir, opts.bunInstallSpawn);
+    installOk = result.ok;
+    if (!installOk) {
+      console.log();
+      console.log(`⚠ bun install failed in ${dir} (exit ${result.code}).`);
+      console.log(`  Scaffolding is on disk and registered in the index.`);
+      console.log(`  Retry:  cd ${dir} && bun install`);
+      console.log(`  Then:   auggy dev ${name}`);
+      console.log();
+    }
+  }
+
   const envVar = PROVIDER_DEFAULTS[provider].envVar;
 
   console.log();
@@ -275,10 +337,16 @@ export async function runCreate(name: string, opts: { dir?: string }): Promise<v
   console.log();
   console.log(` ${bold("Next steps:")}`);
   console.log();
-  console.log(`   ${cream("1.")}  cp ${dir}/.env.example ${dir}/.env`);
-  console.log(`   ${cream("2.")}  Add your ${bold(envVar)} to ${dir}/.env`);
-  console.log(`   ${cream("3.")}  Edit ${dir}/identity.md`);
-  console.log(`   ${cream("4.")}  auggy dev ${name}`);
+  let step = 1;
+  if (opts.skipInstall) {
+    console.log(`   ${cream(`${step++}.`)}  cd ${dir} && bun install`);
+  } else if (!installOk) {
+    console.log(`   ${cream(`${step++}.`)}  cd ${dir} && bun install   ${dim("(retry — earlier attempt failed)")}`);
+  }
+  console.log(`   ${cream(`${step++}.`)}  cp ${dir}/.env.example ${dir}/.env`);
+  console.log(`   ${cream(`${step++}.`)}  Add your ${bold(envVar)} to ${dir}/.env`);
+  console.log(`   ${cream(`${step++}.`)}  Edit ${dir}/identity.md`);
+  console.log(`   ${cream(`${step++}.`)}  auggy dev ${name}`);
   console.log();
 }
 
