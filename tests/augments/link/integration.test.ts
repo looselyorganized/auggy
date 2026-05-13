@@ -15,6 +15,7 @@ import type {
   ToolExecuteContext,
   TransportKernel,
   TurnResult,
+  TurnState,
   TurnTrigger,
 } from "@/types";
 import { asStringTool } from "../../fixtures/tool-helpers";
@@ -131,12 +132,14 @@ function makeOpts(): Parameters<typeof link>[0] {
 // ---------------------------------------------------------------------------
 
 describe("link augment — construction", () => {
-  it("returns an augment with transport + tools capability", () => {
+  it("returns an augment with transport + context + tools capability", () => {
     const aug = link({ ...makeOpts(), _skipServer: true });
     expect(aug.name).toBe("link");
     expect(aug.capabilities).toContain("transport");
+    expect(aug.capabilities).toContain("context");
     expect(aug.capabilities).toContain("tools");
     expect(aug.transport).toBeDefined();
+    expect(aug.context).toBeDefined();
     expect(aug.tools).toBeDefined();
     expect(aug.tools?.map((t) => t.name).sort()).toEqual(["link_list", "link_send"]);
   });
@@ -418,7 +421,7 @@ describe("link_list tool", () => {
     return { turnId: "turn-1", peer: null, threadId: "thread-1" };
   }
 
-  it("returns the configured peer names", async () => {
+  it("returns the configured peer names as { name } entries", async () => {
     const aug = link({
       ...makeOpts(),
       _skipServer: true,
@@ -442,7 +445,13 @@ describe("link_list tool", () => {
     const listTool = aug.tools!.find((t) => t.name === "link_list")!;
     const result = await asStringTool(listTool).execute({}, makeToolCtx());
     const parsed = JSON.parse(result);
-    expect(new Set(parsed.peers)).toEqual(new Set(["researcher", "analyst"]));
+    const names = (parsed.peers as Array<{ name: string }>).map((p) => p.name);
+    expect(new Set(names)).toEqual(new Set(["researcher", "analyst"]));
+    // No purpose/examples were configured, so neither field appears.
+    for (const entry of parsed.peers) {
+      expect(entry.purpose).toBeUndefined();
+      expect(entry.examples).toBeUndefined();
+    }
   });
 
   it("returns an empty array when no peers are configured", async () => {
@@ -455,5 +464,122 @@ describe("link_list tool", () => {
     const result = await asStringTool(listTool).execute({}, makeToolCtx());
     const parsed = JSON.parse(result);
     expect(parsed.peers).toEqual([]);
+  });
+
+  it("includes purpose + examples when configured", async () => {
+    const aug = link({
+      ...makeOpts(),
+      _skipServer: true,
+      peers: {
+        researcher: {
+          url: "https://r.example.org",
+          bearer: "x",
+          participantId: PEER_PARTICIPANT_ID,
+          inboundBearer: "y",
+          inboundBearerId: "yi",
+          purpose: "Research specialist. Recent ML literature.",
+          examples: ["What's new in test-time compute?", "Find recent agents papers"],
+        },
+      },
+    });
+    const listTool = aug.tools!.find((t) => t.name === "link_list")!;
+    const result = await asStringTool(listTool).execute({}, makeToolCtx());
+    const parsed = JSON.parse(result);
+    expect(parsed.peers).toHaveLength(1);
+    expect(parsed.peers[0]).toEqual({
+      name: "researcher",
+      purpose: "Research specialist. Recent ML literature.",
+      examples: ["What's new in test-time compute?", "Find recent agents papers"],
+    });
+  });
+
+  it("omits empty examples array but keeps purpose when only purpose set", async () => {
+    const aug = link({
+      ...makeOpts(),
+      _skipServer: true,
+      peers: {
+        researcher: {
+          url: "https://r.example.org",
+          bearer: "x",
+          participantId: PEER_PARTICIPANT_ID,
+          inboundBearer: "y",
+          inboundBearerId: "yi",
+          purpose: "Knows ML papers.",
+          examples: [],
+        },
+      },
+    });
+    const listTool = aug.tools!.find((t) => t.name === "link_list")!;
+    const result = await asStringTool(listTool).execute({}, makeToolCtx());
+    const parsed = JSON.parse(result);
+    expect(parsed.peers[0]).toEqual({ name: "researcher", purpose: "Knows ML papers." });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Context block — peer roster surfaced to the LLM
+// ---------------------------------------------------------------------------
+
+describe("link augment — context block", () => {
+  function makeTurnState(): TurnState {
+    return {
+      turnId: "turn-1",
+      threadId: "thread-1",
+      peer: null,
+      tools: [],
+      history: [],
+      contextBlocks: [],
+      trigger: { type: "message", turnId: "turn-1", payload: { parts: [] } },
+    } as unknown as TurnState;
+  }
+
+  it("emits a single preamble block listing peer names when peers are configured", async () => {
+    const aug = link({
+      ...makeOpts(),
+      _skipServer: true,
+      peers: {
+        researcher: {
+          url: "https://r.example.org",
+          bearer: "x",
+          participantId: PEER_PARTICIPANT_ID,
+          inboundBearer: "y",
+          inboundBearerId: "yi",
+          purpose: "ML papers",
+        },
+        analyst: {
+          url: "https://a.example.org",
+          bearer: "x2",
+          participantId: "00000000-0000-4000-8000-00000000cccc",
+          inboundBearer: "y2",
+          inboundBearerId: "yi2",
+        },
+      },
+    });
+    const blocks = await aug.context!(makeTurnState());
+    const blockArr = blocks as Array<{
+      source: string;
+      content: string;
+      placement: string;
+      provenance: string;
+    }>;
+    expect(blockArr).toHaveLength(1);
+    expect(blockArr[0]?.source).toBe("link");
+    expect(blockArr[0]?.placement).toBe("preamble");
+    expect(blockArr[0]?.provenance).toBe("augment");
+    // Names appear; purpose intentionally does NOT (call link_list for that).
+    expect(blockArr[0]?.content).toContain("researcher");
+    expect(blockArr[0]?.content).toContain("analyst");
+    expect(blockArr[0]?.content).not.toContain("ML papers");
+    expect(blockArr[0]?.content).toContain("link_list");
+  });
+
+  it("emits no block when peers map is empty", async () => {
+    const aug = link({
+      ...makeOpts(),
+      _skipServer: true,
+      peers: {},
+    });
+    const blocks = await aug.context!(makeTurnState());
+    expect(blocks).toEqual([]);
   });
 });

@@ -60,7 +60,14 @@ import {
 } from "@auggy/link";
 
 import { defineTool } from "../../helpers";
-import type { Augment, ToolExecuteContext, TransportKernel, TransportSpec } from "../../types";
+import type {
+  Augment,
+  ContextBlock,
+  ToolExecuteContext,
+  TransportKernel,
+  TransportSpec,
+  TurnState,
+} from "../../types";
 import { handlerContextToTrigger, turnResultToHandlerOutcome } from "./translate";
 
 // ---------------------------------------------------------------------------
@@ -81,6 +88,16 @@ import { handlerContextToTrigger, turnResultToHandlerOutcome } from "./translate
  *   inboundBearer   — bearer this Auggy ACCEPTS on inbound from the peer
  *   inboundBearerId — opaque audit id paired with inboundBearer (logged on
  *                     verify; never on the wire)
+ *   purpose         — optional natural-language description of what this peer
+ *                     is good for, surfaced to the LLM via `link_list`.
+ *                     Semantic, not structural (per spine-north-star §4
+ *                     Constraint 6). Drift risk: this is THIS agent's belief
+ *                     about the peer, not the peer's self-declared card.
+ *                     Forward-compat: coordinator era replaces this with the
+ *                     participant registry.
+ *   examples        — optional 1–2 example asks suitable for delegation. Used
+ *                     by the LLM for few-shot routing. Beware: bad examples
+ *                     mislead more than they help.
  */
 export interface LinkPeerConfig {
   url: string;
@@ -88,6 +105,8 @@ export interface LinkPeerConfig {
   participantId: string;
   inboundBearer: string;
   inboundBearerId: string;
+  purpose?: string;
+  examples?: string[];
 }
 
 /**
@@ -129,6 +148,10 @@ export interface LinkAugmentAgentCard {
  *             participantId: <uuid>
  *             inboundBearer: ${RESEARCHER_INBOUND_BEARER}
  *             inboundBearerId: <uuid>
+ *             purpose: "Research specialist. Knows recent ML literature."
+ *             examples:
+ *               - "What's the state of test-time compute scaling?"
+ *               - "Find recent papers on agent benchmarks"
  */
 export interface LinkAugmentOptions {
   /** Port for the Bun.serve binding the link HTTP service. Default 8081. */
@@ -405,18 +428,53 @@ export function link(opts: LinkAugmentInternalOptions): Augment {
   const linkListTool = defineTool({
     name: "link_list",
     description:
-      "List the peers configured for outbound A2A traffic. Returns an array of short names that can be used as the `to` argument to `link_send`.",
+      "List the peers configured for outbound A2A traffic. Returns `{ peers: [{ name, purpose?, examples? }] }`. The `name` is the value to pass as the `to` argument to `link_send`. `purpose` and `examples` (when present) describe what the peer is good for and what kinds of asks to delegate.",
     category: "communication",
     input: z.object({}),
     execute: async () => {
-      return JSON.stringify({ peers: Object.keys(peers) });
+      const list = Object.entries(peers).map(([name, cfg]) => {
+        const entry: { name: string; purpose?: string; examples?: string[] } = { name };
+        if (cfg.purpose) entry.purpose = cfg.purpose;
+        if (cfg.examples && cfg.examples.length > 0) entry.examples = cfg.examples;
+        return entry;
+      });
+      return JSON.stringify({ peers: list });
     },
   });
 
+  // ---------------------------------------------------------------------------
+  // Context — minimal peer roster
+  // ---------------------------------------------------------------------------
+  //
+  // Surfaces peer NAMES only (not purpose/examples) in every turn's preamble
+  // so the LLM has awareness without context bloat. The model calls
+  // `link_list` when it needs the richer per-peer purpose/examples for
+  // routing decisions. Empty peers → no block (don't pollute preamble).
+  const context = async (_turn: TurnState): Promise<ContextBlock[]> => {
+    const names = Object.keys(peers);
+    if (names.length === 0) return [];
+    const content =
+      `Peers reachable via link_send: ${names.join(", ")}. ` +
+      "Call link_list to see what each peer is good for.";
+    return [
+      {
+        source: "link",
+        content,
+        placement: "preamble",
+        provenance: "augment",
+        priority: "normal",
+        eviction: "drop",
+        origin: "system",
+        ttl: "turn",
+      },
+    ];
+  };
+
   return {
     name: "link",
-    capabilities: ["transport", "tools"],
+    capabilities: ["transport", "context", "tools"],
     transport,
+    context,
     tools: [linkSendTool, linkListTool],
     async onShutdown() {
       // Stop the server first so no new admissions enter; THEN drain
