@@ -79,12 +79,13 @@ export async function runAdd(name: string, opts: AddOpts): Promise<void> {
   if (hasAdditions && !existsSync(pkgPath)) {
     console.log();
     console.log(
-      `Error: ${pkgPath} does not exist. This agent predates per-agent package manifests.`,
+      `Error: ${pkgPath} does not exist. This agent has no per-agent manifest.`,
     );
-    console.log(`Run \`auggy dev ${name}\` once first to trigger the boot-time migration,`);
-    console.log(`then re-run \`auggy add ${name}\`.`);
+    console.log(`Re-scaffold via \`auggy create ${name}\` (or write package.json manually with`);
+    console.log("auggy + your engine adapter as deps, then run `bun install`), then re-run");
+    console.log(`\`auggy add ${name}\`.`);
     console.log();
-    console.log("(No changes made to agent.yaml — re-run after migration.)");
+    console.log("(No changes made to agent.yaml — atomic bail.)");
     process.exitCode = 1;
     return;
   }

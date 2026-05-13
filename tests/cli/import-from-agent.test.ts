@@ -178,6 +178,43 @@ describe("importFromAgent", () => {
     }
   });
 
+  test("isolation: does NOT satisfy a missing dep from an ancestor node_modules (Codex 2nd-pass #3)", async () => {
+    // Build a nested layout:
+    //   <fixture>/                      ← parent dir
+    //     package.json
+    //     node_modules/fake-engine/     ← ancestor install ("WRONG-VERSION")
+    //     agents/zip/                   ← agent dir (no @auggy/* deps)
+    //       package.json                ← scaffolded manifest, deps empty
+    //
+    // Without the `paths` restriction in importFromAgent, Node's default
+    // resolution walks up from the agent's package.json and finds the
+    // ancestor copy — silently breaking per-agent isolation. The fix
+    // (paths: [agentDir]) constrains resolution to <agentDir>/node_modules,
+    // so this test must surface a MissingAgentDependencyError.
+    writeAgentManifest(fixture.path); // parent has a manifest
+    installEsmPackage(
+      fixture.path,
+      "fake-engine",
+      `export const TAG = "ancestor-WRONG-VERSION";`,
+    );
+
+    const agentDir = join(fixture.path, "agents", "zip");
+    mkdirSync(agentDir, { recursive: true });
+    writeFileSync(
+      join(agentDir, "package.json"),
+      JSON.stringify(
+        { name: "auggy-agent-zip", private: true, type: "module", dependencies: {} },
+        null,
+        2,
+      ),
+    );
+    // CRUCIALLY: do NOT install fake-engine in <agentDir>/node_modules.
+
+    await expect(importFromAgent(agentDir, "fake-engine")).rejects.toBeInstanceOf(
+      MissingAgentDependencyError,
+    );
+  });
+
   test("throws MissingAgentManifestError when <agentDir>/package.json is absent", async () => {
     // Agent dir exists (createTempDir created it) but no package.json was written.
     await expect(importFromAgent(fixture.path, "anything")).rejects.toBeInstanceOf(
@@ -185,7 +222,7 @@ describe("importFromAgent", () => {
     );
   });
 
-  test("MissingAgentManifestError message points at the boot-time migration path", async () => {
+  test("MissingAgentManifestError message points at re-scaffolding (no migration promise)", async () => {
     let caught: unknown;
     try {
       await importFromAgent(fixture.path, "anything");
@@ -195,8 +232,13 @@ describe("importFromAgent", () => {
     expect(caught).toBeInstanceOf(MissingAgentManifestError);
     const msg = (caught as Error).message;
     expect(msg).toContain(fixture.path);
-    expect(msg).toContain("auggy dev");
-    expect(msg).toContain("boot-time migration");
+    expect(msg).toContain("auggy create");
+    expect(msg).toContain("bun install");
+    // Negative assertion: we removed the boot-time migration promise.
+    // The project is in build-mode with no legacy agents to preserve, so
+    // the message tells operators to re-scaffold rather than pretending a
+    // migration step exists.
+    expect(msg).not.toContain("boot-time migration");
   });
 
   test("throws MissingAgentDependencyError when the specifier is not installed", async () => {
@@ -221,19 +263,45 @@ describe("importFromAgent", () => {
     expect(msg).toContain("bun install");
   });
 
-  test("MissingAgentDependencyError carries the underlying resolution error as `cause`", async () => {
+  test("isolation guard uses correct package-name probe for scoped specifiers", async () => {
+    // Pins the scoped-name extraction: the guard must look at
+    // `<agentDir>/node_modules/@auggy/anthropic` for the specifier
+    // `@auggy/anthropic`, NOT something like `<agentDir>/node_modules/@auggy`
+    // which would always exist once any @auggy/* package is installed and
+    // would silently neuter the isolation. Set up a peer-scope sibling that
+    // does exist; assert the actual specifier still fails.
     writeAgentManifest(fixture.path);
+    mkdirSync(join(fixture.path, "node_modules", "@auggy", "sibling-installed"), {
+      recursive: true,
+    });
+    // Critically: @auggy/anthropic is NOT installed at the agent-local path.
+
+    await expect(importFromAgent(fixture.path, "@auggy/anthropic")).rejects.toBeInstanceOf(
+      MissingAgentDependencyError,
+    );
+  });
+
+  test("MissingAgentDependencyError carries the underlying resolution error as `cause` when the resolver fires", async () => {
+    // Set up a package directory that PASSES the isolation guard (exists at
+    // <agentDir>/node_modules/<pkg>) but has no valid entry point. Node's
+    // resolver then throws when computing the entry, and the caught error
+    // gets attached as `cause`. The isolation-guard short-circuit path
+    // (covered by the missing-dep test above) carries no cause by design.
+    writeAgentManifest(fixture.path);
+    mkdirSync(join(fixture.path, "node_modules", "@auggy", "broken-entry"), {
+      recursive: true,
+    });
+    // No package.json, no index.js → require.resolve throws.
+
     let caught: MissingAgentDependencyError | undefined;
     try {
-      await importFromAgent(fixture.path, "@auggy/never-installed");
+      await importFromAgent(fixture.path, "@auggy/broken-entry");
     } catch (err) {
       caught = err as MissingAgentDependencyError;
     }
     expect(caught).toBeInstanceOf(MissingAgentDependencyError);
-    expect(caught?.specifier).toBe("@auggy/never-installed");
+    expect(caught?.specifier).toBe("@auggy/broken-entry");
     expect(caught?.agentDir).toBe(fixture.path);
-    // The cause is whatever the runtime's resolver threw — shape may vary,
-    // but it must be present so downstream callers can diagnose.
     expect((caught as { cause?: unknown }).cause).toBeDefined();
   });
 });

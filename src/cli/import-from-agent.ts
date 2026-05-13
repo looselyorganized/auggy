@@ -66,8 +66,9 @@ export class MissingAgentManifestError extends Error {
   constructor(agentDir: string) {
     super(
       `Agent dir "${agentDir}" has no package.json. ` +
-        `Was this agent created with auggy < 0.3.2? Run \`auggy dev <name>\` ` +
-        `to trigger the boot-time migration, or scaffold a fresh agent with \`auggy create <name>\`.`,
+        `Re-scaffold via \`auggy create <name>\`, or write the manifest manually ` +
+        `with \`auggy\` + the chosen \`@auggy/<engine>\` adapter as dependencies, ` +
+        `then run \`bun install\` in the agent dir.`,
     );
     this.name = "MissingAgentManifestError";
     this.agentDir = agentDir;
@@ -90,8 +91,31 @@ export async function importFromAgent<T = unknown>(
     throw new MissingAgentManifestError(agentDir);
   }
 
-  const localRequire = createRequire(manifestPath);
+  // Explicit isolation guard (Codex 2nd-pass finding #3).
+  //
+  // Node's `require.resolve` walks UP from the caller's manifest location
+  // and stops at the first matching `node_modules/<pkg>`. The `paths`
+  // option theoretically restricts this, but Bun's `createRequire` does NOT
+  // honor it as Node's docs describe — resolution still finds ancestor
+  // packages. Without this guard, an agent created under a wrapping
+  // monorepo (or a developer's `~/projects/<x>/`) silently satisfies a
+  // missing dep from the parent's `node_modules`. The agent appears
+  // healthy locally and breaks — or worse, runs against the wrong SDK
+  // version — on a clean machine where only `<agentDir>/node_modules` is
+  // present.
+  //
+  // Defense: probe `<agentDir>/node_modules/<pkg>` directly. If the
+  // package directory isn't present agent-locally (real dir or symlink to
+  // a workspace target both pass `existsSync`), refuse to resolve. The
+  // subsequent `require.resolve` then operates on a tree we've confirmed
+  // has the package as its FIRST hit during Node's upward walk.
+  const packageName = extractPackageName(specifier);
+  const packageRoot = join(agentDir, "node_modules", packageName);
+  if (!existsSync(packageRoot)) {
+    throw new MissingAgentDependencyError(agentDir, specifier);
+  }
 
+  const localRequire = createRequire(manifestPath);
   let resolved: string;
   try {
     resolved = localRequire.resolve(specifier);
@@ -106,4 +130,27 @@ export async function importFromAgent<T = unknown>(
 
   const moduleUrl = pathToFileURL(resolved).href;
   return (await import(moduleUrl)) as T;
+}
+
+/**
+ * Extract the package-name portion of an npm specifier. Handles both
+ * unscoped (`foo`, `foo/bar/baz` → `foo`) and scoped (`@scope/foo`,
+ * `@scope/foo/sub/path` → `@scope/foo`) forms. Used by the isolation
+ * guard above to probe `<agentDir>/node_modules/<pkg>`.
+ */
+function extractPackageName(specifier: string): string {
+  if (specifier.startsWith("@")) {
+    const segments = specifier.split("/");
+    const scope = segments[0];
+    const name = segments[1];
+    if (!scope || !name) {
+      throw new Error(`Invalid scoped specifier "${specifier}": expected @scope/name shape.`);
+    }
+    return `${scope}/${name}`;
+  }
+  const head = specifier.split("/")[0];
+  if (!head) {
+    throw new Error(`Invalid specifier "${specifier}": empty package name.`);
+  }
+  return head;
 }
