@@ -4,6 +4,7 @@ import {
   buildOpenAIModelResponse,
   convertOpenAIMessages,
   convertOpenAITools,
+  type ReasoningEffort,
 } from "./openai";
 import { resolveSlug, priceOpenRouterResponse } from "./openrouter/pricing";
 import type { AssembledPrompt, ModelClient, ModelDelta, ModelResponse } from "../types";
@@ -37,7 +38,7 @@ export interface OpenRouterEngineOptions {
    *  o-series via OpenRouter, etc). Forwarded as `reasoning.effort` in the
    *  OpenRouter-normalized request body. See OpenAIEngineOptions for the
    *  semantics of each value. */
-  reasoningEffort?: OpenAI.Chat.ChatCompletionReasoningEffort;
+  reasoningEffort?: ReasoningEffort;
   /** OpenRouter provider routing hints. Forwarded as the `provider` body
    *  field. Slugs in `only`/`ignore` are NOT semantically validated — typos
    *  silently fall back to OpenRouter's default routing. */
@@ -72,9 +73,13 @@ const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
 
 /** Local extension of the SDK request type with OpenRouter-specific extras.
  *  These fields don't exist in the SDK's typed surface — OpenRouter's
- *  server reads them when present and the SDK forwards them unchanged. */
+ *  server reads them when present and the SDK forwards them unchanged.
+ *
+ *  `reasoning.effort` uses the local `ReasoningEffort` union (wider than the
+ *  SDK's type — includes `none` and `xhigh`); OpenRouter accepts the broader
+ *  set on reasoning-capable models. */
 type OpenRouterChatParams = OpenAI.Chat.ChatCompletionCreateParamsNonStreaming & {
-  reasoning?: { effort: OpenAI.Chat.ChatCompletionReasoningEffort };
+  reasoning?: { effort: ReasoningEffort };
   provider?: OpenRouterProviderRouting;
 };
 

@@ -29,6 +29,17 @@ import type {
  * method on hot paths (it uses src/tokenizer.ts directly), so accuracy is
  * not load-bearing.
  */
+/**
+ * Reasoning-effort levels exposed by the engine.
+ *
+ * Local string union — intentionally NOT typed as `OpenAI.Chat.ChatCompletionReasoningEffort`
+ * so the engine's public option interface doesn't drag the `openai` SDK into
+ * consumer type resolution via emitted `.d.ts`. Mirrors `EngineConfig.reasoningEffort`
+ * in `src/cli/types.ts` exactly. Wider than the SDK's current union (includes `none`
+ * and `xhigh`); the API call casts at the forwarding site below.
+ */
+export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
+
 export interface OpenAIEngineOptions {
   /** API key. Defaults to OPENAI_API_KEY env (read by the SDK). */
   apiKey?: string;
@@ -49,7 +60,7 @@ export interface OpenAIEngineOptions {
    *  - `xhigh`: gpt-5.1-codex-max and later
    *  Older Chat Completions models (e.g. gpt-4) do NOT support this — the API
    *  returns an error which propagates through `complete()`. */
-  reasoningEffort?: OpenAI.Chat.ChatCompletionReasoningEffort;
+  reasoningEffort?: ReasoningEffort;
   /**
    * Override pricing for cost estimation. If set, the adapter uses these rates
    * instead of the built-in pricing table. Useful for unknown models or custom
@@ -132,7 +143,12 @@ export function createOpenAIEngine(opts: OpenAIEngineOptions): ModelClient {
         max_completion_tokens: maxOutputTokens,
         messages: allMessages,
         ...(tools.length > 0 ? { tools } : {}),
-        ...(opts.reasoningEffort ? { reasoning_effort: opts.reasoningEffort } : {}),
+        ...(opts.reasoningEffort
+          ? {
+              reasoning_effort:
+                opts.reasoningEffort as OpenAI.Chat.ChatCompletionReasoningEffort,
+            }
+          : {}),
       };
 
       let completion: OpenAI.Chat.ChatCompletion;
