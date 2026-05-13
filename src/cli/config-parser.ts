@@ -21,6 +21,7 @@ import type {
   AgentSettings,
   SecurityEvalOverride,
 } from "./types";
+import { KNOWN_PROVIDERS, isKnownProvider } from "./types";
 
 // ---------------------------------------------------------------------------
 // .env loading
@@ -129,7 +130,6 @@ const BUILTIN_TYPES = new Set([
   "visitorAuth",
   "link",
 ]);
-const KNOWN_PROVIDERS = new Set(["anthropic", "openai", "openrouter"]);
 const VALID_REASONING_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh"]);
 const VALID_ROUTING_SORTS = new Set(["price", "throughput", "latency"]);
 
@@ -655,9 +655,9 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
   } else {
     if (typeof engine.provider !== "string") {
       errors.push("engine.provider: required string");
-    } else if (!KNOWN_PROVIDERS.has(engine.provider)) {
+    } else if (!isKnownProvider(engine.provider)) {
       errors.push(
-        `engine.provider: unknown provider "${engine.provider}" (supported: ${[...KNOWN_PROVIDERS].join(", ")})`,
+        `engine.provider: unknown provider "${engine.provider}" (supported: ${KNOWN_PROVIDERS.join(", ")})`,
       );
     }
     if (typeof engine.model !== "string") {

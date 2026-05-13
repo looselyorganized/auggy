@@ -40,10 +40,37 @@ export interface AugmentConfig {
   options?: Record<string, unknown>;
 }
 
+/**
+ * Engine providers auggy can resolve. The string union is the single
+ * source of truth for which providers exist — `KNOWN_PROVIDERS` is the
+ * runtime mirror (used for validation in `config-parser.ts`), and
+ * `PROVIDER_TO_PACKAGE` / `PROVIDER_DEFAULTS` are typed against it. Adding
+ * a fourth provider requires only:
+ *   1. extending this union
+ *   2. registering the adapter package in `scaffold-package-json.ts`
+ *   3. handling the new case in `engine-resolver.ts` (TS exhaustiveness
+ *      check forces this — see the `assertNever` default branch)
+ *   4. adding it to `PROVIDER_DEFAULTS` in `commands/create.ts` (TS
+ *      exhaustiveness forces this too)
+ */
+export type Provider = "anthropic" | "openai" | "openrouter";
+
+/**
+ * Runtime mirror of the `Provider` union for validation against
+ * unstructured `agent.yaml` input. Kept in lockstep with the union via
+ * `Provider[]` casting — TS catches drift at compile.
+ */
+export const KNOWN_PROVIDERS: readonly Provider[] = ["anthropic", "openai", "openrouter"];
+
+/** Type guard: narrow an arbitrary string to `Provider`. */
+export function isKnownProvider(s: string): s is Provider {
+  return (KNOWN_PROVIDERS as readonly string[]).includes(s);
+}
+
 /** Engine configuration from agent.yaml. */
 export interface EngineConfig {
-  /** Engine provider identifier ("anthropic", "openai", or "openrouter"). */
-  provider: string;
+  /** Engine provider identifier (one of the values in `KNOWN_PROVIDERS`). */
+  provider: Provider;
   /** Model identifier (e.g. "claude-sonnet-4-6", "gpt-5", "qwen/qwen3.5-397b-a17b"). */
   model: string;
   /** Max context window in tokens. */

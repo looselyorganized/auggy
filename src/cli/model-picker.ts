@@ -9,7 +9,11 @@
 import * as anthropicPricing from "../engines/anthropic/pricing";
 import * as openaiPricing from "../engines/openai/pricing";
 
-export type Provider = "anthropic" | "openai" | "openrouter";
+// Provider lives in `./types` (single source of truth for the union +
+// runtime mirror). Re-exported here for backward compat with the existing
+// import path `import { Provider } from "./model-picker"`.
+export type { Provider } from "./types";
+import type { Provider } from "./types";
 
 export interface ModelChoice {
   /** Model ID as it appears in agent.yaml `engine.model`. */

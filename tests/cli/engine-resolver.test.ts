@@ -1,5 +1,6 @@
 import { describe, test, expect, beforeEach, afterAll } from "bun:test";
 import { resolveEngine } from "../../src/cli/engine-resolver";
+import type { EngineConfig } from "../../src/cli/types";
 
 const ORIGINAL_OPENROUTER = process.env.OPENROUTER_API_KEY;
 const ORIGINAL_OPENAI = process.env.OPENAI_API_KEY;
@@ -93,25 +94,33 @@ describe("resolveEngine", () => {
     expect(engine).toBeDefined();
   });
 
+  // The next three tests deliberately exercise the runtime guard for
+  // malformed `engine.provider` values. The type system narrows `provider`
+  // to the `Provider` union, so we cast via `as unknown as EngineConfig`
+  // to simulate a programmatic caller that bypassed the YAML parser /
+  // config validator.
   test("throws for unknown provider with full supported list in message", async () => {
-    await expect(resolveEngine({ provider: "foobar", model: "x" }, AGENT_DIR)).rejects.toThrow(
-      'Unknown engine provider: "foobar" (supported: anthropic, openai, openrouter)',
-    );
+    await expect(
+      resolveEngine(
+        { provider: "foobar", model: "x" } as unknown as EngineConfig,
+        AGENT_DIR,
+      ),
+    ).rejects.toThrow('Unknown engine provider: "foobar" (supported: anthropic, openai, openrouter)');
   });
 
   test("throws clearly when provider is empty string", async () => {
-    await expect(resolveEngine({ provider: "", model: "x" }, AGENT_DIR)).rejects.toThrow(
-      "engine.provider is required",
-    );
+    await expect(
+      resolveEngine(
+        { provider: "", model: "x" } as unknown as EngineConfig,
+        AGENT_DIR,
+      ),
+    ).rejects.toThrow("engine.provider is required");
   });
 
   test("throws clearly when provider is undefined (programmatic misuse)", async () => {
     await expect(
       resolveEngine(
-        {
-          provider: undefined as unknown as string,
-          model: "x",
-        },
+        { provider: undefined, model: "x" } as unknown as EngineConfig,
         AGENT_DIR,
       ),
     ).rejects.toThrow("engine.provider is required");
@@ -135,11 +144,11 @@ describe("resolveEngine", () => {
     expect(engine).toBeDefined();
     // Static regression-grep: assert the openrouter branch in source does NOT
     // assign baseURL into the options literal. The branch runs from
-    // `config.provider === "openrouter"` to the `return mod.createOpenRouterEngine`.
+    // `case "openrouter":` to the `return mod.createOpenRouterEngine` line.
     const fs = require("node:fs");
     const source = fs.readFileSync("src/cli/engine-resolver.ts", "utf-8") as string;
     const openrouterBlock = source.match(
-      /config\.provider === "openrouter"[\s\S]*?return mod\.createOpenRouterEngine\(opts\);/,
+      /case "openrouter":[\s\S]*?return mod\.createOpenRouterEngine\(opts\);/,
     );
     expect(openrouterBlock).not.toBeNull();
     expect(openrouterBlock![0]).not.toMatch(/baseURL\s*:/);

@@ -3,6 +3,7 @@ import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync }
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { parse as parseYaml } from "yaml";
+import type { EngineConfig } from "../../src/cli/types";
 import { mockInquirerPrompts, type Answers } from "../fixtures/inquirer-mock";
 import { createStubBunInstallSpawn } from "../fixtures/bun-install-stub";
 
@@ -97,9 +98,11 @@ describe("end-to-end: create → fabricate install → resolveEngine", () => {
     fabricateNodeModules(dir, "anthropic");
 
     // Parse the agent.yaml the scaffold wrote, then resolve the engine
-    // against the fabricated node_modules tree.
+    // against the fabricated node_modules tree. The scaffold writes
+    // valid provider strings, so the `as { engine: EngineConfig }` cast
+    // matches reality without runtime narrowing.
     const agentYaml = parseYaml(readFileSync(join(dir, "agent.yaml"), "utf-8")) as {
-      engine: { provider: string; model: string; maxContextTokens?: number; maxTokens?: number };
+      engine: EngineConfig;
     };
 
     const engine = await resolveEngine(agentYaml.engine, dir);
@@ -126,7 +129,7 @@ describe("end-to-end: create → fabricate install → resolveEngine", () => {
     fabricateNodeModules(dir, "openai");
 
     const agentYaml = parseYaml(readFileSync(join(dir, "agent.yaml"), "utf-8")) as {
-      engine: { provider: string; model: string };
+      engine: EngineConfig;
     };
     const engine = await resolveEngine(agentYaml.engine, dir);
     expect(engine.maxContextTokens).toBeGreaterThan(0);
@@ -154,7 +157,7 @@ describe("end-to-end: create → fabricate install → resolveEngine", () => {
     fabricateNodeModules(dir, "openrouter");
 
     const agentYaml = parseYaml(readFileSync(join(dir, "agent.yaml"), "utf-8")) as {
-      engine: { provider: string; model: string };
+      engine: EngineConfig;
     };
     const engine = await resolveEngine(agentYaml.engine, dir);
     expect(engine.maxContextTokens).toBeGreaterThan(0);
@@ -176,7 +179,7 @@ describe("end-to-end: create → fabricate install → resolveEngine", () => {
     });
 
     const agentYaml = parseYaml(readFileSync(join(dir, "agent.yaml"), "utf-8")) as {
-      engine: { provider: string; model: string };
+      engine: EngineConfig;
     };
 
     await expect(resolveEngine(agentYaml.engine, dir)).rejects.toThrow(

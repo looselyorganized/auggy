@@ -36,8 +36,10 @@ import type {
   OpenRouterEngineOptions,
 } from "@auggy/openrouter";
 import { importFromAgent } from "./import-from-agent";
+import { PROVIDER_TO_PACKAGE } from "./scaffold-package-json";
 import type { ModelClient } from "../types";
-import type { EngineConfig } from "./types";
+import type { EngineConfig, Provider } from "./types";
+import { isKnownProvider, KNOWN_PROVIDERS } from "./types";
 
 /**
  * Test seam: injectable importer. Production callers omit this and get the
@@ -52,61 +54,78 @@ export async function resolveEngine(
   agentDir: string,
   importer: EngineImporter = importFromAgent,
 ): Promise<ModelClient> {
-  // Defensive: programmatic callers may bypass the YAML parser. Catch
-  // missing/empty provider with a clearer message than the catch-all throw.
-  if (typeof config.provider !== "string" || config.provider.length === 0) {
-    throw new Error(`engine.provider is required (got: ${JSON.stringify(config.provider)})`);
+  // Defensive: programmatic callers may bypass the YAML parser, which is
+  // the contract owner for narrowing `provider` to `Provider`. Re-validate
+  // at runtime so a misconfigured caller fails fast with a clear message.
+  const providerRaw = config.provider as string | undefined;
+  if (typeof providerRaw !== "string" || providerRaw.length === 0) {
+    throw new Error(`engine.provider is required (got: ${JSON.stringify(providerRaw)})`);
   }
-
-  if (config.provider === "anthropic") {
-    const mod = await importer<{
-      createAnthropicEngine: typeof AnthropicFactory;
-    }>(agentDir, "@auggy/anthropic");
-    const opts: AnthropicEngineOptions = {
-      model: config.model,
-      maxContextTokens: config.maxContextTokens,
-      maxTokens: config.maxTokens,
-      baseURL: config.baseURL,
-      costOverride: config.costOverride,
-      // apiKey intentionally omitted — SDK reads ANTHROPIC_API_KEY from env.
-    };
-    return mod.createAnthropicEngine(opts);
+  if (!isKnownProvider(providerRaw)) {
+    throw new Error(
+      `Unknown engine provider: "${providerRaw}" (supported: ${KNOWN_PROVIDERS.join(", ")})`,
+    );
   }
+  const provider: Provider = providerRaw;
 
-  if (config.provider === "openai") {
-    const mod = await importer<{
-      createOpenAIEngine: typeof OpenAIFactory;
-    }>(agentDir, "@auggy/openai");
-    const opts: OpenAIEngineOptions = {
-      model: config.model,
-      maxContextTokens: config.maxContextTokens,
-      maxTokens: config.maxTokens,
-      baseURL: config.baseURL,
-      reasoningEffort: config.reasoningEffort,
-      costOverride: config.costOverride,
-      // apiKey intentionally omitted — SDK reads OPENAI_API_KEY from env.
-    };
-    return mod.createOpenAIEngine(opts);
+  // Per-provider dispatch. Switch over the narrowed `Provider` union so
+  // TypeScript enforces exhaustiveness — adding a new provider to the
+  // union triggers a compile error here until a case is added. Each
+  // branch builds its own options shape (fields differ per provider:
+  // anthropic gets `baseURL`, openai+openrouter get `reasoningEffort`,
+  // openrouter gets `providerRouting` but omits `baseURL`).
+  switch (provider) {
+    case "anthropic": {
+      const mod = await importer<{
+        createAnthropicEngine: typeof AnthropicFactory;
+      }>(agentDir, PROVIDER_TO_PACKAGE.anthropic);
+      const opts: AnthropicEngineOptions = {
+        model: config.model,
+        maxContextTokens: config.maxContextTokens,
+        maxTokens: config.maxTokens,
+        baseURL: config.baseURL,
+        costOverride: config.costOverride,
+        // apiKey intentionally omitted — SDK reads ANTHROPIC_API_KEY from env.
+      };
+      return mod.createAnthropicEngine(opts);
+    }
+    case "openai": {
+      const mod = await importer<{
+        createOpenAIEngine: typeof OpenAIFactory;
+      }>(agentDir, PROVIDER_TO_PACKAGE.openai);
+      const opts: OpenAIEngineOptions = {
+        model: config.model,
+        maxContextTokens: config.maxContextTokens,
+        maxTokens: config.maxTokens,
+        baseURL: config.baseURL,
+        reasoningEffort: config.reasoningEffort,
+        costOverride: config.costOverride,
+        // apiKey intentionally omitted — SDK reads OPENAI_API_KEY from env.
+      };
+      return mod.createOpenAIEngine(opts);
+    }
+    case "openrouter": {
+      const mod = await importer<{
+        createOpenRouterEngine: typeof OpenRouterFactory;
+      }>(agentDir, PROVIDER_TO_PACKAGE.openrouter);
+      const opts: OpenRouterEngineOptions = {
+        model: config.model,
+        maxContextTokens: config.maxContextTokens,
+        maxTokens: config.maxTokens,
+        reasoningEffort: config.reasoningEffort,
+        providerRouting: config.providerRouting,
+        costOverride: config.costOverride,
+        // baseURL intentionally NOT passed — hardcoded to OpenRouter.
+        // apiKey intentionally omitted — engine reads OPENROUTER_API_KEY from env.
+      };
+      return mod.createOpenRouterEngine(opts);
+    }
+    default: {
+      // Exhaustiveness check — unreachable today, but if a future Provider
+      // member is added without a `case` here, TypeScript fails with
+      // "Type 'Provider' is not assignable to type 'never'."
+      const _exhaustive: never = provider;
+      throw new Error(`engine-resolver: unhandled provider ${String(_exhaustive)}`);
+    }
   }
-
-  if (config.provider === "openrouter") {
-    const mod = await importer<{
-      createOpenRouterEngine: typeof OpenRouterFactory;
-    }>(agentDir, "@auggy/openrouter");
-    const opts: OpenRouterEngineOptions = {
-      model: config.model,
-      maxContextTokens: config.maxContextTokens,
-      maxTokens: config.maxTokens,
-      reasoningEffort: config.reasoningEffort,
-      providerRouting: config.providerRouting,
-      costOverride: config.costOverride,
-      // baseURL intentionally NOT passed — hardcoded to OpenRouter.
-      // apiKey intentionally omitted — engine reads OPENROUTER_API_KEY from env.
-    };
-    return mod.createOpenRouterEngine(opts);
-  }
-
-  throw new Error(
-    `Unknown engine provider: "${config.provider}" (supported: anthropic, openai, openrouter)`,
-  );
 }
