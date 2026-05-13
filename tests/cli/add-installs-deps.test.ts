@@ -169,13 +169,14 @@ describe("runAdd no-op cases", () => {
   });
 });
 
-describe("runAdd legacy compatibility", () => {
-  test("exits non-zero with a guidance message when agent dir has no package.json", async () => {
+describe("runAdd legacy compatibility (atomicity preflight, §13.3)", () => {
+  test("legacy agent: bail BEFORE any disk write; yaml untouched, no skills, no install", async () => {
     const dir = setupAgent("legacy");
     // Simulate a pre-v0.3.2 agent dir by removing the package.json setupAgent
     // wrote. (The boot-time migration in Phase 6 will scaffold it on first
     // `auggy dev` call.)
     rmSync(join(dir, "package.json"));
+    const yamlBefore = readFileSync(join(dir, "agent.yaml"), "utf-8");
     answers = { augmentTypes: ["link"] };
 
     const originalExitCode = process.exitCode;
@@ -186,13 +187,51 @@ describe("runAdd legacy compatibility", () => {
         bunInstallSpawn: stubSpawn(),
       });
 
+      // Exit signals failure to the operator.
       expect(process.exitCode).toBe(1);
-      // agent.yaml was still mutated (we exit AFTER the yaml write); the
-      // operator is told to run auggy dev once to trigger migration.
-      const yaml = readFileSync(join(dir, "agent.yaml"), "utf-8");
-      expect(yaml).toContain("type: link");
+
+      // Atomicity: yaml is BYTE-IDENTICAL to before the call. No partial
+      // state for the operator to clean up before retrying after migration.
+      const yamlAfter = readFileSync(join(dir, "agent.yaml"), "utf-8");
+      expect(yamlAfter).toBe(yamlBefore);
+      expect(yamlAfter).not.toContain("type: link");
+
+      // package.json still absent (we never created it).
+      expect(existsSync(join(dir, "package.json"))).toBe(false);
+
+      // No `bun install` attempted.
+      expect(bunInstallCalls).toHaveLength(0);
     } finally {
       process.exitCode = originalExitCode;
     }
+  });
+
+  test("commit-then-install order: all three artifacts present + consistent on happy path", async () => {
+    // Pins the §13.3 contract that yaml + package.json + skills all persist
+    // as a sequence after preflight passes, and that install runs strictly
+    // last. Regression-guard: if a future refactor splits the writes or
+    // re-introduces partial-state, the assertions here fail.
+    const dir = setupAgent("happy-path");
+    answers = { augmentTypes: ["link"] };
+
+    await runAdd("happy-path", {
+      config: join(dir, "agent.yaml"),
+      auggyDir,
+      bunInstallSpawn: stubSpawn(),
+    });
+
+    // 1. agent.yaml mutation present.
+    const yamlAfter = readFileSync(join(dir, "agent.yaml"), "utf-8");
+    expect(yamlAfter).toContain("type: link");
+
+    // 2. package.json updated with the new dep.
+    const pkgAfter = JSON.parse(readFileSync(join(dir, "package.json"), "utf-8")) as {
+      dependencies: Record<string, string>;
+    };
+    expect(pkgAfter.dependencies["@auggy/link"]).toBe("^0.1.2");
+
+    // 3. bun install invoked exactly once after the writes.
+    expect(bunInstallCalls).toHaveLength(1);
+    expect(bunInstallCalls[0]?.cwd).toBe(dir);
   });
 });

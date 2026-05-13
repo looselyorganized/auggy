@@ -66,7 +66,33 @@ export async function runAdd(name: string, opts: AddOpts): Promise<void> {
     return;
   }
 
-  // Add to agent.yaml.
+  // === Preflight (atomicity gate, §13.3) ===
+  // Compute which external npm packages this add would introduce. If any,
+  // verify the agent dir has a `package.json` BEFORE touching disk —
+  // pre-v0.3.2 agents must migrate first via `auggy dev` (Phase 6). Bailing
+  // here leaves agent.yaml + skills unchanged so the operator can retry
+  // after migration without first rolling back partial mutations.
+  const additions = mergeAdditions(selected);
+  const hasAdditions = Object.keys(additions).length > 0;
+  const pkgPath = join(agentDir, "package.json");
+
+  if (hasAdditions && !existsSync(pkgPath)) {
+    console.log();
+    console.log(
+      `Error: ${pkgPath} does not exist. This agent predates per-agent package manifests.`,
+    );
+    console.log(`Run \`auggy dev ${name}\` once first to trigger the boot-time migration,`);
+    console.log(`then re-run \`auggy add ${name}\`.`);
+    console.log();
+    console.log("(No changes made to agent.yaml — re-run after migration.)");
+    process.exitCode = 1;
+    return;
+  }
+
+  // === Compute all changes in memory ===
+  // Yaml + package.json text are built without touching disk so a preflight
+  // error (e.g. invalid JSON in the existing package.json) can abort before
+  // any persisted mutation.
   for (const entry of selected) {
     currentAugments.push({
       name: entry.defaultName,
@@ -75,8 +101,33 @@ export async function runAdd(name: string, opts: AddOpts): Promise<void> {
     } as { type: string; name: string });
   }
   raw.augments = currentAugments;
+  const newYaml = `# Agent configuration\n\n${stringifyYaml(raw)}`;
 
-  writeFileSync(configPath, `# Agent configuration\n\n${stringifyYaml(raw)}`);
+  let pkgUpdate: { text: string; added: string[] } | null = null;
+  if (hasAdditions) {
+    const existingText = readFileSync(pkgPath, "utf-8");
+    const merged = mergePackageDeps(existingText, additions);
+    if (merged.added.length > 0) {
+      pkgUpdate = { text: merged.text, added: merged.added };
+    }
+  }
+
+  // === Persist: yaml → package.json → skills (in sequence) ===
+  // The legacy-bail above guards against partial-state on pre-v0.3.2 dirs.
+  // Past this point, all three artifacts are intentional mutations matching
+  // the operator's request; install-failure below leaves them in place.
+  writeFileSync(configPath, newYaml);
+
+  if (pkgUpdate) {
+    writeFileSync(pkgPath, pkgUpdate.text);
+    console.log();
+    console.log(
+      `  ${pkgUpdate.added.length} package dep${pkgUpdate.added.length === 1 ? "" : "s"} added to package.json:`,
+    );
+    for (const pkg of pkgUpdate.added) {
+      console.log(`    + ${pkg}@${additions[pkg]}`);
+    }
+  }
 
   // Install skills — copy the bundled `src/augments/<name>/skill/` folder
   // for each selected augment that ships one. Idempotent. Per ADR-030 the
@@ -88,53 +139,25 @@ export async function runAdd(name: string, opts: AddOpts): Promise<void> {
     console.log(`  ✓ ${entry.defaultName} (${entry.type})`);
   }
 
-  // Merge per-augment packageDeps into the agent's package.json + install.
-  // Skipped silently if no selected augment carries packageDeps. Required
-  // for augments like `link` (needs @auggy/link) or `supabaseMemory` (needs
-  // @supabase/supabase-js) to actually resolve at runtime via importFromAgent.
+  // === Run bun install (last; failure leaves intentional partial state) ===
+  // Yaml + package.json mutations represent the operator's request and
+  // stay on disk regardless of install outcome. A transient install failure
+  // (network, registry) is recovered by re-running `bun install` — not by
+  // rolling back the config the operator just asked for.
   let installOk = true;
-  const additions = mergeAdditions(selected);
-  if (Object.keys(additions).length > 0) {
-    const pkgPath = join(agentDir, "package.json");
-    if (!existsSync(pkgPath)) {
-      // Pre-v0.3.2 agent dirs have no package.json. The boot-time migration
-      // (commands/dev.ts) handles this — but `auggy add` shouldn't silently
-      // succeed without doing what was asked. Surface clearly + exit.
+  if (pkgUpdate && !opts.skipInstall) {
+    console.log();
+    console.log(" Installing dependencies...");
+    console.log();
+    const result = await runBunInstall(agentDir, opts.bunInstallSpawn);
+    installOk = result.ok;
+    if (!installOk) {
       console.log();
-      console.log(
-        `Error: ${pkgPath} does not exist. This agent predates per-agent package manifests.`,
-      );
-      console.log(`Run \`auggy dev ${name}\` once first to trigger the boot-time migration,`);
-      console.log(`then re-run \`auggy add ${name}\`.`);
+      console.log(`⚠ bun install failed in ${agentDir} (exit ${result.code}).`);
+      console.log("  agent.yaml + package.json are already updated.");
+      console.log(`  Retry:  cd ${agentDir} && bun install`);
+      console.log();
       process.exitCode = 1;
-      return;
-    }
-    const existingText = readFileSync(pkgPath, "utf-8");
-    const merged = mergePackageDeps(existingText, additions);
-
-    if (merged.added.length > 0) {
-      writeFileSync(pkgPath, merged.text);
-      console.log();
-      console.log(`  ${merged.added.length} package dep${merged.added.length === 1 ? "" : "s"} added to package.json:`);
-      for (const pkg of merged.added) {
-        console.log(`    + ${pkg}@${additions[pkg]}`);
-      }
-
-      if (!opts.skipInstall) {
-        console.log();
-        console.log(" Installing dependencies...");
-        console.log();
-        const result = await runBunInstall(agentDir, opts.bunInstallSpawn);
-        installOk = result.ok;
-        if (!installOk) {
-          console.log();
-          console.log(`⚠ bun install failed in ${agentDir} (exit ${result.code}).`);
-          console.log(`  agent.yaml + package.json are already updated.`);
-          console.log(`  Retry:  cd ${agentDir} && bun install`);
-          console.log();
-          process.exitCode = 1;
-        }
-      }
     }
   }
 
@@ -149,7 +172,7 @@ export async function runAdd(name: string, opts: AddOpts): Promise<void> {
   }
 
   console.log();
-  if (opts.skipInstall && Object.keys(additions).length > 0) {
+  if (opts.skipInstall && pkgUpdate) {
     console.log(`Run \`cd ${agentDir} && bun install\`, then \`auggy restart ${name}\`.`);
   } else if (installOk) {
     console.log(`Restart to apply: auggy restart ${name}`);
