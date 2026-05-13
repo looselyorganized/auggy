@@ -2,13 +2,21 @@
 
 This is the explicit checklist for cutting a release of the `auggy` npm package. Anything you do that deviates from this list is improvisation; codify the new step here before doing it twice.
 
+## The core principle: PRs ≠ releases
+
+**Feature PRs do not bump the version.** `package.json.version` always reflects the *last published* release. The handful of commits between releases land on `main` without version bumps. When you decide it's time to ship, *that* is a deliberate "release PR" — a separate, intentional PR whose entire job is to bump the version, update the changelog, and merge.
+
+This separation is enforced by `release-rehearsal.yml`: the npm-version-conflict gate and tarball-packaging gate **only run when the PR bumps the version**. Feature PRs see lint/typecheck/test (defense-in-depth, also covered by `ci.yml`) — and that's it.
+
+Pre-1.0 (semver §4: *"Anything MAY change at any time"*), this lets us ship at high velocity. When we go 1.0, the same workflow shape will accommodate stricter cadence (RC tags, dist-tags) without redesign.
+
 ## TL;DR
 
 ```bash
 # On main, version-bumped and CHANGELOG-updated PR already merged:
 git checkout main && git pull
-git tag v0.3.1                   # tag MUST match package.json version
-git push origin v0.3.1
+git tag v0.3.2                   # tag MUST match package.json version
+git push origin v0.3.2
 # CI publishes to npm + creates GitHub Release; watch the workflow run.
 ```
 
@@ -18,25 +26,33 @@ git push origin v0.3.1
 
 Concrete checks the workflows enforce:
 
-| Check | Where | What it gates |
-|---|---|---|
-| `package.json.version` not already on npm | `release-rehearsal.yml` (every PR to main) | Catches version conflicts before merge |
-| Tag suffix matches `package.json.version` | `publish.yml` (on tag push) | Catches version/tag drift |
-| Tag is `v<major>.<minor>.<patch>` | `publish.yml` (regex `v*.*.*`) | Only releases trigger publishes |
-| Version already on npm? | `publish.yml` (idempotency gate) | Retroactive tags don't republish |
+| Check | Where | When it fires | What it gates |
+|---|---|---|---|
+| Lint / typecheck / tests | `ci.yml` + `release-rehearsal.yml` | Every PR to main | Code regressions |
+| `package.json.version` not already on npm | `release-rehearsal.yml` | **Only when the PR bumps the version** | Catches conflicts on release PRs |
+| Tarball packaging dry-run (`npm pack --dry-run`) | `release-rehearsal.yml` | **Only when the PR bumps the version** | Catches missing files / broken bin paths on release PRs |
+| Tag suffix matches `package.json.version` | `publish.yml` (on tag push) | Tag push only | Catches version/tag drift |
+| Tag is `v<major>.<minor>.<patch>` | `publish.yml` (regex `v*.*.*`) | Tag push only | Only releases trigger publishes |
+| Version already on npm? | `publish.yml` (idempotency gate) | Tag push only | Retroactive tags don't republish |
 
 ## Cutting a new release
 
-### 1. Pre-release PR
+### 0. Between releases (feature PRs)
 
-In a feature branch off `main`:
+Just merge them. Don't touch `package.json.version`. Don't touch `CHANGELOG.md`'s released sections. Optionally append to `CHANGELOG.md`'s `[Unreleased]` section so the next release PR has the entries ready to harvest.
+
+`release-rehearsal.yml`'s version-conflict + tarball gates **skip automatically** on no-version-bump PRs. Lint/typecheck/test still run.
+
+### 1. Release PR (the deliberate act)
+
+In a dedicated branch off `main` (name suggestion: `release/X.Y.Z`):
 
 - [ ] Bump `package.json.version` (semver: patch for fixes, minor for additive features, major for breaking changes; pre-1.0 we treat minor bumps liberally for shipped features)
 - [ ] Update `CHANGELOG.md`:
   - Move `[Unreleased]` items into a new `[X.Y.Z] - YYYY-MM-DD` section
   - Group entries under `### Added` / `### Changed` / `### Fixed` / `### Architecture` / `### Process` per [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
-- [ ] Push, open PR
-- [ ] **Wait for `release-rehearsal` workflow to pass** — it runs `npm pack --dry-run` + version-conflict check + lint/typecheck/test. If this is red, the real publish will fail too. Fix before merging.
+- [ ] Push, open PR. The PR's title should be `release: vX.Y.Z` so it's obvious in history.
+- [ ] **Wait for `release-rehearsal` workflow to pass** — for this PR (because the version bumped) it runs ALL gates: lint/typecheck/test + version-vs-npm + `npm pack --dry-run`. If any is red, the real publish will fail too. Fix before merging.
 - [ ] Merge to `main` (squash; matches repo convention)
 
 ### 2. Tag
