@@ -29,8 +29,17 @@ import { telegramTransport } from "../augments/telegram-transport";
 import { turnControl, type TurnControlOptions } from "../augments/turn-control";
 import { visitorAuth } from "../augments/visitor-auth";
 import type { VisitorAuthOptions, VisitorAuthAugmentExtras } from "../augments/visitor-auth/types";
-import { link } from "../augments/link";
-import type { LinkAugmentAgentCard, LinkAugmentOptions, LinkPeerConfig } from "../augments/link";
+// `link` (value) used to be statically imported here, which transitively
+// loaded `@auggy/link` at boot regardless of whether any agent selected the
+// link augment (Codex 1st-pass finding #3). After Phase 5 the value is
+// loaded lazily inside the `case "link":` branch via dynamic-import, and
+// `@auggy/link` itself resolves from the agent dir via importFromAgent.
+// Type imports remain — they're erased at compile, no runtime cost.
+import type {
+  LinkAugmentAgentCard,
+  LinkAugmentInternalOptions,
+  LinkPeerConfig,
+} from "../augments/link";
 import type { Augment, NotifyAugmentOptions, TelegramTransportOptions } from "../types";
 import type { AugmentConfig } from "./types";
 import type { BudgetsAugmentOptions } from "../augments/budgets";
@@ -297,7 +306,7 @@ function resolveBash(opts: Record<string, unknown>, agentDir: string): Augment {
   });
 }
 
-function resolveLink(opts: Record<string, unknown>, agentDir: string): Augment {
+async function resolveLink(opts: Record<string, unknown>, agentDir: string): Promise<Augment> {
   const card = opts.agentCard as Record<string, unknown>;
   const agentCard: LinkAugmentAgentCard = {
     id: card.id as string,
@@ -319,13 +328,20 @@ function resolveLink(opts: Record<string, unknown>, agentDir: string): Augment {
     };
   }
 
-  const linkOpts: LinkAugmentOptions = {
+  const linkOpts: LinkAugmentInternalOptions = {
     port: opts.port as number | undefined,
     dbPath: resolvePath(opts.dbPath as string, agentDir),
     agentCard,
     peers,
+    agentDir,
   };
-  return link(linkOpts);
+
+  // Dynamic-import the factory — keeps `@auggy/link` out of core's boot-time
+  // module graph. The relative import is internal to auggy (resolves through
+  // this package's own files); the factory's body then uses importFromAgent
+  // to reach `@auggy/link` in the AGENT's node_modules.
+  const { link } = await import("../augments/link");
+  return await link(linkOpts);
 }
 
 function resolveVisitorAuth(opts: Record<string, unknown>, agentDir: string): Augment {
@@ -519,7 +535,7 @@ export async function resolveAugments(
         augment = resolveVisitorAuth(opts, agentDir);
         break;
       case "link":
-        augment = resolveLink(opts, agentDir);
+        augment = await resolveLink(opts, agentDir);
         break;
       case "custom":
         augment = await resolveCustom(config, agentDir);

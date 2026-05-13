@@ -107,6 +107,13 @@ function makeLinkContext(overrides: Partial<LinkHandlerContext> = {}): LinkHandl
 
 function makeOpts(): Parameters<typeof link>[0] {
   return {
+    // agentDir: per the v0.3.2 package split, the link factory resolves
+    // `@auggy/link` from <agentDir>/node_modules via importFromAgent. In this
+    // repo, the workspace root has `@auggy/link` available via the
+    // devDependency declared in package.json, so process.cwd() (the repo
+    // root, when tests run via `bun test`) is a valid agentDir. Mirrors the
+    // pattern at tests/cli/engine-resolver.test.ts (AGENT_DIR = process.cwd()).
+    agentDir: process.cwd(),
     port: 0, // _skipServer is enabled in _createLinkForTesting, so port is ignored
     dbPath: uniqueDbPath(),
     agentCard: {
@@ -132,8 +139,8 @@ function makeOpts(): Parameters<typeof link>[0] {
 // ---------------------------------------------------------------------------
 
 describe("link augment — construction", () => {
-  it("returns an augment with transport + context + tools capability", () => {
-    const aug = link({ ...makeOpts(), _skipServer: true });
+  it("returns an augment with transport + context + tools capability", async () => {
+    const aug = await link({ ...makeOpts(), _skipServer: true });
     expect(aug.name).toBe("link");
     expect(aug.capabilities).toContain("transport");
     expect(aug.capabilities).toContain("context");
@@ -144,13 +151,13 @@ describe("link augment — construction", () => {
     expect(aug.tools?.map((t) => t.name).sort()).toEqual(["link_list", "link_send"]);
   });
 
-  it("identify() always returns null (link auth handled by BearerAuthProvider)", () => {
-    const aug = link({ ...makeOpts(), _skipServer: true });
+  it("identify() always returns null (link auth handled by BearerAuthProvider)", async () => {
+    const aug = await link({ ...makeOpts(), _skipServer: true });
     expect(aug.transport?.identify({ anything: true })).toBeNull();
   });
 
   it("onShutdown is wired", async () => {
-    const aug = link({ ...makeOpts(), _skipServer: true });
+    const aug = await link({ ...makeOpts(), _skipServer: true });
     expect(aug.onShutdown).toBeDefined();
     // Calling shutdown without prior register doesn't throw.
     await aug.onShutdown!();
@@ -164,7 +171,7 @@ describe("link augment — construction", () => {
 describe("link augment — inbound flow", () => {
   it("dispatches inbound HandlerContext → kernel.handleInbound with the right trigger", async () => {
     const opts = makeOpts();
-    const { augment, dispatch } = _createLinkForTesting(opts);
+    const { augment, dispatch } = await _createLinkForTesting(opts);
 
     let captured: TurnTrigger | undefined;
     const kernel: TransportKernel = {
@@ -212,7 +219,7 @@ describe("link augment — inbound flow", () => {
   });
 
   it("kernel rejection surfaces as ErrorOutcome on the wire", async () => {
-    const { augment, dispatch } = _createLinkForTesting(makeOpts());
+    const { augment, dispatch } = await _createLinkForTesting(makeOpts());
     const { kernel } = makeStubKernel((t) => rejectedResult(t, "over budget"));
     await augment.transport!.register(kernel, "link");
     const outcome = await dispatch(makeLinkContext());
@@ -225,7 +232,7 @@ describe("link augment — inbound flow", () => {
   });
 
   it("kernel thrown error surfaces as ErrorOutcome (no propagation past the augment)", async () => {
-    const { augment, dispatch } = _createLinkForTesting(makeOpts());
+    const { augment, dispatch } = await _createLinkForTesting(makeOpts());
     const kernel: TransportKernel = {
       handleInbound: async () => {
         throw new Error("boom");
@@ -244,7 +251,7 @@ describe("link augment — inbound flow", () => {
   });
 
   it("respects operator-renamed augment instance (sourceAugment + trigger.source)", async () => {
-    const { augment, dispatch } = _createLinkForTesting(makeOpts());
+    const { augment, dispatch } = await _createLinkForTesting(makeOpts());
     let captured: TurnTrigger | undefined;
     const kernel: TransportKernel = {
       handleInbound: async (t) => {
@@ -269,7 +276,7 @@ describe("link augment — inbound flow", () => {
 
 describe("link augment — trust gate", () => {
   it("trust: 'agent' participant → PeerIdentity.trustLevel = 'agent'", async () => {
-    const { augment, dispatch } = _createLinkForTesting(makeOpts());
+    const { augment, dispatch } = await _createLinkForTesting(makeOpts());
     let peer: PeerIdentity | null | undefined;
     const kernel: TransportKernel = {
       handleInbound: async (t) => {
@@ -288,7 +295,7 @@ describe("link augment — trust gate", () => {
   });
 
   it("trust: 'public' participant translates to public trust without publicSubstate", async () => {
-    const { augment, dispatch } = _createLinkForTesting(makeOpts());
+    const { augment, dispatch } = await _createLinkForTesting(makeOpts());
     let peer: PeerIdentity | null | undefined;
     const kernel: TransportKernel = {
       handleInbound: async (t) => {
@@ -335,7 +342,7 @@ describe("link_send tool", () => {
         };
       },
     };
-    const aug = link({
+    const aug = await link({
       ...makeOpts(),
       _skipServer: true,
       _peerClient: fakePeerClient as unknown as import("@auggy/link").PeerClient,
@@ -371,7 +378,7 @@ describe("link_send tool", () => {
         };
       },
     };
-    const aug = link({
+    const aug = await link({
       ...makeOpts(),
       _skipServer: true,
       _peerClient: fakePeerClient as unknown as import("@auggy/link").PeerClient,
@@ -395,7 +402,7 @@ describe("link_send tool", () => {
         return { ok: false as const, error: err };
       },
     };
-    const aug = link({
+    const aug = await link({
       ...makeOpts(),
       _skipServer: true,
       _peerClient: fakePeerClient as unknown as import("@auggy/link").PeerClient,
@@ -422,7 +429,7 @@ describe("link_list tool", () => {
   }
 
   it("returns the configured peer names as { name } entries", async () => {
-    const aug = link({
+    const aug = await link({
       ...makeOpts(),
       _skipServer: true,
       peers: {
@@ -455,7 +462,7 @@ describe("link_list tool", () => {
   });
 
   it("returns an empty array when no peers are configured", async () => {
-    const aug = link({
+    const aug = await link({
       ...makeOpts(),
       _skipServer: true,
       peers: {},
@@ -467,7 +474,7 @@ describe("link_list tool", () => {
   });
 
   it("includes purpose + examples when configured", async () => {
-    const aug = link({
+    const aug = await link({
       ...makeOpts(),
       _skipServer: true,
       peers: {
@@ -494,7 +501,7 @@ describe("link_list tool", () => {
   });
 
   it("omits empty examples array but keeps purpose when only purpose set", async () => {
-    const aug = link({
+    const aug = await link({
       ...makeOpts(),
       _skipServer: true,
       peers: {
@@ -534,7 +541,7 @@ describe("link augment — context block", () => {
   }
 
   it("emits a single preamble block listing peer names when peers are configured", async () => {
-    const aug = link({
+    const aug = await link({
       ...makeOpts(),
       _skipServer: true,
       peers: {
@@ -574,7 +581,7 @@ describe("link augment — context block", () => {
   });
 
   it("emits no block when peers map is empty", async () => {
-    const aug = link({
+    const aug = await link({
       ...makeOpts(),
       _skipServer: true,
       peers: {},

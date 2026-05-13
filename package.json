@@ -66,13 +66,13 @@
     "format": "bunx --bun @biomejs/biome format --write"
   },
   "devDependencies": {
+    "@auggy/link": "^0.1.2",
     "@types/bun": "latest"
   },
   "peerDependencies": {
     "typescript": "^5"
   },
   "dependencies": {
-    "@auggy/link": "^0.1.2",
     "@inquirer/prompts": "^8.4.1",
     "@supabase/supabase-js": "^2.103.0",
     "commander": "^14.0.3",

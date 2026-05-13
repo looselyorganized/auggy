@@ -44,19 +44,22 @@
  */
 
 import { z } from "zod";
-import {
-  BearerAuthProvider,
-  EnvAddressBook,
-  PeerClient,
-  SqliteTaskStore,
-  buildAgentCard,
-  createLinkApp,
-  isTaskResult,
-  type AgentCard as LinkAgentCard,
-  type HandlerContext as LinkHandlerContext,
-  type LinkAppHandle,
-  type MessageHandler as LinkMessageHandler,
-  type PeerBearerConfig,
+
+// Type-only imports from @auggy/link — erased at compile, so the global
+// `auggy` install doesn't transitively pull `@auggy/link` into consumers'
+// resolution trees. The augment's runtime values come from `importFromAgent`
+// at factory-call time (see the `link()` body below).
+//
+// `PeerClient` is aliased to `PeerClientType` so the lazily-resolved value
+// can re-use the bare `PeerClient` name inside the factory body without a
+// type/value collision.
+import type {
+  AgentCard as LinkAgentCard,
+  HandlerContext as LinkHandlerContext,
+  LinkAppHandle,
+  MessageHandler as LinkMessageHandler,
+  PeerBearerConfig,
+  PeerClient as PeerClientType,
 } from "@auggy/link";
 
 import { defineTool } from "../../helpers";
@@ -69,6 +72,7 @@ import type {
   TurnState,
 } from "../../types";
 import { handlerContextToTrigger, turnResultToHandlerOutcome } from "./translate";
+import { importFromAgent } from "../../cli/import-from-agent";
 
 // ---------------------------------------------------------------------------
 // Options
@@ -169,10 +173,22 @@ export interface LinkAugmentOptions {
 }
 
 /**
- * Test-only options. Production callers leave these unset; the augment
- * defaults to real Bun.serve binding and real SqliteTaskStore.
+ * Internal options. Carries `agentDir` so the factory can resolve `@auggy/link`
+ * from the agent's local `node_modules` via `importFromAgent`. `resolveLink`
+ * in the CLI is the canonical caller and threads `agentDir` from the
+ * augment-resolver's loop. Operator-facing yaml has no `agentDir` field —
+ * that's why this lives on the internal type, not on `LinkAugmentOptions`.
+ *
+ * Test-only fields below default to unset in production. Tests use them to
+ * bypass Bun.serve binding and inject fakes.
  */
 export interface LinkAugmentInternalOptions extends LinkAugmentOptions {
+  /**
+   * Absolute path to the agent's directory. Used by the factory to resolve
+   * `@auggy/link` against `<agentDir>/node_modules` via `importFromAgent`.
+   * Required — the package is no longer carried in `auggy` core's deps.
+   */
+  agentDir: string;
   /**
    * Skip the Bun.serve binding. Useful for unit tests that exercise the
    * MessageHandler closure directly without claiming a port. When set, the
@@ -184,7 +200,7 @@ export interface LinkAugmentInternalOptions extends LinkAugmentOptions {
    * Inject a custom PeerClient. Tests use this to replace the real outbound
    * client with an in-process recorder.
    */
-  _peerClient?: PeerClient;
+  _peerClient?: PeerClientType;
   /**
    * Inject the AddressBook env used by the default PeerClient. Tests skip
    * the synthesized PEERS / PEER_*_BEARER env mangling by passing an env
@@ -257,24 +273,6 @@ function buildAuthPeers(
   return Object.freeze(out);
 }
 
-/**
- * Build the link agent card from the operator config.
- *
- * v0.1 advertises an empty `skills: []` — augment-1's skill catalogue is
- * not yet mapped to link's SkillDescriptor shape. v0.2 will harvest skill
- * metadata from the agent's mounted skill folders.
- */
-function buildLinkAgentCard(card: LinkAugmentAgentCard): LinkAgentCard {
-  return buildAgentCard({
-    id: card.id,
-    name: card.name,
-    description: card.description,
-    endpoint_url: card.endpointUrl,
-    capabilities: card.capabilities ?? [],
-    skills: [],
-  });
-}
-
 /** Stable threadId for a given peer. */
 function threadIdForPeer(participantId: string): string {
   return `link-${participantId}`;
@@ -284,7 +282,23 @@ function threadIdForPeer(participantId: string): string {
 // Factory
 // ---------------------------------------------------------------------------
 
-export function link(opts: LinkAugmentInternalOptions): Augment {
+export async function link(opts: LinkAugmentInternalOptions): Promise<Augment> {
+  // Resolve @auggy/link from the agent's local node_modules. Per the v0.3.2
+  // package split, the SDK no longer ships with `auggy` core — it's declared
+  // in the agent's per-agent package.json (via the catalog's packageDeps for
+  // the link augment) and installed by `bun install` during `auggy create` or
+  // `auggy add`. Library types come from the `import type { ... }` block at
+  // module top; the value names bound below are runtime-only.
+  const {
+    BearerAuthProvider,
+    EnvAddressBook,
+    PeerClient,
+    SqliteTaskStore,
+    buildAgentCard,
+    createLinkApp,
+    isTaskResult,
+  } = await importFromAgent<typeof import("@auggy/link")>(opts.agentDir, "@auggy/link");
+
   const port = opts.port ?? 8081;
   const peers = opts.peers ?? {};
 
@@ -357,7 +371,19 @@ export function link(opts: LinkAugmentInternalOptions): Augment {
       // configuration error surfaces synchronously at boot.
       const taskStore = new SqliteTaskStore({ path: opts.dbPath });
       const auth = new BearerAuthProvider({ peers: buildAuthPeers(peers) });
-      const agentCard = buildLinkAgentCard(opts.agentCard);
+      // Inlined from the former `buildLinkAgentCard` helper — `buildAgentCard`
+      // is now bound from the lazy-loaded module at the top of the factory.
+      // v0.1 advertises `skills: []`; v0.2 will harvest from the agent's
+      // mounted skill folders.
+      const operatorCard = opts.agentCard;
+      const agentCard: LinkAgentCard = buildAgentCard({
+        id: operatorCard.id,
+        name: operatorCard.name,
+        description: operatorCard.description,
+        endpoint_url: operatorCard.endpointUrl,
+        capabilities: operatorCard.capabilities ?? [],
+        skills: [],
+      });
 
       linkHandle = createLinkApp({
         agentCard,
@@ -519,10 +545,10 @@ export function link(opts: LinkAugmentInternalOptions): Augment {
  * over `onMessage` is in scope. The factory ignores the test hooks when
  * called from production paths.
  */
-export function _createLinkForTesting(opts: LinkAugmentInternalOptions): {
+export async function _createLinkForTesting(opts: LinkAugmentInternalOptions): Promise<{
   augment: Augment;
   dispatch: (ctx: LinkHandlerContext) => Promise<ReturnType<LinkMessageHandler>>;
-} {
+}> {
   // Capture the production MessageHandler via the side channel so the test
   // exercises THE SAME closure that real link traffic runs through. No
   // duplicated try/catch or translation logic in test code.
@@ -532,7 +558,7 @@ export function _createLinkForTesting(opts: LinkAugmentInternalOptions): {
     _skipServer: true,
     _captureMessageHandler: capture,
   };
-  const augment = link(internalOpts);
+  const augment = await link(internalOpts);
 
   const dispatch = async (ctx: LinkHandlerContext): Promise<ReturnType<LinkMessageHandler>> => {
     if (!capture.handler) {
