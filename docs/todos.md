@@ -25,6 +25,42 @@ Format: `- [ ] [category] description (context: where/when found)`
 - [ ] **[org-context]** Retry-at-boot message says "running without org context" — should also say "lazy retry on first org_fetch" so operator doesn't restart unnecessarily.
 - [ ] **[scaffold]** `agent.yaml` comments could include engine provider options (currently only shows anthropic as the default).
 
+## v1.0 concierge-readiness
+
+Captured 2026-05-14 during a strategic pass on the v1.0 adoption case (single-owner concierge / front-door agent thesis). Items tiered by whether the thesis is structurally broken without them. Tier 1 is the v1.0 ship gate; Tier 2 is launch polish; Tier 3 is post-v1.0.
+
+### Tier 1 — blocks v1.0
+
+- [ ] **[chat]** Fix `auggy chat` ↔ scaffold bearer-name mismatch (`AUGGY_WEB_TOKEN` vs `WEB_BEARER_TOKEN`). Scaffold writes one, `chat/src/lib/bearer.ts` reads the other; both sides have passing tests but neither cross-checks. Freshly scaffolded agent fails its first GUI connect. (G12, ~30 min)
+- [ ] **[posture]** Flip anonymous-public from silent default to explicit opt-in via `webTransport.allowAnonymous` (default false in production scaffold profile, true in dev). Today Path 4 silently accepts unauthenticated turns on any public Railway URL. Update security eval suite to cover the gated posture. (G3, ~1 day)
+- [ ] **[visitor-auth]** Ship a console-log adapter so OSS adopters can test the magic-link flow without paying for AgentMail. Today `AGENTMAIL_API_KEY` is required; OSS adopters cannot run the visitor-recognition flow end-to-end without a third-party signup. (G34, ~half-day)
+- [ ] **[docs]** Write `docs/20-embedding.md` — copy-paste recipe for integrating a Next.js chat surface (the LORF platform pattern, OSS-friendly). Includes server-proxy bearer pattern, env-var setup, security notes. (G1, ~1 hour)
+- [ ] **[process]** Run end-to-end DX walkthrough (`auggy create → dev → chat → visitor-auth → memory → notify`). Includes error-path coverage (G29), security-eval update for gated posture (G30), bash-can't-read-`.env` verification (G31), `auggy dev` observability check (G37). (G8, ~3-4 hours)
+- [ ] **[chat]** Bake a minimal `/chat` HTML page into `webTransport`, served at `GET /` when no `publicFrontendUrl` is set. Localhost-default-on; public deploys gate behind visitorAuth's verify-email flow (depends on G3). Self-contained HTML+JS speaking AG-UI to `/agent/run`. (G2, ~half-day)
+- [ ] **[engines]** Verify the OpenAI adapter works pointed at an Ollama HTTP endpoint (`OPENAI_BASE_URL`); document or ship an `ollama` engine if needed. The "free local model" adoption-case promise is currently undelivered. (G35, ~30 min verify; +1 day if engine build)
+- [ ] **[examples]** Add `examples/concierge/` — vertical web-channel example (boutique store website chat + stubbed inventory module + visitor-auth + notify-to-operator). Demonstrates the augment composition pattern with a concrete domain. Instagram/SMS variants reframed as community wishlist (see `lo/docs/ROADMAP.md`). (G7, ~3-5 days)
+
+### Tier 2 — launch polish
+
+- [ ] **[budgets]** `auggy spend` command — operator surface for current spend by trust tier. Today operator queries SQLite directly. (G9)
+- [ ] **[budgets]** Budget-threshold notify integration — fire `notify` when 80% / 100% of `dailyBudgetUsd` hits. Closes the cost-awareness loop. (G10)
+- [ ] **[memory]** `auggy memory <agent> [--peer X]` — inspect/audit memory entries. Required for right-to-erasure verification and trust calibration; visually distinguishes agent-derived from creator-confirmed facts (G32). (G14)
+- [ ] **[create]** Notify destination prompt inline during `auggy create`. Mirror the existing `orgContext` conditional-prompts pattern: when notify is selected, ask "webhook / Telegram / log-to-file" + capture config. (G17 revised)
+- [ ] **[notify]** Ship a `log-to-file` destination adapter (`file:./notifications.jsonl`) as the zero-config default. Pairs with G17. (G18)
+- [ ] **[notify]** `auggy notify test <destination>` validator — operator verifies a destination works without triggering the agent. (G19)
+- [ ] **[org-context]** `auggy fact <agent> "..."` for adding org-context entries without editing files. Concrete use case: "we just got the green linen shirt in stock." (G23)
+- [ ] **[deploy]** `auggy deploy logs <agent>` + post-deploy success verification (`wait-for /health = 200` after `railway up --detach`). (G25 + G26)
+
+### Tier 3 — defer past v1.0
+
+- [ ] **[chat-widget]** Publish `@auggy/chat-widget-react` (+ optional `@auggy/next` route helper). Recipe doc is enough for v1.0; package shape benefits from real adopter feedback. (G1 packaged)
+- [ ] **[link]** Mesh-vs-tunnel design resolution (npm-bundled mesh vs explicit per-peer config). (G4)
+- [ ] **[creator-identity]** Multi-operator distinguishing — today single shared bearer = single "creator." Confirmed OK for v1.0 single-owner concierge thesis. (G11)
+- [ ] **[trust]** `staff` (intermediate) trust tier between creator and public. Needed for HVAC-dispatcher-style scenarios; v1.1+. (G13)
+- [ ] **[memory]** Row-count cap on layeredMemory entries (today `retentionDays: 90` is time-only). Slow growth at typical traffic; verify with monitoring before adding. (G15)
+- [ ] **[org-context]** Naming + mode-signal clarity (`baseUrl: file://` default vs catalog description saying "API"). Don't rename in v1.0. (G21 + G22)
+- [ ] **[deploy]** Other cloud targets (Fly, Render, custom Docker). Railway is v1.0 scope. (G24)
+
 ## OSS launch — open questions
 
 - [ ] **[docs] How do we document the user-facing API surface?** We don't have an "SDK" per se — `defineAgent`, `defineAugment`, `defineTool` plus the engines is a small surface. The `docs/01-12-*.md` reference set is contributor-facing, not user-facing. Decide between: (a) one `docs/00-api-reference.md` page that lists each public function with signature + one example (cheap, ~1 hour), (b) auto-generated TypeDoc reference (medium, half-day), (c) a real docs site (Mintlify / Nextra / Starlight, hosted on a subdomain TBD, ~half-day). v0.3.1 shipped without this; revisit pre-OSS-launch. Surfaced 2026-04-28 during OSS readiness audit.
