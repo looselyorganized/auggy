@@ -441,7 +441,7 @@ When set, `GET /` returns `302 Location: <publicFrontendUrl>`:
     port: 8080
     auth:
       type: bearer
-      token: ${WEB_BEARER_TOKEN}
+      token: ${AUGGY_WEB_TOKEN}
     publicFrontendUrl: https://your-frontend.example/chat
 ```
 

@@ -2,7 +2,7 @@ import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 
 /**
- * Reads `<agentDir>/.env` and extracts the value of `WEB_BEARER_TOKEN`.
+ * Reads `<agentDir>/.env` and extracts the value of `AUGGY_WEB_TOKEN`.
  * Returns null if the file or variable is missing.
  *
  * Minimal .env parser: handles quoted/unquoted values, comments, CRLF.
@@ -23,7 +23,7 @@ export function extractBearerFromEnv(agentDir: string): string | null {
     if (eq < 0) continue;
 
     const key = line.slice(0, eq).trim();
-    if (key !== "WEB_BEARER_TOKEN") continue;
+    if (key !== "AUGGY_WEB_TOKEN") continue;
 
     let value = line.slice(eq + 1).trim();
     if (

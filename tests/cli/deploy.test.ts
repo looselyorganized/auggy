@@ -82,7 +82,7 @@ describe("runDeploy", () => {
     mkdirSync(agentDir, { recursive: true });
     writeFileSync(join(agentDir, "agent.yaml"), "name: zip\nmodel: claude-sonnet-4-6\n");
     writeFileSync(join(agentDir, "identity.md"), "# Zip\n");
-    writeFileSync(join(agentDir, ".env"), "ANTHROPIC_API_KEY=sk-test\nWEB_BEARER_TOKEN=tok-1\n");
+    writeFileSync(join(agentDir, ".env"), "ANTHROPIC_API_KEY=sk-test\nAUGGY_WEB_TOKEN=tok-1\n");
     addAgent("zip", agentDir, { auggyDir });
   });
 
@@ -112,9 +112,9 @@ describe("runDeploy", () => {
     expect(calls.addVolume).toEqual([{ name: "zip-data", mountPath: "/app/data" }]);
     expect(calls.generateDomain).toBe(1);
 
-    // Three secrets: ANTHROPIC_API_KEY + WEB_BEARER_TOKEN + AUGGY_PUBLIC_URL.
+    // Three secrets: ANTHROPIC_API_KEY + AUGGY_WEB_TOKEN + AUGGY_PUBLIC_URL.
     const keys = calls.setVariable.map((v) => v.key).sort();
-    expect(keys).toEqual(["ANTHROPIC_API_KEY", "AUGGY_PUBLIC_URL", "WEB_BEARER_TOKEN"]);
+    expect(keys).toEqual(["ANTHROPIC_API_KEY", "AUGGY_PUBLIC_URL", "AUGGY_WEB_TOKEN"]);
     expect(calls.setVariable.find((v) => v.key === "AUGGY_PUBLIC_URL")?.value).toBe(
       "https://zip-production-abcd.up.railway.app",
     );

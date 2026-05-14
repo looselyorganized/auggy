@@ -25,7 +25,7 @@ afterEach(() => {
 // Avoids the random-port-collision flake.
 
 function setupMockAgent(bearer: string) {
-  writeFileSync(join(tempAgentDir, ".env"), `WEB_BEARER_TOKEN=${bearer}\n`);
+  writeFileSync(join(tempAgentDir, ".env"), `AUGGY_WEB_TOKEN=${bearer}\n`);
   const handle = Bun.serve({
     port: 0,
     async fetch(req) {

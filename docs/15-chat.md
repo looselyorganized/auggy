@@ -45,7 +45,7 @@ The chat package lives at `augment-1/chat/` — Vite/React SPA with a Bun.serve 
               POST /api/chat/<id> → proxy               POST /agent/run (Authorization: Bearer ...)
 ```
 
-Bearer tokens are read fresh from each agent's `.env` (the `WEB_BEARER_TOKEN` value) on every chat call. **The browser never sees a bearer.**
+Bearer tokens are read fresh from each agent's `.env` (the `AUGGY_WEB_TOKEN` value) on every chat call. **The browser never sees a bearer.**
 
 ## Per-agent chat history
 
@@ -84,7 +84,7 @@ Use `--rebuild` to build from source (developer mode; requires Bun + Vite).
 
 - **"No agents detected on this machine"** — run `auggy dev <name>` first; check `auggy status` for live PIDs
 - **"agent not found" (404)** — the PID manifest exists but the PID is dead; restart the agent
-- **"no WEB_BEARER_TOKEN in <agentDir>/.env" (412)** — set `WEB_BEARER_TOKEN=…` in the agent's `.env` and run `auggy dev` again
+- **"no AUGGY_WEB_TOKEN in <agentDir>/.env" (412)** — set `AUGGY_WEB_TOKEN=…` in the agent's `.env` and run `auggy dev` again
 - **"upstream connect failed" (502)** — agent is alive per PID but unreachable on its port; check the agent's logs
 - **Port 8090 in use** — pass `--port` with a free port
 
