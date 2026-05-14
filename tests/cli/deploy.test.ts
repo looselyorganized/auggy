@@ -298,6 +298,6 @@ describe("runDeploy", () => {
     const dockerfile = readFileSync(join(stagingDir!, "Dockerfile"), "utf-8");
     expect(dockerfile).toMatch(/ENTRYPOINT \["\/app\/auggy-entrypoint\.sh", "zip"\]/);
     const entrypoint = readFileSync(join(stagingDir!, "auggy-entrypoint.sh"), "utf-8");
-    expect(entrypoint).toMatch(/exec auggy dev "\$1"/);
+    expect(entrypoint).toMatch(/exec bunx auggy dev "\$1"/);
   });
 });

@@ -27,6 +27,13 @@ describe("stageBundle", () => {
   function seedAgentDir() {
     writeFileSync(join(agentDir, "agent.yaml"), "name: zip\n");
     writeFileSync(join(agentDir, "identity.md"), "# Identity\n");
+    // v0.3.2 per-agent manifest + lockfile — MUST land in the staged bundle
+    // so the Dockerfile's `COPY package.json` + `bun install` layer works.
+    writeFileSync(
+      join(agentDir, "package.json"),
+      `{"name":"auggy-agent-zip","private":true,"type":"module","dependencies":{"auggy":"^0.3.1","@auggy/anthropic":"^0.3.1"}}\n`,
+    );
+    writeFileSync(join(agentDir, "bun.lock"), `# bun lockfile placeholder\n`);
     writeFileSync(join(agentDir, ".env"), "ANTHROPIC_API_KEY=secret\n");
     writeFileSync(join(agentDir, ".env.example"), "ANTHROPIC_API_KEY=\n");
     writeFileSync(join(agentDir, "memory.db"), "binary");
@@ -58,6 +65,17 @@ describe("stageBundle", () => {
     expect(existsSync(join(staged, "identity.md"))).toBe(true);
     expect(existsSync(join(staged, "skills", "facility", "SKILL.md"))).toBe(true);
     expect(existsSync(join(staged, ".env.example"))).toBe(true);
+  });
+
+  test("includes package.json + bun.lock (Phase 7: Dockerfile COPY+install relies on these)", () => {
+    // Regression guard for the Phase 7 Dockerfile rewrite: if these files
+    // ever fall out of the staged bundle, the cloud image's `bun install`
+    // step would fail at build time and the agent never boots.
+    seedAgentDir();
+    const staged = stageBundle({ agentDir, agentName: "zip" });
+    cleanup.push(staged);
+    expect(existsSync(join(staged, "package.json"))).toBe(true);
+    expect(existsSync(join(staged, "bun.lock"))).toBe(true);
   });
 
   test("excludes .env, *.db*, workspace/, node_modules/, .git/, .DS_Store, .worktrees/, .claude/", () => {
