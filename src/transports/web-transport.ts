@@ -22,6 +22,7 @@ import {
   type VisitorTokenPayload,
 } from "./visitor-token";
 import { withTimeout, TimeoutError } from "../kernel/timeout";
+import { resolveConfigBool } from "../config";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -95,6 +96,29 @@ export interface WebTransportOptions {
    * Cloudflare for the first time).
    */
   trustedProxies?: string[];
+  /**
+   * Whether requests to `/agent/run` may proceed WITHOUT a bearer token.
+   *
+   * Precedence (most-explicit wins):
+   *   1. This yaml value (when defined)
+   *   2. Env var `AUGGY_ALLOW_ANONYMOUS` (strict "true" / "false")
+   *   3. Default: `process.env.NODE_ENV !== "production"`
+   *
+   * When `true`, missing-bearer requests fall through to `identify()` and
+   * are minted as `public:anonymous` (Path 4). The budgets augment caps
+   * cost; visitorAuth — when mounted — provides the upgrade path to
+   * recognized identity.
+   *
+   * When `false`, missing-bearer requests get 401.
+   *
+   * In ALL cases, a bearer that is PRESENT but invalid returns 401 (no
+   * silent downgrade to anonymous, no timing leak).
+   *
+   * The default rule means production deploys (NODE_ENV=production on
+   * Railway/Fly/etc.) are gated by default; local dev (NODE_ENV unset)
+   * permits anonymous chat out of the box.
+   */
+  allowAnonymous?: boolean;
 }
 
 interface AGUIRunRequestBody {
@@ -413,6 +437,17 @@ export function webTransport(opts: WebTransportOptions): Augment {
   const visitorTokenTtl = opts.visitorTokens?.ttlSeconds ?? 30 * 24 * 3600;
   let signingKey: CryptoKey | null = null;
 
+  // Anonymous-public posture (G3 — concierge-readiness gate). Resolved once
+  // at factory time across yaml > env > default precedence. The resolution
+  // object carries `source` so the boot-time log line in `register()` can
+  // tell the operator exactly why the agent is running in this posture.
+  const allowAnonymousResolution = resolveConfigBool(
+    opts.allowAnonymous,
+    "AUGGY_ALLOW_ANONYMOUS",
+    () => process.env.NODE_ENV !== "production",
+  );
+  const allowAnonymous = allowAnonymousResolution.value;
+
   // ---------------------------------------------------------------------------
   // Identity resolver — four paths
   // ---------------------------------------------------------------------------
@@ -422,6 +457,11 @@ export function webTransport(opts: WebTransportOptions): Augment {
       headers: Record<string, string>;
       __visitorPayload?: VisitorTokenPayload;
       __threadId?: string;
+      // True iff the HTTP handler already validated a bearer token for this
+      // request. Path 1 (creator) requires this — without it the request
+      // arrived via the allowAnonymous path and MUST NOT be promoted to
+      // creator trust. Missing/false falls through to Path 4 (public anon).
+      __bearerValidated?: boolean;
     };
     const headers = req.headers;
     const kind = (headers["x-peer-kind"] as PeerIdentity["kind"]) ?? "human";
@@ -451,10 +491,14 @@ export function webTransport(opts: WebTransportOptions): Augment {
       };
     }
 
-    // PATH 1: Creator — bearer-only request (no visitor token either).
-    // The bearer token is already validated by the HTTP handler before identify()
-    // is called. If there's no visitor token, this is a direct creator call.
-    if (!req.__visitorPayload && !headers["x-visitor-token"]) {
+    // PATH 1: Creator — bearer-validated request (no agent / visitor headers).
+    // REQUIRES `__bearerValidated === true`. The HTTP handler sets that flag
+    // only after `isValidAuth` passes. With `allowAnonymous=true`, a no-bearer
+    // request reaches identify() with the flag falsy and MUST NOT be minted
+    // creator — it falls through to Path 4. This guard is the security gate
+    // for the anonymous path: anonymous traffic can never be silently promoted
+    // to creator trust just by omitting auth + visitor headers.
+    if (req.__bearerValidated === true && !req.__visitorPayload && !headers["x-visitor-token"]) {
       return {
         id: "creator",
         kind: "human",
@@ -497,17 +541,43 @@ export function webTransport(opts: WebTransportOptions): Augment {
       kernel = k;
       augmentRoutes = k.getAugmentRoutes();
       augmentRouteMap = new Map();
+      let visitorAuthMounted = false;
       for (const r of augmentRoutes) {
         augmentRouteMap.set(`${r.method} ${r.path}`, r);
         // Operator-visible audit: log every auth: "none" route so an operator
         // grepping the boot log can spot unauthenticated surfaces.
         // Runtime values are CollectedRoute (extends AugmentHttpRoute with augmentName).
+        const augmentName = (r as { augmentName?: string }).augmentName ?? "(unknown)";
+        if (augmentName === "visitor-auth") visitorAuthMounted = true;
         if (r.auth === "none") {
-          const augmentName = (r as { augmentName?: string }).augmentName ?? "(unknown)";
           console.warn(
             `[web-transport] augment "${augmentName}" registered ${r.method} ${r.path} with auth: "none" — public, unauthenticated.`,
           );
         }
+      }
+
+      // Operator-facing posture line. Always emitted so operators always see
+      // the resolved value AND its source. Source detail helps distinguish
+      // "I set this in yaml" from "Railway set NODE_ENV=production for me".
+      const sourceDetail =
+        allowAnonymousResolution.source === "env"
+          ? `env, AUGGY_ALLOW_ANONYMOUS=${process.env.AUGGY_ALLOW_ANONYMOUS}`
+          : allowAnonymousResolution.source === "default"
+            ? `default, NODE_ENV=${process.env.NODE_ENV ?? "unset"}`
+            : "yaml";
+      console.log(`[web-transport] allowAnonymous=${allowAnonymous} (source: ${sourceDetail})`);
+
+      // visitorAuth-missing warning. Fires only when allowAnonymous=true via
+      // default or env — i.e., the operator hasn't explicitly chosen this in
+      // yaml. If they wrote `allowAnonymous: true` in yaml, they've signaled
+      // intent and we don't second-guess.
+      if (allowAnonymous && !visitorAuthMounted && allowAnonymousResolution.source !== "yaml") {
+        console.warn(
+          `[web-transport] WARNING: allowAnonymous=true but visitor-auth augment is not mounted. ` +
+            `Anonymous visitors have no documented upgrade path to recognized identity. ` +
+            `Consider \`auggy add visitor-auth\`. To suppress this warning explicitly, ` +
+            `set \`allowAnonymous: true\` in agent.yaml (you are doing this on purpose).`,
+        );
       }
     },
     identify,
@@ -524,7 +594,20 @@ export function webTransport(opts: WebTransportOptions): Augment {
 
   async function handleAgentRun(req: Request): Promise<Response> {
     const authHeader = req.headers.get("authorization") ?? "";
-    if (!isValidAuth(authHeader)) {
+    // Bearer policy:
+    //   - bearer present + valid   → proceed (Path 1 creator, or
+    //                                Path 2/3 via the agent/visitor headers
+    //                                resolved later in identify())
+    //   - bearer present + invalid → 401 (timing-safe; no silent downgrade)
+    //   - bearer absent + allowAnonymous=true  → fall through to identify(),
+    //                                            Path 4 mints public:anonymous
+    //   - bearer absent + allowAnonymous=false → 401
+    const hasBearerAttempt = authHeader.length > 0;
+    if (hasBearerAttempt) {
+      if (!isValidAuth(authHeader)) {
+        return json({ error: "unauthorized" }, 401);
+      }
+    } else if (!allowAnonymous) {
       return json({ error: "unauthorized" }, 401);
     }
 
@@ -630,12 +713,16 @@ export function webTransport(opts: WebTransportOptions): Augment {
     // Derive threadId — needed before identify() so anonymous peer IDs are stable.
     const threadId = body.threadId ?? body.contextId ?? crypto.randomUUID();
 
-    // Build identify argument. Inject __threadId so the anonymous path can use it.
+    // Build identify argument. Inject __threadId so the anonymous path can use
+    // it. Inject __bearerValidated so Path 1 (creator) can refuse to mint
+    // creator trust for the allowAnonymous bypass — only requests that arrived
+    // with a bearer that passed `isValidAuth` are eligible for creator.
     const identifyArg: {
       headers: Record<string, string>;
       __visitorPayload?: VisitorTokenPayload;
       __threadId: string;
-    } = { headers, __threadId: threadId };
+      __bearerValidated: boolean;
+    } = { headers, __threadId: threadId, __bearerValidated: hasBearerAttempt };
     if (visitorPayload) {
       identifyArg.__visitorPayload = visitorPayload;
     }

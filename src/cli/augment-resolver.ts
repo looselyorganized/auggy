@@ -242,6 +242,11 @@ function resolveWebTransport(
           revocationCheck: (id: string) => lateBindings.revocationCheck?.(id) ?? false,
         }
       : undefined,
+    // G3: explicit yaml value must reach webTransport so the yaml > env >
+    // default precedence works end-to-end. Without this forward, agent.yaml's
+    // allowAnonymous is silently dropped and the env/default rule wins every
+    // time — breaking the "operator's most-explicit choice wins" contract.
+    allowAnonymous: opts.allowAnonymous as boolean | undefined,
   });
 }
 

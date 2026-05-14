@@ -100,6 +100,97 @@ describe("resolveAugments — webTransport", () => {
     expect(augments[0]!.name).toBe("web");
     expect(augments[0]!.transport).toBeDefined();
   });
+
+  // G3 + codex adversarial finding #2: allowAnonymous in agent.yaml MUST be
+  // forwarded by the resolver to webTransport, otherwise the documented
+  // yaml > env > default precedence is broken end-to-end. This test exercises
+  // the full pipeline (yaml options → resolveAugments → defineAgent →
+  // listening server) and proves yaml=false rejects no-bearer requests even
+  // when NODE_ENV is unset (which would otherwise default-allow anonymous).
+  test("allowAnonymous=false from yaml options overrides env-based default", async () => {
+    const originalNodeEnv = process.env.NODE_ENV;
+    const originalAnon = process.env.AUGGY_ALLOW_ANONYMOUS;
+    // Force the default rule to "allow" so a passthrough bug would let
+    // anonymous requests succeed; yaml=false must still gate them.
+    delete process.env.NODE_ENV;
+    delete process.env.AUGGY_ALLOW_ANONYMOUS;
+
+    const port = 19100;
+    try {
+      const configs: AugmentConfig[] = [
+        {
+          name: "web",
+          type: "webTransport",
+          options: {
+            port,
+            auth: { type: "bearer", token: "test-token" },
+            allowAnonymous: false,
+          },
+        },
+      ];
+      const augments = await resolveAugments(configs, TMP);
+      const model = createMockModel();
+      const agent = defineAgent({ name: "test", model: "mock", augments }, model);
+      await agent.start();
+      try {
+        const resp = await fetch(`http://localhost:${port}/agent/run`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
+        });
+        // Without the resolver forwarding allowAnonymous, env-default would
+        // make this 200; with the fix it correctly stays 401.
+        expect(resp.status).toBe(401);
+      } finally {
+        await agent.stop();
+      }
+    } finally {
+      if (originalNodeEnv !== undefined) process.env.NODE_ENV = originalNodeEnv;
+      if (originalAnon !== undefined) process.env.AUGGY_ALLOW_ANONYMOUS = originalAnon;
+    }
+  });
+
+  test("allowAnonymous=true from yaml options admits no-bearer requests even with NODE_ENV=production", async () => {
+    const originalNodeEnv = process.env.NODE_ENV;
+    const originalAnon = process.env.AUGGY_ALLOW_ANONYMOUS;
+    // Force the default rule to "reject"; yaml=true must override.
+    process.env.NODE_ENV = "production";
+    delete process.env.AUGGY_ALLOW_ANONYMOUS;
+
+    const port = 19101;
+    try {
+      const configs: AugmentConfig[] = [
+        {
+          name: "web",
+          type: "webTransport",
+          options: {
+            port,
+            auth: { type: "bearer", token: "test-token" },
+            allowAnonymous: true,
+          },
+        },
+      ];
+      const augments = await resolveAugments(configs, TMP);
+      const model = createMockModel({ response: "ok" });
+      const agent = defineAgent({ name: "test", model: "mock", augments }, model);
+      await agent.start();
+      try {
+        const resp = await fetch(`http://localhost:${port}/agent/run`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
+        });
+        expect(resp.status).toBe(200);
+        await resp.text();
+      } finally {
+        await agent.stop();
+      }
+    } finally {
+      if (originalNodeEnv !== undefined) process.env.NODE_ENV = originalNodeEnv;
+      else delete process.env.NODE_ENV;
+      if (originalAnon !== undefined) process.env.AUGGY_ALLOW_ANONYMOUS = originalAnon;
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------

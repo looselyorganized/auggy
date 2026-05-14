@@ -102,7 +102,8 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
   },
   {
     label: "webTransport",
-    description: "AG-UI chat endpoint (HTTP + SSE)",
+    description:
+      "AG-UI chat endpoint (HTTP + SSE) — bearer-gated by default; opt-in to anonymous chat via allowAnonymous",
     type: "webTransport",
     defaultName: "web",
     defaultOptions: {

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`webTransport.allowAnonymous` option** (G3 — v1.0 concierge-readiness). Gates whether `/agent/run` accepts requests without a bearer token. Resolved at factory time across three precedence levels: explicit yaml value > `AUGGY_ALLOW_ANONYMOUS` env var (strict `"true"` / `"false"` only) > default rule (`process.env.NODE_ENV !== "production"`). Production deploys (Railway/Fly set `NODE_ENV=production`) are bearer-gated by default; local dev permits anonymous chat out of the box. A bearer that is PRESENT but invalid always returns 401 — never a silent downgrade to anonymous. Documented at `docs/06-transports.md#anonymous-posture`.
+- **Boot-time operator log line** announcing the resolved `allowAnonymous` value AND its source (yaml / env / default). When `allowAnonymous=true` resolves via default or env AND the `visitor-auth` augment is not mounted, a startup warning fires explaining there is no upgrade path for anonymous visitors. Explicit yaml suppresses the warning (operator has signaled intent).
+- **`src/config/resolve.ts` shared helper.** New `resolveConfigBool(yamlValue, envKey, defaultFn)` returns `ConfigResolution<T>` with both the resolved `value` and its `source`. Establishes the codebase pattern for operational settings — future settings (G36 admin dashboard, G37 `auggy config` CLI) plug into this layer.
+
 ## [0.3.1] - 2026-05-12
 
 The deployable-runtime release. First npm-installable Auggy CLI with shipped feature set (0.3.0 was a name-claim publish with no functional changes). End-to-end Railway deployment support and a structural eval suite for the layered-memory autoSave path.
