@@ -457,6 +457,11 @@ export function webTransport(opts: WebTransportOptions): Augment {
       headers: Record<string, string>;
       __visitorPayload?: VisitorTokenPayload;
       __threadId?: string;
+      // True iff the HTTP handler already validated a bearer token for this
+      // request. Path 1 (creator) requires this — without it the request
+      // arrived via the allowAnonymous path and MUST NOT be promoted to
+      // creator trust. Missing/false falls through to Path 4 (public anon).
+      __bearerValidated?: boolean;
     };
     const headers = req.headers;
     const kind = (headers["x-peer-kind"] as PeerIdentity["kind"]) ?? "human";
@@ -486,10 +491,14 @@ export function webTransport(opts: WebTransportOptions): Augment {
       };
     }
 
-    // PATH 1: Creator — bearer-only request (no visitor token either).
-    // The bearer token is already validated by the HTTP handler before identify()
-    // is called. If there's no visitor token, this is a direct creator call.
-    if (!req.__visitorPayload && !headers["x-visitor-token"]) {
+    // PATH 1: Creator — bearer-validated request (no agent / visitor headers).
+    // REQUIRES `__bearerValidated === true`. The HTTP handler sets that flag
+    // only after `isValidAuth` passes. With `allowAnonymous=true`, a no-bearer
+    // request reaches identify() with the flag falsy and MUST NOT be minted
+    // creator — it falls through to Path 4. This guard is the security gate
+    // for the anonymous path: anonymous traffic can never be silently promoted
+    // to creator trust just by omitting auth + visitor headers.
+    if (req.__bearerValidated === true && !req.__visitorPayload && !headers["x-visitor-token"]) {
       return {
         id: "creator",
         kind: "human",
@@ -704,12 +713,16 @@ export function webTransport(opts: WebTransportOptions): Augment {
     // Derive threadId — needed before identify() so anonymous peer IDs are stable.
     const threadId = body.threadId ?? body.contextId ?? crypto.randomUUID();
 
-    // Build identify argument. Inject __threadId so the anonymous path can use it.
+    // Build identify argument. Inject __threadId so the anonymous path can use
+    // it. Inject __bearerValidated so Path 1 (creator) can refuse to mint
+    // creator trust for the allowAnonymous bypass — only requests that arrived
+    // with a bearer that passed `isValidAuth` are eligible for creator.
     const identifyArg: {
       headers: Record<string, string>;
       __visitorPayload?: VisitorTokenPayload;
       __threadId: string;
-    } = { headers, __threadId: threadId };
+      __bearerValidated: boolean;
+    } = { headers, __threadId: threadId, __bearerValidated: hasBearerAttempt };
     if (visitorPayload) {
       identifyArg.__visitorPayload = visitorPayload;
     }

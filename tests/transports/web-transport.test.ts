@@ -30,7 +30,7 @@ describe("webTransport structure", () => {
 
 describe("webTransport identity — four paths", () => {
   // Path 1: Creator — bearer-only, no agent headers, no visitor token
-  it("Path 1: bearer-only request (no agent headers, no visitor token) → creator", () => {
+  it("Path 1: bearer-validated request (no agent headers, no visitor token) → creator", () => {
     const aug = webTransport({
       port: 0,
       auth: { type: "bearer", token: "test-token" },
@@ -38,6 +38,7 @@ describe("webTransport identity — four paths", () => {
     const identity = aug.transport!.identify({
       headers: {},
       __threadId: "thread-123",
+      __bearerValidated: true,
     });
     expect(identity).not.toBeNull();
     expect(identity?.trustLevel).toBe("creator");
@@ -53,8 +54,44 @@ describe("webTransport identity — four paths", () => {
     const identity = aug.transport!.identify({
       headers: {},
       __threadId: "thread-abc",
+      __bearerValidated: true,
     });
     expect(identity?.publicSubstate).toBeUndefined();
+  });
+
+  // G3: explicit security gate — Path 1 MUST require bearer validation.
+  // Without this guard, an allowAnonymous bypass (no bearer) would silently
+  // resolve to creator trust, defeating the safety story. Covered by codex
+  // adversarial review #1.
+  it("Path 1: bare request without __bearerValidated → public:anonymous, NOT creator", () => {
+    const aug = webTransport({
+      port: 0,
+      auth: { type: "bearer", token: "test-token" },
+    });
+    const identity = aug.transport!.identify({
+      headers: {},
+      __threadId: "thread-no-auth",
+      // __bearerValidated intentionally absent — simulates the
+      // allowAnonymous bypass path where no bearer was validated
+    });
+    expect(identity?.trustLevel).toBe("public");
+    expect(identity?.publicSubstate).toBe("anonymous");
+    expect(identity?.id).toBe("anon-thread-no-auth");
+  });
+
+  it("Path 1: __bearerValidated=false explicitly → public:anonymous (no silent creator)", () => {
+    const aug = webTransport({
+      port: 0,
+      auth: { type: "bearer", token: "test-token" },
+    });
+    const identity = aug.transport!.identify({
+      headers: {},
+      __threadId: "thread-explicit-false",
+      __bearerValidated: false,
+    });
+    expect(identity?.trustLevel).toBe("public");
+    expect(identity?.publicSubstate).toBe("anonymous");
+    expect(identity?.id).toBe("anon-thread-explicit-false");
   });
 
   // Path 2: Agent — x-agent-id + x-agent-secret
@@ -171,21 +208,22 @@ describe("webTransport identity — four paths", () => {
     expect(identity?.id).toBe("anon-thread-anon-999");
   });
 
-  it("Path 4: anonymous peer id includes the threadId", () => {
+  it("Path 4: bare request with no headers and no __bearerValidated falls through to anonymous", () => {
+    // Updated under G3: previously this asserted `creator` because Path 1 was
+    // reachable by any request without a visitor token. The G3 security gate
+    // requires __bearerValidated for Path 1, so a bare request (as if it
+    // arrived via the allowAnonymous bypass) correctly lands at Path 4.
     const aug = webTransport({
       port: 0,
       auth: { type: "bearer", token: "test-token" },
     });
     const identity = aug.transport!.identify({
       headers: {},
-      // Simulate: visitor token header was present but not verified
-      // by NOT injecting __visitorPayload. But path 1 would fire here
-      // since there's no x-visitor-token header. Let's simulate a
-      // failed visitor token attempt.
+      __threadId: "thread-bare",
     });
-    // No x-visitor-token header + no agent headers → creator (path 1)
-    // To get anonymous, need x-visitor-token header but no payload.
-    expect(identity?.trustLevel).toBe("creator");
+    expect(identity?.trustLevel).toBe("public");
+    expect(identity?.publicSubstate).toBe("anonymous");
+    expect(identity?.id).toBe("anon-thread-bare");
   });
 
   it("Path 4: x-visitor-token header present but no payload → anonymous with threadId", () => {
