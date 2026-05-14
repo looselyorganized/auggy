@@ -33,8 +33,8 @@ The CLI walks you through:
 
 1. **Presence + auth checks** — confirms `railway` is installed and logged in.
 2. **Project ID prompt** — paste the project ID from the Railway dashboard URL (e.g. `proj_abc123`).
-3. **Bundle staging** — copies your agent directory minus `.env`, `*.db*`, `workspace/`, `node_modules/`, `.git/`, `.worktrees/`, `.claude/`, `.DS_Store`, `*.tmp` into a temp dir.
-4. **Dockerfile + entrypoint generation** — written into the staging dir. Static; not operator-tunable at v1.0.
+3. **Bundle staging** — copies your agent directory minus `.env`, `*.db*`, `workspace/`, `node_modules/`, `.git/`, `.worktrees/`, `.claude/`, `.DS_Store`, `*.tmp` into a temp dir. The agent's `package.json` + `bun.lock` (per-agent manifest from v0.3.2) ARE included so the image can install your pinned deps.
+4. **Dockerfile + entrypoint generation** — written into the staging dir. Static; not operator-tunable at v1.0. The image copies `package.json` + `bun.lock` first, runs `bun install` to materialize `node_modules/` inside the image, then COPYs the rest of the agent dir; the entrypoint invokes `bunx auggy dev` so it uses the per-agent install rather than a global `auggy`.
 5. **Secrets diff + confirm** — shows what's about to be pushed to Railway (with values redacted). Decline aborts the deploy. Pass `--yes` to skip.
 6. **`railway link`** — connects the staging dir to your `<name>` service (auto-created if it doesn't exist in the project).
 7. **`railway volume add`** — provisions a persistent volume `<name>-data` mounted at `/app/data`. Holds all SQLite-backed state across redeploys.

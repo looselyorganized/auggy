@@ -35,12 +35,21 @@ export function generateDockerfile(opts: DockerfileOptions): string {
 
 WORKDIR /app
 
-# Install auggy globally so the entrypoint can call \`auggy dev\`.
-# (Phase 3 of the deploy plan: package will be published as @auggy/cli;
-# update this to "@auggy/cli" once published. Until then, build images
-# from a workspace clone.)
-RUN bun install -g auggy
+# Per-agent install (v0.3.2 package split): the agent's package.json declares
+# its own deps — auggy + the chosen engine adapter (@auggy/anthropic|openai|
+# openrouter) + any augment-deps (@auggy/link, @supabase/supabase-js, ...).
+# Copy the manifest + lockfile first so Docker caches the install layer
+# independently of code changes. \`bun.loc[k]\` is a bracket-glob trick that
+# silently skips when the lockfile is absent (no failure mode if the agent
+# was scaffolded with --skip-install).
+COPY package.json /app/
+COPY bun.loc[k] /app/
+RUN bun install
 
+# Copy the rest of the agent dir (agent.yaml, identity.md, skills/, etc).
+# node_modules/ was excluded at staging time so this won't overwrite the
+# freshly-installed deps. package.json + bun.lock re-COPY here is a no-op
+# (same content) and keeps the agent dir layout intact.
 COPY . /app
 
 # Make the entrypoint executable.
@@ -84,6 +93,10 @@ mkdir -p /app/data
 ${symlinks}
 
 # $1 is the agent name passed by ENTRYPOINT.
-exec auggy dev "$1" --internal-mode railway
+# bunx resolves auggy from the per-agent node_modules/ (installed in the
+# Dockerfile via \`bun install\`). v0.3.2 removed the global-install path
+# because the agent's pinned auggy version + engine adapter is what the
+# image must use, not whatever a stray global has.
+exec bunx auggy dev "$1" --internal-mode railway
 `;
 }

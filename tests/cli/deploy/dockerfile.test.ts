@@ -6,11 +6,27 @@ describe("generateDockerfile", () => {
     expect(generateDockerfile({ agentName: "zip" })).toMatch(/FROM oven\/bun:/);
   });
 
-  test("installs auggy globally", () => {
-    expect(generateDockerfile({ agentName: "zip" })).toMatch(/bun install -g auggy/);
+  test("copies package.json + bun.lock before COPY . for per-agent install layer caching", () => {
+    const df = generateDockerfile({ agentName: "zip" });
+    const copyManifest = df.indexOf("COPY package.json");
+    const runInstall = df.indexOf("RUN bun install");
+    const copyAll = df.indexOf("COPY . /app");
+    expect(copyManifest).toBeGreaterThan(-1);
+    expect(runInstall).toBeGreaterThan(copyManifest);
+    expect(copyAll).toBeGreaterThan(runInstall);
   });
 
-  test("copies the staging context into /app", () => {
+  test("copies bun.lock via bracket-glob so absent lockfile doesn't fail the build", () => {
+    expect(generateDockerfile({ agentName: "zip" })).toMatch(/COPY bun\.loc\[k\] \/app\//);
+  });
+
+  test("runs the per-agent `bun install` (v0.3.2 package split), NOT the legacy global install", () => {
+    const df = generateDockerfile({ agentName: "zip" });
+    expect(df).toMatch(/RUN bun install\b/);
+    expect(df).not.toMatch(/bun install -g auggy/);
+  });
+
+  test("copies the staging context into /app after the install layer", () => {
     expect(generateDockerfile({ agentName: "zip" })).toMatch(/COPY \. \/app/);
   });
 
@@ -46,8 +62,12 @@ describe("generateEntrypoint", () => {
     expect(generateEntrypoint()).toMatch(/ln -sf/);
   });
 
-  test("execs `auggy dev` with --internal-mode railway", () => {
-    expect(generateEntrypoint()).toMatch(/exec auggy dev "\$1" --internal-mode railway/);
+  test("execs auggy via `bunx` so the per-agent install is used (v0.3.2)", () => {
+    const script = generateEntrypoint();
+    expect(script).toMatch(/exec bunx auggy dev "\$1" --internal-mode railway/);
+    // Negative assertion: the bare `auggy dev` shape would resolve to a
+    // global install that the v0.3.2 split no longer ships.
+    expect(script).not.toMatch(/exec auggy dev/);
   });
 
   test("uses `set -e` so failed steps abort the boot", () => {
