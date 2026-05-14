@@ -20,7 +20,7 @@
  *     (confirmed via model.calls[N].contextBlocks containing the email).
  */
 
-import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach, spyOn } from "bun:test";
 import { join } from "node:path";
 import { defineAgent } from "@/agent";
 import { webTransport } from "@/transports/web-transport";
@@ -287,4 +287,179 @@ describe("integration: visitorAuth full flow — anon → verify → recognized"
     );
     expect(allContext).toContain("alice@example.com");
   }, 30_000);
+
+  // ---------------------------------------------------------------------------
+  // G34 — Console adapter coverage
+  // ---------------------------------------------------------------------------
+
+  it("console adapter prints verify URL to stdout and the URL works against the verify route", async () => {
+    // Capture lines from console.log so the test can extract the verify URL
+    // that the console adapter would print to the operator's terminal.
+    const lines: string[] = [];
+    const logSpy = spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      lines.push(args.map((a) => String(a)).join(" "));
+    });
+
+    try {
+      const model = createMockModel({ response: "ok" });
+      model.pushResponse({
+        content: "",
+        toolCalls: [
+          {
+            name: "request_auth",
+            arguments: { method: "email", email: "console-tester@example.com" },
+          },
+        ],
+        finishReason: "tool_use",
+      });
+      model.pushResponse({
+        content: "Verification link has been sent.",
+        finishReason: "end_turn",
+      });
+
+      const PORT_CONSOLE = 19848;
+      const dbPath = join(tmp.path, "visitor-auth.db");
+
+      const transport = webTransport({
+        port: PORT_CONSOLE,
+        auth: { type: "bearer", token: BEARER },
+        visitorTokens: {
+          enabled: true,
+          signingKey: SIGNING_KEY,
+          ttlSeconds: 7_776_000,
+        },
+      });
+
+      const auth = visitorAuth({
+        publicUrl: `http://localhost:${PORT_CONSOLE}`,
+        dbPath,
+        // Console transport — no apiKey / inboxId. visitorAuth picks the
+        // console adapter; printed lines land in the `console.log` spy above.
+        agentMail: { transport: "console" },
+        signingKey: SIGNING_KEY,
+        layeredMemoryDbPath: null,
+        // No _agentMailClient — we want the real console adapter to run.
+      });
+
+      agent = defineAgent(
+        {
+          name: "zip-console-test",
+          purpose: "G34 console adapter coverage",
+          model: "mock",
+          augments: [transport, auth],
+        },
+        model,
+      );
+      await agent.start();
+
+      const run1Resp = await fetch(`http://localhost:${PORT_CONSOLE}/agent/run`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${BEARER}`,
+          "x-visitor-token": "this.is.stale",
+        },
+        body: JSON.stringify({
+          threadId: crypto.randomUUID(),
+          messages: [{ role: "user", content: "hi I'm console-tester@example.com" }],
+        }),
+      });
+
+      expect(run1Resp.status).toBe(200);
+      await run1Resp.text(); // drain
+
+      // The console adapter printed a header line plus the message body. Find
+      // the line that contains the verify URL.
+      const verifyLine = lines.find(
+        (l) => l.includes("[visitor-auth:console]") || l.includes("/visitor-auth/verify"),
+      );
+      expect(verifyLine).toBeDefined();
+      const verifyUrlMatch = verifyLine!.match(
+        /(http:\/\/[^\s]+\/visitor-auth\/verify\?token=[^\s]+)/,
+      );
+      expect(verifyUrlMatch).not.toBeNull();
+      const verifyUrl = verifyUrlMatch![1]!;
+
+      // The printed URL must actually work against the running agent's route.
+      const verifyGetResp = await fetch(verifyUrl);
+      expect(verifyGetResp.status).toBe(200);
+
+      // POST the token to consume it (mirrors the human clicking "Verify").
+      const tokenParam = new URL(verifyUrl).searchParams.get("token")!;
+      const verifyPostResp = await fetch(verifyUrl, {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: `token=${encodeURIComponent(tokenParam)}`,
+      });
+      expect(verifyPostResp.status).toBe(200);
+      const html = await verifyPostResp.text();
+      expect(html.toLowerCase()).toContain("verified");
+    } finally {
+      logSpy.mockRestore();
+    }
+  }, 30_000);
+
+  it("rejects boot when transport=console + NODE_ENV=production without explicit override", async () => {
+    const originalNodeEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = "production";
+    try {
+      expect(() =>
+        visitorAuth({
+          publicUrl: "https://demo.example.com",
+          dbPath: join(tmp.path, "visitor-auth.db"),
+          agentMail: { transport: "console" },
+          signingKey: SIGNING_KEY,
+          layeredMemoryDbPath: null,
+        }),
+      ).toThrow(/transport="console" is rejected at boot when NODE_ENV=production/);
+    } finally {
+      if (originalNodeEnv === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = originalNodeEnv;
+    }
+  });
+
+  it("permits console mode in production when allowConsoleInProduction is set explicitly", async () => {
+    const originalNodeEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = "production";
+    try {
+      // Factory must not throw — operator has acknowledged the risk in yaml.
+      const augment = visitorAuth({
+        publicUrl: "https://demo.example.com",
+        dbPath: join(tmp.path, "visitor-auth.db"),
+        agentMail: { transport: "console" },
+        signingKey: SIGNING_KEY,
+        layeredMemoryDbPath: null,
+        allowConsoleInProduction: true,
+      });
+      expect(augment.name).toBe("visitor-auth");
+    } finally {
+      if (originalNodeEnv === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = originalNodeEnv;
+    }
+  });
+
+  it("test-injected _agentMailClient bypasses the production safeguard (existing test seam preserved)", async () => {
+    const originalNodeEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = "production";
+    try {
+      const stub: AgentMailClient = {
+        send: async () => ({ status: "sent", messageId: "m", threadId: "t" }),
+        getInbox: async () => ({ inboxId: "x", status: "ok" }),
+      };
+      // Even with NODE_ENV=production and transport=console, test injection
+      // wins — tests need deterministic behavior regardless of test-runner env.
+      const augment = visitorAuth({
+        publicUrl: "https://demo.example.com",
+        dbPath: join(tmp.path, "visitor-auth.db"),
+        agentMail: { transport: "console" },
+        signingKey: SIGNING_KEY,
+        layeredMemoryDbPath: null,
+        _agentMailClient: stub,
+      });
+      expect(augment.name).toBe("visitor-auth");
+    } finally {
+      if (originalNodeEnv === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = originalNodeEnv;
+    }
+  });
 });

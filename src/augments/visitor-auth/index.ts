@@ -16,6 +16,7 @@ import { Database } from "bun:sqlite";
 import { z } from "zod";
 import { defineTool } from "../../helpers";
 import { createAgentMailClient, type AgentMailClient } from "../../agentmail-client";
+import { createConsoleMailClient } from "./console-mail-client";
 import { createVisitorToken, deriveSigningKey } from "../../transports/visitor-token";
 import type { Augment, ContextBlock, ToolExecuteContext, TurnState } from "../../types";
 import type {
@@ -76,8 +77,19 @@ function validateOptions(opts: VisitorAuthInternalOptions): void {
   if (!/^https?:$/.test(parsedPublicUrl.protocol)) {
     throw new Error("visitorAuth: publicUrl must use http:// or https://");
   }
-  if (!opts.agentMail?.apiKey || !opts.agentMail?.inboxId) {
-    throw new Error("visitorAuth: agentMail.apiKey and agentMail.inboxId are required");
+  if (!opts.agentMail) {
+    throw new Error("visitorAuth: agentMail config is required");
+  }
+  // Validate per discriminated transport. "agentmail" (or unset, the default)
+  // requires apiKey + inboxId; "console" needs neither.
+  if (opts.agentMail.transport === "console") {
+    // No further validation: console adapter is stateless and credentials-free.
+  } else {
+    if (!opts.agentMail.apiKey || !opts.agentMail.inboxId) {
+      throw new Error(
+        'visitorAuth: agentMail.apiKey and agentMail.inboxId are required when transport is "agentmail" (or unset)',
+      );
+    }
   }
   if (!opts.signingKey || typeof opts.signingKey !== "string") {
     throw new Error("visitorAuth: signingKey is required (set VISITOR_SIGNING_KEY in .env)");
@@ -105,12 +117,52 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
   const store: VisitorAuthStore = createSqliteVisitorAuthStore(storeConfig);
   const rateLimiter: VisitorAuthRateLimiter = createVisitorAuthRateLimiter(rateLimitCaps);
 
-  const agentMail: AgentMailClient =
-    opts._agentMailClient ??
-    createAgentMailClient({
+  // Client selection. Precedence:
+  //   1. Test injection (`_agentMailClient`) — existing test seam, wins outright.
+  //   2. `agentMail.transport === "console"` — print verify links to stdout.
+  //   3. Default — AgentMail HTTP API.
+  // The production safeguard fires only on path 2 with NODE_ENV=production
+  // and operator hasn't acknowledged the risk via `allowConsoleInProduction`.
+  // Path 1 bypasses the check because tests need to drive deterministic
+  // behavior regardless of the environment they happen to run in.
+  //
+  // We narrow once here (TypeScript-narrowing of the discriminated union does
+  // NOT flow through a boolean alias) and bind `mailInboxId` for the
+  // downstream onBoot + send call sites. Console mode uses
+  // `mailInboxId = "console"` as a routing placeholder — the
+  // ConsoleMailClient discards the field, but keeping the type as `string`
+  // avoids threading optionality through every send call site.
+  let mailInboxId: string;
+  if (opts.agentMail.transport === "console") {
+    if (
+      !opts._agentMailClient &&
+      process.env.NODE_ENV === "production" &&
+      !opts.allowConsoleInProduction
+    ) {
+      throw new Error(
+        `visitorAuth: agentMail.transport="console" is rejected at boot when NODE_ENV=production. ` +
+          `Magic links would be written to runtime logs (visible in Railway/Fly dashboards and similar), ` +
+          `which leaks verification credentials. Either configure agentMail with apiKey + inboxId ` +
+          `(recommended for production), or set \`visitorAuth.allowConsoleInProduction: true\` in ` +
+          `agent.yaml to acknowledge the risk explicitly.`,
+      );
+    }
+    mailInboxId = "console";
+  } else {
+    mailInboxId = opts.agentMail.inboxId;
+  }
+
+  let agentMail: AgentMailClient;
+  if (opts._agentMailClient) {
+    agentMail = opts._agentMailClient;
+  } else if (opts.agentMail.transport === "console") {
+    agentMail = createConsoleMailClient();
+  } else {
+    agentMail = createAgentMailClient({
       apiKey: opts.agentMail.apiKey,
       apiBaseUrl: opts.agentMail.apiBaseUrl,
     });
+  }
 
   // Per-peer recent-message buffer for email-in-recent-message validation.
   // Holds up to RECENT_MESSAGES per peerId. Populated by onTurnStart from the
@@ -235,8 +287,10 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
       const { subject, text } = buildEmailBody(verifyUrl, tokenTtlMin);
 
       // Send via agentmail-client.ts (direct — see plan §"Spec deviation").
+      // In console mode `mailInboxId` is the routing placeholder "console";
+      // the ConsoleMailClient ignores it and prints the verify URL instead.
       const sendResult = await agentMail.send({
-        inboxId: opts.agentMail.inboxId,
+        inboxId: mailInboxId,
         to: [email],
         subject,
         text,
@@ -512,7 +566,7 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
               const text = `A new visitor verified their email: ${consume.email!} (vis_id: ${minted.payload.visitorId}).`;
               try {
                 const notifyResult = await agentMail.send({
-                  inboxId: opts.agentMail.inboxId,
+                  inboxId: mailInboxId,
                   to: [cfg.to],
                   subject,
                   text,
@@ -545,15 +599,19 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
     ],
     async onBoot() {
       // Fail-fast on placeholder env-var leakage (operator forgot to set .env).
-      if (looksLikePlaceholder(opts.agentMail.apiKey)) {
-        throw new Error(
-          `visitorAuth: AGENTMAIL_API_KEY is unresolved (got "${opts.agentMail.apiKey}"). Set it in .env and restart.`,
-        );
-      }
-      if (looksLikePlaceholder(opts.agentMail.inboxId)) {
-        throw new Error(
-          `visitorAuth: AGENTMAIL_INBOX_ID is unresolved. Set it in .env and restart.`,
-        );
+      // AgentMail-specific checks only fire when the AgentMail transport is in
+      // use; the console adapter has no apiKey / inboxId to validate.
+      if (opts.agentMail.transport !== "console") {
+        if (looksLikePlaceholder(opts.agentMail.apiKey)) {
+          throw new Error(
+            `visitorAuth: AGENTMAIL_API_KEY is unresolved (got "${opts.agentMail.apiKey}"). Set it in .env and restart.`,
+          );
+        }
+        if (looksLikePlaceholder(opts.agentMail.inboxId)) {
+          throw new Error(
+            `visitorAuth: AGENTMAIL_INBOX_ID is unresolved. Set it in .env and restart.`,
+          );
+        }
       }
       if (looksLikePlaceholder(opts.signingKey)) {
         throw new Error(
@@ -579,17 +637,19 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
       //     hits a silent send-failure.
       //   5xx / network errors → transient. Warn and continue; the first
       //     real send will surface the same error if it persists.
-      const health = await agentMail.getInbox(opts.agentMail.inboxId);
+      // In console mode the synthetic ConsoleMailClient returns OK trivially,
+      // so this block is a no-op rather than dead code — keep it unguarded.
+      const health = await agentMail.getInbox(mailInboxId);
       if (health.status !== "ok") {
         const httpStatus = health.httpStatus;
         if (httpStatus === 401 || httpStatus === 403 || httpStatus === 404) {
           throw new Error(
-            `visitorAuth: AgentMail inbox "${opts.agentMail.inboxId}" healthcheck failed with HTTP ${httpStatus}: ${health.detail}. ` +
+            `visitorAuth: AgentMail inbox "${mailInboxId}" healthcheck failed with HTTP ${httpStatus}: ${health.detail}. ` +
               `Check AGENTMAIL_API_KEY and AGENTMAIL_INBOX_ID in .env and restart.`,
           );
         }
         console.warn(
-          `[visitor-auth] AgentMail inbox "${opts.agentMail.inboxId}" healthcheck failed: ${health.detail}. ` +
+          `[visitor-auth] AgentMail inbox "${mailInboxId}" healthcheck failed: ${health.detail}. ` +
             `First send will surface the real error.`,
         );
       }

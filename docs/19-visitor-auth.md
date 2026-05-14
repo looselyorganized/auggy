@@ -46,6 +46,49 @@ augments:
         subjectPrefix: "[New verified visitor] "
 ```
 
+## Console mode for local testing
+
+OSS adopters who haven't configured AgentMail can still exercise the full magic-link flow by switching the delivery transport to the console adapter. The verify URL prints to the agent's stdout instead of being sent via email — the operator copies the link from their terminal and opens it in a browser to complete verification.
+
+Switch via `agentMail.transport: "console"` in `agent.yaml`:
+
+```yaml
+- name: visitor-auth
+  type: visitorAuth
+  options:
+    publicUrl: http://localhost:8080
+    dbPath: ./visitor-auth.db
+    agentMail:
+      transport: "console"
+    signingKey: ${VISITOR_SIGNING_KEY}
+    agentBinding: ${AUGGY_AGENT_ID}
+```
+
+When console mode is active, `request_auth` prints a line like:
+
+```
+[visitor-auth:console] would-send to=dave@example.com subject="[Verify] Confirm your email"
+Click to verify: http://localhost:8080/visitor-auth/verify?token=550e8400-e29b-41d4-a716-446655440000
+Expires in 15 minutes.
+```
+
+Apart from the delivery path, behavior is identical: token TTL, single-use consumption, peer-id migration, revocation, and `auggy visitors` CLI all work the same way.
+
+### Production safeguard
+
+When `NODE_ENV === "production"` (the default on Railway / Fly / similar cloud platforms) AND `agentMail.transport === "console"`, the `visitorAuth` factory **throws at boot** with a clear error message. Reason: magic links would end up in runtime logs (Railway dashboard, log-shipping services), exfiltratable by anyone with log access.
+
+To explicitly acknowledge the risk and override the safeguard — e.g. for an internal demo deployment where the operator owns the logs entirely — set:
+
+```yaml
+options:
+  agentMail:
+    transport: "console"
+  allowConsoleInProduction: true
+```
+
+For production-grade deployments serving external visitors, use the AgentMail transport (the default).
+
 ## Required environment variables
 
 | Variable | Why |
