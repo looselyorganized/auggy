@@ -240,6 +240,12 @@ augments:
     type: webTransport
     options:
       port: 8080
+      # Anonymous public chat — precedence is yaml > env > default.
+      # Default rule: NODE_ENV !== "production" (true locally, false in cloud).
+      # Uncomment + set explicitly to override. Env var: AUGGY_ALLOW_ANONYMOUS.
+      # When true, visitors can chat without a bearer token; budgets cap cost
+      # and visitor-auth (if mounted) gives them an upgrade path.
+      # allowAnonymous: false
       auth:
         type: bearer
         token: \${AUGGY_WEB_TOKEN}

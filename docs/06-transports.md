@@ -250,12 +250,22 @@ The handler does this in order:
 #### 1. Authenticate
 
 ```ts
-if (!timingSafeEqual(authHeader, `Bearer ${opts.auth.token}`)) {
+const hasBearerAttempt = authHeader.length > 0;
+if (hasBearerAttempt) {
+  if (!isValidAuth(authHeader)) {
+    return json({ error: "unauthorized" }, 401);
+  }
+} else if (!allowAnonymous) {
   return json({ error: "unauthorized" }, 401);
 }
+// else: no bearer + allowAnonymous=true → fall through to identify() Path 4
 ```
 
-The bearer token is validated with a timing-safe comparison to prevent extraction via timing side-channel. It is configured at construction time (a single operator token). All four identity paths below require a valid bearer token — the token authenticates the *connection*; the identity headers determine the *peer*.
+The bearer token is validated with a timing-safe comparison to prevent extraction via timing side-channel. The auth policy has three possible outcomes:
+
+- **Bearer present + valid** → proceed to identity resolution. Resolves to Path 1 / 2 / 3 below depending on which other identity headers are set.
+- **Bearer present + invalid** → HTTP 401. Always rejects — never silently downgrades to anonymous.
+- **Bearer absent** → outcome depends on the `allowAnonymous` flag (see [Anonymous posture](#anonymous-posture) below). When `true`, falls through to Path 4 (`public:anonymous`). When `false`, HTTP 401.
 
 #### 2. Idempotency-Key
 
@@ -283,6 +293,35 @@ Identity is resolved in a fixed priority order:
 **Path 4 — Public anonymous:** default path. Mints `{ trustLevel: "public", publicSubstate: "anonymous", id: "anon-<threadId>" }`. For fresh anonymous visitors, the transport issues a new visitor token in the `x-visitor-token` response header so subsequent requests can become "recognized."
 
 Path 2 is evaluated before Path 1 — if agent headers are present, they determine the outcome regardless of whether the bearer token is also valid.
+
+#### Anonymous posture
+
+Path 4 (`public:anonymous`) is gated by the `allowAnonymous` option on `WebTransportOptions`. The option is resolved at factory time across three precedence levels — operator's most-explicit choice wins:
+
+| Precedence | Source | Wins over |
+|---|---|---|
+| 1 | Explicit yaml value (`allowAnonymous: true \| false` in agent.yaml) | env, default |
+| 2 | Env var (`AUGGY_ALLOW_ANONYMOUS=true \| false`, strict literals only) | default |
+| 3 | Default rule: `process.env.NODE_ENV !== "production"` | — |
+
+Why this shape:
+
+- **Production deploys** (Railway / Fly / etc.) typically set `NODE_ENV=production` automatically → `allowAnonymous` defaults to `false` → bearer required → safe by default.
+- **Local dev** (`NODE_ENV` unset) → `allowAnonymous` defaults to `true` → anonymous chat works out of the box after `auggy create && auggy dev`.
+- **Per-environment override** without redeploying: set `AUGGY_ALLOW_ANONYMOUS=true` in the Railway env panel to flip a deployed agent into demo mode (no yaml edit, no redeploy).
+- **Operator's deliberate choice** in yaml beats both: if you wrote `allowAnonymous: false` in yaml, env vars cannot override you.
+
+At boot, `webTransport` emits an operator-facing log line announcing both the resolved value and its source:
+
+```
+[web-transport] allowAnonymous=true (source: default, NODE_ENV=unset)
+[web-transport] allowAnonymous=false (source: env, AUGGY_ALLOW_ANONYMOUS=false)
+[web-transport] allowAnonymous=true (source: yaml)
+```
+
+If `allowAnonymous` resolves to `true` AND the `visitor-auth` augment is not mounted, AND the value came from `env` or `default` (not explicit yaml), a startup warning fires reminding the operator that anonymous visitors have no documented upgrade path to recognized identity. When `allowAnonymous: true` is explicit in yaml, the warning is suppressed — the operator has signaled intent.
+
+The budgets augment (default scaffold) caps cost for anonymous traffic — typically 5 turns per thread, 30 turns globally per day, and a $5/day global ceiling. visitorAuth (when mounted) gives anonymous visitors a magic-link path to upgrade to recognized identity for higher trust + budget tiers.
 
 #### 3. Validate the body
 
