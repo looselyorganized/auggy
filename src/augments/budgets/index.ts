@@ -59,9 +59,7 @@ export function budgets(opts: BudgetsAugmentOptions): Augment {
     });
   }, sweepIntervalMs);
   // Don't keep the process alive just for the sweeper.
-  if (typeof sweepTimer === "object" && sweepTimer !== null && "unref" in sweepTimer) {
-    (sweepTimer as { unref(): void }).unref();
-  }
+  sweepTimer.unref();
 
   const turnGate: TurnGateProvider = {
     /**

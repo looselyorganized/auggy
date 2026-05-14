@@ -24,10 +24,6 @@ export interface ExtractionBuffer {
   flush(peerId: string): Transcript[];
   /** Read-only view of currently buffered transcripts for a peer. */
   peek(peerId: string): readonly Transcript[];
-  /** Drop the peer's buffer without returning it (e.g. on `forget`). */
-  clear(peerId: string): void;
-  /** Number of distinct peers with at least one buffered transcript. */
-  size(): number;
 }
 
 export function createBuffer(): ExtractionBuffer {
@@ -45,12 +41,6 @@ export function createBuffer(): ExtractionBuffer {
     },
     peek(peerId) {
       return store.get(peerId) ?? [];
-    },
-    clear(peerId) {
-      store.delete(peerId);
-    },
-    size() {
-      return store.size;
     },
   };
 }

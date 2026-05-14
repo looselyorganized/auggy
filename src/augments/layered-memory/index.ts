@@ -18,6 +18,7 @@ import { type ExtractionEngine, handleExtractionTurn } from "./extractor/inject-
 import { createSqliteStore } from "./storage/sqlite-store";
 import { createSupabaseStore, type LayeredSupabaseClient } from "./storage/supabase-store";
 import type { MemoryStore, StoreEntry } from "./storage/types";
+import { emptyTrace } from "../../kernel/trace-emitter";
 
 /**
  * Optional auto-save block (PR β / ADR-018 Phase 2). When `enabled` is
@@ -226,6 +227,19 @@ function buildExtractionTurnResult(args: {
 }): TurnResult {
   const turnId = args.trigger.turnId;
   const threadId = args.trigger.threadId ?? turnId;
+  const trace = emptyTrace({
+    turnId,
+    threadId,
+    trigger: { type: "internal", sourceAugment: AUTO_SAVE_TRIGGER_SOURCE },
+  });
+  trace.inferenceSteps.push({
+    model: EXTRACTION_MODEL_LABEL,
+    inputTokens: args.inputTokens ?? 0,
+    outputTokens: args.outputTokens ?? 0,
+    durationMs: args.inferenceDurationMs,
+    toolCalls: [],
+    cost: args.cost,
+  });
   return {
     turnId,
     success: args.status === "completed",
@@ -237,41 +251,7 @@ function buildExtractionTurnResult(args: {
     error: args.errorMessage
       ? { message: args.errorMessage, source: AUTO_SAVE_TRIGGER_SOURCE }
       : undefined,
-    trace: {
-      turnId,
-      threadId,
-      timestamp: Date.now(),
-      duration: 0,
-      trigger: {
-        type: "internal",
-        sourceAugment: AUTO_SAVE_TRIGGER_SOURCE,
-      },
-      contextAssembly: {
-        augmentBlocks: [],
-        preambleTokens: 0,
-        toolSchemaTokens: 0,
-        historyTokens: 0,
-        totalTokens: 0,
-        budgetUsed: 0,
-      },
-      toolSelection: {
-        totalTools: 0,
-        phase1Used: false,
-        mountedTools: [],
-        withheldTools: [],
-      },
-      inferenceSteps: [
-        {
-          model: EXTRACTION_MODEL_LABEL,
-          inputTokens: args.inputTokens ?? 0,
-          outputTokens: args.outputTokens ?? 0,
-          durationMs: args.inferenceDurationMs,
-          toolCalls: [],
-          cost: args.cost,
-        },
-      ],
-      capabilityChecks: [],
-    },
+    trace,
   };
 }
 

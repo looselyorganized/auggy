@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { readFile, writeFile, readdir, mkdir, rm, realpath, stat, lstat } from "node:fs/promises";
-import { resolve, join, relative, extname, isAbsolute, sep } from "node:path";
+import { resolve, join, relative, extname, isAbsolute, sep, dirname } from "node:path";
 import { Glob } from "bun";
 import type { Augment, ContextBlock } from "../../types";
 import { defineTool } from "../../helpers";
@@ -295,8 +295,7 @@ export function filesystem(opts: FilesystemOptions): Augment {
       }
 
       // Ensure parent directory exists
-      const parentDir = physicalPath.slice(0, physicalPath.lastIndexOf("/"));
-      await mkdir(parentDir, { recursive: true });
+      await mkdir(dirname(physicalPath), { recursive: true });
 
       await writeFile(physicalPath, content, "utf-8");
       return `Written ${formatSize(content.length)} to "${logicalPath}"`;
