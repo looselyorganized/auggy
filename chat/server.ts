@@ -140,8 +140,8 @@ export function createGuiServer(opts: GuiServerOptions) {
     const freshBearer = extractBearerFromEnv(entry.agentDir);
     if (!freshBearer) {
       return jsonResponse({
-        error: `no WEB_BEARER_TOKEN in ${entry.agentDir}/.env`,
-        hint: "Add WEB_BEARER_TOKEN to the agent's .env and reload the picker.",
+        error: `no AUGGY_WEB_TOKEN in ${entry.agentDir}/.env`,
+        hint: "Add AUGGY_WEB_TOKEN to the agent's .env and reload the picker.",
       }, 412);
     }
 

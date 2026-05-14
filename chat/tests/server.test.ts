@@ -30,7 +30,7 @@ afterEach(() => {
 // blocker via port: 0 + readback to coordinate the conflict reliably.
 
 function setupAgent(bearerToken: string, opts: { card?: object; runResponse?: string } = {}) {
-  writeFileSync(join(tempAgentDir, ".env"), `WEB_BEARER_TOKEN=${bearerToken}\n`);
+  writeFileSync(join(tempAgentDir, ".env"), `AUGGY_WEB_TOKEN=${bearerToken}\n`);
   const handle = Bun.serve({
     port: 0,
     async fetch(req) {
