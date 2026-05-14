@@ -173,7 +173,10 @@ describe("runAdd legacy compatibility (atomicity preflight, §13.3)", () => {
       // No `bun install` attempted.
       expect(bunInstallCalls).toHaveLength(0);
     } finally {
-      process.exitCode = originalExitCode;
+      // Normalize undefined → 0. Bun's test runner exits with whatever
+      // process.exitCode is at suite end; some versions don't treat
+      // `undefined` as "clean exit" the way Node does, so set explicitly.
+      process.exitCode = originalExitCode ?? 0;
     }
   });
 
