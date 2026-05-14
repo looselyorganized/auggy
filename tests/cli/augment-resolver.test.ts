@@ -573,7 +573,7 @@ describe("resolveAugments — visitorAuth", () => {
           ],
           TMP,
         ),
-      ).rejects.toThrow(/transport="console" is rejected at boot when NODE_ENV=production/);
+      ).rejects.toThrow(/transport="console" is rejected at boot because/);
     } finally {
       if (originalNodeEnv === undefined) delete process.env.NODE_ENV;
       else process.env.NODE_ENV = originalNodeEnv;

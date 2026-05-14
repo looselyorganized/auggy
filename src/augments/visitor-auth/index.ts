@@ -103,6 +103,57 @@ function looksLikePlaceholder(value: string): boolean {
   return /^\$\{[A-Z0-9_]+\}$/.test(value);
 }
 
+/**
+ * True iff the hostname of the given URL is loopback / private / link-local —
+ * i.e. unreachable from the public internet under normal routing. Used by the
+ * console-transport admission gate to block the dangerous case where an
+ * internet-facing publicUrl would broadcast magic links to runtime logs.
+ *
+ * Recognized as private:
+ *   - `localhost` (any case)
+ *   - `127.0.0.0/8`         (IPv4 loopback)
+ *   - `0.0.0.0`             (wildcard bind / "this host")
+ *   - `::1`                 (IPv6 loopback)
+ *   - `10.0.0.0/8`          (IPv4 private)
+ *   - `172.16.0.0/12`       (IPv4 private)
+ *   - `192.168.0.0/16`      (IPv4 private)
+ *   - `fc00::/7`            (IPv6 unique-local)
+ *   - `fe80::/10`           (IPv6 link-local)
+ *   - `*.local`             (mDNS / Bonjour)
+ *
+ * Anything else — including unparseable URLs — is treated as public
+ * (fail-safe: don't admit when we can't classify).
+ */
+function isLocalOrPrivateUrl(rawUrl: string): boolean {
+  let host: string;
+  try {
+    host = new URL(rawUrl).hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+  // Strip IPv6 brackets if present (URL.hostname keeps them in some runtimes).
+  if (host.startsWith("[") && host.endsWith("]")) {
+    host = host.slice(1, -1);
+  }
+  if (host === "localhost" || host === "0.0.0.0" || host === "::1") return true;
+  if (host.endsWith(".local")) return true;
+  // IPv4 ranges
+  const ipv4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (ipv4) {
+    const a = Number(ipv4[1]);
+    const b = Number(ipv4[2]);
+    if (a === 127) return true;
+    if (a === 10) return true;
+    if (a === 192 && b === 168) return true;
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    return false;
+  }
+  // IPv6 ranges
+  if (host.startsWith("fe80:")) return true; // link-local
+  if (/^f[cd][0-9a-f]{2}:/.test(host)) return true; // unique-local fc00::/7
+  return false;
+}
+
 export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & VisitorAuthAugmentExtras {
   validateOptions(opts);
 
@@ -121,10 +172,21 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
   //   1. Test injection (`_agentMailClient`) — existing test seam, wins outright.
   //   2. `agentMail.transport === "console"` — print verify links to stdout.
   //   3. Default — AgentMail HTTP API.
-  // The production safeguard fires only on path 2 with NODE_ENV=production
-  // and operator hasn't acknowledged the risk via `allowConsoleInProduction`.
-  // Path 1 bypasses the check because tests need to drive deterministic
-  // behavior regardless of the environment they happen to run in.
+  //
+  // Console-transport admission gate. Two independent danger conditions:
+  //   (a) NODE_ENV === "production" — runtime logs on Railway/Fly/etc. are
+  //       visible in dashboards, log-shipping pipelines, etc.
+  //   (b) publicUrl is not loopback/private — a publicly reachable host
+  //       implies anyone with log access (including third-party log shipping)
+  //       can harvest live verify links, regardless of NODE_ENV. This catches
+  //       the "internet-facing staging deploy with NODE_ENV unset" case that
+  //       the production-only check (G34 original) missed.
+  //
+  // Either condition rejects unless the operator explicitly acknowledges via
+  // `allowConsoleInProduction: true` (the name is from the original G34
+  // shape; the field now governs both gates — see docs/19-visitor-auth.md).
+  // Path 1 (test injection) bypasses both checks so tests stay deterministic
+  // regardless of test-runner env.
   //
   // We narrow once here (TypeScript-narrowing of the discriminated union does
   // NOT flow through a boolean alias) and bind `mailInboxId` for the
@@ -134,18 +196,43 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
   // avoids threading optionality through every send call site.
   let mailInboxId: string;
   if (opts.agentMail.transport === "console") {
-    if (
-      !opts._agentMailClient &&
-      process.env.NODE_ENV === "production" &&
-      !opts.allowConsoleInProduction
-    ) {
+    // Block the notifyOnFirstVerify + console combination. The console adapter
+    // would print the ops notification to stdout while still returning
+    // `status: "sent"`, which burns the first-verify ledger entry — the
+    // operator's real alert is permanently suppressed. No principled redesign
+    // serves a real use case here; the combination is rare enough that
+    // blocking is the right call.
+    if (opts.notifyOnFirstVerify) {
       throw new Error(
-        `visitorAuth: agentMail.transport="console" is rejected at boot when NODE_ENV=production. ` +
-          `Magic links would be written to runtime logs (visible in Railway/Fly dashboards and similar), ` +
-          `which leaks verification credentials. Either configure agentMail with apiKey + inboxId ` +
-          `(recommended for production), or set \`visitorAuth.allowConsoleInProduction: true\` in ` +
-          `agent.yaml to acknowledge the risk explicitly.`,
+        `visitorAuth: agentMail.transport="console" cannot be combined with ` +
+          `notifyOnFirstVerify — the console adapter would log the ops alert ` +
+          `to stdout without actually emailing the operator, and the ` +
+          `first-verify ledger would still be burned. A later switch to a ` +
+          `real mail transport would NOT replay the missed alert. Either: ` +
+          `(a) configure agentMail with apiKey + inboxId, or (b) remove ` +
+          `notifyOnFirstVerify from agent.yaml.`,
       );
+    }
+    if (!opts._agentMailClient && !opts.allowConsoleInProduction) {
+      const inProduction = process.env.NODE_ENV === "production";
+      const publicReachable = !isLocalOrPrivateUrl(opts.publicUrl);
+      if (inProduction || publicReachable) {
+        const reasons: string[] = [];
+        if (inProduction) reasons.push("NODE_ENV=production");
+        if (publicReachable) {
+          reasons.push(`publicUrl="${opts.publicUrl}" is publicly reachable`);
+        }
+        throw new Error(
+          `visitorAuth: agentMail.transport="console" is rejected at boot because: ` +
+            `${reasons.join(", and ")}. ` +
+            `Magic links would be written to runtime logs (visible in Railway/Fly ` +
+            `dashboards, log-shipping pipelines, etc.), which leaks verification ` +
+            `credentials. Either configure agentMail with apiKey + inboxId ` +
+            `(recommended for any non-localhost deployment), or set ` +
+            `\`visitorAuth.allowConsoleInProduction: true\` in agent.yaml to ` +
+            `acknowledge the risk explicitly.`,
+        );
+      }
     }
     mailInboxId = "console";
   } else {

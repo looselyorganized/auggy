@@ -74,20 +74,38 @@ Expires in 15 minutes.
 
 Apart from the delivery path, behavior is identical: token TTL, single-use consumption, peer-id migration, revocation, and `auggy visitors` CLI all work the same way.
 
-### Production safeguard
+### Admission gate
 
-When `NODE_ENV === "production"` (the default on Railway / Fly / similar cloud platforms) AND `agentMail.transport === "console"`, the `visitorAuth` factory **throws at boot** with a clear error message. Reason: magic links would end up in runtime logs (Railway dashboard, log-shipping services), exfiltratable by anyone with log access.
+Console mode is **rejected at boot** if EITHER of these is true:
 
-To explicitly acknowledge the risk and override the safeguard — e.g. for an internal demo deployment where the operator owns the logs entirely — set:
+1. `NODE_ENV === "production"` — Railway / Fly / similar cloud platforms set this by default. Magic links would end up in runtime logs (dashboards, log-shipping services), exfiltratable by anyone with log access.
+2. `publicUrl` resolves to a publicly-reachable host — i.e. NOT localhost, NOT a `127.x.x.x` / `10.x.x.x` / `172.16-31.x.x` / `192.168.x.x` / IPv6 loopback or link-local / `*.local` mDNS. Catches the "internet-facing staging deploy with `NODE_ENV` unset" case.
+
+Either gate triggers the same rejection. Operator can explicitly acknowledge the risk via:
 
 ```yaml
 options:
+  publicUrl: https://demo.example.com
   agentMail:
     transport: "console"
-  allowConsoleInProduction: true
+  allowConsoleInProduction: true   # acknowledge: I know magic links land in logs
 ```
 
+Local-only flows are always admitted without ceremony:
+
+| publicUrl | Behavior |
+|---|---|
+| `http://localhost:8080` | console mode allowed (no override needed) |
+| `http://127.0.0.1:8080` | console mode allowed |
+| `http://192.168.1.42:8080` (LAN) | console mode allowed |
+| `https://my-app.local` (mDNS) | console mode allowed |
+| `https://demo.example.com` | console mode **rejected** unless `allowConsoleInProduction: true` |
+
 For production-grade deployments serving external visitors, use the AgentMail transport (the default).
+
+### `notifyOnFirstVerify` is incompatible with console mode
+
+The `notifyOnFirstVerify` option (operator-alert email on each new visitor) cannot be combined with `agentMail.transport: "console"`. The console adapter would print the alert to stdout, return `status: "sent"`, and burn the first-verify ledger entry — silently suppressing the real alert even after a later switch to AgentMail. The factory rejects this combination at boot with a clear error message; configure AgentMail or remove `notifyOnFirstVerify`.
 
 ## Required environment variables
 

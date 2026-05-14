@@ -411,7 +411,7 @@ describe("integration: visitorAuth full flow — anon → verify → recognized"
           signingKey: SIGNING_KEY,
           layeredMemoryDbPath: null,
         }),
-      ).toThrow(/transport="console" is rejected at boot when NODE_ENV=production/);
+      ).toThrow(/transport="console" is rejected at boot because: NODE_ENV=production/);
     } finally {
       if (originalNodeEnv === undefined) delete process.env.NODE_ENV;
       else process.env.NODE_ENV = originalNodeEnv;
@@ -461,5 +461,175 @@ describe("integration: visitorAuth full flow — anon → verify → recognized"
       if (originalNodeEnv === undefined) delete process.env.NODE_ENV;
       else process.env.NODE_ENV = originalNodeEnv;
     }
+  });
+
+  // -------------------------------------------------------------------------
+  // Codex adversarial finding #1 — publicUrl admission gate
+  // The NODE_ENV-only check missed the "internet-facing staging deploy with
+  // NODE_ENV unset" case. The gate now ALSO rejects when publicUrl is a
+  // publicly-reachable host.
+  // -------------------------------------------------------------------------
+
+  it("rejects boot when transport=console + publicly-reachable publicUrl, even without NODE_ENV=production", async () => {
+    const originalNodeEnv = process.env.NODE_ENV;
+    delete process.env.NODE_ENV; // ← no production label — the codex-found gap
+    try {
+      expect(() =>
+        visitorAuth({
+          publicUrl: "https://staging.demo.example.com",
+          dbPath: join(tmp.path, "visitor-auth.db"),
+          agentMail: { transport: "console" },
+          signingKey: SIGNING_KEY,
+          layeredMemoryDbPath: null,
+        }),
+      ).toThrow(/publicUrl="https:\/\/staging\.demo\.example\.com" is publicly reachable/);
+    } finally {
+      if (originalNodeEnv !== undefined) process.env.NODE_ENV = originalNodeEnv;
+    }
+  });
+
+  it("permits console mode on a publicly-reachable publicUrl when allowConsoleInProduction is set", async () => {
+    const originalNodeEnv = process.env.NODE_ENV;
+    delete process.env.NODE_ENV;
+    try {
+      const augment = visitorAuth({
+        publicUrl: "https://staging.demo.example.com",
+        dbPath: join(tmp.path, "visitor-auth.db"),
+        agentMail: { transport: "console" },
+        signingKey: SIGNING_KEY,
+        layeredMemoryDbPath: null,
+        allowConsoleInProduction: true,
+      });
+      expect(augment.name).toBe("visitor-auth");
+    } finally {
+      if (originalNodeEnv !== undefined) process.env.NODE_ENV = originalNodeEnv;
+    }
+  });
+
+  it("admits localhost publicUrl + console mode without override (the common local-testing path)", async () => {
+    // Regression guard: the new publicly-reachable check must NOT break the
+    // OSS-friendly localhost flow that is the whole point of G34.
+    const originalNodeEnv = process.env.NODE_ENV;
+    delete process.env.NODE_ENV;
+    try {
+      const augment = visitorAuth({
+        publicUrl: "http://localhost:8080",
+        dbPath: join(tmp.path, "visitor-auth-localhost.db"),
+        agentMail: { transport: "console" },
+        signingKey: SIGNING_KEY,
+        layeredMemoryDbPath: null,
+      });
+      expect(augment.name).toBe("visitor-auth");
+    } finally {
+      if (originalNodeEnv !== undefined) process.env.NODE_ENV = originalNodeEnv;
+    }
+  });
+
+  it("admits 127.0.0.1 publicUrl + console mode without override", async () => {
+    const originalNodeEnv = process.env.NODE_ENV;
+    delete process.env.NODE_ENV;
+    try {
+      const augment = visitorAuth({
+        publicUrl: "http://127.0.0.1:8080",
+        dbPath: join(tmp.path, "visitor-auth-loopback.db"),
+        agentMail: { transport: "console" },
+        signingKey: SIGNING_KEY,
+        layeredMemoryDbPath: null,
+      });
+      expect(augment.name).toBe("visitor-auth");
+    } finally {
+      if (originalNodeEnv !== undefined) process.env.NODE_ENV = originalNodeEnv;
+    }
+  });
+
+  it("admits a private LAN publicUrl (192.168.x.x) + console mode without override", async () => {
+    const originalNodeEnv = process.env.NODE_ENV;
+    delete process.env.NODE_ENV;
+    try {
+      const augment = visitorAuth({
+        publicUrl: "http://192.168.1.42:8080",
+        dbPath: join(tmp.path, "visitor-auth-lan.db"),
+        agentMail: { transport: "console" },
+        signingKey: SIGNING_KEY,
+        layeredMemoryDbPath: null,
+      });
+      expect(augment.name).toBe("visitor-auth");
+    } finally {
+      if (originalNodeEnv !== undefined) process.env.NODE_ENV = originalNodeEnv;
+    }
+  });
+
+  it("rejects when transport=console + public publicUrl + NODE_ENV=production (both gates trigger)", async () => {
+    const originalNodeEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = "production";
+    try {
+      // Both reasons should appear in the error message.
+      expect(() =>
+        visitorAuth({
+          publicUrl: "https://prod.example.com",
+          dbPath: join(tmp.path, "visitor-auth.db"),
+          agentMail: { transport: "console" },
+          signingKey: SIGNING_KEY,
+          layeredMemoryDbPath: null,
+        }),
+      ).toThrow(
+        /NODE_ENV=production.*publicUrl="https:\/\/prod\.example\.com" is publicly reachable/,
+      );
+    } finally {
+      if (originalNodeEnv === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = originalNodeEnv;
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // Codex adversarial finding #2 — notifyOnFirstVerify + console block
+  // The console adapter would silently consume the first-verify ledger entry
+  // without delivering the operator alert, permanently suppressing it.
+  // -------------------------------------------------------------------------
+
+  it("rejects boot when transport=console is combined with notifyOnFirstVerify", async () => {
+    expect(() =>
+      visitorAuth({
+        publicUrl: "http://localhost:8080", // local, so the publicUrl gate doesn't fire
+        dbPath: join(tmp.path, "visitor-auth.db"),
+        agentMail: { transport: "console" },
+        signingKey: SIGNING_KEY,
+        layeredMemoryDbPath: null,
+        notifyOnFirstVerify: { to: "ops@example.com" },
+      }),
+    ).toThrow(/transport="console" cannot be combined with notifyOnFirstVerify/);
+  });
+
+  it("admits transport=console without notifyOnFirstVerify (regression — no false-positive block)", async () => {
+    const augment = visitorAuth({
+      publicUrl: "http://localhost:8080",
+      dbPath: join(tmp.path, "visitor-auth-no-notify.db"),
+      agentMail: { transport: "console" },
+      signingKey: SIGNING_KEY,
+      layeredMemoryDbPath: null,
+      // notifyOnFirstVerify intentionally omitted
+    });
+    expect(augment.name).toBe("visitor-auth");
+  });
+
+  it("admits AgentMail transport + notifyOnFirstVerify (the production-grade configuration)", async () => {
+    // The block fires only on the console+notifyOnFirstVerify combo. AgentMail
+    // + notifyOnFirstVerify is the intended production setup and must keep
+    // working (validated via _agentMailClient stub since this test runs without
+    // a real AgentMail account).
+    const stub: AgentMailClient = {
+      send: async () => ({ status: "sent", messageId: "m", threadId: "t" }),
+      getInbox: async () => ({ inboxId: "x", status: "ok" }),
+    };
+    const augment = visitorAuth({
+      publicUrl: "https://prod.example.com",
+      dbPath: join(tmp.path, "visitor-auth-agentmail-notify.db"),
+      agentMail: { apiKey: "am_x", inboxId: "ibx_x" },
+      signingKey: SIGNING_KEY,
+      layeredMemoryDbPath: null,
+      notifyOnFirstVerify: { to: "ops@example.com" },
+      _agentMailClient: stub,
+    });
+    expect(augment.name).toBe("visitor-auth");
   });
 });
