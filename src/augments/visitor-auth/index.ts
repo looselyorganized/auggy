@@ -604,9 +604,7 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
         const evicted = rateLimiter.sweep(t);
         opts._onRateLimitSweep?.(evicted, t);
       }, RATE_LIMIT_SWEEP_INTERVAL_MS);
-      if (typeof rateLimiterSweepHandle.unref === "function") {
-        rateLimiterSweepHandle.unref();
-      }
+      rateLimiterSweepHandle.unref();
 
       booted = true;
     },

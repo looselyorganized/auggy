@@ -253,7 +253,7 @@ function buildAuthPeers(
   peers: Record<string, LinkPeerConfig>,
 ): Readonly<Record<string, PeerBearerConfig>> {
   const out: Record<string, PeerBearerConfig> = {};
-  for (const [name, cfg] of Object.entries(peers)) {
+  for (const cfg of Object.values(peers)) {
     out[cfg.participantId] = {
       participant: {
         id: cfg.participantId,
@@ -266,9 +266,6 @@ function buildAuthPeers(
         bearer_id: cfg.inboundBearerId,
       },
     };
-    // Reference `name` in a no-op so it appears in error messages if needed.
-    // (Useful for future expansion; intentional placeholder.)
-    void name;
   }
   return Object.freeze(out);
 }
