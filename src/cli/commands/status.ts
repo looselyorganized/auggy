@@ -48,12 +48,12 @@ async function showAll(): Promise<void> {
 
   // Table header.
   console.log(
-    pad("NAME", 20) +
-      pad("STATUS", 10) +
-      pad("PID", 8) +
-      pad("PORT", 8) +
-      pad("MODE", 10) +
-      pad("UPTIME", 10),
+    "NAME".padEnd(20) +
+      "STATUS".padEnd(10) +
+      "PID".padEnd(8) +
+      "PORT".padEnd(8) +
+      "MODE".padEnd(10) +
+      "UPTIME".padEnd(10),
   );
   console.log("-".repeat(66));
 
@@ -61,12 +61,12 @@ async function showAll(): Promise<void> {
     const alive = isProcessAlive(m.pid);
     const status = alive ? "running" : "dead";
     console.log(
-      pad(m.name, 20) +
-        pad(status, 10) +
-        pad(String(m.pid), 8) +
-        pad(m.port ? String(m.port) : "-", 8) +
-        pad(m.mode, 10) +
-        pad(formatUptime(m.startedAt), 10),
+      m.name.padEnd(20) +
+        status.padEnd(10) +
+        String(m.pid).padEnd(8) +
+        (m.port ? String(m.port) : "-").padEnd(8) +
+        m.mode.padEnd(10) +
+        formatUptime(m.startedAt).padEnd(10),
     );
   }
 }
@@ -99,6 +99,3 @@ async function showDetail(name: string): Promise<void> {
   }
 }
 
-function pad(str: string, width: number): string {
-  return str.padEnd(width);
-}

@@ -57,10 +57,8 @@ export async function runLs(opts: LsOptions = {}): Promise<void> {
   const nameW = Math.max(4, ...rows.map((r) => r.name.length));
   const locW = Math.max(8, ...rows.map((r) => r.location.length));
 
-  const pad = (s: string, w: number): string => s + " ".repeat(Math.max(0, w - s.length));
-
-  console.log(`${pad("NAME", nameW)}  ${pad("LOCATION", locW)}  STATUS`);
+  console.log(`${"NAME".padEnd(nameW)}  ${"LOCATION".padEnd(locW)}  STATUS`);
   for (const row of rows) {
-    console.log(`${pad(row.name, nameW)}  ${pad(row.location, locW)}  ${row.status}`);
+    console.log(`${row.name.padEnd(nameW)}  ${row.location.padEnd(locW)}  ${row.status}`);
   }
 }

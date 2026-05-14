@@ -32,40 +32,56 @@ interface PricingTableEntry {
  * call `listModels()` + `lookup()` to enumerate priced choices without
  * coupling to the internal table shape.
  */
-function readEntry(provider: Provider, id: string): PricingTableEntry | null {
-  if (provider === "anthropic") return anthropicPricing.lookup(id);
-  if (provider === "openai") return openaiPricing.lookup(id);
-  return null;
+function readEntry(provider: "anthropic" | "openai", id: string): PricingTableEntry | null {
+  switch (provider) {
+    case "anthropic":
+      return anthropicPricing.lookup(id);
+    case "openai":
+      return openaiPricing.lookup(id);
+    default: {
+      const _exhaustive: never = provider;
+      return _exhaustive;
+    }
+  }
 }
 
 /**
  * Get the priced model choices for a provider, ordered cheapest-first.
  */
 export function getModelChoices(provider: Provider): ModelChoice[] {
-  let pairs: Array<{ id: string; entry: PricingTableEntry }> = [];
+  const isPriced = (p: { id: string; entry: PricingTableEntry | null }): p is { id: string; entry: PricingTableEntry } =>
+    p.entry !== null;
 
-  if (provider === "anthropic") {
-    const ids = anthropicPricing.listModels();
-    pairs = ids
-      .map((id) => ({ id, entry: readEntry(provider, id) }))
-      .filter((p): p is { id: string; entry: PricingTableEntry } => p.entry !== null);
-  } else if (provider === "openai") {
-    const ids = openaiPricing.listModels();
-    pairs = ids
-      .map((id) => ({ id, entry: readEntry(provider, id) }))
-      .filter((p): p is { id: string; entry: PricingTableEntry } => p.entry !== null);
-  } else if (provider === "openrouter") {
-    const anthropicSlugs = anthropicPricing.listModels().map((id) => ({
-      id: `anthropic/${id}`,
-      entry: readEntry("anthropic", id),
-    }));
-    const openaiSlugs = openaiPricing.listModels().map((id) => ({
-      id: `openai/${id}`,
-      entry: readEntry("openai", id),
-    }));
-    pairs = [...anthropicSlugs, ...openaiSlugs].filter(
-      (p): p is { id: string; entry: PricingTableEntry } => p.entry !== null,
-    );
+  let pairs: Array<{ id: string; entry: PricingTableEntry }>;
+  switch (provider) {
+    case "anthropic":
+      pairs = anthropicPricing
+        .listModels()
+        .map((id) => ({ id, entry: readEntry("anthropic", id) }))
+        .filter(isPriced);
+      break;
+    case "openai":
+      pairs = openaiPricing
+        .listModels()
+        .map((id) => ({ id, entry: readEntry("openai", id) }))
+        .filter(isPriced);
+      break;
+    case "openrouter":
+      pairs = [
+        ...anthropicPricing.listModels().map((id) => ({
+          id: `anthropic/${id}`,
+          entry: readEntry("anthropic", id),
+        })),
+        ...openaiPricing.listModels().map((id) => ({
+          id: `openai/${id}`,
+          entry: readEntry("openai", id),
+        })),
+      ].filter(isPriced);
+      break;
+    default: {
+      const _exhaustive: never = provider;
+      return _exhaustive;
+    }
   }
 
   return pairs

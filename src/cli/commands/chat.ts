@@ -1,30 +1,21 @@
 import { Command } from "commander";
 import { existsSync, mkdirSync, createWriteStream, createReadStream } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve, dirname } from "node:path";
+import { join, resolve } from "node:path";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { pipeline } from "node:stream/promises";
-import { fileURLToPath } from "node:url";
 import packageJson from "../../../package.json" with { type: "json" };
 
 const DEFAULT_PORT = 8090;
 const RELEASE_REPO = "looselyorganized/augment-1";
 
-// Resolve the chat package directory relative to THIS module's location.
-// Uses import.meta.url so it works under both source-tree Bun runs and
-// future ESM-published builds.
-//
 // TODO(npm-packaging): when this CLI is published to npm, the chat/ package
 // won't be a sibling of src/cli/commands/. Two paths:
-//   a) Bundle chat/dist/ as a static asset in the published CLI tarball
-//      and point at the asset path here.
-//   b) Publish @auggy/chat as a separate npm package and use
-//      `require.resolve("@auggy/chat/server")` (after also exposing server.js
-//      as a package "exports" entry).
-// For now, the source-tree relative resolution is the only supported path.
-const MODULE_DIR = dirname(fileURLToPath(import.meta.url));
-const CHAT_PACKAGE_DIR = resolve(MODULE_DIR, "../../../chat");
+//   a) bundle chat/dist/ as a static asset in the published CLI tarball
+//   b) publish @auggy/chat as a separate npm package and resolve via
+//      `require.resolve("@auggy/chat/server")`
+const CHAT_PACKAGE_DIR = resolve(import.meta.dir, "../../../chat");
 
 export function chatCommand(): Command {
   const cmd = new Command("chat")

@@ -21,39 +21,8 @@
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { Command } from "commander";
-import { copyBundledSkill, augmentFolderForType } from "../scaffold-skills";
+import { buildFolderToTypeMap, copyBundledSkill } from "../scaffold-skills";
 import { getAgent } from "../agent-index";
-
-/**
- * Inverse of `TYPE_TO_AUGMENT_FOLDER` exported via `augmentFolderForType`:
- * we need the camelCase `type:` for `copyBundledSkill`, but the operator
- * passes the folder name. The set of folder names is the canonical list of
- * valid `<augment>` arguments. Built lazily so the data lives in one place
- * (scaffold-skills.ts) and we don't drift.
- */
-const KNOWN_TYPES = [
-  "filesystem",
-  "layeredMemory",
-  "webFetch",
-  "orgContext",
-  "bash",
-  "notify",
-  "turnControl",
-  "fileMemory",
-  "supabaseMemory",
-  "budgets",
-  "webTransport",
-  "telegramTransport",
-] as const;
-
-function buildFolderToTypeMap(): Map<string, string> {
-  const map = new Map<string, string>();
-  for (const type of KNOWN_TYPES) {
-    const folder = augmentFolderForType(type);
-    if (folder) map.set(folder, type);
-  }
-  return map;
-}
 
 /**
  * Resolve the on-disk path to the bundled skill SKILL.md for a folder, used

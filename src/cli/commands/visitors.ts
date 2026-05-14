@@ -44,10 +44,6 @@ function resolveAgentPaths(agentName: string, opts: VisitorsCommandOptions): Res
   };
 }
 
-function pad(s: string, w: number): string {
-  return s + " ".repeat(Math.max(0, w - s.length));
-}
-
 function formatTs(ms: number | null): string {
   if (!ms) return "—";
   return `${new Date(ms).toISOString().replace("T", " ").slice(0, 19)} UTC`;
@@ -96,6 +92,6 @@ export async function runVisitorsList(
     statusLabel(r),
   ]);
   const widths = headers.map((h, i) => Math.max(h.length, ...data.map((row) => row[i]!.length)));
-  log(headers.map((h, i) => pad(h, widths[i]!)).join("  "));
-  for (const row of data) log(row.map((c, i) => pad(c, widths[i]!)).join("  "));
+  log(headers.map((h, i) => h.padEnd(widths[i]!)).join("  "));
+  for (const row of data) log(row.map((c, i) => c.padEnd(widths[i]!)).join("  "));
 }
