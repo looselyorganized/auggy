@@ -514,6 +514,71 @@ describe("resolveAugments — visitorAuth", () => {
     );
     expect(augments).toHaveLength(1);
   });
+
+  // G34: agentMail.transport flows through opts.agentMail without resolver
+  // change; allowConsoleInProduction must be explicitly forwarded. This test
+  // proves the full yaml → resolver → factory wiring of both fields by
+  // setting NODE_ENV=production and observing that the factory succeeds
+  // (operator opted in) rather than throwing (which would happen if
+  // allowConsoleInProduction was silently dropped).
+  test("forwards agentMail.transport='console' and allowConsoleInProduction through to the factory", async () => {
+    const originalNodeEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = "production";
+    try {
+      const augments = await resolveAugments(
+        [
+          {
+            type: "visitorAuth",
+            name: "visitor-auth",
+            options: {
+              publicUrl: "https://demo.test",
+              agentMail: { transport: "console" },
+              signingKey: "sig-x",
+              layeredMemoryDbPath: null,
+              allowConsoleInProduction: true,
+            },
+          },
+        ],
+        TMP,
+      );
+      expect(augments).toHaveLength(1);
+      expect(augments[0]?.name).toBe("visitor-auth");
+    } finally {
+      if (originalNodeEnv === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = originalNodeEnv;
+    }
+  });
+
+  test("dropping allowConsoleInProduction in the resolver would surface as a factory throw under NODE_ENV=production", async () => {
+    // Regression guard: prove the production safeguard fires when the override
+    // is absent. If the resolver ever silently swallowed the field, this test
+    // would still throw (factory-level check), but it documents the contract.
+    const originalNodeEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = "production";
+    try {
+      await expect(
+        resolveAugments(
+          [
+            {
+              type: "visitorAuth",
+              name: "visitor-auth",
+              options: {
+                publicUrl: "https://demo.test",
+                agentMail: { transport: "console" },
+                signingKey: "sig-x",
+                layeredMemoryDbPath: null,
+                // allowConsoleInProduction intentionally omitted
+              },
+            },
+          ],
+          TMP,
+        ),
+      ).rejects.toThrow(/transport="console" is rejected at boot because/);
+    } finally {
+      if (originalNodeEnv === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = originalNodeEnv;
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------

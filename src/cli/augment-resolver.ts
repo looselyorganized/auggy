@@ -370,6 +370,10 @@ function resolveVisitorAuth(opts: Record<string, unknown>, agentDir: string): Au
     notifyOnFirstVerify: opts.notifyOnFirstVerify as VisitorAuthOptions["notifyOnFirstVerify"],
     layeredMemoryDbPath:
       layeredMemoryDbPath === null ? null : resolvePath(layeredMemoryDbPath, agentDir),
+    // G34: forward the production-override flag. The `agentMail.transport`
+    // discriminator already flows through `opts.agentMail` above; no separate
+    // wiring needed for it.
+    allowConsoleInProduction: opts.allowConsoleInProduction as boolean | undefined,
   };
   return visitorAuth(config);
 }

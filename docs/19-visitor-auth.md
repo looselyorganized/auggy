@@ -46,6 +46,67 @@ augments:
         subjectPrefix: "[New verified visitor] "
 ```
 
+## Console mode for local testing
+
+OSS adopters who haven't configured AgentMail can still exercise the full magic-link flow by switching the delivery transport to the console adapter. The verify URL prints to the agent's stdout instead of being sent via email — the operator copies the link from their terminal and opens it in a browser to complete verification.
+
+Switch via `agentMail.transport: "console"` in `agent.yaml`:
+
+```yaml
+- name: visitor-auth
+  type: visitorAuth
+  options:
+    publicUrl: http://localhost:8080
+    dbPath: ./visitor-auth.db
+    agentMail:
+      transport: "console"
+    signingKey: ${VISITOR_SIGNING_KEY}
+    agentBinding: ${AUGGY_AGENT_ID}
+```
+
+When console mode is active, `request_auth` prints a line like:
+
+```
+[visitor-auth:console] would-send to=dave@example.com subject="[Verify] Confirm your email"
+Click to verify: http://localhost:8080/visitor-auth/verify?token=550e8400-e29b-41d4-a716-446655440000
+Expires in 15 minutes.
+```
+
+Apart from the delivery path, behavior is identical: token TTL, single-use consumption, peer-id migration, revocation, and `auggy visitors` CLI all work the same way.
+
+### Admission gate
+
+Console mode is **rejected at boot** if EITHER of these is true:
+
+1. `NODE_ENV === "production"` — Railway / Fly / similar cloud platforms set this by default. Magic links would end up in runtime logs (dashboards, log-shipping services), exfiltratable by anyone with log access.
+2. `publicUrl` resolves to a publicly-reachable host — i.e. NOT localhost, NOT a `127.x.x.x` / `10.x.x.x` / `172.16-31.x.x` / `192.168.x.x` / IPv6 loopback or link-local / `*.local` mDNS. Catches the "internet-facing staging deploy with `NODE_ENV` unset" case.
+
+Either gate triggers the same rejection. Operator can explicitly acknowledge the risk via:
+
+```yaml
+options:
+  publicUrl: https://demo.example.com
+  agentMail:
+    transport: "console"
+  allowConsoleInProduction: true   # acknowledge: I know magic links land in logs
+```
+
+Local-only flows are always admitted without ceremony:
+
+| publicUrl | Behavior |
+|---|---|
+| `http://localhost:8080` | console mode allowed (no override needed) |
+| `http://127.0.0.1:8080` | console mode allowed |
+| `http://192.168.1.42:8080` (LAN) | console mode allowed |
+| `https://my-app.local` (mDNS) | console mode allowed |
+| `https://demo.example.com` | console mode **rejected** unless `allowConsoleInProduction: true` |
+
+For production-grade deployments serving external visitors, use the AgentMail transport (the default).
+
+### `notifyOnFirstVerify` is incompatible with console mode
+
+The `notifyOnFirstVerify` option (operator-alert email on each new visitor) cannot be combined with `agentMail.transport: "console"`. The console adapter would print the alert to stdout, return `status: "sent"`, and burn the first-verify ledger entry — silently suppressing the real alert even after a later switch to AgentMail. The factory rejects this combination at boot with a clear error message; configure AgentMail or remove `notifyOnFirstVerify`.
+
 ## Required environment variables
 
 | Variable | Why |

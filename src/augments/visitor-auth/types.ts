@@ -11,8 +11,23 @@
  * AgentMail delivery configuration. visitorAuth uses src/agentmail-client.ts
  * directly (see Plan §"Spec deviation"). Operator wires apiKey + inboxId via
  * env-var interpolation in agent.yaml.
+ *
+ * Discriminated union over `transport`:
+ *   - `"agentmail"` (default when transport is unset) — uses AgentMail HTTP API.
+ *     Requires `apiKey` + `inboxId`.
+ *   - `"console"` — prints verify links to stdout instead of sending email
+ *     (OSS-friendly local-testing path, G34). No third-party credentials needed.
+ *     Rejected at boot in production unless `allowConsoleInProduction: true` is
+ *     set on `VisitorAuthOptions` — see the factory in `./index.ts`.
  */
-export interface AgentMailConfig {
+export type AgentMailConfig = AgentMailAgentMailConfig | AgentMailConsoleConfig;
+
+export interface AgentMailAgentMailConfig {
+  /**
+   * Selects the delivery transport. Omit or set to `"agentmail"` to use the
+   * AgentMail HTTP API (existing behavior — back-compatible).
+   */
+  transport?: "agentmail";
   /** Bearer token (`am_*` prefix). Resolve via `${AGENTMAIL_API_KEY}` in agent.yaml. */
   apiKey: string;
   /** AgentMail inbox the verify email is sent FROM. */
@@ -21,6 +36,16 @@ export interface AgentMailConfig {
   subjectPrefix?: string;
   /** Optional override for the AgentMail API base URL (testing/sandbox). */
   apiBaseUrl?: string;
+}
+
+export interface AgentMailConsoleConfig {
+  /**
+   * Selects the console adapter — prints verify links to stdout instead of
+   * sending email. Useful for local OSS testing without AgentMail credentials.
+   */
+  transport: "console";
+  /** Optional subject prefix prepended to the templated subject. Default: `[Verify] `. */
+  subjectPrefix?: string;
 }
 
 /**
@@ -87,6 +112,18 @@ export interface VisitorAuthOptions {
    * be orphaned but still queryable by threadId).
    */
   layeredMemoryDbPath?: string | null;
+  /**
+   * Permit `agentMail.transport: "console"` when `NODE_ENV === "production"`.
+   * Default `false`. Console mode prints magic links to stdout, which on cloud
+   * platforms (Railway/Fly/etc.) end up in runtime logs — anyone with log
+   * access could harvest verification links. Production deploys MUST set this
+   * to `true` explicitly to acknowledge the risk. visitorAuth's factory
+   * throws at boot with a clear error message pointing here if the operator
+   * forgot.
+   *
+   * Has no effect when `transport` is `"agentmail"` (or unset / default).
+   */
+  allowConsoleInProduction?: boolean;
 }
 
 /**
