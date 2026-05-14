@@ -103,6 +103,14 @@ Local-only flows are always admitted without ceremony:
 
 For production-grade deployments serving external visitors, use the AgentMail transport (the default).
 
+### Cross-origin deployment (reverse-proxy the verify route)
+
+The verify success page (`buildVerifySuccessPage`) writes the upgraded `vis_<uuid>` token to `localStorage['auggy-visitor-token']` on the page's origin — the **agent's** origin. If your frontend and your agent are on different origins (e.g., `myshop.com` and `myshop-agent.up.railway.app`), the chat widget on `myshop.com` cannot read a token written to `localStorage` on `myshop-agent.up.railway.app`. Email verification effectively never reaches the chat surface.
+
+To fix: **reverse-proxy `/visitor-auth/verify` through your frontend origin**. The verify page is then served from the frontend origin → localStorage write happens on the frontend origin → the chat widget can read it. Also set `visitorAuth.publicUrl` in agent.yaml to YOUR frontend URL (not the agent's URL) so the email link points at the right host.
+
+See [`docs/20-embedding.md#cross-origin-reverse-proxy-the-visitor-auth-verify-route`](./20-embedding.md) for the recipe.
+
 ### `notifyOnFirstVerify` is incompatible with console mode
 
 The `notifyOnFirstVerify` option (operator-alert email on each new visitor) cannot be combined with `agentMail.transport: "console"`. The console adapter would print the alert to stdout, return `status: "sent"`, and burn the first-verify ledger entry — silently suppressing the real alert even after a later switch to AgentMail. The factory rejects this combination at boot with a clear error message; configure AgentMail or remove `notifyOnFirstVerify`.
