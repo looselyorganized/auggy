@@ -58,10 +58,7 @@ describe("resolveEngine", () => {
 
   test("uses OpenAI default maxContextTokens of 128_000", async () => {
     process.env.OPENAI_API_KEY = "sk-test-resolver";
-    const engine = await resolveEngine(
-      { provider: "openai", model: "gpt-5" },
-      AGENT_DIR,
-    );
+    const engine = await resolveEngine({ provider: "openai", model: "gpt-5" }, AGENT_DIR);
     expect(engine.maxContextTokens).toBe(128_000);
   });
 
@@ -101,28 +98,21 @@ describe("resolveEngine", () => {
   // config validator.
   test("throws for unknown provider with full supported list in message", async () => {
     await expect(
-      resolveEngine(
-        { provider: "foobar", model: "x" } as unknown as EngineConfig,
-        AGENT_DIR,
-      ),
-    ).rejects.toThrow('Unknown engine provider: "foobar" (supported: anthropic, openai, openrouter)');
+      resolveEngine({ provider: "foobar", model: "x" } as unknown as EngineConfig, AGENT_DIR),
+    ).rejects.toThrow(
+      'Unknown engine provider: "foobar" (supported: anthropic, openai, openrouter)',
+    );
   });
 
   test("throws clearly when provider is empty string", async () => {
     await expect(
-      resolveEngine(
-        { provider: "", model: "x" } as unknown as EngineConfig,
-        AGENT_DIR,
-      ),
+      resolveEngine({ provider: "", model: "x" } as unknown as EngineConfig, AGENT_DIR),
     ).rejects.toThrow("engine.provider is required");
   });
 
   test("throws clearly when provider is undefined (programmatic misuse)", async () => {
     await expect(
-      resolveEngine(
-        { provider: undefined, model: "x" } as unknown as EngineConfig,
-        AGENT_DIR,
-      ),
+      resolveEngine({ provider: undefined, model: "x" } as unknown as EngineConfig, AGENT_DIR),
     ).rejects.toThrow("engine.provider is required");
   });
 
@@ -157,7 +147,7 @@ describe("resolveEngine", () => {
   test("test seam: passing a custom importer bypasses agent-dir resolution", async () => {
     // Verifies the EngineImporter parameter actually drives factory selection,
     // and that resolveEngine doesn't reach into the filesystem when stubbed.
-    let importerCalls: Array<{ agentDir: string; specifier: string }> = [];
+    const importerCalls: Array<{ agentDir: string; specifier: string }> = [];
     const fakeFactory = () => ({
       maxContextTokens: 99_999,
       countTokens: (_: string) => 0,

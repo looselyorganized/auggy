@@ -98,4 +98,3 @@ async function showDetail(name: string): Promise<void> {
     }
   }
 }
-

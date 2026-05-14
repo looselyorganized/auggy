@@ -49,8 +49,10 @@ function readEntry(provider: "anthropic" | "openai", id: string): PricingTableEn
  * Get the priced model choices for a provider, ordered cheapest-first.
  */
 export function getModelChoices(provider: Provider): ModelChoice[] {
-  const isPriced = (p: { id: string; entry: PricingTableEntry | null }): p is { id: string; entry: PricingTableEntry } =>
-    p.entry !== null;
+  const isPriced = (p: {
+    id: string;
+    entry: PricingTableEntry | null;
+  }): p is { id: string; entry: PricingTableEntry } => p.entry !== null;
 
   let pairs: Array<{ id: string; entry: PricingTableEntry }>;
   switch (provider) {

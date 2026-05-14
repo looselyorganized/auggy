@@ -48,23 +48,20 @@ const REPO_ROOT = process.cwd();
  * to the workspace tree, mirroring what a real `bun install` does without
  * the network round-trip.
  */
-function fabricateNodeModules(agentDir: string, engineProvider: "anthropic" | "openai" | "openrouter"): void {
+function fabricateNodeModules(
+  agentDir: string,
+  engineProvider: "anthropic" | "openai" | "openrouter",
+): void {
   const nm = join(agentDir, "node_modules");
   mkdirSync(nm, { recursive: true });
   symlinkSync(REPO_ROOT, join(nm, "auggy"));
 
   mkdirSync(join(nm, "@auggy"), { recursive: true });
-  symlinkSync(
-    join(REPO_ROOT, "packages", engineProvider),
-    join(nm, "@auggy", engineProvider),
-  );
+  symlinkSync(join(REPO_ROOT, "packages", engineProvider), join(nm, "@auggy", engineProvider));
   // OpenRouter has a workspace dep on @auggy/openai — symlink that too so
   // the adapter's internal `import { ... } from "@auggy/openai"` resolves.
   if (engineProvider === "openrouter") {
-    symlinkSync(
-      join(REPO_ROOT, "packages", "openai"),
-      join(nm, "@auggy", "openai"),
-    );
+    symlinkSync(join(REPO_ROOT, "packages", "openai"), join(nm, "@auggy", "openai"));
   }
 }
 

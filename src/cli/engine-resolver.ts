@@ -27,10 +27,7 @@ import type {
   createAnthropicEngine as AnthropicFactory,
   AnthropicEngineOptions,
 } from "@auggy/anthropic";
-import type {
-  createOpenAIEngine as OpenAIFactory,
-  OpenAIEngineOptions,
-} from "@auggy/openai";
+import type { createOpenAIEngine as OpenAIFactory, OpenAIEngineOptions } from "@auggy/openai";
 import type {
   createOpenRouterEngine as OpenRouterFactory,
   OpenRouterEngineOptions,

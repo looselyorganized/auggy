@@ -787,11 +787,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
     return json(kernel.getAgentCard(), 200);
   }
 
-  function json(
-    body: unknown,
-    status: number,
-    extraHeaders?: Record<string, string>,
-  ): Response {
+  function json(body: unknown, status: number, extraHeaders?: Record<string, string>): Response {
     const headers: Record<string, string> = {
       "content-type": "application/json",
       ...extraHeaders,
@@ -893,11 +889,9 @@ export function webTransport(opts: WebTransportOptions): Augment {
               const ip = getCallerIp(req, server, trustedProxies, xffOnUntrusted);
               const rl = checkRouteRateLimit(routeKey, ip, augmentRoute.rateLimit.maxPerMinute);
               if (!rl.allowed) {
-                return json(
-                  { error: "rate-limited" },
-                  429,
-                  { "retry-after": String(rl.retryAfterSec) },
-                );
+                return json({ error: "rate-limited" }, 429, {
+                  "retry-after": String(rl.retryAfterSec),
+                });
               }
             }
 

@@ -84,10 +84,7 @@ export function costFromResponse(response: {
  * prefix and the body so operators see a consistent breadcrumb.
  */
 export function warnCacheRatesIgnored(adapterLabel: string, override: Pricing): void {
-  if (
-    override.cacheWriteUsdPerMtok === undefined &&
-    override.cacheReadUsdPerMtok === undefined
-  ) {
+  if (override.cacheWriteUsdPerMtok === undefined && override.cacheReadUsdPerMtok === undefined) {
     return;
   }
   // eslint-disable-next-line no-console

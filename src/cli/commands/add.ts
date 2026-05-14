@@ -82,9 +82,7 @@ export async function runAdd(name: string, opts: AddOpts): Promise<void> {
     // different sinks see it on the right stream. Matches the convention
     // for thrown errors at src/cli/index.ts.
     console.error();
-    console.error(
-      `Error: ${pkgPath} does not exist. This agent has no per-agent manifest.`,
-    );
+    console.error(`Error: ${pkgPath} does not exist. This agent has no per-agent manifest.`);
     console.error(`Re-scaffold via \`auggy create ${name}\` (or write package.json manually with`);
     console.error("auggy + your engine adapter as deps, then run `bun install`), then re-run");
     console.error(`\`auggy add ${name}\`.`);

@@ -157,16 +157,8 @@ describe("importFromAgent", () => {
     try {
       writeAgentManifest(fixture.path);
       writeAgentManifest(second.path);
-      installEsmPackage(
-        fixture.path,
-        "fake-engine",
-        `export const TAG = "first-dir";`,
-      );
-      installEsmPackage(
-        second.path,
-        "fake-engine",
-        `export const TAG = "second-dir";`,
-      );
+      installEsmPackage(fixture.path, "fake-engine", `export const TAG = "first-dir";`);
+      installEsmPackage(second.path, "fake-engine", `export const TAG = "second-dir";`);
 
       const first = await importFromAgent<{ TAG: string }>(fixture.path, "fake-engine");
       const last = await importFromAgent<{ TAG: string }>(second.path, "fake-engine");
@@ -192,11 +184,7 @@ describe("importFromAgent", () => {
     // (paths: [agentDir]) constrains resolution to <agentDir>/node_modules,
     // so this test must surface a MissingAgentDependencyError.
     writeAgentManifest(fixture.path); // parent has a manifest
-    installEsmPackage(
-      fixture.path,
-      "fake-engine",
-      `export const TAG = "ancestor-WRONG-VERSION";`,
-    );
+    installEsmPackage(fixture.path, "fake-engine", `export const TAG = "ancestor-WRONG-VERSION";`);
 
     const agentDir = join(fixture.path, "agents", "zip");
     mkdirSync(agentDir, { recursive: true });
@@ -243,9 +231,9 @@ describe("importFromAgent", () => {
 
   test("throws MissingAgentDependencyError when the specifier is not installed", async () => {
     writeAgentManifest(fixture.path);
-    await expect(
-      importFromAgent(fixture.path, "@auggy/never-installed"),
-    ).rejects.toBeInstanceOf(MissingAgentDependencyError);
+    await expect(importFromAgent(fixture.path, "@auggy/never-installed")).rejects.toBeInstanceOf(
+      MissingAgentDependencyError,
+    );
   });
 
   test("MissingAgentDependencyError message names the specifier and prescribes bun install", async () => {
