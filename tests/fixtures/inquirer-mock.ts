@@ -68,7 +68,9 @@ export function mockInquirerPrompts(getAnswers: () => Answers): void {
       // `auggy add` doesn't set `checked` on any choice (available list is
       // already post-filter), so the OR collapses to `wanted.has(...)` there.
       const wanted = new Set(getAnswers().augmentTypes ?? []);
-      return config.choices.filter((c) => c.checked || wanted.has(c.value.type)).map((c) => c.value);
+      return config.choices
+        .filter((c) => c.checked || wanted.has(c.value.type))
+        .map((c) => c.value);
     },
     confirm: async (config: { default?: boolean }) => config.default ?? false,
   }));

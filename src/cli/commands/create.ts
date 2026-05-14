@@ -341,7 +341,9 @@ export async function runCreate(name: string, opts: CreateOpts): Promise<void> {
   if (opts.skipInstall) {
     console.log(`   ${cream(`${step++}.`)}  cd ${dir} && bun install`);
   } else if (!installOk) {
-    console.log(`   ${cream(`${step++}.`)}  cd ${dir} && bun install   ${dim("(retry — earlier attempt failed)")}`);
+    console.log(
+      `   ${cream(`${step++}.`)}  cd ${dir} && bun install   ${dim("(retry — earlier attempt failed)")}`,
+    );
   }
   console.log(`   ${cream(`${step++}.`)}  cp ${dir}/.env.example ${dir}/.env`);
   console.log(`   ${cream(`${step++}.`)}  Add your ${bold(envVar)} to ${dir}/.env`);

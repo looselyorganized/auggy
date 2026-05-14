@@ -58,10 +58,7 @@ describe("runCreate writes per-agent package.json", () => {
     expect(pkg.name).toBe("auggy-agent-demo-anthropic");
     expect(pkg.private).toBe(true);
     expect(pkg.type).toBe("module");
-    expect(Object.keys(pkg.dependencies).sort()).toEqual([
-      "@auggy/anthropic",
-      "auggy",
-    ]);
+    expect(Object.keys(pkg.dependencies).sort()).toEqual(["@auggy/anthropic", "auggy"]);
     // No leak of other engine adapters.
     expect(pkg.dependencies["@auggy/openai"]).toBeUndefined();
     expect(pkg.dependencies["@auggy/openrouter"]).toBeUndefined();

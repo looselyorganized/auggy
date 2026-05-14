@@ -30,10 +30,5 @@
       "auggy/internal/openrouter-pricing": ["./src/engines/openrouter/pricing.ts"]
     }
   },
-  "include": [
-    "src/**/*.ts",
-    "tests/**/*.ts",
-    "evals/**/*.ts",
-    "packages/**/*.ts"
-  ]
+  "include": ["src/**/*.ts", "tests/**/*.ts", "evals/**/*.ts", "packages/**/*.ts"]
 }

@@ -55,7 +55,6 @@ export interface RailwayStatus {
   deployment: { status: string };
 }
 
-
 const defaultSpawn: RailwaySpawnFactory = (cmd, opts = {}) => {
   const proc = Bun.spawn(cmd, {
     cwd: opts.cwd,

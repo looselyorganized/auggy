@@ -27,13 +27,14 @@ export interface BunInstallResult {
  * `RailwaySpawnFactory` contract style (`{ exited, stdout, stderr }`)
  * minus the inheriting-stdout convenience the default factory provides.
  */
-export interface BunInstallSpawnFactory {
-  (cmd: string[], opts: { cwd: string }): {
-    exited: Promise<number>;
-    /** Stream to drain stderr into a captured buffer. */
-    stderr: ReadableStream<Uint8Array>;
-  };
-}
+export type BunInstallSpawnFactory = (
+  cmd: string[],
+  opts: { cwd: string },
+) => {
+  exited: Promise<number>;
+  /** Stream to drain stderr into a captured buffer. */
+  stderr: ReadableStream<Uint8Array>;
+};
 
 const defaultSpawn: BunInstallSpawnFactory = (cmd, opts) => {
   const proc = Bun.spawn(cmd, {
