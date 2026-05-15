@@ -498,6 +498,19 @@ export function webTransport(opts: WebTransportOptions): Augment {
     // creator — it falls through to Path 4. This guard is the security gate
     // for the anonymous path: anonymous traffic can never be silently promoted
     // to creator trust just by omitting auth + visitor headers.
+    //
+    // Visitor-token presence wins over bearer (intentional). If the request
+    // includes BOTH a valid bearer AND an x-visitor-token (valid or stale),
+    // Path 1 is skipped and routing falls through to Path 3 (if visitor-token
+    // is valid) or Path 4 (if invalid). The runtime treats x-visitor-token
+    // presence as an explicit "I am acting as a visitor" signal — even from
+    // a bearer-credentialed caller. This is a deliberate design choice that
+    // multiple internal tests rely on as the "admit via bearer, identify as
+    // visitor" convention. Adopters MUST NOT mix headers in real client code:
+    // a creator who forwards a stale visitor-token is silently downgraded to
+    // anonymous (anonymous budgets, anon-* memory namespace). The doc table
+    // in docs/20-embedding.md flags this explicitly. See codex round-6 review
+    // and tests/integration/embedding-primitives.test.ts ("mixed bearer + …").
     if (req.__bearerValidated === true && !req.__visitorPayload && !headers["x-visitor-token"]) {
       return {
         id: "creator",

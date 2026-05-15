@@ -455,4 +455,59 @@ describe("integration: embedding primitives (docs/20-embedding.md)", () => {
     // Model never reached.
     expect(peerCapture.captured).toHaveLength(0);
   }, 30_000);
+
+  it("valid bearer + stale x-visitor-token → public/anonymous (visitor-token presence wins routing)", async () => {
+    // PINS the current runtime behavior. Path 1 (creator) requires the bearer
+    // is valid AND no x-visitor-token header is present. Sending both means
+    // the runtime treats it as a visitor request — falls through to Path 3
+    // (recognized) if the visitor-token is valid, else Path 4 (anonymous).
+    //
+    // This is intentional. Multiple internal tests use the pattern "admit via
+    // bearer, identify as visitor" via stale x-visitor-token. See the Path 1
+    // comment in src/transports/web-transport.ts for the design rationale.
+    //
+    // Adopters who want creator trust MUST NOT forward x-visitor-token
+    // alongside the bearer. The doc table in docs/20-embedding.md flags this
+    // explicitly. Codex round-6 review surfaced this as a footgun for any
+    // future widget that mixes headers — filed as G38 in docs/todos.md for
+    // a v1.x bearer-precedence design discussion (touches identity semantics
+    // + would change this test's expected outcome).
+    const PORT = 19206;
+    const model = createMockModel({ response: "should be anon" });
+    const peerCapture = createPeerCaptureAugment();
+
+    const transport = webTransport({
+      port: PORT,
+      auth: { type: "bearer", token: BEARER },
+      allowAnonymous: false,
+      visitorTokens: { enabled: true, signingKey: SIGNING_KEY, ttlSeconds: 86_400 },
+    });
+    agent = defineAgent(
+      { name: "path-mixed", model: "mock", augments: [transport, peerCapture.augment] },
+      model,
+    );
+    await agent.start();
+
+    const resp = await fetch(`http://localhost:${PORT}/agent/run`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${BEARER}`,
+        "x-visitor-token": "this.is.stale",
+      },
+      body: JSON.stringify({
+        messages: [{ role: "user", content: "hi" }],
+        threadId: "thread-mixed",
+      }),
+    });
+
+    expect(resp.status).toBe(200);
+    await resp.text();
+
+    expect(peerCapture.captured).toHaveLength(1);
+    const peer = peerCapture.captured[0]!;
+    expect(peer.trustLevel).toBe("public");
+    expect(peer.publicSubstate).toBe("anonymous");
+    expect(peer.id).toBe("anon-thread-mixed");
+  }, 30_000);
 });
