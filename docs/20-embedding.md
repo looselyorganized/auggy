@@ -53,7 +53,7 @@ augments:
 
 **Note on `allowAnonymous`**: G3's default rule is `NODE_ENV !== "production"`, so this works out of the box in local dev. For cloud deployment, set `allowAnonymous: true` explicitly in yaml (because cloud platforms set `NODE_ENV=production`), AND set `AUGGY_PUBLIC_URL` to your operator-facing URL. visitorAuth's production safeguard refuses the console adapter on a public host — set `allowConsoleInProduction: true` to acknowledge or (recommended) switch to AgentMail credentials for production.
 
-## Frontend proxy code (NO bearer)
+## Frontend proxy code (NO bearer, server-minted threadId, idempotency)
 
 `app/api/chat/route.ts`:
 
@@ -64,24 +64,66 @@ augments:
  * Does NOT attach `Authorization: Bearer …`. Visitor traffic resolves to
  * `public/anonymous` (or `public/recognized` after token rotation) on the agent.
  *
- * Forwards `x-visitor-token` in BOTH directions — this is what gives returning
- * visitors continuity (a stable `peer.id` for memory scoping). On first contact
- * we send `x-visitor-token: bootstrap` so the agent mints a fresh token for us;
- * we relay the token back to the browser via `x-visitor-token` response header.
+ * Hardening (codex-reviewed):
+ *  - `threadId` is server-minted and bound via an HttpOnly signed cookie. The
+ *    browser cannot pick its own threadId, so it cannot collide-with / hijack
+ *    another anonymous visitor's identity namespace.
+ *  - `Idempotency-Key` is forwarded so retries don't double-count budget.
+ *  - `x-visitor-token` is forwarded both ways for returning-visitor continuity.
  */
 
+import { createHmac } from "node:crypto";
+
 const AGENT_URL = process.env.AUGGY_AGENT_URL; // e.g. "http://localhost:8080"
+const SESSION_SECRET = process.env.AUGGY_SESSION_SECRET; // openssl rand -hex 32
 
 function errorResponse(status: number, message: string) {
   return Response.json({ error: message }, { status });
 }
 
+/**
+ * Signed-cookie helpers. Cookie value format: `<threadId>.<HMAC>`.
+ * Stateless — no server-side session store. Rotating SESSION_SECRET
+ * invalidates all existing threads (visitors get fresh anonymous identities;
+ * no security issue because anonymous identity is ephemeral by design).
+ */
+function signThread(threadId: string): string {
+  const sig = createHmac("sha256", SESSION_SECRET!).update(threadId).digest("base64url");
+  return `${threadId}.${sig}`;
+}
+
+function verifyThread(cookieValue: string | null): string | null {
+  if (!cookieValue) return null;
+  const lastDot = cookieValue.lastIndexOf(".");
+  if (lastDot < 0) return null;
+  const threadId = cookieValue.slice(0, lastDot);
+  const presented = cookieValue.slice(lastDot + 1);
+  const expected = createHmac("sha256", SESSION_SECRET!).update(threadId).digest("base64url");
+  if (presented.length !== expected.length) return null;
+  // Timing-safe compare so attackers can't probe the HMAC byte-by-byte.
+  let diff = 0;
+  for (let i = 0; i < expected.length; i++) {
+    diff |= presented.charCodeAt(i) ^ expected.charCodeAt(i);
+  }
+  return diff === 0 ? threadId : null;
+}
+
+function readThreadCookie(cookieHeader: string | null): string | null {
+  if (!cookieHeader) return null;
+  const m = cookieHeader.match(/(?:^|;\s*)auggy-thread=([^;]+)/);
+  return m ? decodeURIComponent(m[1]!) : null;
+}
+
 export async function POST(request: Request) {
-  if (!AGENT_URL) {
-    return errorResponse(503, "AUGGY_AGENT_URL is not configured.");
+  if (!AGENT_URL || !SESSION_SECRET) {
+    return errorResponse(
+      503,
+      "Pattern A requires AUGGY_AGENT_URL and AUGGY_SESSION_SECRET. " +
+        "Generate the secret with `openssl rand -hex 32` and set it on the frontend.",
+    );
   }
 
-  let body: { messages?: unknown; threadId?: string };
+  let body: { messages?: unknown };
   try {
     body = await request.json();
   } catch {
@@ -108,27 +150,36 @@ export async function POST(request: Request) {
     }
   }
 
-  // Forward the visitor's current token (if any) so the agent can validate it.
-  // First-contact requests send `bootstrap` as a placeholder — webTransport
-  // mints a real token only when an `x-visitor-token` header is PRESENT but
-  // invalid (sending no header at all → no token issued).
+  // Resolve threadId: existing signed cookie wins, else mint one.
+  // Browser-supplied `body.threadId` is IGNORED — letting the browser pick
+  // threadId is a memory-namespace collision attack (one anonymous visitor
+  // joins another's transcript / scoped memory).
+  const existing = verifyThread(readThreadCookie(request.headers.get("cookie")));
+  const threadId = existing ?? crypto.randomUUID();
+  const setCookie = existing
+    ? null
+    : `auggy-thread=${encodeURIComponent(signThread(threadId))};` +
+      ` HttpOnly; SameSite=Lax; Path=/; Max-Age=2592000` +
+      (request.url.startsWith("https:") ? "; Secure" : "");
+
+  // Forward visitor token (continuity) + idempotency key (cost dedup).
+  // Idempotency-Key origin is the CLIENT (per user-send). Stable across the
+  // widget's retries; the proxy just relays it.
   const visitorToken = request.headers.get("x-visitor-token") || "bootstrap";
+  const idempotencyKey = request.headers.get("idempotency-key");
 
   let agentResponse: Response;
   try {
+    const upstreamHeaders: Record<string, string> = {
+      "content-type": "application/json",
+      "x-visitor-token": visitorToken,
+    };
+    if (idempotencyKey) upstreamHeaders["idempotency-key"] = idempotencyKey;
+
     agentResponse = await fetch(`${AGENT_URL}/agent/run`, {
       method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-visitor-token": visitorToken,
-        // NO Authorization header — Pattern A relies on allowAnonymous + budgets,
-        // not bearer auth. (Adding the bearer here elevates the visitor to
-        // creator trust, which is Pattern B's threat model, not this one.)
-      },
-      body: JSON.stringify({
-        messages: body.messages,
-        threadId: body.threadId,
-      }),
+      headers: upstreamHeaders,
+      body: JSON.stringify({ messages: body.messages, threadId }), // ← server-minted
       signal: AbortSignal.timeout(120_000),
     });
   } catch (err) {
@@ -143,9 +194,6 @@ export async function POST(request: Request) {
   }
 
   if (!agentResponse.ok) {
-    // Map upstream statuses to canned messages — never forward raw error
-    // detail to the browser (the agent's error responses may include
-    // operator-side context that should stay server-side).
     const errorMessages: Record<number, string> = {
       401: "Unauthorized. Check that allowAnonymous is enabled on the agent.",
       413: "Message is too long.",
@@ -161,18 +209,14 @@ export async function POST(request: Request) {
     return errorResponse(502, "Agent returned an empty response.");
   }
 
-  // Relay the freshly-issued visitor token (if any) back to the browser so it
-  // can include it on the next request. Without this header, anonymous-recognized
-  // continuity is lost on every page load.
   const responseHeaders: Record<string, string> = {
     "content-type": "text/event-stream",
     "cache-control": "no-cache",
     connection: "keep-alive",
   };
   const issuedToken = agentResponse.headers.get("x-visitor-token");
-  if (issuedToken) {
-    responseHeaders["x-visitor-token"] = issuedToken;
-  }
+  if (issuedToken) responseHeaders["x-visitor-token"] = issuedToken;
+  if (setCookie) responseHeaders["set-cookie"] = setCookie;
   return new Response(agentResponse.body, { status: 200, headers: responseHeaders });
 }
 ```
@@ -188,9 +232,16 @@ When your frontend and your agent are on different origins (e.g., `myshop.com` a
 ```ts
 /**
  * Reverse-proxy visitorAuth's verify route to the agent. Streams the agent's
- * HTML/redirect response back unchanged. Critical for cross-origin deploys —
- * the verify success page writes localStorage on the page's origin, so it
- * must be served from THIS origin (the frontend's), not the agent's.
+ * HTML response back. Critical for cross-origin deploys — the verify success
+ * page writes localStorage on the page's origin, so it must be served from
+ * THIS origin (the frontend's), not the agent's.
+ *
+ * Header hardening (codex-reviewed):
+ *  - Request: ALLOWLIST forwarded headers. Do NOT pass `request.headers` through
+ *    wholesale — that leaks the frontend origin's cookies and any ambient auth
+ *    headers to the agent service, where they land in the agent's runtime logs.
+ *  - Response: STRIP `set-cookie` and `authorization`. The agent must not be
+ *    able to set cookies on the frontend origin or influence its auth surface.
  */
 const AGENT_URL = process.env.AUGGY_AGENT_URL;
 
@@ -198,12 +249,26 @@ async function forward(request: Request): Promise<Response> {
   if (!AGENT_URL) return new Response("AUGGY_AGENT_URL not configured", { status: 503 });
   const url = new URL(request.url);
   const upstream = `${AGENT_URL}/visitor-auth/verify${url.search}`;
-  const init: RequestInit = { method: request.method, headers: request.headers };
+
+  // Allowlist: only `content-type` is needed for the form-POST flow. Strip
+  // everything else — cookies, authorization, host, x-forwarded-*, etc.
+  const forwardHeaders: Record<string, string> = {};
+  const ct = request.headers.get("content-type");
+  if (ct) forwardHeaders["content-type"] = ct;
+
+  const init: RequestInit = { method: request.method, headers: forwardHeaders };
   if (request.method !== "GET" && request.method !== "HEAD") {
     init.body = await request.arrayBuffer();
   }
+
   const resp = await fetch(upstream, init);
-  return new Response(resp.body, { status: resp.status, headers: resp.headers });
+
+  // Strip set-cookie / authorization on the response. Agent should not set
+  // cookies on the frontend origin or echo auth material back.
+  const respHeaders = new Headers();
+  const ctOut = resp.headers.get("content-type");
+  if (ctOut) respHeaders.set("content-type", ctOut);
+  return new Response(resp.body, { status: resp.status, headers: respHeaders });
 }
 
 export const GET = forward;
@@ -293,16 +358,29 @@ export function ChatWidget() {
     // is null; the proxy sends "bootstrap" and the agent mints a fresh token,
     // which arrives in the response `x-visitor-token` header.
     const currentToken = localStorage.getItem(VISITOR_TOKEN_KEY);
-    const requestHeaders: Record<string, string> = { "content-type": "application/json" };
+
+    // Mint an Idempotency-Key for THIS user-send, stable across any retries
+    // of this send (per-send, not per-fetch). The runtime uses this to dedup
+    // BUDGET RESERVATIONS on retry. NOTE: it does NOT cache turn results — the
+    // model is re-called on retry, tools re-execute, fresh tokens billed
+    // (just not against caps). See doc's "Idempotency" section for the truth.
+    const idempotencyKey = crypto.randomUUID();
+
+    const requestHeaders: Record<string, string> = {
+      "content-type": "application/json",
+      "idempotency-key": idempotencyKey,
+    };
     if (currentToken) requestHeaders["x-visitor-token"] = currentToken;
 
+    // NOTE: we no longer send `threadId` in the body — the proxy mints it
+    // server-side and binds via signed cookie. Letting the browser pick its
+    // own threadId would be a memory-namespace collision attack surface.
     try {
       const response = await fetch("/api/chat", {
         method: "POST",
         headers: requestHeaders,
         body: JSON.stringify({
           messages: [{ role: "user", content: text }],
-          threadId: threadIdRef.current,
         }),
         signal: controller.signal,
       });
@@ -433,19 +511,35 @@ export function ChatWidget() {
 
 | Request | trustLevel | publicSubstate | peer.id |
 |---|---|---|---|
-| First contact: `x-visitor-token: bootstrap` (or anything that fails validation) | `public` | `anonymous` | `anon-<threadId>` |
+| First contact: `x-visitor-token: bootstrap`; proxy mints threadId server-side | `public` | `anonymous` | `anon-<server-minted-threadId>` |
 | Second request: client sends the rotated token from previous response | `public` | `recognized` | `vis_<uuid>` (stable, from token payload) |
 | After visitor-auth email verification + reverse-proxied verify route | `public` | `recognized` | `vis_<uuid>` from the visitorAuth-minted token |
 
 The agent **never** mints `creator` trust for Pattern A traffic, because the proxy never attaches the bearer. The `visitor-auth` upgrade preserves anonymous history under the peer-id migration that visitorAuth runs at verify time (see `docs/19-visitor-auth.md`).
 
+## Idempotency (what `Idempotency-Key` actually does)
+
+The widget sends an `Idempotency-Key` header per user-send (stable across retries of THAT send). The proxy forwards it; the agent runtime threads it through as `turnId`. **What this gets you, precisely:**
+
+| | Behavior |
+|---|---|
+| **Duplicate `Idempotency-Key` arrives on a retry** | The budgets store detects the existing reservation row keyed by this turnId and returns the cached admit/deny decision **without re-debiting caps**. Cost reservations are not double-counted. |
+| **Model still re-called on retry?** | **Yes.** The kernel does not cache turn results. The second request runs the full turn loop — fresh inference, fresh tokens, fresh tool execution. |
+| **Tool calls re-executed?** | **Yes.** If your tools have irreversible side effects (Shopify order modification, payment capture, Telegram alert), retries CAN duplicate them. |
+| **What does this mitigate?** | Budget double-counting only. Useful but not full retry-safety. |
+
+**Operator guidance:** treat `Idempotency-Key` as a cost-safety mechanism, not a side-effect-safety mechanism. If your tool surface includes irreversible operations, design those tools idempotently themselves (e.g., natural deduplication via your own request IDs) — don't lean on `Idempotency-Key` alone.
+
+The full kernel-level result cache is on the v1.x roadmap. v1.0 ships budget-only dedup.
+
 ## Frontend environment
 
 ```
 AUGGY_AGENT_URL=http://localhost:8080
+AUGGY_SESSION_SECRET=<openssl rand -hex 32>
 ```
 
-That's the only env var Pattern A needs on the frontend. **No bearer token.**
+`AUGGY_SESSION_SECRET` signs the HttpOnly `auggy-thread` cookie that binds each visitor to a server-minted threadId. Generate once with `openssl rand -hex 32`; keep it stable. Rotating it invalidates all existing anonymous threads (visitors silently get fresh anonymous identities; no security issue because anonymous identity is ephemeral by design). **No bearer token** is needed — Pattern A relies on `allowAnonymous` on the agent + the budgets + visitor-token machinery.
 
 ---
 
@@ -499,12 +593,19 @@ export async function POST(request: Request) {
     }
   }
 
+  // Forward Idempotency-Key (cost dedup on retries). Pattern B is creator-trust
+  // so duplicate tool calls = duplicate operator-authorized side effects, but
+  // budget cap reservations still won't be double-counted.
+  const upstreamHeaders: Record<string, string> = {
+    "content-type": "application/json",
+    authorization: `Bearer ${AGENT_TOKEN}`,  // ← elevates to creator trust
+  };
+  const idempotencyKey = request.headers.get("idempotency-key");
+  if (idempotencyKey) upstreamHeaders["idempotency-key"] = idempotencyKey;
+
   const agentResponse = await fetch(`${AGENT_URL}/agent/run`, {
     method: "POST",
-    headers: {
-      "content-type": "application/json",
-      authorization: `Bearer ${AGENT_TOKEN}`,  // ← elevates to creator trust
-    },
+    headers: upstreamHeaders,
     body: JSON.stringify({ messages: body.messages, threadId: body.threadId }),
     signal: AbortSignal.timeout(120_000),
   });
@@ -574,9 +675,11 @@ CORS doesn't appear on that list. If you need server-side origin enforcement, ad
 
 - **Bearer never reaches browser (Pattern B):** never use `NEXT_PUBLIC_*` prefixes for `AUGGY_AGENT_TOKEN`. Verify by opening browser devtools → network tab → confirm `Authorization` header is absent on `/api/chat` requests. The proxy attaches the bearer server-to-server only.
 - **Visitor token in localStorage is XSS-exfiltratable:** an XSS bug in your widget gives the attacker the visitor's token, redeemable for the token's TTL. Mitigate by (a) shortening `visitorTokens.ttlSeconds` from the 30-day default, (b) keeping a strict CSP on the chat page, (c) using `auggy visitors --revoke <email>` if you detect compromise. The `revocationCheck` callback (already wired) ensures revoked tokens are inert without waiting for TTL expiry.
+- **Verify-route reverse-proxy header tunneling:** the verify reverse-proxy MUST allowlist forwarded headers. NEVER pass `headers: request.headers` wholesale — that forwards the frontend origin's cookies and any ambient auth headers to the agent service, where they land in the agent's runtime logs and log-shipping pipelines. The recipe code above strips everything except `content-type`; mirror that allowlist in any framework variant.
 - **Error message forwarding:** the proxy maps upstream HTTP statuses to canned messages. Never forward raw `error.detail` strings — those may contain operator-side context (file paths, DB error messages) that should stay server-side.
 - **Referrer leakage:** visitor tokens MUST live in localStorage, never in URL fragments or query strings. URLs leak via `Referer` headers; localStorage does not.
 - **Logs:** the agent does not log token values to stdout (validated). If you add custom logging, never log the contents of `x-visitor-token` or `Authorization`.
+- **`AUGGY_SESSION_SECRET` rotation:** rotating the secret invalidates all existing anonymous threads. Visitors silently get fresh anonymous identities. No security issue (anonymous identity is ephemeral by design), but it does mean visitors lose conversation continuity until they re-verify via visitor-auth.
 
 ## Auth-workaround vectors
 
@@ -584,8 +687,9 @@ CORS doesn't appear on that list. If you need server-side origin enforcement, ad
 - **CSRF (cross-site request forgery):** Pattern B is CSRF-immune as written — the bearer never reaches the browser, so a malicious site cannot forge requests with it. Pattern A with localStorage-backed visitor tokens is also CSRF-resistant (the malicious site cannot read the token), but the threat model deserves explicit verification if you change the storage mechanism (cookie-backed tokens would need `SameSite=Strict` + CSRF tokens).
 - **Origin spoofing:** CORS does NOT gate requests by origin. Pattern B relies on the bearer (which a malicious origin cannot get); Pattern A relies on anonymous-budget caps + visitor-token rotation.
 - **Forged `x-peer-name` / `x-peer-kind`:** cosmetic only. Do NOT use them as rate-limit keys or identity proxies.
-- **ThreadId-collision:** Pattern A's anonymous identity is per-thread. A malicious visitor can craft a `threadId` that collides with another anonymous visitor's identity. Mitigate by either: (a) server-generating threadIds on first contact (your proxy can mint a UUID and bind it to a session cookie before forwarding); or (b) accepting per-thread identity is best-effort and relying on visitor-auth verification for durable identity.
-- **Anonymous-budget evasion:** a malicious visitor can churn threadIds to reset per-thread limits. The `anonymousGlobalLimit` (default 30 turns/day across all anonymous traffic) caps the total damage; `dailyBudgetUsd` (default $5) is the hard wall.
+- **Browser-chosen `threadId` is NOT allowed:** the Pattern A proxy server-mints threadIds and binds via signed cookie. Browser-supplied `body.threadId` is IGNORED. Without this safeguard, a malicious visitor can craft a colliding threadId → join another anonymous visitor's identity / memory namespace / per-thread limits. The recipe code enforces this; do not "simplify" it by trusting browser-supplied threadId.
+- **Anonymous-budget evasion:** a visitor can attempt to bypass per-thread limits by clearing cookies to get a fresh threadId on each request. `anonymousGlobalLimit` (default 30 turns/day across ALL anonymous traffic) caps the total; `dailyBudgetUsd` (default $5) is the hard wall.
+- **Idempotency is cost-safe, NOT side-effect-safe:** `Idempotency-Key` dedups budget reservations only. The model is re-called on retry, tools re-execute, fresh tokens billed (against future cap window, not the current one). Design irreversible tools (payments, order modifications) with their own idempotency keys — do not lean on `Idempotency-Key` alone.
 
 ## Coherence with shipped Tier 1 features
 
