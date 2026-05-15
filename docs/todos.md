@@ -53,7 +53,7 @@ Captured 2026-05-14 during a strategic pass on the v1.0 adoption case (single-ow
 
 ### Tier 3 — defer past v1.0
 
-- [ ] **[chat-widget]** Publish `@auggy/chat-widget-react` (+ optional `@auggy/next` route helper). Recipe doc is enough for v1.0; package shape benefits from real adopter feedback. (G1 packaged)
+- [ ] **[chat-widget]** Publish `@auggy/chat-widget-react` (+ optional `@auggy/next` route helper) and/or a Web Component embed. v1.0 ships primitives reference only (`docs/20-embedding.md`) — packaged widget shape benefits from real adopter feedback (looselyorganized.xyz first). Generative-UI vision: components Auggy emits via tool calls (DossierCard, ChoicePrompt, FormBubble, etc.) using the existing AG-UI `TOOL_CALL_*` payload as the render contract — no runtime protocol changes. (G1 packaged + G37 ui-kit)
 - [ ] **[link]** Mesh-vs-tunnel design resolution (npm-bundled mesh vs explicit per-peer config). (G4)
 - [ ] **[creator-identity]** Multi-operator distinguishing — today single shared bearer = single "creator." Confirmed OK for v1.0 single-owner concierge thesis. (G11)
 - [ ] **[trust]** `staff` (intermediate) trust tier between creator and public. Needed for HVAC-dispatcher-style scenarios; v1.1+. (G13)

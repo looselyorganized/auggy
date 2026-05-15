@@ -192,7 +192,15 @@ export function createGuiServer(opts: GuiServerOptions) {
         return handleAgents(req);
       }
       if (url.pathname.startsWith("/api/chat/") && req.method === "POST") {
-        const agentId = decodeURIComponent(url.pathname.slice("/api/chat/".length));
+        // decodeURIComponent throws URIError on malformed percent-encoding
+        // (e.g. `/api/chat/%ZZ`). Treat as 404 rather than letting it surface
+        // as a Bun.serve 500.
+        let agentId: string;
+        try {
+          agentId = decodeURIComponent(url.pathname.slice("/api/chat/".length));
+        } catch {
+          return new Response("Not Found", { status: 404 });
+        }
         return handleChatProxy(req, agentId);
       }
 
