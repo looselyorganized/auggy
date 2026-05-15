@@ -1,22 +1,23 @@
 # 20 — Embedding Auggy in your frontend
 
-> Two patterns for wiring a Next.js (or any server-rendered) chat surface to a running Auggy agent. **Pattern A** is for public visitor chat (the boutique store / dispatcher / front-door use case). **Pattern B** is for operator-only chat (admin dashboard, internal-only surface). The runtime resolves these to different trust levels, and the wrong pattern in the wrong place is a privilege escalation — pick deliberately.
+> The copy-paste recipe for wiring a Next.js (or any server-rendered) chat surface to a running Auggy agent so **public visitors** can chat. Visitors resolve to `public/anonymous` → `public/recognized` on the agent; the operator's bearer never leaves the agent host. This is the boutique store / dispatcher / front-door use case.
 
-## Pick a pattern
+## This doc covers visitor chat. For operator chat, see the matrix.
 
-| | Pattern A — Public visitor chat | Pattern B — Operator-only chat |
+Auggy's auth model is single-credential: the bearer in `<agent-dir>/.env` (`AUGGY_WEB_TOKEN`) is the operator credential. There is no separate operator account or framework integration. The channels operators use to chat with their own agent are:
+
+| Operator wants to… | Today | Post-G36 |
 |---|---|---|
-| **Audience** | Anyone on the internet (boutique store customers, dispatcher inbound, support visitors) | Operator only (admin dashboard, internal "talk to my agent" surface) |
-| **Agent trust level** | `public/anonymous` → `public/recognized` after visitor-token rotation; `public/recognized` with verified email after visitorAuth | `creator` |
-| **Bearer in proxy?** | **NO** — anonymous traffic flows in unauthenticated (agent gates with `webTransport.allowAnonymous: true` + budgets + visitor-token rotation) | **YES** — server-side proxy attaches `Authorization: Bearer ${AUGGY_WEB_TOKEN}` |
-| **Cost-safety** | Budgets cap anonymous spend ($5/day global default, 30 anon turns/day default) | Operator pays full cost on every turn; bearer = no caps |
-| **Risk of misuse** | Low — public is by design | **High if exposed publicly** — every visitor through this proxy becomes the creator. Must gate behind operator auth (login wall, IP allowlist, VPN) before exposing |
+| Chat from the agent's host machine | `auggy chat` (Local GUI) | `auggy chat` (unchanged) |
+| Chat from anywhere on a phone | Telegram (`telegramTransport`) | Telegram OR `/admin` basic-auth |
+| Chat from anywhere in a browser | (gap) | `/admin` route + native basic-auth prompt |
+| Let public visitors chat | **This doc's recipe** | Same |
 
-**Pick Pattern A** unless you specifically want an operator-only surface AND you have your own auth gate in front of it. If in doubt, Pattern A.
+If you came here looking for "how do I chat with my own agent" — use `auggy chat` or `telegramTransport`. The recipe below is specifically for exposing chat to anonymous visitors.
 
 ---
 
-# Pattern A — Public visitor chat (recommended)
+# The recipe
 
 ## Agent-side configuration
 
@@ -59,7 +60,7 @@ augments:
 
 ```ts
 /**
- * Pattern A chat proxy — public visitor chat.
+ * Visitor chat proxy — public traffic.
  *
  * Does NOT attach `Authorization: Bearer …`. Visitor traffic resolves to
  * `public/anonymous` (or `public/recognized` after token rotation) on the agent.
@@ -111,14 +112,22 @@ function verifyThread(cookieValue: string | null): string | null {
 function readThreadCookie(cookieHeader: string | null): string | null {
   if (!cookieHeader) return null;
   const m = cookieHeader.match(/(?:^|;\s*)auggy-thread=([^;]+)/);
-  return m ? decodeURIComponent(m[1]!) : null;
+  if (!m) return null;
+  // Malformed percent-encoded cookies (e.g. `%ZZ`) make decodeURIComponent
+  // throw URIError. Treat them as "no cookie" so the proxy mints a fresh
+  // threadId instead of returning 500 to the visitor.
+  try {
+    return decodeURIComponent(m[1]!);
+  } catch {
+    return null;
+  }
 }
 
 export async function POST(request: Request) {
   if (!AGENT_URL || !SESSION_SECRET) {
     return errorResponse(
       503,
-      "Pattern A requires AUGGY_AGENT_URL and AUGGY_SESSION_SECRET. " +
+      "This recipe requires AUGGY_AGENT_URL and AUGGY_SESSION_SECRET. " +
         "Generate the secret with `openssl rand -hex 32` and set it on the frontend.",
     );
   }
@@ -507,7 +516,7 @@ export function ChatWidget() {
 }
 ```
 
-## What the agent sees (Pattern A identity flow)
+## What the agent sees (identity flow)
 
 | Request | trustLevel | publicSubstate | peer.id |
 |---|---|---|---|
@@ -515,7 +524,7 @@ export function ChatWidget() {
 | Second request: client sends the rotated token from previous response | `public` | `recognized` | `vis_<uuid>` (stable, from token payload) |
 | After visitor-auth email verification + reverse-proxied verify route | `public` | `recognized` | `vis_<uuid>` from the visitorAuth-minted token |
 
-The agent **never** mints `creator` trust for Pattern A traffic, because the proxy never attaches the bearer. The `visitor-auth` upgrade preserves anonymous history under the peer-id migration that visitorAuth runs at verify time (see `docs/19-visitor-auth.md`).
+The agent **never** mints `creator` trust for traffic that comes through this recipe, because the proxy never attaches the bearer. The `visitor-auth` upgrade preserves anonymous history under the peer-id migration that visitorAuth runs at verify time (see `docs/19-visitor-auth.md`).
 
 ## Idempotency (what `Idempotency-Key` actually does)
 
@@ -539,103 +548,7 @@ AUGGY_AGENT_URL=http://localhost:8080
 AUGGY_SESSION_SECRET=<openssl rand -hex 32>
 ```
 
-`AUGGY_SESSION_SECRET` signs the HttpOnly `auggy-thread` cookie that binds each visitor to a server-minted threadId. Generate once with `openssl rand -hex 32`; keep it stable. Rotating it invalidates all existing anonymous threads (visitors silently get fresh anonymous identities; no security issue because anonymous identity is ephemeral by design). **No bearer token** is needed — Pattern A relies on `allowAnonymous` on the agent + the budgets + visitor-token machinery.
-
----
-
-# Pattern B — Operator-only chat (creator trust)
-
-> ⚠ **Every request through this proxy resolves to `creator` trust on the agent**, meaning unlimited budget, full tool access, and creator-scoped memory. **Never** expose this surface to public traffic. If you do, every visitor effectively IS the operator.
->
-> Acceptable uses: internal admin dashboard behind a login wall, IP-restricted operator surface, VPN-gated console. Anything where the only people reaching the proxy are people you would let chat as yourself.
-
-## Agent-side configuration
-
-Standard scaffold defaults are fine. The agent's `webTransport` requires a bearer (the default) and `allowAnonymous` stays unset / `false`.
-
-## Frontend proxy code (bearer forwarded)
-
-`app/api/chat/route.ts`:
-
-```ts
-/**
- * Pattern B chat proxy — operator-only.
- * Every request through this proxy is authenticated as the creator. Gate
- * the page that uses this proxy behind your own operator-auth layer.
- */
-
-const AGENT_URL = process.env.AUGGY_AGENT_URL;
-const AGENT_TOKEN = process.env.AUGGY_AGENT_TOKEN; // matches the agent's AUGGY_WEB_TOKEN
-
-function errorResponse(status: number, message: string) {
-  return Response.json({ error: message }, { status });
-}
-
-export async function POST(request: Request) {
-  if (!AGENT_URL || !AGENT_TOKEN) {
-    return errorResponse(503, "AUGGY_AGENT_URL and AUGGY_AGENT_TOKEN must be set.");
-  }
-
-  // [… same body validation as Pattern A …]
-  let body: { messages?: unknown; threadId?: string };
-  try { body = await request.json(); } catch { return errorResponse(400, "Invalid JSON."); }
-  if (!body.messages || !Array.isArray(body.messages) || body.messages.length === 0) {
-    return errorResponse(400, "Request must include a non-empty messages array.");
-  }
-  for (const msg of body.messages) {
-    if (
-      typeof msg !== "object" || msg === null ||
-      typeof (msg as Record<string, unknown>).role !== "string" ||
-      typeof (msg as Record<string, unknown>).content !== "string" ||
-      (msg as Record<string, unknown>).role !== "user"
-    ) {
-      return errorResponse(400, "Each message must have role: 'user' and a string content.");
-    }
-  }
-
-  // Forward Idempotency-Key (cost dedup on retries). Pattern B is creator-trust
-  // so duplicate tool calls = duplicate operator-authorized side effects, but
-  // budget cap reservations still won't be double-counted.
-  const upstreamHeaders: Record<string, string> = {
-    "content-type": "application/json",
-    authorization: `Bearer ${AGENT_TOKEN}`,  // ← elevates to creator trust
-  };
-  const idempotencyKey = request.headers.get("idempotency-key");
-  if (idempotencyKey) upstreamHeaders["idempotency-key"] = idempotencyKey;
-
-  const agentResponse = await fetch(`${AGENT_URL}/agent/run`, {
-    method: "POST",
-    headers: upstreamHeaders,
-    body: JSON.stringify({ messages: body.messages, threadId: body.threadId }),
-    signal: AbortSignal.timeout(120_000),
-  });
-
-  if (!agentResponse.ok || !agentResponse.body) {
-    return errorResponse(502, "Agent error.");
-  }
-  return new Response(agentResponse.body, {
-    status: 200,
-    headers: {
-      "content-type": "text/event-stream",
-      "cache-control": "no-cache",
-      connection: "keep-alive",
-    },
-  });
-}
-```
-
-## What the agent sees (Pattern B)
-
-Every request: `trustLevel: "creator"`, `peer.id: "creator"`. Anonymous-budget caps do NOT apply. Creator-only memory tools (`memory_forget`, etc.) are accessible. **Treat the proxy URL as a creator credential.**
-
-## Frontend environment
-
-```
-AUGGY_AGENT_URL=http://localhost:8080
-AUGGY_AGENT_TOKEN=<value from the agent's .env: AUGGY_WEB_TOKEN>
-```
-
-`AUGGY_AGENT_TOKEN` MUST match the agent's `AUGGY_WEB_TOKEN`. The bearer never reaches the browser.
+`AUGGY_SESSION_SECRET` signs the HttpOnly `auggy-thread` cookie that binds each visitor to a server-minted threadId. Generate once with `openssl rand -hex 32`; keep it stable. Rotating it invalidates all existing anonymous threads (visitors silently get fresh anonymous identities; no security issue because anonymous identity is ephemeral by design). **No bearer token** is needed — this recipe relies on `allowAnonymous` on the agent + the budgets + visitor-token machinery.
 
 ---
 
@@ -673,7 +586,7 @@ CORS doesn't appear on that list. If you need server-side origin enforcement, ad
 
 ## Credential-leak vectors
 
-- **Bearer never reaches browser (Pattern B):** never use `NEXT_PUBLIC_*` prefixes for `AUGGY_AGENT_TOKEN`. Verify by opening browser devtools → network tab → confirm `Authorization` header is absent on `/api/chat` requests. The proxy attaches the bearer server-to-server only.
+- **Bearer stays on the agent host:** the recipe proxy never attaches `Authorization: Bearer …`. Verify by opening browser devtools → network tab → confirm `Authorization` header is absent on `/api/chat` requests. The operator's bearer lives in `<agent-dir>/.env` and is only used for operator surfaces (`auggy chat`, `telegramTransport`, future `/admin`).
 - **Visitor token in localStorage is XSS-exfiltratable:** an XSS bug in your widget gives the attacker the visitor's token, redeemable for the token's TTL. Mitigate by (a) shortening `visitorTokens.ttlSeconds` from the 30-day default, (b) keeping a strict CSP on the chat page, (c) using `auggy visitors --revoke <email>` if you detect compromise. The `revocationCheck` callback (already wired) ensures revoked tokens are inert without waiting for TTL expiry.
 - **Verify-route reverse-proxy header tunneling:** the verify reverse-proxy MUST allowlist forwarded headers. NEVER pass `headers: request.headers` wholesale — that forwards the frontend origin's cookies and any ambient auth headers to the agent service, where they land in the agent's runtime logs and log-shipping pipelines. The recipe code above strips everything except `content-type`; mirror that allowlist in any framework variant.
 - **Error message forwarding:** the proxy maps upstream HTTP statuses to canned messages. Never forward raw `error.detail` strings — those may contain operator-side context (file paths, DB error messages) that should stay server-side.
@@ -684,18 +597,18 @@ CORS doesn't appear on that list. If you need server-side origin enforcement, ad
 ## Auth-workaround vectors
 
 - **Replay attacks on stolen visitor tokens:** default 30-day TTL; consider shortening for higher-value deployments. visitorAuth supports revocation via `auggy visitors --revoke <email>`; the `revocationCheck` is consulted on every request.
-- **CSRF (cross-site request forgery):** Pattern B is CSRF-immune as written — the bearer never reaches the browser, so a malicious site cannot forge requests with it. Pattern A with localStorage-backed visitor tokens is also CSRF-resistant (the malicious site cannot read the token), but the threat model deserves explicit verification if you change the storage mechanism (cookie-backed tokens would need `SameSite=Strict` + CSRF tokens).
-- **Origin spoofing:** CORS does NOT gate requests by origin. Pattern B relies on the bearer (which a malicious origin cannot get); Pattern A relies on anonymous-budget caps + visitor-token rotation.
+- **CSRF (cross-site request forgery):** the recipe is CSRF-resistant — visitor tokens live in localStorage (not cookies, so a malicious site cannot read them) and the bearer never reaches the browser. If you change the storage mechanism, re-evaluate: cookie-backed tokens would need `SameSite=Strict` + CSRF tokens.
+- **Origin spoofing:** CORS does NOT gate requests by origin. The recipe relies on anonymous-budget caps + visitor-token rotation, not origin checks. If you want origin enforcement, add it explicitly at the proxy.
 - **Forged `x-peer-name` / `x-peer-kind`:** cosmetic only. Do NOT use them as rate-limit keys or identity proxies.
-- **Browser-chosen `threadId` is NOT allowed:** the Pattern A proxy server-mints threadIds and binds via signed cookie. Browser-supplied `body.threadId` is IGNORED. Without this safeguard, a malicious visitor can craft a colliding threadId → join another anonymous visitor's identity / memory namespace / per-thread limits. The recipe code enforces this; do not "simplify" it by trusting browser-supplied threadId.
+- **Browser-chosen `threadId` is NOT allowed:** the proxy server-mints threadIds and binds via signed cookie. Browser-supplied `body.threadId` is IGNORED. Without this safeguard, a malicious visitor can craft a colliding threadId → join another anonymous visitor's identity / memory namespace / per-thread limits. The recipe code enforces this; do not "simplify" it by trusting browser-supplied threadId.
 - **Anonymous-budget evasion:** a visitor can attempt to bypass per-thread limits by clearing cookies to get a fresh threadId on each request. `anonymousGlobalLimit` (default 30 turns/day across ALL anonymous traffic) caps the total; `dailyBudgetUsd` (default $5) is the hard wall.
 - **Idempotency is cost-safe, NOT side-effect-safe:** `Idempotency-Key` dedups budget reservations only. The model is re-called on retry, tools re-execute, fresh tokens billed (against future cap window, not the current one). Design irreversible tools (payments, order modifications) with their own idempotency keys — do not lean on `Idempotency-Key` alone.
 
 ## Coherence with shipped Tier 1 features
 
-- Pattern A REQUIRES `allowAnonymous: true` (G3). For local dev `NODE_ENV` unset → defaults to `true`. For cloud deploy (`NODE_ENV=production`) → must be set explicitly in yaml.
-- Pattern A's visitor-auth flow runs **fine in local dev with the console adapter** (G34): `agentMail.transport: "console"` prints the verify URL to stdout instead of sending email. The reverse-proxied verify route still applies in this case.
-- Pattern A's `/visitor-auth/verify` localStorage handoff REQUIRES reverse-proxying through the frontend origin (see "Cross-origin" section above).
+- The recipe REQUIRES `allowAnonymous: true` (G3). For local dev `NODE_ENV` unset → defaults to `true`. For cloud deploy (`NODE_ENV=production`) → must be set explicitly in yaml.
+- The visitor-auth flow runs **fine in local dev with the console adapter** (G34): `agentMail.transport: "console"` prints the verify URL to stdout instead of sending email. The reverse-proxied verify route still applies in this case.
+- The `/visitor-auth/verify` localStorage handoff REQUIRES reverse-proxying through the frontend origin (see "Cross-origin" section above).
 
 ---
 
@@ -703,12 +616,11 @@ CORS doesn't appear on that list. If you need server-side origin enforcement, ad
 
 The end-to-end flow described here is verified by `tests/integration/embedding-recipe.test.ts`, which boots a real agent + a small inline HTTP proxy and asserts that:
 
-- Pattern A request without bearer + placeholder `x-visitor-token` → `public/anonymous`, fresh token in response
+- A request without bearer + placeholder `x-visitor-token` → `public/anonymous`, fresh token in response
 - Subsequent request with rotated token → `public/recognized`, stable `peer.id`
 - visitorAuth flow (using G34's console adapter) → upgraded `vis_<uuid>` token
-- Pattern B request with bearer → `creator` trust
-- Pattern B without bearer (with `allowAnonymous: false`) → 401
 - `x-peer-id` is ignored for identity regardless of the request shape
+- A malformed `auggy-thread` cookie (e.g. `auggy-thread=%ZZ`) → fresh threadId minted, NOT 500
 
 If you change the recipe, run the integration test to confirm the documented claims still hold.
 
@@ -718,16 +630,15 @@ If you change the recipe, run the integration test to confirm the documented cla
 
 Same pattern in any server-rendered framework:
 
-- **Express / Hono / Fastify**: a `POST /api/chat` route that mimics the Pattern A or Pattern B proxy code above. The shape is identical.
+- **Express / Hono / Fastify**: a `POST /api/chat` route that mimics the proxy code above. The shape is identical.
 - **Cloudflare Workers / Vercel Edge**: same pattern. Both support streaming `Response.body` pass-through.
-- **Pure browser, no server**: not viable for Pattern B (would leak the bearer). For Pattern A, you can technically run a browser-only chat that talks directly to the agent's `/agent/run` if the agent has `cors.origins` set and `allowAnonymous: true`. The reverse-proxy requirement for `/visitor-auth/verify` is mooted (same origin from the browser's perspective). This is an OK pattern for a self-hosted internal tool; less safe for public traffic because per-origin enforcement is absent.
+- **Pure browser, no server**: you can technically run a browser-only chat that talks directly to the agent's `/agent/run` if the agent has `cors.origins` set and `allowAnonymous: true`. The reverse-proxy requirement for `/visitor-auth/verify` is mooted (same origin from the browser's perspective). This is an OK pattern for a self-hosted internal tool; less safe for public traffic because per-origin enforcement is absent and the proxy's server-minted threadId / signed-cookie binding goes away.
 
 ---
 
 # Troubleshooting
 
-- **`401 Unauthorized` (Pattern A)** — agent doesn't have `allowAnonymous: true`. Either set it in yaml or `AUGGY_ALLOW_ANONYMOUS=true` env var.
-- **`401 Unauthorized` (Pattern B)** — `AUGGY_AGENT_TOKEN` doesn't match `<agent-dir>/.env`'s `AUGGY_WEB_TOKEN`. Confirm both files.
+- **`401 Unauthorized`** — agent doesn't have `allowAnonymous: true`. Either set it in yaml or `AUGGY_ALLOW_ANONYMOUS=true` env var.
 - **`502 Agent is not reachable`** — agent isn't running. Run `auggy status`; if empty, `auggy dev <name>` or `auggy start <name>`.
 - **`504 Agent did not respond within 120 seconds`** — turn taking too long. Increase `AbortSignal.timeout(...)` in proxy and `webTransport.idleTimeout` (default 120s).
 - **`429 Rate limited`** — budget cap hit. Check `webTransport.rateLimitPerPeer`, `budgets.maxTurnsPerThread`, `budgets.dailyBudgetUsd`.
@@ -740,4 +651,5 @@ Same pattern in any server-rendered framework:
 - **Visitor recognition flow**: [`docs/19-visitor-auth.md`](./19-visitor-auth.md) — magic-link verification, console-adapter for OSS testing, the production safeguard.
 - **Operator-side chat (not visitor-side)**: [`docs/15-chat.md`](./15-chat.md) — `auggy chat` Local GUI for the creator's own chat surface, separate from production embedding.
 - **G3 `allowAnonymous` posture**: [`docs/06-transports.md#anonymous-posture`](./06-transports.md#anonymous-posture) — the env-based default rule and the override precedence.
-- **G34 console-mail-client**: [`docs/19-visitor-auth.md#console-mode-for-local-testing`](./19-visitor-auth.md#console-mode-for-local-testing) — Pattern A's visitorAuth setup in local dev.
+- **G34 console-mail-client**: [`docs/19-visitor-auth.md#console-mode-for-local-testing`](./19-visitor-auth.md#console-mode-for-local-testing) — visitorAuth setup in local dev.
+- **Operator chat surfaces**: [`docs/15-chat.md`](./15-chat.md) (Local GUI, `auggy chat`) and [`docs/14-telegram-transport.md`](./14-telegram-transport.md) (Telegram). Future: G36 `/admin` route with HTTP basic auth.

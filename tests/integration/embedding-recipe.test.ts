@@ -1,18 +1,21 @@
 /**
  * Integration test for `docs/20-embedding.md` — verifies the documented
- * embedding patterns hold end-to-end against the real transport.
+ * embedding recipe holds end-to-end against the real transport.
  *
  * Closes codex adversarial-review findings on PR #50:
- *   1. Pattern A (no bearer) MUST resolve to public:anonymous, NOT creator.
- *      Verifies the documented public-visitor pattern stays in public trust.
+ *   1. A request without a bearer MUST resolve to public:anonymous, NOT creator.
+ *      Verifies the documented public-visitor flow stays in public trust.
  *   2. `x-peer-id` MUST NOT be used for identity. Regression guard against
  *      future advice that would mislead adopters about visitor-scoping.
+ *   3. A malformed `auggy-thread` cookie MUST NOT 500. The proxy mints a
+ *      fresh threadId instead. Regression guard for the round-3 decodeURIComponent
+ *      crash.
  *
  * Structure: each test mounts a real agent with `webTransport` (and
- * `visitorAuth` for Pattern A) plus a small inline HTTP proxy that mirrors
- * the recipe code from docs/20-embedding.md. The proxy + recipe code stay
- * in sync because changes that break this test will also break the
- * documented claims.
+ * `visitorAuth` where the test exercises the upgrade flow) plus a small
+ * inline HTTP proxy that mirrors the recipe code from docs/20-embedding.md.
+ * The proxy + recipe code stay in sync because changes that break this test
+ * will also break the documented claims.
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
@@ -30,7 +33,7 @@ const BEARER = "embedding-recipe-bearer";
 const SESSION_SECRET = "embedding-recipe-session-secret";
 
 // ---------------------------------------------------------------------------
-// Signed-cookie helpers — mirror docs/20-embedding.md Pattern A.
+// Signed-cookie helpers — mirror the docs/20-embedding.md recipe.
 // ---------------------------------------------------------------------------
 
 function signThread(threadId: string): string {
@@ -56,7 +59,14 @@ function verifyThread(cookieValue: string | null): string | null {
 function readThreadCookie(cookieHeader: string | null): string | null {
   if (!cookieHeader) return null;
   const m = cookieHeader.match(/(?:^|;\s*)auggy-thread=([^;]+)/);
-  return m ? decodeURIComponent(m[1]!) : null;
+  if (!m) return null;
+  // Mirror the recipe: malformed percent-encoding (e.g. `%ZZ`) must NOT
+  // throw — treat as "no cookie" so the proxy mints a fresh threadId.
+  try {
+    return decodeURIComponent(m[1]!);
+  } catch {
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -82,7 +92,7 @@ function createPeerCaptureAugment(): PeerCapture {
 }
 
 // ---------------------------------------------------------------------------
-// Pattern A proxy — mirrors the hardened docs/20-embedding.md recipe:
+// Recipe proxy — mirrors the hardened docs/20-embedding.md code:
 //   - NO Authorization (anonymous traffic only)
 //   - Server-minted threadId, bound via signed cookie. Browser-supplied
 //     `body.threadId` is IGNORED.
@@ -90,7 +100,7 @@ function createPeerCaptureAugment(): PeerCapture {
 //   - Forwards `Idempotency-Key` for budget-dedup on retries.
 // ---------------------------------------------------------------------------
 
-function patternAProxy(agentUrl: string): {
+function recipeProxy(agentUrl: string): {
   fetch: (req: Request) => Promise<Response>;
 } {
   return {
@@ -132,37 +142,6 @@ function patternAProxy(agentUrl: string): {
 }
 
 // ---------------------------------------------------------------------------
-// Pattern B proxy — mirrors docs/20-embedding.md Pattern B code.
-// Forwards Authorization: Bearer.
-// ---------------------------------------------------------------------------
-
-function patternBProxy(
-  agentUrl: string,
-  bearer: string,
-): {
-  fetch: (req: Request) => Promise<Response>;
-} {
-  return {
-    fetch: async (req: Request): Promise<Response> => {
-      const body = await req.text();
-      const agentResp = await fetch(`${agentUrl}/agent/run`, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          authorization: `Bearer ${bearer}`,
-        },
-        body,
-      });
-      const respHeaders = new Headers({
-        "content-type": "text/event-stream",
-        "cache-control": "no-cache",
-      });
-      return new Response(agentResp.body, { status: agentResp.status, headers: respHeaders });
-    },
-  };
-}
-
-// ---------------------------------------------------------------------------
 // Test harness
 // ---------------------------------------------------------------------------
 
@@ -185,10 +164,10 @@ describe("integration: embedding recipe (docs/20-embedding.md)", () => {
   });
 
   // -------------------------------------------------------------------------
-  // Pattern A — public visitor chat
+  // Visitor chat — public traffic
   // -------------------------------------------------------------------------
 
-  it("Pattern A: request without bearer + bootstrap token → public/anonymous + fresh token in response", async () => {
+  it("request without bearer + bootstrap token → public/anonymous + fresh token in response", async () => {
     const PORT = 19200;
     const model = createMockModel({ response: "hi visitor" });
     const peerCapture = createPeerCaptureAugment();
@@ -210,7 +189,7 @@ describe("integration: embedding recipe (docs/20-embedding.md)", () => {
     );
     await agent.start();
 
-    const proxy = patternAProxy(`http://localhost:${PORT}`);
+    const proxy = recipeProxy(`http://localhost:${PORT}`);
     const browserReq = new Request("http://example.invalid/api/chat", {
       method: "POST",
       headers: {
@@ -244,7 +223,7 @@ describe("integration: embedding recipe (docs/20-embedding.md)", () => {
     expect(setCookie).toContain("HttpOnly");
   }, 30_000);
 
-  it("Pattern A: subsequent request with rotated token → public/recognized with stable peer.id", async () => {
+  it("subsequent request with rotated token → public/recognized with stable peer.id", async () => {
     const PORT = 19201;
     const model = createMockModel({ response: "welcome back" });
     const peerCapture = createPeerCaptureAugment();
@@ -261,7 +240,7 @@ describe("integration: embedding recipe (docs/20-embedding.md)", () => {
     );
     await agent.start();
 
-    const proxy = patternAProxy(`http://localhost:${PORT}`);
+    const proxy = recipeProxy(`http://localhost:${PORT}`);
 
     // First contact → bootstrap → response carries rotated token.
     const r1 = await proxy.fetch(
@@ -317,7 +296,7 @@ describe("integration: embedding recipe (docs/20-embedding.md)", () => {
     expect(peerCapture.captured[2]!.id).toBe(recog.id); // stable visitorId across requests
   }, 30_000);
 
-  it("Pattern A: visitorAuth upgrade flow with console adapter → upgraded vis_<uuid> token", async () => {
+  it("visitorAuth upgrade flow with console adapter → upgraded vis_<uuid> token", async () => {
     const PORT = 19202;
     const peerCapture = createPeerCaptureAugment();
 
@@ -371,7 +350,7 @@ describe("integration: embedding recipe (docs/20-embedding.md)", () => {
       );
       await agent.start();
 
-      const proxy = patternAProxy(`http://localhost:${PORT}`);
+      const proxy = recipeProxy(`http://localhost:${PORT}`);
 
       // Turn 1: anonymous visitor asks to verify. Console adapter prints verify URL.
       const r1 = await proxy.fetch(
@@ -437,7 +416,7 @@ describe("integration: embedding recipe (docs/20-embedding.md)", () => {
     }
   }, 30_000);
 
-  it("Pattern A: x-peer-id is IGNORED for identity (regression guard for codex finding 2)", async () => {
+  it("x-peer-id is IGNORED for identity (regression guard for codex finding 2)", async () => {
     const PORT = 19203;
     const model = createMockModel({ response: "ok" });
     const peerCapture = createPeerCaptureAugment();
@@ -454,7 +433,7 @@ describe("integration: embedding recipe (docs/20-embedding.md)", () => {
     );
     await agent.start();
 
-    const proxy = patternAProxy(`http://localhost:${PORT}`);
+    const proxy = recipeProxy(`http://localhost:${PORT}`);
 
     // Send a forged x-peer-id — the agent MUST NOT use it as peer.id.
     // Proxy doesn't normally pass x-peer-id; for this test we hit /agent/run
@@ -494,7 +473,7 @@ describe("integration: embedding recipe (docs/20-embedding.md)", () => {
   // Codex round-2 regression guards — server-minted threadId + idempotency
   // -------------------------------------------------------------------------
 
-  it("Pattern A: signed cookie binds threadId across requests (round-2 fix)", async () => {
+  it("signed cookie binds threadId across requests (round-2 fix)", async () => {
     const PORT = 19206;
     const model = createMockModel({ response: "ok" });
     const peerCapture = createPeerCaptureAugment();
@@ -511,7 +490,7 @@ describe("integration: embedding recipe (docs/20-embedding.md)", () => {
     );
     await agent.start();
 
-    const proxy = patternAProxy(`http://localhost:${PORT}`);
+    const proxy = recipeProxy(`http://localhost:${PORT}`);
 
     // R1: no cookie → proxy mints threadId + sets cookie.
     const r1 = await proxy.fetch(
@@ -548,7 +527,7 @@ describe("integration: embedding recipe (docs/20-embedding.md)", () => {
     expect(r2.headers.get("set-cookie")).toBeNull();
   }, 30_000);
 
-  it("Pattern A: tampered cookie → fresh threadId minted (signature rejected)", async () => {
+  it("tampered cookie → fresh threadId minted (signature rejected)", async () => {
     const PORT = 19207;
     const model = createMockModel({ response: "ok" });
     const peerCapture = createPeerCaptureAugment();
@@ -565,7 +544,7 @@ describe("integration: embedding recipe (docs/20-embedding.md)", () => {
     );
     await agent.start();
 
-    const proxy = patternAProxy(`http://localhost:${PORT}`);
+    const proxy = recipeProxy(`http://localhost:${PORT}`);
 
     // Forge a cookie with a target threadId but a garbage signature.
     const tampered = "victim-thread-id.notTheRealHmacSignature123";
@@ -649,69 +628,51 @@ describe("integration: embedding recipe (docs/20-embedding.md)", () => {
   }, 30_000);
 
   // -------------------------------------------------------------------------
-  // Pattern B — operator-only (creator trust)
+  // Codex round-3 regression guard — malformed cookie must not crash the proxy
   // -------------------------------------------------------------------------
 
-  it("Pattern B: proxy forwards bearer → creator trust on every request", async () => {
-    const PORT = 19204;
-    const model = createMockModel({ response: "ack" });
+  it("malformed auggy-thread cookie (URIError) → fresh threadId minted, not 500", async () => {
+    const PORT = 19209;
+    const model = createMockModel({ response: "ok" });
     const peerCapture = createPeerCaptureAugment();
 
     const transport = webTransport({
       port: PORT,
       auth: { type: "bearer", token: BEARER },
-      // No allowAnonymous — default for production behavior.
-      allowAnonymous: false,
+      allowAnonymous: true,
+      visitorTokens: { enabled: true, signingKey: SIGNING_KEY, ttlSeconds: 86_400 },
     });
     agent = defineAgent(
-      { name: "pb-creator", model: "mock", augments: [transport, peerCapture.augment] },
+      { name: "pa-malformed", model: "mock", augments: [transport, peerCapture.augment] },
       model,
     );
     await agent.start();
 
-    const proxy = patternBProxy(`http://localhost:${PORT}`, BEARER);
+    const proxy = recipeProxy(`http://localhost:${PORT}`);
+
+    // `%ZZ` is not valid percent-encoding — decodeURIComponent on it throws
+    // URIError. Without the try/catch wrap in readThreadCookie, the proxy
+    // would 500 here. With it, the proxy treats the cookie as absent and
+    // mints a fresh threadId.
     const resp = await proxy.fetch(
       new Request("http://example.invalid/api/chat", {
         method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          messages: [{ role: "user", content: "hi" }],
-          threadId: "thread-pb",
-        }),
+        headers: {
+          "content-type": "application/json",
+          "x-visitor-token": "bootstrap",
+          cookie: "auggy-thread=%ZZ",
+        },
+        body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
       }),
     );
+
     expect(resp.status).toBe(200);
     await resp.text();
-
+    // Fresh, properly-signed cookie was minted.
+    const setCookie = resp.headers.get("set-cookie") ?? "";
+    expect(setCookie).toContain("auggy-thread=");
+    // Captured peer.id is a server-minted UUID, not derived from the bad cookie.
     expect(peerCapture.captured).toHaveLength(1);
-    const peer = peerCapture.captured[0]!;
-    expect(peer.trustLevel).toBe("creator");
-    expect(peer.id).toBe("creator");
-  }, 30_000);
-
-  it("Pattern B without bearer (allowAnonymous=false) → 401 from the agent", async () => {
-    const PORT = 19205;
-    const model = createMockModel();
-
-    const transport = webTransport({
-      port: PORT,
-      auth: { type: "bearer", token: BEARER },
-      allowAnonymous: false,
-    });
-    agent = defineAgent({ name: "pb-401", model: "mock", augments: [transport] }, model);
-    await agent.start();
-
-    // Skip the proxy — go straight at /agent/run without a bearer to prove
-    // the agent enforces it. (A buggy "Pattern B proxy that forgot to attach
-    // the bearer" would observe the same 401, which is what we want.)
-    const resp = await fetch(`http://localhost:${PORT}/agent/run`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        messages: [{ role: "user", content: "hi" }],
-        threadId: "thread-pb-401",
-      }),
-    });
-    expect(resp.status).toBe(401);
+    expect(peerCapture.captured[0]!.id).toMatch(/^anon-[0-9a-f]{8}-/);
   }, 30_000);
 });
