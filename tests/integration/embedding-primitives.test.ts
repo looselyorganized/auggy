@@ -507,5 +507,12 @@ describe("integration: embedding primitives (docs/20-embedding.md)", () => {
     const peer = peerCapture.captured[0]!;
     expect(peer.trustLevel).toBe("creator");
     expect(peer.id).toBe("creator");
+
+    // Sanity: NO fresh visitor token is issued in the response. Pre-codex-R6
+    // (Option B follow-on) the mint logic would have issued one regardless of
+    // bearer presence, opening a creator-to-visitor demotion loop via storage
+    // round-tripping. The fix at web-transport.ts ~line 678 suppresses mint
+    // when bearer is attempted.
+    expect(resp.headers.get("x-visitor-token")).toBeNull();
   }, 30_000);
 });

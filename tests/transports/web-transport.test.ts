@@ -2280,11 +2280,14 @@ describe("webTransport agentBinding (fix C2)", () => {
     try {
       // Present agent-a's token to agent-b: must stay anonymous.
       // When anonymous + invalid-ish token, webTransport issues a NEW anon token.
+      // No bearer here — under codex R6 fix, a bearer-credentialed request
+      // resolves to creator (Path 1) and the mint logic is suppressed (no
+      // fresh token issued for bearer callers; closes the creator-to-visitor
+      // demotion loop). allowAnonymous defaults true in test env.
       const resp = await fetch(`http://localhost:${port}/agent/run`, {
         method: "POST",
         headers: {
           "content-type": "application/json",
-          authorization: "Bearer test-token",
           "x-visitor-token": agentAToken,
         },
         body: JSON.stringify({ messages: [{ role: "user", content: "hi from agent-a replay" }] }),
