@@ -314,13 +314,17 @@ describe("webTransport HTTP server", () => {
     await agent.start();
 
     try {
+      // First-contact anonymous request with bootstrap sentinel — the
+      // documented pattern in docs/20-embedding.md. allowAnonymous defaults
+      // true in test env (NODE_ENV !== "production"), so this request is
+      // admitted. Runtime mints a fresh visitor token in the response header.
+      // Bearer omitted because under codex R6 fix, bearer-wins; sending bearer
+      // would route to creator (Path 1) and no visitor token would be issued.
       const resp = await fetch(`http://localhost:${port}/agent/run`, {
         method: "POST",
         headers: {
           "content-type": "application/json",
-          authorization: "Bearer test-token",
-          // No x-visitor-token — first-contact anonymous, gets a token issued
-          "x-visitor-token": "invalid-token-to-trigger-anonymous-path",
+          "x-visitor-token": "bootstrap",
         },
         body: JSON.stringify({
           messages: [{ role: "user", content: "hello" }],
@@ -457,8 +461,6 @@ describe("webTransport HTTP server", () => {
         headers: {
           "content-type": "application/json",
           authorization: "Bearer test-token",
-          // x-visitor-token header triggers public path (no payload → anonymous)
-          "x-visitor-token": "stale-token",
         },
         body: JSON.stringify({
           messages: [{ role: "user", content: "hi" }],
@@ -528,7 +530,6 @@ describe("webTransport HTTP server", () => {
         headers: {
           "content-type": "application/json",
           authorization: "Bearer test-token",
-          "x-visitor-token": "stale",
         },
         body: JSON.stringify({
           messages: [{ role: "user", content: "echo please" }],
@@ -611,7 +612,6 @@ describe("webTransport HTTP server", () => {
         headers: {
           "content-type": "application/json",
           authorization: "Bearer test-token",
-          "x-visitor-token": "stale",
         },
         body: JSON.stringify({
           messages: [{ role: "user", content: "this message is way too long to fit" }],
@@ -652,7 +652,6 @@ describe("webTransport HTTP server", () => {
         headers: {
           "content-type": "application/json",
           authorization: "Bearer test-token",
-          "x-visitor-token": "stale",
         },
         body: JSON.stringify({
           messages: [{ role: "user", content: "hi" }],
@@ -817,13 +816,15 @@ describe("webTransport HTTP server", () => {
     await agent.start();
 
     try {
-      // First request: invalid visitor token → anonymous → issues a new token
+      // First request: anonymous (no bearer; allowAnonymous defaults true in test env)
+      // with bootstrap visitor-token → mints a fresh token in the response.
+      // (Bearer omitted because under codex R6 fix, valid bearer wins over
+      // invalid visitor-token and would route to creator with no token issuance.)
       const resp1 = await fetch(`http://localhost:${port}/agent/run`, {
         method: "POST",
         headers: {
           "content-type": "application/json",
-          authorization: "Bearer test-token",
-          "x-visitor-token": "invalid-stale-token",
+          "x-visitor-token": "bootstrap",
         },
         body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
       });
@@ -833,7 +834,10 @@ describe("webTransport HTTP server", () => {
 
       model.pushResponse({ content: "hello again", finishReason: "end_turn" });
 
-      // Second request: send valid token back → recognized → no new token
+      // Second request: send valid token back → recognized → no new token.
+      // Bearer kept here to verify the documented semantic: valid visitor-token
+      // alongside bearer still resolves to recognized (Path 3 fires because
+      // __visitorPayload is populated; Path 1 is skipped).
       const resp2 = await fetch(`http://localhost:${port}/agent/run`, {
         method: "POST",
         headers: {
@@ -1099,11 +1103,14 @@ describe("webTransport HTTP server", () => {
     await agent.start();
 
     try {
+      // No bearer: admitted via allowAnonymous-default-true in test env.
+      // (Bearer omitted because under codex R6 fix, valid bearer wins over
+      // invalid visitor-token and routes to creator — which doesn't issue
+      // a visitor token in the response.)
       const resp = await fetch(`http://localhost:${port}/agent/run`, {
         method: "POST",
         headers: {
           "content-type": "application/json",
-          authorization: "Bearer test-token",
           // Malformed/garbage token — verification will fail.
           "x-visitor-token": "this.is.garbage",
         },
@@ -1140,10 +1147,10 @@ describe("webTransport HTTP server", () => {
   });
 
   it("Fix 1: missing visitor token + visitorTokens enabled stays anonymous on first request", async () => {
-    // No x-visitor-token header at all on a bearer-auth request resolves to creator
-    // (path 1). A request with x-visitor-token header that fails verification
-    // resolves to anonymous. This test verifies that a first-contact request
-    // with a present-but-invalid token issues a token AND stays anonymous.
+    // A first-contact request with a present-but-invalid x-visitor-token
+    // issues a fresh token AND stays anonymous. (Under codex R6 fix, bearer
+    // omitted: a valid bearer would route to creator and skip the
+    // anonymous-with-token-issuance flow this test exercises.)
     const model = createMockModel({ response: "hi" });
     const port = 18961;
     const aug = webTransport({
@@ -1160,11 +1167,11 @@ describe("webTransport HTTP server", () => {
 
     try {
       // Send request with x-visitor-token header present but empty/invalid.
+      // No bearer: admitted via allowAnonymous-default-true in test env.
       const resp = await fetch(`http://localhost:${port}/agent/run`, {
         method: "POST",
         headers: {
           "content-type": "application/json",
-          authorization: "Bearer test-token",
           "x-visitor-token": "invalid",
         },
         body: JSON.stringify({
@@ -1209,11 +1216,13 @@ describe("webTransport HTTP server", () => {
 
     try {
       // Step 1: get a valid token by sending an invalid one first.
+      // No bearer here — under codex R6 fix, valid bearer + stale visitor-token
+      // routes to creator (Path 1) and no visitor token is issued.
+      // allowAnonymous defaults true in test env (NODE_ENV !== "production").
       const resp1 = await fetch(`http://localhost:${port}/agent/run`, {
         method: "POST",
         headers: {
           "content-type": "application/json",
-          authorization: "Bearer test-token",
           "x-visitor-token": "stale-token",
         },
         body: JSON.stringify({ messages: [{ role: "user", content: "first" }] }),

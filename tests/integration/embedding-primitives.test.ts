@@ -4,12 +4,15 @@
  * real agent + uses direct fetch against /agent/run to assert
  * webTransport.identify() resolves the documented identity paths correctly.
  *
- * Closes codex adversarial-review findings on the (now-closed) recipe PR #50
- * and the round-5 review on the replacement plan:
+ * Closes codex adversarial-review findings on the (now-closed) recipe PR #50,
+ * the round-5 review on the replacement plan, and the round-6 review on PR #51:
  *   1. A request without a bearer MUST resolve to public:anonymous, NOT creator.
  *   2. `x-peer-id` MUST NOT be used for identity.
  *   3. A valid bearer MUST resolve to creator trust.
  *   4. An invalid bearer MUST 401 (no silent downgrade to anonymous).
+ *   5. (Round 6 fix) A valid bearer MUST win over an invalid x-visitor-token —
+ *      Path 1 fires unless a VALID visitor-token is present (in which case
+ *      Path 3 wins; that's an opt-in operator-as-visitor case).
  *
  * Out of scope (covered elsewhere): agent path (src/transports/* tests),
  * full AG-UI event taxonomy (transport unit tests), visitorAuth verify-page
@@ -454,5 +457,55 @@ describe("integration: embedding primitives (docs/20-embedding.md)", () => {
     await resp.text();
     // Model never reached.
     expect(peerCapture.captured).toHaveLength(0);
+  }, 30_000);
+
+  it("valid bearer + stale x-visitor-token → creator (bearer wins over invalid visitor-token)", async () => {
+    // Codex round-6 fix: a valid bearer wins identity resolution when the
+    // x-visitor-token is invalid/stale. Path 1's condition was previously
+    // `!req.__visitorPayload && !headers["x-visitor-token"]` — meaning ANY
+    // x-visitor-token header (even garbage) skipped Path 1 and silently
+    // demoted creator to anonymous. The new condition is just
+    // `!req.__visitorPayload`: bearer wins when the visitor-token is invalid
+    // (no __visitorPayload populated). If the visitor-token IS valid (Path 3
+    // populates __visitorPayload), Path 3 still fires — operator explicitly
+    // acting as a known visitor while authenticated.
+    //
+    // See src/transports/web-transport.ts Path 1 comment.
+    const PORT = 19206;
+    const model = createMockModel({ response: "hi creator" });
+    const peerCapture = createPeerCaptureAugment();
+
+    const transport = webTransport({
+      port: PORT,
+      auth: { type: "bearer", token: BEARER },
+      allowAnonymous: false,
+      visitorTokens: { enabled: true, signingKey: SIGNING_KEY, ttlSeconds: 86_400 },
+    });
+    agent = defineAgent(
+      { name: "path-bearer-wins", model: "mock", augments: [transport, peerCapture.augment] },
+      model,
+    );
+    await agent.start();
+
+    const resp = await fetch(`http://localhost:${PORT}/agent/run`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${BEARER}`,
+        "x-visitor-token": "this.is.stale",
+      },
+      body: JSON.stringify({
+        messages: [{ role: "user", content: "hi" }],
+        threadId: "thread-bearer-wins",
+      }),
+    });
+
+    expect(resp.status).toBe(200);
+    await resp.text();
+
+    expect(peerCapture.captured).toHaveLength(1);
+    const peer = peerCapture.captured[0]!;
+    expect(peer.trustLevel).toBe("creator");
+    expect(peer.id).toBe("creator");
   }, 30_000);
 });

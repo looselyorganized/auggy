@@ -46,10 +46,10 @@ Full event taxonomy (TEXT_MESSAGE_*, TOOL_CALL_*, RUN_ERROR, etc.) lives in `doc
 
 | Path | Trigger | trustLevel | peer.id |
 |---|---|---|---|
-| **1 Creator** | Valid bearer matching `webTransport.auth.token`, AND no `x-visitor-token`, AND no `x-agent-*` headers | `creator` | hardcoded `"creator"` |
+| **1 Creator** | Valid bearer matching `webTransport.auth.token`, AND no valid `x-agent-id`+`x-agent-secret` pair (Path 2 wins for agent credentials), AND no VALID `x-visitor-token` (Path 3 wins for verified visitors). **Bearer wins over an invalid `x-visitor-token`** — a stale or malformed visitor-token alongside a valid bearer is ignored and the request resolves as creator. | `creator` | hardcoded `"creator"` |
 | **2 Agent** | `x-agent-id` + matching `x-agent-secret` (timing-safe compare) | `agent` | `"agent:" + x-agent-id` |
-| **3 Public / recognized** | Valid HMAC-signed `x-visitor-token` (not revoked, `agentBinding` matches) | `public` + `recognized` | `payload.visitorId` from the token (stable across requests) |
-| **4 Public / anonymous** | Default — fallback when above don't match. Includes admitted-by-`allowAnonymous` with no bearer AND bearer-validated with present-but-invalid visitor token | `public` + `anonymous` | `"anon-" + threadId` |
+| **3 Public / recognized** | Valid HMAC-signed `x-visitor-token` (not revoked, `agentBinding` matches). Fires even when a valid bearer is also present — explicit operator-as-visitor opt-in. | `public` + `recognized` | `payload.visitorId` from the token (stable across requests) |
+| **4 Public / anonymous** | Default — fallback when no path above matched. Admitted by `allowAnonymous` with no bearer. | `public` + `anonymous` | `"anon-" + threadId` |
 
 What other headers do:
 
@@ -64,11 +64,13 @@ What other headers do:
 
 ## Visitor-token rotation
 
-When `webTransport.visitorTokens.enabled: true`, a visitor's first request must include an `x-visitor-token` header — any non-empty value works as a bootstrap sentinel (`x-visitor-token: bootstrap` is the documented convention). On receiving a request with a missing/invalid `x-visitor-token`, the runtime mints a fresh `vis_<uuid>` HMAC-signed token and returns it in the response's `x-visitor-token` header. The current request stays at `public/anonymous`; the newly-issued token is for **future** requests.
+When `webTransport.visitorTokens.enabled: true`, **a visitor's first request MUST include a non-empty `x-visitor-token` header** (`x-visitor-token: bootstrap` is the documented sentinel value). The runtime mints a fresh `vis_<uuid>` HMAC-signed token only when an `x-visitor-token` header is present — if the header is absent entirely, no token is issued and the visitor has no continuity into future requests.
+
+When the runtime mints a token, it returns it in the response's `x-visitor-token` header. The current request stays at `public/anonymous`; the newly-issued token is for **future** requests.
 
 The next request from the same visitor includes that minted token, which resolves to `public/recognized` with a stable `peer.id` (the `visitorId` embedded in the token's payload). Memory namespace stays consistent across requests for that visitor.
 
-If the request has no `x-visitor-token` header at all, no token is minted — the request is treated as anonymous, but the visitor has no continuity into future requests. A correctly-implemented widget MUST send the sentinel on first contact and the rotated token thereafter.
+A correctly-implemented widget MUST: (1) send the bootstrap sentinel on first contact, (2) read the rotated token from the response's `x-visitor-token` header, (3) persist it in `localStorage` (or wherever your topology stores client-side state), (4) send the rotated token on every subsequent request. Skip step 1 and the visitor never gets a stable identity.
 
 The signing key (`visitorTokens.signingKey`) is injected at boot by visitorAuth when present (so visitor-tokens and verify-flow tokens share trust). Operators who run with `visitorTokens` but no `visitorAuth` set their own signing key directly.
 

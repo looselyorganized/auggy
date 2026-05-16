@@ -491,14 +491,26 @@ export function webTransport(opts: WebTransportOptions): Augment {
       };
     }
 
-    // PATH 1: Creator — bearer-validated request (no agent / visitor headers).
+    // PATH 1: Creator — bearer-validated request.
     // REQUIRES `__bearerValidated === true`. The HTTP handler sets that flag
     // only after `isValidAuth` passes. With `allowAnonymous=true`, a no-bearer
     // request reaches identify() with the flag falsy and MUST NOT be minted
     // creator — it falls through to Path 4. This guard is the security gate
     // for the anonymous path: anonymous traffic can never be silently promoted
     // to creator trust just by omitting auth + visitor headers.
-    if (req.__bearerValidated === true && !req.__visitorPayload && !headers["x-visitor-token"]) {
+    //
+    // Bearer wins over INVALID x-visitor-token. The condition is
+    // `!req.__visitorPayload` (no VERIFIED visitor identity) — so:
+    //   - Valid bearer + no x-visitor-token            → creator (Path 1)
+    //   - Valid bearer + stale/malformed x-visitor-token → creator (Path 1) ← was anonymous pre-codex-R6
+    //   - Valid bearer + VALID x-visitor-token         → recognized (Path 3 fires because __visitorPayload populated)
+    //   - No bearer + valid x-visitor-token            → recognized (Path 3)
+    //   - No bearer + no/invalid x-visitor-token       → anonymous (Path 4, if allowAnonymous)
+    // This closes the codex round-6 footgun (creator silently demoted to
+    // anonymous by an unrelated stale visitor cookie). The narrower "valid
+    // visitor-token + bearer → recognized" case is preserved as an explicit
+    // operator opt-in to acting as a known visitor while authenticated.
+    if (req.__bearerValidated === true && !req.__visitorPayload) {
       return {
         id: "creator",
         kind: "human",
