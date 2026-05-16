@@ -141,12 +141,16 @@ describe("integration: visitorAuth full flow — anon → verify → recognized"
     // vis_<uuid> token from the verify route instead.
     // -----------------------------------------------------------------------
     const threadId = crypto.randomUUID();
+    // No bearer: admitted via allowAnonymous-default-true in test env.
+    // Stale x-visitor-token → anon path with fresh anon token issued.
+    // (Bearer omitted because under codex R6 fix, valid bearer wins over
+    // invalid visitor-token and routes to creator — but this test needs
+    // an ANONYMOUS Turn 1 so visitorAuth issues the magic link for an
+    // anon peer-id, which is what the verify→recognized arc migrates from.)
     const run1Resp = await fetch(`http://localhost:${PORT}/agent/run`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        authorization: `Bearer ${BEARER}`,
-        // Stale / invalid visitor token → anon path → new anon token issued
         "x-visitor-token": "this.is.stale",
       },
       body: JSON.stringify({
@@ -352,11 +356,14 @@ describe("integration: visitorAuth full flow — anon → verify → recognized"
       );
       await agent.start();
 
+      // No bearer: admitted via allowAnonymous-default-true in test env.
+      // (Same pattern as the alice test above; bearer would route to creator
+      // under codex R6 fix, but this test needs Turn 1 anonymous so visitorAuth's
+      // request_auth tool fires for an anon peer-id.)
       const run1Resp = await fetch(`http://localhost:${PORT_CONSOLE}/agent/run`, {
         method: "POST",
         headers: {
           "content-type": "application/json",
-          authorization: `Bearer ${BEARER}`,
           "x-visitor-token": "this.is.stale",
         },
         body: JSON.stringify({

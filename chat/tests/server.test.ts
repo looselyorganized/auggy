@@ -114,6 +114,19 @@ describe("Local GUI server", () => {
     expect(res.status).toBe(404);
   });
 
+  it("POST /api/chat/<id> with malformed percent-encoding returns 404 (not 500)", async () => {
+    // `%ZZ` is not valid percent-encoding — decodeURIComponent throws URIError
+    // on it. Without the try/catch wrap in the route handler, Bun.serve would
+    // surface this as a 500. Regression guard.
+    const port = await bootServer();
+    const res = await fetch(`http://localhost:${port}/api/chat/%ZZ`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: `http://localhost:${port}` },
+      body: JSON.stringify({ message: "x" }),
+    });
+    expect(res.status).toBe(404);
+  });
+
   it("POST /api/chat/<id> with no bearer in agent .env returns 412", async () => {
     mockAgent = Bun.serve({ port: 0, fetch: () => new Response("ok") });
     writeFileSync(join(tempAuggyDir, "noenv.json"), JSON.stringify({

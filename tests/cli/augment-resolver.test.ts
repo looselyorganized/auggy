@@ -668,11 +668,14 @@ describe("resolveAugments — C1 wiring (fix F17)", () => {
     try {
       // Request with a valid visitor token for VISITOR_ID (not yet revoked).
       // A recognized visitor does NOT get a new x-visitor-token header.
+      // No bearer — under codex R6 fix, the mint logic is suppressed for
+      // bearer-credentialed requests (closes the creator-to-visitor demotion
+      // loop). allowAnonymous defaults true in test env, and the valid
+      // visitor token routes to Path 3 (recognized) on its own.
       const recognizedResp = await fetch(`http://localhost:${PORT}/agent/run`, {
         method: "POST",
         headers: {
           "content-type": "application/json",
-          authorization: "Bearer tok-f17",
           "x-visitor-token": visitorToken,
         },
         body: JSON.stringify({ messages: [{ role: "user", content: "hello" }] }),
@@ -741,11 +744,13 @@ describe("resolveAugments — C1 wiring (fix F17)", () => {
       //   visitor stays anonymous → new x-visitor-token header IS issued.
       // Without F17 wired (reverted): revocationCheck is null → visitor is
       //   STILL recognized (wrong!) → new token NOT issued → assertion fails.
+      // No bearer (codex R6 mint-suppression): a bearer-credentialed request
+      // would resolve to creator (Path 1) AND suppress mint, breaking this
+      // test's revoked→anonymous→new-token assertion.
       const revokedResp = await fetch(`http://localhost:${PORT}/agent/run`, {
         method: "POST",
         headers: {
           "content-type": "application/json",
-          authorization: "Bearer tok-f17",
           "x-visitor-token": visitorToken,
         },
         body: JSON.stringify({ messages: [{ role: "user", content: "revoked" }] }),

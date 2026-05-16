@@ -491,14 +491,26 @@ export function webTransport(opts: WebTransportOptions): Augment {
       };
     }
 
-    // PATH 1: Creator — bearer-validated request (no agent / visitor headers).
+    // PATH 1: Creator — bearer-validated request.
     // REQUIRES `__bearerValidated === true`. The HTTP handler sets that flag
     // only after `isValidAuth` passes. With `allowAnonymous=true`, a no-bearer
     // request reaches identify() with the flag falsy and MUST NOT be minted
     // creator — it falls through to Path 4. This guard is the security gate
     // for the anonymous path: anonymous traffic can never be silently promoted
     // to creator trust just by omitting auth + visitor headers.
-    if (req.__bearerValidated === true && !req.__visitorPayload && !headers["x-visitor-token"]) {
+    //
+    // Bearer wins over INVALID x-visitor-token. The condition is
+    // `!req.__visitorPayload` (no VERIFIED visitor identity) — so:
+    //   - Valid bearer + no x-visitor-token            → creator (Path 1)
+    //   - Valid bearer + stale/malformed x-visitor-token → creator (Path 1) ← was anonymous pre-codex-R6
+    //   - Valid bearer + VALID x-visitor-token         → recognized (Path 3 fires because __visitorPayload populated)
+    //   - No bearer + valid x-visitor-token            → recognized (Path 3)
+    //   - No bearer + no/invalid x-visitor-token       → anonymous (Path 4, if allowAnonymous)
+    // This closes the codex round-6 footgun (creator silently demoted to
+    // anonymous by an unrelated stale visitor cookie). The narrower "valid
+    // visitor-token + bearer → recognized" case is preserved as an explicit
+    // operator opt-in to acting as a known visitor while authenticated.
+    if (req.__bearerValidated === true && !req.__visitorPayload) {
       return {
         id: "creator",
         kind: "human",
@@ -663,12 +675,21 @@ export function webTransport(opts: WebTransportOptions): Augment {
         const hasAgentHeaders = agentId !== null && agentSecret !== null;
         const hasVisitorTokenAttempt = tokenHeader !== null;
 
-        if (hasVisitorTokenAttempt && !hasAgentHeaders) {
+        if (hasVisitorTokenAttempt && !hasAgentHeaders && !hasBearerAttempt) {
           // Had a visitor token header but it was invalid or missing — mint a fresh
           // token to send in the response so the recipient has a valid token for their
           // NEXT request. Do NOT assign issued.payload to visitorPayload here: the
           // current request presented either no token or a bad one, so it stays
           // public:anonymous. The freshly-issued token is for future requests only.
+          //
+          // Skip mint when bearer is present (post codex round-6 fix). A bearer-
+          // credentialed request resolves as creator (Path 1) under the new
+          // bearer-precedence semantic, and a creator does not need a visitor
+          // token. Worse, if we minted a fresh token and returned it: a confused
+          // client that stored the response token in localStorage and sent it on
+          // the next request would silently route to Path 3 (recognized) —
+          // a creator-to-visitor demotion through the mint-then-re-present loop.
+          // This guard closes that footgun.
           //
           // Fix C2: use agentBinding when configured, else agent-card name.
           // This ensures the anon-token and the visitorAuth-minted token agree on
@@ -679,7 +700,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
           newToken = issued.token;
           // visitorPayload intentionally left null — this request is anonymous.
         }
-        // hasAgentHeaders case: no visitor token for agent requests.
+        // hasAgentHeaders or hasBearerAttempt case: no visitor token issued.
       }
     }
 
