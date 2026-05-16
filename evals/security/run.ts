@@ -21,9 +21,34 @@ import { parse as parseYaml } from "yaml";
 import { defineAgent, extractText } from "@/index";
 import type { AgentConfig, Part, TrustLevel, TurnResult, TurnTrigger } from "@/types";
 import { parseConfig } from "@/cli/config-parser";
-import { resolveEngine } from "@/cli/engine-resolver";
+import { resolveEngine, type EngineImporter } from "@/cli/engine-resolver";
 import { resolveAugments } from "@/cli/augment-resolver";
 import type { AugmentConfig } from "@/cli/types";
+
+/**
+ * Engine importer for the eval runner. The eval fixture lives inside the
+ * auggy repo (`evals/security/fixtures/`), not in a real adopter's agent
+ * directory, so the per-agent manifest + node_modules isolation guard in
+ * `importFromAgent` doesn't apply. Resolve engine adapters directly from
+ * the workspace (`packages/anthropic` etc.) via the running process's
+ * import resolution — that's the repo's own `node_modules`.
+ *
+ * Why this exists: a 2026-05-14 refactor of `import-from-agent.ts` made
+ * `package.json` mandatory at the agent dir, breaking the eval fixture
+ * which had never been a real Node package. Rather than fabricating a
+ * package.json that lies about the fixture's install topology, we use
+ * the `EngineImporter` test seam to bypass the isolation guard.
+ *
+ * Adopter agents (created via `auggy create`) continue to use
+ * `importFromAgent` — their dirs ARE real packages with their own
+ * `node_modules`, and the guard correctly catches missing deps.
+ */
+const evalImporter: EngineImporter = async <T>(
+  _agentDir: string,
+  specifier: string,
+): Promise<T> => {
+  return (await import(specifier)) as T;
+};
 
 import type {
   CaseAggregate,
@@ -338,7 +363,7 @@ export async function bootAgent(configPath: string): Promise<{
     (a) => a.type !== "webTransport",
   );
 
-  const model = await resolveEngine(parsed.engine, agentDir);
+  const model = await resolveEngine(parsed.engine, agentDir, evalImporter);
   const augments = await resolveAugments(headlessAugmentConfigs, agentDir);
 
   const agentConfig: AgentConfig = {
