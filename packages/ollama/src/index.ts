@@ -109,32 +109,43 @@ export function createOllamaEngine(opts: OllamaEngineOptions): ModelClient {
 
       if (opts2?.onDelta) {
         // Streaming path: emit text deltas as they arrive. Ollama streams
-        // NDJSON chunks; the SDK exposes them as an AsyncIterable. Tool
-        // calls arrive in the final chunk only (Ollama doesn't stream
-        // tool_calls field; it's populated once when the model decides
-        // to use a tool, in the message.tool_calls of the final response).
+        // NDJSON chunks; the SDK exposes them as an AsyncIterable.
+        //
+        // Tool-call quirk: Ollama emits the entire `tool_calls` array in a
+        // single intermediate chunk (typically the FIRST chunk for a
+        // tool-using turn) with `done: false`, then a final `done: true`
+        // chunk that does NOT repeat tool_calls. We must accumulate
+        // tool_calls across all chunks — relying on the last chunk loses
+        // them entirely (silent empty turn, model output discarded).
         const stream = await client.chat({ ...baseRequest, stream: true });
         let accumulated = "";
         let lastChunk: ChatResponse | null = null;
+        const accumulatedToolCalls: NonNullable<OllamaMessage["tool_calls"]> = [];
         for await (const chunk of stream) {
           if (chunk.message?.content) {
             accumulated += chunk.message.content;
             opts2.onDelta({ kind: "text_delta", text: chunk.message.content });
           }
+          if (chunk.message?.tool_calls) {
+            accumulatedToolCalls.push(...chunk.message.tool_calls);
+          }
           lastChunk = chunk;
         }
         if (!lastChunk) {
-          // Stream closed without any chunks. Surface as an explicit error
-          // so the kernel's turn loop can report it clearly.
           throw new Error("Ollama stream returned no chunks");
         }
-        return buildModelResponse(accumulated, lastChunk);
+        return buildModelResponse(accumulated, lastChunk, accumulatedToolCalls);
       }
 
-      // Non-streaming path (buffered; used by tests and consumers that
-      // don't care about streaming).
+      // Non-streaming path (buffered; for tests / consumers that don't
+      // need streaming). Tool calls come back in response.message.tool_calls
+      // directly — no accumulation needed.
       const response = await client.chat({ ...baseRequest, stream: false });
-      return buildModelResponse(response.message?.content ?? "", response);
+      return buildModelResponse(
+        response.message?.content ?? "",
+        response,
+        response.message?.tool_calls ?? [],
+      );
     },
   };
 }
@@ -241,18 +252,25 @@ function convertTools(toolDefs: ToolDefinition[]): OllamaTool[] {
 }
 
 // === Ollama response → ModelResponse translation ===
+//
+// `rawToolCalls` is passed in by the caller. Streaming path accumulates
+// across all chunks (tool_calls arrive in an intermediate chunk for
+// Ollama, not the final one). Buffered path passes
+// `response.message?.tool_calls ?? []` directly.
 
-function buildModelResponse(content: string, response: ChatResponse): ModelResponse {
+function buildModelResponse(
+  content: string,
+  response: ChatResponse,
+  rawToolCalls: NonNullable<OllamaMessage["tool_calls"]>,
+): ModelResponse {
   const toolCalls: { name: string; arguments: Record<string, unknown> }[] = [];
-  if (response.message?.tool_calls) {
-    for (const tc of response.message.tool_calls) {
-      // tc.function.arguments is `{[key: string]: any}` per Ollama SDK
-      // types — already an object, no parsing needed.
-      toolCalls.push({
-        name: tc.function.name,
-        arguments: tc.function.arguments as Record<string, unknown>,
-      });
-    }
+  for (const tc of rawToolCalls) {
+    // tc.function.arguments is `{[key: string]: any}` per Ollama SDK
+    // types — already an object, no parsing needed.
+    toolCalls.push({
+      name: tc.function.name,
+      arguments: tc.function.arguments as Record<string, unknown>,
+    });
   }
 
   // Map Ollama's done_reason to Auggy's finishReason. Ollama uses:

@@ -404,6 +404,99 @@ describe("createOllamaEngine — streaming", () => {
       }),
     ).rejects.toThrow("Ollama stream returned no chunks");
   });
+
+  test("extracts tool_calls from intermediate chunk (not the final done:true chunk)", async () => {
+    // Regression guard for the streaming + tool-call bug found during G35
+    // manual integration: Ollama emits the entire tool_calls array in an
+    // intermediate chunk (typically the FIRST chunk for a tool-using turn)
+    // with done:false. The final done:true chunk does NOT repeat them.
+    // Earlier code only consulted the final chunk's message.tool_calls —
+    // which is always undefined for tool-using turns — silently producing
+    // empty turns ("completed" status, no text, no tool calls executed).
+    //
+    // This shape mirrors what `llama3.2` actually returns for a tool-using
+    // turn (captured via direct ollama API call against the SDK).
+    const engine = createOllamaEngine({ model: "llama3.2" });
+    nextStreamChunks = [
+      {
+        ...defaultResponse(),
+        message: {
+          role: "assistant",
+          content: "",
+          tool_calls: [
+            {
+              function: {
+                name: "memory_write",
+                arguments: { label: "hi", value: "user said hi" },
+              },
+            },
+          ],
+        },
+        done: false,
+      },
+      {
+        ...defaultResponse(),
+        message: { role: "assistant", content: "" },
+        done: true,
+        done_reason: "stop",
+        prompt_eval_count: 100,
+        eval_count: 22,
+      },
+    ];
+    const deltas: string[] = [];
+    const result = await engine.complete(
+      emptyPrompt({ messages: [msg({ role: "user", content: "say hi" })] }),
+      {
+        onDelta: (d) => {
+          if (d.kind === "text_delta") deltas.push(d.text);
+        },
+      },
+    );
+    expect(deltas).toEqual([]);
+    expect(result.toolCalls).toEqual([
+      { name: "memory_write", arguments: { label: "hi", value: "user said hi" } },
+    ]);
+    expect(result.finishReason).toBe("tool_use");
+    expect(result.inputTokens).toBe(100);
+    expect(result.outputTokens).toBe(22);
+  });
+
+  test("accumulates tool_calls across multiple intermediate chunks", async () => {
+    // Defensive: even though llama3.2 emits all tool_calls in a single
+    // chunk, the adapter should handle a model that spreads them across
+    // multiple chunks (some future Ollama model might).
+    const engine = createOllamaEngine({ model: "llama3.2" });
+    nextStreamChunks = [
+      {
+        ...defaultResponse(),
+        message: {
+          role: "assistant",
+          content: "",
+          tool_calls: [{ function: { name: "first_tool", arguments: { x: 1 } } }],
+        },
+        done: false,
+      },
+      {
+        ...defaultResponse(),
+        message: {
+          role: "assistant",
+          content: "",
+          tool_calls: [{ function: { name: "second_tool", arguments: { y: 2 } } }],
+        },
+        done: false,
+      },
+      { ...defaultResponse(), message: { role: "assistant", content: "" }, done: true },
+    ];
+    const result = await engine.complete(
+      emptyPrompt({ messages: [msg({ role: "user", content: "do two things" })] }),
+      { onDelta: () => {} },
+    );
+    expect(result.toolCalls).toEqual([
+      { name: "first_tool", arguments: { x: 1 } },
+      { name: "second_tool", arguments: { y: 2 } },
+    ]);
+    expect(result.finishReason).toBe("tool_use");
+  });
 });
 
 // ---------------------------------------------------------------------------
