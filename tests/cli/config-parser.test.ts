@@ -229,6 +229,85 @@ describe("engine.providerRouting validation", () => {
       "providerRouting: only valid for provider 'openrouter'",
     );
   });
+});
+
+describe("engine.keepAlive + engine.options validation (ollama-only)", () => {
+  test("accepts string keepAlive on ollama", () => {
+    const path = writeYaml(
+      "agent.yaml",
+      minimalConfig({ engine: { provider: "ollama", model: "llama3.2", keepAlive: "30m" } }),
+    );
+    const config = parseConfig(path);
+    expect(config.engine.keepAlive).toBe("30m");
+  });
+
+  test("accepts numeric keepAlive on ollama (0 = unload after turn)", () => {
+    const path = writeYaml(
+      "agent.yaml",
+      minimalConfig({ engine: { provider: "ollama", model: "llama3.2", keepAlive: 0 } }),
+    );
+    const config = parseConfig(path);
+    expect(config.engine.keepAlive).toBe(0);
+  });
+
+  test("rejects keepAlive for non-ollama provider", () => {
+    const path = writeYaml(
+      "agent.yaml",
+      minimalConfig({
+        engine: { provider: "anthropic", model: "claude-sonnet-4-6", keepAlive: "5m" },
+      }),
+    );
+    expect(() => parseConfig(path)).toThrow("keepAlive: only valid for provider 'ollama'");
+  });
+
+  test("rejects non-string non-number keepAlive", () => {
+    const path = writeYaml(
+      "agent.yaml",
+      minimalConfig({
+        engine: { provider: "ollama", model: "llama3.2", keepAlive: true },
+      }),
+    );
+    expect(() => parseConfig(path)).toThrow(
+      'keepAlive: must be a duration string (e.g. "5m") or a number of seconds',
+    );
+  });
+
+  test("accepts options object on ollama", () => {
+    const path = writeYaml(
+      "agent.yaml",
+      minimalConfig({
+        engine: {
+          provider: "ollama",
+          model: "llama3.2",
+          options: { temperature: 0.7, seed: 42, top_p: 0.9 },
+        },
+      }),
+    );
+    const config = parseConfig(path);
+    expect(config.engine.options).toEqual({ temperature: 0.7, seed: 42, top_p: 0.9 });
+  });
+
+  test("rejects options for non-ollama provider", () => {
+    const path = writeYaml(
+      "agent.yaml",
+      minimalConfig({
+        engine: { provider: "openai", model: "gpt-5", options: { temperature: 0.7 } },
+      }),
+    );
+    expect(() => parseConfig(path)).toThrow("options: only valid for provider 'ollama'");
+  });
+
+  test("rejects non-object options", () => {
+    const path = writeYaml(
+      "agent.yaml",
+      minimalConfig({
+        engine: { provider: "ollama", model: "llama3.2", options: "temperature=0.7" },
+      }),
+    );
+    expect(() => parseConfig(path)).toThrow(
+      "options: must be an object (native Ollama generation options)",
+    );
+  });
 
   test("rejects invalid sort value", () => {
     const path = writeYaml(

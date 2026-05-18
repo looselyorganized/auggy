@@ -1,0 +1,46 @@
+{
+  "name": "@auggy/ollama",
+  "version": "0.3.1",
+  "description": "Ollama engine adapter for auggy — local LLM runner, no API key required.",
+  "keywords": [
+    "auggy",
+    "ollama",
+    "local",
+    "llama",
+    "qwen",
+    "engine",
+    "adapter"
+  ],
+  "license": "Apache-2.0",
+  "author": "LORF (Loosely Organized Research Facility)",
+  "homepage": "https://github.com/looselyorganized/augment-1#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/looselyorganized/augment-1.git",
+    "directory": "packages/ollama"
+  },
+  "bugs": {
+    "url": "https://github.com/looselyorganized/augment-1/issues"
+  },
+  "type": "module",
+  "main": "src/index.ts",
+  "module": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": [
+    "src",
+    "LICENSE",
+    "README.md"
+  ],
+  "engines": {
+    "bun": ">=1.2.0"
+  },
+  "private": false,
+  "dependencies": {
+    "ollama": "^0.6.0"
+  },
+  "peerDependencies": {
+    "auggy": "^0.3.1"
+  }
+}

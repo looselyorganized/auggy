@@ -3,17 +3,18 @@
  *
  * Maps the `engine.provider` string from agent.yaml to the corresponding
  * engine package, then dynamically imports the package from the agent dir's
- * `node_modules`. Supports "anthropic", "openai", and "openrouter".
+ * `node_modules`. Supports "anthropic", "openai", "openrouter", and "ollama".
  *
  * Why dynamic-import from the agent dir?
  *
  *   Per the v0.3.2 package split, provider SDKs (`@anthropic-ai/sdk`,
- *   `openai`) no longer ship inside `auggy` core — they live in
+ *   `openai`, `ollama`) no longer ship inside `auggy` core — they live in
  *   per-provider adapter packages (`@auggy/anthropic`, `@auggy/openai`,
- *   `@auggy/openrouter`) which are installed PER AGENT in the agent's
- *   `node_modules`. The `auggy` CLI binary still runs from a global
- *   install; the engine for any given turn resolves from that agent's
- *   local install. An Anthropic-only agent never installs the OpenAI SDK.
+ *   `@auggy/openrouter`, `@auggy/ollama`) which are installed PER AGENT in
+ *   the agent's `node_modules`. The `auggy` CLI binary still runs from a
+ *   global install; the engine for any given turn resolves from that
+ *   agent's local install. An Anthropic-only agent never installs the
+ *   OpenAI or Ollama SDK.
  *
  * API keys are NEVER in the YAML config — each engine reads its own env:
  *   - anthropic   → ANTHROPIC_API_KEY (read by @anthropic-ai/sdk)
@@ -21,6 +22,8 @@
  *   - openrouter  → OPENROUTER_API_KEY (read by @auggy/openrouter; throws
  *     explicitly if absent rather than letting the SDK fall through to
  *     OPENAI_API_KEY)
+ *   - ollama      → no API key (local runtime; baseURL defaults to
+ *     http://localhost:11434, override for remote Ollama deployments)
  */
 
 import type {
@@ -32,6 +35,7 @@ import type {
   createOpenRouterEngine as OpenRouterFactory,
   OpenRouterEngineOptions,
 } from "@auggy/openrouter";
+import type { createOllamaEngine as OllamaFactory, OllamaEngineOptions } from "@auggy/ollama";
 import { importFromAgent } from "./import-from-agent";
 import { PROVIDER_TO_PACKAGE } from "./scaffold-package-json";
 import type { ModelClient } from "../types";
@@ -116,6 +120,23 @@ export async function resolveEngine(
         // apiKey intentionally omitted — engine reads OPENROUTER_API_KEY from env.
       };
       return mod.createOpenRouterEngine(opts);
+    }
+    case "ollama": {
+      const mod = await importer<{
+        createOllamaEngine: typeof OllamaFactory;
+      }>(agentDir, PROVIDER_TO_PACKAGE.ollama);
+      const opts: OllamaEngineOptions = {
+        model: config.model,
+        maxContextTokens: config.maxContextTokens,
+        maxTokens: config.maxTokens,
+        baseURL: config.baseURL,
+        keepAlive: config.keepAlive,
+        options: config.options,
+        // costOverride: NOT supported (free local runtime; no pricing apparatus).
+        // reasoningEffort: NOT a concept in Ollama models.
+        // No apiKey — Ollama doesn't authenticate by default.
+      };
+      return mod.createOllamaEngine(opts);
     }
     default: {
       // Exhaustiveness check — unreachable today, but if a future Provider
