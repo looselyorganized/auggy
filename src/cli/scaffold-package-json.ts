@@ -33,6 +33,7 @@ export const PROVIDER_TO_PACKAGE: Record<Provider, string> = {
   anthropic: "@auggy/anthropic",
   openai: "@auggy/openai",
   openrouter: "@auggy/openrouter",
+  ollama: "@auggy/ollama",
 };
 
 export interface BuildAgentPackageJsonInput {

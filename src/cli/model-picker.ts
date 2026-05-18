@@ -80,6 +80,19 @@ export function getModelChoices(provider: Provider): ModelChoice[] {
         })),
       ].filter(isPriced);
       break;
+    case "ollama":
+      // Ollama is free + local — no pricing table to derive from. Return a
+      // curated list of tool-call-capable models commonly pulled by adopters.
+      // Operator must have run `ollama pull <model>` before first turn; the
+      // SDK surfaces a clear "model not found" error if they haven't.
+      // Pricing fields are zero (formatted as "$0/$0 per Mtok" in the label
+      // — visually distinct from paid providers, makes "free" obvious).
+      return [
+        { id: "llama3.2", inputUsdPerMtok: 0, outputUsdPerMtok: 0 },
+        { id: "llama3.1", inputUsdPerMtok: 0, outputUsdPerMtok: 0 },
+        { id: "qwen2.5", inputUsdPerMtok: 0, outputUsdPerMtok: 0 },
+        { id: "qwen2.5-coder", inputUsdPerMtok: 0, outputUsdPerMtok: 0 },
+      ];
     default: {
       const _exhaustive: never = provider;
       return _exhaustive;

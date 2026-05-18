@@ -100,7 +100,7 @@ describe("resolveEngine", () => {
     await expect(
       resolveEngine({ provider: "foobar", model: "x" } as unknown as EngineConfig, AGENT_DIR),
     ).rejects.toThrow(
-      'Unknown engine provider: "foobar" (supported: anthropic, openai, openrouter)',
+      'Unknown engine provider: "foobar" (supported: anthropic, openai, openrouter, ollama)',
     );
   });
 

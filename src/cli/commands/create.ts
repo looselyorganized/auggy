@@ -31,6 +31,10 @@ const PROVIDER_DEFAULTS: Record<Provider, { model: string; envVar: string }> = {
     model: "anthropic/claude-sonnet-4-6",
     envVar: "OPENROUTER_API_KEY",
   },
+  // Ollama is local + free — no API key. Empty `envVar` signals to
+  // `collectEnvVars` to skip the provider env-var entry in .env.example
+  // (avoids a stray `=` line for a var that doesn't exist).
+  ollama: { model: "llama3.2", envVar: "" },
 };
 
 /**
@@ -457,7 +461,10 @@ function layeredMemoryNamespaceFor(
 }
 
 function collectEnvVars(augments: CatalogEntry[], provider: Provider): string[] {
-  const vars = new Set<string>([PROVIDER_DEFAULTS[provider].envVar]);
+  const vars = new Set<string>();
+  // Skip empty envVar (ollama has no provider API key — no env var to add).
+  const providerEnvVar = PROVIDER_DEFAULTS[provider].envVar;
+  if (providerEnvVar) vars.add(providerEnvVar);
   for (const entry of augments) {
     if (entry.envVars) {
       for (const v of entry.envVars) vars.add(v);

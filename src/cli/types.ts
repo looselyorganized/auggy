@@ -53,14 +53,14 @@ export interface AugmentConfig {
  *   4. adding it to `PROVIDER_DEFAULTS` in `commands/create.ts` (TS
  *      exhaustiveness forces this too)
  */
-export type Provider = "anthropic" | "openai" | "openrouter";
+export type Provider = "anthropic" | "openai" | "openrouter" | "ollama";
 
 /**
  * Runtime mirror of the `Provider` union for validation against
  * unstructured `agent.yaml` input. Kept in lockstep with the union via
  * `Provider[]` casting — TS catches drift at compile.
  */
-export const KNOWN_PROVIDERS: readonly Provider[] = ["anthropic", "openai", "openrouter"];
+export const KNOWN_PROVIDERS: readonly Provider[] = ["anthropic", "openai", "openrouter", "ollama"];
 
 /** Type guard: narrow an arbitrary string to `Provider`. */
 export function isKnownProvider(s: string): s is Provider {
