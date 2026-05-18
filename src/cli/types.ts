@@ -107,6 +107,22 @@ export interface EngineConfig {
     cacheWriteUsdPerMtok?: number;
     cacheReadUsdPerMtok?: number;
   };
+  /**
+   * Ollama-only: how long the model stays loaded in memory after the request.
+   * Forwarded as the SDK's `keep_alive` field. Accepts a duration string
+   * (e.g. `"5m"`, `"1h"`), or a number of seconds (e.g. `0` to unload after
+   * each turn, `-1` to keep loaded indefinitely). Defaults to `"5m"` in the
+   * @auggy/ollama adapter. Rejected by the parser for non-ollama providers.
+   */
+  keepAlive?: string | number;
+  /**
+   * Ollama-only: native generation options forwarded as the SDK's `options`
+   * field (e.g. `temperature`, `top_k`, `top_p`, `seed`, `repeat_penalty`,
+   * `mirostat`). The adapter sets `num_predict` from `maxTokens`; keys here
+   * are merged on top, so an explicit `num_predict` overrides `maxTokens`.
+   * Rejected by the parser for non-ollama providers.
+   */
+  options?: Record<string, unknown>;
 }
 
 /** OpenRouter provider routing config (forwarded as the `provider` body field). */

@@ -782,6 +782,29 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
         }
       }
     }
+    // Ollama-only fields: rejected for other providers so a yaml typo
+    // (e.g. operator copies an ollama snippet into an anthropic agent)
+    // surfaces at parse time, not silently as a dropped field.
+    if (engine.keepAlive !== undefined) {
+      if (engine.provider !== "ollama") {
+        errors.push("engine.keepAlive: only valid for provider 'ollama'");
+      } else if (typeof engine.keepAlive !== "string" && typeof engine.keepAlive !== "number") {
+        errors.push(
+          'engine.keepAlive: must be a duration string (e.g. "5m") or a number of seconds',
+        );
+      }
+    }
+    if (engine.options !== undefined) {
+      if (engine.provider !== "ollama") {
+        errors.push("engine.options: only valid for provider 'ollama'");
+      } else if (
+        typeof engine.options !== "object" ||
+        engine.options === null ||
+        Array.isArray(engine.options)
+      ) {
+        errors.push("engine.options: must be an object (native Ollama generation options)");
+      }
+    }
   }
 
   // Augments.

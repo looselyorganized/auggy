@@ -130,6 +130,8 @@ export async function resolveEngine(
         maxContextTokens: config.maxContextTokens,
         maxTokens: config.maxTokens,
         baseURL: config.baseURL,
+        keepAlive: config.keepAlive,
+        options: config.options,
         // costOverride: NOT supported (free local runtime; no pricing apparatus).
         // reasoningEffort: NOT a concept in Ollama models.
         // No apiKey — Ollama doesn't authenticate by default.
