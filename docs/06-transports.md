@@ -681,6 +681,148 @@ CIDR ranges are not yet supported (v1 keeps it simple); list the exact IPs.
 - Routes are frozen at `agent.start()` — no dynamic add/remove during runtime.
 - Per-route auth schemes are `bearer | none` only. For OAuth/HMAC/custom schemes, augments wrap their handler with the additional check.
 
+## The `/admin` route (G36)
+
+The built-in `/admin` route gives the creator a single HTTP surface for inspecting and tuning every augment that declares an `adminInfo()` contract. Composable across augments: the route lives in `webTransport` and dispatches; each augment owns its block.
+
+### Surface
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/admin` | Server-rendered dashboard (HTML). One block per augment that declares `adminInfo()`. |
+| `POST` | `/admin/action/<id>` | Augment-level action dispatch. CSRF-protected. |
+| `POST` | `/admin/action/<id>/row/<rowKey>` | Row-scoped action (table `rowActions`, keyValue `resetAction`s). |
+
+`HEAD /admin` returns 405 with `Allow: GET, POST`. Any other method on an `/admin*` path returns 405 as well.
+
+### Opt-out
+
+Set `adminRoute: false` in `webTransport(opts)` to disable the surface entirely. When disabled, requests against any `/admin*` path fall through to the 404 handler — there is no signal that an `/admin` route ever existed. Operators with a custom admin surface or security-conscious deploys can use this to suppress the bearer-as-password seam.
+
+### Auth
+
+HTTP Basic with the webTransport bearer as the password. Username is ignored:
+
+```
+authorization: Basic base64(":<bearer-token>")
+```
+
+A `WWW-Authenticate: Basic realm="auggy-admin <agent-name>"` header on 401 lets browsers prompt for credentials. Bearer comparison is timing-safe.
+
+### HTTPS-on-non-loopback gate
+
+When the caller IP is not loopback (not in `127.0.0.0/8`, not `::1`, not IPv4-mapped loopback), the route returns `426 Upgrade Required` with a body explaining how to either expose HTTPS or use an SSH tunnel. The gate fires BEFORE the bearer check, so an attacker probing over plain HTTP cannot learn whether the bearer is correct.
+
+The body includes:
+
+```
+HTTPS required for /admin on non-loopback connections.
+
+Options:
+  1. Front the agent with an HTTPS reverse proxy (Railway, Fly, Caddy, nginx).
+  2. SSH tunnel: ssh -L <port>:127.0.0.1:<port> user@host
+```
+
+### CSRF
+
+Every POST against `/admin/action/*` requires a `_csrf` token in the form body.
+
+Tokens are HMAC-SHA256 over `<agentName>|<unix-ts>|<actionId>|<rowKey-or-empty>`, signed with the bearer. Format: `<base64url(sig)>.<unix-ts>`.
+
+| Property | Behavior |
+|---|---|
+| Bearer rotation | Invalidates all prior tokens. |
+| Action binding | A token for `posture-flip` will not validate against `posture-reset`. |
+| Row binding | A row-scoped token tied to `rowKey=vis_a` will not validate for `rowKey=vis_b`. |
+| Expiry | 24h (`CSRF_TTL_SECONDS = 24 * 3600`); future-skew tolerance 60s. |
+
+Validation returns a rich result: `{valid: true}` or `{valid: false; reason: "expired" | "tampered" | "malformed"}`. **Expired** tokens return `200 OK` with an HTML meta-refresh back to `/admin` (graceful UX — the operator's session timed out; give them a fresh CSRF on reload). **Tampered** and **malformed** return `403`.
+
+### Rate limiting
+
+Per-IP combined rate limit across the entire `/admin*` surface: **60 requests / minute**, synthetic route-key `"admin"`. Defeats brute-force against HTTP Basic. Returns `429` with `Retry-After`. Honors `trustedProxies` for `X-Forwarded-For` (same machinery as augment-registered routes).
+
+### Composition — the `adminInfo()` contract
+
+Each augment that owns inspectable state declares two optional fields on the `Augment` interface:
+
+```ts
+interface Augment {
+  // ... existing
+  adminInfo?: () => Promise<AdminInfoBlock>;
+  adminActions?: Record<string, AdminActionHandler>;
+}
+```
+
+`adminInfo()` returns a block of section primitives:
+
+- **`keyValue`** — labelled rows with optional `source` annotation (`yaml` / `env` / `/admin override`) and optional `resetAction`. Used for live posture display and operator-tunable knobs.
+- **`table`** — columnar rows with optional `rowActions` (per-row buttons; rowKey extracted from a chosen column index).
+- **`status`** — single-line status with `level: "ok" | "info" | "warn" | "error"`.
+- **`eventStream`** — recent-events stream (currently rendered as a table; reserved for the deferred Tier-2 telemetry pipeline).
+
+`adminActions[id]` is the handler invoked on POST. Returns `{ok, message}` for the redirect's flash.
+
+At boot, `buildAdminActionRegistry` walks every mounted augment's `adminInfo()` declarations and constructs a global action registry. **Action ids must be globally unique across augments** — collisions throw at boot. Declared actions without a matching handler also throw at boot — the runtime-bomb pattern (handlers missing, only discovered at first POST) cannot occur.
+
+### Persistence — `admin-overrides.json`
+
+Three runtime-mutable knobs persist across restart via `<agentDir>/admin-overrides.json`:
+
+| Knob | Owning augment | Override action | Reset action |
+|---|---|---|---|
+| `allowAnonymous` | `webTransport` | `posture-flip` | `posture-reset` |
+| `dailyBudgetUsd` | `budgets` | `budget-cap-adjust` | `budget-cap-reset` |
+| `globalMaxPerHour` | `notify` | `notify-cap-adjust` | `notify-cap-reset` |
+
+Schema is Zod-validated (`{version: 1, lastModified, lastModifiedBy, overrides: {...}}`). File is written atomically (temp + rename) with `0o600` mode. Each augment reads its override at construction time and applies it on top of yaml + env precedence; subsequent admin POSTs persist back via `writeOverrides()` BEFORE mutating the closure — S7 ordering ensures a write failure leaves agent state unchanged.
+
+Resets clear the relevant field from the file (and the augment object key if the field was the last child); the augment re-resolves from yaml/env/default.
+
+### Audit log
+
+Every action POST emits a structured `console.log` line:
+
+```
+[admin] actor=creator action=<id> rowKey=<key|-> result=<ok|fail> message=<json-quoted>
+```
+
+Captured by Bun's stdout/stderr → operator-grep'able. A dedicated audit file is deferred (Tier-2 follow-up; the telemetry-exporter pattern in `lo/telemetry-exporter/` is the planned destination).
+
+### Reserved paths
+
+`/admin` is reserved — augments cannot register routes there. The route collector enforces both exact path collisions AND a scoped prefix block (`/admin/*` cannot be claimed by augment routes via `RESERVED_PREFIXES = ["/admin/"]`). Without this, an augment could shadow the dispatcher.
+
+### Operator workflow
+
+```bash
+# Set up agent with admin enabled (default).
+auggy create my-agent
+# Edit my-agent/agent.yaml: ensure webTransport.adminRoute: true (default).
+
+# Start the agent.
+auggy dev my-agent
+
+# Hit /admin (assuming bearer in $AUGGY_BEARER).
+curl -u :$AUGGY_BEARER http://localhost:8080/admin
+
+# From a remote host? SSH tunnel first — the HTTPS gate blocks non-loopback over HTTP.
+ssh -L 8080:127.0.0.1:8080 my-host
+# Then curl as above.
+
+# Flip the posture? Easier via the rendered HTML form than raw curl — the form
+# includes the CSRF token. For scripted use, parse the token from the GET response
+# and POST it back.
+```
+
+### What's not in v1
+
+- **Live updates** — the dashboard is request/response; no SSE or polling. Page refresh required to see new events. (Tier-2 telemetry pipeline.)
+- **Pagination** — tables cap at 50 rows. Operators with more than 50 verified visitors / memory entries / peers-with-spend see only the most recent.
+- **Operator chat surface** — chatting with the agent from `/admin` is filed as G36-followup (Tier-2). The Local GUI (`auggy chat`) remains the primary way to interact with running agents.
+- **Multiple operators** — single bearer = single creator. Operator delegation is out of scope.
+- **Action audit file** — `console.log` only.
+
 ## Multi-transport composition
 
 Auggy's kernel multiplexes turns from N mounted transports into shared agent state. Each transport is a separate augment with its own queue, its own identity resolver, and its own boot lifecycle. The kernel never talks directly to individual transports — everything flows through the `TransportSpec`/`TransportKernel` interface described above.
