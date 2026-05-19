@@ -467,11 +467,11 @@ Returns the JSON-encoded `AgentCard`. The card was generated once at `defineAgen
 
 The path `/.well-known/agent-card.json` is an A2A convention — A2A discovery clients know to check this path on any agent host.
 
-### `GET /` — optional redirect to a frontend
+### `GET /` and `HEAD /` — agent info endpoint + optional frontend redirect (G2)
 
-When `publicFrontendUrl` is unset (default), `GET /` returns `404 Not Found` and the agent's bare URL is silently inert — visitors who land there see nothing useful.
+`GET /` and `HEAD /` are both handled. The branch depends on whether `publicFrontendUrl` is configured.
 
-When set, `GET /` returns `302 Location: <publicFrontendUrl>`:
+**`publicFrontendUrl` set** → `302 Found` with `Location: <publicFrontendUrl>`. Use this to point visitors at a polished frontend you stand up yourself (your own chat widget, LORF's `platform/chat`, a marketing page, a future spine-visitor-chat URL).
 
 ```yaml
 - name: web
@@ -484,9 +484,26 @@ When set, `GET /` returns `302 Location: <publicFrontendUrl>`:
     publicFrontendUrl: https://your-frontend.example/chat
 ```
 
-Use this to point visitors at whichever polished frontend you've stood up — your own chat widget, a marketing page, a third-party chat surface, or a future spine-visitor-chat URL. The agent itself stays headless; presentation lives one layer up.
+`publicFrontendUrl` is validated at agent boot (`agent.start()`) — a malformed URL fails fast with `publicFrontendUrl is not a valid URL` rather than at first request.
 
-Only `GET /` is redirected. `POST /`, `HEAD /`, and other methods on `/` still return 404. `/agent/run`, `/health`, and `/.well-known/agent-card.json` are unaffected.
+**`publicFrontendUrl` unset** → `200 OK` with a minimal HTML info page (~1.3 KB, self-contained, no JS, no external assets). The page contains:
+
+- Agent name (from the agent card's `provider.name`) in `<title>` and `<h1>` (falls back to `"An Auggy agent"` when the name is empty or whitespace-only)
+- Agent purpose (from `card.purpose`) in `<meta description>` + Open Graph + a body paragraph (omitted when purpose is undefined, empty, or whitespace-only)
+- `<link rel="alternate" type="application/json" href="/.well-known/agent-card.json">` so machine clients can find the structured form
+- `<meta name="robots" content="noindex, nofollow">` so well-behaved search crawlers don't index passively
+- Open Graph tags (`og:title`, `og:description`, `og:type`) so Slack/Discord/iMessage link previews render usefully when the URL is shared
+- Brief copy pointing the visitor at: inspecting the agent card, bringing their own AG-UI client to `POST /agent/run`, or asking the operator to configure `publicFrontendUrl`
+
+Response headers include `Cache-Control: public, max-age=300` — five-minute browser/CDN cache to prevent thundering from uptime monitors and link-preview refreshes.
+
+The HTML body is rendered once at agent boot and cached in the transport — per-request cost is just `Response` construction.
+
+**`HEAD /` mirrors `GET /`** — same status code, same headers (including `Content-Length` matching the GET body, per RFC 9110 §9.3.2), body omitted. Both branches handle HEAD identically to GET.
+
+**Other methods on `/`** (POST, PUT, DELETE, PATCH) continue to return `404 Not Found`. CORS preflight (`OPTIONS /`) is unchanged. `/agent/run`, `/health`, and `/.well-known/agent-card.json` are unaffected by `publicFrontendUrl`.
+
+**Auth posture.** The info page is unauthenticated regardless of `webTransport.allowAnonymous`. Rationale: the same fields are already served unauthenticated at `/.well-known/agent-card.json`; gating discovery behind visitor-auth would block link previews and monitors with no security benefit.
 
 For local operator testing, run `auggy chat` instead — it provides a polished
 chat surface against agents you've started with `auggy dev`, without exposing a

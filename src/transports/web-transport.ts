@@ -30,6 +30,7 @@ import {
   buildAdminActionRegistry,
   handleAdminRoute,
 } from "./admin/index";
+import { renderInfoPage } from "./info-page";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -399,6 +400,16 @@ export function webTransport(opts: WebTransportOptions): Augment {
   // Empty when adminRoute is disabled or no augment declares adminInfo.
   let actionRegistry: AdminActionRegistry = new Map();
 
+  // G2 — info endpoint cache. Populated in register() when publicFrontendUrl
+  // is unset. Allows HEAD's Content-Length to match GET's body length
+  // without re-rendering per request. validatedPublicFrontendUrl mirrors
+  // opts.publicFrontendUrl after URL validation succeeds — using it on the
+  // request hot path means a malformed URL is rejected once at boot, never
+  // smuggled into a Location header.
+  let validatedPublicFrontendUrl: string | undefined = undefined;
+  let infoPageHtml: string | null = null;
+  let infoPageByteLength = 0;
+
   // PR γ.1 — per-route rate-limit state. Sliding-window timestamps keyed by
   // "<METHOD> <path>". NOT per-peer — auth-none routes have no peer.
   const routeHits = new Map<string, number[]>();
@@ -753,6 +764,29 @@ export function webTransport(opts: WebTransportOptions): Augment {
       // collisions; surface fires at boot, not at first POST.
       if (opts.adminRoute !== false) {
         actionRegistry = await buildAdminActionRegistry(k.getAugments());
+      }
+
+      // G2 — validate publicFrontendUrl once + cache info page HTML.
+      // Validation throws here so a malformed URL fails fast at agent boot
+      // rather than at first request. Mirrors the discipline used earlier in
+      // this file for visitorTokens.signingKey + agentBinding.
+      if (opts.publicFrontendUrl !== undefined) {
+        try {
+          new URL(opts.publicFrontendUrl);
+        } catch (err) {
+          throw new Error(
+            `[web-transport] publicFrontendUrl is not a valid URL: ${JSON.stringify(
+              opts.publicFrontendUrl,
+            )}. ${(err as Error).message}`,
+          );
+        }
+        validatedPublicFrontendUrl = opts.publicFrontendUrl;
+      } else {
+        // No publicFrontendUrl set — info page will be served at GET / and
+        // mirrored at HEAD /. Eagerly render so HEAD's Content-Length matches
+        // GET's body length per RFC 9110 §9.3.2.
+        infoPageHtml = renderInfoPage(k.getAgentCard());
+        infoPageByteLength = new TextEncoder().encode(infoPageHtml).byteLength;
       }
 
       let visitorAuthMounted = false;
@@ -1181,12 +1215,37 @@ export function webTransport(opts: WebTransportOptions): Augment {
             });
           }
 
-          // GET / — optional redirect to operator-configured publicFrontendUrl
-          if (req.method === "GET" && url.pathname === "/") {
-            if (opts.publicFrontendUrl) {
-              return Response.redirect(opts.publicFrontendUrl, 302);
+          // G2 — GET / and HEAD / for the info endpoint or operator-configured
+          // redirect. URL validation + HTML caching ran once in register();
+          // per-request work is just method/branch + Response construction.
+          if ((req.method === "GET" || req.method === "HEAD") && url.pathname === "/") {
+            if (validatedPublicFrontendUrl !== undefined) {
+              // Both GET and HEAD use manual construction so URL validation
+              // happens at register-time only (not per-request). Body is null
+              // in both — visitors follow the Location header.
+              return new Response(null, {
+                status: 302,
+                headers: { location: validatedPublicFrontendUrl },
+              });
             }
-            return new Response("Not Found", { status: 404 });
+            // Info page path. infoPageHtml is non-null here by construction
+            // in register() — the defensive guard exists in case of future
+            // refactor breakage.
+            if (infoPageHtml === null) return new Response(null, { status: 404 });
+            const headers = new Headers({
+              "content-type": "text/html; charset=utf-8",
+              "cache-control": "public, max-age=300",
+            });
+            // RFC 9110 §9.3.2 — HEAD's headers SHOULD match GET's. Set
+            // Content-Length explicitly. Bun's auto-compute behavior on
+            // null-body responses is verified by the Content-Length probe
+            // test in tests/transports/web-transport.test.ts; if Bun
+            // overrides this value to 0, the test documents the deviation.
+            headers.set("content-length", String(infoPageByteLength));
+            return new Response(req.method === "HEAD" ? null : infoPageHtml, {
+              status: 200,
+              headers,
+            });
           }
 
           if (req.method === "POST" && url.pathname === "/agent/run") {
