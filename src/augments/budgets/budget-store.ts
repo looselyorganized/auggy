@@ -103,6 +103,15 @@ export interface BudgetStore {
    */
   sweepIncompleteReservations(opts?: { olderThanMs?: number }): Promise<number>;
 
+  /**
+   * G36 — read-only view for /admin: total spend + per-peer breakdown for
+   * a given day (default: today UTC).
+   */
+  getDaySpend(day?: string): Promise<{
+    totalUsd: number;
+    byPeer: Array<{ peerId: string; costUsd: number; turnCount: number }>;
+  }>;
+
   close(): Promise<void>;
 }
 
@@ -488,6 +497,33 @@ export function createBudgetStore(config: BudgetStoreConfig): BudgetStore {
     };
   }
 
+  // ── getDaySpend (G36) ────────────────────────────────────
+
+  const selectDailyGlobalStmt = db.prepare<{ total_cost_usd: number }, [string]>(
+    `SELECT total_cost_usd FROM daily_global WHERE day = ?`,
+  );
+  const selectPeerDailyCostsStmt = db.prepare<
+    { peer_id: string; cost_usd: number; unpriced_turns: number },
+    [string]
+  >(`SELECT peer_id, cost_usd, unpriced_turns FROM peer_daily_costs WHERE day = ?`);
+
+  async function getDaySpend(day?: string): Promise<{
+    totalUsd: number;
+    byPeer: Array<{ peerId: string; costUsd: number; turnCount: number }>;
+  }> {
+    const dayKey = day ?? ymdUtc(Date.now());
+    const totalRow = selectDailyGlobalStmt.get(dayKey);
+    const rows = selectPeerDailyCostsStmt.all(dayKey);
+    return {
+      totalUsd: totalRow?.total_cost_usd ?? 0,
+      byPeer: rows.map((r) => ({
+        peerId: r.peer_id,
+        costUsd: r.cost_usd,
+        turnCount: r.unpriced_turns,
+      })),
+    };
+  }
+
   // ── sweepIncompleteReservations ──────────────────────────
 
   async function sweepIncompleteReservations(opts?: { olderThanMs?: number }): Promise<number> {
@@ -508,6 +544,7 @@ export function createBudgetStore(config: BudgetStoreConfig): BudgetStore {
     commit,
     getPeerUsage,
     sweepIncompleteReservations,
+    getDaySpend,
     close,
   };
 }
