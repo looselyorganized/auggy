@@ -1057,6 +1057,13 @@ export interface NotifyRateLimitOptions {
 export interface NotifyAugmentOptions {
   destinations: NotifyDestination[];
   rateLimit?: NotifyRateLimitOptions;
+  /**
+   * G36 — agent directory (typically `~/.auggy/agents/<name>/`). When set,
+   * `admin-overrides.json` is read at boot to apply runtime overrides
+   * (currently: globalMaxPerHour). Admin actions persist back via this
+   * path.
+   */
+  agentDir?: string;
 }
 
 export interface NotifyPayload {
