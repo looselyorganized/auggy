@@ -37,9 +37,14 @@ function parseCsrfFromForm(html: string, actionPath: string): string | null {
 
 let tempDir: string;
 let port: number;
+// Deterministic high-block ports — avoid colliding with the 19500-19501
+// pair used in tests/integration/full-agent.test.ts. Bun runs test files
+// in parallel by default; a randomized range here flaked CI when two
+// files happened to draw the same port.
+let portCounter = 19800;
 beforeEach(() => {
   tempDir = mkdtempSync(join(tmpdir(), "auggy-csrf-rt-"));
-  port = 19500 + Math.floor(Math.random() * 200);
+  port = portCounter++;
 });
 afterEach(() => {
   rmSync(tempDir, { recursive: true, force: true });
