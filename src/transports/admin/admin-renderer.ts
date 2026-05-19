@@ -1,9 +1,24 @@
-import type { AdminActionInput, AdminInfoBlock, AdminSection, AgentCard } from "../../types";
+import type {
+  AdminActionInput,
+  AdminInfoBlock,
+  AdminRowAction,
+  AdminSection,
+  AgentCard,
+} from "../../types";
+
+/**
+ * Token lookup callback. Each form gets a CSRF token bound to its specific
+ * (actionId, rowKey?) tuple — page-level shared tokens fail validation
+ * because the dispatcher's CSRF check binds to the actual actionId of the
+ * POST. Production builds a Map keyed via {@link csrfKey} and calls
+ * `tokens.get(...)`; tests can pass `() => "stub"`.
+ */
+export type CsrfTokenLookup = (actionId: string, rowKey?: string) => string;
 
 export interface RenderAdminPageOpts {
   card: AgentCard;
   blocks: AdminInfoBlock[];
-  csrfToken: string;
+  getCsrfToken: CsrfTokenLookup;
   flashMessage?: string;
 }
 
@@ -43,7 +58,7 @@ export function renderAdminPage(opts: RenderAdminPageOpts): string {
 
   const blocksHtml = opts.blocks
     .filter((b) => b.sections.length > 0 || (b.actions && b.actions.length > 0))
-    .map((b) => renderBlock(b, opts.csrfToken))
+    .map((b) => renderBlock(b, opts.getCsrfToken))
     .join("\n");
 
   return `<!doctype html>
@@ -66,10 +81,10 @@ ${blocksHtml}
 </html>`;
 }
 
-function renderBlock(block: AdminInfoBlock, csrfToken: string): string {
-  const sectionsHtml = block.sections.map((s) => renderSection(s, csrfToken)).join("\n");
+function renderBlock(block: AdminInfoBlock, getCsrfToken: CsrfTokenLookup): string {
+  const sectionsHtml = block.sections.map((s) => renderSection(s, getCsrfToken)).join("\n");
   const actionsHtml = (block.actions ?? [])
-    .map((action) => renderAction(action, csrfToken))
+    .map((action) => renderAction(action, getCsrfToken))
     .join("\n");
 
   return `  <section>
@@ -79,13 +94,13 @@ ${actionsHtml}
   </section>`;
 }
 
-function renderSection(section: AdminSection, csrfToken: string): string {
+function renderSection(section: AdminSection, getCsrfToken: CsrfTokenLookup): string {
   switch (section.kind) {
     case "keyValue": {
       const rows = section.rows
         .map((r) => {
           const src = r.source ? ` <span class="source">${escapeHtml(r.source)}</span>` : "";
-          const resetBtn = r.resetAction ? renderResetButton(r.resetAction, csrfToken) : "";
+          const resetBtn = r.resetAction ? renderResetButton(r.resetAction, getCsrfToken) : "";
           return `      <dt>${escapeHtml(r.label)}</dt><dd>${escapeHtml(r.value)}${src}${resetBtn}</dd>`;
         })
         .join("\n");
@@ -95,11 +110,18 @@ function renderSection(section: AdminSection, csrfToken: string): string {
       const caption = section.caption
         ? `      <caption>${escapeHtml(section.caption)}</caption>\n`
         : "";
+      const rowActions = section.rowActions ?? [];
+      const actionsCol = rowActions.length > 0 ? "<th>Actions</th>" : "";
       const head = `      <thead><tr>${section.columns
         .map((c) => `<th>${escapeHtml(c)}</th>`)
-        .join("")}</tr></thead>`;
+        .join("")}${actionsCol}</tr></thead>`;
       const body = `      <tbody>${section.rows
-        .map((r) => `<tr>${r.map((c) => `<td>${escapeHtml(c)}</td>`).join("")}</tr>`)
+        .map((r) => {
+          const cells = r.map((c) => `<td>${escapeHtml(c)}</td>`).join("");
+          if (rowActions.length === 0) return `<tr>${cells}</tr>`;
+          const buttons = rowActions.map((ra) => renderRowAction(ra, r, getCsrfToken)).join("");
+          return `<tr>${cells}<td>${buttons}</td></tr>`;
+        })
         .join("")}</tbody>`;
       return `    <table>\n${caption}${head}\n${body}\n    </table>`;
     }
@@ -124,8 +146,9 @@ function renderSection(section: AdminSection, csrfToken: string): string {
 
 function renderAction(
   action: { id: string; label: string; confirmRequired: boolean; inputs?: AdminActionInput[] },
-  csrfToken: string,
+  getCsrfToken: CsrfTokenLookup,
 ): string {
+  const csrfToken = getCsrfToken(action.id);
   // M1 fix — generic confirm message instead of interpolating action.label
   // into JS. Action labels containing `'` or `"` would otherwise break the
   // inline onsubmit JS string (the HTML parser decodes &#39; → ' INSIDE the
@@ -156,12 +179,45 @@ ${inputs}
 // S6 — reset-to-yaml button rendered next to keyValue rows whose resetAction
 // is set. The augment's adminInfo() decides when to populate resetAction
 // (Phase 3 work). Phase 2's renderer just honors the field.
-function renderResetButton(reset: { id: string; label: string }, csrfToken: string): string {
+function renderResetButton(
+  reset: { id: string; label: string },
+  getCsrfToken: CsrfTokenLookup,
+): string {
+  const csrfToken = getCsrfToken(reset.id);
   return ` <form class="reset-form" action="/admin/action/${escapeHtml(
     reset.id,
   )}" method="POST" onsubmit="return confirm('Confirm this action?')"><input type="hidden" name="_csrf" value="${escapeHtml(
     csrfToken,
   )}"><button type="submit">${escapeHtml(reset.label)}</button></form>`;
+}
+
+/**
+ * Render a row-scoped action button. The rowKey is extracted from the
+ * row's `rowKeyColumn` index; the form submits to
+ * `/admin/action/<id>/row/<rowKey>`. CSRF token is bound to (id, rowKey).
+ *
+ * Hotfix: row actions were previously not rendered at all — the table
+ * displayed cells but no button column, leaving memory-erase /
+ * visitor-revoke unreachable from the dashboard.
+ */
+function renderRowAction(
+  rowAction: AdminRowAction,
+  row: string[],
+  getCsrfToken: CsrfTokenLookup,
+): string {
+  const rowKey = row[rowAction.rowKeyColumn] ?? "";
+  if (!rowKey) return "";
+  const csrfToken = getCsrfToken(rowAction.id, rowKey);
+  const confirmAttr = rowAction.confirmRequired
+    ? ` onsubmit="return confirm('Confirm this action?')"`
+    : "";
+  return `<form class="action-form" action="/admin/action/${escapeHtml(
+    rowAction.id,
+  )}/row/${escapeHtml(
+    encodeURIComponent(rowKey),
+  )}" method="POST"${confirmAttr}><input type="hidden" name="_csrf" value="${escapeHtml(
+    csrfToken,
+  )}"><button type="submit">${escapeHtml(rowAction.label)}</button></form>`;
 }
 
 function escapeHtml(s: string): string {

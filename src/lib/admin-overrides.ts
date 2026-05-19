@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
@@ -90,7 +91,13 @@ export function readOverrides(agentDir: string | undefined): AdminOverrides | nu
  */
 export function writeOverrides(agentDir: string, overrides: AdminOverrides): void {
   const path = overrideFilePath(agentDir);
-  const tmp = `${path}.tmp.${process.pid}`;
+  // Unique temp name per call. Current Bun is single-threaded JS — within
+  // one process, the read-modify-write sequence runs atomically because
+  // no `await` interleaves between the readFileSync/writeFileSync/renameSync
+  // calls. The UUID is defense-in-depth: if a future Bun version (or
+  // worker threads) breaks that invariant, two concurrent writers won't
+  // clobber each other's temp file before either renames.
+  const tmp = `${path}.tmp.${process.pid}.${randomUUID()}`;
   writeFileSync(tmp, JSON.stringify(overrides, null, 2), { mode: 0o600 });
   renameSync(tmp, path);
 }

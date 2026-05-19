@@ -2,6 +2,7 @@ import type {
   AdminActionHandler,
   AdminActionInput,
   AdminActionResult,
+  AdminInfoBlock,
   Augment,
   TransportKernel,
 } from "../../types";
@@ -10,6 +11,54 @@ import { coerceInputs } from "./admin-coerce";
 import { collectAdminInfoBlocks } from "./admin-collector";
 import { generateCsrfToken, validateCsrfToken } from "./admin-csrf";
 import { renderAdminPage } from "./admin-renderer";
+
+/**
+ * Build a map of CSRF tokens, one per (actionId, rowKey?) tuple present
+ * in the collected admin blocks. The renderer looks up the right token
+ * for each form via the `getCsrfToken` callback. The previous shared
+ * `__page` token failed validation because the dispatcher's CSRF check
+ * binds to the actual actionId being POSTed, not to a generic page-load
+ * marker.
+ */
+async function buildCsrfTokenMap(
+  blocks: AdminInfoBlock[],
+  bearer: string,
+  agentName: string,
+): Promise<Map<string, string>> {
+  const tokens = new Map<string, string>();
+  const mintIfMissing = async (actionId: string, rowKey?: string): Promise<void> => {
+    const key = csrfMapKey(actionId, rowKey);
+    if (tokens.has(key)) return;
+    tokens.set(key, await generateCsrfToken({ bearer, agentName, actionId, rowKey }));
+  };
+
+  for (const block of blocks) {
+    for (const action of block.actions ?? []) {
+      await mintIfMissing(action.id);
+    }
+    for (const section of block.sections) {
+      if (section.kind === "keyValue") {
+        for (const row of section.rows) {
+          if (row.resetAction) await mintIfMissing(row.resetAction.id);
+        }
+      }
+      if (section.kind === "table" && section.rowActions) {
+        for (const rowAction of section.rowActions) {
+          for (const row of section.rows) {
+            const rowKey = row[rowAction.rowKeyColumn];
+            if (rowKey) await mintIfMissing(rowAction.id, rowKey);
+          }
+        }
+      }
+    }
+  }
+
+  return tokens;
+}
+
+function csrfMapKey(actionId: string, rowKey?: string): string {
+  return `${actionId}\x00${rowKey ?? ""}`;
+}
 
 /**
  * S8 — action declaration registry. Built at boot time by
@@ -70,16 +119,12 @@ export async function handleAdminRoute(req: Request, ctx: AdminRouteContext): Pr
   // GET /admin — render the dashboard
   if (req.method === "GET" && url.pathname === "/admin") {
     const blocks = await collectAdminInfoBlocks(ctx.kernel);
-    const csrfToken = await generateCsrfToken({
-      bearer: ctx.bearer,
-      agentName,
-      actionId: "__page",
-    });
+    const csrfTokens = await buildCsrfTokenMap(blocks, ctx.bearer, agentName);
     const flashMessage = url.searchParams.get("msg") ?? undefined;
     const html = renderAdminPage({
       card: agentCard,
       blocks,
-      csrfToken,
+      getCsrfToken: (actionId, rowKey) => csrfTokens.get(csrfMapKey(actionId, rowKey)) ?? "",
       flashMessage,
     });
     return new Response(html, {
@@ -95,7 +140,17 @@ export async function handleAdminRoute(req: Request, ctx: AdminRouteContext): Pr
   // POST /admin/action/<id>[/row/<rowKey>] — dispatch
   const actionMatch = url.pathname.match(ACTION_ROUTE_RE);
   if (req.method === "POST" && actionMatch) {
-    return handleActionPost(req, ctx, actionMatch[1]!, actionMatch[2], agentName);
+    // Decode rowKey — the renderer URL-encodes it so values like email
+    // addresses (`foo@example.com` → `foo%40example.com`) round-trip.
+    let rowKey: string | undefined;
+    if (actionMatch[2]) {
+      try {
+        rowKey = decodeURIComponent(actionMatch[2]);
+      } catch {
+        return new Response(null, { status: 400 });
+      }
+    }
+    return handleActionPost(req, ctx, actionMatch[1]!, rowKey, agentName);
   }
 
   return new Response(null, { status: 404 });
