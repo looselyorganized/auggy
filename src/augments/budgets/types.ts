@@ -51,6 +51,12 @@ export interface BudgetsConfig {
   dailyBudgetUsd?: number;
   /** Milliseconds before a pending reservation is swept to 'allow:incomplete'. Default: 3_600_000. */
   cleanupWindowMs?: number;
+  /**
+   * G36 — agent directory (typically `~/.auggy/agents/<name>/`). When set,
+   * `admin-overrides.json` is read at boot to apply runtime overrides
+   * (currently: dailyBudgetUsd). Admin actions persist back via this path.
+   */
+  agentDir?: string;
 }
 
 /**

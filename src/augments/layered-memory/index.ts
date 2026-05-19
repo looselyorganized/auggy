@@ -1,6 +1,8 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type {
+  AdminActionResult,
+  AdminInfoBlock,
   Augment,
   CostResult,
   InternalTurnContext,
@@ -712,6 +714,70 @@ export async function layeredMemory(opts: LayeredMemoryOptions): Promise<Augment
     });
   }
 
+  function formatAge(createdAt: number): string {
+    const seconds = Math.floor((Date.now() - createdAt) / 1000);
+    if (seconds < 60) return `${seconds}s`;
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return `${minutes}m`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return `${hours}h`;
+    return `${Math.floor(hours / 24)}d`;
+  }
+
+  async function adminInfo(): Promise<AdminInfoBlock> {
+    const counts = await store.countByRetentionClass();
+    const entries = await store.listEntriesByPeer({ limit: 50 });
+    return {
+      augmentName: `layered-memory-${opts.namespace}`,
+      title: "Memory",
+      sections: [
+        {
+          kind: "keyValue",
+          rows: [
+            { label: "Total entries", value: String(counts.total) },
+            { label: "Operational", value: String(counts.operational) },
+            { label: "Lesson", value: String(counts.lesson) },
+            { label: "Namespace", value: prefix },
+          ],
+        },
+        {
+          kind: "table",
+          columns: ["Peer", "Label", "Content (snippet)", "Retention", "Age"],
+          rows: entries.map((e) => [
+            e.peerId ?? "(no peer)",
+            e.label,
+            (e.content ?? "").slice(0, 80),
+            e.retentionClass ?? "operational",
+            formatAge(e.createdAt),
+          ]),
+          rowActions: [
+            {
+              id: "memory-erase",
+              label: "Erase peer",
+              confirmRequired: true,
+              rowKeyColumn: 0,
+            },
+          ],
+          caption: `Showing ${entries.length} most recent entries`,
+        },
+      ],
+    };
+  }
+
+  const adminActions: Record<
+    string,
+    (params: Record<string, unknown>) => Promise<AdminActionResult>
+  > = {
+    "memory-erase": async (params) => {
+      const rowKey = typeof params.rowKey === "string" ? params.rowKey : "";
+      if (!rowKey || rowKey === "(no peer)") {
+        return { ok: false, message: "memory-erase requires a rowKey (peer id)" };
+      }
+      const erased = await store.forget(rowKey);
+      return { ok: true, message: `Erased ${erased} entries for ${rowKey}` };
+    },
+  };
+
   return {
     name: `layered-memory-${opts.namespace}`,
     capabilities: ["context", "tools"],
@@ -729,6 +795,8 @@ export async function layeredMemory(opts: LayeredMemoryOptions): Promise<Augment
       write,
       forget,
     },
+    adminInfo,
+    adminActions,
     ...(autoSaveEnabled ? { scheduleAfterTurn, handleInternalTurn } : {}),
     onShutdown: async () => {
       await store.close();

@@ -248,6 +248,21 @@ export function createSupabaseStore(
     // No-op for Supabase.
   }
 
+  // G36 — admin views. Supabase support is out of scope for v1; returning
+  // empty/zero is safe — the /admin page renders without breakage and the
+  // operator sees "0 entries" rather than crashing.
+  async function listEntriesByPeer(): Promise<StoreEntry[]> {
+    return [];
+  }
+
+  async function countByRetentionClass(): Promise<{
+    operational: number;
+    lesson: number;
+    total: number;
+  }> {
+    return { operational: 0, lesson: 0, total: 0 };
+  }
+
   return {
     initialize,
     write,
@@ -258,6 +273,8 @@ export function createSupabaseStore(
     forget,
     supersede,
     cleanup,
+    listEntriesByPeer,
+    countByRetentionClass,
     close,
   };
 }

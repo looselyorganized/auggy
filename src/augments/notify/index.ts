@@ -13,14 +13,18 @@
 
 import { z } from "zod";
 import type {
+  AdminActionResult,
+  AdminInfoBlock,
   Augment,
-  NotifyAugmentOptions,
   NotifyAdapter,
+  NotifyAugmentOptions,
   NotifyDeliveryResult,
   NotifyDestination,
   ToolExecuteContext,
 } from "../../types";
 import { defineTool } from "../../helpers";
+import { readOverrides, writeOverrides } from "../../lib/admin-overrides";
+import { createRingBuffer } from "../../lib/ring-buffer";
 import { createWebhookAdapter } from "./adapters/webhook";
 import { createTelegramAdapter } from "./adapters/telegram";
 import { createAgentMailAdapter } from "./adapters/agentmail";
@@ -51,10 +55,32 @@ export function notify(opts: NotifyAugmentInternalOptions): Augment {
   const rl = opts.rateLimit ?? {};
   const enabled = rl.enabled !== false;
   const cooldownMs = rl.cooldownMs ?? 120_000;
-  const globalMaxPerHour = rl.globalMaxPerHour ?? 5;
+  const yamlGlobalMaxPerHour = rl.globalMaxPerHour ?? 5;
+  let globalMaxPerHour = yamlGlobalMaxPerHour;
+  let globalMaxSource: "yaml" | "override" = "yaml";
   const dedupWindowMs = rl.dedupWindowMs ?? 300_000;
   const dedupThreshold = rl.dedupThreshold ?? 0.6;
   const perPeerCooldownMs = rl.perPeerCooldownMs ?? cooldownMs;
+
+  if (opts.agentDir) {
+    const overrides = readOverrides(opts.agentDir);
+    const overrideVal = overrides?.overrides.notify?.globalMaxPerHour;
+    if (overrideVal !== undefined) {
+      globalMaxPerHour = overrideVal;
+      globalMaxSource = "override";
+    }
+  }
+
+  interface DispatchRecord {
+    timestamp: string;
+    destination: string;
+    status: "sent" | "rate_limited" | "failed";
+    summary: string;
+  }
+  const dispatches = createRingBuffer<DispatchRecord>(100);
+  function recordDispatch(record: DispatchRecord): void {
+    dispatches.push(record);
+  }
 
   const peerLastNotify = new Map<string, number>();
   const recentSummaries: Array<{ summary: string; timestamp: number }> = [];
@@ -259,6 +285,12 @@ export function notify(opts: NotifyAugmentInternalOptions): Augment {
       try {
         result = await adapter.deliver(destination, { summary, reason, visitor });
       } catch (err) {
+        recordDispatch({
+          timestamp: new Date().toISOString().slice(11, 19),
+          destination: destination.name,
+          status: "failed",
+          summary,
+        });
         return JSON.stringify({
           status: "failed",
           message: `Adapter for '${destination.transport}' threw: ${(err as Error).message}`,
@@ -269,6 +301,13 @@ export function notify(opts: NotifyAugmentInternalOptions): Augment {
         recordNotification(context.peer.id, summary, destination.name, destHasExplicitLimit);
       }
 
+      recordDispatch({
+        timestamp: new Date().toISOString().slice(11, 19),
+        destination: destination.name,
+        status: result.status,
+        summary,
+      });
+
       return JSON.stringify({
         status: result.status,
         ...(result.detail ? { detail: result.detail } : {}),
@@ -276,9 +315,194 @@ export function notify(opts: NotifyAugmentInternalOptions): Augment {
     },
   });
 
+  async function dispatchTest(
+    destinationName: string,
+    summary: string,
+  ): Promise<{ status: "sent" | "failed"; detail?: string }> {
+    const dest = destinationsByName.get(destinationName);
+    if (!dest) {
+      return { status: "failed", detail: `unknown destination: ${destinationName}` };
+    }
+    const adapter = adapters[dest.transport];
+    if (!adapter) {
+      return { status: "failed", detail: `no adapter for transport: ${dest.transport}` };
+    }
+    try {
+      const result = await adapter.deliver(dest, { summary: `[test] ${summary}` });
+      return result;
+    } catch (err) {
+      return { status: "failed", detail: (err as Error).message };
+    }
+  }
+
+  async function persistNotifyOverride(value: number): Promise<void> {
+    if (!opts.agentDir) {
+      throw new Error("agentDir not configured; admin overrides cannot persist");
+    }
+    const current = readOverrides(opts.agentDir) ?? {
+      version: 1 as const,
+      lastModified: new Date().toISOString(),
+      lastModifiedBy: "creator",
+      overrides: {},
+    };
+    current.lastModified = new Date().toISOString();
+    current.lastModifiedBy = "creator";
+    current.overrides.notify = {
+      ...current.overrides.notify,
+      globalMaxPerHour: value,
+    };
+    writeOverrides(opts.agentDir, current);
+  }
+
+  async function clearNotifyOverride(): Promise<void> {
+    if (!opts.agentDir) return;
+    const current = readOverrides(opts.agentDir);
+    if (!current) return;
+    if (current.overrides.notify) {
+      delete (current.overrides.notify as Record<string, unknown>).globalMaxPerHour;
+      if (Object.keys(current.overrides.notify).length === 0) {
+        delete (current.overrides as Record<string, unknown>).notify;
+      }
+    }
+    current.lastModified = new Date().toISOString();
+    current.lastModifiedBy = "creator";
+    writeOverrides(opts.agentDir, current);
+  }
+
+  async function adminInfo(): Promise<AdminInfoBlock> {
+    const recentEvents = dispatches.snapshot().slice(-50);
+    return {
+      augmentName: "notify",
+      title: "Notify",
+      sections: [
+        {
+          kind: "keyValue",
+          rows: [
+            {
+              label: "Global cap per hour",
+              value: String(globalMaxPerHour),
+              source: globalMaxSource === "override" ? "/admin override" : "yaml",
+              resetAction: { id: "notify-cap-reset", label: "Reset to yaml" },
+            },
+            { label: "Cooldown (ms)", value: String(cooldownMs), source: "yaml" },
+            { label: "Destinations", value: String(opts.destinations.length) },
+          ],
+        },
+        {
+          kind: "table",
+          columns: ["Time", "Destination", "Status", "Summary"],
+          rows: recentEvents.map((e) => [
+            e.timestamp,
+            e.destination,
+            e.status,
+            e.summary.slice(0, 80),
+          ]),
+          caption: `Recent dispatches (${recentEvents.length})`,
+        },
+      ],
+      actions: [
+        {
+          id: "notify-test",
+          label: "Send test notification",
+          confirmRequired: false,
+          inputs: [
+            {
+              name: "destination",
+              label: "Destination name",
+              type: "text",
+              required: true,
+            },
+            {
+              name: "message",
+              label: "Message",
+              type: "text",
+              required: false,
+              default: "Test from /admin",
+            },
+          ],
+        },
+        {
+          id: "notify-cap-adjust",
+          label: "Adjust globalMaxPerHour",
+          confirmRequired: true,
+          inputs: [
+            {
+              name: "value",
+              label: "New value (positive integer)",
+              type: "number",
+              required: true,
+              helpText: "Persists across restart via admin-overrides.json.",
+            },
+          ],
+        },
+      ],
+    };
+  }
+
+  const adminActions: Record<
+    string,
+    (params: Record<string, unknown>) => Promise<AdminActionResult>
+  > = {
+    "notify-test": async (params) => {
+      const dest = typeof params.destination === "string" ? params.destination : "";
+      const message =
+        typeof params.message === "string" && params.message ? params.message : "Test from /admin";
+      if (!dest) {
+        return { ok: false, message: "destination is required" };
+      }
+      const result = await dispatchTest(dest, message);
+      recordDispatch({
+        timestamp: new Date().toISOString().slice(11, 19),
+        destination: dest,
+        status: result.status,
+        summary: `[test] ${message}`,
+      });
+      if (result.status === "sent") {
+        return { ok: true, message: `Test notification sent to ${dest}` };
+      }
+      return { ok: false, message: `Test failed: ${result.detail ?? "unknown error"}` };
+    },
+    "notify-cap-adjust": async (params) => {
+      const raw = params.value;
+      const value = typeof raw === "number" ? raw : Number(raw);
+      if (!Number.isFinite(value) || value <= 0 || !Number.isInteger(value)) {
+        return {
+          ok: false,
+          message: `invalid value: must be a positive integer (got ${String(raw)})`,
+        };
+      }
+      try {
+        await persistNotifyOverride(value);
+      } catch (err) {
+        return {
+          ok: false,
+          message: `could not persist override: ${(err as Error).message}`,
+        };
+      }
+      globalMaxPerHour = value;
+      globalMaxSource = "override";
+      return { ok: true, message: `globalMaxPerHour set to ${value}` };
+    },
+    "notify-cap-reset": async () => {
+      try {
+        await clearNotifyOverride();
+      } catch (err) {
+        return {
+          ok: false,
+          message: `could not clear override: ${(err as Error).message}`,
+        };
+      }
+      globalMaxPerHour = yamlGlobalMaxPerHour;
+      globalMaxSource = "yaml";
+      return { ok: true, message: "globalMaxPerHour reset to yaml value" };
+    },
+  };
+
   return {
     name: "notify",
     capabilities: ["tools"],
     tools: [notifyTool],
+    adminInfo,
+    adminActions,
   };
 }
