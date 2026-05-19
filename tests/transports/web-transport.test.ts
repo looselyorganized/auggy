@@ -1,6 +1,6 @@
 import { describe, it, expect } from "bun:test";
 import { z } from "zod";
-import { normalizeIp, webTransport } from "@/transports/web-transport";
+import { isLoopback, normalizeIp, webTransport } from "@/transports/web-transport";
 import { defineAgent } from "@/agent";
 import { createMockModel } from "@tests/fixtures/mock-model";
 import { createIdentityAugment } from "@tests/fixtures/mock-augment";
@@ -2167,6 +2167,44 @@ describe("webTransport augment-registered routes", () => {
     expect(normalizeIp(null)).toBeNull();
     expect(normalizeIp(undefined)).toBeNull();
     expect(normalizeIp("")).toBeNull();
+  });
+
+  it("G36 isLoopback returns true for 127.0.0.1", () => {
+    expect(isLoopback("127.0.0.1")).toBe(true);
+  });
+
+  it("G36 isLoopback returns true for any 127.0.0.0/8 address", () => {
+    expect(isLoopback("127.0.0.0")).toBe(true);
+    expect(isLoopback("127.1.2.3")).toBe(true);
+    expect(isLoopback("127.255.255.254")).toBe(true);
+  });
+
+  it("G36 isLoopback returns true for ::1", () => {
+    expect(isLoopback("::1")).toBe(true);
+  });
+
+  it("G36 isLoopback returns true for IPv4-mapped loopback (::ffff:127.0.0.1)", () => {
+    expect(isLoopback("::ffff:127.0.0.1")).toBe(true);
+  });
+
+  it("G36 isLoopback returns false for non-loopback IPv4", () => {
+    expect(isLoopback("10.0.0.1")).toBe(false);
+    expect(isLoopback("192.168.1.1")).toBe(false);
+    expect(isLoopback("8.8.8.8")).toBe(false);
+  });
+
+  it("G36 isLoopback returns false for non-loopback IPv6", () => {
+    expect(isLoopback("::2")).toBe(false);
+    expect(isLoopback("fe80::1")).toBe(false);
+    expect(isLoopback("2001:db8::1")).toBe(false);
+  });
+
+  it("G36 isLoopback returns false for empty / null / undefined / non-IP input", () => {
+    expect(isLoopback("")).toBe(false);
+    expect(isLoopback(null)).toBe(false);
+    expect(isLoopback(undefined)).toBe(false);
+    expect(isLoopback("not-an-ip")).toBe(false);
+    expect(isLoopback("localhost")).toBe(false);
   });
 
   // F16 (Codex Low) — warn-once latch is now narrowed to XFF only.
