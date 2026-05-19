@@ -835,9 +835,7 @@ export interface AdminActionResult {
  * params arrive typed-string but the handler can assume coercion succeeded.
  * For row actions, the rowKey is delivered in params under the key "rowKey".
  */
-export type AdminActionHandler = (
-  params: Record<string, string>,
-) => Promise<AdminActionResult>;
+export type AdminActionHandler = (params: Record<string, string>) => Promise<AdminActionResult>;
 
 export interface Augment {
   name: string;

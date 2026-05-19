@@ -26,7 +26,9 @@ describe("ring-buffer", () => {
 
   it("evicts multiple oldest when pushing many over capacity", () => {
     const rb = createRingBuffer<number>(2);
-    [1, 2, 3, 4, 5, 6].forEach((n) => rb.push(n));
+    [1, 2, 3, 4, 5, 6].forEach((n) => {
+      rb.push(n);
+    });
     expect(rb.snapshot()).toEqual([5, 6]);
   });
 
