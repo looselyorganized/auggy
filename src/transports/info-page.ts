@@ -20,11 +20,42 @@ function escape(s: string): string {
 /**
  * Render the unauthenticated info page served at `GET /` when no
  * `publicFrontendUrl` is configured. Pure function — no I/O, no kernel deps,
- * deterministic output for a given AgentCard.
- *
- * Task 2 expands this to the full template; Task 1 only needs the escaping
- * primitive proven.
+ * deterministic output for a given AgentCard. Cached at register-time by
+ * `web-transport.ts` so per-request cost is just Response construction.
  */
 export function renderInfoPage(card: AgentCard): string {
-  return `<title>${escape(card.provider.name)}</title>`;
+  const escapedName = escape(card.provider.name);
+  const title = `${escapedName} — Auggy agent`;
+  const escapedPurpose = escape(card.purpose ?? "");
+  const purposeParagraph = `\n  <p>${escapedPurpose}</p>`;
+
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>${title}</title>
+  <meta name="description" content="${escapedPurpose}">
+  <meta property="og:title" content="${title}">
+  <meta property="og:description" content="${escapedPurpose}">
+  <meta property="og:type" content="website">
+  <link rel="alternate" type="application/json" href="/.well-known/agent-card.json">
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 40rem; margin: 3rem auto; padding: 0 1rem; color: #222; line-height: 1.5; }
+    code { background: #f4f4f4; padding: 0.15rem 0.4rem; border-radius: 3px; font-size: 0.95em; }
+    a { color: #0a66c2; }
+  </style>
+</head>
+<body>
+  <h1>${escapedName}</h1>
+  <p>This is an <a href="https://github.com/looselyorganized/augment-1">Auggy</a> agent backend.</p>${purposeParagraph}
+  <p>To interact:</p>
+  <ul>
+    <li>Inspect the <a href="/.well-known/agent-card.json">agent card</a></li>
+    <li>Bring your own AG-UI client and <code>POST /agent/run</code></li>
+    <li>Or configure <code>publicFrontendUrl</code> in <code>agent.yaml</code> to redirect visitors to a polished frontend</li>
+  </ul>
+</body>
+</html>`;
 }
