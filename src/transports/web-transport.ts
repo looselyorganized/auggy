@@ -30,6 +30,7 @@ import {
   buildAdminActionRegistry,
   handleAdminRoute,
 } from "./admin/index";
+import { renderInfoPage } from "./info-page";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -399,6 +400,16 @@ export function webTransport(opts: WebTransportOptions): Augment {
   // Empty when adminRoute is disabled or no augment declares adminInfo.
   let actionRegistry: AdminActionRegistry = new Map();
 
+  // G2 — info endpoint cache. Populated in register() when publicFrontendUrl
+  // is unset. Allows HEAD's Content-Length to match GET's body length
+  // without re-rendering per request. validatedPublicFrontendUrl mirrors
+  // opts.publicFrontendUrl after URL validation succeeds — using it on the
+  // request hot path means a malformed URL is rejected once at boot, never
+  // smuggled into a Location header.
+  let validatedPublicFrontendUrl: string | undefined = undefined;
+  let infoPageHtml: string | null = null;
+  let infoPageByteLength = 0;
+
   // PR γ.1 — per-route rate-limit state. Sliding-window timestamps keyed by
   // "<METHOD> <path>". NOT per-peer — auth-none routes have no peer.
   const routeHits = new Map<string, number[]>();
@@ -753,6 +764,29 @@ export function webTransport(opts: WebTransportOptions): Augment {
       // collisions; surface fires at boot, not at first POST.
       if (opts.adminRoute !== false) {
         actionRegistry = await buildAdminActionRegistry(k.getAugments());
+      }
+
+      // G2 — validate publicFrontendUrl once + cache info page HTML.
+      // Validation throws here so a malformed URL fails fast at agent boot
+      // rather than at first request. Mirrors the discipline used earlier in
+      // this file for visitorTokens.signingKey + agentBinding.
+      if (opts.publicFrontendUrl !== undefined) {
+        try {
+          new URL(opts.publicFrontendUrl);
+        } catch (err) {
+          throw new Error(
+            `[web-transport] publicFrontendUrl is not a valid URL: ${JSON.stringify(
+              opts.publicFrontendUrl,
+            )}. ${(err as Error).message}`,
+          );
+        }
+        validatedPublicFrontendUrl = opts.publicFrontendUrl;
+      } else {
+        // No publicFrontendUrl set — info page will be served at GET / and
+        // mirrored at HEAD /. Eagerly render so HEAD's Content-Length matches
+        // GET's body length per RFC 9110 §9.3.2.
+        infoPageHtml = renderInfoPage(k.getAgentCard());
+        infoPageByteLength = new TextEncoder().encode(infoPageHtml).byteLength;
       }
 
       let visitorAuthMounted = false;

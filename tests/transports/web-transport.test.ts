@@ -2342,6 +2342,7 @@ describe("webTransport agentBinding (fix C2)", () => {
 });
 
 // ---------------------------------------------------------------------------
+<<<<<<< HEAD
 // G36 — /admin route integration tests (Phase 2)
 // ---------------------------------------------------------------------------
 
@@ -2470,5 +2471,22 @@ describe("webTransport /admin route — basic dispatch (G36 phase 2)", () => {
     };
     const agent = defineAgent({ name: "zip", model: "mock", augments: [conflicting, aug] }, model);
     await expect(agent.start()).rejects.toThrow(/admin/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// webTransport / (root) route — boot-time validation (G2)
+// ---------------------------------------------------------------------------
+
+describe("webTransport / (root) route — boot-time validation (G2)", () => {
+  it("agent.start() throws when publicFrontendUrl is not a valid URL", async () => {
+    const model = createMockModel();
+    const aug = webTransport({
+      port: 18999,
+      auth: { type: "bearer", token: "test-token" },
+      publicFrontendUrl: "://bad",
+    });
+    const agent = defineAgent({ name: "test", model: "mock", augments: [aug] }, model);
+    await expect(agent.start()).rejects.toThrow(/publicFrontendUrl is not a valid URL/);
   });
 });
