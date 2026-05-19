@@ -24,18 +24,12 @@
       "dependencies": {
         "@anthropic-ai/sdk": "^0.94.0",
       },
-      "peerDependencies": {
-        "auggy": "^0.4.0",
-      },
     },
     "packages/ollama": {
       "name": "@auggy/ollama",
       "version": "0.4.0",
       "dependencies": {
         "ollama": "^0.6.0",
-      },
-      "peerDependencies": {
-        "auggy": "^0.4.0",
       },
     },
     "packages/openai": {
@@ -44,9 +38,6 @@
       "dependencies": {
         "openai": "^6.34.0",
       },
-      "peerDependencies": {
-        "auggy": "^0.4.0",
-      },
     },
     "packages/openrouter": {
       "name": "@auggy/openrouter",
@@ -54,9 +45,6 @@
       "dependencies": {
         "@auggy/openai": "^0.4.0",
         "openai": "^6.34.0",
-      },
-      "peerDependencies": {
-        "auggy": "^0.4.0",
       },
     },
   },

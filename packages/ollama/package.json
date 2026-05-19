@@ -39,8 +39,5 @@
   "private": false,
   "dependencies": {
     "ollama": "^0.6.0"
-  },
-  "peerDependencies": {
-    "auggy": "^0.4.0"
   }
 }

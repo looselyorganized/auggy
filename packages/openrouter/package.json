@@ -37,8 +37,5 @@
   "dependencies": {
     "@auggy/openai": "^0.4.0",
     "openai": "^6.34.0"
-  },
-  "peerDependencies": {
-    "auggy": "^0.4.0"
   }
 }
