@@ -87,3 +87,44 @@ describe("renderInfoPage — HTML structure", () => {
     expect(html).toContain("<p>concierge agent</p>");
   });
 });
+
+describe("renderInfoPage — fallbacks and edge cases", () => {
+  it("falls back to 'An Auggy agent' when name is empty string", () => {
+    const html = renderInfoPage(mockCard({ name: "", purpose: "x" }));
+    expect(html).toContain("<title>An Auggy agent</title>");
+    expect(html).toContain("<h1>An Auggy agent</h1>");
+    expect(html).toContain('<meta property="og:title" content="An Auggy agent">');
+  });
+
+  it("falls back to 'An Auggy agent' when name is whitespace-only", () => {
+    const html = renderInfoPage(mockCard({ name: "   \t\n", purpose: "x" }));
+    expect(html).toContain("<title>An Auggy agent</title>");
+    expect(html).toContain("<h1>An Auggy agent</h1>");
+  });
+
+  it("omits the body purpose paragraph when purpose is undefined", () => {
+    const html = renderInfoPage(mockCard({ name: "zip", purpose: undefined }));
+    expect(html).not.toContain("<p></p>");
+    expect(html).toContain('<meta name="description" content="">');
+  });
+
+  it("omits the body purpose paragraph when purpose is empty string", () => {
+    const html = renderInfoPage(mockCard({ name: "zip", purpose: "" }));
+    expect(html).not.toContain("<p></p>");
+    expect(html).toContain('<meta name="description" content="">');
+  });
+
+  it("omits the body purpose paragraph when purpose is whitespace-only", () => {
+    const html = renderInfoPage(mockCard({ name: "zip", purpose: "   \t\n" }));
+    expect(html).not.toContain("<p></p>");
+    expect(html).toContain('<meta name="description" content="">');
+  });
+
+  it("includes + escapes purpose when purpose contains HTML metacharacters", () => {
+    const html = renderInfoPage(mockCard({ name: "zip", purpose: "Concierge <demo> & co" }));
+    expect(html).toContain("<p>Concierge &lt;demo&gt; &amp; co</p>");
+    expect(html).toContain(
+      '<meta name="description" content="Concierge &lt;demo&gt; &amp; co">',
+    );
+  });
+});

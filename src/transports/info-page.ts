@@ -17,6 +17,8 @@ function escape(s: string): string {
     .replaceAll("'", "&#39;");
 }
 
+const FALLBACK = "An Auggy agent";
+
 /**
  * Render the unauthenticated info page served at `GET /` when no
  * `publicFrontendUrl` is configured. Pure function — no I/O, no kernel deps,
@@ -24,10 +26,19 @@ function escape(s: string): string {
  * `web-transport.ts` so per-request cost is just Response construction.
  */
 export function renderInfoPage(card: AgentCard): string {
-  const escapedName = escape(card.provider.name);
-  const title = `${escapedName} — Auggy agent`;
-  const escapedPurpose = escape(card.purpose ?? "");
-  const purposeParagraph = `\n  <p>${escapedPurpose}</p>`;
+  const rawName = card.provider.name;
+  const hasName = rawName.trim() !== "";
+  const escapedName = hasName ? escape(rawName) : "";
+  const title = hasName ? `${escapedName} — Auggy agent` : FALLBACK;
+  const heading = hasName ? escapedName : FALLBACK;
+
+  // `??` flattens `string | undefined` to `string` so the next escape() call
+  // type-checks cleanly. The trim check then decides whether the paragraph
+  // and meta tags render with the value or stay empty.
+  const purposeStr = card.purpose ?? "";
+  const hasPurpose = purposeStr.trim() !== "";
+  const escapedPurpose = hasPurpose ? escape(purposeStr) : "";
+  const purposeParagraph = hasPurpose ? `\n  <p>${escapedPurpose}</p>` : "";
 
   return `<!doctype html>
 <html lang="en">
@@ -48,7 +59,7 @@ export function renderInfoPage(card: AgentCard): string {
   </style>
 </head>
 <body>
-  <h1>${escapedName}</h1>
+  <h1>${heading}</h1>
   <p>This is an <a href="https://github.com/looselyorganized/augment-1">Auggy</a> agent backend.</p>${purposeParagraph}
   <p>To interact:</p>
   <ul>
