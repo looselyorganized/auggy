@@ -40,6 +40,7 @@ function makeStubKernel(handler: (t: TurnTrigger) => TurnResult): {
     onOutbound: () => {},
     getAgentCard: () => ({}) as AgentCard,
     getAugmentRoutes: () => [],
+    getAugments: () => [],
   };
   return { kernel, triggers };
 }
@@ -182,6 +183,7 @@ describe("link augment — inbound flow", () => {
       onOutbound: () => {},
       getAgentCard: () => ({}) as AgentCard,
       getAugmentRoutes: () => [],
+      getAugments: () => [],
     };
 
     await augment.transport!.register(kernel, "link");
@@ -240,6 +242,7 @@ describe("link augment — inbound flow", () => {
       onOutbound: () => {},
       getAgentCard: () => ({}) as AgentCard,
       getAugmentRoutes: () => [],
+      getAugments: () => [],
     };
     await augment.transport!.register(kernel, "link");
     const outcome = await dispatch(makeLinkContext());
@@ -261,6 +264,7 @@ describe("link augment — inbound flow", () => {
       onOutbound: () => {},
       getAgentCard: () => ({}) as AgentCard,
       getAugmentRoutes: () => [],
+      getAugments: () => [],
     };
     await augment.transport!.register(kernel, "link-mesh");
     await dispatch(makeLinkContext());
@@ -286,6 +290,7 @@ describe("link augment — trust gate", () => {
       onOutbound: () => {},
       getAgentCard: () => ({}) as AgentCard,
       getAugmentRoutes: () => [],
+      getAugments: () => [],
     };
     await augment.transport!.register(kernel, "link");
     await dispatch(makeLinkContext({ from: { ...makeLinkContext().from, trust: "agent" } }));
@@ -305,6 +310,7 @@ describe("link augment — trust gate", () => {
       onOutbound: () => {},
       getAgentCard: () => ({}) as AgentCard,
       getAugmentRoutes: () => [],
+      getAugments: () => [],
     };
     await augment.transport!.register(kernel, "link");
     const ctx = makeLinkContext();
