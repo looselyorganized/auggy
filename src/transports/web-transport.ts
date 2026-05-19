@@ -193,6 +193,24 @@ export function normalizeIp(ip: string | null | undefined): string | null {
 }
 
 /**
+ * Returns true iff `ip` is a loopback address (127.0.0.0/8 or ::1).
+ *
+ * Strips the IPv4-mapped IPv6 prefix (`::ffff:1.2.3.4` → `1.2.3.4`) before
+ * the check, so `::ffff:127.0.0.1` is correctly classified as loopback.
+ *
+ * G36 uses this to gate HTTPS enforcement on /admin: loopback connections
+ * are exempt for dev (operator on the same machine); non-loopback connections
+ * over plain HTTP get 426 Upgrade Required.
+ */
+export function isLoopback(ip: string | null | undefined): boolean {
+  if (!ip) return false;
+  const norm = normalizeIp(ip);
+  if (!norm) return false;
+  if (norm === "::1") return true;
+  return /^127\./.test(norm);
+}
+
+/**
  * Extract the caller's IP for rate-limit keying.
  *
  * F16 — only honors `x-forwarded-for` / `x-real-ip` when the connection's

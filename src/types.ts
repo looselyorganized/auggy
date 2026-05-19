@@ -745,6 +745,98 @@ export interface AugmentConstraints {
   >;
 }
 
+// ===========================================================================
+// G36 — Admin route contract (built into webTransport; see
+// docs/superpowers/specs/2026-05-19-g36-admin-route-design.md)
+// ===========================================================================
+
+/** A typed render block for an augment's section on /admin. */
+export interface AdminInfoBlock {
+  /** Stable identifier; used in audit logs + action dispatch. */
+  augmentName: string;
+  /** Human-readable heading. */
+  title: string;
+  /** Ordered sections rendered in the block. */
+  sections: AdminSection[];
+  /** Optional augment-level actions (rendered as forms at the bottom). */
+  actions?: AdminAction[];
+}
+
+/** Section variants. The four primitives v1.0 supports. */
+export type AdminSection =
+  | {
+      kind: "keyValue";
+      rows: Array<{
+        label: string;
+        value: string;
+        /** Optional annotation, e.g. "source: yaml". */
+        source?: string;
+        /** Optional reset-to-yaml affordance for rows with /admin-override source. */
+        resetAction?: { id: string; label: string };
+      }>;
+    }
+  | {
+      kind: "table";
+      columns: string[];
+      rows: string[][];
+      /** Optional per-row buttons. */
+      rowActions?: AdminRowAction[];
+      /** Optional caption (e.g., "Showing 50 of 234"). */
+      caption?: string;
+    }
+  | {
+      kind: "status";
+      level: "ok" | "warn" | "error";
+      message: string;
+    }
+  | {
+      kind: "eventStream";
+      events: Array<{ timestamp: string; type: string; summary: string }>;
+      caption?: string;
+    };
+
+/** Augment-level action (rendered as a form). */
+export interface AdminAction {
+  id: string;
+  label: string;
+  confirmRequired: boolean;
+  inputs?: AdminActionInput[];
+}
+
+/** Form input declaration on an AdminAction. */
+export interface AdminActionInput {
+  name: string;
+  label: string;
+  type: "text" | "number" | "boolean";
+  required: boolean;
+  default?: string;
+  helpText?: string;
+}
+
+/** Per-row action button (rendered next to each row in a table section). */
+export interface AdminRowAction {
+  id: string;
+  label: string;
+  confirmRequired: boolean;
+  /** Which column's value to pass as `rowKey` to the action handler. */
+  rowKeyColumn: number;
+}
+
+/** Result returned by an AdminActionHandler. */
+export interface AdminActionResult {
+  ok: boolean;
+  /** Human-readable message displayed as flash on the redirected admin page. */
+  message: string;
+}
+
+/**
+ * Handler signature for adminActions[id]. The dispatcher coerces form inputs
+ * to declared types (string/number/boolean) before calling the handler, so
+ * params arrive typed-string but the handler can assume coercion succeeded.
+ * For row actions, the rowKey is delivered in params under the key "rowKey".
+ */
+export type AdminActionHandler = (params: Record<string, string>) => Promise<AdminActionResult>;
+
 export interface Augment {
   name: string;
   version?: string;
@@ -760,6 +852,19 @@ export interface Augment {
    * See `AugmentHttpRoute` for the contract.
    */
   httpRoutes?: AugmentHttpRoute[];
+  /**
+   * G36 — optional dashboard block for the built-in /admin route.
+   * Augments that implement this opt into being dashboarded; the admin
+   * collector iterates kernel.getAugments() and calls this on each.
+   * Returns null/undefined → augment doesn't appear on /admin.
+   */
+  adminInfo?: () => Promise<AdminInfoBlock>;
+  /**
+   * G36 — action handlers for the actions declared in adminInfo().actions
+   * (and AdminRowAction in table sections). Boot-time validation verifies
+   * every declared action id has a matching key here.
+   */
+  adminActions?: Record<string, AdminActionHandler>;
   memory?: MemoryProviderSpec;
   constraints?: AugmentConstraints;
   onBoot?: () => Promise<void>;
