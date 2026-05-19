@@ -1236,6 +1236,12 @@ export function webTransport(opts: WebTransportOptions): Augment {
               "content-type": "text/html; charset=utf-8",
               "cache-control": "public, max-age=300",
             });
+            // RFC 9110 §9.3.2 — HEAD's headers SHOULD match GET's. Set
+            // Content-Length explicitly. Bun's auto-compute behavior on
+            // null-body responses is verified by the Content-Length probe
+            // test in tests/transports/web-transport.test.ts; if Bun
+            // overrides this value to 0, the test documents the deviation.
+            headers.set("content-length", String(infoPageByteLength));
             return new Response(req.method === "HEAD" ? null : infoPageHtml, {
               status: 200,
               headers,

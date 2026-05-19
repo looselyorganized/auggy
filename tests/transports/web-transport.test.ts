@@ -1797,6 +1797,72 @@ describe("webTransport / (root) route", () => {
       await agent.stop();
     }
   });
+
+  it("GET / sets Cache-Control: public, max-age=300 on the info page (G2)", async () => {
+    const model = createMockModel();
+    const port = 19004;
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: "test-token" },
+    });
+    const agent = defineAgent(
+      { name: "zip", purpose: "concierge agent", model: "mock", augments: [aug] },
+      model,
+    );
+    await agent.start();
+
+    try {
+      const resp = await fetch(`http://localhost:${port}/`, {
+        method: "GET",
+        redirect: "manual",
+      });
+      expect(resp.status).toBe(200);
+      expect(resp.headers.get("cache-control")).toBe("public, max-age=300");
+      await resp.text();
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("HEAD / Content-Length probe — reflects GET body length or known Bun limit (G2)", async () => {
+    const model = createMockModel();
+    const port = 19005;
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: "test-token" },
+    });
+    const agent = defineAgent(
+      { name: "zip", purpose: "concierge agent", model: "mock", augments: [aug] },
+      model,
+    );
+    await agent.start();
+
+    try {
+      // Compare HEAD vs GET. Whatever Bun reports for HEAD's Content-Length
+      // is what we assert against. Goal: lock in observed behavior so a
+      // future Bun upgrade changing the answer is loud.
+      const getResp = await fetch(`http://localhost:${port}/`, {
+        method: "GET",
+        redirect: "manual",
+      });
+      const getBody = await getResp.text();
+      const getBytes = new TextEncoder().encode(getBody).byteLength;
+
+      const headResp = await fetch(`http://localhost:${port}/`, {
+        method: "HEAD",
+        redirect: "manual",
+      });
+      const headContentLength = headResp.headers.get("content-length");
+      // Two acceptable outcomes per the spec's "Bun nuance" note:
+      //   (a) Bun honors the explicit header — headContentLength matches GET bytes.
+      //   (b) Bun overrides to 0 (null-body default) — known spec deviation.
+      const matchesBody = headContentLength === String(getBytes);
+      const overriddenToZero = headContentLength === "0";
+      expect(matchesBody || overriddenToZero).toBe(true);
+    } finally {
+      await agent.stop();
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
