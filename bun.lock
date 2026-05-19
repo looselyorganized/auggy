@@ -20,30 +20,38 @@
     },
     "packages/anthropic": {
       "name": "@auggy/anthropic",
-      "version": "0.4.0",
+      "version": "0.4.1",
       "dependencies": {
         "@anthropic-ai/sdk": "^0.94.0",
       },
     },
+    "packages/evals": {
+      "name": "@auggy/evals",
+      "version": "0.4.1",
+      "dependencies": {
+        "yaml": "^2.8.3",
+        "zod": "^4.3.6",
+      },
+    },
     "packages/ollama": {
       "name": "@auggy/ollama",
-      "version": "0.4.0",
+      "version": "0.4.1",
       "dependencies": {
         "ollama": "^0.6.0",
       },
     },
     "packages/openai": {
       "name": "@auggy/openai",
-      "version": "0.4.0",
+      "version": "0.4.1",
       "dependencies": {
         "openai": "^6.34.0",
       },
     },
     "packages/openrouter": {
       "name": "@auggy/openrouter",
-      "version": "0.4.0",
+      "version": "0.4.1",
       "dependencies": {
-        "@auggy/openai": "^0.4.0",
+        "@auggy/openai": "^0.4.1",
         "openai": "^6.34.0",
       },
     },
@@ -52,6 +60,8 @@
     "@anthropic-ai/sdk": ["@anthropic-ai/sdk@0.94.0", "", { "dependencies": { "json-schema-to-ts": "^3.1.1" }, "peerDependencies": { "zod": "^3.25.0 || ^4.0.0" }, "optionalPeers": ["zod"], "bin": { "anthropic-ai-sdk": "bin/cli" } }, "sha512-OVlCttk5MyeTGtrWX5+F3MJOfEMDuEjK8+rm9aQMDfRPWndVMbhk37QG8WLnVbcc7huyUGngVMjT7iMN2llySA=="],
 
     "@auggy/anthropic": ["@auggy/anthropic@workspace:packages/anthropic"],
+
+    "@auggy/evals": ["@auggy/evals@workspace:packages/evals"],
 
     "@auggy/link": ["@auggy/link@0.1.2", "", { "dependencies": { "hono": "^4.6.0", "zod": "^3.23.0" } }, "sha512-UTIP3fK8jsrJx/8GQPIUMcUbaemlhgFG91oY4HVDRRzK/8c+evPQ3FuSHETKMTP6Ju2jVyECU8VKL58LCYKmuw=="],
 

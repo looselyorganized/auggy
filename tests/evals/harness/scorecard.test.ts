@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { buildScorecard, formatScorecardYaml } from "../../../evals/harness/scorecard";
-import type { EvalDefinition, EvalTrialResult } from "../../../evals/harness/types";
+import { buildScorecard, formatScorecardYaml } from "@evals/harness/scorecard";
+import type { EvalDefinition, EvalTrialResult } from "@evals/harness/types";
 
 const DEF: EvalDefinition = {
   eval_id: 1,

@@ -13,8 +13,8 @@
  */
 
 import Anthropic from "@anthropic-ai/sdk";
-import type { ExtractionEngine } from "../../../src/augments/layered-memory/extractor/inject-handler";
-import { computeCostUsd, type Pricing } from "../../../src/engines/_shared/cost";
+import type { ExtractionEngine } from "auggy/internal/augments/layered-memory/extractor/inject-handler";
+import { computeCostUsd, type Pricing } from "auggy/internal/cost";
 
 const HAIKU_MODEL = "claude-haiku-4-5";
 

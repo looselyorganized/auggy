@@ -9,7 +9,7 @@
  * both conform to the same `ExtractionEngine` interface.
  */
 
-import type { ExtractionEngine } from "../../../src/augments/layered-memory/extractor/inject-handler";
+import type { ExtractionEngine } from "auggy/internal/augments/layered-memory/extractor/inject-handler";
 import type { ExtractionPromptCapture, FixtureExpectedExtraction } from "../types";
 
 export interface RecordingEngineHandle {

@@ -19,16 +19,37 @@
     "paths": {
       "@/*": ["./src/*"],
       "@tests/*": ["./tests/*"],
-      "@evals/*": ["./evals/*"],
+      "@evals/*": ["./packages/evals/src/*"],
+      "@auggy/evals/*": ["./packages/evals/src/*"],
       "auggy": ["./src/index.ts"],
+      "auggy/cli": ["./src/cli/index.ts"],
       "auggy/internal/cost": ["./src/engines/_shared/cost.ts"],
       "auggy/internal/schema-normalize": ["./src/engines/_shared/schema-normalize.ts"],
       "auggy/internal/tool-call": ["./src/engines/_shared/tool-call.ts"],
       "auggy/internal/prompt-assembly": ["./src/engines/_shared/prompt-assembly.ts"],
       "auggy/internal/anthropic-pricing": ["./src/engines/anthropic/pricing.ts"],
       "auggy/internal/openai-pricing": ["./src/engines/openai/pricing.ts"],
-      "auggy/internal/openrouter-pricing": ["./src/engines/openrouter/pricing.ts"]
+      "auggy/internal/openrouter-pricing": ["./src/engines/openrouter/pricing.ts"],
+      "auggy/internal/agent": ["./src/agent.ts"],
+      "auggy/internal/helpers": ["./src/helpers.ts"],
+      "auggy/internal/types": ["./src/types.ts"],
+      "auggy/internal/cli/config-parser": ["./src/cli/config-parser.ts"],
+      "auggy/internal/cli/engine-resolver": ["./src/cli/engine-resolver.ts"],
+      "auggy/internal/cli/augment-resolver": ["./src/cli/augment-resolver.ts"],
+      "auggy/internal/augments/layered-memory": ["./src/augments/layered-memory/index.ts"],
+      "auggy/internal/augments/layered-memory/storage/types": [
+        "./src/augments/layered-memory/storage/types.ts"
+      ],
+      "auggy/internal/augments/layered-memory/storage/sqlite-store": [
+        "./src/augments/layered-memory/storage/sqlite-store.ts"
+      ],
+      "auggy/internal/augments/layered-memory/extractor/inject-handler": [
+        "./src/augments/layered-memory/extractor/inject-handler.ts"
+      ],
+      "auggy/internal/augments/layered-memory/extractor/frequency": [
+        "./src/augments/layered-memory/extractor/frequency.ts"
+      ]
     }
   },
-  "include": ["src/**/*.ts", "tests/**/*.ts", "evals/**/*.ts", "packages/**/*.ts"]
+  "include": ["src/**/*.ts", "tests/**/*.ts", "packages/**/*.ts"]
 }

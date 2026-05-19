@@ -63,7 +63,8 @@ jobs:
                     "packages/anthropic/package.json" \
                     "packages/openai/package.json" \
                     "packages/openrouter/package.json" \
-                    "packages/ollama/package.json"; do
+                    "packages/ollama/package.json" \
+                    "packages/evals/package.json"; do
             PKG_VERSION="$(node -p "require('./$pkg').version")"
             PKG_NAME="$(node -p "require('./$pkg').name")"
             if [ "$PKG_VERSION" != "$TAG_VERSION" ]; then
@@ -111,6 +112,9 @@ jobs:
           publish_pkg "packages/openai"
           publish_pkg "packages/openrouter"
           publish_pkg "packages/ollama"
+
+          echo "-- @auggy/evals --"
+          publish_pkg "packages/evals"
 
           echo "-- auggy core last --"
           publish_pkg "."

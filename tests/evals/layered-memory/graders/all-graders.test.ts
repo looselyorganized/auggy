@@ -12,8 +12,8 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import type { Fixture, RunEvidence } from "../../../../evals/layered-memory/types";
-import { getGrader } from "../../../../evals/layered-memory/graders/index";
+import type { Fixture, RunEvidence } from "@evals/layered-memory/types";
+import { getGrader } from "@evals/layered-memory/graders/index";
 
 const SAMPLE_PEER = {
   id: "p1",

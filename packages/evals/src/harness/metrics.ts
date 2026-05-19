@@ -1,4 +1,4 @@
-import type { TurnTrace } from "../../src/types";
+import type { TurnTrace } from "auggy/internal/types";
 
 export interface TokenCostMetrics {
   tokensIn: number;

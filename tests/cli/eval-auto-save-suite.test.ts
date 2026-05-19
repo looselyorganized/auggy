@@ -24,14 +24,14 @@ import {
   validateAll,
   discoverFixtures,
   type AutoSaveSuite,
-} from "../../evals/auto-save/run";
+} from "@evals/auto-save/run";
 import { evalCommand, type EvalCommandDeps } from "../../src/cli/commands/eval";
 
 // ---------------------------------------------------------------------------
 // Paths
 // ---------------------------------------------------------------------------
 
-const EVALS_DIR = resolve(import.meta.dir, "../../evals/auto-save");
+const EVALS_DIR = resolve(import.meta.dir, "../../packages/evals/src/auto-save");
 const FIXTURES_DIR = resolve(EVALS_DIR, "fixtures");
 const SUITE_YAML = resolve(EVALS_DIR, "suite.yaml");
 const GRADER_MD = resolve(EVALS_DIR, "grader.md");
@@ -329,7 +329,10 @@ describe("auggy eval auto-save — CLI routing", () => {
 
     // Need a fixture config path to avoid 'file not found' errors on the
     // default fixture path resolution; use the real fixture file.
-    const fixturePath = resolve(import.meta.dir, "../../evals/security/fixtures/test-agent.yaml");
+    const fixturePath = resolve(
+      import.meta.dir,
+      "../../packages/evals/src/security/fixtures/test-agent.yaml",
+    );
     // If the fixture file doesn't exist in this worktree, skip this assertion.
     if (!existsSync(fixturePath)) return;
 
@@ -360,7 +363,7 @@ describe("runAutoSaveEval — dry-run (no LLM calls)", () => {
   test("dry-run exits 0 when all fixtures are valid", async () => {
     // Import the real runner and call it with dryRun=true.
     // This exercises the full validation path without any LLM calls.
-    const { runAutoSaveEval } = await import("../../evals/auto-save/run");
+    const { runAutoSaveEval } = await import("@evals/auto-save/run");
     const result = await runAutoSaveEval({ dryRun: true });
     expect(result.exitCode).toBe(0);
   });

@@ -1,4 +1,4 @@
-import type { TaskState } from "../../src/types";
+import type { TaskState } from "auggy/internal/types";
 
 export interface ToolSpec {
   name: string;

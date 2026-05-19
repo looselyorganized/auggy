@@ -29,7 +29,7 @@ import { buildAgent, makeMessageTrigger } from "./harness/agent-builder";
 import { inspectStore, probeRecall } from "./harness/evidence-loader";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import type { ModelResponse, PeerIdentity, TurnTrigger } from "../../src/types";
+import type { ModelResponse, PeerIdentity, TurnTrigger } from "auggy/internal/types";
 
 const NAMESPACE = "sm";
 const CASE_BUDGET_USD = 1.5;

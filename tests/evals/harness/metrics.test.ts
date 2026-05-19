@@ -4,7 +4,7 @@ import {
   computeContextUtilization,
   computeLatency,
   aggregateMetrics,
-} from "../../../evals/harness/metrics";
+} from "@evals/harness/metrics";
 import type { TurnTrace } from "../../../src/types";
 
 function makeTrace(overrides?: Partial<TurnTrace>): TurnTrace {

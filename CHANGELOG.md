@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-05-19
+
+Hotfix: a fresh `npm i -g auggy@0.4.0` followed by ANY auggy command (even `auggy --version`) crashed at boot. Root cause: `src/cli/commands/eval.ts` statically imported from `../../../evals/security/run` — a path that pointed OUTSIDE the published tarball (the `files` array shipped `src` only, not `evals/`). Because Commander eagerly imports all subcommands at module load time, the missing `evals/` brought down the entire CLI.
+
+### Fixed
+
+- **`auggy --version` and every other command boot cleanly from npm install.** The eval module loads lazily at action time, and the eval suites themselves moved into a separate `@auggy/evals` workspace package (see *Architecture* below). End users running `auggy create / dev / chat / deploy` see no behavior change; users running `auggy eval` need to `npm i -g @auggy/evals` (the CLI emits a clear install hint if missing).
+
+### Architecture
+
+- **`evals/` → `packages/evals/`** — promoted from a repo-root dev-tools directory into a real workspace package published to npm as `@auggy/evals@0.4.1`. Mirrors the engine-adapter split shipped in 0.4.0: optional, opt-in, version-locked with `auggy` core. The package ships fixtures + graders + harness + runners for the security, auto-save, layered-memory, alara, modularity, and quality suites.
+- **`auggy/internal/*` subpath exports** — exposes 10 additional internal paths so the `@auggy/evals` package can import auggy's internals (layered-memory store + extractor, CLI config/engine/augment resolvers, agent/helpers/types) without going through deep relative paths. Same convention as the pre-existing `auggy/internal/cost` etc. Path: `auggy/internal/{agent,helpers,types,cli/*,augments/layered-memory/**}`.
+- **Lazy import in `src/cli/commands/eval.ts`** — replaces the top-level static imports of `evals/security/run` + `evals/auto-save/run` with a `loadEvalsModule()` helper that dynamically imports `@auggy/evals` at action time. Missing-package state surfaces as a clear install hint instead of a module-load crash that takes down `auggy --version`.
+
+### Process
+
+- **`release-rehearsal.yml` gains a tarball-boot CI gate.** When a PR bumps `package.json.version`, CI now packs auggy + every engine package into local tarballs, installs auggy globally into an isolated prefix, and runs `auggy --version` + `auggy --help`. Catches the "import path resolves locally but breaks in the published tarball" class of bug — the exact failure mode 0.4.0 shipped with. Engine packages get their own pack to surface any path drift in scoped packages too.
+- **`publish.yml` extended** to publish `@auggy/evals` alongside the engines (engines → evals → core, so the dependency order is satisfied on first install).
+
 ## [0.4.0] - 2026-05-19
 
 The /admin-route + npm-engine-split release. Operators can now inspect and tune a running agent from a browser. Engine adapters move out of the core into their own npm packages (`@auggy/anthropic`, `@auggy/openai`, `@auggy/openrouter`, `@auggy/ollama`), all published alongside `auggy` itself.

@@ -1,10 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { runAblation } from "../../../evals/harness/runner";
+import { runAblation } from "@evals/harness/runner";
 import { createMockModel } from "../../fixtures/mock-model";
 import { createTempDir } from "../../fixtures/temp-dir";
 import { readdirSync } from "node:fs";
-import type { EvalDefinition, EvalTask } from "../../../evals/harness/types";
-import { generateTasks } from "../../../evals/alara/dataset";
+import type { EvalDefinition, EvalTask } from "@evals/harness/types";
+import { generateTasks } from "@evals/alara/dataset";
 
 const MINI_DEF: EvalDefinition = {
   eval_id: 99,

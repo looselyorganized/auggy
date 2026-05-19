@@ -1,6 +1,6 @@
 {
   "name": "auggy",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Modular agent runtime — composable augments, multi-engine, SQLite-first memory.",
   "keywords": [
     "agent",
@@ -41,7 +41,18 @@
     "./internal/prompt-assembly": "./src/engines/_shared/prompt-assembly.ts",
     "./internal/anthropic-pricing": "./src/engines/anthropic/pricing.ts",
     "./internal/openai-pricing": "./src/engines/openai/pricing.ts",
-    "./internal/openrouter-pricing": "./src/engines/openrouter/pricing.ts"
+    "./internal/openrouter-pricing": "./src/engines/openrouter/pricing.ts",
+    "./internal/agent": "./src/agent.ts",
+    "./internal/helpers": "./src/helpers.ts",
+    "./internal/types": "./src/types.ts",
+    "./internal/cli/config-parser": "./src/cli/config-parser.ts",
+    "./internal/cli/engine-resolver": "./src/cli/engine-resolver.ts",
+    "./internal/cli/augment-resolver": "./src/cli/augment-resolver.ts",
+    "./internal/augments/layered-memory": "./src/augments/layered-memory/index.ts",
+    "./internal/augments/layered-memory/storage/types": "./src/augments/layered-memory/storage/types.ts",
+    "./internal/augments/layered-memory/storage/sqlite-store": "./src/augments/layered-memory/storage/sqlite-store.ts",
+    "./internal/augments/layered-memory/extractor/inject-handler": "./src/augments/layered-memory/extractor/inject-handler.ts",
+    "./internal/augments/layered-memory/extractor/frequency": "./src/augments/layered-memory/extractor/frequency.ts"
   },
   "bin": {
     "auggy": "src/cli/index.ts"

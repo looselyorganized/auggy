@@ -14,8 +14,8 @@
  * real turn-loop machinery — see lo/docs/auggy-oss-launch-readiness.md task #8.
  */
 
-import type { TrustLevel } from "../../src/types";
-import type { StoreEntry } from "../../src/augments/layered-memory/storage/types";
+import type { TrustLevel } from "auggy/internal/types";
+import type { StoreEntry } from "auggy/internal/augments/layered-memory/storage/types";
 
 // ---------------------------------------------------------------------------
 // Fixture shape (YAML on disk)

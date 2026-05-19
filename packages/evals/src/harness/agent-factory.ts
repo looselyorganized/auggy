@@ -1,13 +1,13 @@
 import { z } from "zod";
-import { defineAgent } from "../../src/agent";
-import { defineAugment } from "../../src/helpers";
+import { defineAgent } from "auggy/internal/agent";
+import { defineAugment } from "auggy/internal/helpers";
 import type {
   AgentConfig,
   AgentHandle,
   AugmentConstraints,
   ModelClient,
   Tool,
-} from "../../src/types";
+} from "auggy/internal/types";
 import type { ToolSpec } from "./types";
 
 function specToTool(spec: ToolSpec): Tool<unknown> {
