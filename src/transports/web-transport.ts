@@ -23,7 +23,8 @@ import {
 } from "./visitor-token";
 import { withTimeout, TimeoutError } from "../kernel/timeout";
 import { resolveConfigBool } from "../config";
-import { readOverrides } from "../lib/admin-overrides";
+import { readOverrides, writeOverrides } from "../lib/admin-overrides";
+import type { AdminActionResult, AdminInfoBlock } from "../types";
 import {
   type AdminActionRegistry,
   buildAdminActionRegistry,
@@ -495,15 +496,139 @@ export function webTransport(opts: WebTransportOptions): Augment {
   );
   let allowAnonymous = allowAnonymousResolution.value;
 
-  // G36 — setter for Phase 3's posture-flip action to call. Mutates the
+  // G36 — setter for the posture-flip action to call. Mutates the
   // closure variable above; the identity resolver reads `allowAnonymous`
   // on every request so the change applies immediately.
   function setAllowAnonymous(value: boolean): void {
     allowAnonymous = value;
   }
-  // Touch to suppress unused-symbol lint while Phase 2 doesn't expose it yet;
-  // Phase 3 uses it via the budgets/notify/posture augment adminActions.
-  void setAllowAnonymous;
+
+  async function persistAllowAnonymousOverride(value: boolean): Promise<void> {
+    if (!opts.agentDir) {
+      throw new Error("agentDir not configured; admin overrides cannot persist");
+    }
+    const current = readOverrides(opts.agentDir) ?? {
+      version: 1 as const,
+      lastModified: new Date().toISOString(),
+      lastModifiedBy: "creator",
+      overrides: {},
+    };
+    current.lastModified = new Date().toISOString();
+    current.lastModifiedBy = "creator";
+    current.overrides.webTransport = {
+      ...current.overrides.webTransport,
+      allowAnonymous: value,
+    };
+    writeOverrides(opts.agentDir, current);
+  }
+
+  async function clearAllowAnonymousOverride(): Promise<void> {
+    if (!opts.agentDir) return;
+    const current = readOverrides(opts.agentDir);
+    if (!current) return;
+    if (current.overrides.webTransport) {
+      delete (current.overrides.webTransport as Record<string, unknown>).allowAnonymous;
+      if (Object.keys(current.overrides.webTransport).length === 0) {
+        delete (current.overrides as Record<string, unknown>).webTransport;
+      }
+    }
+    current.lastModified = new Date().toISOString();
+    current.lastModifiedBy = "creator";
+    writeOverrides(opts.agentDir, current);
+  }
+
+  async function adminInfo(): Promise<AdminInfoBlock> {
+    const sourceLabel =
+      allowAnonymousResolution.source === ("admin-override" as string)
+        ? "/admin override"
+        : allowAnonymousResolution.source === "env"
+          ? `env (AUGGY_ALLOW_ANONYMOUS=${process.env.AUGGY_ALLOW_ANONYMOUS})`
+          : allowAnonymousResolution.source === "default"
+            ? `default (NODE_ENV=${process.env.NODE_ENV ?? "unset"})`
+            : "yaml";
+    return {
+      augmentName: "web",
+      title: "Posture",
+      sections: [
+        {
+          kind: "keyValue",
+          rows: [
+            {
+              label: "allowAnonymous",
+              value: String(allowAnonymous),
+              source: sourceLabel,
+              resetAction: { id: "posture-reset", label: "Reset to yaml" },
+            },
+            {
+              label: "publicFrontendUrl",
+              value: opts.publicFrontendUrl ?? "(unset)",
+            },
+            { label: "Port", value: String(opts.port) },
+            {
+              label: "Trusted proxies",
+              value: (opts.trustedProxies ?? []).join(", ") || "(none)",
+            },
+          ],
+        },
+      ],
+      actions: [
+        {
+          id: "posture-flip",
+          label: "Flip allowAnonymous",
+          confirmRequired: true,
+          inputs: [
+            {
+              name: "value",
+              label: "allowAnonymous",
+              type: "boolean",
+              required: true,
+              helpText: "Demo-mode on/off. Persists across restart via admin-overrides.json.",
+            },
+          ],
+        },
+      ],
+    };
+  }
+
+  const adminActions = {
+    "posture-flip": async (params: Record<string, unknown>): Promise<AdminActionResult> => {
+      const value = params.value === true || params.value === "true";
+      try {
+        await persistAllowAnonymousOverride(value);
+      } catch (err) {
+        return {
+          ok: false,
+          message: `could not persist override: ${(err as Error).message}; agent state unchanged`,
+        };
+      }
+      setAllowAnonymous(value);
+      (allowAnonymousResolution as unknown as { source: string }).source = "admin-override";
+      return { ok: true, message: `allowAnonymous set to ${value}` };
+    },
+    "posture-reset": async (): Promise<AdminActionResult> => {
+      try {
+        await clearAllowAnonymousOverride();
+      } catch (err) {
+        return {
+          ok: false,
+          message: `could not clear override: ${(err as Error).message}`,
+        };
+      }
+      const reResolved = resolveConfigBool(
+        opts.allowAnonymous,
+        "AUGGY_ALLOW_ANONYMOUS",
+        () => process.env.NODE_ENV !== "production",
+      );
+      setAllowAnonymous(reResolved.value);
+      (
+        allowAnonymousResolution as unknown as {
+          source: typeof reResolved.source;
+          value: boolean;
+        }
+      ).source = reResolved.source;
+      return { ok: true, message: `allowAnonymous reset to yaml: ${reResolved.value}` };
+    },
+  };
 
   // ---------------------------------------------------------------------------
   // Identity resolver — four paths
@@ -987,6 +1112,8 @@ export function webTransport(opts: WebTransportOptions): Augment {
     name: "web",
     capabilities: ["transport"],
     transport,
+    adminInfo,
+    adminActions,
     async onBoot() {
       if (visitorTokensEnabled) {
         const keySource = opts.visitorTokens?.signingKey;
