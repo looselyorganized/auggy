@@ -53,9 +53,7 @@ describe("renderInfoPage — HTML structure", () => {
 
   it("includes viewport meta tag", () => {
     const html = renderInfoPage(mockCard({ name: "zip", purpose: "concierge agent" }));
-    expect(html).toContain(
-      '<meta name="viewport" content="width=device-width, initial-scale=1">',
-    );
+    expect(html).toContain('<meta name="viewport" content="width=device-width, initial-scale=1">');
   });
 
   it("includes noindex robots meta tag (crawler suppression)", () => {
@@ -123,8 +121,6 @@ describe("renderInfoPage — fallbacks and edge cases", () => {
   it("includes + escapes purpose when purpose contains HTML metacharacters", () => {
     const html = renderInfoPage(mockCard({ name: "zip", purpose: "Concierge <demo> & co" }));
     expect(html).toContain("<p>Concierge &lt;demo&gt; &amp; co</p>");
-    expect(html).toContain(
-      '<meta name="description" content="Concierge &lt;demo&gt; &amp; co">',
-    );
+    expect(html).toContain('<meta name="description" content="Concierge &lt;demo&gt; &amp; co">');
   });
 });

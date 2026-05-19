@@ -8,7 +8,7 @@ import type { AgentCard } from "../types";
  * Covers the five HTML metacharacters that matter for both element content and
  * double-quoted attribute values: `&`, `<`, `>`, `"`, `'`.
  */
-function escape(s: string): string {
+function escapeHtml(s: string): string {
   return s
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
@@ -28,7 +28,7 @@ const FALLBACK = "An Auggy agent";
 export function renderInfoPage(card: AgentCard): string {
   const rawName = card.provider.name;
   const hasName = rawName.trim() !== "";
-  const escapedName = hasName ? escape(rawName) : "";
+  const escapedName = hasName ? escapeHtml(rawName) : "";
   const title = hasName ? `${escapedName} — Auggy agent` : FALLBACK;
   const heading = hasName ? escapedName : FALLBACK;
 
@@ -37,7 +37,7 @@ export function renderInfoPage(card: AgentCard): string {
   // and meta tags render with the value or stay empty.
   const purposeStr = card.purpose ?? "";
   const hasPurpose = purposeStr.trim() !== "";
-  const escapedPurpose = hasPurpose ? escape(purposeStr) : "";
+  const escapedPurpose = hasPurpose ? escapeHtml(purposeStr) : "";
   const purposeParagraph = hasPurpose ? `\n  <p>${escapedPurpose}</p>` : "";
 
   return `<!doctype html>
