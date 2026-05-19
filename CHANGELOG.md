@@ -7,7 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-05-19
+
+The /admin-route + npm-engine-split release. Operators can now inspect and tune a running agent from a browser. Engine adapters move out of the core into their own npm packages (`@auggy/anthropic`, `@auggy/openai`, `@auggy/openrouter`, `@auggy/ollama`), all published alongside `auggy` itself.
+
 ### Added
+
+#### `/admin` route (G36)
+
+- **Built-in `/admin` route in `webTransport`** — single HTTP surface for the creator to inspect and tune any augment that declares an `adminInfo()` contract. Composable across augments: the route lives in `webTransport` and dispatches; each augment owns its block. HTTP Basic auth with the bearer as the password (no new credential); HTTPS-on-non-loopback gate (426 + SSH-tunnel guidance); per-(actionId, rowKey) CSRF (HMAC-SHA256 over `agentName|ts|actionId|rowKey`, 24h expiry, 60s future-skew tolerance); per-IP rate limit (60/min synthetic route-key `"admin"`); reserved paths block augment routes at `/admin` and under `/admin/*`. Opt-out via `webTransport.adminRoute: false` → 404, no signal that admin exists when disabled. Surface + composition documented at `docs/06-transports.md#the-admin-route-g36`.
+- **`adminInfo()` + `adminActions` contract on the `Augment` type.** Augments opt into being dashboarded by returning an `AdminInfoBlock` of section primitives (`keyValue`, `table`, `status`, `eventStream` — the last reserved for the deferred Tier-2 telemetry pipeline). Action handlers live in `adminActions[id]`; the dispatcher coerces form inputs to the declared types, validates CSRF + auth, dispatches, and emits a structured audit log line. Boot-time `buildAdminActionRegistry` validates that every declared action has a matching handler AND that action ids are globally unique across augments.
+- **Per-augment `adminInfo()` for 5 augments + 9 admin actions.**
+  - `webTransport`: posture KV (allowAnonymous, publicFrontendUrl, port, trustedProxies). Actions: `posture-flip`, `posture-reset`.
+  - `budgets`: daily cap + today's spend + per-peer table. Actions: `budget-cap-adjust`, `budget-cap-reset`.
+  - `layered-memory`: retention-class counts + 50-most-recent-entries table. Action: `memory-erase` (per-peer row action).
+  - `notify`: globalMaxPerHour + cooldown + dispatch ring buffer (last 50). Actions: `notify-test` (bypasses rate-limit + dedup), `notify-cap-adjust`, `notify-cap-reset`.
+  - `visitor-auth`: mail transport + verified-visitors table + console-in-prod warning. Action: `visitor-revoke` (per-email row action).
+- **`admin-overrides.json` persistence layer.** Three runtime-mutable knobs persist across restart at `<agentDir>/admin-overrides.json` (Zod-validated schema, 0o600 mode, atomic temp+rename + UUID-uniqued temp filename): `webTransport.allowAnonymous`, `budgets.dailyBudgetUsd`, `notify.globalMaxPerHour`. Each augment reads its override at construction time and applies it on top of yaml + env precedence; admin POSTs persist back via `writeOverrides()` BEFORE mutating the closure (S7 ordering — a write failure leaves agent state unchanged).
+- **`docs/06-transports.md` operator reference** (~145 lines) for the /admin route — surface, opt-out, auth, HTTPS gate, CSRF model, rate limit, composition, persistence, audit log, reserved paths, operator curl workflow, v1 limits.
+- **Per-augment `### Admin info (G36)` paragraphs** under each augment's section in `docs/07-built-in-augments.md`.
+- **End-to-end CSRF round-trip integration test** (`tests/transports/admin/integration-csrf-roundtrip.test.ts`). Boots a real agent, parses the `_csrf` token from rendered HTML, POSTs it back to the action endpoint — the test that catches the regression class shipped briefly in the Phase 2 implementation (page-level CSRF token bound to `"__page"` failed validation per-action, returning 403 from every browser form submit).
+
+#### Info endpoint (G2)
+
+- **`GET /` returns an HTML info page when `publicFrontendUrl` is unset.** Replaces the previous 404 with a small unauthenticated response carrying the agent name, a link to `/.well-known/agent-card.json`, and a one-line "this is an Auggy agent backend — POST `/agent/run` or set `publicFrontendUrl`." When `publicFrontendUrl` IS set, GET / returns 302 to that URL (existing behavior preserved). `HEAD /` mirrors GET in both branches (same status code, same headers including `Content-Length` matching the GET body, body omitted) per RFC 9110 §9.3.2. `publicFrontendUrl` is validated once at agent boot — a malformed URL fails fast instead of returning a broken Location header per request.
+- **`src/transports/info-page.ts`** — pure HTML renderer with escaped agent name, robots `noindex`, OG/Twitter meta. No CSS framework, no JS — single self-contained HTML response.
+
+#### Ollama engine (G35)
+
+- **`@auggy/ollama` package** — Ollama engine adapter for local LLM runners. No API key required. Drives the agent against a locally-running Ollama server (default `http://localhost:11434`; configurable for remote Ollama). Compatible with tool-capable models (llama3.2, qwen2.5, etc.). Selectable as the `ollama` provider during `auggy create`.
+
+#### Package split
+
+- **Engine adapters moved into separate npm packages**: `@auggy/anthropic`, `@auggy/openai`, `@auggy/openrouter`, `@auggy/ollama`. The auggy core no longer carries SDK dependencies; scaffolded agents declare the engine adapter as a direct dep alongside `auggy` itself. The engine resolver loads adapters via `importFromAgent` against the agent's `node_modules`, so an agent uses the engine version it was scaffolded against.
+- **Publish workflow extended** (`publish.yml`) to publish all 5 packages — engines first (so a fresh `npm i -g auggy` followed by `auggy create` resolves engine deps), then core. Per-package version + already-published checks for idempotent retroactive-tag support.
+
+#### Earlier in [Unreleased] (now part of 0.4.0)
 
 - **`docs/20-embedding.md` primitives reference** for wiring a visitor-facing chat surface to a running Auggy agent. Documents the wire contract (POST `/agent/run` with AG-UI SSE response), the identity-path resolution of `webTransport.identify()` (creator / agent / public-recognized / public-anonymous), the visitor-token bootstrap + rotation flow (including TTL expiry semantics), and the visitorAuth verify endpoint. Deliberately ships **no copy-paste recipe** — visitor-side widgets are an adopter-application-layer concern (origin policy, CSRF gates, cookie domain, framework idioms) where Auggy's job is to expose clean primitives, not to ship a security-sensitive integration the adopter is supposed to copy. Replaces the deferred PR #50 "embedding recipe" direction; the recipe doc surfaced four rounds of codex findings about gaps at the adopter-app layer (CSRF / verify-page reverse-proxy / trust boundaries), all of which dissolved by reframing as primitives. Tested by `tests/integration/embedding-primitives.test.ts` (7 tests covering identity paths + visitorAuth upgrade flow + bearer-wins precedence). (G1 — v1.0 concierge-readiness.)
 - **`tests/integration/embedding-primitives.test.ts`** — integration suite that boots a real agent and asserts: a valid bearer resolves to `creator` trust with `peer.id === "creator"` (Path 1); a present-but-invalid bearer returns 401 with no silent downgrade to anonymous (security claim about Path 1 failure mode); a request without bearer + bootstrap visitor-token resolves to `public/anonymous` with a fresh token in the response (Path 4); the rotated token resolves to `public/recognized` with a stable `peer.id` (Path 3); the visitorAuth upgrade flow (G34 console adapter) mints a `vis_<uuid>`; `x-peer-id` is ignored for identity regardless of request shape; **valid bearer + stale `x-visitor-token` resolves to creator** (bearer wins over invalid visitor-token; codex round-6 fix). Regression guard against runtime drift from the documented identity-path contract.

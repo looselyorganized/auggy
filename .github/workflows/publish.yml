@@ -1,13 +1,26 @@
-name: Publish auggy to npm on tag
+name: Publish auggy + engine packages to npm on tag
 
 on:
   push:
     tags:
       - "v*.*.*"
 
+# All packages version-lock together: one tag → one version across
+# `auggy`, `@auggy/anthropic`, `@auggy/openai`, `@auggy/openrouter`,
+# `@auggy/ollama`. Each package's package.json version MUST equal the
+# tag suffix; the workflow fails fast if any drift.
+#
+# Per-package already-published checks mean retroactive tags are
+# idempotent — if a package@X.Y.Z is already on npm, that publish is
+# skipped while siblings still publish if they're new. Useful when a
+# previous run failed mid-flight and we need to retry.
+#
+# Order: engines FIRST (so a fresh `npm i -g auggy@X.Y.Z` followed by
+# `auggy create` resolves engine deps from npm), then `auggy` core.
+
 jobs:
   publish:
-    name: Publish auggy to npm
+    name: Publish auggy + engine packages
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -31,50 +44,73 @@ jobs:
       - name: Install deps
         run: bun install
 
-      # Read-only check: if the tagged version is already on npm, skip the rest.
-      # Makes retroactive tags (e.g. backfilling v0.3.0 after a manual publish)
-      # safe to push without forcing a republish that would fail with EPUBLISHCONFLICT.
-      - name: Check if version already published
-        id: npm-check
-        env:
-          REF_NAME: ${{ github.ref_name }}
-        run: |
-          TAG_VERSION="${REF_NAME#v}"
-          if npm view "auggy@$TAG_VERSION" version >/dev/null 2>&1; then
-            echo "auggy@$TAG_VERSION already on npm; skipping rest of workflow"
-            echo "already_published=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "auggy@$TAG_VERSION not yet on npm; proceeding"
-            echo "already_published=false" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Typecheck
-        if: steps.npm-check.outputs.already_published == 'false'
         run: bunx tsc --noEmit
 
       - name: Run tests
-        if: steps.npm-check.outputs.already_published == 'false'
         run: bun test
 
-      - name: Confirm version matches tag
-        if: steps.npm-check.outputs.already_published == 'false'
+      # Every package's package.json version must equal the tag suffix.
+      # Catches drift between `auggy` and the engine packages — they
+      # version together; a partial bump is a release-PR bug.
+      - name: Confirm all package versions match tag
         env:
           REF_NAME: ${{ github.ref_name }}
         run: |
-          PKG_VERSION="$(node -p "require('./package.json').version")"
           TAG_VERSION="${REF_NAME#v}"
-          if [ "$PKG_VERSION" != "$TAG_VERSION" ]; then
-            echo "::error::package.json version ($PKG_VERSION) does not match tag ($TAG_VERSION)"
-            exit 1
-          fi
+          echo "Tag version: $TAG_VERSION"
+          for pkg in "package.json" \
+                    "packages/anthropic/package.json" \
+                    "packages/openai/package.json" \
+                    "packages/openrouter/package.json" \
+                    "packages/ollama/package.json"; do
+            PKG_VERSION="$(node -p "require('./$pkg').version")"
+            PKG_NAME="$(node -p "require('./$pkg').name")"
+            if [ "$PKG_VERSION" != "$TAG_VERSION" ]; then
+              echo "::error::$PKG_NAME ($pkg) version ($PKG_VERSION) does not match tag ($TAG_VERSION)"
+              exit 1
+            fi
+            echo "  $PKG_NAME @ $PKG_VERSION OK"
+          done
 
-      # Provenance attestation (--provenance) is currently DISABLED because it
-      # requires a public source repo. Re-enable when the augment-1 repo is
-      # made public for OSS launch by adding `--provenance` to the publish
-      # command below. See docs/RELEASING.md § "Provenance gate" for the full
-      # re-enable checklist.
-      - name: Publish to npm
-        if: steps.npm-check.outputs.already_published == 'false'
-        run: npm publish --access public
+      # Publish engines first, then core. Order matters: a fresh user
+      # doing `npm i -g auggy@<tag>` immediately followed by `auggy
+      # create` needs the engine packages already on npm so `bun
+      # install` in the scaffolded agent resolves them.
+      #
+      # Per-package idempotency: `npm view` checks the registry; if the
+      # version is already published, skip that package and continue.
+      # This makes retroactive tags safe — only newly-bumped packages
+      # actually publish.
+      #
+      # Provenance attestation (--provenance) is currently DISABLED
+      # because it requires a public source repo. Re-enable when the
+      # augment-1 repo is made public for OSS launch.
+      # See docs/RELEASING.md § "Provenance gate".
+      - name: Publish engines first, then auggy core
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          TAG_VERSION="${REF_NAME#v}"
+
+          publish_pkg() {
+            local pkg_dir="$1"
+            local pkg_name
+            pkg_name="$(node -p "require('./$pkg_dir/package.json').name")"
+            if npm view "$pkg_name@$TAG_VERSION" version >/dev/null 2>&1; then
+              echo "  $pkg_name@$TAG_VERSION already on npm; skipping"
+            else
+              echo "  publishing $pkg_name@$TAG_VERSION from $pkg_dir"
+              (cd "$pkg_dir" && npm publish --access public)
+            fi
+          }
+
+          echo "-- Engine packages first --"
+          publish_pkg "packages/anthropic"
+          publish_pkg "packages/openai"
+          publish_pkg "packages/openrouter"
+          publish_pkg "packages/ollama"
+
+          echo "-- auggy core last --"
+          publish_pkg "."

@@ -1,6 +1,6 @@
 {
   "name": "@auggy/openai",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "description": "OpenAI engine adapter for auggy — implements ModelClient against the openai SDK.",
   "keywords": [
     "auggy",
@@ -37,8 +37,5 @@
   "private": false,
   "dependencies": {
     "openai": "^6.34.0"
-  },
-  "peerDependencies": {
-    "auggy": "^0.3.1"
   }
 }

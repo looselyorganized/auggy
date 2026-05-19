@@ -120,3 +120,26 @@ jobs:
       - name: Validate tarball packaging
         if: steps.version-check.outputs.changed == 'true'
         run: npm pack --dry-run
+
+      # All packages version-lock together. On a release PR, confirm every
+      # engine package's version matches the root + its tarball would pack
+      # cleanly. Catches drift before tag push, where the publish workflow
+      # would fail with a clearer error but later in the cycle.
+      - name: Validate engine packages match root version + pack cleanly
+        if: steps.version-check.outputs.changed == 'true'
+        run: |
+          ROOT_VERSION="$(node -p "require('./package.json').version")"
+          for pkg_dir in packages/anthropic packages/openai packages/openrouter packages/ollama; do
+            PKG_VERSION="$(node -p "require('./$pkg_dir/package.json').version")"
+            PKG_NAME="$(node -p "require('./$pkg_dir/package.json').name")"
+            if [ "$PKG_VERSION" != "$ROOT_VERSION" ]; then
+              echo "::error::$PKG_NAME ($pkg_dir) version ($PKG_VERSION) does not match root ($ROOT_VERSION). All packages version-lock together."
+              exit 1
+            fi
+            if npm view "$PKG_NAME@$PKG_VERSION" version >/dev/null 2>&1; then
+              echo "::error::$PKG_NAME@$PKG_VERSION is already on npm. Bump versions before merging."
+              exit 1
+            fi
+            echo "  $PKG_NAME @ $PKG_VERSION OK"
+            (cd "$pkg_dir" && npm pack --dry-run >/dev/null)
+          done
