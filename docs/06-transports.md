@@ -713,14 +713,15 @@ A `WWW-Authenticate: Basic realm="auggy-admin <agent-name>"` header on 401 lets 
 
 When the caller IP is not loopback (not in `127.0.0.0/8`, not `::1`, not IPv4-mapped loopback), the route returns `426 Upgrade Required` with a body explaining how to either expose HTTPS or use an SSH tunnel. The gate fires BEFORE the bearer check, so an attacker probing over plain HTTP cannot learn whether the bearer is correct.
 
-The body includes:
+The body is a plain-text guidance message (transcribed from `src/transports/admin/admin-auth.ts`):
 
 ```
-HTTPS required for /admin on non-loopback connections.
+/admin requires HTTPS on non-loopback addresses.
 
 Options:
-  1. Front the agent with an HTTPS reverse proxy (Railway, Fly, Caddy, nginx).
-  2. SSH tunnel: ssh -L <port>:127.0.0.1:<port> user@host
+  1. Configure HTTPS termination in front of this agent.
+  2. Access via http://127.0.0.1:<port>/admin from the agent host.
+  3. SSH tunnel: ssh -L <port>:127.0.0.1:<port> user@host
 ```
 
 ### CSRF
@@ -781,13 +782,15 @@ Resets clear the relevant field from the file (and the augment object key if the
 
 ### Audit log
 
-Every action POST emits a structured `console.log` line:
+Every **dispatched** action emits a structured `console.log` line (i.e., the POST passed auth + CSRF + registry lookup + input coercion and reached the handler):
 
 ```
 [admin] actor=creator action=<id> rowKey=<key|-> result=<ok|fail> message=<json-quoted>
 ```
 
 Captured by Bun's stdout/stderr → operator-grep'able. A dedicated audit file is deferred (Tier-2 follow-up; the telemetry-exporter pattern in `lo/telemetry-exporter/` is the planned destination).
+
+Currently NOT logged: rejected POSTs (CSRF failure, unknown action id, input coercion failure). Adding audit lines on the reject branches is a known gap — silent CSRF reject masks probing attempts. Filed as G36-followup.
 
 ### Reserved paths
 
