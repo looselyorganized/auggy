@@ -558,6 +558,13 @@ export interface TransportKernel {
    * Transports that don't speak HTTP simply ignore this method.
    */
   getAugmentRoutes(): readonly AugmentHttpRoute[];
+  /**
+   * G36 — returns the live augment list for /admin's adminInfo collection
+   * + boot-time action-handler validation. Returns a frozen snapshot so
+   * downstream iteration is safe even if an augment's adminInfo() happened
+   * to mutate the array.
+   */
+  getAugments(): readonly Augment[];
 }
 
 export interface TransportSpec {

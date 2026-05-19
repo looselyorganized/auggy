@@ -3,6 +3,7 @@ import type {
   AgentConfig,
   AgentHandle,
   AgentHealth,
+  Augment,
   ModelClient,
   TurnTrigger,
   TurnResult,
@@ -150,6 +151,12 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
       }
       const augmentRoutes: readonly CollectedRoute[] = collected.routes;
 
+      // G36 — frozen augment snapshot exposed to transports via kernel.getAugments().
+      // Downstream consumers (notably /admin's adminInfo collector) iterate this
+      // list; freezing prevents accidental mutation by a buggy adminInfo()
+      // implementation from corrupting iteration.
+      const frozenAugments: readonly Augment[] = Object.freeze(effectiveAugments.slice());
+
       // Register transport augments
       for (const aug of effectiveAugments) {
         if (aug.transport) {
@@ -182,6 +189,9 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
             },
             getAugmentRoutes() {
               return augmentRoutes;
+            },
+            getAugments() {
+              return frozenAugments;
             },
           };
           await aug.transport.register(transportKernel, aug.name);

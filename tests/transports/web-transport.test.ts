@@ -2340,3 +2340,135 @@ describe("webTransport agentBinding (fix C2)", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// G36 — /admin route integration tests (Phase 2)
+// ---------------------------------------------------------------------------
+
+describe("webTransport /admin route — basic dispatch (G36 phase 2)", () => {
+  it("GET /admin without auth → 401", async () => {
+    const model = createMockModel();
+    const port = 19200;
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: "test-token" },
+    });
+    const agent = defineAgent({ name: "zip", model: "mock", augments: [aug] }, model);
+    await agent.start();
+    try {
+      const resp = await fetch(`http://127.0.0.1:${port}/admin`);
+      expect(resp.status).toBe(401);
+      expect(resp.headers.get("www-authenticate")).toBe('Basic realm="auggy-admin zip"');
+      await resp.text();
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("GET /admin with HTTP Basic bearer → 200 + HTML", async () => {
+    const model = createMockModel();
+    const port = 19201;
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: "test-token" },
+    });
+    const agent = defineAgent({ name: "zip", model: "mock", augments: [aug] }, model);
+    await agent.start();
+    try {
+      const basic = Buffer.from(":test-token").toString("base64");
+      const resp = await fetch(`http://127.0.0.1:${port}/admin`, {
+        headers: { authorization: `Basic ${basic}` },
+      });
+      expect(resp.status).toBe(200);
+      const body = await resp.text();
+      expect(body).toContain("<title>zip — admin</title>");
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("HEAD /admin → 405 with Allow: GET, POST", async () => {
+    const model = createMockModel();
+    const port = 19202;
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: "test-token" },
+    });
+    const agent = defineAgent({ name: "zip", model: "mock", augments: [aug] }, model);
+    await agent.start();
+    try {
+      const resp = await fetch(`http://127.0.0.1:${port}/admin`, { method: "HEAD" });
+      expect(resp.status).toBe(405);
+      expect(resp.headers.get("allow")).toMatch(/GET/);
+      expect(resp.headers.get("allow")).toMatch(/POST/);
+      await resp.text();
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("adminRoute: false → GET /admin returns 404", async () => {
+    const model = createMockModel();
+    const port = 19203;
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: "test-token" },
+      adminRoute: false,
+    });
+    const agent = defineAgent({ name: "zip", model: "mock", augments: [aug] }, model);
+    await agent.start();
+    try {
+      const basic = Buffer.from(":test-token").toString("base64");
+      const resp = await fetch(`http://127.0.0.1:${port}/admin`, {
+        headers: { authorization: `Basic ${basic}` },
+      });
+      expect(resp.status).toBe(404);
+      await resp.text();
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("augment cannot register route at /admin (reserved-paths collision)", async () => {
+    const model = createMockModel();
+    const port = 19204;
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: "test-token" },
+    });
+    const conflicting: Augment = {
+      name: "evil",
+      httpRoutes: [
+        {
+          method: "GET",
+          path: "/admin",
+          auth: "none",
+          handler: async () => new Response("evil"),
+        },
+      ],
+    };
+    const agent = defineAgent({ name: "zip", model: "mock", augments: [conflicting, aug] }, model);
+    await expect(agent.start()).rejects.toThrow(/admin/i);
+  });
+
+  it("S9 — augment cannot register route under /admin/ prefix", async () => {
+    const model = createMockModel();
+    const aug = webTransport({
+      port: 19205,
+      auth: { type: "bearer", token: "test-token" },
+    });
+    const conflicting: Augment = {
+      name: "evil",
+      httpRoutes: [
+        {
+          method: "POST",
+          path: "/admin/action/notify-test",
+          auth: "none",
+          handler: async () => new Response("evil"),
+        },
+      ],
+    };
+    const agent = defineAgent({ name: "zip", model: "mock", augments: [conflicting, aug] }, model);
+    await expect(agent.start()).rejects.toThrow(/admin/i);
+  });
+});
