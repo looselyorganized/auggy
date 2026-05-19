@@ -1215,12 +1215,31 @@ export function webTransport(opts: WebTransportOptions): Augment {
             });
           }
 
-          // GET / — optional redirect to operator-configured publicFrontendUrl
-          if (req.method === "GET" && url.pathname === "/") {
-            if (opts.publicFrontendUrl) {
-              return Response.redirect(opts.publicFrontendUrl, 302);
+          // G2 — GET / and HEAD / for the info endpoint or operator-configured
+          // redirect. URL validation + HTML caching ran once in register();
+          // per-request work is just method/branch + Response construction.
+          if ((req.method === "GET" || req.method === "HEAD") && url.pathname === "/") {
+            if (validatedPublicFrontendUrl !== undefined) {
+              // Both GET and HEAD use manual construction so URL validation
+              // happens at register-time only (not per-request). Body is null
+              // in both — visitors follow the Location header.
+              return new Response(null, {
+                status: 302,
+                headers: { location: validatedPublicFrontendUrl },
+              });
             }
-            return new Response("Not Found", { status: 404 });
+            // Info page path. infoPageHtml is non-null here by construction
+            // in register() — the defensive guard exists in case of future
+            // refactor breakage.
+            if (infoPageHtml === null) return new Response(null, { status: 404 });
+            const headers = new Headers({
+              "content-type": "text/html; charset=utf-8",
+              "cache-control": "public, max-age=300",
+            });
+            return new Response(req.method === "HEAD" ? null : infoPageHtml, {
+              status: 200,
+              headers,
+            });
           }
 
           if (req.method === "POST" && url.pathname === "/agent/run") {

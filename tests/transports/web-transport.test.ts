@@ -1585,14 +1585,17 @@ describe("webTransport visitorTokens.enabled guard (fix F2)", () => {
 // ---------------------------------------------------------------------------
 
 describe("webTransport / (root) route", () => {
-  it("GET / returns 404 when publicFrontendUrl is not configured", async () => {
+  it("GET / returns 200 + HTML info page when publicFrontendUrl is not configured (G2)", async () => {
     const model = createMockModel();
     const port = 18965;
     const aug = webTransport({
       port,
       auth: { type: "bearer", token: "test-token" },
     });
-    const agent = defineAgent({ name: "test", model: "mock", augments: [aug] }, model);
+    const agent = defineAgent(
+      { name: "zip", purpose: "concierge agent", model: "mock", augments: [aug] },
+      model,
+    );
     await agent.start();
 
     try {
@@ -1600,8 +1603,12 @@ describe("webTransport / (root) route", () => {
         method: "GET",
         redirect: "manual",
       });
-      expect(resp.status).toBe(404);
-      await resp.text();
+      expect(resp.status).toBe(200);
+      expect(resp.headers.get("content-type")).toBe("text/html; charset=utf-8");
+      const body = await resp.text();
+      expect(body).toContain("<title>zip — Auggy agent</title>");
+      expect(body).toContain("<h1>zip</h1>");
+      expect(body).toContain('<meta name="robots" content="noindex, nofollow">');
     } finally {
       await agent.stop();
     }
@@ -1705,6 +1712,82 @@ describe("webTransport / (root) route", () => {
           "content-type": "application/json",
           authorization: "Bearer test-token",
         },
+        body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
+        redirect: "manual",
+      });
+      expect(resp.status).toBe(404);
+      await resp.text();
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("HEAD / returns 200 + empty body + html headers when publicFrontendUrl unset (G2)", async () => {
+    const model = createMockModel();
+    const port = 19000;
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: "test-token" },
+    });
+    const agent = defineAgent(
+      { name: "zip", purpose: "concierge agent", model: "mock", augments: [aug] },
+      model,
+    );
+    await agent.start();
+
+    try {
+      const resp = await fetch(`http://localhost:${port}/`, {
+        method: "HEAD",
+        redirect: "manual",
+      });
+      expect(resp.status).toBe(200);
+      expect(resp.headers.get("content-type")).toBe("text/html; charset=utf-8");
+      const body = await resp.text();
+      expect(body).toBe("");
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("HEAD / returns 302 + empty body when publicFrontendUrl is set (G2)", async () => {
+    const model = createMockModel();
+    const port = 19001;
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: "test-token" },
+      publicFrontendUrl: "https://example.com/chat",
+    });
+    const agent = defineAgent({ name: "test", model: "mock", augments: [aug] }, model);
+    await agent.start();
+
+    try {
+      const resp = await fetch(`http://localhost:${port}/`, {
+        method: "HEAD",
+        redirect: "manual",
+      });
+      expect(resp.status).toBe(302);
+      expect(resp.headers.get("location")).toBe("https://example.com/chat");
+      const body = await resp.text();
+      expect(body).toBe("");
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("POST / returns 404 when publicFrontendUrl is unset (regression for G2 HEAD/GET addition)", async () => {
+    const model = createMockModel();
+    const port = 19002;
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: "test-token" },
+    });
+    const agent = defineAgent({ name: "test", model: "mock", augments: [aug] }, model);
+    await agent.start();
+
+    try {
+      const resp = await fetch(`http://localhost:${port}/`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: "Bearer test-token" },
         body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
         redirect: "manual",
       });
@@ -2342,7 +2425,6 @@ describe("webTransport agentBinding (fix C2)", () => {
 });
 
 // ---------------------------------------------------------------------------
-<<<<<<< HEAD
 // G36 — /admin route integration tests (Phase 2)
 // ---------------------------------------------------------------------------
 
@@ -2482,7 +2564,7 @@ describe("webTransport / (root) route — boot-time validation (G2)", () => {
   it("agent.start() throws when publicFrontendUrl is not a valid URL", async () => {
     const model = createMockModel();
     const aug = webTransport({
-      port: 18999,
+      port: 19003,
       auth: { type: "bearer", token: "test-token" },
       publicFrontendUrl: "://bad",
     });
