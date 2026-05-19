@@ -23,6 +23,12 @@ import {
 } from "./visitor-token";
 import { withTimeout, TimeoutError } from "../kernel/timeout";
 import { resolveConfigBool } from "../config";
+import { readOverrides } from "../lib/admin-overrides";
+import {
+  type AdminActionRegistry,
+  buildAdminActionRegistry,
+  handleAdminRoute,
+} from "./admin/index";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -119,6 +125,22 @@ export interface WebTransportOptions {
    * permits anonymous chat out of the box.
    */
   allowAnonymous?: boolean;
+  /**
+   * G36 — opt-out flag for the built-in /admin route. Default: `true`.
+   * When `false`, GET/POST /admin and POST /admin/action/* all return 404
+   * (no signal that admin exists when disabled). Useful for embedded /
+   * headless deploys, operators with a custom admin, or security-conscious
+   * setups that don't want HTTP-Basic-over-Bearer exposed.
+   */
+  adminRoute?: boolean;
+  /**
+   * G36 — agent directory (typically `~/.auggy/agents/<name>/`). Used by
+   * the admin module to read/write `admin-overrides.json`. When unset,
+   * admin overrides are skipped silently (the runtime falls back to yaml +
+   * env values for the tunable knobs). The auggy CLI populates this at
+   * scaffold time; direct callers may leave it undefined.
+   */
+  agentDir?: string;
 }
 
 interface AGUIRunRequestBody {
@@ -372,6 +394,10 @@ export function webTransport(opts: WebTransportOptions): Augment {
   let augmentRoutes: readonly import("../types").AugmentHttpRoute[] = [];
   let augmentRouteMap: Map<string, import("../types").AugmentHttpRoute> = new Map();
 
+  // G36 — action registry built at register() time by buildAdminActionRegistry.
+  // Empty when adminRoute is disabled or no augment declares adminInfo.
+  let actionRegistry: AdminActionRegistry = new Map();
+
   // PR γ.1 — per-route rate-limit state. Sliding-window timestamps keyed by
   // "<METHOD> <path>". NOT per-peer — auth-none routes have no peer.
   const routeHits = new Map<string, number[]>();
@@ -459,12 +485,25 @@ export function webTransport(opts: WebTransportOptions): Augment {
   // at factory time across yaml > env > default precedence. The resolution
   // object carries `source` so the boot-time log line in `register()` can
   // tell the operator exactly why the agent is running in this posture.
+  //
+  // G36: also mutable at register-time when admin-overrides.json carries an
+  // override; Phase 3's /admin posture-flip action will mutate via setAllowAnonymous.
   const allowAnonymousResolution = resolveConfigBool(
     opts.allowAnonymous,
     "AUGGY_ALLOW_ANONYMOUS",
     () => process.env.NODE_ENV !== "production",
   );
-  const allowAnonymous = allowAnonymousResolution.value;
+  let allowAnonymous = allowAnonymousResolution.value;
+
+  // G36 — setter for Phase 3's posture-flip action to call. Mutates the
+  // closure variable above; the identity resolver reads `allowAnonymous`
+  // on every request so the change applies immediately.
+  function setAllowAnonymous(value: boolean): void {
+    allowAnonymous = value;
+  }
+  // Touch to suppress unused-symbol lint while Phase 2 doesn't expose it yet;
+  // Phase 3 uses it via the budgets/notify/posture augment adminActions.
+  void setAllowAnonymous;
 
   // ---------------------------------------------------------------------------
   // Identity resolver — four paths
@@ -571,6 +610,26 @@ export function webTransport(opts: WebTransportOptions): Augment {
       kernel = k;
       augmentRoutes = k.getAugmentRoutes();
       augmentRouteMap = new Map();
+
+      // G36 — apply admin-overrides on top of yaml/env/default.
+      // The override file is read once at boot; the closure values are the
+      // runtime source of truth thereafter.
+      const overrides = readOverrides(opts.agentDir);
+      if (overrides?.overrides.webTransport?.allowAnonymous !== undefined) {
+        allowAnonymous = overrides.overrides.webTransport.allowAnonymous;
+        // Mark the resolution source so /admin can display "source: /admin override"
+        // (Phase 3's webTransport adminInfo reads this). The cast is needed because
+        // resolveConfigBool's union doesn't yet include "admin-override".
+        (allowAnonymousResolution as unknown as { source: string }).source = "admin-override";
+      }
+
+      // G36 — build the action registry from declared adminInfo + adminActions.
+      // buildAdminActionRegistry throws on missing handlers or action-id
+      // collisions; surface fires at boot, not at first POST.
+      if (opts.adminRoute !== false) {
+        actionRegistry = await buildAdminActionRegistry(k.getAugments());
+      }
+
       let visitorAuthMounted = false;
       for (const r of augmentRoutes) {
         augmentRouteMap.set(`${r.method} ${r.path}`, r);
@@ -949,6 +1008,50 @@ export function webTransport(opts: WebTransportOptions): Augment {
           // CORS preflight — required for browser-based AG-UI clients
           if (req.method === "OPTIONS") {
             return handleCorsPreFlight();
+          }
+
+          // G36 — /admin route. Opt-out via adminRoute: false makes the route
+          // look like a 404 (no signal that admin exists when disabled).
+          // Exact-match on "/admin" + scoped prefix on "/admin/action/" — NOT
+          // startsWith("/admin") which would also match /administrative and
+          // leak the opt-out setting (M3 fix).
+          const adminEnabled = opts.adminRoute !== false;
+          const isAdminPath =
+            url.pathname === "/admin" || url.pathname.startsWith("/admin/action/");
+          if (adminEnabled && isAdminPath) {
+            if (req.method === "HEAD") {
+              return new Response(null, {
+                status: 405,
+                headers: { allow: "GET, POST" },
+              });
+            }
+            if (req.method !== "GET" && req.method !== "POST") {
+              return new Response(null, {
+                status: 405,
+                headers: { allow: "GET, POST" },
+              });
+            }
+
+            // M4 fix — rate-limit BEFORE handling. Per-IP combined budget
+            // across the entire /admin* surface: 60 req/min via synthetic
+            // route-key "admin". Defeats brute-force against HTTP Basic.
+            const adminIp = getCallerIp(req, server, trustedProxies, xffOnUntrusted);
+            const adminRl = checkRouteRateLimit("admin", adminIp, 60);
+            if (!adminRl.allowed) {
+              return new Response(null, {
+                status: 429,
+                headers: { "retry-after": String(adminRl.retryAfterSec) },
+              });
+            }
+
+            if (!kernel) return new Response(null, { status: 503 });
+            return handleAdminRoute(req, {
+              kernel,
+              bearer: opts.auth.token,
+              agentDir: opts.agentDir,
+              callerIp: adminIp,
+              actionRegistry,
+            });
           }
 
           // GET / — optional redirect to operator-configured publicFrontendUrl
