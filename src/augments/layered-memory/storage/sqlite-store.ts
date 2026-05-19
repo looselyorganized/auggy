@@ -333,6 +333,59 @@ export function createSqliteStore(config: SqliteStoreConfig): MemoryStore {
     });
   }
 
+  async function listEntriesByPeer(
+    opts: { peerId?: string; limit?: number } = {},
+  ): Promise<StoreEntry[]> {
+    const limit = opts.limit ?? 50;
+    const now = Date.now();
+    if (opts.peerId) {
+      const rows = db
+        .prepare<Row, [string, number, number]>(
+          `SELECT * FROM entries
+           WHERE peer_id = ?
+             AND superseded_by IS NULL
+             AND (expires_at IS NULL OR expires_at > ?)
+           ORDER BY created_at DESC
+           LIMIT ?`,
+        )
+        .all(opts.peerId, now, limit);
+      return rows.map(rowToEntry);
+    }
+    const rows = db
+      .prepare<Row, [number, number]>(
+        `SELECT * FROM entries
+         WHERE superseded_by IS NULL
+           AND (expires_at IS NULL OR expires_at > ?)
+         ORDER BY created_at DESC
+         LIMIT ?`,
+      )
+      .all(now, limit);
+    return rows.map(rowToEntry);
+  }
+
+  async function countByRetentionClass(): Promise<{
+    operational: number;
+    lesson: number;
+    total: number;
+  }> {
+    const rows = db
+      .prepare<{ retention_class: string; n: number }, [number]>(
+        `SELECT retention_class, COUNT(*) AS n
+         FROM entries
+         WHERE superseded_by IS NULL
+           AND (expires_at IS NULL OR expires_at > ?)
+         GROUP BY retention_class`,
+      )
+      .all(Date.now());
+    let operational = 0;
+    let lesson = 0;
+    for (const r of rows) {
+      if (r.retention_class === "operational") operational = r.n;
+      if (r.retention_class === "lesson") lesson = r.n;
+    }
+    return { operational, lesson, total: operational + lesson };
+  }
+
   async function close(): Promise<void> {
     db.close();
   }
@@ -347,6 +400,8 @@ export function createSqliteStore(config: SqliteStoreConfig): MemoryStore {
     forget,
     supersede,
     cleanup,
+    listEntriesByPeer,
+    countByRetentionClass,
     close,
   };
 }

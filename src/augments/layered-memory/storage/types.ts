@@ -71,6 +71,13 @@ export interface MemoryStore {
   forget(peerId: string): Promise<number>;
   supersede(entryId: string, newEntryId: string): Promise<void>;
   cleanup(): Promise<number>;
+  /**
+   * G36 — read-only views for /admin.
+   * `listEntriesByPeer` returns most-recent entries (peer-scoped if peerId provided).
+   * `countByRetentionClass` returns retention-class breakdown across live entries.
+   */
+  listEntriesByPeer(opts?: { peerId?: string; limit?: number }): Promise<StoreEntry[]>;
+  countByRetentionClass(): Promise<{ operational: number; lesson: number; total: number }>;
   close(): Promise<void>;
 }
 
