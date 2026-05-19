@@ -18,7 +18,14 @@ import { defineTool } from "../../helpers";
 import { createAgentMailClient, type AgentMailClient } from "../../agentmail-client";
 import { createConsoleMailClient } from "./console-mail-client";
 import { createVisitorToken, deriveSigningKey } from "../../transports/visitor-token";
-import type { Augment, ContextBlock, ToolExecuteContext, TurnState } from "../../types";
+import type {
+  AdminActionResult,
+  AdminInfoBlock,
+  Augment,
+  ContextBlock,
+  ToolExecuteContext,
+  TurnState,
+} from "../../types";
 import type {
   RecentVisitorMessage,
   RequestAuthResult,
@@ -434,10 +441,84 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
     return !!row?.revoked;
   }
 
+  async function adminInfo(): Promise<AdminInfoBlock> {
+    const visitors = store.listVerifiedVisitors();
+    const isProd = process.env.NODE_ENV === "production";
+    const transport = opts.agentMail.transport ?? "agentmail";
+    const consoleInProd = transport === "console" && isProd;
+    return {
+      augmentName: "visitor-auth",
+      title: "Visitors",
+      sections: [
+        {
+          kind: "keyValue",
+          rows: [
+            { label: "Mail transport", value: transport, source: "yaml" },
+            {
+              label: "Inbox",
+              value:
+                opts.agentMail.transport === "agentmail"
+                  ? (opts.agentMail.inboxId ?? "(unset)")
+                  : "(console mode)",
+            },
+            { label: "Public URL", value: opts.publicUrl },
+            { label: "Agent binding", value: opts.agentBinding ?? "auggy" },
+          ],
+        },
+        {
+          kind: "status",
+          level: consoleInProd ? "warn" : "ok",
+          message: consoleInProd
+            ? "Mail transport is 'console' in production — magic links print to stdout. Switch to 'agentmail' for production deployments."
+            : `Mail transport is '${transport}'.`,
+        },
+        {
+          kind: "table",
+          columns: ["Email", "Verified at", "Revoked"],
+          rows: visitors
+            .slice(0, 50)
+            .map((v) => [v.email, new Date(v.verifiedAt).toISOString(), v.revoked ? "yes" : "no"]),
+          rowActions: [
+            {
+              id: "visitor-revoke",
+              label: "Revoke",
+              confirmRequired: true,
+              rowKeyColumn: 0,
+            },
+          ],
+          caption: `Showing ${Math.min(visitors.length, 50)} of ${visitors.length} verified visitor(s)`,
+        },
+      ],
+    };
+  }
+
+  const adminActions: Record<
+    string,
+    (params: Record<string, unknown>) => Promise<AdminActionResult>
+  > = {
+    "visitor-revoke": async (params) => {
+      const rowKey = typeof params.rowKey === "string" ? params.rowKey : "";
+      if (!rowKey) {
+        return { ok: false, message: "visitor-revoke requires a rowKey (email)" };
+      }
+      const visitorId = store.revokeByEmail(rowKey, "/admin revoke", Date.now());
+      if (!visitorId) {
+        return {
+          ok: false,
+          message: `visitor "${rowKey}" not found or already revoked`,
+        };
+      }
+      store.addRevokedVisitorId(visitorId, rowKey, "/admin revoke", Date.now());
+      return { ok: true, message: `Revoked ${rowKey} (${visitorId})` };
+    },
+  };
+
   const augment: Augment & { isVisitorRevoked: (visitorId: string) => boolean } = {
     name: "visitor-auth",
     capabilities: ["tools", "context"],
     tools: [requestAuthTool],
+    adminInfo,
+    adminActions,
     isVisitorRevoked,
     httpRoutes: [
       // -----------------------------------------------------------------------
