@@ -135,5 +135,8 @@ export async function runDev(
     console.log(`  Health:    http://localhost:${port}/health`);
   }
   console.log(`  Config:    ${configPath}`);
+  console.log(
+    `  Chat:      leave \`auggy chat\` running in another terminal — it picks up new agents automatically`,
+  );
   console.log(`  Press Ctrl-C to stop.`);
 }
