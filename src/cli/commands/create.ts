@@ -14,7 +14,7 @@
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { checkbox, confirm, select, input } from "@inquirer/prompts";
 import { stringify } from "yaml";
 import { AUGMENT_CATALOG, type CatalogEntry } from "../augment-catalog";
@@ -44,6 +44,21 @@ const PROVIDER_DEFAULTS: Record<Provider, { model: string; envVar: string }> = {
  * compatible with the canonical eval suite (see evals/security/eval-context.ts
  * deriveOperatorName fallback).
  */
+/**
+ * Env vars the scaffold computes itself — written to `.env` as concrete
+ * values, never surfaced to the operator as "fill in this placeholder."
+ * The catalog entries that mount these augments still LIST the env vars
+ * in their `envVars` arrays (so the agent.yaml's `${VAR}` interpolation
+ * still resolves at boot), but the scaffold filters them out of the
+ * "operator needs to fill" set since we already populated them.
+ */
+const AUTO_GENERATED_ENV_VARS = new Set([
+  "AUGGY_WEB_TOKEN",
+  "AUGGY_AGENT_ID",
+  "AUGGY_PUBLIC_URL",
+  "VISITOR_SIGNING_KEY",
+]);
+
 const DEFAULT_OPERATOR_NAME = "the operator";
 const DEFAULT_PURPOSE = "a helpful assistant";
 const DEFAULT_ORG_NAME = "Test Org";
@@ -281,12 +296,37 @@ export async function runCreate(name: string, opts: CreateOpts): Promise<void> {
       writeOrgContextExample(dir, { orgName, orgPurpose, operatorName });
     }
 
-    const envVars = collectEnvVars(augments, provider);
-    if (ollamaNeedsBearer) envVars.push("OLLAMA_API_KEY");
-    // Write `.env` directly (gitignored) — no `.env.example` + copy step.
-    // The per-agent dir lives under ~/.auggy/agents/ and is not committed,
-    // so an `.example` reference serves no purpose here.
-    writeFileSync(join(dir, ".env"), buildEnvExample(envVars));
+    // Build .env with both auto-generated values AND empty placeholders for
+    // env vars the operator still needs to fill. Auto-gen drops the "fill 7
+    // env vars before booting" friction operators hit in 0.4.3.
+    //
+    // Auto-generated at scaffold time:
+    //   AUGGY_WEB_TOKEN      → 32 random hex bytes (the agent's bearer)
+    //   VISITOR_SIGNING_KEY  → 32 random hex bytes (HMAC for visitor tokens)
+    //   AUGGY_AGENT_ID       → agent name (anti-replay binding default)
+    //   AUGGY_PUBLIC_URL     → http://localhost:<webTransport.port>
+    //
+    // The rest of the env vars (provider API key when applicable, augment-
+    // specific creds) stay as empty `=` lines for the operator to fill.
+    const placeholderEnvVars = collectEnvVars(augments, provider).filter(
+      (v) => !AUTO_GENERATED_ENV_VARS.has(v),
+    );
+    if (ollamaNeedsBearer) placeholderEnvVars.push("OLLAMA_API_KEY");
+
+    const autoGenLines: string[] = [];
+    if (augments.some((e) => e.type === "webTransport")) {
+      autoGenLines.push(`AUGGY_WEB_TOKEN=${randomBytes(32).toString("hex")}`);
+      autoGenLines.push(`AUGGY_AGENT_ID=${name}`);
+      const webTransportEntry = augments.find((e) => e.type === "webTransport");
+      const port =
+        (webTransportEntry?.defaultOptions as { port?: number } | undefined)?.port ?? 8080;
+      autoGenLines.push(`AUGGY_PUBLIC_URL=http://localhost:${port}`);
+    }
+    if (augments.some((e) => e.type === "visitorAuth")) {
+      autoGenLines.push(`VISITOR_SIGNING_KEY=${randomBytes(32).toString("hex")}`);
+    }
+
+    writeFileSync(join(dir, ".env"), buildEnv(autoGenLines, placeholderEnvVars));
     writeFileSync(join(dir, ".gitignore"), GITIGNORE);
 
     // Per-agent package.json — the engine adapter + auggy + any per-augment
@@ -387,10 +427,12 @@ export async function runCreate(name: string, opts: CreateOpts): Promise<void> {
       `   ${cream(`${step++}.`)}  cd ${dir} && bun install   ${dim("(retry — earlier attempt failed)")}`,
     );
   }
-  // Env-vars step: only render when there's actually a secret to fill.
-  // Ollama-local agents have no env var to set (no API key required), so
-  // emitting "Add your  to ..." with an empty name was confusing.
-  const envVarsForNextSteps = collectEnvVars(augments, provider);
+  // Env-vars step: only render when there's actually a secret left for the
+  // operator to fill. Auto-generated vars (AUGGY_WEB_TOKEN, VISITOR_SIGNING_KEY,
+  // etc.) are written to .env directly by the scaffold and excluded here.
+  const envVarsForNextSteps = collectEnvVars(augments, provider).filter(
+    (v) => !AUTO_GENERATED_ENV_VARS.has(v),
+  );
   if (ollamaNeedsBearer) envVarsForNextSteps.push("OLLAMA_API_KEY");
   if (envVarsForNextSteps.length > 0) {
     console.log(
@@ -537,6 +579,26 @@ function buildEnvExample(vars: string[]): string {
   const lines = ["# Agent secrets — copy to .env and fill in values.", "# .env is gitignored.", ""];
   for (const v of vars) {
     lines.push(`${v}=`);
+  }
+  return `${lines.join("\n")}\n`;
+}
+
+/**
+ * Compose the agent's `.env` from auto-generated lines (concrete values
+ * the scaffold knows) + placeholder env vars (operator still needs to
+ * fill). The auto-gen section lands first so casual readers see
+ * "everything is set" before the empty-equals lines below.
+ */
+function buildEnv(autoGenLines: string[], placeholderVars: string[]): string {
+  const lines = ["# Agent secrets — gitignored.", ""];
+  if (autoGenLines.length > 0) {
+    lines.push("# Auto-generated at scaffold time:");
+    for (const l of autoGenLines) lines.push(l);
+    lines.push("");
+  }
+  if (placeholderVars.length > 0) {
+    lines.push("# Fill these in before booting:");
+    for (const v of placeholderVars) lines.push(`${v}=`);
   }
   return `${lines.join("\n")}\n`;
 }

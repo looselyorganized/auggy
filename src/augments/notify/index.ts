@@ -28,6 +28,7 @@ import { createRingBuffer } from "../../lib/ring-buffer";
 import { createWebhookAdapter } from "./adapters/webhook";
 import { createTelegramAdapter } from "./adapters/telegram";
 import { createAgentMailAdapter } from "./adapters/agentmail";
+import { createLogToFileAdapter } from "./adapters/log-to-file";
 
 export interface NotifyAugmentInternalOptions extends NotifyAugmentOptions {
   /**
@@ -38,6 +39,7 @@ export interface NotifyAugmentInternalOptions extends NotifyAugmentOptions {
     webhook: NotifyAdapter;
     telegram: NotifyAdapter;
     agentmail: NotifyAdapter;
+    "log-to-file": NotifyAdapter;
   }>;
 }
 
@@ -46,6 +48,7 @@ export function notify(opts: NotifyAugmentInternalOptions): Augment {
     webhook: createWebhookAdapter(),
     telegram: createTelegramAdapter(),
     agentmail: createAgentMailAdapter(),
+    "log-to-file": createLogToFileAdapter(),
   };
   const adapters = { ...defaults, ...(opts.adapters ?? {}) };
 
