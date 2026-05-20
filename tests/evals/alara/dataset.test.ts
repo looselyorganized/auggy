@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { generateTasks } from "../../../evals/alara/dataset";
+import { generateTasks } from "@evals/alara/dataset";
 
 describe("generateTasks", () => {
   test("determinism — same seed produces same output", () => {

@@ -1,14 +1,14 @@
 import { writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { randomUUID } from "node:crypto";
-import type { ModelClient, TurnTrigger } from "../../src/types";
+import type { ModelClient, TurnTrigger } from "auggy/internal/types";
 import type {
   EvalDefinition,
   EvalTask,
   EvalTrialResult,
   Scorecard,
 } from "./types";
-import type { TurnTrace } from "../../src/types";
+import type { TurnTrace } from "auggy/internal/types";
 import { buildEvalAgent } from "./agent-factory";
 import { buildScorecard, formatScorecardYaml } from "./scorecard";
 import { aggregateMetrics, printMetricsSummary } from "./metrics";

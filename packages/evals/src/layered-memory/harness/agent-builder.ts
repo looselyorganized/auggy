@@ -9,18 +9,18 @@
  * the recordingBudgetGate shape is proven.
  */
 
-import { defineAgent } from "../../../src/agent";
-import { layeredMemory } from "../../../src/augments/layered-memory";
-import type { ExtractionFrequencyConfig } from "../../../src/augments/layered-memory/extractor/frequency";
-import type { ExtractionEngine } from "../../../src/augments/layered-memory/extractor/inject-handler";
+import { defineAgent } from "auggy/internal/agent";
+import { layeredMemory } from "auggy/internal/augments/layered-memory";
+import type { ExtractionFrequencyConfig } from "auggy/internal/augments/layered-memory/extractor/frequency";
+import type { ExtractionEngine } from "auggy/internal/augments/layered-memory/extractor/inject-handler";
 import type {
   Augment,
   CostResult,
   ModelResponse,
   PeerIdentity,
   TurnGateProvider,
-} from "../../../src/types";
-import { createMockModel, type MockModelClient } from "../../../tests/fixtures/mock-model";
+} from "auggy/internal/types";
+import { createMockModel, type MockModelClient } from "@tests/fixtures/mock-model";
 
 export interface RecordedCommit {
   turnId: string;

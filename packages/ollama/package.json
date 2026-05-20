@@ -1,6 +1,6 @@
 {
   "name": "@auggy/ollama",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Ollama engine adapter for auggy — local LLM runner, no API key required.",
   "keywords": [
     "auggy",

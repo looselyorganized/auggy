@@ -25,7 +25,7 @@ const ALLOWED_GRADER_TYPES = new Set([
 ]);
 
 function loadCorpus(filename: string): Record<string, unknown> {
-  const p = resolve(import.meta.dir, "../../../evals/security", filename);
+  const p = resolve(import.meta.dir, "../../../packages/evals/src/security", filename);
   return parseYaml(readFileSync(p, "utf-8")) as Record<string, unknown>;
 }
 

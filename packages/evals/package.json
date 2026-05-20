@@ -1,0 +1,52 @@
+{
+  "name": "@auggy/evals",
+  "version": "0.4.1",
+  "description": "Eval suites for auggy agents — security (red-team prompts), auto-save (fact extraction fixtures), layered-memory (multi-session recall), plus the harness primitives all three build on.",
+  "keywords": [
+    "auggy",
+    "evals",
+    "security",
+    "red-team",
+    "agent",
+    "testing"
+  ],
+  "license": "Apache-2.0",
+  "author": "LORF (Loosely Organized Research Facility)",
+  "homepage": "https://github.com/looselyorganized/augment-1#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/looselyorganized/augment-1.git",
+    "directory": "packages/evals"
+  },
+  "bugs": {
+    "url": "https://github.com/looselyorganized/augment-1/issues"
+  },
+  "type": "module",
+  "exports": {
+    "./security/run": "./src/security/run.ts",
+    "./auto-save/run": "./src/auto-save/run.ts",
+    "./harness/types": "./src/harness/types.ts",
+    "./harness/scorecard": "./src/harness/scorecard.ts",
+    "./harness/metrics": "./src/harness/metrics.ts",
+    "./security/types": "./src/security/types.ts",
+    "./security/graders": "./src/security/graders/index.ts",
+    "./security/eval-context": "./src/security/eval-context.ts",
+    "./layered-memory/types": "./src/layered-memory/types.ts",
+    "./layered-memory/graders": "./src/layered-memory/graders/index.ts",
+    "./alara/dataset": "./src/alara/dataset.ts",
+    "./alara/graders/exact-tool-match": "./src/alara/graders/exact-tool-match.ts"
+  },
+  "files": [
+    "src",
+    "LICENSE",
+    "README.md"
+  ],
+  "engines": {
+    "bun": ">=1.2.0"
+  },
+  "private": false,
+  "dependencies": {
+    "yaml": "^2.8.3",
+    "zod": "^4.3.6"
+  }
+}

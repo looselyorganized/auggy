@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { exactToolMatch } from "../../../evals/alara/graders/exact-tool-match";
-import type { EvalTask } from "../../../evals/harness/types";
+import { exactToolMatch } from "@evals/alara/graders/exact-tool-match";
+import type { EvalTask } from "@evals/harness/types";
 
 function makeTask(overrides?: Partial<EvalTask>): EvalTask {
   return {

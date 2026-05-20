@@ -21,9 +21,45 @@
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { Command } from "commander";
-import { runEvalSuite, getDefaultFixtureConfigPath } from "../../../evals/security/run";
-import { runAutoSaveEval } from "../../../evals/auto-save/run";
 import { getAgent } from "../agent-index";
+
+// `@auggy/evals` is loaded lazily at command-action time. The package
+// ships eval suites + fixtures (~1MB) separately from auggy core — most
+// users never run `auggy eval`, so paying for the bundle on every CLI
+// boot is wasteful. The lazy import also means a missing-package state
+// (auggy installed without @auggy/evals) surfaces as a clear error
+// instead of a module-load crash that takes down `auggy --version`.
+type SecurityRunModule = typeof import("@auggy/evals/security/run");
+type AutoSaveRunModule = typeof import("@auggy/evals/auto-save/run");
+type EvalsModule = {
+  runEvalSuite: SecurityRunModule["runEvalSuite"];
+  getDefaultFixtureConfigPath: SecurityRunModule["getDefaultFixtureConfigPath"];
+  runAutoSaveEval: AutoSaveRunModule["runAutoSaveEval"];
+};
+
+async function loadEvalsModule(): Promise<EvalsModule> {
+  try {
+    const security = await import("@auggy/evals/security/run");
+    const autoSave = await import("@auggy/evals/auto-save/run");
+    return {
+      runEvalSuite: security.runEvalSuite,
+      getDefaultFixtureConfigPath: security.getDefaultFixtureConfigPath,
+      runAutoSaveEval: autoSave.runAutoSaveEval,
+    };
+  } catch (err) {
+    throw new Error(
+      `auggy eval requires the @auggy/evals package, which isn't installed.\n\n` +
+        `  Install it:    npm i -g @auggy/evals\n` +
+        `  Or per-agent:  cd <agent-dir> && bun add @auggy/evals\n\n` +
+        `Original error: ${(err as Error).message}`,
+    );
+  }
+}
+
+// Type aliases re-exported by name so the rest of the file reads cleanly.
+type RunEvalSuite = EvalsModule["runEvalSuite"];
+type RunAutoSaveEval = EvalsModule["runAutoSaveEval"];
+type GetDefaultFixtureConfigPath = EvalsModule["getDefaultFixtureConfigPath"];
 
 /** Known suite names that route to specialized runners (not the security runner). */
 const NAMED_SUITES = ["auto-save"] as const;
@@ -32,7 +68,7 @@ type NamedSuite = (typeof NAMED_SUITES)[number];
 interface ResolveEvalConfigOptions {
   /** Override `~/.auggy/` for tests. */
   auggyDir?: string;
-  /** Inject a fixture-path resolver for tests. Defaults to the runner's resolver. */
+  /** Inject a fixture-path resolver for tests. REQUIRED when no agent name + no --config (because the production resolver lives in @auggy/evals and is loaded lazily — pass through the resolver from the loaded module). */
   defaultFixtureConfigPath?: () => string;
 }
 
@@ -73,15 +109,22 @@ export function resolveEvalConfigPath(
     return cfg;
   }
 
-  const fixtureResolver = opts.defaultFixtureConfigPath ?? getDefaultFixtureConfigPath;
-  return fixtureResolver();
+  if (!opts.defaultFixtureConfigPath) {
+    throw new Error(
+      "resolveEvalConfigPath: no agent name, no --config, and no defaultFixtureConfigPath. " +
+        "When @auggy/evals is loaded, pass its `getDefaultFixtureConfigPath` here.",
+    );
+  }
+  return opts.defaultFixtureConfigPath();
 }
 
 export interface EvalCommandDeps {
   /** Inject for tests so we don't make real API calls. */
-  runEvalSuite?: typeof runEvalSuite;
+  runEvalSuite?: RunEvalSuite;
   /** Inject auto-save runner for tests. */
-  runAutoSaveEval?: typeof runAutoSaveEval;
+  runAutoSaveEval?: RunAutoSaveEval;
+  /** Inject the fixture-path resolver for tests. Optional — without it, the production resolver is loaded from @auggy/evals at action time. */
+  getDefaultFixtureConfigPath?: GetDefaultFixtureConfigPath;
   /** Override exit so tests can assert the exit code without crashing the runner. */
   exit?: (code: number) => void;
   /** Override `~/.auggy/` for tests. */
@@ -89,8 +132,6 @@ export interface EvalCommandDeps {
 }
 
 export function evalCommand(deps: EvalCommandDeps = {}): Command {
-  const runner = deps.runEvalSuite ?? runEvalSuite;
-  const autoSaveRunner = deps.runAutoSaveEval ?? runAutoSaveEval;
   const exit = deps.exit ?? ((code: number) => process.exit(code));
 
   return new Command("eval")
@@ -115,6 +156,31 @@ export function evalCommand(deps: EvalCommandDeps = {}): Command {
         suiteOrAgent: string | undefined,
         opts: { config?: string; suite: string; trials?: string; dryRun?: boolean },
       ) => {
+        // Lazy-load @auggy/evals exactly once at action time. Test deps are
+        // honored when provided; otherwise the runner + auto-save + fixture
+        // resolver come from the package. Missing-package surfaces with a
+        // clear install hint instead of a module-load crash.
+        let runner: RunEvalSuite;
+        let autoSaveRunner: RunAutoSaveEval;
+        let fixtureResolver: GetDefaultFixtureConfigPath;
+        if (deps.runEvalSuite && deps.runAutoSaveEval && deps.getDefaultFixtureConfigPath) {
+          runner = deps.runEvalSuite;
+          autoSaveRunner = deps.runAutoSaveEval;
+          fixtureResolver = deps.getDefaultFixtureConfigPath;
+        } else {
+          let evals: EvalsModule;
+          try {
+            evals = await loadEvalsModule();
+          } catch (err) {
+            console.error((err as Error).message);
+            exit(1);
+            return;
+          }
+          runner = deps.runEvalSuite ?? evals.runEvalSuite;
+          autoSaveRunner = deps.runAutoSaveEval ?? evals.runAutoSaveEval;
+          fixtureResolver = deps.getDefaultFixtureConfigPath ?? evals.getDefaultFixtureConfigPath;
+        }
+
         // Route named suites to their own runners.
         if (suiteOrAgent != null && NAMED_SUITES.includes(suiteOrAgent as NamedSuite)) {
           const suiteName = suiteOrAgent as NamedSuite;
@@ -137,7 +203,7 @@ export function evalCommand(deps: EvalCommandDeps = {}): Command {
         try {
           configPath = resolveEvalConfigPath(
             { agentName, explicitConfig: opts.config },
-            { auggyDir: deps.auggyDir },
+            { auggyDir: deps.auggyDir, defaultFixtureConfigPath: fixtureResolver },
           );
         } catch (err) {
           console.error(`Error: ${(err as Error).message}`);

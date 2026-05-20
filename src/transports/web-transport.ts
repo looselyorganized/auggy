@@ -406,7 +406,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
   // opts.publicFrontendUrl after URL validation succeeds — using it on the
   // request hot path means a malformed URL is rejected once at boot, never
   // smuggled into a Location header.
-  let validatedPublicFrontendUrl: string | undefined = undefined;
+  let validatedPublicFrontendUrl: string | undefined;
   let infoPageHtml: string | null = null;
   let infoPageByteLength = 0;
 

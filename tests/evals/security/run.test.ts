@@ -172,7 +172,7 @@ describe("perCategory", () => {
 // ---------------------------------------------------------------------------
 
 describe("writeJsonl", () => {
-  const resultsDir = resolve(import.meta.dir, "../../../evals/security/results");
+  const resultsDir = resolve(import.meta.dir, "../../../packages/evals/src/security/results");
   let written: string[] = [];
 
   afterEach(() => {

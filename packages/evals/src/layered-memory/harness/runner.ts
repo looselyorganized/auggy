@@ -20,8 +20,8 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ModelResponse, PeerIdentity, TurnTrigger } from "../../../src/types";
-import type { ExtractionFrequencyConfig } from "../../../src/augments/layered-memory/extractor/frequency";
+import type { ModelResponse, PeerIdentity, TurnTrigger } from "auggy/internal/types";
+import type { ExtractionFrequencyConfig } from "auggy/internal/augments/layered-memory/extractor/frequency";
 import type {
   ExtractionTurnEvidence,
   Fixture,

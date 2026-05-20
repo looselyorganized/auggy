@@ -129,7 +129,7 @@ jobs:
         if: steps.version-check.outputs.changed == 'true'
         run: |
           ROOT_VERSION="$(node -p "require('./package.json').version")"
-          for pkg_dir in packages/anthropic packages/openai packages/openrouter packages/ollama; do
+          for pkg_dir in packages/anthropic packages/openai packages/openrouter packages/ollama packages/evals; do
             PKG_VERSION="$(node -p "require('./$pkg_dir/package.json').version")"
             PKG_NAME="$(node -p "require('./$pkg_dir/package.json').name")"
             if [ "$PKG_VERSION" != "$ROOT_VERSION" ]; then
@@ -143,3 +143,36 @@ jobs:
             echo "  $PKG_NAME @ $PKG_VERSION OK"
             (cd "$pkg_dir" && npm pack --dry-run >/dev/null)
           done
+
+      # Install-tarball-and-boot gate (added v0.4.1 after the v0.4.0
+      # post-mortem). The previous gates validate WHAT we ship (version
+      # match, tarball structure). This gate validates the shipped
+      # tarball ACTUALLY BOOTS — installs auggy + engine packages into
+      # an isolated prefix and runs `auggy --version`. Catches the
+      # "import path resolves locally but breaks in the published
+      # tarball" class of bug. Engine packages get their own pack +
+      # install too so any path drift in scoped packages surfaces.
+      - name: Install + boot tarball in isolated prefix
+        if: steps.version-check.outputs.changed == 'true'
+        run: |
+          ROOT_VERSION="$(node -p "require('./package.json').version")"
+          SMOKE_DIR="$RUNNER_TEMP/tarball-boot-smoke"
+          mkdir -p "$SMOKE_DIR/prefix"
+
+          # Pack core + engines into local tarballs.
+          npm pack --pack-destination "$SMOKE_DIR"
+          for pkg_dir in packages/anthropic packages/openai packages/openrouter packages/ollama packages/evals; do
+            (cd "$pkg_dir" && npm pack --pack-destination "$SMOKE_DIR")
+          done
+
+          # Install core globally to the isolated prefix.
+          cd "$SMOKE_DIR"
+          ls -la
+          npm i -g --prefix ./prefix "./auggy-$ROOT_VERSION.tgz"
+
+          # Boot it. Bun must be on PATH (already is in this job).
+          ./prefix/bin/auggy --version
+          ./prefix/bin/auggy --help >/dev/null
+
+          # Cleanup so subsequent steps see a clean RUNNER_TEMP.
+          rm -rf "$SMOKE_DIR"

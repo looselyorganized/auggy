@@ -6,7 +6,7 @@
  * `graders/index.ts` and document in the README grader table.
  */
 
-import type { TurnResult, TaskState } from "../../src/types";
+import type { TurnResult, TaskState } from "auggy";
 
 // ---------------------------------------------------------------------------
 // Suite YAML shape

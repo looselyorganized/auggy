@@ -645,7 +645,17 @@ describe("buildEvalContext", () => {
 
   test("works against the real evals/security/defaults/ + fixtures/identity.md", () => {
     // Use the actual repo paths to verify the module reads what's checked in.
-    const defaultsDir = join(import.meta.dir, "..", "..", "..", "evals", "security", "defaults");
+    const defaultsDir = join(
+      import.meta.dir,
+      "..",
+      "..",
+      "..",
+      "packages",
+      "evals",
+      "src",
+      "security",
+      "defaults",
+    );
     expect(existsSync(defaultsDir)).toBe(true);
 
     const fixtureAgentDir = join(
@@ -653,7 +663,9 @@ describe("buildEvalContext", () => {
       "..",
       "..",
       "..",
+      "packages",
       "evals",
+      "src",
       "security",
       "fixtures",
     );

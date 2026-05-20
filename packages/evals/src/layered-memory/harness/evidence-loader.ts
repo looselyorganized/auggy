@@ -8,11 +8,11 @@
  * we're not racing with the agent.
  */
 
-import { createSqliteStore } from "../../../src/augments/layered-memory/storage/sqlite-store";
+import { createSqliteStore } from "auggy/internal/augments/layered-memory/storage/sqlite-store";
 import type {
   MemoryStore,
   StoreEntry,
-} from "../../../src/augments/layered-memory/storage/types";
+} from "auggy/internal/augments/layered-memory/storage/types";
 
 export interface InspectedEntries {
   /** All entries in the store, grouped by peerId (entries with null peerId go under the empty-string key). */

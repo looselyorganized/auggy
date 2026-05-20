@@ -13,11 +13,11 @@
 import { resolve, dirname } from "node:path";
 import { randomUUID } from "node:crypto";
 import { writeFileSync, mkdirSync, existsSync } from "node:fs";
-import { parseConfig } from "../../src/cli/config-parser";
-import { resolveEngine } from "../../src/cli/engine-resolver";
-import { resolveAugments } from "../../src/cli/augment-resolver";
-import { defineAgent } from "../../src/agent";
-import type { AgentConfig, AgentHandle, TurnTrigger, TurnTrace } from "../../src/types";
+import { parseConfig } from "auggy/internal/cli/config-parser";
+import { resolveEngine } from "auggy/internal/cli/engine-resolver";
+import { resolveAugments } from "auggy/internal/cli/augment-resolver";
+import { defineAgent } from "auggy";
+import type { AgentConfig, AgentHandle, TurnTrigger, TurnTrace } from "auggy";
 import type { EvalTrialResult } from "../harness/types";
 import { exactToolMatch } from "../alara/graders/exact-tool-match";
 import { generateModularityTasks } from "./tasks";

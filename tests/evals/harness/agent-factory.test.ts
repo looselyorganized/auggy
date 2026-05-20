@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { buildEvalAgent } from "../../../evals/harness/agent-factory";
+import { buildEvalAgent } from "@evals/harness/agent-factory";
 import { createMockModel } from "../../fixtures/mock-model";
-import type { ToolSpec } from "../../../evals/harness/types";
+import type { ToolSpec } from "@evals/harness/types";
 import type { TurnTrigger } from "../../../src/types";
 
 const SPECS: ToolSpec[] = [
