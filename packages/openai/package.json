@@ -1,6 +1,6 @@
 {
   "name": "@auggy/openai",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "OpenAI engine adapter for auggy — implements ModelClient against the openai SDK.",
   "keywords": [
     "auggy",
