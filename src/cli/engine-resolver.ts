@@ -134,7 +134,11 @@ export async function resolveEngine(
         options: config.options,
         // costOverride: NOT supported (free local runtime; no pricing apparatus).
         // reasoningEffort: NOT a concept in Ollama models.
-        // No apiKey — Ollama doesn't authenticate by default.
+        // apiKey is read from OLLAMA_API_KEY env var when present. Local
+        // Ollama (default localhost:11434) doesn't authenticate; remote
+        // Ollama (Ollama Cloud, self-hosted with auth) does. Leaving the
+        // env var unset is the local case; setting it enables bearer auth.
+        ...(process.env.OLLAMA_API_KEY ? { apiKey: process.env.OLLAMA_API_KEY } : {}),
       };
       return mod.createOllamaEngine(opts);
     }

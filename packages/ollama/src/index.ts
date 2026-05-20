@@ -67,11 +67,18 @@ export interface OllamaEngineOptions {
    *  field of the chat request. `num_predict` is set from `maxTokens`
    *  above; other fields here override it if both are specified. */
   options?: Partial<OllamaOptions>;
+  /** Optional bearer token. When set, forwarded as
+   *  `Authorization: Bearer <apiKey>` on every request. Required for
+   *  Ollama Cloud (ollama.com hosted) and self-hosted Ollama behind
+   *  bearer-gated proxies. Local Ollama (default `localhost:11434`)
+   *  does not authenticate; leave unset for that case. */
+  apiKey?: string;
 }
 
 export function createOllamaEngine(opts: OllamaEngineOptions): ModelClient {
   const client = new Ollama({
     host: opts.baseURL ?? "http://localhost:11434",
+    ...(opts.apiKey ? { headers: { Authorization: `Bearer ${opts.apiKey}` } } : {}),
   });
 
   const maxContextTokens = opts.maxContextTokens ?? 8_192;

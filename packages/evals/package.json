@@ -1,6 +1,6 @@
 {
   "name": "@auggy/evals",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "description": "Eval suites for auggy agents — security (red-team prompts), auto-save (fact extraction fixtures), layered-memory (multi-session recall), plus the harness primitives all three build on.",
   "keywords": [
     "auggy",
