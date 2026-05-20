@@ -52,6 +52,8 @@ describe("runLs", () => {
     await runLs({ auggyDir });
     const output = logged.join("\n");
     expect(output).toContain("zip");
-    expect(output).toMatch(/missing-dir/i);
+    // Was "missing-dir" pre lifecycle hardening (2026-05-20); renamed to
+    // "ghost" to match the orphan/ghost/ok vocabulary surfaced by `--all`.
+    expect(output).toMatch(/ghost/i);
   });
 });

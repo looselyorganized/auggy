@@ -6,7 +6,7 @@
  */
 
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { confirm } from "@inquirer/prompts";
 import { clearCloud, getAgent, removeAgent } from "../agent-index";
@@ -28,6 +28,13 @@ function readConfigName(localDir: string): string | null {
 interface RemoveOptions {
   /** Skip the y/N prompt. */
   yes?: boolean;
+  /**
+   * Remove agent dirs not in the index (orphans). Without this, missing
+   * index entry → "not registered" error and the orphan stays on disk.
+   * With it, falls back to `~/.auggy/agents/<name>` and deletes whatever
+   * is there after the same agent.yaml sanity check.
+   */
+  force?: boolean;
   /** When set with a cloud-deployed agent, also destroy the Railway service. */
   cloud?: boolean;
   /** Override `~/.auggy/` for tests. */
@@ -38,9 +45,44 @@ interface RemoveOptions {
 
 export async function runRemove(name: string, opts: RemoveOptions = {}): Promise<void> {
   const entry = getAgent(name, { auggyDir: opts.auggyDir });
+
+  // --force path: handle the orphan-dir case (lifecycle F4 fix). When the
+  // index doesn't list the name but a dir exists at the conventional path,
+  // delete the dir directly. Skips the running-process check (an orphan
+  // dir can't be running — no PID manifest points at it).
   if (!entry) {
+    if (opts.force) {
+      const auggyRoot = opts.auggyDir ?? join(homedir(), ".auggy");
+      const orphanDir = join(auggyRoot, "agents", name);
+      if (!existsSync(orphanDir)) {
+        throw new Error(
+          `Nothing to remove: "${name}" is not in the index and no dir at ${orphanDir}.`,
+        );
+      }
+      // Sanity-check the orphan looks like an agent dir before recursive-delete.
+      const yamlPath = join(orphanDir, "agent.yaml");
+      if (!existsSync(yamlPath)) {
+        throw new Error(
+          `Refusing to delete "${orphanDir}" — it does not contain agent.yaml.\n\n` +
+            `  This may not be an auggy agent dir. Clean up manually if intentional.`,
+        );
+      }
+      if (!opts.yes) {
+        const ok = await confirm({
+          message: `Orphan dir found at ${orphanDir}. Delete?`,
+          default: false,
+        });
+        if (!ok) {
+          console.log("Aborted.");
+          return;
+        }
+      }
+      rmSync(orphanDir, { recursive: true, force: true });
+      console.log(`Removed orphan dir at ${orphanDir}.`);
+      return;
+    }
     throw new Error(
-      `Agent "${name}" is not registered.\n\n  Run \`auggy ls\` to see registered agents.`,
+      `Agent "${name}" is not registered.\n\n  Run \`auggy ls\` to see registered agents.\n  Run \`auggy remove ${name} --force\` if an orphan dir exists at ~/.auggy/agents/${name}/.`,
     );
   }
 

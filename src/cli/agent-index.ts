@@ -191,9 +191,22 @@ export function readIndex(opts: IndexOptions = {}): IndexFile {
     const ts = new Date().toISOString().replace(/[:.]/g, "-");
     const backupPath = join(getAuggyDir(opts), `agents.json.corrupt-${ts}`);
     renameSync(path, backupPath);
-    console.warn(
-      `[agent-index] corrupt agents.json detected; backed up to ${backupPath}. Recreating empty index.`,
-    );
+    // Prominent multi-line warning instead of a single-line console.warn that
+    // scrolls past in a busy terminal. Operators losing their entire index
+    // need to know (a) it happened, (b) where the backup is, (c) what to
+    // do next. Lifecycle hardening F7 (2026-05-20).
+    console.warn("");
+    console.warn("⚠  ──────────────────────────────────────────────────────────────");
+    console.warn("⚠  agents.json was corrupt and could not be parsed as JSON.");
+    console.warn("⚠");
+    console.warn(`⚠  Backed up to:  ${backupPath}`);
+    console.warn("⚠  A fresh empty index is being created in its place.");
+    console.warn("⚠");
+    console.warn("⚠  Your agent dirs under ~/.auggy/agents/ are NOT affected.");
+    console.warn("⚠  Run `auggy ls --all` to see what's still on disk, then");
+    console.warn("⚠  `auggy reconcile` to rebuild the index from those dirs.");
+    console.warn("⚠  ──────────────────────────────────────────────────────────────");
+    console.warn("");
     return emptyIndex();
   }
 

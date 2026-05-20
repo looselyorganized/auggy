@@ -32,6 +32,7 @@ import { chatCommand } from "./commands/chat";
 import { evalCommand } from "./commands/eval";
 import { runRemove } from "./commands/remove";
 import { runLs } from "./commands/ls";
+import { runReconcile } from "./commands/reconcile";
 
 const program = new Command();
 
@@ -138,9 +139,10 @@ program
   )
   .option("--yes", "skip the confirmation prompt")
   .option("--cloud", "also destroy the agent's Railway service (when cloud-deployed)")
-  .action(async (name: string, opts: { yes?: boolean; cloud?: boolean }) => {
+  .option("--force", "remove orphan dirs not in the index (cleans up after aborted creates)")
+  .action(async (name: string, opts: { yes?: boolean; cloud?: boolean; force?: boolean }) => {
     try {
-      await runRemove(name, { yes: opts.yes, cloud: opts.cloud });
+      await runRemove(name, { yes: opts.yes, cloud: opts.cloud, force: opts.force });
     } catch (err) {
       console.error(`Error: ${(err as Error).message}`);
       process.exit(1);
@@ -150,9 +152,29 @@ program
 program
   .command("ls")
   .description("List registered agents with their status")
-  .action(async () => {
+  .option(
+    "--all",
+    "include orphan dirs (under ~/.auggy/agents/ but not in the index — e.g. aborted scaffolds)",
+  )
+  .action(async (opts: { all?: boolean }) => {
     try {
-      await runLs();
+      await runLs({ all: opts.all });
+    } catch (err) {
+      console.error(`Error: ${(err as Error).message}`);
+      process.exit(1);
+    }
+  });
+
+program
+  .command("reconcile")
+  .description(
+    "Clean orphan dirs + ghost index entries + scaffold-staging tmp dirs (~/.auggy hygiene)",
+  )
+  .option("--yes", "skip the confirmation prompt; clean everything found")
+  .option("--dry-run", "list mismatches without changing anything")
+  .action(async (opts: { yes?: boolean; dryRun?: boolean }) => {
+    try {
+      await runReconcile({ yes: opts.yes, dryRun: opts.dryRun });
     } catch (err) {
       console.error(`Error: ${(err as Error).message}`);
       process.exit(1);

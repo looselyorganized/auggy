@@ -11,7 +11,7 @@
  *   - target dir already exists on disk
  */
 
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
@@ -118,11 +118,40 @@ export async function runCreate(name: string, opts: CreateOpts): Promise<void> {
   }
 
   // Resolve target directory.
-  const dir = opts.dir ? resolve(opts.dir) : join(homedir(), ".auggy", "agents", name);
+  const finalDir = opts.dir ? resolve(opts.dir) : join(homedir(), ".auggy", "agents", name);
 
-  if (existsSync(dir)) {
-    throw new Error(`Directory already exists: ${dir}`);
+  // Orphan-detection guard (lifecycle F3 fix): when the final dir exists but
+  // is NOT in the index, that's a leftover from a prior aborted scaffold or
+  // an externally-created directory. Today we'd just error "Directory already
+  // exists" with no way forward; instead, prompt to delete + recreate so
+  // operators have an in-CLI recovery path.
+  if (existsSync(finalDir)) {
+    const deleteAndContinue = await confirm({
+      message: `Found orphan dir at ${finalDir} (not in agents.json).\n  Delete and start fresh?`,
+      default: true,
+    });
+    if (!deleteAndContinue) {
+      throw new Error(
+        `Directory already exists: ${finalDir}\n\n` +
+          `  Keep it: pick a different agent name.\n` +
+          `  Remove it: \`auggy remove ${name} --force\`.`,
+      );
+    }
+    rmSync(finalDir, { recursive: true, force: true });
   }
+
+  // Transactional scaffold (lifecycle F1 fix): write everything to a tempdir
+  // sibling, then atomic-rename to `finalDir` at the end. Process kill mid-
+  // scaffold leaves a `.tmp-<uuid>` orphan that's distinguishable and
+  // garbage-collectable (auggy reconcile handles cleanup). The window
+  // between the rename and the index write is one syscall + a few lines —
+  // any death there leaves an orphan finalDir that the F3 guard above
+  // recovers on the next `auggy create`.
+  const tempDir = `${finalDir}.tmp-${randomUUID()}`;
+  // For test isolation, the local `dir` variable refers to the tempdir
+  // during scaffold and the finalDir after rename. Downstream code (printout,
+  // next-steps) uses `finalDir`.
+  const dir = tempDir;
 
   printWelcome();
 
@@ -356,14 +385,17 @@ export async function runCreate(name: string, opts: CreateOpts): Promise<void> {
   }
 
   // SIGINT handler scoped to the post-scaffold/pre-index window.
-  // Without this, Ctrl+C between scaffold completion and addAgent leaves
-  // an orphan dir with no index entry — neither create nor remove can recover.
+  // After atomic rename, both tempDir and finalDir may exist — clean both
+  // best-effort. SIGTERM also covered (lifecycle F2 fix): operators closing
+  // a terminal session send SIGHUP/SIGTERM, not SIGINT.
   const sigintHandler = (): void => {
-    if (existsSync(dir)) {
-      try {
-        rmSync(dir, { recursive: true, force: true });
-      } catch {
-        // best-effort
+    for (const p of [tempDir, finalDir]) {
+      if (existsSync(p)) {
+        try {
+          rmSync(p, { recursive: true, force: true });
+        } catch {
+          // best-effort
+        }
       }
     }
     console.log();
@@ -371,20 +403,45 @@ export async function runCreate(name: string, opts: CreateOpts): Promise<void> {
     process.exit(130); // 128 + SIGINT(2)
   };
   process.once("SIGINT", sigintHandler);
+  process.once("SIGTERM", sigintHandler);
+  process.once("SIGHUP", sigintHandler);
 
-  // Register in the index. If this fails, clean up the scaffolded dir.
+  // Atomic rename: tempDir → finalDir. Single syscall. After this point the
+  // scaffold lives at its operator-visible path. If anything fails between
+  // here and the addAgent below, the orphan is at finalDir — recovered on
+  // the next `auggy create` via the F3 guard above OR via `auggy remove --force`.
   try {
-    addAgent(name, dir, { auggyDir: opts.auggyDir });
+    renameSync(tempDir, finalDir);
   } catch (err) {
     process.removeListener("SIGINT", sigintHandler);
+    process.removeListener("SIGTERM", sigintHandler);
+    process.removeListener("SIGHUP", sigintHandler);
     try {
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(tempDir, { recursive: true, force: true });
+    } catch {
+      // best-effort
+    }
+    throw new Error(`Failed to install scaffolded agent at ${finalDir}: ${(err as Error).message}`);
+  }
+
+  // Register in the index. If this fails, clean up the finalDir (it's now
+  // an orphan that the F3 guard can recover, but cleaning eagerly is friendlier).
+  try {
+    addAgent(name, finalDir, { auggyDir: opts.auggyDir });
+  } catch (err) {
+    process.removeListener("SIGINT", sigintHandler);
+    process.removeListener("SIGTERM", sigintHandler);
+    process.removeListener("SIGHUP", sigintHandler);
+    try {
+      rmSync(finalDir, { recursive: true, force: true });
     } catch {
       // best-effort
     }
     throw err;
   }
   process.removeListener("SIGINT", sigintHandler);
+  process.removeListener("SIGTERM", sigintHandler);
+  process.removeListener("SIGHUP", sigintHandler);
 
   // bun install — populates <dir>/node_modules so `auggy dev` can resolve
   // the engine + augment packages. Skipped under --skip-install; the
@@ -399,13 +456,13 @@ export async function runCreate(name: string, opts: CreateOpts): Promise<void> {
     console.log();
     console.log(dim(" Installing dependencies..."));
     console.log();
-    const result = await runBunInstall(dir, opts.bunInstallSpawn);
+    const result = await runBunInstall(finalDir, opts.bunInstallSpawn);
     installOk = result.ok;
     if (!installOk) {
       console.log();
-      console.log(`⚠ bun install failed in ${dir} (exit ${result.code}).`);
+      console.log(`⚠ bun install failed in ${finalDir} (exit ${result.code}).`);
       console.log(`  Scaffolding is on disk and registered in the index.`);
-      console.log(`  Retry:  cd ${dir} && bun install`);
+      console.log(`  Retry:  cd ${finalDir} && bun install`);
       console.log(`  Then:   auggy dev ${name}`);
       console.log();
     }
@@ -415,16 +472,16 @@ export async function runCreate(name: string, opts: CreateOpts): Promise<void> {
   console.log(dim(" ─────────────────────────────────────────────"));
   console.log();
   console.log(` ${green("✓")} ${bold(cream(`Agent "${name}" created`))}`);
-  console.log(`   ${dim(dir)}`);
+  console.log(`   ${dim(finalDir)}`);
   console.log();
   console.log(` ${bold("Next steps:")}`);
   console.log();
   let step = 1;
   if (opts.skipInstall) {
-    console.log(`   ${cream(`${step++}.`)}  cd ${dir} && bun install`);
+    console.log(`   ${cream(`${step++}.`)}  cd ${finalDir} && bun install`);
   } else if (!installOk) {
     console.log(
-      `   ${cream(`${step++}.`)}  cd ${dir} && bun install   ${dim("(retry — earlier attempt failed)")}`,
+      `   ${cream(`${step++}.`)}  cd ${finalDir} && bun install   ${dim("(retry — earlier attempt failed)")}`,
     );
   }
   // Env-vars step: only render when there's actually a secret left for the
@@ -573,14 +630,6 @@ function collectEnvVars(augments: CatalogEntry[], provider: Provider): string[] 
     }
   }
   return [...vars];
-}
-
-function buildEnvExample(vars: string[]): string {
-  const lines = ["# Agent secrets — copy to .env and fill in values.", "# .env is gitignored.", ""];
-  for (const v of vars) {
-    lines.push(`${v}=`);
-  }
-  return `${lines.join("\n")}\n`;
 }
 
 /**
