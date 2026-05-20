@@ -65,3 +65,4 @@ docs/**/
 evals/security/fixtures/memory.sqlite
 evals/security/fixtures/memory.sqlite-shm
 evals/security/fixtures/memory.sqlite-wal
+package-lock.json
