@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-05-20
+
+### Added
+
+- **`auggy create` prompts for local-or-remote Ollama** when the operator picks `ollama` as the engine provider. Local (default) wires `http://localhost:11434` with no auth. Remote prompts for a URL, then asks whether the remote requires a bearer token (Ollama Cloud + gated proxies do). When bearer is required, the scaffold drops `OLLAMA_API_KEY=` into `.env.example`.
+- **`@auggy/ollama` engine adapter accepts `apiKey?: string`.** When set, forwarded as `Authorization: Bearer <apiKey>` on every Ollama request. Required for Ollama Cloud (ollama.com hosted) and self-hosted Ollama behind bearer-gated proxies. Local Ollama still works with no auth.
+- **`engine-resolver` reads `OLLAMA_API_KEY` from env** when present and passes it to the engine adapter. Matches the env-driven pattern of the other providers.
+
 ## [0.4.2] - 2026-05-20
 
 ### Fixed

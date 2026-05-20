@@ -123,6 +123,40 @@ export async function runCreate(name: string, opts: CreateOpts): Promise<void> {
     default: "anthropic",
   });
 
+  // Ollama-specific: ask whether it runs locally or against a remote host.
+  // Local: default to http://localhost:11434, no auth.
+  // Remote: prompt URL + optional bearer-token env var (Ollama Cloud / gated
+  // self-hosted proxies use Authorization: Bearer).
+  let ollamaBaseURL: string | undefined;
+  let ollamaNeedsBearer = false;
+  if (provider === "ollama") {
+    const ollamaMode = await select<"local" | "remote">({
+      message: "Where does Ollama run?",
+      choices: [
+        { name: "Local (http://localhost:11434, no auth)", value: "local" },
+        {
+          name: "Remote / Cloud (custom URL, optional bearer)",
+          value: "remote",
+        },
+      ],
+      default: "local",
+    });
+    if (ollamaMode === "remote") {
+      ollamaBaseURL = await input({
+        message: "Ollama URL (e.g. https://ollama.example.com):",
+      });
+      if (!ollamaBaseURL || !/^https?:\/\//.test(ollamaBaseURL)) {
+        throw new Error(
+          `Invalid Ollama URL: ${JSON.stringify(ollamaBaseURL)}. Must start with http:// or https://`,
+        );
+      }
+      ollamaNeedsBearer = await confirm({
+        message: "Does the remote Ollama require a bearer token? (Ollama Cloud + gated proxies do)",
+        default: true,
+      });
+    }
+  }
+
   // Model selection: dropdown of priced models + Custom escape hatch.
   const CUSTOM_SENTINEL = "__custom__";
   const choices = getModelChoices(provider);
@@ -221,6 +255,7 @@ export async function runCreate(name: string, opts: CreateOpts): Promise<void> {
       model,
       operatorName,
       purpose,
+      ollamaBaseURL,
     });
     writeFileSync(join(dir, "agent.yaml"), config);
 
@@ -247,6 +282,7 @@ export async function runCreate(name: string, opts: CreateOpts): Promise<void> {
     }
 
     const envVars = collectEnvVars(augments, provider);
+    if (ollamaNeedsBearer) envVars.push("OLLAMA_API_KEY");
     writeFileSync(join(dir, ".env.example"), buildEnvExample(envVars));
     writeFileSync(join(dir, ".gitignore"), GITIGNORE);
 
@@ -413,8 +449,27 @@ function buildAgentYaml(
   id: string,
   name: string,
   augments: CatalogEntry[],
-  engine: { provider: Provider; model: string; operatorName: string; purpose: string },
+  engine: {
+    provider: Provider;
+    model: string;
+    operatorName: string;
+    purpose: string;
+    ollamaBaseURL?: string;
+  },
 ): string {
+  const engineBlock: Record<string, unknown> = {
+    provider: engine.provider,
+    model: engine.model,
+    maxContextTokens: 200000,
+    maxTokens: 4096,
+  };
+  // Remote Ollama: pin the baseURL so the engine resolver points at the
+  // operator-supplied host instead of localhost. Local Ollama leaves
+  // baseURL unset → engine adapter uses its built-in default.
+  if (engine.provider === "ollama" && engine.ollamaBaseURL) {
+    engineBlock.baseURL = engine.ollamaBaseURL;
+  }
+
   const config: Record<string, unknown> = {
     id,
     name,
@@ -424,12 +479,7 @@ function buildAgentYaml(
     // time (per α-5). Operators wanting non-default options should drop the
     // shorthand and add an explicit fileMemory augment instead.
     identity: "./identity.md",
-    engine: {
-      provider: engine.provider,
-      model: engine.model,
-      maxContextTokens: 200000,
-      maxTokens: 4096,
-    },
+    engine: engineBlock,
     settings: {
       compactionStrategy: "truncate",
       maxInferenceLoops: 10,
