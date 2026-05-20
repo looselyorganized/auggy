@@ -60,7 +60,7 @@ function setupMockAgent(bearer: string) {
 }
 
 async function bootGui() {
-  const s = createGuiServer({ port: 0, auggyDir: tempAuggyDir });
+  const s = await createGuiServer({ port: 0, auggyDir: tempAuggyDir });
   server = { stop: () => s.stop(), port: s.port };
   return s.port;
 }
