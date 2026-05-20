@@ -169,7 +169,7 @@ describe("runCreate scaffolding integration", () => {
     expect(existsSync(join(dir, "identity.md"))).toBe(true);
     expect(existsSync(join(dir, "skills"))).toBe(true);
     expect(existsSync(join(dir, "workspace"))).toBe(true);
-    expect(existsSync(join(dir, ".env.example"))).toBe(true);
+    expect(existsSync(join(dir, ".env"))).toBe(true);
     expect(existsSync(join(dir, ".gitignore"))).toBe(true);
     expect(existsSync(join(dir, "package.json"))).toBe(true);
   });

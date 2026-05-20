@@ -283,7 +283,10 @@ export async function runCreate(name: string, opts: CreateOpts): Promise<void> {
 
     const envVars = collectEnvVars(augments, provider);
     if (ollamaNeedsBearer) envVars.push("OLLAMA_API_KEY");
-    writeFileSync(join(dir, ".env.example"), buildEnvExample(envVars));
+    // Write `.env` directly (gitignored) — no `.env.example` + copy step.
+    // The per-agent dir lives under ~/.auggy/agents/ and is not committed,
+    // so an `.example` reference serves no purpose here.
+    writeFileSync(join(dir, ".env"), buildEnvExample(envVars));
     writeFileSync(join(dir, ".gitignore"), GITIGNORE);
 
     // Per-agent package.json — the engine adapter + auggy + any per-augment
@@ -368,8 +371,6 @@ export async function runCreate(name: string, opts: CreateOpts): Promise<void> {
     }
   }
 
-  const envVar = PROVIDER_DEFAULTS[provider].envVar;
-
   console.log();
   console.log(dim(" ─────────────────────────────────────────────"));
   console.log();
@@ -386,9 +387,17 @@ export async function runCreate(name: string, opts: CreateOpts): Promise<void> {
       `   ${cream(`${step++}.`)}  cd ${dir} && bun install   ${dim("(retry — earlier attempt failed)")}`,
     );
   }
-  console.log(`   ${cream(`${step++}.`)}  cp ${dir}/.env.example ${dir}/.env`);
-  console.log(`   ${cream(`${step++}.`)}  Add your ${bold(envVar)} to ${dir}/.env`);
-  console.log(`   ${cream(`${step++}.`)}  Edit ${dir}/identity.md`);
+  // Env-vars step: only render when there's actually a secret to fill.
+  // Ollama-local agents have no env var to set (no API key required), so
+  // emitting "Add your  to ..." with an empty name was confusing.
+  const envVarsForNextSteps = collectEnvVars(augments, provider);
+  if (ollamaNeedsBearer) envVarsForNextSteps.push("OLLAMA_API_KEY");
+  if (envVarsForNextSteps.length > 0) {
+    console.log(
+      `   ${cream(`${step++}.`)}  Fill in ${dir}/.env  ${dim(`(${envVarsForNextSteps.join(", ")})`)}`,
+    );
+  }
+  console.log(`   ${cream(`${step++}.`)}  Edit ${dir}/identity.md   ${dim("(optional)")}`);
   console.log(`   ${cream(`${step++}.`)}  auggy dev ${name}`);
   console.log();
 }
