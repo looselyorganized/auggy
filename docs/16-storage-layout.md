@@ -66,7 +66,7 @@ by `auggy list`, which only enumerates dirs that look like complete agents).
 ## Inspecting and removing
 
 ```bash
-auggy list                          # list agents from <auggyDir>/agents/ (alias: ls)
+auggy list                          # list agents from <auggyDir>/agents/
 auggy remove <name>                 # delete the agent dir
 auggy remove <name> --yes           # skip the confirmation prompt
 auggy remove <name> --cloud         # also destroy the Railway service

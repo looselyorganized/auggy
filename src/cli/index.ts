@@ -11,7 +11,7 @@
  *   auggy stop <name>                Stop a running agent
  *   auggy restart <name>             Stop + start
  *   auggy status [name]              Show running agents
- *   auggy list                       List registered agents (alias: ls)
+ *   auggy list                       List registered agents
  *   auggy remove <name> [--yes] [--cloud]  Delete an agent (dir + index, optionally Railway service)
  *   auggy deploy <name> --to railway       Deploy an agent to Railway
  *   auggy chat                       Launch local GUI
@@ -148,7 +148,6 @@ program
 
 program
   .command("list")
-  .alias("ls")
   .description("List registered agents with their status")
   .action(async () => {
     try {
