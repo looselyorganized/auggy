@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-05-20
+
+### Fixed
+
+- **`auggy create` interactive engine picker now lists `ollama`.** The provider was wired through every other layer (`PROVIDER_DEFAULTS`, `PROVIDER_TO_PACKAGE`, `getModelChoices`, `@auggy/ollama` package on npm) since 0.4.0, but the inquirer prompt in `commands/create.ts` only offered anthropic / openai / openrouter. Operators wanting local-LLM scaffolds had to hand-edit the resulting `agent.yaml`. Now selectable inline as "ollama — local LLM (no API key, runs offline)".
+
 ## [0.4.1] - 2026-05-19
 
 Hotfix: a fresh `npm i -g auggy@0.4.0` followed by ANY auggy command (even `auggy --version`) crashed at boot. Root cause: `src/cli/commands/eval.ts` statically imported from `../../../evals/security/run` — a path that pointed OUTSIDE the published tarball (the `files` array shipped `src` only, not `evals/`). Because Commander eagerly imports all subcommands at module load time, the missing `evals/` brought down the entire CLI.

@@ -118,6 +118,7 @@ export async function runCreate(name: string, opts: CreateOpts): Promise<void> {
       { name: "anthropic — Claude models", value: "anthropic" },
       { name: "openai — GPT models", value: "openai" },
       { name: "openrouter — any model via OpenRouter", value: "openrouter" },
+      { name: "ollama — local LLM (no API key, runs offline)", value: "ollama" },
     ],
     default: "anthropic",
   });
