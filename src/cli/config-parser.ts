@@ -460,8 +460,14 @@ function validateNotifyOptions(
       if (dest.to == null || (typeof dest.to !== "string" && !Array.isArray(dest.to))) {
         errors.push(`${dPrefix}.to: required string or array for agentmail transport`);
       }
+    } else if (dest.transport === "log-to-file") {
+      if (typeof dest.path !== "string" || !dest.path) {
+        errors.push(`${dPrefix}.path: required string for log-to-file transport`);
+      }
     } else {
-      errors.push(`${dPrefix}.transport: must be "webhook", "telegram", or "agentmail"`);
+      errors.push(
+        `${dPrefix}.transport: must be "webhook", "telegram", "agentmail", or "log-to-file"`,
+      );
     }
   }
 
