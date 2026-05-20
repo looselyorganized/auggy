@@ -11,7 +11,7 @@
  *   auggy stop <name>                Stop a running agent
  *   auggy restart <name>             Stop + start
  *   auggy status [name]              Show running agents
- *   auggy ls                         List registered agents
+ *   auggy list                       List registered agents (alias: ls)
  *   auggy remove <name> [--yes] [--cloud]  Delete an agent (dir + index, optionally Railway service)
  *   auggy deploy <name> --to railway       Deploy an agent to Railway
  *   auggy chat                       Launch local GUI
@@ -147,7 +147,8 @@ program
   });
 
 program
-  .command("ls")
+  .command("list")
+  .alias("ls")
   .description("List registered agents with their status")
   .action(async () => {
     try {
@@ -159,7 +160,7 @@ program
   });
 
 program
-  .command("visitors <agent>")
+  .command("visitors <name>")
   .description("list verified visitors for an agent")
   .option("--revoke <email>", "revoke a verified visitor by email")
   .option("--yes", "skip the confirmation prompt for --revoke")

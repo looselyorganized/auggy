@@ -56,7 +56,7 @@ export function resolveAgentDir(
     if (!entry) {
       throw new Error(
         `Agent "${agentNameFlag}" is not registered.\n\n` +
-          `  Run \`auggy ls\` to see registered agents.`,
+          `  Run \`auggy list\` to see registered agents.`,
       );
     }
     return entry.localDir;

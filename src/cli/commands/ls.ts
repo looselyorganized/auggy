@@ -1,5 +1,5 @@
 /**
- * auggy ls — list all agents under `<auggyDir>/agents/` with their status.
+ * auggy list — list all agents under `<auggyDir>/agents/` with their status.
  *
  * Status is derived from PID manifests: running, or stopped. The filesystem
  * is the source of truth — an agent IS a directory at the canonical path,

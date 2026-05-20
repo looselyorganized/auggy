@@ -61,12 +61,12 @@ filesystem mtime and treats `cloud` as `null`.
 `~/.auggy/agents/.tmp-<uuid>/` staging directory, then renames it into
 place. The rename is the atomic publish step — if the process is interrupted
 beforehand, the staging dir is swept on the next `auggy create` (or skipped
-by `auggy ls`, which only enumerates dirs that look like complete agents).
+by `auggy list`, which only enumerates dirs that look like complete agents).
 
 ## Inspecting and removing
 
 ```bash
-auggy ls                            # list agents from <auggyDir>/agents/
+auggy list                          # list agents from <auggyDir>/agents/ (alias: ls)
 auggy remove <name>                 # delete the agent dir
 auggy remove <name> --yes           # skip the confirmation prompt
 auggy remove <name> --cloud         # also destroy the Railway service

@@ -40,7 +40,7 @@ export function resolveConfigPath(
     throw new Error(
       `Agent "${name}" not found.\n\n` +
         `  Run \`auggy create ${name}\` to scaffold a new agent,\n` +
-        `  or \`auggy ls\` to see existing agents.`,
+        `  or \`auggy list\` to see existing agents.`,
     );
   }
 

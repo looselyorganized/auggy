@@ -18,7 +18,7 @@ auggy start <name>               # Install as launchd service (always-on)
 auggy stop <name>                # Stop agent (either mode)
 auggy restart <name>             # Stop + start
 auggy status [name]              # Show running agents
-auggy ls                         # List registered agents with status
+auggy list                       # List registered agents (alias: ls)
 auggy remove <name> [--yes]      # Delete an agent dir + clear index entry
 auggy chat [--port N]            # Launch Local GUI for talking to running agents
 auggy eval [name]                # Run portable security eval suite (default: bundled fixture)
@@ -160,7 +160,7 @@ src/
         ├── chat.ts         # auggy chat (Local GUI launcher)
         ├── dev.ts          # auggy dev (foreground runner, core lifecycle)
         ├── eval.ts         # auggy eval (portable security suite)
-        ├── ls.ts           # auggy ls (list registered agents)
+        ├── ls.ts           # auggy list / ls (list registered agents)
         ├── remove.ts       # auggy remove <name>
         ├── restart.ts      # auggy restart (stop + start)
         ├── start.ts        # auggy start (launchd install)

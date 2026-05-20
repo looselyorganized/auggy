@@ -41,7 +41,7 @@ export async function runRemove(name: string, opts: RemoveOptions = {}): Promise
   const entry = getAgent(name, { auggyDir: opts.auggyDir });
   if (!entry) {
     throw new Error(
-      `Agent "${name}" not found.\n\n  Run \`auggy ls\` to see scaffolded agents.`,
+      `Agent "${name}" not found.\n\n  Run \`auggy list\` to see scaffolded agents.`,
     );
   }
 
