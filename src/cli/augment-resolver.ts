@@ -14,6 +14,7 @@
  *    operator's chosen instance name from the config.
  */
 
+import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { fileMemory } from "../augments/file-memory";
@@ -616,7 +617,24 @@ export async function resolveAugments(
   // whose bundled skill is not mounted at <agent-dir>/skills/<folder>/SKILL.md.
   // Per ADR-025 Decision 5 + spec §H. Runs after every factory has produced
   // its tool surface so the discriminator (`tools.length > 0`) is final.
+  // MUST run before the skills auto-synth below — the validator pairs
+  // augments[i] with configs[i] and bails if lengths mismatch.
   validateBundledSkills(configs, augments, agentDir);
+
+  // Auto-mount `skills` when the agent has a skills/ dir and hasn't declared
+  // its own. The skills augment is auggy's model-facing skill surface (ADR-030)
+  // — runtime infrastructure, not a feature operators opt into. Production
+  // scaffolds always create `<agentDir>/skills/` (the bundled-skill copy step
+  // populates it), so this synth fires for real agents. Test harnesses that
+  // construct agent dirs without a skills/ subdir won't trigger the synth,
+  // which keeps the resolver's length contract predictable for unit tests.
+  // Existing scaffolds with an explicit `skills` declaration still work — we
+  // don't double-mount.
+  const skillsDir = resolvePath("./skills", agentDir);
+  const hasSkills = augments.some((a) => a.name === "skills");
+  if (!hasSkills && existsSync(skillsDir)) {
+    augments.push(skills({ dir: skillsDir }));
+  }
 
   return augments;
 }

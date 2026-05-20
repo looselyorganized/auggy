@@ -74,7 +74,8 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
   },
   {
     label: "layeredMemory",
-    description: "Peer-scoped episodic memory with provenance (SQLite or Supabase)",
+    description:
+      "Peer-scoped episodic memory with provenance (SQLite or Supabase) — upgrade to filesystem",
     type: "layeredMemory",
     defaultName: "memory",
     defaultOptions: {
@@ -83,7 +84,7 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
       namespace: "ep",
       retentionDays: 90,
     },
-    required: true,
+    required: false,
     hasSkill: true,
   },
   {
@@ -166,25 +167,10 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
     required: false,
     hasSkill: true,
   },
-  {
-    // ADR-030: model-facing skill surface. Emits a single system-placement
-    // context block listing each mounted skill's name + description (read
-    // from each SKILL.md's YAML frontmatter, agentskills.io standard).
-    // Activation is fs_read via the filesystem augment. Required because
-    // without it no skills are surfaced to the model; operators wanting an
-    // agent with literally zero skill discovery can edit agent.yaml after
-    // scaffolding.
-    label: "skills",
-    description: "Lists mounted skills for the model (ADR-030 skill surface)",
-    type: "skills",
-    defaultName: "skills",
-    defaultOptions: {
-      dir: "./skills",
-    },
-    required: true,
-    // The augment itself carries no skill — it IS the skill surface.
-    hasSkill: false,
-  },
+  // `skills` (ADR-030 model-facing skill surface) is NOT in the catalog.
+  // It's auggy runtime infrastructure, not a feature operators choose.
+  // Auto-mounted by `augment-resolver.ts` if not explicitly declared in
+  // agent.yaml. See docs/solutions/architecture/adr-NNN-augment-catalog-policy.md.
   {
     label: "bash",
     description: "Execute shell commands with configurable risk levels",
