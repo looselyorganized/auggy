@@ -59,14 +59,6 @@ export function resolveAgentDir(
           `  Run \`auggy ls\` to see registered agents.`,
       );
     }
-    const cfg = join(entry.localDir, "agent.yaml");
-    if (!existsSync(cfg)) {
-      throw new Error(
-        `agent.yaml missing at indexed path: ${cfg}\n\n` +
-          `  The agent directory may have been deleted or moved manually.\n` +
-          `  Run \`auggy remove ${agentNameFlag}\` to clean up the index entry.`,
-      );
-    }
     return entry.localDir;
   }
 

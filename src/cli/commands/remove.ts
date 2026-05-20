@@ -1,15 +1,16 @@
 /**
- * auggy remove <name> — delete an agent directory and clear the index entry.
+ * auggy remove <name> — delete an agent directory.
  *
  * Refuses if the agent is running. Prompts before deletion (skipped with
- * --yes). Tolerates missing localDir (still cleans the index entry).
+ * --yes). The agent dir is the source of truth — removing it removes the
+ * agent entirely.
  */
 
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { confirm } from "@inquirer/prompts";
-import { clearCloud, getAgent, removeAgent } from "../agent-index";
+import { getAgent, removeAgent } from "../agent-index";
 import { createRailwayCli, type RailwayCli } from "../deploy/railway-cli";
 import { readPidManifest, isProcessAlive, removePidManifest } from "../pid-registry";
 
@@ -40,7 +41,7 @@ export async function runRemove(name: string, opts: RemoveOptions = {}): Promise
   const entry = getAgent(name, { auggyDir: opts.auggyDir });
   if (!entry) {
     throw new Error(
-      `Agent "${name}" is not registered.\n\n  Run \`auggy ls\` to see registered agents.`,
+      `Agent "${name}" not found.\n\n  Run \`auggy ls\` to see scaffolded agents.`,
     );
   }
 
@@ -62,9 +63,7 @@ export async function runRemove(name: string, opts: RemoveOptions = {}): Promise
 
   if (!opts.yes) {
     const ok = await confirm({
-      message:
-        `This will permanently delete:\n  ${entry.localDir}\n\n` +
-        `And remove the registry entry for "${name}".\n\nContinue?`,
+      message: `This will permanently delete:\n  ${entry.localDir}\n\nContinue?`,
       default: false,
     });
     if (!ok) {
@@ -73,34 +72,10 @@ export async function runRemove(name: string, opts: RemoveOptions = {}): Promise
     }
   }
 
-  // Delete the local dir if present (tolerate missing). Sanity-check that the
-  // dir contains agent.yaml first — refuse to recursively delete if not, since
-  // a tampered or corrupt index entry could otherwise nuke arbitrary paths.
-  if (existsSync(entry.localDir)) {
-    const yamlPath = join(entry.localDir, "agent.yaml");
-    if (!existsSync(yamlPath)) {
-      throw new Error(
-        `Refusing to delete "${entry.localDir}" — it does not contain agent.yaml.\n\n` +
-          `  This may indicate a tampered or stale index entry. If the agent dir was\n` +
-          `  modified outside auggy, clean up manually and re-run \`auggy remove\` to\n` +
-          `  clear the index entry.`,
-      );
-    }
-    rmSync(entry.localDir, { recursive: true, force: true });
-  }
-
-  // Clean up stale PID manifest(s) if any. Remove under whichever name we
-  // actually found a manifest at.
-  if (pidByCli) removePidManifest(name);
-  if (pidByConfig && configName) removePidManifest(configName);
-
-  // --cloud: also destroy the Railway service before clearing the index.
-  // We do this AFTER local cleanup so a failed Railway call doesn't leave
-  // local state in an inconsistent half-deleted shape.
+  // --cloud: destroy the Railway service BEFORE removing the local dir,
+  // because the cloud record lives inside the dir's .auggy-meta.json.
   if (opts.cloud && entry.cloud) {
     const cli = opts.railwayCli ?? createRailwayCli();
-    // `railway service delete` needs to be run from a dir linked to the
-    // service. Create a temp dir, link it, then delete.
     const tmp = mkdtempSync(join(tmpdir(), `auggy-remove-${name}-`));
     try {
       await cli.link({
@@ -120,10 +95,14 @@ export async function runRemove(name: string, opts: RemoveOptions = {}): Promise
         rmSync(tmp, { recursive: true, force: true });
       } catch {}
     }
-    clearCloud(name, { auggyDir: opts.auggyDir });
   }
 
-  // Clear index entry.
+  // Clean up stale PID manifest(s) if any.
+  if (pidByCli) removePidManifest(name);
+  if (pidByConfig && configName) removePidManifest(configName);
+
+  // Remove the agent dir. `removeAgent` refuses paths that don't contain
+  // agent.yaml as a guard against accidental nukes.
   removeAgent(name, { auggyDir: opts.auggyDir });
 
   console.log(`Removed agent "${name}" (was at ${entry.localDir}).`);

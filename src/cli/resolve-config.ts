@@ -3,11 +3,10 @@
  *
  * Resolution order:
  *   1. Explicit --config <path> flag
- *   2. Look up <name> in `~/.auggy/agents.json` (the index)
+ *   2. Look up <name> in the filesystem (canonical: <auggyDir>/agents/<name>/)
  *
- * The legacy CWD-relative fallback (`./<name>/agent.yaml`, `./agent.yaml`)
- * was removed in ADR-021. Pre-ADR-021 agents are not auto-discovered;
- * adoption is deferred until concrete demand.
+ * Pre-ADR-021 CWD-relative discovery was removed. Pre-021 agents are not
+ * auto-discovered; adoption is deferred until concrete demand.
  */
 
 import { existsSync } from "node:fs";
@@ -20,7 +19,8 @@ interface ResolveOptions {
 }
 
 /**
- * Resolve the config file path from explicit flag or the agent index.
+ * Resolve the config file path from explicit flag or the agent's canonical
+ * directory.
  */
 export function resolveConfigPath(
   name: string,
@@ -38,19 +38,11 @@ export function resolveConfigPath(
   const entry = getAgent(name, opts);
   if (!entry) {
     throw new Error(
-      `Agent "${name}" is not registered.\n\n` +
+      `Agent "${name}" not found.\n\n` +
         `  Run \`auggy create ${name}\` to scaffold a new agent,\n` +
-        `  or \`auggy ls\` to see registered agents.`,
+        `  or \`auggy ls\` to see existing agents.`,
     );
   }
 
-  const cfg = join(entry.localDir, "agent.yaml");
-  if (!existsSync(cfg)) {
-    throw new Error(
-      `agent.yaml missing at indexed path: ${cfg}\n\n` +
-        `  The agent directory may have been deleted or moved manually.\n` +
-        `  Run \`auggy remove ${name}\` to clean up the index entry.`,
-    );
-  }
-  return cfg;
+  return join(entry.localDir, "agent.yaml");
 }

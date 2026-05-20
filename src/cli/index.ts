@@ -39,10 +39,9 @@ program.name("auggy").description("Auggy agent runtime CLI").version(pkg.version
 
 program
   .command("create <name>")
-  .description("Scaffold a new agent directory (interactive)")
-  .option("--dir <path>", "target directory (defaults to ./<name>)")
+  .description("Scaffold a new agent at ~/.auggy/agents/<name>/ (interactive)")
   .option("--skip-install", "write package.json but don't run bun install")
-  .action(async (name: string, opts: { dir?: string; skipInstall?: boolean }) => {
+  .action(async (name: string, opts: { skipInstall?: boolean }) => {
     try {
       await runCreate(name, opts);
     } catch (err) {

@@ -1,9 +1,10 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runVisitorsList, type VisitorsCommandOptions } from "../../../src/cli/commands/visitors";
 import { createSqliteVisitorAuthStore } from "../../../src/augments/visitor-auth/storage/sqlite-store";
+import { seedAgentForTest } from "../../../src/cli/agent-index";
 
 let tmp: string;
 let agentDir: string;
@@ -11,22 +12,10 @@ let auggyDir: string;
 
 beforeEach(() => {
   tmp = mkdtempSync(join(tmpdir(), "visitors-cmd-"));
-  agentDir = join(tmp, "agents", "zip");
   auggyDir = join(tmp, "auggy");
-  mkdirSync(agentDir, { recursive: true });
-  mkdirSync(auggyDir, { recursive: true });
-  writeFileSync(
-    join(auggyDir, "agents.json"),
-    JSON.stringify({
-      version: 1,
-      agents: {
-        zip: { localDir: agentDir, createdAt: new Date().toISOString(), cloud: null },
-      },
-    }),
-  );
-  writeFileSync(
-    join(agentDir, "agent.yaml"),
-    `augments:
+  agentDir = seedAgentForTest("zip", {
+    auggyDir,
+    yaml: `augments:
   - type: visitorAuth
     name: visitor-auth
     options:
@@ -38,7 +27,7 @@ beforeEach(() => {
       signingKey: sig
       layeredMemoryDbPath: ./memory.db
 `,
-  );
+  });
 });
 
 afterEach(() => {

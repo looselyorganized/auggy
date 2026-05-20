@@ -247,25 +247,16 @@ export type CloudRecord = null | {
 };
 
 /**
- * One agent's entry in `~/.auggy/agents.json`.
+ * Runtime view of one agent: filesystem path + metadata derived from the
+ * agent's `.auggy-meta.json` (or synthesized from its directory mtime when
+ * the meta file is missing).
  */
 export interface IndexEntry {
-  /** Absolute path to the agent directory. */
+  /** Absolute path to the agent directory under `<auggyDir>/agents/<name>/`. */
   localDir: string;
-  /** ISO-8601 timestamp of when the entry was created. */
+  /** ISO-8601 timestamp of when the agent was first scaffolded. */
   createdAt: string;
   /** Cloud deployment state (null when not deployed). */
   cloud: CloudRecord;
 }
 
-/**
- * Schema for `~/.auggy/agents.json`.
- *
- * `version` is gated on read — unknown versions throw rather than risk data
- * loss. Bump when adding required fields; keep readers backward-compatible
- * for purely additive changes.
- */
-export interface IndexFile {
-  version: 1;
-  agents: Record<string, IndexEntry>;
-}

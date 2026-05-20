@@ -6,34 +6,31 @@ Operator reference for where Auggy puts agents on disk.
 
 ```
 ~/.auggy/
-├── agents.json                     # the index — name → localDir → cloud-state
-├── agents/                         # default home for scaffolded agents
+├── agents/                         # one subdirectory per agent
 │   └── <name>/
 │       ├── agent.yaml              # source-of-truth config (uses `identity:` shorthand)
+│       ├── .auggy-meta.json        # per-agent metadata (createdAt, cloud record)
 │       ├── identity.md             # who the agent is — security rules + skill manifest
 │       ├── learned.md              # mutable learnings
 │       ├── memory.sqlite           # SQLite (layeredMemory, default scaffold)
 │       ├── budgets.db              # SQLite (budgets)
 │       ├── .env                    # secrets (gitignored)
-│       ├── .env.example            # template
 │       ├── skills/                 # bundled-skill copies (one folder per tool-providing augment)
 │       │   ├── layered-memory/SKILL.md
 │       │   ├── filesystem/SKILL.md (+ references/)
 │       │   └── ...                 # web-fetch, org-context, bash, notify, turn-control as configured
 │       ├── org-context/            # scaffolded if orgContext is selected (file:// example)
-│       │   ├── manifest            # JSON manifest consumed by orgContext
-│       │   ├── mission.md
-│       │   ├── team.md
-│       │   └── README.md
 │       ├── workspace/
 │       └── augments/
 ├── <name>.json                     # PID manifest (per running agent)
 └── chat/                           # chat dist cache
 ```
 
-`auggy create <name>` scaffolds at `~/.auggy/agents/<name>/` by default.
+`auggy create <name>` scaffolds at `~/.auggy/agents/<name>/`. The directory IS
+the agent — there is no central index file that has to stay in sync with the
+filesystem.
 
-### Default-scaffold details (post-PR α)
+### Default-scaffold details
 
 - `agent.yaml` uses the top-level `identity: ./identity.md` shorthand (parsed to a synthetic `fileMemory@placement:system` entry); `augments:` enumerates the rest.
 - `identity.md` is rendered from `src/scaffold-templates/identity.md` and ships with four baked-in security rules and a `## Available skills` manifest enumerating each tool-providing augment selected at scaffold time.
@@ -41,47 +38,60 @@ Operator reference for where Auggy puts agents on disk.
 - `memory.sqlite` is the default `layeredMemory` backend (SQLite, namespace-scoped). The scaffold includes the augment by default; remove from `agent.yaml` if not needed.
 - `org-context/` is scaffolded only when `orgContext` is selected; the example `manifest` + endpoint files plus `baseUrl: file://./org-context` give a working local config without needing to stand up an HTTP server.
 
-## Custom location with `--dir`
+## Per-agent metadata
 
-For git-tracked agents or project-folder layouts:
-
-```bash
-auggy create concierge --dir ~/projects/concierge
-```
-
-The agent dir lives wherever you point `--dir`; the index records the absolute path. Subsequent `auggy dev concierge`, `auggy stop concierge`, etc. work from any CWD.
-
-## The index file
-
-`~/.auggy/agents.json` is load-bearing. It maps each registered agent name to its directory and (eventually) its cloud deployment state. Schema:
+`<agent-dir>/.auggy-meta.json` carries:
 
 ```json
 {
   "version": 1,
-  "agents": {
-    "<name>": {
-      "localDir": "/abs/path",
-      "createdAt": "2026-05-01T12:00:00Z",
-      "cloud": null
-    }
-  }
+  "createdAt": "2026-05-01T12:00:00.000Z",
+  "cloud": null
 }
 ```
 
-The CLI writes atomically (temp+rename), recovers from corruption (backs up to `agents.json.corrupt-<timestamp>` and recreates empty), and refuses unknown schema versions.
+`createdAt` is set at `auggy create` time. `cloud` is populated by `auggy
+deploy` and cleared by `auggy remove --cloud`. If the file is missing (e.g.
+older agents pre-dating the schema), the CLI falls back to the directory's
+filesystem mtime and treats `cloud` as `null`.
+
+## Atomic creation
+
+`auggy create <name>` writes the scaffold into a sibling
+`~/.auggy/agents/.tmp-<uuid>/` staging directory, then renames it into
+place. The rename is the atomic publish step — if the process is interrupted
+beforehand, the staging dir is swept on the next `auggy create` (or skipped
+by `auggy ls`, which only enumerates dirs that look like complete agents).
 
 ## Inspecting and removing
 
 ```bash
-auggy ls                            # list registered agents
-auggy remove <name>                 # delete dir + clear index entry
+auggy ls                            # list agents from <auggyDir>/agents/
+auggy remove <name>                 # delete the agent dir
 auggy remove <name> --yes           # skip the confirmation prompt
+auggy remove <name> --cloud         # also destroy the Railway service
 ```
 
-`auggy remove` refuses if the agent is running — `auggy stop` it first.
+`auggy remove` refuses if the agent is running — `auggy stop` it first. It
+also refuses to delete a directory that lacks `agent.yaml`, as a guard
+against accidentally nuking unrelated paths.
 
-If you delete an agent's directory manually (e.g., `rm -rf ~/.auggy/agents/zip`), the index entry is left orphaned. `auggy ls` flags it as `missing-dir`; `auggy remove zip` will then clean up the index entry without trying to re-delete the dir.
+If you delete an agent's directory manually (`rm -rf ~/.auggy/agents/zip`),
+that's the entire removal — there is no separate index entry to clean up.
 
-## Cloud (forward-looking)
+## Migration from the legacy index
 
-Cloud deploys (Railway) are on the roadmap for after v1.0 OSS launch — not yet shipped. When they land, the index `cloud` field is populated with provider/projectId/serviceId/url/volumeId. Design captured in ADR-021 (`agent-storage-and-deployment-locations`).
+Pre-`feat/filesystem-as-truth` builds kept a central `~/.auggy/agents.json`
+mapping each name to a `localDir`. The first call into the new store on an
+upgraded installation migrates each entry into a per-agent
+`.auggy-meta.json` (preserving `createdAt` and any `cloud` record), then
+renames the legacy file to `agents.json.migrated-<ISO timestamp>` so the
+operator can recover from backup if needed. Migration is idempotent and
+runs at most once per directory.
+
+## Cloud
+
+`auggy deploy <name> --to railway` writes the Railway service metadata
+(provider, projectId, serviceId, url, volumeId, deployedAt) into the
+agent's `.auggy-meta.json`. `auggy remove <name> --cloud` reads the same
+record to destroy the Railway service before removing the local dir.
