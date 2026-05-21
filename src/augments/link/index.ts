@@ -54,7 +54,9 @@ import { z } from "zod";
 // can re-use the bare `PeerClient` name inside the factory body without a
 // type/value collision.
 import type {
+  AddressBook as LinkAddressBook,
   AgentCard as LinkAgentCard,
+  AuthProvider as LinkAuthProvider,
   HandlerContext as LinkHandlerContext,
   LinkAppHandle,
   MessageHandler as LinkMessageHandler,
@@ -72,6 +74,7 @@ import type {
   TurnState,
 } from "../../types";
 import { handlerContextToTrigger, turnResultToHandlerOutcome } from "./translate";
+import { createPeerResolver, type PeerResolver } from "./peer-resolver";
 import { importFromAgent } from "../../cli/import-from-agent";
 
 // ---------------------------------------------------------------------------
@@ -114,6 +117,57 @@ export interface LinkPeerConfig {
 }
 
 /**
+ * Discriminated union of peer-source configurations.
+ *
+ * At v1, only the `registry` source type ships. Future variants
+ * (`coordinator`, `mdns`, etc.) can be added without breaking existing
+ * config — the discriminant is on `type`.
+ *
+ * See `lo/docs/superpowers/specs/2026-05-20-link-peer-directory-v1.md` for
+ * the full design, including the discovery-vs-auth split (registry holds
+ * public identities; bearers come from env vars).
+ */
+export type PeerSourceConfig = {
+  /** Source-type discriminant. */
+  type: "registry";
+  /**
+   * HTTPS URL the augment fetches at boot to populate its peer roster.
+   * The URL must serve a JSON body matching `RegistryResponse`.
+   */
+  url: string;
+  /**
+   * In-memory cache TTL. After this many seconds the next operation that
+   * needs peer state triggers a re-fetch. Default 60.
+   */
+  cacheSeconds?: number;
+};
+
+/**
+ * Shape returned by a peer-registry endpoint. The stable wire contract
+ * between the registry and the link augment.
+ *
+ * Public-only — no bearers. Bearers live in env vars on each Auggy:
+ *   LINK_BEARER_<UPPERCASE_NAME>          — outbound bearer
+ *   LINK_INBOUND_BEARER_<UPPERCASE_NAME>  — inbound bearer
+ *   LINK_INBOUND_BEARER_ID_<UPPERCASE_NAME> — audit id paired with inbound
+ */
+export interface RegistryResponse {
+  peers: RegistryPeer[];
+}
+
+/** A single peer entry served by a peer registry. */
+export interface RegistryPeer {
+  /** Short name the LLM uses with `link_send` (also the env-var lookup key). */
+  name: string;
+  /** Peer's link endpoint (e.g. https://researcher.example.org:8081). */
+  url: string;
+  /** Peer's UUID, used for AddressBook lookup symmetry. */
+  participantId: string;
+  /** Optional pointer to the peer's `/.well-known/agent.json` for richer discovery. */
+  agentCardUrl?: string;
+}
+
+/**
  * Agent-card fields the link augment serves at /.well-known/agent.json.
  * Note this is the LINK card, not augment-1's general agent card — they
  * exist for different consumers (A2A peers vs AG-UI browsers).
@@ -132,7 +186,21 @@ export interface LinkAugmentAgentCard {
 }
 
 /**
- * Operator-facing options for the link augment. Configured in agent.yaml:
+ * Operator-facing options for the link augment. Two ways to populate peers:
+ *
+ *   (1) `peerSource` — fetch a registry on boot. Public identities only;
+ *       bearers come from env vars. Preferred for non-trivial N (operator
+ *       maintains one source of truth, agents stay in sync).
+ *
+ *   (2) `peers` — inline list keyed by name, bearers embedded. Kept as a
+ *       fallback for offline dev and as a safety net if the registry is
+ *       unreachable.
+ *
+ * When both are present, `peerSource` takes precedence; `peers` is used as
+ * fallback if the registry fetch fails at boot. If neither is configured,
+ * the augment runs in inbound-only mode (no outbound peers).
+ *
+ * Example with registry:
  *
  *   augments:
  *     - name: link
@@ -145,6 +213,18 @@ export interface LinkAugmentAgentCard {
  *           name: zip
  *           description: Front-door agent
  *           endpointUrl: https://zip.example.org
+ *         peerSource:
+ *           type: registry
+ *           url: https://lorf-context.up.railway.app/peers.json
+ *           cacheSeconds: 60
+ *
+ * Bearers (env, per peer name `researcher`):
+ *   LINK_BEARER_RESEARCHER          # outbound bearer
+ *   LINK_INBOUND_BEARER_RESEARCHER  # inbound bearer
+ *   LINK_INBOUND_BEARER_ID_RESEARCHER # audit id
+ *
+ * Example with inline peers (legacy / dev / fallback):
+ *
  *         peers:
  *           researcher:
  *             url: https://researcher.example.org
@@ -155,7 +235,6 @@ export interface LinkAugmentAgentCard {
  *             purpose: "Research specialist. Knows recent ML literature."
  *             examples:
  *               - "What's the state of test-time compute scaling?"
- *               - "Find recent papers on agent benchmarks"
  */
 export interface LinkAugmentOptions {
   /** Port for the Bun.serve binding the link HTTP service. Default 8081. */
@@ -165,11 +244,17 @@ export interface LinkAugmentOptions {
   /** Agent-card fields. */
   agentCard: LinkAugmentAgentCard;
   /**
-   * Configured peers keyed by their short name (the name the LLM uses with
-   * `link_send`). Empty map = the augment runs but has no callable peers,
-   * which is legal (operator may rely on inbound-only at first).
+   * Inline-configured peers keyed by short name. When `peerSource` is also
+   * set, this map is the fallback if the registry fetch fails. Omit (or
+   * leave empty) for inbound-only mode.
    */
-  peers: Record<string, LinkPeerConfig>;
+  peers?: Record<string, LinkPeerConfig>;
+  /**
+   * Fetch peers from a registry at boot. Preferred for non-trivial N where
+   * inline maintenance is painful. Falls back to `peers` if the registry
+   * fetch fails. See `PeerSourceConfig` for the JSON contract.
+   */
+  peerSource?: PeerSourceConfig;
 }
 
 /**
@@ -196,6 +281,21 @@ export interface LinkAugmentInternalOptions extends LinkAugmentOptions {
    * so tests can drive it via the exported `_dispatchInbound` test hook.
    */
   _skipServer?: boolean;
+  /**
+   * Skip the periodic peerSource refresh timer. Useful for unit tests that
+   * exercise the augment with a one-shot resolver fetch but don't want a
+   * background interval running. When `peerSource` is unset this option has
+   * no effect (no timer is scheduled either way).
+   */
+  _skipRefreshLoop?: boolean;
+  /**
+   * Inject a pre-built peer resolver. Tests use this to exercise the
+   * augment's resolver-driven path without spinning a real HTTP server or
+   * mocking `fetch` globally. When set, the factory bypasses the
+   * `createPeerResolver(opts.peerSource)` construction and uses the
+   * provided instance directly. Production callers leave unset.
+   */
+  _peerResolver?: PeerResolver;
   /**
    * Inject a custom PeerClient. Tests use this to replace the real outbound
    * client with an in-process recorder.
@@ -297,15 +397,77 @@ export async function link(opts: LinkAugmentInternalOptions): Promise<Augment> {
   } = await importFromAgent<typeof import("@auggy/link")>(opts.agentDir, "@auggy/link");
 
   const port = opts.port ?? 8081;
-  const peers = opts.peers ?? {};
 
-  // Build the AddressBook env once at construction time. The library's
-  // EnvAddressBook takes a frozen snapshot, so this can't be hot-reloaded
-  // until @auggy/link v0.2 lands richer config plumbing.
-  const addressBookEnv = opts._addressBookEnv ?? buildAddressBookEnv(peers);
-  const addressBook = new EnvAddressBook(addressBookEnv);
+  // ---------------------------------------------------------------------------
+  // Peer state — mutable so peerSource refreshes propagate to tools + context
+  // ---------------------------------------------------------------------------
+  //
+  // `peerStateRef.current` holds the active peer map. When `peerSource` is
+  // configured, the resolver mutates it on each successful refresh; the
+  // tools + context block + dynamic auth + dynamic address book all read
+  // from this single source of truth.
+  const peerStateRef: { current: Record<string, LinkPeerConfig> } = {
+    current: opts.peers ?? {},
+  };
 
-  const peerClient = opts._peerClient ?? new PeerClient({ addressBook });
+  // The library's EnvAddressBook + BearerAuthProvider take frozen snapshots
+  // at construction. To support live refresh, we wrap each in a thin
+  // delegating implementation that swaps the inner instance on update.
+  // This keeps the `@auggy/link` handle stable while letting peer state
+  // change underneath.
+
+  let innerAddressBook = new EnvAddressBook(
+    opts._addressBookEnv ?? buildAddressBookEnv(peerStateRef.current),
+  );
+  const dynamicAddressBook: LinkAddressBook = {
+    getPeer(name) {
+      return innerAddressBook.getPeer(name);
+    },
+  };
+  function rebuildAddressBook() {
+    innerAddressBook = new EnvAddressBook(buildAddressBookEnv(peerStateRef.current));
+  }
+
+  let innerAuth = new BearerAuthProvider({ peers: buildAuthPeers(peerStateRef.current) });
+  const dynamicAuth: LinkAuthProvider = {
+    verify(req) {
+      return innerAuth.verify(req);
+    },
+  };
+  function rebuildAuth() {
+    innerAuth = new BearerAuthProvider({ peers: buildAuthPeers(peerStateRef.current) });
+  }
+
+  const peerClient = opts._peerClient ?? new PeerClient({ addressBook: dynamicAddressBook });
+
+  // Optional peer-source resolver. Constructed once at factory time; activated
+  // (initial fetch + refresh loop) in transport.register so the kernel is
+  // already wired when the first refresh propagates peer changes.
+  const resolver: PeerResolver | null =
+    opts._peerResolver ??
+    (opts.peerSource
+      ? createPeerResolver({
+          url: opts.peerSource.url,
+          cacheSeconds: opts.peerSource.cacheSeconds,
+          selfParticipantId: opts.agentCard.id,
+        })
+      : null);
+  let refreshTimer: ReturnType<typeof setInterval> | null = null;
+
+  /**
+   * Apply a fresh peer map from the resolver. Replaces `peerStateRef.current`
+   * and swaps the inner auth + address-book instances so subsequent
+   * inbound/outbound traffic sees the new state immediately.
+   *
+   * Caller is responsible for filtering: this function trusts the input as
+   * the authoritative peer set. Peers absent from `next` are dropped (the
+   * "forget" semantics in §4.4 of the spec).
+   */
+  function applyResolvedPeers(next: Record<string, LinkPeerConfig>): void {
+    peerStateRef.current = next;
+    rebuildAddressBook();
+    rebuildAuth();
+  }
 
   let kernel: TransportKernel | null = null;
   let registeredName = "link";
@@ -364,10 +526,31 @@ export async function link(opts: LinkAugmentInternalOptions): Promise<Augment> {
       kernel = k;
       registeredName = augmentName;
 
+      // If `peerSource` is configured, fetch initial peers before constructing
+      // the link app so the very first inbound request sees the right auth
+      // table. On fetch failure, fall back to inline `opts.peers` (already
+      // loaded into peerStateRef.current).
+      if (resolver) {
+        const initial = await resolver.getPeers();
+        if (initial.ok) {
+          applyResolvedPeers(initial.peers);
+        } else {
+          const inlineCount = Object.keys(peerStateRef.current).length;
+          console.warn(
+            `[link] peerSource initial fetch failed (${initial.error.kind}): ${
+              "message" in initial.error ? initial.error.message : initial.error.kind
+            }. ${
+              inlineCount > 0
+                ? `Falling back to ${inlineCount} inline peer(s).`
+                : "No inline peers — running inbound-only until next refresh succeeds."
+            }`,
+          );
+        }
+      }
+
       // Construct the link handle BEFORE binding Bun.serve so any
       // configuration error surfaces synchronously at boot.
       const taskStore = new SqliteTaskStore({ path: opts.dbPath });
-      const auth = new BearerAuthProvider({ peers: buildAuthPeers(peers) });
       // Inlined from the former `buildLinkAgentCard` helper — `buildAgentCard`
       // is now bound from the lazy-loaded module at the top of the factory.
       // v0.1 advertises `skills: []`; v0.2 will harvest from the agent's
@@ -384,13 +567,38 @@ export async function link(opts: LinkAugmentInternalOptions): Promise<Augment> {
 
       linkHandle = createLinkApp({
         agentCard,
-        auth,
+        auth: dynamicAuth,
         taskStore,
         onMessage,
       });
 
       if (!opts._skipServer) {
         server = Bun.serve({ port, fetch: linkHandle.fetch });
+      }
+
+      // Schedule periodic refresh. The resolver itself caches by TTL, but
+      // we need an active timer to drive the propagation — without a timer,
+      // peer-state changes only land when getPeers() is called, which today
+      // happens only in the tools at user request. The interval matches the
+      // cache TTL so each tick yields exactly one fetch.
+      if (resolver && !opts._skipRefreshLoop) {
+        const intervalMs = (opts.peerSource?.cacheSeconds ?? 60) * 1000;
+        refreshTimer = setInterval(() => {
+          // fire-and-forget — errors are surfaced inside getPeers
+          void (async () => {
+            resolver.invalidate();
+            const result = await resolver.getPeers();
+            if (result.ok) {
+              applyResolvedPeers(result.peers);
+            } else {
+              console.warn(
+                `[link] peerSource refresh failed (${result.error.kind}): ${
+                  "message" in result.error ? result.error.message : result.error.kind
+                }. Keeping last-known peer state.`,
+              );
+            }
+          })();
+        }, intervalMs);
       }
     },
     identify,
@@ -455,7 +663,7 @@ export async function link(opts: LinkAugmentInternalOptions): Promise<Augment> {
     category: "communication",
     input: z.object({}),
     execute: async () => {
-      const list = Object.entries(peers).map(([name, cfg]) => {
+      const list = Object.entries(peerStateRef.current).map(([name, cfg]) => {
         const entry: { name: string; purpose?: string; examples?: string[] } = { name };
         if (cfg.purpose) entry.purpose = cfg.purpose;
         if (cfg.examples && cfg.examples.length > 0) entry.examples = cfg.examples;
@@ -474,7 +682,7 @@ export async function link(opts: LinkAugmentInternalOptions): Promise<Augment> {
   // `link_list` when it needs the richer per-peer purpose/examples for
   // routing decisions. Empty peers → no block (don't pollute preamble).
   const context = async (_turn: TurnState): Promise<ContextBlock[]> => {
-    const names = Object.keys(peers);
+    const names = Object.keys(peerStateRef.current);
     if (names.length === 0) return [];
     const content =
       `Peers reachable via link_send: ${names.join(", ")}. ` +
@@ -500,7 +708,13 @@ export async function link(opts: LinkAugmentInternalOptions): Promise<Augment> {
     context,
     tools: [linkSendTool, linkListTool],
     async onShutdown() {
-      // Stop the server first so no new admissions enter; THEN drain
+      // Stop the refresh loop FIRST so an in-flight refresh doesn't try to
+      // touch state that's about to be torn down.
+      if (refreshTimer) {
+        clearInterval(refreshTimer);
+        refreshTimer = null;
+      }
+      // Stop the server next so no new admissions enter; THEN drain
       // in-flight requests via linkHandle.shutdown() so the store closes
       // cleanly. Order matters: if the store closes while a request is
       // still in flight, that request would see a store error.

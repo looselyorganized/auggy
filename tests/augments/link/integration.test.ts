@@ -596,3 +596,168 @@ describe("link augment — context block", () => {
     expect(blocks).toEqual([]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// peerSource — registry-based resolution
+// ---------------------------------------------------------------------------
+
+import type { PeerResolver } from "@/augments/link/peer-resolver";
+import type { LinkPeerConfig } from "@/augments/link";
+
+type ResolverResult = Awaited<ReturnType<PeerResolver["getPeers"]>>;
+
+function makeStubResolver(behavior: () => ResolverResult): PeerResolver {
+  return {
+    async getPeers() {
+      return behavior();
+    },
+    invalidate() {},
+    cacheAgeSeconds() {
+      return null;
+    },
+  };
+}
+
+describe("link augment — peerSource integration", () => {
+  function makeTurnState(): TurnState {
+    return {
+      turnId: "turn-1",
+      threadId: "thread-1",
+      peer: null,
+      tools: [],
+      history: [],
+      contextBlocks: [],
+      trigger: { type: "message", turnId: "turn-1", payload: { parts: [] } },
+    } as unknown as TurnState;
+  }
+
+  it("uses resolved peers when initial fetch succeeds (no inline peers)", async () => {
+    const resolvedPeers: Record<string, LinkPeerConfig> = {
+      frontier: {
+        url: "https://frontier.example.org",
+        bearer: "outbound",
+        participantId: PEER_PARTICIPANT_ID,
+        inboundBearer: "inbound",
+        inboundBearerId: "inbound-id",
+      },
+    };
+    const resolver = makeStubResolver(() => ({ ok: true, peers: resolvedPeers }) as ResolverResult);
+
+    const aug = await link({
+      ...makeOpts(),
+      _skipServer: true,
+      _skipRefreshLoop: true,
+      _peerResolver: resolver,
+      peerSource: { type: "registry", url: "https://example.org/peers.json" },
+      peers: undefined,
+    });
+
+    const { kernel } = makeStubKernel((t) => completedResult(t, "ok"));
+    await aug.transport!.register(kernel, "link");
+
+    // link_list reflects the resolved peers
+    const listTool = aug.tools!.find((t) => t.name === "link_list")!;
+    const result = await asStringTool(listTool).execute(
+      {},
+      {
+        turnId: "t",
+        peer: null,
+        threadId: "th",
+      },
+    );
+    const parsed = JSON.parse(result);
+    expect(parsed.peers).toHaveLength(1);
+    expect(parsed.peers[0].name).toBe("frontier");
+
+    // context block reflects the resolved peers
+    const blocks = await aug.context!(makeTurnState());
+    expect(blocks).toHaveLength(1);
+    expect((blocks as Array<{ content: string }>)[0]?.content).toContain("frontier");
+
+    await aug.onShutdown!();
+  });
+
+  it("falls back to inline peers when initial fetch fails", async () => {
+    const resolver = makeStubResolver(
+      () =>
+        ({
+          ok: false,
+          error: { kind: "fetch_failed", status: 503, message: "registry down" },
+        }) as ResolverResult,
+    );
+
+    const aug = await link({
+      ...makeOpts(),
+      _skipServer: true,
+      _skipRefreshLoop: true,
+      _peerResolver: resolver,
+      peerSource: { type: "registry", url: "https://example.org/peers.json" },
+      peers: {
+        backup: {
+          url: "https://backup.example.org",
+          bearer: "x",
+          participantId: "00000000-0000-4000-8000-00000000eeee",
+          inboundBearer: "y",
+          inboundBearerId: "yi",
+        },
+      },
+    });
+
+    const { kernel } = makeStubKernel((t) => completedResult(t, "ok"));
+    await aug.transport!.register(kernel, "link");
+
+    const listTool = aug.tools!.find((t) => t.name === "link_list")!;
+    const result = await asStringTool(listTool).execute(
+      {},
+      {
+        turnId: "t",
+        peer: null,
+        threadId: "th",
+      },
+    );
+    const parsed = JSON.parse(result);
+    expect(parsed.peers.map((p: { name: string }) => p.name)).toEqual(["backup"]);
+
+    await aug.onShutdown!();
+  });
+
+  it("runs in inbound-only mode when fetch fails and no inline peers", async () => {
+    const resolver = makeStubResolver(
+      () =>
+        ({
+          ok: false,
+          error: { kind: "fetch_failed", message: "network unreachable" },
+        }) as ResolverResult,
+    );
+
+    const aug = await link({
+      ...makeOpts(),
+      _skipServer: true,
+      _skipRefreshLoop: true,
+      _peerResolver: resolver,
+      peerSource: { type: "registry", url: "https://example.org/peers.json" },
+      peers: undefined,
+    });
+
+    const { kernel } = makeStubKernel((t) => completedResult(t, "ok"));
+    await aug.transport!.register(kernel, "link");
+
+    const listTool = aug.tools!.find((t) => t.name === "link_list")!;
+    const result = await asStringTool(listTool).execute(
+      {},
+      {
+        turnId: "t",
+        peer: null,
+        threadId: "th",
+      },
+    );
+    const parsed = JSON.parse(result);
+    expect(parsed.peers).toEqual([]);
+
+    // Context block is empty (no peers)
+    const blocks = await aug.context!(makeTurnState());
+    expect(blocks).toEqual([]);
+
+    await aug.onShutdown!();
+  });
+});

@@ -1134,6 +1134,67 @@ Names only — not purposes or examples — to keep preamble cost ~10 tokens per
 | `purpose` | no | Natural-language description of what the peer is good for. Surfaced via `link_list`. Semantic, not structural — see [spine-north-star §4 Constraint 6](../../docs/spine-north-star.md). |
 | `examples` | no | 1–2 example asks suitable for delegation. Used by the LLM for few-shot routing. |
 
+### `peerSource` — fetch peers from a registry
+
+For more than a couple of peers, hardcoding `peers` in every agent's yaml becomes painful. The `peerSource` block points the augment at a JSON URL it fetches on boot; the registry serves the org's peer roster as a single source of truth.
+
+```yaml
+augments:
+  - type: link
+    name: link
+    options:
+      port: 8081
+      dbPath: ./link.db
+      agentCard:
+        id: <self-uuid>
+        name: zip
+        description: Front-door agent
+        endpointUrl: https://zip.example.org:8081
+      peerSource:
+        type: registry
+        url: https://lorf-context.up.railway.app/peers.json
+        cacheSeconds: 60     # default 60; lower for snappier propagation
+      # peers: {...}         # optional — fallback if registry is unreachable
+```
+
+The registry response shape (the **stable wire contract**):
+
+```json
+{
+  "peers": [
+    {
+      "name": "frontier",
+      "url": "https://frontier.example.org:8081",
+      "participantId": "54bb9528-05c6-4e2e-a419-62e6e003156c",
+      "agentCardUrl": "https://frontier.example.org:8081/.well-known/agent.json"
+    }
+  ]
+}
+```
+
+Required per entry: `name`, `url`, `participantId`. Optional: `agentCardUrl` (reserved for future capability discovery; not used at v1).
+
+**Discovery separate from auth.** The registry holds public identity only. Bearers live in environment variables on each Auggy, keyed by peer name:
+
+| Env var | What it is |
+|---|---|
+| `LINK_BEARER_<UPPERCASE_NAME>` | Bearer this agent sends on outbound to the peer |
+| `LINK_INBOUND_BEARER_<UPPERCASE_NAME>` | Bearer this agent accepts on inbound *from* the peer |
+| `LINK_INBOUND_BEARER_ID_<UPPERCASE_NAME>` | Audit id paired with `inboundBearer`; logged on verify |
+
+Names are uppercased; non-alphanumeric characters become underscores. Peer `data-analyst` → `LINK_BEARER_DATA_ANALYST` etc. Missing bearer for a peer present in the registry → clear actionable error at boot (names which env var is missing).
+
+**Behavior:**
+- On boot, the augment fetches `peerSource.url`. On success, peers populate the AddressBook + BearerAuthProvider. On failure, the augment falls back to the inline `peers` block if present, or runs inbound-only if not.
+- A periodic refresh (TTL = `cacheSeconds`) propagates registry edits to running agents without a restart. Refresh failures preserve the last-good peer state — degradation, not outage.
+- Peers absent from a successful refresh are **forgotten**: outbound to that name returns "unknown peer"; inbound from that participant is 401'd. In-flight conversations complete on the bearer they started with — there is no mid-stream eviction.
+
+**Self-filter:** an entry whose `participantId` matches the agent's own `agentCard.id` is dropped from the resolved map. Agents do not call themselves even if the operator forgets to omit them from the registry.
+
+**Forward-compat:** when the coordinator service ships, the registry URL flips to point at the coordinator's `/participants` endpoint. Same JSON contract; no code changes in agents.
+
+For the full design + acceptance criteria, see [`docs/superpowers/specs/2026-05-20-link-peer-directory-v1.md`](../../docs/superpowers/specs/2026-05-20-link-peer-directory-v1.md) (in the LO repo).
+
 ### AgentCard fields
 
 The `agentCard` block populates `/.well-known/agent.json` served at this agent's link endpoint. Anyone who can reach the URL can read it — keep descriptions and `capabilities[]` appropriately vague if you're cross-org. `capabilities` is a free-form `string[]` (sanctioned by [spine-north-star §4 Constraint 6](../../docs/spine-north-star.md): semantic, not structural).
