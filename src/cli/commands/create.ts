@@ -321,7 +321,10 @@ export async function runCreate(name: string, opts: CreateOpts): Promise<void> {
     } catch {
       // best-effort
     }
-    if ((err as NodeJS.ErrnoException).code === "ENOTEMPTY" || (err as NodeJS.ErrnoException).code === "EEXIST") {
+    if (
+      (err as NodeJS.ErrnoException).code === "ENOTEMPTY" ||
+      (err as NodeJS.ErrnoException).code === "EEXIST"
+    ) {
       throw new Error(
         `Agent "${name}" was created concurrently at ${finalDir}.\n\n` +
           `  Use a different name, or remove the existing one with \`auggy remove ${name}\`.`,

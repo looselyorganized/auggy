@@ -211,9 +211,7 @@ export function getAgent(name: string, opts: AgentStoreOptions = {}): IndexEntry
  * `agent.yaml` are skipped (incomplete scaffolds, `.tmp-*` staging dirs).
  * Hidden directories (leading `.`) are also skipped.
  */
-export function listAgents(
-  opts: AgentStoreOptions = {},
-): Array<IndexEntry & { name: string }> {
+export function listAgents(opts: AgentStoreOptions = {}): Array<IndexEntry & { name: string }> {
   migrateOnce(opts);
   const root = getAgentsRoot(opts);
   if (!existsSync(root)) return [];
@@ -293,9 +291,7 @@ export function resolveAgentDir(name: string, opts: AgentStoreOptions = {}): str
  * Called from `runCreate` before a new scaffold so retry-after-crash flows
  * don't leave staging dirs lying around indefinitely.
  */
-export function sweepStaleTempDirs(
-  opts: AgentStoreOptions & { maxAgeMs?: number } = {},
-): void {
+export function sweepStaleTempDirs(opts: AgentStoreOptions & { maxAgeMs?: number } = {}): void {
   const root = getAgentsRoot(opts);
   if (!existsSync(root)) return;
   const maxAgeMs = opts.maxAgeMs ?? 60 * 60 * 1000;
@@ -337,10 +333,7 @@ export function seedAgentForTest(
 ): string {
   const localDir = agentDir(name, opts);
   mkdirSync(localDir, { recursive: true });
-  writeFileSync(
-    join(localDir, "agent.yaml"),
-    opts.yaml ?? `id: aug1_${name}\nname: ${name}\n`,
-  );
+  writeFileSync(join(localDir, "agent.yaml"), opts.yaml ?? `id: aug1_${name}\nname: ${name}\n`);
   if (opts.cloud) {
     writeCloud(localDir, opts.cloud);
   }

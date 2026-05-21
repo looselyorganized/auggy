@@ -97,10 +97,7 @@ describe("listAgents — filesystem scan", () => {
   test("skips hidden dirs (.tmp-* staging)", () => {
     seedAgentForTest("zip", { auggyDir });
     mkdirSync(join(auggyDir, "agents", ".tmp-abc123"), { recursive: true });
-    writeFileSync(
-      join(auggyDir, "agents", ".tmp-abc123", "agent.yaml"),
-      "id: aug1_partial\n",
-    );
+    writeFileSync(join(auggyDir, "agents", ".tmp-abc123", "agent.yaml"), "id: aug1_partial\n");
     expect(listAgents({ auggyDir }).map((a) => a.name)).toEqual(["zip"]);
   });
 });
@@ -134,23 +131,13 @@ describe("setCloud / clearCloud — file-existence semantics", () => {
   });
 
   test("setCloud throws when the agent dir is missing", () => {
-    expect(() => setCloud("ghost", CLOUD_FIXTURE, { auggyDir })).toThrow(
-      /agent dir not found/i,
-    );
+    expect(() => setCloud("ghost", CLOUD_FIXTURE, { auggyDir })).toThrow(/agent dir not found/i);
   });
 
   test("setCloud overwrites a prior cloud record (redeploy case)", () => {
     seedAgentForTest("zip", { auggyDir });
-    setCloud(
-      "zip",
-      { ...CLOUD_FIXTURE, url: "https://old.example" },
-      { auggyDir },
-    );
-    setCloud(
-      "zip",
-      { ...CLOUD_FIXTURE, url: "https://new.example" },
-      { auggyDir },
-    );
+    setCloud("zip", { ...CLOUD_FIXTURE, url: "https://old.example" }, { auggyDir });
+    setCloud("zip", { ...CLOUD_FIXTURE, url: "https://new.example" }, { auggyDir });
     expect(getAgent("zip", { auggyDir })?.cloud?.url).toBe("https://new.example");
   });
 

@@ -73,9 +73,7 @@ describe("runCreate writes per-agent package.json", () => {
       bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
     });
 
-    const pkg = JSON.parse(
-      readFileSync(join(agentDirFor("demo-openai"), "package.json"), "utf-8"),
-    );
+    const pkg = JSON.parse(readFileSync(join(agentDirFor("demo-openai"), "package.json"), "utf-8"));
     expect(pkg.dependencies[PROVIDER_TO_PACKAGE.openai]).toBeDefined();
     expect(pkg.dependencies[PROVIDER_TO_PACKAGE.anthropic]).toBeUndefined();
   });

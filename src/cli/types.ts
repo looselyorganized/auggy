@@ -259,4 +259,3 @@ export interface IndexEntry {
   /** Cloud deployment state (null when not deployed). */
   cloud: CloudRecord;
 }
-

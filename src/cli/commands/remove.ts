@@ -40,9 +40,7 @@ interface RemoveOptions {
 export async function runRemove(name: string, opts: RemoveOptions = {}): Promise<void> {
   const entry = getAgent(name, { auggyDir: opts.auggyDir });
   if (!entry) {
-    throw new Error(
-      `Agent "${name}" not found.\n\n  Run \`auggy list\` to see scaffolded agents.`,
-    );
+    throw new Error(`Agent "${name}" not found.\n\n  Run \`auggy list\` to see scaffolded agents.`);
   }
 
   // Refuse if the agent is running. Stale manifests (dead PID) are tolerated
