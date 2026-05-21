@@ -71,10 +71,13 @@ describe("resolveAugments — filesystem", () => {
     ];
 
     const augments = await resolveAugments(configs, TMP);
-    expect(augments).toHaveLength(1);
-    expect(augments[0]!.name).toBe("files");
-    expect(augments[0]!.tools).toBeDefined();
-    expect(augments[0]!.tools!.length).toBe(6);
+    // skills/ exists, so the auto-mount synth fires too → 2 augments.
+    // Assert specifically on the filesystem one rather than the array length
+    // so the test stays robust against future synth additions.
+    const files = augments.find((a) => a.name === "files");
+    expect(files).toBeDefined();
+    expect(files!.tools).toBeDefined();
+    expect(files!.tools!.length).toBe(6);
   });
 });
 
