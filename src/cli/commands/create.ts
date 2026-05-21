@@ -20,7 +20,7 @@ import { checkbox, confirm, select, input } from "@inquirer/prompts";
 import { stringify } from "yaml";
 import { AUGMENT_CATALOG, type CatalogEntry } from "../augment-catalog";
 import { copyBundledSkill, renderIdentityFromTemplate } from "../scaffold-skills";
-import { resolveAgentDir, sweepStaleTempDirs, writeAgentMeta } from "../agent-index";
+import { resolveAgentDir, sweepStaleTempDirs } from "../agent-index";
 import { getModelChoices, formatChoiceLabel, type Provider } from "../model-picker";
 import { buildAgentPackageJson, getAuggyVersion } from "../scaffold-package-json";
 import { runBunInstall, type BunInstallSpawnFactory } from "../bun-install";
@@ -297,10 +297,9 @@ export async function runCreate(name: string, opts: CreateOpts): Promise<void> {
       }),
     );
 
-    // Stamp the per-agent metadata file LAST so a reader looking at the
-    // staging dir can tell a complete scaffold from a half-finished one
-    // (the rename below is still the authoritative publish step).
-    writeAgentMeta(tempDir, { createdAt: new Date().toISOString() });
+    // No per-agent metadata file is written for fresh agents. createdAt
+    // derives from the dir's filesystem birthtime/mtime, and there is no
+    // cloud record until `auggy deploy` runs.
   } catch (err) {
     try {
       rmSync(tempDir, { recursive: true, force: true });

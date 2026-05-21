@@ -248,8 +248,8 @@ export type CloudRecord = null | {
 
 /**
  * Runtime view of one agent: filesystem path + metadata derived from the
- * agent's `.auggy-meta.json` (or synthesized from its directory mtime when
- * the meta file is missing).
+ * agent's `.auggy-cloud.json` (when deployed) and the directory's
+ * filesystem birthtime/mtime (for `createdAt`).
  */
 export interface IndexEntry {
   /** Absolute path to the agent directory under `<auggyDir>/agents/<name>/`. */

@@ -73,7 +73,7 @@ export async function runRemove(name: string, opts: RemoveOptions = {}): Promise
   }
 
   // --cloud: destroy the Railway service BEFORE removing the local dir,
-  // because the cloud record lives inside the dir's .auggy-meta.json.
+  // because the cloud record lives inside the dir's .auggy-cloud.json.
   if (opts.cloud && entry.cloud) {
     const cli = opts.railwayCli ?? createRailwayCli();
     const tmp = mkdtempSync(join(tmpdir(), `auggy-remove-${name}-`));

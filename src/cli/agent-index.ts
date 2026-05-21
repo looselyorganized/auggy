@@ -2,13 +2,13 @@
  * Agent store — filesystem-as-truth.
  *
  * An agent IS a directory at `<auggyDir>/agents/<name>/` containing
- * `agent.yaml` and (optionally) `.auggy-meta.json`. There is no central
- * index file; `listAgents` scans the directory, `getAgent` checks one path.
+ * `agent.yaml`. There is no central index file; `listAgents` scans the
+ * directory, `getAgent` checks one path.
  *
- * Per-agent metadata (`.auggy-meta.json`) carries the createdAt timestamp
- * and cloud-deployment record. Missing or unreadable meta is tolerated —
- * we synthesize defaults from the dir's mtime — because the agent's
- * existence is signaled by its directory, not by a metadata file.
+ * Cloud-deployment metadata persists in `<agentDir>/.auggy-cloud.json`,
+ * which exists only when the agent has been deployed. `createdAt` is
+ * derived from the directory's filesystem birthtime/mtime — not stored.
+ * File-existence carries information: present = deployed, absent = not.
  *
  * Atomic-create semantics live in `create.ts` (scaffold into a sibling
  * `.tmp-<uuid>` dir, `renameSync` to the final path). This module exposes
@@ -23,25 +23,20 @@ import {
   renameSync,
   rmSync,
   statSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { CloudRecord, IndexEntry } from "./types";
 
-const META_SCHEMA_VERSION = 1 as const;
-const META_FILENAME = ".auggy-meta.json";
+const CLOUD_FILENAME = ".auggy-cloud.json";
 const LEGACY_INDEX_FILENAME = "agents.json";
+const LEGACY_META_FILENAME = ".auggy-meta.json";
 
 interface AgentStoreOptions {
   /** Override `~/.auggy/` for tests. Production callers omit. */
   auggyDir?: string;
-}
-
-interface AgentMeta {
-  version: typeof META_SCHEMA_VERSION;
-  createdAt: string;
-  cloud: CloudRecord;
 }
 
 function getAuggyDir(opts: AgentStoreOptions = {}): string {
@@ -56,60 +51,76 @@ function agentDir(name: string, opts: AgentStoreOptions = {}): string {
   return join(getAgentsRoot(opts), name);
 }
 
-function metaPath(localDir: string): string {
-  return join(localDir, META_FILENAME);
-}
-
-function readMeta(localDir: string): AgentMeta {
-  const path = metaPath(localDir);
-  if (!existsSync(path)) {
-    return synthesizeMeta(localDir);
-  }
-  try {
-    const raw = readFileSync(path, "utf-8");
-    const parsed = JSON.parse(raw) as Partial<AgentMeta>;
-    if (parsed.version !== META_SCHEMA_VERSION) {
-      return synthesizeMeta(localDir);
-    }
-    return {
-      version: META_SCHEMA_VERSION,
-      createdAt: parsed.createdAt ?? synthesizeMeta(localDir).createdAt,
-      cloud: parsed.cloud ?? null,
-    };
-  } catch {
-    return synthesizeMeta(localDir);
-  }
-}
-
-function synthesizeMeta(localDir: string): AgentMeta {
-  let createdAt: string;
-  try {
-    const stats = statSync(localDir);
-    createdAt = stats.birthtime?.toISOString() ?? stats.mtime.toISOString();
-  } catch {
-    createdAt = new Date().toISOString();
-  }
-  return { version: META_SCHEMA_VERSION, createdAt, cloud: null };
-}
-
-function writeMeta(localDir: string, meta: AgentMeta): void {
-  const path = metaPath(localDir);
-  const tmp = `${path}.tmp-${process.pid}`;
-  writeFileSync(tmp, JSON.stringify(meta, null, 2));
-  renameSync(tmp, path);
+function cloudPath(localDir: string): string {
+  return join(localDir, CLOUD_FILENAME);
 }
 
 /**
- * One-shot migration from the legacy `agents.json` index.
- *
- * For each entry whose `localDir` still exists and lacks `.auggy-meta.json`,
- * write a meta file derived from the index entry. Rename the legacy file
- * aside with a timestamp so the operator can recover from backup if needed
- * and so we never run the migration twice.
+ * Derive the createdAt timestamp from the agent directory's filesystem
+ * birthtime (preferred) or mtime (fallback for filesystems that don't
+ * track birthtime). Stat failures fall back to "now" so a malformed dir
+ * doesn't crash listAgents.
+ */
+function deriveCreatedAt(localDir: string): string {
+  try {
+    const stats = statSync(localDir);
+    return (stats.birthtime ?? stats.mtime).toISOString();
+  } catch {
+    return new Date().toISOString();
+  }
+}
+
+/**
+ * Read the cloud-deploy record. Returns null when the file is absent
+ * (agent hasn't been deployed) or unreadable (treat as not-deployed
+ * rather than crash the read path).
+ */
+function readCloud(localDir: string): CloudRecord {
+  const path = cloudPath(localDir);
+  if (!existsSync(path)) return null;
+  try {
+    const raw = readFileSync(path, "utf-8");
+    const parsed = JSON.parse(raw) as NonNullable<CloudRecord>;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function writeCloud(localDir: string, record: NonNullable<CloudRecord>): void {
+  const path = cloudPath(localDir);
+  const tmp = `${path}.tmp-${process.pid}`;
+  writeFileSync(tmp, `${JSON.stringify(record, null, 2)}\n`);
+  renameSync(tmp, path);
+}
+
+function deleteCloud(localDir: string): void {
+  const path = cloudPath(localDir);
+  if (!existsSync(path)) return;
+  try {
+    unlinkSync(path);
+  } catch {
+    /* best-effort */
+  }
+}
+
+/**
+ * One-shot migration from older storage shapes:
+ *   - Legacy `agents.json` (pre-filesystem-as-truth): distribute each
+ *     entry's non-null cloud record into `<localDir>/.auggy-cloud.json`,
+ *     then rename the legacy file aside with a timestamp.
+ *   - In-progress `.auggy-meta.json` (intermediate shape never released):
+ *     if it contains a cloud record, write it to `.auggy-cloud.json`;
+ *     then delete the meta file.
  *
  * Best-effort: any failure is logged but does not block the caller.
  */
 function migrateLegacyIndex(opts: AgentStoreOptions = {}): void {
+  migrateLegacyAgentsJson(opts);
+  migrateLegacyMetaFiles(opts);
+}
+
+function migrateLegacyAgentsJson(opts: AgentStoreOptions): void {
   const legacyPath = join(getAuggyDir(opts), LEGACY_INDEX_FILENAME);
   if (!existsSync(legacyPath)) return;
 
@@ -122,16 +133,13 @@ function migrateLegacyIndex(opts: AgentStoreOptions = {}): void {
     if (parsed?.version === 1 && parsed.agents) {
       for (const [, entry] of Object.entries(parsed.agents)) {
         if (!entry?.localDir || !existsSync(entry.localDir)) continue;
-        if (existsSync(metaPath(entry.localDir))) continue;
+        if (existsSync(cloudPath(entry.localDir))) continue;
+        if (entry.cloud === null) continue;
         try {
-          writeMeta(entry.localDir, {
-            version: META_SCHEMA_VERSION,
-            createdAt: entry.createdAt,
-            cloud: entry.cloud,
-          });
+          writeCloud(entry.localDir, entry.cloud);
         } catch (err) {
           console.warn(
-            `[agent-store] migration: failed to write meta for ${entry.localDir}: ${(err as Error).message}`,
+            `[agent-store] migration: failed to write cloud for ${entry.localDir}: ${(err as Error).message}`,
           );
         }
       }
@@ -143,10 +151,39 @@ function migrateLegacyIndex(opts: AgentStoreOptions = {}): void {
   }
 }
 
+function migrateLegacyMetaFiles(opts: AgentStoreOptions): void {
+  const root = getAgentsRoot(opts);
+  if (!existsSync(root)) return;
+  for (const entry of readdirSync(root, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    if (entry.name.startsWith(".")) continue;
+    const localDir = join(root, entry.name);
+    const metaPath = join(localDir, LEGACY_META_FILENAME);
+    if (!existsSync(metaPath)) continue;
+    try {
+      const raw = readFileSync(metaPath, "utf-8");
+      const parsed = JSON.parse(raw) as { cloud?: CloudRecord };
+      if (parsed?.cloud && !existsSync(cloudPath(localDir))) {
+        writeCloud(localDir, parsed.cloud);
+      }
+      unlinkSync(metaPath);
+    } catch (err) {
+      console.warn(
+        `[agent-store] migration: failed to convert ${metaPath}: ${(err as Error).message}`,
+      );
+    }
+  }
+}
+
 function migrateOnce(opts: AgentStoreOptions = {}): void {
-  const legacyPath = join(getAuggyDir(opts), LEGACY_INDEX_FILENAME);
-  if (!existsSync(legacyPath)) return;
-  migrateLegacyIndex(opts);
+  const legacyIndex = join(getAuggyDir(opts), LEGACY_INDEX_FILENAME);
+  if (existsSync(legacyIndex)) {
+    migrateLegacyAgentsJson(opts);
+  }
+  // Always sweep for stray .auggy-meta.json files — cheap, scoped to
+  // existing agent dirs, and lets in-progress-branch installs upgrade
+  // without operator intervention.
+  migrateLegacyMetaFiles(opts);
 }
 
 function isAgentDir(localDir: string): boolean {
@@ -162,11 +199,10 @@ export function getAgent(name: string, opts: AgentStoreOptions = {}): IndexEntry
   migrateOnce(opts);
   const localDir = agentDir(name, opts);
   if (!isAgentDir(localDir)) return null;
-  const meta = readMeta(localDir);
   return {
     localDir,
-    createdAt: meta.createdAt,
-    cloud: meta.cloud,
+    createdAt: deriveCreatedAt(localDir),
+    cloud: readCloud(localDir),
   };
 }
 
@@ -188,12 +224,11 @@ export function listAgents(
     if (entry.name.startsWith(".")) continue;
     const localDir = join(root, entry.name);
     if (!isAgentDir(localDir)) continue;
-    const meta = readMeta(localDir);
     out.push({
       name: entry.name,
       localDir,
-      createdAt: meta.createdAt,
-      cloud: meta.cloud,
+      createdAt: deriveCreatedAt(localDir),
+      cloud: readCloud(localDir),
     });
   }
   return out;
@@ -216,8 +251,8 @@ export function removeAgent(name: string, opts: AgentStoreOptions = {}): void {
 }
 
 /**
- * Write the cloud record into the agent's `.auggy-meta.json`. Throws when
- * the agent dir does not exist (callers should ensure the agent is
+ * Write the cloud record into the agent's `.auggy-cloud.json`. Throws
+ * when the agent dir does not exist (callers should ensure the agent is
  * scaffolded before deploy).
  */
 export function setCloud(
@@ -229,43 +264,19 @@ export function setCloud(
   if (!isAgentDir(localDir)) {
     throw new Error(`Cannot set cloud for "${name}": agent dir not found at ${localDir}.`);
   }
-  const meta = readMeta(localDir);
-  meta.cloud = record;
-  writeMeta(localDir, meta);
+  writeCloud(localDir, record);
 }
 
 /**
- * Clear the cloud record. No-op when the agent dir is missing or has no
- * cloud record set.
+ * Clear the cloud record by deleting `.auggy-cloud.json`. No-op when
+ * the agent dir is missing or the file doesn't exist. The absence of
+ * the file IS the "not-deployed" state — there is no null sentinel to
+ * write.
  */
 export function clearCloud(name: string, opts: AgentStoreOptions = {}): void {
   const localDir = agentDir(name, opts);
   if (!isAgentDir(localDir)) return;
-  const meta = readMeta(localDir);
-  if (meta.cloud === null) return;
-  meta.cloud = null;
-  writeMeta(localDir, meta);
-}
-
-/**
- * Write the `.auggy-meta.json` for a freshly-scaffolded agent. Called by
- * `create.ts` before the atomic `renameSync` lifts the tempdir into place.
- * Exposed for tests that seed an agent without going through `runCreate`.
- *
- * `localDir` must already exist.
- */
-export function writeAgentMeta(
-  localDir: string,
-  fields: { createdAt?: string; cloud?: CloudRecord } = {},
-): void {
-  if (!existsSync(localDir)) {
-    throw new Error(`writeAgentMeta: ${localDir} does not exist.`);
-  }
-  writeMeta(localDir, {
-    version: META_SCHEMA_VERSION,
-    createdAt: fields.createdAt ?? new Date().toISOString(),
-    cloud: fields.cloud ?? null,
-  });
+  deleteCloud(localDir);
 }
 
 /**
@@ -312,19 +323,16 @@ export function sweepStaleTempDirs(
 /**
  * Test-only: seed an agent directory under `<auggyDir>/agents/<name>/`.
  *
- * Creates the dir, writes a minimal `agent.yaml`, and writes
- * `.auggy-meta.json`. Mirrors what `runCreate` produces, minus the
- * augment-specific files. Idempotent.
- *
- * Aliased as `addAgent` for compatibility with tests that pre-date the
- * filesystem-as-truth refactor; new tests should use `seedAgentForTest`.
+ * Creates the dir and writes a minimal `agent.yaml`. If `cloud` is
+ * supplied, also writes `.auggy-cloud.json` so tests can simulate a
+ * deployed agent. `createdAt` is intentionally not configurable —
+ * tests that need it can stat the dir after seeding.
  */
 export function seedAgentForTest(
   name: string,
   opts: AgentStoreOptions & {
     yaml?: string;
-    cloud?: CloudRecord;
-    createdAt?: string;
+    cloud?: NonNullable<CloudRecord>;
   } = {},
 ): string {
   const localDir = agentDir(name, opts);
@@ -333,10 +341,9 @@ export function seedAgentForTest(
     join(localDir, "agent.yaml"),
     opts.yaml ?? `id: aug1_${name}\nname: ${name}\n`,
   );
-  writeAgentMeta(localDir, {
-    createdAt: opts.createdAt,
-    cloud: opts.cloud,
-  });
+  if (opts.cloud) {
+    writeCloud(localDir, opts.cloud);
+  }
   return localDir;
 }
 

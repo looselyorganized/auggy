@@ -41,7 +41,7 @@ The CLI walks you through:
 8. **`railway domain --generate`** — assigns a `<name>-production-xxxx.up.railway.app` URL.
 9. **Push env vars** — your `.env` entries + `AUGGY_PUBLIC_URL` (the just-generated URL) are pushed via `railway variables --set`.
 10. **`railway up --detach`** — uploads the bundle, kicks off the build and deploy.
-11. **Metadata write** — the cloud record lands in `~/.auggy/agents/zip/.auggy-meta.json` so subsequent `auggy deploy zip` runs are idempotent redeploys.
+11. **Metadata write** — the cloud record lands in `~/.auggy/agents/zip/.auggy-cloud.json` so subsequent `auggy deploy zip` runs are idempotent redeploys.
 
 Follow the build in the [Railway dashboard](https://railway.com) or `railway logs`.
 
@@ -142,7 +142,7 @@ The Railway volume is **NOT** automatically deleted (Railway retains it as a saf
 - **Auto-rollback** on failed deploys. If `railway up` succeeds but the agent crashes at boot, Railway's auto-restart loop kicks in but doesn't roll back to the previous build. Use `railway logs` to diagnose.
 - **Multi-instance / horizontal scaling.** One Railway service runs one Auggy instance. The SQLite-on-volume design assumes a single writer.
 - **Plugin abstraction for other providers.** `--to fly` / `--to render` are deferred until concrete demand ([ADR-021](../../../docs/solutions/architecture/adr-021-agent-storage-and-deployment-locations.md)).
-- **Cross-machine cloud-record sync.** Each developer machine has its own `~/.auggy/agents/<name>/.auggy-meta.json`. Cloud deployment doesn't sync state back.
+- **Cross-machine cloud-record sync.** Each developer machine has its own `~/.auggy/agents/<name>/.auggy-cloud.json`. Cloud deployment doesn't sync state back.
 - **Built-in observability.** Use Railway's metrics dashboard and `railway logs`. Long-term observability is a v2 concern.
 
 ---

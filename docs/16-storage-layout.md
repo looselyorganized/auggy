@@ -9,7 +9,7 @@ Operator reference for where Auggy puts agents on disk.
 ├── agents/                         # one subdirectory per agent
 │   └── <name>/
 │       ├── agent.yaml              # source-of-truth config (uses `identity:` shorthand)
-│       ├── .auggy-meta.json        # per-agent metadata (createdAt, cloud record)
+│       ├── .auggy-cloud.json       # cloud-deploy record (only present when deployed)
 │       ├── identity.md             # who the agent is — security rules + skill manifest
 │       ├── learned.md              # mutable learnings
 │       ├── memory.sqlite           # SQLite (layeredMemory, default scaffold)
@@ -38,22 +38,30 @@ filesystem.
 - `memory.sqlite` is the default `layeredMemory` backend (SQLite, namespace-scoped). The scaffold includes the augment by default; remove from `agent.yaml` if not needed.
 - `org-context/` is scaffolded only when `orgContext` is selected; the example `manifest` + endpoint files plus `baseUrl: file://./org-context` give a working local config without needing to stand up an HTTP server.
 
-## Per-agent metadata
+## Cloud-deploy state
 
-`<agent-dir>/.auggy-meta.json` carries:
+`<agent-dir>/.auggy-cloud.json` exists **only when the agent has been
+deployed**. The file's presence carries the information; its absence is
+the "not-deployed" state (no null sentinel).
 
 ```json
 {
-  "version": 1,
-  "createdAt": "2026-05-01T12:00:00.000Z",
-  "cloud": null
+  "provider": "railway",
+  "projectId": "proj_abc",
+  "serviceId": "svc_def",
+  "url": "https://zip.up.railway.app",
+  "volumeId": "zip-data",
+  "deployedAt": "2026-05-15T12:00:00.000Z"
 }
 ```
 
-`createdAt` is set at `auggy create` time. `cloud` is populated by `auggy
-deploy` and cleared by `auggy remove --cloud`. If the file is missing (e.g.
-older agents pre-dating the schema), the CLI falls back to the directory's
-filesystem mtime and treats `cloud` as `null`.
+`auggy deploy` writes it; `auggy remove --cloud` (and `clearCloud`)
+deletes it. There is no central index — each agent carries its own
+deploy record beside its config.
+
+`createdAt` is **not stored**; the CLI derives it from the directory's
+filesystem birthtime (or mtime as a fallback) wherever it surfaces a
+timestamp.
 
 ## Atomic creation
 
@@ -81,17 +89,26 @@ that's the entire removal — there is no separate index entry to clean up.
 
 ## Migration from the legacy index
 
-Pre-`feat/filesystem-as-truth` builds kept a central `~/.auggy/agents.json`
-mapping each name to a `localDir`. The first call into the new store on an
-upgraded installation migrates each entry into a per-agent
-`.auggy-meta.json` (preserving `createdAt` and any `cloud` record), then
-renames the legacy file to `agents.json.migrated-<ISO timestamp>` so the
-operator can recover from backup if needed. Migration is idempotent and
-runs at most once per directory.
+Pre-filesystem-as-truth builds kept a central `~/.auggy/agents.json`
+mapping each name to a `localDir`. The first call into the new store on
+an upgraded installation:
+
+- distributes any non-null `cloud` records into the corresponding
+  agent's `.auggy-cloud.json`,
+- renames `agents.json` to `agents.json.migrated-<ISO timestamp>` so
+  the operator can recover from backup if needed.
+
+A short-lived in-progress shape (`.auggy-meta.json`, never released) is
+also forward-migrated: cloud records inside it move to
+`.auggy-cloud.json` and the meta file is deleted.
+
+Migration is idempotent and best-effort — failures are logged, not
+fatal.
 
 ## Cloud
 
 `auggy deploy <name> --to railway` writes the Railway service metadata
-(provider, projectId, serviceId, url, volumeId, deployedAt) into the
-agent's `.auggy-meta.json`. `auggy remove <name> --cloud` reads the same
-record to destroy the Railway service before removing the local dir.
+(provider, projectId, serviceId, url, volumeId, deployedAt) into
+`<agent-dir>/.auggy-cloud.json`. `auggy remove <name> --cloud` reads
+that file to destroy the Railway service before removing the local dir
+(and the file with it).
