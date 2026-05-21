@@ -24,6 +24,7 @@ import { resolveAgentDir, sweepStaleTempDirs } from "../agent-index";
 import { getModelChoices, formatChoiceLabel, type Provider } from "../model-picker";
 import { buildAgentPackageJson, getAuggyVersion } from "../scaffold-package-json";
 import { runBunInstall, type BunInstallSpawnFactory } from "../bun-install";
+import { withEscRestart, WizardRestartRequested } from "../wizard-restart";
 
 const PROVIDER_DEFAULTS: Record<Provider, { model: string; envVar: string }> = {
   anthropic: { model: "claude-sonnet-4-6", envVar: "ANTHROPIC_API_KEY" },
@@ -82,6 +83,214 @@ export interface CreateOpts {
   auggyDir?: string;
 }
 
+interface WizardAnswers {
+  provider: Provider;
+  model: string;
+  operatorName: string;
+  purpose: string;
+  augments: CatalogEntry[];
+  orgName: string;
+  orgPurpose: string;
+  orgContextSelected: boolean;
+  ollamaBaseURL: string | undefined;
+  ollamaNeedsBearer: boolean;
+}
+
+/**
+ * Drive the interactive wizard. Returns the collected answers on success.
+ * Pressing Esc at any prompt throws `WizardRestartRequested`; the caller
+ * catches that and re-invokes this fn.
+ *
+ * Each prompt is wrapped in `withEscRestart(ctx => prompt(config, ctx))`
+ * so the keypress listener lives only for the duration of the call. The
+ * lazy thunk preserves ESM live-binding of the prompt imports (tests
+ * replace `@inquirer/prompts` via `mock.module`).
+ */
+async function runWizard(): Promise<WizardAnswers> {
+  // Interactive engine selection.
+  const provider = await withEscRestart((ctx) =>
+    select<Provider>(
+      {
+        message: "Engine provider:",
+        choices: [
+          { name: "anthropic — Claude models", value: "anthropic" },
+          { name: "openai — GPT models", value: "openai" },
+          { name: "openrouter — any model via OpenRouter", value: "openrouter" },
+          { name: "ollama — local LLM (Qwen, Llama, & more)", value: "ollama" },
+        ],
+        default: "anthropic",
+      },
+      ctx,
+    ),
+  );
+
+  // Ollama-specific: ask whether it runs locally or against a remote host.
+  let ollamaBaseURL: string | undefined;
+  let ollamaNeedsBearer = false;
+  if (provider === "ollama") {
+    const ollamaMode = await withEscRestart((ctx) =>
+      select<"local" | "remote">(
+        {
+          message: "Where does Ollama run?",
+          choices: [
+            { name: "Local (http://localhost:11434, no auth)", value: "local" },
+            {
+              name: "Remote / Cloud (custom URL, optional bearer)",
+              value: "remote",
+            },
+          ],
+          default: "local",
+        },
+        ctx,
+      ),
+    );
+    if (ollamaMode === "remote") {
+      ollamaBaseURL = await withEscRestart((ctx) =>
+        input(
+          {
+            message: "Ollama URL (e.g. https://ollama.example.com):",
+          },
+          ctx,
+        ),
+      );
+      if (!ollamaBaseURL || !/^https?:\/\//.test(ollamaBaseURL)) {
+        throw new Error(
+          `Invalid Ollama URL: ${JSON.stringify(ollamaBaseURL)}. Must start with http:// or https://`,
+        );
+      }
+      ollamaNeedsBearer = await withEscRestart((ctx) =>
+        confirm(
+          {
+            message:
+              "Does the remote Ollama require a bearer token? (Ollama Cloud + gated proxies do)",
+            default: true,
+          },
+          ctx,
+        ),
+      );
+    }
+  }
+
+  // Model selection: dropdown of priced models + Custom escape hatch.
+  const CUSTOM_SENTINEL = "__custom__";
+  const choices = getModelChoices(provider);
+  const modelSelection = await withEscRestart((ctx) =>
+    select<string>(
+      {
+        message: "Model:",
+        choices: [
+          ...choices.map((c) => ({ name: formatChoiceLabel(c), value: c.id })),
+          { name: "Custom — type your own model ID", value: CUSTOM_SENTINEL },
+        ],
+      },
+      ctx,
+    ),
+  );
+
+  let model: string;
+  if (modelSelection === CUSTOM_SENTINEL) {
+    model = await withEscRestart((ctx) => input({ message: "Custom model ID:" }, ctx));
+    printCustomModelWarning(model);
+    const proceed = await withEscRestart((ctx) =>
+      confirm(
+        {
+          message: "Continue with unpriced model? Budget caps will not enforce.",
+          default: false,
+        },
+        ctx,
+      ),
+    );
+    if (!proceed) {
+      throw new Error(
+        "Aborted by operator. Pick a priced model or add `engine.costOverride` to agent.yaml after scaffolding.",
+      );
+    }
+  } else {
+    model = modelSelection;
+  }
+
+  // Operator + purpose prompts.
+  const operatorName = await withEscRestart((ctx) =>
+    input(
+      {
+        message: "Operator name (your name; appears in identity.md security rule):",
+        default: DEFAULT_OPERATOR_NAME,
+      },
+      ctx,
+    ),
+  );
+  const purpose = await withEscRestart((ctx) =>
+    input(
+      {
+        message: "Agent purpose (one sentence):",
+        default: DEFAULT_PURPOSE,
+      },
+      ctx,
+    ),
+  );
+
+  // Interactive augment selection.
+  const selected = await withEscRestart((ctx) =>
+    checkbox(
+      {
+        message: "Select augments:",
+        choices: AUGMENT_CATALOG.map((entry) => ({
+          name: `${entry.label} — ${entry.description}`,
+          value: entry,
+          checked: entry.required,
+          disabled: entry.required ? "(always included)" : false,
+        })),
+      },
+      ctx,
+    ),
+  );
+
+  const augments = AUGMENT_CATALOG.filter((e) => e.required);
+  for (const entry of selected) {
+    if (!augments.includes(entry)) {
+      augments.push(entry);
+    }
+  }
+
+  // Conditional org prompts — only ask when orgContext is selected.
+  const orgContextSelected = augments.some((e) => e.type === "orgContext");
+  let orgName = DEFAULT_ORG_NAME;
+  let orgPurpose = DEFAULT_ORG_PURPOSE;
+  if (orgContextSelected) {
+    orgName = await withEscRestart((ctx) =>
+      input(
+        {
+          message: "Org name:",
+          default: DEFAULT_ORG_NAME,
+        },
+        ctx,
+      ),
+    );
+    orgPurpose = await withEscRestart((ctx) =>
+      input(
+        {
+          message: "Org purpose (one sentence):",
+          default: DEFAULT_ORG_PURPOSE,
+        },
+        ctx,
+      ),
+    );
+  }
+
+  return {
+    provider,
+    model,
+    operatorName,
+    purpose,
+    augments,
+    orgName,
+    orgPurpose,
+    orgContextSelected,
+    ollamaBaseURL,
+    ollamaNeedsBearer,
+  };
+}
+
 export async function runCreate(name: string, opts: CreateOpts): Promise<void> {
   const finalDir = resolveAgentDir(name, { auggyDir: opts.auggyDir });
 
@@ -97,123 +306,40 @@ export async function runCreate(name: string, opts: CreateOpts): Promise<void> {
   // progress (the finalDir check above is the lock).
   sweepStaleTempDirs({ auggyDir: opts.auggyDir });
 
-  printWelcome();
-
-  // Interactive engine selection.
-  const provider = await select<Provider>({
-    message: "Engine provider:",
-    choices: [
-      { name: "anthropic — Claude models", value: "anthropic" },
-      { name: "openai — GPT models", value: "openai" },
-      { name: "openrouter — any model via OpenRouter", value: "openrouter" },
-      { name: "ollama — local LLM (no API key, runs offline)", value: "ollama" },
-    ],
-    default: "anthropic",
-  });
-
-  // Ollama-specific: ask whether it runs locally or against a remote host.
-  let ollamaBaseURL: string | undefined;
-  let ollamaNeedsBearer = false;
-  if (provider === "ollama") {
-    const ollamaMode = await select<"local" | "remote">({
-      message: "Where does Ollama run?",
-      choices: [
-        { name: "Local (http://localhost:11434, no auth)", value: "local" },
-        {
-          name: "Remote / Cloud (custom URL, optional bearer)",
-          value: "remote",
-        },
-      ],
-      default: "local",
-    });
-    if (ollamaMode === "remote") {
-      ollamaBaseURL = await input({
-        message: "Ollama URL (e.g. https://ollama.example.com):",
-      });
-      if (!ollamaBaseURL || !/^https?:\/\//.test(ollamaBaseURL)) {
-        throw new Error(
-          `Invalid Ollama URL: ${JSON.stringify(ollamaBaseURL)}. Must start with http:// or https://`,
-        );
+  // Wizard loop — Esc at any prompt restarts from the engine-provider
+  // step. We only print the welcome banner on the first attempt; restart
+  // attempts skip it to keep the terminal scrollback clean.
+  let attempt = 0;
+  let answers: WizardAnswers;
+  for (;;) {
+    if (attempt === 0) printWelcome();
+    try {
+      answers = await runWizard();
+      break;
+    } catch (err) {
+      if (err instanceof WizardRestartRequested) {
+        attempt += 1;
+        console.log();
+        console.log(dim("  ↺ Restarted (Esc pressed)"));
+        console.log();
+        continue;
       }
-      ollamaNeedsBearer = await confirm({
-        message: "Does the remote Ollama require a bearer token? (Ollama Cloud + gated proxies do)",
-        default: true,
-      });
+      throw err;
     }
   }
 
-  // Model selection: dropdown of priced models + Custom escape hatch.
-  const CUSTOM_SENTINEL = "__custom__";
-  const choices = getModelChoices(provider);
-  const modelSelection = await select<string>({
-    message: "Model:",
-    choices: [
-      ...choices.map((c) => ({ name: formatChoiceLabel(c), value: c.id })),
-      { name: "Custom — type your own model ID", value: CUSTOM_SENTINEL },
-    ],
-  });
-
-  let model: string;
-  if (modelSelection === CUSTOM_SENTINEL) {
-    model = await input({ message: "Custom model ID:" });
-    printCustomModelWarning(model);
-    const proceed = await confirm({
-      message: "Continue with unpriced model? Budget caps will not enforce.",
-      default: false,
-    });
-    if (!proceed) {
-      throw new Error(
-        "Aborted by operator. Pick a priced model or add `engine.costOverride` to agent.yaml after scaffolding.",
-      );
-    }
-  } else {
-    model = modelSelection;
-  }
-
-  // Operator + purpose prompts. Used to populate identity.md security rules
-  // (operator-name reference) and the agent.yaml `operators[]` array.
-  const operatorName = await input({
-    message: "Operator name (your name; appears in identity.md security rule):",
-    default: DEFAULT_OPERATOR_NAME,
-  });
-  const purpose = await input({
-    message: "Agent purpose (one sentence):",
-    default: DEFAULT_PURPOSE,
-  });
-
-  // Interactive augment selection.
-  const selected = await checkbox({
-    message: "Select augments:",
-    choices: AUGMENT_CATALOG.map((entry) => ({
-      name: `${entry.label} — ${entry.description}`,
-      value: entry,
-      checked: entry.required,
-      disabled: entry.required ? "(always included)" : false,
-    })),
-  });
-
-  // Ensure required augments are included.
-  const augments = AUGMENT_CATALOG.filter((e) => e.required);
-  for (const entry of selected) {
-    if (!augments.includes(entry)) {
-      augments.push(entry);
-    }
-  }
-
-  // Conditional org prompts — only ask when orgContext is selected.
-  const orgContextSelected = augments.some((e) => e.type === "orgContext");
-  let orgName = DEFAULT_ORG_NAME;
-  let orgPurpose = DEFAULT_ORG_PURPOSE;
-  if (orgContextSelected) {
-    orgName = await input({
-      message: "Org name:",
-      default: DEFAULT_ORG_NAME,
-    });
-    orgPurpose = await input({
-      message: "Org purpose (one sentence):",
-      default: DEFAULT_ORG_PURPOSE,
-    });
-  }
+  const {
+    provider,
+    model,
+    operatorName,
+    purpose,
+    augments,
+    orgName,
+    orgPurpose,
+    orgContextSelected,
+    ollamaBaseURL,
+    ollamaNeedsBearer,
+  } = answers;
 
   const id = `aug1_${randomUUID()}`;
 
