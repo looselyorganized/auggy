@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { addAgent, getAgent, setCloud } from "../../src/cli/agent-index";
+import { getAgent, seedAgentForTest, setCloud } from "../../src/cli/agent-index";
 import { runDeploy } from "../../src/cli/commands/deploy";
 import type { RailwayCli } from "../../src/cli/deploy/railway-cli";
 
@@ -78,12 +78,12 @@ describe("runDeploy", () => {
 
   beforeEach(() => {
     auggyDir = mkdtempSync(join(tmpdir(), "auggy-deploy-test-"));
-    agentDir = join(auggyDir, "agents", "zip");
-    mkdirSync(agentDir, { recursive: true });
-    writeFileSync(join(agentDir, "agent.yaml"), "name: zip\nmodel: claude-sonnet-4-6\n");
+    agentDir = seedAgentForTest("zip", {
+      auggyDir,
+      yaml: "name: zip\nmodel: claude-sonnet-4-6\n",
+    });
     writeFileSync(join(agentDir, "identity.md"), "# Zip\n");
     writeFileSync(join(agentDir, ".env"), "ANTHROPIC_API_KEY=sk-test\nAUGGY_WEB_TOKEN=tok-1\n");
-    addAgent("zip", agentDir, { auggyDir });
   });
 
   afterEach(() => {
@@ -235,7 +235,7 @@ describe("runDeploy", () => {
         promptConfirm: async () => true,
         logger: { info: () => {}, warn: () => {}, error: () => {} },
       }),
-    ).rejects.toThrow(/not registered/i);
+    ).rejects.toThrow(/not registered|not found/i);
   });
 
   test("redeploy: reuses existing projectId from CloudRecord, skips addVolume", async () => {

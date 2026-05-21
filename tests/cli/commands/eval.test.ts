@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { addAgent } from "../../../src/cli/agent-index";
+import { seedAgentForTest } from "../../../src/cli/agent-index";
 import { evalCommand, resolveEvalConfigPath } from "../../../src/cli/commands/eval";
 
 type RunEvalSuiteArgs = {
@@ -73,12 +73,8 @@ describe("resolveEvalConfigPath", () => {
     ).toThrow(/not found/i);
   });
 
-  test("registered agent name resolves to indexed agent.yaml", () => {
-    const dir = join(agentParent, "zip");
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, "agent.yaml"), "id: aug1_test\n");
-    addAgent("zip", dir, { auggyDir });
-
+  test("registered agent name resolves to canonical agent.yaml", () => {
+    const dir = seedAgentForTest("zip", { auggyDir });
     expect(resolveEvalConfigPath({ agentName: "zip" }, { auggyDir })).toBe(join(dir, "agent.yaml"));
   });
 
@@ -89,24 +85,15 @@ describe("resolveEvalConfigPath", () => {
     );
   });
 
-  test("indexed agent missing agent.yaml on disk throws helpful error", () => {
-    const dir = join(agentParent, "zip");
-    mkdirSync(dir, { recursive: true });
-    addAgent("zip", dir, { auggyDir }); // dir exists, agent.yaml does not
-    expect(() => resolveEvalConfigPath({ agentName: "zip" }, { auggyDir })).toThrow(
-      /missing|agent\.yaml/i,
-    );
+  test("agent dir without agent.yaml is treated as not-found", () => {
+    mkdirSync(join(auggyDir, "agents", "zip"), { recursive: true });
+    expect(() => resolveEvalConfigPath({ agentName: "zip" }, { auggyDir })).toThrow(/not found/i);
   });
 
   test("explicit --config takes precedence over agent name", () => {
-    const dir = join(agentParent, "zip");
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, "agent.yaml"), "id: aug1_test\n");
-    addAgent("zip", dir, { auggyDir });
-
+    seedAgentForTest("zip", { auggyDir });
     const override = join(agentParent, "override.yaml");
     writeFileSync(override, "id: aug1_override\n");
-
     expect(
       resolveEvalConfigPath({ agentName: "zip", explicitConfig: override }, { auggyDir }),
     ).toBe(override);
@@ -154,11 +141,8 @@ describe("auggy eval — action dispatch", () => {
     expect(exit).toHaveBeenCalledWith(0);
   });
 
-  test("agent name resolves through registry", async () => {
-    const dir = join(agentParent, "zip");
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, "agent.yaml"), "id: aug1_test\n");
-    addAgent("zip", dir, { auggyDir });
+  test("agent name resolves through filesystem", async () => {
+    const dir = seedAgentForTest("zip", { auggyDir });
 
     const runEvalSuite = mock<MockRunEvalSuite>(async () => ({ exitCode: 0 }));
     const exit = mock((_code: number) => {});
@@ -171,10 +155,7 @@ describe("auggy eval — action dispatch", () => {
   });
 
   test("--config overrides agent name lookup", async () => {
-    const dir = join(agentParent, "zip");
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, "agent.yaml"), "id: aug1_indexed\n");
-    addAgent("zip", dir, { auggyDir });
+    seedAgentForTest("zip", { auggyDir, yaml: "id: aug1_indexed\n" });
 
     const override = join(agentParent, "override.yaml");
     writeFileSync(override, "id: aug1_override\n");

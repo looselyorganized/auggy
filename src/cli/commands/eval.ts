@@ -14,7 +14,7 @@
  *
  * Config-path resolution order (highest precedence first):
  *   1. --config <path>  (resolved against cwd)
- *   2. [agent] argument (looked up in `~/.auggy/agents.json`)
+ *   2. [agent] argument (looked up at `<auggyDir>/agents/<name>/agent.yaml`)
  *   3. Default: the canonical fixture at `evals/security/fixtures/test-agent.yaml`
  */
 
@@ -94,19 +94,11 @@ export function resolveEvalConfigPath(
     if (!entry) {
       throw new Error(
         `Agent "${args.agentName}" not found.\n\n` +
-          `  Run \`auggy ls\` to see registered agents,\n` +
+          `  Run \`auggy list\` to see registered agents,\n` +
           `  or use --config <path> for a one-off path.`,
       );
     }
-    const cfg = join(entry.localDir, "agent.yaml");
-    if (!existsSync(cfg)) {
-      throw new Error(
-        `agent.yaml missing at indexed path: ${cfg}\n\n` +
-          `  The agent directory may have been deleted or moved manually.\n` +
-          `  Run \`auggy remove ${args.agentName}\` to clean up the index entry.`,
-      );
-    }
-    return cfg;
+    return join(entry.localDir, "agent.yaml");
   }
 
   if (!opts.defaultFixtureConfigPath) {

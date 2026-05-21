@@ -1,11 +1,11 @@
 /**
- * auggy ls — list all registered agents with their location and status.
+ * auggy list — list all agents under `<auggyDir>/agents/` with their status.
  *
- * Status is derived from PID manifests + filesystem: running, stopped, or
- * missing-dir (indexed but localDir gone).
+ * Status is derived from PID manifests: running, or stopped. The filesystem
+ * is the source of truth — an agent IS a directory at the canonical path,
+ * so a "missing-dir" state cannot exist by construction.
  */
 
-import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { listAgents } from "../agent-index";
 import { readPidManifest, isProcessAlive } from "../pid-registry";
@@ -28,8 +28,7 @@ function tildify(path: string): string {
   return path;
 }
 
-function statusFor(name: string, localDir: string): string {
-  if (!existsSync(localDir)) return "missing-dir";
+function statusFor(name: string): string {
   const pid = readPidManifest(name);
   if (pid && isProcessAlive(pid.pid)) {
     return `running (${pid.mode}, :${pid.port})`;
@@ -50,10 +49,9 @@ export async function runLs(opts: LsOptions = {}): Promise<void> {
   const rows: AgentRow[] = agents.map((a) => ({
     name: a.name,
     location: tildify(a.localDir),
-    status: statusFor(a.name, a.localDir),
+    status: statusFor(a.name),
   }));
 
-  // Compute column widths.
   const nameW = Math.max(4, ...rows.map((r) => r.name.length));
   const locW = Math.max(8, ...rows.map((r) => r.location.length));
 

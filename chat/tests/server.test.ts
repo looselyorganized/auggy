@@ -59,7 +59,7 @@ function setupAgent(bearerToken: string, opts: { card?: object; runResponse?: st
 }
 
 async function bootServer(overrides: Partial<GuiServerOptions> = {}) {
-  const s = createGuiServer({
+  const s = await createGuiServer({
     port: 0,
     auggyDir: tempAuggyDir,
     ...overrides,
@@ -183,12 +183,41 @@ describe("Local GUI server", () => {
     try {
       let threw = false;
       try {
-        const s = createGuiServer({ port: conflictPort, auggyDir: tempAuggyDir });
+        const s = await createGuiServer({ port: conflictPort, auggyDir: tempAuggyDir });
         s.stop();
       } catch {
         threw = true;
       }
       expect(threw).toBe(true);
+    } finally {
+      blocker.stop();
+    }
+  });
+
+  it("refuses to start if port is held by an IPv6-only listener (stale-vite repro)", async () => {
+    // Repro for the bug we shipped without coverage: a stale Vite dev server
+    // bound to `[::1]:8090` while `auggy chat` bound to `127.0.0.1:8090`
+    // coexisted silently. The pre-flight must probe BOTH wildcards.
+    const blocker = Bun.serve({
+      port: 0,
+      hostname: "::1",
+      fetch: () => new Response("v6-blocked"),
+    });
+    const conflictPort = blocker.port;
+    if (conflictPort === undefined) throw new Error("v6 blocker did not bind a port");
+    try {
+      let threw = false;
+      let errMessage = "";
+      try {
+        const s = await createGuiServer({ port: conflictPort, auggyDir: tempAuggyDir });
+        s.stop();
+      } catch (err) {
+        threw = true;
+        errMessage = (err as Error).message;
+      }
+      expect(threw).toBe(true);
+      expect(errMessage).toMatch(/in use/i);
+      expect(errMessage).toMatch(/IPv6/);
     } finally {
       blocker.stop();
     }

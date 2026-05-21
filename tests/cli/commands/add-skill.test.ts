@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { addAgent } from "../../../src/cli/agent-index";
+import { seedAgentForTest } from "../../../src/cli/agent-index";
 import { addSkillCommand, resolveAgentDir } from "../../../src/cli/commands/add-skill";
 
 const BUNDLED_WEB_FETCH_SKILL = resolve(
@@ -29,8 +29,15 @@ afterEach(() => {
   rmSync(agentParent, { recursive: true, force: true });
 });
 
-/** Helper: scaffold a minimal agent dir with a stub agent.yaml. */
+/** Helper: scaffold a minimal agent dir under auggyDir/agents/<name>/. */
 function makeAgentDir(name: string): string {
+  const dir = seedAgentForTest(name, { auggyDir });
+  mkdirSync(join(dir, "skills"), { recursive: true });
+  return dir;
+}
+
+/** Helper: minimal CWD-only agent dir for tests that exercise CWD detection. */
+function makeCwdAgentDir(name: string): string {
   const dir = join(agentParent, name);
   mkdirSync(dir, { recursive: true });
   mkdirSync(join(dir, "skills"), { recursive: true });
@@ -76,7 +83,6 @@ describe("resolveAgentDir", () => {
 
   test("looks up registered agent via --agent flag", () => {
     const dir = makeAgentDir("zip");
-    addAgent("zip", dir, { auggyDir });
     expect(resolveAgentDir("zip", { auggyDir })).toBe(dir);
   });
 
@@ -84,11 +90,9 @@ describe("resolveAgentDir", () => {
     expect(() => resolveAgentDir("ghost", { auggyDir })).toThrow(/not registered/i);
   });
 
-  test("throws when indexed agent.yaml has been deleted", () => {
-    const dir = join(agentParent, "ghost");
-    mkdirSync(dir, { recursive: true });
-    addAgent("ghost", dir, { auggyDir }); // no agent.yaml on disk
-    expect(() => resolveAgentDir("ghost", { auggyDir })).toThrow(/missing|agent\.yaml/i);
+  test("treats agent dir without agent.yaml as not-registered", () => {
+    mkdirSync(join(auggyDir, "agents", "ghost"), { recursive: true });
+    expect(() => resolveAgentDir("ghost", { auggyDir })).toThrow(/not registered/i);
   });
 });
 
@@ -187,7 +191,6 @@ describe("auggy add-skill — invalid input", () => {
 describe("auggy add-skill — --agent flag", () => {
   test("targets a registered agent regardless of CWD", async () => {
     const dir = makeAgentDir("target");
-    addAgent("target", dir, { auggyDir });
 
     // Run from a sibling cwd that has no agent.yaml — --agent must take over.
     const sibling = mkdtempSync(join(tmpdir(), "auggy-add-skill-sibling-"));

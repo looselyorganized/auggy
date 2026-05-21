@@ -25,9 +25,20 @@ import type {
 import { defineTool } from "../../helpers";
 import { readOverrides, writeOverrides } from "../../lib/admin-overrides";
 import { createRingBuffer } from "../../lib/ring-buffer";
+/**
+ * Single source of truth for the transports notify ships. The type union
+ * `NotifyAdapterKind` (src/types.ts) MUST stay in sync — the drift test
+ * (tests/augments/notify-transport-drift.test.ts) and config-parser
+ * exhaustiveness depend on this list. Adding an adapter: add the string
+ * here + add the destination interface in src/types.ts + handle in the
+ * config-parser destination validator + register the factory below.
+ */
+export const NOTIFY_TRANSPORTS = ["webhook", "telegram", "agentmail", "log-to-file"] as const;
+
 import { createWebhookAdapter } from "./adapters/webhook";
 import { createTelegramAdapter } from "./adapters/telegram";
 import { createAgentMailAdapter } from "./adapters/agentmail";
+import { createLogToFileAdapter } from "./adapters/log-to-file";
 
 export interface NotifyAugmentInternalOptions extends NotifyAugmentOptions {
   /**
@@ -38,6 +49,7 @@ export interface NotifyAugmentInternalOptions extends NotifyAugmentOptions {
     webhook: NotifyAdapter;
     telegram: NotifyAdapter;
     agentmail: NotifyAdapter;
+    "log-to-file": NotifyAdapter;
   }>;
 }
 
@@ -46,6 +58,7 @@ export function notify(opts: NotifyAugmentInternalOptions): Augment {
     webhook: createWebhookAdapter(),
     telegram: createTelegramAdapter(),
     agentmail: createAgentMailAdapter(),
+    "log-to-file": createLogToFileAdapter(),
   };
   const adapters = { ...defaults, ...(opts.adapters ?? {}) };
 

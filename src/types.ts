@@ -991,7 +991,22 @@ export interface AgentHandle {
 
 // === Notify augment ===
 
-export type NotifyAdapterKind = "webhook" | "telegram" | "agentmail";
+export type NotifyAdapterKind = "webhook" | "telegram" | "agentmail" | "log-to-file";
+
+export interface LogToFileNotifyDestination {
+  name: string;
+  transport: "log-to-file";
+  /** Path to the JSONL log file. Relative paths resolve against the agent
+   *  dir; absolute paths used as-is. Default destination for scaffolded
+   *  agents: `./notifications.jsonl`. The file is created on first write
+   *  and appended to (one JSON object per line). */
+  path: string;
+  /** Optional per-destination rate limit. */
+  rateLimit?: {
+    maxPerHour?: number;
+    cooldownMs?: number;
+  };
+}
 
 export interface WebhookNotifyDestination {
   name: string;
@@ -1043,7 +1058,8 @@ export interface AgentMailNotifyDestination {
 export type NotifyDestination =
   | WebhookNotifyDestination
   | TelegramNotifyDestination
-  | AgentMailNotifyDestination;
+  | AgentMailNotifyDestination
+  | LogToFileNotifyDestination;
 
 export interface NotifyRateLimitOptions {
   enabled?: boolean;
