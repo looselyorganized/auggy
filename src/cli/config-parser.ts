@@ -125,6 +125,7 @@ const BUILTIN_TYPES = new Set([
   "bash",
   "budgets",
   "notify",
+  "agentMail",
   "telegramTransport",
   "turnControl",
   "visitorAuth",
@@ -527,6 +528,134 @@ function validateNotifyOptions(
 }
 
 /**
+ * Single source of truth for the `inbound.mode` discriminator on the
+ * agentMail augment. Phase A ships `"none"`; Phase B adds `"websocket"`
+ * and `"polling"`; Phase C adds `"webhook"`. Listing the future modes here
+ * (rather than rejecting them outright) gives operators a clear error
+ * message that distinguishes "not yet implemented" from "typo'd value".
+ */
+const AGENT_MAIL_INBOUND_MODES = new Set(["none", "websocket", "polling", "webhook"]);
+const AGENT_MAIL_INBOUND_MODES_IMPLEMENTED = new Set(["none"]);
+const VALID_TRUST_LEVELS = new Set(["creator", "agent", "public"]);
+
+function validateAgentMailOptions(
+  opts: Record<string, unknown>,
+  prefix: string,
+  errors: string[],
+): void {
+  if (typeof opts.apiKey !== "string" || !opts.apiKey) {
+    errors.push(`${prefix}.apiKey: required string (set AGENTMAIL_API_KEY in .env)`);
+  }
+  if (typeof opts.inboxId !== "string" || !opts.inboxId) {
+    errors.push(`${prefix}.inboxId: required string (set AGENTMAIL_INBOX_ID in .env)`);
+  }
+
+  if (opts.outbound !== undefined) {
+    if (typeof opts.outbound !== "object" || opts.outbound === null) {
+      errors.push(`${prefix}.outbound: must be an object`);
+    } else {
+      const out = opts.outbound as Record<string, unknown>;
+
+      if (out.allowedTrustLevels !== undefined) {
+        if (!Array.isArray(out.allowedTrustLevels)) {
+          errors.push(`${prefix}.outbound.allowedTrustLevels: must be an array`);
+        } else {
+          for (let i = 0; i < out.allowedTrustLevels.length; i++) {
+            const lvl = out.allowedTrustLevels[i];
+            if (typeof lvl !== "string" || !VALID_TRUST_LEVELS.has(lvl)) {
+              errors.push(
+                `${prefix}.outbound.allowedTrustLevels[${i}]: must be one of "creator", "agent", "public" (got ${JSON.stringify(lvl)})`,
+              );
+            }
+          }
+        }
+      }
+
+      if (out.allowedRecipients !== undefined) {
+        if (!Array.isArray(out.allowedRecipients)) {
+          errors.push(`${prefix}.outbound.allowedRecipients: must be an array`);
+        } else {
+          for (let i = 0; i < out.allowedRecipients.length; i++) {
+            const r = out.allowedRecipients[i];
+            if (typeof r !== "string" || r.length === 0) {
+              errors.push(
+                `${prefix}.outbound.allowedRecipients[${i}]: must be a non-empty string (email or "*@domain")`,
+              );
+            }
+          }
+        }
+      }
+
+      const numericFields = ["maxRecipients", "bodyMaxBytes"] as const;
+      for (const field of numericFields) {
+        if (
+          out[field] !== undefined &&
+          (typeof out[field] !== "number" || (out[field] as number) <= 0)
+        ) {
+          errors.push(`${prefix}.outbound.${field}: must be a positive number`);
+        }
+      }
+
+      if (out.subjectPrefix !== undefined) {
+        if (typeof out.subjectPrefix !== "string") {
+          errors.push(`${prefix}.outbound.subjectPrefix: must be a string`);
+        } else if (out.subjectPrefix.length === 0) {
+          errors.push(`${prefix}.outbound.subjectPrefix: cannot be the empty string`);
+        }
+      }
+
+      if (out.allowHtml !== undefined && typeof out.allowHtml !== "boolean") {
+        errors.push(`${prefix}.outbound.allowHtml: must be a boolean`);
+      }
+
+      if (out.rateLimit !== undefined) {
+        if (typeof out.rateLimit !== "object" || out.rateLimit === null) {
+          errors.push(`${prefix}.outbound.rateLimit: must be an object`);
+        } else {
+          const rl = out.rateLimit as Record<string, unknown>;
+          const rlNumeric = [
+            "globalMaxPerHour",
+            "perRecipientCooldownMs",
+            "dedupWindowMs",
+          ] as const;
+          for (const field of rlNumeric) {
+            if (
+              rl[field] !== undefined &&
+              (typeof rl[field] !== "number" || (rl[field] as number) < 0)
+            ) {
+              errors.push(`${prefix}.outbound.rateLimit.${field}: must be a non-negative number`);
+            }
+          }
+          if (rl.enabled !== undefined && typeof rl.enabled !== "boolean") {
+            errors.push(`${prefix}.outbound.rateLimit.enabled: must be a boolean`);
+          }
+        }
+      }
+    }
+  }
+
+  if (opts.inbound !== undefined) {
+    if (typeof opts.inbound !== "object" || opts.inbound === null) {
+      errors.push(`${prefix}.inbound: must be an object with a "mode" field`);
+    } else {
+      const inb = opts.inbound as Record<string, unknown>;
+      const mode = inb.mode;
+      if (typeof mode !== "string") {
+        errors.push(`${prefix}.inbound.mode: required string`);
+      } else if (!AGENT_MAIL_INBOUND_MODES.has(mode)) {
+        errors.push(
+          `${prefix}.inbound.mode: unknown mode "${mode}" — valid modes are ${[...AGENT_MAIL_INBOUND_MODES].map((m) => `"${m}"`).join(", ")}`,
+        );
+      } else if (!AGENT_MAIL_INBOUND_MODES_IMPLEMENTED.has(mode)) {
+        errors.push(
+          `${prefix}.inbound.mode: "${mode}" is not yet implemented. Phase A ships outbound only — set inbound.mode to "none" (or omit) until Phase B lands websocket/polling.`,
+        );
+      }
+    }
+  }
+}
+
+/**
  * Validate the options block for a telegramTransport augment.
  * Enforces mode mutual exclusion: polling block is forbidden when mode=webhook
  * and vice versa.
@@ -888,6 +1017,9 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
       } else if (aug.type === "notify") {
         const notifyOpts = (aug.options ?? {}) as Record<string, unknown>;
         validateNotifyOptions(notifyOpts, `${prefix}.options`, errors);
+      } else if (aug.type === "agentMail") {
+        const amOpts = (aug.options ?? {}) as Record<string, unknown>;
+        validateAgentMailOptions(amOpts, `${prefix}.options`, errors);
       } else if (aug.type === "telegramTransport") {
         const tgOpts = (aug.options ?? {}) as Record<string, unknown>;
         validateTelegramTransportOptions(tgOpts, `${prefix}.options`, errors);

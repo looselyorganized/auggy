@@ -4,7 +4,7 @@
 
 Auggy (`augment-1`) is a modular agent runtime in TypeScript/Bun. Agents are composed from swappable augments; the kernel manages context, tools, permissions, and lifecycle. Framework-agnostic by design — **not LORF-locked**.
 
-**Status: v0.2.0 base + PR α + PR β shipped.** Plans 1 (kernel) + 2 (built-in augments) + 3 (CLI & manifest) complete. **PR α (DX foundation):** augment-as-folder pattern, bundled skills, secure scaffold, `identity:` shorthand, `auggy add-skill`, boot-time skill validator ([ADR-025](../docs/solutions/architecture/adr-025-augment-folder-and-skill-bundling.md)). **PR β (auto-save / ADR-018 Phase 2 / ADR-027):** `layeredMemory` gains post-turn fact extraction (`autoSave` capability) — background process runs after each turn per trust-level cadence, writes `[AGENT-DERIVED]`-marked facts to peer-scoped storage via an internal turn admitted through normal cost machinery; kernel gains `Augment.scheduleAfterTurn` + `Augment.handleInternalTurn` hooks ([ADR-027](../docs/solutions/architecture/adr-027-internal-turn-admission.md)); SQLite + Supabase schema migrated (+7 columns); auto-save eval suite (6 fixtures); security-eval extended (+3 cases). Sequencing: single-agent excellence (PR α/β/γ) ships before the multi-agent network layer per [ADR-026](../docs/solutions/architecture/adr-026-v1-single-agent-excellence-reorder.md). **12 built-in augments, 3 engines, 1617 tests across 128 files.** The `chat/` package ships the Auggy Local GUI (`auggy chat`) — a Vite/React SPA with a Bun proxy server that discovers running agents via PID manifests and proxies chat through to each agent's `/agent/run`; distributed as a versioned GitHub release artifact with first-run download + SHA256 verification. See `lo/docs/auggy-plans-detail.md` (outside this repo) for the plan-by-plan roadmap.
+**Status: v0.2.0 base + PR α + PR β shipped.** Plans 1 (kernel) + 2 (built-in augments) + 3 (CLI & manifest) complete. **PR α (DX foundation):** augment-as-folder pattern, bundled skills, secure scaffold, `identity:` shorthand, `auggy add-skill`, boot-time skill validator ([ADR-025](../docs/solutions/architecture/adr-025-augment-folder-and-skill-bundling.md)). **PR β (auto-save / ADR-018 Phase 2 / ADR-027):** `layeredMemory` gains post-turn fact extraction (`autoSave` capability) — background process runs after each turn per trust-level cadence, writes `[AGENT-DERIVED]`-marked facts to peer-scoped storage via an internal turn admitted through normal cost machinery; kernel gains `Augment.scheduleAfterTurn` + `Augment.handleInternalTurn` hooks ([ADR-027](../docs/solutions/architecture/adr-027-internal-turn-admission.md)); SQLite + Supabase schema migrated (+7 columns); auto-save eval suite (6 fixtures); security-eval extended (+3 cases). Sequencing: single-agent excellence (PR α/β/γ) ships before the multi-agent network layer per [ADR-026](../docs/solutions/architecture/adr-026-v1-single-agent-excellence-reorder.md). **13 built-in augments (with `agentMail` Phase A — outbound only), 3 engines, 2200+ tests.** The `chat/` package ships the Auggy Local GUI (`auggy chat`) — a Vite/React SPA with a Bun proxy server that discovers running agents via PID manifests and proxies chat through to each agent's `/agent/run`; distributed as a versioned GitHub release artifact with first-run download + SHA256 verification. See `lo/docs/auggy-plans-detail.md` (outside this repo) for the plan-by-plan roadmap.
 
 ## Commands
 
@@ -40,8 +40,9 @@ The `docs/` directory carries operator-facing references for the augments and su
 |-----|--------|
 | `docs/02-architecture-overview.md` | Module map, data flow through a turn |
 | `docs/06-transports.md` | Transport interface, AG-UI event protocol, SSE streaming |
-| `docs/07-built-in-augments.md` | All 12 built-in augments + bundled-skill convention (filesystem / layeredMemory / webFetch / orgContext / bash / notify / turnControl / visitorAuth ship `skill/`) |
+| `docs/07-built-in-augments.md` | All 13 built-in augments + bundled-skill convention (filesystem / layeredMemory / webFetch / orgContext / bash / notify / agentMail / turnControl / visitorAuth ship `skill/`) |
 | `docs/13-notify.md` | `notify` augment operator reference (destinations, rate limit, dedup) |
+| `docs/22-agent-mail.md` | `agentMail` augment operator reference (Phase A outbound — tools, guards, admin) |
 | `docs/14-telegram-transport.md` | `telegramTransport` operator reference (modes, identity resolution, deployment) |
 | `docs/15-chat.md` | Auggy Local GUI (`auggy chat`) — proxy server + SPA architecture |
 | `docs/16-storage-layout.md` | Where agents live on disk: `~/.auggy/agents/`, the index file, `--dir` override |
@@ -95,6 +96,12 @@ src/
 │   └── identity.md         # Identity preamble template (security rules + skill manifest placeholders)
 │
 ├── augments/             # Built-in augments — every augment is a folder per ADR-025
+│   ├── agent-mail/
+│   │   ├── index.ts        # AgentMail augment (Phase A outbound: send_message / reply_to_message / forward_message)
+│   │   ├── outbound.ts     # Recipient/body validation, allowlist, sanitization, sensitive-content scan
+│   │   ├── rate-limit.ts   # Global cap + per-recipient cooldown + subject-hash dedup
+│   │   ├── types.ts
+│   │   └── skill/SKILL.md
 │   ├── bash/
 │   │   ├── index.ts        # Scoped shell execution (allowlist, cwd, timeout)
 │   │   └── skill/SKILL.md

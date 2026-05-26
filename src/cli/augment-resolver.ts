@@ -26,6 +26,7 @@ import { orgContext } from "../augments/org-context";
 import { skills } from "../augments/skills";
 import { bash } from "../augments/bash";
 import { notify } from "../augments/notify";
+import { agentMail } from "../augments/agent-mail";
 import { telegramTransport } from "../augments/telegram-transport";
 import { turnControl, type TurnControlOptions } from "../augments/turn-control";
 import { visitorAuth } from "../augments/visitor-auth";
@@ -41,7 +42,12 @@ import type {
   LinkAugmentInternalOptions,
   LinkPeerConfig,
 } from "../augments/link";
-import type { Augment, NotifyAugmentOptions, TelegramTransportOptions } from "../types";
+import type {
+  AgentMailAugmentOptions,
+  Augment,
+  NotifyAugmentOptions,
+  TelegramTransportOptions,
+} from "../types";
 import type { AugmentConfig } from "./types";
 import type { BudgetsAugmentOptions } from "../augments/budgets";
 import { validateBundledSkills } from "./skill-validator";
@@ -532,6 +538,18 @@ export async function resolveAugments(
         augment = notify({
           destinations: opts.destinations as NotifyAugmentOptions["destinations"],
           rateLimit: opts.rateLimit as NotifyAugmentOptions["rateLimit"],
+        });
+        break;
+      }
+      case "agentMail": {
+        augment = agentMail({
+          apiKey: opts.apiKey as string,
+          inboxId: opts.inboxId as string,
+          apiBaseUrl: opts.apiBaseUrl as string | undefined,
+          dbPath: opts.dbPath as string | undefined,
+          outbound: opts.outbound as AgentMailAugmentOptions["outbound"],
+          inbound: opts.inbound as AgentMailAugmentOptions["inbound"],
+          agentDir,
         });
         break;
       }
