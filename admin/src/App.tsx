@@ -11,7 +11,9 @@ import { AugmentsTab } from "@/routes/AugmentsTab";
 import { SkillsTab } from "@/routes/SkillsTab";
 import { IdentityTab } from "@/routes/IdentityTab";
 import { CredentialsTab } from "@/routes/CredentialsTab";
-import { ChatTab, BudgetsTab, TracesTab } from "@/routes/placeholders";
+import { BudgetTab } from "@/routes/BudgetTab";
+import { SecurityTab } from "@/routes/SecurityTab";
+import { ChatTab } from "@/routes/placeholders";
 
 export function App() {
   const dashboard = useDashboard();
@@ -64,7 +66,7 @@ export function App() {
                     path="/budget"
                     element={
                       visibility.budget ? (
-                        <BudgetsTab />
+                        <BudgetTab />
                       ) : (
                         <NotInstalled tabLabel="Budget" requires={["budgets"]} />
                       )
@@ -74,8 +76,7 @@ export function App() {
                     path="/security"
                     element={
                       visibility.security ? (
-                        // Placeholder for now — Security tab build is task #24.
-                        <TracesTab />
+                        <SecurityTab />
                       ) : (
                         <NotInstalled tabLabel="Security" requires={["webTransport", "visitorAuth"]} />
                       )

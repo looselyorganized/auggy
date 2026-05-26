@@ -1,11 +1,7 @@
 import { useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { KeyValueSection } from "./sections/KeyValueSection";
-import { TableSection } from "./sections/TableSection";
-import { StatusSection } from "./sections/StatusSection";
-import { EventStreamSection } from "./sections/EventStreamSection";
-import { ActionForm } from "./ActionForm";
+import { AdminBlockBody } from "./AdminBlockBody";
 import type { AdminInfoBlock, AugmentSummary } from "@/lib/types";
 
 export interface AugmentRowProps {
@@ -47,39 +43,10 @@ export function AugmentRow({ augment, block, initialOpen = false }: AugmentRowPr
         </div>
       </CardHeader>
       {open && block && (
-        <CardContent className="space-y-4 p-3 pt-0">
-          {block.sections.map((section, i) => (
-            <SectionRouter key={i} section={section} />
-          ))}
-          {block.actions?.length ? (
-            <div className="flex flex-wrap gap-3 border-t pt-3">
-              {block.actions.map((action) => (
-                <ActionForm key={action.id} action={action} />
-              ))}
-            </div>
-          ) : null}
+        <CardContent className="p-3 pt-0">
+          <AdminBlockBody block={block} />
         </CardContent>
       )}
     </Card>
   );
-}
-
-function SectionRouter({ section }: { section: AdminInfoBlock["sections"][number] }) {
-  switch (section.kind) {
-    case "keyValue":
-      return <KeyValueSection rows={section.rows} />;
-    case "table":
-      return (
-        <TableSection
-          columns={section.columns}
-          rows={section.rows}
-          rowActions={section.rowActions}
-          caption={section.caption}
-        />
-      );
-    case "status":
-      return <StatusSection level={section.level} message={section.message} />;
-    case "eventStream":
-      return <EventStreamSection events={section.events} caption={section.caption} />;
-  }
 }
