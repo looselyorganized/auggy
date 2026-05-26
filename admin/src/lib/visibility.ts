@@ -47,3 +47,73 @@ export function getTabVisibility(augments: AugmentSummary[]): TabVisibility {
 
 /** Tab to deep-link the operator to when their target tab is hidden. */
 export const HIDDEN_TAB_FALLBACK: TabKey = "augments";
+
+// ---------------------------------------------------------------------------
+// Per-augment promotion — derived from the spec's augment→home mapping
+// table. See docs/21-admin.md §"Augment → home mapping".
+// ---------------------------------------------------------------------------
+
+export type PromotionInfo =
+  | {
+      kind: "promoted";
+      /** The dedicated tab that owns this augment's operator config. */
+      tab: Exclude<TabKey, "augments">;
+      /** Display label used in the "Configured in X ↗" link. */
+      tabLabel: string;
+    }
+  | { kind: "unpromoted" }
+  | {
+      kind: "hidden";
+      /** Why the row is hidden from the Augments tab. */
+      reason: string;
+    };
+
+interface AugmentLite {
+  type: string;
+  name: string;
+}
+
+/**
+ * Promotion classification for a single augment. Drives how the Augments tab
+ * renders the row:
+ *
+ *   - "promoted" rows show a `Configured in [Tab] ↗` link — no inline edit.
+ *   - "unpromoted" rows expand inline to the augment's adminInfo() block.
+ *   - "hidden" rows are filtered out of the visible list entirely.
+ */
+export function getAugmentPromotion(augment: AugmentLite): PromotionInfo {
+  // Hidden — these augments don't surface tunable operator state.
+  if (augment.type === "supabaseMemory") {
+    return { kind: "hidden", reason: "Frozen legacy provider — no operator state to surface." };
+  }
+  if (augment.type === "turnControl") {
+    return { kind: "hidden", reason: "Model-driven; no operator configuration." };
+  }
+  if (augment.type === "memoryBus") {
+    return { kind: "hidden", reason: "Kernel-injected memory tools — not user-mounted." };
+  }
+
+  // Promoted — each has a dedicated operator-question tab.
+  if (augment.type === "budgets") {
+    return { kind: "promoted", tab: "budget", tabLabel: "Budget" };
+  }
+  if (augment.type === "visitorAuth") {
+    return { kind: "promoted", tab: "security", tabLabel: "Security" };
+  }
+  if (augment.type === "webTransport") {
+    return { kind: "promoted", tab: "security", tabLabel: "Security" };
+  }
+  if (augment.type === "skills") {
+    return { kind: "promoted", tab: "skills", tabLabel: "Skills" };
+  }
+  // The identity-shorthand fileMemory uses label "self" → runtime name
+  // "file-memory-self". Other fileMemory mounts (e.g. "learned") stay
+  // unpromoted as their own Augments row.
+  if (augment.type === "fileMemory" && augment.name === "file-memory-self") {
+    return { kind: "promoted", tab: "identity", tabLabel: "Identity" };
+  }
+
+  // Everything else — inline editable on the Augments tab.
+  return { kind: "unpromoted" };
+}
+

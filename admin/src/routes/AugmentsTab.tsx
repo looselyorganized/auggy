@@ -2,6 +2,7 @@ import { useMemo } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { useDashboardContext } from "@/components/admin/DashboardContext";
 import { AugmentRow } from "@/components/admin/AugmentRow";
+import { getAugmentPromotion } from "@/lib/visibility";
 import type { AdminInfoBlock, AugmentCategory, AugmentSummary } from "@/lib/types";
 
 interface CategoryDef {
@@ -51,6 +52,10 @@ export function AugmentsTab() {
     if (!data) return out;
     const blockByName = new Map(data.blocks.map((b) => [b.augmentName, b]));
     for (const aug of data.augments) {
+      // Hidden augments (turnControl, supabaseMemory, memory-bus) don't
+      // surface tunable state — they don't belong in the operator's
+      // composition view.
+      if (getAugmentPromotion(aug).kind === "hidden") continue;
       out[aug.category].push({ aug, block: blockByName.get(aug.name) });
     }
     // Stable display order within each category.
@@ -73,15 +78,21 @@ export function AugmentsTab() {
     return <Empty />;
   }
 
-  const totalWithSettings = data.augments.filter((a) => a.hasAdminInfo).length;
+  const visibleAugments = data.augments.filter(
+    (a) => getAugmentPromotion(a).kind !== "hidden",
+  );
+  const promotedCount = visibleAugments.filter(
+    (a) => getAugmentPromotion(a).kind === "promoted",
+  ).length;
 
   return (
     <div className="space-y-8">
       <div className="flex items-center justify-between text-xs text-muted-foreground">
         <span>
-          {data.augments.length} mounted · {totalWithSettings} with operator settings
+          {visibleAugments.length} mounted · {promotedCount} configured in dedicated tabs ·{" "}
+          {visibleAugments.length - promotedCount} inline below
         </span>
-        <span className="italic">Mount / unmount augments — coming in v1.1</span>
+        <span className="italic">Mount / unmount — coming in v1.1</span>
       </div>
 
       {CATEGORIES.map(({ key, label, blurb }) => {
