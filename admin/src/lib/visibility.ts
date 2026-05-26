@@ -1,5 +1,5 @@
 /**
- * Tab visibility derived from installed augments, per docs/21-admin.md
+ * Tab visibility derived from installed augments, per docs/21-console.md
  * "Tab visibility" section.
  *
  * The Sidebar filters its nav by these flags; the App router renders a
@@ -50,7 +50,7 @@ export const HIDDEN_TAB_FALLBACK: TabKey = "augments";
 
 // ---------------------------------------------------------------------------
 // Per-augment promotion — derived from the spec's augment→home mapping
-// table. See docs/21-admin.md §"Augment → home mapping".
+// table. See docs/21-console.md §"Augment → home mapping".
 // ---------------------------------------------------------------------------
 
 export type PromotionInfo =

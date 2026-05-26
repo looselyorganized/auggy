@@ -5,14 +5,7 @@ describe("auggy chat command", () => {
   it("registers the chat subcommand with name and description", () => {
     const cmd = chatCommand();
     expect(cmd.name()).toBe("chat");
-    expect(cmd.description()).toContain("Local GUI");
-  });
-
-  it("declares --port option with default 8090", () => {
-    const cmd = chatCommand();
-    const port = cmd.options.find((o) => o.long === "--port");
-    expect(port).toBeDefined();
-    expect(port?.defaultValue).toBe("8090");
+    expect(cmd.description()).toContain("/console/chat");
   });
 
   it("declares --no-open option", () => {
@@ -21,9 +14,14 @@ describe("auggy chat command", () => {
     expect(noOpen).toBeDefined();
   });
 
-  it("declares --rebuild option", () => {
+  it("accepts an optional [name] argument", () => {
     const cmd = chatCommand();
-    const rebuild = cmd.options.find((o) => o.long === "--rebuild");
-    expect(rebuild).toBeDefined();
+    // Commander stores positional args as [name] on the underlying _args list.
+    // Cast to the documented shape; if commander changes its internal name
+    // the assertion still has signal because the test would crash here.
+    const args = (cmd as unknown as { _args: Array<{ _name: string; required: boolean }> })._args;
+    expect(args.length).toBe(1);
+    expect(args[0]?._name).toBe("name");
+    expect(args[0]?.required).toBe(false);
   });
 });

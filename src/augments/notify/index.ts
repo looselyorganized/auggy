@@ -459,7 +459,9 @@ export function notify(opts: NotifyAugmentInternalOptions): Augment {
     "notify-test": async (params) => {
       const dest = typeof params.destination === "string" ? params.destination : "";
       const message =
-        typeof params.message === "string" && params.message ? params.message : "Test from /console";
+        typeof params.message === "string" && params.message
+          ? params.message
+          : "Test from /console";
       if (!dest) {
         return { ok: false, message: "destination is required" };
       }

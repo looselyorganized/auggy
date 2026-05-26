@@ -308,7 +308,10 @@ export async function handleAdminRoute(req: Request, ctx: AdminRouteContext): Pr
 
   // GET /admin and the SPA's client-side routes (e.g. /admin/skills) — serve
   // the SPA shell. /console/assets/* serves bundled JS/CSS from dist/.
-  if (req.method === "GET" && (url.pathname === "/console" || url.pathname.startsWith("/console/"))) {
+  if (
+    req.method === "GET" &&
+    (url.pathname === "/console" || url.pathname.startsWith("/console/"))
+  ) {
     return handleStaticOrSpa(ctx, url.pathname);
   }
 
