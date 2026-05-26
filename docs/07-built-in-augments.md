@@ -1188,6 +1188,16 @@ Names are uppercased; non-alphanumeric characters become underscores. Peer `data
 - On boot, the augment fetches `peerSource.url`. On success, peers populate the AddressBook + BearerAuthProvider. On failure, the augment falls back to the inline `peers` block if present, or runs inbound-only if not.
 - A periodic refresh (TTL = `cacheSeconds`) propagates registry edits to running agents without a restart. Refresh failures preserve the last-good peer state — degradation, not outage.
 - Peers absent from a successful refresh are **forgotten**: outbound to that name returns "unknown peer"; inbound from that participant is 401'd. In-flight conversations complete on the bearer they started with — there is no mid-stream eviction.
+- **Per-peer error handling:** if a single entry in the registry is invalid (malformed, insecure URL, missing env-var bearer), the augment logs a warning and skips that entry. Other entries — including removals of revoked peers — still apply. This prevents an unrelated misconfiguration from blocking trust revocations.
+
+**Security defaults:**
+- `peerSource.url` MUST be `https://`. Plaintext `http://` is rejected at boot. To override for localhost dev, set `LINK_ALLOW_PLAINTEXT=1` (the same env knob the link library uses for plain-HTTP binding).
+- Registry-supplied peer URLs (and `agentCardUrl`) MUST be `https://`. Plaintext entries are skipped — they don't poison the rest of the directory but they're never used for outbound traffic. Same `LINK_ALLOW_PLAINTEXT=1` override applies.
+- Why: the registry is a remote trust boundary. Without HTTPS enforcement, a compromised or misconfigured registry could repoint a peer name to an attacker-controlled host while the agent still sends the real `LINK_BEARER_<NAME>`. HTTPS is mandatory for any production deployment.
+
+**Reliability defaults:**
+- Registry fetches have a **10-second timeout** (abortable). A hung registry won't stall agent startup indefinitely.
+- The resolver is **single-flight**: concurrent `getPeers()` callers share the same in-flight promise. The refresh timer won't stack concurrent fetches against a slow registry — it joins the existing one.
 
 **Self-filter:** an entry whose `participantId` matches the agent's own `agentCard.id` is dropped from the resolved map. Agents do not call themselves even if the operator forgets to omit them from the registry.
 

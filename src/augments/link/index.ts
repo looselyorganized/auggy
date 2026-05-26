@@ -74,7 +74,7 @@ import type {
   TurnState,
 } from "../../types";
 import { handlerContextToTrigger, turnResultToHandlerOutcome } from "./translate";
-import { createPeerResolver, type PeerResolver } from "./peer-resolver";
+import { createPeerResolver, type PeerResolver, type SkippedPeer } from "./peer-resolver";
 import { importFromAgent } from "../../cli/import-from-agent";
 
 // ---------------------------------------------------------------------------
@@ -443,6 +443,13 @@ export async function link(opts: LinkAugmentInternalOptions): Promise<Augment> {
   // Optional peer-source resolver. Constructed once at factory time; activated
   // (initial fetch + refresh loop) in transport.register so the kernel is
   // already wired when the first refresh propagates peer changes.
+  //
+  // `allowPlaintext` reuses the link library's localhost-dev convention:
+  // when LINK_ALLOW_PLAINTEXT=1 the resolver accepts http:// for the source
+  // URL and registry-supplied peer URLs. Production setups should leave it
+  // unset so a compromised/misconfigured registry can't repoint bearer
+  // traffic to plaintext attacker hosts.
+  const allowPlaintext = (process.env.LINK_ALLOW_PLAINTEXT ?? "") === "1";
   const resolver: PeerResolver | null =
     opts._peerResolver ??
     (opts.peerSource
@@ -450,8 +457,28 @@ export async function link(opts: LinkAugmentInternalOptions): Promise<Augment> {
           url: opts.peerSource.url,
           cacheSeconds: opts.peerSource.cacheSeconds,
           selfParticipantId: opts.agentCard.id,
+          allowPlaintext,
         })
       : null);
+
+  /**
+   * Surface peers the resolver skipped during the last refresh. Each entry
+   * is operator-actionable (missing env var, insecure URL, malformed entry).
+   * Logged as warn so they're loud enough to see in `auggy dev` output
+   * without crashing the agent.
+   */
+  function logSkippedPeers(skipped: SkippedPeer[], phase: string): void {
+    if (skipped.length === 0) return;
+    for (const s of skipped) {
+      const detail =
+        s.reason.kind === "missing_bearer"
+          ? `missing env var ${s.reason.envVar}`
+          : s.reason.kind === "insecure_url"
+            ? `insecure http:// URL "${s.reason.url}" (set LINK_ALLOW_PLAINTEXT=1 for localhost dev)`
+            : `invalid entry — ${s.reason.reason}`;
+      console.warn(`[link] peerSource ${phase}: skipped peer "${s.name}" — ${detail}`);
+    }
+  }
   let refreshTimer: ReturnType<typeof setInterval> | null = null;
 
   /**
@@ -533,13 +560,12 @@ export async function link(opts: LinkAugmentInternalOptions): Promise<Augment> {
       if (resolver) {
         const initial = await resolver.getPeers();
         if (initial.ok) {
-          applyResolvedPeers(initial.peers);
+          applyResolvedPeers(initial.resolved.peers);
+          logSkippedPeers(initial.resolved.skipped, "initial fetch");
         } else {
           const inlineCount = Object.keys(peerStateRef.current).length;
           console.warn(
-            `[link] peerSource initial fetch failed (${initial.error.kind}): ${
-              "message" in initial.error ? initial.error.message : initial.error.kind
-            }. ${
+            `[link] peerSource initial fetch failed (${initial.error.kind}): ${initial.error.message}. ${
               inlineCount > 0
                 ? `Falling back to ${inlineCount} inline peer(s).`
                 : "No inline peers — running inbound-only until next refresh succeeds."
@@ -584,17 +610,19 @@ export async function link(opts: LinkAugmentInternalOptions): Promise<Augment> {
       if (resolver && !opts._skipRefreshLoop) {
         const intervalMs = (opts.peerSource?.cacheSeconds ?? 60) * 1000;
         refreshTimer = setInterval(() => {
-          // fire-and-forget — errors are surfaced inside getPeers
+          // fire-and-forget — errors are surfaced inside getPeers. The
+          // resolver guarantees single-flight, so even if the previous
+          // tick is still in-flight (slow registry), this `getPeers()`
+          // joins the existing promise rather than launching a new fetch.
           void (async () => {
             resolver.invalidate();
             const result = await resolver.getPeers();
             if (result.ok) {
-              applyResolvedPeers(result.peers);
+              applyResolvedPeers(result.resolved.peers);
+              logSkippedPeers(result.resolved.skipped, "refresh");
             } else {
               console.warn(
-                `[link] peerSource refresh failed (${result.error.kind}): ${
-                  "message" in result.error ? result.error.message : result.error.kind
-                }. Keeping last-known peer state.`,
+                `[link] peerSource refresh failed (${result.error.kind}): ${result.error.message}. Keeping last-known peer state.`,
               );
             }
           })();

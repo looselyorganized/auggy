@@ -641,7 +641,13 @@ describe("link augment — peerSource integration", () => {
         inboundBearerId: "inbound-id",
       },
     };
-    const resolver = makeStubResolver(() => ({ ok: true, peers: resolvedPeers }) as ResolverResult);
+    const resolver = makeStubResolver(
+      () =>
+        ({
+          ok: true,
+          resolved: { peers: resolvedPeers, skipped: [] },
+        }) as ResolverResult,
+    );
 
     const aug = await link({
       ...makeOpts(),
