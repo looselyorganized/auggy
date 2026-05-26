@@ -112,22 +112,22 @@ describe("handleAdminRoute — auth", () => {
     expect(res.headers.get("www-authenticate")).toBe('Basic realm="auggy-admin zip"');
   });
 
-  it("GET /admin with valid bearer → 503 build-required when no staticDir", async () => {
+  it("GET /console with valid bearer → 503 build-required when no staticDir", async () => {
     // Without a built SPA dist, the transport degrades to a build-required
     // notice. Tests that exercise the served-shell path pass an explicit
     // staticDir via makeCtx({ staticDir }).
-    const req = new Request("http://127.0.0.1:8080/admin", {
+    const req = new Request("http://127.0.0.1:8080/console", {
       headers: { authorization: basicHeader("test-bearer") },
     });
     const res = await handleAdminRoute(req, await makeCtx());
     expect(res.status).toBe(503);
     expect(res.headers.get("content-type")).toContain("text/html");
     const body = await res.text();
-    expect(body).toContain("Admin SPA not built");
+    expect(body).toContain("Console SPA not built");
   });
 
-  it("GET /admin/api/dashboard with valid bearer → 200 + JSON", async () => {
-    const req = new Request("http://127.0.0.1:8080/admin/api/dashboard", {
+  it("GET /console/api/dashboard with valid bearer → 200 + JSON", async () => {
+    const req = new Request("http://127.0.0.1:8080/console/api/dashboard", {
       headers: { authorization: basicHeader("test-bearer") },
     });
     const res = await handleAdminRoute(req, await makeCtx());
@@ -152,7 +152,7 @@ describe("handleAdminRoute — auth", () => {
 });
 
 describe("handleAdminRoute — POST action dispatch", () => {
-  it("POST /admin/action/<id> without CSRF → 403", async () => {
+  it("POST /console/action/<id> without CSRF → 403", async () => {
     const aug: Augment = {
       name: "test",
       adminInfo: async () => ({
@@ -165,7 +165,7 @@ describe("handleAdminRoute — POST action dispatch", () => {
         "test-action": async () => ({ ok: true, message: "ok" }),
       },
     };
-    const req = new Request("http://127.0.0.1:8080/admin/action/test-action", {
+    const req = new Request("http://127.0.0.1:8080/console/action/test-action", {
       method: "POST",
       headers: {
         authorization: basicHeader("test-bearer"),
@@ -177,7 +177,7 @@ describe("handleAdminRoute — POST action dispatch", () => {
     expect(res.status).toBe(403);
   });
 
-  it("POST /admin/action/<id> with valid CSRF dispatches handler", async () => {
+  it("POST /console/action/<id> with valid CSRF dispatches handler", async () => {
     const aug: Augment = {
       name: "test",
       adminInfo: async () => ({
@@ -195,7 +195,7 @@ describe("handleAdminRoute — POST action dispatch", () => {
       agentName: "zip",
       actionId: "test-action",
     });
-    const req = new Request("http://127.0.0.1:8080/admin/action/test-action", {
+    const req = new Request("http://127.0.0.1:8080/console/action/test-action", {
       method: "POST",
       headers: {
         authorization: basicHeader("test-bearer"),
@@ -205,17 +205,17 @@ describe("handleAdminRoute — POST action dispatch", () => {
     });
     const res = await handleAdminRoute(req, await makeCtx({ augments: [aug] }));
     expect(res.status).toBe(303);
-    expect(res.headers.get("location")).toContain("/admin?msg=");
+    expect(res.headers.get("location")).toContain("/console?msg=");
     expect(res.headers.get("location")).toContain(encodeURIComponent("fired"));
   });
 
-  it("POST /admin/action/<unknown-id> → 404", async () => {
+  it("POST /console/action/<unknown-id> → 404", async () => {
     const csrf = await generateCsrfToken({
       bearer: "test-bearer",
       agentName: "zip",
       actionId: "unknown",
     });
-    const req = new Request("http://127.0.0.1:8080/admin/action/unknown", {
+    const req = new Request("http://127.0.0.1:8080/console/action/unknown", {
       method: "POST",
       headers: {
         authorization: basicHeader("test-bearer"),
@@ -227,7 +227,7 @@ describe("handleAdminRoute — POST action dispatch", () => {
     expect(res.status).toBe(404);
   });
 
-  it("POST /admin/action/<id>/row/<rowKey> dispatches with rowKey", async () => {
+  it("POST /console/action/<id>/row/<rowKey> dispatches with rowKey", async () => {
     let receivedParams: Record<string, string> = {};
     const aug: Augment = {
       name: "memory",
@@ -258,7 +258,7 @@ describe("handleAdminRoute — POST action dispatch", () => {
       actionId: "memory-erase",
       rowKey: "vis_abc",
     });
-    const req = new Request("http://127.0.0.1:8080/admin/action/memory-erase/row/vis_abc", {
+    const req = new Request("http://127.0.0.1:8080/console/action/memory-erase/row/vis_abc", {
       method: "POST",
       headers: {
         authorization: basicHeader("test-bearer"),
@@ -291,7 +291,7 @@ describe("handleAdminRoute — POST action dispatch", () => {
       agentName: "zip",
       actionId: "broken-action",
     });
-    const req = new Request("http://127.0.0.1:8080/admin/action/broken-action", {
+    const req = new Request("http://127.0.0.1:8080/console/action/broken-action", {
       method: "POST",
       headers: {
         authorization: basicHeader("test-bearer"),
@@ -322,7 +322,7 @@ describe("handleAdminRoute — POST action dispatch", () => {
       actionId: "test-action",
       _timestamp: expiredTs,
     });
-    const req = new Request("http://127.0.0.1:8080/admin/action/test-action", {
+    const req = new Request("http://127.0.0.1:8080/console/action/test-action", {
       method: "POST",
       headers: {
         authorization: basicHeader("test-bearer"),

@@ -36,7 +36,7 @@ interface DashboardJson {
 }
 
 async function fetchDashboard(port: number, bearer: string): Promise<DashboardJson> {
-  const resp = await fetch(`http://127.0.0.1:${port}/admin/api/dashboard`, {
+  const resp = await fetch(`http://127.0.0.1:${port}/console/api/dashboard`, {
     headers: { authorization: basicHeader(bearer) },
   });
   expect(resp.status).toBe(200);
@@ -44,7 +44,7 @@ async function fetchDashboard(port: number, bearer: string): Promise<DashboardJs
 }
 
 describe("webTransport adminInfo — posture row (G36 phase 3)", () => {
-  it("GET /admin/api/dashboard includes the webTransport posture block", async () => {
+  it("GET /console/api/dashboard includes the webTransport posture block", async () => {
     const model = createMockModel();
     const port = 19310;
     const aug = webTransport({
@@ -71,7 +71,7 @@ describe("webTransport adminInfo — posture row (G36 phase 3)", () => {
     }
   });
 
-  it("POST /admin/action/posture-flip writes admin-overrides.json + mutates closure", async () => {
+  it("POST /console/action/posture-flip writes admin-overrides.json + mutates closure", async () => {
     const agentDir = tempAgentDir();
     const port = 19311;
     const model = createMockModel();
@@ -91,7 +91,7 @@ describe("webTransport adminInfo — posture row (G36 phase 3)", () => {
         actionId: "posture-flip",
       });
 
-      const resp = await fetch(`http://127.0.0.1:${port}/admin/action/posture-flip`, {
+      const resp = await fetch(`http://127.0.0.1:${port}/console/action/posture-flip`, {
         method: "POST",
         headers: {
           authorization: basicHeader("test-token"),
@@ -101,7 +101,7 @@ describe("webTransport adminInfo — posture row (G36 phase 3)", () => {
         redirect: "manual",
       });
       expect(resp.status).toBe(303);
-      expect(resp.headers.get("location")).toContain("/admin?msg=");
+      expect(resp.headers.get("location")).toContain("/console?msg=");
       await resp.text();
 
       const overrideFile = join(agentDir, "admin-overrides.json");
@@ -123,7 +123,7 @@ describe("webTransport adminInfo — posture row (G36 phase 3)", () => {
     }
   });
 
-  it("POST /admin/action/posture-reset clears the override and reverts to yaml", async () => {
+  it("POST /console/action/posture-reset clears the override and reverts to yaml", async () => {
     const agentDir = tempAgentDir();
     const port = 19312;
     const model = createMockModel();
@@ -142,7 +142,7 @@ describe("webTransport adminInfo — posture row (G36 phase 3)", () => {
         agentName: "zip",
         actionId: "posture-flip",
       });
-      await fetch(`http://127.0.0.1:${port}/admin/action/posture-flip`, {
+      await fetch(`http://127.0.0.1:${port}/console/action/posture-flip`, {
         method: "POST",
         headers: {
           authorization: basicHeader("test-token"),
@@ -160,7 +160,7 @@ describe("webTransport adminInfo — posture row (G36 phase 3)", () => {
         agentName: "zip",
         actionId: "posture-reset",
       });
-      const resp = await fetch(`http://127.0.0.1:${port}/admin/action/posture-reset`, {
+      const resp = await fetch(`http://127.0.0.1:${port}/console/action/posture-reset`, {
         method: "POST",
         headers: {
           authorization: basicHeader("test-token"),

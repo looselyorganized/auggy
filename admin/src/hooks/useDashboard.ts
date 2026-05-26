@@ -12,7 +12,7 @@ export interface DashboardState {
 }
 
 /**
- * v1 polls `/admin/api/dashboard` every 2s. SSE migration is queued in
+ * v1 polls `/console/api/dashboard` every 2s. SSE migration is queued in
  * `docs/21-admin.md` (Deferred). The hook keeps the latest payload between
  * polls so the UI doesn't flicker; only the first fetch flips `loading: true`.
  */

@@ -17,7 +17,7 @@ export interface IdentityRead {
 }
 
 export async function readIdentity(): Promise<IdentityRead> {
-  const res = await identityFetch("/admin/api/identity");
+  const res = await identityFetch("/console/api/identity");
   if (!res.ok) {
     const body = (await safeJson(res)) as { error?: string };
     throw new Error(body.error ?? `HTTP ${res.status}`);
@@ -38,7 +38,7 @@ export async function writeIdentity(
 ): Promise<IdentityWriteResult> {
   const csrf = findCsrfToken(csrfTokens, "identity-save");
   if (!csrf) return { ok: false, message: "Missing CSRF token for identity-save" };
-  const res = await identityFetch("/admin/api/identity", {
+  const res = await identityFetch("/console/api/identity", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ csrf, content }),

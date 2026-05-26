@@ -7,7 +7,7 @@
  *   auggy add <name>                 Add augments to an existing agent
  *   auggy add-skill <augment>        Install a bundled skill into an agent
  *   auggy dev <name> [--config]      Run agent in foreground (headless)
- *   auggy run <name> [--config]      Run agent + open /admin in browser
+ *   auggy run <name> [--config]      Run agent + open /console in browser
  *   auggy start <name> [--config]    Install as launchd service (always-on)
  *   auggy stop <name>                Stop a running agent
  *   auggy restart <name>             Stop + start
@@ -84,7 +84,7 @@ program
 
 program
   .command("run <name>")
-  .description("Boot an agent and open /admin in your browser (Ctrl-C to stop)")
+  .description("Boot an agent and open /console in your browser (Ctrl-C to stop)")
   .option("--config <path>", "path to agent.yaml")
   .option("--no-browser", "boot the agent but don't auto-launch a browser")
   .action(async (name: string, opts: { config?: string; noBrowser?: boolean }) => {

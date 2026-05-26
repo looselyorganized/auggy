@@ -22,9 +22,9 @@ async function adminFetch(input: string, init: RequestInit = {}): Promise<Respon
 }
 
 export async function fetchDashboard(signal?: AbortSignal): Promise<DashboardData> {
-  const res = await adminFetch("/admin/api/dashboard", { signal });
+  const res = await adminFetch("/console/api/dashboard", { signal });
   if (!res.ok) {
-    throw new Error(`/admin/api/dashboard ${res.status} ${res.statusText}`);
+    throw new Error(`/console/api/dashboard ${res.status} ${res.statusText}`);
   }
   return (await res.json()) as DashboardData;
 }
@@ -52,7 +52,7 @@ export interface ActionPostResult {
 /**
  * Post an admin action. Mirrors the server's existing HTML-form contract
  * (`application/x-www-form-urlencoded` body, `_csrf` field, 303 redirect to
- * `/admin?msg=...`). We read the Location header instead of following the
+ * `/console?msg=...`). We read the Location header instead of following the
  * redirect so the SPA can surface the flash message inline rather than
  * navigating away.
  */
@@ -63,8 +63,8 @@ export async function postAction(
   rowKey?: string,
 ): Promise<ActionPostResult> {
   const path = rowKey
-    ? `/admin/action/${encodeURIComponent(actionId)}/row/${encodeURIComponent(rowKey)}`
-    : `/admin/action/${encodeURIComponent(actionId)}`;
+    ? `/console/action/${encodeURIComponent(actionId)}/row/${encodeURIComponent(rowKey)}`
+    : `/console/action/${encodeURIComponent(actionId)}`;
   const body = new URLSearchParams({ _csrf: csrfToken, ...values }).toString();
   const res = await adminFetch(path, {
     method: "POST",

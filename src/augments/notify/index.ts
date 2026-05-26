@@ -394,7 +394,7 @@ export function notify(opts: NotifyAugmentInternalOptions): Augment {
             {
               label: "Global cap per hour",
               value: String(globalMaxPerHour),
-              source: globalMaxSource === "override" ? "/admin override" : "yaml",
+              source: globalMaxSource === "override" ? "/console override" : "yaml",
               resetAction: { id: "notify-cap-reset", label: "Reset to yaml" },
             },
             { label: "Cooldown (ms)", value: String(cooldownMs), source: "yaml" },
@@ -430,7 +430,7 @@ export function notify(opts: NotifyAugmentInternalOptions): Augment {
               label: "Message",
               type: "text",
               required: false,
-              default: "Test from /admin",
+              default: "Test from /console",
             },
           ],
         },
@@ -459,7 +459,7 @@ export function notify(opts: NotifyAugmentInternalOptions): Augment {
     "notify-test": async (params) => {
       const dest = typeof params.destination === "string" ? params.destination : "";
       const message =
-        typeof params.message === "string" && params.message ? params.message : "Test from /admin";
+        typeof params.message === "string" && params.message ? params.message : "Test from /console";
       if (!dest) {
         return { ok: false, message: "destination is required" };
       }

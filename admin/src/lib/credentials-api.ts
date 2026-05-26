@@ -23,7 +23,7 @@ export interface CredentialsList {
 }
 
 export async function listCredentials(): Promise<CredentialsList> {
-  const res = await credFetch("/admin/api/credentials");
+  const res = await credFetch("/console/api/credentials");
   if (!res.ok) {
     const body = (await safeJson(res)) as { error?: string };
     throw new Error(body.error ?? `HTTP ${res.status}`);
@@ -37,7 +37,7 @@ export async function revealCredential(
 ): Promise<{ value: string } | { error: string }> {
   const csrf = findCsrfToken(csrfTokens, "cred-reveal");
   if (!csrf) return { error: "Missing CSRF token for cred-reveal" };
-  const res = await credFetch("/admin/api/credentials/reveal", {
+  const res = await credFetch("/console/api/credentials/reveal", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ csrf, key }),
@@ -77,14 +77,14 @@ export function setCredential(
   key: string,
   value: string,
 ): Promise<CredentialMutationResult> {
-  return postCred("/admin/api/credentials/set", csrfTokens, "cred-set", { key, value });
+  return postCred("/console/api/credentials/set", csrfTokens, "cred-set", { key, value });
 }
 
 export function deleteCredential(
   csrfTokens: CsrfToken[],
   key: string,
 ): Promise<CredentialMutationResult> {
-  return postCred("/admin/api/credentials/delete", csrfTokens, "cred-delete", { key });
+  return postCred("/console/api/credentials/delete", csrfTokens, "cred-delete", { key });
 }
 
 async function safeJson(res: Response): Promise<unknown> {

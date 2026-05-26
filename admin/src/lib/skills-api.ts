@@ -15,7 +15,7 @@ async function skillsFetch(input: string, init: RequestInit = {}): Promise<Respo
 }
 
 export async function readSkillContent(folder: string): Promise<string> {
-  const res = await skillsFetch(`/admin/api/skills/${encodeURIComponent(folder)}/content`);
+  const res = await skillsFetch(`/console/api/skills/${encodeURIComponent(folder)}/content`);
   if (!res.ok) {
     const detail = await safeText(res);
     throw new Error(`${res.status} ${res.statusText}${detail ? ` — ${detail}` : ""}`);
@@ -64,7 +64,7 @@ export function editSkill(
   content: string,
 ): Promise<SkillMutationResult> {
   return postSkillJson(
-    `/admin/api/skills/${encodeURIComponent(folder)}/edit`,
+    `/console/api/skills/${encodeURIComponent(folder)}/edit`,
     csrfTokens,
     "skill-edit",
     folder,
@@ -74,7 +74,7 @@ export function editSkill(
 
 export function removeSkill(csrfTokens: CsrfToken[], folder: string): Promise<SkillMutationResult> {
   return postSkillJson(
-    `/admin/api/skills/${encodeURIComponent(folder)}/remove`,
+    `/console/api/skills/${encodeURIComponent(folder)}/remove`,
     csrfTokens,
     "skill-remove",
     folder,
@@ -83,7 +83,7 @@ export function removeSkill(csrfTokens: CsrfToken[], folder: string): Promise<Sk
 
 export function resetSkill(csrfTokens: CsrfToken[], folder: string): Promise<SkillMutationResult> {
   return postSkillJson(
-    `/admin/api/skills/${encodeURIComponent(folder)}/reset`,
+    `/console/api/skills/${encodeURIComponent(folder)}/reset`,
     csrfTokens,
     "skill-reset",
     folder,
@@ -92,7 +92,7 @@ export function resetSkill(csrfTokens: CsrfToken[], folder: string): Promise<Ski
 
 export function installSkill(csrfTokens: CsrfToken[], folder: string): Promise<SkillMutationResult> {
   return postSkillJson(
-    `/admin/api/skills/${encodeURIComponent(folder)}/install`,
+    `/console/api/skills/${encodeURIComponent(folder)}/install`,
     csrfTokens,
     "skill-install",
     folder,
@@ -106,7 +106,7 @@ export async function createSkill(
 ): Promise<SkillMutationResult> {
   const csrf = findCsrfToken(csrfTokens, "skill-create");
   if (!csrf) return { ok: false, message: "Missing CSRF token for skill-create" };
-  const res = await skillsFetch("/admin/api/skills/create", {
+  const res = await skillsFetch("/console/api/skills/create", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ csrf, folder, content }),

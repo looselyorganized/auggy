@@ -173,7 +173,7 @@ export function budgets(opts: BudgetsAugmentOptions): Augment {
             {
               label: "Daily budget cap",
               value: formatCap(currentDailyBudgetUsd),
-              source: dailyBudgetSource === "override" ? "/admin override" : "yaml",
+              source: dailyBudgetSource === "override" ? "/console override" : "yaml",
               resetAction: { id: "budget-cap-reset", label: "Reset to yaml" },
             },
             { label: "Today's spend", value: `$${spend.totalUsd.toFixed(2)}` },

@@ -62,7 +62,7 @@ const BUILD_REQUIRED_HTML = `<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>Admin SPA not built</title>
+  <title>Console SPA not built</title>
   <meta name="robots" content="noindex, nofollow">
   <style>
     body { font-family: system-ui, sans-serif; max-width: 40rem; margin: 4rem auto; padding: 0 1rem; color: #222; line-height: 1.5; }
@@ -72,13 +72,13 @@ const BUILD_REQUIRED_HTML = `<!doctype html>
   </style>
 </head>
 <body>
-  <h1>Admin SPA not built</h1>
-  <p>The <code>/admin</code> surface needs a built SPA in <code>augment-1/admin/dist/</code>.</p>
+  <h1>Console SPA not built</h1>
+  <p>The <code>/console</code> surface needs a built SPA in <code>augment-1/admin/dist/</code>.</p>
   <p>Build it from a working copy:</p>
   <pre>cd augment-1/admin
 bun install
 bun run build</pre>
-  <p class="hint">Once built, refresh this page. POST <code>/admin/action/*</code> still works in the meantime.</p>
+  <p class="hint">Once built, refresh this page. POST <code>/console/action/*</code> still works in the meantime.</p>
 </body>
 </html>`;
 

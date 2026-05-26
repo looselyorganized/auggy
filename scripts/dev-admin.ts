@@ -1,10 +1,10 @@
 /**
- * Boot a small live agent with the /admin route enabled so we can poke at
+ * Boot a small live agent with the /console route enabled so we can poke at
  * the SPA in a browser. Picks up the freshly-built admin/dist/.
  *
  *   bun --hot scripts/dev-admin.ts
  *
- * Then open http://localhost:8081/admin — bearer is "dev-admin" (use the
+ * Then open http://localhost:8081/console — bearer is "dev-admin" (use the
  * browser's native Sign-In prompt: leave username blank, paste the bearer
  * into the password field).
  *
@@ -81,7 +81,7 @@ writeFileSync(
   [
     "# demo agent",
     "",
-    "You are demo, a dev-mode auggy agent used to exercise the /admin SPA.",
+    "You are demo, a dev-mode auggy agent used to exercise the /console SPA.",
     "Be friendly, terse, and never pretend to be more than you are.",
     "",
     "## Operating principles",
@@ -100,7 +100,7 @@ writeFileSync(
 );
 
 // Mirror what `auggy create` / `auggy add` do: copy each bundled skill into
-// the agent's skills/ dir so the operator's "Missing skills" view in /admin
+// the agent's skills/ dir so the operator's "Missing skills" view in /console
 // is empty by default (the normal state).
 for (const type of [
   "bash",
@@ -222,7 +222,7 @@ const agent = defineAgent(
 );
 
 await agent.start();
-console.log(`[dev-admin] running at http://localhost:${PORT}/admin`);
+console.log(`[dev-admin] running at http://localhost:${PORT}/console`);
 console.log(`[dev-admin] bearer: ${BEARER}`);
 console.log(`[dev-admin] press Ctrl-C to stop.`);
 

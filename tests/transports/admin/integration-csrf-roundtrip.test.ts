@@ -1,5 +1,5 @@
 /**
- * End-to-end CSRF round-trip — boot a real agent, GET /admin/api/dashboard
+ * End-to-end CSRF round-trip — boot a real agent, GET /console/api/dashboard
  * to discover the per-(actionId, rowKey) CSRF tokens, POST one back. The
  * previous shared `__page` token returned 403 (bound to "__page" but
  * validated against the actual action id); per-action tokens make the
@@ -39,7 +39,7 @@ function findCsrfToken(data: DashboardJson, actionId: string, rowKey?: string): 
 }
 
 async function fetchDashboard(port: number): Promise<DashboardJson> {
-  const resp = await fetch(`http://127.0.0.1:${port}/admin/api/dashboard`, {
+  const resp = await fetch(`http://127.0.0.1:${port}/console/api/dashboard`, {
     headers: { authorization: authHeader() },
   });
   expect(resp.status).toBe(200);
@@ -88,7 +88,7 @@ describe("admin CSRF round-trip (hotfix)", () => {
       expect(csrf).not.toBeNull();
       expect(csrf!.length).toBeGreaterThan(10);
 
-      const postResp = await fetch(`http://127.0.0.1:${port}/admin/action/posture-flip`, {
+      const postResp = await fetch(`http://127.0.0.1:${port}/console/action/posture-flip`, {
         method: "POST",
         headers: {
           authorization: authHeader(),
@@ -176,7 +176,7 @@ describe("admin CSRF round-trip (hotfix)", () => {
       expect(csrf).not.toBeNull();
 
       const postResp = await fetch(
-        `http://127.0.0.1:${port}/admin/action/memory-erase/row/vis_rowtest`,
+        `http://127.0.0.1:${port}/console/action/memory-erase/row/vis_rowtest`,
         {
           method: "POST",
           headers: {
@@ -224,7 +224,7 @@ describe("admin CSRF round-trip (hotfix)", () => {
       const csrf = findCsrfToken(data, "budget-cap-adjust");
       expect(csrf).not.toBeNull();
 
-      const postResp = await fetch(`http://127.0.0.1:${port}/admin/action/budget-cap-adjust`, {
+      const postResp = await fetch(`http://127.0.0.1:${port}/console/action/budget-cap-adjust`, {
         method: "POST",
         headers: {
           authorization: authHeader(),

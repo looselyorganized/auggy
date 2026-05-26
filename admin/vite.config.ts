@@ -6,7 +6,7 @@ const DEV_AGENT_PORT = Number(process.env.AUGGY_ADMIN_DEV_AGENT_PORT ?? 8081);
 
 export default defineConfig({
   plugins: [react()],
-  base: "/admin/",
+  base: "/console/",
   resolve: {
     alias: {
       "@": fileURLToPath(new URL("./src", import.meta.url)),
@@ -25,8 +25,8 @@ export default defineConfig({
     // agent so the dev SPA hits real data without rebuilding. Bearer auth
     // flows through via the browser's saved credentials for the agent origin.
     proxy: {
-      "/admin/api": { target: `http://localhost:${DEV_AGENT_PORT}`, changeOrigin: false },
-      "/admin/action": { target: `http://localhost:${DEV_AGENT_PORT}`, changeOrigin: false },
+      "/console/api": { target: `http://localhost:${DEV_AGENT_PORT}`, changeOrigin: false },
+      "/console/action": { target: `http://localhost:${DEV_AGENT_PORT}`, changeOrigin: false },
       "/agent/run": { target: `http://localhost:${DEV_AGENT_PORT}`, changeOrigin: false },
     },
   },

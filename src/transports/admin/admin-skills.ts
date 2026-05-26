@@ -32,7 +32,7 @@ import { readSkillFrontmatter, type SkillFrontmatter } from "../../cli/skill-fro
 import { augmentFolderForType, buildFolderToTypeMap } from "../../cli/scaffold-skills";
 
 // ---------------------------------------------------------------------------
-// Types surfaced to the SPA via /admin/api/skills
+// Types surfaced to the SPA via /console/api/skills
 // ---------------------------------------------------------------------------
 
 export type SkillSource = "bundled" | "modified" | "manual";

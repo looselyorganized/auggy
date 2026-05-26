@@ -501,14 +501,14 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
       if (!rowKey) {
         return { ok: false, message: "visitor-revoke requires a rowKey (email)" };
       }
-      const visitorId = store.revokeByEmail(rowKey, "/admin revoke", Date.now());
+      const visitorId = store.revokeByEmail(rowKey, "/console revoke", Date.now());
       if (!visitorId) {
         return {
           ok: false,
           message: `visitor "${rowKey}" not found or already revoked`,
         };
       }
-      store.addRevokedVisitorId(visitorId, rowKey, "/admin revoke", Date.now());
+      store.addRevokedVisitorId(visitorId, rowKey, "/console revoke", Date.now());
       return { ok: true, message: `Revoked ${rowKey} (${visitorId})` };
     },
   };

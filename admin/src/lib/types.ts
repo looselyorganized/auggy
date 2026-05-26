@@ -2,7 +2,7 @@
  * Mirror of the admin server contract. Kept hand-typed (not generated) so the
  * SPA stays decoupled from the server source tree at build time. The shape
  * must match `src/types.ts` (`AdminInfoBlock` and friends) and the JSON
- * envelope produced by `/admin/api/dashboard`.
+ * envelope produced by `/console/api/dashboard`.
  */
 
 export interface KeyValueRow {

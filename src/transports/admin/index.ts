@@ -72,7 +72,7 @@ function readAgentMeta(agentDir: string | undefined): AgentMeta | null {
 
 /**
  * Build a map of CSRF tokens, one per (actionId, rowKey?) tuple present
- * in the collected admin blocks. The SPA reads `/admin/api/dashboard`
+ * in the collected admin blocks. The SPA reads `/console/api/dashboard`
  * to fetch blocks + tokens together; each form posts with the token
  * matching its (id, rowKey) pair. Page-shared tokens fail validation
  * because the dispatcher binds the check to the POSTed actionId.
@@ -157,7 +157,7 @@ export interface AdminRouteContext {
   selfPort?: number;
 }
 
-const ACTION_ROUTE_RE = /^\/admin\/action\/([^/]+)(?:\/row\/([^/]+))?$/;
+const ACTION_ROUTE_RE = /^\/console\/action\/([^/]+)(?:\/row\/([^/]+))?$/;
 
 /**
  * Skills CSRF actions — mint a token per (action, folder) pair so the SPA's
@@ -186,11 +186,11 @@ const EXPIRED_CSRF_HTML = `<!doctype html>
 <head>
   <meta charset="utf-8">
   <title>Session expired — redirecting</title>
-  <meta http-equiv="refresh" content="0; url=/admin">
+  <meta http-equiv="refresh" content="0; url=/console">
 </head>
 <body>
   <p>Session expired — refreshing the page now…</p>
-  <p>If you are not redirected automatically, <a href="/admin">click here</a>.</p>
+  <p>If you are not redirected automatically, <a href="/console">click here</a>.</p>
 </body>
 </html>`;
 
@@ -209,7 +209,7 @@ export async function handleAdminRoute(req: Request, ctx: AdminRouteContext): Pr
   if (auth.kind === "https-required") return auth.response;
   if (auth.kind === "unauthorized") return auth.response;
 
-  // POST /admin/action/<id>[/row/<rowKey>] — dispatch action handlers
+  // POST /console/action/<id>[/row/<rowKey>] — dispatch action handlers
   const actionMatch = url.pathname.match(ACTION_ROUTE_RE);
   if (req.method === "POST" && actionMatch) {
     // Decode rowKey — the SPA URL-encodes it so values like email addresses
@@ -225,54 +225,54 @@ export async function handleAdminRoute(req: Request, ctx: AdminRouteContext): Pr
     return handleActionPost(req, ctx, actionMatch[1]!, rowKey, agentName);
   }
 
-  // GET /admin/api/dashboard — JSON payload for the SPA
-  if (req.method === "GET" && url.pathname === "/admin/api/dashboard") {
+  // GET /console/api/dashboard — JSON payload for the SPA
+  if (req.method === "GET" && url.pathname === "/console/api/dashboard") {
     return handleDashboardJson(ctx, agentName);
   }
 
   // Identity API ----------------------------------------------------------
-  if (req.method === "GET" && url.pathname === "/admin/api/identity") {
+  if (req.method === "GET" && url.pathname === "/console/api/identity") {
     return handleIdentityRead(ctx);
   }
-  if (req.method === "POST" && url.pathname === "/admin/api/identity") {
+  if (req.method === "POST" && url.pathname === "/console/api/identity") {
     return handleIdentityWrite(req, ctx, agentName);
   }
 
   // Chat SSE proxy --------------------------------------------------------
-  if (req.method === "POST" && url.pathname === "/admin/api/chat") {
+  if (req.method === "POST" && url.pathname === "/console/api/chat") {
     return handleChatProxy(req, ctx);
   }
 
   // Credentials API -------------------------------------------------------
-  if (req.method === "GET" && url.pathname === "/admin/api/credentials") {
+  if (req.method === "GET" && url.pathname === "/console/api/credentials") {
     return handleCredentialsList(ctx);
   }
-  if (req.method === "POST" && url.pathname === "/admin/api/credentials/reveal") {
+  if (req.method === "POST" && url.pathname === "/console/api/credentials/reveal") {
     return handleCredentialReveal(req, ctx, agentName);
   }
-  if (req.method === "POST" && url.pathname === "/admin/api/credentials/set") {
+  if (req.method === "POST" && url.pathname === "/console/api/credentials/set") {
     return handleCredentialSet(req, ctx, agentName);
   }
-  if (req.method === "POST" && url.pathname === "/admin/api/credentials/delete") {
+  if (req.method === "POST" && url.pathname === "/console/api/credentials/delete") {
     return handleCredentialDelete(req, ctx, agentName);
   }
 
   // Skills API ------------------------------------------------------------
-  if (req.method === "GET" && url.pathname === "/admin/api/skills") {
+  if (req.method === "GET" && url.pathname === "/console/api/skills") {
     return handleSkillsList(ctx);
   }
-  if (req.method === "POST" && url.pathname === "/admin/api/skills/create") {
+  if (req.method === "POST" && url.pathname === "/console/api/skills/create") {
     return handleSkillCreate(req, ctx, agentName);
   }
-  const skillContentMatch = url.pathname.match(/^\/admin\/api\/skills\/([^/]+)\/content$/);
+  const skillContentMatch = url.pathname.match(/^\/console\/api\/skills\/([^/]+)\/content$/);
   if (req.method === "GET" && skillContentMatch) {
     return handleSkillContentRead(ctx, decodeURIComponent(skillContentMatch[1]!));
   }
-  const skillEditMatch = url.pathname.match(/^\/admin\/api\/skills\/([^/]+)\/edit$/);
+  const skillEditMatch = url.pathname.match(/^\/console\/api\/skills\/([^/]+)\/edit$/);
   if (req.method === "POST" && skillEditMatch) {
     return handleSkillEdit(req, ctx, agentName, decodeURIComponent(skillEditMatch[1]!));
   }
-  const skillRemoveMatch = url.pathname.match(/^\/admin\/api\/skills\/([^/]+)\/remove$/);
+  const skillRemoveMatch = url.pathname.match(/^\/console\/api\/skills\/([^/]+)\/remove$/);
   if (req.method === "POST" && skillRemoveMatch) {
     return handleSkillSimple(
       req,
@@ -283,7 +283,7 @@ export async function handleAdminRoute(req: Request, ctx: AdminRouteContext): Pr
       removeInstalledSkill,
     );
   }
-  const skillResetMatch = url.pathname.match(/^\/admin\/api\/skills\/([^/]+)\/reset$/);
+  const skillResetMatch = url.pathname.match(/^\/console\/api\/skills\/([^/]+)\/reset$/);
   if (req.method === "POST" && skillResetMatch) {
     return handleSkillSimple(
       req,
@@ -294,7 +294,7 @@ export async function handleAdminRoute(req: Request, ctx: AdminRouteContext): Pr
       resetInstalledSkill,
     );
   }
-  const skillInstallMatch = url.pathname.match(/^\/admin\/api\/skills\/([^/]+)\/install$/);
+  const skillInstallMatch = url.pathname.match(/^\/console\/api\/skills\/([^/]+)\/install$/);
   if (req.method === "POST" && skillInstallMatch) {
     return handleSkillSimple(
       req,
@@ -307,8 +307,8 @@ export async function handleAdminRoute(req: Request, ctx: AdminRouteContext): Pr
   }
 
   // GET /admin and the SPA's client-side routes (e.g. /admin/skills) — serve
-  // the SPA shell. /admin/assets/* serves bundled JS/CSS from dist/.
-  if (req.method === "GET" && (url.pathname === "/admin" || url.pathname.startsWith("/admin/"))) {
+  // the SPA shell. /console/assets/* serves bundled JS/CSS from dist/.
+  if (req.method === "GET" && (url.pathname === "/console" || url.pathname.startsWith("/console/"))) {
     return handleStaticOrSpa(ctx, url.pathname);
   }
 
@@ -396,10 +396,10 @@ async function handleDashboardJson(ctx: AdminRouteContext, agentName: string): P
 function handleStaticOrSpa(ctx: AdminRouteContext, pathname: string): Response {
   if (!ctx.staticDir) return buildRequiredResponse();
 
-  // /admin/assets/* → file from dist/assets/. Anything else under /admin
+  // /console/assets/* → file from dist/assets/. Anything else under /admin
   // falls back to index.html so the React Router can handle the route.
-  if (pathname.startsWith("/admin/assets/")) {
-    const rel = pathname.slice("/admin/".length); // assets/index-...js
+  if (pathname.startsWith("/console/assets/")) {
+    const rel = pathname.slice("/console/".length); // assets/index-...js
     const file = serveStaticFile(ctx.staticDir, rel);
     return file ?? new Response(null, { status: 404 });
   }
@@ -407,8 +407,8 @@ function handleStaticOrSpa(ctx: AdminRouteContext, pathname: string): Response {
   // Other static files Vite emits at the root (e.g. /admin/vite.svg, source
   // maps). Try the literal path first; if missing, fall through to index.html
   // so client-side routes work.
-  if (pathname !== "/admin" && pathname !== "/admin/") {
-    const rel = pathname.slice("/admin/".length);
+  if (pathname !== "/console" && pathname !== "/console/") {
+    const rel = pathname.slice("/console/".length);
     if (rel.length > 0 && rel.includes(".")) {
       const file = serveStaticFile(ctx.staticDir, rel);
       if (file) return file;
@@ -498,7 +498,7 @@ async function handleActionPost(
 function flashRedirect(message: string): Response {
   return new Response(null, {
     status: 303,
-    headers: { location: `/admin?msg=${encodeURIComponent(message)}` },
+    headers: { location: `/console?msg=${encodeURIComponent(message)}` },
   });
 }
 
