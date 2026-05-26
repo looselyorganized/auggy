@@ -28,11 +28,6 @@ import {
   revealCredential,
   setCredential,
 } from "./admin-credentials";
-import {
-  collectMemoryDashboard,
-  erasePeerAcrossProviders,
-  validatePeerId,
-} from "./admin-memory";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
@@ -177,7 +172,6 @@ const CRED_REVEAL_ACTION = "cred-reveal";
 const CRED_SET_ACTION = "cred-set";
 const CRED_DELETE_ACTION = "cred-delete";
 
-const MEMORY_ERASE_PEER_ACTION = "memory-erase-peer";
 
 const EXPIRED_CSRF_HTML = `<!doctype html>
 <html lang="en">
@@ -234,14 +228,6 @@ export async function handleAdminRoute(req: Request, ctx: AdminRouteContext): Pr
   }
   if (req.method === "POST" && url.pathname === "/admin/api/identity") {
     return handleIdentityWrite(req, ctx, agentName);
-  }
-
-  // Memory API ------------------------------------------------------------
-  if (req.method === "GET" && url.pathname === "/admin/api/memory") {
-    return handleMemoryDashboard(ctx);
-  }
-  if (req.method === "POST" && url.pathname === "/admin/api/memory/peer/erase") {
-    return handleMemoryErasePeer(req, ctx, agentName);
   }
 
   // Credentials API -------------------------------------------------------
@@ -355,18 +341,6 @@ async function handleDashboardJson(
     const token = await generateCsrfToken({ bearer: ctx.bearer, agentName, actionId: credAction });
     csrfTokens.push({ actionId: credAction, rowKey: undefined, token });
   }
-
-  // Memory cross-provider peer-erase token. PeerId travels in the body.
-  const memoryEraseToken = await generateCsrfToken({
-    bearer: ctx.bearer,
-    agentName,
-    actionId: MEMORY_ERASE_PEER_ACTION,
-  });
-  csrfTokens.push({
-    actionId: MEMORY_ERASE_PEER_ACTION,
-    rowKey: undefined,
-    token: memoryEraseToken,
-  });
 
   return new Response(
     JSON.stringify({
@@ -618,47 +592,6 @@ async function handleIdentityWrite(
   const agentMeta = readAgentMeta(ctx.agentDir);
   const result = writeIdentity(ctx.agentDir, agentMeta?.identityPath, body.content);
   return jsonResponse(result, result.ok ? 200 : 400);
-}
-
-// ===========================================================================
-// Memory API handlers
-// ===========================================================================
-
-async function handleMemoryDashboard(ctx: AdminRouteContext): Promise<Response> {
-  const dashboard = await collectMemoryDashboard(ctx.kernel);
-  return jsonResponse(dashboard);
-}
-
-async function handleMemoryErasePeer(
-  req: Request,
-  ctx: AdminRouteContext,
-  agentName: string,
-): Promise<Response> {
-  let body: { csrf?: unknown; peerId?: unknown };
-  try {
-    body = (await req.json()) as typeof body;
-  } catch {
-    return jsonResponse({ error: "invalid JSON body" }, 400);
-  }
-  if (typeof body.csrf !== "string") return jsonResponse({ error: "missing csrf" }, 400);
-  const peerId = validatePeerId(body.peerId);
-  if (!peerId) return jsonResponse({ error: "invalid peerId" }, 400);
-
-  const csrfResult = await validateCsrfToken({
-    token: body.csrf,
-    bearer: ctx.bearer,
-    agentName,
-    actionId: MEMORY_ERASE_PEER_ACTION,
-  });
-  if (!csrfResult.valid) {
-    if (csrfResult.reason === "expired") {
-      return jsonResponse({ error: "Session expired — reload the page." }, 419);
-    }
-    return jsonResponse({ error: "CSRF check failed." }, 403);
-  }
-
-  const result = await erasePeerAcrossProviders(ctx.kernel.getAugments(), peerId);
-  return jsonResponse(result, result.ok ? 200 : 500);
 }
 
 // ===========================================================================

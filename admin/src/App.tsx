@@ -9,7 +9,6 @@ import { AugmentsTab } from "@/routes/AugmentsTab";
 import { SkillsTab } from "@/routes/SkillsTab";
 import { IdentityTab } from "@/routes/IdentityTab";
 import { CredentialsTab } from "@/routes/CredentialsTab";
-import { MemoryTab } from "@/routes/MemoryTab";
 import {
   ChatTab,
   BudgetsTab,
@@ -48,7 +47,6 @@ export function App() {
                 <Route path="/augments" element={<AugmentsTab />} />
                 <Route path="/skills" element={<SkillsTab />} />
                 <Route path="/credentials" element={<CredentialsTab />} />
-                <Route path="/memory" element={<MemoryTab />} />
                 <Route path="/budgets" element={<BudgetsTab />} />
                 <Route path="/traces" element={<TracesTab />} />
                 <Route path="/manifest" element={<ManifestTab />} />
