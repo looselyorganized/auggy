@@ -492,8 +492,14 @@ export function filesystem(opts: FilesystemOptions): Augment {
               label: "Default search excludes",
               value: DEFAULT_SEARCH_EXCLUDES.join(", "),
             },
-            { label: "Tools exposed", value: "fs_read, fs_list, fs_write, fs_mkdir, fs_remove, fs_search" },
-            { label: "Public/agent neverExpose", value: "fs_write, fs_mkdir, fs_remove (public); fs_remove (agent)" },
+            {
+              label: "Tools exposed",
+              value: "fs_read, fs_list, fs_write, fs_mkdir, fs_remove, fs_search",
+            },
+            {
+              label: "Public/agent neverExpose",
+              value: "fs_write, fs_mkdir, fs_remove (public); fs_remove (agent)",
+            },
           ],
         },
       ],

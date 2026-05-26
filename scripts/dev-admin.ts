@@ -199,7 +199,11 @@ const agent = defineAgent(
       }),
       notify({
         destinations: [
-          { name: "creator", transport: "log-to-file", path: join(agentDir, "notifications.jsonl") },
+          {
+            name: "creator",
+            transport: "log-to-file",
+            path: join(agentDir, "notifications.jsonl"),
+          },
         ],
         rateLimit: {
           cooldownMs: 120000,

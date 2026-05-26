@@ -16,7 +16,16 @@
  * through the path guards defined below.
  */
 
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readSkillFrontmatter, type SkillFrontmatter } from "../../cli/skill-frontmatter";
@@ -161,10 +170,7 @@ function listInstalledFolders(agentDir: string | undefined): string[] {
   return folders;
 }
 
-function classifyInstalledSkill(
-  folder: string,
-  installedContent: string,
-): SkillSource {
+function classifyInstalledSkill(folder: string, installedContent: string): SkillSource {
   const bundled = readBundledSkillContent(folder);
   if (!bundled) return "manual";
   return bundled === installedContent ? "bundled" : "modified";
@@ -298,10 +304,7 @@ export function writeInstalledSkillContent(
   }
 }
 
-export function removeInstalledSkill(
-  agentDir: string | undefined,
-  folder: string,
-): MutationResult {
+export function removeInstalledSkill(agentDir: string | undefined, folder: string): MutationResult {
   const dir = installedSkillDir(agentDir, folder);
   if (!dir) return { ok: false, message: "invalid skill folder" };
   if (!existsSync(dir)) return { ok: false, message: "skill not installed" };
@@ -313,10 +316,7 @@ export function removeInstalledSkill(
   }
 }
 
-export function resetInstalledSkill(
-  agentDir: string | undefined,
-  folder: string,
-): MutationResult {
+export function resetInstalledSkill(agentDir: string | undefined, folder: string): MutationResult {
   const src = bundledSkillSourceDir(folder);
   if (!src) return { ok: false, message: "no bundled skill for this folder" };
   const dest = installedSkillDir(agentDir, folder);
@@ -389,10 +389,7 @@ export function createSkill(
   }
 }
 
-export function installBundledSkill(
-  agentDir: string | undefined,
-  folder: string,
-): MutationResult {
+export function installBundledSkill(agentDir: string | undefined, folder: string): MutationResult {
   if (!agentDir) return { ok: false, message: "agentDir not configured" };
   const safe = validateSkillFolderName(folder);
   if (!safe) return { ok: false, message: "invalid skill folder" };

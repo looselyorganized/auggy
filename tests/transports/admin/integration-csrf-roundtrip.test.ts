@@ -31,11 +31,7 @@ interface DashboardJson {
   csrfTokens: { actionId: string; rowKey?: string; token: string }[];
 }
 
-function findCsrfToken(
-  data: DashboardJson,
-  actionId: string,
-  rowKey?: string,
-): string | null {
+function findCsrfToken(data: DashboardJson, actionId: string, rowKey?: string): string | null {
   const match = data.csrfTokens.find(
     (t) => t.actionId === actionId && (t.rowKey ?? undefined) === rowKey,
   );

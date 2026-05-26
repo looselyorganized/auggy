@@ -60,7 +60,9 @@ function readAgentMeta(agentDir: string | undefined): AgentMeta | null {
       id: typeof r.id === "string" ? r.id : undefined,
       name: typeof r.name === "string" ? r.name : undefined,
       purpose: typeof r.purpose === "string" ? r.purpose : undefined,
-      operators: Array.isArray(r.operators) ? r.operators.filter((o): o is string => typeof o === "string") : undefined,
+      operators: Array.isArray(r.operators)
+        ? r.operators.filter((o): o is string => typeof o === "string")
+        : undefined,
       identityPath: typeof r.identity === "string" ? r.identity : undefined,
     };
   } catch {
@@ -179,7 +181,6 @@ const CRED_REVEAL_ACTION = "cred-reveal";
 const CRED_SET_ACTION = "cred-set";
 const CRED_DELETE_ACTION = "cred-delete";
 
-
 const EXPIRED_CSRF_HTML = `<!doctype html>
 <html lang="en">
 <head>
@@ -273,15 +274,36 @@ export async function handleAdminRoute(req: Request, ctx: AdminRouteContext): Pr
   }
   const skillRemoveMatch = url.pathname.match(/^\/admin\/api\/skills\/([^/]+)\/remove$/);
   if (req.method === "POST" && skillRemoveMatch) {
-    return handleSkillSimple(req, ctx, agentName, "skill-remove", decodeURIComponent(skillRemoveMatch[1]!), removeInstalledSkill);
+    return handleSkillSimple(
+      req,
+      ctx,
+      agentName,
+      "skill-remove",
+      decodeURIComponent(skillRemoveMatch[1]!),
+      removeInstalledSkill,
+    );
   }
   const skillResetMatch = url.pathname.match(/^\/admin\/api\/skills\/([^/]+)\/reset$/);
   if (req.method === "POST" && skillResetMatch) {
-    return handleSkillSimple(req, ctx, agentName, "skill-reset", decodeURIComponent(skillResetMatch[1]!), resetInstalledSkill);
+    return handleSkillSimple(
+      req,
+      ctx,
+      agentName,
+      "skill-reset",
+      decodeURIComponent(skillResetMatch[1]!),
+      resetInstalledSkill,
+    );
   }
   const skillInstallMatch = url.pathname.match(/^\/admin\/api\/skills\/([^/]+)\/install$/);
   if (req.method === "POST" && skillInstallMatch) {
-    return handleSkillSimple(req, ctx, agentName, "skill-install", decodeURIComponent(skillInstallMatch[1]!), installBundledSkill);
+    return handleSkillSimple(
+      req,
+      ctx,
+      agentName,
+      "skill-install",
+      decodeURIComponent(skillInstallMatch[1]!),
+      installBundledSkill,
+    );
   }
 
   // GET /admin and the SPA's client-side routes (e.g. /admin/skills) — serve
@@ -293,10 +315,7 @@ export async function handleAdminRoute(req: Request, ctx: AdminRouteContext): Pr
   return new Response(null, { status: 404 });
 }
 
-async function handleDashboardJson(
-  ctx: AdminRouteContext,
-  agentName: string,
-): Promise<Response> {
+async function handleDashboardJson(ctx: AdminRouteContext, agentName: string): Promise<Response> {
   const blocks = await collectAdminInfoBlocks(ctx.kernel);
   const tokenMap = await buildCsrfTokenMap(blocks, ctx.bearer, agentName);
   // Serialize the token map as a flat array so the SPA can index it without
@@ -576,10 +595,7 @@ export async function buildAdminActionRegistry(
  * standalone multi-agent picker UI) but simpler: one agent, one bearer,
  * no per-request bearer cache.
  */
-async function handleChatProxy(
-  req: Request,
-  ctx: AdminRouteContext,
-): Promise<Response> {
+async function handleChatProxy(req: Request, ctx: AdminRouteContext): Promise<Response> {
   if (!ctx.selfPort) {
     return jsonResponse(
       { error: "Chat proxy unavailable — agent port not exposed to admin route." },
@@ -615,10 +631,7 @@ async function handleChatProxy(
     if ((err as Error).name === "AbortError") {
       return new Response(null, { status: 499 });
     }
-    return jsonResponse(
-      { error: `upstream connect failed: ${(err as Error).message}` },
-      502,
-    );
+    return jsonResponse({ error: `upstream connect failed: ${(err as Error).message}` }, 502);
   }
 
   return new Response(upstream.body, {

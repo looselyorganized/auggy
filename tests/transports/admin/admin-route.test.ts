@@ -133,7 +133,11 @@ describe("handleAdminRoute — auth", () => {
     const res = await handleAdminRoute(req, await makeCtx());
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("application/json");
-    const body = (await res.json()) as { card: { provider: { name: string } }; blocks: unknown[]; csrfTokens: unknown[] };
+    const body = (await res.json()) as {
+      card: { provider: { name: string } };
+      blocks: unknown[];
+      csrfTokens: unknown[];
+    };
     expect(body.card.provider.name).toBe("zip");
     expect(Array.isArray(body.blocks)).toBe(true);
     expect(Array.isArray(body.csrfTokens)).toBe(true);

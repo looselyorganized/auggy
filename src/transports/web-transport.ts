@@ -1189,8 +1189,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
           // and any client-side route under `/admin/<path>`. Using the literal
           // `/admin/` prefix (note trailing slash) keeps siblings like
           // `/administrative` from being captured (M3 fix preserved).
-          const isAdminPath =
-            url.pathname === "/admin" || url.pathname.startsWith("/admin/");
+          const isAdminPath = url.pathname === "/admin" || url.pathname.startsWith("/admin/");
           if (adminEnabled && isAdminPath) {
             if (req.method === "HEAD") {
               return new Response(null, {

@@ -98,7 +98,8 @@ export function serializeEnv(lines: EnvLine[]): string {
 function encodeEnvValue(value: string): string {
   if (value === "") return "";
   // Quote when the value would round-trip ambiguously otherwise.
-  const needsQuotes = /[\s"'=$#]|^\s|\s$/.test(value) || value.includes("\n") || value.includes("\t");
+  const needsQuotes =
+    /[\s"'=$#]|^\s|\s$/.test(value) || value.includes("\n") || value.includes("\t");
   if (!needsQuotes) return value;
   const escaped = value
     .replace(/\\/g, "\\\\")
@@ -117,12 +118,14 @@ function envPath(agentDir: string | undefined): string | null {
   return join(agentDir, ".env");
 }
 
-function readEnvFile(agentDir: string | undefined): {
-  lines: EnvLine[];
-  path: string;
-  exists: boolean;
-  modifiedIso: string | null;
-} | { error: string } {
+function readEnvFile(agentDir: string | undefined):
+  | {
+      lines: EnvLine[];
+      path: string;
+      exists: boolean;
+      modifiedIso: string | null;
+    }
+  | { error: string } {
   const path = envPath(agentDir);
   if (!path) return { error: "agent directory not configured" };
   if (!existsSync(path)) {
@@ -142,7 +145,10 @@ function readEnvFile(agentDir: string | undefined): {
   }
 }
 
-function writeEnvFile(agentDir: string | undefined, lines: EnvLine[]): { ok: true; modifiedIso: string } | { ok: false; message: string } {
+function writeEnvFile(
+  agentDir: string | undefined,
+  lines: EnvLine[],
+): { ok: true; modifiedIso: string } | { ok: false; message: string } {
   const path = envPath(agentDir);
   if (!path) return { ok: false, message: "agent directory not configured" };
   try {

@@ -41,26 +41,27 @@ function inferCategory(aug: { transport?: unknown; memory?: unknown }): AugmentC
 }
 
 export function collectAugmentSummaries(kernel: TransportKernel): AugmentSummary[] {
-  return kernel
-    .getAugments()
-    // Hide kernel-injected plumbing the operator didn't mount.
-    .filter((aug) => !aug.synthetic)
-    .map((aug) => ({
-    type: aug.type ?? aug.name,
-    name: aug.name,
-    version: aug.version,
-    required: aug.required ?? false,
-    category: aug.category ?? inferCategory(aug),
-    capabilities: aug.capabilities ?? [],
-    hasTools: (aug.tools?.length ?? 0) > 0,
-    toolCount: aug.tools?.length ?? 0,
-    isTransport: !!aug.transport,
-    isMemoryProvider: !!aug.memory,
-    httpRouteCount: aug.httpRoutes?.length ?? 0,
-    hasAdminInfo: !!aug.adminInfo,
-  }));
+  return (
+    kernel
+      .getAugments()
+      // Hide kernel-injected plumbing the operator didn't mount.
+      .filter((aug) => !aug.synthetic)
+      .map((aug) => ({
+        type: aug.type ?? aug.name,
+        name: aug.name,
+        version: aug.version,
+        required: aug.required ?? false,
+        category: aug.category ?? inferCategory(aug),
+        capabilities: aug.capabilities ?? [],
+        hasTools: (aug.tools?.length ?? 0) > 0,
+        toolCount: aug.tools?.length ?? 0,
+        isTransport: !!aug.transport,
+        isMemoryProvider: !!aug.memory,
+        httpRouteCount: aug.httpRoutes?.length ?? 0,
+        hasAdminInfo: !!aug.adminInfo,
+      }))
+  );
 }
-
 
 /**
  * Iterate registered augments and collect their AdminInfoBlocks for /admin

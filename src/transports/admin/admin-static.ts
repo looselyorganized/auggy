@@ -37,10 +37,7 @@ export function resolveDistDir(): string | undefined {
  * inside the directory. Returns `null` when the file does not exist;
  * returns a 403 Response on traversal attempts.
  */
-export function serveStaticFile(
-  staticDir: string,
-  relativePath: string,
-): Response | null {
+export function serveStaticFile(staticDir: string, relativePath: string): Response | null {
   const filePath = join(staticDir, relativePath);
   const dirWithSep = staticDir.endsWith(sep) ? staticDir : staticDir + sep;
   if (!filePath.startsWith(dirWithSep) && filePath !== staticDir) {
