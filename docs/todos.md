@@ -1,6 +1,10 @@
-# Auggy — Backlog
+# Auggy — Operational Backlog
 
-Running list of known bugs, UX issues, and small improvements discovered during real use. Not a roadmap — roadmap lives at `lo/docs/auggy-plans-detail.md`. This is the "grab one when you have a spare hour" list.
+The "grab one when you have a spare hour" list — bugs, small UX
+fixes, polish. **Not a roadmap.** Roadmap features live in
+[`docs/ROADMAP.md`](./ROADMAP.md); the operator console contract lives
+in [`docs/21-console.md`](./21-console.md). If something here grows
+into a real feature, move it to the roadmap.
 
 Format: `- [ ] [category] description (context: where/when found)`
 
@@ -8,85 +12,21 @@ Format: `- [ ] [category] description (context: where/when found)`
 
 ## Bugs
 
-- [x] ~~**[engine+transport] Token streaming in Anthropic engine + AG-UI delta events.**~~ — shipped: `messages.stream()` in Anthropic adapter with `onDelta` callback, `text_message_start`/`text_message_delta`/`text_message_end` KernelEvents, AG-UI translator routes deltas 1:1 to `TEXT_MESSAGE_CONTENT`. Turn loop emits start/delta/end with error cleanup (closes stream on error). Non-streaming engines backward compat via existing `text_message` triple.
-- [x] ~~**[webTransport] Bun.serve idleTimeout.**~~ — shipped: `idleTimeout: 120` in `Bun.serve()`. Streaming keeps the pipe warm; this is the safety net for long tool executions.
-- [x] ~~**[notify] Rate limiting + deduplication for outbound escalations.** Prevent operator-attention DoS. Per-peer/session cooldown on `notify` calls, deduplication window for similar summaries, circuit breaker on repeated abuse from the same peer. Tool-level rate limit, not transport-level. Surfaced during red-team session (2026-04-16). Shipped in Phase A (feat/notify-and-telegram-transport): `src/augments/notify.ts` rate-limits per peer with sliding window + dedup key.~~
+*(none currently open — recent fixes are recorded in git history /
+release notes, not here)*
 
 ## UX
 
-- [ ] **[CLI]** Scaffold should create `.env` directly instead of `.env.example` + copy step. Two-step copy is friction; users hit "env var missing" errors on first boot.
 - [ ] **[CLI]** `auggy create` from wrong directory (e.g. a sibling project's checkout) scaffolds `<wrong-dir>/<name>/` without warning. Should detect or ask "create here?".
-- [ ] **[CLI]** Missing `auggy remove <name>` command. Today you have to `rm -rf` the directory manually after a failed `auggy create`.
 - [ ] **[CLI]** Env var error messages list missing vars but don't say "add these to your .env" or show the file path.
-- [ ] **[CLI]** `auggy create` — replace the free-text model input with a `select()` dropdown of known models per provider (Claude Sonnet/Opus/Haiku, GPT-5/o3, OpenRouter top models), with "custom" option for typing a model slug. Currently operators have to know the exact model string.
 
 ## Polish
 
 - [ ] **[org-context]** Retry-at-boot message says "running without org context" — should also say "lazy retry on first org_fetch" so operator doesn't restart unnecessarily.
 - [ ] **[scaffold]** `agent.yaml` comments could include engine provider options (currently only shows anthropic as the default).
 
-## v1.0 concierge-readiness
-
-Captured 2026-05-14 during a strategic pass on the v1.0 adoption case (single-owner concierge / front-door agent thesis). Items tiered by whether the thesis is structurally broken without them. Tier 1 is the v1.0 ship gate; Tier 2 is launch polish; Tier 3 is post-v1.0.
-
-### Tier 1 — blocks v1.0
-
-- [ ] **[process]** Run end-to-end DX walkthrough (`auggy create → dev → chat → visitor-auth → memory → notify`). Includes error-path coverage (G29), security-eval update for gated posture (G30), bash-can't-read-`.env` verification (G31), `auggy dev` observability check (G37). (G8, ~3-4 hours)
-- [ ] **[chat]** Minimal info endpoint at `GET /` when no `publicFrontendUrl` is set. Replaces the current 404 with a small unauthenticated response (HTML, possibly content-negotiated with JSON) carrying agent name from the agent-card, a link to `/.well-known/agent-card.json`, and a one-line "this is an Auggy agent backend — bring your own AG-UI client (POST `/agent/run`) or set `publicFrontendUrl` in `agent.yaml`." Honors the 2026-04-29 spec decision (`docs/superpowers/specs/2026-04-29-auggy-chat-design.md:44` — "`/` simplifies to '404 default + optional redirect'") and the OSS-runtime landscape (Hermes, OpenClaw, Letta, CrewAI, OpenAI Agents SDK all ship no public-visitor HTTP chat in OSS — visitor surfaces are either messaging adapters or BYO-UI). Bundled chat HTML reconsidered + rejected 2026-05-19 after head-of-product landscape scan. (G2 revised, ~1-2 hours)
-- [x] ~~**[admin]** `/admin` route + OpenHands-style HTTP basic auth, bearer-as-password (G36)~~ — shipped 2026-05-19 across PRs [#59](https://github.com/looselyorganized/augment-1/pull/59) (foundation: ring-buffer, admin-overrides Zod schema + 0o600 atomic write, contract types, isLoopback), [#60](https://github.com/looselyorganized/augment-1/pull/60) (admin module: auth, HTTPS-on-non-loopback gate, CSRF, renderer, dispatcher, registry), [#61](https://github.com/looselyorganized/augment-1/pull/61) (per-augment adminInfo + 9 admin actions across web-transport / budgets / layered-memory / notify / visitor-auth), [#62](https://github.com/looselyorganized/augment-1/pull/62) (CSRF per-action token fix + row-action rendering + write race hardening — found via Phase 4 adversarial review), [#63](https://github.com/looselyorganized/augment-1/pull/63) (operator-facing reference docs + Should-fix followups filed). Verified end-to-end via integration test that boots a real agent, parses CSRF from rendered HTML, POSTs round-trip. 5 Should-fix followups in Tier 2 below. **2026-05-26 evolution:** lane re-evaluation placed auggy in the Pocketbase / Supabase / Convex tier (deployable platform where the operator manages their deployment via web admin) — admin UI is table stakes for that lane. v1.0 ships an admin SPA at `/admin` with a single focused tab (**Chat**) replacing both the G36 server-rendered dashboard AND the standalone `auggy chat`. Additional tabs deferred until adopter signal. Spec: `docs/21-admin.md`.
-- [ ] **[examples]** Add `examples/concierge/` — vertical web-channel example (boutique store website chat + stubbed inventory module + visitor-auth + notify-to-operator). Demonstrates the augment composition pattern with a concrete domain. Instagram/SMS variants reframed as community wishlist (see `lo/docs/ROADMAP.md`). (G7, ~3-5 days)
-
-**Note on security-eval expansion:** Deliberately deferred to **v1.0 ship + post-OSS-launch**. Rationale (2026-05-16 principal-eng review): the LLM-judged eval suite is a regression guard, which requires a stable baseline. The runtime is currently turbulent (bearer-precedence semantics, mint-suppression, allowAnonymous defaults, identity-path resolution all shifted in the past week). Writing new eval cases against a moving baseline produces constant rewrite cycles. Current eval (10 cases from 2026-04-16 red-team) continues to run nightly as cheap drift monitoring (~$0.07/run on Haiku). When v1.0 ships + adopter feedback drives the next iteration, expand the corpus.
-
-### Tier 2 — launch polish
-
-- [ ] **[budgets]** `auggy spend` command — operator surface for current spend by trust tier. Today operator queries SQLite directly. (G9)
-- [ ] **[budgets]** Budget-threshold notify integration — fire `notify` when 80% / 100% of `dailyBudgetUsd` hits. Closes the cost-awareness loop. (G10)
-- [ ] **[memory]** `auggy memory <agent> [--peer X]` — inspect/audit memory entries. Required for right-to-erasure verification and trust calibration; visually distinguishes agent-derived from creator-confirmed facts (G32). (G14)
-- [ ] **[create]** Notify destination prompt inline during `auggy create`. Mirror the existing `orgContext` conditional-prompts pattern: when notify is selected, ask "webhook / Telegram / log-to-file" + capture config. (G17 revised)
-- [ ] **[notify]** Ship a `log-to-file` destination adapter (`file:./notifications.jsonl`) as the zero-config default. Pairs with G17. (G18)
-- [ ] **[notify]** `auggy notify test <destination>` validator — operator verifies a destination works without triggering the agent. (G19)
-- [ ] **[org-context]** `auggy fact <agent> "..."` for adding org-context entries without editing files. Concrete use case: "we just got the green linen shirt in stock." (G23)
-- [ ] **[deploy]** `auggy deploy logs <agent>` + post-deploy success verification (`wait-for /health = 200` after `railway up --detach`). (G25 + G26)
-- [ ] **[engines]** Ollama adapter doesn't preserve `tool_call.id` from Ollama's response, and doesn't set `tool_name` on `role: "tool"` messages on the way back. Single-tool-per-turn (llama3.2 happy path, verified) is unaffected; parallel/multi-tool turns (qwen2.5 and similar) may mis-attribute tool results to invocations. Investigate first: does the kernel's tool_use → tool_result mapping in `src/kernel/turn-loop.ts` carry the original tool name on the result message? Compare how Anthropic + OpenAI adapters handle multi-tool round-trips. Likely one-file adapter fix (~½ day); +½ day if kernel needs threading. (G35-followup, surfaced 2026-05-18 during adversarial review of PR #53)
-- [ ] **[observability]** Augment telemetry export pipeline. Generalize `src/kernel/trace-emitter.ts` into a typed event bus that augments emit to. Initial sinks: in-memory ring buffer (consumed by G36 `/admin` `eventStream` sections — natural forward-compat shape), OTel exporter (Prometheus / Grafana / Datadog), Supabase outbox (extends the existing `telemetry-exporter/` project). Augments declare event schemas in a typed contract analogous to `adminInfo()` for state. Event-taxonomy decisions wait for adopter feedback — don't lock in the schema pre-launch. Pairs with G36's `eventStream` section type which v1.0 ships polled but v1.x can swap to telemetry-backed without contract change. Surfaced 2026-05-19 during G36 architectural sidebar. (~2-3 weeks)
-- [ ] **[admin]** ~~Inline operator chat in `/admin` (G36-followup)~~ — **absorbed into the v1.0 admin SPA scope on 2026-05-26**. The Chat tab in the v1.0 SPA (`docs/21-admin.md`) IS this work. Implementation lives on `feat/chat-ui-iteration`. Replaces both the G36 server-rendered HTML and the standalone `auggy chat` SPA. Solves the remote-deploy chat gap (Railway/Fly operators chat via the deployed agent's `/admin` rather than SSH-tunneling).
-- [ ] **[admin]** Audit-log rejected POSTs (CSRF failure / unknown action id / input-coercion failure). Today only dispatched-and-handled actions emit `[admin] actor=...` lines; CSRF rejects are silent which masks probing attempts. Add a structured log line per reject path with `reason=csrf|unknown-action|coerce` for operator-grep visibility. ~½ day. Surfaced 2026-05-19 during Phase 4 adversarial review of G36. (G36-followup)
-- [ ] **[admin]** Reset-action collision uniqueness asymmetry. `buildAdminActionRegistry` throws on duplicate augment-level action ids and duplicate table rowAction ids, but silently skips a duplicate keyValue `resetAction.id` (`if (row.resetAction && !registry.has(row.resetAction.id))`). Make all three paths throw on collision so two augments declaring the same reset id are caught at boot, not at first POST. ~1 hour. (G36-followup)
-- [ ] **[admin]** Pre-auth /admin rate limit shares bucket with creator. The 60/min cap is per-IP combined across the entire /admin* surface, BEFORE auth — an attacker probing /admin from the operator's NAT'd network DOSes the legit creator. Either move the limiter after auth-success (so unauthenticated probes have a separate, tighter bucket) or raise the post-auth cap. Doc claim "Defeats brute-force against HTTP Basic" overstates it: 60/min × 24h = 86,400 attempts/day per IP, plenty for online recovery on a low-entropy bearer. ~½ day. (G36-followup)
-- [ ] **[admin]** Unknown-action POST returns empty 404. Include a brief JSON body (`{"error":"unknown action id"}`) so operators staring at empty responses don't waste time wondering if the route shape changed. ~15 min. (G36-followup)
-- [ ] **[admin]** Tighten `isLoopback` IPv4 regex from `^127\.` to `^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$`. Current regex accepts `127.999.999.999` (not a real IPv4 but matches the prefix). Practically harmless because no real socket address would present that form, but tighten for clarity. ~5 min. (G36-followup)
-
-### Tier 3 — defer past v1.0
-
-- [ ] **[chat-widget]** Publish `@auggy/chat-widget-react` (+ optional `@auggy/next` route helper) and/or a Web Component embed. v1.0 ships primitives reference only (`docs/20-embedding.md`) — packaged widget shape benefits from real adopter feedback (looselyorganized.xyz first). Generative-UI vision: components Auggy emits via tool calls (DossierCard, ChoicePrompt, FormBubble, etc.) using the existing AG-UI `TOOL_CALL_*` payload as the render contract — no runtime protocol changes. (G1 packaged + G37 ui-kit)
-- [ ] **[link]** Mesh-vs-tunnel design resolution (npm-bundled mesh vs explicit per-peer config). (G4)
-- [ ] **[creator-identity]** Multi-operator distinguishing — today single shared bearer = single "creator." Confirmed OK for v1.0 single-owner concierge thesis. (G11)
-- [ ] **[trust]** `staff` (intermediate) trust tier between creator and public. Needed for HVAC-dispatcher-style scenarios; v1.1+. (G13)
-- [ ] **[memory]** Row-count cap on layeredMemory entries (today `retentionDays: 90` is time-only). Slow growth at typical traffic; verify with monitoring before adding. (G15)
-- [ ] **[org-context]** Naming + mode-signal clarity (`baseUrl: file://` default vs catalog description saying "API"). Don't rename in v1.0. (G21 + G22)
-- [ ] **[deploy]** Other cloud targets (Fly, Render, custom Docker). Railway is v1.0 scope. (G24)
-
-## OSS launch — open questions
-
-- [ ] **[docs] How do we document the user-facing API surface?** We don't have an "SDK" per se — `defineAgent`, `defineAugment`, `defineTool` plus the engines is a small surface. The `docs/01-12-*.md` reference set is contributor-facing, not user-facing. Decide between: (a) one `docs/00-api-reference.md` page that lists each public function with signature + one example (cheap, ~1 hour), (b) auto-generated TypeDoc reference (medium, half-day), (c) a real docs site (Mintlify / Nextra / Starlight, hosted on a subdomain TBD, ~half-day). v0.3.1 shipped without this; revisit pre-OSS-launch. Surfaced 2026-04-28 during OSS readiness audit.
-- [ ] **[examples] Do we ship `examples/` clone-and-run agent templates?** `scripts/hello.ts` is a one-shot demo, not a starter template. Candidates if we do: `examples/slack-bot/`, `examples/cli-chat/`, `examples/research-agent/`, `examples/coding-agent/`. Cost: each example is a maintained reference that breaks when the API moves. Benefit: answers "how do I X?" before the issue is filed. Decide between: defer until the first issue asks for it, or seed with 2-3 at launch. Surfaced 2026-04-28 during OSS readiness audit.
-- [ ] **[architecture] Investigate cross-augment dependencies — what works with what, and how do we express it?** PR γ.2 (visitorAuth) surfaced this as a real question: visitorAuth's revocation-check needs webTransport's visitor-token verify path, requiring a deferred-closure wiring through `auggy resolver` because both augments are constructed independently. visitorAuth + layered-memory also have a coordination gap (Codex review H4 — promotion-flush after verify undoes peer-id migration). visitorAuth + webTransport's `agentBinding` mismatch silently strands visitors — we shipped a boot-time check, but that pattern doesn't generalize. Other likely-coupled pairs: notify ↔ telegramTransport (both use telegram-client.ts), turnControl ↔ webTransport (request_input semantics on streaming transport), bash ↔ filesystem (workspace mount visibility). Investigate: do we need a declared `requires` / `optionalCoordinatesWith` field on `Augment`? A topological resolver pass? A documented "augment compatibility matrix"? A general "cross-augment config consistency" validator? Spec needs to consider: silent failures (a depends on b but b is absent → degraded behavior), version skew (a expects b@v1, gets b@v2), and circular coupling. Surfaced 2026-05-08 during PR γ.2 implementation.
-- [ ] **[setup-experience] Augment setup wizards — automate the cross-system bootstrap.** Each "real" augment requires the operator to wire up external dependencies before it works. visitorAuth needs 5 env vars (`AGENTMAIL_API_KEY`, `AGENTMAIL_INBOX_ID`, `AUGGY_PUBLIC_URL`, `VISITOR_SIGNING_KEY`, `AUGGY_AGENT_ID`); `notify` needs per-adapter creds (webhook URL, Telegram bot token, AgentMail key); `telegramTransport` needs a bot token + (in webhook mode) a public URL + secret; `orgContext` needs an API URL + token. The current scaffold drops template `${VAR}` placeholders into `.env.example` and tells the operator to fill them in — high friction at first-run. Automation tiers: (1) **Trivially automatable now** — `auggy add visitor-auth` runs `openssl rand -hex 32` for `VISITOR_SIGNING_KEY`; defaults `AUGGY_AGENT_ID` to the agent's name. (2) **API-integrated** — call AgentMail's create-inbox API for `AGENTMAIL_INBOX_ID`; ping `inboxes.list` to validate `AGENTMAIL_API_KEY` at setup-time instead of boot-time. Same shape for Telegram's `getMe`. (3) **Deployment-platform-aware** — auto-derive `AUGGY_PUBLIC_URL` from `RAILWAY_PUBLIC_DOMAIN` / `FLY_APP_NAME.fly.dev`; for local dev, integrate with `ngrok start` / `cloudflared tunnel`. (4) **Stays manual** — third-party signups (AgentMail account creation) can't be automated, but a documented walkthrough helps. Natural unit of work: an `auggy add <augment> --auto` mode + per-augment `setup()` hook in the catalog that knows how to bootstrap its dependencies. Plus per-platform `auggy deploy --auto-public-url`. Land this AFTER PRs 1-6 of the visitorAuth follow-ups; targets pre-OSS-launch when first-run friction becomes the dominant signal. Surfaced 2026-05-08 during visitorAuth ops walkthrough.
-
-## Post-ship augments (separate roadmap entries, captured here for cross-reference)
-
-- [x] ~~bashAugment~~ — shipped: `bash` augment with risk presets (scripts-only / restricted / standard / unrestricted), Layer 1 trust gating, named scripts, env sanitization. See `src/augments/bash.ts`.
-- [ ] hooksAugment — PreToolUse/PostToolUse with Claw's exit-code contract
-- [ ] **Memory Layer Architecture** — L0-L3 hierarchy with promotion rules, per-layer trust gating, consolidation pipeline, peer-scoped retrieval. Supersedes compactHistory (compaction is a bridge, not the architecture). **Planning brief:** [`docs/memory-layer-architecture-brief.md`](./memory-layer-architecture-brief.md). Large multi-session project — design session first.
-- [ ] projectInstructions — AUGGY.md ancestor walk pattern
-- [ ] Permission-mode ladder in agent.yaml
-- [ ] researchAugment — web search + arxiv + document analysis for agents that need to look things up. Could wrap Brave/Tavily/Firecrawl; tools: `research_search`, `research_fetch_paper`, `research_summarize`. Progressive disclosure pattern.
-
-## Aspirational (Plan 8+ / v2.0 Progressive Autonomy)
-
-- [ ] **Self-extending agents** — agents can create their own augments and skills. Tools: `augment_create` (writes `.ts` file to `augments/` directory), `skill_create` (writes `SKILL.md`), `augment_install` (adds to agent.yaml, triggers restart). Blocks on: (1) hot-reload (Plan 8+ — today restart is required), (2) sandboxing to prevent escape (V8 isolates or similar), (3) operator approval flow for self-generated code (Layer 3 trust), (4) evals to measure whether self-generated augments actually improve agent quality (Plan 7). Significant feature — don't underestimate. Connects directly to v2.0 "Progressive Autonomy" in the LORF roadmap. Should be gated behind operator trust and a clear approval UX. Research: see `augment-1/docs/research/skill-folder-pattern-2026-04-09.md` for the self-authoring skill pattern.
-
 ---
 
-When you fix something, remove the line. When you discover something, add it. If an item grows into a real project, move it to the roadmap.
+When you fix something, remove the line. When you discover something,
+add it. If it grows into a real project, move it to
+[`docs/ROADMAP.md`](./ROADMAP.md).
