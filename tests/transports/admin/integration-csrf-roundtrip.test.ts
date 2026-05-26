@@ -1,12 +1,13 @@
 /**
- * End-to-end CSRF round-trip — boot a real agent, GET /admin, parse the
- * `_csrf` token from a rendered form, POST it back. The previous shared
- * `__page` token returned 403 (bound to "__page" but validated against
- * the actual action id); per-(actionId, rowKey) tokens make the
+ * End-to-end CSRF round-trip — boot a real agent, GET /admin/api/dashboard
+ * to discover the per-(actionId, rowKey) CSRF tokens, POST one back. The
+ * previous shared `__page` token returned 403 (bound to "__page" but
+ * validated against the actual action id); per-action tokens make the
  * dashboard usable end-to-end.
  *
- * Also covers row-action rendering (memory-erase had no UI affordance
- * before this fix).
+ * Pre-SPA this test scraped HTML forms; with the SPA, the dashboard data
+ * (blocks + csrfTokens) is served as JSON for the React client to render.
+ * Server-side dispatch contract is unchanged.
  */
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -24,15 +25,29 @@ function authHeader(): string {
   return `Basic ${Buffer.from(`:${BEARER}`).toString("base64")}`;
 }
 
-function parseCsrfFromForm(html: string, actionPath: string): string | null {
-  // Find the <form action="actionPath" ...><input ... name="_csrf" value="...">
-  const formPattern = new RegExp(
-    `<form[^>]*action="${actionPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"[^>]*>([\\s\\S]*?)</form>`,
+interface DashboardJson {
+  card: { provider: { name: string } };
+  blocks: unknown[];
+  csrfTokens: { actionId: string; rowKey?: string; token: string }[];
+}
+
+function findCsrfToken(
+  data: DashboardJson,
+  actionId: string,
+  rowKey?: string,
+): string | null {
+  const match = data.csrfTokens.find(
+    (t) => t.actionId === actionId && (t.rowKey ?? undefined) === rowKey,
   );
-  const formMatch = html.match(formPattern);
-  if (!formMatch) return null;
-  const csrfMatch = formMatch[1]!.match(/name="_csrf" value="([^"]+)"/);
-  return csrfMatch?.[1] ?? null;
+  return match?.token ?? null;
+}
+
+async function fetchDashboard(port: number): Promise<DashboardJson> {
+  const resp = await fetch(`http://127.0.0.1:${port}/admin/api/dashboard`, {
+    headers: { authorization: authHeader() },
+  });
+  expect(resp.status).toBe(200);
+  return (await resp.json()) as DashboardJson;
 }
 
 let tempDir: string;
@@ -51,7 +66,7 @@ afterEach(() => {
 });
 
 describe("admin CSRF round-trip (hotfix)", () => {
-  it("GET /admin → parse _csrf from posture-flip form → POST returns 303 (not 403)", async () => {
+  it("GET dashboard → pick posture-flip token → POST returns 303 (not 403)", async () => {
     const model = createMockModel();
     const agent = defineAgent(
       {
@@ -72,13 +87,8 @@ describe("admin CSRF round-trip (hotfix)", () => {
 
     await agent.start();
     try {
-      const getResp = await fetch(`http://127.0.0.1:${port}/admin`, {
-        headers: { authorization: authHeader() },
-      });
-      expect(getResp.status).toBe(200);
-      const html = await getResp.text();
-
-      const csrf = parseCsrfFromForm(html, "/admin/action/posture-flip");
+      const data = await fetchDashboard(port);
+      const csrf = findCsrfToken(data, "posture-flip");
       expect(csrf).not.toBeNull();
       expect(csrf!.length).toBeGreaterThan(10);
 
@@ -98,7 +108,7 @@ describe("admin CSRF round-trip (hotfix)", () => {
     }
   });
 
-  it("posture-reset form carries a DIFFERENT csrf token than posture-flip", async () => {
+  it("posture-reset token is DIFFERENT than posture-flip token", async () => {
     const model = createMockModel();
     const agent = defineAgent(
       {
@@ -118,12 +128,9 @@ describe("admin CSRF round-trip (hotfix)", () => {
     );
     await agent.start();
     try {
-      const resp = await fetch(`http://127.0.0.1:${port}/admin`, {
-        headers: { authorization: authHeader() },
-      });
-      const html = await resp.text();
-      const flipCsrf = parseCsrfFromForm(html, "/admin/action/posture-flip");
-      const resetCsrf = parseCsrfFromForm(html, "/admin/action/posture-reset");
+      const data = await fetchDashboard(port);
+      const flipCsrf = findCsrfToken(data, "posture-flip");
+      const resetCsrf = findCsrfToken(data, "posture-reset");
       expect(flipCsrf).not.toBeNull();
       expect(resetCsrf).not.toBeNull();
       expect(flipCsrf).not.toBe(resetCsrf);
@@ -132,7 +139,7 @@ describe("admin CSRF round-trip (hotfix)", () => {
     }
   });
 
-  it("row-action buttons render in tables AND POST round-trips with per-row CSRF", async () => {
+  it("row-action tokens appear per-row AND POST round-trips with per-row CSRF", async () => {
     const model = createMockModel();
     const mem = await layeredMemory({
       backend: "sqlite",
@@ -166,28 +173,24 @@ describe("admin CSRF round-trip (hotfix)", () => {
     );
     await agent.start();
     try {
-      const resp = await fetch(`http://127.0.0.1:${port}/admin`, {
-        headers: { authorization: authHeader() },
-      });
-      const html = await resp.text();
+      const data = await fetchDashboard(port);
 
-      // The memory-erase rowAction form should render for the seeded row.
-      // rowKey "vis_rowtest" is in column 0 (Peer); URL-encoded form action.
-      const expectedAction = "/admin/action/memory-erase/row/vis_rowtest";
-      expect(html).toContain(`action="${expectedAction}"`);
-
-      const csrf = parseCsrfFromForm(html, expectedAction);
+      // The seeded row should mint a per-row CSRF token for memory-erase.
+      const csrf = findCsrfToken(data, "memory-erase", "vis_rowtest");
       expect(csrf).not.toBeNull();
 
-      const postResp = await fetch(`http://127.0.0.1:${port}${expectedAction}`, {
-        method: "POST",
-        headers: {
-          authorization: authHeader(),
-          "content-type": "application/x-www-form-urlencoded",
+      const postResp = await fetch(
+        `http://127.0.0.1:${port}/admin/action/memory-erase/row/vis_rowtest`,
+        {
+          method: "POST",
+          headers: {
+            authorization: authHeader(),
+            "content-type": "application/x-www-form-urlencoded",
+          },
+          body: new URLSearchParams({ _csrf: csrf! }).toString(),
+          redirect: "manual",
         },
-        body: new URLSearchParams({ _csrf: csrf! }).toString(),
-        redirect: "manual",
-      });
+      );
       expect(postResp.status).toBe(303);
       await postResp.text();
     } finally {
@@ -221,12 +224,8 @@ describe("admin CSRF round-trip (hotfix)", () => {
     );
     await agent.start();
     try {
-      const getResp = await fetch(`http://127.0.0.1:${port}/admin`, {
-        headers: { authorization: authHeader() },
-      });
-      const html = await getResp.text();
-
-      const csrf = parseCsrfFromForm(html, "/admin/action/budget-cap-adjust");
+      const data = await fetchDashboard(port);
+      const csrf = findCsrfToken(data, "budget-cap-adjust");
       expect(csrf).not.toBeNull();
 
       const postResp = await fetch(`http://127.0.0.1:${port}/admin/action/budget-cap-adjust`, {

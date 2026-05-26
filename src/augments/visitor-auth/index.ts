@@ -515,6 +515,8 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
 
   const augment: Augment & { isVisitorRevoked: (visitorId: string) => boolean } = {
     name: "visitor-auth",
+    type: "visitorAuth",
+    category: "guardrails",
     capabilities: ["tools", "context"],
     tools: [requestAuthTool],
     adminInfo,

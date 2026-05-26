@@ -1,0 +1,85 @@
+import { useState } from "react";
+import { ChevronDown, ChevronRight } from "lucide-react";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { KeyValueSection } from "./sections/KeyValueSection";
+import { TableSection } from "./sections/TableSection";
+import { StatusSection } from "./sections/StatusSection";
+import { EventStreamSection } from "./sections/EventStreamSection";
+import { ActionForm } from "./ActionForm";
+import type { AdminInfoBlock, AugmentSummary } from "@/lib/types";
+
+export interface AugmentRowProps {
+  augment: AugmentSummary;
+  block?: AdminInfoBlock;
+  initialOpen?: boolean;
+}
+
+export function AugmentRow({ augment, block, initialOpen = false }: AugmentRowProps) {
+  const expandable = !!block;
+  const [open, setOpen] = useState(initialOpen && expandable);
+
+  return (
+    <Card>
+      <CardHeader className="p-3">
+        <div className="flex items-center justify-between gap-3">
+          <button
+            type="button"
+            onClick={() => expandable && setOpen((o) => !o)}
+            className="flex flex-1 items-center gap-3 text-left disabled:cursor-default"
+            aria-expanded={expandable ? open : undefined}
+            disabled={!expandable}
+          >
+            {expandable ? (
+              open ? (
+                <ChevronDown className="size-4 shrink-0 text-muted-foreground" />
+              ) : (
+                <ChevronRight className="size-4 shrink-0 text-muted-foreground" />
+              )
+            ) : (
+              <span className="inline-block size-4 shrink-0" />
+            )}
+            <CardTitle className="font-mono text-sm">{augment.type}</CardTitle>
+          </button>
+          <div className="flex shrink-0 items-center gap-3 text-xs text-muted-foreground">
+            {augment.version && <span className="font-mono">v{augment.version}</span>}
+            {!expandable && <span className="italic">no settings</span>}
+          </div>
+        </div>
+      </CardHeader>
+      {open && block && (
+        <CardContent className="space-y-4 p-3 pt-0">
+          {block.sections.map((section, i) => (
+            <SectionRouter key={i} section={section} />
+          ))}
+          {block.actions?.length ? (
+            <div className="flex flex-wrap gap-3 border-t pt-3">
+              {block.actions.map((action) => (
+                <ActionForm key={action.id} action={action} />
+              ))}
+            </div>
+          ) : null}
+        </CardContent>
+      )}
+    </Card>
+  );
+}
+
+function SectionRouter({ section }: { section: AdminInfoBlock["sections"][number] }) {
+  switch (section.kind) {
+    case "keyValue":
+      return <KeyValueSection rows={section.rows} />;
+    case "table":
+      return (
+        <TableSection
+          columns={section.columns}
+          rows={section.rows}
+          rowActions={section.rowActions}
+          caption={section.caption}
+        />
+      );
+    case "status":
+      return <StatusSection level={section.level} message={section.message} />;
+    case "eventStream":
+      return <EventStreamSection events={section.events} caption={section.caption} />;
+  }
+}

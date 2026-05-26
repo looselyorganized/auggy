@@ -256,6 +256,8 @@ export function budgets(opts: BudgetsAugmentOptions): Augment {
 
   return {
     name: "budgets",
+    type: "budgets",
+    category: "guardrails",
     capabilities: ["context", "lifecycle"],
     turnGate,
     adminInfo,

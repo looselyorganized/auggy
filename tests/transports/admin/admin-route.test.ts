@@ -112,15 +112,31 @@ describe("handleAdminRoute — auth", () => {
     expect(res.headers.get("www-authenticate")).toBe('Basic realm="auggy-admin zip"');
   });
 
-  it("GET /admin with valid bearer → 200 + HTML", async () => {
+  it("GET /admin with valid bearer → 503 build-required when no staticDir", async () => {
+    // Without a built SPA dist, the transport degrades to a build-required
+    // notice. Tests that exercise the served-shell path pass an explicit
+    // staticDir via makeCtx({ staticDir }).
     const req = new Request("http://127.0.0.1:8080/admin", {
       headers: { authorization: basicHeader("test-bearer") },
     });
     const res = await handleAdminRoute(req, await makeCtx());
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(503);
     expect(res.headers.get("content-type")).toContain("text/html");
     const body = await res.text();
-    expect(body).toContain("<title>zip — admin</title>");
+    expect(body).toContain("Admin SPA not built");
+  });
+
+  it("GET /admin/api/dashboard with valid bearer → 200 + JSON", async () => {
+    const req = new Request("http://127.0.0.1:8080/admin/api/dashboard", {
+      headers: { authorization: basicHeader("test-bearer") },
+    });
+    const res = await handleAdminRoute(req, await makeCtx());
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("application/json");
+    const body = (await res.json()) as { card: { provider: { name: string } }; blocks: unknown[]; csrfTokens: unknown[] };
+    expect(body.card.provider.name).toBe("zip");
+    expect(Array.isArray(body.blocks)).toBe(true);
+    expect(Array.isArray(body.csrfTokens)).toBe(true);
   });
 
   it("GET /admin from non-loopback over http → 426", async () => {

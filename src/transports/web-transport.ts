@@ -29,6 +29,7 @@ import {
   type AdminActionRegistry,
   buildAdminActionRegistry,
   handleAdminRoute,
+  resolveDistDir,
 } from "./admin/index";
 import { renderInfoPage } from "./info-page";
 
@@ -400,6 +401,10 @@ export function webTransport(opts: WebTransportOptions): Augment {
   // Empty when adminRoute is disabled or no augment declares adminInfo.
   let actionRegistry: AdminActionRegistry = new Map();
 
+  // Admin SPA dist directory resolved at register() time. `undefined` when no
+  // build exists; the admin transport degrades to a "build required" notice.
+  let adminStaticDir: string | undefined;
+
   // G2 — info endpoint cache. Populated in register() when publicFrontendUrl
   // is unset. Allows HEAD's Content-Length to match GET's body length
   // without re-rendering per request. validatedPublicFrontendUrl mirrors
@@ -764,6 +769,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
       // collisions; surface fires at boot, not at first POST.
       if (opts.adminRoute !== false) {
         actionRegistry = await buildAdminActionRegistry(k.getAugments());
+        adminStaticDir = resolveDistDir();
       }
 
       // G2 — validate publicFrontendUrl once + cache info page HTML.
@@ -1144,6 +1150,8 @@ export function webTransport(opts: WebTransportOptions): Augment {
 
   return {
     name: "web",
+    type: "webTransport",
+    category: "transports",
     capabilities: ["transport"],
     transport,
     adminInfo,
@@ -1177,8 +1185,12 @@ export function webTransport(opts: WebTransportOptions): Augment {
           // startsWith("/admin") which would also match /administrative and
           // leak the opt-out setting (M3 fix).
           const adminEnabled = opts.adminRoute !== false;
+          // SPA expansion — accept the bare `/admin`, the action POST surface,
+          // and any client-side route under `/admin/<path>`. Using the literal
+          // `/admin/` prefix (note trailing slash) keeps siblings like
+          // `/administrative` from being captured (M3 fix preserved).
           const isAdminPath =
-            url.pathname === "/admin" || url.pathname.startsWith("/admin/action/");
+            url.pathname === "/admin" || url.pathname.startsWith("/admin/");
           if (adminEnabled && isAdminPath) {
             if (req.method === "HEAD") {
               return new Response(null, {
@@ -1212,6 +1224,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
               agentDir: opts.agentDir,
               callerIp: adminIp,
               actionRegistry,
+              staticDir: adminStaticDir,
             });
           }
 

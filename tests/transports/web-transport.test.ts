@@ -2514,7 +2514,7 @@ describe("webTransport /admin route — basic dispatch (G36 phase 2)", () => {
     }
   });
 
-  it("GET /admin with HTTP Basic bearer → 200 + HTML", async () => {
+  it("GET /admin with HTTP Basic bearer → 200 SPA shell when dist is built (or 503 notice when not)", async () => {
     const model = createMockModel();
     const port = 19201;
     const aug = webTransport({
@@ -2528,9 +2528,39 @@ describe("webTransport /admin route — basic dispatch (G36 phase 2)", () => {
       const resp = await fetch(`http://127.0.0.1:${port}/admin`, {
         headers: { authorization: `Basic ${basic}` },
       });
-      expect(resp.status).toBe(200);
       const body = await resp.text();
-      expect(body).toContain("<title>zip — admin</title>");
+      expect(resp.headers.get("content-type")).toContain("text/html");
+      // Either the built SPA shell (200) or the "build required" notice (503)
+      // — both are valid post-SPA. Auth passed in either case.
+      if (resp.status === 200) {
+        expect(body.toLowerCase()).toContain("auggy");
+      } else {
+        expect(resp.status).toBe(503);
+        expect(body).toContain("Admin SPA not built");
+      }
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("GET /admin/api/dashboard with HTTP Basic bearer → 200 + JSON", async () => {
+    const model = createMockModel();
+    const port = 19211;
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: "test-token" },
+    });
+    const agent = defineAgent({ name: "zip", model: "mock", augments: [aug] }, model);
+    await agent.start();
+    try {
+      const basic = Buffer.from(":test-token").toString("base64");
+      const resp = await fetch(`http://127.0.0.1:${port}/admin/api/dashboard`, {
+        headers: { authorization: `Basic ${basic}` },
+      });
+      expect(resp.status).toBe(200);
+      expect(resp.headers.get("content-type")).toContain("application/json");
+      const body = (await resp.json()) as { card: { provider: { name: string } } };
+      expect(body.card.provider.name).toBe("zip");
     } finally {
       await agent.stop();
     }

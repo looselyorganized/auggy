@@ -513,6 +513,8 @@ export function notify(opts: NotifyAugmentInternalOptions): Augment {
 
   return {
     name: "notify",
+    type: "notify",
+    category: "transports",
     capabilities: ["tools"],
     tools: [notifyTool],
     adminInfo,

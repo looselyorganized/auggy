@@ -105,6 +105,17 @@ export interface NamespaceMemoryProvider {
   read?: (label: string) => Promise<MemoryEntry | null>;
   list?: () => Promise<string[]>;
   forget?: (peerId: string) => Promise<number>;
+  /**
+   * Read-only listing for `/admin`'s Memory tab. Returns most-recent entries
+   * (peer-scoped if `peerId` given). Implementing it is optional — providers
+   * that don't surface the admin browser get a "no entries listing available"
+   * placeholder in the SPA.
+   *
+   * Distinct from `search` (query-driven, ranked) and `list` (labels only,
+   * no payload). Returns full `MemoryEntry` rows so the tab can render
+   * peer/trust/timestamp without a second round-trip.
+   */
+  listEntries?: (opts?: { peerId?: string; limit?: number }) => Promise<MemoryEntry[]>;
 }
 
 export type MemoryProviderSpec = StaticMemoryProvider | NamespaceMemoryProvider;
@@ -844,10 +855,41 @@ export interface AdminActionResult {
  */
 export type AdminActionHandler = (params: Record<string, string>) => Promise<AdminActionResult>;
 
+/**
+ * Operator-facing category for the Augments tab grouping. Every augment
+ * declares the role it plays for the agent so the SPA can group cards by
+ * what they DO, not by which file they live in. Adding a new category is
+ * a deliberate decision — keep the set short.
+ *
+ *   - `transports`  — how the agent talks to the outside world (in + out).
+ *   - `capabilities`— what the agent can DO (tools, scripts, side effects).
+ *   - `memory`      — what the agent remembers / knows.
+ *   - `guardrails`  — limits, identity, safety, trust.
+ */
+export type AugmentCategory = "transports" | "capabilities" | "memory" | "guardrails";
+
 export interface Augment {
   name: string;
+  /**
+   * Canonical type identifier as the operator declares it in `agent.yaml`'s
+   * `type:` field (and as the create-flow catalog enumerates it). Stable
+   * across instances of the same factory — e.g. `layeredMemory` even if the
+   * runtime `name` is `layered-memory-${namespace}`. Used as the primary
+   * label in the `/admin` Augments tab so the operator sees the names they
+   * typed into config, not derived runtime slugs.
+   */
+  type?: string;
   version?: string;
   required?: boolean;
+  /** Operator-facing category. Used by `/admin`'s Augments tab to group. */
+  category?: AugmentCategory;
+  /**
+   * True for augments the kernel injects automatically (not user-declared in
+   * `agent.yaml`). The Augments tab hides these — the operator didn't add them
+   * and can't unmount them; they're plumbing. Example: `memory-bus`, which
+   * registers the memory tools whenever any memory provider is mounted.
+   */
+  synthetic?: boolean;
   capabilities?: AugmentCapability[];
   context?: (turn: TurnState, priorContext?: ContextBlock[]) => Promise<ContextBlock[] | string>;
   receivesPriorContext?: boolean;

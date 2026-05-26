@@ -445,8 +445,59 @@ export function bash(opts: BashAugmentOptions = {}): Augment {
     );
   }
 
+  const adminInfo = async (): Promise<import("../../types").AdminInfoBlock> => ({
+    augmentName: "bash",
+    title: "Bash",
+    sections: [
+      {
+        kind: "keyValue",
+        rows: [
+          { label: "Risk preset", value: opts.risk ?? "restricted" },
+          { label: "Mode", value: config.mode },
+          { label: "Shell exec enabled", value: config.shellExecEnabled ? "true" : "false" },
+          { label: "Working dir", value: config.workingDir },
+          { label: "Inherit env", value: config.inheritEnv ? "true" : "false" },
+          { label: "Timeout (ms)", value: String(config.timeout) },
+          { label: "Max output (bytes/stream)", value: String(config.maxOutputBytes) },
+          { label: "Max tool calls per turn", value: String(opts.maxToolCallsPerTurn ?? 10) },
+        ],
+      },
+      {
+        kind: "table",
+        columns: ["Allowed command"],
+        caption:
+          config.allowedCommands === null
+            ? "No allowlist active — any command is permitted."
+            : `${config.allowedCommands.length} command${config.allowedCommands.length === 1 ? "" : "s"} allowed`,
+        rows: (config.allowedCommands ?? []).map((c) => [c]),
+      },
+      ...(config.blockedCommands.length > 0
+        ? [
+            {
+              kind: "table" as const,
+              columns: ["Blocked pattern"],
+              caption: `${config.blockedCommands.length} operator-declared blocked pattern${config.blockedCommands.length === 1 ? "" : "s"} (hardcoded blocks apply additionally).`,
+              rows: config.blockedCommands.map((c) => [c]),
+            },
+          ]
+        : []),
+      ...(config.scripts.length > 0
+        ? [
+            {
+              kind: "table" as const,
+              columns: ["Script name", "Description"],
+              caption: `${config.scripts.length} pre-authored script${config.scripts.length === 1 ? "" : "s"}.`,
+              rows: config.scripts.map((s) => [s.name, s.description ?? ""]),
+            },
+          ]
+        : []),
+    ],
+  });
+
   return {
     name: "bash",
+    type: "bash",
+    category: "capabilities",
     capabilities: ["tools"],
     constraints: {
       maxToolCallsPerTurn: opts.maxToolCallsPerTurn ?? 10,
@@ -459,5 +510,6 @@ export function bash(opts: BashAugmentOptions = {}): Augment {
       },
     },
     tools,
+    adminInfo,
   };
 }
