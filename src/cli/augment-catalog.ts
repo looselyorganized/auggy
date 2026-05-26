@@ -281,7 +281,7 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
     },
     required: false,
     envVars: ["AUGGY_AGENT_ID", "AUGGY_AGENT_NAME", "AUGGY_LINK_PUBLIC_URL"],
-    hasSkill: false,
+    hasSkill: true,
     packageDeps: { "@auggy/link": "^0.1.2" },
   },
   {

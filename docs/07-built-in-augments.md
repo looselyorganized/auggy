@@ -29,7 +29,7 @@ The principle: Auggy ships the *contracts* (`MemoryProviderSpec`, `TransportSpec
 
 Every built-in augment lives at `src/augments/<name>/index.ts` (folder shape, per [ADR-025](../../docs/solutions/architecture/adr-025-augment-folder-and-skill-bundling.md)). Augments that contribute model-callable tools ship a bundled `<name>/skill/SKILL.md` colocated in the same folder; `auggy create` and `auggy add` copy it to `<agent-dir>/skills/<name>/SKILL.md`, and `auggy add-skill <name>` installs it retroactively. A boot-time validator warns at agent startup if a tool-providing augment is mounted without a skill — applies to both factory-declared `tools[]` and namespace memory providers (kernel-synthesized `memory_*` tools). Tool-less augments (transports, static memory providers, admission gates) skip the skill folder.
 
-Augments shipping a bundled skill at v1.0: `filesystem`, `layeredMemory`, `webFetch`, `orgContext`, `bash`, `notify`, `turnControl`, `visitorAuth`. The `skills` augment is the model-facing surface that lists them — it carries no SKILL.md of its own.
+Augments shipping a bundled skill at v1.0: `filesystem`, `layeredMemory`, `webFetch`, `orgContext`, `bash`, `notify`, `turnControl`, `visitorAuth`, `link`. The `skills` augment is the model-facing surface that lists them — it carries no SKILL.md of its own.
 
 ### Model-facing surface (ADR-030)
 
@@ -1219,7 +1219,7 @@ When the coordinator service ships (ADR-022 sequencing item 3), the peer list �
 
 ### Bundled skill
 
-The `link` augment does not currently ship a bundled `skill/SKILL.md`. The boot-time skill validator will warn at agent startup (cosmetic). A skill teaching delegation patterns + probe-on-pushback is a future addition.
+`link` ships `src/augments/link/skill/SKILL.md` with model teaching on the `link_send` and `link_list` tools: when to delegate (genuinely-different expertise/access) vs answer directly, choosing the right peer from `link_list`, the **probe-on-pushback** pattern (re-ping the peer with the user's clarification instead of refusing on "no visibility into their tools"), synthesis-vs-echo when relaying a peer's reply, failure-mode handling (`unknown peer` / unreachable / refused), and the inbound side (when YOU are the peer being called). Copied into `<agent-dir>/skills/link/SKILL.md` at `auggy create`/`auggy add` time; install retroactively with `auggy add-skill link`.
 
 ## Why these aren't exhaustive
 
