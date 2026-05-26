@@ -1,6 +1,6 @@
 {
   "name": "auggy",
-  "version": "0.4.3",
+  "version": "0.4.4",
   "description": "Modular agent runtime — composable augments, multi-engine, SQLite-first memory.",
   "keywords": [
     "agent",

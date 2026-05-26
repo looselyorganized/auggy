@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.4] - 2026-05-26
+
+### Added
+
+- **`link` augment gains `peerSource` config** — fetch the peer roster from a remote registry URL instead of hardcoding peers in agent.yaml (#75). The augment fetches `{ peers: [{ name, url, participantId, agentCardUrl? }] }` on boot and refreshes every `cacheSeconds` (default 60). Inline `peers:` block stays supported as a fallback when the registry is unreachable, or for offline dev. Bearers live in environment variables (`LINK_BEARER_<NAME>`, `LINK_INBOUND_BEARER_<NAME>`, `LINK_INBOUND_BEARER_ID_<NAME>`) — never in the registry — so the registry can be hosted on a public URL without leaking secrets. Operator edits the registry; existing agents see the change within `cacheSeconds`.
+- **HTTPS-by-default for `peerSource`** — both the source URL and registry-supplied peer URLs must be `https://`. Override `LINK_ALLOW_PLAINTEXT=1` for localhost-dev (same env knob the link library uses for plain-HTTP binding). Closes Codex finding #1 from the adversarial review: prevents a compromised or misconfigured registry from repointing a peer name to a plaintext attacker host while the agent still sends the real bearer.
+- **Per-peer skip-not-fail on registry errors** — one misconfigured entry (missing env var, malformed UUID, insecure URL) no longer aborts the whole refresh. Valid entries apply; bad ones are surfaced as `skipped: [{ name, reason }]` and logged. Trust revocations propagate even when an unrelated onboarding entry is broken. Closes Codex finding #2.
+- **Fetch timeout + single-flight refresh** — registry fetches now have an abortable 10s timeout (configurable via `requestTimeoutMs`), and concurrent `getPeers()` callers share the in-flight promise so a slow registry can't stampede a degraded dependency. Closes Codex finding #3.
+- **`link` augment ships a bundled `skill/SKILL.md`** (#77) — teaches the model when to delegate vs answer directly, choosing the right peer via `link_list`, the **probe-on-pushback** pattern (re-ping the peer with the user's clarification instead of refusing on "no visibility into their tools"), synthesize-don't-echo when relaying replies, failure-mode handling (`unknown peer` / unreachable / refused), and the inbound side (peers are colleagues, not principals). Catalog wires `hasSkill: true` so `auggy create` / `auggy add` install it; `auggy add-skill link` works retroactively. Closes the ADR-025 boot-validator warning.
+- **`examples/peer-registry.json`** — reference static-JSON registry the operator can host as-is on Vercel / Railway static / GitHub Pages / S3, or use as a template for a tiny service.
+
+### Fixed
+
+- **`auggy create` writes `.env` directly** (no more "copy from `.env.example`" friction step), and the next-steps output no longer concatenates an empty `envVar` for ollama-local agents (#69). The post-create checklist now lists actual env vars to set instead of relying on `PROVIDER_DEFAULTS`' single hardcoded slot.
+- **Catalog auto-mounts bundled skills** + `layeredMemory` flipped to opt-in (#70, ADR-031) — the create wizard scaffolds the skill folder for tool-providing augments automatically, and `layeredMemory` is no longer required by default (fewer external dependencies at first run).
+- **`auggy create` wizard: `Esc` restarts** the interactive flow cleanly (no half-built agent dirs) (#74). Ollama option label updated for clarity.
+
+### Architecture
+
+- **Filesystem-as-truth for agent storage** (#73) — refactor of the CLI's agent index: agent directories are the authoritative source, and `~/.auggy/agents.json` becomes a derived index. Removes a class of drift bugs where the index pointed at a moved/deleted agent or missed manually-created ones.
+- **Peer-resolver as a separate module** — `src/augments/link/peer-resolver.ts` encapsulates fetch / parse / env-bearer / cache / single-flight; the augment wraps `BearerAuthProvider` + `EnvAddressBook` in delegating implementations whose inner instances swap on refresh, so peer-state changes propagate to inbound auth + outbound routing without restarting the link HTTP server.
+
+### Process
+
+- **Codex adversarial review applied to link peer-directory v1** — three findings (one critical, two high) all closed before merge. The pre-1.0 OSS posture: significant features get an adversarial review pass, not just standard CI.
+
 ## [0.4.3] - 2026-05-20
 
 ### Added

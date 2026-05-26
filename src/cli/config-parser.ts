@@ -344,8 +344,18 @@ function validateLayeredMemoryOptions(
 
 /**
  * Validate the options block for a link augment (peer-to-peer A2A v0.2).
+ *
  * Shape:
- *   { port?, dbPath, agentCard: {...}, peers: { name: {...} } }
+ *   {
+ *     port?, dbPath, agentCard: {...},
+ *     peers?: { name: {...} },            // inline (fallback / dev path)
+ *     peerSource?: { type: "registry", url, cacheSeconds? }  // remote fetch
+ *   }
+ *
+ * Both `peers` and `peerSource` are optional. When both are present,
+ * `peerSource` is the primary source and `peers` becomes the fallback if
+ * the registry fetch fails. When neither is present, the augment runs in
+ * inbound-only mode (no outbound peers configured).
  */
 function validateLinkOptions(
   opts: Record<string, unknown>,
@@ -402,6 +412,31 @@ function validateLinkOptions(
             errors.push(`${peerPrefix}.${field}: required non-empty string`);
           }
         }
+      }
+    }
+  }
+
+  const peerSource = opts.peerSource;
+  if (peerSource !== undefined) {
+    if (!peerSource || typeof peerSource !== "object" || Array.isArray(peerSource)) {
+      errors.push(`${prefix}.options.peerSource: must be an object`);
+    } else {
+      const ps = peerSource as Record<string, unknown>;
+      if (ps.type !== "registry") {
+        errors.push(
+          `${prefix}.options.peerSource.type: must be "registry" (no other source types at v1)`,
+        );
+      }
+      if (typeof ps.url !== "string" || (ps.url as string).length === 0) {
+        errors.push(`${prefix}.options.peerSource.url: required non-empty string`);
+      }
+      if (
+        ps.cacheSeconds !== undefined &&
+        (typeof ps.cacheSeconds !== "number" || ps.cacheSeconds < 1)
+      ) {
+        errors.push(
+          `${prefix}.options.peerSource.cacheSeconds: must be a positive number (seconds)`,
+        );
       }
     }
   }
