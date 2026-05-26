@@ -1,0 +1,45 @@
+/**
+ * Internal types for the agentMail augment.
+ * Public types (AgentMailAugmentOptions etc.) live in src/types.ts.
+ */
+
+import type { AgentMailClient } from "../../agentmail-client";
+import type { AgentMailAugmentOptions } from "../../types";
+
+/**
+ * Phase A-only internal options. Production callers do not pass these.
+ *
+ * Once Phase B lands (`_now` for SQLite cursor clock injection, transport
+ * test seams, etc.) the surface here will grow. For now: just the client
+ * factory hook and a clock injection point used by the rate-limit tests.
+ */
+export interface AgentMailAugmentInternalOptions extends AgentMailAugmentOptions {
+  /** Test-only override; production constructs from apiKey via createAgentMailClient. */
+  _client?: AgentMailClient;
+  /** Test-only clock injection (ms epoch). Defaults to Date.now. */
+  _now?: () => number;
+}
+
+/**
+ * Single row in the admin "recent dispatches" ring buffer. Recipients are
+ * stored redacted (first 2 chars of local-part + domain) so admin views
+ * never leak full address lists.
+ */
+export interface DispatchRecord {
+  /** Short HH:MM:SS for compact display. Operators rarely care about the date. */
+  timestamp: string;
+  /** Tool that produced this dispatch. */
+  tool: "send_message" | "reply_to_message" | "forward_message" | "admin-test";
+  /** Outcome surfaced back to the model / operator. */
+  status: "sent" | "rate_limited" | "blocked" | "failed";
+  /** Redacted recipient summary (e.g. `"al***@example.com (+2)"`). */
+  recipients: string;
+  /** First 80 chars of subject. */
+  subject: string;
+  /** HTTP status when status === "failed" and the failure came from AgentMail. */
+  httpStatus?: number;
+  /** Set to true when sensitive-token regex matched and body was logged with redaction. */
+  flaggedSensitive?: boolean;
+  /** Human-readable detail for failures / rate-limits. */
+  detail?: string;
+}

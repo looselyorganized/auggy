@@ -230,6 +230,34 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
     hasSkill: true,
   },
   {
+    label: "agentMail",
+    description:
+      "Send and (Phase B) receive email via AgentMail. Outbound tools (send_message / reply_to_message / forward_message) with trust-level gate, recipient allowlist, rate limits, dedup, and audit ring.",
+    type: "agentMail",
+    defaultName: "agentmail",
+    defaultOptions: {
+      apiKey: "${AGENTMAIL_API_KEY}",
+      inboxId: "${AGENTMAIL_INBOX_ID}",
+      dbPath: "./agent-mail.db",
+      outbound: {
+        allowedTrustLevels: ["creator"],
+        subjectPrefix: "[Auggy] ",
+        maxRecipients: 10,
+        bodyMaxBytes: 102_400,
+        allowHtml: false,
+        rateLimit: {
+          globalMaxPerHour: 10,
+          perRecipientCooldownMs: 300_000,
+          dedupWindowMs: 300_000,
+        },
+      },
+      inbound: { mode: "none" },
+    },
+    required: false,
+    envVars: ["AGENTMAIL_API_KEY", "AGENTMAIL_INBOX_ID"],
+    hasSkill: true,
+  },
+  {
     label: "telegramTransport",
     description: "Bidirectional Telegram I/O — long-poll OR webhook inbound, four-path identity",
     type: "telegramTransport",

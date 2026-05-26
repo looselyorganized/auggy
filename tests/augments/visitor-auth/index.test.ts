@@ -23,6 +23,8 @@ afterEach(() => {
 function fakeAgentMail(overrides: Partial<AgentMailClient> = {}): AgentMailClient {
   return {
     send: async () => ({ status: "sent", messageId: "m", threadId: "t" }),
+    reply: async () => ({ status: "sent", messageId: "m", threadId: "t" }),
+    forward: async () => ({ status: "sent", messageId: "m", threadId: "t" }),
     getInbox: async () => ({ inboxId: "i", status: "ok" }),
     ...overrides,
   } as AgentMailClient;
@@ -1485,6 +1487,8 @@ describe("isVisitorRevoked (fix C1)", () => {
       signingKey: "sig",
       _agentMailClient: {
         send: async () => ({ status: "sent" as const, messageId: "m", threadId: "t" }),
+        reply: async () => ({ status: "sent" as const, messageId: "m", threadId: "t" }),
+        forward: async () => ({ status: "sent" as const, messageId: "m", threadId: "t" }),
         getInbox: async () => ({ inboxId: "i", status: "ok" as const }),
       } as AgentMailClient,
     });
@@ -1506,6 +1510,8 @@ describe("isVisitorRevoked (fix C1)", () => {
           sends.push({ text: i.text });
           return { status: "sent" as const, messageId: "m", threadId: "t" };
         },
+        reply: async () => ({ status: "sent" as const, messageId: "m", threadId: "t" }),
+        forward: async () => ({ status: "sent" as const, messageId: "m", threadId: "t" }),
         getInbox: async () => ({ inboxId: "i", status: "ok" as const }),
       } as AgentMailClient,
     });
@@ -1527,6 +1533,8 @@ describe("isVisitorRevoked (fix C1)", () => {
           sends.push({ text: i.text });
           return { status: "sent" as const, messageId: "m", threadId: "t" };
         },
+        reply: async () => ({ status: "sent" as const, messageId: "m", threadId: "t" }),
+        forward: async () => ({ status: "sent" as const, messageId: "m", threadId: "t" }),
         getInbox: async () => ({ inboxId: "i", status: "ok" as const }),
       } as AgentMailClient,
     });
@@ -1557,6 +1565,8 @@ describe("isVisitorRevoked (fix C1)", () => {
           sends.push({ text: i.text });
           return { status: "sent" as const, messageId: "m", threadId: "t" };
         },
+        reply: async () => ({ status: "sent" as const, messageId: "m", threadId: "t" }),
+        forward: async () => ({ status: "sent" as const, messageId: "m", threadId: "t" }),
         getInbox: async () => ({ inboxId: "i", status: "ok" as const }),
       } as AgentMailClient,
     });
@@ -1601,6 +1611,8 @@ describe("isVisitorRevoked (fix C1)", () => {
           sends.push({ text: i.text });
           return { status: "sent" as const, messageId: "m", threadId: "t" };
         },
+        reply: async () => ({ status: "sent" as const, messageId: "m", threadId: "t" }),
+        forward: async () => ({ status: "sent" as const, messageId: "m", threadId: "t" }),
         getInbox: async () => ({ inboxId: "i", status: "ok" as const }),
       } as AgentMailClient,
     });

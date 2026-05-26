@@ -7,9 +7,17 @@ import type {
   SendMessageError,
 } from "../../../../src/agentmail-client";
 
+const unusedSendResult: SendMessageResult = {
+  status: "sent",
+  messageId: "stub",
+  threadId: "stub",
+};
+
 function mockClient(handler: (input: SendMessageInput) => SendMessageResult | SendMessageError) {
   return (_apiKey: string, _baseUrl?: string) => ({
     send: async (input: SendMessageInput) => handler(input),
+    reply: async () => unusedSendResult,
+    forward: async () => unusedSendResult,
     getInbox: async () => ({ inboxId: "i", status: "ok" as const }),
   });
 }
@@ -34,6 +42,8 @@ describe("agentMailAdapter", () => {
             captured = input;
             return { status: "sent", messageId: "msg_1", threadId: "thd_1" };
           },
+          reply: async () => unusedSendResult,
+          forward: async () => unusedSendResult,
           getInbox: async () => ({ inboxId: "i", status: "ok" as const }),
         };
       },
@@ -114,6 +124,8 @@ describe("agentMailAdapter", () => {
         send: async () => {
           throw new Error("ECONNREFUSED");
         },
+        reply: async () => unusedSendResult,
+        forward: async () => unusedSendResult,
         getInbox: async () => ({ inboxId: "i", status: "ok" as const }),
       }),
     });
@@ -130,6 +142,8 @@ describe("agentMailAdapter", () => {
           called = true;
           throw new Error("should not be called");
         },
+        reply: async () => unusedSendResult,
+        forward: async () => unusedSendResult,
         getInbox: async () => ({ inboxId: "i", status: "ok" as const }),
       }),
     });

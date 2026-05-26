@@ -64,6 +64,8 @@ describe("integration: visitorAuth full flow — anon → verify → recognized"
         sends.push({ to: input.to, text: input.text, subject: input.subject });
         return { status: "sent", messageId: "msg-1", threadId: "thr-1" };
       },
+      reply: async () => ({ status: "sent", messageId: "msg-r", threadId: "thr-1" }),
+      forward: async () => ({ status: "sent", messageId: "msg-f", threadId: "thr-f" }),
       getInbox: async () => ({ inboxId: "ibx_test", status: "ok" }),
     };
 
@@ -451,6 +453,8 @@ describe("integration: visitorAuth full flow — anon → verify → recognized"
     try {
       const stub: AgentMailClient = {
         send: async () => ({ status: "sent", messageId: "m", threadId: "t" }),
+        reply: async () => ({ status: "sent", messageId: "m", threadId: "t" }),
+        forward: async () => ({ status: "sent", messageId: "m", threadId: "t" }),
         getInbox: async () => ({ inboxId: "x", status: "ok" }),
       };
       // Even with NODE_ENV=production and transport=console, test injection
@@ -626,6 +630,8 @@ describe("integration: visitorAuth full flow — anon → verify → recognized"
     // a real AgentMail account).
     const stub: AgentMailClient = {
       send: async () => ({ status: "sent", messageId: "m", threadId: "t" }),
+      reply: async () => ({ status: "sent", messageId: "m", threadId: "t" }),
+      forward: async () => ({ status: "sent", messageId: "m", threadId: "t" }),
       getInbox: async () => ({ inboxId: "x", status: "ok" }),
     };
     const augment = visitorAuth({

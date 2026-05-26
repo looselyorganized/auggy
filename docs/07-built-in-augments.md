@@ -17,6 +17,7 @@ Fourteen augments ship in `src/augments/` (plus `webTransport` under `src/transp
 - **`bash`** — scoped shell execution
 - **`budgets`** — per-trust-level turn budgets + dollar ceiling
 - **`notify`** — outbound messaging to operator-configured destinations
+- **`agentMail`** — outbound email via AgentMail with per-peer trust gate, allowlist, rate limits, audit ring (Phase A; inbound in Phase B)
 - **`turnControl`** — `request_input` for hand-off prompts
 - **`visitorAuth`** — email magic-link verification; promotes anonymous → recognized
 - **`link`** — peer-to-peer A2A v0.2 transport (the v1.0 Mesh entry, per [ADR-022](../../docs/solutions/architecture/adr-022-mesh-destination-link-entry.md))
@@ -29,7 +30,7 @@ The principle: Auggy ships the *contracts* (`MemoryProviderSpec`, `TransportSpec
 
 Every built-in augment lives at `src/augments/<name>/index.ts` (folder shape, per [ADR-025](../../docs/solutions/architecture/adr-025-augment-folder-and-skill-bundling.md)). Augments that contribute model-callable tools ship a bundled `<name>/skill/SKILL.md` colocated in the same folder; `auggy create` and `auggy add` copy it to `<agent-dir>/skills/<name>/SKILL.md`, and `auggy add-skill <name>` installs it retroactively. A boot-time validator warns at agent startup if a tool-providing augment is mounted without a skill — applies to both factory-declared `tools[]` and namespace memory providers (kernel-synthesized `memory_*` tools). Tool-less augments (transports, static memory providers, admission gates) skip the skill folder.
 
-Augments shipping a bundled skill at v1.0: `filesystem`, `layeredMemory`, `webFetch`, `orgContext`, `bash`, `notify`, `turnControl`, `visitorAuth`, `link`. The `skills` augment is the model-facing surface that lists them — it carries no SKILL.md of its own.
+Augments shipping a bundled skill at v1.0: `filesystem`, `layeredMemory`, `webFetch`, `orgContext`, `bash`, `notify`, `agentMail`, `turnControl`, `visitorAuth`, `link`. The `skills` augment is the model-facing surface that lists them — it carries no SKILL.md of its own.
 
 ### Model-facing surface (ADR-030)
 
