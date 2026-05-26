@@ -36,10 +36,27 @@ function extractPort(config: ReturnType<typeof parseConfig>): number | null {
   return null;
 }
 
-export async function runDev(
-  name: string,
-  opts: { config?: string; internalMode?: string },
-): Promise<void> {
+export interface DevReadyInfo {
+  /** Resolved agent name (from agent.yaml's `name:` field, not the CLI arg). */
+  agentName: string;
+  /** webTransport port if configured, else null. */
+  port: number | null;
+  /** Operator workbench URL — `http://localhost:<port>/admin`, or null when no webTransport. */
+  adminUrl: string | null;
+}
+
+export interface DevOpts {
+  config?: string;
+  internalMode?: string;
+  /**
+   * Callback invoked after `agent.start()` returns. Used by `auggy run` to
+   * open the operator's browser to `/admin` once the agent is accepting
+   * connections.
+   */
+  onReady?: (info: DevReadyInfo) => void;
+}
+
+export async function runDev(name: string, opts: DevOpts): Promise<void> {
   const configPath = resolveConfigPath(name, opts.config);
   const agentDir = dirname(configPath);
   const mode = opts.internalMode === "launchd" ? ("launchd" as const) : ("dev" as const);
@@ -129,14 +146,17 @@ export async function runDev(
   // Start the agent.
   await agent.start();
 
+  const adminUrl = port ? `http://localhost:${port}/admin` : null;
   console.log(`Agent "${agentName}" running (PID ${process.pid})`);
-  if (port) {
-    console.log(`  Transport: http://localhost:${port}`);
+  if (adminUrl) {
+    console.log(`  Admin:     ${adminUrl}`);
     console.log(`  Health:    http://localhost:${port}/health`);
   }
   console.log(`  Config:    ${configPath}`);
-  console.log(
-    `  Chat:      leave \`auggy chat\` running in another terminal — it picks up new agents automatically`,
-  );
+  if (adminUrl) {
+    console.log(`  Tip:       next time, try \`auggy run ${agentName}\` to boot + open /admin`);
+  }
   console.log(`  Press Ctrl-C to stop.`);
+
+  opts.onReady?.({ agentName, port, adminUrl });
 }

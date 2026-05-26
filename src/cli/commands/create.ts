@@ -1,28 +1,30 @@
 /**
  * auggy create <name> — scaffold a new agent directory.
  *
- * Default location: ~/.auggy/agents/<name>/. Override with --dir <path>
- * for git-tracked / project-folder layouts. Writes an entry to the
- * agent index (~/.auggy/agents.json) on success.
+ * Lives at `<auggyDir>/agents/<name>/` — there is no custom-location override.
+ * The directory itself is the registration; no central index file is touched.
+ *
+ * Atomicity: the scaffold writes into a sibling `.tmp-<uuid>/` dir and lifts
+ * it into place with a single `renameSync` at the end. If the process dies
+ * mid-scaffold, the tempdir is left behind and swept on the next `create` of
+ * the same name (or any create — sweep runs at the start of every run).
  *
  * Refuses if:
- *   - CWD contains agent.yaml (operator likely meant `cd ..` first)
- *   - <name> already in the index
- *   - target dir already exists on disk
+ *   - <name>/agent.yaml already exists at the canonical path
  */
 
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
 import { checkbox, confirm, select, input } from "@inquirer/prompts";
 import { stringify } from "yaml";
 import { AUGMENT_CATALOG, type CatalogEntry } from "../augment-catalog";
 import { copyBundledSkill, renderIdentityFromTemplate } from "../scaffold-skills";
-import { addAgent, getAgent } from "../agent-index";
+import { resolveAgentDir, sweepStaleTempDirs } from "../agent-index";
 import { getModelChoices, formatChoiceLabel, type Provider } from "../model-picker";
 import { buildAgentPackageJson, getAuggyVersion } from "../scaffold-package-json";
 import { runBunInstall, type BunInstallSpawnFactory } from "../bun-install";
+import { withEscRestart, WizardRestartRequested } from "../wizard-restart";
 
 const PROVIDER_DEFAULTS: Record<Provider, { model: string; envVar: string }> = {
   anthropic: { model: "claude-sonnet-4-6", envVar: "ANTHROPIC_API_KEY" },
@@ -38,19 +40,8 @@ const PROVIDER_DEFAULTS: Record<Provider, { model: string; envVar: string }> = {
 };
 
 /**
- * Default values surfaced when an operator skips the interactive prompts
- * (Ctrl+D, non-TTY stdin, etc.). The operator-name default matches the
- * security-eval test fixture's fallback so non-interactive scaffolding stays
- * compatible with the canonical eval suite (see evals/security/eval-context.ts
- * deriveOperatorName fallback).
- */
-/**
  * Env vars the scaffold computes itself — written to `.env` as concrete
  * values, never surfaced to the operator as "fill in this placeholder."
- * The catalog entries that mount these augments still LIST the env vars
- * in their `envVars` arrays (so the agent.yaml's `${VAR}` interpolation
- * still resolves at boot), but the scaffold filters them out of the
- * "operator needs to fill" set since we already populated them.
  */
 const AUTO_GENERATED_ENV_VARS = new Set([
   "AUGGY_WEB_TOKEN",
@@ -74,8 +65,6 @@ const cream = (s: string): string => ansi("38;2;251;247;235", s);
 const green = (s: string): string => ansi("32", s);
 
 export interface CreateOpts {
-  /** Target directory override (defaults to ~/.auggy/agents/<name>/). */
-  dir?: string;
   /**
    * Skip the post-scaffold `bun install` step. The agent's `package.json` is
    * still written; the operator can run `bun install` later. Useful for CI,
@@ -88,109 +77,129 @@ export interface CreateOpts {
    */
   bunInstallSpawn?: BunInstallSpawnFactory;
   /**
-   * Test seam: override `~/.auggy/` for index reads/writes. Production
-   * callers omit. Mirrors `IndexOptions.auggyDir` on `agent-index.ts`.
+   * Test seam: override `~/.auggy/` for reads/writes. Production callers
+   * omit. The agent lands at `<auggyDir>/agents/<name>/`.
    */
   auggyDir?: string;
 }
 
-export async function runCreate(name: string, opts: CreateOpts): Promise<void> {
-  // Wrong-dir guard: refuse if CWD has agent.yaml. Skip when --dir is provided
-  // (operator has explicitly chosen the target, so CWD is irrelevant).
-  if (!opts.dir) {
-    const cwdAgentYaml = resolve("./agent.yaml");
-    if (existsSync(cwdAgentYaml)) {
-      throw new Error(
-        `You appear to be inside an agent directory.\n\n` +
-          `  Found: ${cwdAgentYaml}\n\n` +
-          `Run \`cd ..\` first, or pass --dir <path> to scaffold elsewhere.`,
-      );
-    }
-  }
+interface WizardAnswers {
+  provider: Provider;
+  model: string;
+  operatorName: string;
+  purpose: string;
+  augments: CatalogEntry[];
+  orgName: string;
+  orgPurpose: string;
+  orgContextSelected: boolean;
+  ollamaBaseURL: string | undefined;
+  ollamaNeedsBearer: boolean;
+}
 
-  // Refuse if name already registered in the index.
-  const existing = getAgent(name, { auggyDir: opts.auggyDir });
-  if (existing) {
-    throw new Error(
-      `Agent "${name}" already exists at ${existing.localDir}.\n\n` +
-        `  Use a different name, or remove the existing one with \`auggy remove ${name}\`.`,
-    );
-  }
-
-  // Resolve target directory.
-  const dir = opts.dir ? resolve(opts.dir) : join(homedir(), ".auggy", "agents", name);
-
-  if (existsSync(dir)) {
-    throw new Error(`Directory already exists: ${dir}`);
-  }
-
-  printWelcome();
-
+/**
+ * Drive the interactive wizard. Returns the collected answers on success.
+ * Pressing Esc at any prompt throws `WizardRestartRequested`; the caller
+ * catches that and re-invokes this fn.
+ *
+ * Each prompt is wrapped in `withEscRestart(ctx => prompt(config, ctx))`
+ * so the keypress listener lives only for the duration of the call. The
+ * lazy thunk preserves ESM live-binding of the prompt imports (tests
+ * replace `@inquirer/prompts` via `mock.module`).
+ */
+async function runWizard(): Promise<WizardAnswers> {
   // Interactive engine selection.
-  const provider = await select<Provider>({
-    message: "Engine provider:",
-    choices: [
-      { name: "anthropic — Claude models", value: "anthropic" },
-      { name: "openai — GPT models", value: "openai" },
-      { name: "openrouter — any model via OpenRouter", value: "openrouter" },
-      { name: "ollama — local LLM (no API key, runs offline)", value: "ollama" },
-    ],
-    default: "anthropic",
-  });
+  const provider = await withEscRestart((ctx) =>
+    select<Provider>(
+      {
+        message: "Engine provider:",
+        choices: [
+          { name: "anthropic — Claude models", value: "anthropic" },
+          { name: "openai — GPT models", value: "openai" },
+          { name: "openrouter — any model via OpenRouter", value: "openrouter" },
+          { name: "ollama — local LLM (Qwen, Llama, & more)", value: "ollama" },
+        ],
+        default: "anthropic",
+      },
+      ctx,
+    ),
+  );
 
   // Ollama-specific: ask whether it runs locally or against a remote host.
-  // Local: default to http://localhost:11434, no auth.
-  // Remote: prompt URL + optional bearer-token env var (Ollama Cloud / gated
-  // self-hosted proxies use Authorization: Bearer).
   let ollamaBaseURL: string | undefined;
   let ollamaNeedsBearer = false;
   if (provider === "ollama") {
-    const ollamaMode = await select<"local" | "remote">({
-      message: "Where does Ollama run?",
-      choices: [
-        { name: "Local (http://localhost:11434, no auth)", value: "local" },
+    const ollamaMode = await withEscRestart((ctx) =>
+      select<"local" | "remote">(
         {
-          name: "Remote / Cloud (custom URL, optional bearer)",
-          value: "remote",
+          message: "Where does Ollama run?",
+          choices: [
+            { name: "Local (http://localhost:11434, no auth)", value: "local" },
+            {
+              name: "Remote / Cloud (custom URL, optional bearer)",
+              value: "remote",
+            },
+          ],
+          default: "local",
         },
-      ],
-      default: "local",
-    });
+        ctx,
+      ),
+    );
     if (ollamaMode === "remote") {
-      ollamaBaseURL = await input({
-        message: "Ollama URL (e.g. https://ollama.example.com):",
-      });
+      ollamaBaseURL = await withEscRestart((ctx) =>
+        input(
+          {
+            message: "Ollama URL (e.g. https://ollama.example.com):",
+          },
+          ctx,
+        ),
+      );
       if (!ollamaBaseURL || !/^https?:\/\//.test(ollamaBaseURL)) {
         throw new Error(
           `Invalid Ollama URL: ${JSON.stringify(ollamaBaseURL)}. Must start with http:// or https://`,
         );
       }
-      ollamaNeedsBearer = await confirm({
-        message: "Does the remote Ollama require a bearer token? (Ollama Cloud + gated proxies do)",
-        default: true,
-      });
+      ollamaNeedsBearer = await withEscRestart((ctx) =>
+        confirm(
+          {
+            message:
+              "Does the remote Ollama require a bearer token? (Ollama Cloud + gated proxies do)",
+            default: true,
+          },
+          ctx,
+        ),
+      );
     }
   }
 
   // Model selection: dropdown of priced models + Custom escape hatch.
   const CUSTOM_SENTINEL = "__custom__";
   const choices = getModelChoices(provider);
-  const modelSelection = await select<string>({
-    message: "Model:",
-    choices: [
-      ...choices.map((c) => ({ name: formatChoiceLabel(c), value: c.id })),
-      { name: "Custom — type your own model ID", value: CUSTOM_SENTINEL },
-    ],
-  });
+  const modelSelection = await withEscRestart((ctx) =>
+    select<string>(
+      {
+        message: "Model:",
+        choices: [
+          ...choices.map((c) => ({ name: formatChoiceLabel(c), value: c.id })),
+          { name: "Custom — type your own model ID", value: CUSTOM_SENTINEL },
+        ],
+      },
+      ctx,
+    ),
+  );
 
   let model: string;
   if (modelSelection === CUSTOM_SENTINEL) {
-    model = await input({ message: "Custom model ID:" });
+    model = await withEscRestart((ctx) => input({ message: "Custom model ID:" }, ctx));
     printCustomModelWarning(model);
-    const proceed = await confirm({
-      message: "Continue with unpriced model? Budget caps will not enforce.",
-      default: false,
-    });
+    const proceed = await withEscRestart((ctx) =>
+      confirm(
+        {
+          message: "Continue with unpriced model? Budget caps will not enforce.",
+          default: false,
+        },
+        ctx,
+      ),
+    );
     if (!proceed) {
       throw new Error(
         "Aborted by operator. Pick a priced model or add `engine.costOverride` to agent.yaml after scaffolding.",
@@ -200,29 +209,42 @@ export async function runCreate(name: string, opts: CreateOpts): Promise<void> {
     model = modelSelection;
   }
 
-  // Operator + purpose prompts. Used to populate identity.md security rules
-  // (operator-name reference) and the agent.yaml `operators[]` array.
-  const operatorName = await input({
-    message: "Operator name (your name; appears in identity.md security rule):",
-    default: DEFAULT_OPERATOR_NAME,
-  });
-  const purpose = await input({
-    message: "Agent purpose (one sentence):",
-    default: DEFAULT_PURPOSE,
-  });
+  // Operator + purpose prompts.
+  const operatorName = await withEscRestart((ctx) =>
+    input(
+      {
+        message: "Operator name (your name; appears in identity.md security rule):",
+        default: DEFAULT_OPERATOR_NAME,
+      },
+      ctx,
+    ),
+  );
+  const purpose = await withEscRestart((ctx) =>
+    input(
+      {
+        message: "Agent purpose (one sentence):",
+        default: DEFAULT_PURPOSE,
+      },
+      ctx,
+    ),
+  );
 
   // Interactive augment selection.
-  const selected = await checkbox({
-    message: "Select augments:",
-    choices: AUGMENT_CATALOG.map((entry) => ({
-      name: `${entry.label} — ${entry.description}`,
-      value: entry,
-      checked: entry.required,
-      disabled: entry.required ? "(always included)" : false,
-    })),
-  });
+  const selected = await withEscRestart((ctx) =>
+    checkbox(
+      {
+        message: "Select augments:",
+        choices: AUGMENT_CATALOG.map((entry) => ({
+          name: `${entry.label} — ${entry.description}`,
+          value: entry,
+          checked: entry.required,
+          disabled: entry.required ? "(always included)" : false,
+        })),
+      },
+      ctx,
+    ),
+  );
 
-  // Ensure required augments are included.
   const augments = AUGMENT_CATALOG.filter((e) => e.required);
   for (const entry of selected) {
     if (!augments.includes(entry)) {
@@ -235,33 +257,109 @@ export async function runCreate(name: string, opts: CreateOpts): Promise<void> {
   let orgName = DEFAULT_ORG_NAME;
   let orgPurpose = DEFAULT_ORG_PURPOSE;
   if (orgContextSelected) {
-    orgName = await input({
-      message: "Org name:",
-      default: DEFAULT_ORG_NAME,
-    });
-    orgPurpose = await input({
-      message: "Org purpose (one sentence):",
-      default: DEFAULT_ORG_PURPOSE,
-    });
+    orgName = await withEscRestart((ctx) =>
+      input(
+        {
+          message: "Org name:",
+          default: DEFAULT_ORG_NAME,
+        },
+        ctx,
+      ),
+    );
+    orgPurpose = await withEscRestart((ctx) =>
+      input(
+        {
+          message: "Org purpose (one sentence):",
+          default: DEFAULT_ORG_PURPOSE,
+        },
+        ctx,
+      ),
+    );
   }
+
+  return {
+    provider,
+    model,
+    operatorName,
+    purpose,
+    augments,
+    orgName,
+    orgPurpose,
+    orgContextSelected,
+    ollamaBaseURL,
+    ollamaNeedsBearer,
+  };
+}
+
+export async function runCreate(name: string, opts: CreateOpts): Promise<void> {
+  const finalDir = resolveAgentDir(name, { auggyDir: opts.auggyDir });
+
+  if (existsSync(finalDir)) {
+    throw new Error(
+      `Agent "${name}" already exists at ${finalDir}.\n\n` +
+        `  Use a different name, or remove the existing one with \`auggy remove ${name}\`.`,
+    );
+  }
+
+  // Sweep any stale .tmp-* dirs left behind by a previous interrupted run.
+  // Safe pre-scaffold because no concurrent create for this name can be in
+  // progress (the finalDir check above is the lock).
+  sweepStaleTempDirs({ auggyDir: opts.auggyDir });
+
+  // Wizard loop — Esc at any prompt restarts from the engine-provider
+  // step. We only print the welcome banner on the first attempt; restart
+  // attempts skip it to keep the terminal scrollback clean.
+  let attempt = 0;
+  let answers: WizardAnswers;
+  for (;;) {
+    if (attempt === 0) printWelcome();
+    try {
+      answers = await runWizard();
+      break;
+    } catch (err) {
+      if (err instanceof WizardRestartRequested) {
+        attempt += 1;
+        console.log();
+        console.log(dim("  ↺ Restarted (Esc pressed)"));
+        console.log();
+        continue;
+      }
+      throw err;
+    }
+  }
+
+  const {
+    provider,
+    model,
+    operatorName,
+    purpose,
+    augments,
+    orgName,
+    orgPurpose,
+    orgContextSelected,
+    ollamaBaseURL,
+    ollamaNeedsBearer,
+  } = answers;
 
   const id = `aug1_${randomUUID()}`;
 
-  // Scaffold the directory.
-  let scaffoldComplete = false;
+  // Stage everything into a sibling `.tmp-<uuid>` dir under the agents root.
+  // The rename at the end is the atomic publish step.
+  const stagingParent = join(finalDir, "..");
+  mkdirSync(stagingParent, { recursive: true });
+  const tempDir = join(stagingParent, `.tmp-${randomUUID()}`);
+
   try {
-    mkdirSync(dir, { recursive: true });
-    mkdirSync(join(dir, "skills"), { recursive: true });
-    mkdirSync(join(dir, "workspace"), { recursive: true });
-    mkdirSync(join(dir, "augments"), { recursive: true });
+    mkdirSync(tempDir, { recursive: true });
+    mkdirSync(join(tempDir, "skills"), { recursive: true });
+    mkdirSync(join(tempDir, "workspace"), { recursive: true });
+    mkdirSync(join(tempDir, "augments"), { recursive: true });
 
     console.log();
     console.log(dim(" Installing augments..."));
     console.log();
     for (const entry of augments) {
-      // Copy bundled skill folder if the augment has one — overrides any
-      // legacy inline skillTemplate from the catalog. Idempotent.
-      copyBundledSkill(entry.type, dir);
+      copyBundledSkill(entry.type, tempDir);
       console.log(`   ${green("✓")} ${cream(entry.defaultName)} ${dim(`(${entry.type})`)}`);
     }
 
@@ -272,12 +370,10 @@ export async function runCreate(name: string, opts: CreateOpts): Promise<void> {
       purpose,
       ollamaBaseURL,
     });
-    writeFileSync(join(dir, "agent.yaml"), config);
+    writeFileSync(join(tempDir, "agent.yaml"), config);
 
-    // Per ADR-030: identity.md no longer carries a skill manifest. The
-    // runtime `skills` augment surfaces the listing from disk.
     writeFileSync(
-      join(dir, "identity.md"),
+      join(tempDir, "identity.md"),
       renderIdentityFromTemplate({
         agentName: name,
         purpose,
@@ -286,28 +382,15 @@ export async function runCreate(name: string, opts: CreateOpts): Promise<void> {
     );
 
     if (augments.some((e) => e.defaultName === "learned")) {
-      writeFileSync(join(dir, "learned.md"), "");
+      writeFileSync(join(tempDir, "learned.md"), "");
     }
 
-    // Scaffold an example org-context/ directory when orgContext is selected
-    // (per spec §Decision 9). The orgContext augment's file:// scheme support
-    // (α-6) lets this work without standing up an HTTP server.
     if (orgContextSelected) {
-      writeOrgContextExample(dir, { orgName, orgPurpose, operatorName });
+      writeOrgContextExample(tempDir, { orgName, orgPurpose, operatorName });
     }
 
     // Build .env with both auto-generated values AND empty placeholders for
-    // env vars the operator still needs to fill. Auto-gen drops the "fill 7
-    // env vars before booting" friction operators hit in 0.4.3.
-    //
-    // Auto-generated at scaffold time:
-    //   AUGGY_WEB_TOKEN      → 32 random hex bytes (the agent's bearer)
-    //   VISITOR_SIGNING_KEY  → 32 random hex bytes (HMAC for visitor tokens)
-    //   AUGGY_AGENT_ID       → agent name (anti-replay binding default)
-    //   AUGGY_PUBLIC_URL     → http://localhost:<webTransport.port>
-    //
-    // The rest of the env vars (provider API key when applicable, augment-
-    // specific creds) stay as empty `=` lines for the operator to fill.
+    // env vars the operator still needs to fill.
     const placeholderEnvVars = collectEnvVars(augments, provider).filter(
       (v) => !AUTO_GENERATED_ENV_VARS.has(v),
     );
@@ -326,15 +409,12 @@ export async function runCreate(name: string, opts: CreateOpts): Promise<void> {
       autoGenLines.push(`VISITOR_SIGNING_KEY=${randomBytes(32).toString("hex")}`);
     }
 
-    writeFileSync(join(dir, ".env"), buildEnv(autoGenLines, placeholderEnvVars));
-    writeFileSync(join(dir, ".gitignore"), GITIGNORE);
+    writeFileSync(join(tempDir, ".env"), buildEnv(autoGenLines, placeholderEnvVars));
+    writeFileSync(join(tempDir, ".gitignore"), GITIGNORE);
 
-    // Per-agent package.json — the engine adapter + auggy + any per-augment
-    // packageDeps. Required for the runtime to resolve via importFromAgent.
-    // See `src/cli/scaffold-package-json.ts` for the build contract.
     const auggyVersion = getAuggyVersion();
     writeFileSync(
-      join(dir, "package.json"),
+      join(tempDir, "package.json"),
       buildAgentPackageJson({
         agentName: name,
         auggyVersion,
@@ -343,69 +423,57 @@ export async function runCreate(name: string, opts: CreateOpts): Promise<void> {
       }),
     );
 
-    scaffoldComplete = true;
-  } finally {
-    // Best-effort cleanup if scaffolding partially failed.
-    if (!scaffoldComplete && existsSync(dir)) {
-      try {
-        rmSync(dir, { recursive: true, force: true });
-      } catch {
-        // best-effort
-      }
-    }
-  }
-
-  // SIGINT handler scoped to the post-scaffold/pre-index window.
-  // Without this, Ctrl+C between scaffold completion and addAgent leaves
-  // an orphan dir with no index entry — neither create nor remove can recover.
-  const sigintHandler = (): void => {
-    if (existsSync(dir)) {
-      try {
-        rmSync(dir, { recursive: true, force: true });
-      } catch {
-        // best-effort
-      }
-    }
-    console.log();
-    console.log("Aborted. Cleaned up partially-scaffolded directory.");
-    process.exit(130); // 128 + SIGINT(2)
-  };
-  process.once("SIGINT", sigintHandler);
-
-  // Register in the index. If this fails, clean up the scaffolded dir.
-  try {
-    addAgent(name, dir, { auggyDir: opts.auggyDir });
+    // No per-agent metadata file is written for fresh agents. createdAt
+    // derives from the dir's filesystem birthtime/mtime, and there is no
+    // cloud record until `auggy deploy` runs.
   } catch (err) {
-    process.removeListener("SIGINT", sigintHandler);
     try {
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(tempDir, { recursive: true, force: true });
     } catch {
       // best-effort
     }
     throw err;
   }
-  process.removeListener("SIGINT", sigintHandler);
 
-  // bun install — populates <dir>/node_modules so `auggy dev` can resolve
-  // the engine + augment packages. Skipped under --skip-install; the
-  // operator can run `cd <dir> && bun install` themselves.
-  //
-  // Fail-soft: a failed install leaves the scaffolded dir AND the index
-  // entry intact. The package manager has touched node_modules at this
-  // point; an auto-rollback would surprise the operator more than the
-  // partial state. Print the exact retry command and continue.
+  // Atomic publish: rename the staging dir into the canonical path.
+  // If the target appeared between the existsSync check above and now,
+  // renameSync throws ENOTEMPTY/EEXIST — we clean up the staging dir and
+  // surface a clear error.
+  try {
+    renameSync(tempDir, finalDir);
+  } catch (err) {
+    try {
+      rmSync(tempDir, { recursive: true, force: true });
+    } catch {
+      // best-effort
+    }
+    if (
+      (err as NodeJS.ErrnoException).code === "ENOTEMPTY" ||
+      (err as NodeJS.ErrnoException).code === "EEXIST"
+    ) {
+      throw new Error(
+        `Agent "${name}" was created concurrently at ${finalDir}.\n\n` +
+          `  Use a different name, or remove the existing one with \`auggy remove ${name}\`.`,
+      );
+    }
+    throw err;
+  }
+
+  // bun install — populates <finalDir>/node_modules so `auggy dev` can resolve
+  // the engine + augment packages. Fail-soft: a failed install leaves the
+  // scaffolded dir intact and surfaces a clear retry command.
   let installOk = true;
   if (!opts.skipInstall) {
     console.log();
     console.log(dim(" Installing dependencies..."));
     console.log();
-    const result = await runBunInstall(dir, opts.bunInstallSpawn);
+    const result = await runBunInstall(finalDir, opts.bunInstallSpawn);
     installOk = result.ok;
     if (!installOk) {
       console.log();
-      console.log(`⚠ bun install failed in ${dir} (exit ${result.code}).`);
-      console.log(`  Scaffolding is on disk and registered in the index.`);
-      console.log(`  Retry:  cd ${dir} && bun install`);
+      console.log(`⚠ bun install failed in ${finalDir} (exit ${result.code}).`);
+      console.log(`  Scaffolding is on disk.`);
+      console.log(`  Retry:  cd ${finalDir} && bun install`);
       console.log(`  Then:   auggy dev ${name}`);
       console.log();
     }
@@ -415,31 +483,28 @@ export async function runCreate(name: string, opts: CreateOpts): Promise<void> {
   console.log(dim(" ─────────────────────────────────────────────"));
   console.log();
   console.log(` ${green("✓")} ${bold(cream(`Agent "${name}" created`))}`);
-  console.log(`   ${dim(dir)}`);
+  console.log(`   ${dim(finalDir)}`);
   console.log();
   console.log(` ${bold("Next steps:")}`);
   console.log();
   let step = 1;
   if (opts.skipInstall) {
-    console.log(`   ${cream(`${step++}.`)}  cd ${dir} && bun install`);
+    console.log(`   ${cream(`${step++}.`)}  cd ${finalDir} && bun install`);
   } else if (!installOk) {
     console.log(
-      `   ${cream(`${step++}.`)}  cd ${dir} && bun install   ${dim("(retry — earlier attempt failed)")}`,
+      `   ${cream(`${step++}.`)}  cd ${finalDir} && bun install   ${dim("(retry — earlier attempt failed)")}`,
     );
   }
-  // Env-vars step: only render when there's actually a secret left for the
-  // operator to fill. Auto-generated vars (AUGGY_WEB_TOKEN, VISITOR_SIGNING_KEY,
-  // etc.) are written to .env directly by the scaffold and excluded here.
   const envVarsForNextSteps = collectEnvVars(augments, provider).filter(
     (v) => !AUTO_GENERATED_ENV_VARS.has(v),
   );
   if (ollamaNeedsBearer) envVarsForNextSteps.push("OLLAMA_API_KEY");
   if (envVarsForNextSteps.length > 0) {
     console.log(
-      `   ${cream(`${step++}.`)}  Fill in ${dir}/.env  ${dim(`(${envVarsForNextSteps.join(", ")})`)}`,
+      `   ${cream(`${step++}.`)}  Fill in ${finalDir}/.env  ${dim(`(${envVarsForNextSteps.join(", ")})`)}`,
     );
   }
-  console.log(`   ${cream(`${step++}.`)}  Edit ${dir}/identity.md   ${dim("(optional)")}`);
+  console.log(`   ${cream(`${step++}.`)}  Edit ${finalDir}/identity.md   ${dim("(optional)")}`);
   console.log(`   ${cream(`${step++}.`)}  auggy dev ${name}`);
   console.log();
 }
@@ -514,9 +579,6 @@ function buildAgentYaml(
     maxContextTokens: 200000,
     maxTokens: 4096,
   };
-  // Remote Ollama: pin the baseURL so the engine resolver points at the
-  // operator-supplied host instead of localhost. Local Ollama leaves
-  // baseURL unset → engine adapter uses its built-in default.
   if (engine.provider === "ollama" && engine.ollamaBaseURL) {
     engineBlock.baseURL = engine.ollamaBaseURL;
   }
@@ -526,9 +588,6 @@ function buildAgentYaml(
     name,
     purpose: engine.purpose,
     operators: [engine.operatorName],
-    // identity shorthand — synthesizes the fileMemory@system entry at parse
-    // time (per α-5). Operators wanting non-default options should drop the
-    // shorthand and add an explicit fileMemory augment instead.
     identity: "./identity.md",
     engine: engineBlock,
     settings: {
@@ -548,12 +607,6 @@ function buildAgentYaml(
   return `# Agent configuration\n\n${stringify(config)}`;
 }
 
-/**
- * For a layeredMemory catalog entry, substitute the agent name for the
- * placeholder namespace so each scaffolded agent gets its own logical
- * storage namespace out of the box. Returns `null` for non-layeredMemory
- * entries so the caller can fall back to defaults.
- */
 function layeredMemoryNamespaceFor(
   entry: CatalogEntry,
   agentName: string,
@@ -564,7 +617,6 @@ function layeredMemoryNamespaceFor(
 
 function collectEnvVars(augments: CatalogEntry[], provider: Provider): string[] {
   const vars = new Set<string>();
-  // Skip empty envVar (ollama has no provider API key — no env var to add).
   const providerEnvVar = PROVIDER_DEFAULTS[provider].envVar;
   if (providerEnvVar) vars.add(providerEnvVar);
   for (const entry of augments) {
@@ -573,14 +625,6 @@ function collectEnvVars(augments: CatalogEntry[], provider: Provider): string[] 
     }
   }
   return [...vars];
-}
-
-function buildEnvExample(vars: string[]): string {
-  const lines = ["# Agent secrets — copy to .env and fill in values.", "# .env is gitignored.", ""];
-  for (const v of vars) {
-    lines.push(`${v}=`);
-  }
-  return `${lines.join("\n")}\n`;
 }
 
 /**
@@ -605,8 +649,7 @@ function buildEnv(autoGenLines: string[], placeholderVars: string[]): string {
 
 /**
  * Write a minimal example `org-context/` directory the orgContext augment
- * can read with `baseUrl: file://./org-context` (α-6). Lets the operator
- * see the augment work end-to-end without standing up an HTTP service.
+ * can read with `baseUrl: file://./org-context` (α-6).
  */
 function writeOrgContextExample(
   agentDir: string,

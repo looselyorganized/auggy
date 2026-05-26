@@ -79,7 +79,7 @@ export function chatCommand(): Command {
 
       let server: Awaited<ReturnType<typeof createGuiServer>>;
       try {
-        server = createGuiServer({ port, staticDir: distDir });
+        server = await createGuiServer({ port, staticDir: distDir });
       } catch (err) {
         console.error(
           `[auggy chat] Failed to start server on port ${port}: ${(err as Error).message}\n` +

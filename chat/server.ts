@@ -1,4 +1,5 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
+import { Socket } from "node:net";
 import { join, sep } from "node:path";
 import { homedir } from "node:os";
 import { createLocalPidSource } from "./src/adapters/local-pid-source";
@@ -7,22 +8,51 @@ import { validateCsrf } from "./src/lib/csrf";
 import type { AgentRef } from "./src/adapters/types";
 
 /**
- * Bun.serve on macOS can silently coexist with another listener bound to a
- * different interface on the same port (e.g. blocker on 0.0.0.0, ours on
- * 127.0.0.1) under BSD-socket address-tuple rules — meaning EADDRINUSE never
- * surfaces when we'd intuitively expect it to. Detect any conflict by first
- * probe-binding to 0.0.0.0 (the wildcard); if that throws, the port is taken
- * by something. The probe is closed before we open the real server.
+ * Probe whether anything is currently accepting TCP connections at
+ * `<host>:<port>`. Bind-based probes are unreliable for collision detection —
+ * BSD-socket address-tuple rules let `127.0.0.1:N` and `[::1]:N` coexist, and
+ * Bun.serve's `hostname: "::"` does not always conflict with a specific-IPv6
+ * listener on macOS. A connect-probe answers the question that actually
+ * matters: "will the browser, when it dials this loopback, reach someone?"
  */
-function preflightPortCheck(port: number): void {
-  let probe: ReturnType<typeof Bun.serve> | null = null;
-  try {
-    probe = Bun.serve({ port, hostname: "0.0.0.0", fetch: () => new Response() });
-  } catch (err) {
-    throw new Error(`port ${port} is already in use: ${(err as Error).message}`);
-  } finally {
-    if (probe) {
-      try { probe.stop(true); } catch { /* noop */ }
+function isPortListening(host: string, port: number, timeoutMs = 500): Promise<boolean> {
+  return new Promise((resolve) => {
+    const sock = new Socket();
+    let settled = false;
+    const finish = (result: boolean): void => {
+      if (settled) return;
+      settled = true;
+      try {
+        sock.destroy();
+      } catch {
+        /* noop */
+      }
+      resolve(result);
+    };
+    sock.once("connect", () => finish(true));
+    sock.once("error", () => finish(false));
+    sock.setTimeout(timeoutMs, () => finish(false));
+    sock.connect({ host, port, family: host.includes(":") ? 6 : 4 });
+  });
+}
+
+/**
+ * Refuse to boot if either loopback (IPv4 `127.0.0.1` or IPv6 `[::1]`) has
+ * something already listening on the requested port. Catches the silent-
+ * collision case (Bun.serve binds 127.0.0.1 cleanly while a stale process
+ * holds `[::1]:port`; browsers prefer IPv6 and dial the stale process).
+ */
+async function preflightPortCheck(port: number): Promise<void> {
+  const families: Array<{ host: string; label: string }> = [
+    { host: "127.0.0.1", label: "IPv4 loopback" },
+    { host: "::1", label: "IPv6 loopback" },
+  ];
+  for (const { host, label } of families) {
+    if (await isPortListening(host, port)) {
+      throw new Error(
+        `port ${port} is already in use (${label}).\n` +
+          `  Find the process holding it:  lsof -nP -iTCP:${port} -sTCP:LISTEN`,
+      );
     }
   }
 }
@@ -39,7 +69,7 @@ interface AgentEntry {
   agentDir: string;
 }
 
-export function createGuiServer(opts: GuiServerOptions) {
+export async function createGuiServer(opts: GuiServerOptions) {
   const auggyDir = opts.auggyDir ?? join(homedir(), ".auggy");
   const staticDir = opts.staticDir;
   // `port` starts as the requested port; if opts.port === 0 (OS-assigned),
@@ -51,7 +81,7 @@ export function createGuiServer(opts: GuiServerOptions) {
   // Pre-flight: confirm the port is free before any state (fs.watch, polling)
   // is allocated. Skip for port 0 (OS-assigned) — there's no specific port
   // to check, and the OS will pick a free one in Bun.serve below.
-  if (port !== 0) preflightPortCheck(port);
+  if (port !== 0) await preflightPortCheck(port);
 
   const source = createLocalPidSource({
     auggyDir,

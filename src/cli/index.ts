@@ -6,12 +6,13 @@
  *   auggy create <name>              Scaffold a new agent (interactive)
  *   auggy add <name>                 Add augments to an existing agent
  *   auggy add-skill <augment>        Install a bundled skill into an agent
- *   auggy dev <name> [--config]      Run agent in foreground
+ *   auggy dev <name> [--config]      Run agent in foreground (headless)
+ *   auggy run <name> [--config]      Run agent + open /admin in browser
  *   auggy start <name> [--config]    Install as launchd service (always-on)
  *   auggy stop <name>                Stop a running agent
  *   auggy restart <name>             Stop + start
  *   auggy status [name]              Show running agents
- *   auggy ls                         List registered agents
+ *   auggy list                       List registered agents
  *   auggy remove <name> [--yes] [--cloud]  Delete an agent (dir + index, optionally Railway service)
  *   auggy deploy <name> --to railway       Deploy an agent to Railway
  *   auggy chat                       Launch local GUI
@@ -24,6 +25,7 @@ import { runCreate } from "./commands/create";
 import { runAdd } from "./commands/add";
 import { addSkillCommand } from "./commands/add-skill";
 import { runDev } from "./commands/dev";
+import { runRun } from "./commands/run";
 import { runStart } from "./commands/start";
 import { runStop } from "./commands/stop";
 import { runRestart } from "./commands/restart";
@@ -39,10 +41,9 @@ program.name("auggy").description("Auggy agent runtime CLI").version(pkg.version
 
 program
   .command("create <name>")
-  .description("Scaffold a new agent directory (interactive)")
-  .option("--dir <path>", "target directory (defaults to ./<name>)")
+  .description("Scaffold a new agent at ~/.auggy/agents/<name>/ (interactive)")
   .option("--skip-install", "write package.json but don't run bun install")
-  .action(async (name: string, opts: { dir?: string; skipInstall?: boolean }) => {
+  .action(async (name: string, opts: { skipInstall?: boolean }) => {
     try {
       await runCreate(name, opts);
     } catch (err) {
@@ -75,6 +76,20 @@ program
   .action(async (name: string, opts: { config?: string; internalMode?: string }) => {
     try {
       await runDev(name, opts);
+    } catch (err) {
+      console.error(`Error: ${(err as Error).message}`);
+      process.exit(1);
+    }
+  });
+
+program
+  .command("run <name>")
+  .description("Boot an agent and open /admin in your browser (Ctrl-C to stop)")
+  .option("--config <path>", "path to agent.yaml")
+  .option("--no-browser", "boot the agent but don't auto-launch a browser")
+  .action(async (name: string, opts: { config?: string; noBrowser?: boolean }) => {
+    try {
+      await runRun(name, opts);
     } catch (err) {
       console.error(`Error: ${(err as Error).message}`);
       process.exit(1);
@@ -148,7 +163,7 @@ program
   });
 
 program
-  .command("ls")
+  .command("list")
   .description("List registered agents with their status")
   .action(async () => {
     try {
@@ -160,7 +175,7 @@ program
   });
 
 program
-  .command("visitors <agent>")
+  .command("visitors <name>")
   .description("list verified visitors for an agent")
   .option("--revoke <email>", "revoke a verified visitor by email")
   .option("--yes", "skip the confirmation prompt for --revoke")

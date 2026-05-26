@@ -1,9 +1,9 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { resolveConfigPath } from "../../src/cli/resolve-config";
-import { addAgent } from "../../src/cli/agent-index";
+import { seedAgentForTest } from "../../src/cli/agent-index";
 
 let auggyDir: string;
 let agentParent: string;
@@ -31,27 +31,22 @@ describe("resolveConfigPath", () => {
     );
   });
 
-  test("index hit returns indexed agent.yaml path", () => {
-    const dir = join(agentParent, "zip");
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, "agent.yaml"), "id: aug1_test\n");
-    addAgent("zip", dir, { auggyDir });
+  test("registered agent name resolves to canonical agent.yaml path", () => {
+    const dir = seedAgentForTest("zip", { auggyDir });
     expect(resolveConfigPath("zip", undefined, { auggyDir })).toBe(join(dir, "agent.yaml"));
   });
 
-  test("index hit but agent.yaml missing throws helpful error", () => {
-    const dir = join(agentParent, "zip");
-    mkdirSync(dir, { recursive: true });
-    addAgent("zip", dir, { auggyDir });
-    // no agent.yaml in dir
+  test("agent dir exists but agent.yaml missing surfaces a clear error", () => {
+    const dir = seedAgentForTest("zip", { auggyDir });
+    unlinkSync(join(dir, "agent.yaml"));
     expect(() => resolveConfigPath("zip", undefined, { auggyDir })).toThrow(
-      /missing|not found.*agent\.yaml|agent\.yaml.*missing/i,
+      /not found|auggy create/i,
     );
   });
 
-  test("index miss throws clear 'not registered' error", () => {
+  test("missing agent name throws clear error", () => {
     expect(() => resolveConfigPath("ghost", undefined, { auggyDir })).toThrow(
-      /not registered|auggy create/i,
+      /not found|auggy create/i,
     );
   });
 });

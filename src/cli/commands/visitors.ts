@@ -26,7 +26,7 @@ function resolveAgentPaths(agentName: string, opts: VisitorsCommandOptions): Res
   const entry = getAgent(agentName, { auggyDir: opts.auggyDir });
   if (!entry) {
     throw new Error(
-      `Agent "${agentName}" is not registered. Run \`auggy ls\` to see registered agents.`,
+      `Agent "${agentName}" is not registered. Run \`auggy list\` to see registered agents.`,
     );
   }
   const agentDir = entry.localDir;
