@@ -6,7 +6,8 @@
  *   auggy create <name>              Scaffold a new agent (interactive)
  *   auggy add <name>                 Add augments to an existing agent
  *   auggy add-skill <augment>        Install a bundled skill into an agent
- *   auggy dev <name> [--config]      Run agent in foreground
+ *   auggy dev <name> [--config]      Run agent in foreground (headless)
+ *   auggy run <name> [--config]      Run agent + open /admin in browser
  *   auggy start <name> [--config]    Install as launchd service (always-on)
  *   auggy stop <name>                Stop a running agent
  *   auggy restart <name>             Stop + start
@@ -24,6 +25,7 @@ import { runCreate } from "./commands/create";
 import { runAdd } from "./commands/add";
 import { addSkillCommand } from "./commands/add-skill";
 import { runDev } from "./commands/dev";
+import { runRun } from "./commands/run";
 import { runStart } from "./commands/start";
 import { runStop } from "./commands/stop";
 import { runRestart } from "./commands/restart";
@@ -74,6 +76,20 @@ program
   .action(async (name: string, opts: { config?: string; internalMode?: string }) => {
     try {
       await runDev(name, opts);
+    } catch (err) {
+      console.error(`Error: ${(err as Error).message}`);
+      process.exit(1);
+    }
+  });
+
+program
+  .command("run <name>")
+  .description("Boot an agent and open /admin in your browser (Ctrl-C to stop)")
+  .option("--config <path>", "path to agent.yaml")
+  .option("--no-browser", "boot the agent but don't auto-launch a browser")
+  .action(async (name: string, opts: { config?: string; noBrowser?: boolean }) => {
+    try {
+      await runRun(name, opts);
     } catch (err) {
       console.error(`Error: ${(err as Error).message}`);
       process.exit(1);

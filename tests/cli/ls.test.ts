@@ -36,4 +36,26 @@ describe("runLs", () => {
     expect(output).toContain("zip");
     expect(output).toContain(dir);
   });
+
+  test("URL column shows /admin URL for agents with webTransport", async () => {
+    seedAgentForTest("zip", {
+      auggyDir,
+      yaml:
+        "id: aug1_zip\nname: zip\n" +
+        "augments:\n" +
+        "  - name: web\n    type: webTransport\n    options:\n      port: 8085\n",
+    });
+    await runLs({ auggyDir });
+    const output = logged.join("\n");
+    expect(output).toContain("URL");
+    expect(output).toContain("http://localhost:8085/admin");
+  });
+
+  test("URL column shows dash for agents without webTransport", async () => {
+    seedAgentForTest("headless", { auggyDir });
+    await runLs({ auggyDir });
+    const output = logged.join("\n");
+    expect(output).toContain("headless");
+    expect(output).toMatch(/—\s*$/m);
+  });
 });
