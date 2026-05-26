@@ -24,21 +24,16 @@ export const ChatTab = () => (
 
 export const BudgetsTab = () => (
   <Placeholder
-    title="Budgets"
-    description="Per-day spend, caps, per-augment breakdown."
+    title="Budget"
+    description="Current spend per trust tier · cap-edit affordances. Backed by the budgets augment."
   />
 );
 
+// TracesTab kept as a stub for the Security route's temporary placeholder —
+// Security tab build replaces it in task #24.
 export const TracesTab = () => (
   <Placeholder
-    title="Traces"
-    description="Recent turns, click a row for full event stream."
-  />
-);
-
-export const ManifestTab = () => (
-  <Placeholder
-    title="Manifest"
-    description="agent-card.json · lo.yml · resolved augments · identity preamble."
+    title="Security"
+    description="Auth posture + visitor list. Coming up next in the build."
   />
 );

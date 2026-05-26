@@ -6,34 +6,44 @@ import {
   Sparkles,
   KeyRound,
   Wallet,
-  Activity,
-  FileJson,
+  ShieldCheck,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { AgentMeta } from "@/lib/types";
+import type { TabKey, TabVisibility } from "@/lib/visibility";
 
-const NAV = [
-  { to: "/chat", label: "Chat", icon: MessageSquare },
-  { to: "/identity", label: "Identity", icon: FileText },
-  { to: "/augments", label: "Augments", icon: Puzzle },
-  { to: "/skills", label: "Skills", icon: Sparkles },
-  { to: "/credentials", label: "Credentials", icon: KeyRound },
-  { to: "/budgets", label: "Budgets", icon: Wallet },
-  { to: "/traces", label: "Traces", icon: Activity },
-  { to: "/manifest", label: "Manifest", icon: FileJson },
-] as const;
+interface NavEntry {
+  key: TabKey;
+  to: string;
+  label: string;
+  icon: typeof MessageSquare;
+}
+
+const NAV: NavEntry[] = [
+  { key: "chat",        to: "/chat",        label: "Chat",        icon: MessageSquare },
+  { key: "identity",    to: "/identity",    label: "Identity",    icon: FileText },
+  { key: "skills",      to: "/skills",      label: "Skills",      icon: Sparkles },
+  { key: "credentials", to: "/credentials", label: "Credentials", icon: KeyRound },
+  { key: "budget",      to: "/budget",      label: "Budget",      icon: Wallet },
+  { key: "security",    to: "/security",    label: "Security",    icon: ShieldCheck },
+  { key: "augments",    to: "/augments",    label: "Augments",    icon: Puzzle },
+];
 
 export interface SidebarProps {
   /** Identity read from `agent.yaml`. Null when unavailable (boot state, no agentDir, etc). */
   agentMeta: AgentMeta | null;
   /** Runtime-resolved name from the agent card. Used as fallback when agent.yaml didn't surface one. */
   fallbackName?: string;
+  /** Per-tab visibility derived from installed augments. */
+  visibility: TabVisibility;
 }
 
-export function Sidebar({ agentMeta, fallbackName }: SidebarProps) {
+export function Sidebar({ agentMeta, fallbackName, visibility }: SidebarProps) {
   const name = agentMeta?.name ?? fallbackName ?? "—";
   const id = agentMeta?.id;
   const operators = agentMeta?.operators ?? [];
+
+  const visibleNav = NAV.filter((n) => visibility[n.key]);
 
   return (
     <aside className="flex h-full w-56 shrink-0 flex-col border-r bg-background">
@@ -62,7 +72,7 @@ export function Sidebar({ agentMeta, fallbackName }: SidebarProps) {
         )}
       </div>
       <nav className="flex-1 space-y-0.5 overflow-y-auto p-2">
-        {NAV.map(({ to, label, icon: Icon }) => (
+        {visibleNav.map(({ to, label, icon: Icon }) => (
           <NavLink
             key={to}
             to={to}
