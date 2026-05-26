@@ -146,6 +146,13 @@ export interface AdminRouteContext {
    * "build required" notice instead.
    */
   staticDir?: string;
+  /**
+   * The webTransport's bound port. The Chat tab proxies messages to
+   * `127.0.0.1:<selfPort>/agent/run` — the agent's same-process AG-UI
+   * surface. Optional so tests can omit it; chat endpoint returns 503
+   * when unset.
+   */
+  selfPort?: number;
 }
 
 const ACTION_ROUTE_RE = /^\/admin\/action\/([^/]+)(?:\/row\/([^/]+))?$/;
@@ -228,6 +235,11 @@ export async function handleAdminRoute(req: Request, ctx: AdminRouteContext): Pr
   }
   if (req.method === "POST" && url.pathname === "/admin/api/identity") {
     return handleIdentityWrite(req, ctx, agentName);
+  }
+
+  // Chat SSE proxy --------------------------------------------------------
+  if (req.method === "POST" && url.pathname === "/admin/api/chat") {
+    return handleChatProxy(req, ctx);
   }
 
   // Credentials API -------------------------------------------------------
@@ -549,6 +561,70 @@ export async function buildAdminActionRegistry(
   }
 
   return registry;
+}
+
+// ===========================================================================
+// Chat SSE proxy
+// ===========================================================================
+
+/**
+ * Proxies a chat message to the agent's own `/agent/run` SSE endpoint on
+ * the same port. The bearer is attached server-side from
+ * `AdminRouteContext.bearer` — the browser never sees it.
+ *
+ * Mirrors the shape of `chat/server.ts`'s `/api/chat/<id>` proxy (the
+ * standalone multi-agent picker UI) but simpler: one agent, one bearer,
+ * no per-request bearer cache.
+ */
+async function handleChatProxy(
+  req: Request,
+  ctx: AdminRouteContext,
+): Promise<Response> {
+  if (!ctx.selfPort) {
+    return jsonResponse(
+      { error: "Chat proxy unavailable — agent port not exposed to admin route." },
+      503,
+    );
+  }
+  let body: { message?: unknown; threadId?: unknown };
+  try {
+    body = (await req.json()) as typeof body;
+  } catch {
+    return jsonResponse({ error: "invalid JSON body" }, 400);
+  }
+  if (typeof body.message !== "string" || body.message.length === 0) {
+    return jsonResponse({ error: "missing message" }, 400);
+  }
+  const threadId = typeof body.threadId === "string" ? body.threadId : undefined;
+
+  let upstream: Response;
+  try {
+    upstream = await fetch(`http://127.0.0.1:${ctx.selfPort}/agent/run`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${ctx.bearer}`,
+      },
+      body: JSON.stringify({
+        messages: [{ role: "user", content: body.message }],
+        threadId,
+      }),
+      signal: req.signal,
+    });
+  } catch (err) {
+    if ((err as Error).name === "AbortError") {
+      return new Response(null, { status: 499 });
+    }
+    return jsonResponse(
+      { error: `upstream connect failed: ${(err as Error).message}` },
+      502,
+    );
+  }
+
+  return new Response(upstream.body, {
+    status: upstream.status,
+    headers: { "content-type": "text/event-stream" },
+  });
 }
 
 // ===========================================================================

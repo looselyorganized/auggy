@@ -13,7 +13,7 @@ import { IdentityTab } from "@/routes/IdentityTab";
 import { CredentialsTab } from "@/routes/CredentialsTab";
 import { BudgetTab } from "@/routes/BudgetTab";
 import { SecurityTab } from "@/routes/SecurityTab";
-import { ChatTab } from "@/routes/placeholders";
+import { ChatTab } from "@/routes/ChatTab";
 
 export function App() {
   const dashboard = useDashboard();

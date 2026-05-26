@@ -10,6 +10,7 @@ export default defineConfig({
   resolve: {
     alias: {
       "@": fileURLToPath(new URL("./src", import.meta.url)),
+      "@chat": fileURLToPath(new URL("../chat/src", import.meta.url)),
     },
   },
   build: {

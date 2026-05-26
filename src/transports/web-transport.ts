@@ -1225,6 +1225,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
               callerIp: adminIp,
               actionRegistry,
               staticDir: adminStaticDir,
+              selfPort: opts.port,
             });
           }
 
