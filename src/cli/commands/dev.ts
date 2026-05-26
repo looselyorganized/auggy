@@ -22,6 +22,10 @@ import { resolveEngine } from "../engine-resolver";
 import { resolveAugments } from "../augment-resolver";
 import { writePidManifest, removePidManifest } from "../pid-registry";
 import { resolveConfigPath } from "../resolve-config";
+
+// ANSI dim used for the inline "(info page)" annotation in boot output.
+// Strips on non-TTY so piped output stays clean.
+const dim = (s: string): string => (process.stdout.isTTY ? `\x1b[2m${s}\x1b[0m` : s);
 import type { AgentConfig, Augment, ModelClient } from "../../types";
 
 /**
@@ -149,13 +153,13 @@ export async function runDev(name: string, opts: DevOpts): Promise<void> {
   const adminUrl = port ? `http://localhost:${port}/admin` : null;
   console.log(`Agent "${agentName}" running (PID ${process.pid})`);
   if (adminUrl) {
-    console.log(`  Admin:     ${adminUrl}`);
+    console.log(`  Admin:     ${adminUrl}   ${dim("(info page)")}`);
     console.log(`  Health:    http://localhost:${port}/health`);
   }
   console.log(`  Config:    ${configPath}`);
-  if (adminUrl) {
-    console.log(`  Tip:       next time, try \`auggy run ${agentName}\` to boot + open /admin`);
-  }
+  console.log(
+    `  Chat:      run \`auggy chat\` in another terminal to talk to this agent in your browser`,
+  );
   console.log(`  Press Ctrl-C to stop.`);
 
   opts.onReady?.({ agentName, port, adminUrl });

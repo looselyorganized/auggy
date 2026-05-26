@@ -1,235 +1,179 @@
-# /admin — Operator Workbench
+# /admin — Per-Agent Operator Surface
 
-The per-agent operator surface served at `GET /admin` by every agent that
-mounts the `webTransport` augment. One agent = one `/admin`.
+## What `/admin` is in v1.0
 
-## Scope
+The **server-rendered HTML dashboard** shipped in G36 (PRs #59–#63,
+2026-05-19). One per-agent, served at `GET /admin` by every agent that
+mounts `webTransport`. HTTP Basic auth, no JavaScript, no SPA, no
+client-side framework.
 
-`/admin` is **per-agent**. There is no cross-agent dashboard, no central
-hub, no fleet view. Operators with multiple local agents open multiple
-browser tabs — one per agent's port. `auggy list` surfaces the URLs.
+What it surfaces (built-in):
 
-A multi-agent surface is a *post-link* concern (facility/hub, owned by
-Zip), not a v1.0 deliverable.
+- Agent name + purpose (from the agent-card)
+- Health / status line
+- Per-augment sections rendered from each augment's `adminInfo()` —
+  `keyValue`, `table`, `status` primitives
+- State-mutating actions via HTML forms, CSRF-bound to
+  `(actionId, rowKey)` tuples
+- Footer notice about devtools exposure of bearer
 
-## Auth
+Server modules: `src/transports/admin/`. Renderer:
+`src/transports/admin/admin-renderer.ts`. The contract surface
+(`AdminInfoBlock`, `AdminSection`, `adminAction`, etc.) lives in
+`src/types.ts` — augments opt in by implementing `adminInfo()`.
 
-HTTP Basic auth. Username blank, password is the agent's bearer
-(`AUGGY_WEB_TOKEN` in the agent's `.env`). Same credential the operator
-uses on `/agent/run`. The browser caches it per origin so the operator
-logs in once per tab.
+## What `/admin` is NOT in v1.0
 
-State-mutating actions additionally require a CSRF token bound to the
-specific `(actionId, rowKey)` tuple — page-shared tokens are rejected.
-See `src/transports/admin/admin-csrf.ts`.
+- Not a single-page app.
+- Not a React/Vite/Tailwind/shadcn build.
+- Not a multi-tab workbench with Chat / Budget / Security / Skills /
+  Credentials / Identity / Augments routes.
+- Not a JSON API at `/admin/api/*`.
 
-HTTPS is enforced on non-loopback hostnames. Hitting `/admin` over
-plaintext HTTP from a non-loopback address returns `426 Upgrade Required`
-with guidance.
+That work exists on `feat/chat-ui-iteration` and is **deferred to v1.1+**.
 
-## Surface
+## Why the SPA was cut (2026-05-26)
 
-Single-page React app at `/admin`. Stack: React 19 + Vite + Tailwind +
-shadcn (Radix primitives). Source: `admin/`. Build output: `admin/dist/`.
-The runtime serves the SPA's static assets from `admin/dist/` via
-`src/transports/admin/admin-static.ts`.
+After building most of a 7-tab SPA on `feat/chat-ui-iteration`, the
+work was cut from v1.0 scope. Rationale:
 
-The SPA consumes JSON endpoints under `/admin/api/*`. Endpoint shape is
-package-locked: `admin/dist/` ships inside the same release as the auggy
-runtime, so the JSON contract is always in lockstep with the SPA build.
-No API versioning prefix in v1; add it only if the packaging ever splits.
+1. **Audience-positioning mismatch.** Auggy's v1.0 adopters are
+   technical operators (CLI-comfortable, self-hosting). The OSS
+   runtimes they're used to (LangChain, LangGraph, AutoGen, CrewAI OSS
+   tier) ship no admin UI. Operators in this audience prefer editing
+   `agent.yaml` in vim over filling YAML in a form. A SPA pushes
+   auggy into "product" framing when its v1.0 positioning is
+   "runtime + SDK."
 
----
+2. **The demo is the chat, not the dashboard.** The shareable v1.0
+   moment is `npm i -g auggy → auggy create → auggy run → chat works`.
+   A polished admin SPA is the SaaS demo — different game.
 
-## Tabs (v1.0)
+3. **We were speculating on operator needs.** The 7-tab structure,
+   the augment-to-home mapping, the Augments-as-registry vs editor
+   call — all decided without adopter signal. Ship the runtime,
+   watch what operators *actually* hit friction on, build the SPA
+   for *that* in v1.1+.
 
-Seven tabs. Each owns one operator question. No tab is named after an
-augment; tabs are named for the question the operator is asking.
+4. **Code editor is a first-class operator tool.** `agent.yaml` is
+   YAML, `identity.md` is markdown, `.env` is dotenv, `memory.sqlite`
+   opens in DBeaver / `sqlite3` CLI. Every dev knows how to edit
+   these. The G36 dashboard handles the operator's *read* needs (see
+   what's running, current spend, current visitors); the editor
+   handles config; CLI handles audited mutations.
 
-| # | Tab | Operator question | Backing augments |
-|---|---|---|---|
-| 1 | **Chat** | "Talk to the agent." | webTransport (kernel SSE surface) |
-| 2 | **Identity** | "Who is this agent?" | fileMemory@system (identity.md) |
-| 3 | **Skills** | "What does it know how to do?" | skills runtime mount + per-augment SKILL.md files |
-| 4 | **Credentials** | "What secrets does it hold?" | env vars (cross-cutting) |
-| 5 | **Budget** | "What can it spend?" | budgets |
-| 6 | **Security** | "Who can interact with it?" | webTransport.auth + visitorAuth.visitors |
-| 7 | **Augments** | "What's plumbed in?" | composition + all augments |
+5. **Maintenance tax.** React + Vite + Tailwind + shadcn + Radix is
+   a perpetual dependency tree on a runtime project. That tax
+   compounds against features that move the v1.0 adoption needle.
 
-### Tab visibility
+The G36 dashboard already satisfies the *minimum* operator-surface
+need (visibility into a running agent). The SPA would have been a
+nicer surface, not a structurally different one. Ship the working
+dashboard, defer the polish.
 
-The sidebar is rendered from `/admin/api/augments`, not from a hardcoded
-route list. **Tab visibility maps to installed augments**:
+## Browser chat in v1.0: `auggy chat`
 
-- Tabs whose backing augment(s) aren't installed are hidden from the sidebar.
-- Direct URL access to a hidden tab renders a "not installed — visit
-  Augments to add it" message rather than an empty form.
-- Identity is effectively always visible (the `identity:` shorthand
-  synthesizes a fileMemory@system entry at parse time).
-- Skills is always visible (the skills mount is auto-mounted runtime
-  infrastructure per ADR-030).
-- Credentials is always visible (env vars always exist).
-- Augments is always visible.
-- Chat appears when webTransport is present (i.e., always for a
-  browser-reachable agent — if webTransport isn't mounted, /admin
-  itself isn't served, so the question is moot).
-- Budget appears when `budgets` is in agent.yaml.
-- Security appears when webTransport's auth posture is exposed OR
-  visitorAuth is installed.
+Browser chat is **not** an `/admin` concern in v1.0. The bundled
+chat surface is `auggy chat` — a separate browser SPA at
+`localhost:8090` that:
 
-### The rule
+- Discovers all running local agents via PID manifests
+- Lists them in a picker (sidebar)
+- Streams chat via SSE through a bearer-attaching proxy (browser
+  never sees the bearer)
+- Ships as the `chat-dist` GitHub release artifact, downloaded on
+  first run
 
-Every augment has exactly **one home**. No augment's options live in
-two places.
+Operators talk to their agent via `auggy chat`. Operators inspect /
+administer their agent via `/admin`. Two surfaces, two purposes,
+both shipped, no overlap.
 
----
+The earlier plan to deprecate `auggy chat` in favor of a unified
+`/admin/chat` tab is **reversed** by this cut. `auggy chat` is the
+v1.0 browser chat surface.
 
-## Augments tab contract
+## Operator surface inventory (v1.0)
 
-The **Augments tab is the registry — not an editor**. It owns
-composition, status, and add/remove. Per-augment options have one of two
-homes depending on whether the augment is **promoted** (has a dedicated
-operator-question tab):
+| Operator task | v1.0 affordance |
+|---|---|
+| Configure the agent | Edit `~/.auggy/agents/<name>/agent.yaml` in your editor |
+| Edit identity | Edit `~/.auggy/agents/<name>/identity.md` |
+| Rotate credentials | Edit `~/.auggy/agents/<name>/.env` |
+| Adjust budget caps | Edit `agent.yaml` OR use the budget admin action at `/admin` |
+| Revoke a visitor | `/admin` visitor table action, OR `auggy visitors <name> --revoke <email>` |
+| Inspect memory | `sqlite3 ~/.auggy/agents/<name>/memory.sqlite` OR `/admin` memory section (read-only) |
+| Talk to the agent (browser) | `auggy chat` (separate SPA on port 8090) |
+| Talk to the agent (terminal) | Curl `/agent/run` directly, or BYO AG-UI client |
+| See agent status | `auggy list` (CLI) OR `/admin` info panel |
 
-- **Promoted augment row** (e.g., budgets, visitor-auth): shows type,
-  instance name, healthy/error status, and a `Configured in [Tab] ↗`
-  link. No inline edit affordance.
-- **Unpromoted augment row** (e.g., webFetch, bash, notify, orgContext,
-  fileMemory@learned, layeredMemory, filesystem, telegramTransport):
-  shows type, instance name, healthy/error status, and expandable
-  inline options. Edits write back to agent.yaml; the runtime
-  hot-reloads if the augment supports it, otherwise prompts for a
-  restart.
+## Auth model (v1.0)
 
-Composition actions (add augment, remove augment, reorder) live here
-**for every augment**, including promoted ones. The Budget tab edits
-budget caps; if the operator wants to *uninstall* budgets entirely,
-they go to Augments. Composition is a separate concern from
-configuration.
+`/admin` uses **HTTP Basic auth**, bearer-as-password. Username
+blank, password is `AUGGY_WEB_TOKEN`. State-mutating actions
+additionally require a CSRF token bound to `(actionId, rowKey)`. See
+`src/transports/admin/admin-csrf.ts`.
 
----
+HTTPS is enforced on non-loopback hostnames. Plaintext HTTP from a
+non-loopback address returns `426 Upgrade Required`.
 
-## Skills tab contract
+The `auggy chat` SPA is independent of `/admin` auth: it lives on a
+separate port (8090 by default), proxies requests with the agent's
+bearer attached server-side, and serves an unauthenticated origin to
+the operator's local browser.
 
-The **Skills tab owns the knowledge catalog** — the `.md` files
-mounted at `<agent-dir>/skills/`. This is distinct from Augments by
-construction: augments are hardware, skills are teaching.
+## What stays in the codebase
 
-Lifecycle differences:
+Everything from G36 is shipped and stays:
 
-- Mounting the `bash` augment gives the agent shell access (potentially
-  dangerous capability).
-- Mounting bash's SKILL.md teaches the agent *how to use shell well*
-  (quality / safety guidance).
+- `src/transports/admin/` — admin module (auth, CSRF, renderer,
+  dispatcher, registry)
+- `src/transports/admin/admin-renderer.ts` — server-side HTML renderer
+- `Augment.adminInfo()` contract on the type
+- Per-augment `adminInfo()` implementations on budgets, layered-memory,
+  notify, visitor-auth, web-transport
+- Admin action handlers across those augments
+- Ring buffer + admin-overrides Zod schema + 0o600 atomic write
 
-The boot-time validator (ADR-025) warns when a tool-providing augment
-has no skill mounted. **The Skills tab is where the operator resolves
-that warning.**
+The forward-compat surfaces (`adminInfo()` contract, `eventStream`
+section primitive declared but not yet rendered) remain in place for
+the v1.1 SPA work to resume against without needing a re-architecture.
 
-The tab shows:
+## What stays parked
 
-- All mounted skills, grouped by source (augment-bundled vs.
-  operator-added)
-- Install affordance for augment-bundled skills not yet mounted
-  (wraps `auggy add-skill`)
-- View/edit affordance for operator-added skills (custom `.md` files
-  in `skills/`)
+On branch `feat/chat-ui-iteration`:
 
----
+- `admin/` — Vite + React + Tailwind + shadcn SPA scaffold
+- `src/transports/admin/admin-credentials.ts` — JSON endpoint for SPA
+- `src/transports/admin/admin-identity.ts` — JSON endpoint for SPA
+- `src/transports/admin/admin-skills.ts` — JSON endpoint for SPA
+- Per-tab React components
+- `scripts/dev-admin.ts` — SPA dev driver
 
-## Augment → home mapping
-
-Every augment maps to exactly one home. This table is the source of
-truth for what goes where. Updates to it require a docs change in this
-file.
-
-| Augment | Operator config | Status | Home |
-|---|---|---|---|
-| `fileMemory@system` (identity) | path (default `./identity.md`) | file contents | **Identity** |
-| `fileMemory@learned` | path | file contents | **Augments** row |
-| `layeredMemory` | retention, namespace | entry count, recent peers | **Augments** row |
-| `filesystem` | additional mounts | mount list, RO/RW | **Augments** row |
-| `skills` | (none — auto-mount) | mounted skill list | **Skills** |
-| `webTransport` | port, allowAnonymous | listening URL | **Security** (auth posture) + Chat header (URL) |
-| `webFetch` | allowed-hosts | recent fetches | **Augments** row |
-| `bash` | allowed-commands, cwd | recent invocations | **Augments** row |
-| `orgContext` | baseUrl, refresh interval | last sync | **Augments** row |
-| `supabaseMemory` | (frozen) | — | hidden (legacy) |
-| `budgets` | per-tier caps, dailyBudgetUsd | current spend, transactions | **Budget** |
-| `notify` | destinations[], default policy | recent sends | **Augments** row |
-| `telegramTransport` | bot token (Credentials), allowed chats | polling status | **Augments** row + **Credentials** (token) |
-| `turnControl` | (none — model-driven) | — | hidden |
-| `visitorAuth` | verified visitors, reverify TTL | visitor list | **Security** (visitors) |
-| `link` | peer config (deferred) | — | future (peer-directory work) |
-
----
-
-## Promotion policy
-
-When a new augment ships, it appears as a row in the **Augments** tab
-with its tunable options inline. **Promotion to a dedicated top-level
-tab is not automatic.** Promotion requires all three of:
-
-1. **Frequency.** Operator interacts with this concern weekly or more.
-2. **Distinct concern.** Doesn't fit any existing tab's question.
-3. **Documented.** Add a section to this spec explaining what the new
-   tab owns and why Augments-row treatment is insufficient.
-
-Promotion is a deliberate spec change, not a default. If a new augment
-clearly belongs inside an existing tab (e.g., an additional auth
-augment goes under Security), update that tab's contract section here
-and add the augment to the mapping table — no new tab needed.
-
-### Worked example: AgentMail
-
-If AgentMail ships as an augment for **outbound mail** (used by
-visitor-auth verification + notify destinations):
-
-- Operator config: apiKey (lives in **Credentials**), inboxId + default
-  labels (lives in the augment's row in **Augments**)
-- Status: recent sends, deliverability state (in **Augments** row)
-- **Home: Augments row.** Doesn't meet the promotion bar — operators
-  set credentials once at setup, the augment then operates invisibly.
-
-If a separate **inbound mail triage** augment ships later (e.g., Zip's
-operator-mail flow), that's a different shape — thread state, inbox
-state machine, operator approval queue. *That* would warrant a
-"Mailbox" tab. But it's a separate decision, made when that augment
-exists. Not now.
-
----
-
-## What's NOT in /admin
-
-- **Cross-agent views.** One agent per surface. Multi-agent is link-era.
-- **Process control** (`start`/`stop`/`restart`). Stays in the CLI —
-  crosses trust boundaries (launchd, signals).
-- **`auggy create`.** Scaffolding is operator-local; the agent that
-  would host /admin doesn't exist yet.
-- **Headless / no-JS fallback.** Operators without a browser use
-  `auggy dev` and the agent's other endpoints directly.
-
----
+That work is not abandoned — it's deferred. Resumes in v1.1+ when
+adopter feedback identifies concrete admin friction the G36 dashboard
+doesn't cover.
 
 ## Operator entry points
 
-- `auggy run <name>` — boots the agent and opens `/admin` in the
-  operator's default browser. The happy-path command.
-- `auggy dev <name>` — boots the agent foreground without launching a
-  browser. For headless / scripted use.
+- `auggy run <name>` — boots the agent and opens its `/admin` page
+  in the operator's default browser. The G36 dashboard renders;
+  operator sees the read-only state + can take any admin actions
+  that augments expose.
+- `auggy dev <name>` — boots the agent without launching a browser.
+  For headless / scripted use.
+- `auggy chat` — separate browser SPA (port 8090) listing all running
+  local agents. The v1.0 chat surface.
 - `auggy list` — shows each agent's `/admin` URL alongside name +
   status.
 
----
+## Deferred (v1.1+)
 
-## Deferred
-
-- Multi-agent / facility hub (post-link)
-- SPA-driven `auggy create` wizard (CLI is good enough for v1.0)
-- API versioning at `/admin/api/v1/*` (only needed if `admin/dist/`
-  packaging splits from the runtime)
-- Cross-operator collaboration / multi-seat
-- A dedicated "Inspect" surface for memory browsing or trace history —
-  deferred until operators ask for it; the Chat tab's tool-call /
-  memory-op event stream covers the moment-to-moment "what's it
-  doing?" question.
+- The 7-tab SPA on `feat/chat-ui-iteration`
+- `/admin/api/*` JSON endpoints for SPA consumption
+- Per-augment SPA surfaces (memory browser, budget editor UI, etc.)
+- `auggy admin <name>` CLI verb
+- Inline operator chat at `/admin/chat` (originally a G36-followup;
+  unnecessary while `auggy chat` exists)
+- Cross-agent / facility hub (post-link)
+- Remote-deploy chat (Railway/Fly) — today requires SSH-tunneling
+  `auggy chat` or BYO UI via `publicFrontendUrl`
