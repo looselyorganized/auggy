@@ -22,8 +22,7 @@ Operator reference for where Auggy puts agents on disk.
 │       ├── manifest/            # scaffolded if manifest is selected (file:// example)
 │       ├── workspace/
 │       └── augments/
-├── <name>.json                     # PID manifest (per running agent)
-└── chat/                           # chat dist cache
+└── <name>.json                     # PID manifest (per running agent)
 ```
 
 `auggy create <name>` scaffolds at `~/.auggy/agents/<name>/`. The directory IS

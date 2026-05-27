@@ -18,9 +18,8 @@
     "types": ["bun-types"],
     "baseUrl": ".",
     "paths": {
-      "@/*": ["./src/*"],
-      "@chat/*": ["../chat/src/*"]
+      "@/*": ["./src/*"]
     }
   },
-  "include": ["src", "tests", "../chat/src"]
+  "include": ["src", "tests"]
 }

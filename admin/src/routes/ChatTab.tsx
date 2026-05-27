@@ -6,15 +6,12 @@ import { Textarea } from "@/components/ui/textarea";
 import { useDashboardContext } from "@/components/admin/DashboardContext";
 import { findCsrfToken } from "@/lib/api";
 import { cn } from "@/lib/utils";
-// Reuses only the AG-UI parser logic from chat/ — no UI components, no
-// stylesheet. The widget itself is native to console's idiom (Tailwind +
-// shadcn) so it inherits dark mode + the rest of the surface naturally.
-import { parseSSEStream, type AGUIEvent } from "@chat/lib/ag-ui-parse";
+import { parseSSEStream, type AGUIEvent } from "@/lib/ag-ui-parse";
 
 // ---------------------------------------------------------------------------
-// Local message model — narrower than the chat/ chat-store; this tab is
-// session-scoped, no localStorage persistence, no per-source keying. If
-// operators ask for chat history across reloads we'll add it then.
+// Local message model — session-scoped, no localStorage persistence, no
+// per-source keying. If operators ask for chat history across reloads we'll
+// add it then.
 // ---------------------------------------------------------------------------
 
 interface ToolCall {

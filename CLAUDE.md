@@ -4,7 +4,7 @@
 
 Auggy (`augment-1`) is a modular agent runtime in TypeScript/Bun. Agents are composed from swappable augments; the kernel manages context, tools, permissions, and lifecycle. Framework-agnostic by design — **not LORF-locked**.
 
-**Status: v0.2.0 base + PR α + PR β shipped.** Plans 1 (kernel) + 2 (built-in augments) + 3 (CLI & manifest) complete. **PR α (DX foundation):** augment-as-folder pattern, bundled skills, secure scaffold, `identity:` shorthand, `auggy add-skill`, boot-time skill validator ([ADR-025](../docs/solutions/architecture/adr-025-augment-folder-and-skill-bundling.md)). **PR β (auto-save / ADR-018 Phase 2 / ADR-027):** `layeredMemory` gains post-turn fact extraction (`autoSave` capability) — background process runs after each turn per trust-level cadence, writes `[AGENT-DERIVED]`-marked facts to peer-scoped storage via an internal turn admitted through normal cost machinery; kernel gains `Augment.scheduleAfterTurn` + `Augment.handleInternalTurn` hooks ([ADR-027](../docs/solutions/architecture/adr-027-internal-turn-admission.md)); SQLite + Supabase schema migrated (+7 columns); auto-save eval suite (6 fixtures); security-eval extended (+3 cases). Sequencing: single-agent excellence (PR α/β/γ) ships before the multi-agent network layer per [ADR-026](../docs/solutions/architecture/adr-026-v1-single-agent-excellence-reorder.md). **13 built-in augments (with `agentMail` Phase A — outbound only), 3 engines, 2200+ tests.** The `chat/` package ships the Auggy Local GUI (`auggy chat`) — a Vite/React SPA with a Bun proxy server that discovers running agents via PID manifests and proxies chat through to each agent's `/agent/run`; distributed as a versioned GitHub release artifact with first-run download + SHA256 verification. See `lo/docs/auggy-plans-detail.md` (outside this repo) for the plan-by-plan roadmap.
+**Status: v0.2.0 base + PR α + PR β shipped.** Plans 1 (kernel) + 2 (built-in augments) + 3 (CLI & manifest) complete. **PR α (DX foundation):** augment-as-folder pattern, bundled skills, secure scaffold, `identity:` shorthand, `auggy add-skill`, boot-time skill validator ([ADR-025](../docs/solutions/architecture/adr-025-augment-folder-and-skill-bundling.md)). **PR β (auto-save / ADR-018 Phase 2 / ADR-027):** `layeredMemory` gains post-turn fact extraction (`autoSave` capability) — background process runs after each turn per trust-level cadence, writes `[AGENT-DERIVED]`-marked facts to peer-scoped storage via an internal turn admitted through normal cost machinery; kernel gains `Augment.scheduleAfterTurn` + `Augment.handleInternalTurn` hooks ([ADR-027](../docs/solutions/architecture/adr-027-internal-turn-admission.md)); SQLite + Supabase schema migrated (+7 columns); auto-save eval suite (6 fixtures); security-eval extended (+3 cases). Sequencing: single-agent excellence (PR α/β/γ) ships before the multi-agent network layer per [ADR-026](../docs/solutions/architecture/adr-026-v1-single-agent-excellence-reorder.md). **13 built-in augments (with `agentMail` Phase A — outbound only), 3 engines, 2200+ tests.** The operator chat surface lives in the per-agent `/console` SPA (`admin/`); `auggy chat` opens `http://<agent>/console/chat` directly. The standalone `chat/` package was removed once `/console` subsumed it. See `lo/docs/auggy-plans-detail.md` (outside this repo) for the plan-by-plan roadmap.
 
 ## Commands
 
@@ -186,19 +186,6 @@ tests/                    # 1617 tests across 128 files
 ├── evals/                # Security eval harness (grader pipeline)
 ├── http.test.ts          # HTTP client tests (redirects, body size, auth stripping)
 └── (augments/web-fetch.test.ts — entity decoding, script strip, JSON pass)
-
-chat/                     # Auggy Local GUI (auggy chat) — Vite/React SPA + Bun proxy server
-├── server.ts             # Bun.serve proxy: /api/agents discovery, /api/chat/<id> bearer-attaching forwarder, CSRF guard
-├── src/
-│   ├── App.tsx           # Root composition (picker + ChatWidget, Cmd+K / Esc shortcuts)
-│   ├── main.tsx          # React entry
-│   ├── components/       # AgentPicker, ChatWidget, MessageList, ToolCallView, ErrorBanner
-│   ├── adapters/         # Source/Connection adapters (localPidSource, httpProxyConnection)
-│   ├── lib/              # chat-store (localStorage history), parser (AG-UI SSE), bearer
-│   └── state/            # React state hooks
-├── tests/                # 70 tests (server, adapters, lib, state, integration)
-├── index.html, vite.config.ts, tsconfig.json, eslint.config.js, package.json
-└── dist/                 # Vite build output (gitignored; published as GitHub release artifact)
 
 scripts/
 ├── hello.ts              # Hello-world composition (real Claude, file identity, web transport)
