@@ -48,7 +48,7 @@ function statusFor(name: string): string {
  * Returns `—` when the agent has no webTransport augment or its yaml
  * fails to parse — the agent is still listed; just no URL surfaced.
  */
-function adminUrlFor(localDir: string): string {
+function consoleUrlFor(localDir: string): string {
   try {
     const options = parseAugmentConfigOnly(join(localDir, "agent.yaml"), "webTransport");
     if (!options) return "—";
@@ -74,7 +74,7 @@ export async function runLs(opts: LsOptions = {}): Promise<void> {
     name: a.name,
     location: tildify(a.localDir),
     status: statusFor(a.name),
-    url: adminUrlFor(a.localDir),
+    url: consoleUrlFor(a.localDir),
   }));
 
   const nameW = Math.max(4, ...rows.map((r) => r.name.length));

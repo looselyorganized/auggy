@@ -504,8 +504,12 @@ export async function runCreate(name: string, opts: CreateOpts): Promise<void> {
       `   ${cream(`${step++}.`)}  Fill in ${finalDir}/.env  ${dim(`(${envVarsForNextSteps.join(", ")})`)}`,
     );
   }
-  console.log(`   ${cream(`${step++}.`)}  Edit ${finalDir}/identity.md   ${dim("(optional)")}`);
-  console.log(`   ${cream(`${step++}.`)}  auggy dev ${name}`);
+  console.log(
+    `   ${cream(`${step++}.`)}  Open ${finalDir} in your editor   ${dim("(identity.md, agent.yaml — optional)")}`,
+  );
+  console.log(
+    `   ${cream(`${step++}.`)}  auggy dev ${name} --open   ${dim("(boots + opens /console/chat in your browser)")}`,
+  );
   console.log();
 }
 

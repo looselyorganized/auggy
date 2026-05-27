@@ -2491,11 +2491,16 @@ describe("webTransport agentBinding (fix C2)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// G36 — /admin route integration tests (Phase 2)
+// G36 — /console route integration tests (Phase 2)
 // ---------------------------------------------------------------------------
 
-describe("webTransport /admin route — basic dispatch (G36 phase 2)", () => {
-  it("GET /admin without auth → 401", async () => {
+describe("webTransport /console route — basic dispatch (G36 phase 2)", () => {
+  it("GET /console from loopback without bearer → bypass (no 401, falls through to next gate)", async () => {
+    // Integration test: real fetch from the test process to 127.0.0.1 → the
+    // loopback bypass in checkAdminAuth applies. Without a built SPA dist the
+    // next gate returns 503; the test asserts the bypass by checking the
+    // response is *not* 401. Non-loopback paths are covered in the unit
+    // tests (tests/transports/admin/admin-auth.test.ts).
     const model = createMockModel();
     const port = 19200;
     const aug = webTransport({
@@ -2506,8 +2511,8 @@ describe("webTransport /admin route — basic dispatch (G36 phase 2)", () => {
     await agent.start();
     try {
       const resp = await fetch(`http://127.0.0.1:${port}/console`);
-      expect(resp.status).toBe(401);
-      expect(resp.headers.get("www-authenticate")).toBe('Basic realm="auggy-admin zip"');
+      expect(resp.status).not.toBe(401);
+      expect(resp.headers.get("www-authenticate")).toBeNull();
       await resp.text();
     } finally {
       await agent.stop();

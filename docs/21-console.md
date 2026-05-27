@@ -213,12 +213,20 @@ exists. Not now.
 
 ## Operator entry points
 
-- `auggy run <name>` — boots the agent and opens `/console` in the
-  operator's default browser. The happy-path command.
+- `auggy dev <name> --open` — boots the agent and opens `/console/chat`
+  in the operator's default browser. The happy-path command.
 - `auggy dev <name>` — boots the agent foreground without launching a
   browser. For headless / scripted use.
 - `auggy list` — shows each agent's `/console` URL alongside name +
   status.
+
+### Auth on loopback vs. remote
+
+The console gates non-loopback requests behind HTTP Basic (`AUGGY_WEB_TOKEN`)
++ HTTPS. **Loopback requests (127.0.0.1, ::1) skip the bearer check** —
+filesystem read on `.env` already grants the token, so the gate added
+friction without protection. Remote access (cloud / LAN / SSH tunnel
+to a different host) still requires the bearer.
 
 ---
 
