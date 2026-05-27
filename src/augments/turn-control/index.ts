@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { Augment, ToolResult } from "../../types";
+import type { AdminInfoBlock, Augment, ToolResult } from "../../types";
 import { defineAugment, defineTool } from "../../helpers";
 
 /**
@@ -53,9 +53,37 @@ export function turnControl(opts: TurnControlOptions = {}): Augment {
     }),
   });
 
+  const description = opts.requestInputDescription ?? DEFAULT_REQUEST_INPUT_DESCRIPTION;
+
+  const adminInfo = async (): Promise<AdminInfoBlock> => ({
+    augmentName: "turnControl",
+    title: "Turn control",
+    sections: [
+      {
+        kind: "keyValue",
+        rows: [
+          { label: "Exposed tool", value: "request_input" },
+          {
+            label: "Behavior",
+            value: "Ends the turn with status 'input-required'; prompt becomes the visible reply.",
+          },
+          {
+            label: "Description override",
+            value: opts.requestInputDescription ? "custom" : "default",
+            source: opts.requestInputDescription ? "agent.yaml" : "default",
+          },
+          { label: "Description chars", value: String(description.length) },
+        ],
+      },
+    ],
+  });
+
   return defineAugment({
     name: "turnControl",
+    type: "turnControl",
+    category: "capabilities",
     capabilities: ["tools"],
     tools: [requestInput],
+    adminInfo,
   });
 }

@@ -44,7 +44,7 @@ function statusFor(name: string): string {
 }
 
 /**
- * Derive the /admin URL from the agent's webTransport configuration.
+ * Derive the /console URL from the agent's webTransport configuration.
  * Returns `—` when the agent has no webTransport augment or its yaml
  * fails to parse — the agent is still listed; just no URL surfaced.
  */
@@ -54,7 +54,7 @@ function adminUrlFor(localDir: string): string {
     if (!options) return "—";
     const port = options.port;
     if (typeof port !== "number" || !Number.isInteger(port) || port < 1) return "—";
-    return `http://localhost:${port}/admin`;
+    return `http://localhost:${port}/console`;
   } catch {
     return "—";
   }

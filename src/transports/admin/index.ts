@@ -8,17 +8,75 @@ import type {
 } from "../../types";
 import { checkAdminAuth } from "./admin-auth";
 import { coerceInputs } from "./admin-coerce";
-import { collectAdminInfoBlocks } from "./admin-collector";
+import { collectAdminInfoBlocks, collectAugmentSummaries } from "./admin-collector";
 import { generateCsrfToken, validateCsrfToken } from "./admin-csrf";
-import { renderAdminPage } from "./admin-renderer";
+import { buildRequiredResponse, resolveDistDir, serveStaticFile } from "./admin-static";
+import {
+  collectSkillsInfo,
+  createSkill,
+  installBundledSkill,
+  readInstalledSkillContent,
+  removeInstalledSkill,
+  resetInstalledSkill,
+  validateSkillFolderName,
+  writeInstalledSkillContent,
+} from "./admin-skills";
+import { readIdentity, writeIdentity } from "./admin-identity";
+import {
+  deleteCredential,
+  listCredentials,
+  renameCredential,
+  revealCredential,
+  setCredential,
+} from "./admin-credentials";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { parse as parseYaml } from "yaml";
+
+/**
+ * Minimal agent.yaml top-level summary surfaced to the SPA so the sidebar
+ * can show the agent's identity from config (which is the operator's source
+ * of truth — the agent card carries only the runtime-resolved name).
+ *
+ * Returns `null` when the file cannot be read / parsed; the SPA treats that
+ * as a soft-fail and falls back to the agent card's provider name.
+ */
+interface AgentMeta {
+  id?: string;
+  name?: string;
+  purpose?: string;
+  operators?: string[];
+  identityPath?: string;
+}
+
+function readAgentMeta(agentDir: string | undefined): AgentMeta | null {
+  if (!agentDir) return null;
+  const path = join(agentDir, "agent.yaml");
+  if (!existsSync(path)) return null;
+  try {
+    const raw = parseYaml(readFileSync(path, "utf-8"));
+    if (raw === null || typeof raw !== "object") return null;
+    const r = raw as Record<string, unknown>;
+    return {
+      id: typeof r.id === "string" ? r.id : undefined,
+      name: typeof r.name === "string" ? r.name : undefined,
+      purpose: typeof r.purpose === "string" ? r.purpose : undefined,
+      operators: Array.isArray(r.operators)
+        ? r.operators.filter((o): o is string => typeof o === "string")
+        : undefined,
+      identityPath: typeof r.identity === "string" ? r.identity : undefined,
+    };
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Build a map of CSRF tokens, one per (actionId, rowKey?) tuple present
- * in the collected admin blocks. The renderer looks up the right token
- * for each form via the `getCsrfToken` callback. The previous shared
- * `__page` token failed validation because the dispatcher's CSRF check
- * binds to the actual actionId being POSTed, not to a generic page-load
- * marker.
+ * in the collected admin blocks. The SPA reads `/console/api/dashboard`
+ * to fetch blocks + tokens together; each form posts with the token
+ * matching its (id, rowKey) pair. Page-shared tokens fail validation
+ * because the dispatcher binds the check to the POSTed actionId.
  */
 async function buildCsrfTokenMap(
   blocks: AdminInfoBlock[],
@@ -84,20 +142,59 @@ export interface AdminRouteContext {
   callerIp: string;
   /** S8 — built once at boot by `buildAdminActionRegistry`. */
   actionRegistry: AdminActionRegistry;
+  /**
+   * Static dist directory for the admin SPA. Resolved at boot via
+   * {@link resolveDistDir}; left `undefined` in tests that don't exercise
+   * the SPA path. When unset at request time, GET /admin returns the
+   * "build required" notice instead.
+   */
+  staticDir?: string;
+  /**
+   * The webTransport's bound port. The Chat tab proxies messages to
+   * `127.0.0.1:<selfPort>/agent/run` — the agent's same-process AG-UI
+   * surface. Optional so tests can omit it; chat endpoint returns 503
+   * when unset.
+   */
+  selfPort?: number;
 }
 
-const ACTION_ROUTE_RE = /^\/admin\/action\/([^/]+)(?:\/row\/([^/]+))?$/;
+const ACTION_ROUTE_RE = /^\/console\/action\/([^/]+)(?:\/row\/([^/]+))?$/;
+
+/**
+ * Skills CSRF actions — mint a token per (action, folder) pair so the SPA's
+ * skill mutation buttons can validate against the same bearer-bound HMAC
+ * machinery as the admin-action buttons. Keep this list and the route
+ * handler below in sync.
+ */
+const SKILL_CSRF_ACTIONS = ["skill-edit", "skill-remove", "skill-reset", "skill-install"] as const;
+
+/**
+ * Folder-less skill action — minted once per session, no rowKey, used by the
+ * "New skill" button to validate the create POST. Kept separate from the
+ * per-folder skill actions because the folder doesn't exist yet at submit
+ * time.
+ */
+const SKILL_CREATE_ACTION = "skill-create";
+
+const IDENTITY_SAVE_ACTION = "identity-save";
+
+const CRED_REVEAL_ACTION = "cred-reveal";
+const CRED_SET_ACTION = "cred-set";
+const CRED_DELETE_ACTION = "cred-delete";
+const CRED_RENAME_ACTION = "cred-rename";
+
+const CONSOLE_CHAT_ACTION = "console-chat";
 
 const EXPIRED_CSRF_HTML = `<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <title>Session expired — redirecting</title>
-  <meta http-equiv="refresh" content="0; url=/admin">
+  <meta http-equiv="refresh" content="0; url=/console">
 </head>
 <body>
   <p>Session expired — refreshing the page now…</p>
-  <p>If you are not redirected automatically, <a href="/admin">click here</a>.</p>
+  <p>If you are not redirected automatically, <a href="/console">click here</a>.</p>
 </body>
 </html>`;
 
@@ -116,32 +213,11 @@ export async function handleAdminRoute(req: Request, ctx: AdminRouteContext): Pr
   if (auth.kind === "https-required") return auth.response;
   if (auth.kind === "unauthorized") return auth.response;
 
-  // GET /admin — render the dashboard
-  if (req.method === "GET" && url.pathname === "/admin") {
-    const blocks = await collectAdminInfoBlocks(ctx.kernel);
-    const csrfTokens = await buildCsrfTokenMap(blocks, ctx.bearer, agentName);
-    const flashMessage = url.searchParams.get("msg") ?? undefined;
-    const html = renderAdminPage({
-      card: agentCard,
-      blocks,
-      getCsrfToken: (actionId, rowKey) => csrfTokens.get(csrfMapKey(actionId, rowKey)) ?? "",
-      flashMessage,
-    });
-    return new Response(html, {
-      status: 200,
-      headers: {
-        "content-type": "text/html; charset=utf-8",
-        "cache-control": "no-store, must-revalidate",
-        "x-robots-tag": "noindex, nofollow",
-      },
-    });
-  }
-
-  // POST /admin/action/<id>[/row/<rowKey>] — dispatch
+  // POST /console/action/<id>[/row/<rowKey>] — dispatch action handlers
   const actionMatch = url.pathname.match(ACTION_ROUTE_RE);
   if (req.method === "POST" && actionMatch) {
-    // Decode rowKey — the renderer URL-encodes it so values like email
-    // addresses (`foo@example.com` → `foo%40example.com`) round-trip.
+    // Decode rowKey — the SPA URL-encodes it so values like email addresses
+    // (`foo@example.com` → `foo%40example.com`) round-trip.
     let rowKey: string | undefined;
     if (actionMatch[2]) {
       try {
@@ -153,7 +229,220 @@ export async function handleAdminRoute(req: Request, ctx: AdminRouteContext): Pr
     return handleActionPost(req, ctx, actionMatch[1]!, rowKey, agentName);
   }
 
+  // GET /console/api/dashboard — JSON payload for the SPA
+  if (req.method === "GET" && url.pathname === "/console/api/dashboard") {
+    return handleDashboardJson(ctx, agentName);
+  }
+
+  // Identity API ----------------------------------------------------------
+  if (req.method === "GET" && url.pathname === "/console/api/identity") {
+    return handleIdentityRead(ctx);
+  }
+  if (req.method === "POST" && url.pathname === "/console/api/identity") {
+    return handleIdentityWrite(req, ctx, agentName);
+  }
+
+  // Chat SSE proxy --------------------------------------------------------
+  if (req.method === "POST" && url.pathname === "/console/api/chat") {
+    return handleChatProxy(req, ctx, agentName);
+  }
+
+  // Credentials API -------------------------------------------------------
+  if (req.method === "GET" && url.pathname === "/console/api/credentials") {
+    return handleCredentialsList(ctx);
+  }
+  if (req.method === "POST" && url.pathname === "/console/api/credentials/reveal") {
+    return handleCredentialReveal(req, ctx, agentName);
+  }
+  if (req.method === "POST" && url.pathname === "/console/api/credentials/set") {
+    return handleCredentialSet(req, ctx, agentName);
+  }
+  if (req.method === "POST" && url.pathname === "/console/api/credentials/delete") {
+    return handleCredentialDelete(req, ctx, agentName);
+  }
+  if (req.method === "POST" && url.pathname === "/console/api/credentials/rename") {
+    return handleCredentialRename(req, ctx, agentName);
+  }
+
+  // Skills API ------------------------------------------------------------
+  if (req.method === "GET" && url.pathname === "/console/api/skills") {
+    return handleSkillsList(ctx);
+  }
+  if (req.method === "POST" && url.pathname === "/console/api/skills/create") {
+    return handleSkillCreate(req, ctx, agentName);
+  }
+  const skillContentMatch = url.pathname.match(/^\/console\/api\/skills\/([^/]+)\/content$/);
+  if (req.method === "GET" && skillContentMatch) {
+    return handleSkillContentRead(ctx, decodeURIComponent(skillContentMatch[1]!));
+  }
+  const skillEditMatch = url.pathname.match(/^\/console\/api\/skills\/([^/]+)\/edit$/);
+  if (req.method === "POST" && skillEditMatch) {
+    return handleSkillEdit(req, ctx, agentName, decodeURIComponent(skillEditMatch[1]!));
+  }
+  const skillRemoveMatch = url.pathname.match(/^\/console\/api\/skills\/([^/]+)\/remove$/);
+  if (req.method === "POST" && skillRemoveMatch) {
+    return handleSkillSimple(
+      req,
+      ctx,
+      agentName,
+      "skill-remove",
+      decodeURIComponent(skillRemoveMatch[1]!),
+      removeInstalledSkill,
+    );
+  }
+  const skillResetMatch = url.pathname.match(/^\/console\/api\/skills\/([^/]+)\/reset$/);
+  if (req.method === "POST" && skillResetMatch) {
+    return handleSkillSimple(
+      req,
+      ctx,
+      agentName,
+      "skill-reset",
+      decodeURIComponent(skillResetMatch[1]!),
+      resetInstalledSkill,
+    );
+  }
+  const skillInstallMatch = url.pathname.match(/^\/console\/api\/skills\/([^/]+)\/install$/);
+  if (req.method === "POST" && skillInstallMatch) {
+    return handleSkillSimple(
+      req,
+      ctx,
+      agentName,
+      "skill-install",
+      decodeURIComponent(skillInstallMatch[1]!),
+      installBundledSkill,
+    );
+  }
+
+  // GET /admin and the SPA's client-side routes (e.g. /admin/skills) — serve
+  // the SPA shell. /console/assets/* serves bundled JS/CSS from dist/.
+  if (
+    req.method === "GET" &&
+    (url.pathname === "/console" || url.pathname.startsWith("/console/"))
+  ) {
+    return handleStaticOrSpa(ctx, url.pathname);
+  }
+
   return new Response(null, { status: 404 });
+}
+
+async function handleDashboardJson(ctx: AdminRouteContext, agentName: string): Promise<Response> {
+  const blocks = await collectAdminInfoBlocks(ctx.kernel);
+  const tokenMap = await buildCsrfTokenMap(blocks, ctx.bearer, agentName);
+  // Serialize the token map as a flat array so the SPA can index it without
+  // reproducing the `\x00`-delimited key encoding.
+  const csrfTokens = Array.from(tokenMap.entries()).map(([key, token]) => {
+    const [actionId, rowKey] = key.split("\x00");
+    return { actionId, rowKey: rowKey || undefined, token };
+  });
+  const augments = collectAugmentSummaries(ctx.kernel);
+  const agentMeta = readAgentMeta(ctx.agentDir);
+
+  // Mint a CSRF token per (skill-action, folder) tuple so the Skills tab
+  // can validate writes against the same bearer-bound HMAC scheme as the
+  // admin-action buttons. The set of folders is dynamic (depends on what's
+  // installed + what's available); load skills once and emit tokens for both.
+  // Filter "available" to skills whose augment is actually mounted — a
+  // bundled skill teaching tools that don't exist would mislead the model.
+  const mountedTypes = new Set(augments.map((a) => a.type));
+  const skills = collectSkillsInfo(ctx.agentDir, mountedTypes);
+  const skillFolders = new Set<string>();
+  for (const s of skills.installed) skillFolders.add(s.folder);
+  for (const s of skills.available) skillFolders.add(s.folder);
+  for (const folder of skillFolders) {
+    for (const action of SKILL_CSRF_ACTIONS) {
+      const token = await generateCsrfToken({
+        bearer: ctx.bearer,
+        agentName,
+        actionId: action,
+        rowKey: folder,
+      });
+      csrfTokens.push({ actionId: action, rowKey: folder, token });
+    }
+  }
+
+  // Folder-less create token — one per session, no rowKey.
+  const createToken = await generateCsrfToken({
+    bearer: ctx.bearer,
+    agentName,
+    actionId: SKILL_CREATE_ACTION,
+  });
+  csrfTokens.push({ actionId: SKILL_CREATE_ACTION, rowKey: undefined, token: createToken });
+
+  // Identity save token — one per session, no rowKey.
+  const identityToken = await generateCsrfToken({
+    bearer: ctx.bearer,
+    agentName,
+    actionId: IDENTITY_SAVE_ACTION,
+  });
+  csrfTokens.push({ actionId: IDENTITY_SAVE_ACTION, rowKey: undefined, token: identityToken });
+
+  // Credential action tokens — one per action, no rowKey. The key travels
+  // in the JSON body; CSRF just gates the action class (reveal/set/delete/rename).
+  for (const credAction of [
+    CRED_REVEAL_ACTION,
+    CRED_SET_ACTION,
+    CRED_DELETE_ACTION,
+    CRED_RENAME_ACTION,
+  ]) {
+    const token = await generateCsrfToken({ bearer: ctx.bearer, agentName, actionId: credAction });
+    csrfTokens.push({ actionId: credAction, rowKey: undefined, token });
+  }
+
+  // Chat proxy token — one per session, no rowKey. The chat endpoint forwards
+  // to /agent/run with the server-side bearer, so without CSRF a third-party
+  // page could drive the operator's already-authenticated browser to inject
+  // prompts with full tool side effects (codex adversarial-review High-1).
+  const chatToken = await generateCsrfToken({
+    bearer: ctx.bearer,
+    agentName,
+    actionId: CONSOLE_CHAT_ACTION,
+  });
+  csrfTokens.push({ actionId: CONSOLE_CHAT_ACTION, rowKey: undefined, token: chatToken });
+
+  return new Response(
+    JSON.stringify({
+      card: ctx.kernel.getAgentCard(),
+      agentMeta,
+      augments,
+      blocks,
+      csrfTokens,
+      skills,
+    }),
+    {
+      status: 200,
+      headers: {
+        "content-type": "application/json",
+        "cache-control": "no-store, must-revalidate",
+        "x-robots-tag": "noindex, nofollow",
+      },
+    },
+  );
+}
+
+function handleStaticOrSpa(ctx: AdminRouteContext, pathname: string): Response {
+  if (!ctx.staticDir) return buildRequiredResponse();
+
+  // /console/assets/* → file from dist/assets/. Anything else under /admin
+  // falls back to index.html so the React Router can handle the route.
+  if (pathname.startsWith("/console/assets/")) {
+    const rel = pathname.slice("/console/".length); // assets/index-...js
+    const file = serveStaticFile(ctx.staticDir, rel);
+    return file ?? new Response(null, { status: 404 });
+  }
+
+  // Other static files Vite emits at the root (e.g. /admin/vite.svg, source
+  // maps). Try the literal path first; if missing, fall through to index.html
+  // so client-side routes work.
+  if (pathname !== "/console" && pathname !== "/console/") {
+    const rel = pathname.slice("/console/".length);
+    if (rel.length > 0 && rel.includes(".")) {
+      const file = serveStaticFile(ctx.staticDir, rel);
+      if (file) return file;
+    }
+  }
+
+  const index = serveStaticFile(ctx.staticDir, "index.html");
+  return index ?? buildRequiredResponse();
 }
 
 async function handleActionPost(
@@ -235,7 +524,7 @@ async function handleActionPost(
 function flashRedirect(message: string): Response {
   return new Response(null, {
     status: 303,
-    headers: { location: `/admin?msg=${encodeURIComponent(message)}` },
+    headers: { location: `/console?msg=${encodeURIComponent(message)}` },
   });
 }
 
@@ -318,3 +607,386 @@ export async function buildAdminActionRegistry(
 
   return registry;
 }
+
+// ===========================================================================
+// Chat SSE proxy
+// ===========================================================================
+
+/**
+ * Proxies a chat message to the agent's own `/agent/run` SSE endpoint on
+ * the same port. The bearer is attached server-side from
+ * `AdminRouteContext.bearer` — the browser never sees it.
+ *
+ * CSRF: required. Even though HTTP Basic creds make the operator's browser
+ * pre-authenticated, the chat endpoint is just as privileged as any other
+ * mutation — a third-party page could otherwise drive a simple-request POST
+ * (text/plain JSON, no preflight) to inject prompts and trigger tool calls
+ * with full creator side effects. CSRF binds the request to the issued
+ * token and rejects cross-site forgeries.
+ *
+ * Mirrors the shape of `chat/server.ts`'s `/api/chat/<id>` proxy (the
+ * standalone multi-agent picker UI) but simpler: one agent, one bearer,
+ * no per-request bearer cache.
+ */
+async function handleChatProxy(
+  req: Request,
+  ctx: AdminRouteContext,
+  agentName: string,
+): Promise<Response> {
+  if (!ctx.selfPort) {
+    return jsonResponse(
+      { error: "Chat proxy unavailable — agent port not exposed to admin route." },
+      503,
+    );
+  }
+  let body: { csrf?: unknown; message?: unknown; threadId?: unknown };
+  try {
+    body = (await req.json()) as typeof body;
+  } catch {
+    return jsonResponse({ error: "invalid JSON body" }, 400);
+  }
+  if (typeof body.csrf !== "string" || body.csrf.length === 0) {
+    return jsonResponse({ error: "missing csrf" }, 400);
+  }
+  const csrfResult = await validateCsrfToken({
+    token: body.csrf,
+    bearer: ctx.bearer,
+    agentName,
+    actionId: CONSOLE_CHAT_ACTION,
+  });
+  if (!csrfResult.valid) {
+    if (csrfResult.reason === "expired") {
+      return jsonResponse({ error: "Session expired — reload the page." }, 419);
+    }
+    return jsonResponse({ error: "CSRF check failed." }, 403);
+  }
+  if (typeof body.message !== "string" || body.message.length === 0) {
+    return jsonResponse({ error: "missing message" }, 400);
+  }
+  const threadId = typeof body.threadId === "string" ? body.threadId : undefined;
+
+  let upstream: Response;
+  try {
+    upstream = await fetch(`http://127.0.0.1:${ctx.selfPort}/agent/run`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${ctx.bearer}`,
+      },
+      body: JSON.stringify({
+        messages: [{ role: "user", content: body.message }],
+        threadId,
+      }),
+      signal: req.signal,
+    });
+  } catch (err) {
+    if ((err as Error).name === "AbortError") {
+      return new Response(null, { status: 499 });
+    }
+    return jsonResponse({ error: `upstream connect failed: ${(err as Error).message}` }, 502);
+  }
+
+  return new Response(upstream.body, {
+    status: upstream.status,
+    headers: { "content-type": "text/event-stream" },
+  });
+}
+
+// ===========================================================================
+// Identity API handlers
+// ===========================================================================
+
+function handleIdentityRead(ctx: AdminRouteContext): Response {
+  const agentMeta = readAgentMeta(ctx.agentDir);
+  const result = readIdentity(ctx.agentDir, agentMeta?.identityPath);
+  if ("error" in result) return jsonResponse({ error: result.error }, 400);
+  return jsonResponse(result);
+}
+
+async function handleIdentityWrite(
+  req: Request,
+  ctx: AdminRouteContext,
+  agentName: string,
+): Promise<Response> {
+  let body: { csrf?: unknown; content?: unknown };
+  try {
+    body = (await req.json()) as typeof body;
+  } catch {
+    return jsonResponse({ error: "invalid JSON body" }, 400);
+  }
+  if (typeof body.csrf !== "string") return jsonResponse({ error: "missing csrf" }, 400);
+  if (typeof body.content !== "string") return jsonResponse({ error: "missing content" }, 400);
+
+  const csrfResult = await validateCsrfToken({
+    token: body.csrf,
+    bearer: ctx.bearer,
+    agentName,
+    actionId: IDENTITY_SAVE_ACTION,
+  });
+  if (!csrfResult.valid) {
+    if (csrfResult.reason === "expired") {
+      return jsonResponse({ error: "Session expired — reload the page." }, 419);
+    }
+    return jsonResponse({ error: "CSRF check failed." }, 403);
+  }
+
+  const agentMeta = readAgentMeta(ctx.agentDir);
+  const result = writeIdentity(ctx.agentDir, agentMeta?.identityPath, body.content);
+  return jsonResponse(result, result.ok ? 200 : 400);
+}
+
+// ===========================================================================
+// Credentials API handlers
+// ===========================================================================
+
+function handleCredentialsList(ctx: AdminRouteContext): Response {
+  const result = listCredentials(ctx.agentDir);
+  if ("error" in result) return jsonResponse({ error: result.error }, 400);
+  return jsonResponse(result);
+}
+
+async function readCredentialBody(
+  req: Request,
+): Promise<{ csrf?: string; key?: string; value?: string } | null> {
+  try {
+    const body = (await req.json()) as Record<string, unknown>;
+    return {
+      csrf: typeof body.csrf === "string" ? body.csrf : undefined,
+      key: typeof body.key === "string" ? body.key : undefined,
+      value: typeof body.value === "string" ? body.value : undefined,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function validateCredCsrf(
+  ctx: AdminRouteContext,
+  agentName: string,
+  actionId: string,
+  token: string | undefined,
+): Promise<{ ok: true } | { ok: false; status: number; message: string }> {
+  if (!token) return { ok: false, status: 400, message: "missing csrf" };
+  const r = await validateCsrfToken({ token, bearer: ctx.bearer, agentName, actionId });
+  if (r.valid) return { ok: true };
+  if (r.reason === "expired") {
+    return { ok: false, status: 419, message: "Session expired — reload the page." };
+  }
+  return { ok: false, status: 403, message: "CSRF check failed." };
+}
+
+async function handleCredentialReveal(
+  req: Request,
+  ctx: AdminRouteContext,
+  agentName: string,
+): Promise<Response> {
+  const body = await readCredentialBody(req);
+  if (!body?.key) return jsonResponse({ error: "missing key" }, 400);
+  const csrf = await validateCredCsrf(ctx, agentName, CRED_REVEAL_ACTION, body.csrf);
+  if (!csrf.ok) return jsonResponse({ error: csrf.message }, csrf.status);
+  const result = revealCredential(ctx.agentDir, body.key);
+  if ("error" in result) return jsonResponse({ error: result.error }, 404);
+  return jsonResponse(result);
+}
+
+async function handleCredentialSet(
+  req: Request,
+  ctx: AdminRouteContext,
+  agentName: string,
+): Promise<Response> {
+  const body = await readCredentialBody(req);
+  if (!body?.key) return jsonResponse({ error: "missing key" }, 400);
+  if (body.value === undefined) return jsonResponse({ error: "missing value" }, 400);
+  const csrf = await validateCredCsrf(ctx, agentName, CRED_SET_ACTION, body.csrf);
+  if (!csrf.ok) return jsonResponse({ error: csrf.message }, csrf.status);
+  const result = setCredential(ctx.agentDir, body.key, body.value);
+  return jsonResponse(result, result.ok ? 200 : 400);
+}
+
+async function handleCredentialDelete(
+  req: Request,
+  ctx: AdminRouteContext,
+  agentName: string,
+): Promise<Response> {
+  const body = await readCredentialBody(req);
+  if (!body?.key) return jsonResponse({ error: "missing key" }, 400);
+  const csrf = await validateCredCsrf(ctx, agentName, CRED_DELETE_ACTION, body.csrf);
+  if (!csrf.ok) return jsonResponse({ error: csrf.message }, csrf.status);
+  const result = deleteCredential(ctx.agentDir, body.key);
+  return jsonResponse(result, result.ok ? 200 : 400);
+}
+
+/**
+ * Atomic rename — replaces the previous client-side delete-then-set flow
+ * which could permanently drop the secret if the set step failed (codex
+ * adversarial-review Medium-1). One server-side read/modify/write, no
+ * intermediate "secret is missing" state on disk.
+ */
+async function handleCredentialRename(
+  req: Request,
+  ctx: AdminRouteContext,
+  agentName: string,
+): Promise<Response> {
+  let body: { csrf?: unknown; oldKey?: unknown; newKey?: unknown; value?: unknown };
+  try {
+    body = (await req.json()) as typeof body;
+  } catch {
+    return jsonResponse({ error: "invalid JSON body" }, 400);
+  }
+  if (typeof body.oldKey !== "string" || body.oldKey.length === 0) {
+    return jsonResponse({ error: "missing oldKey" }, 400);
+  }
+  if (typeof body.newKey !== "string" || body.newKey.length === 0) {
+    return jsonResponse({ error: "missing newKey" }, 400);
+  }
+  if (typeof body.value !== "string") return jsonResponse({ error: "missing value" }, 400);
+  const csrf = await validateCredCsrf(
+    ctx,
+    agentName,
+    CRED_RENAME_ACTION,
+    typeof body.csrf === "string" ? body.csrf : undefined,
+  );
+  if (!csrf.ok) return jsonResponse({ error: csrf.message }, csrf.status);
+  const result = renameCredential(ctx.agentDir, body.oldKey, body.newKey, body.value);
+  return jsonResponse(result, result.ok ? 200 : 400);
+}
+
+// ===========================================================================
+// Skills API handlers
+// ===========================================================================
+
+function handleSkillsList(ctx: AdminRouteContext): Response {
+  const skills = collectSkillsInfo(ctx.agentDir);
+  return jsonResponse(skills);
+}
+
+function handleSkillContentRead(ctx: AdminRouteContext, folder: string): Response {
+  const safe = validateSkillFolderName(folder);
+  if (!safe) return jsonResponse({ error: "invalid skill folder" }, 400);
+  const result = readInstalledSkillContent(ctx.agentDir, safe);
+  if ("error" in result) return jsonResponse({ error: result.error }, 404);
+  return jsonResponse({ content: result.content });
+}
+
+interface SkillCsrfBody {
+  csrf: string;
+  content?: string;
+}
+
+async function readSkillPostBody(req: Request): Promise<SkillCsrfBody | null> {
+  try {
+    const body = (await req.json()) as Record<string, unknown>;
+    if (typeof body.csrf !== "string") return null;
+    return {
+      csrf: body.csrf,
+      content: typeof body.content === "string" ? body.content : undefined,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function validateSkillCsrf(
+  ctx: AdminRouteContext,
+  agentName: string,
+  actionId: string,
+  folder: string,
+  token: string,
+): Promise<{ ok: true } | { ok: false; status: number; message: string }> {
+  const csrfResult = await validateCsrfToken({
+    token,
+    bearer: ctx.bearer,
+    agentName,
+    actionId,
+    rowKey: folder,
+  });
+  if (csrfResult.valid) return { ok: true };
+  if (csrfResult.reason === "expired") {
+    return { ok: false, status: 419, message: "Session expired — reload the page." };
+  }
+  return { ok: false, status: 403, message: "CSRF check failed." };
+}
+
+async function handleSkillEdit(
+  req: Request,
+  ctx: AdminRouteContext,
+  agentName: string,
+  folder: string,
+): Promise<Response> {
+  const safe = validateSkillFolderName(folder);
+  if (!safe) return jsonResponse({ error: "invalid skill folder" }, 400);
+  const body = await readSkillPostBody(req);
+  if (!body) return jsonResponse({ error: "invalid JSON body" }, 400);
+  if (body.content === undefined) return jsonResponse({ error: "missing content" }, 400);
+  const csrf = await validateSkillCsrf(ctx, agentName, "skill-edit", safe, body.csrf);
+  if (!csrf.ok) return jsonResponse({ error: csrf.message }, csrf.status);
+  const result = writeInstalledSkillContent(ctx.agentDir, safe, body.content);
+  return jsonResponse(result, result.ok ? 200 : 400);
+}
+
+async function handleSkillCreate(
+  req: Request,
+  ctx: AdminRouteContext,
+  agentName: string,
+): Promise<Response> {
+  let body: { csrf?: unknown; folder?: unknown; content?: unknown };
+  try {
+    body = (await req.json()) as typeof body;
+  } catch {
+    return jsonResponse({ error: "invalid JSON body" }, 400);
+  }
+  if (typeof body.csrf !== "string") return jsonResponse({ error: "missing csrf" }, 400);
+  if (typeof body.folder !== "string") return jsonResponse({ error: "missing folder" }, 400);
+
+  const csrfResult = await validateCsrfToken({
+    token: body.csrf,
+    bearer: ctx.bearer,
+    agentName,
+    actionId: SKILL_CREATE_ACTION,
+  });
+  if (!csrfResult.valid) {
+    if (csrfResult.reason === "expired") {
+      return jsonResponse({ error: "Session expired — reload the page." }, 419);
+    }
+    return jsonResponse({ error: "CSRF check failed." }, 403);
+  }
+
+  const result = createSkill(
+    ctx.agentDir,
+    body.folder,
+    typeof body.content === "string" ? body.content : undefined,
+  );
+  return jsonResponse(result, result.ok ? 200 : 400);
+}
+
+async function handleSkillSimple(
+  req: Request,
+  ctx: AdminRouteContext,
+  agentName: string,
+  actionId: string,
+  folder: string,
+  mutator: (agentDir: string | undefined, folder: string) => { ok: boolean; message: string },
+): Promise<Response> {
+  const safe = validateSkillFolderName(folder);
+  if (!safe) return jsonResponse({ error: "invalid skill folder" }, 400);
+  const body = await readSkillPostBody(req);
+  if (!body) return jsonResponse({ error: "invalid JSON body" }, 400);
+  const csrf = await validateSkillCsrf(ctx, agentName, actionId, safe, body.csrf);
+  if (!csrf.ok) return jsonResponse({ error: csrf.message }, csrf.status);
+  const result = mutator(ctx.agentDir, safe);
+  return jsonResponse(result, result.ok ? 200 : 400);
+}
+
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: {
+      "content-type": "application/json",
+      "cache-control": "no-store, must-revalidate",
+      "x-robots-tag": "noindex, nofollow",
+    },
+  });
+}
+
+// Re-export for callers (web-transport) that need to resolve dist on boot.
+export { resolveDistDir } from "./admin-static";

@@ -323,9 +323,35 @@ export function webFetch(opts: WebFetchOptions = {}): Augment {
     },
   });
 
+  const adminInfo = async (): Promise<import("../../types").AdminInfoBlock> => ({
+    augmentName: "web-fetch",
+    title: "Web fetch",
+    sections: [
+      {
+        kind: "keyValue",
+        rows: [
+          {
+            label: "SSRF guard",
+            value: opts.client ? "delegated (custom client)" : "on (rejectUnsafeUrls)",
+          },
+          { label: "Timeout (ms)", value: String(opts.timeoutMs ?? 30000) },
+          { label: "User agent", value: opts.userAgent ?? "(default)" },
+        ],
+      },
+      {
+        kind: "status",
+        level: "ok",
+        message: "Exposes one tool: web_fetch. Output is JSON with code/bytes/durationMs/result.",
+      },
+    ],
+  });
+
   return {
     name: "web-fetch",
+    type: "webFetch",
+    category: "capabilities",
     capabilities: ["tools"],
+    adminInfo,
     tools: [webFetchTool],
   };
 }

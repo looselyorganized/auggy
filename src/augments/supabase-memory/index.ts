@@ -1,4 +1,5 @@
 import type {
+  AdminInfoBlock,
   Augment,
   MemoryEntry,
   ContextOrigin,
@@ -130,8 +131,32 @@ export function supabaseMemory(opts: SupabaseMemoryOptions): Augment {
       }
     : undefined;
 
+  const augmentName = `supabase-memory-${opts.namespace}`;
+  const adminInfo = async (): Promise<AdminInfoBlock> => ({
+    augmentName,
+    title: `Supabase memory — ${opts.namespace}`,
+    sections: [
+      {
+        kind: "keyValue",
+        rows: [
+          { label: "Namespace", value: opts.namespace },
+          { label: "Prefix", value: prefix },
+          { label: "Table", value: opts.table },
+          { label: "Mutable", value: opts.mutable ? "true" : "false" },
+          { label: "Search limit", value: String(limit) },
+          { label: "Origin", value: opts.origin },
+          { label: "Priority", value: opts.priority },
+          { label: "Placement", value: opts.placement },
+          { label: "Eviction", value: opts.eviction },
+        ],
+      },
+    ],
+  });
+
   return {
-    name: `supabase-memory-${opts.namespace}`,
+    name: augmentName,
+    type: "supabaseMemory",
+    category: "memory",
     capabilities: ["context", "tools"],
     memory: {
       owns: { kind: "namespace", prefix },
@@ -147,5 +172,6 @@ export function supabaseMemory(opts: SupabaseMemoryOptions): Augment {
       read,
       write,
     },
+    adminInfo,
   };
 }

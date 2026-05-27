@@ -729,12 +729,43 @@ export async function link(opts: LinkAugmentInternalOptions): Promise<Augment> {
     ];
   };
 
+  const adminInfo = async (): Promise<import("../../types").AdminInfoBlock> => {
+    const peerEntries = Object.entries(opts.peers ?? {});
+    return {
+      augmentName: "link",
+      title: "Link (aug1 ↔ aug1)",
+      sections: [
+        {
+          kind: "keyValue",
+          rows: [
+            { label: "Listen port", value: String(opts.port ?? 8081) },
+            { label: "Agent id", value: opts.agentCard?.id ?? "(unset)" },
+            { label: "Agent name", value: opts.agentCard?.name ?? "(unset)" },
+            { label: "Peer count", value: String(peerEntries.length) },
+          ],
+        },
+        {
+          kind: "table",
+          columns: ["Name", "URL", "Participant id"],
+          caption:
+            peerEntries.length === 0
+              ? "No peers configured."
+              : `${peerEntries.length} peer${peerEntries.length === 1 ? "" : "s"}.`,
+          rows: peerEntries.map(([name, p]) => [name, p.url, p.participantId]),
+        },
+      ],
+    };
+  };
+
   return {
     name: "link",
+    type: "link",
+    category: "transports",
     capabilities: ["transport", "context", "tools"],
     transport,
     context,
     tools: [linkSendTool, linkListTool],
+    adminInfo,
     async onShutdown() {
       // Stop the refresh loop FIRST so an in-flight refresh doesn't try to
       // touch state that's about to be torn down.

@@ -42,6 +42,9 @@ export function wireMemoryBus(
 
   const syntheticToolsAugment: Augment = {
     name: "memory-bus",
+    type: "memoryBus",
+    category: "memory",
+    synthetic: true,
     capabilities: ["tools"],
     constraints: { maxToolCallsPerTurn: maxPerTurn },
     tools,

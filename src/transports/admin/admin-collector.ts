@@ -1,4 +1,67 @@
-import type { AdminInfoBlock, TransportKernel } from "../../types";
+import type { AdminInfoBlock, AugmentCategory, TransportKernel } from "../../types";
+
+/**
+ * Minimal augment shape rendered in the Augments tab's "every augment" list.
+ * Independent of `AdminInfoBlock` — every mounted augment shows up here, even
+ * ones that don't ship operator-facing settings. The SPA cross-references
+ * `name` against `blocks[].augmentName` to decide whether to render an
+ * expandable settings panel beneath the row.
+ */
+export interface AugmentSummary {
+  /** Canonical type from the create-flow catalog (e.g. `layeredMemory`). */
+  type: string;
+  /** Runtime instance name (e.g. `layered-memory-test_agent`). Often equals type. */
+  name: string;
+  version?: string;
+  required: boolean;
+  /**
+   * Operator-facing category. Falls back to `"capabilities"` when the augment
+   * has not declared one — keeps third-party / older augments visible in the
+   * Augments tab instead of dropping them into an "uncategorized" bin.
+   */
+  category: AugmentCategory;
+  capabilities: string[];
+  hasTools: boolean;
+  toolCount: number;
+  isTransport: boolean;
+  isMemoryProvider: boolean;
+  httpRouteCount: number;
+  hasAdminInfo: boolean;
+}
+
+/**
+ * Best-guess category for augments that haven't been migrated to declare
+ * `category` yet. Inferred from the augment's structural shape so the SPA
+ * always has a useful bucket. New augments should set `category` explicitly.
+ */
+function inferCategory(aug: { transport?: unknown; memory?: unknown }): AugmentCategory {
+  if (aug.transport) return "transports";
+  if (aug.memory) return "memory";
+  return "capabilities";
+}
+
+export function collectAugmentSummaries(kernel: TransportKernel): AugmentSummary[] {
+  return (
+    kernel
+      .getAugments()
+      // Hide kernel-injected plumbing the operator didn't mount.
+      .filter((aug) => !aug.synthetic)
+      .map((aug) => ({
+        type: aug.type ?? aug.name,
+        name: aug.name,
+        version: aug.version,
+        required: aug.required ?? false,
+        category: aug.category ?? inferCategory(aug),
+        capabilities: aug.capabilities ?? [],
+        hasTools: (aug.tools?.length ?? 0) > 0,
+        toolCount: aug.tools?.length ?? 0,
+        isTransport: !!aug.transport,
+        isMemoryProvider: !!aug.memory,
+        httpRouteCount: aug.httpRoutes?.length ?? 0,
+        hasAdminInfo: !!aug.adminInfo,
+      }))
+  );
+}
 
 /**
  * Iterate registered augments and collect their AdminInfoBlocks for /admin
