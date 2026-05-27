@@ -22,6 +22,11 @@ import { AUGMENT_CATALOG, type CatalogEntry } from "../augment-catalog";
 import { copyBundledSkill, renderIdentityFromTemplate } from "../scaffold-skills";
 import { resolveAgentDir, sweepStaleTempDirs } from "../agent-index";
 import { getModelChoices, formatChoiceLabel, type Provider } from "../model-picker";
+import {
+  listInstalledOllamaModels,
+  partitionByRecommended,
+  RECOMMENDED_FIRST_PULL,
+} from "../ollama-discover";
 import { buildAgentPackageJson, getAuggyVersion } from "../scaffold-package-json";
 import { runBunInstall, type BunInstallSpawnFactory } from "../bun-install";
 import { withEscRestart, WizardRestartRequested } from "../wizard-restart";
@@ -172,14 +177,58 @@ async function runWizard(): Promise<WizardAnswers> {
   }
 
   // Model selection: dropdown of priced models + Custom escape hatch.
+  //
+  // For ollama-local, discover what's installed on the box (`ollama list`)
+  // and offer those first; the curated fallback is only shown if discovery
+  // turns up nothing tool-capable. See `ollama-discover.ts` for the rules
+  // and the BFCL-evidence shortlist.
   const CUSTOM_SENTINEL = "__custom__";
-  const choices = getModelChoices(provider);
+  const isOllamaLocal = provider === "ollama" && !ollamaBaseURL;
+  let modelChoices: Array<{ name: string; value: string }> = getModelChoices(provider).map((c) => ({
+    name: formatChoiceLabel(c),
+    value: c.id,
+  }));
+
+  if (isOllamaLocal) {
+    const installed = await listInstalledOllamaModels();
+    const { recommended, other } = partitionByRecommended(installed);
+    if (recommended.length > 0) {
+      modelChoices = [
+        ...recommended.map((id) => ({
+          name: `${id} ${dim("(installed, recommended for tool calling)")}`,
+          value: id,
+        })),
+        ...other.map((id) => ({
+          name: `${id} ${dim("(installed)")}`,
+          value: id,
+        })),
+      ];
+    } else {
+      // Discovery returned nothing tool-capable. Tell the operator how to
+      // get a usable model on disk, then fall through to the curated list
+      // + Custom so the wizard doesn't dead-end.
+      console.log();
+      console.log(`  ${dim("No tool-capable Ollama model found on this box.")}`);
+      console.log(`  ${dim("Recommended:")}  ${cream(`ollama pull ${RECOMMENDED_FIRST_PULL}`)}`);
+      console.log(
+        `  ${dim("Re-run `auggy create` after pulling; your installed models will appear here.")}`,
+      );
+      if (other.length > 0) {
+        console.log();
+        console.log(
+          `  ${dim(`Installed but not on the tool-capable shortlist: ${other.join(", ")}`)}`,
+        );
+      }
+      console.log();
+    }
+  }
+
   const modelSelection = await withEscRestart((ctx) =>
     select<string>(
       {
         message: "Model:",
         choices: [
-          ...choices.map((c) => ({ name: formatChoiceLabel(c), value: c.id })),
+          ...modelChoices,
           { name: "Custom — type your own model ID", value: CUSTOM_SENTINEL },
         ],
       },

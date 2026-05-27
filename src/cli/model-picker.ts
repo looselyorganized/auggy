@@ -81,17 +81,21 @@ export function getModelChoices(provider: Provider): ModelChoice[] {
       ].filter(isPriced);
       break;
     case "ollama":
-      // Ollama is free + local — no pricing table to derive from. Return a
-      // curated list of tool-call-capable models commonly pulled by adopters.
-      // Operator must have run `ollama pull <model>` before first turn; the
-      // SDK surfaces a clear "model not found" error if they haven't.
-      // Pricing fields are zero (formatted as "$0/$0 per Mtok" in the label
-      // — visually distinct from paid providers, makes "free" obvious).
+      // Ollama is free + local. The wizard's primary path queries the
+      // operator's installed models (see `ollama-discover.ts`) and offers
+      // those. This curated list is the FALLBACK shown when discovery is
+      // unavailable (ollama not installed, daemon down, remote ollama).
+      //
+      // Curated for tool-call reliability based on BFCL V4 (2026-04-12).
+      // Models with weak tool-use scores (notably Llama 3.2 1B/3B at
+      // BFCL ranks 107/98) are deliberately excluded — they emit tool
+      // calls as plain text rather than via the structured channel and
+      // produce hallucinated failures in agentic flows.
       return [
-        { id: "llama3.2", inputUsdPerMtok: 0, outputUsdPerMtok: 0 },
-        { id: "llama3.1", inputUsdPerMtok: 0, outputUsdPerMtok: 0 },
-        { id: "qwen2.5", inputUsdPerMtok: 0, outputUsdPerMtok: 0 },
-        { id: "qwen2.5-coder", inputUsdPerMtok: 0, outputUsdPerMtok: 0 },
+        { id: "qwen3:8b", inputUsdPerMtok: 0, outputUsdPerMtok: 0 },
+        { id: "qwen3:14b", inputUsdPerMtok: 0, outputUsdPerMtok: 0 },
+        { id: "qwen3:32b", inputUsdPerMtok: 0, outputUsdPerMtok: 0 },
+        { id: "gemma4", inputUsdPerMtok: 0, outputUsdPerMtok: 0 },
       ];
     default: {
       const _exhaustive: never = provider;
