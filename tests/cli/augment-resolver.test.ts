@@ -153,6 +153,53 @@ describe("resolveAugments — webTransport", () => {
     }
   });
 
+  // Regression: agentDir must flow through resolveWebTransport →
+  // webTransport(...) so the /console module can read .env + identity.md.
+  // Without this, the Credentials and Identity tabs render
+  // "agent directory not configured" / "agent directory or identity path not
+  // configured" errors. End-to-end: scaffold a .env file, hit
+  // /console/api/credentials from loopback, assert it returns the parsed
+  // entries (not the "not configured" error).
+  test("forwards agentDir to webTransport so /console can read .env", async () => {
+    const { writeFileSync } = await import("node:fs");
+    const port = 19102;
+    writeFileSync(`${TMP}/.env`, "FOO=bar\nBAZ=qux\n", "utf-8");
+    writeFileSync(
+      `${TMP}/agent.yaml`,
+      "name: test\nidentity: ./identity.md\nengine:\n  provider: anthropic\n  model: claude-sonnet-4-6\naugments: []\n",
+      "utf-8",
+    );
+
+    const configs: AugmentConfig[] = [
+      {
+        name: "web",
+        type: "webTransport",
+        options: {
+          port,
+          auth: { type: "bearer", token: "test-token" },
+        },
+      },
+    ];
+    const augments = await resolveAugments(configs, TMP);
+    const model = createMockModel();
+    const agent = defineAgent({ name: "test", model: "mock", augments }, model);
+    await agent.start();
+    try {
+      const resp = await fetch(`http://127.0.0.1:${port}/console/api/credentials`);
+      expect(resp.status).toBe(200);
+      const body = (await resp.json()) as { error?: string; entries?: unknown[] };
+      // The bug surfaced as `{ error: "agent directory not configured" }`.
+      expect(body.error).toBeUndefined();
+      expect(Array.isArray(body.entries)).toBe(true);
+      // Auto-generated entries (ANTHROPIC_API_KEY etc.) plus the two we wrote.
+      expect((body.entries as Array<{ key: string }>).map((e) => e.key)).toEqual(
+        expect.arrayContaining(["FOO", "BAZ"]),
+      );
+    } finally {
+      await agent.stop();
+    }
+  });
+
   test("allowAnonymous=true from yaml options admits no-bearer requests even with NODE_ENV=production", async () => {
     const originalNodeEnv = process.env.NODE_ENV;
     const originalAnon = process.env.AUGGY_ALLOW_ANONYMOUS;
