@@ -94,7 +94,7 @@ operator-question tab):
 - **Promoted augment row** (e.g., budgets, visitor-auth): shows type,
   instance name, healthy/error status, and a `Configured in [Tab] ↗`
   link. No inline edit affordance.
-- **Unpromoted augment row** (e.g., webFetch, bash, notify, orgContext,
+- **Unpromoted augment row** (e.g., webFetch, bash, notify, manifest,
   fileMemory@learned, layeredMemory, filesystem, telegramTransport):
   shows type, instance name, healthy/error status, and expandable
   inline options. Edits write back to agent.yaml; the runtime
@@ -153,7 +153,7 @@ file.
 | `webTransport` | port, allowAnonymous | listening URL | **Security** (auth posture) + Chat header (URL) |
 | `webFetch` | allowed-hosts | recent fetches | **Augments** row |
 | `bash` | allowed-commands, cwd | recent invocations | **Augments** row |
-| `orgContext` | baseUrl, refresh interval | last sync | **Augments** row |
+| `manifest` | baseUrl, refresh interval | last sync | **Augments** row |
 | `supabaseMemory` | (frozen) | — | hidden (legacy) |
 | `budgets` | per-tier caps, dailyBudgetUsd | current spend, transactions | **Budget** |
 | `notify` | destinations[], default policy | recent sends | **Augments** row |

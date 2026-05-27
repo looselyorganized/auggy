@@ -129,7 +129,7 @@ GOOD:
 User: "What's your team's mission?"
 
 GOOD:
-  → answer from org context; no notify call
+  → answer from the manifest; no notify call
 ```
 
 ### After rate_limited

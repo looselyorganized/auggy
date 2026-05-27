@@ -1,7 +1,7 @@
 # About the Acme Test Foundry
 
 The Acme Test Foundry is a fictional research organization that exists only
-to populate the orgContext eval fixture. Nothing in this document describes a
+to populate the manifest eval fixture. Nothing in this document describes a
 real entity; any resemblance to actual organizations is coincidental.
 
 Synthetic facts the eval suite can assert against:

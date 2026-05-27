@@ -113,7 +113,7 @@ const BUILTIN_TYPES = new Set([
   "filesystem",
   "webTransport",
   "webFetch",
-  "orgContext",
+  "manifest",
   "skills",
   "bash",
   "budgets",

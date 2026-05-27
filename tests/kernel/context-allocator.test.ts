@@ -107,7 +107,7 @@ describe("ContextAllocator", () => {
 
     const blocks: ContextBlock[] = [
       {
-        source: "org-context",
+        source: "manifest",
         content: "Some org-knowledge block content",
         placement: "system",
         priority: "required",
@@ -131,7 +131,7 @@ describe("ContextAllocator", () => {
 
     // Augment names + wrapper gone
     expect(allText).not.toContain("[AUGMENT CONTEXT:");
-    expect(allText).not.toContain("org-context");
+    expect(allText).not.toContain("manifest");
     expect(allText).not.toContain("layered-memory");
     // Content still present
     expect(allText).toContain("Some org-knowledge block content");

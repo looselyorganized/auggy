@@ -1,21 +1,21 @@
 /**
- * Tests for the org-context augment.
+ * Tests for the manifest augment.
  *
  * Coverage map (per α-6 spec / Codex review focus #3):
  *   - Positive cases: file:// (absolute + relative-via-resolver) manifest read,
- *     org_fetch under file:// (literal + .md fallback), HTTP backward compat
+ *     manifest_fetch under file:// (literal + .md fallback), HTTP backward compat
  *   - Path-traversal attacks (must REJECT): `..`, double-`..`, deep-`..`,
  *     URL-encoded `..`, double-encoded `..`, absolute-looking path,
  *     mid-path `..`, double slash, null byte, symlink escape
  *   - Edge cases: missing file, directory-instead-of-file, malformed manifest JSON
- *   - End-to-end: scaffolded org-context/ dir + file://./org-context resolution
+ *   - End-to-end: scaffolded manifest/ dir + file://./manifest resolution
  */
 
 import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
 import { writeFile, mkdir, symlink } from "node:fs/promises";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { orgContext, isWithinBase } from "@/augments/org-context";
+import { manifest, isWithinBase } from "@/augments/manifest";
 import { resolveAugments } from "@/cli/augment-resolver";
 import { createTempDir } from "@tests/fixtures/temp-dir";
 import { asStringTool } from "@tests/fixtures/tool-helpers";
@@ -45,14 +45,14 @@ const stubTurn: TurnState = {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Run org_fetch on the given augment, returning the parsed JSON envelope. */
-async function callOrgFetch(
+/** Run manifest_fetch on the given augment, returning the parsed JSON envelope. */
+async function callManifestFetch(
   aug: Augment,
   endpoint: string,
   prompt?: string,
 ): Promise<Record<string, unknown>> {
-  const tool = aug.tools!.find((t) => t.name === "org_fetch");
-  if (!tool) throw new Error("org_fetch tool not found on augment");
+  const tool = aug.tools!.find((t) => t.name === "manifest_fetch");
+  if (!tool) throw new Error("manifest_fetch tool not found on augment");
   const result = await asStringTool(tool).execute(prompt ? { endpoint, prompt } : { endpoint });
   return JSON.parse(result) as Record<string, unknown>;
 }
@@ -105,8 +105,8 @@ interface ManifestEntry {
   method?: string;
 }
 
-/** Write a fully-stocked example org-context dir under `baseDir`. */
-async function writeExampleOrgContext(baseDir: string): Promise<void> {
+/** Write a fully-stocked example manifest dir under `baseDir`. */
+async function writeExampleManifest(baseDir: string): Promise<void> {
   await mkdir(baseDir, { recursive: true });
   await writeFile(join(baseDir, "manifest"), `${JSON.stringify(defaultManifest(), null, 2)}\n`);
   await writeFile(join(baseDir, "mission.md"), "# Test Org — Mission\n\nfor testing only\n");
@@ -156,7 +156,7 @@ describe("isWithinBase", () => {
 // file:// scheme — positive cases
 // ---------------------------------------------------------------------------
 
-describe("orgContext file:// scheme", () => {
+describe("manifest file:// scheme", () => {
   let tmp: { path: string; cleanup: () => Promise<void> };
   let baseDir: string;
   let baseUrl: string;
@@ -169,9 +169,9 @@ describe("orgContext file:// scheme", () => {
 
   beforeEach(async () => {
     tmp = await createTempDir();
-    baseDir = join(tmp.path, "org-context");
+    baseDir = join(tmp.path, "manifest");
     baseUrl = pathToFileURL(baseDir).href;
-    await writeExampleOrgContext(baseDir);
+    await writeExampleManifest(baseDir);
     console.warn = mock(() => {});
     console.log = mock(() => {});
   });
@@ -187,7 +187,7 @@ describe("orgContext file:// scheme", () => {
   // ---------------------------------------------------------------------------
 
   it("reads manifest from file:///<absolute-path>", async () => {
-    const aug = orgContext({ baseUrl });
+    const aug = manifest({ baseUrl });
     const block = await getManifestBlock(aug);
     expect(block).not.toBeNull();
     expect(block!.content).toContain("Test Org");
@@ -204,8 +204,8 @@ describe("orgContext file:// scheme", () => {
       [
         {
           name: "org",
-          type: "orgContext",
-          options: { baseUrl: "file://./org-context" },
+          type: "manifest",
+          options: { baseUrl: "file://./manifest" },
         },
       ],
       tmp.path,
@@ -217,11 +217,11 @@ describe("orgContext file:// scheme", () => {
     expect(block!.content).toContain("Test Org");
   });
 
-  it("org_fetch reads /mission via the .md fallback", async () => {
-    const aug = orgContext({ baseUrl });
+  it("manifest_fetch reads /mission via the .md fallback", async () => {
+    const aug = manifest({ baseUrl });
     // Prime the manifest so the augment's base-dir cache populates.
     await getManifestBlock(aug);
-    const result = await callOrgFetch(aug, "/mission");
+    const result = await callManifestFetch(aug, "/mission");
     expect(result.endpoint).toBe("/mission");
     expect(result.content).toContain("Test Org — Mission");
   });
@@ -255,11 +255,11 @@ describe("orgContext file:// scheme", () => {
       delete: async () => fakeResponse(""),
       head: async () => fakeResponse(""),
     };
-    const aug = orgContext({ baseUrl: "https://example.com", client: fakeClient });
+    const aug = manifest({ baseUrl: "https://example.com", client: fakeClient });
     const block = await getManifestBlock(aug);
     expect(block).not.toBeNull();
     expect(block!.content).toContain("Test Org");
-    const fetched = await callOrgFetch(aug, "/mission");
+    const fetched = await callManifestFetch(aug, "/mission");
     expect(fetched.endpoint).toBe("/mission");
     expect(fetched.content).toContain("Mission body");
   });
@@ -304,65 +304,65 @@ describe("orgContext file:// scheme", () => {
   }
 
   it("rejects /../etc/passwd (no leak)", async () => {
-    const aug = orgContext({ baseUrl });
+    const aug = manifest({ baseUrl });
     await getManifestBlock(aug);
-    const res = await callOrgFetch(aug, "/../etc/passwd");
+    const res = await callManifestFetch(aug, "/../etc/passwd");
     expectNoLeak(res);
   });
 
   it("rejects /../../etc/passwd (no leak)", async () => {
-    const aug = orgContext({ baseUrl });
+    const aug = manifest({ baseUrl });
     await getManifestBlock(aug);
-    const res = await callOrgFetch(aug, "/../../etc/passwd");
+    const res = await callManifestFetch(aug, "/../../etc/passwd");
     expectNoLeak(res);
   });
 
   it("rejects /../../../../../etc/passwd deep escape (no leak)", async () => {
-    const aug = orgContext({ baseUrl });
+    const aug = manifest({ baseUrl });
     await getManifestBlock(aug);
-    const res = await callOrgFetch(aug, "/../../../../../etc/passwd");
+    const res = await callManifestFetch(aug, "/../../../../../etc/passwd");
     expectNoLeak(res);
   });
 
   it("rejects /%2e%2e/etc/passwd URL-encoded `..` (no leak)", async () => {
-    const aug = orgContext({ baseUrl });
+    const aug = manifest({ baseUrl });
     await getManifestBlock(aug);
     // Single-decoded once: "%2e%2e" → ".." → normalize collapses against
     // the leading slash → resolved path is inside the base → ENOENT.
-    const res = await callOrgFetch(aug, "/%2e%2e/%2e%2e/%2e%2e/etc/passwd");
+    const res = await callManifestFetch(aug, "/%2e%2e/%2e%2e/%2e%2e/etc/passwd");
     expectNoLeak(res);
   });
 
   it("rejects /%252e%252e/etc/passwd double-encoded (no leak)", async () => {
-    const aug = orgContext({ baseUrl });
+    const aug = manifest({ baseUrl });
     await getManifestBlock(aug);
     // Decode-once policy: "%252e%252e" → "%2e%2e" (NOT "..").
     // Stays as a literal segment under the base → ENOENT, no escape.
-    const res = await callOrgFetch(aug, "/%252e%252e/etc/passwd");
+    const res = await callManifestFetch(aug, "/%252e%252e/etc/passwd");
     expectNoLeak(res);
   });
 
   it("rejects an absolute-looking endpoint /etc/passwd (no leak)", async () => {
-    const aug = orgContext({ baseUrl });
+    const aug = manifest({ baseUrl });
     await getManifestBlock(aug);
     // Manifest convention: `/`-prefix means "rooted at base". The leading
     // `/` is stripped before join, so this becomes `<base>/etc/passwd`
     // (which doesn't exist) — read fails cleanly with ENOENT.
-    const res = await callOrgFetch(aug, "/etc/passwd");
+    const res = await callManifestFetch(aug, "/etc/passwd");
     expectNoLeak(res);
   });
 
   it("rejects mid-path traversal /foo/../../etc/passwd (no leak)", async () => {
-    const aug = orgContext({ baseUrl });
+    const aug = manifest({ baseUrl });
     await getManifestBlock(aug);
-    const res = await callOrgFetch(aug, "/foo/../../etc/passwd");
+    const res = await callManifestFetch(aug, "/foo/../../etc/passwd");
     expectNoLeak(res);
   });
 
   it("rejects double-slash //etc/passwd (no leak)", async () => {
-    const aug = orgContext({ baseUrl });
+    const aug = manifest({ baseUrl });
     await getManifestBlock(aug);
-    const res = await callOrgFetch(aug, "//etc/passwd");
+    const res = await callManifestFetch(aug, "//etc/passwd");
     expectNoLeak(res);
   });
 
@@ -370,9 +370,9 @@ describe("orgContext file:// scheme", () => {
     // Allowlist the path so the High-1 check passes; defense-in-depth at
     // the null-byte layer in safeResolveUnderBase must still fire.
     await writeManifestWithEntries(baseDir, [{ path: "/\0bad", description: "test" }]);
-    const aug = orgContext({ baseUrl });
+    const aug = manifest({ baseUrl });
     await getManifestBlock(aug);
-    const res = await callOrgFetch(aug, "/\0bad");
+    const res = await callManifestFetch(aug, "/\0bad");
     expect(res.error as string).toMatch(/null byte/i);
   });
 
@@ -380,9 +380,9 @@ describe("orgContext file:// scheme", () => {
     // Same defense-in-depth posture: allowlist the literal request path so
     // the null-byte-after-decode rejection inside safeResolveUnderBase fires.
     await writeManifestWithEntries(baseDir, [{ path: "/safe%00.md", description: "test" }]);
-    const aug = orgContext({ baseUrl });
+    const aug = manifest({ baseUrl });
     await getManifestBlock(aug);
-    const res = await callOrgFetch(aug, "/safe%00.md");
+    const res = await callManifestFetch(aug, "/safe%00.md");
     expect(res.error as string).toMatch(/null byte/i);
   });
 
@@ -399,13 +399,13 @@ describe("orgContext file:// scheme", () => {
       { path: "/evil-link/passwd", description: "deliberately suspicious" },
     ]);
 
-    const aug = orgContext({ baseUrl });
+    const aug = manifest({ baseUrl });
     await getManifestBlock(aug);
     // The literal request path under the base is `/evil-link/passwd`.
     // safeResolveUnderBase joins to `<base>/evil-link/passwd`, then
     // realpath resolves the symlink → `/etc/passwd`, which is OUTSIDE
     // realBase. The boundary check rejects.
-    const res = await callOrgFetch(aug, "/evil-link/passwd");
+    const res = await callManifestFetch(aug, "/evil-link/passwd");
     expect(res.error as string).toMatch(/rejected|traversal/i);
   });
 
@@ -413,37 +413,37 @@ describe("orgContext file:// scheme", () => {
   // High-1: manifest allowlist (file:// branch)
   //
   // Per spec §Decision 9, the manifest is the authoritative endpoint
-  // contract. org_fetch must refuse any path that isn't listed in
+  // contract. manifest_fetch must refuse any path that isn't listed in
   // manifest.endpoints[].path (strict equality, no prefix matching). When
   // no manifest is loaded at all (file unreadable / HTTP 404 / network
   // failure) every fetch must be refused with a clear error so the model
   // doesn't fall through to filesystem reads on an undefined contract.
   // ---------------------------------------------------------------------------
 
-  it("allowlist (file://): org_fetch refuses an unlisted path", async () => {
-    const aug = orgContext({ baseUrl });
+  it("allowlist (file://): manifest_fetch refuses an unlisted path", async () => {
+    const aug = manifest({ baseUrl });
     await getManifestBlock(aug);
-    const res = await callOrgFetch(aug, "/unlisted");
+    const res = await callManifestFetch(aug, "/unlisted");
     expect(res.error as string).toMatch(/not in the manifest/i);
     expect(res.content).toBeUndefined();
   });
 
-  it("allowlist (file://): org_fetch allows a listed path", async () => {
-    const aug = orgContext({ baseUrl });
+  it("allowlist (file://): manifest_fetch allows a listed path", async () => {
+    const aug = manifest({ baseUrl });
     await getManifestBlock(aug);
-    const res = await callOrgFetch(aug, "/mission");
+    const res = await callManifestFetch(aug, "/mission");
     expect(res.error).toBeUndefined();
     expect(res.endpoint).toBe("/mission");
     expect(res.content as string).toContain("Test Org — Mission");
   });
 
-  it("allowlist (file://): org_fetch refuses when no manifest is loaded", async () => {
+  it("allowlist (file://): manifest_fetch refuses when no manifest is loaded", async () => {
     // Empty base dir — manifest file doesn't exist; fetchManifest returns null.
     const emptyDir = join(tmp.path, "empty-org");
     await mkdir(emptyDir, { recursive: true });
-    const aug = orgContext({ baseUrl: pathToFileURL(emptyDir).href });
+    const aug = manifest({ baseUrl: pathToFileURL(emptyDir).href });
     // Don't call getManifestBlock — leave cachedManifest null.
-    const res = await callOrgFetch(aug, "/mission");
+    const res = await callManifestFetch(aug, "/mission");
     expect(res.error as string).toMatch(/no manifest loaded/i);
     expect(res.content).toBeUndefined();
   });
@@ -452,7 +452,7 @@ describe("orgContext file:// scheme", () => {
   // High-1: manifest allowlist (HTTP branch)
   // ---------------------------------------------------------------------------
 
-  it("allowlist (HTTP): org_fetch refuses an unlisted path", async () => {
+  it("allowlist (HTTP): manifest_fetch refuses an unlisted path", async () => {
     function fakeResponse(body: string, status = 200): HttpResponse {
       return {
         finalUrl: "https://example.com/x",
@@ -479,14 +479,14 @@ describe("orgContext file:// scheme", () => {
       delete: async () => fakeResponse(""),
       head: async () => fakeResponse(""),
     };
-    const aug = orgContext({ baseUrl: "https://example.com", client: fakeClient });
+    const aug = manifest({ baseUrl: "https://example.com", client: fakeClient });
     await getManifestBlock(aug);
-    const res = await callOrgFetch(aug, "/unlisted");
+    const res = await callManifestFetch(aug, "/unlisted");
     expect(res.error as string).toMatch(/not in the manifest/i);
     expect(JSON.stringify(res)).not.toContain("LEAK");
   });
 
-  it("allowlist (HTTP): org_fetch allows a listed path", async () => {
+  it("allowlist (HTTP): manifest_fetch allows a listed path", async () => {
     function fakeResponse(body: string, status = 200): HttpResponse {
       return {
         finalUrl: "https://example.com/x",
@@ -515,15 +515,15 @@ describe("orgContext file:// scheme", () => {
       delete: async () => fakeResponse(""),
       head: async () => fakeResponse(""),
     };
-    const aug = orgContext({ baseUrl: "https://example.com", client: fakeClient });
+    const aug = manifest({ baseUrl: "https://example.com", client: fakeClient });
     await getManifestBlock(aug);
-    const res = await callOrgFetch(aug, "/mission");
+    const res = await callManifestFetch(aug, "/mission");
     expect(res.error).toBeUndefined();
     expect(res.endpoint).toBe("/mission");
     expect(res.content as string).toContain("Mission body");
   });
 
-  it("allowlist (HTTP): org_fetch refuses when no manifest is loaded", async () => {
+  it("allowlist (HTTP): manifest_fetch refuses when no manifest is loaded", async () => {
     // /manifest returns 404 — fetchManifest returns null, allowlist refuses.
     function fakeResponse(body: string, status = 200): HttpResponse {
       return {
@@ -543,10 +543,10 @@ describe("orgContext file:// scheme", () => {
       delete: async () => fakeResponse(""),
       head: async () => fakeResponse(""),
     };
-    const aug = orgContext({ baseUrl: "https://example.com", client: fakeClient });
+    const aug = manifest({ baseUrl: "https://example.com", client: fakeClient });
     // Don't call getManifestBlock — leave cachedManifest null even after the
     // first allowlist check forces a fetch (which 404s and returns null).
-    const res = await callOrgFetch(aug, "/mission");
+    const res = await callManifestFetch(aug, "/mission");
     expect(res.error as string).toMatch(/no manifest loaded/i);
     expect(res.content).toBeUndefined();
   });
@@ -564,9 +564,9 @@ describe("orgContext file:// scheme", () => {
 
   it("traversal layer: rejects /../etc/passwd even when allowlisted", async () => {
     await writeManifestWithEntries(baseDir, [{ path: "/../etc/passwd", description: "evil" }]);
-    const aug = orgContext({ baseUrl });
+    const aug = manifest({ baseUrl });
     await getManifestBlock(aug);
-    const res = await callOrgFetch(aug, "/../etc/passwd");
+    const res = await callManifestFetch(aug, "/../etc/passwd");
     expect(res.error as string).toMatch(/'\.\.' segment/i);
     expect(res.content).toBeUndefined();
     expect(JSON.stringify(res)).not.toContain("root:");
@@ -574,9 +574,9 @@ describe("orgContext file:// scheme", () => {
 
   it("traversal layer: rejects //etc/passwd even when allowlisted", async () => {
     await writeManifestWithEntries(baseDir, [{ path: "//etc/passwd", description: "evil" }]);
-    const aug = orgContext({ baseUrl });
+    const aug = manifest({ baseUrl });
     await getManifestBlock(aug);
-    const res = await callOrgFetch(aug, "//etc/passwd");
+    const res = await callManifestFetch(aug, "//etc/passwd");
     expect(res.error as string).toMatch(/doubled slash/i);
     expect(res.content).toBeUndefined();
     expect(JSON.stringify(res)).not.toContain("root:");
@@ -588,9 +588,9 @@ describe("orgContext file:// scheme", () => {
     // string still contains a literal `%2e` — the traversal layer must
     // refuse rather than silently treat it as opaque.
     await writeManifestWithEntries(baseDir, [{ path: "/%252e/foo", description: "evil" }]);
-    const aug = orgContext({ baseUrl });
+    const aug = manifest({ baseUrl });
     await getManifestBlock(aug);
-    const res = await callOrgFetch(aug, "/%252e/foo");
+    const res = await callManifestFetch(aug, "/%252e/foo");
     expect(res.error as string).toMatch(/encoded traversal marker/i);
     expect(res.content).toBeUndefined();
   });
@@ -603,9 +603,9 @@ describe("orgContext file:// scheme", () => {
     // Allowlist the path so the High-1 check passes — the test is exercising
     // the ENOENT path inside fetchFromFile, not the allowlist.
     await writeManifestWithEntries(baseDir, [{ path: "/no-such-endpoint", description: "test" }]);
-    const aug = orgContext({ baseUrl });
+    const aug = manifest({ baseUrl });
     await getManifestBlock(aug);
-    const res = await callOrgFetch(aug, "/no-such-endpoint");
+    const res = await callManifestFetch(aug, "/no-such-endpoint");
     expect(res.error).toBeDefined();
     expect(typeof res.error).toBe("string");
     expect(res.error as string).toMatch(/not found/i);
@@ -617,22 +617,22 @@ describe("orgContext file:// scheme", () => {
     // Allowlist `/subdir` so the High-1 check passes — the test exercises
     // the directory-handling path inside fetchFromFile.
     await writeManifestWithEntries(baseDir, [{ path: "/subdir", description: "test" }]);
-    const aug = orgContext({ baseUrl });
+    const aug = manifest({ baseUrl });
     await getManifestBlock(aug);
     // Hit `/subdir`. The literal path is a directory; readFile gets EISDIR.
     // The .md fallback then tries `/subdir.md`, which doesn't exist → ENOENT.
-    const res = await callOrgFetch(aug, "/subdir");
+    const res = await callManifestFetch(aug, "/subdir");
     expect(res.error).toBeDefined();
   });
 
   it("returns null manifest gracefully when manifest JSON is malformed", async () => {
     // Overwrite manifest with bad JSON.
     await writeFile(join(baseDir, "manifest"), "{not valid json");
-    const aug = orgContext({ baseUrl });
+    const aug = manifest({ baseUrl });
     const block = await getManifestBlock(aug);
     expect(block).toBeNull();
-    // org_fetch should still respond with a structured error.
-    const res = await callOrgFetch(aug, "/mission");
+    // manifest_fetch should still respond with a structured error.
+    const res = await callManifestFetch(aug, "/mission");
     // The base dir is still readable; the .md fallback path works.
     // What matters: the augment didn't crash on bad manifest JSON.
     expect(res).toBeDefined();
@@ -642,13 +642,13 @@ describe("orgContext file:// scheme", () => {
   // End-to-end (18) — α-4's scaffolded example dir + α-6's file:// reader
   // ---------------------------------------------------------------------------
 
-  it("end-to-end: scaffold-shaped org-context/ dir works through resolveAugments", async () => {
-    // Mimic what α-4's writeOrgContextExample produces (manifest + mission.md
+  it("end-to-end: scaffold-shaped manifest/ dir works through resolveAugments", async () => {
+    // Mimic what α-4's writeManifestExample produces (manifest + mission.md
     // + team.md + README.md), then construct the augment via the same path
-    // the CLI uses — resolveAugments with `file://./org-context` and
+    // the CLI uses — resolveAugments with `file://./manifest` and
     // agentDir = the temp dir.
     const e2eRoot = join(tmp.path, "e2e-agent");
-    const orgDir = join(e2eRoot, "org-context");
+    const orgDir = join(e2eRoot, "manifest");
     await mkdir(orgDir, { recursive: true });
     await writeFile(
       join(orgDir, "manifest"),
@@ -674,8 +674,8 @@ describe("orgContext file:// scheme", () => {
       [
         {
           name: "org",
-          type: "orgContext",
-          options: { baseUrl: "file://./org-context" },
+          type: "manifest",
+          options: { baseUrl: "file://./manifest" },
         },
       ],
       e2eRoot,
@@ -690,12 +690,12 @@ describe("orgContext file:// scheme", () => {
     expect(block!.content).toContain("end-to-end test");
 
     // /mission via .md fallback.
-    const mission = await callOrgFetch(aug, "/mission");
+    const mission = await callManifestFetch(aug, "/mission");
     expect(mission.endpoint).toBe("/mission");
     expect(mission.content as string).toContain("E2E mission body");
 
     // /team via .md fallback.
-    const team = await callOrgFetch(aug, "/team");
+    const team = await callManifestFetch(aug, "/team");
     expect(team.endpoint).toBe("/team");
     expect(team.content as string).toContain("E2E team body");
   });
@@ -705,35 +705,35 @@ describe("orgContext file:// scheme", () => {
 // Construction-time validation
 // ---------------------------------------------------------------------------
 
-describe("orgContext construction", () => {
+describe("manifest construction", () => {
   it("throws on relative file:// URL — augment factory accepts only absolute", () => {
     // The augment surface is intentionally absolute-only. Relative file://
     // URLs are the resolver's job. Direct factory construction with a
     // relative form must error so misuse is loud.
-    expect(() => orgContext({ baseUrl: "file://./org-context" })).toThrow();
+    expect(() => manifest({ baseUrl: "file://./manifest" })).toThrow();
   });
 
   it("accepts file:///<absolute-path> directly", () => {
-    expect(() => orgContext({ baseUrl: "file:///tmp/some/path" })).not.toThrow();
+    expect(() => manifest({ baseUrl: "file:///tmp/some/path" })).not.toThrow();
   });
 
   it("accepts http:// and https:// without parsing as file://", () => {
-    expect(() => orgContext({ baseUrl: "http://localhost:3000" })).not.toThrow();
-    expect(() => orgContext({ baseUrl: "https://example.com" })).not.toThrow();
+    expect(() => manifest({ baseUrl: "http://localhost:3000" })).not.toThrow();
+    expect(() => manifest({ baseUrl: "https://example.com" })).not.toThrow();
   });
 });
 
 // ---------------------------------------------------------------------------
 // Manifest shape validation (Codex 2nd-pass High finding)
 // ---------------------------------------------------------------------------
-// Per Codex 2nd-pass review: `JSON.parse(body) as OrgManifest` lies at runtime.
+// Per Codex 2nd-pass review: `JSON.parse(body) as Manifest` lies at runtime.
 // A body of `{}` or `{"endpoints": null}` parses successfully but breaks
 // downstream — allowlist throws on `undefined.endpoints`; onBoot crashes on
 // `manifest.endpoints.length`. Validator at the cache boundary fails closed:
 // invalid manifests are not cached; warn + treat as "no manifest loaded";
-// org_fetch returns a clean refusal envelope.
+// manifest_fetch returns a clean refusal envelope.
 
-describe("orgContext manifest shape validation", () => {
+describe("manifest manifest shape validation", () => {
   let tmp: { path: string; cleanup: () => Promise<void> };
   let baseDir: string;
   let baseUrl: string;
@@ -743,7 +743,7 @@ describe("orgContext manifest shape validation", () => {
 
   beforeEach(async () => {
     tmp = await createTempDir();
-    baseDir = join(tmp.path, "org-context");
+    baseDir = join(tmp.path, "manifest");
     baseUrl = pathToFileURL(baseDir).href;
     await mkdir(baseDir, { recursive: true });
     console.warn = mock(() => {});
@@ -758,12 +758,12 @@ describe("orgContext manifest shape validation", () => {
 
   it("rejects empty-object manifest (no org/purpose/endpoints fields)", async () => {
     await writeFile(join(baseDir, "manifest"), "{}");
-    const aug = orgContext({ baseUrl });
-    // No manifest = the augment treats it as "no org context loaded".
+    const aug = manifest({ baseUrl });
+    // No manifest = the augment treats it as "no manifest loaded".
     const block = await getManifestBlock(aug);
     expect(block).toBeNull();
-    // org_fetch should produce the manifest-refusal envelope, not crash.
-    const res = await callOrgFetch(aug, "/anything");
+    // manifest_fetch should produce the manifest-refusal envelope, not crash.
+    const res = await callManifestFetch(aug, "/anything");
     expect(res.error).toBeDefined();
     expect(typeof res.error).toBe("string");
     expect((res.error as string).toLowerCase()).toMatch(/manifest|no manifest|unavailable/);
@@ -774,10 +774,10 @@ describe("orgContext manifest shape validation", () => {
       join(baseDir, "manifest"),
       JSON.stringify({ org: "Test", purpose: "test", endpoints: null }),
     );
-    const aug = orgContext({ baseUrl });
+    const aug = manifest({ baseUrl });
     const block = await getManifestBlock(aug);
     expect(block).toBeNull();
-    const res = await callOrgFetch(aug, "/anything");
+    const res = await callManifestFetch(aug, "/anything");
     expect(res.error).toBeDefined();
     expect((res.error as string).toLowerCase()).toMatch(/manifest|no manifest|unavailable/);
   });
@@ -791,10 +791,10 @@ describe("orgContext manifest shape validation", () => {
         endpoints: [{ description: "missing path field" }],
       }),
     );
-    const aug = orgContext({ baseUrl });
+    const aug = manifest({ baseUrl });
     const block = await getManifestBlock(aug);
     expect(block).toBeNull();
-    const res = await callOrgFetch(aug, "/anything");
+    const res = await callManifestFetch(aug, "/anything");
     expect(res.error).toBeDefined();
     expect((res.error as string).toLowerCase()).toMatch(/manifest|no manifest|unavailable/);
   });
@@ -804,7 +804,7 @@ describe("orgContext manifest shape validation", () => {
       join(baseDir, "manifest"),
       JSON.stringify({ org: 42, purpose: "test", endpoints: [] }),
     );
-    const aug = orgContext({ baseUrl });
+    const aug = manifest({ baseUrl });
     const block = await getManifestBlock(aug);
     expect(block).toBeNull();
   });
@@ -818,7 +818,7 @@ describe("orgContext manifest shape validation", () => {
         endpoints: [{ path: "/foo" }],
       }),
     );
-    const aug = orgContext({ baseUrl });
+    const aug = manifest({ baseUrl });
     const block = await getManifestBlock(aug);
     expect(block).toBeNull();
   });
@@ -835,11 +835,11 @@ describe("orgContext manifest shape validation", () => {
       }),
     );
     await writeFile(join(baseDir, "foo"), "foo-content");
-    const aug = orgContext({ baseUrl });
+    const aug = manifest({ baseUrl });
     const block = await getManifestBlock(aug);
     expect(block).not.toBeNull();
     expect(block!.content).toContain("Test");
-    const res = await callOrgFetch(aug, "/foo");
+    const res = await callManifestFetch(aug, "/foo");
     expect(res.error).toBeUndefined();
     expect(res.content).toContain("foo-content");
   });

@@ -54,13 +54,13 @@ augments:
       timeoutMs: 5000
 
   - name: org
-    type: orgContext
+    type: manifest
     options:
       # Synthetic file:// corpus, not a real org. Lets the suite exercise
-      # `org_fetch` for legitimate org-info questions (benign cases) while
+      # `manifest_fetch` for legitimate org-info questions (benign cases) while
       # staying fully portable — no LORF-specific content. See
-      # ./org-context-test-corpus/README.md for the corpus layout.
-      baseUrl: file://./org-context-test-corpus
+      # ./manifest-test-corpus/README.md for the corpus layout.
+      baseUrl: file://./manifest-test-corpus
 
   - name: notify
     type: notify

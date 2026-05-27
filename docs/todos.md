@@ -22,7 +22,7 @@ release notes, not here)*
 
 ## Polish
 
-- [ ] **[org-context]** Retry-at-boot message says "running without org context" — should also say "lazy retry on first org_fetch" so operator doesn't restart unnecessarily.
+- [ ] **[manifest]** Retry-at-boot message says "running without a loaded manifest" — should also say "lazy retry on first manifest_fetch" so operator doesn't restart unnecessarily.
 - [ ] **[scaffold]** `agent.yaml` comments could include engine provider options (currently only shows anthropic as the default).
 
 ---

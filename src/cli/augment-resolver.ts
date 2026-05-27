@@ -22,7 +22,7 @@ import { supabaseMemory } from "../augments/supabase-memory";
 import { filesystem } from "../augments/filesystem";
 import { webTransport } from "../transports/web-transport";
 import { webFetch } from "../augments/web-fetch";
-import { orgContext } from "../augments/org-context";
+import { manifest } from "../augments/manifest";
 import { skills } from "../augments/skills";
 import { bash } from "../augments/bash";
 import { notify } from "../augments/notify";
@@ -62,7 +62,7 @@ function resolvePath(path: string, agentDir: string): string {
 }
 
 /**
- * Resolve an orgContext baseUrl, normalizing relative `file://...` shapes
+ * Resolve an manifest baseUrl, normalizing relative `file://...` shapes
  * against the agent dir so the augment factory only ever sees absolute
  * file:// URLs.
  *
@@ -73,14 +73,14 @@ function resolvePath(path: string, agentDir: string): string {
  *     an absolute file:// URL via `pathToFileURL`
  *   - `file://relative/path`       — same; tolerated for ergonomics. The two-
  *     slash relative form mirrors how operators tend to write `file://`-style
- *     URLs in YAML config (`file://./org-context`).
+ *     URLs in YAML config (`file://./manifest`).
  *
  * Rationale: keeping the relative→absolute conversion in the resolver avoids
  * threading an `agentDir` construction parameter through to the augment
- * factory (per ADR-024 — no new kernel surface; per the org-context augment's
+ * factory (per ADR-024 — no new kernel surface; per the manifest augment's
  * design — the factory accepts only absolute file:// URLs).
  */
-function resolveOrgContextBaseUrl(baseUrl: string, agentDir: string): string {
+function resolveManifestBaseUrl(baseUrl: string, agentDir: string): string {
   if (!/^file:/i.test(baseUrl)) return baseUrl;
 
   // Distinguishing absolute vs relative after stripping the `file:` scheme
@@ -509,9 +509,9 @@ export async function resolveAugments(
       case "webFetch":
         augment = resolveWebFetch(opts);
         break;
-      case "orgContext":
-        augment = orgContext({
-          baseUrl: resolveOrgContextBaseUrl(opts.baseUrl as string, agentDir),
+      case "manifest":
+        augment = manifest({
+          baseUrl: resolveManifestBaseUrl(opts.baseUrl as string, agentDir),
           token: opts.token as string | undefined,
           cacheTtlMs: opts.cacheTtlMs as number | undefined,
         });
