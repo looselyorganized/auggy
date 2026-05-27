@@ -15,6 +15,7 @@ import type { CatalogEntry } from "../../src/cli/augment-catalog";
 function makeEntry(partial: Partial<CatalogEntry>): CatalogEntry {
   return {
     label: partial.label ?? "test",
+    tagline: partial.tagline ?? "test tagline",
     description: partial.description ?? "test entry",
     type: partial.type ?? "test",
     defaultName: partial.defaultName ?? "test",

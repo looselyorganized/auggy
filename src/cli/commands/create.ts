@@ -230,22 +230,39 @@ async function runWizard(): Promise<WizardAnswers> {
   );
 
   // Interactive augment selection.
+  //
+  // Two-step visual: print the always-included augments above the picker
+  // as a dimmed header (no checkbox, no scrollable position) so they don't
+  // compete for attention or confuse first-runners about what's actually
+  // a choice. Then run checkbox() only on the optional entries with
+  // one-line taglines + a detail panel for the focused row.
+  const requiredEntries = AUGMENT_CATALOG.filter((e) => e.required);
+  const optionalEntries = AUGMENT_CATALOG.filter((e) => !e.required);
+
+  if (requiredEntries.length > 0) {
+    console.log();
+    console.log(dim("  Always included:"));
+    for (const entry of requiredEntries) {
+      console.log(`    ${dim("•")}  ${entry.label.padEnd(20)} ${dim(entry.tagline)}`);
+    }
+    console.log();
+  }
+
   const selected = await withEscRestart((ctx) =>
     checkbox(
       {
-        message: "Select augments:",
-        choices: AUGMENT_CATALOG.map((entry) => ({
-          name: `${entry.label} — ${entry.description}`,
+        message: "Pick the rest:",
+        choices: optionalEntries.map((entry) => ({
+          name: `${entry.label.padEnd(20)} ${entry.tagline}`,
           value: entry,
-          checked: entry.required,
-          disabled: entry.required ? "(always included)" : false,
+          description: entry.description,
         })),
       },
       ctx,
     ),
   );
 
-  const augments = AUGMENT_CATALOG.filter((e) => e.required);
+  const augments = [...requiredEntries];
   for (const entry of selected) {
     if (!augments.includes(entry)) {
       augments.push(entry);
