@@ -40,7 +40,7 @@ The `docs/` directory carries operator-facing references for the augments and su
 |-----|--------|
 | `docs/02-architecture-overview.md` | Module map, data flow through a turn |
 | `docs/06-transports.md` | Transport interface, AG-UI event protocol, SSE streaming |
-| `docs/07-built-in-augments.md` | All 13 built-in augments + bundled-skill convention (filesystem / layeredMemory / webFetch / orgContext / bash / notify / agentMail / turnControl / visitorAuth ship `skill/`) |
+| `docs/07-built-in-augments.md` | All 13 built-in augments + bundled-skill convention (filesystem / layeredMemory / webFetch / manifest / bash / notify / agentMail / turnControl / visitorAuth ship `skill/`) |
 | `docs/13-notify.md` | `notify` augment operator reference (destinations, rate limit, dedup) |
 | `docs/22-agent-mail.md` | `agentMail` augment operator reference (Phase A outbound — tools, guards, admin) |
 | `docs/14-telegram-transport.md` | `telegramTransport` operator reference (modes, identity resolution, deployment) |
@@ -122,8 +122,8 @@ src/
 │   │   ├── index.ts        # Outbound messaging to operator-configured destinations
 │   │   ├── adapters/{telegram, webhook}.ts
 │   │   └── skill/SKILL.md
-│   ├── org-context/
-│   │   ├── index.ts        # Org knowledge (manifest + org_fetch; HTTP or file:// baseUrl)
+│   ├── manifest/
+│   │   ├── index.ts        # Org knowledge (manifest + manifest_fetch; HTTP or file:// baseUrl)
 │   │   └── skill/SKILL.md
 │   ├── supabase-memory/
 │   │   └── index.ts        # Namespace memory provider (frozen, kept for migration)

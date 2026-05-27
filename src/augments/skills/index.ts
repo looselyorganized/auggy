@@ -30,7 +30,7 @@ export interface SkillsOptions {
    * should contain a SKILL.md with `name` + `description` YAML frontmatter.
    *
    * The augment-resolver converts relative paths against the agent dir before
-   * construction (same pattern as orgContext's file:// scheme), so the
+   * construction (same pattern as manifest's file:// scheme), so the
    * augment factory only ever sees absolute paths.
    */
   dir: string;

@@ -10,4 +10,4 @@ charge. Bulk orders (100 units or more) are subject to a 15% restocking
 fee, also denominated in synthetic currency.
 
 This policy is fictional and is referenced only by the eval-suite test
-cases that exercise the orgContext augment.
+cases that exercise the manifest augment.

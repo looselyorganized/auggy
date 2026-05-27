@@ -89,8 +89,8 @@ export { filesystem } from "./augments/filesystem";
 export type { FilesystemOptions, FsMount } from "./augments/filesystem";
 
 // === Built-in augments (org) ===
-export { orgContext } from "./augments/org-context";
-export type { OrgContextOptions } from "./augments/org-context";
+export { manifest } from "./augments/manifest";
+export type { ManifestOptions } from "./augments/manifest";
 
 // === Built-in augments (web) ===
 export { webFetch } from "./augments/web-fetch";

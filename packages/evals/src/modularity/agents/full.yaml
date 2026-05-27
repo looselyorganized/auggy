@@ -1,6 +1,6 @@
-# Full agent — all non-external augments + orgContext (6 augments, ~15 tools)
+# Full agent — all non-external augments + manifest (6 augments, ~15 tools)
 # Used by modularity-accuracy eval to test loaded agent accuracy.
-# orgContext uses a dummy URL — tools register but never execute (distractors).
+# manifest uses a dummy URL — tools register but never execute (distractors).
 
 id: aug1_00000000-0000-4000-a000-000000000003
 name: eval-full
@@ -57,6 +57,6 @@ augments:
           description: "Run health checks against all services"
           command: "echo healthy"
   - name: org
-    type: orgContext
+    type: manifest
     options:
       baseUrl: http://localhost:0

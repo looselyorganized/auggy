@@ -1,17 +1,18 @@
 /**
- * Org-context augment — read-only manifest registry.
+ * Manifest augment — read-only registry of information endpoints the agent
+ * can access (files, URLs, etc.).
  *
  * Connects an Auggy agent to an organization's knowledge API. Two stages of
  * progressive disclosure:
  *   1. Manifest (always in context, ~200 tokens) — org identity + endpoint list
- *   2. Endpoint content (on demand via org_fetch) — full docs, fetched when relevant
+ *   2. Endpoint content (on demand via manifest_fetch) — full docs, fetched when relevant
  *
  * Outbound messaging (org_escalate, rate limits) moved to the notify augment
  * in roadmap item 6 (2026-04-28). For escalation, mount the notify augment
  * alongside this one.
  *
  * Boot is graceful: if the org API is unreachable, the agent starts without
- * org context and logs a warning. org_fetch will fail with clear errors until
+ * manifest and logs a warning. manifest_fetch will fail with clear errors until
  * the API is reachable.
  *
  * URL schemes (per α-6 / spec §Decision 8):
@@ -38,7 +39,7 @@ import type { HttpClient } from "../../http";
 // Types
 // ---------------------------------------------------------------------------
 
-export interface OrgContextOptions {
+export interface ManifestOptions {
   /**
    * Base URL of the org's knowledge source. Three schemes accepted:
    *
@@ -67,7 +68,7 @@ interface ManifestEndpoint {
   method?: string;
 }
 
-interface OrgManifest {
+interface Manifest {
   org: string;
   purpose: string;
   operator?: string;
@@ -76,11 +77,11 @@ interface OrgManifest {
 }
 
 /**
- * Validate that parsed JSON has the OrgManifest shape. Returns the manifest
- * cast to OrgManifest if valid, null if not. Hand-rolled (not zod) to avoid
+ * Validate that parsed JSON has the Manifest shape. Returns the manifest
+ * cast to Manifest if valid, null if not. Hand-rolled (not zod) to avoid
  * a runtime-validation dependency for a single shape; the schema is small.
  *
- * Rationale: `JSON.parse(body) as OrgManifest` is a TypeScript cast that
+ * Rationale: `JSON.parse(body) as Manifest` is a TypeScript cast that
  * lies at runtime — a body of `{}` or `{"endpoints": null}` parses
  * successfully but breaks downstream (the allowlist check throws on
  * `undefined.endpoints`; `onBoot` crashes on `manifest.endpoints.length`).
@@ -89,7 +90,7 @@ interface OrgManifest {
  * loaded" (warn + return prior cache, keeping the augment's graceful-boot
  * contract intact).
  */
-function validateManifest(raw: unknown): OrgManifest | null {
+function validateManifest(raw: unknown): Manifest | null {
   if (raw === null || typeof raw !== "object") return null;
   const m = raw as Record<string, unknown>;
   if (typeof m.org !== "string") return null;
@@ -104,7 +105,7 @@ function validateManifest(raw: unknown): OrgManifest | null {
   }
   if (m.operator !== undefined && typeof m.operator !== "string") return null;
   if (m.phase !== undefined && typeof m.phase !== "string") return null;
-  return m as unknown as OrgManifest;
+  return m as unknown as Manifest;
 }
 
 // ---------------------------------------------------------------------------
@@ -132,14 +133,14 @@ function parseFileBaseUrl(baseUrl: string): string {
     absPath = fileURLToPath(trimmed);
   } catch (err) {
     throw new Error(
-      `org-context: invalid file:// URL "${baseUrl}" — must be absolute (file:///abs/path). ` +
+      `manifest: invalid file:// URL "${baseUrl}" — must be absolute (file:///abs/path). ` +
         `Relative file:// URLs must be resolved by the augment-resolver against the agent dir before construction. ` +
         `(${(err as Error).message})`,
     );
   }
   if (!isAbsolute(absPath)) {
     throw new Error(
-      `org-context: file:// URL "${baseUrl}" did not resolve to an absolute path (got "${absPath}").`,
+      `manifest: file:// URL "${baseUrl}" did not resolve to an absolute path (got "${absPath}").`,
     );
   }
   return absPath;
@@ -232,7 +233,7 @@ async function safeResolveUnderBase(realBaseDir: string, requestedPath: string):
   // Layer 1: null-byte rejection.
   if (requestedPath.includes("\0")) {
     throw new Error(
-      `org-context: rejected path containing null byte: ${JSON.stringify(requestedPath)}`,
+      `manifest: rejected path containing null byte: ${JSON.stringify(requestedPath)}`,
     );
   }
 
@@ -241,7 +242,7 @@ async function safeResolveUnderBase(realBaseDir: string, requestedPath: string):
   if (decoded.includes("\0")) {
     // Re-check after decode — `%00` decodes to `\0`.
     throw new Error(
-      `org-context: rejected path containing null byte after decode: ${JSON.stringify(requestedPath)}`,
+      `manifest: rejected path containing null byte after decode: ${JSON.stringify(requestedPath)}`,
     );
   }
 
@@ -250,13 +251,13 @@ async function safeResolveUnderBase(realBaseDir: string, requestedPath: string):
   // 3a: `..` segment — `^..` or `/../` or trailing `/..`.
   if (/(?:^|\/)\.\.(?:\/|$)/.test(decoded)) {
     throw new Error(
-      `org-context: rejected traversal — path contains '..' segment: ${JSON.stringify(requestedPath)}`,
+      `manifest: rejected traversal — path contains '..' segment: ${JSON.stringify(requestedPath)}`,
     );
   }
   // 3b: doubled leading slash — `//foo` is an attempt to disturb root semantics.
   if (decoded.startsWith("//")) {
     throw new Error(
-      `org-context: rejected traversal — path begins with doubled slash: ${JSON.stringify(requestedPath)}`,
+      `manifest: rejected traversal — path begins with doubled slash: ${JSON.stringify(requestedPath)}`,
     );
   }
   // 3c: surviving encoded traversal marker. After decode-once, any literal
@@ -264,7 +265,7 @@ async function safeResolveUnderBase(realBaseDir: string, requestedPath: string):
   // double-encoding attempt that must not be silently accepted.
   if (/%2[eE]/.test(decoded)) {
     throw new Error(
-      `org-context: rejected traversal — path contains encoded traversal marker that survived decode: ${JSON.stringify(requestedPath)}`,
+      `manifest: rejected traversal — path contains encoded traversal marker that survived decode: ${JSON.stringify(requestedPath)}`,
     );
   }
 
@@ -282,9 +283,7 @@ async function safeResolveUnderBase(realBaseDir: string, requestedPath: string):
   // (e.g. "C:\\Windows\\..."), UNC paths, and any other absolute shape that
   // shouldn't escape relative-join semantics.
   if (isAbsolute(stripped)) {
-    throw new Error(
-      `org-context: rejected absolute-looking path: ${JSON.stringify(requestedPath)}`,
-    );
+    throw new Error(`manifest: rejected absolute-looking path: ${JSON.stringify(requestedPath)}`);
   }
 
   // Layer 6+7: resolve under base, realpath, boundary check.
@@ -305,7 +304,7 @@ async function safeResolveUnderBase(realBaseDir: string, requestedPath: string):
 
   if (!isWithinBase(realCandidate, realBaseDir)) {
     throw new Error(
-      `org-context: rejected traversal — ${JSON.stringify(requestedPath)} resolves outside base ${realBaseDir}`,
+      `manifest: rejected traversal — ${JSON.stringify(requestedPath)} resolves outside base ${realBaseDir}`,
     );
   }
 
@@ -318,7 +317,7 @@ async function safeResolveUnderBase(realBaseDir: string, requestedPath: string):
 
 const DEFAULT_CACHE_TTL = 60 * 60 * 1000; // 1 hour
 
-export function orgContext(opts: OrgContextOptions): Augment {
+export function manifest(opts: ManifestOptions): Augment {
   const isFile = FILE_SCHEME_RE.test(opts.baseUrl);
 
   // For HTTP/HTTPS: keep existing behavior (trim trailing slash, init client).
@@ -334,20 +333,20 @@ export function orgContext(opts: OrgContextOptions): Augment {
         // narrow. Never actually called when isFile is true.
         createHttpClient({
           timeoutMs: 10_000,
-          userAgent: "auggy-org-context/0.2",
+          userAgent: "auggy-manifest/0.2",
           defaultHeaders: opts.token ? { authorization: `Bearer ${opts.token}` } : {},
         }))
       : createHttpClient({
           timeoutMs: 10_000,
-          userAgent: "auggy-org-context/0.2",
+          userAgent: "auggy-manifest/0.2",
           defaultHeaders: opts.token ? { authorization: `Bearer ${opts.token}` } : {},
         });
   const cacheTtl = opts.cacheTtlMs ?? DEFAULT_CACHE_TTL;
 
-  let cachedManifest: OrgManifest | null = null;
+  let cachedManifest: Manifest | null = null;
   let cacheExpiresAt = 0;
   // Cached realpath of the file:// base dir. Populated on first manifest
-  // fetch (or first org_fetch if the manifest hadn't been read). Stays
+  // fetch (or first manifest_fetch if the manifest hadn't been read). Stays
   // null until then; subsequent calls reuse the cached value.
   let cachedRealBase: string | null = null;
 
@@ -361,11 +360,11 @@ export function orgContext(opts: OrgContextOptions): Augment {
     // clean error if the operator pointed baseUrl at something invalid.
     const baseStat = await stat(fileBasePath).catch((err: unknown) => {
       throw new Error(
-        `org-context: file:// base "${fileBasePath}" not accessible: ${(err as Error).message}`,
+        `manifest: file:// base "${fileBasePath}" not accessible: ${(err as Error).message}`,
       );
     });
     if (!baseStat.isDirectory()) {
-      throw new Error(`org-context: file:// base "${fileBasePath}" is not a directory`);
+      throw new Error(`manifest: file:// base "${fileBasePath}" is not a directory`);
     }
     cachedRealBase = await realpath(fileBasePath);
     return cachedRealBase;
@@ -375,7 +374,7 @@ export function orgContext(opts: OrgContextOptions): Augment {
   // Manifest fetching (HTTP or file)
   // ---------------------------------------------------------------------------
 
-  async function fetchManifest(force = false): Promise<OrgManifest | null> {
+  async function fetchManifest(force = false): Promise<Manifest | null> {
     if (!force && cachedManifest && Date.now() < cacheExpiresAt) {
       return cachedManifest;
     }
@@ -389,7 +388,7 @@ export function orgContext(opts: OrgContextOptions): Augment {
         const validated = validateManifest(parsed);
         if (validated === null) {
           console.warn(
-            `[org-context] manifest at ${fileBasePath}/manifest has invalid shape — running without org context. Will retry on next fetch.`,
+            `[manifest] manifest at ${fileBasePath}/manifest has invalid shape — running without a loaded manifest. Will retry on next fetch.`,
           );
           return cachedManifest;
         }
@@ -398,7 +397,7 @@ export function orgContext(opts: OrgContextOptions): Augment {
         return cachedManifest;
       } catch (err) {
         console.warn(
-          `[org-context] failed to read file:// manifest from ${fileBasePath}: ${(err as Error).message}`,
+          `[manifest] failed to read file:// manifest from ${fileBasePath}: ${(err as Error).message}`,
         );
         return cachedManifest;
       }
@@ -407,14 +406,14 @@ export function orgContext(opts: OrgContextOptions): Augment {
     try {
       const res = await client.get(`${httpBaseUrl}/manifest`);
       if (res.status !== 200) {
-        console.warn(`[org-context] manifest returned ${res.status}: ${res.body.slice(0, 200)}`);
+        console.warn(`[manifest] manifest returned ${res.status}: ${res.body.slice(0, 200)}`);
         return cachedManifest;
       }
       const parsed: unknown = JSON.parse(res.body);
       const validated = validateManifest(parsed);
       if (validated === null) {
         console.warn(
-          `[org-context] manifest at ${httpBaseUrl}/manifest has invalid shape — running without org context. Will retry on next fetch.`,
+          `[manifest] manifest at ${httpBaseUrl}/manifest has invalid shape — running without a loaded manifest. Will retry on next fetch.`,
         );
         return cachedManifest;
       }
@@ -422,7 +421,7 @@ export function orgContext(opts: OrgContextOptions): Augment {
       cacheExpiresAt = Date.now() + cacheTtl;
       return cachedManifest;
     } catch (err) {
-      console.warn(`[org-context] failed to fetch manifest: ${(err as Error).message}`);
+      console.warn(`[manifest] failed to fetch manifest: ${(err as Error).message}`);
       return cachedManifest;
     }
   }
@@ -431,7 +430,7 @@ export function orgContext(opts: OrgContextOptions): Augment {
   // Context block
   // ---------------------------------------------------------------------------
 
-  function buildContextBlock(manifest: OrgManifest): string {
+  function buildContextBlock(manifest: Manifest): string {
     const lines = [`# ${manifest.org} — Organization Context`, "", manifest.purpose, ""];
 
     if (manifest.operator) {
@@ -444,7 +443,7 @@ export function orgContext(opts: OrgContextOptions): Augment {
     lines.push("");
     lines.push("## Available org knowledge");
     lines.push("");
-    lines.push("Use `org_fetch` to retrieve any of these when relevant to the conversation:");
+    lines.push("Use `manifest_fetch` to retrieve any of these when relevant to the conversation:");
     lines.push("");
 
     for (const ep of manifest.endpoints) {
@@ -478,7 +477,7 @@ export function orgContext(opts: OrgContextOptions): Augment {
     if (!manifest) {
       return JSON.stringify({
         error:
-          "Org context refused: no manifest loaded — cannot validate endpoint allowlist. " +
+          "Manifest unavailable: no manifest loaded — cannot validate endpoint allowlist. " +
           "The manifest is the authoritative contract for advertised endpoints.",
         hint: "Check that the org base is reachable and the manifest is present and well-formed.",
       });
@@ -486,15 +485,15 @@ export function orgContext(opts: OrgContextOptions): Augment {
     const allowed = manifest.endpoints.some((ep) => ep.path === requestedPath);
     if (!allowed) {
       return JSON.stringify({
-        error: `Org context refused: endpoint ${JSON.stringify(requestedPath)} is not in the manifest's advertised endpoints`,
-        hint: "The model may only fetch paths advertised by the manifest. Inspect the org context block for the listed paths.",
+        error: `Manifest endpoint refused: ${JSON.stringify(requestedPath)} is not in the manifest's advertised endpoints`,
+        hint: "The model may only fetch paths advertised by the manifest. Inspect the manifest block for the listed paths.",
       });
     }
     return null;
   }
 
   // ---------------------------------------------------------------------------
-  // org_fetch tool — file:// branch
+  // manifest_fetch tool — file:// branch
   // ---------------------------------------------------------------------------
 
   async function fetchFromFile(endpoint: string, prompt?: string): Promise<string> {
@@ -510,7 +509,7 @@ export function orgContext(opts: OrgContextOptions): Augment {
       realBase = await resolveRealBase();
     } catch (err) {
       return JSON.stringify({
-        error: `Failed to resolve org-context base: ${(err as Error).message}`,
+        error: `Failed to resolve manifest base: ${(err as Error).message}`,
         hint: "Check the file:// baseUrl in agent.yaml and that the directory exists.",
       });
     }
@@ -573,7 +572,7 @@ export function orgContext(opts: OrgContextOptions): Augment {
   }
 
   // ---------------------------------------------------------------------------
-  // org_fetch tool — HTTP branch (unchanged)
+  // manifest_fetch tool — HTTP branch (unchanged)
   // ---------------------------------------------------------------------------
 
   async function fetchFromHttp(endpoint: string, prompt?: string): Promise<string> {
@@ -627,13 +626,13 @@ export function orgContext(opts: OrgContextOptions): Augment {
   }
 
   // ---------------------------------------------------------------------------
-  // org_fetch tool
+  // manifest_fetch tool
   // ---------------------------------------------------------------------------
 
-  const orgFetchTool = defineTool({
-    name: "org_fetch",
+  const manifestFetchTool = defineTool({
+    name: "manifest_fetch",
     description:
-      "Fetch knowledge from the organization's API. Use the endpoint paths from the org context manifest.",
+      "Fetch knowledge from the organization's API. Use the endpoint paths from the manifest.",
     category: "search",
     input: z.object({
       endpoint: z
@@ -654,16 +653,16 @@ export function orgContext(opts: OrgContextOptions): Augment {
   // ---------------------------------------------------------------------------
 
   return {
-    name: "org-context",
+    name: "manifest",
     capabilities: ["context", "tools"],
-    tools: [orgFetchTool],
+    tools: [manifestFetchTool],
 
     context: async () => {
       const manifest = await fetchManifest();
       if (!manifest) return [];
 
       const block: ContextBlock = {
-        source: "org-context",
+        source: "manifest",
         content: buildContextBlock(manifest),
         placement: "system",
         priority: "required",
@@ -683,18 +682,18 @@ export function orgContext(opts: OrgContextOptions): Augment {
         const manifest = await fetchManifest(true);
         if (manifest) {
           console.log(
-            `[org-context] loaded file:// manifest for ${manifest.org} (${manifest.endpoints.length} endpoints)`,
+            `[manifest] loaded file:// manifest for ${manifest.org} (${manifest.endpoints.length} endpoints)`,
           );
         } else {
           console.warn(
-            `[org-context] file:// manifest at ${fileBasePath}/manifest unreadable — running without org context. Will retry on first org_fetch call.`,
+            `[manifest] file:// manifest at ${fileBasePath}/manifest unreadable — running without a loaded manifest. Will retry on first manifest_fetch call.`,
           );
         }
         return;
       }
 
       const delays = [0, 2000, 5000];
-      let manifest: OrgManifest | null = null;
+      let manifest: Manifest | null = null;
 
       for (let i = 0; i < delays.length; i++) {
         if (delays[i]! > 0) await new Promise((r) => setTimeout(r, delays[i]!));
@@ -702,18 +701,18 @@ export function orgContext(opts: OrgContextOptions): Augment {
         if (manifest) break;
         if (i < delays.length - 1) {
           console.warn(
-            `[org-context] manifest fetch failed, retrying in ${delays[i + 1]! / 1000}s...`,
+            `[manifest] manifest fetch failed, retrying in ${delays[i + 1]! / 1000}s...`,
           );
         }
       }
 
       if (manifest) {
         console.log(
-          `[org-context] loaded manifest for ${manifest.org} (${manifest.endpoints.length} endpoints)`,
+          `[manifest] loaded manifest for ${manifest.org} (${manifest.endpoints.length} endpoints)`,
         );
       } else {
         console.warn(
-          "[org-context] org API unreachable — running without org context. Will retry on first org_fetch call.",
+          "[manifest] org API unreachable — running without a loaded manifest. Will retry on first manifest_fetch call.",
         );
       }
     },

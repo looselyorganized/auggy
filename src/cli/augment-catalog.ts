@@ -154,15 +154,15 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
     packageDeps: { "@supabase/supabase-js": "^2.103.0" },
   },
   {
-    label: "orgContext",
-    description: "Connect to org knowledge API (manifest + org_fetch)",
-    type: "orgContext",
-    defaultName: "org",
+    label: "manifest",
+    description: "Registry of information endpoints (files/URLs the agent can fetch)",
+    type: "manifest",
+    defaultName: "manifest",
     defaultOptions: {
       // Default to file:// scheme pointing at the scaffolded example dir
       // (per α-6 + spec §Decision 9). Operators wanting an HTTP-served
-      // manifest replace this with `${ORG_CONTEXT_URL}` and provide the env.
-      baseUrl: "file://./org-context",
+      // manifest replace this with `${MANIFEST_URL}` and provide the env.
+      baseUrl: "file://./manifest",
     },
     required: false,
     hasSkill: true,

@@ -25,7 +25,7 @@ export const modularityDefinition: EvalDefinition = {
     },
     {
       id: "full",
-      label: "Full agent — all augments including orgContext + bash scripts (~15 tools)",
+      label: "Full agent — all augments including manifest + bash scripts (~15 tools)",
       neverExpose: () => [],
       staticPerCohort: true,
     },
