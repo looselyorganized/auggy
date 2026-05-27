@@ -53,8 +53,9 @@ docs/**/
 !docs/18-deploy.md
 !docs/19-visitor-auth.md
 !docs/20-embedding.md
-!docs/21-admin.md
+!docs/21-console.md
 !docs/22-agent-mail.md
+!docs/ROADMAP.md
 !docs/RELEASING.md
 
 # Local git worktrees (subagent-driven-development)

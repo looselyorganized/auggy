@@ -21,7 +21,7 @@
 
 import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
-import type { Augment, ContextBlock } from "../../types";
+import type { AdminInfoBlock, Augment, ContextBlock } from "../../types";
 import { readSkillFrontmatter, type SkillFrontmatter } from "../../cli/skill-frontmatter";
 
 export interface SkillsOptions {
@@ -81,8 +81,41 @@ function buildBlockContent(discovered: DiscoveredSkill[]): string {
 }
 
 export function skills(opts: SkillsOptions): Augment {
+  const adminInfo = async (): Promise<AdminInfoBlock> => {
+    const discovered = discoverSkills(opts.dir);
+    return {
+      augmentName: "skills",
+      title: "Skills",
+      sections: [
+        {
+          kind: "keyValue",
+          rows: [
+            { label: "Directory", value: opts.dir },
+            { label: "Discovered", value: String(discovered.length) },
+          ],
+        },
+        {
+          kind: "table",
+          columns: ["Folder", "Name", "Description"],
+          caption: `${discovered.length} skill${discovered.length === 1 ? "" : "s"} loaded`,
+          rows: discovered.map((s) => [s.folder, s.name ?? "—", s.description ?? ""]),
+        },
+        {
+          kind: "status",
+          level: discovered.length > 0 ? "ok" : "warn",
+          message:
+            discovered.length > 0
+              ? "Skill manifest emitted on every turn."
+              : "No skills discovered — directory empty or SKILL.md frontmatter unparseable.",
+        },
+      ],
+    };
+  };
+
   return {
     name: "skills",
+    type: "skills",
+    category: "capabilities",
     capabilities: ["context"],
     context: async () => {
       const discovered = discoverSkills(opts.dir);
@@ -99,5 +132,6 @@ export function skills(opts: SkillsOptions): Augment {
       };
       return [block];
     },
+    adminInfo,
   };
 }

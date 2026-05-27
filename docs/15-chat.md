@@ -1,5 +1,7 @@
 # `auggy chat` — Operator chat surface (Local GUI)
 
+> **Deprecation timeline (2026-05-27):** `auggy chat` is the v0.x operator chat surface. In v1.0 it is being folded into the `/console` SPA's Chat tab (per `docs/21-console.md`) — single operator surface, single port, served by the agent itself. `auggy chat` continues to work until `/console/chat` reaches parity, then this command is removed. New adopters should expect to use `/console` on the agent's own port; existing flows using `auggy chat` will keep working through the transition.
+
 The polished chat UI for talking to local agents. Boots a Bun-served Vite/React app on `localhost`, discovers running auggies via PID manifests, and proxies messages through to each agent's `/agent/run` with the agent's bearer token attached server-side.
 
 > **Mental model:** `auggy dev <name>` runs an agent. `auggy chat` lets you talk to it. They are separate processes — you can boot the GUI any time after the agent is up.

@@ -1,198 +1,104 @@
+/**
+ * `auggy chat` — open a running agent's `/console/chat` in the browser.
+ *
+ * Replaces the previous standalone GUI (`chat/` package with its own port
+ * 8090 + agent picker) now that every agent serves a built-in console at
+ * `/console` (see docs/21-console.md). One agent → one console; the
+ * console's Chat tab is the single source of truth for operator chat.
+ *
+ *   auggy chat                  — discover running agents; open if one,
+ *                                 prompt if many, error if none.
+ *   auggy chat <name>           — open that agent's /console/chat.
+ *   auggy chat <name> --no-open — print the URL only.
+ *
+ * The standalone `chat/` package is deprecated and will be removed once
+ * downstream callers migrate.
+ */
+
 import { Command } from "commander";
-import { existsSync, mkdirSync, createWriteStream, createReadStream } from "node:fs";
-import { homedir } from "node:os";
-import { join, resolve } from "node:path";
-import { spawn } from "node:child_process";
-import { createHash } from "node:crypto";
-import { pipeline } from "node:stream/promises";
-import packageJson from "../../../package.json" with { type: "json" };
-
-const DEFAULT_PORT = 8090;
-const RELEASE_REPO = "looselyorganized/augment-1";
-
-// TODO(npm-packaging): when this CLI is published to npm, the chat/ package
-// won't be a sibling of src/cli/commands/. Two paths:
-//   a) bundle chat/dist/ as a static asset in the published CLI tarball
-//   b) publish @auggy/chat as a separate npm package and resolve via
-//      `require.resolve("@auggy/chat/server")`
-const CHAT_PACKAGE_DIR = resolve(import.meta.dir, "../../../chat");
+import { select } from "@inquirer/prompts";
+import { listPidManifests, readPidManifest, isProcessAlive } from "../pid-registry";
+import { openBrowser } from "../open-browser";
+import type { PidManifest } from "../types";
 
 export function chatCommand(): Command {
-  const cmd = new Command("chat")
-    .description("Launch the Auggy operator chat surface (Local GUI)")
-    .option("-p, --port <port>", "GUI server port", String(DEFAULT_PORT))
-    .option("--no-open", "Don't auto-open the browser")
-    .option("--rebuild", "Rebuild the GUI dist from source (requires Bun + Vite in chat/)")
-    .action(async (opts: { port: string; open: boolean; rebuild: boolean }) => {
-      const port = Number(opts.port);
-      if (!Number.isInteger(port) || port < 1 || port > 65535) {
-        console.error(`Invalid --port value: ${opts.port}`);
+  return new Command("chat")
+    .description("Open a running agent's /console/chat in your browser")
+    .argument("[name]", "Agent name (optional when only one agent is running)")
+    .option("--no-open", "Print the URL only; don't launch a browser")
+    .action(async (name: string | undefined, opts: { open: boolean }) => {
+      let manifest: PidManifest | null;
+      try {
+        manifest = await pickAgentManifest(name);
+      } catch (err) {
+        console.error(`[auggy chat] ${(err as Error).message}`);
         process.exit(1);
+        return;
+      }
+      if (!manifest) {
+        // pickAgentManifest already printed a tailored message.
+        process.exit(1);
+        return;
       }
 
-      const guiPackageDir = CHAT_PACKAGE_DIR;
-      const localDistDir = join(guiPackageDir, "dist");
-      const version = packageJson.version;
-      const cacheDistDir = join(homedir(), ".auggy", "chat", version, "dist");
-
-      // Lazy-load the chat server so a missing chat/ package (e.g. from an npm
-      // install that omits the chat/ directory) surfaces as a recoverable error
-      // instead of crashing the whole auggy CLI at module-load time.
-      let createGuiServer: typeof import("../../../chat/server").createGuiServer;
-      try {
-        ({ createGuiServer } = await import("../../../chat/server"));
-      } catch (err) {
+      const port = manifest.port;
+      if (port === null) {
         console.error(
-          `[auggy chat] chat package not available: ${(err as Error).message}\n` +
-            `\n` +
-            `Recovery options:\n` +
-            `  • If you are running from source: cd ${guiPackageDir} && bun install\n` +
-            `  • If auggy was installed via npm and chat/ is missing, this is a\n` +
-            `    packaging bug — please file an issue.`,
+          `[auggy chat] Agent "${manifest.name}" is running without webTransport — no /console to open. ` +
+            `Add a webTransport augment to expose the operator console.`,
         );
         process.exit(1);
+        return;
       }
 
-      let distDir: string;
-      try {
-        if (opts.rebuild) {
-          console.log("[auggy chat] Rebuilding chat/dist via Vite...");
-          await runVite(guiPackageDir);
+      const url = `http://localhost:${port}/console/chat`;
+      console.log(url);
+
+      if (opts.open) {
+        const result = openBrowser(url);
+        if (!result.ok) {
+          console.log(`[auggy chat] Couldn't launch a browser; open the URL above manually.`);
         }
-        distDir = await resolveDistDir({
-          localDistDir,
-          cacheDistDir,
-          version,
-        });
-      } catch (err) {
-        console.error(
-          `[auggy chat] chat dist not found or failed to resolve: ${(err as Error).message}\n` +
-            `\n` +
-            `Recovery options:\n` +
-            `  • If you are running from source: cd ${guiPackageDir} && bun install && bun run build\n` +
-            `  • Or pass --rebuild to do that automatically: auggy chat --rebuild\n` +
-            `  • If auggy was installed via npm and chat/ is missing, this is a\n` +
-            `    packaging bug — please file an issue.`,
-        );
-        process.exit(1);
       }
-
-      let server: Awaited<ReturnType<typeof createGuiServer>>;
-      try {
-        server = await createGuiServer({ port, staticDir: distDir });
-      } catch (err) {
-        console.error(
-          `[auggy chat] Failed to start server on port ${port}: ${(err as Error).message}\n` +
-            `Try a different port: auggy chat --port ${port + 1}`,
-        );
-        process.exit(1);
-      }
-
-      const url = `http://localhost:${port}`;
-      console.log(`[auggy chat] Local GUI ready at ${url}`);
-      console.log("[auggy chat] Ctrl-C to stop.");
-
-      if (opts.open) openBrowser(url);
-
-      const shutdown = (signal: string) => {
-        console.log(`\n[auggy chat] Received ${signal}, shutting down...`);
-        try {
-          server.stop();
-        } catch {
-          /* swallow */
-        }
-        process.exit(0);
-      };
-      process.on("SIGINT", () => shutdown("SIGINT"));
-      process.on("SIGTERM", () => shutdown("SIGTERM"));
     });
-
-  return cmd;
 }
 
-async function resolveDistDir(opts: {
-  localDistDir: string;
-  cacheDistDir: string;
-  version: string;
-}): Promise<string> {
-  if (existsSync(join(opts.localDistDir, "index.html"))) return opts.localDistDir;
-  if (existsSync(join(opts.cacheDistDir, "index.html"))) return opts.cacheDistDir;
+// ---------------------------------------------------------------------------
+// Discovery
+// ---------------------------------------------------------------------------
 
-  console.log(
-    `[auggy chat] No cached dist for version ${opts.version}; downloading from GitHub release...`,
-  );
-  await downloadAndCache(opts.version, opts.cacheDistDir);
-  if (!existsSync(join(opts.cacheDistDir, "index.html"))) {
-    throw new Error("download succeeded but dist/index.html not found after extraction");
-  }
-  return opts.cacheDistDir;
-}
-
-async function downloadAndCache(version: string, cacheDistDir: string): Promise<void> {
-  const tag = `v${version}`;
-  const tarballUrl = `https://github.com/${RELEASE_REPO}/releases/download/${tag}/chat-dist-${tag}.tar.gz`;
-  const checksumUrl = `${tarballUrl}.sha256`;
-
-  const cacheRoot = join(cacheDistDir, "..");
-  mkdirSync(cacheRoot, { recursive: true });
-
-  const tarballPath = join(cacheRoot, "dist.tar.gz");
-  const tarRes = await fetch(tarballUrl);
-  if (!tarRes.ok || !tarRes.body) {
-    throw new Error(`Download failed: ${tarRes.status} ${tarRes.statusText} from ${tarballUrl}`);
-  }
-  await pipeline(tarRes.body as unknown as NodeJS.ReadableStream, createWriteStream(tarballPath));
-
-  const checksumRes = await fetch(checksumUrl);
-  if (!checksumRes.ok) {
-    throw new Error(`Failed to fetch checksum: ${checksumRes.status} ${checksumRes.statusText}`);
-  }
-  const checksumLine = await checksumRes.text();
-  const expectedSha = checksumLine.split(/\s+/)[0];
-  const actualSha = await sha256File(tarballPath);
-  if (expectedSha !== actualSha) {
-    throw new Error(`Checksum mismatch: expected ${expectedSha}, got ${actualSha}`);
+async function pickAgentManifest(name: string | undefined): Promise<PidManifest | null> {
+  if (name) {
+    const m = readPidManifest(name);
+    if (!m) {
+      console.error(
+        `[auggy chat] No PID manifest for "${name}". Run \`auggy run ${name}\` first ` +
+          `(or \`auggy list\` to see what's running).`,
+      );
+      return null;
+    }
+    if (!isProcessAlive(m.pid)) {
+      console.error(
+        `[auggy chat] Agent "${name}" has a stale PID manifest. ` +
+          `Run \`auggy run ${name}\` to boot it.`,
+      );
+      return null;
+    }
+    return m;
   }
 
-  await runTar(tarballPath, cacheRoot);
-}
+  const running = listPidManifests();
+  if (running.length === 0) {
+    console.error("[auggy chat] No agents running. Boot one with `auggy run <name>` first.");
+    return null;
+  }
+  if (running.length === 1) return running[0]!;
 
-function sha256File(path: string): Promise<string> {
-  return new Promise((resolveP, rejectP) => {
-    const hash = createHash("sha256");
-    const stream = createReadStream(path);
-    stream.on("data", (chunk: Buffer | string) => hash.update(chunk));
-    stream.on("end", () => resolveP(hash.digest("hex")));
-    stream.on("error", rejectP);
+  return await select<PidManifest>({
+    message: "Which agent?",
+    choices: running.map((m) => ({
+      name: `${m.name} (port ${m.port ?? "—"}, pid ${m.pid})`,
+      value: m,
+    })),
   });
-}
-
-function runTar(tarballPath: string, destDir: string): Promise<void> {
-  return new Promise((resolveP, rejectP) => {
-    const child = spawn("tar", ["-xzf", tarballPath, "-C", destDir], {
-      stdio: "inherit",
-    });
-    child.on("exit", (code) => (code === 0 ? resolveP() : rejectP(new Error(`tar exit ${code}`))));
-    child.on("error", rejectP);
-  });
-}
-
-function runVite(cwd: string): Promise<void> {
-  return new Promise((resolveP, rejectP) => {
-    const child = spawn("bun", ["run", "build"], { cwd, stdio: "inherit" });
-    child.on("exit", (code) =>
-      code === 0 ? resolveP() : rejectP(new Error(`Vite build exit ${code}`)),
-    );
-    child.on("error", rejectP);
-  });
-}
-
-function openBrowser(url: string): void {
-  const platform = process.platform;
-  const cmd = platform === "darwin" ? "open" : platform === "win32" ? "start" : "xdg-open";
-  try {
-    spawn(cmd, [url], { detached: true, stdio: "ignore" }).unref();
-  } catch {
-    /* best-effort */
-  }
 }

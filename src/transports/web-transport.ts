@@ -29,6 +29,7 @@ import {
   type AdminActionRegistry,
   buildAdminActionRegistry,
   handleAdminRoute,
+  resolveDistDir,
 } from "./admin/index";
 import { renderInfoPage } from "./info-page";
 
@@ -129,7 +130,7 @@ export interface WebTransportOptions {
   allowAnonymous?: boolean;
   /**
    * G36 — opt-out flag for the built-in /admin route. Default: `true`.
-   * When `false`, GET/POST /admin and POST /admin/action/* all return 404
+   * When `false`, GET/POST /admin and POST /console/action/* all return 404
    * (no signal that admin exists when disabled). Useful for embedded /
    * headless deploys, operators with a custom admin, or security-conscious
    * setups that don't want HTTP-Basic-over-Bearer exposed.
@@ -400,6 +401,10 @@ export function webTransport(opts: WebTransportOptions): Augment {
   // Empty when adminRoute is disabled or no augment declares adminInfo.
   let actionRegistry: AdminActionRegistry = new Map();
 
+  // Admin SPA dist directory resolved at register() time. `undefined` when no
+  // build exists; the admin transport degrades to a "build required" notice.
+  let adminStaticDir: string | undefined;
+
   // G2 — info endpoint cache. Populated in register() when publicFrontendUrl
   // is unset. Allows HEAD's Content-Length to match GET's body length
   // without re-rendering per request. validatedPublicFrontendUrl mirrors
@@ -551,7 +556,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
   async function adminInfo(): Promise<AdminInfoBlock> {
     const sourceLabel =
       allowAnonymousResolution.source === ("admin-override" as string)
-        ? "/admin override"
+        ? "/console override"
         : allowAnonymousResolution.source === "env"
           ? `env (AUGGY_ALLOW_ANONYMOUS=${process.env.AUGGY_ALLOW_ANONYMOUS})`
           : allowAnonymousResolution.source === "default"
@@ -764,6 +769,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
       // collisions; surface fires at boot, not at first POST.
       if (opts.adminRoute !== false) {
         actionRegistry = await buildAdminActionRegistry(k.getAugments());
+        adminStaticDir = resolveDistDir();
       }
 
       // G2 — validate publicFrontendUrl once + cache info page HTML.
@@ -1144,6 +1150,8 @@ export function webTransport(opts: WebTransportOptions): Augment {
 
   return {
     name: "web",
+    type: "webTransport",
+    category: "transports",
     capabilities: ["transport"],
     transport,
     adminInfo,
@@ -1173,12 +1181,15 @@ export function webTransport(opts: WebTransportOptions): Augment {
 
           // G36 — /admin route. Opt-out via adminRoute: false makes the route
           // look like a 404 (no signal that admin exists when disabled).
-          // Exact-match on "/admin" + scoped prefix on "/admin/action/" — NOT
-          // startsWith("/admin") which would also match /administrative and
+          // Exact-match on "/console" + scoped prefix on "/console/action/" — NOT
+          // startsWith("/console") which would also match /administrative and
           // leak the opt-out setting (M3 fix).
           const adminEnabled = opts.adminRoute !== false;
-          const isAdminPath =
-            url.pathname === "/admin" || url.pathname.startsWith("/admin/action/");
+          // SPA expansion — accept the bare `/admin`, the action POST surface,
+          // and any client-side route under `/admin/<path>`. Using the literal
+          // `/admin/` prefix (note trailing slash) keeps siblings like
+          // `/administrative` from being captured (M3 fix preserved).
+          const isAdminPath = url.pathname === "/console" || url.pathname.startsWith("/console/");
           if (adminEnabled && isAdminPath) {
             if (req.method === "HEAD") {
               return new Response(null, {
@@ -1212,6 +1223,8 @@ export function webTransport(opts: WebTransportOptions): Augment {
               agentDir: opts.agentDir,
               callerIp: adminIp,
               actionRegistry,
+              staticDir: adminStaticDir,
+              selfPort: opts.port,
             });
           }
 

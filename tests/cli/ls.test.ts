@@ -37,7 +37,7 @@ describe("runLs", () => {
     expect(output).toContain(dir);
   });
 
-  test("URL column shows /admin URL for agents with webTransport", async () => {
+  test("URL column shows /console URL for agents with webTransport", async () => {
     seedAgentForTest("zip", {
       auggyDir,
       yaml:
@@ -48,7 +48,7 @@ describe("runLs", () => {
     await runLs({ auggyDir });
     const output = logged.join("\n");
     expect(output).toContain("URL");
-    expect(output).toContain("http://localhost:8085/admin");
+    expect(output).toContain("http://localhost:8085/console");
   });
 
   test("URL column shows dash for agents without webTransport", async () => {

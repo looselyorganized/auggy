@@ -2505,7 +2505,7 @@ describe("webTransport /admin route — basic dispatch (G36 phase 2)", () => {
     const agent = defineAgent({ name: "zip", model: "mock", augments: [aug] }, model);
     await agent.start();
     try {
-      const resp = await fetch(`http://127.0.0.1:${port}/admin`);
+      const resp = await fetch(`http://127.0.0.1:${port}/console`);
       expect(resp.status).toBe(401);
       expect(resp.headers.get("www-authenticate")).toBe('Basic realm="auggy-admin zip"');
       await resp.text();
@@ -2514,7 +2514,7 @@ describe("webTransport /admin route — basic dispatch (G36 phase 2)", () => {
     }
   });
 
-  it("GET /admin with HTTP Basic bearer → 200 + HTML", async () => {
+  it("GET /admin with HTTP Basic bearer → 200 SPA shell when dist is built (or 503 notice when not)", async () => {
     const model = createMockModel();
     const port = 19201;
     const aug = webTransport({
@@ -2525,12 +2525,42 @@ describe("webTransport /admin route — basic dispatch (G36 phase 2)", () => {
     await agent.start();
     try {
       const basic = Buffer.from(":test-token").toString("base64");
-      const resp = await fetch(`http://127.0.0.1:${port}/admin`, {
+      const resp = await fetch(`http://127.0.0.1:${port}/console`, {
+        headers: { authorization: `Basic ${basic}` },
+      });
+      const body = await resp.text();
+      expect(resp.headers.get("content-type")).toContain("text/html");
+      // Either the built SPA shell (200) or the "build required" notice (503)
+      // — both are valid post-SPA. Auth passed in either case.
+      if (resp.status === 200) {
+        expect(body.toLowerCase()).toContain("auggy");
+      } else {
+        expect(resp.status).toBe(503);
+        expect(body).toContain("Console SPA not built");
+      }
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("GET /console/api/dashboard with HTTP Basic bearer → 200 + JSON", async () => {
+    const model = createMockModel();
+    const port = 19211;
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: "test-token" },
+    });
+    const agent = defineAgent({ name: "zip", model: "mock", augments: [aug] }, model);
+    await agent.start();
+    try {
+      const basic = Buffer.from(":test-token").toString("base64");
+      const resp = await fetch(`http://127.0.0.1:${port}/console/api/dashboard`, {
         headers: { authorization: `Basic ${basic}` },
       });
       expect(resp.status).toBe(200);
-      const body = await resp.text();
-      expect(body).toContain("<title>zip — admin</title>");
+      expect(resp.headers.get("content-type")).toContain("application/json");
+      const body = (await resp.json()) as { card: { provider: { name: string } } };
+      expect(body.card.provider.name).toBe("zip");
     } finally {
       await agent.stop();
     }
@@ -2546,7 +2576,7 @@ describe("webTransport /admin route — basic dispatch (G36 phase 2)", () => {
     const agent = defineAgent({ name: "zip", model: "mock", augments: [aug] }, model);
     await agent.start();
     try {
-      const resp = await fetch(`http://127.0.0.1:${port}/admin`, { method: "HEAD" });
+      const resp = await fetch(`http://127.0.0.1:${port}/console`, { method: "HEAD" });
       expect(resp.status).toBe(405);
       expect(resp.headers.get("allow")).toMatch(/GET/);
       expect(resp.headers.get("allow")).toMatch(/POST/);
@@ -2568,7 +2598,7 @@ describe("webTransport /admin route — basic dispatch (G36 phase 2)", () => {
     await agent.start();
     try {
       const basic = Buffer.from(":test-token").toString("base64");
-      const resp = await fetch(`http://127.0.0.1:${port}/admin`, {
+      const resp = await fetch(`http://127.0.0.1:${port}/console`, {
         headers: { authorization: `Basic ${basic}` },
       });
       expect(resp.status).toBe(404);
@@ -2590,14 +2620,14 @@ describe("webTransport /admin route — basic dispatch (G36 phase 2)", () => {
       httpRoutes: [
         {
           method: "GET",
-          path: "/admin",
+          path: "/console",
           auth: "none",
           handler: async () => new Response("evil"),
         },
       ],
     };
     const agent = defineAgent({ name: "zip", model: "mock", augments: [conflicting, aug] }, model);
-    await expect(agent.start()).rejects.toThrow(/admin/i);
+    await expect(agent.start()).rejects.toThrow(/reserved|console/i);
   });
 
   it("S9 — augment cannot register route under /admin/ prefix", async () => {
@@ -2611,14 +2641,14 @@ describe("webTransport /admin route — basic dispatch (G36 phase 2)", () => {
       httpRoutes: [
         {
           method: "POST",
-          path: "/admin/action/notify-test",
+          path: "/console/action/notify-test",
           auth: "none",
           handler: async () => new Response("evil"),
         },
       ],
     };
     const agent = defineAgent({ name: "zip", model: "mock", augments: [conflicting, aug] }, model);
-    await expect(agent.start()).rejects.toThrow(/admin/i);
+    await expect(agent.start()).rejects.toThrow(/reserved|console/i);
   });
 });
 

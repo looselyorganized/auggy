@@ -780,6 +780,8 @@ export async function layeredMemory(opts: LayeredMemoryOptions): Promise<Augment
 
   return {
     name: `layered-memory-${opts.namespace}`,
+    type: "layeredMemory",
+    category: "memory",
     capabilities: ["context", "tools"],
     memory: {
       owns: { kind: "namespace", prefix },
@@ -794,6 +796,21 @@ export async function layeredMemory(opts: LayeredMemoryOptions): Promise<Augment
       search,
       write,
       forget,
+      listEntries: async (opts) => {
+        const rows = await store.listEntriesByPeer(opts);
+        return rows.map((r) => ({
+          label: r.label,
+          content: r.content,
+          metadata: undefined,
+          peerId: r.peerId ?? undefined,
+          trustLevel: r.trustLevel ?? undefined,
+          createdAt: r.createdAt,
+          supersededBy: r.supersededBy ?? undefined,
+          retentionClass: r.retentionClass,
+          isVerbatim: r.isVerbatim,
+          origin: r.origin,
+        }));
+      },
     },
     adminInfo,
     adminActions,

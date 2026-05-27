@@ -255,10 +255,56 @@ export function telegramTransport(opts: TelegramTransportOptions): Augment {
     }
   }
 
+  const adminInfo = async (): Promise<import("../../types").AdminInfoBlock> => {
+    const mode = opts.inbound.mode;
+    return {
+      augmentName: "telegram-transport",
+      title: "Telegram transport",
+      sections: [
+        {
+          kind: "keyValue",
+          rows: [
+            { label: "Bot token configured", value: opts.botToken ? "yes" : "no" },
+            { label: "Inbound mode", value: mode },
+            ...(mode === "polling"
+              ? [
+                  {
+                    label: "Polling timeout (s)",
+                    value: String(opts.inbound.polling?.timeoutSec ?? 30),
+                  },
+                ]
+              : []),
+            ...(mode === "webhook" && opts.inbound.webhook
+              ? [
+                  { label: "Webhook URL", value: opts.inbound.webhook.publicUrl },
+                  { label: "Webhook port", value: String(opts.inbound.webhook.port ?? 8081) },
+                ]
+              : []),
+            {
+              label: "Admitted agents",
+              value: String(opts.auth.admittedAgents?.length ?? 0),
+            },
+          ],
+        },
+        {
+          kind: "status",
+          level: pollHandle || webhookHandle ? "ok" : "warn",
+          message:
+            pollHandle || webhookHandle
+              ? "Transport running."
+              : "Transport not yet started (boot in progress or shutdown).",
+        },
+      ],
+    };
+  };
+
   return {
     name: "telegram-transport",
+    type: "telegramTransport",
+    category: "transports",
     capabilities: ["transport"],
     transport,
+    adminInfo,
 
     async onBoot(): Promise<void> {
       await validateAdmittedAgents(opts.auth.admittedAgents, client);

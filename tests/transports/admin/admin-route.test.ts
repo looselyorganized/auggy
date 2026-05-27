@@ -112,15 +112,35 @@ describe("handleAdminRoute — auth", () => {
     expect(res.headers.get("www-authenticate")).toBe('Basic realm="auggy-admin zip"');
   });
 
-  it("GET /admin with valid bearer → 200 + HTML", async () => {
-    const req = new Request("http://127.0.0.1:8080/admin", {
+  it("GET /console with valid bearer → 503 build-required when no staticDir", async () => {
+    // Without a built SPA dist, the transport degrades to a build-required
+    // notice. Tests that exercise the served-shell path pass an explicit
+    // staticDir via makeCtx({ staticDir }).
+    const req = new Request("http://127.0.0.1:8080/console", {
+      headers: { authorization: basicHeader("test-bearer") },
+    });
+    const res = await handleAdminRoute(req, await makeCtx());
+    expect(res.status).toBe(503);
+    expect(res.headers.get("content-type")).toContain("text/html");
+    const body = await res.text();
+    expect(body).toContain("Console SPA not built");
+  });
+
+  it("GET /console/api/dashboard with valid bearer → 200 + JSON", async () => {
+    const req = new Request("http://127.0.0.1:8080/console/api/dashboard", {
       headers: { authorization: basicHeader("test-bearer") },
     });
     const res = await handleAdminRoute(req, await makeCtx());
     expect(res.status).toBe(200);
-    expect(res.headers.get("content-type")).toContain("text/html");
-    const body = await res.text();
-    expect(body).toContain("<title>zip — admin</title>");
+    expect(res.headers.get("content-type")).toContain("application/json");
+    const body = (await res.json()) as {
+      card: { provider: { name: string } };
+      blocks: unknown[];
+      csrfTokens: unknown[];
+    };
+    expect(body.card.provider.name).toBe("zip");
+    expect(Array.isArray(body.blocks)).toBe(true);
+    expect(Array.isArray(body.csrfTokens)).toBe(true);
   });
 
   it("GET /admin from non-loopback over http → 426", async () => {
@@ -132,7 +152,7 @@ describe("handleAdminRoute — auth", () => {
 });
 
 describe("handleAdminRoute — POST action dispatch", () => {
-  it("POST /admin/action/<id> without CSRF → 403", async () => {
+  it("POST /console/action/<id> without CSRF → 403", async () => {
     const aug: Augment = {
       name: "test",
       adminInfo: async () => ({
@@ -145,7 +165,7 @@ describe("handleAdminRoute — POST action dispatch", () => {
         "test-action": async () => ({ ok: true, message: "ok" }),
       },
     };
-    const req = new Request("http://127.0.0.1:8080/admin/action/test-action", {
+    const req = new Request("http://127.0.0.1:8080/console/action/test-action", {
       method: "POST",
       headers: {
         authorization: basicHeader("test-bearer"),
@@ -157,7 +177,7 @@ describe("handleAdminRoute — POST action dispatch", () => {
     expect(res.status).toBe(403);
   });
 
-  it("POST /admin/action/<id> with valid CSRF dispatches handler", async () => {
+  it("POST /console/action/<id> with valid CSRF dispatches handler", async () => {
     const aug: Augment = {
       name: "test",
       adminInfo: async () => ({
@@ -175,7 +195,7 @@ describe("handleAdminRoute — POST action dispatch", () => {
       agentName: "zip",
       actionId: "test-action",
     });
-    const req = new Request("http://127.0.0.1:8080/admin/action/test-action", {
+    const req = new Request("http://127.0.0.1:8080/console/action/test-action", {
       method: "POST",
       headers: {
         authorization: basicHeader("test-bearer"),
@@ -185,17 +205,17 @@ describe("handleAdminRoute — POST action dispatch", () => {
     });
     const res = await handleAdminRoute(req, await makeCtx({ augments: [aug] }));
     expect(res.status).toBe(303);
-    expect(res.headers.get("location")).toContain("/admin?msg=");
+    expect(res.headers.get("location")).toContain("/console?msg=");
     expect(res.headers.get("location")).toContain(encodeURIComponent("fired"));
   });
 
-  it("POST /admin/action/<unknown-id> → 404", async () => {
+  it("POST /console/action/<unknown-id> → 404", async () => {
     const csrf = await generateCsrfToken({
       bearer: "test-bearer",
       agentName: "zip",
       actionId: "unknown",
     });
-    const req = new Request("http://127.0.0.1:8080/admin/action/unknown", {
+    const req = new Request("http://127.0.0.1:8080/console/action/unknown", {
       method: "POST",
       headers: {
         authorization: basicHeader("test-bearer"),
@@ -207,7 +227,7 @@ describe("handleAdminRoute — POST action dispatch", () => {
     expect(res.status).toBe(404);
   });
 
-  it("POST /admin/action/<id>/row/<rowKey> dispatches with rowKey", async () => {
+  it("POST /console/action/<id>/row/<rowKey> dispatches with rowKey", async () => {
     let receivedParams: Record<string, string> = {};
     const aug: Augment = {
       name: "memory",
@@ -238,7 +258,7 @@ describe("handleAdminRoute — POST action dispatch", () => {
       actionId: "memory-erase",
       rowKey: "vis_abc",
     });
-    const req = new Request("http://127.0.0.1:8080/admin/action/memory-erase/row/vis_abc", {
+    const req = new Request("http://127.0.0.1:8080/console/action/memory-erase/row/vis_abc", {
       method: "POST",
       headers: {
         authorization: basicHeader("test-bearer"),
@@ -271,7 +291,7 @@ describe("handleAdminRoute — POST action dispatch", () => {
       agentName: "zip",
       actionId: "broken-action",
     });
-    const req = new Request("http://127.0.0.1:8080/admin/action/broken-action", {
+    const req = new Request("http://127.0.0.1:8080/console/action/broken-action", {
       method: "POST",
       headers: {
         authorization: basicHeader("test-bearer"),
@@ -282,6 +302,63 @@ describe("handleAdminRoute — POST action dispatch", () => {
     const res = await handleAdminRoute(req, await makeCtx({ augments: [aug] }));
     expect(res.status).toBe(303);
     expect(res.headers.get("location")).toContain(encodeURIComponent("internal error"));
+  });
+
+  it("POST /console/api/chat without CSRF → 400 (cross-site forgery defense)", async () => {
+    // The chat endpoint proxies to /agent/run with the server-side bearer.
+    // Without CSRF, a third-party page could induce the operator's browser
+    // (already authenticated via HTTP Basic) to send a simple-request POST
+    // and inject prompts with full creator-level tool side effects. Codex
+    // adversarial-review High-1 — regression test guards against re-removal.
+    const req = new Request("http://127.0.0.1:8080/console/api/chat", {
+      method: "POST",
+      headers: {
+        authorization: basicHeader("test-bearer"),
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ message: "hello", threadId: "abc" }),
+    });
+    const res = await handleAdminRoute(req, await makeCtx({ selfPort: 9999 }));
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error?: string };
+    expect(body.error).toMatch(/csrf/i);
+  });
+
+  it("POST /console/api/chat with tampered CSRF → 403", async () => {
+    const req = new Request("http://127.0.0.1:8080/console/api/chat", {
+      method: "POST",
+      headers: {
+        authorization: basicHeader("test-bearer"),
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        csrf: "AAAA.9999999999", // syntactically valid but wrong signature
+        message: "hello",
+        threadId: "abc",
+      }),
+    });
+    const res = await handleAdminRoute(req, await makeCtx({ selfPort: 9999 }));
+    expect(res.status).toBe(403);
+  });
+
+  it("POST /console/api/chat with another action's CSRF → 403 (binding to actionId)", async () => {
+    // A token minted for `cred-set` must not be replayable against
+    // `console-chat`. CSRF is bound to (bearer, agentName, actionId).
+    const wrongActionCsrf = await generateCsrfToken({
+      bearer: "test-bearer",
+      agentName: "zip",
+      actionId: "cred-set",
+    });
+    const req = new Request("http://127.0.0.1:8080/console/api/chat", {
+      method: "POST",
+      headers: {
+        authorization: basicHeader("test-bearer"),
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ csrf: wrongActionCsrf, message: "hello", threadId: "abc" }),
+    });
+    const res = await handleAdminRoute(req, await makeCtx({ selfPort: 9999 }));
+    expect(res.status).toBe(403);
   });
 
   it("S7 — POST with expired CSRF token returns 200 + auto-refresh HTML (not 403)", async () => {
@@ -302,7 +379,7 @@ describe("handleAdminRoute — POST action dispatch", () => {
       actionId: "test-action",
       _timestamp: expiredTs,
     });
-    const req = new Request("http://127.0.0.1:8080/admin/action/test-action", {
+    const req = new Request("http://127.0.0.1:8080/console/action/test-action", {
       method: "POST",
       headers: {
         authorization: basicHeader("test-bearer"),

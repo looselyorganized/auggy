@@ -22,16 +22,16 @@ export const RESERVED_PATHS: readonly string[] = Object.freeze([
   "/agent/run",
   "/health",
   "/.well-known/agent-card.json",
-  "/admin",
+  "/console",
 ]);
 
 /**
  * G36 — Path prefixes reserved by webTransport. An augment registering ANY
  * path under one of these prefixes gets a validation error. Used for
- * `/admin/action/*` so augments can't shadow the built-in dispatch.
+ * `/console/action/*` so augments can't shadow the built-in dispatch.
  * (S9 fix from adversarial review.)
  */
-export const RESERVED_PREFIXES: readonly string[] = Object.freeze(["/admin/"]);
+export const RESERVED_PREFIXES: readonly string[] = Object.freeze(["/console/"]);
 
 export interface CollectedRoute extends AugmentHttpRoute {
   /** Augment name that registered this route — for error messages and logging. */

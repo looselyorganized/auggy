@@ -2,7 +2,7 @@ import { z } from "zod";
 import { readFile, writeFile, readdir, mkdir, rm, realpath, stat, lstat } from "node:fs/promises";
 import { resolve, join, relative, extname, isAbsolute, sep, dirname } from "node:path";
 import { Glob } from "bun";
-import type { Augment, ContextBlock } from "../../types";
+import type { AdminInfoBlock, Augment, ContextBlock } from "../../types";
 import { defineTool } from "../../helpers";
 
 /**
@@ -465,9 +465,53 @@ export function filesystem(opts: FilesystemOptions): Augment {
 
   // --- Augment definition ---
 
+  const adminInfo = async (): Promise<AdminInfoBlock> => {
+    const rows = opts.mounts.map((m) => [
+      m.name,
+      m.path,
+      m.writable ? "yes" : "no",
+      m.deletable ? "yes" : "no",
+      String(m.maxReadSize ?? DEFAULT_MAX_READ),
+      String(m.maxWriteSize ?? DEFAULT_MAX_WRITE),
+    ]);
+    return {
+      augmentName: "filesystem",
+      title: "Filesystem",
+      sections: [
+        {
+          kind: "table",
+          columns: ["Mount", "Path", "Writable", "Deletable", "Max read", "Max write"],
+          caption: `${opts.mounts.length} mount${opts.mounts.length === 1 ? "" : "s"} configured.`,
+          rows,
+        },
+        {
+          kind: "keyValue",
+          rows: [
+            { label: "SKILL.md", value: opts.skillFile ?? "(none)" },
+            {
+              label: "Default search excludes",
+              value: DEFAULT_SEARCH_EXCLUDES.join(", "),
+            },
+            {
+              label: "Tools exposed",
+              value: "fs_read, fs_list, fs_write, fs_mkdir, fs_remove, fs_search",
+            },
+            {
+              label: "Public/agent neverExpose",
+              value: "fs_write, fs_mkdir, fs_remove (public); fs_remove (agent)",
+            },
+          ],
+        },
+      ],
+    };
+  };
+
   return {
     name: "filesystem",
+    type: "filesystem",
+    category: "capabilities",
     capabilities: ["tools", "context"],
+    adminInfo,
     constraints: {
       maxToolCallsPerTurn: 15,
       // Structural Layer 1 defaults: mutation tools are hidden from the

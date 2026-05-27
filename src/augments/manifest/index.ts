@@ -652,10 +652,58 @@ export function manifest(opts: ManifestOptions): Augment {
   // Augment
   // ---------------------------------------------------------------------------
 
+  const adminInfo = async (): Promise<import("../../types").AdminInfoBlock> => {
+    const manifest = await fetchManifest().catch(() => null);
+    const scheme = isFile ? "file://" : opts.baseUrl.startsWith("https") ? "https" : "http";
+    return {
+      augmentName: "org-context",
+      title: "Org context",
+      sections: [
+        {
+          kind: "keyValue",
+          rows: [
+            { label: "Base URL", value: opts.baseUrl },
+            { label: "Scheme", value: scheme },
+            { label: "Token configured", value: opts.token ? "yes" : "no" },
+            { label: "Cache TTL (ms)", value: String(opts.cacheTtlMs ?? 60 * 60 * 1000) },
+          ],
+        },
+        manifest
+          ? {
+              kind: "keyValue" as const,
+              rows: [
+                { label: "Org", value: manifest.org },
+                { label: "Purpose", value: manifest.purpose },
+                ...(manifest.operator ? [{ label: "Operator", value: manifest.operator }] : []),
+                ...(manifest.phase ? [{ label: "Phase", value: manifest.phase }] : []),
+                { label: "Endpoints", value: String(manifest.endpoints.length) },
+              ],
+            }
+          : {
+              kind: "status" as const,
+              level: "warn" as const,
+              message: "Manifest not currently loaded — will retry on next org_fetch call.",
+            },
+        ...(manifest
+          ? [
+              {
+                kind: "table" as const,
+                columns: ["Path", "Method", "Description"],
+                rows: manifest.endpoints.map((e) => [e.path, e.method ?? "GET", e.description]),
+              },
+            ]
+          : []),
+      ],
+    };
+  };
+
   return {
     name: "manifest",
+    type: "manifest",
+    category: "memory",
     capabilities: ["context", "tools"],
     tools: [manifestFetchTool],
+    adminInfo,
 
     context: async () => {
       const manifest = await fetchManifest();

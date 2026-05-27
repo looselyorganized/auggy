@@ -1,11 +1,11 @@
-# /admin — Operator Workbench
+# /console — Operator Workbench
 
-The per-agent operator surface served at `GET /admin` by every agent that
-mounts the `webTransport` augment. One agent = one `/admin`.
+The per-agent operator surface served at `GET /console` by every agent that
+mounts the `webTransport` augment. One agent = one `/console`.
 
 ## Scope
 
-`/admin` is **per-agent**. There is no cross-agent dashboard, no central
+`/console` is **per-agent**. There is no cross-agent dashboard, no central
 hub, no fleet view. Operators with multiple local agents open multiple
 browser tabs — one per agent's port. `auggy list` surfaces the URLs.
 
@@ -23,18 +23,18 @@ State-mutating actions additionally require a CSRF token bound to the
 specific `(actionId, rowKey)` tuple — page-shared tokens are rejected.
 See `src/transports/admin/admin-csrf.ts`.
 
-HTTPS is enforced on non-loopback hostnames. Hitting `/admin` over
+HTTPS is enforced on non-loopback hostnames. Hitting `/console` over
 plaintext HTTP from a non-loopback address returns `426 Upgrade Required`
 with guidance.
 
 ## Surface
 
-Single-page React app at `/admin`. Stack: React 19 + Vite + Tailwind +
+Single-page React app at `/console`. Stack: React 19 + Vite + Tailwind +
 shadcn (Radix primitives). Source: `admin/`. Build output: `admin/dist/`.
 The runtime serves the SPA's static assets from `admin/dist/` via
 `src/transports/admin/admin-static.ts`.
 
-The SPA consumes JSON endpoints under `/admin/api/*`. Endpoint shape is
+The SPA consumes JSON endpoints under `/console/api/*`. Endpoint shape is
 package-locked: `admin/dist/` ships inside the same release as the auggy
 runtime, so the JSON contract is always in lockstep with the SPA build.
 No API versioning prefix in v1; add it only if the packaging ever splits.
@@ -58,7 +58,7 @@ augment; tabs are named for the question the operator is asking.
 
 ### Tab visibility
 
-The sidebar is rendered from `/admin/api/augments`, not from a hardcoded
+The sidebar is rendered from `/console/api/augments`, not from a hardcoded
 route list. **Tab visibility maps to installed augments**:
 
 - Tabs whose backing augment(s) aren't installed are hidden from the sidebar.
@@ -71,7 +71,7 @@ route list. **Tab visibility maps to installed augments**:
 - Credentials is always visible (env vars always exist).
 - Augments is always visible.
 - Chat appears when webTransport is present (i.e., always for a
-  browser-reachable agent — if webTransport isn't mounted, /admin
+  browser-reachable agent — if webTransport isn't mounted, /console
   itself isn't served, so the question is moot).
 - Budget appears when `budgets` is in agent.yaml.
 - Security appears when webTransport's auth posture is exposed OR
@@ -199,13 +199,13 @@ exists. Not now.
 
 ---
 
-## What's NOT in /admin
+## What's NOT in /console
 
 - **Cross-agent views.** One agent per surface. Multi-agent is link-era.
 - **Process control** (`start`/`stop`/`restart`). Stays in the CLI —
   crosses trust boundaries (launchd, signals).
 - **`auggy create`.** Scaffolding is operator-local; the agent that
-  would host /admin doesn't exist yet.
+  would host /console doesn't exist yet.
 - **Headless / no-JS fallback.** Operators without a browser use
   `auggy dev` and the agent's other endpoints directly.
 
@@ -213,11 +213,11 @@ exists. Not now.
 
 ## Operator entry points
 
-- `auggy run <name>` — boots the agent and opens `/admin` in the
+- `auggy run <name>` — boots the agent and opens `/console` in the
   operator's default browser. The happy-path command.
 - `auggy dev <name>` — boots the agent foreground without launching a
   browser. For headless / scripted use.
-- `auggy list` — shows each agent's `/admin` URL alongside name +
+- `auggy list` — shows each agent's `/console` URL alongside name +
   status.
 
 ---
@@ -226,7 +226,7 @@ exists. Not now.
 
 - Multi-agent / facility hub (post-link)
 - SPA-driven `auggy create` wizard (CLI is good enough for v1.0)
-- API versioning at `/admin/api/v1/*` (only needed if `admin/dist/`
+- API versioning at `/console/api/v1/*` (only needed if `admin/dist/`
   packaging splits from the runtime)
 - Cross-operator collaboration / multi-seat
 - A dedicated "Inspect" surface for memory browsing or trace history —
