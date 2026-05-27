@@ -304,6 +304,63 @@ describe("handleAdminRoute — POST action dispatch", () => {
     expect(res.headers.get("location")).toContain(encodeURIComponent("internal error"));
   });
 
+  it("POST /console/api/chat without CSRF → 400 (cross-site forgery defense)", async () => {
+    // The chat endpoint proxies to /agent/run with the server-side bearer.
+    // Without CSRF, a third-party page could induce the operator's browser
+    // (already authenticated via HTTP Basic) to send a simple-request POST
+    // and inject prompts with full creator-level tool side effects. Codex
+    // adversarial-review High-1 — regression test guards against re-removal.
+    const req = new Request("http://127.0.0.1:8080/console/api/chat", {
+      method: "POST",
+      headers: {
+        authorization: basicHeader("test-bearer"),
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ message: "hello", threadId: "abc" }),
+    });
+    const res = await handleAdminRoute(req, await makeCtx({ selfPort: 9999 }));
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error?: string };
+    expect(body.error).toMatch(/csrf/i);
+  });
+
+  it("POST /console/api/chat with tampered CSRF → 403", async () => {
+    const req = new Request("http://127.0.0.1:8080/console/api/chat", {
+      method: "POST",
+      headers: {
+        authorization: basicHeader("test-bearer"),
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        csrf: "AAAA.9999999999", // syntactically valid but wrong signature
+        message: "hello",
+        threadId: "abc",
+      }),
+    });
+    const res = await handleAdminRoute(req, await makeCtx({ selfPort: 9999 }));
+    expect(res.status).toBe(403);
+  });
+
+  it("POST /console/api/chat with another action's CSRF → 403 (binding to actionId)", async () => {
+    // A token minted for `cred-set` must not be replayable against
+    // `console-chat`. CSRF is bound to (bearer, agentName, actionId).
+    const wrongActionCsrf = await generateCsrfToken({
+      bearer: "test-bearer",
+      agentName: "zip",
+      actionId: "cred-set",
+    });
+    const req = new Request("http://127.0.0.1:8080/console/api/chat", {
+      method: "POST",
+      headers: {
+        authorization: basicHeader("test-bearer"),
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ csrf: wrongActionCsrf, message: "hello", threadId: "abc" }),
+    });
+    const res = await handleAdminRoute(req, await makeCtx({ selfPort: 9999 }));
+    expect(res.status).toBe(403);
+  });
+
   it("S7 — POST with expired CSRF token returns 200 + auto-refresh HTML (not 403)", async () => {
     const aug: Augment = {
       name: "test",

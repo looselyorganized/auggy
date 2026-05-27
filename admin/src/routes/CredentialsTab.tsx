@@ -18,6 +18,7 @@ import { useConfirm } from "@/lib/confirm";
 import {
   deleteCredential,
   listCredentials,
+  renameCredential,
   revealCredential,
   setCredential,
   type CredentialsEntry,
@@ -126,16 +127,19 @@ export function CredentialsTab() {
       return;
     }
     setEditing({ ...editing, saving: true });
-    // When renaming, delete the old key first then set the new one.
-    if (editing.originalKey && editing.originalKey !== key) {
-      const del = await deleteCredential(data?.csrfTokens ?? [], editing.originalKey);
-      if (!del.ok) {
-        push("error", del.message || "rename failed");
-        setEditing((prev) => (prev ? { ...prev, saving: false } : null));
-        return;
-      }
-    }
-    const r = await setCredential(data?.csrfTokens ?? [], key, editing.value);
+    // Renames go through a single atomic server op so a failure can't drop
+    // the secret (codex adversarial-review Medium-1 fix). The previous
+    // client-side delete-then-set sequence had no rollback if the set step
+    // failed mid-rename.
+    const r =
+      editing.originalKey && editing.originalKey !== key
+        ? await renameCredential(
+            data?.csrfTokens ?? [],
+            editing.originalKey,
+            key,
+            editing.value,
+          )
+        : await setCredential(data?.csrfTokens ?? [], key, editing.value);
     push(r.ok ? "success" : "error", r.message || (r.ok ? "Saved" : "Failed"));
     if (r.ok) {
       setEditing(null);
@@ -370,7 +374,7 @@ function EditDialog({
             ? "Will be added to .env."
             : trimmed === editing.originalKey
               ? "Value will be updated in place."
-              : "Existing entry will be deleted, new key added."
+              : "Will be renamed atomically (no intermediate empty state on disk)."
     : "";
 
   return (

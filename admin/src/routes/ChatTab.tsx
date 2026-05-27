@@ -4,6 +4,7 @@ import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/ca
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { useDashboardContext } from "@/components/admin/DashboardContext";
+import { findCsrfToken } from "@/lib/api";
 import { cn } from "@/lib/utils";
 // Reuses only the AG-UI parser logic from chat/ — no UI components, no
 // stylesheet. The widget itself is native to console's idiom (Tailwind +
@@ -74,13 +75,22 @@ export function ChatTab() {
       setMessages((ms) => ms.map((m) => (m.id === assistantMsg.id ? { ...m, ...patch } : m)));
 
     try {
+      const csrf = findCsrfToken(data?.csrfTokens ?? [], "console-chat");
+      if (!csrf) {
+        throw new Error(
+          "Missing CSRF token — reload the page to mint a fresh /console/api/chat token.",
+        );
+      }
       const url = buildSameOriginUrl("/console/api/chat");
       const res = await fetch(url, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ message: text, threadId }),
+        body: JSON.stringify({ csrf, message: text, threadId }),
         signal: ctrl.signal,
       });
+      if (res.status === 419) {
+        throw new Error("Session expired — reload the page.");
+      }
       if (!res.ok) {
         const detail = await readErrorDetail(res);
         throw new Error(`${res.status} ${res.statusText}${detail ? ` — ${detail}` : ""}`);
@@ -148,7 +158,7 @@ export function ChatTab() {
           break;
       }
     }
-  }, [input, streaming, threadId]);
+  }, [input, streaming, threadId, data]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {

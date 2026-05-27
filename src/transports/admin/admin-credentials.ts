@@ -11,103 +11,20 @@
  *     whitespace, `=`, `"`, `'`, `$`, `#`, or leading/trailing whitespace.
  *   - File round-trips through `parseEnvFile` → mutations → `serializeEnv`
  *     so the operator's comments and ordering survive edits.
+ *
+ * IMPORTANT: parsing/serialization is owned by `src/cli/env-parse.ts`, which
+ * is also used by `loadEnvFile` so the runtime and the UI agree on disk
+ * format by construction. Do not duplicate the parser here.
  */
 
 import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { ENV_KEY_RE, parseEnvFile, serializeEnv, type EnvLine } from "../../cli/env-parse";
 
-// ---------------------------------------------------------------------------
-// File parsing / serialization
-// ---------------------------------------------------------------------------
+export type { EnvLine } from "../../cli/env-parse";
+export { parseEnvFile, serializeEnv } from "../../cli/env-parse";
 
-export type EnvLine =
-  | { kind: "kv"; key: string; value: string; raw: string }
-  | { kind: "comment"; raw: string }
-  | { kind: "blank" };
-
-const KV_LINE_RE = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/;
-const KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
-
-/**
- * Parse a .env file body into an ordered list of lines. Each line is either
- * a key/value, a comment, or a blank line. Comments and blanks are preserved
- * verbatim so a round-trip leaves the operator's structure intact.
- *
- * Quoting: handles `'…'` and `"…"` wrappers (strips the quotes for the
- * runtime value). Backslash escapes inside double quotes (\n, \t, \", \\)
- * are decoded; single-quoted values pass through literally.
- */
-export function parseEnvFile(text: string): EnvLine[] {
-  const lines = text.split(/\r?\n/);
-  // Drop a trailing empty line caused by a file ending in \n so we don't
-  // emit a phantom blank on every round-trip.
-  if (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
-
-  const out: EnvLine[] = [];
-  for (const raw of lines) {
-    if (raw.trim().length === 0) {
-      out.push({ kind: "blank" });
-      continue;
-    }
-    if (raw.trim().startsWith("#")) {
-      out.push({ kind: "comment", raw });
-      continue;
-    }
-    const m = raw.match(KV_LINE_RE);
-    if (!m) {
-      // Unrecognized — treat as a comment so it survives the round-trip.
-      out.push({ kind: "comment", raw });
-      continue;
-    }
-    const key = m[1]!;
-    const value = decodeEnvValue(m[2]!);
-    out.push({ kind: "kv", key, value, raw });
-  }
-  return out;
-}
-
-function decodeEnvValue(raw: string): string {
-  const trimmed = raw.trim();
-  if (trimmed.length >= 2 && trimmed.startsWith('"') && trimmed.endsWith('"')) {
-    return trimmed
-      .slice(1, -1)
-      .replace(/\\n/g, "\n")
-      .replace(/\\t/g, "\t")
-      .replace(/\\"/g, '"')
-      .replace(/\\\\/g, "\\");
-  }
-  if (trimmed.length >= 2 && trimmed.startsWith("'") && trimmed.endsWith("'")) {
-    return trimmed.slice(1, -1);
-  }
-  return trimmed;
-}
-
-/** Re-emit an EnvLine array as a `.env` body, always ending with a newline. */
-export function serializeEnv(lines: EnvLine[]): string {
-  return (
-    lines
-      .map((line) => {
-        if (line.kind === "blank") return "";
-        if (line.kind === "comment") return line.raw;
-        return `${line.key}=${encodeEnvValue(line.value)}`;
-      })
-      .join("\n") + "\n"
-  );
-}
-
-function encodeEnvValue(value: string): string {
-  if (value === "") return "";
-  // Quote when the value would round-trip ambiguously otherwise.
-  const needsQuotes =
-    /[\s"'=$#]|^\s|\s$/.test(value) || value.includes("\n") || value.includes("\t");
-  if (!needsQuotes) return value;
-  const escaped = value
-    .replace(/\\/g, "\\\\")
-    .replace(/"/g, '\\"')
-    .replace(/\n/g, "\\n")
-    .replace(/\t/g, "\\t");
-  return `"${escaped}"`;
-}
+const KEY_RE = ENV_KEY_RE;
 
 // ---------------------------------------------------------------------------
 // File I/O
@@ -267,6 +184,66 @@ export function setCredential(
   return {
     ok: true,
     message: replaced ? `Updated ${key}` : `Added ${key}`,
+    modifiedIso: w.modifiedIso,
+  };
+}
+
+/**
+ * Atomically rename a credential. Removes the old entry and writes the new
+ * key/value in a single read/modify/write pass — there is no intermediate
+ * filesystem state where the secret is missing.
+ *
+ * Codex adversarial-review Medium-1 fix. The previous flow was
+ * delete-then-set client-side: a failure on the set step would have
+ * permanently dropped the operator's secret with no rollback. This server
+ * op is the safe replacement.
+ *
+ * Refuses to overwrite an existing destination key (unless oldKey===newKey,
+ * which collapses to a value update). Refuses if the source key is missing.
+ */
+export function renameCredential(
+  agentDir: string | undefined,
+  oldKey: string,
+  newKey: string,
+  value: string,
+): CredentialMutationResult {
+  if (!KEY_RE.test(oldKey)) return { ok: false, message: "invalid oldKey" };
+  if (!KEY_RE.test(newKey)) {
+    return {
+      ok: false,
+      message: "newKey must match [A-Za-z_][A-Za-z0-9_]* (no spaces or hyphens)",
+    };
+  }
+  if (value.includes("\0")) return { ok: false, message: "value contains a null byte" };
+  if (value.length > 64 * 1024) return { ok: false, message: "value exceeds 64 KiB" };
+
+  const result = readEnvFile(agentDir);
+  if ("error" in result) return { ok: false, message: result.error };
+  const lines: EnvLine[] = [...result.lines];
+
+  let oldIdx = -1;
+  let newIdx = -1;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+    if (line.kind !== "kv") continue;
+    if (line.key === oldKey) oldIdx = i;
+    if (line.key === newKey) newIdx = i;
+  }
+  if (oldIdx === -1) return { ok: false, message: `key not found: ${oldKey}` };
+  if (oldKey !== newKey && newIdx !== -1) {
+    return { ok: false, message: `destination key already exists: ${newKey}` };
+  }
+
+  // Replace in place at the old key's position so ordering and surrounding
+  // comments are preserved. When oldKey===newKey we still want a value
+  // update; the in-place replace handles both.
+  lines[oldIdx] = { kind: "kv", key: newKey, value, raw: `${newKey}=${value}` };
+
+  const w = writeEnvFile(agentDir, lines);
+  if (!w.ok) return { ok: false, message: w.message };
+  return {
+    ok: true,
+    message: oldKey === newKey ? `Updated ${newKey}` : `Renamed ${oldKey} → ${newKey}`,
     modifiedIso: w.modifiedIso,
   };
 }

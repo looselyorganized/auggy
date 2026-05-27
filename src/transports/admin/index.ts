@@ -25,6 +25,7 @@ import { readIdentity, writeIdentity } from "./admin-identity";
 import {
   deleteCredential,
   listCredentials,
+  renameCredential,
   revealCredential,
   setCredential,
 } from "./admin-credentials";
@@ -180,6 +181,9 @@ const IDENTITY_SAVE_ACTION = "identity-save";
 const CRED_REVEAL_ACTION = "cred-reveal";
 const CRED_SET_ACTION = "cred-set";
 const CRED_DELETE_ACTION = "cred-delete";
+const CRED_RENAME_ACTION = "cred-rename";
+
+const CONSOLE_CHAT_ACTION = "console-chat";
 
 const EXPIRED_CSRF_HTML = `<!doctype html>
 <html lang="en">
@@ -240,7 +244,7 @@ export async function handleAdminRoute(req: Request, ctx: AdminRouteContext): Pr
 
   // Chat SSE proxy --------------------------------------------------------
   if (req.method === "POST" && url.pathname === "/console/api/chat") {
-    return handleChatProxy(req, ctx);
+    return handleChatProxy(req, ctx, agentName);
   }
 
   // Credentials API -------------------------------------------------------
@@ -255,6 +259,9 @@ export async function handleAdminRoute(req: Request, ctx: AdminRouteContext): Pr
   }
   if (req.method === "POST" && url.pathname === "/console/api/credentials/delete") {
     return handleCredentialDelete(req, ctx, agentName);
+  }
+  if (req.method === "POST" && url.pathname === "/console/api/credentials/rename") {
+    return handleCredentialRename(req, ctx, agentName);
   }
 
   // Skills API ------------------------------------------------------------
@@ -370,11 +377,27 @@ async function handleDashboardJson(ctx: AdminRouteContext, agentName: string): P
   csrfTokens.push({ actionId: IDENTITY_SAVE_ACTION, rowKey: undefined, token: identityToken });
 
   // Credential action tokens — one per action, no rowKey. The key travels
-  // in the JSON body; CSRF just gates the action class (reveal/set/delete).
-  for (const credAction of [CRED_REVEAL_ACTION, CRED_SET_ACTION, CRED_DELETE_ACTION]) {
+  // in the JSON body; CSRF just gates the action class (reveal/set/delete/rename).
+  for (const credAction of [
+    CRED_REVEAL_ACTION,
+    CRED_SET_ACTION,
+    CRED_DELETE_ACTION,
+    CRED_RENAME_ACTION,
+  ]) {
     const token = await generateCsrfToken({ bearer: ctx.bearer, agentName, actionId: credAction });
     csrfTokens.push({ actionId: credAction, rowKey: undefined, token });
   }
+
+  // Chat proxy token — one per session, no rowKey. The chat endpoint forwards
+  // to /agent/run with the server-side bearer, so without CSRF a third-party
+  // page could drive the operator's already-authenticated browser to inject
+  // prompts with full tool side effects (codex adversarial-review High-1).
+  const chatToken = await generateCsrfToken({
+    bearer: ctx.bearer,
+    agentName,
+    actionId: CONSOLE_CHAT_ACTION,
+  });
+  csrfTokens.push({ actionId: CONSOLE_CHAT_ACTION, rowKey: undefined, token: chatToken });
 
   return new Response(
     JSON.stringify({
@@ -594,22 +617,48 @@ export async function buildAdminActionRegistry(
  * the same port. The bearer is attached server-side from
  * `AdminRouteContext.bearer` — the browser never sees it.
  *
+ * CSRF: required. Even though HTTP Basic creds make the operator's browser
+ * pre-authenticated, the chat endpoint is just as privileged as any other
+ * mutation — a third-party page could otherwise drive a simple-request POST
+ * (text/plain JSON, no preflight) to inject prompts and trigger tool calls
+ * with full creator side effects. CSRF binds the request to the issued
+ * token and rejects cross-site forgeries.
+ *
  * Mirrors the shape of `chat/server.ts`'s `/api/chat/<id>` proxy (the
  * standalone multi-agent picker UI) but simpler: one agent, one bearer,
  * no per-request bearer cache.
  */
-async function handleChatProxy(req: Request, ctx: AdminRouteContext): Promise<Response> {
+async function handleChatProxy(
+  req: Request,
+  ctx: AdminRouteContext,
+  agentName: string,
+): Promise<Response> {
   if (!ctx.selfPort) {
     return jsonResponse(
       { error: "Chat proxy unavailable — agent port not exposed to admin route." },
       503,
     );
   }
-  let body: { message?: unknown; threadId?: unknown };
+  let body: { csrf?: unknown; message?: unknown; threadId?: unknown };
   try {
     body = (await req.json()) as typeof body;
   } catch {
     return jsonResponse({ error: "invalid JSON body" }, 400);
+  }
+  if (typeof body.csrf !== "string" || body.csrf.length === 0) {
+    return jsonResponse({ error: "missing csrf" }, 400);
+  }
+  const csrfResult = await validateCsrfToken({
+    token: body.csrf,
+    bearer: ctx.bearer,
+    agentName,
+    actionId: CONSOLE_CHAT_ACTION,
+  });
+  if (!csrfResult.valid) {
+    if (csrfResult.reason === "expired") {
+      return jsonResponse({ error: "Session expired — reload the page." }, 419);
+    }
+    return jsonResponse({ error: "CSRF check failed." }, 403);
   }
   if (typeof body.message !== "string" || body.message.length === 0) {
     return jsonResponse({ error: "missing message" }, 400);
@@ -732,7 +781,7 @@ async function handleCredentialReveal(
   agentName: string,
 ): Promise<Response> {
   const body = await readCredentialBody(req);
-  if (!body || !body.key) return jsonResponse({ error: "missing key" }, 400);
+  if (!body?.key) return jsonResponse({ error: "missing key" }, 400);
   const csrf = await validateCredCsrf(ctx, agentName, CRED_REVEAL_ACTION, body.csrf);
   if (!csrf.ok) return jsonResponse({ error: csrf.message }, csrf.status);
   const result = revealCredential(ctx.agentDir, body.key);
@@ -746,7 +795,7 @@ async function handleCredentialSet(
   agentName: string,
 ): Promise<Response> {
   const body = await readCredentialBody(req);
-  if (!body || !body.key) return jsonResponse({ error: "missing key" }, 400);
+  if (!body?.key) return jsonResponse({ error: "missing key" }, 400);
   if (body.value === undefined) return jsonResponse({ error: "missing value" }, 400);
   const csrf = await validateCredCsrf(ctx, agentName, CRED_SET_ACTION, body.csrf);
   if (!csrf.ok) return jsonResponse({ error: csrf.message }, csrf.status);
@@ -760,10 +809,45 @@ async function handleCredentialDelete(
   agentName: string,
 ): Promise<Response> {
   const body = await readCredentialBody(req);
-  if (!body || !body.key) return jsonResponse({ error: "missing key" }, 400);
+  if (!body?.key) return jsonResponse({ error: "missing key" }, 400);
   const csrf = await validateCredCsrf(ctx, agentName, CRED_DELETE_ACTION, body.csrf);
   if (!csrf.ok) return jsonResponse({ error: csrf.message }, csrf.status);
   const result = deleteCredential(ctx.agentDir, body.key);
+  return jsonResponse(result, result.ok ? 200 : 400);
+}
+
+/**
+ * Atomic rename — replaces the previous client-side delete-then-set flow
+ * which could permanently drop the secret if the set step failed (codex
+ * adversarial-review Medium-1). One server-side read/modify/write, no
+ * intermediate "secret is missing" state on disk.
+ */
+async function handleCredentialRename(
+  req: Request,
+  ctx: AdminRouteContext,
+  agentName: string,
+): Promise<Response> {
+  let body: { csrf?: unknown; oldKey?: unknown; newKey?: unknown; value?: unknown };
+  try {
+    body = (await req.json()) as typeof body;
+  } catch {
+    return jsonResponse({ error: "invalid JSON body" }, 400);
+  }
+  if (typeof body.oldKey !== "string" || body.oldKey.length === 0) {
+    return jsonResponse({ error: "missing oldKey" }, 400);
+  }
+  if (typeof body.newKey !== "string" || body.newKey.length === 0) {
+    return jsonResponse({ error: "missing newKey" }, 400);
+  }
+  if (typeof body.value !== "string") return jsonResponse({ error: "missing value" }, 400);
+  const csrf = await validateCredCsrf(
+    ctx,
+    agentName,
+    CRED_RENAME_ACTION,
+    typeof body.csrf === "string" ? body.csrf : undefined,
+  );
+  if (!csrf.ok) return jsonResponse({ error: csrf.message }, csrf.status);
+  const result = renameCredential(ctx.agentDir, body.oldKey, body.newKey, body.value);
   return jsonResponse(result, result.ok ? 200 : 400);
 }
 

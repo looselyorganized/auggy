@@ -22,14 +22,19 @@ import type {
   SecurityEvalOverride,
 } from "./types";
 import { KNOWN_PROVIDERS, isKnownProvider } from "./types";
+import { parseEnvFile } from "./env-parse";
 
 // ---------------------------------------------------------------------------
 // .env loading
 // ---------------------------------------------------------------------------
 
 /**
- * Load a .env file into process.env. Simple KEY=VALUE format, no
- * interpolation, no quoting beyond trimming quotes from values.
+ * Load a .env file into process.env. Uses the shared `parseEnvFile` so the
+ * runtime sees exactly what the admin Credentials UI writes/reads (codex
+ * adversarial-review High-2 fix — previously the runtime stripped quotes
+ * but did not honor `\n`/`\t`/`\\` escapes inside double-quoted values,
+ * which silently corrupted PEM/JSON/multiline secrets).
+ *
  * Silently skips if the file doesn't exist.
  */
 export function loadEnvFile(dir: string): void {
@@ -37,24 +42,12 @@ export function loadEnvFile(dir: string): void {
   if (!existsSync(envPath)) return;
 
   const content = readFileSync(envPath, "utf-8");
-  for (const line of content.split("\n")) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#")) continue;
-    const eqIdx = trimmed.indexOf("=");
-    if (eqIdx < 0) continue;
-    const key = trimmed.slice(0, eqIdx).trim();
-    let value = trimmed.slice(eqIdx + 1).trim();
-    // Strip surrounding quotes.
-    if (
-      (value.startsWith('"') && value.endsWith('"')) ||
-      (value.startsWith("'") && value.endsWith("'"))
-    ) {
-      value = value.slice(1, -1);
-    }
+  for (const line of parseEnvFile(content)) {
+    if (line.kind !== "kv") continue;
     // Skip empty values (placeholder lines like KEY= in the template).
     // Don't override existing env vars (shell exports take precedence).
-    if (key && value && !(key in process.env)) {
-      process.env[key] = value;
+    if (line.key && line.value && !(line.key in process.env)) {
+      process.env[line.key] = line.value;
     }
   }
 }

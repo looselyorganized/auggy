@@ -87,6 +87,25 @@ export function deleteCredential(
   return postCred("/console/api/credentials/delete", csrfTokens, "cred-delete", { key });
 }
 
+/**
+ * Atomic rename. Replaces the previous delete-then-set sequence which could
+ * permanently drop the secret if the set step failed. The server performs
+ * one read/modify/write — there is no intermediate state where the secret
+ * is missing from .env.
+ */
+export function renameCredential(
+  csrfTokens: CsrfToken[],
+  oldKey: string,
+  newKey: string,
+  value: string,
+): Promise<CredentialMutationResult> {
+  return postCred("/console/api/credentials/rename", csrfTokens, "cred-rename", {
+    oldKey,
+    newKey,
+    value,
+  });
+}
+
 async function safeJson(res: Response): Promise<unknown> {
   try {
     return await res.json();
