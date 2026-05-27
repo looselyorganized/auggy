@@ -140,7 +140,7 @@ docs(readme): refresh badges + augments table for v0.2.0 visitor-economics work
 test(transport): cover four-path identity resolution
 ```
 
-Scopes match top-level source areas: `kernel`, `memory`, `transport`, `engines`, `cli`, plus augment names (`layered-memory`, `budgets`, `bash`, `org-context`, `web-fetch`).
+Scopes match top-level source areas: `kernel`, `memory`, `transport`, `engines`, `cli`, plus augment names (`layered-memory`, `budgets`, `bash`, `manifest`, `web-fetch`).
 
 ## Pull request checklist
 

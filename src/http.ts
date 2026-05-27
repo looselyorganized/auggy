@@ -34,7 +34,7 @@ export interface HttpClientOptions {
    *
    * Enable on clients that consume model- or peer-supplied URLs (web_fetch).
    * Leave disabled on clients fetching operator-configured endpoints (e.g. the
-   * org-context manifest URL, which is often localhost during dev).
+   * manifest manifest URL, which is often localhost during dev).
    */
   rejectUnsafeUrls?: boolean;
 }

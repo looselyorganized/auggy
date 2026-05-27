@@ -17,7 +17,7 @@ describe("augmentFolderForType", () => {
   test("maps camelCase types to kebab-case folders", () => {
     expect(augmentFolderForType("layeredMemory")).toBe("layered-memory");
     expect(augmentFolderForType("webFetch")).toBe("web-fetch");
-    expect(augmentFolderForType("orgContext")).toBe("org-context");
+    expect(augmentFolderForType("manifest")).toBe("manifest");
     expect(augmentFolderForType("turnControl")).toBe("turn-control");
   });
 

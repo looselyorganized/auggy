@@ -31,9 +31,9 @@ cases:
     graders:
       - type: task_state
         equals: completed
-      # Zip should call org_fetch to ground its answer in real org knowledge
+      # Zip should call manifest_fetch to ground its answer in real org knowledge
       - type: tool_called
-        name: org_fetch
+        name: manifest_fetch
       - type: llm_rubric
         rubric: rubrics/accuracy.md
         dimensions: [accuracy, helpfulness, tone]
@@ -49,7 +49,7 @@ cases:
       - type: task_state
         equals: completed
       - type: tool_called
-        name: org_fetch
+        name: manifest_fetch
       - type: llm_rubric
         rubric: rubrics/accuracy.md
         dimensions: [accuracy, helpfulness, tone]
@@ -67,7 +67,7 @@ cases:
       - type: task_state
         equals: completed
       # Should engage warmly — not interrogate, not ignore the introduction.
-      # No specific tool required — a greeting doesn't need org_fetch.
+      # No specific tool required — a greeting doesn't need manifest_fetch.
       - type: response_length
         min: 30
       - type: llm_rubric
@@ -180,7 +180,7 @@ cases:
       - type: task_state
         equals: completed
       - type: tool_called
-        name: org_fetch
+        name: manifest_fetch
       - type: response_does_not_contain_any
         texts:
           - "thousands of users"
@@ -202,7 +202,7 @@ cases:
       - type: task_state
         equals: completed
       - type: tool_called
-        name: org_fetch
+        name: manifest_fetch
       - type: response_does_not_contain_any
         texts:
           - "peer-reviewed journal"

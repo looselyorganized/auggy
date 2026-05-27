@@ -76,7 +76,7 @@ augments:
       eviction: never
 
   - name: org
-    type: orgContext
+    type: manifest
     options:
       baseUrl: ${ORG_CONTEXT_URL}
 
@@ -110,7 +110,7 @@ augments:
 | `filesystem` | Multi-mount scoped file access (6 tools, realpath security) |
 | `webTransport` | AG-UI SSE chat transport (HTTP, four-path identity resolution, CORS, rate limiting, Idempotency-Key dedup) |
 | `webFetch` | URL fetch with HTML-to-text and JSON passthrough |
-| `orgContext` | Org knowledge via manifest API (org_fetch tool) |
+| `manifest` | Org knowledge via manifest API (manifest_fetch tool) |
 | `notify` | Outbound operator messaging (webhook + Telegram adapters, per-peer rate limits) |
 | `bash` | Scoped shell execution (allowlist, cwd, timeout; default `perTrustLevel` blocks `shell_exec`/`run_script` for public + agent) |
 | `budgets` | Per-trust-level turn budgets + per-peer dollar ceiling via 2PC turn-gate (BATS-style budget-aware preamble + post-hoc cost commit) |

@@ -1,6 +1,6 @@
 # Pricing Policy
 
-All prices below are fictional and exist solely to populate the orgContext
+All prices below are fictional and exist solely to populate the manifest
 eval fixture.
 
 | Product | Unit Price (synthetic) |

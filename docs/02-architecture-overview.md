@@ -129,7 +129,7 @@ Built-in augments. This directory is intentionally small — only augments that 
 | `layered-memory/` | `layeredMemory(opts)` — peer-scoped episodic memory with L0–L3 provenance tiers (SQLite or Supabase backend). Includes background fact-extraction (`autoSave`). |
 | `filesystem/` | `filesystem(opts)` — multi-mount scoped file access (6 tools, realpath-based sandbox). Bundled `skill/SKILL.md` shipped alongside. |
 | `web-fetch/` | `webFetch(opts)` — URL fetch with HTML→text conversion and JSON passthrough. Uses the shared `src/http.ts` client. |
-| `org-context/` | `orgContext(opts)` — org knowledge augment (manifest + `org_fetch`). HTTP or `file://` baseUrl. |
+| `manifest/` | `manifest(opts)` — org knowledge augment (manifest + `manifest_fetch`). HTTP or `file://` baseUrl. |
 | `skills/` | `skills(opts)` — model-facing skill surface (ADR-030). Scans a configured `dir:` and emits a single system-placement context block listing each mounted skill from its SKILL.md frontmatter. |
 | `notify/` | `notify(opts)` — outbound messaging augment (webhook + Telegram adapters, per-peer rate limits). |
 | `bash/` | `bash(opts)` — scoped shell execution (allowlist, working dir, timeout). |
@@ -185,7 +185,7 @@ Small utility modules.
 - `parts.ts` — `extractText(parts)`, `textPart(text)`, `dataPart(data)`. The A2A `Part[]` shape requires helpers to convert between text-only and the polymorphic content type.
 - `helpers.ts` — `defineAugment(spec)`, `defineTool(spec)`. These are pass-throughs that exist purely for type inference (so users get autocomplete on partial specs). They're not factories — they don't add behavior.
 - `tokenizer.ts` — `createTokenizer()` returns a `{count(text)}` object. v1 uses a simple character-divided-by-4 estimate. Real tokenization is a model-specific concern that should live in the `ModelClient` adapter.
-- `http.ts` — shared HTTP client used by `webFetch` and `orgContext`. Enforces redirect security (same-origin on auth redirects), body size cap, and auth-header stripping on cross-origin redirects.
+- `http.ts` — shared HTTP client used by `webFetch` and `manifest`. Enforces redirect security (same-origin on auth redirects), body size cap, and auth-header stripping on cross-origin redirects.
 
 ### `src/index.ts`
 The public API surface. Re-exports everything users should be able to import. If a symbol isn't in `index.ts`, it's an internal detail.

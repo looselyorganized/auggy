@@ -18,7 +18,7 @@ export type BuiltinAugmentType =
   | "filesystem"
   | "webTransport"
   | "webFetch"
-  | "orgContext"
+  | "manifest"
   | "skills"
   | "bash"
   | "budgets"

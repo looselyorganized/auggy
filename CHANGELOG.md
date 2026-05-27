@@ -208,7 +208,7 @@ The visitor-economics release. Multi-trust, peer-scoped memory, budgets, and a s
 ### Changed
 
 - `supabaseMemory` augment frozen — kept for migration only. Use `layeredMemory` for new work.
-- `org-context` augment refactored to share the HTTP client and apply consistent body-size caps.
+- `manifest` augment refactored to share the HTTP client and apply consistent body-size caps.
 
 ### Tests
 
@@ -235,7 +235,7 @@ Initial tagged release. The kernel and built-in augments described in `docs/02-a
 ### Added
 
 - **Kernel** — turn loop, context allocator, capability table, history manager, lifecycle manager, tool selector, trace emitter, transport queue, output validator, preamble.
-- **Built-in augments** — `fileMemory`, `supabaseMemory`, `webTransport`, `filesystem`, `webFetch`, `orgContext`.
+- **Built-in augments** — `fileMemory`, `supabaseMemory`, `webTransport`, `filesystem`, `webFetch`, `manifest`.
 - **Reasoning engines** — Anthropic, OpenAI, OpenRouter adapters.
 - **CLI** — `aug1 create / add / dev / start / stop / restart / status` with launchd installation on macOS and PID-manifest tracking under `~/.auggy/`.
 - **Reference documentation** — `docs/01-philosophy.md` through `docs/11-skills.md`.

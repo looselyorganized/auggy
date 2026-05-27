@@ -31,7 +31,7 @@ const TYPE_TO_AUGMENT_FOLDER: Record<string, string> = {
   filesystem: "filesystem",
   layeredMemory: "layered-memory",
   webFetch: "web-fetch",
-  orgContext: "org-context",
+  manifest: "manifest",
   bash: "bash",
   notify: "notify",
   turnControl: "turn-control",

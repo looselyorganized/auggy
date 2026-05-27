@@ -91,7 +91,7 @@ interface WizardAnswers {
   augments: CatalogEntry[];
   orgName: string;
   orgPurpose: string;
-  orgContextSelected: boolean;
+  manifestSelected: boolean;
   ollamaBaseURL: string | undefined;
   ollamaNeedsBearer: boolean;
 }
@@ -252,11 +252,11 @@ async function runWizard(): Promise<WizardAnswers> {
     }
   }
 
-  // Conditional org prompts — only ask when orgContext is selected.
-  const orgContextSelected = augments.some((e) => e.type === "orgContext");
+  // Conditional org prompts — only ask when manifest is selected.
+  const manifestSelected = augments.some((e) => e.type === "manifest");
   let orgName = DEFAULT_ORG_NAME;
   let orgPurpose = DEFAULT_ORG_PURPOSE;
-  if (orgContextSelected) {
+  if (manifestSelected) {
     orgName = await withEscRestart((ctx) =>
       input(
         {
@@ -285,7 +285,7 @@ async function runWizard(): Promise<WizardAnswers> {
     augments,
     orgName,
     orgPurpose,
-    orgContextSelected,
+    manifestSelected,
     ollamaBaseURL,
     ollamaNeedsBearer,
   };
@@ -336,7 +336,7 @@ export async function runCreate(name: string, opts: CreateOpts): Promise<void> {
     augments,
     orgName,
     orgPurpose,
-    orgContextSelected,
+    manifestSelected,
     ollamaBaseURL,
     ollamaNeedsBearer,
   } = answers;
@@ -385,8 +385,8 @@ export async function runCreate(name: string, opts: CreateOpts): Promise<void> {
       writeFileSync(join(tempDir, "learned.md"), "");
     }
 
-    if (orgContextSelected) {
-      writeOrgContextExample(tempDir, { orgName, orgPurpose, operatorName });
+    if (manifestSelected) {
+      writeManifestExample(tempDir, { orgName, orgPurpose, operatorName });
     }
 
     // Build .env with both auto-generated values AND empty placeholders for
@@ -648,15 +648,15 @@ function buildEnv(autoGenLines: string[], placeholderVars: string[]): string {
 }
 
 /**
- * Write a minimal example `org-context/` directory the orgContext augment
- * can read with `baseUrl: file://./org-context` (α-6).
+ * Write a minimal example `manifest/` directory the manifest augment
+ * can read with `baseUrl: file://./manifest` (α-6).
  */
-function writeOrgContextExample(
+function writeManifestExample(
   agentDir: string,
   values: { orgName: string; orgPurpose: string; operatorName: string },
 ): void {
-  const orgDir = join(agentDir, "org-context");
-  mkdirSync(orgDir, { recursive: true });
+  const manifestDir = join(agentDir, "manifest");
+  mkdirSync(manifestDir, { recursive: true });
 
   const manifest = {
     org: values.orgName,
@@ -668,18 +668,18 @@ function writeOrgContextExample(
       { path: "/team", description: "People and roles" },
     ],
   };
-  writeFileSync(join(orgDir, "manifest"), `${JSON.stringify(manifest, null, 2)}\n`);
+  writeFileSync(join(manifestDir, "manifest"), `${JSON.stringify(manifest, null, 2)}\n`);
   writeFileSync(
-    join(orgDir, "mission.md"),
+    join(manifestDir, "mission.md"),
     `# ${values.orgName} — Mission\n\n${values.orgPurpose}\n`,
   );
   writeFileSync(
-    join(orgDir, "team.md"),
+    join(manifestDir, "team.md"),
     `# ${values.orgName} — Team\n\n- ${values.operatorName} (operator)\n`,
   );
   writeFileSync(
-    join(orgDir, "README.md"),
-    `# Org context (example)\n\nThis directory backs the orgContext augment via the\n\`baseUrl: file://./org-context\` config in agent.yaml.\n\n- \`manifest\` — JSON listing endpoints the augment exposes\n- \`mission.md\`, \`team.md\` — endpoint targets the manifest references\n\nReplace these files with your real org content, or change \`baseUrl\` in\n\`agent.yaml\` to point at an HTTP-served manifest if you'd rather host\nyour org context elsewhere.\n`,
+    join(manifestDir, "README.md"),
+    `# Manifest (example)\n\nThis directory backs the manifest augment via the\n\`baseUrl: file://./manifest\` config in agent.yaml.\n\n- \`manifest\` — JSON listing the endpoints the augment exposes\n- \`mission.md\`, \`team.md\` — endpoint targets the manifest references\n\nReplace these files with your real content, or change \`baseUrl\` in\n\`agent.yaml\` to point at an HTTP-served manifest if you'd rather host\nit elsewhere.\n`,
   );
 }
 
