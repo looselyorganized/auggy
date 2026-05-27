@@ -55,6 +55,24 @@ export function createConsoleMailClient(opts: ConsoleMailClientOptions = {}): Ag
         threadId: `console-thread-${crypto.randomUUID()}`,
       };
     },
+    async reply(input): Promise<SendMessageResult> {
+      sink(`[visitor-auth:console] would-reply messageId=${input.messageId}\n${input.text}`);
+      return {
+        status: "sent",
+        messageId: `console-${crypto.randomUUID()}`,
+        threadId: `console-thread-${crypto.randomUUID()}`,
+      };
+    },
+    async forward(input): Promise<SendMessageResult> {
+      sink(
+        `[visitor-auth:console] would-forward messageId=${input.messageId} to=${input.to.join(", ")}`,
+      );
+      return {
+        status: "sent",
+        messageId: `console-${crypto.randomUUID()}`,
+        threadId: `console-thread-${crypto.randomUUID()}`,
+      };
+    },
     async getInbox(inboxId: string): Promise<AgentMailInboxInfo> {
       // The console adapter has no inbox; return a synthetic OK so any
       // boot-time inbox validation passes without touching the network.

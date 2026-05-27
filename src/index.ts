@@ -96,6 +96,16 @@ export type { OrgContextOptions } from "./augments/org-context";
 export { webFetch } from "./augments/web-fetch";
 export type { WebFetchOptions, WebFetchResult } from "./augments/web-fetch";
 
+// === Built-in augments (mail) ===
+export { agentMail } from "./augments/agent-mail";
+export type {
+  AgentMailAugmentOptions,
+  AgentMailOutboundOptions,
+  AgentMailRateLimitOptions,
+  AgentMailInboundConfig,
+  AgentMailInboundMode,
+} from "./types";
+
 export { bash } from "./augments/bash";
 export type {
   BashAugmentOptions,

@@ -1140,6 +1140,85 @@ export interface NotifyAdapter {
 }
 
 // ---------------------------------------------------------------------------
+// agentMail augment (outbound + Phase B/C inbound)
+// ---------------------------------------------------------------------------
+
+/**
+ * Inbound delivery modes for the agentMail augment.
+ * Phase A ships "none" only. Phase B adds "websocket" (recommended) + "polling".
+ * Phase C adds "webhook" via the Svix signature scheme.
+ */
+export type AgentMailInboundMode = "none" | "websocket" | "polling" | "webhook";
+
+export interface AgentMailRateLimitOptions {
+  /** Master toggle; default true. Creator/null peer always bypass when enabled. */
+  enabled?: boolean;
+  /** Maximum outbound sends across all recipients per hour. Default 10. */
+  globalMaxPerHour?: number;
+  /** Cooldown between sends to the same recipient (ms). Default 300000 (5min). */
+  perRecipientCooldownMs?: number;
+  /** Subject-hash dedup window (ms). Default 300000 (5min). 0 disables dedup. */
+  dedupWindowMs?: number;
+}
+
+export interface AgentMailOutboundOptions {
+  /**
+   * Trust levels permitted to call `send_message` / `reply_to_message` /
+   * `forward_message`. Default `["creator"]`. Email is a high-blast-radius
+   * channel — defaults are strict on purpose.
+   */
+  allowedTrustLevels?: TrustLevel[];
+  /**
+   * Recipient allowlist. When set, only these addresses may receive mail.
+   * Match modes:
+   *   - exact: `"alice@example.com"` matches just that address (lowercased).
+   *   - domain glob: `"*@example.com"` matches any address at example.com.
+   * When unset, recipients only need to pass `isWellFormedEmail()`.
+   */
+  allowedRecipients?: string[];
+  /** Max recipients per send (combined to/cc/bcc). Default 10. Hard ceiling 50 per AgentMail. */
+  maxRecipients?: number;
+  /** Hard cap on text body size in bytes. Default 102400 (100KB). */
+  bodyMaxBytes?: number;
+  /** Permit HTML body in send/reply/forward. Default false. */
+  allowHtml?: boolean;
+  /**
+   * Subject prefix prepended to every outbound subject. Default `"[Auggy] "`.
+   * Cannot be empty — recipients must be able to identify agent-sent mail.
+   */
+  subjectPrefix?: string;
+  /** Rate-limit configuration. */
+  rateLimit?: AgentMailRateLimitOptions;
+}
+
+export interface AgentMailInboundConfig {
+  /** Inbound delivery channel. Phase A ships `"none"`. */
+  mode: AgentMailInboundMode;
+}
+
+export interface AgentMailAugmentOptions {
+  /** AgentMail API key (`am_*`). Resolve via `${AGENTMAIL_API_KEY}` in agent.yaml. */
+  apiKey: string;
+  /** AgentMail inbox ID this augment sends from / receives at. */
+  inboxId: string;
+  /** Override AgentMail API base URL (testing/sandbox). */
+  apiBaseUrl?: string;
+  /** SQLite store path for inbound dedup (Phase B+). Default `"./agent-mail.db"`. */
+  dbPath?: string;
+  /** Outbound policy + tools configuration. */
+  outbound?: AgentMailOutboundOptions;
+  /** Inbound configuration. Phase A: `{ mode: "none" }` only. */
+  inbound?: AgentMailInboundConfig;
+  /**
+   * Agent directory (typically `~/.auggy/agents/<name>/`). When set,
+   * `admin-overrides.json` is read at boot to apply runtime overrides
+   * (currently: outbound.rateLimit.globalMaxPerHour). Admin actions persist
+   * back via this path.
+   */
+  agentDir?: string;
+}
+
+// ---------------------------------------------------------------------------
 // Telegram transport
 // ---------------------------------------------------------------------------
 
