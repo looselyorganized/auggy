@@ -68,7 +68,7 @@ async function pickAgentManifest(name: string | undefined): Promise<PidManifest 
     const m = readPidManifest(name);
     if (!m) {
       console.error(
-        `[auggy chat] No PID manifest for "${name}". Run \`auggy run ${name}\` first ` +
+        `[auggy chat] No PID manifest for "${name}". Run \`auggy dev ${name}\` first ` +
           `(or \`auggy list\` to see what's running).`,
       );
       return null;
@@ -76,7 +76,7 @@ async function pickAgentManifest(name: string | undefined): Promise<PidManifest 
     if (!isProcessAlive(m.pid)) {
       console.error(
         `[auggy chat] Agent "${name}" has a stale PID manifest. ` +
-          `Run \`auggy run ${name}\` to boot it.`,
+          `Run \`auggy dev ${name}\` to boot it.`,
       );
       return null;
     }
@@ -85,7 +85,7 @@ async function pickAgentManifest(name: string | undefined): Promise<PidManifest 
 
   const running = listPidManifests();
   if (running.length === 0) {
-    console.error("[auggy chat] No agents running. Boot one with `auggy run <name>` first.");
+    console.error("[auggy chat] No agents running. Boot one with `auggy dev <name>` first.");
     return null;
   }
   if (running.length === 1) return running[0]!;

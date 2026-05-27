@@ -13,11 +13,16 @@ export type AdminAuthResult =
   | { kind: "unauthorized"; response: Response };
 
 /**
- * Validate HTTP Basic auth on an /admin request + enforce HTTPS-on-non-loopback.
+ * Validate HTTP Basic auth on a `/console` request + enforce HTTPS-on-non-loopback.
  *
  * Order of checks:
  *   1. HTTPS gate (loopback exempt; non-loopback http → 426 + guidance body)
- *   2. HTTP Basic decode + bearer compare (timing-safe)
+ *   2. Loopback bypass: if the caller is on 127.0.0.1 / ::1, skip the bearer
+ *      check entirely. Threat model: anyone with shell access to the host
+ *      already has filesystem read on `.env` → already has the bearer, so the
+ *      bearer-on-loopback check added friction without meaningful protection.
+ *      Non-loopback callers (LAN, cloud, tunneled HTTPS) still get checked.
+ *   3. HTTP Basic decode + bearer compare (timing-safe)
  *
  * The 426 fires BEFORE the 401 — a misconfigured deployment (non-loopback,
  * plain HTTP, with a valid bearer) still gets pushed to HTTPS rather than
@@ -30,11 +35,11 @@ export function checkAdminAuth(ctx: AdminAuthContext): AdminAuthResult {
   if (!isLoopback(ctx.callerIp) && url.protocol !== "https:") {
     const port = url.port || "8080";
     const guidance = [
-      `/admin requires HTTPS on non-loopback addresses.`,
+      `/console requires HTTPS on non-loopback addresses.`,
       ``,
       `Options:`,
       `  1. Configure HTTPS termination in front of this agent.`,
-      `  2. Access via http://127.0.0.1:${port}/admin from the agent host.`,
+      `  2. Access via http://127.0.0.1:${port}/console from the agent host.`,
       `  3. SSH tunnel: ssh -L ${port}:127.0.0.1:${port} user@host`,
     ].join("\n");
     return {
@@ -50,7 +55,12 @@ export function checkAdminAuth(ctx: AdminAuthContext): AdminAuthResult {
     };
   }
 
-  // 2. HTTP Basic check
+  // 2. Loopback bypass — see doc comment above for rationale.
+  if (isLoopback(ctx.callerIp)) {
+    return { kind: "ok" };
+  }
+
+  // 3. HTTP Basic check (non-loopback only)
   const authHeader = ctx.req.headers.get("authorization");
   if (!authHeader?.toLowerCase().startsWith("basic ")) {
     return unauthorized(ctx.agentName);

@@ -6,7 +6,7 @@
  *   - Linux:  `xdg-open <url>`
  *   - Windows: `start "" <url>` (via cmd /c)
  *
- * Detached + ignored stdio so the parent process (typically `auggy run`)
+ * Detached + ignored stdio so the parent process (typically `auggy dev --open`)
  * doesn't accumulate a child handle. Failures are swallowed; the caller is
  * expected to also print the URL so the operator can copy/paste if the
  * automated launch silently fails.

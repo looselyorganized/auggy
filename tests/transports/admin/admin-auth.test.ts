@@ -5,14 +5,17 @@ function basicHeader(username: string, password: string): string {
   return `Basic ${Buffer.from(`${username}:${password}`).toString("base64")}`;
 }
 
-function makeReq(headers: Record<string, string>, url = "http://localhost:8080/admin"): Request {
+function makeReq(
+  headers: Record<string, string>,
+  url = "https://my-agent.fly.dev/console",
+): Request {
   return new Request(url, { headers });
 }
 
 describe("admin-auth — HTTPS gate", () => {
   it("returns 426 when non-loopback caller uses http://", () => {
     const result = checkAdminAuth({
-      req: makeReq({}, "http://my-agent.fly.dev/admin"),
+      req: makeReq({}, "http://my-agent.fly.dev/console"),
       bearer: "test-token",
       agentName: "zip",
       callerIp: "10.0.0.5",
@@ -24,21 +27,11 @@ describe("admin-auth — HTTPS gate", () => {
     }
   });
 
-  it("allows loopback caller over plain http", () => {
-    const result = checkAdminAuth({
-      req: makeReq({ authorization: basicHeader("", "test-token") }, "http://127.0.0.1:8080/admin"),
-      bearer: "test-token",
-      agentName: "zip",
-      callerIp: "127.0.0.1",
-    });
-    expect(result.kind).toBe("ok");
-  });
-
   it("allows non-loopback caller over https://", () => {
     const result = checkAdminAuth({
       req: makeReq(
         { authorization: basicHeader("", "test-token") },
-        "https://my-agent.fly.dev/admin",
+        "https://my-agent.fly.dev/console",
       ),
       bearer: "test-token",
       agentName: "zip",
@@ -48,13 +41,48 @@ describe("admin-auth — HTTPS gate", () => {
   });
 });
 
-describe("admin-auth — HTTP Basic", () => {
-  it("returns 401 + WWW-Authenticate when no Authorization header", () => {
+describe("admin-auth — loopback bypass", () => {
+  it("loopback caller is allowed without any Authorization header", () => {
     const result = checkAdminAuth({
-      req: makeReq({}, "http://127.0.0.1:8080/admin"),
+      req: makeReq({}, "http://127.0.0.1:8080/console"),
       bearer: "test-token",
       agentName: "zip",
       callerIp: "127.0.0.1",
+    });
+    expect(result.kind).toBe("ok");
+  });
+
+  it("loopback caller is allowed even with a wrong bearer (bypass is unconditional)", () => {
+    const result = checkAdminAuth({
+      req: makeReq(
+        { authorization: basicHeader("", "wrong-token") },
+        "http://127.0.0.1:8080/console",
+      ),
+      bearer: "test-token",
+      agentName: "zip",
+      callerIp: "127.0.0.1",
+    });
+    expect(result.kind).toBe("ok");
+  });
+
+  it("IPv6 loopback (::1) is also bypassed", () => {
+    const result = checkAdminAuth({
+      req: makeReq({}, "http://[::1]:8080/console"),
+      bearer: "test-token",
+      agentName: "zip",
+      callerIp: "::1",
+    });
+    expect(result.kind).toBe("ok");
+  });
+});
+
+describe("admin-auth — HTTP Basic (non-loopback only)", () => {
+  it("returns 401 + WWW-Authenticate when no Authorization header", () => {
+    const result = checkAdminAuth({
+      req: makeReq({}, "https://my-agent.fly.dev/console"),
+      bearer: "test-token",
+      agentName: "zip",
+      callerIp: "10.0.0.5",
     });
     expect(result.kind).toBe("unauthorized");
     if (result.kind === "unauthorized") {
@@ -65,10 +93,10 @@ describe("admin-auth — HTTP Basic", () => {
 
   it("401 response body is empty", async () => {
     const result = checkAdminAuth({
-      req: makeReq({}, "http://127.0.0.1:8080/admin"),
+      req: makeReq({}, "https://my-agent.fly.dev/console"),
       bearer: "test-token",
       agentName: "zip",
-      callerIp: "127.0.0.1",
+      callerIp: "10.0.0.5",
     });
     expect(result.kind).toBe("unauthorized");
     if (result.kind === "unauthorized") {
@@ -79,10 +107,13 @@ describe("admin-auth — HTTP Basic", () => {
 
   it("accepts empty-username basic auth (curl -u :token form)", () => {
     const result = checkAdminAuth({
-      req: makeReq({ authorization: basicHeader("", "test-token") }, "http://127.0.0.1:8080/admin"),
+      req: makeReq(
+        { authorization: basicHeader("", "test-token") },
+        "https://my-agent.fly.dev/console",
+      ),
       bearer: "test-token",
       agentName: "zip",
-      callerIp: "127.0.0.1",
+      callerIp: "10.0.0.5",
     });
     expect(result.kind).toBe("ok");
   });
@@ -91,11 +122,11 @@ describe("admin-auth — HTTP Basic", () => {
     const result = checkAdminAuth({
       req: makeReq(
         { authorization: basicHeader("admin", "test-token") },
-        "http://127.0.0.1:8080/admin",
+        "https://my-agent.fly.dev/console",
       ),
       bearer: "test-token",
       agentName: "zip",
-      callerIp: "127.0.0.1",
+      callerIp: "10.0.0.5",
     });
     expect(result.kind).toBe("ok");
   });
@@ -104,11 +135,11 @@ describe("admin-auth — HTTP Basic", () => {
     const result = checkAdminAuth({
       req: makeReq(
         { authorization: basicHeader("", "wrong-token") },
-        "http://127.0.0.1:8080/admin",
+        "https://my-agent.fly.dev/console",
       ),
       bearer: "test-token",
       agentName: "zip",
-      callerIp: "127.0.0.1",
+      callerIp: "10.0.0.5",
     });
     expect(result.kind).toBe("unauthorized");
     if (result.kind === "unauthorized") {
@@ -118,29 +149,32 @@ describe("admin-auth — HTTP Basic", () => {
 
   it("rejects malformed Authorization header (non-Basic) with 401", () => {
     const result = checkAdminAuth({
-      req: makeReq({ authorization: "Bearer test-token" }, "http://127.0.0.1:8080/admin"),
+      req: makeReq({ authorization: "Bearer test-token" }, "https://my-agent.fly.dev/console"),
       bearer: "test-token",
       agentName: "zip",
-      callerIp: "127.0.0.1",
+      callerIp: "10.0.0.5",
     });
     expect(result.kind).toBe("unauthorized");
   });
 
   it("rejects malformed base64 in Basic header with 401", () => {
     const result = checkAdminAuth({
-      req: makeReq({ authorization: "Basic not-valid-base64!@#" }, "http://127.0.0.1:8080/admin"),
+      req: makeReq(
+        { authorization: "Basic not-valid-base64!@#" },
+        "https://my-agent.fly.dev/console",
+      ),
       bearer: "test-token",
       agentName: "zip",
-      callerIp: "127.0.0.1",
+      callerIp: "10.0.0.5",
     });
     expect(result.kind).toBe("unauthorized");
   });
 
-  it("HTTPS gate fires before HTTP Basic check (non-loopback http with valid bearer still 426)", () => {
+  it("HTTPS gate fires before loopback bypass + Basic check (non-loopback http with valid bearer still 426)", () => {
     const result = checkAdminAuth({
       req: makeReq(
         { authorization: basicHeader("", "test-token") },
-        "http://my-agent.fly.dev/admin",
+        "http://my-agent.fly.dev/console",
       ),
       bearer: "test-token",
       agentName: "zip",

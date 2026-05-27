@@ -105,11 +105,22 @@ function basicHeader(bearer: string): string {
 }
 
 describe("handleAdminRoute — auth", () => {
-  it("GET /admin without bearer → 401", async () => {
-    const req = new Request("http://127.0.0.1:8080/admin");
-    const res = await handleAdminRoute(req, await makeCtx());
+  it("GET /console without bearer from non-loopback → 401", async () => {
+    const req = new Request("https://my-agent.fly.dev/console");
+    const res = await handleAdminRoute(req, await makeCtx({ callerIp: "10.0.0.5" }));
     expect(res.status).toBe(401);
     expect(res.headers.get("www-authenticate")).toBe('Basic realm="auggy-admin zip"');
+  });
+
+  it("GET /console from loopback without bearer → bypass (no 401)", async () => {
+    // Loopback bypass: anyone with shell access to the host already has
+    // filesystem read on .env → already has the bearer, so the bearer-on-
+    // loopback check added friction without protection. The 503 build-required
+    // is the next gate (no staticDir in this test setup).
+    const req = new Request("http://127.0.0.1:8080/console");
+    const res = await handleAdminRoute(req, await makeCtx({ callerIp: "127.0.0.1" }));
+    expect(res.status).not.toBe(401);
+    expect(res.status).toBe(503);
   });
 
   it("GET /console with valid bearer → 503 build-required when no staticDir", async () => {
