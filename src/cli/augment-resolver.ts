@@ -229,6 +229,7 @@ function resolveSkills(opts: Record<string, unknown>, agentDir: string): Augment
 
 function resolveWebTransport(
   opts: Record<string, unknown>,
+  agentDir: string,
   lateBindings: { revocationCheck: ((id: string) => boolean) | null },
 ): Augment {
   const vtBase = opts.visitorTokens as
@@ -254,6 +255,11 @@ function resolveWebTransport(
     // allowAnonymous is silently dropped and the env/default rule wins every
     // time — breaking the "operator's most-explicit choice wins" contract.
     allowAnonymous: opts.allowAnonymous as boolean | undefined,
+    // Wire the agent dir through to webTransport so the /console module can
+    // read/write `.env`, `identity.md`, and admin-overrides.json. Without
+    // this, the Credentials and Identity tabs render "agent directory not
+    // configured" errors.
+    agentDir,
   });
 }
 
@@ -504,7 +510,7 @@ export async function resolveAugments(
         augment = resolveFilesystem(opts, agentDir);
         break;
       case "webTransport":
-        augment = resolveWebTransport(opts, lateBindings);
+        augment = resolveWebTransport(opts, agentDir, lateBindings);
         break;
       case "webFetch":
         augment = resolveWebFetch(opts);
