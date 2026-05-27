@@ -12,7 +12,7 @@ Fourteen augments ship in `src/augments/` (plus `webTransport` under `src/transp
 - **`telegramTransport`** — bidirectional Telegram bot transport
 - **`filesystem`** — multi-mount scoped file access
 - **`webFetch`** — URL fetch with HTML→text rendering
-- **`manifest`** — read-only org knowledge manifest (HTTP or `file://` baseUrl)
+- **`manifest`** — read-only registry of information endpoints (HTTP or `file://` baseUrl) the agent can fetch on demand
 - **`skills`** — model-facing skill surface; lists mounted skills (name + description from each SKILL.md's YAML frontmatter) per [ADR-030](../../docs/solutions/architecture/adr-030-model-facing-skill-surface-separation.md)
 - **`bash`** — scoped shell execution
 - **`budgets`** — per-trust-level turn budgets + dollar ceiling
@@ -698,14 +698,14 @@ The `/admin` route renders a **Notify** block with:
 
 The override persists across restart when `agentDir` is set in the augment config.
 
-## `manifest` — Read-only org knowledge manifest
+## `manifest` — Read-only info-endpoint registry
 
 ```ts
 import { manifest } from "augment-1";
 
 const org = manifest({
-  baseUrl: process.env.ORG_CONTEXT_URL!,
-  token: process.env.ORG_CONTEXT_TOKEN,
+  baseUrl: process.env.MANIFEST_URL!,
+  token: process.env.MANIFEST_TOKEN,
 });
 ```
 
