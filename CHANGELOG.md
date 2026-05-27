@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- **`chat/` package deleted.** The standalone Local GUI (separate port 8090, agent picker, BEM CSS) is gone now that every agent serves its own operator surface at `/console`. `auggy chat` already opens `http://<agent>/console/chat` directly (#81). The only piece worth keeping — the AG-UI SSE parser — has been relocated to `admin/src/lib/ag-ui-parse/` (its sole consumer). The `@chat/*` path alias is removed from `admin/tsconfig.json` and `admin/vite.config.ts`. `docs/15-chat.md` is also deleted; the console doc at `docs/21-console.md` is now authoritative.
+
 ## [0.4.4] - 2026-05-26
 
 ### Added

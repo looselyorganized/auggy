@@ -623,10 +623,6 @@ export async function buildAdminActionRegistry(
  * (text/plain JSON, no preflight) to inject prompts and trigger tool calls
  * with full creator side effects. CSRF binds the request to the issued
  * token and rejects cross-site forgeries.
- *
- * Mirrors the shape of `chat/server.ts`'s `/api/chat/<id>` proxy (the
- * standalone multi-agent picker UI) but simpler: one agent, one bearer,
- * no per-request bearer cache.
  */
 async function handleChatProxy(
   req: Request,

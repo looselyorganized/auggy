@@ -1,18 +1,14 @@
 /**
  * `auggy chat` — open a running agent's `/console/chat` in the browser.
  *
- * Replaces the previous standalone GUI (`chat/` package with its own port
- * 8090 + agent picker) now that every agent serves a built-in console at
- * `/console` (see docs/21-console.md). One agent → one console; the
- * console's Chat tab is the single source of truth for operator chat.
+ * Every agent serves a built-in console at `/console` (see docs/21-console.md).
+ * One agent → one console; the console's Chat tab is the single source of
+ * truth for operator chat.
  *
  *   auggy chat                  — discover running agents; open if one,
  *                                 prompt if many, error if none.
  *   auggy chat <name>           — open that agent's /console/chat.
  *   auggy chat <name> --no-open — print the URL only.
- *
- * The standalone `chat/` package is deprecated and will be removed once
- * downstream callers migrate.
  */
 
 import { Command } from "commander";
