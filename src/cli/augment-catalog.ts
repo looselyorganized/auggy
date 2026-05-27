@@ -17,7 +17,16 @@
 export interface CatalogEntry {
   /** Display name for selection UI. */
   label: string;
-  /** Short description shown in the selector. */
+  /**
+   * Short one-line summary (~50 chars) shown next to the label in the
+   * augment picker. Keeps the picker readable at any terminal width.
+   */
+  tagline: string;
+  /**
+   * Long-form description shown in the picker's detail panel for the
+   * focused row, and in docs. Can run multiple sentences; the picker
+   * renders it below the list, not inline.
+   */
   description: string;
   /** The augment type identifier in agent.yaml. */
   type: string;
@@ -57,7 +66,9 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
   // shorthand directly; the catalog never carries an identity row.
   {
     label: "fileMemory (learned)",
-    description: "Mutable memory — agent writes learned behaviors here",
+    tagline: "learned-behaviors store",
+    description:
+      "Mutable file the agent writes learned behaviors to (./learned.md). Mounted into the preamble.",
     type: "fileMemory",
     defaultName: "learned",
     defaultOptions: {
@@ -74,8 +85,9 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
   },
   {
     label: "layeredMemory",
+    tagline: "peer-scoped episodic memory (SQLite/Supabase)",
     description:
-      "Peer-scoped episodic memory with provenance (SQLite or Supabase) — upgrade to filesystem",
+      "Per-peer episodic memory with provenance tracking. Stores facts the agent extracts from conversations. SQLite by default; Supabase for shared/cloud deployments.",
     type: "layeredMemory",
     defaultName: "memory",
     defaultOptions: {
@@ -89,7 +101,9 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
   },
   {
     label: "filesystem",
-    description: "Read/write files — skills directory + workspace",
+    tagline: "scoped read/write + skills directory",
+    description:
+      "Scoped file access with two mounts: ./skills (read-only, used to teach the agent via SKILL.md files) and ./workspace (read/write/delete scratchpad).",
     type: "filesystem",
     defaultName: "files",
     defaultOptions: {
@@ -103,8 +117,9 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
   },
   {
     label: "webTransport",
+    tagline: "chat over HTTP+SSE + the /console operator UI",
     description:
-      "AG-UI chat endpoint (HTTP + SSE) — bearer-gated by default; opt-in to anonymous chat via allowAnonymous",
+      "Exposes the agent on a port: AG-UI chat endpoint (SSE), the /console operator surface, and /health. Bearer-gated on non-loopback; loopback is open. Required if you want anything besides the CLI to talk to the agent.",
     type: "webTransport",
     defaultName: "web",
     defaultOptions: {
@@ -123,7 +138,9 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
   },
   {
     label: "webFetch",
-    description: "Fetch URLs, read web pages, call HTTP APIs",
+    tagline: "fetch URLs / scrape pages / call HTTP APIs",
+    description:
+      "Gives the agent a fetch tool: GET any public URL, parse HTML to text, pass JSON through. SSRF guard blocks loopback + private IPs by default.",
     type: "webFetch",
     defaultName: "fetch",
     defaultOptions: {
@@ -134,7 +151,9 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
   },
   {
     label: "supabaseMemory",
-    description: "Episodic memory backed by Supabase (visitor profiles, events)",
+    tagline: "namespace memory in Supabase (legacy)",
+    description:
+      "Frozen older memory provider kept for migration paths. Use layeredMemory for new agents.",
     type: "supabaseMemory",
     defaultName: "episodic",
     defaultOptions: {
@@ -155,7 +174,9 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
   },
   {
     label: "manifest",
-    description: "Registry of information endpoints (files/URLs the agent can fetch)",
+    tagline: "registry of org-specific knowledge endpoints",
+    description:
+      "Catalog of files / URLs the agent can fetch to answer questions about your org or project. Defaults to ./manifest/ on disk; can point at an HTTP-served manifest.",
     type: "manifest",
     defaultName: "manifest",
     defaultOptions: {
@@ -173,7 +194,9 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
   // agent.yaml. See docs/solutions/architecture/adr-NNN-augment-catalog-policy.md.
   {
     label: "bash",
-    description: "Execute shell commands with configurable risk levels",
+    tagline: "scoped shell execution (allowlist + risk levels)",
+    description:
+      "Lets the agent run shell commands. Restricted by default to a small allowlist (echo, ls, cat, pwd, date). Configure risk level + allowlist in agent.yaml.",
     type: "bash",
     defaultName: "bash",
     defaultOptions: {
@@ -185,7 +208,9 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
   },
   {
     label: "budgets",
-    description: "Per-trust-level turn budgets + dailyBudgetUsd ceiling (SQLite)",
+    tagline: "spend caps per trust level (turns + $/day)",
+    description:
+      "Cost guard. Caps turns-per-thread, turns-per-day, and USD-per-day per trust level. Hard daily budget ceiling. SQLite-backed.",
     type: "budgets",
     defaultName: "budgets",
     defaultOptions: {
@@ -204,8 +229,9 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
   },
   {
     label: "notify",
+    tagline: "outbound messaging (webhook / Telegram / email)",
     description:
-      "Outbound messaging to operator-defined destinations (webhook + telegram + agentmail adapters)",
+      "Lets the agent ping you when something happens. Adapters: log-to-file (default), webhook, telegram, agentmail. Per-destination rate limit + dedup.",
     type: "notify",
     defaultName: "notify",
     defaultOptions: {
@@ -231,8 +257,9 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
   },
   {
     label: "agentMail",
+    tagline: "send email via AgentMail (Phase A: outbound only)",
     description:
-      "Send and (Phase B) receive email via AgentMail. Outbound tools (send_message / reply_to_message / forward_message) with trust-level gate, recipient allowlist, rate limits, dedup, and audit ring.",
+      "Lets the agent send email (send / reply / forward) via AgentMail. Trust-level gate, recipient allowlist, rate limits, dedup, audit ring. Requires AGENTMAIL_API_KEY + AGENTMAIL_INBOX_ID.",
     type: "agentMail",
     defaultName: "agentmail",
     defaultOptions: {
@@ -259,7 +286,9 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
   },
   {
     label: "telegramTransport",
-    description: "Bidirectional Telegram I/O — long-poll OR webhook inbound, four-path identity",
+    tagline: "talk to the agent on Telegram (in + out)",
+    description:
+      "Bidirectional Telegram chat. Long-poll or webhook inbound. Four-path identity (creator user IDs, recognized via visitorAuth, anonymous). Requires TELEGRAM_BOT_TOKEN.",
     type: "telegramTransport",
     defaultName: "telegram",
     defaultOptions: {
@@ -281,9 +310,10 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
     hasSkill: false,
   },
   {
-    label: "Turn Control",
+    label: "turnControl",
+    tagline: "agent can pause + ask for clarification",
     description:
-      "Lets the agent pause and request input from the user. Recommended for chat-shaped agents (web/telegram).",
+      "Gives the agent a request_input tool that ends the turn waiting for a reply. Recommended for chat-shaped agents (web/telegram) — without it the agent always produces a final answer.",
     type: "turnControl",
     defaultName: "turn-control",
     defaultOptions: {},
@@ -292,8 +322,9 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
   },
   {
     label: "link",
+    tagline: "peer-to-peer A2A (auggy ↔ auggy / A2A peers)",
     description:
-      "Peer-to-peer A2A v0.2 transport (auggy ↔ auggy / A2A-speaking peers) via @auggy/link",
+      "Lets two agents talk to each other directly over the A2A v0.2 protocol. No central service. Opens a port for inbound + dials configured peers outbound.",
     type: "link",
     defaultName: "link",
     defaultOptions: {
@@ -313,9 +344,10 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
     packageDeps: { "@auggy/link": "^0.1.2" },
   },
   {
-    label: "Visitor Auth",
+    label: "visitorAuth",
+    tagline: "email magic-link → recognized visitor",
     description:
-      "Email magic-link verification — promotes anonymous visitors to recognized identity. Console mode (agentMail.transport: 'console') prints verify links to stdout for OSS testing without AgentMail.",
+      "Promotes anonymous chat visitors to recognized identity via email magic-link. Console mode (default) prints verify links to stdout for local testing; switch to agentmail transport for production mail delivery.",
     type: "visitorAuth",
     defaultName: "visitor-auth",
     defaultOptions: {
