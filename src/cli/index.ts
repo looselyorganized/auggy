@@ -72,14 +72,16 @@ program
   .option("--config <path>", "path to agent.yaml")
   .option("--open", "auto-launch the operator's browser to /console/chat once the agent is up")
   .option("--internal-mode <mode>", "(internal) process mode for PID manifest")
-  .action(async (name: string, opts: { config?: string; open?: boolean; internalMode?: string }) => {
-    try {
-      await runDev(name, opts);
-    } catch (err) {
-      console.error(`Error: ${(err as Error).message}`);
-      process.exit(1);
-    }
-  });
+  .action(
+    async (name: string, opts: { config?: string; open?: boolean; internalMode?: string }) => {
+      try {
+        await runDev(name, opts);
+      } catch (err) {
+        console.error(`Error: ${(err as Error).message}`);
+        process.exit(1);
+      }
+    },
+  );
 
 program
   .command("start <name>")
