@@ -2536,7 +2536,7 @@ describe("webTransport /admin route — basic dispatch (G36 phase 2)", () => {
         expect(body.toLowerCase()).toContain("auggy");
       } else {
         expect(resp.status).toBe(503);
-        expect(body).toContain("Admin SPA not built");
+        expect(body).toContain("Console SPA not built");
       }
     } finally {
       await agent.stop();

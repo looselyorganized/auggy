@@ -42,9 +42,7 @@ describe("admin-credentials — renameCredential atomicity", () => {
     expect(r.ok).toBe(true);
     const body = readFileSync(join(dir, ".env"), "utf-8");
     // Order: header, ALPHA2 (replacing ALPHA's slot), BETA, tail.
-    expect(body).toBe(
-      `${["# header", "ALPHA2=one-updated", "BETA=two", "# tail"].join("\n")}\n`,
-    );
+    expect(body).toBe(`${["# header", "ALPHA2=one-updated", "BETA=two", "# tail"].join("\n")}\n`);
   });
 
   it("oldKey === newKey degenerates to a value update", () => {
@@ -131,10 +129,7 @@ describe("admin-credentials — setCredential round-trips multiline", () => {
   });
 
   it("deleting a key keeps surrounding comments intact", () => {
-    writeFileSync(
-      join(dir, ".env"),
-      `${["# head", "DOOMED=value", "# tail"].join("\n")}\n`,
-    );
+    writeFileSync(join(dir, ".env"), `${["# head", "DOOMED=value", "# tail"].join("\n")}\n`);
     const r = deleteCredential(dir, "DOOMED");
     expect(r.ok).toBe(true);
     const body = readFileSync(join(dir, ".env"), "utf-8");
