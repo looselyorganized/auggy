@@ -378,9 +378,9 @@ describe("railway-cli", () => {
     }));
     const cli = createRailwayCli({ spawn: factory });
     const status = await cli.status({ cwd: "/tmp/staging" });
-    expect(status.project.id).toBe("proj_abc");
-    expect(status.service.id).toBe("svc_def");
-    expect(status.deployment.status).toBe("SUCCESS");
+    expect(status.project?.id).toBe("proj_abc");
+    expect(status.service?.id).toBe("svc_def");
+    expect(status.deployment?.status).toBe("SUCCESS");
   });
 
   test("destroyService runs `railway service delete --yes`", async () => {

@@ -403,6 +403,46 @@ describe("runDeploy", () => {
     });
   });
 
+  test("missing Railway deployment status does not crash after build is queued", async () => {
+    const warnings: string[] = [];
+    const infos: string[] = [];
+    const { cli } = mockRailwayCli();
+    cli.status = async () => ({
+      project: { id: "proj_abc", name: "lorf" },
+      service: { name: "zip" },
+    });
+
+    const result = await runDeploy(
+      "zip",
+      baseDeployOptions(cli, auggyDir, {
+        logger: {
+          info: (msg) => infos.push(msg),
+          warn: (msg) => warnings.push(msg),
+          error: () => {},
+        },
+        healthCheck: {
+          fetch: async () => new Response(null, { status: 404 }),
+          sleep: async () => {},
+          now: (() => {
+            let ticks = 0;
+            return () => ticks++;
+          })(),
+          timeoutMs: 1,
+          intervalMs: 1,
+        },
+      }),
+    );
+
+    expect(result.health).toMatchObject({ ok: false, status: 404 });
+    expect(result.serviceId).toBe("zip");
+    expect(infos.join("\n")).toMatch(/Service status: unknown/);
+    expect(warnings.join("\n")).toMatch(/Health check did not pass yet/);
+    expect(getAgent("zip", { auggyDir })?.cloud).toMatchObject({
+      serviceId: "zip",
+      url: "https://zip-production-abcd.up.railway.app",
+    });
+  });
+
   test("rejects unknown providers", async () => {
     const { cli } = mockRailwayCli();
     await expect(

@@ -67,9 +67,9 @@ interface RunOrThrowOptions {
 }
 
 export interface RailwayStatus {
-  project: { id: string; name: string };
-  service: { id: string; name: string };
-  deployment: { status: string };
+  project?: { id?: string; name?: string };
+  service?: { id?: string; name?: string };
+  deployment?: { status?: string };
 }
 
 const defaultSpawn: RailwaySpawnFactory = (cmd, opts = {}) => {
@@ -212,7 +212,8 @@ export function createRailwayCli(opts: CreateRailwayCliOptions = {}): RailwayCli
       const fromInit = extractProjectId(stdout);
       if (fromInit) return fromInit;
       const status = await this.status({ cwd });
-      return status.project.id;
+      if (status.project?.id) return status.project.id;
+      throw new Error(`railway init --json produced no project id: ${stdout.trim()}`);
     },
 
     async linkProject({ projectId, cwd }) {

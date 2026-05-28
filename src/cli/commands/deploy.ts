@@ -254,13 +254,15 @@ export async function runDeploy(name: string, opts: DeployOptions): Promise<Depl
   const status = await withProgress(opts, `Reading Railway service status`, () =>
     opts.cli.status({ cwd: stagingDir }),
   );
-  opts.logger.info(`Service status: ${status.deployment.status}.`);
+  const deploymentStatus = status.deployment?.status ?? "unknown";
+  opts.logger.info(`Service status: ${deploymentStatus}.`);
 
   // 14) Write CloudRecord to the agent index.
+  const serviceId = status.service?.id ?? status.service?.name ?? opts.service ?? existingCloud?.serviceId ?? name;
   const result: DeployResult = {
     url,
     projectId,
-    serviceId: status.service.id,
+    serviceId,
     volumeId: `${name}-data`,
     health,
   };
