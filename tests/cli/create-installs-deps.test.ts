@@ -2,6 +2,7 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { parse as parseYaml } from "yaml";
 import { mockInquirerPrompts, type Answers } from "../fixtures/inquirer-mock";
 import { createStubBunInstallSpawn, type SpawnCapture } from "../fixtures/bun-install-stub";
 
@@ -145,6 +146,59 @@ describe("runCreate invokes bun install in agent dir", () => {
 });
 
 describe("runCreate scaffolding integration", () => {
+  test("default create includes the v1 chat-ready augment profile", async () => {
+    answers = { provider: "anthropic", model: "claude-sonnet-4-6" };
+
+    await runCreate("demo-defaults", {
+      auggyDir,
+      bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
+    });
+
+    const dir = agentDirFor("demo-defaults");
+    const config = parseYaml(readFileSync(join(dir, "agent.yaml"), "utf-8")) as {
+      augments: Array<{ type: string; name: string }>;
+    };
+    expect(config.augments.map((a) => a.type)).toEqual([
+      "fileMemory",
+      "filesystem",
+      "webTransport",
+      "webFetch",
+      "budgets",
+      "turnControl",
+    ]);
+    expect(existsSync(join(dir, "skills", "filesystem", "SKILL.md"))).toBe(true);
+    expect(existsSync(join(dir, "skills", "web-fetch", "SKILL.md"))).toBe(true);
+    expect(existsSync(join(dir, "skills", "turn-control", "SKILL.md"))).toBe(true);
+
+    const env = readFileSync(join(dir, ".env"), "utf-8");
+    expect(env).toMatch(/AUGGY_WEB_TOKEN=[a-f0-9]{64}/);
+    expect(env).toContain("AUGGY_AGENT_ID=demo-defaults");
+    expect(env).toContain("AUGGY_PUBLIC_URL=http://localhost:8080");
+    expect(env).toContain("ANTHROPIC_API_KEY=");
+  });
+
+  test("create output points first-runners at auggy run", async () => {
+    answers = { provider: "anthropic", model: "claude-sonnet-4-6" };
+    const originalLog = console.log;
+    const logs: string[] = [];
+    console.log = (...args: unknown[]) => {
+      logs.push(args.map(String).join(" "));
+    };
+
+    try {
+      await runCreate("demo-output", {
+        auggyDir,
+        skipInstall: true,
+        bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
+      });
+    } finally {
+      console.log = originalLog;
+    }
+
+    expect(logs.join("\n")).toContain("auggy run demo-output");
+    expect(logs.join("\n")).not.toContain("auggy dev demo-output --open");
+  });
+
   test("agent.yaml + identity.md + skills/ + workspace/ all scaffolded", async () => {
     answers = { provider: "anthropic", model: "claude-sonnet-4-6" };
 

@@ -132,7 +132,7 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
         agentBinding: "${AUGGY_AGENT_ID}",
       },
     },
-    required: false,
+    required: true,
     envVars: ["AUGGY_WEB_TOKEN", "AUGGY_AGENT_ID"],
     hasSkill: false,
   },
@@ -146,7 +146,7 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
     defaultOptions: {
       timeoutMs: 15000,
     },
-    required: false,
+    required: true,
     hasSkill: true,
   },
   {
@@ -224,7 +224,7 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
       anonymousGlobalLimit: 30,
       dailyBudgetUsd: 5,
     },
-    required: false,
+    required: true,
     hasSkill: false,
   },
   {
@@ -317,7 +317,7 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
     type: "turnControl",
     defaultName: "turn-control",
     defaultOptions: {},
-    required: false,
+    required: true,
     hasSkill: true,
   },
   {

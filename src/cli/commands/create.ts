@@ -540,7 +540,7 @@ export async function runCreate(name: string, opts: CreateOpts): Promise<void> {
       console.log(`⚠ bun install failed in ${finalDir} (exit ${result.code}).`);
       console.log(`  Scaffolding is on disk.`);
       console.log(`  Retry:  cd ${finalDir} && bun install`);
-      console.log(`  Then:   auggy dev ${name}`);
+      console.log(`  Then:   auggy run ${name}`);
       console.log();
     }
   }
@@ -574,7 +574,7 @@ export async function runCreate(name: string, opts: CreateOpts): Promise<void> {
     `   ${cream(`${step++}.`)}  Open ${finalDir} in your editor   ${dim("(identity.md, agent.yaml — optional)")}`,
   );
   console.log(
-    `   ${cream(`${step++}.`)}  auggy dev ${name} --open   ${dim("(boots + opens /console/chat in your browser)")}`,
+    `   ${cream(`${step++}.`)}  auggy run ${name}   ${dim("(boots + opens /console/chat in your browser)")}`,
   );
   console.log();
 }

@@ -137,7 +137,7 @@ Acceptance:
 
 ## Phase 2: Create Defaults And Output
 
-### 4. Define The v1 Default Profile
+### 4. Define The v1 Default Profile *(implemented 2026-05-28)*
 
 Behavior:
 
@@ -175,7 +175,7 @@ Acceptance:
 
 - A fresh agent can chat after adding one provider key.
 
-### 5. Clean Create Output
+### 5. Clean Create Output *(implemented 2026-05-28)*
 
 Behavior:
 
