@@ -371,13 +371,15 @@ Acceptance:
 
 ## Phase 5: Railway Deploy Polish
 
-### 12. Run Deploy Preflight
+### 12. Run Deploy Preflight *(implemented 2026-05-28)*
 
 Behavior:
 
 - `auggy deploy` runs deploy-focused checks before staging.
 - Fails before Railway work if config, deps, env, or expected deploy state are
   invalid.
+- Local web port availability is skipped for deploy preflight because Railway
+  deployability should not depend on a developer machine's occupied ports.
 
 Likely files:
 

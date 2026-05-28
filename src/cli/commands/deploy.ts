@@ -24,6 +24,7 @@
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { getAgent, setCloud } from "../agent-index";
+import { formatDoctorChecks, hasDoctorFailures, runDoctor } from "./doctor";
 import { stageBundle } from "../deploy/bundle";
 import { generateDockerfile, generateEntrypoint } from "../deploy/dockerfile";
 import type { RailwayCli } from "../deploy/railway-cli";
@@ -71,12 +72,26 @@ export async function runDeploy(name: string, opts: DeployOptions): Promise<Depl
   }
   const agentDir = entry.localDir;
 
-  // 1) Presence + auth checks (fail fast before any subprocess work).
+  // 1) Local preflight before touching Railway or staging a deploy bundle.
+  const preflight = await runDoctor(name, {
+    auggyDir: opts.auggyDir,
+    isPortAvailable: async () => true,
+  });
+  const warnings = preflight.filter((check) => check.status === "warn");
+  for (const warning of warnings) {
+    opts.logger.warn(`${warning.name}: ${warning.message}`);
+  }
+  if (hasDoctorFailures(preflight)) {
+    throw new Error(`Deploy preflight failed:\n${formatDoctorChecks(preflight)}`);
+  }
+  opts.logger.info(`Deploy preflight passed.`);
+
+  // 2) Presence + auth checks (fail fast before any subprocess work).
   await opts.cli.checkPresence();
   await opts.cli.checkAuth();
   opts.logger.info(`Railway CLI ready.`);
 
-  // 2) Determine first-deploy vs redeploy from existing CloudRecord.
+  // 3) Determine first-deploy vs redeploy from existing CloudRecord.
   const existingCloud = entry.cloud;
   const isRedeploy = existingCloud !== null;
 
@@ -89,15 +104,15 @@ export async function runDeploy(name: string, opts: DeployOptions): Promise<Depl
     opts.logger.info(`First deploy of ${name} to Railway project ${projectId}.`);
   }
 
-  // 3) Stage the bundle (excludes secrets + volume-bound state).
+  // 4) Stage the bundle (excludes secrets + volume-bound state).
   const stagingDir = stageBundle({ agentDir, agentName: name });
   opts.logger.info(`Bundle staged at ${stagingDir}.`);
 
-  // 4) Write Dockerfile + entrypoint into the staging dir.
+  // 5) Write Dockerfile + entrypoint into the staging dir.
   writeFileSync(join(stagingDir, "Dockerfile"), generateDockerfile({ agentName: name }));
   writeFileSync(join(stagingDir, "auggy-entrypoint.sh"), generateEntrypoint());
 
-  // 5) Load secrets plan and confirm with operator unless --yes.
+  // 6) Load secrets plan and confirm with operator unless --yes.
   const envPath = join(agentDir, ".env");
   const plan = loadSecretsPlan(envPath);
   if (plan.warnings.length > 0) {
@@ -115,13 +130,13 @@ export async function runDeploy(name: string, opts: DeployOptions): Promise<Depl
     }
   }
 
-  // 6) Link the staging dir to the Railway service. First deploy: Railway
+  // 7) Link the staging dir to the Railway service. First deploy: Railway
   //    auto-creates the service if --service name doesn't exist in the
   //    project. Redeploy: idempotent — re-links the same service.
   await opts.cli.link({ projectId, serviceName: name, cwd: stagingDir });
   opts.logger.info(`Linked staging dir to project ${projectId}, service ${name}.`);
 
-  // 7) Volume: only add on first deploy. Redeploys keep the existing volume
+  // 8) Volume: only add on first deploy. Redeploys keep the existing volume
   //    (Railway preserves it via the volumeId in the existing CloudRecord).
   if (!isRedeploy) {
     await opts.cli.addVolume({
@@ -132,12 +147,12 @@ export async function runDeploy(name: string, opts: DeployOptions): Promise<Depl
     opts.logger.info(`Volume "${name}-data" mounted at ${VOLUME_MOUNT_PATH}.`);
   }
 
-  // 8) Generate (or recover) the public domain. Idempotent: second call
+  // 9) Generate (or recover) the public domain. Idempotent: second call
   //    returns the existing URL.
   const url = await opts.cli.generateDomain({ cwd: stagingDir });
   opts.logger.info(`Public URL: ${url}`);
 
-  // 9) Push secrets (.env keys + AUGGY_PUBLIC_URL). D7: AUGGY_PUBLIC_URL must
+  // 10) Push secrets (.env keys + AUGGY_PUBLIC_URL). D7: AUGGY_PUBLIC_URL must
   //    be set BEFORE `up` so visitorAuth sees the publicUrl on first boot.
   for (const v of plan.variables) {
     await opts.cli.setVariable({ key: v.key, value: v.value, cwd: stagingDir });
@@ -145,16 +160,16 @@ export async function runDeploy(name: string, opts: DeployOptions): Promise<Depl
   await opts.cli.setVariable({ key: "AUGGY_PUBLIC_URL", value: url, cwd: stagingDir });
   opts.logger.info(`Pushed ${plan.variables.length + 1} env var(s) to Railway.`);
 
-  // 10) Trigger the build + deploy. --detach so we return without tailing
+  // 11) Trigger the build + deploy. --detach so we return without tailing
   //     build logs; operator follows progress via Railway UI / `railway logs`.
   await opts.cli.up({ cwd: stagingDir });
   opts.logger.info(`Build queued.`);
 
-  // 11) Capture service metadata for the CloudRecord.
+  // 12) Capture service metadata for the CloudRecord.
   const status = await opts.cli.status({ cwd: stagingDir });
   opts.logger.info(`Service status: ${status.deployment.status}.`);
 
-  // 12) Write CloudRecord to the agent index.
+  // 13) Write CloudRecord to the agent index.
   const result: DeployResult = {
     url,
     projectId,

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getAgent, seedAgentForTest, setCloud } from "../../src/cli/agent-index";
@@ -80,10 +80,40 @@ describe("runDeploy", () => {
     auggyDir = mkdtempSync(join(tmpdir(), "auggy-deploy-test-"));
     agentDir = seedAgentForTest("zip", {
       auggyDir,
-      yaml: "name: zip\nmodel: claude-sonnet-4-6\n",
+      yaml: [
+        "id: aug1_a3f7c2e1-8b4d-4f9e-a6c1-2d8e9f0b3a5c",
+        "name: zip",
+        "identity: ./identity.md",
+        "engine:",
+        "  provider: anthropic",
+        "  model: claude-sonnet-4-6",
+        "augments:",
+        "  - name: web",
+        "    type: webTransport",
+        "    options:",
+        "      port: 8080",
+        "      auth:",
+        "        type: bearer",
+        "        token: ${AUGGY_WEB_TOKEN}",
+        "",
+      ].join("\n"),
     });
     writeFileSync(join(agentDir, "identity.md"), "# Zip\n");
     writeFileSync(join(agentDir, ".env"), "ANTHROPIC_API_KEY=sk-test\nAUGGY_WEB_TOKEN=tok-1\n");
+    writeFileSync(
+      join(agentDir, "package.json"),
+      `${JSON.stringify({
+        name: "auggy-agent-zip",
+        private: true,
+        type: "module",
+        dependencies: {
+          auggy: "^0.3.1",
+          "@auggy/anthropic": "^0.3.1",
+        },
+      })}\n`,
+    );
+    mkdirSync(join(agentDir, "node_modules", "auggy"), { recursive: true });
+    mkdirSync(join(agentDir, "node_modules", "@auggy", "anthropic"), { recursive: true });
   });
 
   afterEach(() => {
@@ -187,6 +217,36 @@ describe("runDeploy", () => {
     ).rejects.toThrow(/aborted/i);
     expect(calls.up).toBe(0);
     expect(calls.setVariable).toEqual([]);
+    expect(getAgent("zip", { auggyDir })?.cloud).toBeNull();
+  });
+
+  test("aborts before Railway calls when local deploy preflight fails", async () => {
+    const agentYamlPath = join(agentDir, "agent.yaml");
+    writeFileSync(
+      agentYamlPath,
+      readFileSync(agentYamlPath, "utf-8").replace(
+        "${AUGGY_WEB_TOKEN}",
+        "${AUGGY_DEPLOY_PREFLIGHT_MISSING_TOKEN}",
+      ),
+    );
+    writeFileSync(join(agentDir, ".env"), "ANTHROPIC_API_KEY=sk-test\n");
+    const { cli, calls } = mockRailwayCli();
+    await expect(
+      runDeploy("zip", {
+        to: "railway",
+        yes: true,
+        auggyDir,
+        cli,
+        promptProjectId: async () => "proj_abc",
+        promptConfirm: async () => true,
+        logger: { info: () => {}, warn: () => {}, error: () => {} },
+      }),
+    ).rejects.toThrow(/Deploy preflight failed:[\s\S]*AUGGY_DEPLOY_PREFLIGHT_MISSING_TOKEN/);
+
+    expect(calls.checkPresence).toBe(0);
+    expect(calls.checkAuth).toBe(0);
+    expect(calls.link).toEqual([]);
+    expect(calls.up).toBe(0);
     expect(getAgent("zip", { auggyDir })?.cloud).toBeNull();
   });
 
