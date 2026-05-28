@@ -588,8 +588,9 @@ describe("runDeploy", () => {
     expect(existsSync(join(stagingDir!, "Dockerfile"))).toBe(true);
     expect(existsSync(join(stagingDir!, "auggy-entrypoint.sh"))).toBe(true);
     const dockerfile = readFileSync(join(stagingDir!, "Dockerfile"), "utf-8");
-    expect(dockerfile).toMatch(/ENTRYPOINT \["\/app\/auggy-entrypoint\.sh", "zip"\]/);
+    expect(dockerfile).toMatch(/ENTRYPOINT \["\/app\/auggy-entrypoint\.sh"\]/);
     const entrypoint = readFileSync(join(stagingDir!, "auggy-entrypoint.sh"), "utf-8");
-    expect(entrypoint).toMatch(/exec bunx auggy dev "\$1"/);
+    expect(entrypoint).toMatch(/exec bunx auggy run --config \/app\/agent\.yaml --no-open/);
+    expect(entrypoint).not.toMatch(/"\$1"/);
   });
 });

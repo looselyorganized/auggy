@@ -3,7 +3,7 @@
  *
  * The deploy command writes these strings into the staging dir before
  * `railway up`. ADR-021 cloud design: bake-in the volume symlink dance +
- * `auggy dev --config /app/agent.yaml --internal-mode railway` invocation so `agent.yaml`'s
+ * `auggy run --config /app/agent.yaml --no-open` invocation so `agent.yaml`'s
  * `dbPath: ./<name>.db` paths work unchanged in cloud.
  */
 
@@ -26,11 +26,7 @@ const BUN_VERSION = "1.1-alpine";
  */
 const SQLITE_DB_NAMES = ["memory.db", "budgets.db", "visitor-auth.db", "link.db"];
 
-interface DockerfileOptions {
-  agentName: string;
-}
-
-export function generateDockerfile(opts: DockerfileOptions): string {
+export function generateDockerfile(): string {
   return `FROM oven/bun:${BUN_VERSION}
 
 WORKDIR /app
@@ -58,7 +54,7 @@ RUN chmod +x /app/auggy-entrypoint.sh
 # Railway routes traffic to the port declared by the app via PORT env.
 EXPOSE 8080
 
-ENTRYPOINT ["/app/auggy-entrypoint.sh", "${opts.agentName}"]
+ENTRYPOINT ["/app/auggy-entrypoint.sh"]
 `;
 }
 
@@ -89,11 +85,10 @@ mkdir -p /app/data
 
 ${symlinks}
 
-# $1 is the agent name passed by ENTRYPOINT.
 # bunx resolves auggy from the per-agent node_modules/ (installed in the
 # Dockerfile via \`bun install\`). v0.3.2 removed the global-install path
 # because the agent's pinned auggy version + engine adapter is what the
 # image must use, not whatever a stray global has.
-exec bunx auggy dev "$1" --config /app/agent.yaml --internal-mode railway
+exec bunx auggy run --config /app/agent.yaml --no-open
 `;
 }
