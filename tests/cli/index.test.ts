@@ -38,4 +38,10 @@ describe("auggy CLI command table", () => {
     expect(help).toContain("run [options] <name>");
     expect(help).toContain("Run an agent locally and open /console/chat");
   });
+
+  test("create exposes standalone project mode", () => {
+    const create = buildCli().commands.find((cmd) => cmd.name() === "create");
+    expect(create?.helpInformation()).toContain("--project");
+    expect(create?.helpInformation()).toContain("standalone agent project");
+  });
 });

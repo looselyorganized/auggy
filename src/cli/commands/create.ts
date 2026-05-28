@@ -1,7 +1,8 @@
 /**
  * auggy create <name> — scaffold a new agent directory.
  *
- * Lives at `<auggyDir>/agents/<name>/` — there is no custom-location override.
+ * Default compatibility mode lives at `<auggyDir>/agents/<name>/`. Project
+ * mode (`--project`) creates `./<name>/` as a standalone agent repo.
  * The directory itself is the registration; no central index file is touched.
  *
  * Atomicity: the scaffold writes into a sibling `.tmp-<uuid>/` dir and lifts
@@ -14,7 +15,7 @@
  */
 
 import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
 import { checkbox, confirm, select, input } from "@inquirer/prompts";
 import { stringify } from "yaml";
@@ -86,6 +87,13 @@ export interface CreateOpts {
    * omit. The agent lands at `<auggyDir>/agents/<name>/`.
    */
   auggyDir?: string;
+  /**
+   * Create a standalone agent project at `<cwd>/<name>` instead of the
+   * compatibility registry path under `~/.auggy/agents`.
+   */
+  project?: boolean;
+  /** Test seam: override process.cwd() for project mode. */
+  cwd?: string;
 }
 
 interface WizardAnswers {
@@ -358,19 +366,25 @@ async function runWizard(): Promise<WizardAnswers> {
 }
 
 export async function runCreate(name: string, opts: CreateOpts): Promise<void> {
-  const finalDir = resolveAgentDir(name, { auggyDir: opts.auggyDir });
+  const finalDir = opts.project
+    ? resolve(opts.cwd ?? process.cwd(), name)
+    : resolveAgentDir(name, { auggyDir: opts.auggyDir });
 
   if (existsSync(finalDir)) {
     throw new Error(
       `Agent "${name}" already exists at ${finalDir}.\n\n` +
-        `  Use a different name, or remove the existing one with \`auggy remove ${name}\`.`,
+        (opts.project
+          ? "  Use a different directory name, or remove the existing directory."
+          : `  Use a different name, or remove the existing one with \`auggy remove ${name}\`.`),
     );
   }
 
   // Sweep any stale .tmp-* dirs left behind by a previous interrupted run.
   // Safe pre-scaffold because no concurrent create for this name can be in
   // progress (the finalDir check above is the lock).
-  sweepStaleTempDirs({ auggyDir: opts.auggyDir });
+  if (!opts.project) {
+    sweepStaleTempDirs({ auggyDir: opts.auggyDir });
+  }
 
   // Wizard loop — Esc at any prompt restarts from the engine-provider
   // step. We only print the welcome banner on the first attempt; restart

@@ -48,9 +48,10 @@ export function buildCli(): Command {
 
   program
     .command("create <name>")
-    .description("Scaffold a new agent at ~/.auggy/agents/<name>/ (interactive)")
+    .description("Scaffold a new agent (interactive)")
     .option("--skip-install", "write package.json but don't run bun install")
-    .action(async (name: string, opts: { skipInstall?: boolean }) => {
+    .option("--project", "create ./<name>/ as a standalone agent project")
+    .action(async (name: string, opts: { skipInstall?: boolean; project?: boolean }) => {
       try {
         await runCreate(name, opts);
       } catch (err) {

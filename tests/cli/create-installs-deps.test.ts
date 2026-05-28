@@ -28,6 +28,7 @@ const { getAgent } = await import("../../src/cli/agent-index");
 const { PROVIDER_TO_PACKAGE } = await import("../../src/cli/scaffold-package-json");
 
 let auggyDir: string;
+let projectParent: string;
 let bunInstallCalls: SpawnCapture[];
 
 function agentDirFor(name: string): string {
@@ -36,12 +37,14 @@ function agentDirFor(name: string): string {
 
 beforeEach(() => {
   auggyDir = mkdtempSync(join(tmpdir(), "create-test-auggy-"));
+  projectParent = mkdtempSync(join(tmpdir(), "create-test-projects-"));
   bunInstallCalls = [];
   answers = {};
 });
 
 afterEach(() => {
   rmSync(auggyDir, { recursive: true, force: true });
+  rmSync(projectParent, { recursive: true, force: true });
 });
 
 describe("runCreate writes per-agent package.json", () => {
@@ -228,5 +231,26 @@ describe("runCreate scaffolding integration", () => {
     const entry = getAgent("demo-indexed", { auggyDir });
     expect(entry).not.toBeNull();
     expect(entry?.localDir).toBe(agentDirFor("demo-indexed"));
+  });
+
+  test("--project creates a standalone project directory outside ~/.auggy", async () => {
+    answers = { provider: "anthropic", model: "claude-sonnet-4-6" };
+
+    await runCreate("demo-project", {
+      auggyDir,
+      cwd: projectParent,
+      project: true,
+      bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
+    });
+
+    const dir = join(projectParent, "demo-project");
+    expect(existsSync(join(dir, "agent.yaml"))).toBe(true);
+    expect(existsSync(join(dir, "identity.md"))).toBe(true);
+    expect(existsSync(join(dir, "package.json"))).toBe(true);
+    expect(existsSync(join(dir, "skills"))).toBe(true);
+    expect(existsSync(join(dir, "augments"))).toBe(true);
+    expect(existsSync(join(dir, "workspace"))).toBe(true);
+    expect(getAgent("demo-project", { auggyDir })).toBeNull();
+    expect(bunInstallCalls[0]?.cwd).toBe(dir);
   });
 });
