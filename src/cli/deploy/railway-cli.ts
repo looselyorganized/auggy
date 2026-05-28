@@ -216,12 +216,12 @@ export function createRailwayCli(opts: CreateRailwayCliOptions = {}): RailwayCli
 
     async generateDomain({ cwd }) {
       // Idempotent: first call generates, second returns the existing URL.
-      const { stdout } = await runOrThrow(["domain", "--generate"], { cwd });
-      const match = stdout.match(/https:\/\/[a-z0-9.-]+/i);
-      if (!match) {
-        throw new Error(`railway domain --generate produced no URL: ${stdout.trim()}`);
+      const { stdout } = await runOrThrow(["domain", "--json"], { cwd });
+      const url = extractDomainUrl(stdout);
+      if (!url) {
+        throw new Error(`railway domain --json produced no URL: ${stdout.trim()}`);
       }
-      return match[0];
+      return url;
     },
 
     async addVolume({ mountPath, cwd }) {
@@ -261,4 +261,45 @@ function extractProjectId(stdout: string): string | null {
   }
   const match = stdout.match(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/i);
   return match?.[0] ?? null;
+}
+
+function extractDomainUrl(stdout: string): string | null {
+  try {
+    const parsed = JSON.parse(stdout) as unknown;
+    const fromJson = findDomainUrl(parsed);
+    if (fromJson) return fromJson;
+  } catch {
+    // Fall through to text parsing for older/non-JSON Railway output.
+  }
+  return urlFromString(stdout);
+}
+
+function findDomainUrl(value: unknown): string | null {
+  if (typeof value === "string") return urlFromString(value);
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = findDomainUrl(item);
+      if (found) return found;
+    }
+    return null;
+  }
+  if (!value || typeof value !== "object") return null;
+
+  const record = value as Record<string, unknown>;
+  for (const key of ["url", "domain", "serviceDomain", "publicUrl"]) {
+    const found = findDomainUrl(record[key]);
+    if (found) return found;
+  }
+  for (const item of Object.values(record)) {
+    const found = findDomainUrl(item);
+    if (found) return found;
+  }
+  return null;
+}
+
+function urlFromString(value: string): string | null {
+  const httpMatch = value.match(/https?:\/\/[a-z0-9.-]+/i);
+  if (httpMatch) return httpMatch[0]!;
+  const railwayDomainMatch = value.match(/\b[a-z0-9.-]+\.up\.railway\.app\b/i);
+  return railwayDomainMatch ? `https://${railwayDomainMatch[0]}` : null;
 }

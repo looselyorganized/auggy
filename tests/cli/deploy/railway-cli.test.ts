@@ -150,7 +150,33 @@ describe("railway-cli", () => {
     expect(calls[0]!.cwd).toBe("/tmp/staging");
   });
 
-  test("generateDomain extracts the URL from stdout", async () => {
+  test("generateDomain runs `railway domain --json` and extracts the URL", async () => {
+    const { factory, calls } = mockSpawn(() => ({
+      stdout: JSON.stringify({ domain: "zip-production-abcd.up.railway.app" }),
+      stderr: "",
+      exitCode: 0,
+    }));
+    const cli = createRailwayCli({ spawn: factory });
+    const url = await cli.generateDomain({ cwd: "/tmp/staging" });
+    expect(url).toBe("https://zip-production-abcd.up.railway.app");
+    expect(calls[0]!.cmd).toEqual(["railway", "domain", "--json"]);
+    expect(calls[0]!.cwd).toBe("/tmp/staging");
+  });
+
+  test("generateDomain extracts nested URLs from JSON stdout", async () => {
+    const { factory } = mockSpawn(() => ({
+      stdout: JSON.stringify({
+        serviceDomains: [{ domain: "zip-production-abcd.up.railway.app" }],
+      }),
+      stderr: "",
+      exitCode: 0,
+    }));
+    const cli = createRailwayCli({ spawn: factory });
+    const url = await cli.generateDomain({ cwd: "/tmp/staging" });
+    expect(url).toBe("https://zip-production-abcd.up.railway.app");
+  });
+
+  test("generateDomain falls back to extracting the URL from text stdout", async () => {
     const { factory } = mockSpawn(() => ({
       stdout: "Domain created: https://zip-production-abcd.up.railway.app\n",
       stderr: "",
@@ -166,7 +192,7 @@ describe("railway-cli", () => {
     const { factory } = mockSpawn(() => {
       callCount++;
       return {
-        stdout: "https://zip-production-abcd.up.railway.app\n",
+        stdout: JSON.stringify({ url: "https://zip-production-abcd.up.railway.app" }),
         stderr: callCount > 1 ? "Domain already exists\n" : "",
         exitCode: 0,
       };

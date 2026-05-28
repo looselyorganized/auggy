@@ -39,7 +39,7 @@ The CLI walks you through:
 6. **Secrets diff + confirm** — shows what's about to be pushed to Railway (with values redacted). Decline aborts the deploy. Pass `--yes` to skip.
 7. **Railway service selection** — by default Auggy creates a new service named `<name>` in the selected project. Pass `--service <name-or-id>` to deploy into an existing Railway service instead.
 8. **`railway volume add --mount-path /app/data`** — provisions a persistent volume mounted at `/app/data`. Holds SQLite-backed state across redeploys.
-9. **`railway domain --generate`** — assigns a `<name>-production-xxxx.up.railway.app` URL.
+9. **`railway domain`** — assigns a `<name>-production-xxxx.up.railway.app` URL.
 10. **Push env vars** — your `.env` entries + `AUGGY_PUBLIC_URL` (the just-generated URL) are pushed via `railway variables --set`.
 11. **`railway up --detach`** — uploads the bundle, kicks off the build and deploy.
 12. **Health verification** — polls `${url}/health` for a bounded window. Timeout is non-destructive; Railway may still finish booting.
