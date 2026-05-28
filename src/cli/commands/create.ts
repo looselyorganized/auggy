@@ -1,14 +1,9 @@
 /**
- * auggy create <name> — scaffold a new agent directory.
- *
- * Default compatibility mode lives at `<auggyDir>/agents/<name>/`. Project
- * mode (`--project`) creates `./<name>/` as a standalone agent repo.
- * The directory itself is the registration; no central index file is touched.
+ * auggy create <name> — scaffold a standalone agent project at `./<name>/`.
  *
  * Atomicity: the scaffold writes into a sibling `.tmp-<uuid>/` dir and lifts
  * it into place with a single `renameSync` at the end. If the process dies
- * mid-scaffold, the tempdir is left behind and swept on the next `create` of
- * the same name (or any create — sweep runs at the start of every run).
+ * mid-scaffold, the tempdir is left behind next to the intended project dir.
  *
  * Refuses if:
  *   - <name>/agent.yaml already exists at the canonical path
@@ -21,7 +16,6 @@ import { checkbox, confirm, select, input } from "@inquirer/prompts";
 import { stringify } from "yaml";
 import { AUGMENT_CATALOG, type CatalogEntry } from "../augment-catalog";
 import { copyBundledSkill, renderIdentityFromTemplate } from "../scaffold-skills";
-import { resolveAgentDir, sweepStaleTempDirs } from "../agent-index";
 import { getModelChoices, formatChoiceLabel, type Provider } from "../model-picker";
 import {
   listInstalledOllamaModels,
@@ -82,17 +76,9 @@ export interface CreateOpts {
    * callers omit this and the helper uses the real `Bun.spawn`.
    */
   bunInstallSpawn?: BunInstallSpawnFactory;
-  /**
-   * Test seam: override `~/.auggy/` for reads/writes. Production callers
-   * omit. The agent lands at `<auggyDir>/agents/<name>/`.
-   */
+  /** Deprecated test seam retained for older tests; create no longer uses ~/.auggy. */
   auggyDir?: string;
-  /**
-   * Create a standalone agent project at `<cwd>/<name>` instead of the
-   * compatibility registry path under `~/.auggy/agents`.
-   */
-  project?: boolean;
-  /** Test seam: override process.cwd() for project mode. */
+  /** Test seam: override process.cwd(). */
   cwd?: string;
 }
 
@@ -366,24 +352,13 @@ async function runWizard(): Promise<WizardAnswers> {
 }
 
 export async function runCreate(name: string, opts: CreateOpts): Promise<void> {
-  const finalDir = opts.project
-    ? resolve(opts.cwd ?? process.cwd(), name)
-    : resolveAgentDir(name, { auggyDir: opts.auggyDir });
+  const finalDir = resolve(opts.cwd ?? process.cwd(), name);
 
   if (existsSync(finalDir)) {
     throw new Error(
       `Agent "${name}" already exists at ${finalDir}.\n\n` +
-        (opts.project
-          ? "  Use a different directory name, or remove the existing directory."
-          : `  Use a different name, or remove the existing one with \`auggy remove ${name}\`.`),
+        "  Use a different directory name, or remove the existing directory.",
     );
-  }
-
-  // Sweep any stale .tmp-* dirs left behind by a previous interrupted run.
-  // Safe pre-scaffold because no concurrent create for this name can be in
-  // progress (the finalDir check above is the lock).
-  if (!opts.project) {
-    sweepStaleTempDirs({ auggyDir: opts.auggyDir });
   }
 
   // Wizard loop — Esc at any prompt restarts from the engine-provider
@@ -423,7 +398,7 @@ export async function runCreate(name: string, opts: CreateOpts): Promise<void> {
 
   const id = `aug1_${randomUUID()}`;
 
-  // Stage everything into a sibling `.tmp-<uuid>` dir under the agents root.
+  // Stage everything into a sibling `.tmp-<uuid>` dir beside the final project.
   // The rename at the end is the atomic publish step.
   const stagingParent = join(finalDir, "..");
   mkdirSync(stagingParent, { recursive: true });
@@ -432,11 +407,7 @@ export async function runCreate(name: string, opts: CreateOpts): Promise<void> {
   try {
     mkdirSync(tempDir, { recursive: true });
     mkdirSync(join(tempDir, "skills"), { recursive: true });
-    if (opts.project) {
-      mkdirSync(join(tempDir, "data", "workspace"), { recursive: true });
-    } else {
-      mkdirSync(join(tempDir, "workspace"), { recursive: true });
-    }
+    mkdirSync(join(tempDir, "data", "workspace"), { recursive: true });
     mkdirSync(join(tempDir, "augments"), { recursive: true });
 
     console.log();
@@ -458,7 +429,7 @@ export async function runCreate(name: string, opts: CreateOpts): Promise<void> {
         purpose,
         ollamaBaseURL,
       },
-      { project: opts.project ?? false },
+      { project: true },
     );
     writeFileSync(join(tempDir, "agent.yaml"), config);
 

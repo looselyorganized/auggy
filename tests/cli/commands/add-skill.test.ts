@@ -88,18 +88,18 @@ describe("resolveAgentDir", () => {
     }
   });
 
-  test("looks up registered agent via --agent flag", () => {
+  test("looks up project directory via --agent flag", () => {
     const dir = makeAgentDir("zip");
     expect(resolveAgentDir("zip", { auggyDir })).toBe(dir);
   });
 
   test("throws clear error for unknown --agent name", () => {
-    expect(() => resolveAgentDir("ghost", { auggyDir })).toThrow(/not registered/i);
+    expect(() => resolveAgentDir("ghost", { auggyDir })).toThrow(/not found/i);
   });
 
-  test("treats agent dir without agent.yaml as not-registered", () => {
+  test("treats agent dir without agent.yaml as not found", () => {
     mkdirSync(join(auggyDir, "agents", "ghost"), { recursive: true });
-    expect(() => resolveAgentDir("ghost", { auggyDir })).toThrow(/not registered/i);
+    expect(() => resolveAgentDir("ghost", { auggyDir })).toThrow(/not found/i);
   });
 });
 
@@ -196,7 +196,7 @@ describe("auggy add-skill — invalid input", () => {
 });
 
 describe("auggy add-skill — --agent flag", () => {
-  test("targets a registered agent regardless of CWD", async () => {
+  test("targets a project directory regardless of CWD", async () => {
     const dir = makeAgentDir("target");
 
     // Run from a sibling cwd that has no agent.yaml — --agent must take over.

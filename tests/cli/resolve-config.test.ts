@@ -1,9 +1,8 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync, unlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { resolveConfigPath } from "../../src/cli/resolve-config";
-import { seedAgentForTest } from "../../src/cli/agent-index";
 
 let auggyDir: string;
 let agentParent: string;
@@ -31,13 +30,19 @@ describe("resolveConfigPath", () => {
     );
   });
 
-  test("registered agent name resolves to canonical agent.yaml path", () => {
-    const dir = seedAgentForTest("zip", { auggyDir });
-    expect(resolveConfigPath("zip", undefined, { auggyDir })).toBe(join(dir, "agent.yaml"));
+  test("agent name resolves to ./<name>/agent.yaml from cwd", () => {
+    const dir = join(agentParent, "zip");
+    mkdirSync(dir);
+    writeFileSync(join(dir, "agent.yaml"), "id: aug1_zip\nname: zip\n");
+    expect(resolveConfigPath("zip", undefined, { auggyDir, cwd: agentParent })).toBe(
+      join(dir, "agent.yaml"),
+    );
   });
 
-  test("project-local agent.yaml wins before registered agent lookup", () => {
-    seedAgentForTest("zip", { auggyDir });
+  test("project-local agent.yaml wins before child agent lookup", () => {
+    const childDir = join(agentParent, "zip");
+    mkdirSync(childDir);
+    writeFileSync(join(childDir, "agent.yaml"), "id: aug1_zip\nname: zip\n");
     const projectDir = mkdtempSync(join(agentParent, "project-"));
     const projectConfig = join(projectDir, "agent.yaml");
     writeFileSync(projectConfig, "id: aug1_project\nname: project\n");
@@ -57,15 +62,14 @@ describe("resolveConfigPath", () => {
   });
 
   test("agent dir exists but agent.yaml missing surfaces a clear error", () => {
-    const dir = seedAgentForTest("zip", { auggyDir });
-    unlinkSync(join(dir, "agent.yaml"));
-    expect(() => resolveConfigPath("zip", undefined, { auggyDir })).toThrow(
+    mkdirSync(join(agentParent, "zip"));
+    expect(() => resolveConfigPath("zip", undefined, { auggyDir, cwd: agentParent })).toThrow(
       /not found|auggy create/i,
     );
   });
 
   test("missing agent name throws clear error", () => {
-    expect(() => resolveConfigPath("ghost", undefined, { auggyDir })).toThrow(
+    expect(() => resolveConfigPath("ghost", undefined, { auggyDir, cwd: agentParent })).toThrow(
       /not found|auggy create/i,
     );
   });

@@ -26,7 +26,7 @@ describe("runLs", () => {
   test("prints message when no agents exist", async () => {
     await runLs({ auggyDir });
     const output = logged.join("\n");
-    expect(output).toMatch(/no agents registered/i);
+    expect(output).toMatch(/no agent projects found/i);
   });
 
   test("lists agents found on disk", async () => {

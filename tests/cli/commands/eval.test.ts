@@ -73,12 +73,12 @@ describe("resolveEvalConfigPath", () => {
     ).toThrow(/not found/i);
   });
 
-  test("registered agent name resolves to canonical agent.yaml", () => {
+  test("agent project name resolves to canonical agent.yaml", () => {
     const dir = seedAgentForTest("zip", { auggyDir });
     expect(resolveEvalConfigPath({ agentName: "zip" }, { auggyDir })).toBe(join(dir, "agent.yaml"));
   });
 
-  test("unregistered agent name throws clear error", () => {
+  test("missing agent project name throws clear error", () => {
     expect(() => resolveEvalConfigPath({ agentName: "ghost" }, { auggyDir })).toThrow(/not found/i);
     expect(() => resolveEvalConfigPath({ agentName: "ghost" }, { auggyDir })).toThrow(
       /auggy ls|--config/i,

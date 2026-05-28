@@ -22,7 +22,6 @@ import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { Command } from "commander";
 import { buildFolderToTypeMap, copyBundledSkill } from "../scaffold-skills";
-import { getAgent } from "../agent-index";
 
 /**
  * Resolve the on-disk path to the bundled skill SKILL.md for a folder, used
@@ -43,7 +42,7 @@ interface ResolveAgentDirOptions {
 /**
  * Resolve the agent directory from the optional --agent flag or CWD.
  *
- * - With `--agent <name>`: look up the registered agent in the index.
+ * - With `--agent <name>`: target ./<name>/agent.yaml from CWD.
  * - Without: use CWD; require an `agent.yaml` to be present so we don't
  *   silently create a `skills/` directory in the wrong place.
  */
@@ -51,23 +50,24 @@ export function resolveAgentDir(
   agentNameFlag: string | undefined,
   opts: ResolveAgentDirOptions = {},
 ): string {
+  const cwd = opts.cwd ?? process.cwd();
   if (agentNameFlag) {
-    const entry = getAgent(agentNameFlag, { auggyDir: opts.auggyDir });
-    if (!entry) {
+    const baseDir = opts.auggyDir ? join(opts.auggyDir, "agents") : cwd;
+    const agentDir = resolve(baseDir, agentNameFlag);
+    if (!existsSync(join(agentDir, "agent.yaml"))) {
       throw new Error(
-        `Agent "${agentNameFlag}" is not registered.\n\n` +
-          `  Run \`auggy list\` to see registered agents.`,
+        `Agent "${agentNameFlag}" not found at ${agentDir}.\n\n` +
+          `  Run from inside an agent dir, or pass a project directory name from its parent.`,
       );
     }
-    return entry.localDir;
+    return agentDir;
   }
 
-  const cwd = opts.cwd ?? process.cwd();
   const agentYaml = join(cwd, "agent.yaml");
   if (!existsSync(agentYaml)) {
     throw new Error(
       `Not an agent directory: no agent.yaml in ${cwd}.\n\n` +
-        `  Run from inside an agent dir, or pass \`--agent <name>\` to target a registered agent.`,
+        `  Run from inside an agent dir, or pass \`--agent <name>\` from its parent.`,
     );
   }
   return cwd;
@@ -88,7 +88,7 @@ export function addSkillCommand(deps: AddSkillCommandDeps = {}): Command {
   return new Command("add-skill")
     .description("Repair or reinstall a bundled augment skill for an existing agent")
     .argument("<augment>", "augment folder name (kebab-case), e.g. web-fetch, layered-memory, bash")
-    .option("--agent <name>", "registered agent name (defaults to current directory)")
+    .option("--agent <name>", "agent project directory name (defaults to current directory)")
     .addHelpText(
       "after",
       [
@@ -98,7 +98,7 @@ export function addSkillCommand(deps: AddSkillCommandDeps = {}): Command {
         "",
         "Examples:",
         "  cd my-agent && auggy add-skill web-fetch",
-        "  auggy add-skill layered-memory --agent zip",
+        "  auggy add-skill layered-memory --agent my-agent",
       ].join("\n"),
     )
     .action(async (augment: string, opts: { agent?: string }) => {

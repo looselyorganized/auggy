@@ -1,18 +1,21 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { getAgent } from "../agent-index";
+import { dirname, join } from "node:path";
+import { getAgentFromDir } from "../agent-index";
 import { createRailwayCli, type RailwayCli } from "../deploy/railway-cli";
+import { resolveConfigPath } from "../resolve-config";
 
 export interface LogsOptions {
   auggyDir?: string;
+  cwd?: string;
   railwayCli?: RailwayCli;
 }
 
 export async function runLogs(name: string, opts: LogsOptions = {}): Promise<void> {
-  const entry = getAgent(name, { auggyDir: opts.auggyDir });
+  const configPath = resolveConfigPath(name, undefined, { auggyDir: opts.auggyDir, cwd: opts.cwd });
+  const entry = getAgentFromDir(dirname(configPath));
   if (!entry) {
-    throw new Error(`Agent "${name}" not found.\n\n  Run \`auggy list\` to see scaffolded agents.`);
+    throw new Error(`Agent "${name}" not found.\n\n  Run from inside an agent project or its parent.`);
   }
   if (!entry.cloud) {
     throw new Error(

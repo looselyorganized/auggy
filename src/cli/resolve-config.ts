@@ -4,16 +4,15 @@
  * Resolution order:
  *   1. Explicit --config <path> flag
  *   2. Project-local ./agent.yaml from cwd
- *   3. Look up <name> in the filesystem (canonical: <auggyDir>/agents/<name>/)
+ *   3. Project child ./<name>/agent.yaml from cwd
  */
 
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { parse as parseYaml } from "yaml";
-import { getAgent } from "./agent-index";
 
 interface ResolveOptions {
-  /** Override `~/.auggy/` for tests. */
+  /** Deprecated compatibility seam; project resolution ignores ~/.auggy. */
   auggyDir?: string;
   /** Override cwd for project-local resolution. */
   cwd?: string;
@@ -28,6 +27,7 @@ export function resolveConfigPath(
   configFlag?: string,
   opts: ResolveOptions = {},
 ): string {
+  const baseDir = opts.cwd ?? (opts.auggyDir ? join(opts.auggyDir, "agents") : process.cwd());
   if (configFlag) {
     const absPath = resolve(configFlag);
     if (!existsSync(absPath)) {
@@ -36,7 +36,7 @@ export function resolveConfigPath(
     return absPath;
   }
 
-  const localConfig = resolve(opts.cwd ?? process.cwd(), "agent.yaml");
+  const localConfig = resolve(baseDir, "agent.yaml");
   if (existsSync(localConfig)) {
     return localConfig;
   }
@@ -48,16 +48,17 @@ export function resolveConfigPath(
     );
   }
 
-  const entry = getAgent(name, opts);
-  if (!entry) {
+  const childConfig = resolve(baseDir, name, "agent.yaml");
+  if (!existsSync(childConfig)) {
     throw new Error(
       `Agent "${name}" not found.\n\n` +
-        `  Run \`auggy create ${name}\` to scaffold a new agent,\n` +
-        `  or \`auggy list\` to see existing agents.`,
+        `  Run \`auggy create ${name}\` to scaffold ./${name},\n` +
+        `  run this command from inside an agent project,\n` +
+        `  or use --config <path> for a one-off path.`,
     );
   }
 
-  return join(entry.localDir, "agent.yaml");
+  return childConfig;
 }
 
 export function readAgentName(configPath: string): string {

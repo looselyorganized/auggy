@@ -67,7 +67,7 @@ describe("runLogs", () => {
     } catch {}
   });
 
-  test("fails when the agent is not registered", async () => {
+    test("fails when the agent is not found", async () => {
     const { cli } = mockRailwayCli();
     await expect(runLogs("ghost", { auggyDir, railwayCli: cli })).rejects.toThrow(/not found/i);
   });

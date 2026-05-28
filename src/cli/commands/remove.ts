@@ -8,11 +8,12 @@
 
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { confirm } from "@inquirer/prompts";
-import { getAgent, removeAgent } from "../agent-index";
+import { getAgentFromDir } from "../agent-index";
 import { createRailwayCli, type RailwayCli } from "../deploy/railway-cli";
 import { readPidManifest, isProcessAlive, removePidManifest } from "../pid-registry";
+import { resolveConfigPath } from "../resolve-config";
 
 function readConfigName(localDir: string): string | null {
   try {
@@ -33,14 +34,17 @@ interface RemoveOptions {
   cloud?: boolean;
   /** Override `~/.auggy/` for tests. */
   auggyDir?: string;
+  cwd?: string;
   /** Inject a RailwayCli for tests (defaults to the real one). */
   railwayCli?: RailwayCli;
 }
 
 export async function runRemove(name: string, opts: RemoveOptions = {}): Promise<void> {
-  const entry = getAgent(name, { auggyDir: opts.auggyDir });
+  const configPath = resolveConfigPath(name, undefined, { auggyDir: opts.auggyDir, cwd: opts.cwd });
+  const localDir = dirname(configPath);
+  const entry = getAgentFromDir(localDir);
   if (!entry) {
-    throw new Error(`Agent "${name}" not found.\n\n  Run \`auggy list\` to see scaffolded agents.`);
+    throw new Error(`Agent "${name}" not found.\n\n  Run from inside an agent project or its parent.`);
   }
 
   // Refuse if the agent is running. Stale manifests (dead PID) are tolerated
@@ -102,9 +106,10 @@ export async function runRemove(name: string, opts: RemoveOptions = {}): Promise
   if (pidByCli) removePidManifest(name, { auggyDir: opts.auggyDir });
   if (pidByConfig && configName) removePidManifest(configName, { auggyDir: opts.auggyDir });
 
-  // Remove the agent dir. `removeAgent` refuses paths that don't contain
-  // agent.yaml as a guard against accidental nukes.
-  removeAgent(name, { auggyDir: opts.auggyDir });
+  if (!existsSync(join(localDir, "agent.yaml"))) {
+    throw new Error(`Refusing to delete "${localDir}" — it does not contain agent.yaml.`);
+  }
+  rmSync(localDir, { recursive: true, force: true });
 
   console.log(`Removed agent "${name}" (was at ${entry.localDir}).`);
 }

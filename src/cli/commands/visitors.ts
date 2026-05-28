@@ -8,12 +8,13 @@
 
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { getAgent } from "../agent-index";
 import { createSqliteVisitorAuthStore } from "../../augments/visitor-auth/storage/sqlite-store";
 import { parseAugmentConfigOnly } from "../yaml-helpers";
+import { resolveConfigPath } from "../resolve-config";
 
 export interface VisitorsCommandOptions {
   auggyDir?: string;
+  cwd?: string;
   log?: (line: string) => void;
 }
 
@@ -23,14 +24,8 @@ interface ResolvedAgentPaths {
 }
 
 function resolveAgentPaths(agentName: string, opts: VisitorsCommandOptions): ResolvedAgentPaths {
-  const entry = getAgent(agentName, { auggyDir: opts.auggyDir });
-  if (!entry) {
-    throw new Error(
-      `Agent "${agentName}" is not registered. Run \`auggy list\` to see registered agents.`,
-    );
-  }
-  const agentDir = entry.localDir;
-  const yamlPath = join(agentDir, "agent.yaml");
+  const yamlPath = resolveConfigPath(agentName, undefined, { auggyDir: opts.auggyDir, cwd: opts.cwd });
+  const agentDir = resolve(yamlPath, "..");
   // parseAugmentConfigOnly handles env-var interpolation (F15) so that
   // `dbPath: ${MY_DB_PATH}` in agent.yaml resolves correctly here.
   const vaOptions = parseAugmentConfigOnly(yamlPath, "visitorAuth");

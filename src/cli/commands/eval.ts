@@ -7,21 +7,21 @@
  *
  * Security eval (default when no suite name is given):
  *   auggy eval                          # default fixture (canonical test agent)
- *   auggy eval zip                      # registered agent
+ *   auggy eval zip                      # ./zip/agent.yaml
  *   auggy eval --config path/to/agent.yaml
  *   auggy eval zip --suite security-only
  *   auggy eval zip --trials 5
  *
  * Config-path resolution order (highest precedence first):
  *   1. --config <path>  (resolved against cwd)
- *   2. [agent] argument (looked up at `<auggyDir>/agents/<name>/agent.yaml`)
+ *   2. [agent] argument (looked up at `./<name>/agent.yaml`)
  *   3. Default: the canonical fixture at `evals/security/fixtures/test-agent.yaml`
  */
 
 import { existsSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { resolve } from "node:path";
 import { Command } from "commander";
-import { getAgent } from "../agent-index";
+import { resolveConfigPath } from "../resolve-config";
 
 // `@auggy/evals` is loaded lazily at command-action time. The package
 // ships eval suites + fixtures (~1MB) separately from auggy core — most
@@ -90,15 +90,7 @@ export function resolveEvalConfigPath(
   }
 
   if (args.agentName) {
-    const entry = getAgent(args.agentName, opts);
-    if (!entry) {
-      throw new Error(
-        `Agent "${args.agentName}" not found.\n\n` +
-          `  Run \`auggy list\` to see registered agents,\n` +
-          `  or use --config <path> for a one-off path.`,
-      );
-    }
-    return join(entry.localDir, "agent.yaml");
+    return resolveConfigPath(args.agentName, undefined, opts);
   }
 
   if (!opts.defaultFixtureConfigPath) {
@@ -130,7 +122,7 @@ export function evalCommand(deps: EvalCommandDeps = {}): Command {
     .description("Run an eval suite: auto-save (fixture validation) or security (default)")
     .argument(
       "[suite-or-agent]",
-      "suite name (auto-save) or registered agent name for security eval (defaults to the bundled fixture)",
+      "suite name (auto-save) or agent project directory name for security eval (defaults to the bundled fixture)",
     )
     .option(
       "--config <path>",

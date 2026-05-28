@@ -4,7 +4,6 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
-  readdirSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -14,7 +13,6 @@ import {
   clearCloud,
   getAgent,
   listAgents,
-  migrateLegacyIndex,
   removeAgent,
   resolveAgentDir,
   seedAgentForTest,
@@ -183,116 +181,5 @@ describe("sweepStaleTempDirs", () => {
     seedAgentForTest("zip", { auggyDir });
     sweepStaleTempDirs({ auggyDir, maxAgeMs: 0 });
     expect(getAgent("zip", { auggyDir })).not.toBeNull();
-  });
-});
-
-describe("migrateLegacyIndex", () => {
-  test("legacy agents.json: distributes only non-null cloud entries to .auggy-cloud.json", () => {
-    const zipDir = join(auggyDir, "agents", "zip");
-    const conciergeDir = join(auggyDir, "agents", "concierge");
-    mkdirSync(zipDir, { recursive: true });
-    mkdirSync(conciergeDir, { recursive: true });
-    writeFileSync(join(zipDir, "agent.yaml"), "id: aug1_zip\n");
-    writeFileSync(join(conciergeDir, "agent.yaml"), "id: aug1_concierge\n");
-
-    const legacy = {
-      version: 1,
-      agents: {
-        zip: {
-          localDir: zipDir,
-          createdAt: "2026-05-01T00:00:00.000Z",
-          cloud: null,
-        },
-        concierge: {
-          localDir: conciergeDir,
-          createdAt: "2026-05-02T00:00:00.000Z",
-          cloud: CLOUD_FIXTURE,
-        },
-      },
-    };
-    writeFileSync(join(auggyDir, "agents.json"), JSON.stringify(legacy));
-
-    migrateLegacyIndex({ auggyDir });
-
-    expect(existsSync(join(zipDir, ".auggy-cloud.json"))).toBe(false);
-    expect(existsSync(join(conciergeDir, ".auggy-cloud.json"))).toBe(true);
-    expect(getAgent("concierge", { auggyDir })?.cloud?.projectId).toBe("proj_abc");
-  });
-
-  test("legacy agents.json: renamed aside with a timestamp suffix", () => {
-    seedAgentForTest("zip", { auggyDir });
-    writeFileSync(join(auggyDir, "agents.json"), JSON.stringify({ version: 1, agents: {} }));
-    migrateLegacyIndex({ auggyDir });
-    expect(existsSync(join(auggyDir, "agents.json"))).toBe(false);
-    const moved = readdirSync(auggyDir).find((f) => f.startsWith("agents.json.migrated-"));
-    expect(moved).toBeDefined();
-  });
-
-  test("legacy agents.json: skips entries whose localDir no longer exists", () => {
-    const legacy = {
-      version: 1,
-      agents: {
-        gone: {
-          localDir: "/nonexistent/path",
-          createdAt: "2026-05-01T00:00:00.000Z",
-          cloud: CLOUD_FIXTURE,
-        },
-      },
-    };
-    writeFileSync(join(auggyDir, "agents.json"), JSON.stringify(legacy));
-    expect(() => migrateLegacyIndex({ auggyDir })).not.toThrow();
-  });
-
-  test("legacy .auggy-meta.json: converts to .auggy-cloud.json when cloud is set", () => {
-    const zipDir = seedAgentForTest("zip", { auggyDir });
-    writeFileSync(
-      join(zipDir, ".auggy-meta.json"),
-      JSON.stringify({
-        version: 1,
-        createdAt: "2026-05-01T00:00:00.000Z",
-        cloud: CLOUD_FIXTURE,
-      }),
-    );
-    migrateLegacyIndex({ auggyDir });
-    expect(existsSync(join(zipDir, ".auggy-meta.json"))).toBe(false);
-    expect(existsSync(join(zipDir, ".auggy-cloud.json"))).toBe(true);
-    expect(getAgent("zip", { auggyDir })?.cloud?.projectId).toBe("proj_abc");
-  });
-
-  test("legacy .auggy-meta.json: deletes the file even when cloud is null", () => {
-    const zipDir = seedAgentForTest("zip", { auggyDir });
-    writeFileSync(
-      join(zipDir, ".auggy-meta.json"),
-      JSON.stringify({
-        version: 1,
-        createdAt: "2026-05-01T00:00:00.000Z",
-        cloud: null,
-      }),
-    );
-    migrateLegacyIndex({ auggyDir });
-    expect(existsSync(join(zipDir, ".auggy-meta.json"))).toBe(false);
-    expect(existsSync(join(zipDir, ".auggy-cloud.json"))).toBe(false);
-  });
-
-  test("getAgent triggers migration lazily when legacy state is present", () => {
-    const zipDir = join(auggyDir, "agents", "zip");
-    mkdirSync(zipDir, { recursive: true });
-    writeFileSync(join(zipDir, "agent.yaml"), "id: aug1_zip\n");
-    writeFileSync(
-      join(auggyDir, "agents.json"),
-      JSON.stringify({
-        version: 1,
-        agents: {
-          zip: {
-            localDir: zipDir,
-            createdAt: "2026-05-01T00:00:00.000Z",
-            cloud: CLOUD_FIXTURE,
-          },
-        },
-      }),
-    );
-    expect(existsSync(join(zipDir, ".auggy-cloud.json"))).toBe(false);
-    getAgent("zip", { auggyDir });
-    expect(existsSync(join(zipDir, ".auggy-cloud.json"))).toBe(true);
   });
 });

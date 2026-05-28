@@ -512,11 +512,11 @@ describe("runDeploy", () => {
     ).rejects.toThrow(/only "railway" is supported/i);
   });
 
-  test("throws when agent is not registered", async () => {
+  test("throws when agent is not found", async () => {
     const { cli } = mockRailwayCli();
     await expect(
       runDeploy("ghost", baseDeployOptions(cli, auggyDir)),
-    ).rejects.toThrow(/not registered|not found/i);
+    ).rejects.toThrow(/not found/i);
   });
 
   test("redeploy: reuses existing projectId from CloudRecord, skips addVolume", async () => {

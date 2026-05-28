@@ -14,7 +14,7 @@
  *   auggy stop <name>                Stop a running agent
  *   auggy restart <name>             Stop + start
  *   auggy status [name]              Show running agents
- *   auggy list                       List registered agents
+ *   auggy list                       List agent projects in this directory
  *   auggy remove <name> [--yes] [--cloud]  Delete an agent (dir + index, optionally Railway service)
  *   auggy deploy [name]             Deploy an agent to Railway
  *   auggy logs <name>               Show Railway logs for a deployed agent
@@ -48,10 +48,9 @@ export function buildCli(): Command {
 
   program
     .command("create <name>")
-    .description("Scaffold a new agent (interactive)")
+    .description("Scaffold a standalone agent project at ./<name> (interactive)")
     .option("--skip-install", "write package.json but don't run bun install")
-    .option("--project", "create ./<name>/ as a standalone agent project")
-    .action(async (name: string, opts: { skipInstall?: boolean; project?: boolean }) => {
+    .action(async (name: string, opts: { skipInstall?: boolean }) => {
       try {
         await runCreate(name, opts);
       } catch (err) {
@@ -170,7 +169,7 @@ export function buildCli(): Command {
 
   program
     .command("list")
-    .description("List registered agents with their status")
+    .description("List agent projects in this directory with their status")
     .action(async () => {
       try {
         await runLs();

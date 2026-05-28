@@ -88,7 +88,7 @@ export async function runDeploy(nameArg: string | undefined, opts: DeployOptions
   } catch {
     const nameForMessage = nameArg ?? "<name>";
     throw new Error(
-      `Agent "${nameForMessage}" not registered. Run \`auggy create ${nameForMessage}\` first, then \`auggy deploy ${nameForMessage}\`.`,
+      `Agent "${nameForMessage}" not found. Run \`auggy create ${nameForMessage}\` first, then \`auggy deploy ${nameForMessage}\`.`,
     );
   }
   const name = readAgentName(configPath);
@@ -96,7 +96,7 @@ export async function runDeploy(nameArg: string | undefined, opts: DeployOptions
   const entry = getAgentFromDir(agentDir);
   if (!entry) {
     throw new Error(
-      `Agent "${name}" not registered. Run \`auggy create ${name}\` first, then \`auggy deploy ${name}\`.`,
+      `Agent "${name}" not found. Run \`auggy create ${name}\` first, then \`auggy deploy ${name}\`.`,
     );
   }
 

@@ -1,5 +1,5 @@
 /**
- * auggy list — list all agents under `<auggyDir>/agents/` with their status.
+ * auggy list — list agent projects under the current directory.
  *
  * Status is derived from PID manifests: running, or stopped. The filesystem
  * is the source of truth — an agent IS a directory at the canonical path,
@@ -10,14 +10,16 @@
  * to find the workbench. Agents without webTransport show `—`.
  */
 
-import { join } from "node:path";
+import { existsSync, readdirSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { homedir } from "node:os";
-import { listAgents } from "../agent-index";
+import { getAgentFromDir } from "../agent-index";
 import { readPidManifest, isProcessAlive } from "../pid-registry";
 import { parseAugmentConfigOnly } from "../yaml-helpers";
 
 interface LsOptions {
   auggyDir?: string;
+  cwd?: string;
 }
 
 interface AgentRow {
@@ -61,12 +63,13 @@ function consoleUrlFor(localDir: string): string {
 }
 
 export async function runLs(opts: LsOptions = {}): Promise<void> {
-  const agents = listAgents({ auggyDir: opts.auggyDir });
+  const cwd = opts.cwd ?? (opts.auggyDir ? join(opts.auggyDir, "agents") : process.cwd());
+  const agents = listProjectAgents(cwd);
 
   if (agents.length === 0) {
-    console.log("No agents registered.");
+    console.log("No agent projects found in this directory.");
     console.log();
-    console.log("Run `auggy create <name>` to scaffold one.");
+    console.log("Run `auggy create <name>` to scaffold one here.");
     return;
   }
 
@@ -89,4 +92,34 @@ export async function runLs(opts: LsOptions = {}): Promise<void> {
       `${row.name.padEnd(nameW)}  ${row.location.padEnd(locW)}  ${row.status.padEnd(statusW)}  ${row.url}`,
     );
   }
+}
+
+function listProjectAgents(cwd: string): Array<AgentRow & { localDir: string }> {
+  const out: Array<AgentRow & { localDir: string }> = [];
+  if (!existsSync(cwd)) return out;
+  if (existsSync(join(cwd, "agent.yaml"))) {
+    const localDir = resolve(cwd);
+    const name = localDir.split(/[\\/]/).filter(Boolean).at(-1) ?? ".";
+    out.push({
+      name,
+      localDir,
+      location: tildify(localDir),
+      status: statusFor(name),
+      url: consoleUrlFor(localDir),
+    });
+  }
+
+  for (const entry of readdirSync(cwd, { withFileTypes: true })) {
+    if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
+    const localDir = join(cwd, entry.name);
+    if (!getAgentFromDir(localDir)) continue;
+    out.push({
+      name: entry.name,
+      localDir,
+      location: tildify(localDir),
+      status: statusFor(entry.name),
+      url: consoleUrlFor(localDir),
+    });
+  }
+  return out;
 }

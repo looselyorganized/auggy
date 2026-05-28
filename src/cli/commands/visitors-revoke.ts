@@ -12,12 +12,13 @@
 import { existsSync } from "node:fs";
 import { Database } from "bun:sqlite";
 import { join, resolve } from "node:path";
-import { getAgent } from "../agent-index";
 import { createSqliteVisitorAuthStore } from "../../augments/visitor-auth/storage/sqlite-store";
 import { parseAugmentConfigOnly } from "../yaml-helpers";
+import { resolveConfigPath } from "../resolve-config";
 
 export interface VisitorsRevokeOptions {
   auggyDir?: string;
+  cwd?: string;
   /** When true, prompt the user. When false (or --yes), skip the prompt. */
   confirm?: boolean;
   log?: (line: string) => void;
@@ -32,14 +33,8 @@ interface ResolvedPaths {
 }
 
 function resolvePaths(agentName: string, opts: VisitorsRevokeOptions): ResolvedPaths {
-  const entry = getAgent(agentName, { auggyDir: opts.auggyDir });
-  if (!entry) {
-    throw new Error(
-      `Agent "${agentName}" is not registered. Run \`auggy list\` to see registered agents.`,
-    );
-  }
-  const agentDir = entry.localDir;
-  const yamlPath = join(agentDir, "agent.yaml");
+  const yamlPath = resolveConfigPath(agentName, undefined, { auggyDir: opts.auggyDir, cwd: opts.cwd });
+  const agentDir = resolve(yamlPath, "..");
   // parseAugmentConfigOnly handles env-var interpolation (F15) so that
   // `dbPath: ${MY_DB_PATH}` / `layeredMemoryDbPath: ${MEMORY_DB}` in
   // agent.yaml resolves correctly here.

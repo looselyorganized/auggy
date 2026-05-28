@@ -253,7 +253,7 @@ export type CloudRecord = null | {
  * filesystem birthtime/mtime (for `createdAt`).
  */
 export interface IndexEntry {
-  /** Absolute path to the agent directory under `<auggyDir>/agents/<name>/`. */
+  /** Absolute path to the agent project directory. */
   localDir: string;
   /** ISO-8601 timestamp of when the agent was first scaffolded. */
   createdAt: string;

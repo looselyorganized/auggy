@@ -24,7 +24,6 @@ let answers: Answers = {};
 mockInquirerPrompts(() => answers);
 
 const { runCreate } = await import("../../src/cli/commands/create");
-const { getAgent } = await import("../../src/cli/agent-index");
 const { PROVIDER_TO_PACKAGE } = await import("../../src/cli/scaffold-package-json");
 
 let auggyDir: string;
@@ -32,7 +31,7 @@ let projectParent: string;
 let bunInstallCalls: SpawnCapture[];
 
 function agentDirFor(name: string): string {
-  return join(auggyDir, "agents", name);
+  return join(projectParent, name);
 }
 
 beforeEach(() => {
@@ -52,7 +51,7 @@ describe("runCreate writes per-agent package.json", () => {
     answers = { provider: "anthropic", model: "claude-sonnet-4-6" };
 
     await runCreate("demo-anthropic", {
-      auggyDir,
+      cwd: projectParent,
       bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
     });
 
@@ -73,7 +72,7 @@ describe("runCreate writes per-agent package.json", () => {
     answers = { provider: "openai", model: "gpt-5" };
 
     await runCreate("demo-openai", {
-      auggyDir,
+      cwd: projectParent,
       bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
     });
 
@@ -90,7 +89,7 @@ describe("runCreate writes per-agent package.json", () => {
     };
 
     await runCreate("demo-with-link", {
-      auggyDir,
+      cwd: projectParent,
       bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
     });
 
@@ -107,7 +106,7 @@ describe("runCreate invokes bun install in agent dir", () => {
     answers = { provider: "anthropic", model: "claude-sonnet-4-6" };
 
     await runCreate("demo-install", {
-      auggyDir,
+      cwd: projectParent,
       bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
     });
 
@@ -120,7 +119,7 @@ describe("runCreate invokes bun install in agent dir", () => {
     answers = { provider: "anthropic", model: "claude-sonnet-4-6" };
 
     await runCreate("demo-skip", {
-      auggyDir,
+      cwd: projectParent,
       skipInstall: true,
       bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
     });
@@ -133,7 +132,7 @@ describe("runCreate invokes bun install in agent dir", () => {
     answers = { provider: "anthropic", model: "claude-sonnet-4-6" };
 
     await runCreate("demo-failsoft", {
-      auggyDir,
+      cwd: projectParent,
       bunInstallSpawn: createStubBunInstallSpawn({
         exitCode: 1,
         stderrText: "error: network unreachable\n",
@@ -144,7 +143,6 @@ describe("runCreate invokes bun install in agent dir", () => {
     expect(existsSync(dir)).toBe(true);
     expect(existsSync(join(dir, "package.json"))).toBe(true);
     expect(existsSync(join(dir, "agent.yaml"))).toBe(true);
-    expect(getAgent("demo-failsoft", { auggyDir })).not.toBeNull();
   });
 });
 
@@ -153,7 +151,7 @@ describe("runCreate scaffolding integration", () => {
     answers = { provider: "anthropic", model: "claude-sonnet-4-6" };
 
     await runCreate("demo-defaults", {
-      auggyDir,
+      cwd: projectParent,
       bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
     });
 
@@ -190,7 +188,7 @@ describe("runCreate scaffolding integration", () => {
 
     try {
       await runCreate("demo-output", {
-        auggyDir,
+        cwd: projectParent,
         skipInstall: true,
         bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
       });
@@ -202,11 +200,11 @@ describe("runCreate scaffolding integration", () => {
     expect(logs.join("\n")).not.toContain("auggy dev demo-output --open");
   });
 
-  test("agent.yaml + identity.md + skills/ + workspace/ all scaffolded", async () => {
+  test("agent.yaml + identity.md + skills/ + data/workspace all scaffolded", async () => {
     answers = { provider: "anthropic", model: "claude-sonnet-4-6" };
 
     await runCreate("demo-full", {
-      auggyDir,
+      cwd: projectParent,
       bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
     });
 
@@ -214,26 +212,14 @@ describe("runCreate scaffolding integration", () => {
     expect(existsSync(join(dir, "agent.yaml"))).toBe(true);
     expect(existsSync(join(dir, "identity.md"))).toBe(true);
     expect(existsSync(join(dir, "skills"))).toBe(true);
-    expect(existsSync(join(dir, "workspace"))).toBe(true);
+    expect(existsSync(join(dir, "data", "workspace"))).toBe(true);
+    expect(existsSync(join(dir, "workspace"))).toBe(false);
     expect(existsSync(join(dir, ".env"))).toBe(true);
     expect(existsSync(join(dir, ".gitignore"))).toBe(true);
     expect(existsSync(join(dir, "package.json"))).toBe(true);
   });
 
-  test("agent appears in the filesystem at the canonical localDir", async () => {
-    answers = { provider: "anthropic", model: "claude-sonnet-4-6" };
-
-    await runCreate("demo-indexed", {
-      auggyDir,
-      bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
-    });
-
-    const entry = getAgent("demo-indexed", { auggyDir });
-    expect(entry).not.toBeNull();
-    expect(entry?.localDir).toBe(agentDirFor("demo-indexed"));
-  });
-
-  test("--project creates a standalone project directory outside ~/.auggy", async () => {
+  test("create writes a standalone project directory", async () => {
     answers = {
       provider: "anthropic",
       model: "claude-sonnet-4-6",
@@ -241,9 +227,7 @@ describe("runCreate scaffolding integration", () => {
     };
 
     await runCreate("demo-project", {
-      auggyDir,
       cwd: projectParent,
-      project: true,
       bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
     });
 
@@ -255,7 +239,6 @@ describe("runCreate scaffolding integration", () => {
     expect(existsSync(join(dir, "augments"))).toBe(true);
     expect(existsSync(join(dir, "data", "workspace"))).toBe(true);
     expect(existsSync(join(dir, "workspace"))).toBe(false);
-    expect(getAgent("demo-project", { auggyDir })).toBeNull();
     expect(bunInstallCalls[0]?.cwd).toBe(dir);
 
     const config = parseYaml(readFileSync(join(dir, "agent.yaml"), "utf-8")) as {
