@@ -27,6 +27,7 @@ import { getAgent, setCloud } from "../agent-index";
 import { formatDoctorChecks, hasDoctorFailures, runDoctor } from "./doctor";
 import { stageBundle } from "../deploy/bundle";
 import { generateDockerfile, generateEntrypoint } from "../deploy/dockerfile";
+import { waitForHealth, type HealthCheckOptions, type HealthCheckResult } from "../deploy/health";
 import type { RailwayCli } from "../deploy/railway-cli";
 import { loadSecretsPlan } from "../deploy/secrets";
 
@@ -46,6 +47,7 @@ export interface DeployOptions {
   /** Prompt the operator for yes/no confirmation. Receives a human-readable message. */
   promptConfirm: (message: string) => Promise<boolean>;
   logger: DeployLogger;
+  healthCheck?: HealthCheckOptions | false;
 }
 
 export interface DeployResult {
@@ -53,6 +55,7 @@ export interface DeployResult {
   projectId: string;
   serviceId: string;
   volumeId: string;
+  health: HealthCheckResult;
 }
 
 const VOLUME_MOUNT_PATH = "/app/data";
@@ -165,16 +168,36 @@ export async function runDeploy(name: string, opts: DeployOptions): Promise<Depl
   await opts.cli.up({ cwd: stagingDir });
   opts.logger.info(`Build queued.`);
 
-  // 12) Capture service metadata for the CloudRecord.
+  // 12) Verify the public health endpoint. Timeout is non-destructive: the
+  //     deploy may still finish, but the operator needs recovery commands.
+  const health =
+    opts.healthCheck === false
+      ? { ok: false, url: new URL("/health", ensureTrailingSlash(url)).toString(), attempts: 0 }
+      : await waitForHealth(url, opts.healthCheck);
+  if (health.ok) {
+    opts.logger.info(`Health check passed: ${health.url}`);
+  } else {
+    const reason = health.status
+      ? `last HTTP status ${health.status}`
+      : health.error
+        ? `last error: ${health.error}`
+        : "no attempts completed";
+    opts.logger.warn(
+      `Health check did not pass yet (${reason}). Try \`railway logs\`, then \`auggy deploy ${name} --yes\` after fixing the service.`,
+    );
+  }
+
+  // 13) Capture service metadata for the CloudRecord.
   const status = await opts.cli.status({ cwd: stagingDir });
   opts.logger.info(`Service status: ${status.deployment.status}.`);
 
-  // 13) Write CloudRecord to the agent index.
+  // 14) Write CloudRecord to the agent index.
   const result: DeployResult = {
     url,
     projectId,
     serviceId: status.service.id,
     volumeId: `${name}-data`,
+    health,
   };
   setCloud(
     name,
@@ -190,4 +213,8 @@ export async function runDeploy(name: string, opts: DeployOptions): Promise<Depl
   );
 
   return result;
+}
+
+function ensureTrailingSlash(url: string): string {
+  return url.endsWith("/") ? url : `${url}/`;
 }

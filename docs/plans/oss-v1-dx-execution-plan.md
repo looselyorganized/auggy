@@ -397,13 +397,15 @@ Acceptance:
 
 - Deploy does not queue obviously doomed builds.
 
-### 13. Post-Deploy Health Verification
+### 13. Post-Deploy Health Verification *(implemented 2026-05-28)*
 
 Behavior:
 
 - After `railway up`, poll `${url}/health` for a bounded window.
 - Print chat, console, health, logs, and redeploy commands.
 - Timeout is non-destructive and gives recovery guidance.
+- Deploy still records cloud metadata on health timeout because Railway builds
+  can continue booting after the CLI returns.
 
 Likely files:
 

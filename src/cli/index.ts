@@ -226,7 +226,16 @@ export function buildCli(): Command {
         console.log(`  Project:    ${result.projectId}`);
         console.log(`  Service:    ${result.serviceId}`);
         console.log(`  Volume:     ${result.volumeId} (mounted at /app/data)`);
-        console.log(`\nFollow the build in the Railway dashboard or with \`railway logs\`.`);
+        console.log(`  Health:     ${result.health.url}`);
+        console.log(`  Chat:       ${new URL("/console/chat", result.url).toString()}`);
+        console.log(`  Console:    ${new URL("/console", result.url).toString()}`);
+        if (!result.health.ok) {
+          console.log(
+            `\nHealth is not passing yet. Check \`railway logs\`, then rerun \`auggy deploy ${name} --yes\`.`,
+          );
+        } else {
+          console.log(`\nFollow future builds in the Railway dashboard or with \`railway logs\`.`);
+        }
       } catch (err) {
         console.error(`Error: ${(err as Error).message}`);
         process.exit(1);

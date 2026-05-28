@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getAgent, seedAgentForTest, setCloud } from "../../src/cli/agent-index";
-import { runDeploy } from "../../src/cli/commands/deploy";
+import { type DeployOptions, runDeploy } from "../../src/cli/commands/deploy";
 import type { RailwayCli } from "../../src/cli/deploy/railway-cli";
 
 interface MockCliCalls {
@@ -72,6 +72,29 @@ function mockRailwayCli(): { cli: RailwayCli; calls: MockCliCalls; capturedCwds:
   return { cli, calls, capturedCwds };
 }
 
+function baseDeployOptions(
+  cli: RailwayCli,
+  auggyDir: string,
+  opts: Partial<DeployOptions> = {},
+): DeployOptions {
+  return {
+    to: "railway",
+    yes: true,
+    auggyDir,
+    cli,
+    promptProjectId: async () => "proj_abc",
+    promptConfirm: async () => true,
+    logger: { info: () => {}, warn: () => {}, error: () => {} },
+    healthCheck: {
+      fetch: async () => new Response(null, { status: 200 }),
+      sleep: async () => {},
+      timeoutMs: 1,
+      intervalMs: 1,
+    },
+    ...opts,
+  };
+}
+
 describe("runDeploy", () => {
   let auggyDir: string;
   let agentDir: string;
@@ -124,15 +147,7 @@ describe("runDeploy", () => {
 
   test("first deploy: links, addsVolume, generates domain, pushes secrets + AUGGY_PUBLIC_URL, runs up, writes CloudRecord", async () => {
     const { cli, calls } = mockRailwayCli();
-    const result = await runDeploy("zip", {
-      to: "railway",
-      yes: false,
-      auggyDir,
-      cli,
-      promptProjectId: async () => "proj_abc",
-      promptConfirm: async () => true,
-      logger: { info: () => {}, warn: () => {}, error: () => {} },
-    });
+    const result = await runDeploy("zip", baseDeployOptions(cli, auggyDir, { yes: false }));
 
     expect(calls.checkPresence).toBe(1);
     expect(calls.checkAuth).toBe(1);
@@ -153,6 +168,10 @@ describe("runDeploy", () => {
     expect(result.url).toBe("https://zip-production-abcd.up.railway.app");
     expect(result.serviceId).toBe("svc_def");
     expect(result.volumeId).toBe("zip-data");
+    expect(result.health).toMatchObject({
+      ok: true,
+      url: "https://zip-production-abcd.up.railway.app/health",
+    });
 
     const entry = getAgent("zip", { auggyDir });
     expect(entry?.cloud).toMatchObject({
@@ -184,15 +203,7 @@ describe("runDeploy", () => {
       return origUp(args);
     };
 
-    await runDeploy("zip", {
-      to: "railway",
-      yes: true,
-      auggyDir,
-      cli,
-      promptProjectId: async () => "proj_abc",
-      promptConfirm: async () => true,
-      logger: { info: () => {}, warn: () => {}, error: () => {} },
-    });
+    await runDeploy("zip", baseDeployOptions(cli, auggyDir));
 
     const domainIdx = orderLog.indexOf("generateDomain");
     const publicUrlIdx = orderLog.indexOf("setVariable:AUGGY_PUBLIC_URL");
@@ -205,15 +216,13 @@ describe("runDeploy", () => {
   test("aborts when operator declines secrets-push confirmation", async () => {
     const { cli, calls } = mockRailwayCli();
     await expect(
-      runDeploy("zip", {
-        to: "railway",
-        yes: false,
-        auggyDir,
-        cli,
-        promptProjectId: async () => "proj_abc",
-        promptConfirm: async () => false,
-        logger: { info: () => {}, warn: () => {}, error: () => {} },
-      }),
+      runDeploy(
+        "zip",
+        baseDeployOptions(cli, auggyDir, {
+          yes: false,
+          promptConfirm: async () => false,
+        }),
+      ),
     ).rejects.toThrow(/aborted/i);
     expect(calls.up).toBe(0);
     expect(calls.setVariable).toEqual([]);
@@ -232,15 +241,7 @@ describe("runDeploy", () => {
     writeFileSync(join(agentDir, ".env"), "ANTHROPIC_API_KEY=sk-test\n");
     const { cli, calls } = mockRailwayCli();
     await expect(
-      runDeploy("zip", {
-        to: "railway",
-        yes: true,
-        auggyDir,
-        cli,
-        promptProjectId: async () => "proj_abc",
-        promptConfirm: async () => true,
-        logger: { info: () => {}, warn: () => {}, error: () => {} },
-      }),
+      runDeploy("zip", baseDeployOptions(cli, auggyDir)),
     ).rejects.toThrow(/Deploy preflight failed:[\s\S]*AUGGY_DEPLOY_PREFLIGHT_MISSING_TOKEN/);
 
     expect(calls.checkPresence).toBe(0);
@@ -253,48 +254,62 @@ describe("runDeploy", () => {
   test("--yes flag skips the confirmation prompt", async () => {
     const { cli } = mockRailwayCli();
     let promptCalled = false;
-    await runDeploy("zip", {
-      to: "railway",
-      yes: true,
-      auggyDir,
-      cli,
-      promptProjectId: async () => "proj_abc",
-      promptConfirm: async () => {
-        promptCalled = true;
-        return true;
-      },
-      logger: { info: () => {}, warn: () => {}, error: () => {} },
-    });
+    await runDeploy(
+      "zip",
+      baseDeployOptions(cli, auggyDir, {
+        promptConfirm: async () => {
+          promptCalled = true;
+          return true;
+        },
+      }),
+    );
     expect(promptCalled).toBe(false);
+  });
+
+  test("health timeout warns but still records the deployment", async () => {
+    const warnings: string[] = [];
+    const { cli, calls } = mockRailwayCli();
+    const result = await runDeploy(
+      "zip",
+      baseDeployOptions(cli, auggyDir, {
+        logger: { info: () => {}, warn: (msg) => warnings.push(msg), error: () => {} },
+        healthCheck: {
+          fetch: async () => new Response(null, { status: 503 }),
+          sleep: async () => {},
+          now: (() => {
+            let ticks = 0;
+            return () => ticks++;
+          })(),
+          timeoutMs: 1,
+          intervalMs: 1,
+        },
+      }),
+    );
+
+    expect(result.health).toMatchObject({
+      ok: false,
+      status: 503,
+      url: "https://zip-production-abcd.up.railway.app/health",
+    });
+    expect(warnings.join("\n")).toMatch(/Health check did not pass yet/);
+    expect(warnings.join("\n")).toMatch(/railway logs/);
+    expect(calls.status).toBe(1);
+    expect(getAgent("zip", { auggyDir })?.cloud).toMatchObject({
+      url: "https://zip-production-abcd.up.railway.app",
+    });
   });
 
   test("rejects unknown providers", async () => {
     const { cli } = mockRailwayCli();
     await expect(
-      runDeploy("zip", {
-        to: "fly" as never as "railway",
-        yes: false,
-        auggyDir,
-        cli,
-        promptProjectId: async () => "x",
-        promptConfirm: async () => true,
-        logger: { info: () => {}, warn: () => {}, error: () => {} },
-      }),
+      runDeploy("zip", baseDeployOptions(cli, auggyDir, { to: "fly" as never as "railway" })),
     ).rejects.toThrow(/only "railway" is supported/i);
   });
 
   test("throws when agent is not registered", async () => {
     const { cli } = mockRailwayCli();
     await expect(
-      runDeploy("ghost", {
-        to: "railway",
-        yes: true,
-        auggyDir,
-        cli,
-        promptProjectId: async () => "x",
-        promptConfirm: async () => true,
-        logger: { info: () => {}, warn: () => {}, error: () => {} },
-      }),
+      runDeploy("ghost", baseDeployOptions(cli, auggyDir)),
     ).rejects.toThrow(/not registered|not found/i);
   });
 
@@ -313,18 +328,15 @@ describe("runDeploy", () => {
     );
     const { cli, calls } = mockRailwayCli();
     let projectIdPromptCalled = false;
-    const result = await runDeploy("zip", {
-      to: "railway",
-      yes: true,
-      auggyDir,
-      cli,
-      promptProjectId: async () => {
-        projectIdPromptCalled = true;
-        return "should-not-be-used";
-      },
-      promptConfirm: async () => true,
-      logger: { info: () => {}, warn: () => {}, error: () => {} },
-    });
+    const result = await runDeploy(
+      "zip",
+      baseDeployOptions(cli, auggyDir, {
+        promptProjectId: async () => {
+          projectIdPromptCalled = true;
+          return "should-not-be-used";
+        },
+      }),
+    );
     expect(projectIdPromptCalled).toBe(false);
     expect(calls.link[0]?.projectId).toBe("proj_existing");
     expect(calls.addVolume).toEqual([]); // no addVolume on redeploy
@@ -343,15 +355,7 @@ describe("runDeploy", () => {
       stagingDir = args.cwd;
       calls.link.push(args);
     };
-    await runDeploy("zip", {
-      to: "railway",
-      yes: true,
-      auggyDir,
-      cli,
-      promptProjectId: async () => "proj_abc",
-      promptConfirm: async () => true,
-      logger: { info: () => {}, warn: () => {}, error: () => {} },
-    });
+    await runDeploy("zip", baseDeployOptions(cli, auggyDir));
     expect(stagingDir).toBeDefined();
     expect(existsSync(join(stagingDir!, "Dockerfile"))).toBe(true);
     expect(existsSync(join(stagingDir!, "auggy-entrypoint.sh"))).toBe(true);
