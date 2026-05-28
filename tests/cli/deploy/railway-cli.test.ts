@@ -144,18 +144,11 @@ describe("railway-cli", () => {
     expect(url).toBe("https://zip-production-abcd.up.railway.app");
   });
 
-  test("addVolume runs `railway volume add <name> --mount-path <path>`", async () => {
+  test("addVolume runs `railway volume add --mount-path <path>`", async () => {
     const { factory, calls } = mockSpawn(() => ({ stdout: "", stderr: "", exitCode: 0 }));
     const cli = createRailwayCli({ spawn: factory });
     await cli.addVolume({ name: "zip-data", mountPath: "/app/data", cwd: "/tmp/staging" });
-    expect(calls[0]!.cmd).toEqual([
-      "railway",
-      "volume",
-      "add",
-      "zip-data",
-      "--mount-path",
-      "/app/data",
-    ]);
+    expect(calls[0]!.cmd).toEqual(["railway", "volume", "add", "--mount-path", "/app/data"]);
   });
 
   test("status returns parsed JSON from `railway status --json`", async () => {

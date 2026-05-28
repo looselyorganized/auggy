@@ -215,8 +215,8 @@ export function createRailwayCli(opts: CreateRailwayCliOptions = {}): RailwayCli
       return match[0];
     },
 
-    async addVolume({ name, mountPath, cwd }) {
-      await runOrThrow(["volume", "add", name, "--mount-path", mountPath], { cwd });
+    async addVolume({ mountPath, cwd }) {
+      await runOrThrow(["volume", "add", "--mount-path", mountPath], { cwd });
     },
 
     async status({ cwd }) {
