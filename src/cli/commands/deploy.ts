@@ -43,6 +43,12 @@ export interface DeployOptions {
   yes: boolean;
   auggyDir?: string;
   cli: RailwayCli;
+  /** Existing Railway project ID. When omitted on first deploy, operator chooses new/existing. */
+  project?: string;
+  /** Prompt the operator to create a new Railway project or use an existing one. */
+  promptProjectTarget: () => Promise<"new" | "existing">;
+  /** Prompt for a new Railway project name. */
+  promptProjectName: (defaultName: string) => Promise<string>;
   /** Prompt the operator for a Railway project ID. */
   promptProjectId: () => Promise<string>;
   /** Prompt the operator for yes/no confirmation. Receives a human-readable message. */
@@ -104,22 +110,36 @@ export async function runDeploy(name: string, opts: DeployOptions): Promise<Depl
   const existingCloud = entry.cloud;
   const isRedeploy = existingCloud !== null;
 
-  let projectId: string;
-  if (isRedeploy && existingCloud) {
-    projectId = existingCloud.projectId;
-    opts.logger.info(`Redeploying ${name} to Railway project ${projectId}.`);
-  } else {
-    projectId = await opts.promptProjectId();
-    opts.logger.info(`First deploy of ${name} to Railway project ${projectId}.`);
-  }
-
-  // 4) Stage the bundle (excludes secrets + volume-bound state).
+  // 4) Stage the bundle (excludes secrets + volume-bound state). New Railway
+  //    project creation links the current directory, so staging must exist
+  //    before we can create/link project state.
   const stagingDir = stageBundle({ agentDir, agentName: name });
   opts.logger.info(`Bundle staged at ${stagingDir}.`);
 
   // 5) Write Dockerfile + entrypoint into the staging dir.
   writeFileSync(join(stagingDir, "Dockerfile"), generateDockerfile({ agentName: name }));
   writeFileSync(join(stagingDir, "auggy-entrypoint.sh"), generateEntrypoint());
+
+  let projectId: string;
+  let projectAlreadyLinked = false;
+  if (isRedeploy && existingCloud) {
+    projectId = existingCloud.projectId;
+    opts.logger.info(`Redeploying ${name} to Railway project ${projectId}.`);
+  } else if (opts.project) {
+    projectId = opts.project;
+    opts.logger.info(`First deploy of ${name} to existing Railway project ${projectId}.`);
+  } else {
+    const target = await opts.promptProjectTarget();
+    if (target === "new") {
+      const projectName = await opts.promptProjectName(name);
+      projectId = await opts.cli.createProject({ projectName, cwd: stagingDir });
+      projectAlreadyLinked = true;
+      opts.logger.info(`Created Railway project ${projectName} (${projectId}).`);
+    } else {
+      projectId = await opts.promptProjectId();
+      opts.logger.info(`First deploy of ${name} to existing Railway project ${projectId}.`);
+    }
+  }
 
   // 6) Load secrets plan and confirm with operator unless --yes.
   const envPath = join(agentDir, ".env");
@@ -145,8 +165,10 @@ export async function runDeploy(name: string, opts: DeployOptions): Promise<Depl
   // First deploy with --service: link an existing Railway service by name/id.
   // Redeploy: use the stored serviceId unless --service explicitly overrides.
   if (!isRedeploy) {
-    await opts.cli.linkProject({ projectId, cwd: stagingDir });
-    opts.logger.info(`Linked staging dir to project ${projectId}.`);
+    if (!projectAlreadyLinked) {
+      await opts.cli.linkProject({ projectId, cwd: stagingDir });
+      opts.logger.info(`Linked staging dir to project ${projectId}.`);
+    }
     if (opts.service) {
       await opts.cli.linkService({ serviceName: opts.service, cwd: stagingDir });
       opts.logger.info(`Using existing Railway service ${opts.service}.`);

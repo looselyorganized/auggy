@@ -95,6 +95,7 @@ const defaultInteractiveSpawn: RailwayInteractiveSpawnFactory = (cmd, opts = {})
 export interface RailwayCli {
   checkPresence(): Promise<true>;
   checkAuth(): Promise<string>;
+  createProject(args: { projectName: string; cwd: string }): Promise<string>;
   linkProject(args: { projectId: string; cwd: string }): Promise<void>;
   linkService(args: { serviceName: string; cwd: string }): Promise<void>;
   link(args: { projectId: string; serviceName: string; cwd: string }): Promise<void>;
@@ -179,6 +180,14 @@ export function createRailwayCli(opts: CreateRailwayCliOptions = {}): RailwayCli
       return match ? match[1]!.trim() : stdout.trim();
     },
 
+    async createProject({ projectName, cwd }) {
+      const { stdout } = await runOrThrow(["init", "--name", projectName, "--json"], { cwd });
+      const fromInit = extractProjectId(stdout);
+      if (fromInit) return fromInit;
+      const status = await this.status({ cwd });
+      return status.project.id;
+    },
+
     async linkProject({ projectId, cwd }) {
       await runOrThrow(["link", "--project", projectId], { cwd });
     },
@@ -233,4 +242,23 @@ export function createRailwayCli(opts: CreateRailwayCliOptions = {}): RailwayCli
       await runInteractiveOrThrow(["logs"], { cwd });
     },
   };
+}
+
+function extractProjectId(stdout: string): string | null {
+  try {
+    const parsed = JSON.parse(stdout) as unknown;
+    if (parsed && typeof parsed === "object") {
+      const root = parsed as Record<string, unknown>;
+      if (typeof root.id === "string") return root.id;
+      const project = root.project;
+      if (project && typeof project === "object") {
+        const id = (project as Record<string, unknown>).id;
+        if (typeof id === "string") return id;
+      }
+    }
+  } catch {
+    // Fall through to regex for older/non-JSON Railway output.
+  }
+  const match = stdout.match(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/i);
+  return match?.[0] ?? null;
 }

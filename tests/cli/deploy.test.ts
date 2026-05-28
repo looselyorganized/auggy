@@ -17,6 +17,7 @@ interface MockCliCalls {
   status: number;
   destroyService: number;
   logs: number;
+  createProject: Array<{ projectName: string; cwd: string }>;
   linkProject: Array<{ projectId: string; cwd: string }>;
   linkService: Array<{ serviceName: string; cwd: string }>;
   createService: Array<{ serviceName: string; cwd: string }>;
@@ -34,6 +35,7 @@ function mockRailwayCli(): { cli: RailwayCli; calls: MockCliCalls; capturedCwds:
     status: 0,
     destroyService: 0,
     logs: 0,
+    createProject: [],
     linkProject: [],
     linkService: [],
     createService: [],
@@ -51,6 +53,11 @@ function mockRailwayCli(): { cli: RailwayCli; calls: MockCliCalls; capturedCwds:
     async link({ projectId, serviceName, cwd }) {
       calls.link.push({ projectId, serviceName, cwd });
       capturedCwds.push(cwd);
+    },
+    async createProject({ projectName, cwd }) {
+      calls.createProject.push({ projectName, cwd });
+      capturedCwds.push(cwd);
+      return "proj_created";
     },
     async linkProject({ projectId, cwd }) {
       calls.linkProject.push({ projectId, cwd });
@@ -105,6 +112,8 @@ function baseDeployOptions(
     yes: true,
     auggyDir,
     cli,
+    promptProjectTarget: async () => "existing",
+    promptProjectName: async (defaultName) => defaultName,
     promptProjectId: async () => "proj_abc",
     promptConfirm: async () => true,
     logger: { info: () => {}, warn: () => {}, error: () => {} },
@@ -204,6 +213,42 @@ describe("runDeploy", () => {
       url: "https://zip-production-abcd.up.railway.app",
       volumeId: "zip-data",
     });
+  });
+
+  test("first deploy can create a new Railway project", async () => {
+    const { cli, calls } = mockRailwayCli();
+    const result = await runDeploy(
+      "zip",
+      baseDeployOptions(cli, auggyDir, {
+        promptProjectTarget: async () => "new",
+        promptProjectName: async () => "zip-project",
+      }),
+    );
+
+    expect(calls.createProject).toEqual([expect.objectContaining({ projectName: "zip-project" })]);
+    expect(calls.linkProject).toEqual([]);
+    expect(calls.createService).toEqual([expect.objectContaining({ serviceName: "zip" })]);
+    expect(result.projectId).toBe("proj_created");
+    expect(getAgent("zip", { auggyDir })?.cloud?.projectId).toBe("proj_created");
+  });
+
+  test("--project skips the project target prompt and uses an existing project", async () => {
+    const { cli, calls } = mockRailwayCli();
+    let promptCalled = false;
+    await runDeploy(
+      "zip",
+      baseDeployOptions(cli, auggyDir, {
+        project: "proj_flag",
+        promptProjectTarget: async () => {
+          promptCalled = true;
+          return "new";
+        },
+      }),
+    );
+
+    expect(promptCalled).toBe(false);
+    expect(calls.createProject).toEqual([]);
+    expect(calls.linkProject[0]?.projectId).toBe("proj_flag");
   });
 
   test("first deploy with --service links an existing Railway service instead of creating one", async () => {

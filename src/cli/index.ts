@@ -210,20 +210,36 @@ export function buildCli(): Command {
     .command("deploy <name>")
     .description("Deploy an agent to the cloud (--to railway)")
     .option("--to <provider>", "deploy target (only `railway` supported in v1.0)", "railway")
+    .option("--project <project-id>", "deploy into an existing Railway project")
     .option("--service <name-or-id>", "deploy into an existing Railway service")
     .option("--yes", "skip the secrets-push confirmation prompt")
-    .action(async (name: string, opts: { to: string; service?: string; yes?: boolean }) => {
+    .action(async (name: string, opts: { to: string; project?: string; service?: string; yes?: boolean }) => {
       try {
         const { runDeploy } = await import("./commands/deploy");
         const { createRailwayCli } = await import("./deploy/railway-cli");
-        const { input, confirm } = await import("@inquirer/prompts");
+        const { input, confirm, select } = await import("@inquirer/prompts");
 
         const cli = createRailwayCli();
         const result = await runDeploy(name, {
           to: opts.to as "railway",
           yes: opts.yes ?? false,
+          project: opts.project,
           service: opts.service,
           cli,
+          promptProjectTarget: () =>
+            select({
+              message: "Railway target:",
+              choices: [
+                { name: `Create a new Railway project for ${name}`, value: "new" as const },
+                { name: "Use an existing Railway project", value: "existing" as const },
+              ],
+            }),
+          promptProjectName: (defaultName) =>
+            input({
+              message: "New Railway project name:",
+              default: defaultName,
+              validate: (v) => v.trim().length > 0 || "project name required",
+            }),
           promptProjectId: () =>
             input({
               message:

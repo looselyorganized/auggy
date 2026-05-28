@@ -72,6 +72,39 @@ describe("railway-cli", () => {
     expect(calls[0]!.cwd).toBe("/tmp/staging");
   });
 
+  test("createProject runs `railway init --name --json` and returns the project id", async () => {
+    const { factory, calls } = mockSpawn(() => ({
+      stdout: JSON.stringify({ project: { id: "proj_created" } }),
+      stderr: "",
+      exitCode: 0,
+    }));
+    const cli = createRailwayCli({ spawn: factory });
+    const id = await cli.createProject({ projectName: "zip", cwd: "/tmp/staging" });
+    expect(id).toBe("proj_created");
+    expect(calls[0]!.cmd).toEqual(["railway", "init", "--name", "zip", "--json"]);
+  });
+
+  test("createProject falls back to status when init output has no id", async () => {
+    let call = 0;
+    const { factory } = mockSpawn((args) => {
+      call++;
+      if (args[0] === "init") return { stdout: "{}", stderr: "", exitCode: 0 };
+      return {
+        stdout: JSON.stringify({
+          project: { id: "proj_status", name: "zip" },
+          service: { id: "svc_def", name: "zip" },
+          deployment: { status: "SUCCESS" },
+        }),
+        stderr: "",
+        exitCode: 0,
+      };
+    });
+    const cli = createRailwayCli({ spawn: factory });
+    const id = await cli.createProject({ projectName: "zip", cwd: "/tmp/staging" });
+    expect(id).toBe("proj_status");
+    expect(call).toBe(2);
+  });
+
   test("linkService runs `railway service link` from the given cwd", async () => {
     const { factory, calls } = mockSpawn(() => ({ stdout: "", stderr: "", exitCode: 0 }));
     const cli = createRailwayCli({ spawn: factory });
