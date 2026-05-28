@@ -4,6 +4,7 @@ import {
   RailwayCliMissingError,
   RailwayNotLoggedInError,
   type RailwaySpawnFactory,
+  type RailwayInteractiveSpawnFactory,
 } from "../../../src/cli/deploy/railway-cli";
 
 interface MockSpawnCall {
@@ -153,6 +154,28 @@ describe("railway-cli", () => {
     const cli = createRailwayCli({ spawn: factory });
     await cli.destroyService({ cwd: "/tmp/staging" });
     expect(calls[0]!.cmd).toEqual(["railway", "service", "delete", "--yes"]);
+  });
+
+  test("logs streams `railway logs` from the given cwd", async () => {
+    const calls: MockSpawnCall[] = [];
+    const interactiveSpawn: RailwayInteractiveSpawnFactory = (cmd, opts = {}) => {
+      calls.push({ cmd, cwd: opts.cwd, env: opts.env });
+      return { exited: Promise.resolve(0) };
+    };
+    const { factory } = mockSpawn(() => ({ stdout: "", stderr: "", exitCode: 0 }));
+    const cli = createRailwayCli({ spawn: factory, interactiveSpawn });
+    await cli.logs({ cwd: "/tmp/staging" });
+    expect(calls[0]!.cmd).toEqual(["railway", "logs"]);
+    expect(calls[0]!.cwd).toBe("/tmp/staging");
+  });
+
+  test("logs surfaces a non-zero exit", async () => {
+    const interactiveSpawn: RailwayInteractiveSpawnFactory = () => ({
+      exited: Promise.resolve(1),
+    });
+    const { factory } = mockSpawn(() => ({ stdout: "", stderr: "", exitCode: 0 }));
+    const cli = createRailwayCli({ spawn: factory, interactiveSpawn });
+    await expect(cli.logs({ cwd: "/tmp/staging" })).rejects.toThrow(/railway logs exited 1/);
   });
 
   test("non-zero exit surfaces stderr in the error message", async () => {

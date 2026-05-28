@@ -158,6 +158,7 @@ describe("runRemove", () => {
       async destroyService() {
         calls.destroy++;
       },
+      async logs() {},
     };
 
     await runRemove("zip", { yes: true, cloud: true, auggyDir, railwayCli: mockCli });
@@ -205,6 +206,7 @@ describe("runRemove", () => {
       async destroyService() {
         throw new Error("Railway API timeout");
       },
+      async logs() {},
     };
 
     await runRemove("zip", { yes: true, cloud: true, auggyDir, railwayCli: mockCli });

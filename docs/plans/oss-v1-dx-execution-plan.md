@@ -423,7 +423,7 @@ Acceptance:
 
 - Deploy ends with a working URL or a clear recovery path.
 
-### 14. Add `auggy logs <name>`
+### 14. Add `auggy logs <name>` *(implemented 2026-05-28)*
 
 Behavior:
 

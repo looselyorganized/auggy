@@ -17,6 +17,7 @@
  *   auggy list                       List registered agents
  *   auggy remove <name> [--yes] [--cloud]  Delete an agent (dir + index, optionally Railway service)
  *   auggy deploy <name> --to railway       Deploy an agent to Railway
+ *   auggy logs <name>               Show Railway logs for a deployed agent
  *   auggy chat                       Launch local GUI
  *   auggy eval [name]                Run portable security eval suite
  */
@@ -186,6 +187,19 @@ export function buildCli(): Command {
         }
         const { runVisitorsList } = await import("./commands/visitors");
         await runVisitorsList(agentName);
+      } catch (err) {
+        console.error(`Error: ${(err as Error).message}`);
+        process.exit(1);
+      }
+    });
+
+  program
+    .command("logs <name>")
+    .description("Show Railway logs for a deployed agent")
+    .action(async (name: string) => {
+      try {
+        const { runLogs } = await import("./commands/logs");
+        await runLogs(name);
       } catch (err) {
         console.error(`Error: ${(err as Error).message}`);
         process.exit(1);

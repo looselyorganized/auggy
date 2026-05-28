@@ -16,6 +16,7 @@ interface MockCliCalls {
   addVolume: Array<{ name: string; mountPath: string }>;
   status: number;
   destroyService: number;
+  logs: number;
 }
 
 function mockRailwayCli(): { cli: RailwayCli; calls: MockCliCalls; capturedCwds: string[] } {
@@ -29,6 +30,7 @@ function mockRailwayCli(): { cli: RailwayCli; calls: MockCliCalls; capturedCwds:
     addVolume: [],
     status: 0,
     destroyService: 0,
+    logs: 0,
   };
   const capturedCwds: string[] = [];
   const cli: RailwayCli = {
@@ -67,6 +69,9 @@ function mockRailwayCli(): { cli: RailwayCli; calls: MockCliCalls; capturedCwds:
     },
     async destroyService() {
       calls.destroyService++;
+    },
+    async logs() {
+      calls.logs++;
     },
   };
   return { cli, calls, capturedCwds };

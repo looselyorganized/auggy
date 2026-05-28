@@ -35,13 +35,23 @@ interface SpawnHandle {
   stderr: ReadableStream<Uint8Array>;
 }
 
+interface InteractiveSpawnHandle {
+  exited: Promise<number>;
+}
+
 export type RailwaySpawnFactory = (
   cmd: string[],
   opts?: { cwd?: string; env?: Record<string, string> },
 ) => SpawnHandle;
 
+export type RailwayInteractiveSpawnFactory = (
+  cmd: string[],
+  opts?: { cwd?: string; env?: Record<string, string> },
+) => InteractiveSpawnHandle;
+
 interface CreateRailwayCliOptions {
   spawn?: RailwaySpawnFactory;
+  interactiveSpawn?: RailwayInteractiveSpawnFactory;
 }
 
 interface RunOptions {
@@ -69,6 +79,19 @@ const defaultSpawn: RailwaySpawnFactory = (cmd, opts = {}) => {
   };
 };
 
+const defaultInteractiveSpawn: RailwayInteractiveSpawnFactory = (cmd, opts = {}) => {
+  const proc = Bun.spawn(cmd, {
+    cwd: opts.cwd,
+    env: opts.env ? { ...process.env, ...opts.env } : undefined,
+    stdin: "inherit",
+    stdout: "inherit",
+    stderr: "inherit",
+  });
+  return {
+    exited: proc.exited,
+  };
+};
+
 export interface RailwayCli {
   checkPresence(): Promise<true>;
   checkAuth(): Promise<string>;
@@ -79,10 +102,12 @@ export interface RailwayCli {
   addVolume(args: { name: string; mountPath: string; cwd: string }): Promise<void>;
   status(args: { cwd: string }): Promise<RailwayStatus>;
   destroyService(args: { cwd: string }): Promise<void>;
+  logs(args: { cwd: string }): Promise<void>;
 }
 
 export function createRailwayCli(opts: CreateRailwayCliOptions = {}): RailwayCli {
   const spawn = opts.spawn ?? defaultSpawn;
+  const interactiveSpawn = opts.interactiveSpawn ?? defaultInteractiveSpawn;
 
   async function runRailway(
     args: string[],
@@ -116,6 +141,22 @@ export function createRailwayCli(opts: CreateRailwayCliOptions = {}): RailwayCli
       );
     }
     return { stdout, stderr };
+  }
+
+  async function runInteractiveOrThrow(args: string[], runOpts: RunOptions = {}): Promise<void> {
+    let handle: InteractiveSpawnHandle;
+    try {
+      handle = interactiveSpawn(["railway", ...args], runOpts);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+        throw new RailwayCliMissingError();
+      }
+      throw err;
+    }
+    const exitCode = await handle.exited;
+    if (exitCode !== 0) {
+      throw new Error(`railway ${args.join(" ")} exited ${exitCode}`);
+    }
   }
 
   return {
@@ -169,6 +210,10 @@ export function createRailwayCli(opts: CreateRailwayCliOptions = {}): RailwayCli
 
     async destroyService({ cwd }) {
       await runOrThrow(["service", "delete", "--yes"], { cwd });
+    },
+
+    async logs({ cwd }) {
+      await runInteractiveOrThrow(["logs"], { cwd });
     },
   };
 }
