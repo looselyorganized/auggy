@@ -1,16 +1,12 @@
-import { describe, test, expect, afterEach } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import type { PidManifest } from "../../src/cli/types";
 
 // We test the core logic by importing the functions and operating on
-// temp directories. The real registry uses ~/.auggy/ but tests
-// exercise the same code paths.
-
-const _TMP = join(import.meta.dir, ".tmp-pid-test");
-
-// Since pid-registry.ts uses a hardcoded AUGGY_DIR, we test by
-// directly testing the exported functions with real filesystem ops.
-// For the atomic write and liveness checks, we use the actual module.
+// temp directories. Production uses ~/.auggy/, but the same code paths
+// support an explicit auggyDir override for tests and embedded callers.
 import {
   writePidManifest,
   readPidManifest,
@@ -19,6 +15,16 @@ import {
   tryClaimName,
   isProcessAlive,
 } from "../../src/cli/pid-registry";
+
+let auggyDir: string;
+
+beforeEach(() => {
+  auggyDir = mkdtempSync(join(tmpdir(), "pid-registry-test-"));
+});
+
+afterEach(() => {
+  rmSync(auggyDir, { recursive: true, force: true });
+});
 
 describe("isProcessAlive", () => {
   test("returns true for the current process", () => {
@@ -35,7 +41,7 @@ describe("PID manifest lifecycle", () => {
   const testName = `test-agent-${Date.now()}`;
 
   afterEach(() => {
-    removePidManifest(testName);
+    removePidManifest(testName, { auggyDir });
   });
 
   test("write + read round-trip", () => {
@@ -49,8 +55,8 @@ describe("PID manifest lifecycle", () => {
       mode: "dev",
     };
 
-    writePidManifest(manifest);
-    const read = readPidManifest(testName);
+    writePidManifest(manifest, { auggyDir });
+    const read = readPidManifest(testName, { auggyDir });
     expect(read).not.toBeNull();
     expect(read!.pid).toBe(process.pid);
     expect(read!.name).toBe(testName);
@@ -59,7 +65,7 @@ describe("PID manifest lifecycle", () => {
   });
 
   test("read returns null for non-existent manifest", () => {
-    expect(readPidManifest("nonexistent-agent-xyz")).toBeNull();
+    expect(readPidManifest("nonexistent-agent-xyz", { auggyDir })).toBeNull();
   });
 
   test("write throws on duplicate (atomic wx flag)", () => {
@@ -73,8 +79,8 @@ describe("PID manifest lifecycle", () => {
       mode: "dev",
     };
 
-    writePidManifest(manifest);
-    expect(() => writePidManifest(manifest)).toThrow();
+    writePidManifest(manifest, { auggyDir });
+    expect(() => writePidManifest(manifest, { auggyDir })).toThrow();
   });
 
   test("remove cleans up the manifest", () => {
@@ -88,14 +94,14 @@ describe("PID manifest lifecycle", () => {
       mode: "dev",
     };
 
-    writePidManifest(manifest);
-    expect(readPidManifest(testName)).not.toBeNull();
-    removePidManifest(testName);
-    expect(readPidManifest(testName)).toBeNull();
+    writePidManifest(manifest, { auggyDir });
+    expect(readPidManifest(testName, { auggyDir })).not.toBeNull();
+    removePidManifest(testName, { auggyDir });
+    expect(readPidManifest(testName, { auggyDir })).toBeNull();
   });
 
   test("remove is idempotent (doesn't throw if already gone)", () => {
-    expect(() => removePidManifest("nonexistent-xyz")).not.toThrow();
+    expect(() => removePidManifest("nonexistent-xyz", { auggyDir })).not.toThrow();
   });
 });
 
@@ -104,22 +110,25 @@ describe("listPidManifests", () => {
   const name2 = `list-test-2-${Date.now()}`;
 
   afterEach(() => {
-    removePidManifest(name1);
-    removePidManifest(name2);
+    removePidManifest(name1, { auggyDir });
+    removePidManifest(name2, { auggyDir });
   });
 
   test("lists manifests with alive processes", () => {
-    writePidManifest({
-      pid: process.pid,
-      name: name1,
-      port: null,
-      configPath: "/tmp/a.yaml",
-      agentDir: "/tmp/a",
-      startedAt: new Date().toISOString(),
-      mode: "dev",
-    });
+    writePidManifest(
+      {
+        pid: process.pid,
+        name: name1,
+        port: null,
+        configPath: "/tmp/a.yaml",
+        agentDir: "/tmp/a",
+        startedAt: new Date().toISOString(),
+        mode: "dev",
+      },
+      { auggyDir },
+    );
 
-    const list = listPidManifests();
+    const list = listPidManifests({ auggyDir });
     const found = list.find((m) => m.name === name1);
     expect(found).toBeDefined();
   });
@@ -129,39 +138,45 @@ describe("tryClaimName", () => {
   const testName = `claim-test-${Date.now()}`;
 
   afterEach(() => {
-    removePidManifest(testName);
+    removePidManifest(testName, { auggyDir });
   });
 
   test("returns true when no manifest exists", () => {
-    expect(tryClaimName(testName)).toBe(true);
+    expect(tryClaimName(testName, { auggyDir })).toBe(true);
   });
 
   test("returns false when agent is alive and recent", () => {
-    writePidManifest({
-      pid: process.pid,
-      name: testName,
-      port: null,
-      configPath: "/tmp/a.yaml",
-      agentDir: "/tmp/a",
-      startedAt: new Date().toISOString(),
-      mode: "dev",
-    });
+    writePidManifest(
+      {
+        pid: process.pid,
+        name: testName,
+        port: null,
+        configPath: "/tmp/a.yaml",
+        agentDir: "/tmp/a",
+        startedAt: new Date().toISOString(),
+        mode: "dev",
+      },
+      { auggyDir },
+    );
 
-    expect(tryClaimName(testName)).toBe(false);
+    expect(tryClaimName(testName, { auggyDir })).toBe(false);
   });
 
   test("returns true and cleans up when process is dead", () => {
-    writePidManifest({
-      pid: 99999999, // dead PID
-      name: testName,
-      port: null,
-      configPath: "/tmp/a.yaml",
-      agentDir: "/tmp/a",
-      startedAt: new Date().toISOString(),
-      mode: "dev",
-    });
+    writePidManifest(
+      {
+        pid: 99999999, // dead PID
+        name: testName,
+        port: null,
+        configPath: "/tmp/a.yaml",
+        agentDir: "/tmp/a",
+        startedAt: new Date().toISOString(),
+        mode: "dev",
+      },
+      { auggyDir },
+    );
 
-    expect(tryClaimName(testName)).toBe(true);
-    expect(readPidManifest(testName)).toBeNull();
+    expect(tryClaimName(testName, { auggyDir })).toBe(true);
+    expect(readPidManifest(testName, { auggyDir })).toBeNull();
   });
 });

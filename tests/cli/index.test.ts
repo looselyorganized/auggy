@@ -1,5 +1,13 @@
-import { describe, expect, test } from "bun:test";
-import { buildCli } from "../../src/cli/index";
+import { describe, expect, mock, test } from "bun:test";
+
+mock.module("@inquirer/prompts", () => ({
+  checkbox: async () => [],
+  confirm: async () => true,
+  input: async () => "",
+  select: async (config: { choices?: Array<{ value: unknown }> }) => config.choices?.[0]?.value,
+}));
+
+const { buildCli } = await import("../../src/cli/index");
 
 describe("auggy CLI command table", () => {
   test("registers the public command suite", () => {

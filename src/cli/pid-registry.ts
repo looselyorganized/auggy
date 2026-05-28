@@ -20,16 +20,26 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { PidManifest } from "./types";
 
-const AUGGY_DIR = join(homedir(), ".auggy");
+interface PidRegistryOptions {
+  /** Override `~/.auggy/` for tests. Production callers omit. */
+  auggyDir?: string;
+}
+
 // No time-based staleness heuristic — always-on agents can run for weeks.
 // Liveness is determined solely by whether the PID is alive.
 
-function ensureDir(): void {
-  mkdirSync(AUGGY_DIR, { recursive: true });
+function registryDir(opts: PidRegistryOptions = {}): string {
+  return opts.auggyDir ?? join(homedir(), ".auggy");
 }
 
-function manifestPath(name: string): string {
-  return join(AUGGY_DIR, `${name}.json`);
+function ensureDir(opts: PidRegistryOptions = {}): string {
+  const dir = registryDir(opts);
+  mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+function manifestPath(name: string, opts: PidRegistryOptions = {}): string {
+  return join(registryDir(opts), `${name}.json`);
 }
 
 // ---------------------------------------------------------------------------
@@ -57,15 +67,15 @@ export function isProcessAlive(pid: number): boolean {
  * Call `cleanupStaleManifest` first if you want to recover from a
  * stale PID file before writing.
  */
-export function writePidManifest(manifest: PidManifest): void {
-  ensureDir();
-  const path = manifestPath(manifest.name);
+export function writePidManifest(manifest: PidManifest, opts: PidRegistryOptions = {}): void {
+  ensureDir(opts);
+  const path = manifestPath(manifest.name, opts);
   writeFileSync(path, JSON.stringify(manifest, null, 2), { flag: "wx" });
 }
 
 /** Read a PID manifest. Returns null if not found. */
-export function readPidManifest(name: string): PidManifest | null {
-  const path = manifestPath(name);
+export function readPidManifest(name: string, opts: PidRegistryOptions = {}): PidManifest | null {
+  const path = manifestPath(name, opts);
   if (!existsSync(path)) return null;
   try {
     return JSON.parse(readFileSync(path, "utf-8")) as PidManifest;
@@ -75,8 +85,8 @@ export function readPidManifest(name: string): PidManifest | null {
 }
 
 /** Remove a PID manifest (called on clean shutdown). */
-export function removePidManifest(name: string): void {
-  const path = manifestPath(name);
+export function removePidManifest(name: string, opts: PidRegistryOptions = {}): void {
+  const path = manifestPath(name, opts);
   try {
     unlinkSync(path);
   } catch {
@@ -88,13 +98,13 @@ export function removePidManifest(name: string): void {
  * List all PID manifests. Dead processes are cleaned up automatically.
  * Returns only manifests whose processes are still alive.
  */
-export function listPidManifests(): PidManifest[] {
-  ensureDir();
+export function listPidManifests(opts: PidRegistryOptions = {}): PidManifest[] {
+  const dir = ensureDir(opts);
   const manifests: PidManifest[] = [];
 
-  for (const file of readdirSync(AUGGY_DIR)) {
+  for (const file of readdirSync(dir)) {
     if (!file.endsWith(".json")) continue;
-    const path = join(AUGGY_DIR, file);
+    const path = join(dir, file);
     try {
       const manifest = JSON.parse(readFileSync(path, "utf-8")) as PidManifest;
       if (isProcessAlive(manifest.pid)) {
@@ -123,12 +133,12 @@ export function listPidManifests(): PidManifest[] {
  *    remove the manifest and return true.
  *  - If the process is alive and recent, return false (name is taken).
  */
-export function tryClaimName(name: string): boolean {
-  const manifest = readPidManifest(name);
+export function tryClaimName(name: string, opts: PidRegistryOptions = {}): boolean {
+  const manifest = readPidManifest(name, opts);
   if (!manifest) return true;
 
   if (!isProcessAlive(manifest.pid)) {
-    removePidManifest(name);
+    removePidManifest(name, opts);
     return true;
   }
 
@@ -141,6 +151,5 @@ export function tryClaimName(name: string): boolean {
  * Used by the plist generator for log paths.
  */
 export function getAuggyDir(): string {
-  ensureDir();
-  return AUGGY_DIR;
+  return ensureDir();
 }

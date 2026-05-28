@@ -47,9 +47,12 @@ export async function runRemove(name: string, opts: RemoveOptions = {}): Promise
   // — we clean them up below. Check under both the CLI-arg name AND the
   // agent.yaml's config.name (operator may have edited the yaml after create,
   // in which case `auggy dev` writes the manifest under config.name).
-  const pidByCli = readPidManifest(name);
+  const pidByCli = readPidManifest(name, { auggyDir: opts.auggyDir });
   const configName = readConfigName(entry.localDir);
-  const pidByConfig = configName && configName !== name ? readPidManifest(configName) : null;
+  const pidByConfig =
+    configName && configName !== name
+      ? readPidManifest(configName, { auggyDir: opts.auggyDir })
+      : null;
 
   const aliveCli = pidByCli && isProcessAlive(pidByCli.pid);
   const aliveConfig = pidByConfig && isProcessAlive(pidByConfig.pid);
@@ -96,8 +99,8 @@ export async function runRemove(name: string, opts: RemoveOptions = {}): Promise
   }
 
   // Clean up stale PID manifest(s) if any.
-  if (pidByCli) removePidManifest(name);
-  if (pidByConfig && configName) removePidManifest(configName);
+  if (pidByCli) removePidManifest(name, { auggyDir: opts.auggyDir });
+  if (pidByConfig && configName) removePidManifest(configName, { auggyDir: opts.auggyDir });
 
   // Remove the agent dir. `removeAgent` refuses paths that don't contain
   // agent.yaml as a guard against accidental nukes.

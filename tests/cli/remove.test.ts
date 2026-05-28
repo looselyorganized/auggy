@@ -6,7 +6,10 @@ import { tmpdir } from "node:os";
 // Mock @inquirer/prompts so we can drive the confirm() return value per-test.
 let confirmAnswer = true;
 mock.module("@inquirer/prompts", () => ({
+  checkbox: async () => [],
   confirm: async () => confirmAnswer,
+  input: async () => "",
+  select: async (config: { choices?: Array<{ value: unknown }> }) => config.choices?.[0]?.value,
 }));
 
 const { runRemove } = await import("../../src/cli/commands/remove");
@@ -34,21 +37,24 @@ describe("runRemove", () => {
 
   test("refuses when agent process is alive", async () => {
     const dir = setupAgent("zip");
-    writePidManifest({
-      pid: process.pid,
-      name: "zip",
-      port: 8080,
-      configPath: join(dir, "agent.yaml"),
-      agentDir: dir,
-      startedAt: new Date().toISOString(),
-      mode: "dev",
-    });
+    writePidManifest(
+      {
+        pid: process.pid,
+        name: "zip",
+        port: 8080,
+        configPath: join(dir, "agent.yaml"),
+        agentDir: dir,
+        startedAt: new Date().toISOString(),
+        mode: "dev",
+      },
+      { auggyDir },
+    );
     try {
       await expect(runRemove("zip", { yes: true, auggyDir })).rejects.toThrow(
         /running|stop it first/i,
       );
     } finally {
-      removePidManifest("zip");
+      removePidManifest("zip", { auggyDir });
     }
   });
 
@@ -61,15 +67,18 @@ describe("runRemove", () => {
 
   test("tolerates stale PID manifest (pid dead)", async () => {
     setupAgent("zip");
-    writePidManifest({
-      pid: 99999999,
-      name: "zip",
-      port: 8080,
-      configPath: join(auggyDir, "agents", "zip", "agent.yaml"),
-      agentDir: join(auggyDir, "agents", "zip"),
-      startedAt: new Date().toISOString(),
-      mode: "dev",
-    });
+    writePidManifest(
+      {
+        pid: 99999999,
+        name: "zip",
+        port: 8080,
+        configPath: join(auggyDir, "agents", "zip", "agent.yaml"),
+        agentDir: join(auggyDir, "agents", "zip"),
+        startedAt: new Date().toISOString(),
+        mode: "dev",
+      },
+      { auggyDir },
+    );
     await runRemove("zip", { yes: true, auggyDir });
     expect(getAgent("zip", { auggyDir })).toBeNull();
   });
@@ -98,21 +107,24 @@ describe("runRemove", () => {
   test("refuses delete when agent.yaml's name is alive under different PID manifest key", async () => {
     const dir = setupAgent("zip");
     writeFileSync(join(dir, "agent.yaml"), "id: aug1_test\nname: zippy\n");
-    writePidManifest({
-      pid: process.pid,
-      name: "zippy",
-      port: 8081,
-      configPath: join(dir, "agent.yaml"),
-      agentDir: dir,
-      startedAt: new Date().toISOString(),
-      mode: "dev",
-    });
+    writePidManifest(
+      {
+        pid: process.pid,
+        name: "zippy",
+        port: 8081,
+        configPath: join(dir, "agent.yaml"),
+        agentDir: dir,
+        startedAt: new Date().toISOString(),
+        mode: "dev",
+      },
+      { auggyDir },
+    );
     try {
       await expect(runRemove("zip", { yes: true, auggyDir })).rejects.toThrow(
         /running|stop it first/i,
       );
     } finally {
-      removePidManifest("zippy");
+      removePidManifest("zippy", { auggyDir });
     }
   });
 

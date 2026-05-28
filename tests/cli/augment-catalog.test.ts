@@ -10,7 +10,7 @@ describe("augment catalog", () => {
     const entry = AUGMENT_CATALOG.find((e) => e.type === "turnControl");
     expect(entry).toBeDefined();
     expect(entry?.label).toMatch(/turn[- ]?control/i);
-    expect(entry?.required).toBe(false);
+    expect(entry?.required).toBe(true);
     // After ADR-025 + PR α task 2, turnControl ships a bundled skill folder.
     expect(entry?.hasSkill).toBe(true);
   });
