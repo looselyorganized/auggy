@@ -1,11 +1,17 @@
 import { describe, expect, mock, test } from "bun:test";
-import { augmentCommand } from "../../../src/cli/commands/augment";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { parse as parseYaml } from "yaml";
+import { seedAgentForTest } from "../../../src/cli/agent-index";
+import { augmentCommand, installCustomAugment } from "../../../src/cli/commands/augment";
 
 describe("auggy augment command", () => {
   test("registers the augment command with create subcommand", () => {
     const cmd = augmentCommand();
     expect(cmd.name()).toBe("augment");
     expect(cmd.commands.map((c) => c.name())).toContain("create");
+    expect(cmd.commands.map((c) => c.name())).toContain("install");
   });
 
   test("create dispatches to scaffold helper", async () => {
@@ -53,5 +59,115 @@ describe("auggy augment command", () => {
 
     expect(exit).toHaveBeenCalledWith(1);
     expect(errors.join("\n")).toContain("bad slug");
+  });
+
+  test("install dispatches to install helper", async () => {
+    const install = mock(() => ({
+      configPath: "/tmp/agent.yaml",
+      agentDir: "/tmp/agent",
+      source: "./augments/weather/index.ts",
+      name: "weather",
+      skillCopied: true,
+    }));
+    const logs: string[] = [];
+    const origLog = console.log;
+    console.log = (msg: unknown) => {
+      logs.push(String(msg));
+    };
+
+    try {
+      const cmd = augmentCommand({ installCustomAugment: install, auggyDir: "/tmp/auggy" });
+      await cmd.parseAsync(["install", "zip", "./augments/weather", "--config", "/tmp/a.yaml"], {
+        from: "user",
+      });
+    } finally {
+      console.log = origLog;
+    }
+
+    expect(install).toHaveBeenCalledWith({
+      agentName: "zip",
+      sourcePath: "./augments/weather",
+      config: "/tmp/a.yaml",
+      auggyDir: "/tmp/auggy",
+    });
+    expect(logs.join("\n")).toContain('Installed custom augment "weather"');
+  });
+});
+
+describe("installCustomAugment", () => {
+  test("adds a type: custom augment with source relative to the agent dir and copies SKILL.md", () => {
+    const root = mkdtempSync(join(tmpdir(), "augment-install-"));
+    try {
+      const auggyDir = join(root, "auggy");
+      const agentDir = seedAgentForTest("zip", {
+        auggyDir,
+        yaml: [
+          "id: aug1_a3f7c2e1-8b4d-4f9e-a6c1-2d8e9f0b3a5c",
+          "name: zip",
+          "engine:",
+          "  provider: anthropic",
+          "  model: claude-sonnet-4-6",
+          "augments: []",
+          "",
+        ].join("\n"),
+      });
+      const customDir = join(agentDir, "augments", "weather");
+      mkdirSync(customDir, { recursive: true });
+      writeFileSync(join(customDir, "index.ts"), "export default function weather() { return { name: 'weather' }; }\n");
+      writeFileSync(join(customDir, "SKILL.md"), "---\nname: weather\n---\n");
+
+      const result = installCustomAugment({
+        agentName: "zip",
+        sourcePath: customDir,
+        auggyDir,
+      });
+
+      expect(result.source).toBe("./augments/weather/index.ts");
+      expect(result.skillCopied).toBe(true);
+      expect(existsSync(join(agentDir, "skills", "weather", "SKILL.md"))).toBe(true);
+
+      const parsed = parseYaml(readFileSync(join(agentDir, "agent.yaml"), "utf-8")) as {
+        augments: Array<Record<string, unknown>>;
+      };
+      expect(parsed.augments[0]).toEqual({
+        name: "weather",
+        type: "custom",
+        source: "./augments/weather/index.ts",
+        options: {},
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("refuses duplicate custom augment names", () => {
+    const root = mkdtempSync(join(tmpdir(), "augment-install-"));
+    try {
+      const auggyDir = join(root, "auggy");
+      const agentDir = seedAgentForTest("zip", {
+        auggyDir,
+        yaml: [
+          "id: aug1_a3f7c2e1-8b4d-4f9e-a6c1-2d8e9f0b3a5c",
+          "name: zip",
+          "engine:",
+          "  provider: anthropic",
+          "  model: claude-sonnet-4-6",
+          "augments:",
+          "  - name: weather",
+          "    type: custom",
+          "    source: ./augments/weather/index.ts",
+          "",
+        ].join("\n"),
+      });
+      const customDir = join(agentDir, "augments", "weather");
+      mkdirSync(customDir, { recursive: true });
+      writeFileSync(join(customDir, "index.ts"), "export default function weather() { return { name: 'weather' }; }\n");
+
+      expect(() =>
+        installCustomAugment({ agentName: "zip", sourcePath: customDir, auggyDir }),
+      ).toThrow(/already declared/i);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

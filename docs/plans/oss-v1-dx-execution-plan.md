@@ -318,7 +318,7 @@ Acceptance:
 
 - A developer can generate the skeleton for a custom capability in one command.
 
-### 10. Add `auggy augment install <agent> <path>`
+### 10. Add `auggy augment install <agent> <path>` *(implemented 2026-05-28)*
 
 Behavior:
 
