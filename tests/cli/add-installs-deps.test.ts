@@ -142,6 +142,35 @@ describe("runAdd no-op cases", () => {
     expect(existsSync(join(dir, "skills", "web-fetch", "SKILL.md"))).toBe(true);
   });
 
+  test("project-local single arg is treated as augment when cwd has agent.yaml", async () => {
+    const dir = setupAgent("local-add");
+
+    await runAdd("web-fetch", {
+      cwd: dir,
+      auggyDir,
+      bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
+    });
+
+    const yaml = readFileSync(join(dir, "agent.yaml"), "utf-8");
+    expect(yaml).toContain("type: webFetch");
+    expect(yaml).toContain("name: fetch");
+    expect(existsSync(join(dir, "skills", "web-fetch", "SKILL.md"))).toBe(true);
+  });
+
+  test("project-local no args opens the picker for the cwd agent", async () => {
+    const dir = setupAgent("local-picker");
+    answers = { augmentTypes: ["bash"] };
+
+    await runAdd(undefined, {
+      cwd: dir,
+      auggyDir,
+      bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
+    });
+
+    const yaml = readFileSync(join(dir, "agent.yaml"), "utf-8");
+    expect(yaml).toContain("type: bash");
+  });
+
   test("non-interactive friendly alias works for memory", async () => {
     const dir = setupAgent("with-memory");
 

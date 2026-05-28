@@ -2,7 +2,7 @@ import { describe, expect, mock, test } from "bun:test";
 import { runCommand } from "../../../src/cli/commands/run";
 import type { DevOpts } from "../../../src/cli/commands/dev";
 
-type MockRunDev = (name: string, opts: DevOpts) => Promise<void>;
+type MockRunDev = (name: string | undefined, opts: DevOpts) => Promise<void>;
 
 describe("auggy run command", () => {
   test("registers the run subcommand with description", () => {
@@ -11,10 +11,10 @@ describe("auggy run command", () => {
     expect(cmd.description()).toContain("/console/chat");
   });
 
-  test("declares required name argument and config/open options", () => {
+  test("declares optional name argument and config/open options", () => {
     const cmd = runCommand();
     const help = cmd.helpInformation();
-    expect(help).toContain("<name>");
+    expect(help).toContain("[name]");
 
     const longs = cmd.options.map((o) => o.long);
     expect(longs).toContain("--config");
@@ -29,6 +29,16 @@ describe("auggy run command", () => {
 
     expect(runDev).toHaveBeenCalledTimes(1);
     expect(runDev).toHaveBeenCalledWith("zip", { config: undefined, open: true });
+  });
+
+  test("runs dev without a name for project-local agent dirs", async () => {
+    const runDev = mock<MockRunDev>(async () => {});
+    const cmd = runCommand({ runDev });
+
+    await cmd.parseAsync([], { from: "user" });
+
+    expect(runDev).toHaveBeenCalledTimes(1);
+    expect(runDev).toHaveBeenCalledWith(undefined, { config: undefined, open: true });
   });
 
   test("forwards --config and honors --no-open", async () => {

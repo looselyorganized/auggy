@@ -30,6 +30,7 @@ export interface DoctorCheck {
 export interface DoctorOptions {
   config?: string;
   auggyDir?: string;
+  cwd?: string;
   isPortAvailable?: (port: number) => Promise<boolean>;
 }
 
@@ -38,12 +39,12 @@ export interface DoctorCommandDeps {
   exit?: (code: number) => void;
 }
 
-export async function runDoctor(name: string, opts: DoctorOptions = {}): Promise<DoctorCheck[]> {
+export async function runDoctor(name: string | undefined, opts: DoctorOptions = {}): Promise<DoctorCheck[]> {
   const checks: DoctorCheck[] = [];
 
   let configPath: string;
   try {
-    configPath = resolveConfigPath(name, opts.config, { auggyDir: opts.auggyDir });
+    configPath = resolveConfigPath(name, opts.config, { auggyDir: opts.auggyDir, cwd: opts.cwd });
     checks.push({
       name: "config path",
       status: "pass",
@@ -54,7 +55,9 @@ export async function runDoctor(name: string, opts: DoctorOptions = {}): Promise
       name: "config path",
       status: "fail",
       message: (err as Error).message,
-      fix: `Run \`auggy create ${name}\` or pass \`--config <path>\`.`,
+      fix: name
+        ? `Run \`auggy create ${name}\` or pass \`--config <path>\`.`
+        : "Run from inside an agent project, pass an agent name, or pass `--config <path>`.",
     });
     return checks;
   }
@@ -299,7 +302,7 @@ export function doctorCommand(deps: DoctorCommandDeps = {}): Command {
 
   return new Command("doctor")
     .description("Check whether an agent is ready to run")
-    .argument("<name>", "agent name")
+    .argument("[name]", "agent name (defaults to ./agent.yaml)")
     .option("--config <path>", "path to agent.yaml")
     .action(async (name: string, opts: { config?: string }) => {
       try {

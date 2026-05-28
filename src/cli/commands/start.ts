@@ -28,8 +28,8 @@ function resolveCliEntryPoint(): string {
   return resolve(import.meta.dir, "../index.ts");
 }
 
-export async function runStart(name: string, opts: { config?: string }): Promise<void> {
-  const configPath = resolveConfigPath(name, opts.config);
+export async function runStart(name: string | undefined, opts: { config?: string; cwd?: string }): Promise<void> {
+  const configPath = resolveConfigPath(name, opts.config, { cwd: opts.cwd });
   const agentDir = dirname(configPath);
 
   // Validate config before installing.

@@ -131,6 +131,19 @@ describe("runDoctor", () => {
     expect(checks.some((c) => c.name === "port 18080" && c.status === "pass")).toBe(true);
   });
 
+  test("passes a ready project-local scaffold without an agent name", async () => {
+    const dir = writeAgent("zip", { installDeps: true, installSkill: true });
+
+    const checks = await runDoctor(undefined, {
+      auggyDir,
+      cwd: dir,
+      isPortAvailable: async () => true,
+    });
+
+    expect(hasDoctorFailures(checks)).toBe(false);
+    expect(checks.find((c) => c.name === "config path")?.message).toBe(join(dir, "agent.yaml"));
+  });
+
   test("fails when the agent cannot be resolved", async () => {
     const checks = await runDoctor("ghost", { auggyDir });
 
@@ -267,5 +280,18 @@ describe("doctor formatting and command", () => {
     expect(run).toHaveBeenCalledWith("zip", { config: undefined });
     expect(exit).toHaveBeenCalledWith(1);
     expect(logs.join("\n")).toContain("FAIL dep");
+  });
+
+  test("doctor command can omit name for project-local agent dirs", async () => {
+    const run = mock(async (): Promise<DoctorCheck[]> => [
+      { name: "agent.yaml", status: "pass", message: "parsed zip" },
+    ]);
+    const exit = mock((_code: number) => {});
+
+    const cmd = doctorCommand({ runDoctor: run, exit });
+    await cmd.parseAsync([], { from: "user" });
+
+    expect(run).toHaveBeenCalledWith(undefined, { config: undefined });
+    expect(exit).toHaveBeenCalledWith(0);
   });
 });

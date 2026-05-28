@@ -4,19 +4,19 @@
  *
  * Commands:
  *   auggy create <name>              Scaffold a new agent (interactive)
- *   auggy add <name>                 Add augments to an existing agent
+ *   auggy add [name] [augment]       Add augments to an existing agent
  *   auggy add-skill <augment>        Repair/reinstall a bundled skill
- *   auggy run <name> [--no-open]     Run agent in foreground; opens /console/chat by default
- *   auggy doctor <name>              Check whether an agent is ready to run
+ *   auggy run [name] [--no-open]     Run agent in foreground; opens /console/chat by default
+ *   auggy doctor [name]              Check whether an agent is ready to run
  *   auggy augment create <slug>      Scaffold a local custom augment
- *   auggy dev <name> [--open]        Run agent in foreground; --open pops /console in browser
- *   auggy start <name> [--config]    Install as launchd service (always-on)
+ *   auggy dev [name] [--open]        Run agent in foreground; --open pops /console in browser
+ *   auggy start [name] [--config]    Install as launchd service (always-on)
  *   auggy stop <name>                Stop a running agent
  *   auggy restart <name>             Stop + start
  *   auggy status [name]              Show running agents
  *   auggy list                       List registered agents
  *   auggy remove <name> [--yes] [--cloud]  Delete an agent (dir + index, optionally Railway service)
- *   auggy deploy <name>             Deploy an agent to Railway
+ *   auggy deploy [name]             Deploy an agent to Railway
  *   auggy logs <name>               Show Railway logs for a deployed agent
  *   auggy chat                       Launch local GUI
  *   auggy eval [name]                Run portable security eval suite
@@ -61,19 +61,24 @@ export function buildCli(): Command {
     });
 
   program
-    .command("add <name> [augment]")
+    .command("add [target] [augment]")
     .description("Add augments to an existing agent")
     .option("--config <path>", "path to agent.yaml")
     .option("--skip-install", "mutate package.json but don't run bun install")
     .action(
-      async (name: string, augment: string | undefined, opts: { config?: string; skipInstall?: boolean }) => {
-      try {
-        await runAdd(name, { ...opts, augment });
-      } catch (err) {
-        console.error(`Error: ${(err as Error).message}`);
-        process.exit(1);
-      }
-    });
+      async (
+        target: string | undefined,
+        augment: string | undefined,
+        opts: { config?: string; skipInstall?: boolean },
+      ) => {
+        try {
+          await runAdd(target, { ...opts, augment });
+        } catch (err) {
+          console.error(`Error: ${(err as Error).message}`);
+          process.exit(1);
+        }
+      },
+    );
 
   program.addCommand(addSkillCommand());
   program.addCommand(runCommand());
@@ -81,13 +86,13 @@ export function buildCli(): Command {
   program.addCommand(augmentCommand());
 
   program
-    .command("dev <name>")
+    .command("dev [name]")
     .description("Run an agent in the foreground (Ctrl-C to stop)")
     .option("--config <path>", "path to agent.yaml")
     .option("--open", "auto-launch the operator's browser to /console/chat once the agent is up")
     .option("--internal-mode <mode>", "(internal) process mode for PID manifest")
     .action(
-      async (name: string, opts: { config?: string; open?: boolean; internalMode?: string }) => {
+      async (name: string | undefined, opts: { config?: string; open?: boolean; internalMode?: string }) => {
         try {
           await runDev(name, opts);
         } catch (err) {
@@ -98,10 +103,10 @@ export function buildCli(): Command {
     );
 
   program
-    .command("start <name>")
+    .command("start [name]")
     .description("Install agent as a launchd service (always-on)")
     .option("--config <path>", "path to agent.yaml")
-    .action(async (name: string, opts: { config?: string }) => {
+    .action(async (name: string | undefined, opts: { config?: string }) => {
       try {
         await runStart(name, opts);
       } catch (err) {
@@ -209,13 +214,13 @@ export function buildCli(): Command {
     });
 
   program
-    .command("deploy <name>")
+    .command("deploy [name]")
     .description("Deploy an agent to the cloud (--to railway)")
     .option("--to <provider>", "deploy target (only `railway` supported in v1.0)", "railway")
     .option("--project <project-id>", "deploy into an existing Railway project")
     .option("--service <name-or-id>", "deploy into an existing Railway service")
     .option("--yes", "skip the secrets-push confirmation prompt")
-    .action(async (name: string, opts: { to: string; project?: string; service?: string; yes?: boolean }) => {
+    .action(async (name: string | undefined, opts: { to: string; project?: string; service?: string; yes?: boolean }) => {
       try {
         const { runDeploy } = await import("./commands/deploy");
         const { createRailwayCli } = await import("./deploy/railway-cli");
@@ -232,7 +237,7 @@ export function buildCli(): Command {
             select({
               message: "Railway target:",
               choices: [
-                { name: `Create a new Railway project for ${name}`, value: "new" as const },
+                { name: `Create a new Railway project for ${name ?? "this agent"}`, value: "new" as const },
                 { name: "Use an existing Railway project", value: "existing" as const },
               ],
             }),

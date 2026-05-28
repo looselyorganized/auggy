@@ -7,8 +7,9 @@
  *   3. Look up <name> in the filesystem (canonical: <auggyDir>/agents/<name>/)
  */
 
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { parse as parseYaml } from "yaml";
 import { getAgent } from "./agent-index";
 
 interface ResolveOptions {
@@ -23,7 +24,7 @@ interface ResolveOptions {
  * directory.
  */
 export function resolveConfigPath(
-  name: string,
+  name: string | undefined,
   configFlag?: string,
   opts: ResolveOptions = {},
 ): string {
@@ -40,6 +41,13 @@ export function resolveConfigPath(
     return localConfig;
   }
 
+  if (!name) {
+    throw new Error(
+      `No agent specified and no agent.yaml found in ${opts.cwd ?? process.cwd()}.\n\n` +
+        `  Run from inside an agent project, or pass an agent name.`,
+    );
+  }
+
   const entry = getAgent(name, opts);
   if (!entry) {
     throw new Error(
@@ -50,4 +58,12 @@ export function resolveConfigPath(
   }
 
   return join(entry.localDir, "agent.yaml");
+}
+
+export function readAgentName(configPath: string): string {
+  const raw = parseYaml(readFileSync(configPath, "utf-8")) as { name?: unknown } | null;
+  if (typeof raw?.name === "string" && raw.name.trim().length > 0) {
+    return raw.name.trim();
+  }
+  throw new Error(`agent.yaml at ${configPath} is missing a non-empty name.`);
 }

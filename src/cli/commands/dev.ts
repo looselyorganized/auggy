@@ -49,6 +49,8 @@ export interface DevReadyInfo {
 
 export interface DevOpts {
   config?: string;
+  /** Test seam: override process.cwd() for project-local resolution. */
+  cwd?: string;
   internalMode?: string;
   /**
    * When true, auto-launch the operator's default browser to `/console`
@@ -62,15 +64,15 @@ export interface DevOpts {
   onReady?: (info: DevReadyInfo) => void;
 }
 
-export async function runDev(name: string, opts: DevOpts): Promise<void> {
-  const configPath = resolveConfigPath(name, opts.config);
+export async function runDev(name: string | undefined, opts: DevOpts): Promise<void> {
+  const configPath = resolveConfigPath(name, opts.config, { cwd: opts.cwd });
   const agentDir = dirname(configPath);
   const mode = opts.internalMode === "launchd" ? ("launchd" as const) : ("dev" as const);
 
   // Parse and validate config.
   const config = parseConfig(configPath);
 
-  if (config.name !== name) {
+  if (name && config.name !== name) {
     console.warn(
       `Warning: agent name in config ("${config.name}") differs from CLI argument ("${name}"). Using "${config.name}".`,
     );

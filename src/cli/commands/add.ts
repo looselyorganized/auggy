@@ -22,7 +22,7 @@ import {
   type CatalogEntry,
 } from "../augment-catalog";
 import { copyBundledSkill } from "../scaffold-skills";
-import { resolveConfigPath } from "../resolve-config";
+import { readAgentName, resolveConfigPath } from "../resolve-config";
 import { mergePackageDeps } from "../scaffold-package-json";
 import { runBunInstall, type BunInstallSpawnFactory } from "../bun-install";
 import { parseEnvFile, serializeEnv, type EnvLine } from "../env-parse";
@@ -41,10 +41,20 @@ export interface AddOpts {
   bunInstallSpawn?: BunInstallSpawnFactory;
   /** Test seam: override `~/.auggy/` for index reads. */
   auggyDir?: string;
+  /** Test seam: override process.cwd() for project-local resolution. */
+  cwd?: string;
 }
 
-export async function runAdd(name: string, opts: AddOpts): Promise<void> {
-  const configPath = resolveConfigPath(name, opts.config, { auggyDir: opts.auggyDir });
+export async function runAdd(target: string | undefined, opts: AddOpts): Promise<void> {
+  const localConfig = join(opts.cwd ?? process.cwd(), "agent.yaml");
+  const useProjectLocalArg =
+    !opts.config && !opts.augment && !!target && existsSync(localConfig);
+  const configPath = resolveConfigPath(useProjectLocalArg ? undefined : target, opts.config, {
+    auggyDir: opts.auggyDir,
+    cwd: opts.cwd,
+  });
+  const name = target && !useProjectLocalArg ? target : readAgentName(configPath);
+  const selectedAugment = useProjectLocalArg ? target : opts.augment;
   const agentDir = dirname(configPath);
 
   // Parse current config.
@@ -61,13 +71,15 @@ export async function runAdd(name: string, opts: AddOpts): Promise<void> {
     return;
   }
 
-  const selected = opts.augment ? resolveNonInteractiveSelection(opts.augment, available) : await checkbox<CatalogEntry>({
-    message: "Select augments to add:",
-    choices: available.map((entry) => ({
-      name: `${entry.label} — ${entry.description}`,
-      value: entry,
-    })),
-  });
+  const selected = selectedAugment
+    ? resolveNonInteractiveSelection(selectedAugment, available)
+    : await checkbox<CatalogEntry>({
+        message: "Select augments to add:",
+        choices: available.map((entry) => ({
+          name: `${entry.label} — ${entry.description}`,
+          value: entry,
+        })),
+      });
 
   if (selected.length === 0) {
     console.log("No augments selected.");

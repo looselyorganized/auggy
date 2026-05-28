@@ -46,6 +46,16 @@ describe("resolveConfigPath", () => {
     );
   });
 
+  test("project-local agent.yaml can resolve without an agent name", () => {
+    const projectDir = mkdtempSync(join(agentParent, "project-"));
+    const projectConfig = join(projectDir, "agent.yaml");
+    writeFileSync(projectConfig, "id: aug1_project\nname: project\n");
+
+    expect(resolveConfigPath(undefined, undefined, { auggyDir, cwd: projectDir })).toBe(
+      projectConfig,
+    );
+  });
+
   test("agent dir exists but agent.yaml missing surfaces a clear error", () => {
     const dir = seedAgentForTest("zip", { auggyDir });
     unlinkSync(join(dir, "agent.yaml"));
@@ -57,6 +67,12 @@ describe("resolveConfigPath", () => {
   test("missing agent name throws clear error", () => {
     expect(() => resolveConfigPath("ghost", undefined, { auggyDir })).toThrow(
       /not found|auggy create/i,
+    );
+  });
+
+  test("missing unnamed project throws clear error", () => {
+    expect(() => resolveConfigPath(undefined, undefined, { auggyDir, cwd: agentParent })).toThrow(
+      /No agent specified/,
     );
   });
 });

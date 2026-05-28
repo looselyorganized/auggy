@@ -10,7 +10,7 @@ import { Command } from "commander";
 import { runDev, type DevOpts } from "./dev";
 
 export interface RunCommandDeps {
-  runDev?: (name: string, opts: DevOpts) => Promise<void>;
+  runDev?: (name: string | undefined, opts: DevOpts) => Promise<void>;
   exit?: (code: number) => void;
 }
 
@@ -20,7 +20,7 @@ export function runCommand(deps: RunCommandDeps = {}): Command {
 
   return new Command("run")
     .description("Run an agent locally and open /console/chat")
-    .argument("<name>", "agent name")
+    .argument("[name]", "agent name (defaults to ./agent.yaml)")
     .option("--config <path>", "path to agent.yaml")
     .option("--no-open", "don't launch a browser after boot")
     .action(async (name: string, opts: { config?: string; open: boolean }) => {

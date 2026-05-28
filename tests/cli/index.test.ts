@@ -35,7 +35,7 @@ describe("auggy CLI command table", () => {
 
   test("includes run in top-level help", () => {
     const help = buildCli().helpInformation();
-    expect(help).toContain("run [options] <name>");
+    expect(help).toContain("run [options] [name]");
     expect(help).toContain("Run an agent locally and open /console/chat");
   });
 

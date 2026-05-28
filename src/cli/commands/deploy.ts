@@ -26,7 +26,7 @@ import { writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { getAgentFromDir, setCloudForDir } from "../agent-index";
 import { formatDoctorChecks, hasDoctorFailures, runDoctor } from "./doctor";
-import { resolveConfigPath } from "../resolve-config";
+import { readAgentName, resolveConfigPath } from "../resolve-config";
 import { stageBundle } from "../deploy/bundle";
 import { generateDockerfile, generateEntrypoint } from "../deploy/dockerfile";
 import { waitForHealth, type HealthCheckOptions, type HealthCheckResult } from "../deploy/health";
@@ -75,7 +75,7 @@ export interface DeployResult {
 
 const VOLUME_MOUNT_PATH = "/app/data";
 
-export async function runDeploy(name: string, opts: DeployOptions): Promise<DeployResult> {
+export async function runDeploy(nameArg: string | undefined, opts: DeployOptions): Promise<DeployResult> {
   if (opts.to !== "railway") {
     throw new Error(
       `Only "railway" is supported in v1.0 (got "${opts.to}"). Other targets: deferred.`,
@@ -84,12 +84,14 @@ export async function runDeploy(name: string, opts: DeployOptions): Promise<Depl
 
   let configPath: string;
   try {
-    configPath = resolveConfigPath(name, undefined, { auggyDir: opts.auggyDir, cwd: opts.cwd });
+    configPath = resolveConfigPath(nameArg, undefined, { auggyDir: opts.auggyDir, cwd: opts.cwd });
   } catch {
+    const nameForMessage = nameArg ?? "<name>";
     throw new Error(
-      `Agent "${name}" not registered. Run \`auggy create ${name}\` first, then \`auggy deploy ${name}\`.`,
+      `Agent "${nameForMessage}" not registered. Run \`auggy create ${nameForMessage}\` first, then \`auggy deploy ${nameForMessage}\`.`,
     );
   }
+  const name = readAgentName(configPath);
   const agentDir = dirname(configPath);
   const entry = getAgentFromDir(agentDir);
   if (!entry) {
