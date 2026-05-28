@@ -237,7 +237,17 @@ export function createRailwayCli(opts: CreateRailwayCliOptions = {}): RailwayCli
     },
 
     async setVariable({ key, value, cwd }) {
-      await runOrThrow(["variables", "--set", `${key}=${value}`], { cwd }, { retryTransient: true });
+      try {
+        await runOrThrow(["variable", "set", `${key}=${value}`, "--skip-deploys"], { cwd }, {
+          retryTransient: true,
+        });
+      } catch (err) {
+        if (!isTransientRailwayFailure("", String((err as Error).message))) throw err;
+        const { stdout } = await runOrThrow(["variable", "list", "--json"], { cwd }, {
+          retryTransient: true,
+        });
+        if (!variableListHasKey(stdout, key)) throw err;
+      }
     },
 
     async up({ cwd }) {
@@ -326,6 +336,29 @@ function isAlreadyExistsFailure(stdout: string, stderr: string): boolean {
     "already mounted",
     "maximum of 1 railway provided domain",
   ].some((marker) => text.includes(marker));
+}
+
+function variableListHasKey(stdout: string, key: string): boolean {
+  try {
+    return jsonHasVariableKey(JSON.parse(stdout) as unknown, key);
+  } catch {
+    return stdout
+      .split(/\r?\n/)
+      .some((line) => line.trim() === key || line.trim().startsWith(`${key}=`));
+  }
+}
+
+function jsonHasVariableKey(value: unknown, key: string): boolean {
+  if (typeof value === "string") return value === key || value.startsWith(`${key}=`);
+  if (Array.isArray(value)) return value.some((item) => jsonHasVariableKey(item, key));
+  if (!value || typeof value !== "object") return false;
+
+  const record = value as Record<string, unknown>;
+  if (Object.prototype.hasOwnProperty.call(record, key)) return true;
+  for (const field of ["key", "name", "variable"]) {
+    if (record[field] === key) return true;
+  }
+  return Object.values(record).some((item) => jsonHasVariableKey(item, key));
 }
 
 function extractDomainUrl(stdout: string): string | null {

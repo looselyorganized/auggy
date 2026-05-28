@@ -131,11 +131,94 @@ describe("railway-cli", () => {
     expect(calls[1]!.cmd).toEqual(["railway", "service", "link", "zip"]);
   });
 
-  test("setVariable runs `railway variables --set KEY=value`", async () => {
+  test("setVariable runs `railway variable set KEY=value --skip-deploys`", async () => {
     const { factory, calls } = mockSpawn(() => ({ stdout: "", stderr: "", exitCode: 0 }));
     const cli = createRailwayCli({ spawn: factory });
     await cli.setVariable({ key: "ANTHROPIC_API_KEY", value: "sk-secret", cwd: "/tmp/staging" });
-    expect(calls[0]!.cmd).toEqual(["railway", "variables", "--set", "ANTHROPIC_API_KEY=sk-secret"]);
+    expect(calls[0]!.cmd).toEqual([
+      "railway",
+      "variable",
+      "set",
+      "ANTHROPIC_API_KEY=sk-secret",
+      "--skip-deploys",
+    ]);
+  });
+
+  test("setVariable retries transient Railway API timeouts", async () => {
+    let attempts = 0;
+    const { factory, calls } = mockSpawn(() => {
+      attempts++;
+      if (attempts < 3) {
+        return {
+          stdout: "",
+          stderr:
+            "Failed to fetch: error sending request for url (https://backboard.railway.com/graphql/v2)\n\nCaused by:\n    operation timed out\n",
+          exitCode: 1,
+        };
+      }
+      return { stdout: "", stderr: "", exitCode: 0 };
+    });
+    const cli = createRailwayCli({
+      spawn: factory,
+      retryDelayMs: 1,
+      sleep: async () => {},
+    });
+    await cli.setVariable({ key: "AUGGY_WEB_TOKEN", value: "tok-1", cwd: "/tmp/staging" });
+    expect(calls).toHaveLength(3);
+    expect(calls.every((call) => call.cmd[1] === "variable" && call.cmd[2] === "set")).toBe(true);
+  });
+
+  test("setVariable verifies key presence after a persistent transient timeout", async () => {
+    const { factory, calls } = mockSpawn((args) => {
+      if (args[0] === "variable" && args[1] === "list") {
+        return {
+          stdout: JSON.stringify([{ name: "AUGGY_WEB_TOKEN" }]),
+          stderr: "",
+          exitCode: 0,
+        };
+      }
+      return {
+        stdout: "",
+        stderr:
+          "Failed to fetch: error sending request for url (https://backboard.railway.com/graphql/v2)\n\nCaused by:\n    operation timed out\n",
+        exitCode: 1,
+      };
+    });
+    const cli = createRailwayCli({
+      spawn: factory,
+      retryDelayMs: 1,
+      sleep: async () => {},
+    });
+    await cli.setVariable({ key: "AUGGY_WEB_TOKEN", value: "tok-1", cwd: "/tmp/staging" });
+    expect(calls.map((call) => call.cmd)).toEqual([
+      ["railway", "variable", "set", "AUGGY_WEB_TOKEN=tok-1", "--skip-deploys"],
+      ["railway", "variable", "set", "AUGGY_WEB_TOKEN=tok-1", "--skip-deploys"],
+      ["railway", "variable", "set", "AUGGY_WEB_TOKEN=tok-1", "--skip-deploys"],
+      ["railway", "variable", "list", "--json"],
+    ]);
+  });
+
+  test("setVariable throws after transient timeout when verification cannot find the key", async () => {
+    const { factory, calls } = mockSpawn((args) => {
+      if (args[0] === "variable" && args[1] === "list") {
+        return { stdout: JSON.stringify([{ name: "OTHER_KEY" }]), stderr: "", exitCode: 0 };
+      }
+      return {
+        stdout: "",
+        stderr:
+          "Failed to fetch: error sending request for url (https://backboard.railway.com/graphql/v2)\n\nCaused by:\n    operation timed out\n",
+        exitCode: 1,
+      };
+    });
+    const cli = createRailwayCli({
+      spawn: factory,
+      retryDelayMs: 1,
+      sleep: async () => {},
+    });
+    await expect(
+      cli.setVariable({ key: "AUGGY_WEB_TOKEN", value: "tok-1", cwd: "/tmp/staging" }),
+    ).rejects.toThrow(/operation timed out/);
+    expect(calls).toHaveLength(4);
   });
 
   test("up runs `railway up --detach`", async () => {
