@@ -39,6 +39,7 @@ function writeAgent(
     includePackageJson?: boolean;
     installDeps?: boolean;
     installSkill?: boolean;
+    providerKey?: string;
   } = {},
 ): string {
   const provider = opts.provider ?? "anthropic";
@@ -46,7 +47,17 @@ function writeAgent(
   mkdirSync(dir, { recursive: true });
 
   const envToken = opts.token ?? "tok-test";
-  writeFileSync(join(dir, ".env"), `AUGGY_WEB_TOKEN=${envToken}\n`);
+  const providerKey = opts.providerKey ?? "sk-test";
+  const providerEnvVar =
+    provider === "openai"
+      ? "OPENAI_API_KEY"
+      : provider === "anthropic"
+        ? "ANTHROPIC_API_KEY"
+        : "OPENROUTER_API_KEY";
+  writeFileSync(
+    join(dir, ".env"),
+    `AUGGY_WEB_TOKEN=${envToken}\n${providerEnvVar}=${providerKey}\n`,
+  );
 
   const config = {
     id: "aug1_a3f7c2e1-8b4d-4f9e-a6c1-2d8e9f0b3a5c",
@@ -140,6 +151,33 @@ describe("runDoctor", () => {
     expect(config?.status).toBe("fail");
     expect(config?.message).toContain("AUGGY_WEB_TOKEN");
     expect(config?.message).toContain(".env");
+  });
+
+  test("fails when provider api key is blank in .env", async () => {
+    writeAgent("zip", { installDeps: true, installSkill: true, providerKey: "" });
+
+    const checks = await runDoctor("zip", {
+      auggyDir,
+      isPortAvailable: async () => true,
+    });
+
+    const providerEnv = checks.find((c) => c.name === "env ANTHROPIC_API_KEY");
+    expect(providerEnv?.status).toBe("fail");
+    expect(providerEnv?.message).toContain(".env");
+    expect(providerEnv?.fix).toContain("ANTHROPIC_API_KEY");
+  });
+
+  test("passes provider api key check when set", async () => {
+    writeAgent("zip", { installDeps: true, installSkill: true, providerKey: "sk-ant-test" });
+
+    const checks = await runDoctor("zip", {
+      auggyDir,
+      isPortAvailable: async () => true,
+    });
+
+    const providerEnv = checks.find((c) => c.name === "env ANTHROPIC_API_KEY");
+    expect(providerEnv?.status).toBe("pass");
+    expect(hasDoctorFailures(checks)).toBe(false);
   });
 
   test("fails when package.json is missing", async () => {

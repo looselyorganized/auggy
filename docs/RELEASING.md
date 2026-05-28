@@ -77,6 +77,24 @@ Manual checks:
 - [ ] Sending a message returns a model response
 - [ ] Missing-provider-key failure, if reproduced, names the exact `.env` path and key
 
+Package artifact checks:
+
+```bash
+(cd admin && bun run build)
+npm pack --dry-run
+npm pack
+tar -tf auggy-*.tgz | grep 'admin/dist/index.html'
+if tar -tf auggy-*.tgz | grep '\.map$'; then
+  echo "unexpected source map in package"
+  exit 1
+fi
+```
+
+- [ ] Tarball includes `admin/dist/index.html`
+- [ ] Tarball includes built console JS/CSS
+- [ ] Tarball does not include `admin/dist/*.map`
+- [ ] Package size is reasonable for CLI install
+
 Augment checks:
 
 ```bash

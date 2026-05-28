@@ -6,7 +6,7 @@
  * install, web port availability, and bundled skills.
  */
 
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { createServer } from "node:net";
 import { Command } from "commander";
@@ -15,6 +15,7 @@ import { resolveConfigPath } from "../resolve-config";
 import { PROVIDER_TO_PACKAGE } from "../scaffold-package-json";
 import { AUGMENT_CATALOG } from "../augment-catalog";
 import { augmentFolderForType } from "../scaffold-skills";
+import { parseEnvFile } from "../env-parse";
 import type { AugmentConfig, ParsedConfig } from "../types";
 
 export type DoctorStatus = "pass" | "warn" | "fail";
@@ -78,6 +79,7 @@ export async function runDoctor(name: string, opts: DoctorOptions = {}): Promise
   }
 
   checks.push(checkPackageManifest(agentDir));
+  checks.push(...checkProviderEnv(agentDir, config));
   checks.push(...checkAgentDependencies(agentDir, config));
   checks.push(...(await checkWebPorts(config, opts.isPortAvailable ?? isPortAvailable)));
   checks.push(...checkBundledSkills(agentDir, config.augments));
@@ -101,6 +103,64 @@ function checkPackageManifest(agentDir: string): DoctorCheck {
     message: `missing ${packagePath}`,
     fix: "Re-run create for this agent, or add package.json with auggy + the selected engine adapter, then run bun install.",
   };
+}
+
+const PROVIDER_ENV_VARS: Partial<Record<ParsedConfig["engine"]["provider"], string>> = {
+  anthropic: "ANTHROPIC_API_KEY",
+  openai: "OPENAI_API_KEY",
+  openrouter: "OPENROUTER_API_KEY",
+};
+
+function checkProviderEnv(agentDir: string, config: ParsedConfig): DoctorCheck[] {
+  const envVar = PROVIDER_ENV_VARS[config.engine.provider];
+  if (!envVar) return [];
+
+  const envPath = join(agentDir, ".env");
+  if (!existsSync(envPath)) {
+    return [
+      {
+        name: `env ${envVar}`,
+        status: "fail",
+        message: `missing ${envPath}`,
+        fix: `Create ${envPath} and set ${envVar}.`,
+      },
+    ];
+  }
+
+  let value: string | undefined;
+  try {
+    for (const line of parseEnvFile(readFileSync(envPath, "utf-8"))) {
+      if (line.kind === "kv" && line.key === envVar) value = line.value;
+    }
+  } catch (err) {
+    return [
+      {
+        name: `env ${envVar}`,
+        status: "fail",
+        message: `could not read ${envPath}: ${(err as Error).message}`,
+        fix: `Make ${envPath} readable and set ${envVar}.`,
+      },
+    ];
+  }
+
+  if (!value?.trim()) {
+    return [
+      {
+        name: `env ${envVar}`,
+        status: "fail",
+        message: `missing value in ${envPath}`,
+        fix: `Set ${envVar}=<your ${config.engine.provider} key> in ${envPath}.`,
+      },
+    ];
+  }
+
+  return [
+    {
+      name: `env ${envVar}`,
+      status: "pass",
+      message: envPath,
+    },
+  ];
 }
 
 function checkAgentDependencies(agentDir: string, config: ParsedConfig): DoctorCheck[] {
