@@ -282,7 +282,7 @@ Acceptance:
 
 ## Phase 4: Custom Augments
 
-### 9. Add `auggy augment create <slug>`
+### 9. Add `auggy augment create <slug>` *(implemented 2026-05-28)*
 
 Behavior:
 
