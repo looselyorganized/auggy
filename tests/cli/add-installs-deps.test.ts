@@ -122,6 +122,64 @@ describe("runAdd mutates per-agent package.json", () => {
 });
 
 describe("runAdd no-op cases", () => {
+  test("non-interactive augment argument mutates yaml without invoking picker", async () => {
+    const dir = setupAgent("with-fetch");
+
+    await runAdd("with-fetch", {
+      config: join(dir, "agent.yaml"),
+      auggyDir,
+      augment: "web-fetch",
+      bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
+    });
+
+    const yaml = readFileSync(join(dir, "agent.yaml"), "utf-8");
+    expect(yaml).toContain("type: webFetch");
+    expect(yaml).toContain("name: fetch");
+    expect(existsSync(join(dir, "skills", "web-fetch", "SKILL.md"))).toBe(true);
+  });
+
+  test("non-interactive friendly alias works for memory", async () => {
+    const dir = setupAgent("with-memory");
+
+    await runAdd("with-memory", {
+      config: join(dir, "agent.yaml"),
+      auggyDir,
+      augment: "memory",
+      bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
+    });
+
+    const yaml = readFileSync(join(dir, "agent.yaml"), "utf-8");
+    expect(yaml).toContain("type: layeredMemory");
+  });
+
+  test("non-interactive unknown augment throws with valid choices", async () => {
+    const dir = setupAgent("bad-augment");
+
+    await expect(
+      runAdd("bad-augment", {
+        config: join(dir, "agent.yaml"),
+        auggyDir,
+        augment: "not-real",
+        bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
+      }),
+    ).rejects.toThrow(/Unknown augment "not-real".*web-fetch/s);
+  });
+
+  test("non-interactive already-installed augment makes no changes", async () => {
+    const dir = setupAgent("already-fetch", [{ name: "fetch", type: "webFetch" }]);
+    const before = readFileSync(join(dir, "agent.yaml"), "utf-8");
+
+    await runAdd("already-fetch", {
+      config: join(dir, "agent.yaml"),
+      auggyDir,
+      augment: "web-fetch",
+      bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
+    });
+
+    expect(readFileSync(join(dir, "agent.yaml"), "utf-8")).toBe(before);
+    expect(bunInstallCalls).toHaveLength(0);
+  });
+
   test("adding augments with no packageDeps does NOT run bun install", async () => {
     const dir = setupAgent("with-bash");
     answers = { augmentTypes: ["bash"] }; // bash has no packageDeps

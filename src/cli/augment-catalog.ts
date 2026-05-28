@@ -379,6 +379,59 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
   },
 ];
 
+const AUGMENT_ALIASES: Record<string, string> = {
+  "agent-mail": "agentMail",
+  agentmail: "agentMail",
+  auth: "visitorAuth",
+  fetch: "webFetch",
+  files: "filesystem",
+  link: "link",
+  memory: "layeredMemory",
+  notify: "notify",
+  shell: "bash",
+  telegram: "telegramTransport",
+  "turn-control": "turnControl",
+  "visitor-auth": "visitorAuth",
+  web: "webTransport",
+  "web-fetch": "webFetch",
+  "web-transport": "webTransport",
+};
+
+/**
+ * Resolve a user-facing augment specifier to a catalog entry. Accepts YAML
+ * type names (`webFetch`), default instance names (`turn-control`), labels
+ * (`layeredMemory`), and friendly aliases (`memory`, `telegram`).
+ */
+export function resolveCatalogEntry(specifier: string): CatalogEntry | null {
+  const normalized = specifier.trim();
+  if (!normalized) return null;
+
+  const aliasTarget = AUGMENT_ALIASES[normalized] ?? AUGMENT_ALIASES[normalized.toLowerCase()];
+  const target = aliasTarget ?? normalized;
+  const lower = target.toLowerCase();
+
+  return (
+    AUGMENT_CATALOG.find(
+      (entry) =>
+        entry.type === target ||
+        entry.defaultName === target ||
+        entry.label.toLowerCase() === lower ||
+        entry.type.toLowerCase() === lower ||
+        entry.defaultName.toLowerCase() === lower,
+    ) ?? null
+  );
+}
+
+export function validAugmentSpecifiers(): string[] {
+  const names = new Set<string>();
+  for (const entry of AUGMENT_CATALOG) {
+    names.add(entry.type);
+    names.add(entry.defaultName);
+  }
+  for (const alias of Object.keys(AUGMENT_ALIASES)) names.add(alias);
+  return [...names].sort();
+}
+
 /** Get catalog entries that are not yet installed (by type + defaultName). */
 export function getAvailableAugments(
   installed: Array<{ type: string; name: string }>,

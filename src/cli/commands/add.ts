@@ -14,7 +14,12 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { checkbox } from "@inquirer/prompts";
-import { getAvailableAugments, type CatalogEntry } from "../augment-catalog";
+import {
+  getAvailableAugments,
+  resolveCatalogEntry,
+  validAugmentSpecifiers,
+  type CatalogEntry,
+} from "../augment-catalog";
 import { copyBundledSkill } from "../scaffold-skills";
 import { resolveConfigPath } from "../resolve-config";
 import { mergePackageDeps } from "../scaffold-package-json";
@@ -23,6 +28,8 @@ import { runBunInstall, type BunInstallSpawnFactory } from "../bun-install";
 export interface AddOpts {
   /** Path override for agent.yaml. */
   config?: string;
+  /** Optional non-interactive augment specifier (type, default name, or alias). */
+  augment?: string;
   /**
    * Skip the post-mutation `bun install` step. The agent's `package.json` is
    * still updated; the operator can run `bun install` later.
@@ -52,8 +59,7 @@ export async function runAdd(name: string, opts: AddOpts): Promise<void> {
     return;
   }
 
-  // Interactive selection.
-  const selected = await checkbox<CatalogEntry>({
+  const selected = opts.augment ? resolveNonInteractiveSelection(opts.augment, available) : await checkbox<CatalogEntry>({
     message: "Select augments to add:",
     choices: available.map((entry) => ({
       name: `${entry.label} — ${entry.description}`,
@@ -180,6 +186,25 @@ export async function runAdd(name: string, opts: AddOpts): Promise<void> {
   } else if (installOk) {
     console.log(`Restart to apply: auggy restart ${name}`);
   }
+}
+
+function resolveNonInteractiveSelection(specifier: string, available: CatalogEntry[]): CatalogEntry[] {
+  const entry = resolveCatalogEntry(specifier);
+  if (!entry) {
+    throw new Error(
+      `Unknown augment "${specifier}". Valid augment names: ${validAugmentSpecifiers().join(", ")}`,
+    );
+  }
+
+  const isAvailable = available.some(
+    (candidate) => candidate.type === entry.type && candidate.defaultName === entry.defaultName,
+  );
+  if (!isAvailable) {
+    console.log(`Augment "${entry.defaultName}" (${entry.type}) is already installed.`);
+    return [];
+  }
+
+  return [entry];
 }
 
 /**

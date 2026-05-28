@@ -1,5 +1,9 @@
 import { describe, it, expect } from "bun:test";
-import { AUGMENT_CATALOG } from "../../src/cli/augment-catalog";
+import {
+  AUGMENT_CATALOG,
+  resolveCatalogEntry,
+  validAugmentSpecifiers,
+} from "../../src/cli/augment-catalog";
 
 describe("augment catalog", () => {
   it("turnControl is registered in the catalog", () => {
@@ -29,5 +33,24 @@ describe("augment catalog", () => {
       expect.arrayContaining(["AUGGY_PUBLIC_URL", "VISITOR_SIGNING_KEY", "AUGGY_AGENT_ID"]),
     );
     expect(entry!.hasSkill).toBe(true);
+  });
+
+  it("resolves friendly augment aliases", () => {
+    expect(resolveCatalogEntry("web-fetch")?.type).toBe("webFetch");
+    expect(resolveCatalogEntry("visitor-auth")?.type).toBe("visitorAuth");
+    expect(resolveCatalogEntry("telegram")?.type).toBe("telegramTransport");
+    expect(resolveCatalogEntry("memory")?.type).toBe("layeredMemory");
+    expect(resolveCatalogEntry("agent-mail")?.type).toBe("agentMail");
+  });
+
+  it("resolves canonical type names and default instance names", () => {
+    expect(resolveCatalogEntry("webFetch")?.defaultName).toBe("fetch");
+    expect(resolveCatalogEntry("turn-control")?.type).toBe("turnControl");
+  });
+
+  it("returns null for unknown augment specifiers and includes aliases in valid specifiers", () => {
+    expect(resolveCatalogEntry("not-real")).toBeNull();
+    expect(validAugmentSpecifiers()).toContain("web-fetch");
+    expect(validAugmentSpecifiers()).toContain("webFetch");
   });
 });

@@ -200,7 +200,7 @@ Acceptance:
 
 ## Phase 3: Augment Install UX
 
-### 6. Support `auggy add <agent> <augment>`
+### 6. Support `auggy add <agent> <augment>` *(implemented 2026-05-28)*
 
 Behavior:
 
@@ -230,7 +230,7 @@ Acceptance:
 
 - Common augment adds do not require a checkbox wizard.
 
-### 7. Add Human-Friendly Augment Aliases
+### 7. Add Human-Friendly Augment Aliases *(implemented 2026-05-28)*
 
 Behavior:
 

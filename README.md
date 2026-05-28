@@ -93,7 +93,7 @@ augments:
 | Command | What it does |
 |---------|-------------|
 | `auggy create <name>` | Scaffold agent directory (interactive augment selection) |
-| `auggy add <name>` | Add augments to an existing agent |
+| `auggy add <name> [augment]` | Add augments to an existing agent |
 | `auggy run <name>` | Run locally and open `/console/chat` |
 | `auggy doctor <name>` | Check whether an agent is ready to run |
 | `auggy dev <name>` | Run in foreground (Ctrl-C stops) |

@@ -56,13 +56,14 @@ export function buildCli(): Command {
     });
 
   program
-    .command("add <name>")
+    .command("add <name> [augment]")
     .description("Add augments to an existing agent")
     .option("--config <path>", "path to agent.yaml")
     .option("--skip-install", "mutate package.json but don't run bun install")
-    .action(async (name: string, opts: { config?: string; skipInstall?: boolean }) => {
+    .action(
+      async (name: string, augment: string | undefined, opts: { config?: string; skipInstall?: boolean }) => {
       try {
-        await runAdd(name, opts);
+        await runAdd(name, { ...opts, augment });
       } catch (err) {
         console.error(`Error: ${(err as Error).message}`);
         process.exit(1);
