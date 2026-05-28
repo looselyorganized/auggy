@@ -52,11 +52,18 @@ export type RailwayInteractiveSpawnFactory = (
 interface CreateRailwayCliOptions {
   spawn?: RailwaySpawnFactory;
   interactiveSpawn?: RailwayInteractiveSpawnFactory;
+  retryDelayMs?: number;
+  sleep?: (ms: number) => Promise<void>;
 }
 
 interface RunOptions {
   cwd?: string;
   env?: Record<string, string>;
+}
+
+interface RunOrThrowOptions {
+  retryTransient?: boolean;
+  acceptNonZero?: (result: { stdout: string; stderr: string; exitCode: number }) => boolean;
 }
 
 export interface RailwayStatus {
@@ -112,6 +119,8 @@ export interface RailwayCli {
 export function createRailwayCli(opts: CreateRailwayCliOptions = {}): RailwayCli {
   const spawn = opts.spawn ?? defaultSpawn;
   const interactiveSpawn = opts.interactiveSpawn ?? defaultInteractiveSpawn;
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const retryDelayMs = opts.retryDelayMs ?? 750;
 
   async function runRailway(
     args: string[],
@@ -137,14 +146,32 @@ export function createRailwayCli(opts: CreateRailwayCliOptions = {}): RailwayCli
   async function runOrThrow(
     args: string[],
     runOpts: RunOptions = {},
+    options: RunOrThrowOptions = {},
   ): Promise<{ stdout: string; stderr: string }> {
-    const { stdout, stderr, exitCode } = await runRailway(args, runOpts);
-    if (exitCode !== 0) {
+    const maxAttempts = options.retryTransient ? 3 : 1;
+    let lastResult: { stdout: string; stderr: string; exitCode: number } | null = null;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      const result = await runRailway(args, runOpts);
+      lastResult = result;
+      if (result.exitCode === 0 || options.acceptNonZero?.(result)) {
+        return { stdout: result.stdout, stderr: result.stderr };
+      }
+      if (attempt < maxAttempts && isTransientRailwayFailure(result.stdout, result.stderr)) {
+        await sleep(retryDelayMs * attempt);
+        continue;
+      }
       throw new Error(
-        `railway ${args.join(" ")} exited ${exitCode}${stderr ? `: ${stderr.trim()}` : ""}`,
+        `railway ${args.join(" ")} exited ${result.exitCode}${
+          result.stderr ? `: ${result.stderr.trim()}` : ""
+        }`,
       );
     }
-    return { stdout, stderr };
+    const result = lastResult!;
+    throw new Error(
+      `railway ${args.join(" ")} exited ${result.exitCode}${
+        result.stderr ? `: ${result.stderr.trim()}` : ""
+      }`,
+    );
   }
 
   async function runInteractiveOrThrow(args: string[], runOpts: RunOptions = {}): Promise<void> {
@@ -189,34 +216,37 @@ export function createRailwayCli(opts: CreateRailwayCliOptions = {}): RailwayCli
     },
 
     async linkProject({ projectId, cwd }) {
-      await runOrThrow(["link", "--project", projectId], { cwd });
+      await runOrThrow(["link", "--project", projectId], { cwd }, { retryTransient: true });
     },
 
     async linkService({ serviceName, cwd }) {
-      await runOrThrow(["service", "link", serviceName], { cwd });
+      await runOrThrow(["service", "link", serviceName], { cwd }, { retryTransient: true });
     },
 
     async link({ projectId, serviceName, cwd }) {
-      await runOrThrow(["link", "--project", projectId], { cwd });
-      await runOrThrow(["service", "link", serviceName], { cwd });
+      await runOrThrow(["link", "--project", projectId], { cwd }, { retryTransient: true });
+      await runOrThrow(["service", "link", serviceName], { cwd }, { retryTransient: true });
     },
 
     async createService({ serviceName, cwd }) {
-      await runOrThrow(["add", "--service", serviceName], { cwd });
-      await runOrThrow(["service", "link", serviceName], { cwd });
+      await runOrThrow(["add", "--service", serviceName], { cwd }, {
+        retryTransient: true,
+        acceptNonZero: (result) => isAlreadyExistsFailure(result.stdout, result.stderr),
+      });
+      await runOrThrow(["service", "link", serviceName], { cwd }, { retryTransient: true });
     },
 
     async setVariable({ key, value, cwd }) {
-      await runOrThrow(["variables", "--set", `${key}=${value}`], { cwd });
+      await runOrThrow(["variables", "--set", `${key}=${value}`], { cwd }, { retryTransient: true });
     },
 
     async up({ cwd }) {
-      await runOrThrow(["up", "--detach"], { cwd });
+      await runOrThrow(["up", "--detach"], { cwd }, { retryTransient: true });
     },
 
     async generateDomain({ cwd }) {
       // Idempotent: first call generates, second returns the existing URL.
-      const { stdout } = await runOrThrow(["domain", "--json"], { cwd });
+      const { stdout } = await runOrThrow(["domain", "--json"], { cwd }, { retryTransient: true });
       const url = extractDomainUrl(stdout);
       if (!url) {
         throw new Error(`railway domain --json produced no URL: ${stdout.trim()}`);
@@ -225,11 +255,16 @@ export function createRailwayCli(opts: CreateRailwayCliOptions = {}): RailwayCli
     },
 
     async addVolume({ mountPath, cwd }) {
-      await runOrThrow(["volume", "add", "--mount-path", mountPath], { cwd });
+      await runOrThrow(["volume", "add", "--mount-path", mountPath], { cwd }, {
+        retryTransient: true,
+        acceptNonZero: (result) =>
+          isAlreadyExistsFailure(result.stdout, result.stderr) ||
+          /\bvolume\b[\s\S]*\bmounted at\b/i.test(`${result.stdout}\n${result.stderr}`),
+      });
     },
 
     async status({ cwd }) {
-      const { stdout } = await runOrThrow(["status", "--json"], { cwd });
+      const { stdout } = await runOrThrow(["status", "--json"], { cwd }, { retryTransient: true });
       const parsed = JSON.parse(stdout) as RailwayStatus;
       return parsed;
     },
@@ -261,6 +296,36 @@ function extractProjectId(stdout: string): string | null {
   }
   const match = stdout.match(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/i);
   return match?.[0] ?? null;
+}
+
+function isTransientRailwayFailure(stdout: string, stderr: string): boolean {
+  const text = `${stdout}\n${stderr}`.toLowerCase();
+  return [
+    "failed to fetch",
+    "operation timed out",
+    "timed out",
+    "timeout",
+    "econnreset",
+    "etimedout",
+    "econnrefused",
+    "socket hang up",
+    "network error",
+    "temporary failure",
+    "tls handshake timeout",
+    "502 bad gateway",
+    "503 service unavailable",
+    "504 gateway timeout",
+  ].some((marker) => text.includes(marker));
+}
+
+function isAlreadyExistsFailure(stdout: string, stderr: string): boolean {
+  const text = `${stdout}\n${stderr}`.toLowerCase();
+  return [
+    "already exists",
+    "already attached",
+    "already mounted",
+    "maximum of 1 railway provided domain",
+  ].some((marker) => text.includes(marker));
 }
 
 function extractDomainUrl(stdout: string): string | null {

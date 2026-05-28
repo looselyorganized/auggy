@@ -210,6 +210,79 @@ describe("railway-cli", () => {
     expect(calls[0]!.cmd).toEqual(["railway", "volume", "add", "--mount-path", "/app/data"]);
   });
 
+  test("addVolume retries transient Railway API timeouts", async () => {
+    let attempts = 0;
+    const { factory, calls } = mockSpawn(() => {
+      attempts++;
+      if (attempts < 3) {
+        return {
+          stdout: "",
+          stderr:
+            "Failed to fetch: error sending request for url (https://backboard.railway.com/graphql/v2)\n\nCaused by:\n    operation timed out\n",
+          exitCode: 1,
+        };
+      }
+      return { stdout: 'Volume "zip-data" mounted at /app/data.\n', stderr: "", exitCode: 0 };
+    });
+    const cli = createRailwayCli({
+      spawn: factory,
+      retryDelayMs: 1,
+      sleep: async () => {},
+    });
+    await cli.addVolume({ name: "zip-data", mountPath: "/app/data", cwd: "/tmp/staging" });
+    expect(calls).toHaveLength(3);
+    expect(calls.map((call) => call.cmd)).toEqual([
+      ["railway", "volume", "add", "--mount-path", "/app/data"],
+      ["railway", "volume", "add", "--mount-path", "/app/data"],
+      ["railway", "volume", "add", "--mount-path", "/app/data"],
+    ]);
+  });
+
+  test("addVolume treats post-mount timeout output as success", async () => {
+    const { factory, calls } = mockSpawn(() => ({
+      stdout: 'Volume "zip-data" mounted at /app/data.\n',
+      stderr:
+        "Failed to fetch: error sending request for url (https://backboard.railway.com/graphql/v2)\n\nCaused by:\n    operation timed out\n",
+      exitCode: 1,
+    }));
+    const cli = createRailwayCli({
+      spawn: factory,
+      retryDelayMs: 1,
+      sleep: async () => {},
+    });
+    await cli.addVolume({ name: "zip-data", mountPath: "/app/data", cwd: "/tmp/staging" });
+    expect(calls).toHaveLength(1);
+  });
+
+  test("createService tolerates an already-existing service and links it", async () => {
+    const { factory, calls } = mockSpawn((args) => {
+      if (args[0] === "add") {
+        return { stdout: "", stderr: 'Service "zip" already exists\n', exitCode: 1 };
+      }
+      return { stdout: "", stderr: "", exitCode: 0 };
+    });
+    const cli = createRailwayCli({ spawn: factory });
+    await cli.createService({ serviceName: "zip", cwd: "/tmp/staging" });
+    expect(calls[0]!.cmd).toEqual(["railway", "add", "--service", "zip"]);
+    expect(calls[1]!.cmd).toEqual(["railway", "service", "link", "zip"]);
+  });
+
+  test("non-transient Railway command errors are not retried", async () => {
+    const { factory, calls } = mockSpawn(() => ({
+      stdout: "",
+      stderr: "error: unexpected argument '--bad' found\n",
+      exitCode: 2,
+    }));
+    const cli = createRailwayCli({
+      spawn: factory,
+      retryDelayMs: 1,
+      sleep: async () => {},
+    });
+    await expect(cli.addVolume({ name: "zip-data", mountPath: "/app/data", cwd: "/tmp/staging" }))
+      .rejects.toThrow(/unexpected argument/);
+    expect(calls).toHaveLength(1);
+  });
+
   test("status returns parsed JSON from `railway status --json`", async () => {
     const { factory } = mockSpawn(() => ({
       stdout: JSON.stringify({
