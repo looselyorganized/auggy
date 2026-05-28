@@ -17,6 +17,9 @@ interface MockCliCalls {
   status: number;
   destroyService: number;
   logs: number;
+  linkProject: Array<{ projectId: string; cwd: string }>;
+  linkService: Array<{ serviceName: string; cwd: string }>;
+  createService: Array<{ serviceName: string; cwd: string }>;
 }
 
 function mockRailwayCli(): { cli: RailwayCli; calls: MockCliCalls; capturedCwds: string[] } {
@@ -31,6 +34,9 @@ function mockRailwayCli(): { cli: RailwayCli; calls: MockCliCalls; capturedCwds:
     status: 0,
     destroyService: 0,
     logs: 0,
+    linkProject: [],
+    linkService: [],
+    createService: [],
   };
   const capturedCwds: string[] = [];
   const cli: RailwayCli = {
@@ -44,6 +50,18 @@ function mockRailwayCli(): { cli: RailwayCli; calls: MockCliCalls; capturedCwds:
     },
     async link({ projectId, serviceName, cwd }) {
       calls.link.push({ projectId, serviceName, cwd });
+      capturedCwds.push(cwd);
+    },
+    async linkProject({ projectId, cwd }) {
+      calls.linkProject.push({ projectId, cwd });
+      capturedCwds.push(cwd);
+    },
+    async linkService({ serviceName, cwd }) {
+      calls.linkService.push({ serviceName, cwd });
+      capturedCwds.push(cwd);
+    },
+    async createService({ serviceName, cwd }) {
+      calls.createService.push({ serviceName, cwd });
       capturedCwds.push(cwd);
     },
     async setVariable({ key, value }) {
@@ -150,15 +168,15 @@ describe("runDeploy", () => {
     } catch {}
   });
 
-  test("first deploy: links, addsVolume, generates domain, pushes secrets + AUGGY_PUBLIC_URL, runs up, writes CloudRecord", async () => {
+  test("first deploy: links project, creates service, addsVolume, generates domain, pushes secrets + AUGGY_PUBLIC_URL, runs up, writes CloudRecord", async () => {
     const { cli, calls } = mockRailwayCli();
     const result = await runDeploy("zip", baseDeployOptions(cli, auggyDir, { yes: false }));
 
     expect(calls.checkPresence).toBe(1);
     expect(calls.checkAuth).toBe(1);
-    expect(calls.link).toEqual([
-      expect.objectContaining({ projectId: "proj_abc", serviceName: "zip" }),
-    ]);
+    expect(calls.linkProject).toEqual([expect.objectContaining({ projectId: "proj_abc" })]);
+    expect(calls.createService).toEqual([expect.objectContaining({ serviceName: "zip" })]);
+    expect(calls.link).toEqual([]);
     expect(calls.addVolume).toEqual([{ name: "zip-data", mountPath: "/app/data" }]);
     expect(calls.generateDomain).toBe(1);
 
@@ -186,6 +204,16 @@ describe("runDeploy", () => {
       url: "https://zip-production-abcd.up.railway.app",
       volumeId: "zip-data",
     });
+  });
+
+  test("first deploy with --service links an existing Railway service instead of creating one", async () => {
+    const { cli, calls } = mockRailwayCli();
+    await runDeploy("zip", baseDeployOptions(cli, auggyDir, { service: "existing-api" }));
+
+    expect(calls.linkProject).toEqual([expect.objectContaining({ projectId: "proj_abc" })]);
+    expect(calls.linkService).toEqual([expect.objectContaining({ serviceName: "existing-api" })]);
+    expect(calls.createService).toEqual([]);
+    expect(calls.addVolume).toEqual([{ name: "zip-data", mountPath: "/app/data" }]);
   });
 
   test("D7 sequencing: generateDomain runs BEFORE setVariable so AUGGY_PUBLIC_URL is set before up", async () => {
@@ -344,6 +372,7 @@ describe("runDeploy", () => {
     );
     expect(projectIdPromptCalled).toBe(false);
     expect(calls.link[0]?.projectId).toBe("proj_existing");
+    expect(calls.link[0]?.serviceName).toBe("svc_existing");
     expect(calls.addVolume).toEqual([]); // no addVolume on redeploy
     expect(calls.up).toBe(1);
     expect(result.projectId).toBe("proj_existing");
@@ -352,13 +381,34 @@ describe("runDeploy", () => {
     expect(entry?.cloud?.deployedAt).not.toBe("2026-05-10T00:00:00.000Z");
   });
 
+  test("redeploy with --service overrides the stored service id", async () => {
+    setCloud(
+      "zip",
+      {
+        provider: "railway",
+        projectId: "proj_existing",
+        serviceId: "svc_existing",
+        url: "https://zip-old.up.railway.app",
+        volumeId: "zip-data",
+        deployedAt: "2026-05-10T00:00:00.000Z",
+      },
+      { auggyDir },
+    );
+    const { cli, calls } = mockRailwayCli();
+    await runDeploy("zip", baseDeployOptions(cli, auggyDir, { service: "existing-api" }));
+
+    expect(calls.link[0]?.projectId).toBe("proj_existing");
+    expect(calls.link[0]?.serviceName).toBe("existing-api");
+    expect(calls.createService).toEqual([]);
+  });
+
   test("writes Dockerfile + entrypoint into the staging dir", async () => {
     const { cli, calls } = mockRailwayCli();
-    // Capture the cwd `link` was called with — that's the staging dir.
+    // Capture the cwd `linkProject` was called with — that's the staging dir.
     let stagingDir: string | undefined;
-    cli.link = async (args) => {
+    cli.linkProject = async (args) => {
       stagingDir = args.cwd;
-      calls.link.push(args);
+      calls.linkProject.push(args);
     };
     await runDeploy("zip", baseDeployOptions(cli, auggyDir));
     expect(stagingDir).toBeDefined();

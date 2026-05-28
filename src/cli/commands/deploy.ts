@@ -4,7 +4,8 @@
  * Orchestrates the first-deploy + redeploy flows:
  *
  *   first-deploy: presence + auth checks → operator prompt for projectId →
- *     stage bundle → write Dockerfile + entrypoint → link → addVolume →
+ *     stage bundle → write Dockerfile + entrypoint → link project →
+ *     create service (or link --service existing) → addVolume →
  *     generateDomain → push secrets (.env + AUGGY_PUBLIC_URL) → up →
  *     capture status → write CloudRecord to index.
  *
@@ -48,6 +49,11 @@ export interface DeployOptions {
   promptConfirm: (message: string) => Promise<boolean>;
   logger: DeployLogger;
   healthCheck?: HealthCheckOptions | false;
+  /**
+   * Existing Railway service name/id to deploy into. Omit on first deploy to
+   * create a new service named after the agent.
+   */
+  service?: string;
 }
 
 export interface DeployResult {
@@ -133,11 +139,26 @@ export async function runDeploy(name: string, opts: DeployOptions): Promise<Depl
     }
   }
 
-  // 7) Link the staging dir to the Railway service. First deploy: Railway
-  //    auto-creates the service if --service name doesn't exist in the
-  //    project. Redeploy: idempotent — re-links the same service.
-  await opts.cli.link({ projectId, serviceName: name, cwd: stagingDir });
-  opts.logger.info(`Linked staging dir to project ${projectId}, service ${name}.`);
+  // 7) Link the staging dir to the Railway project/service.
+  //
+  // First deploy default: create a new Railway service named after the agent.
+  // First deploy with --service: link an existing Railway service by name/id.
+  // Redeploy: use the stored serviceId unless --service explicitly overrides.
+  if (!isRedeploy) {
+    await opts.cli.linkProject({ projectId, cwd: stagingDir });
+    opts.logger.info(`Linked staging dir to project ${projectId}.`);
+    if (opts.service) {
+      await opts.cli.linkService({ serviceName: opts.service, cwd: stagingDir });
+      opts.logger.info(`Using existing Railway service ${opts.service}.`);
+    } else {
+      await opts.cli.createService({ serviceName: name, cwd: stagingDir });
+      opts.logger.info(`Created Railway service ${name}.`);
+    }
+  } else if (existingCloud) {
+    const serviceName = opts.service ?? existingCloud.serviceId;
+    await opts.cli.link({ projectId, serviceName, cwd: stagingDir });
+    opts.logger.info(`Linked staging dir to project ${projectId}, service ${serviceName}.`);
+  }
 
   // 8) Volume: only add on first deploy. Redeploys keep the existing volume
   //    (Railway preserves it via the volumeId in the existing CloudRecord).

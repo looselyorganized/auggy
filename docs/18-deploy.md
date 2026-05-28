@@ -37,7 +37,7 @@ The CLI walks you through:
 4. **Bundle staging** — copies your agent directory minus `.env`, `*.db*`, `workspace/`, `node_modules/`, `.git/`, `.worktrees/`, `.claude/`, `.DS_Store`, `*.tmp` into a temp dir. The agent's `package.json` + `bun.lock` are included so the image can install your pinned deps.
 5. **Dockerfile + entrypoint generation** — written into the staging dir. Static; not operator-tunable at v1.0. The image copies `package.json` + `bun.lock` first, runs `bun install` to materialize `node_modules/` inside the image, then COPYs the rest of the agent dir; the entrypoint invokes `bunx auggy dev` so it uses the per-agent install rather than a global `auggy`.
 6. **Secrets diff + confirm** — shows what's about to be pushed to Railway (with values redacted). Decline aborts the deploy. Pass `--yes` to skip.
-7. **`railway link`** — connects the staging dir to your `<name>` service (auto-created if it doesn't exist in the project).
+7. **Railway service selection** — by default Auggy creates a new service named `<name>` in the selected project. Pass `--service <name-or-id>` to deploy into an existing Railway service instead.
 8. **`railway volume add`** — provisions a persistent volume `<name>-data` mounted at `/app/data`. Holds SQLite-backed state across redeploys.
 9. **`railway domain --generate`** — assigns a `<name>-production-xxxx.up.railway.app` URL.
 10. **Push env vars** — your `.env` entries + `AUGGY_PUBLIC_URL` (the just-generated URL) are pushed via `railway variables --set`.
@@ -55,6 +55,12 @@ A re-run of the same command IS the redeploy. There's no separate `redeploy` ver
 
 ```bash
 auggy deploy zip
+```
+
+To deploy into an existing Railway service instead of creating a new one:
+
+```bash
+auggy deploy zip --service my-existing-service
 ```
 
 What changes vs. first deploy:

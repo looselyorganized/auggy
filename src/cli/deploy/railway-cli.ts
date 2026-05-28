@@ -95,7 +95,10 @@ const defaultInteractiveSpawn: RailwayInteractiveSpawnFactory = (cmd, opts = {})
 export interface RailwayCli {
   checkPresence(): Promise<true>;
   checkAuth(): Promise<string>;
+  linkProject(args: { projectId: string; cwd: string }): Promise<void>;
+  linkService(args: { serviceName: string; cwd: string }): Promise<void>;
   link(args: { projectId: string; serviceName: string; cwd: string }): Promise<void>;
+  createService(args: { serviceName: string; cwd: string }): Promise<void>;
   setVariable(args: { key: string; value: string; cwd: string }): Promise<void>;
   up(args: { cwd: string }): Promise<void>;
   generateDomain(args: { cwd: string }): Promise<string>;
@@ -176,8 +179,22 @@ export function createRailwayCli(opts: CreateRailwayCliOptions = {}): RailwayCli
       return match ? match[1]!.trim() : stdout.trim();
     },
 
+    async linkProject({ projectId, cwd }) {
+      await runOrThrow(["link", "--project", projectId], { cwd });
+    },
+
+    async linkService({ serviceName, cwd }) {
+      await runOrThrow(["service", "link", serviceName], { cwd });
+    },
+
     async link({ projectId, serviceName, cwd }) {
-      await runOrThrow(["link", "--project", projectId, "--service", serviceName], { cwd });
+      await runOrThrow(["link", "--project", projectId], { cwd });
+      await runOrThrow(["service", "link", serviceName], { cwd });
+    },
+
+    async createService({ serviceName, cwd }) {
+      await runOrThrow(["add", "--service", serviceName], { cwd });
+      await runOrThrow(["service", "link", serviceName], { cwd });
     },
 
     async setVariable({ key, value, cwd }) {

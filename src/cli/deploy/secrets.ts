@@ -7,8 +7,8 @@
  *
  *   { variables: [{ key, value, redactedValue }], warnings: [...] }
  *
- * `redactedValue` masks the middle of each value so the operator can confirm
- * the right secret without the full key being printed to the terminal.
+ * `redactedValue` gives a compact fingerprint so the operator can confirm
+ * the right secret without dumping long masks into the terminal.
  *
  * This module does NOT call Railway. The deploy command calls `railway-cli`'s
  * `setVariable` for each plan entry after operator confirmation.
@@ -39,14 +39,15 @@ function unquote(raw: string): string {
 }
 
 /**
- * Redact a secret for terminal display. Reveals the first 4 and last 4 chars
- * for values >= 12 chars; shorter values are fully masked. Empty strings stay
- * empty so the operator notices.
+ * Redact a secret for terminal display. Reveals a tiny fingerprint and uses a
+ * fixed-size mask for long values so API keys do not wrap across lines. Empty
+ * strings stay empty so the operator notices.
  */
 export function redactValue(value: string): string {
   if (value.length === 0) return "";
-  if (value.length < 12) return "*".repeat(value.length);
-  return `${value.slice(0, 4)}${"*".repeat(value.length - 8)}${value.slice(-4)}`;
+  if (value.length <= 4) return "*".repeat(value.length);
+  if (value.length <= 12) return `${value.slice(0, 2)}...${value.slice(-2)}`;
+  return `${value.slice(0, 4)}...${value.slice(-4)}`;
 }
 
 /**

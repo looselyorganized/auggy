@@ -154,6 +154,9 @@ describe("runRemove", () => {
       async link() {
         calls.link++;
       },
+      async linkProject() {},
+      async linkService() {},
+      async createService() {},
       async setVariable() {},
       async up() {},
       async generateDomain() {
@@ -202,6 +205,9 @@ describe("runRemove", () => {
         return "x@y.z";
       },
       async link() {},
+      async linkProject() {},
+      async linkService() {},
+      async createService() {},
       async setVariable() {},
       async up() {},
       async generateDomain() {

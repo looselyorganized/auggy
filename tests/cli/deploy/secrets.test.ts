@@ -9,10 +9,13 @@ describe("redactValue", () => {
     expect(redactValue("")).toBe("");
   });
   test("short values fully masked", () => {
-    expect(redactValue("short")).toBe("*****");
+    expect(redactValue("key")).toBe("***");
   });
-  test("long values reveal first/last 4 chars", () => {
-    expect(redactValue("sk-ant-abc-1234567890")).toBe("sk-a*************7890");
+  test("medium values show a compact fingerprint", () => {
+    expect(redactValue("shortish")).toBe("sh...sh");
+  });
+  test("long values show a compact fixed-width fingerprint", () => {
+    expect(redactValue("sk-ant-abc-1234567890")).toBe("sk-a...7890");
   });
 });
 
@@ -64,7 +67,7 @@ GOOD=ok
 
   test("redactedValue is populated and matches redactValue() output", () => {
     const plan = parseEnvText("ANTHROPIC_API_KEY=sk-ant-abc-1234567890\n");
-    expect(plan.variables[0]?.redactedValue).toBe("sk-a*************7890");
+    expect(plan.variables[0]?.redactedValue).toBe("sk-a...7890");
   });
 });
 

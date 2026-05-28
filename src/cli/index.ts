@@ -210,8 +210,9 @@ export function buildCli(): Command {
     .command("deploy <name>")
     .description("Deploy an agent to the cloud (--to railway)")
     .option("--to <provider>", "deploy target (only `railway` supported in v1.0)", "railway")
+    .option("--service <name-or-id>", "deploy into an existing Railway service")
     .option("--yes", "skip the secrets-push confirmation prompt")
-    .action(async (name: string, opts: { to: string; yes?: boolean }) => {
+    .action(async (name: string, opts: { to: string; service?: string; yes?: boolean }) => {
       try {
         const { runDeploy } = await import("./commands/deploy");
         const { createRailwayCli } = await import("./deploy/railway-cli");
@@ -221,6 +222,7 @@ export function buildCli(): Command {
         const result = await runDeploy(name, {
           to: opts.to as "railway",
           yes: opts.yes ?? false,
+          service: opts.service,
           cli,
           promptProjectId: () =>
             input({

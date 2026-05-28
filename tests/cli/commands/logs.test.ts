@@ -20,6 +20,15 @@ function mockRailwayCli() {
     async link(args) {
       calls.push({ name: "link", args });
     },
+    async linkProject(args) {
+      calls.push({ name: "linkProject", args });
+    },
+    async linkService(args) {
+      calls.push({ name: "linkService", args });
+    },
+    async createService(args) {
+      calls.push({ name: "createService", args });
+    },
     async logs(args) {
       calls.push({ name: "logs", args });
     },

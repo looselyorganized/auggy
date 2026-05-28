@@ -64,12 +64,38 @@ describe("railway-cli", () => {
     await expect(cli.checkAuth()).resolves.toBe("alice@example.com");
   });
 
-  test("link runs `railway link --project --service` from the given cwd", async () => {
+  test("linkProject runs `railway link --project` from the given cwd", async () => {
+    const { factory, calls } = mockSpawn(() => ({ stdout: "", stderr: "", exitCode: 0 }));
+    const cli = createRailwayCli({ spawn: factory });
+    await cli.linkProject({ projectId: "proj_abc", cwd: "/tmp/staging" });
+    expect(calls[0]!.cmd).toEqual(["railway", "link", "--project", "proj_abc"]);
+    expect(calls[0]!.cwd).toBe("/tmp/staging");
+  });
+
+  test("linkService runs `railway service link` from the given cwd", async () => {
+    const { factory, calls } = mockSpawn(() => ({ stdout: "", stderr: "", exitCode: 0 }));
+    const cli = createRailwayCli({ spawn: factory });
+    await cli.linkService({ serviceName: "zip", cwd: "/tmp/staging" });
+    expect(calls[0]!.cmd).toEqual(["railway", "service", "link", "zip"]);
+    expect(calls[0]!.cwd).toBe("/tmp/staging");
+  });
+
+  test("link runs project link then service link", async () => {
     const { factory, calls } = mockSpawn(() => ({ stdout: "", stderr: "", exitCode: 0 }));
     const cli = createRailwayCli({ spawn: factory });
     await cli.link({ projectId: "proj_abc", serviceName: "zip", cwd: "/tmp/staging" });
-    expect(calls[0]!.cmd).toEqual(["railway", "link", "--project", "proj_abc", "--service", "zip"]);
+    expect(calls[0]!.cmd).toEqual(["railway", "link", "--project", "proj_abc"]);
+    expect(calls[1]!.cmd).toEqual(["railway", "service", "link", "zip"]);
     expect(calls[0]!.cwd).toBe("/tmp/staging");
+    expect(calls[1]!.cwd).toBe("/tmp/staging");
+  });
+
+  test("createService runs `railway add --service` then links it", async () => {
+    const { factory, calls } = mockSpawn(() => ({ stdout: "", stderr: "", exitCode: 0 }));
+    const cli = createRailwayCli({ spawn: factory });
+    await cli.createService({ serviceName: "zip", cwd: "/tmp/staging" });
+    expect(calls[0]!.cmd).toEqual(["railway", "add", "--service", "zip"]);
+    expect(calls[1]!.cmd).toEqual(["railway", "service", "link", "zip"]);
   });
 
   test("setVariable runs `railway variables --set KEY=value`", async () => {
