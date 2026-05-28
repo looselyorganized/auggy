@@ -1,5 +1,5 @@
 /**
- * auggy add-skill <augment> — install a bundled augment skill into an agent.
+ * auggy add-skill <augment> — repair/reinstall a bundled augment skill.
  *
  * Companion command to the boot-time skill validator (PR α task 7) and the
  * scaffold-time auto-copy in `auggy create` / `auggy add`. When an operator
@@ -86,12 +86,15 @@ export function addSkillCommand(deps: AddSkillCommandDeps = {}): Command {
   const exit = deps.exit ?? ((code: number) => process.exit(code));
 
   return new Command("add-skill")
-    .description("Install a bundled augment skill into an existing agent")
+    .description("Repair or reinstall a bundled augment skill for an existing agent")
     .argument("<augment>", "augment folder name (kebab-case), e.g. web-fetch, layered-memory, bash")
     .option("--agent <name>", "registered agent name (defaults to current directory)")
     .addHelpText(
       "after",
       [
+        "",
+        "Normal augment installs already copy bundled skills. Use this only to repair",
+        "a missing/deleted skill folder or to opt into the latest bundled copy.",
         "",
         "Examples:",
         "  cd my-agent && auggy add-skill web-fetch",

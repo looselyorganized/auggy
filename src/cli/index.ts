@@ -5,7 +5,7 @@
  * Commands:
  *   auggy create <name>              Scaffold a new agent (interactive)
  *   auggy add <name>                 Add augments to an existing agent
- *   auggy add-skill <augment>        Install a bundled skill into an agent
+ *   auggy add-skill <augment>        Repair/reinstall a bundled skill
  *   auggy run <name> [--no-open]     Run agent in foreground; opens /console/chat by default
  *   auggy doctor <name>              Check whether an agent is ready to run
  *   auggy dev <name> [--open]        Run agent in foreground; --open pops /console in browser

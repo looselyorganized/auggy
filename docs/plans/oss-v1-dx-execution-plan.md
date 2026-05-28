@@ -258,7 +258,7 @@ Acceptance:
 
 - Public CLI examples use friendly names.
 
-### 8. Reframe `add-skill` As Repair
+### 8. Reframe `add-skill` As Repair *(implemented 2026-05-28)*
 
 Behavior:
 

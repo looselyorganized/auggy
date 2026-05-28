@@ -33,7 +33,7 @@ filesystem.
 
 - `agent.yaml` uses the top-level `identity: ./identity.md` shorthand (parsed to a synthetic `fileMemory@placement:system` entry); `augments:` enumerates the rest.
 - `identity.md` is rendered from `src/scaffold-templates/identity.md` and ships with four baked-in security rules and a `## Available skills` manifest enumerating each tool-providing augment selected at scaffold time.
-- `skills/<augment>/` directories hold byte-for-byte copies of each augment's bundled `src/augments/<augment>/skill/` folder — copied at `auggy create`/`auggy add` time and (re-)installable via `auggy add-skill <augment>`. The boot-time validator warns at startup if a tool-providing augment has no skill folder mounted.
+- `skills/<augment>/` directories hold byte-for-byte copies of each augment's bundled `src/augments/<augment>/skill/` folder — copied automatically at `auggy create`/`auggy add` time. `auggy add-skill <augment>` is a repair/update command for missing, deleted, or intentionally refreshed bundled skills. The boot-time validator warns at startup if a tool-providing augment has no skill folder mounted.
 - `memory.sqlite` is the default `layeredMemory` backend (SQLite, namespace-scoped). The scaffold includes the augment by default; remove from `agent.yaml` if not needed.
 - `manifest/` is scaffolded only when `manifest` is selected; the example `manifest` + endpoint files plus `baseUrl: file://./manifest` give a working local config without needing to stand up an HTTP server.
 

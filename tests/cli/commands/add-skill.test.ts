@@ -49,6 +49,7 @@ describe("auggy add-skill — command shape", () => {
   test("registers as 'add-skill' subcommand with description", () => {
     const cmd = addSkillCommand();
     expect(cmd.name()).toBe("add-skill");
+    expect(cmd.description()).toContain("Repair");
     expect(cmd.description()).toContain("bundled");
   });
 
@@ -61,6 +62,12 @@ describe("auggy add-skill — command shape", () => {
     const cmd = addSkillCommand();
     const longs = cmd.options.map((o) => o.long);
     expect(longs).toContain("--agent");
+  });
+
+  test("frames add-skill as repair/update in help text", () => {
+    const help = addSkillCommand().helpInformation();
+    expect(help).toMatch(/repair/i);
+    expect(help).toMatch(/reinstall/i);
   });
 });
 
