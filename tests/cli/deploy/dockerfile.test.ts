@@ -62,12 +62,17 @@ describe("generateEntrypoint", () => {
     expect(generateEntrypoint()).toMatch(/ln -sf/);
   });
 
-  test("execs auggy via `bunx` so the per-agent install is used (v0.3.2)", () => {
+  test("execs auggy via `bunx` with explicit /app/agent.yaml config", () => {
     const script = generateEntrypoint();
-    expect(script).toMatch(/exec bunx auggy dev "\$1" --internal-mode railway/);
+    expect(script).toMatch(
+      /exec bunx auggy dev "\$1" --config \/app\/agent\.yaml --internal-mode railway/,
+    );
     // Negative assertion: the bare `auggy dev` shape would resolve to a
     // global install that the v0.3.2 split no longer ships.
     expect(script).not.toMatch(/exec auggy dev/);
+    // Negative assertion: without --config, cloud boot tries to discover the
+    // agent in ~/.auggy/agents, which does not exist inside the staged image.
+    expect(script).not.toMatch(/exec bunx auggy dev "\$1" --internal-mode railway/);
   });
 
   test("uses `set -e` so failed steps abort the boot", () => {

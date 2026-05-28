@@ -11,13 +11,13 @@ describe("withBrailleSpinner", () => {
       },
     };
 
-    const result = await withBrailleSpinner("Queueing Railway build", async () => "ok", {
+    const result = await withBrailleSpinner("Starting Railway build", async () => "ok", {
       stream,
       intervalMs: 1_000,
     });
 
     expect(result).toBe("ok");
-    expect(writes[0]).toContain("⠋ Queueing Railway build...");
+    expect(writes[0]).toContain("⠋ Starting Railway build...");
     expect(writes.at(-1)).toBe("\r\x1b[2K");
   });
 

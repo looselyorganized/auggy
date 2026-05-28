@@ -223,10 +223,10 @@ export async function runDeploy(name: string, opts: DeployOptions): Promise<Depl
   });
   opts.logger.info(`Pushed ${plan.variables.length + 1} env var(s) to Railway.`);
 
-  // 11) Trigger the build + deploy. --detach so we return without tailing
+  // 11) Start the build + deploy. --detach so we return without tailing
   //     build logs; operator follows progress via Railway UI / `railway logs`.
-  await withProgress(opts, `Queueing Railway build`, () => opts.cli.up({ cwd: stagingDir }));
-  opts.logger.info(`Build queued.`);
+  await withProgress(opts, `Starting Railway build`, () => opts.cli.up({ cwd: stagingDir }));
+  opts.logger.info(`Build started. Railway will build the image, deploy it, then start the service.`);
 
   // 12) Verify the public health endpoint. Timeout is non-destructive: the
   //     deploy may still finish, but the operator needs recovery commands.
@@ -234,11 +234,11 @@ export async function runDeploy(name: string, opts: DeployOptions): Promise<Depl
   const health =
     opts.healthCheck === false
       ? { ok: false, url: new URL("/health", ensureTrailingSlash(url)).toString(), attempts: 0 }
-      : await withProgress(opts, `Checking health endpoint`, () =>
+      : await withProgress(opts, `Verifying deployment health`, () =>
           waitForHealth(url, healthCheckOptions),
         );
   if (health.ok) {
-    opts.logger.info(`Health check passed: ${health.url}`);
+    opts.logger.info(`Deployment health verified: ${health.url}`);
   } else {
     const reason = health.status
       ? `last HTTP status ${health.status}`
@@ -246,7 +246,7 @@ export async function runDeploy(name: string, opts: DeployOptions): Promise<Depl
         ? `last error: ${health.error}`
         : "no attempts completed";
     opts.logger.warn(
-      `Health check did not pass yet (${reason}). Try \`railway logs\`, then \`auggy deploy ${name} --yes\` after fixing the service.`,
+      `Deployment is not healthy yet (${reason}). Try \`railway logs\`, then \`auggy deploy ${name} --yes\` after fixing the service.`,
     );
   }
 

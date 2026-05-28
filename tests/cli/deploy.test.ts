@@ -367,7 +367,8 @@ describe("runDeploy", () => {
     expect(taskMessages).toContain("Mounting Railway volume");
     expect(taskMessages).toContain("Generating public Railway URL");
     expect(taskMessages).toContain("Pushing 3 env var(s)");
-    expect(taskMessages).toContain("Queueing Railway build");
+    expect(taskMessages).toContain("Starting Railway build");
+    expect(taskMessages).toContain("Verifying deployment health");
   });
 
   test("health timeout warns but still records the deployment", async () => {
@@ -395,7 +396,7 @@ describe("runDeploy", () => {
       status: 503,
       url: "https://zip-production-abcd.up.railway.app/health",
     });
-    expect(warnings.join("\n")).toMatch(/Health check did not pass yet/);
+    expect(warnings.join("\n")).toMatch(/Deployment is not healthy yet/);
     expect(warnings.join("\n")).toMatch(/railway logs/);
     expect(calls.status).toBe(1);
     expect(getAgent("zip", { auggyDir })?.cloud).toMatchObject({
@@ -436,7 +437,7 @@ describe("runDeploy", () => {
     expect(result.health).toMatchObject({ ok: false, status: 404 });
     expect(result.serviceId).toBe("zip");
     expect(infos.join("\n")).toMatch(/Service status: unknown/);
-    expect(warnings.join("\n")).toMatch(/Health check did not pass yet/);
+    expect(warnings.join("\n")).toMatch(/Deployment is not healthy yet/);
     expect(getAgent("zip", { auggyDir })?.cloud).toMatchObject({
       serviceId: "zip",
       url: "https://zip-production-abcd.up.railway.app",
