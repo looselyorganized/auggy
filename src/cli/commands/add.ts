@@ -11,6 +11,7 @@
  */
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
 import { dirname, join } from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { checkbox } from "@inquirer/prompts";
@@ -24,6 +25,7 @@ import { copyBundledSkill } from "../scaffold-skills";
 import { resolveConfigPath } from "../resolve-config";
 import { mergePackageDeps } from "../scaffold-package-json";
 import { runBunInstall, type BunInstallSpawnFactory } from "../bun-install";
+import { parseEnvFile, serializeEnv, type EnvLine } from "../env-parse";
 
 export interface AddOpts {
   /** Path override for agent.yaml. */
@@ -138,6 +140,8 @@ export async function runAdd(name: string, opts: AddOpts): Promise<void> {
     }
   }
 
+  const envUpdate = updateEnvForAddedAugments(agentDir, selected, raw);
+
   // Install skills — copy the bundled `src/augments/<name>/skill/` folder
   // for each selected augment that ships one. Idempotent. Per ADR-030 the
   // 'skills' augment surfaces them to the model automatically by rescanning
@@ -171,12 +175,18 @@ export async function runAdd(name: string, opts: AddOpts): Promise<void> {
   }
 
   // Collect any new env vars needed.
-  const newEnvVars = selected.flatMap((e) => e.envVars ?? []);
-  if (newEnvVars.length > 0) {
+  if (envUpdate.placeholders.length > 0) {
     console.log();
     console.log("Add these to your .env:");
-    for (const v of newEnvVars) {
+    for (const v of envUpdate.placeholders) {
       console.log(`  ${v}=`);
+    }
+  }
+  if (envUpdate.generated.length > 0) {
+    console.log();
+    console.log("Generated local .env values:");
+    for (const v of envUpdate.generated) {
+      console.log(`  ${v}`);
     }
   }
 
@@ -186,6 +196,117 @@ export async function runAdd(name: string, opts: AddOpts): Promise<void> {
   } else if (installOk) {
     console.log(`Restart to apply: auggy restart ${name}`);
   }
+}
+
+const AUTO_GENERATED_ADD_ENV_VARS = new Set([
+  "AUGGY_AGENT_ID",
+  "AUGGY_PUBLIC_URL",
+  "AUGGY_WEB_TOKEN",
+  "VISITOR_SIGNING_KEY",
+]);
+
+function updateEnvForAddedAugments(
+  agentDir: string,
+  selected: CatalogEntry[],
+  rawConfig: Record<string, unknown>,
+): { generated: string[]; placeholders: string[] } {
+  const requiredEnvVars = unique(selected.flatMap((entry) => entry.envVars ?? []));
+  if (requiredEnvVars.length === 0) return { generated: [], placeholders: [] };
+
+  const envPath = join(agentDir, ".env");
+  const lines: EnvLine[] = existsSync(envPath)
+    ? parseEnvFile(readFileSync(envPath, "utf-8"))
+    : [
+        { kind: "comment", raw: "# Agent secrets — gitignored." },
+        { kind: "blank" },
+      ];
+
+  const existing = new Map<string, { index: number; value: string }>();
+  lines.forEach((line, index) => {
+    if (line.kind === "kv") existing.set(line.key, { index, value: line.value });
+  });
+
+  const generated: string[] = [];
+  const placeholders: string[] = [];
+
+  for (const key of requiredEnvVars) {
+    const current = existing.get(key);
+    if (current && current.value.trim().length > 0) continue;
+
+    const generatedValue = AUTO_GENERATED_ADD_ENV_VARS.has(key)
+      ? generateEnvValueForAdd(key, agentDir, rawConfig)
+      : null;
+    if (generatedValue) {
+      upsertEnvLine(lines, existing, key, generatedValue);
+      generated.push(key);
+    } else {
+      upsertEnvLine(lines, existing, key, "");
+      placeholders.push(key);
+    }
+  }
+
+  writeFileSync(envPath, serializeEnv(lines));
+  return { generated, placeholders };
+}
+
+function upsertEnvLine(
+  lines: EnvLine[],
+  existing: Map<string, { index: number; value: string }>,
+  key: string,
+  value: string,
+): void {
+  const current = existing.get(key);
+  if (current) {
+    lines[current.index] = { kind: "kv", key, value, raw: `${key}=${value}` };
+    existing.set(key, { index: current.index, value });
+    return;
+  }
+  lines.push({ kind: "kv", key, value, raw: `${key}=${value}` });
+  existing.set(key, { index: lines.length - 1, value });
+}
+
+function generateEnvValueForAdd(
+  key: string,
+  agentDir: string,
+  rawConfig: Record<string, unknown>,
+): string | null {
+  switch (key) {
+    case "AUGGY_AGENT_ID":
+      return typeof rawConfig.name === "string" && rawConfig.name.trim()
+        ? rawConfig.name.trim()
+        : nameForEnv(agentDir);
+    case "AUGGY_PUBLIC_URL":
+      return `http://localhost:${findWebTransportPort(rawConfig) ?? 8080}`;
+    case "AUGGY_WEB_TOKEN":
+      return randomBytes(32).toString("hex");
+    case "VISITOR_SIGNING_KEY":
+      return randomBytes(32).toString("hex");
+    default:
+      return null;
+  }
+}
+
+function findWebTransportPort(rawConfig: Record<string, unknown>): number | null {
+  const augments = rawConfig.augments;
+  if (!Array.isArray(augments)) return null;
+  for (const aug of augments) {
+    if (!aug || typeof aug !== "object") continue;
+    const record = aug as Record<string, unknown>;
+    if (record.type !== "webTransport") continue;
+    const options = record.options;
+    if (!options || typeof options !== "object" || Array.isArray(options)) continue;
+    const port = (options as Record<string, unknown>).port;
+    if (typeof port === "number" && Number.isInteger(port) && port > 0) return port;
+  }
+  return null;
+}
+
+function nameForEnv(agentDir: string): string {
+  return agentDir.split(/[\\/]/).filter(Boolean).at(-1) ?? "auggy";
+}
+
+function unique(values: string[]): string[] {
+  return [...new Set(values)];
 }
 
 function resolveNonInteractiveSelection(specifier: string, available: CatalogEntry[]): CatalogEntry[] {

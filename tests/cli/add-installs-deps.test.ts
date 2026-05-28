@@ -34,6 +34,10 @@ function setupAgent(name: string, augments: Array<{ type: string; name: string }
     `augments:\n` +
     augments.map((a) => `  - name: ${a.name}\n    type: ${a.type}\n`).join("");
   writeFileSync(join(dir, "agent.yaml"), yaml);
+  writeFileSync(
+    join(dir, ".env"),
+    "AUGGY_WEB_TOKEN=tok-test\nAUGGY_AGENT_ID=existing-agent\nAUGGY_PUBLIC_URL=http://localhost:18080\n",
+  );
 
   const pkg = {
     name: `auggy-agent-${name}`,
@@ -150,6 +154,45 @@ describe("runAdd no-op cases", () => {
 
     const yaml = readFileSync(join(dir, "agent.yaml"), "utf-8");
     expect(yaml).toContain("type: layeredMemory");
+  });
+
+  test("adding visitor-auth generates VISITOR_SIGNING_KEY in .env", async () => {
+    const dir = setupAgent("with-auth");
+
+    await runAdd("with-auth", {
+      config: join(dir, "agent.yaml"),
+      auggyDir,
+      augment: "visitor-auth",
+      bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
+    });
+
+    const yaml = readFileSync(join(dir, "agent.yaml"), "utf-8");
+    expect(yaml).toContain("type: visitorAuth");
+    expect(yaml).toContain("signingKey: ${VISITOR_SIGNING_KEY}");
+
+    const env = readFileSync(join(dir, ".env"), "utf-8");
+    const signingKey = env.match(/^VISITOR_SIGNING_KEY=([a-f0-9]{64})$/m)?.[1];
+    expect(signingKey).toBeTruthy();
+    expect(env).toContain("AUGGY_AGENT_ID=existing-agent");
+    expect(env).toContain("AUGGY_PUBLIC_URL=http://localhost:18080");
+    expect(existsSync(join(dir, "skills", "visitor-auth", "SKILL.md"))).toBe(true);
+  });
+
+  test("adding visitor-auth fills blank generated env vars", async () => {
+    const dir = setupAgent("with-auth-blank");
+    writeFileSync(join(dir, ".env"), "AUGGY_AGENT_ID=\nAUGGY_PUBLIC_URL=\nVISITOR_SIGNING_KEY=\n");
+
+    await runAdd("with-auth-blank", {
+      config: join(dir, "agent.yaml"),
+      auggyDir,
+      augment: "visitor-auth",
+      bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
+    });
+
+    const env = readFileSync(join(dir, ".env"), "utf-8");
+    expect(env).toContain("AUGGY_AGENT_ID=with-auth-blank");
+    expect(env).toContain("AUGGY_PUBLIC_URL=http://localhost:8080");
+    expect(env).toMatch(/^VISITOR_SIGNING_KEY=[a-f0-9]{64}$/m);
   });
 
   test("non-interactive unknown augment throws with valid choices", async () => {
