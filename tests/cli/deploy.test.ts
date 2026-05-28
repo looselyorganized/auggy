@@ -232,6 +232,67 @@ describe("runDeploy", () => {
     expect(getAgent("zip", { auggyDir })?.cloud?.projectId).toBe("proj_created");
   });
 
+  test("first deploy can run from a project-local agent.yaml outside ~/.auggy", async () => {
+    const projectDir = mkdtempSync(join(tmpdir(), "auggy-project-agent-"));
+    try {
+      writeFileSync(
+        join(projectDir, "agent.yaml"),
+        [
+          "id: aug1_a3f7c2e1-8b4d-4f9e-a6c1-2d8e9f0b3a5c",
+          "name: project",
+          "identity: ./identity.md",
+          "engine:",
+          "  provider: anthropic",
+          "  model: claude-sonnet-4-6",
+          "augments:",
+          "  - name: web",
+          "    type: webTransport",
+          "    options:",
+          "      port: 8080",
+          "      auth:",
+          "        type: bearer",
+          "        token: ${AUGGY_WEB_TOKEN}",
+          "",
+        ].join("\n"),
+      );
+      writeFileSync(join(projectDir, "identity.md"), "# Project\n");
+      writeFileSync(join(projectDir, ".env"), "ANTHROPIC_API_KEY=sk-test\nAUGGY_WEB_TOKEN=tok-1\n");
+      writeFileSync(
+        join(projectDir, "package.json"),
+        JSON.stringify({
+          name: "auggy-agent-project",
+          private: true,
+          type: "module",
+          dependencies: {
+            auggy: "^0.3.1",
+            "@auggy/anthropic": "^0.3.1",
+          },
+        }),
+      );
+      mkdirSync(join(projectDir, "node_modules", "auggy"), { recursive: true });
+      mkdirSync(join(projectDir, "node_modules", "@auggy", "anthropic"), { recursive: true });
+
+      const { cli, calls } = mockRailwayCli();
+      const result = await runDeploy(
+        "project",
+        baseDeployOptions(cli, auggyDir, { cwd: projectDir }),
+      );
+
+      expect(calls.linkProject[0]?.cwd).toContain("auggy-deploy-project-");
+      expect(result.serviceId).toBe("svc_def");
+      expect(JSON.parse(readFileSync(join(projectDir, ".auggy-cloud.json"), "utf-8"))).toMatchObject(
+        {
+          provider: "railway",
+          projectId: "proj_abc",
+          serviceId: "svc_def",
+          url: "https://zip-production-abcd.up.railway.app",
+        },
+      );
+    } finally {
+      rmSync(projectDir, { recursive: true, force: true });
+    }
+  });
+
   test("--project skips the project target prompt and uses an existing project", async () => {
     const { cli, calls } = mockRailwayCli();
     let promptCalled = false;

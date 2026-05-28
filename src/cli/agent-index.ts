@@ -207,6 +207,19 @@ export function getAgent(name: string, opts: AgentStoreOptions = {}): IndexEntry
 }
 
 /**
+ * Read an agent entry from an explicit project directory. Used by
+ * project-local workflows where the agent is not under ~/.auggy/agents.
+ */
+export function getAgentFromDir(localDir: string): IndexEntry | null {
+  if (!isAgentDir(localDir)) return null;
+  return {
+    localDir,
+    createdAt: deriveCreatedAt(localDir),
+    cloud: readCloud(localDir),
+  };
+}
+
+/**
  * List all agents under `<auggyDir>/agents/`. Subdirectories without
  * `agent.yaml` are skipped (incomplete scaffolds, `.tmp-*` staging dirs).
  * Hidden directories (leading `.`) are also skipped.
@@ -261,6 +274,13 @@ export function setCloud(
   const localDir = agentDir(name, opts);
   if (!isAgentDir(localDir)) {
     throw new Error(`Cannot set cloud for "${name}": agent dir not found at ${localDir}.`);
+  }
+  writeCloud(localDir, record);
+}
+
+export function setCloudForDir(localDir: string, record: NonNullable<CloudRecord>): void {
+  if (!isAgentDir(localDir)) {
+    throw new Error(`Cannot set cloud: agent dir not found at ${localDir}.`);
   }
   writeCloud(localDir, record);
 }

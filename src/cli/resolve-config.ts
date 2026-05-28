@@ -3,10 +3,8 @@
  *
  * Resolution order:
  *   1. Explicit --config <path> flag
- *   2. Look up <name> in the filesystem (canonical: <auggyDir>/agents/<name>/)
- *
- * Pre-ADR-021 CWD-relative discovery was removed. Pre-021 agents are not
- * auto-discovered; adoption is deferred until concrete demand.
+ *   2. Project-local ./agent.yaml from cwd
+ *   3. Look up <name> in the filesystem (canonical: <auggyDir>/agents/<name>/)
  */
 
 import { existsSync } from "node:fs";
@@ -16,6 +14,8 @@ import { getAgent } from "./agent-index";
 interface ResolveOptions {
   /** Override `~/.auggy/` for tests. */
   auggyDir?: string;
+  /** Override cwd for project-local resolution. */
+  cwd?: string;
 }
 
 /**
@@ -33,6 +33,11 @@ export function resolveConfigPath(
       throw new Error(`Config file not found: ${absPath}`);
     }
     return absPath;
+  }
+
+  const localConfig = resolve(opts.cwd ?? process.cwd(), "agent.yaml");
+  if (existsSync(localConfig)) {
+    return localConfig;
   }
 
   const entry = getAgent(name, opts);

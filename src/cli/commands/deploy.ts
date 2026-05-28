@@ -23,9 +23,10 @@
  */
 
 import { writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { getAgent, setCloud } from "../agent-index";
+import { dirname, join } from "node:path";
+import { getAgentFromDir, setCloudForDir } from "../agent-index";
 import { formatDoctorChecks, hasDoctorFailures, runDoctor } from "./doctor";
+import { resolveConfigPath } from "../resolve-config";
 import { stageBundle } from "../deploy/bundle";
 import { generateDockerfile, generateEntrypoint } from "../deploy/dockerfile";
 import { waitForHealth, type HealthCheckOptions, type HealthCheckResult } from "../deploy/health";
@@ -43,6 +44,7 @@ export interface DeployOptions {
   to: "railway";
   yes: boolean;
   auggyDir?: string;
+  cwd?: string;
   cli: RailwayCli;
   /** Existing Railway project ID. When omitted on first deploy, operator chooses new/existing. */
   project?: string;
@@ -80,17 +82,26 @@ export async function runDeploy(name: string, opts: DeployOptions): Promise<Depl
     );
   }
 
-  const entry = getAgent(name, { auggyDir: opts.auggyDir });
+  let configPath: string;
+  try {
+    configPath = resolveConfigPath(name, undefined, { auggyDir: opts.auggyDir, cwd: opts.cwd });
+  } catch {
+    throw new Error(
+      `Agent "${name}" not registered. Run \`auggy create ${name}\` first, then \`auggy deploy ${name}\`.`,
+    );
+  }
+  const agentDir = dirname(configPath);
+  const entry = getAgentFromDir(agentDir);
   if (!entry) {
     throw new Error(
       `Agent "${name}" not registered. Run \`auggy create ${name}\` first, then \`auggy deploy ${name}\`.`,
     );
   }
-  const agentDir = entry.localDir;
 
   // 1) Local preflight before touching Railway or staging a deploy bundle.
   const preflight = await runDoctor(name, {
     auggyDir: opts.auggyDir,
+    config: configPath,
     isPortAvailable: async () => true,
   });
   const warnings = preflight.filter((check) => check.status === "warn");
@@ -266,18 +277,14 @@ export async function runDeploy(name: string, opts: DeployOptions): Promise<Depl
     volumeId: `${name}-data`,
     health,
   };
-  setCloud(
-    name,
-    {
-      provider: "railway",
-      projectId: result.projectId,
-      serviceId: result.serviceId,
-      url: result.url,
-      volumeId: result.volumeId,
-      deployedAt: new Date().toISOString(),
-    },
-    { auggyDir: opts.auggyDir },
-  );
+  setCloudForDir(agentDir, {
+    provider: "railway",
+    projectId: result.projectId,
+    serviceId: result.serviceId,
+    url: result.url,
+    volumeId: result.volumeId,
+    deployedAt: new Date().toISOString(),
+  });
 
   return result;
 }
