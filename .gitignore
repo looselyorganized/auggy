@@ -7,6 +7,8 @@ node_modules
 # output
 out
 dist
+!admin/dist/
+!admin/dist/**
 *.tgz
 
 # code coverage

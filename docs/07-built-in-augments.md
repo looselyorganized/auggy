@@ -481,15 +481,15 @@ Auto-save extraction runs as an admitted internal turn — it flows through the 
 
 The bundled `src/augments/layered-memory/skill/SKILL.md` teaches the model when and how to use `memory_write`, `memory_search`, `memory_list`, and `memory_forget`, plus a section on interpreting `[AGENT-DERIVED]` entries and the privacy boundaries that apply to both manual and auto-saved writes. Copied into `<agent-dir>/skills/layered-memory/SKILL.md` at `auggy create`/`auggy add` time; install retroactively with `auggy add-skill layered-memory`.
 
-### Admin info (G36)
+### Console/API info
 
-The `/admin` route renders a **Memory** block with:
+The console dashboard API exposes a **Memory** block with:
 
 - **KV row** — total live entry count, retention-class breakdown (operational vs lesson), namespace prefix.
 - **Table** — 50 most-recent live entries (peer, label, content snippet, retention class, age) with a per-row `memory-erase` action.
 - **Erase semantics** — invokes `store.forget(peerId)` and reports the deletion count. Per-peer only; there is no "erase all" affordance (intentional — too easy to wipe everything by mistake).
 
-See [docs/06-transports.md § The `/admin` route](./06-transports.md#the-admin-route-g36) for the route reference.
+See [docs/06-transports.md § The `/console` route](./06-transports.md#the-console-route) for the route reference.
 
 ## How they compose
 
@@ -703,11 +703,11 @@ For the full operator reference, see [docs/13-notify.md](./13-notify.md).
 
 This augment ships `src/augments/notify/skill/SKILL.md` with model teaching on the `notify` tool — destination semantics, when to escalate vs answer in-thread, dedup awareness. Copied into `<agent-dir>/skills/notify/SKILL.md` at `auggy create`/`auggy add` time; install retroactively with `auggy add-skill notify`.
 
-### Admin info (G36)
+### Console/API info
 
-The `/admin` route renders a **Notify** block with:
+The console dashboard API exposes a **Notify** block with:
 
-- **KV row** — global cap per hour (with `yaml` or `/admin override` source), cooldown ms, configured destination count.
+- **KV row** — global cap per hour (with `yaml` or `/console override` source), cooldown ms, configured destination count.
 - **Table** — last 50 dispatch attempts from the augment's internal ring buffer (time, destination, status, summary snippet).
 - **Actions** — `notify-test` (sends `[test] <message>` via the named destination, **bypassing rate-limit + dedup** for diagnostic dispatch), `notify-cap-adjust` (overrides `globalMaxPerHour`), `notify-cap-reset` (restores yaml).
 
@@ -1033,11 +1033,11 @@ Pre-call cost projection (estimating the turn's cost before running it) is defer
 
 For a comprehensive operator reference, see [docs/12-budgets.md](./12-budgets.md).
 
-### Admin info (G36)
+### Console/API info
 
-The `/admin` route renders a **Budgets** block with:
+The console dashboard API exposes a **Budgets** block with:
 
-- **KV row** — daily cap (with `yaml` or `/admin override` source), today's total spend, active peer count.
+- **KV row** — daily cap (with `yaml` or `/console override` source), today's total spend, active peer count.
 - **Table** — per-peer spend + unpriced turn count for today (top 50 peers).
 - **Actions** — `budget-cap-adjust` (POSTs a new daily cap; persists to `admin-overrides.json`) and `budget-cap-reset` (clears the override, restores the yaml value).
 
@@ -1078,9 +1078,9 @@ It adds three things to the agent: a model-callable `request_auth({method: "emai
 
 For the full operator reference (config, env vars, security posture, ops commands, troubleshooting), see [docs/19-visitor-auth.md](./19-visitor-auth.md).
 
-### Admin info (G36)
+### Console/API info
 
-The `/admin` route renders a **Visitors** block with:
+The console dashboard API exposes a **Visitors** block with:
 
 - **KV row** — mail transport, inbox / console mode, public URL, agent binding.
 - **Status section** — `warn` level when `agentMail.transport === "console"` and `NODE_ENV=production` (operator-visible reminder that magic links print to logs).

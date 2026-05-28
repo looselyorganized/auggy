@@ -200,33 +200,8 @@ export function ChatTab() {
   }
 
   return (
-    <div className="flex h-[calc(100vh-7rem)] flex-col gap-3">
-      <header className="flex items-baseline justify-between gap-3">
-        <div>
-          <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-            Chat
-          </h2>
-          <p className="text-xs text-muted-foreground">
-            Live SSE stream from <code className="font-mono text-[11px]">/console/api/chat</code>.
-            Tool calls and memory operations appear inline as the agent runs.
-          </p>
-        </div>
-        <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
-          <span className="font-mono" title={threadId}>
-            thread: {threadId.slice(0, 8)}
-          </span>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={handleClear}
-            disabled={streaming || messages.length === 0}
-          >
-            Clear
-          </Button>
-        </div>
-      </header>
-
-      <div className="flex flex-1 flex-col overflow-hidden rounded-md border bg-background">
+    <div className="mx-auto flex h-full w-full max-w-4xl flex-col p-3 sm:p-4">
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-md border bg-background">
         <MessageList messages={messages} streaming={streaming} agentName={agentName} />
         {streamError && (
           <div className="border-t border-destructive/30 bg-destructive/5 px-4 py-2 text-xs text-destructive">
@@ -260,9 +235,19 @@ export function ChatTab() {
               </Button>
             )}
           </div>
-          <p className="mt-1.5 text-[10px] text-muted-foreground">
-            Enter to send · Shift+Enter for newline
-          </p>
+          {messages.length > 0 && (
+            <div className="mt-1.5 flex justify-end">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={handleClear}
+                disabled={streaming}
+                className="h-6 px-2 text-xs"
+              >
+                Clear
+              </Button>
+            </div>
+          )}
         </footer>
       </div>
     </div>
@@ -309,9 +294,6 @@ function MessageList({
       <div className="flex flex-1 items-center justify-center p-8 text-center">
         <div className="space-y-1">
           <p className="text-sm font-medium">Talk to {agentName}</p>
-          <p className="text-xs text-muted-foreground">
-            Tool calls and memory operations will appear here as the agent runs.
-          </p>
         </div>
       </div>
     );
@@ -359,7 +341,7 @@ function MessageView({ message }: { message: Message }) {
         )}
         {message.error && (
           <p className="rounded border border-destructive/30 bg-destructive/5 px-2 py-1 text-xs text-destructive">
-            ⚠ {message.error}
+            {message.error}
           </p>
         )}
       </div>

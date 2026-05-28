@@ -59,6 +59,7 @@
   },
   "files": [
     "src",
+    "admin/dist",
     "LICENSE",
     "README.md",
     "CHANGELOG.md"

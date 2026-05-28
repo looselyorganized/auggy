@@ -66,6 +66,7 @@ export interface CsrfToken {
 
 export interface AgentCardLite {
   provider: { name: string; description?: string };
+  purpose?: string;
   capabilities?: Record<string, unknown>;
   skills?: Array<{ name: string; description?: string; category?: string }>;
 }
@@ -81,6 +82,10 @@ export interface AgentMeta {
   id?: string;
   name?: string;
   purpose?: string;
+  engine?: {
+    provider?: string;
+    model?: string;
+  };
   operators?: string[];
   identityPath?: string;
 }

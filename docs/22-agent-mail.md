@@ -2,7 +2,7 @@
 
 **Status:** Phase A (outbound) — shipping. Phase B (WebSocket / polling inbound) and Phase C (Svix-verified webhook inbound) tracked separately.
 
-Sends email through AgentMail with per-peer trust gating, recipient allowlist, rate limits, dedup, sensitive-content auditing, and an admin panel. Exposes three model-facing tools whose names align with AgentMail's MCP standard: `send_message`, `reply_to_message`, `forward_message`.
+Sends email through AgentMail with per-peer trust gating, recipient allowlist, rate limits, dedup, sensitive-content auditing, and console API status blocks. Exposes three model-facing tools whose names align with AgentMail's MCP standard: `send_message`, `reply_to_message`, `forward_message`.
 
 ## When to use
 
@@ -97,9 +97,11 @@ augments:
 | **Rate limits** | Global cap per hour + per-recipient cooldown + subject-hash dedup. Creator (and null/system peer) bypass. |
 | **Sensitive scan** | Bodies containing token shapes (`am_`/`sk-`/`xoxb-`/`eyJ`/`gh[ousr]_`/`AKIA…`) are flagged in the admin ring buffer but the send proceeds. The model is taught (via the bundled skill) what to omit. |
 
-## Admin info
+## Console/API info
 
-The `/admin` panel surfaces:
+AgentMail exposes admin-info blocks to the console dashboard API. The v1
+chat-first console does not render these as top-level controls by default.
+Future developer surfaces can show:
 
 - Masked API key, inbox ID, current global cap (yaml vs override), allowed trust levels, recipient allowlist size
 - Last 50 dispatches with timestamp / tool / status / **redacted** recipients / subject
@@ -114,7 +116,7 @@ Recipients in the audit table are redacted (`al***@example.com (+2)`) so the adm
 | Boot error: `AGENTMAIL_API_KEY is unresolved` | `.env` missing the var | Set `AGENTMAIL_API_KEY=am_…` in `.env`, restart |
 | Boot error: `healthcheck failed with HTTP 401` | Wrong API key | Verify the key in [console.agentmail.to](https://console.agentmail.to) |
 | Tool returns `failed: trust level "public" is not permitted` | Anonymous visitor asked the agent to send | Either ignore (correct) or add `agent`/`public` to `outbound.allowedTrustLevels` if you really want broader access |
-| Tool returns `rate_limited` on every send | Global cap or dedup window misconfigured | Bump `globalMaxPerHour` via `/admin` or `outbound.rateLimit.globalMaxPerHour` |
+| Tool returns `rate_limited` on every send | Global cap or dedup window misconfigured | Set `outbound.rateLimit.globalMaxPerHour` |
 | Audit table shows `⚠` marker | Body contained a token-shaped string | Read the dispatch detail — operator's job to nudge the model toward better behavior |
 
 ## What this augment does NOT do (yet)

@@ -45,6 +45,10 @@ interface AgentMeta {
   id?: string;
   name?: string;
   purpose?: string;
+  engine?: {
+    provider?: string;
+    model?: string;
+  };
   operators?: string[];
   identityPath?: string;
 }
@@ -61,6 +65,19 @@ function readAgentMeta(agentDir: string | undefined): AgentMeta | null {
       id: typeof r.id === "string" ? r.id : undefined,
       name: typeof r.name === "string" ? r.name : undefined,
       purpose: typeof r.purpose === "string" ? r.purpose : undefined,
+      engine:
+        r.engine && typeof r.engine === "object" && !Array.isArray(r.engine)
+          ? {
+              provider:
+                typeof (r.engine as Record<string, unknown>).provider === "string"
+                  ? ((r.engine as Record<string, unknown>).provider as string)
+                  : undefined,
+              model:
+                typeof (r.engine as Record<string, unknown>).model === "string"
+                  ? ((r.engine as Record<string, unknown>).model as string)
+                  : undefined,
+            }
+          : undefined,
       operators: Array.isArray(r.operators)
         ? r.operators.filter((o): o is string => typeof o === "string")
         : undefined,

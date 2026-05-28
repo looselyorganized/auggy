@@ -1,4 +1,7 @@
 import { describe, expect, it } from "bun:test";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { coerceInputs } from "@/transports/admin/admin-coerce";
 import {
   type AdminActionRegistry,
@@ -152,6 +155,42 @@ describe("handleAdminRoute — auth", () => {
     expect(body.card.provider.name).toBe("zip");
     expect(Array.isArray(body.blocks)).toBe(true);
     expect(Array.isArray(body.csrfTokens)).toBe(true);
+  });
+
+  it("GET /console/api/dashboard includes agent.yaml identity and engine metadata", async () => {
+    const agentDir = join(tmpdir(), `auggy-console-${crypto.randomUUID()}`);
+    mkdirSync(agentDir, { recursive: true });
+    writeFileSync(
+      join(agentDir, "agent.yaml"),
+      [
+        "id: agent_123",
+        "name: Zip",
+        "purpose: Help the operator ship.",
+        "engine:",
+        "  provider: anthropic",
+        "  model: claude-sonnet-4-6",
+      ].join("\n"),
+    );
+
+    const req = new Request("http://127.0.0.1:8080/console/api/dashboard", {
+      headers: { authorization: basicHeader("test-bearer") },
+    });
+    const res = await handleAdminRoute(req, await makeCtx({ agentDir }));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      agentMeta: {
+        id?: string;
+        name?: string;
+        purpose?: string;
+        engine?: { provider?: string; model?: string };
+      };
+    };
+    expect(body.agentMeta).toEqual({
+      id: "agent_123",
+      name: "Zip",
+      purpose: "Help the operator ship.",
+      engine: { provider: "anthropic", model: "claude-sonnet-4-6" },
+    });
   });
 
   it("GET /admin from non-loopback over http → 426", async () => {

@@ -698,23 +698,36 @@ CIDR ranges are not yet supported (v1 keeps it simple); list the exact IPs.
 - Routes are frozen at `agent.start()` — no dynamic add/remove during runtime.
 - Per-route auth schemes are `bearer | none` only. For OAuth/HMAC/custom schemes, augments wrap their handler with the additional check.
 
-## The `/admin` route (G36)
+## The `/console` route
 
-The built-in `/admin` route gives the creator a single HTTP surface for inspecting and tuning every augment that declares an `adminInfo()` contract. Composable across augments: the route lives in `webTransport` and dispatches; each augment owns its block.
+The built-in `/console` route gives the creator a chat-first browser surface
+for one running agent. `/console` redirects to `/console/chat`; the visible v1
+UI is chat plus a compact Details dialog for agent identity, URLs, engine, and
+diagnostics. See [`docs/21-console.md`](./21-console.md).
+
+The older `adminInfo()` composition API still backs JSON endpoints and
+augment-owned action dispatch. Those endpoints are intentionally not exposed as
+top-level v1 tabs.
 
 ### Surface
 
 | Method | Path | Purpose |
 |---|---|---|
-| `GET` | `/admin` | Server-rendered dashboard (HTML). One block per augment that declares `adminInfo()`. |
-| `POST` | `/admin/action/<id>` | Augment-level action dispatch. CSRF-protected. |
-| `POST` | `/admin/action/<id>/row/<rowKey>` | Row-scoped action (table `rowActions`, keyValue `resetAction`s). |
+| `GET` | `/console` | SPA shell; redirects client-side to `/console/chat`. |
+| `GET` | `/console/chat` | Chat surface. |
+| `GET` | `/console/api/dashboard` | Agent card, agent metadata, augment summaries, CSRF tokens, and admin blocks for future developer tools. |
+| `POST` | `/console/api/chat` | CSRF-protected chat proxy to `/agent/run`. |
+| `POST` | `/console/action/<id>` | Augment-level action dispatch. CSRF-protected. |
+| `POST` | `/console/action/<id>/row/<rowKey>` | Row-scoped action dispatch. CSRF-protected. |
 
-`HEAD /admin` returns 405 with `Allow: GET, POST`. Any other method on an `/admin*` path returns 405 as well.
+`HEAD /console` returns 405 with `Allow: GET, POST`. Other unsupported methods
+on the console surface return 405.
 
 ### Opt-out
 
-Set `adminRoute: false` in `webTransport(opts)` to disable the surface entirely. When disabled, requests against any `/admin*` path fall through to the 404 handler — there is no signal that an `/admin` route ever existed. Operators with a custom admin surface or security-conscious deploys can use this to suppress the bearer-as-password seam.
+Set `adminRoute: false` in `webTransport(opts)` to disable the console surface
+entirely. When disabled, requests against `/console` fall through to the 404
+handler.
 
 ### Auth
 
@@ -733,17 +746,19 @@ When the caller IP is not loopback (not in `127.0.0.0/8`, not `::1`, not IPv4-ma
 The body is a plain-text guidance message (transcribed from `src/transports/admin/admin-auth.ts`):
 
 ```
-/admin requires HTTPS on non-loopback addresses.
+/console requires HTTPS on non-loopback addresses.
 
 Options:
   1. Configure HTTPS termination in front of this agent.
-  2. Access via http://127.0.0.1:<port>/admin from the agent host.
+  2. Access via http://127.0.0.1:<port>/console from the agent host.
   3. SSH tunnel: ssh -L <port>:127.0.0.1:<port> user@host
 ```
 
 ### CSRF
 
-Every POST against `/admin/action/*` requires a `_csrf` token in the form body.
+Every POST against `/console/action/*` requires a `_csrf` token in the form
+body. `POST /console/api/chat` requires a JSON `csrf` token bound to the
+`console-chat` action.
 
 Tokens are HMAC-SHA256 over `<agentName>|<unix-ts>|<actionId>|<rowKey-or-empty>`, signed with the bearer. Format: `<base64url(sig)>.<unix-ts>`.
 
@@ -754,11 +769,14 @@ Tokens are HMAC-SHA256 over `<agentName>|<unix-ts>|<actionId>|<rowKey-or-empty>`
 | Row binding | A row-scoped token tied to `rowKey=vis_a` will not validate for `rowKey=vis_b`. |
 | Expiry | 24h (`CSRF_TTL_SECONDS = 24 * 3600`); future-skew tolerance 60s. |
 
-Validation returns a rich result: `{valid: true}` or `{valid: false; reason: "expired" | "tampered" | "malformed"}`. **Expired** tokens return `200 OK` with an HTML meta-refresh back to `/admin` (graceful UX — the operator's session timed out; give them a fresh CSRF on reload). **Tampered** and **malformed** return `403`.
+Validation returns a rich result: `{valid: true}` or `{valid: false; reason: "expired" | "tampered" | "malformed"}`. **Expired** action tokens return `200 OK` with an HTML meta-refresh back to `/console`. **Tampered** and **malformed** return `403`.
 
 ### Rate limiting
 
-Per-IP combined rate limit across the entire `/admin*` surface: **60 requests / minute**, synthetic route-key `"admin"`. Defeats brute-force against HTTP Basic. Returns `429` with `Retry-After`. Honors `trustedProxies` for `X-Forwarded-For` (same machinery as augment-registered routes).
+Per-IP combined rate limit across the console surface: **60 requests / minute**,
+synthetic route-key `"admin"` for compatibility with existing internals.
+Returns `429` with `Retry-After`. Honors `trustedProxies` for
+`X-Forwarded-For`.
 
 ### Composition — the `adminInfo()` contract
 
@@ -774,7 +792,7 @@ interface Augment {
 
 `adminInfo()` returns a block of section primitives:
 
-- **`keyValue`** — labelled rows with optional `source` annotation (`yaml` / `env` / `/admin override`) and optional `resetAction`. Used for live posture display and operator-tunable knobs.
+- **`keyValue`** — labelled rows with optional `source` annotation (`yaml` / `env` / `/console override`) and optional `resetAction`. Used for live posture display and operator-tunable knobs.
 - **`table`** — columnar rows with optional `rowActions` (per-row buttons; rowKey extracted from a chosen column index).
 - **`status`** — single-line status with `level: "ok" | "info" | "warn" | "error"`.
 - **`eventStream`** — recent-events stream (currently rendered as a table; reserved for the deferred Tier-2 telemetry pipeline).
@@ -785,7 +803,7 @@ At boot, `buildAdminActionRegistry` walks every mounted augment's `adminInfo()` 
 
 ### Persistence — `admin-overrides.json`
 
-Three runtime-mutable knobs persist across restart via `<agentDir>/admin-overrides.json`:
+Runtime-mutable knobs persist across restart via `<agentDir>/admin-overrides.json`:
 
 | Knob | Owning augment | Override action | Reset action |
 |---|---|---|---|
@@ -811,35 +829,30 @@ Currently NOT logged: rejected POSTs (CSRF failure, unknown action id, input coe
 
 ### Reserved paths
 
-`/admin` is reserved — augments cannot register routes there. The route collector enforces both exact path collisions AND a scoped prefix block (`/admin/*` cannot be claimed by augment routes via `RESERVED_PREFIXES = ["/admin/"]`). Without this, an augment could shadow the dispatcher.
+`/console` is reserved; augments cannot register routes there. The route
+collector enforces both exact path collisions and the scoped `/console/`
+prefix.
 
 ### Operator workflow
 
 ```bash
-# Set up agent with admin enabled (default).
+# Set up agent with console enabled (default).
 auggy create my-agent
-# Edit my-agent/agent.yaml: ensure webTransport.adminRoute: true (default).
 
 # Start the agent.
-auggy dev my-agent
+auggy run my-agent
 
-# Hit /admin (assuming bearer in $AUGGY_BEARER).
-curl -u :$AUGGY_BEARER http://localhost:8080/admin
+# Open the console.
+open http://localhost:8080/console/chat
 
 # From a remote host? SSH tunnel first — the HTTPS gate blocks non-loopback over HTTP.
 ssh -L 8080:127.0.0.1:8080 my-host
-# Then curl as above.
-
-# Flip the posture? Easier via the rendered HTML form than raw curl — the form
-# includes the CSRF token. For scripted use, parse the token from the GET response
-# and POST it back.
 ```
 
 ### What's not in v1
 
-- **Live updates** — the dashboard is request/response; no SSE or polling. Page refresh required to see new events. (Tier-2 telemetry pipeline.)
-- **Pagination** — tables cap at 50 rows. Operators with more than 50 verified visitors / memory entries / peers-with-spend see only the most recent.
-- **Operator chat surface** — chatting with the agent from `/admin` is filed as G36-followup (Tier-2). The Local GUI (`auggy chat`) remains the primary way to interact with running agents.
+- **Config/admin tabs** — deferred until adopter signal proves they belong in the browser.
+- **Pagination-heavy inspectors** — memory, visitors, traces, and manifest browsers are post-v1.
 - **Multiple operators** — single bearer = single creator. Operator delegation is out of scope.
 - **Action audit file** — `console.log` only.
 

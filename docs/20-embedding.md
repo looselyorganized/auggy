@@ -4,7 +4,7 @@
 
 **Why no recipe?** A copy-paste integration recipe is a security-sensitive artifact at the adopter's application layer (origin policy, CSRF gates, cookie domain, token storage, framework idioms). The right shape for those decisions depends on the adopter's stack and topology. Auggy ships clean primitives; you compose them.
 
-**Creator-side chat (skip this doc):** if you want to chat with your own agent, use `auggy chat` (Local GUI) or `telegramTransport` (mobile). See `docs/15-chat.md` and `docs/14-telegram-transport.md`. The future operator-browser surface is G36 `/admin`.
+**Creator-side chat (skip this doc):** if you want to chat with your own agent, use `auggy run <name>` and open `/console/chat`, or use `telegramTransport` for mobile. See `docs/21-console.md` and `docs/14-telegram-transport.md`.
 
 **Visitor-side chat (this doc):** the contract a visitor-facing frontend must satisfy to talk to a running Auggy agent.
 
@@ -114,10 +114,8 @@ This doc deliberately doesn't pick one — the right choice depends on your stac
 
 For creator-side chat (the operator chatting with their own agent), Auggy ships two surfaces today:
 
-- **`auggy chat`** — Local GUI (Vite/React SPA + Bun proxy on `127.0.0.1`). Discovers running agents via PID manifests. See `docs/15-chat.md`.
+- **`/console/chat`** — per-agent browser chat opened by `auggy run <name>`. See `docs/21-console.md`.
 - **`telegramTransport`** — Telegram bot, polling or webhook mode. See `docs/14-telegram-transport.md`.
-
-Future: G36 `/admin` route adds an in-browser operator surface using HTTP basic auth with the bearer as password. Designed; not yet shipped.
 
 ---
 
@@ -142,6 +140,6 @@ If you change webTransport identity resolution or visitorAuth's upgrade flow, ru
 
 - **Wire protocol details**: [`docs/06-transports.md`](./06-transports.md) — full AG-UI event shape, all four identity paths in depth, allowAnonymous resolution.
 - **Visitor recognition flow**: [`docs/19-visitor-auth.md`](./19-visitor-auth.md) — magic-link verification, console-adapter for OSS testing, production safeguards.
-- **Operator-side chat**: [`docs/15-chat.md`](./15-chat.md) (Local GUI) and [`docs/14-telegram-transport.md`](./14-telegram-transport.md) (Telegram).
+- **Operator-side chat**: [`docs/21-console.md`](./21-console.md) (browser console) and [`docs/14-telegram-transport.md`](./14-telegram-transport.md) (Telegram).
 - **G3 `allowAnonymous` posture**: [`docs/06-transports.md#anonymous-posture`](./06-transports.md#anonymous-posture).
 - **G34 console-mail-client**: [`docs/19-visitor-auth.md#console-mode-for-local-testing`](./19-visitor-auth.md#console-mode-for-local-testing).

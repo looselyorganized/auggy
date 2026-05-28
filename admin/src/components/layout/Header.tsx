@@ -1,16 +1,26 @@
 import { useEffect, useState } from "react";
-import { Sun, Moon, Monitor } from "lucide-react";
+import { Check, Copy, Info, Moon, Monitor, Sun } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
 import { apply, getTheme, setTheme, subscribeSystemTheme, type Theme } from "@/lib/theme";
+import type { DashboardData } from "@/lib/types";
 
 export interface HeaderProps {
   agentName: string;
   agentDescription?: string;
   port?: number;
   online: "online" | "offline" | "unknown";
+  dashboard: DashboardData | null;
 }
 
-export function Header({ agentName, agentDescription, port, online }: HeaderProps) {
+export function Header({ agentName, agentDescription, port, online, dashboard }: HeaderProps) {
   const [theme, setThemeState] = useState<Theme>(() => getTheme());
 
   useEffect(() => {
@@ -31,12 +41,13 @@ export function Header({ agentName, agentDescription, port, online }: HeaderProp
       : online === "offline"
         ? "bg-slate-400"
         : "bg-amber-500";
+  const modelLabel = formatModelLabel(dashboard);
 
   return (
-    <header className="flex h-14 items-center justify-between border-b bg-background px-4">
-      <div className="flex items-center gap-3 overflow-hidden">
+    <header className="flex h-14 items-center justify-between gap-3 border-b bg-background px-4">
+      <div className="flex min-w-0 items-center gap-3 overflow-hidden">
         <span className={`inline-block size-2 shrink-0 rounded-full ${dot}`} />
-        <div className="flex items-baseline gap-2 overflow-hidden">
+        <div className="flex min-w-0 items-baseline gap-2 overflow-hidden">
           <h1 className="truncate text-sm font-semibold">{agentName}</h1>
           {agentDescription && (
             <span className="truncate text-xs text-muted-foreground">
@@ -49,8 +60,14 @@ export function Header({ agentName, agentDescription, port, online }: HeaderProp
             :{port}
           </span>
         )}
+        {modelLabel && (
+          <span className="hidden shrink-0 rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground sm:inline">
+            {modelLabel}
+          </span>
+        )}
       </div>
-      <div className="flex items-center gap-1">
+      <div className="flex shrink-0 items-center gap-1">
+        <AgentDetailsButton dashboard={dashboard} online={online} />
         <Button
           variant="ghost"
           size="icon"
@@ -63,4 +80,132 @@ export function Header({ agentName, agentDescription, port, online }: HeaderProp
       </div>
     </header>
   );
+}
+
+function AgentDetailsButton({
+  dashboard,
+  online,
+}: {
+  dashboard: DashboardData | null;
+  online: HeaderProps["online"];
+}) {
+  const [copied, setCopied] = useState<string | null>(null);
+  const origin = typeof window === "undefined" ? "" : window.location.origin;
+  const publicUrl = origin || "unknown";
+  const agentCardUrl = origin ? `${origin}/.well-known/agent-card.json` : "";
+  const healthUrl = origin ? `${origin}/health` : "";
+  const agentName = dashboard?.agentMeta?.name ?? dashboard?.card.provider.name ?? "auggy";
+  const agentId = dashboard?.agentMeta?.id;
+  const purpose = dashboard?.agentMeta?.purpose ?? dashboard?.card.purpose;
+  const modelLabel = formatModelLabel(dashboard);
+  const transports = dashboard?.augments.filter((a) => a.isTransport).map((a) => a.type) ?? [];
+  const augmentCount = dashboard?.augments.length ?? 0;
+
+  async function copy(label: string, value: string) {
+    if (!value || typeof navigator === "undefined") return;
+    await navigator.clipboard.writeText(value);
+    setCopied(label);
+    window.setTimeout(() => setCopied((current) => (current === label ? null : current)), 1200);
+  }
+
+  const diagnostics = [
+    `agent=${agentName}`,
+    agentId ? `id=${agentId}` : undefined,
+    modelLabel ? `engine=${modelLabel}` : undefined,
+    `status=${online}`,
+    publicUrl ? `url=${publicUrl}` : undefined,
+    `augments=${dashboard?.augments.map((a) => a.type).join(",") ?? ""}`,
+  ]
+    .filter(Boolean)
+    .join("\n");
+
+  return (
+    <Dialog>
+      <DialogTrigger asChild>
+        <Button variant="ghost" size="icon" aria-label="Agent details" title="Agent details">
+          <Info className="size-4" />
+        </Button>
+      </DialogTrigger>
+      <DialogContent className="max-w-xl">
+        <DialogHeader>
+          <DialogTitle>{agentName}</DialogTitle>
+          {purpose && <DialogDescription>{purpose}</DialogDescription>}
+        </DialogHeader>
+
+        <div className="space-y-4 text-sm">
+          <DetailGrid
+            rows={[
+              ["Status", online],
+              ["Engine", modelLabel ?? "unknown"],
+              ["Agent UUID", agentId ?? "not set"],
+              ["Runtime URL", publicUrl],
+              ["Agent card", agentCardUrl],
+              ["Health", healthUrl],
+              ["Transports", transports.length > 0 ? transports.join(", ") : "none reported"],
+              ["Augments", String(augmentCount)],
+            ]}
+            onCopy={copy}
+            copied={copied}
+          />
+
+          <div className="flex justify-end">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => void copy("diagnostics", diagnostics)}
+            >
+              {copied === "diagnostics" ? (
+                <Check className="mr-2 size-4" />
+              ) : (
+                <Copy className="mr-2 size-4" />
+              )}
+              Copy diagnostics
+            </Button>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function DetailGrid({
+  rows,
+  copied,
+  onCopy,
+}: {
+  rows: Array<[string, string]>;
+  copied: string | null;
+  onCopy: (label: string, value: string) => void | Promise<void>;
+}) {
+  return (
+    <div className="divide-y rounded-md border">
+      {rows.map(([label, value]) => (
+        <div key={label} className="grid grid-cols-[7rem_1fr_auto] items-center gap-3 px-3 py-2">
+          <div className="text-xs font-medium text-muted-foreground">{label}</div>
+          <div className="min-w-0 truncate font-mono text-xs" title={value}>
+            {value}
+          </div>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="size-7"
+            onClick={() => void onCopy(label, value)}
+            aria-label={`Copy ${label}`}
+            title={`Copy ${label}`}
+          >
+            {copied === label ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
+          </Button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function formatModelLabel(dashboard: DashboardData | null): string | null {
+  const provider = dashboard?.agentMeta?.engine?.provider;
+  const model = dashboard?.agentMeta?.engine?.model;
+  if (provider && model) return `${provider} / ${model}`;
+  if (provider) return provider;
+  if (model) return model;
+  return null;
 }

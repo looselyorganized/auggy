@@ -20,7 +20,7 @@ be done before v1.0 cuts. Items are not just CLI niceties — they're
 the production-readiness story.
 
 - **[walkthrough]** Run end-to-end DX walkthrough — `auggy create → run → chat → visitor-auth → memory → notify → deploy`. Includes error-path coverage, security-eval check, observability spot-check, all surfaces actually used by a fresh operator. *Currently active; the gate everything else defers to.* (G8)
-- **[console]** Operator console SPA at `/console` with seven tabs — **Chat / Identity / Skills / Credentials / Budget / Security / Augments**. Replaces the G36 server-rendered HTML AND the standalone `auggy chat`. Server-side history persistence, bearer-attached SSE proxy, AG-UI rendering, sidebar visibility derived from installed augments, Augments-as-composition-registry pattern. Per `docs/21-console.md`. *Implementation in flight on `feat/chat-ui-iteration` (PR #81); ~8400 LOC.* (G36 SPA evolution; renamed from /admin to /console for the operator-workbench framing)
+- **[console]** Chat-first `/console` surface. `/console` redirects to `/console/chat`; the first screen is chat plus a compact Details dialog for agent identity, URLs, engine, transport summary, and copy diagnostics. Config/admin tabs are deferred until adopter signal proves they belong in the browser. Per `docs/21-console.md`.
 - **[chat]** Minimal info endpoint at `GET /` when no `publicFrontendUrl` is set. Replaces the current 404 with a small HTML response (agent name, agent-card link, "this is an Auggy agent backend" tagline). (G2 revised)
 - **[examples]** `examples/concierge/` — vertical web-channel example (boutique store website chat + stubbed inventory + visitor-auth + notify-to-operator). Demonstrates the augment composition pattern with a concrete domain that maps to the v1.0 thesis. (G7)
 - **[deploy]** Verify `auggy deploy <name>` works end-to-end on a fresh adopter machine. Doc the limits, the manual steps that remain, the recovery path on failure.
@@ -36,9 +36,9 @@ Items that ship in the weeks after v1.0 launch. **Order is not
 committed** — adopter signal reorders the list. Pick the next item
 based on which friction got loudest in the first 50 adopters.
 
-### Operator surfaces (CLI + admin)
+### Operator surfaces (CLI + console)
 
-- **[console]** Additional `/console` tab(s), driven by adopter signal. Candidates (in rough likelihood order): Memory browser, Traces / event stream, Manifest viewer. Promotion bar in `docs/21-console.md`.
+- **[console]** Additional `/console` developer surfaces, driven by adopter signal. Candidates: Memory browser, trace/event inspector, manifest viewer, skills editor, credentials editor.
 - **[budgets]** `auggy spend` command — current spend by trust tier from CLI. Today operators query SQLite directly. (G9)
 - **[budgets]** Budget-threshold notify integration — fire `notify` at 80% / 100% of `dailyBudgetUsd`. (G10)
 - **[memory]** `auggy memory <agent> [--peer X]` — inspect/audit memory entries from CLI. Visually distinguishes agent-derived from creator-confirmed facts. Required for right-to-erasure verification. (G14)
