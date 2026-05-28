@@ -95,6 +95,7 @@ augments:
 | `auggy create <name>` | Scaffold agent directory (interactive augment selection) |
 | `auggy add <name>` | Add augments to an existing agent |
 | `auggy run <name>` | Run locally and open `/console/chat` |
+| `auggy doctor <name>` | Check whether an agent is ready to run |
 | `auggy dev <name>` | Run in foreground (Ctrl-C stops) |
 | `auggy start <name>` | Install as launchd service (always-on) |
 | `auggy stop <name>` | Stop a running agent |

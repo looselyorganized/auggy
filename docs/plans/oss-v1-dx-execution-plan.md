@@ -106,7 +106,7 @@ Acceptance:
 - First boot with an empty `.env` tells the operator exactly where to add the
   key and which command to run next.
 
-### 3. Add `auggy doctor <name>`
+### 3. Add `auggy doctor <name>` *(implemented 2026-05-28)*
 
 Behavior:
 

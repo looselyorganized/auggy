@@ -7,6 +7,7 @@
  *   auggy add <name>                 Add augments to an existing agent
  *   auggy add-skill <augment>        Install a bundled skill into an agent
  *   auggy run <name> [--no-open]     Run agent in foreground; opens /console/chat by default
+ *   auggy doctor <name>              Check whether an agent is ready to run
  *   auggy dev <name> [--open]        Run agent in foreground; --open pops /console in browser
  *   auggy start <name> [--config]    Install as launchd service (always-on)
  *   auggy stop <name>                Stop a running agent
@@ -25,6 +26,7 @@ import { runCreate } from "./commands/create";
 import { runAdd } from "./commands/add";
 import { addSkillCommand } from "./commands/add-skill";
 import { runCommand } from "./commands/run";
+import { doctorCommand } from "./commands/doctor";
 import { runDev } from "./commands/dev";
 import { runStart } from "./commands/start";
 import { runStop } from "./commands/stop";
@@ -69,6 +71,7 @@ export function buildCli(): Command {
 
   program.addCommand(addSkillCommand());
   program.addCommand(runCommand());
+  program.addCommand(doctorCommand());
 
   program
     .command("dev <name>")

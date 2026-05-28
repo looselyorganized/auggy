@@ -1,0 +1,254 @@
+/**
+ * `auggy doctor <name>` — local readiness checks for an agent.
+ *
+ * Doctor does not boot the agent. It validates the setup pieces that most
+ * often block `create -> run`: config resolution/parsing, per-agent package
+ * install, web port availability, and bundled skills.
+ */
+
+import { existsSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { createServer } from "node:net";
+import { Command } from "commander";
+import { parseConfig } from "../config-parser";
+import { resolveConfigPath } from "../resolve-config";
+import { PROVIDER_TO_PACKAGE } from "../scaffold-package-json";
+import { AUGMENT_CATALOG } from "../augment-catalog";
+import { augmentFolderForType } from "../scaffold-skills";
+import type { AugmentConfig, ParsedConfig } from "../types";
+
+export type DoctorStatus = "pass" | "warn" | "fail";
+
+export interface DoctorCheck {
+  name: string;
+  status: DoctorStatus;
+  message: string;
+  fix?: string;
+}
+
+export interface DoctorOptions {
+  config?: string;
+  auggyDir?: string;
+  isPortAvailable?: (port: number) => Promise<boolean>;
+}
+
+export interface DoctorCommandDeps {
+  runDoctor?: (name: string, opts: DoctorOptions) => Promise<DoctorCheck[]>;
+  exit?: (code: number) => void;
+}
+
+export async function runDoctor(name: string, opts: DoctorOptions = {}): Promise<DoctorCheck[]> {
+  const checks: DoctorCheck[] = [];
+
+  let configPath: string;
+  try {
+    configPath = resolveConfigPath(name, opts.config, { auggyDir: opts.auggyDir });
+    checks.push({
+      name: "config path",
+      status: "pass",
+      message: configPath,
+    });
+  } catch (err) {
+    checks.push({
+      name: "config path",
+      status: "fail",
+      message: (err as Error).message,
+      fix: `Run \`auggy create ${name}\` or pass \`--config <path>\`.`,
+    });
+    return checks;
+  }
+
+  const agentDir = dirname(configPath);
+
+  let config: ParsedConfig;
+  try {
+    config = parseConfig(configPath);
+    checks.push({
+      name: "agent.yaml",
+      status: "pass",
+      message: `parsed ${config.name}`,
+    });
+  } catch (err) {
+    checks.push({
+      name: "agent.yaml",
+      status: "fail",
+      message: (err as Error).message,
+    });
+    return checks;
+  }
+
+  checks.push(checkPackageManifest(agentDir));
+  checks.push(...checkAgentDependencies(agentDir, config));
+  checks.push(...(await checkWebPorts(config, opts.isPortAvailable ?? isPortAvailable)));
+  checks.push(...checkBundledSkills(agentDir, config.augments));
+
+  return checks;
+}
+
+function checkPackageManifest(agentDir: string): DoctorCheck {
+  const packagePath = join(agentDir, "package.json");
+  if (existsSync(packagePath)) {
+    return {
+      name: "package.json",
+      status: "pass",
+      message: packagePath,
+    };
+  }
+
+  return {
+    name: "package.json",
+    status: "fail",
+    message: `missing ${packagePath}`,
+    fix: "Re-run create for this agent, or add package.json with auggy + the selected engine adapter, then run bun install.",
+  };
+}
+
+function checkAgentDependencies(agentDir: string, config: ParsedConfig): DoctorCheck[] {
+  const packages = collectRequiredPackages(config);
+  return packages.map((pkg) => {
+    const packageRoot = join(agentDir, "node_modules", packageNameFromSpecifier(pkg));
+    if (existsSync(packageRoot)) {
+      return {
+        name: `dependency ${pkg}`,
+        status: "pass",
+        message: packageRoot,
+      };
+    }
+
+    return {
+      name: `dependency ${pkg}`,
+      status: "fail",
+      message: `missing ${packageRoot}`,
+      fix: `Run \`cd ${agentDir} && bun install\`.`,
+    };
+  });
+}
+
+function collectRequiredPackages(config: ParsedConfig): string[] {
+  const packages = new Set<string>(["auggy", PROVIDER_TO_PACKAGE[config.engine.provider]]);
+  for (const aug of config.augments) {
+    const entry = AUGMENT_CATALOG.find((e) => e.type === aug.type);
+    if (!entry?.packageDeps) continue;
+    for (const pkg of Object.keys(entry.packageDeps)) packages.add(pkg);
+  }
+  return [...packages].sort();
+}
+
+function packageNameFromSpecifier(specifier: string): string {
+  if (!specifier.startsWith("@")) return specifier.split("/")[0] ?? specifier;
+  const [scope, name] = specifier.split("/");
+  if (!scope || !name) return specifier;
+  return `${scope}/${name}`;
+}
+
+async function checkWebPorts(
+  config: ParsedConfig,
+  checkPort: (port: number) => Promise<boolean>,
+): Promise<DoctorCheck[]> {
+  const out: DoctorCheck[] = [];
+  for (const aug of config.augments) {
+    if (aug.type !== "webTransport") continue;
+    const port = aug.options?.port;
+    if (typeof port !== "number" || !Number.isInteger(port) || port <= 0) {
+      out.push({
+        name: `port ${aug.name}`,
+        status: "warn",
+        message: "webTransport has no concrete positive integer port to check",
+      });
+      continue;
+    }
+
+    const available = await checkPort(port);
+    if (available) {
+      out.push({
+        name: `port ${port}`,
+        status: "pass",
+        message: "available",
+      });
+    } else {
+      out.push({
+        name: `port ${port}`,
+        status: "fail",
+        message: "already in use",
+        fix: `Stop the process using port ${port}, or change webTransport.options.port in agent.yaml.`,
+      });
+    }
+  }
+  return out;
+}
+
+function checkBundledSkills(agentDir: string, augments: AugmentConfig[]): DoctorCheck[] {
+  const out: DoctorCheck[] = [];
+  for (const aug of augments) {
+    const folder = augmentFolderForType(aug.type);
+    if (!folder) continue;
+
+    const bundledSkillPath = resolve(import.meta.dir, "../../augments", folder, "skill", "SKILL.md");
+    if (!existsSync(bundledSkillPath)) continue;
+
+    const mountedSkillPath = join(agentDir, "skills", folder, "SKILL.md");
+    if (existsSync(mountedSkillPath)) {
+      out.push({
+        name: `skill ${folder}`,
+        status: "pass",
+        message: mountedSkillPath,
+      });
+    } else {
+      out.push({
+        name: `skill ${folder}`,
+        status: "warn",
+        message: `missing ${mountedSkillPath}`,
+        fix: `Run \`auggy add-skill ${folder} --agent ${nameForFix(agentDir)}\`, or re-add the augment.`,
+      });
+    }
+  }
+  return out;
+}
+
+function nameForFix(agentDir: string): string {
+  return agentDir.split(/[\\/]/).filter(Boolean).at(-1) ?? "<name>";
+}
+
+export async function isPortAvailable(port: number): Promise<boolean> {
+  return await new Promise((resolvePort) => {
+    const server = createServer();
+    server.once("error", () => resolvePort(false));
+    server.once("listening", () => {
+      server.close(() => resolvePort(true));
+    });
+    server.listen(port, "127.0.0.1");
+  });
+}
+
+export function hasDoctorFailures(checks: DoctorCheck[]): boolean {
+  return checks.some((c) => c.status === "fail");
+}
+
+export function formatDoctorChecks(checks: DoctorCheck[]): string {
+  return checks
+    .map((check) => {
+      const head = `${check.status.toUpperCase().padEnd(4)} ${check.name}: ${check.message}`;
+      return check.fix ? `${head}\n     fix: ${check.fix}` : head;
+    })
+    .join("\n");
+}
+
+export function doctorCommand(deps: DoctorCommandDeps = {}): Command {
+  const run = deps.runDoctor ?? runDoctor;
+  const exit = deps.exit ?? ((code: number) => process.exit(code));
+
+  return new Command("doctor")
+    .description("Check whether an agent is ready to run")
+    .argument("<name>", "agent name")
+    .option("--config <path>", "path to agent.yaml")
+    .action(async (name: string, opts: { config?: string }) => {
+      try {
+        const checks = await run(name, { config: opts.config });
+        console.log(formatDoctorChecks(checks));
+        exit(hasDoctorFailures(checks) ? 1 : 0);
+      } catch (err) {
+        console.error(`Error: ${(err as Error).message}`);
+        exit(1);
+      }
+    });
+}
