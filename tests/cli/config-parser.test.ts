@@ -516,6 +516,22 @@ describe("env var interpolation", () => {
     expect(() => interpolateEnvVars({ token: "${MISSING_VAR_XYZ}" })).toThrow("MISSING_VAR_XYZ");
   });
 
+  test("reports each missing env var once even when referenced multiple times", () => {
+    let caught: Error | null = null;
+    try {
+      interpolateEnvVars({
+        a: "${MISSING_DUPLICATE_VAR_XYZ}",
+        b: "${MISSING_DUPLICATE_VAR_XYZ}",
+      });
+    } catch (err) {
+      caught = err as Error;
+    }
+
+    expect(caught).not.toBeNull();
+    const matches = caught!.message.match(/MISSING_DUPLICATE_VAR_XYZ/g) ?? [];
+    expect(matches).toHaveLength(1);
+  });
+
   test("leaves non-string values unchanged", () => {
     const result = interpolateEnvVars({ num: 42, bool: true, nil: null });
     expect(result).toEqual({ num: 42, bool: true, nil: null });
@@ -822,7 +838,24 @@ describe("parseConfig — augmented missing-env-var error", () => {
     }
     expect(caught).not.toBeNull();
     expect(caught!.message).toMatch(/\.env/);
+    expect(caught!.message).toMatch(/Add values for the missing keys/);
     expect(caught!.message).not.toMatch(/cp .*\.env\.example/);
+  });
+
+  test("treats empty .env placeholder values as missing", () => {
+    const yamlPath = writeAgentYaml();
+    writeFileSync(join(dir, ".env"), "MISSING_TOKEN=\n");
+
+    let caught: Error | null = null;
+    try {
+      parseConfig(yamlPath);
+    } catch (err) {
+      caught = err as Error;
+    }
+
+    expect(caught).not.toBeNull();
+    expect(caught!.message).toContain("MISSING_TOKEN");
+    expect(caught!.message).toMatch(/Add values for the missing keys/);
   });
 
   test("includes .env path only (no cp) when neither file exists", () => {
@@ -849,7 +882,7 @@ describe("parseConfig — augmented missing-env-var error", () => {
     }
     expect(caught).not.toBeNull();
     // Should NOT contain the .env-suggestion suffix.
-    expect(caught!.message).not.toMatch(/Set them in the agent's \.env file/);
+    expect(caught!.message).not.toMatch(/Add values for the missing keys/);
   });
 });
 

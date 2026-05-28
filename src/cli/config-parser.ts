@@ -69,9 +69,24 @@ export function interpolateEnvVars(obj: unknown, path = ""): unknown {
   const missing: string[] = [];
   const result = walkAndInterpolate(obj, path, missing);
   if (missing.length > 0) {
-    throw new Error(`Missing environment variables:\n${missing.map((m) => `  - ${m}`).join("\n")}`);
+    const uniqueMissing = uniqueMissingEnvVars(missing);
+    throw new Error(
+      `Missing environment variables:\n${uniqueMissing.map((m) => `  - ${m}`).join("\n")}`,
+    );
   }
   return result;
+}
+
+function uniqueMissingEnvVars(missing: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const item of missing) {
+    const key = item.split(" (referenced in ")[0] ?? item;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(item);
+  }
+  return out;
 }
 
 function walkAndInterpolate(obj: unknown, path: string, missing: string[]): unknown {
@@ -1208,7 +1223,7 @@ function augmentMissingEnvError(originalMsg: string, agentDir: string): string {
       "Missing environment variables in agent.yaml:",
     ),
     "",
-    "Set them in the agent's .env file:",
+    "Add values for the missing keys to the agent's .env file:",
     `  ${envPath}`,
   ];
 

@@ -213,8 +213,9 @@ exists. Not now.
 
 ## Operator entry points
 
-- `auggy dev <name> --open` — boots the agent and opens `/console/chat`
+- `auggy run <name>` — boots the agent and opens `/console/chat`
   in the operator's default browser. The happy-path command.
+- `auggy dev <name> --open` — equivalent lower-level form.
 - `auggy dev <name>` — boots the agent foreground without launching a
   browser. For headless / scripted use.
 - `auggy list` — shows each agent's `/console` URL alongside name +

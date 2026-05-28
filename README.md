@@ -28,11 +28,10 @@ npm i -g auggy
 auggy create zip
 
 # Configure secrets
-cp zip/.env.example zip/.env
-# Add your API key to zip/.env
+# Add your provider API key to ~/.auggy/agents/zip/.env
 
-# Run locally (foreground)
-auggy dev zip
+# Run locally (foreground + opens chat)
+auggy run zip
 
 # Or install as a launchd service (macOS, always-on)
 auggy start zip
@@ -95,6 +94,7 @@ augments:
 |---------|-------------|
 | `auggy create <name>` | Scaffold agent directory (interactive augment selection) |
 | `auggy add <name>` | Add augments to an existing agent |
+| `auggy run <name>` | Run locally and open `/console/chat` |
 | `auggy dev <name>` | Run in foreground (Ctrl-C stops) |
 | `auggy start <name>` | Install as launchd service (always-on) |
 | `auggy stop <name>` | Stop a running agent |
