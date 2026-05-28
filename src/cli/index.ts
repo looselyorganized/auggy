@@ -16,7 +16,7 @@
  *   auggy status [name]              Show running agents
  *   auggy list                       List registered agents
  *   auggy remove <name> [--yes] [--cloud]  Delete an agent (dir + index, optionally Railway service)
- *   auggy deploy <name> --to railway       Deploy an agent to Railway
+ *   auggy deploy <name>             Deploy an agent to Railway
  *   auggy logs <name>               Show Railway logs for a deployed agent
  *   auggy chat                       Launch local GUI
  *   auggy eval [name]                Run portable security eval suite

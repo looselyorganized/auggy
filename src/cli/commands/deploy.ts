@@ -1,5 +1,5 @@
 /**
- * `auggy deploy <name> --to railway` command.
+ * `auggy deploy <name>` command.
  *
  * Orchestrates the first-deploy + redeploy flows:
  *

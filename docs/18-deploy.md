@@ -1,6 +1,6 @@
 # Deploying an Auggy agent to Railway
 
-This page covers `auggy deploy <name> --to railway` — the CLI path for shipping a single agent to Railway, the v1.0 cloud deployment target.
+This page covers `auggy deploy <name>` — the CLI path for shipping a single agent to Railway, the v1.0 cloud deployment target.
 
 If you're deploying locally as a launchd service (macOS), see [`auggy start`](./07-built-in-augments.md) instead.
 
@@ -22,28 +22,30 @@ If you're deploying locally as a launchd service (macOS), see [`auggy start`](./
 
 ```bash
 # 1. Make sure the agent runs locally
-auggy dev zip
+auggy run zip
 # (Ctrl-C to stop)
 
 # 2. Deploy to Railway
-auggy deploy zip --to railway
+auggy deploy zip
 ```
 
 The CLI walks you through:
 
-1. **Presence + auth checks** — confirms `railway` is installed and logged in.
-2. **Project ID prompt** — paste the project ID from the Railway dashboard URL (e.g. `proj_abc123`).
-3. **Bundle staging** — copies your agent directory minus `.env`, `*.db*`, `workspace/`, `node_modules/`, `.git/`, `.worktrees/`, `.claude/`, `.DS_Store`, `*.tmp` into a temp dir. The agent's `package.json` + `bun.lock` (per-agent manifest from v0.3.2) ARE included so the image can install your pinned deps.
-4. **Dockerfile + entrypoint generation** — written into the staging dir. Static; not operator-tunable at v1.0. The image copies `package.json` + `bun.lock` first, runs `bun install` to materialize `node_modules/` inside the image, then COPYs the rest of the agent dir; the entrypoint invokes `bunx auggy dev` so it uses the per-agent install rather than a global `auggy`.
-5. **Secrets diff + confirm** — shows what's about to be pushed to Railway (with values redacted). Decline aborts the deploy. Pass `--yes` to skip.
-6. **`railway link`** — connects the staging dir to your `<name>` service (auto-created if it doesn't exist in the project).
-7. **`railway volume add`** — provisions a persistent volume `<name>-data` mounted at `/app/data`. Holds all SQLite-backed state across redeploys.
-8. **`railway domain --generate`** — assigns a `<name>-production-xxxx.up.railway.app` URL.
-9. **Push env vars** — your `.env` entries + `AUGGY_PUBLIC_URL` (the just-generated URL) are pushed via `railway variables --set`.
-10. **`railway up --detach`** — uploads the bundle, kicks off the build and deploy.
-11. **Metadata write** — the cloud record lands in `~/.auggy/agents/zip/.auggy-cloud.json` so subsequent `auggy deploy zip` runs are idempotent redeploys.
+1. **Local preflight** — runs doctor-style checks for config, env placeholders, package manifest, and agent-local dependencies before touching Railway.
+2. **Presence + auth checks** — confirms `railway` is installed and logged in.
+3. **Project ID prompt** — paste the project ID from the Railway dashboard URL (e.g. `proj_abc123`).
+4. **Bundle staging** — copies your agent directory minus `.env`, `*.db*`, `workspace/`, `node_modules/`, `.git/`, `.worktrees/`, `.claude/`, `.DS_Store`, `*.tmp` into a temp dir. The agent's `package.json` + `bun.lock` are included so the image can install your pinned deps.
+5. **Dockerfile + entrypoint generation** — written into the staging dir. Static; not operator-tunable at v1.0. The image copies `package.json` + `bun.lock` first, runs `bun install` to materialize `node_modules/` inside the image, then COPYs the rest of the agent dir; the entrypoint invokes `bunx auggy dev` so it uses the per-agent install rather than a global `auggy`.
+6. **Secrets diff + confirm** — shows what's about to be pushed to Railway (with values redacted). Decline aborts the deploy. Pass `--yes` to skip.
+7. **`railway link`** — connects the staging dir to your `<name>` service (auto-created if it doesn't exist in the project).
+8. **`railway volume add`** — provisions a persistent volume `<name>-data` mounted at `/app/data`. Holds SQLite-backed state across redeploys.
+9. **`railway domain --generate`** — assigns a `<name>-production-xxxx.up.railway.app` URL.
+10. **Push env vars** — your `.env` entries + `AUGGY_PUBLIC_URL` (the just-generated URL) are pushed via `railway variables --set`.
+11. **`railway up --detach`** — uploads the bundle, kicks off the build and deploy.
+12. **Health verification** — polls `${url}/health` for a bounded window. Timeout is non-destructive; Railway may still finish booting.
+13. **Metadata write** — the cloud record lands in `~/.auggy/agents/zip/.auggy-cloud.json` so subsequent `auggy deploy zip` runs are idempotent redeploys.
 
-Follow the build in the [Railway dashboard](https://railway.com) or `railway logs`.
+Successful deploy output includes the public URL, `/health`, `/console`, and `/console/chat`. Follow later builds in the [Railway dashboard](https://railway.com) or with `auggy logs zip`.
 
 ---
 
@@ -52,7 +54,7 @@ Follow the build in the [Railway dashboard](https://railway.com) or `railway log
 A re-run of the same command IS the redeploy. There's no separate `redeploy` verb.
 
 ```bash
-auggy deploy zip --to railway
+auggy deploy zip
 ```
 
 What changes vs. first deploy:
@@ -60,7 +62,26 @@ What changes vs. first deploy:
 - Project ID is read from the existing `cloud` record — no prompt.
 - Volume is not re-added; the existing one is preserved.
 - Secrets are re-pushed (so updating `.env` and redeploying is the workflow).
+- `/health` is checked again after the build is queued.
 - `deployedAt` in the index is refreshed.
+
+---
+
+## Logs and recovery
+
+```bash
+auggy logs zip
+```
+
+`auggy logs` reads the stored Railway cloud record, links a temporary Railway workspace to the saved project/service, and streams `railway logs`.
+
+Use it when:
+
+- Deploy health verification times out.
+- Railway reports a crash loop.
+- You changed `.env` or `agent.yaml` and need boot diagnostics.
+
+If the agent has not been deployed yet, `auggy logs zip` fails with a local message and points you back to `auggy deploy zip`.
 
 ---
 
@@ -155,6 +176,8 @@ The Railway volume is **NOT** automatically deleted (Railway retains it as a saf
 | `Unauthorized. Run \`railway login\` first.` | Re-run `railway login` and follow the browser flow. |
 | `Agent "X" not registered` | Run `auggy create X` first, then `auggy deploy X`. |
 | First-deploy fails at `railway volume add` | The Railway project may not support volumes on the free tier. Upgrade or pick a different project. |
+| Deploy preflight fails before Railway work | Run `auggy doctor <name>` and fix the reported config/env/dependency issue. |
+| Health check does not pass after deploy | Run `auggy logs <name>` and inspect the boot error. The cloud record is still written, so redeploy with `auggy deploy <name> --yes` after fixing. |
 | visitorAuth refuses to boot — "publicUrl required" | Check that your agent.yaml has `publicUrl: ${AUGGY_PUBLIC_URL}` and the deploy actually generated a domain. Re-run `auggy deploy <name>` to refresh. |
 | Memory disappears after redeploy | Check the volume is mounted (Railway dashboard → service → Volumes). If empty, the symlink list in the Dockerfile may be missing your dbPath — check `src/cli/deploy/dockerfile.ts`'s `SQLITE_DB_NAMES`. |
 | Daily budget cap hit unexpectedly | autoSave extraction calls count against the cap. Run `evals/layered-memory/run.ts --smoke` to measure your per-extraction cost; lower the cadence in `agent.yaml`'s `layeredMemory.options.autoSave.extractionFrequency` if needed. |

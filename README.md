@@ -16,7 +16,7 @@
 
 Auggy (augment-1) is a modular agent runtime in TypeScript/Bun, purpose-built for **persistent organizational interface agents** — long-running, memory-rich, organization-facing. Agents are composed from swappable **augments**; the kernel manages context, tools, permissions, and lifecycle. Open source, multi-engine, self-hostable.
 
-**v0.3.1 on npm (2026-05-12)** — 12 built-in augments, 3 engines, 1840 tests, end-to-end Railway deploy via `auggy deploy <name> --to railway`. Agents boot from YAML, chat via AG-UI SSE, remember across restarts (peer-scoped layered memory with post-turn fact extraction), verify visitors via email magic links, fetch URLs, pull org knowledge, escalate to the operator, run scoped shell commands, and enforce per-trust-level turn budgets + dollar ceilings via a 2PC turn-gate kernel capability.
+**v0.3.1 on npm (2026-05-12)** — 12 built-in augments, 3 engines, 1840 tests, end-to-end Railway deploy via `auggy deploy <name>`. Agents boot from YAML, chat via AG-UI SSE, remember across restarts (peer-scoped layered memory with post-turn fact extraction), verify visitors via email magic links, fetch URLs, pull org knowledge, escalate to the operator, run scoped shell commands, and enforce per-trust-level turn budgets + dollar ceilings via a 2PC turn-gate kernel capability.
 
 ## Quick start
 
@@ -24,7 +24,7 @@ Auggy (augment-1) is a modular agent runtime in TypeScript/Bun, purpose-built fo
 # Install the CLI globally (requires Bun: https://bun.sh/install)
 npm i -g auggy
 
-# Create an agent (interactive augment selection)
+# Create a chat-ready agent
 auggy create zip
 
 # Configure secrets
@@ -36,12 +36,28 @@ auggy run zip
 # Or install as a launchd service (macOS, always-on)
 auggy start zip
 
-# Or deploy to the cloud (requires Railway CLI + `railway login`)
-auggy deploy zip --to railway
+# Add a built-in augment later, if needed
+auggy add zip visitor-auth
+
+# Create and install a local custom augment
+auggy augment create weather --dir ~/.auggy/agents/zip/augments/weather
+auggy augment test ~/.auggy/agents/zip/augments/weather
+auggy augment install zip ~/.auggy/agents/zip/augments/weather
+
+# Deploy to the cloud (requires Railway CLI + `railway login`)
+auggy deploy zip
+
+# Stream cloud logs
+auggy logs zip
 ```
 
 The `auggy` binary requires [Bun](https://bun.sh) at runtime. The package
 ships TypeScript sources; Bun executes them directly without a build step.
+
+Fresh agents include the local chat surface by default: identity shorthand,
+learned file memory, scoped filesystem + skills, web chat transport, web
+fetch, turn control, and budgets. After `create`, the only required first-run
+edit for hosted engines is the selected provider API key in the agent `.env`.
 
 > For local development against an in-progress branch, use the workspace install:
 > `git clone …augment-1 && cd augment-1 && bun install && bun link`.
@@ -99,11 +115,14 @@ augments:
 | `auggy augment create <slug>` | Scaffold a local custom augment |
 | `auggy augment install <name> <path>` | Install a local custom augment |
 | `auggy augment test <path>` | Validate a local custom augment |
+| `auggy deploy <name>` | Deploy to Railway |
+| `auggy logs <name>` | Stream Railway logs for a deployed agent |
 | `auggy dev <name>` | Run in foreground (Ctrl-C stops) |
 | `auggy start <name>` | Install as launchd service (always-on) |
 | `auggy stop <name>` | Stop a running agent |
 | `auggy restart <name>` | Stop and restart |
 | `auggy status [name]` | Show running agents |
+| `auggy remove <name> [--cloud]` | Delete a local agent, optionally destroying its Railway service |
 
 ## Built-in augments
 
@@ -129,7 +148,15 @@ augments:
 
 ## Custom augments
 
-Export a factory function from a `.ts` file:
+Scaffold, test, and install one with the CLI:
+
+```bash
+auggy augment create my-augment --dir ~/.auggy/agents/zip/augments/my-augment
+auggy augment test ~/.auggy/agents/zip/augments/my-augment
+auggy augment install zip ~/.auggy/agents/zip/augments/my-augment
+```
+
+The scaffold exports a factory function from `index.ts`:
 
 ```typescript
 import { defineAugment, defineTool } from "augment-1";

@@ -26,6 +26,21 @@ The selection is deliberate. Together they cover: identity, episodic memory, web
 
 The principle: Auggy ships the *contracts* (`MemoryProviderSpec`, `TransportSpec`) and a small set of *reference implementations* that prove the contracts work. Domain-specific augments are the user's responsibility.
 
+## Default `auggy create` profile
+
+Fresh agents are scaffolded for the shortest path to chat:
+
+- `fileMemory` learned-behavior store
+- `filesystem` with read-only `./skills` and writable `./workspace`
+- `webTransport` for `/console`, `/console/chat`, `/agent/run`, and `/health`
+- `webFetch`
+- `budgets`
+- `turnControl`
+
+The `skills` augment is runtime infrastructure and is auto-mounted when needed. `layeredMemory`, `visitorAuth`, `telegramTransport`, `manifest`, `bash`, `notify`, `agentMail`, and `link` remain opt-in via `auggy add <agent> <augment>` so first boot is not blocked by extra services or background extraction.
+
+`auggy add` installs the augment config, package dependencies, and bundled skill together. `auggy add-skill` is a repair/update command for restoring a bundled skill folder, not part of the normal install path.
+
 ### Augment-as-folder + bundled-skill convention
 
 Every built-in augment lives at `src/augments/<name>/index.ts` (folder shape, per [ADR-025](../../docs/solutions/architecture/adr-025-augment-folder-and-skill-bundling.md)). Augments that contribute model-callable tools ship a bundled `<name>/skill/SKILL.md` colocated in the same folder; `auggy create` and `auggy add` copy it to `<agent-dir>/skills/<name>/SKILL.md`, and `auggy add-skill <name>` installs it retroactively. A boot-time validator warns at agent startup if a tool-providing augment is mounted without a skill — applies to both factory-declared `tools[]` and namespace memory providers (kernel-synthesized `memory_*` tools). Tool-less augments (transports, static memory providers, admission gates) skip the skill folder.

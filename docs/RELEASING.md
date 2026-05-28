@@ -47,6 +47,7 @@ Just merge them. Don't touch `package.json.version`. Don't touch `CHANGELOG.md`'
 
 In a dedicated branch off `main` (name suggestion: `release/X.Y.Z`):
 
+- [ ] Run the cold-machine DX walkthrough below and paste the result into the PR description
 - [ ] Bump `package.json.version` (semver: patch for fixes, minor for additive features, major for breaking changes; pre-1.0 we treat minor bumps liberally for shipped features)
 - [ ] Update `CHANGELOG.md`:
   - Move `[Unreleased]` items into a new `[X.Y.Z] - YYYY-MM-DD` section
@@ -54,6 +55,60 @@ In a dedicated branch off `main` (name suggestion: `release/X.Y.Z`):
 - [ ] Push, open PR. The PR's title should be `release: vX.Y.Z` so it's obvious in history.
 - [ ] **Wait for `release-rehearsal` workflow to pass** — for this PR (because the version bumped) it runs ALL gates: lint/typecheck/test + version-vs-npm + `npm pack --dry-run`. If any is red, the real publish will fail too. Fix before merging.
 - [ ] Merge to `main` (squash; matches repo convention)
+
+### Cold-machine DX walkthrough
+
+This is the v1.0 release gate. Run it from a shell/profile that does not have an existing Auggy state directory. Do not skip the manual browser checks; this gate exists to catch first-run and packaging failures that unit tests miss.
+
+```bash
+mv ~/.auggy ~/.auggy.backup-$(date +%Y%m%d%H%M%S) 2>/dev/null || true
+npm i -g auggy
+auggy --version
+
+auggy create dx-smoke
+# Add the selected provider key to ~/.auggy/agents/dx-smoke/.env
+auggy doctor dx-smoke
+auggy run dx-smoke
+```
+
+Manual checks:
+
+- [ ] `/console/chat` opens in the browser
+- [ ] Sending a message returns a model response
+- [ ] Missing-provider-key failure, if reproduced, names the exact `.env` path and key
+
+Augment checks:
+
+```bash
+auggy add dx-smoke visitor-auth
+auggy doctor dx-smoke
+
+auggy augment create weather --dir ~/.auggy/agents/dx-smoke/augments/weather
+auggy augment test ~/.auggy/agents/dx-smoke/augments/weather
+auggy augment install dx-smoke ~/.auggy/agents/dx-smoke/augments/weather
+auggy doctor dx-smoke
+```
+
+Deploy checks:
+
+```bash
+railway login
+auggy deploy dx-smoke
+auggy logs dx-smoke
+```
+
+Manual checks:
+
+- [ ] Deploy output includes public URL, `/health`, `/console`, and `/console/chat`
+- [ ] Public `/health` returns success or `auggy logs dx-smoke` gives actionable boot errors
+- [ ] Public `/console/chat` opens
+- [ ] `auggy deploy dx-smoke --yes` works as a redeploy
+
+Cleanup:
+
+```bash
+auggy remove dx-smoke --cloud --yes
+```
 
 ### 2. Tag
 

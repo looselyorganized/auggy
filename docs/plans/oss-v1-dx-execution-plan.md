@@ -450,7 +450,7 @@ Acceptance:
 
 ## Phase 6: Docs And Release Gate
 
-### 15. Rewrite Quickstart Around Outcomes
+### 15. Rewrite Quickstart Around Outcomes *(implemented 2026-05-28)*
 
 Behavior:
 
@@ -475,7 +475,7 @@ Acceptance:
 
 - A new adopter can follow the docs without reading architecture first.
 
-### 16. Add Cold-Machine Walkthrough Gate
+### 16. Add Cold-Machine Walkthrough Gate *(implemented 2026-05-28)*
 
 Behavior:
 
