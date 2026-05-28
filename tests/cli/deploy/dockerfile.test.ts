@@ -30,8 +30,8 @@ describe("generateDockerfile", () => {
     expect(generateDockerfile({ agentName: "zip" })).toMatch(/COPY \. \/app/);
   });
 
-  test("declares a VOLUME at /app/data (Railway-mounted persistence)", () => {
-    expect(generateDockerfile({ agentName: "zip" })).toMatch(/VOLUME \["\/app\/data"\]/);
+  test("does not declare Docker VOLUME because Railway rejects it", () => {
+    expect(generateDockerfile({ agentName: "zip" })).not.toMatch(/\bVOLUME\b/);
   });
 
   test("exposes the webTransport port", () => {

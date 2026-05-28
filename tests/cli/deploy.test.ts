@@ -344,6 +344,32 @@ describe("runDeploy", () => {
     expect(promptCalled).toBe(false);
   });
 
+  test("uses task logger around long Railway operations", async () => {
+    const taskMessages: string[] = [];
+    const { cli } = mockRailwayCli();
+    await runDeploy(
+      "zip",
+      baseDeployOptions(cli, auggyDir, {
+        logger: {
+          info: () => {},
+          warn: () => {},
+          error: () => {},
+          task: async (message, run) => {
+            taskMessages.push(message);
+            return run();
+          },
+        },
+      }),
+    );
+
+    expect(taskMessages).toContain("Linking Railway project");
+    expect(taskMessages).toContain("Creating Railway service zip");
+    expect(taskMessages).toContain("Mounting Railway volume");
+    expect(taskMessages).toContain("Generating public Railway URL");
+    expect(taskMessages).toContain("Pushing 3 env var(s)");
+    expect(taskMessages).toContain("Queueing Railway build");
+  });
+
   test("health timeout warns but still records the deployment", async () => {
     const warnings: string[] = [];
     const { cli, calls } = mockRailwayCli();

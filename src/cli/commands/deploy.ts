@@ -36,6 +36,7 @@ export interface DeployLogger {
   info(msg: string): void;
   warn(msg: string): void;
   error(msg: string): void;
+  task?<T>(msg: string, run: () => Promise<T>): Promise<T>;
 }
 
 export interface DeployOptions {
@@ -132,7 +133,9 @@ export async function runDeploy(name: string, opts: DeployOptions): Promise<Depl
     const target = await opts.promptProjectTarget();
     if (target === "new") {
       const projectName = await opts.promptProjectName(name);
-      projectId = await opts.cli.createProject({ projectName, cwd: stagingDir });
+      projectId = await withProgress(opts, `Creating Railway project ${projectName}`, () =>
+        opts.cli.createProject({ projectName, cwd: stagingDir }),
+      );
       projectAlreadyLinked = true;
       opts.logger.info(`Created Railway project ${projectName} (${projectId}).`);
     } else {
@@ -166,57 +169,74 @@ export async function runDeploy(name: string, opts: DeployOptions): Promise<Depl
   // Redeploy: use the stored serviceId unless --service explicitly overrides.
   if (!isRedeploy) {
     if (!projectAlreadyLinked) {
-      await opts.cli.linkProject({ projectId, cwd: stagingDir });
+      await withProgress(opts, `Linking Railway project`, () =>
+        opts.cli.linkProject({ projectId, cwd: stagingDir }),
+      );
       opts.logger.info(`Linked staging dir to project ${projectId}.`);
     }
     if (opts.service) {
-      await opts.cli.linkService({ serviceName: opts.service, cwd: stagingDir });
+      await withProgress(opts, `Linking Railway service ${opts.service}`, () =>
+        opts.cli.linkService({ serviceName: opts.service!, cwd: stagingDir }),
+      );
       opts.logger.info(`Using existing Railway service ${opts.service}.`);
     } else {
-      await opts.cli.createService({ serviceName: name, cwd: stagingDir });
+      await withProgress(opts, `Creating Railway service ${name}`, () =>
+        opts.cli.createService({ serviceName: name, cwd: stagingDir }),
+      );
       opts.logger.info(`Created Railway service ${name}.`);
     }
   } else if (existingCloud) {
     const serviceName = opts.service ?? existingCloud.serviceId;
-    await opts.cli.link({ projectId, serviceName, cwd: stagingDir });
+    await withProgress(opts, `Linking Railway service ${serviceName}`, () =>
+      opts.cli.link({ projectId, serviceName, cwd: stagingDir }),
+    );
     opts.logger.info(`Linked staging dir to project ${projectId}, service ${serviceName}.`);
   }
 
   // 8) Volume: only add on first deploy. Redeploys keep the existing volume
   //    (Railway preserves it via the volumeId in the existing CloudRecord).
   if (!isRedeploy) {
-    await opts.cli.addVolume({
-      name: `${name}-data`,
-      mountPath: VOLUME_MOUNT_PATH,
-      cwd: stagingDir,
-    });
+    await withProgress(opts, `Mounting Railway volume`, () =>
+      opts.cli.addVolume({
+        name: `${name}-data`,
+        mountPath: VOLUME_MOUNT_PATH,
+        cwd: stagingDir,
+      }),
+    );
     opts.logger.info(`Volume "${name}-data" mounted at ${VOLUME_MOUNT_PATH}.`);
   }
 
   // 9) Generate (or recover) the public domain. Idempotent: second call
   //    returns the existing URL.
-  const url = await opts.cli.generateDomain({ cwd: stagingDir });
+  const url = await withProgress(opts, `Generating public Railway URL`, () =>
+    opts.cli.generateDomain({ cwd: stagingDir }),
+  );
   opts.logger.info(`Public URL: ${url}`);
 
   // 10) Push secrets (.env keys + AUGGY_PUBLIC_URL). D7: AUGGY_PUBLIC_URL must
   //    be set BEFORE `up` so visitorAuth sees the publicUrl on first boot.
-  for (const v of plan.variables) {
-    await opts.cli.setVariable({ key: v.key, value: v.value, cwd: stagingDir });
-  }
-  await opts.cli.setVariable({ key: "AUGGY_PUBLIC_URL", value: url, cwd: stagingDir });
+  await withProgress(opts, `Pushing ${plan.variables.length + 1} env var(s)`, async () => {
+    for (const v of plan.variables) {
+      await opts.cli.setVariable({ key: v.key, value: v.value, cwd: stagingDir });
+    }
+    await opts.cli.setVariable({ key: "AUGGY_PUBLIC_URL", value: url, cwd: stagingDir });
+  });
   opts.logger.info(`Pushed ${plan.variables.length + 1} env var(s) to Railway.`);
 
   // 11) Trigger the build + deploy. --detach so we return without tailing
   //     build logs; operator follows progress via Railway UI / `railway logs`.
-  await opts.cli.up({ cwd: stagingDir });
+  await withProgress(opts, `Queueing Railway build`, () => opts.cli.up({ cwd: stagingDir }));
   opts.logger.info(`Build queued.`);
 
   // 12) Verify the public health endpoint. Timeout is non-destructive: the
   //     deploy may still finish, but the operator needs recovery commands.
+  const healthCheckOptions = opts.healthCheck === false ? undefined : opts.healthCheck;
   const health =
     opts.healthCheck === false
       ? { ok: false, url: new URL("/health", ensureTrailingSlash(url)).toString(), attempts: 0 }
-      : await waitForHealth(url, opts.healthCheck);
+      : await withProgress(opts, `Checking health endpoint`, () =>
+          waitForHealth(url, healthCheckOptions),
+        );
   if (health.ok) {
     opts.logger.info(`Health check passed: ${health.url}`);
   } else {
@@ -231,7 +251,9 @@ export async function runDeploy(name: string, opts: DeployOptions): Promise<Depl
   }
 
   // 13) Capture service metadata for the CloudRecord.
-  const status = await opts.cli.status({ cwd: stagingDir });
+  const status = await withProgress(opts, `Reading Railway service status`, () =>
+    opts.cli.status({ cwd: stagingDir }),
+  );
   opts.logger.info(`Service status: ${status.deployment.status}.`);
 
   // 14) Write CloudRecord to the agent index.
@@ -260,4 +282,12 @@ export async function runDeploy(name: string, opts: DeployOptions): Promise<Depl
 
 function ensureTrailingSlash(url: string): string {
   return url.endsWith("/") ? url : `${url}/`;
+}
+
+function withProgress<T>(
+  opts: DeployOptions,
+  message: string,
+  run: () => Promise<T>,
+): Promise<T> {
+  return opts.logger.task ? opts.logger.task(message, run) : run();
 }

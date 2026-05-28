@@ -55,9 +55,6 @@ COPY . /app
 # Make the entrypoint executable.
 RUN chmod +x /app/auggy-entrypoint.sh
 
-# Railway mounts the persistent volume here.
-VOLUME ["/app/data"]
-
 # Railway routes traffic to the port declared by the app via PORT env.
 EXPOSE 8080
 

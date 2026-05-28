@@ -39,6 +39,7 @@ import { chatCommand } from "./commands/chat";
 import { evalCommand } from "./commands/eval";
 import { runRemove } from "./commands/remove";
 import { runLs } from "./commands/ls";
+import { withBrailleSpinner } from "./spinner";
 
 export function buildCli(): Command {
   const program = new Command();
@@ -251,6 +252,7 @@ export function buildCli(): Command {
             info: (msg) => console.log(msg),
             warn: (msg) => console.warn(`warn: ${msg}`),
             error: (msg) => console.error(`error: ${msg}`),
+            task: (msg, run) => withBrailleSpinner(msg, run),
           },
         });
         console.log(`\nDeployed ${name} to Railway.`);
