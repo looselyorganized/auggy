@@ -98,6 +98,7 @@ augments:
 | `auggy doctor <name>` | Check whether an agent is ready to run |
 | `auggy augment create <slug>` | Scaffold a local custom augment |
 | `auggy augment install <name> <path>` | Install a local custom augment |
+| `auggy augment test <path>` | Validate a local custom augment |
 | `auggy dev <name>` | Run in foreground (Ctrl-C stops) |
 | `auggy start <name>` | Install as launchd service (always-on) |
 | `auggy stop <name>` | Stop a running agent |

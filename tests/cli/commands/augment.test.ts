@@ -12,6 +12,7 @@ describe("auggy augment command", () => {
     expect(cmd.name()).toBe("augment");
     expect(cmd.commands.map((c) => c.name())).toContain("create");
     expect(cmd.commands.map((c) => c.name())).toContain("install");
+    expect(cmd.commands.map((c) => c.name())).toContain("test");
   });
 
   test("create dispatches to scaffold helper", async () => {
@@ -91,6 +92,30 @@ describe("auggy augment command", () => {
       auggyDir: "/tmp/auggy",
     });
     expect(logs.join("\n")).toContain('Installed custom augment "weather"');
+  });
+
+  test("test dispatches to validator", async () => {
+    const validate = mock(async () => ({ name: "weather", toolCount: 1 }));
+    const logs: string[] = [];
+    const root = mkdtempSync(join(tmpdir(), "augment-test-command-"));
+    const augmentDir = join(root, "weather");
+    mkdirSync(augmentDir, { recursive: true });
+    writeFileSync(join(augmentDir, "index.ts"), "export default function weather() { return { name: 'weather' }; }\n");
+    const origLog = console.log;
+    console.log = (msg: unknown) => {
+      logs.push(String(msg));
+    };
+
+    try {
+      const cmd = augmentCommand({ validateCustomAugment: validate });
+      await cmd.parseAsync(["test", augmentDir], { from: "user" });
+    } finally {
+      console.log = origLog;
+      rmSync(root, { recursive: true, force: true });
+    }
+
+    expect(validate).toHaveBeenCalledWith(join(augmentDir, "index.ts"));
+    expect(logs.join("\n")).toContain('Valid custom augment "weather" (1 tool).');
   });
 });
 

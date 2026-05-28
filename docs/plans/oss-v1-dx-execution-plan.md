@@ -343,7 +343,7 @@ Acceptance:
 
 - A custom augment can be wired into an agent without manual YAML editing.
 
-### 11. Add `auggy augment test <path>`
+### 11. Add `auggy augment test <path>` *(implemented 2026-05-28)*
 
 Behavior:
 

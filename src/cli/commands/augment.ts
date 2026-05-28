@@ -4,10 +4,12 @@ import { basename, dirname, join, relative, resolve } from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { resolveConfigPath } from "../resolve-config";
 import { scaffoldCustomAugment } from "../scaffold-custom-augment";
+import { validateCustomAugment } from "../augment-validator";
 
 export interface AugmentCommandDeps {
   scaffoldCustomAugment?: typeof scaffoldCustomAugment;
   installCustomAugment?: typeof installCustomAugment;
+  validateCustomAugment?: typeof validateCustomAugment;
   exit?: (code: number) => void;
   auggyDir?: string;
 }
@@ -30,6 +32,7 @@ export interface InstallCustomAugmentResult {
 export function augmentCommand(deps: AugmentCommandDeps = {}): Command {
   const scaffold = deps.scaffoldCustomAugment ?? scaffoldCustomAugment;
   const install = deps.installCustomAugment ?? installCustomAugment;
+  const validate = deps.validateCustomAugment ?? validateCustomAugment;
   const exit = deps.exit ?? ((code: number) => process.exit(code));
 
   const command = new Command("augment").description("Create and manage custom augments");
@@ -69,6 +72,20 @@ export function augmentCommand(deps: AugmentCommandDeps = {}): Command {
         if (result.skillCopied) {
           console.log(`Copied skill to ${join(result.agentDir, "skills", result.name)}/`);
         }
+      } catch (err) {
+        console.error(`Error: ${(err as Error).message}`);
+        exit(1);
+      }
+    });
+
+  command
+    .command("test <path>")
+    .description("Validate a local custom augment module")
+    .action(async (sourcePath: string) => {
+      try {
+        const sourceFile = resolveSourceFile(resolve(sourcePath));
+        const result = await validate(sourceFile);
+        console.log(`Valid custom augment "${result.name}" (${result.toolCount} tool${result.toolCount === 1 ? "" : "s"}).`);
       } catch (err) {
         console.error(`Error: ${(err as Error).message}`);
         exit(1);
