@@ -234,7 +234,11 @@ describe("runCreate scaffolding integration", () => {
   });
 
   test("--project creates a standalone project directory outside ~/.auggy", async () => {
-    answers = { provider: "anthropic", model: "claude-sonnet-4-6" };
+    answers = {
+      provider: "anthropic",
+      model: "claude-sonnet-4-6",
+      augmentTypes: ["layeredMemory"],
+    };
 
     await runCreate("demo-project", {
       auggyDir,
@@ -249,8 +253,19 @@ describe("runCreate scaffolding integration", () => {
     expect(existsSync(join(dir, "package.json"))).toBe(true);
     expect(existsSync(join(dir, "skills"))).toBe(true);
     expect(existsSync(join(dir, "augments"))).toBe(true);
-    expect(existsSync(join(dir, "workspace"))).toBe(true);
+    expect(existsSync(join(dir, "data", "workspace"))).toBe(true);
+    expect(existsSync(join(dir, "workspace"))).toBe(false);
     expect(getAgent("demo-project", { auggyDir })).toBeNull();
     expect(bunInstallCalls[0]?.cwd).toBe(dir);
+
+    const config = parseYaml(readFileSync(join(dir, "agent.yaml"), "utf-8")) as {
+      augments: Array<{ type: string; options?: Record<string, unknown> }>;
+    };
+    const memory = config.augments.find((aug) => aug.type === "layeredMemory");
+    const budgets = config.augments.find((aug) => aug.type === "budgets");
+    const files = config.augments.find((aug) => aug.type === "filesystem");
+    expect(memory?.options?.dbPath).toBe("./data/memory.sqlite");
+    expect(budgets?.options?.dbPath).toBe("./data/budgets.db");
+    expect(JSON.stringify(files?.options)).toContain("./data/workspace");
   });
 });

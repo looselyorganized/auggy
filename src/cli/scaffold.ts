@@ -10,8 +10,9 @@
  *     skills/            Skill folders (read-only fs mount), one per
  *                        tool-providing augment, copied from src/augments/<name>/skill/
  *     workspace/         Agent's mutable workspace
+ *     data/              Runtime state (ignored; used by project scaffolds)
  *     augments/          Custom augments directory
- *     .gitignore         Ignores .env, workspace/, *.log, *.db, memory.sqlite
+ *     .gitignore         Ignores .env, workspace/, data/, *.log, *.db, memory.sqlite
  *
  * Per ADR-025 (augment-as-folder + skill bundling) and the PR α foundation
  * spec: scaffold copies bundled skills, uses the `identity:` YAML shorthand,
@@ -279,6 +280,7 @@ AUGGY_AGENT_ID=
 const GITIGNORE_TEMPLATE = `.env
 .env.local
 workspace/
+data/
 *.log
 *.err
 node_modules/

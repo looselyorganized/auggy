@@ -44,6 +44,9 @@ describe("stageBundle", () => {
     writeFileSync(join(agentDir, "link.db"), "binary");
     mkdirSync(join(agentDir, "workspace"));
     writeFileSync(join(agentDir, "workspace", "scratch.txt"), "ephemeral");
+    mkdirSync(join(agentDir, "data", "workspace"), { recursive: true });
+    writeFileSync(join(agentDir, "data", "workspace", "scratch.txt"), "ephemeral");
+    writeFileSync(join(agentDir, "data", "memory.sqlite"), "binary");
     mkdirSync(join(agentDir, "node_modules", "x"), { recursive: true });
     writeFileSync(join(agentDir, "node_modules", "x", "index.js"), "x");
     mkdirSync(join(agentDir, ".git"));
@@ -78,7 +81,7 @@ describe("stageBundle", () => {
     expect(existsSync(join(staged, "bun.lock"))).toBe(true);
   });
 
-  test("excludes .env, *.db*, workspace/, node_modules/, .git/, .DS_Store, .worktrees/, .claude/", () => {
+  test("excludes .env, *.db*, workspace/, data/, node_modules/, .git/, .DS_Store, .worktrees/, .claude/", () => {
     seedAgentDir();
     const staged = stageBundle({ agentDir, agentName: "zip" });
     cleanup.push(staged);
@@ -90,6 +93,7 @@ describe("stageBundle", () => {
     expect(existsSync(join(staged, "visitor-auth.db"))).toBe(false);
     expect(existsSync(join(staged, "link.db"))).toBe(false);
     expect(existsSync(join(staged, "workspace"))).toBe(false);
+    expect(existsSync(join(staged, "data"))).toBe(false);
     expect(existsSync(join(staged, "node_modules"))).toBe(false);
     expect(existsSync(join(staged, ".git"))).toBe(false);
     expect(existsSync(join(staged, ".worktrees"))).toBe(false);

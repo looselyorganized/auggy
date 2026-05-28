@@ -15,7 +15,7 @@
  */
 
 import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
 import { checkbox, confirm, select, input } from "@inquirer/prompts";
 import { stringify } from "yaml";
@@ -432,7 +432,11 @@ export async function runCreate(name: string, opts: CreateOpts): Promise<void> {
   try {
     mkdirSync(tempDir, { recursive: true });
     mkdirSync(join(tempDir, "skills"), { recursive: true });
-    mkdirSync(join(tempDir, "workspace"), { recursive: true });
+    if (opts.project) {
+      mkdirSync(join(tempDir, "data", "workspace"), { recursive: true });
+    } else {
+      mkdirSync(join(tempDir, "workspace"), { recursive: true });
+    }
     mkdirSync(join(tempDir, "augments"), { recursive: true });
 
     console.log();
@@ -443,13 +447,19 @@ export async function runCreate(name: string, opts: CreateOpts): Promise<void> {
       console.log(`   ${green("✓")} ${cream(entry.defaultName)} ${dim(`(${entry.type})`)}`);
     }
 
-    const config = buildAgentYaml(id, name, augments, {
-      provider,
-      model,
-      operatorName,
-      purpose,
-      ollamaBaseURL,
-    });
+    const config = buildAgentYaml(
+      id,
+      name,
+      augments,
+      {
+        provider,
+        model,
+        operatorName,
+        purpose,
+        ollamaBaseURL,
+      },
+      { project: opts.project ?? false },
+    );
     writeFileSync(join(tempDir, "agent.yaml"), config);
 
     writeFileSync(
@@ -656,6 +666,7 @@ function buildAgentYaml(
     purpose: string;
     ollamaBaseURL?: string;
   },
+  layout: { project: boolean } = { project: false },
 ): string {
   const engineBlock: Record<string, unknown> = {
     provider: engine.provider,
@@ -679,7 +690,7 @@ function buildAgentYaml(
       maxInferenceLoops: 10,
     },
     augments: augments.map((entry) => {
-      const options = layeredMemoryNamespaceFor(entry, name) ?? entry.defaultOptions;
+      const options = optionsForLayout(entry, name, layout);
       return {
         name: entry.defaultName,
         type: entry.type,
@@ -689,6 +700,41 @@ function buildAgentYaml(
   };
 
   return `# Agent configuration\n\n${stringify(config)}`;
+}
+
+function optionsForLayout(
+  entry: CatalogEntry,
+  agentName: string,
+  layout: { project: boolean },
+): Record<string, unknown> | undefined {
+  const options = layeredMemoryNamespaceFor(entry, agentName) ?? entry.defaultOptions;
+  if (!options || !layout.project) return options;
+  return rewriteMutablePaths(options) as Record<string, unknown>;
+}
+
+function rewriteMutablePaths(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map((item) => rewriteMutablePaths(item));
+  if (!value || typeof value !== "object") return value;
+
+  const out: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(value)) {
+    if (key === "path" && child === "./workspace") {
+      out[key] = "./data/workspace";
+      continue;
+    }
+    if (typeof child === "string" && isMutableArtifactPath(key, child)) {
+      out[key] = `./data/${basename(child)}`;
+      continue;
+    }
+    out[key] = rewriteMutablePaths(child);
+  }
+  return out;
+}
+
+function isMutableArtifactPath(key: string, value: string): boolean {
+  if (!value.startsWith("./")) return false;
+  if (!/(Path|path)$/.test(key)) return false;
+  return /\.(db|sqlite|jsonl)$/.test(value);
 }
 
 function layeredMemoryNamespaceFor(
@@ -770,6 +816,7 @@ function writeManifestExample(
 const GITIGNORE = `.env
 .env.local
 workspace/
+data/
 *.log
 *.err
 node_modules/

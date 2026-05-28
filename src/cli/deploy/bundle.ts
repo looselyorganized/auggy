@@ -1,6 +1,6 @@
 /**
  * Bundle staging — copies an agent dir into a fresh temp directory minus the
- * exclusions defined by ADR-021 (`.env`, `workspace/`, `*.db*`, `node_modules/`,
+ * exclusions defined by ADR-021 (`.env`, `workspace/`, `data/`, `*.db*`, `node_modules/`,
  * `.git/`, `.DS_Store`, `*.tmp`) plus this PR's additions (`.worktrees/`,
  * `.claude/`).
  *
@@ -23,6 +23,7 @@ const EXCLUDED_NAMES = new Set([
   ".DS_Store",
   "node_modules",
   "workspace",
+  "data",
   ".worktrees",
   ".claude",
 ]);
