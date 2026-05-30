@@ -109,12 +109,108 @@ function basicHeader(bearer: string): string {
 
 describe("handleAdminRoute — auth", () => {
   it("GET /console without bearer from non-loopback → 401", async () => {
-    const req = new Request("https://my-agent.fly.dev/console");
+    const req = new Request("https://my-agent.fly.dev/console", {
+      headers: { accept: "application/json" },
+    });
     const res = await handleAdminRoute(req, await makeCtx({ callerIp: "10.0.0.5" }));
     expect(res.status).toBe(401);
     expect(res.headers.get("www-authenticate")).toBe(
       'Basic realm="auggy-admin zip (username auggy, password AUGGY_WEB_TOKEN)"',
     );
+  });
+
+  it("GET /console html navigation without auth redirects to first-party login", async () => {
+    const req = new Request("https://my-agent.fly.dev/console/chat", {
+      headers: { accept: "text/html" },
+    });
+    const res = await handleAdminRoute(req, await makeCtx({ callerIp: "10.0.0.5" }));
+    expect(res.status).toBe(303);
+    expect(res.headers.get("location")).toBe("/console/login?next=%2Fconsole%2Fchat");
+    expect(res.headers.get("www-authenticate")).toBeNull();
+  });
+
+  it("GET /console/api/dashboard without auth returns JSON 401, not login HTML", async () => {
+    const req = new Request("https://my-agent.fly.dev/console/api/dashboard", {
+      headers: { accept: "text/html" },
+    });
+    const res = await handleAdminRoute(req, await makeCtx({ callerIp: "10.0.0.5" }));
+    expect(res.status).toBe(401);
+    expect(res.headers.get("location")).toBeNull();
+    expect(res.headers.get("www-authenticate")).toContain("auggy-admin zip");
+  });
+
+  it("GET /console/login serves a first-party login page", async () => {
+    const req = new Request("https://my-agent.fly.dev/console/login");
+    const res = await handleAdminRoute(req, await makeCtx({ callerIp: "10.0.0.5" }));
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/html");
+    const body = await res.text();
+    expect(body).toContain("Console sign-in");
+    expect(body).not.toContain("AUGGY_WEB_TOKEN");
+  });
+
+  it("POST /console/login with valid password sets an HttpOnly session cookie", async () => {
+    const req = new Request("https://my-agent.fly.dev/console/login?next=%2Fconsole%2Fchat", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ password: "test-bearer" }).toString(),
+    });
+    const res = await handleAdminRoute(req, await makeCtx({ callerIp: "10.0.0.5" }));
+    const cookie = res.headers.get("set-cookie") ?? "";
+    expect(res.status).toBe(303);
+    expect(res.headers.get("location")).toBe("/console/chat");
+    expect(cookie).toContain("auggy_console=");
+    expect(cookie).toContain("HttpOnly");
+    expect(cookie).toContain("SameSite=Lax");
+    expect(cookie).toContain("Path=/console");
+    expect(cookie).toContain("Secure");
+  });
+
+  it("session cookie admits subsequent console requests without Basic auth", async () => {
+    const login = new Request("https://my-agent.fly.dev/console/login", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ password: "test-bearer" }).toString(),
+    });
+    const loginRes = await handleAdminRoute(login, await makeCtx({ callerIp: "10.0.0.5" }));
+    const cookie = loginRes.headers.get("set-cookie")!.split(";")[0]!;
+
+    const req = new Request("https://my-agent.fly.dev/console/api/dashboard", {
+      headers: { cookie },
+    });
+    const res = await handleAdminRoute(req, await makeCtx({ callerIp: "10.0.0.5" }));
+    expect(res.status).toBe(200);
+  });
+
+  it("tampered session cookie is rejected", async () => {
+    const req = new Request("https://my-agent.fly.dev/console/api/dashboard", {
+      headers: { cookie: "auggy_console=bad.payload" },
+    });
+    const res = await handleAdminRoute(req, await makeCtx({ callerIp: "10.0.0.5" }));
+    expect(res.status).toBe(401);
+  });
+
+  it("POST /console/logout clears the session cookie", async () => {
+    const req = new Request("https://my-agent.fly.dev/console/logout", { method: "POST" });
+    const res = await handleAdminRoute(req, await makeCtx({ callerIp: "10.0.0.5" }));
+    expect(res.status).toBe(303);
+    expect(res.headers.get("location")).toBe("/console/login");
+    const cookie = res.headers.get("set-cookie") ?? "";
+    expect(cookie).toContain("auggy_console=");
+    expect(cookie).toContain("Max-Age=0");
+  });
+
+  it("POST /console/login rejects open redirect next values", async () => {
+    const req = new Request(
+      "https://my-agent.fly.dev/console/login?next=https%3A%2F%2Fevil.example",
+      {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ password: "test-bearer" }).toString(),
+      },
+    );
+    const res = await handleAdminRoute(req, await makeCtx({ callerIp: "10.0.0.5" }));
+    expect(res.headers.get("location")).toBe("/console");
   });
 
   it("GET /console from loopback without bearer → bypass (no 401)", async () => {

@@ -6,7 +6,11 @@ import type {
   Augment,
   TransportKernel,
 } from "../../types";
-import { checkAdminAuth } from "./admin-auth";
+import {
+  checkAdminAuth,
+  createConsoleSessionClearCookie,
+  createConsoleSessionSetCookie,
+} from "./admin-auth";
 import { coerceInputs } from "./admin-coerce";
 import { collectAdminInfoBlocks, collectAugmentSummaries } from "./admin-collector";
 import { generateCsrfToken, validateCsrfToken } from "./admin-csrf";
@@ -204,6 +208,10 @@ const CRED_RENAME_ACTION = "cred-rename";
 
 const CONSOLE_CHAT_ACTION = "console-chat";
 
+const LOGIN_RATE_LIMIT_WINDOW_MS = 60_000;
+const LOGIN_RATE_LIMIT_MAX = 10;
+const loginAttempts = new Map<string, number[]>();
+
 const EXPIRED_CSRF_HTML = `<!doctype html>
 <html lang="en">
 <head>
@@ -221,6 +229,28 @@ export async function handleAdminRoute(req: Request, ctx: AdminRouteContext): Pr
   const url = new URL(req.url);
   const agentCard = ctx.kernel.getAgentCard();
   const agentName = agentCard.provider.name || "auggy";
+
+  const secureRequest = isSecureConsoleRequest(req, ctx);
+  if (url.pathname === "/console/login") {
+    if (!isLoopbackIp(ctx.callerIp) && !secureRequest) return consoleHttpsRequiredResponse(url);
+    if (req.method === "GET") return loginPageResponse(undefined, url.search);
+    if (req.method === "POST") return handleLoginPost(req, ctx, secureRequest);
+    return new Response(null, { status: 405, headers: { allow: "GET, POST" } });
+  }
+  if (url.pathname === "/console/logout") {
+    if (!isLoopbackIp(ctx.callerIp) && !secureRequest) return consoleHttpsRequiredResponse(url);
+    if (req.method !== "GET" && req.method !== "POST") {
+      return new Response(null, { status: 405, headers: { allow: "GET, POST" } });
+    }
+    return new Response(null, {
+      status: 303,
+      headers: {
+        location: "/console/login",
+        "set-cookie": createConsoleSessionClearCookie(secureRequest),
+        "cache-control": "no-store",
+      },
+    });
+  }
 
   // Auth + HTTPS gate
   const auth = checkAdminAuth({
@@ -343,6 +373,91 @@ export async function handleAdminRoute(req: Request, ctx: AdminRouteContext): Pr
   }
 
   return new Response(null, { status: 404 });
+}
+
+async function handleLoginPost(
+  req: Request,
+  ctx: AdminRouteContext,
+  secureRequest: boolean,
+): Promise<Response> {
+  const loginLimit = checkLoginRateLimit(ctx.callerIp);
+  if (!loginLimit.allowed) {
+    return new Response("Too many attempts. Try again shortly.", {
+      status: 429,
+      headers: {
+        "content-type": "text/plain; charset=utf-8",
+        "retry-after": String(loginLimit.retryAfterSec),
+        "cache-control": "no-store",
+      },
+    });
+  }
+
+  let form: URLSearchParams;
+  try {
+    form = new URLSearchParams(await req.text());
+  } catch {
+    return loginPageResponse("Invalid console password.", new URL(req.url).search);
+  }
+
+  const password = form.get("password") ?? "";
+  if (!timingSafeStringEqual(password, ctx.bearer)) {
+    return loginPageResponse("Invalid console password.", new URL(req.url).search);
+  }
+
+  return new Response(null, {
+    status: 303,
+    headers: {
+      location: safeConsoleNextPath(new URL(req.url).searchParams.get("next")),
+      "set-cookie": createConsoleSessionSetCookie({ bearer: ctx.bearer, secure: secureRequest }),
+      "cache-control": "no-store",
+    },
+  });
+}
+
+function loginPageResponse(error?: string, search = ""): Response {
+  const escapedError = error ? escapeHtml(error) : "";
+  const action = `/console/login${search}`;
+  return new Response(
+    `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Console sign-in</title>
+  <style>
+    :root { color-scheme: light dark; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    body { min-height: 100vh; margin: 0; display: grid; place-items: center; background: #0f172a; color: #f8fafc; }
+    main { width: min(360px, calc(100vw - 32px)); }
+    h1 { font-size: 24px; font-weight: 650; margin: 0 0 8px; }
+    p { color: #cbd5e1; margin: 0 0 20px; line-height: 1.45; }
+    label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 8px; color: #e2e8f0; }
+    input { box-sizing: border-box; width: 100%; height: 44px; border: 1px solid #334155; border-radius: 6px; padding: 0 12px; background: #020617; color: #f8fafc; font-size: 16px; }
+    button { width: 100%; height: 42px; margin-top: 14px; border: 0; border-radius: 6px; background: #f8fafc; color: #020617; font-weight: 700; cursor: pointer; }
+    .error { margin-bottom: 14px; color: #fecaca; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Console sign-in</h1>
+    <p>Enter your console password.</p>
+    ${escapedError ? `<p class="error">${escapedError}</p>` : ""}
+    <form method="post" action="${escapeHtml(action)}">
+      <label for="password">Console password</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" autofocus required>
+      <button type="submit">Sign in</button>
+    </form>
+  </main>
+</body>
+</html>`,
+    {
+      status: error ? 401 : 200,
+      headers: {
+        "content-type": "text/html; charset=utf-8",
+        "cache-control": "no-store",
+        "x-robots-tag": "noindex, nofollow",
+      },
+    },
+  );
 }
 
 async function handleDashboardJson(ctx: AdminRouteContext, agentName: string): Promise<Response> {
@@ -1001,6 +1116,97 @@ function jsonResponse(body: unknown, status = 200): Response {
       "cache-control": "no-store, must-revalidate",
       "x-robots-tag": "noindex, nofollow",
     },
+  });
+}
+
+function isSecureConsoleRequest(req: Request, ctx: AdminRouteContext): boolean {
+  const url = new URL(req.url);
+  const forwardedProto = req.headers.get("x-forwarded-proto")?.split(",")[0]?.trim().toLowerCase();
+  return (
+    url.protocol === "https:" || (ctx.trustForwardedProto === true && forwardedProto === "https")
+  );
+}
+
+function consoleHttpsRequiredResponse(url: URL): Response {
+  const port = url.port || "8080";
+  const guidance = [
+    `/console requires HTTPS on non-loopback addresses.`,
+    ``,
+    `Options:`,
+    `  1. Configure HTTPS termination in front of this agent.`,
+    `  2. Access via http://127.0.0.1:${port}/console from the agent host.`,
+    `  3. SSH tunnel: ssh -L ${port}:127.0.0.1:${port} user@host`,
+  ].join("\n");
+  return new Response(guidance, {
+    status: 426,
+    headers: {
+      upgrade: "TLS/1.2",
+      connection: "Upgrade",
+      "content-type": "text/plain; charset=utf-8",
+    },
+  });
+}
+
+function isLoopbackIp(ip: string): boolean {
+  return ip === "::1" || ip.startsWith("127.") || ip.startsWith("::ffff:127.");
+}
+
+function safeConsoleNextPath(next: string | null): string {
+  if (!next) return "/console";
+  try {
+    const decoded = decodeURIComponent(next);
+    if (decoded === "/console" || decoded.startsWith("/console/")) return decoded;
+  } catch {
+    // Fall through to the safe default.
+  }
+  return "/console";
+}
+
+function checkLoginRateLimit(
+  callerIp: string,
+): { allowed: true } | { allowed: false; retryAfterSec: number } {
+  const now = Date.now();
+  const cutoff = now - LOGIN_RATE_LIMIT_WINDOW_MS;
+  const hits = (loginAttempts.get(callerIp) ?? []).filter((ts) => ts > cutoff);
+  if (hits.length >= LOGIN_RATE_LIMIT_MAX) {
+    const retryAfterSec = Math.max(
+      1,
+      Math.ceil((hits[0]! + LOGIN_RATE_LIMIT_WINDOW_MS - now) / 1000),
+    );
+    loginAttempts.set(callerIp, hits);
+    return { allowed: false, retryAfterSec };
+  }
+  hits.push(now);
+  loginAttempts.set(callerIp, hits);
+  return { allowed: true };
+}
+
+function timingSafeStringEqual(a: string, b: string): boolean {
+  const enc = new TextEncoder();
+  const aa = enc.encode(a);
+  const bb = enc.encode(b);
+  const len = Math.max(aa.length, bb.length);
+  let diff = aa.length ^ bb.length;
+  for (let i = 0; i < len; i++) {
+    diff |= (aa[i] ?? 0) ^ (bb[i] ?? 0);
+  }
+  return diff === 0;
+}
+
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>"']/g, (ch) => {
+    switch (ch) {
+      case "&":
+        return "&amp;";
+      case "<":
+        return "&lt;";
+      case ">":
+        return "&gt;";
+      case '"':
+        return "&quot;";
+      default:
+        return "&#39;";
+    }
   });
 }
 
