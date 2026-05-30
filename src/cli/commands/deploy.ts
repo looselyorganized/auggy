@@ -402,8 +402,7 @@ export async function runDeploy(
   const status = await withProgress(opts, `Reading Railway service status`, () =>
     opts.cli.status({ cwd: stagingDir }),
   );
-  const deploymentStatus = status.deployment?.status ?? "unknown";
-  opts.logger.info(`Service status: ${deploymentStatus}.`);
+  opts.logger.info(`Service status: ${formatRailwayServiceStatus(status, health.ok)}.`);
 
   // 14) Write CloudRecord to the agent index.
   const serviceId =
@@ -433,4 +432,58 @@ function ensureTrailingSlash(url: string): string {
 
 function withProgress<T>(opts: DeployOptions, message: string, run: () => Promise<T>): Promise<T> {
   return opts.logger.task ? opts.logger.task(message, run) : run();
+}
+
+function formatRailwayServiceStatus(status: unknown, healthOk: boolean): string {
+  const deploymentStatus = findRailwayStatusValue(status);
+  if (deploymentStatus) return deploymentStatus;
+  return healthOk
+    ? "healthy; Railway CLI did not report deployment status yet"
+    : "not reported yet; build may still be deploying";
+}
+
+function findRailwayStatusValue(value: unknown): string | null {
+  if (!value || typeof value !== "object") return null;
+  const root = value as Record<string, unknown>;
+
+  for (const key of ["deployment", "latestDeployment", "activeDeployment"]) {
+    const found = statusField(root[key]);
+    if (found) return found;
+  }
+
+  const direct =
+    stringField(root.deploymentStatus) ??
+    stringField(root.deploymentState) ??
+    stringField(root.status) ??
+    stringField(root.state);
+  if (direct) return direct;
+
+  for (const key of ["deployments", "serviceInstances"]) {
+    const list = root[key];
+    if (!Array.isArray(list)) continue;
+    for (const item of list) {
+      const found = statusField(item);
+      if (found) return found;
+    }
+  }
+
+  const serviceStatus = statusField(root.service);
+  if (serviceStatus) return serviceStatus;
+
+  return null;
+}
+
+function statusField(value: unknown): string | null {
+  if (!value || typeof value !== "object") return null;
+  const obj = value as Record<string, unknown>;
+  return (
+    stringField(obj.status) ??
+    stringField(obj.state) ??
+    stringField(obj.deploymentStatus) ??
+    stringField(obj.deploymentState)
+  );
+}
+
+function stringField(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
 }

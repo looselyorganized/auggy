@@ -5,6 +5,7 @@ export interface AdminAuthContext {
   bearer: string;
   agentName: string;
   callerIp: string;
+  trustForwardedProto?: boolean;
 }
 
 export type AdminAuthResult =
@@ -30,9 +31,16 @@ export type AdminAuthResult =
  */
 export function checkAdminAuth(ctx: AdminAuthContext): AdminAuthResult {
   const url = new URL(ctx.req.url);
+  const forwardedProto = ctx.req.headers
+    .get("x-forwarded-proto")
+    ?.split(",")[0]
+    ?.trim()
+    .toLowerCase();
+  const isSecureRequest =
+    url.protocol === "https:" || (ctx.trustForwardedProto === true && forwardedProto === "https");
 
   // 1. HTTPS gate
-  if (!isLoopback(ctx.callerIp) && url.protocol !== "https:") {
+  if (!isLoopback(ctx.callerIp) && !isSecureRequest) {
     const port = url.port || "8080";
     const guidance = [
       `/console requires HTTPS on non-loopback addresses.`,

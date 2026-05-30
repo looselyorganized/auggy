@@ -498,12 +498,38 @@ describe("runDeploy", () => {
 
     expect(result.health).toMatchObject({ ok: false, status: 404 });
     expect(result.serviceId).toBe("zip");
-    expect(infos.join("\n")).toMatch(/Service status: unknown/);
+    expect(infos.join("\n")).toMatch(
+      /Service status: not reported yet; build may still be deploying/,
+    );
     expect(warnings.join("\n")).toMatch(/Deployment is not healthy yet/);
     expect(getAgent("zip", { auggyDir })?.cloud).toMatchObject({
       serviceId: "zip",
       url: "https://zip-production-abcd.up.railway.app",
     });
+  });
+
+  test("reads Railway deployment status from alternate CLI shapes", async () => {
+    const infos: string[] = [];
+    const { cli } = mockRailwayCli();
+    cli.status = async () =>
+      ({
+        project: { id: "proj_abc", name: "lorf" },
+        service: { id: "svc_def", name: "zip" },
+        deployments: [{ status: "DEPLOYING" }],
+      }) as Awaited<ReturnType<RailwayCli["status"]>>;
+
+    await runDeploy(
+      "zip",
+      baseDeployOptions(cli, auggyDir, {
+        logger: {
+          info: (msg) => infos.push(msg),
+          warn: () => {},
+          error: () => {},
+        },
+      }),
+    );
+
+    expect(infos.join("\n")).toMatch(/Service status: DEPLOYING/);
   });
 
   test("rejects unknown providers", async () => {

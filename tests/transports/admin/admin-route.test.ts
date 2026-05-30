@@ -199,6 +199,32 @@ describe("handleAdminRoute — auth", () => {
     expect(res.status).toBe(426);
     expect(res.headers.get("upgrade")).toBe("TLS/1.2");
   });
+
+  it("GET /console from non-loopback over trusted forwarded https → no 426", async () => {
+    const req = new Request("http://my-agent.up.railway.app/console", {
+      headers: {
+        authorization: basicHeader("test-bearer"),
+        "x-forwarded-proto": "https",
+      },
+    });
+    const res = await handleAdminRoute(
+      req,
+      await makeCtx({ callerIp: "10.0.0.5", trustForwardedProto: true }),
+    );
+    expect(res.status).not.toBe(426);
+    expect(res.status).toBe(503);
+  });
+
+  it("GET /console does not trust spoofed forwarded https by default", async () => {
+    const req = new Request("http://my-agent.example.com/console", {
+      headers: {
+        authorization: basicHeader("test-bearer"),
+        "x-forwarded-proto": "https",
+      },
+    });
+    const res = await handleAdminRoute(req, await makeCtx({ callerIp: "10.0.0.5" }));
+    expect(res.status).toBe(426);
+  });
 });
 
 describe("handleAdminRoute — POST action dispatch", () => {

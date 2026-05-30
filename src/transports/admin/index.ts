@@ -157,6 +157,8 @@ export interface AdminRouteContext {
   bearer: string;
   agentDir: string | undefined;
   callerIp: string;
+  /** True when the transport has validated that X-Forwarded-Proto came from a trusted proxy. */
+  trustForwardedProto?: boolean;
   /** S8 — built once at boot by `buildAdminActionRegistry`. */
   actionRegistry: AdminActionRegistry;
   /**
@@ -226,6 +228,7 @@ export async function handleAdminRoute(req: Request, ctx: AdminRouteContext): Pr
     bearer: ctx.bearer,
     agentName,
     callerIp: ctx.callerIp,
+    trustForwardedProto: ctx.trustForwardedProto,
   });
   if (auth.kind === "https-required") return auth.response;
   if (auth.kind === "unauthorized") return auth.response;

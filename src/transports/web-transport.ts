@@ -271,15 +271,11 @@ function getCallerIp(
 ): string {
   const xff = req.headers.get("x-forwarded-for");
   const realIp = req.headers.get("x-real-ip");
-  let connIp: string | null = null;
-  try {
-    connIp = server?.requestIP?.(req)?.address ?? null;
-  } catch {
-    connIp = null;
-  }
+  const connIp = getConnectionIp(req, server);
   const connIpNorm = normalizeIp(connIp);
   const proxiesNorm = trustedProxies.map((p) => normalizeIp(p) ?? p);
-  const proxyIsTrusted = connIpNorm !== null && proxiesNorm.includes(connIpNorm);
+  const proxyIsTrusted =
+    isRailwayRuntime() || (connIpNorm !== null && proxiesNorm.includes(connIpNorm));
 
   if (xff && !proxyIsTrusted) {
     // Warn-once: XFF arrived from an untrusted source. Almost certainly an
@@ -312,6 +308,40 @@ function getCallerIp(
     return normalizeIp(realIp.trim()) ?? realIp.trim();
   }
   return connIpNorm ?? "unknown";
+}
+
+function getConnectionIp(
+  req: Request,
+  server: { requestIP?: (req: Request) => { address?: string } | null } | undefined,
+): string | null {
+  try {
+    return server?.requestIP?.(req)?.address ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function isRailwayRuntime(): boolean {
+  return Boolean(
+    process.env.RAILWAY_ENVIRONMENT ||
+      process.env.RAILWAY_PROJECT_ID ||
+      process.env.RAILWAY_SERVICE_ID,
+  );
+}
+
+function shouldTrustForwardedProto(
+  req: Request,
+  server: { requestIP?: (req: Request) => { address?: string } | null } | undefined,
+  trustedProxies: readonly string[],
+): boolean {
+  const forwardedProto = req.headers.get("x-forwarded-proto")?.split(",")[0]?.trim().toLowerCase();
+  if (forwardedProto !== "https") return false;
+  if (isRailwayRuntime()) return true;
+
+  const connIpNorm = normalizeIp(getConnectionIp(req, server));
+  if (!connIpNorm) return false;
+  const proxiesNorm = trustedProxies.map((p) => normalizeIp(p) ?? p);
+  return proxiesNorm.includes(connIpNorm);
 }
 
 // ---------------------------------------------------------------------------
@@ -1222,6 +1252,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
               bearer: opts.auth.token,
               agentDir: opts.agentDir,
               callerIp: adminIp,
+              trustForwardedProto: shouldTrustForwardedProto(req, server, trustedProxies),
               actionRegistry,
               staticDir: adminStaticDir,
               selfPort: opts.port,
