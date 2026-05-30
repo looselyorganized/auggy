@@ -8,7 +8,7 @@
  * in cloud.
  */
 
-const BUN_VERSION = "1.1-alpine";
+const BUN_VERSION = "1.2.14-alpine";
 
 /**
  * Known SQLite paths in the agent dir that need to live on the Railway
@@ -29,6 +29,7 @@ const SQLITE_DB_NAMES = ["memory.db", "budgets.db", "visitor-auth.db", "link.db"
 
 interface DockerfileOptions {
   agentName: string;
+  runtimeTarballName?: string;
 }
 
 export function generateDockerfile(opts: DockerfileOptions): string {
@@ -45,6 +46,7 @@ WORKDIR /app
 # was scaffolded with --skip-install).
 COPY package.json /app/
 COPY bun.loc[k] /app/
+${opts.runtimeTarballName ? `COPY ${opts.runtimeTarballName} /app/\n` : ""}\
 RUN bun install
 
 # Copy the rest of the agent dir (agent.yaml, identity.md, skills/, etc).

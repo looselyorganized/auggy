@@ -112,6 +112,20 @@ function clearCloudMetadataForDir(agentDir: string): void {
   unlinkSync(path);
 }
 
+function formatStaleCloudMetadataWarning(args: {
+  serviceName: string;
+  projectId: string;
+  metadataPath: string;
+}): string {
+  return [
+    "",
+    "WARNING: Stale Railway deploy metadata detected",
+    "",
+    `Saved service "${args.serviceName}" was not found in project ${args.projectId}.`,
+    `Cleared ${args.metadataPath} and continuing as a first deploy.`,
+  ].join("\n");
+}
+
 function maybeVendorLocalAuggyTarball(args: {
   agentDir: string;
   stagingDir: string;
@@ -147,7 +161,10 @@ function maybeVendorLocalAuggyTarball(args: {
   return stagedTarballName;
 }
 
-export async function runDeploy(nameArg: string | undefined, opts: DeployOptions): Promise<DeployResult> {
+export async function runDeploy(
+  nameArg: string | undefined,
+  opts: DeployOptions,
+): Promise<DeployResult> {
   if (opts.to !== "railway") {
     throw new Error(
       `Only "railway" is supported in v1.0 (got "${opts.to}"). Other targets: deferred.`,
@@ -211,7 +228,10 @@ export async function runDeploy(nameArg: string | undefined, opts: DeployOptions
   if (vendoredRuntime) {
     opts.logger.info(`Vendored local Auggy runtime ${vendoredRuntime} into deploy bundle.`);
   }
-  writeFileSync(join(stagingDir, "Dockerfile"), generateDockerfile({ agentName: name }));
+  writeFileSync(
+    join(stagingDir, "Dockerfile"),
+    generateDockerfile({ agentName: name, runtimeTarballName: vendoredRuntime ?? undefined }),
+  );
   writeFileSync(join(stagingDir, "auggy-entrypoint.sh"), generateEntrypoint());
 
   let projectId: string;
@@ -288,11 +308,12 @@ export async function runDeploy(nameArg: string | undefined, opts: DeployOptions
     } catch (err) {
       if (isRailwayServiceNotFoundError(err)) {
         if (!opts.service) {
+          const metadataPath = join(agentDir, ".auggy-cloud.json");
           clearCloudMetadataForDir(agentDir);
           existingCloud = null;
           isRedeploy = false;
           opts.logger.warn(
-            `Saved Railway service "${serviceName}" was not found in project ${projectId}; cleared stale local deploy metadata and continuing as a first deploy.`,
+            formatStaleCloudMetadataWarning({ serviceName, projectId, metadataPath }),
           );
           await withProgress(opts, `Creating Railway service ${name}`, () =>
             opts.cli.createService({ serviceName: name, cwd: stagingDir }),
@@ -351,7 +372,9 @@ export async function runDeploy(nameArg: string | undefined, opts: DeployOptions
   // 11) Start the build + deploy. --detach so we return without tailing
   //     build logs; operator follows progress via Railway UI / `railway logs`.
   await withProgress(opts, `Starting Railway build`, () => opts.cli.up({ cwd: stagingDir }));
-  opts.logger.info(`Build started. Railway will build the image, deploy it, then start the service.`);
+  opts.logger.info(
+    `Build started. Railway will build the image, deploy it, then start the service.`,
+  );
 
   // 12) Verify the public health endpoint. Timeout is non-destructive: the
   //     deploy may still finish, but the operator needs recovery commands.
@@ -383,7 +406,8 @@ export async function runDeploy(nameArg: string | undefined, opts: DeployOptions
   opts.logger.info(`Service status: ${deploymentStatus}.`);
 
   // 14) Write CloudRecord to the agent index.
-  const serviceId = status.service?.id ?? status.service?.name ?? opts.service ?? existingCloud?.serviceId ?? name;
+  const serviceId =
+    status.service?.id ?? status.service?.name ?? opts.service ?? existingCloud?.serviceId ?? name;
   const result: DeployResult = {
     url,
     projectId,
@@ -407,10 +431,6 @@ function ensureTrailingSlash(url: string): string {
   return url.endsWith("/") ? url : `${url}/`;
 }
 
-function withProgress<T>(
-  opts: DeployOptions,
-  message: string,
-  run: () => Promise<T>,
-): Promise<T> {
+function withProgress<T>(opts: DeployOptions, message: string, run: () => Promise<T>): Promise<T> {
   return opts.logger.task ? opts.logger.task(message, run) : run();
 }

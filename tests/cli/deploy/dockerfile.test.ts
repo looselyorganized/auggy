@@ -3,7 +3,7 @@ import { generateDockerfile, generateEntrypoint } from "../../../src/cli/deploy/
 
 describe("generateDockerfile", () => {
   test("uses a pinned Bun base image", () => {
-    expect(generateDockerfile({ agentName: "zip" })).toMatch(/FROM oven\/bun:/);
+    expect(generateDockerfile({ agentName: "zip" })).toMatch(/FROM oven\/bun:1\.2\.14-alpine/);
   });
 
   test("copies package.json + bun.lock before COPY . for per-agent install layer caching", () => {
@@ -18,6 +18,19 @@ describe("generateDockerfile", () => {
 
   test("copies bun.lock via bracket-glob so absent lockfile doesn't fail the build", () => {
     expect(generateDockerfile({ agentName: "zip" })).toMatch(/COPY bun\.loc\[k\] \/app\//);
+  });
+
+  test("copies a vendored runtime tarball before bun install when provided", () => {
+    const df = generateDockerfile({
+      agentName: "zip",
+      runtimeTarballName: "auggy-0.4.4.tgz",
+    });
+    const copyLock = df.indexOf("COPY bun.loc[k] /app/");
+    const copyTarball = df.indexOf("COPY auggy-0.4.4.tgz /app/");
+    const runInstall = df.indexOf("RUN bun install");
+
+    expect(copyTarball).toBeGreaterThan(copyLock);
+    expect(runInstall).toBeGreaterThan(copyTarball);
   });
 
   test("runs the per-agent `bun install` (v0.3.2 package split), NOT the legacy global install", () => {

@@ -281,14 +281,14 @@ describe("runDeploy", () => {
 
       expect(calls.linkProject[0]?.cwd).toContain("auggy-deploy-project-");
       expect(result.serviceId).toBe("svc_def");
-      expect(JSON.parse(readFileSync(join(projectDir, ".auggy-cloud.json"), "utf-8"))).toMatchObject(
-        {
-          provider: "railway",
-          projectId: "proj_abc",
-          serviceId: "svc_def",
-          url: "https://zip-production-abcd.up.railway.app",
-        },
-      );
+      expect(
+        JSON.parse(readFileSync(join(projectDir, ".auggy-cloud.json"), "utf-8")),
+      ).toMatchObject({
+        provider: "railway",
+        projectId: "proj_abc",
+        serviceId: "svc_def",
+        url: "https://zip-production-abcd.up.railway.app",
+      });
     } finally {
       rmSync(projectDir, { recursive: true, force: true });
     }
@@ -380,9 +380,9 @@ describe("runDeploy", () => {
     );
     writeFileSync(join(agentDir, ".env"), "ANTHROPIC_API_KEY=sk-test\n");
     const { cli, calls } = mockRailwayCli();
-    await expect(
-      runDeploy("zip", baseDeployOptions(cli, auggyDir)),
-    ).rejects.toThrow(/Deploy preflight failed:[\s\S]*AUGGY_DEPLOY_PREFLIGHT_MISSING_TOKEN/);
+    await expect(runDeploy("zip", baseDeployOptions(cli, auggyDir))).rejects.toThrow(
+      /Deploy preflight failed:[\s\S]*AUGGY_DEPLOY_PREFLIGHT_MISSING_TOKEN/,
+    );
 
     expect(calls.checkPresence).toBe(0);
     expect(calls.checkAuth).toBe(0);
@@ -515,9 +515,9 @@ describe("runDeploy", () => {
 
   test("throws when agent is not found", async () => {
     const { cli } = mockRailwayCli();
-    await expect(
-      runDeploy("ghost", baseDeployOptions(cli, auggyDir)),
-    ).rejects.toThrow(/not found/i);
+    await expect(runDeploy("ghost", baseDeployOptions(cli, auggyDir))).rejects.toThrow(
+      /not found/i,
+    );
   });
 
   test("redeploy: reuses existing projectId from CloudRecord, skips addVolume", async () => {
@@ -605,7 +605,8 @@ describe("runDeploy", () => {
       }),
     );
 
-    expect(warnings.join("\n")).toMatch(/cleared stale local deploy metadata/i);
+    expect(warnings.join("\n")).toMatch(/WARNING: Stale Railway deploy metadata detected/);
+    expect(warnings.join("\n")).toMatch(/Cleared .*\.auggy-cloud\.json/);
     expect(calls.createService).toEqual([expect.objectContaining({ serviceName: "zip" })]);
     expect(calls.addVolume).toEqual([{ name: "zip-data", mountPath: "/app/data" }]);
     expect(calls.up).toBe(1);
@@ -682,5 +683,10 @@ describe("runDeploy", () => {
     expect(existsSync(join(stagingDir!, tarballName))).toBe(true);
     const stagedPackage = JSON.parse(readFileSync(join(stagingDir!, "package.json"), "utf-8"));
     expect(stagedPackage.dependencies.auggy).toBe(`file:./${tarballName}`);
+    const dockerfile = readFileSync(join(stagingDir!, "Dockerfile"), "utf-8");
+    expect(dockerfile.indexOf(`COPY ${tarballName} /app/`)).toBeGreaterThan(-1);
+    expect(dockerfile.indexOf("RUN bun install")).toBeGreaterThan(
+      dockerfile.indexOf(`COPY ${tarballName} /app/`),
+    );
   });
 });
