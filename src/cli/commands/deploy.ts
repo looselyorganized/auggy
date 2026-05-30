@@ -386,7 +386,7 @@ export async function runDeploy(
           waitForHealth(url, healthCheckOptions),
         );
   if (health.ok) {
-    opts.logger.info(`Deployment health verified: ${health.url}`);
+    opts.logger.info(`Current public health verified: ${health.url}`);
   } else {
     const reason = health.status
       ? `last HTTP status ${health.status}`
@@ -394,7 +394,7 @@ export async function runDeploy(
         ? `last error: ${health.error}`
         : "no attempts completed";
     opts.logger.warn(
-      `Deployment is not healthy yet (${reason}). Try \`railway logs\`, then \`auggy deploy ${name} --yes\` after fixing the service.`,
+      `Current public service is not healthy yet (${reason}). Try \`railway logs\`, then \`auggy deploy ${name} --yes\` after fixing the service.`,
     );
   }
 
@@ -438,7 +438,7 @@ function formatRailwayServiceStatus(status: unknown, healthOk: boolean): string 
   const deploymentStatus = findRailwayStatusValue(status);
   if (deploymentStatus) return deploymentStatus;
   return healthOk
-    ? "healthy; Railway CLI did not report deployment status yet"
+    ? "current service is healthy; new build status was not reported yet"
     : "not reported yet; build may still be deploying";
 }
 

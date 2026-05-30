@@ -260,20 +260,22 @@ export function buildCli(): Command {
             task: (msg, run) => withBrailleSpinner(msg, run),
           },
         });
-        console.log(`\nDeployed ${name} to Railway.`);
+        console.log(`\nSubmitted ${name} deployment to Railway.`);
         console.log(`  URL:        ${result.url}`);
         console.log(`  Project:    ${result.projectId}`);
         console.log(`  Service:    ${result.serviceId}`);
         console.log(`  Volume:     ${result.volumeId} (mounted at /app/data)`);
-        console.log(`  Health:     ${result.health.url}`);
+        console.log(`  Health:     ${result.health.url} (current public service)`);
         console.log(`  Chat:       ${new URL("/console/chat", result.url).toString()}`);
         console.log(`  Console:    ${new URL("/console", result.url).toString()}`);
         if (!result.health.ok) {
           console.log(
-            `\nHealth is not passing yet. Check \`railway logs\`, then rerun \`auggy deploy ${name} --yes\`.`,
+            `\nCurrent health is not passing yet. Check \`railway logs\`, then rerun \`auggy deploy ${name} --yes\`.`,
           );
         } else {
-          console.log(`\nFollow future builds in the Railway dashboard or with \`railway logs\`.`);
+          console.log(
+            `\nCurrent health is passing. Follow the new build in the Railway dashboard or with \`railway logs\`.`,
+          );
         }
       } catch (err) {
         console.error(`Error: ${(err as Error).message}`);

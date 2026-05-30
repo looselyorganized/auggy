@@ -458,7 +458,7 @@ describe("runDeploy", () => {
       status: 503,
       url: "https://zip-production-abcd.up.railway.app/health",
     });
-    expect(warnings.join("\n")).toMatch(/Deployment is not healthy yet/);
+    expect(warnings.join("\n")).toMatch(/Current public service is not healthy yet/);
     expect(warnings.join("\n")).toMatch(/railway logs/);
     expect(calls.status).toBe(1);
     expect(getAgent("zip", { auggyDir })?.cloud).toMatchObject({
@@ -501,7 +501,7 @@ describe("runDeploy", () => {
     expect(infos.join("\n")).toMatch(
       /Service status: not reported yet; build may still be deploying/,
     );
-    expect(warnings.join("\n")).toMatch(/Deployment is not healthy yet/);
+    expect(warnings.join("\n")).toMatch(/Current public service is not healthy yet/);
     expect(getAgent("zip", { auggyDir })?.cloud).toMatchObject({
       serviceId: "zip",
       url: "https://zip-production-abcd.up.railway.app",
