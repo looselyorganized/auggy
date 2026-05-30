@@ -161,7 +161,7 @@ export async function runDeploy(nameArg: string | undefined, opts: DeployOptions
   opts.logger.info(`Bundle staged at ${stagingDir}.`);
 
   // 5) Write Dockerfile + entrypoint into the staging dir.
-  writeFileSync(join(stagingDir, "Dockerfile"), generateDockerfile());
+  writeFileSync(join(stagingDir, "Dockerfile"), generateDockerfile({ agentName: name }));
   writeFileSync(join(stagingDir, "auggy-entrypoint.sh"), generateEntrypoint());
 
   let projectId: string;
