@@ -268,6 +268,7 @@ export function buildCli(): Command {
         console.log(`  Health:     ${result.health.url} (current public service)`);
         console.log(`  Chat:       ${new URL("/console/chat", result.url).toString()}`);
         console.log(`  Console:    ${new URL("/console", result.url).toString()}`);
+        console.log(`  Sign-in:    username auggy, password AUGGY_WEB_TOKEN from this agent's .env`);
         if (!result.health.ok) {
           console.log(
             `\nCurrent health is not passing yet. Check \`railway logs\`, then rerun \`auggy deploy ${name} --yes\`.`,

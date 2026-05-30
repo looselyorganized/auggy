@@ -99,7 +99,7 @@ function unauthorized(agentName: string): AdminAuthResult {
     response: new Response("", {
       status: 401,
       headers: {
-        "www-authenticate": `Basic realm="auggy-admin ${agentName}"`,
+        "www-authenticate": `Basic realm="auggy-admin ${agentName} (username auggy, password AUGGY_WEB_TOKEN)"`,
       },
     }),
   };

@@ -112,7 +112,9 @@ describe("handleAdminRoute — auth", () => {
     const req = new Request("https://my-agent.fly.dev/console");
     const res = await handleAdminRoute(req, await makeCtx({ callerIp: "10.0.0.5" }));
     expect(res.status).toBe(401);
-    expect(res.headers.get("www-authenticate")).toBe('Basic realm="auggy-admin zip"');
+    expect(res.headers.get("www-authenticate")).toBe(
+      'Basic realm="auggy-admin zip (username auggy, password AUGGY_WEB_TOKEN)"',
+    );
   });
 
   it("GET /console from loopback without bearer → bypass (no 401)", async () => {
