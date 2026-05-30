@@ -575,6 +575,31 @@ describe("runDeploy", () => {
     expect(calls.createService).toEqual([]);
   });
 
+  test("redeploy with stale cloud metadata explains how to recover", async () => {
+    setCloud(
+      "zip",
+      {
+        provider: "railway",
+        projectId: "proj_existing",
+        serviceId: "missing-service",
+        url: "https://zip-old.up.railway.app",
+        volumeId: "zip-data",
+        deployedAt: "2026-05-10T00:00:00.000Z",
+      },
+      { auggyDir },
+    );
+    const { cli, calls } = mockRailwayCli();
+    cli.link = async ({ projectId, serviceName, cwd }) => {
+      calls.link.push({ projectId, serviceName, cwd });
+      throw new Error(`railway service link ${serviceName} exited 1: Service "${serviceName}" not found.`);
+    };
+
+    await expect(runDeploy("zip", baseDeployOptions(cli, auggyDir))).rejects.toThrow(
+      /Saved Railway service "missing-service" was not found[\s\S]*\.auggy-cloud\.json[\s\S]*auggy deploy zip --service <service-name>/,
+    );
+    expect(calls.up).toBe(0);
+  });
+
   test("writes Dockerfile + entrypoint into the staging dir", async () => {
     const { cli, calls } = mockRailwayCli();
     // Capture the cwd `linkProject` was called with — that's the staging dir.

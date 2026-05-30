@@ -75,6 +75,36 @@ export interface DeployResult {
 
 const VOLUME_MOUNT_PATH = "/app/data";
 
+function isRailwayServiceNotFoundError(err: unknown): boolean {
+  return /Service ".*" not found/i.test((err as Error).message ?? "");
+}
+
+function formatMissingServiceError(args: {
+  name: string;
+  projectId: string;
+  serviceName: string;
+  agentDir: string;
+  explicitService: boolean;
+}): Error {
+  if (args.explicitService) {
+    return new Error(
+      `Railway service "${args.serviceName}" was not found in project ${args.projectId}.\n\n` +
+        `  Check the service name in Railway, then rerun:\n` +
+        `  auggy deploy ${args.name} --service <service-name>`,
+    );
+  }
+
+  return new Error(
+    `Saved Railway service "${args.serviceName}" was not found in project ${args.projectId}.\n\n` +
+      `Local deploy metadata says this agent is already deployed:\n` +
+      `  ${join(args.agentDir, ".auggy-cloud.json")}\n\n` +
+      `If that Railway service was deleted, remove the metadata file and rerun:\n` +
+      `  auggy deploy ${args.name}\n\n` +
+      `If you want to bind this agent to an existing Railway service, rerun:\n` +
+      `  auggy deploy ${args.name} --service <service-name>`,
+  );
+}
+
 export async function runDeploy(nameArg: string | undefined, opts: DeployOptions): Promise<DeployResult> {
   if (opts.to !== "railway") {
     throw new Error(
@@ -200,9 +230,22 @@ export async function runDeploy(nameArg: string | undefined, opts: DeployOptions
     }
   } else if (existingCloud) {
     const serviceName = opts.service ?? existingCloud.serviceId;
-    await withProgress(opts, `Linking Railway service ${serviceName}`, () =>
-      opts.cli.link({ projectId, serviceName, cwd: stagingDir }),
-    );
+    try {
+      await withProgress(opts, `Linking Railway service ${serviceName}`, () =>
+        opts.cli.link({ projectId, serviceName, cwd: stagingDir }),
+      );
+    } catch (err) {
+      if (isRailwayServiceNotFoundError(err)) {
+        throw formatMissingServiceError({
+          name,
+          projectId,
+          serviceName,
+          agentDir,
+          explicitService: Boolean(opts.service),
+        });
+      }
+      throw err;
+    }
     opts.logger.info(`Linked staging dir to project ${projectId}, service ${serviceName}.`);
   }
 
