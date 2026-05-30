@@ -88,10 +88,9 @@ export async function runAdd(target: string | undefined, opts: AddOpts): Promise
 
   // === Preflight (atomicity gate, §13.3) ===
   // Compute which external npm packages this add would introduce. If any,
-  // verify the agent dir has a `package.json` BEFORE touching disk —
-  // pre-v0.3.2 agents must migrate first via `auggy dev` (Phase 6). Bailing
-  // here leaves agent.yaml + skills unchanged so the operator can retry
-  // after migration without first rolling back partial mutations.
+  // verify the agent dir has a `package.json` BEFORE touching disk. Bailing
+  // here leaves agent.yaml + skills unchanged so the operator can fix the
+  // project scaffold without first rolling back partial mutations.
   const additions = mergeAdditions(selected);
   const hasAdditions = Object.keys(additions).length > 0;
   const pkgPath = join(agentDir, "package.json");
@@ -102,10 +101,9 @@ export async function runAdd(target: string | undefined, opts: AddOpts): Promise
     // different sinks see it on the right stream. Matches the convention
     // for thrown errors at src/cli/index.ts.
     console.error();
-    console.error(`Error: ${pkgPath} does not exist. This agent has no per-agent manifest.`);
-    console.error(`Re-scaffold via \`auggy create ${name}\` (or write package.json manually with`);
-    console.error("auggy + your engine adapter as deps, then run `bun install`), then re-run");
-    console.error(`\`auggy add ${name}\`.`);
+    console.error(`Error: ${pkgPath} does not exist. This is not a complete Auggy agent project.`);
+    console.error("Run `auggy init` in this directory, or create a fresh project with");
+    console.error(`\`auggy create ${name}\`, then re-run \`auggy add\`.`);
     console.error();
     console.error("(No changes made to agent.yaml — atomic bail.)");
     process.exitCode = 1;
@@ -136,7 +134,8 @@ export async function runAdd(target: string | undefined, opts: AddOpts): Promise
   }
 
   // === Persist: yaml → package.json → skills (in sequence) ===
-  // The legacy-bail above guards against partial-state on pre-v0.3.2 dirs.
+  // The package.json preflight above guards against partial-state on invalid
+  // agent project dirs.
   // Past this point, all three artifacts are intentional mutations matching
   // the operator's request; install-failure below leaves them in place.
   writeFileSync(configPath, newYaml);

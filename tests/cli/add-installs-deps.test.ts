@@ -11,7 +11,7 @@ import { createStubBunInstallSpawn, type SpawnCapture } from "../fixtures/bun-in
  *    catalog entry of every newly-selected augment
  *  - invokes `bun install` in the agent dir (mocked)
  *  - is a no-op on install when nothing new came in
- *  - bails clearly when the agent dir has no package.json (pre-v0.3.2 shape)
+ *  - bails clearly when the agent project has no package.json
  */
 
 let answers: Answers = { augmentTypes: [] };
@@ -273,19 +273,18 @@ describe("runAdd no-op cases", () => {
   });
 });
 
-describe("runAdd legacy compatibility (atomicity preflight, §13.3)", () => {
-  test("legacy agent: bail BEFORE any disk write; yaml untouched, no skills, no install", async () => {
-    const dir = setupAgent("legacy");
-    // Simulate a pre-v0.3.2 agent dir by removing the package.json setupAgent
-    // wrote. (The boot-time migration in Phase 6 will scaffold it on first
-    // `auggy dev` call.)
+describe("runAdd package manifest preflight", () => {
+  test("missing package.json: bail BEFORE any disk write; yaml untouched, no skills, no install", async () => {
+    const dir = setupAgent("missing-package");
+    // Simulate an incomplete v1 agent project by removing the package.json
+    // setupAgent wrote.
     rmSync(join(dir, "package.json"));
     const yamlBefore = readFileSync(join(dir, "agent.yaml"), "utf-8");
     answers = { augmentTypes: ["link"] };
 
     const originalExitCode = process.exitCode;
     try {
-      await runAdd("legacy", {
+      await runAdd("missing-package", {
         config: join(dir, "agent.yaml"),
         auggyDir,
         bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
