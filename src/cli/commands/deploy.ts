@@ -22,7 +22,7 @@
  * crash when agent.yaml interpolates `${AUGGY_PUBLIC_URL}` or similar.
  */
 
-import { copyFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { getAgentFromDir, setCloudForDir } from "../agent-index";
 import { formatDoctorChecks, hasDoctorFailures, runDoctor } from "./doctor";
@@ -106,6 +106,12 @@ function formatMissingServiceError(args: {
   );
 }
 
+function clearCloudMetadataForDir(agentDir: string): void {
+  const path = join(agentDir, ".auggy-cloud.json");
+  if (!existsSync(path)) return;
+  unlinkSync(path);
+}
+
 function maybeVendorLocalAuggyTarball(args: {
   agentDir: string;
   stagingDir: string;
@@ -187,8 +193,8 @@ export async function runDeploy(nameArg: string | undefined, opts: DeployOptions
   opts.logger.info(`Railway CLI ready.`);
 
   // 3) Determine first-deploy vs redeploy from existing CloudRecord.
-  const existingCloud = entry.cloud;
-  const isRedeploy = existingCloud !== null;
+  let existingCloud = entry.cloud;
+  let isRedeploy = existingCloud !== null;
 
   // 4) Stage the bundle (excludes secrets + volume-bound state). New Railway
   //    project creation links the current directory, so staging must exist
@@ -274,23 +280,42 @@ export async function runDeploy(nameArg: string | undefined, opts: DeployOptions
     }
   } else if (existingCloud) {
     const serviceName = opts.service ?? existingCloud.serviceId;
+    let recoveredStaleService = false;
     try {
       await withProgress(opts, `Linking Railway service ${serviceName}`, () =>
         opts.cli.link({ projectId, serviceName, cwd: stagingDir }),
       );
     } catch (err) {
       if (isRailwayServiceNotFoundError(err)) {
-        throw formatMissingServiceError({
-          name,
-          projectId,
-          serviceName,
-          agentDir,
-          explicitService: Boolean(opts.service),
-        });
+        if (!opts.service) {
+          clearCloudMetadataForDir(agentDir);
+          existingCloud = null;
+          isRedeploy = false;
+          opts.logger.warn(
+            `Saved Railway service "${serviceName}" was not found in project ${projectId}; cleared stale local deploy metadata and continuing as a first deploy.`,
+          );
+          await withProgress(opts, `Creating Railway service ${name}`, () =>
+            opts.cli.createService({ serviceName: name, cwd: stagingDir }),
+          );
+          opts.logger.info(`Created Railway service ${name}.`);
+          projectAlreadyLinked = true;
+          recoveredStaleService = true;
+        } else {
+          throw formatMissingServiceError({
+            name,
+            projectId,
+            serviceName,
+            agentDir,
+            explicitService: Boolean(opts.service),
+          });
+        }
+      } else {
+        throw err;
       }
-      throw err;
     }
-    opts.logger.info(`Linked staging dir to project ${projectId}, service ${serviceName}.`);
+    if (!recoveredStaleService) {
+      opts.logger.info(`Linked staging dir to project ${projectId}, service ${serviceName}.`);
+    }
   }
 
   // 8) Volume: only add on first deploy. Redeploys keep the existing volume

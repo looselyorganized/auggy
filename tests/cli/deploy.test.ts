@@ -576,7 +576,7 @@ describe("runDeploy", () => {
     expect(calls.createService).toEqual([]);
   });
 
-  test("redeploy with stale cloud metadata explains how to recover", async () => {
+  test("redeploy with stale cloud metadata clears it and continues as first deploy", async () => {
     setCloud(
       "zip",
       {
@@ -589,15 +589,59 @@ describe("runDeploy", () => {
       },
       { auggyDir },
     );
+    const warnings: string[] = [];
     const { cli, calls } = mockRailwayCli();
     cli.link = async ({ projectId, serviceName, cwd }) => {
       calls.link.push({ projectId, serviceName, cwd });
-      throw new Error(`railway service link ${serviceName} exited 1: Service "${serviceName}" not found.`);
+      throw new Error(
+        `railway service link ${serviceName} exited 1: Service "${serviceName}" not found.`,
+      );
     };
 
-    await expect(runDeploy("zip", baseDeployOptions(cli, auggyDir))).rejects.toThrow(
-      /Saved Railway service "missing-service" was not found[\s\S]*\.auggy-cloud\.json[\s\S]*auggy deploy zip --service <service-name>/,
+    const result = await runDeploy(
+      "zip",
+      baseDeployOptions(cli, auggyDir, {
+        logger: { info: () => {}, warn: (msg) => warnings.push(msg), error: () => {} },
+      }),
     );
+
+    expect(warnings.join("\n")).toMatch(/cleared stale local deploy metadata/i);
+    expect(calls.createService).toEqual([expect.objectContaining({ serviceName: "zip" })]);
+    expect(calls.addVolume).toEqual([{ name: "zip-data", mountPath: "/app/data" }]);
+    expect(calls.up).toBe(1);
+    expect(result.projectId).toBe("proj_existing");
+    expect(getAgent("zip", { auggyDir })?.cloud).toMatchObject({
+      projectId: "proj_existing",
+      serviceId: "svc_def",
+      url: "https://zip-production-abcd.up.railway.app",
+    });
+  });
+
+  test("redeploy with missing explicit --service still fails", async () => {
+    setCloud(
+      "zip",
+      {
+        provider: "railway",
+        projectId: "proj_existing",
+        serviceId: "svc_existing",
+        url: "https://zip-old.up.railway.app",
+        volumeId: "zip-data",
+        deployedAt: "2026-05-10T00:00:00.000Z",
+      },
+      { auggyDir },
+    );
+    const { cli, calls } = mockRailwayCli();
+    cli.link = async ({ projectId, serviceName, cwd }) => {
+      calls.link.push({ projectId, serviceName, cwd });
+      throw new Error(
+        `railway service link ${serviceName} exited 1: Service "${serviceName}" not found.`,
+      );
+    };
+
+    await expect(
+      runDeploy("zip", baseDeployOptions(cli, auggyDir, { service: "missing-explicit" })),
+    ).rejects.toThrow(/Railway service "missing-explicit" was not found/);
+    expect(calls.createService).toEqual([]);
     expect(calls.up).toBe(0);
   });
 
