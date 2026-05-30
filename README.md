@@ -49,7 +49,7 @@ auggy augment install zip augments/weather
 auggy deploy
 
 # Stream cloud logs
-auggy logs zip
+auggy logs
 ```
 
 The `auggy` binary requires [Bun](https://bun.sh) at runtime. The package
@@ -110,20 +110,20 @@ augments:
 | Command | What it does |
 |---------|-------------|
 | `auggy create <name>` | Scaffold agent directory (interactive augment selection) |
-| `auggy add <name> [augment]` | Add augments to an existing agent |
-| `auggy run <name>` | Run locally and open `/console/chat` |
-| `auggy doctor <name>` | Check whether an agent is ready to run |
+| `auggy add [name] [augment]` | Add augments to an existing agent |
+| `auggy run [name]` | Run locally and open `/console/chat` |
+| `auggy doctor [name]` | Check whether an agent is ready to run |
 | `auggy augment create <slug>` | Scaffold a local custom augment |
 | `auggy augment install <name> <path>` | Install a local custom augment |
 | `auggy augment test <path>` | Validate a local custom augment |
-| `auggy deploy <name>` | Deploy to Railway |
-| `auggy logs <name>` | Stream Railway logs for a deployed agent |
-| `auggy dev <name>` | Run in foreground (Ctrl-C stops) |
-| `auggy start <name>` | Install as launchd service (always-on) |
+| `auggy deploy [name]` | Deploy to Railway |
+| `auggy logs [name]` | Stream Railway logs for a deployed agent |
+| `auggy dev [name]` | Run in foreground (Ctrl-C stops) |
+| `auggy start [name]` | Install as launchd service (always-on) |
 | `auggy stop <name>` | Stop a running agent |
 | `auggy restart <name>` | Stop and restart |
 | `auggy status [name]` | Show running agents |
-| `auggy remove <name> [--cloud]` | Delete a local agent, optionally destroying its Railway service |
+| `auggy remove [name] [--cloud]` | Delete a local agent, optionally destroying its Railway service |
 
 ## Built-in augments
 

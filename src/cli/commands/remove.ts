@@ -1,5 +1,5 @@
 /**
- * auggy remove <name> — delete an agent directory.
+ * auggy remove [name] — delete an agent project.
  *
  * Refuses if the agent is running. Prompts before deletion (skipped with
  * --yes). The agent dir is the source of truth — removing it removes the
@@ -39,20 +39,23 @@ interface RemoveOptions {
   railwayCli?: RailwayCli;
 }
 
-export async function runRemove(name: string, opts: RemoveOptions = {}): Promise<void> {
+export async function runRemove(name: string | undefined, opts: RemoveOptions = {}): Promise<void> {
   const configPath = resolveConfigPath(name, undefined, { auggyDir: opts.auggyDir, cwd: opts.cwd });
   const localDir = dirname(configPath);
   const entry = getAgentFromDir(localDir);
+  const configName = readConfigName(localDir);
+  const displayName = configName ?? name ?? "this agent";
   if (!entry) {
-    throw new Error(`Agent "${name}" not found.\n\n  Run from inside an agent project or its parent.`);
+    throw new Error(
+      `Agent "${displayName}" not found.\n\n  Run from inside an agent project or its parent.`,
+    );
   }
 
   // Refuse if the agent is running. Stale manifests (dead PID) are tolerated
   // — we clean them up below. Check under both the CLI-arg name AND the
   // agent.yaml's config.name (operator may have edited the yaml after create,
   // in which case `auggy dev` writes the manifest under config.name).
-  const pidByCli = readPidManifest(name, { auggyDir: opts.auggyDir });
-  const configName = readConfigName(entry.localDir);
+  const pidByCli = name ? readPidManifest(name, { auggyDir: opts.auggyDir }) : null;
   const pidByConfig =
     configName && configName !== name
       ? readPidManifest(configName, { auggyDir: opts.auggyDir })
@@ -62,7 +65,7 @@ export async function runRemove(name: string, opts: RemoveOptions = {}): Promise
   const aliveConfig = pidByConfig && isProcessAlive(pidByConfig.pid);
 
   if (aliveCli || aliveConfig) {
-    const liveName = aliveCli ? name : configName!;
+    const liveName = aliveCli ? name! : configName!;
     throw new Error(`Agent "${liveName}" is running. Stop it first:\n\n  auggy stop ${liveName}`);
   }
 
@@ -81,15 +84,17 @@ export async function runRemove(name: string, opts: RemoveOptions = {}): Promise
   // because the cloud record lives inside the dir's .auggy-cloud.json.
   if (opts.cloud && entry.cloud) {
     const cli = opts.railwayCli ?? createRailwayCli();
-    const tmp = mkdtempSync(join(tmpdir(), `auggy-remove-${name}-`));
+    const tmp = mkdtempSync(join(tmpdir(), `auggy-remove-${displayName}-`));
     try {
       await cli.link({
         projectId: entry.cloud.projectId,
-        serviceName: name,
+        serviceName: entry.cloud.serviceId,
         cwd: tmp,
       });
       await cli.destroyService({ cwd: tmp });
-      console.log(`Destroyed Railway service "${name}" (project ${entry.cloud.projectId}).`);
+      console.log(
+        `Destroyed Railway service "${entry.cloud.serviceId}" (project ${entry.cloud.projectId}).`,
+      );
     } catch (err) {
       console.warn(
         `warn: Railway service destruction failed: ${(err as Error).message}\n` +
@@ -103,7 +108,7 @@ export async function runRemove(name: string, opts: RemoveOptions = {}): Promise
   }
 
   // Clean up stale PID manifest(s) if any.
-  if (pidByCli) removePidManifest(name, { auggyDir: opts.auggyDir });
+  if (pidByCli && name) removePidManifest(name, { auggyDir: opts.auggyDir });
   if (pidByConfig && configName) removePidManifest(configName, { auggyDir: opts.auggyDir });
 
   if (!existsSync(join(localDir, "agent.yaml"))) {
@@ -111,5 +116,5 @@ export async function runRemove(name: string, opts: RemoveOptions = {}): Promise
   }
   rmSync(localDir, { recursive: true, force: true });
 
-  console.log(`Removed agent "${name}" (was at ${entry.localDir}).`);
+  console.log(`Removed agent "${displayName}" (was at ${entry.localDir}).`);
 }

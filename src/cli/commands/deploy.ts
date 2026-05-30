@@ -67,6 +67,7 @@ export interface DeployOptions {
 }
 
 export interface DeployResult {
+  name: string;
   url: string;
   projectId: string;
   serviceId: string;
@@ -408,6 +409,7 @@ export async function runDeploy(
   const serviceId =
     status.service?.id ?? status.service?.name ?? opts.service ?? existingCloud?.serviceId ?? name;
   const result: DeployResult = {
+    name,
     url,
     projectId,
     serviceId,

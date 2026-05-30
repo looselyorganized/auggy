@@ -74,6 +74,7 @@ directory is removed or left outside the agent project.
 
 ```bash
 auggy list                          # list agent projects below the current directory
+auggy remove --yes                  # delete the current agent project
 auggy remove <name>                 # delete the agent dir
 auggy remove <name> --yes           # skip the confirmation prompt
 auggy remove <name> --cloud         # also destroy the Railway service
@@ -106,9 +107,9 @@ fatal.
 
 ## Cloud
 
-`auggy deploy <name>` writes the Railway service metadata
+`auggy deploy` writes the Railway service metadata
 (provider, projectId, serviceId, url, volumeId, deployedAt) into
-`<agent-dir>/.auggy-cloud.json`. `auggy logs <name>` reads the same file
-to stream Railway logs for the saved project/service. `auggy remove <name>
---cloud` reads that file to destroy the Railway service before removing the
-local dir (and the file with it).
+`<agent-dir>/.auggy-cloud.json`. `auggy logs` reads the same file to stream
+Railway logs for the saved project/service. `auggy remove --cloud` reads that
+file to destroy the Railway service before removing the local dir (and the file
+with it).

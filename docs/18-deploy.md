@@ -1,6 +1,6 @@
 # Deploying an Auggy agent to Railway
 
-This page covers `auggy deploy <name>` — the CLI path for shipping a single agent to Railway, the v1.0 cloud deployment target.
+This page covers `auggy deploy` — the CLI path for shipping a single agent to Railway, the v1.0 cloud deployment target.
 
 If you're deploying locally as a launchd service (macOS), see [`auggy start`](./07-built-in-augments.md) instead.
 
@@ -14,7 +14,7 @@ If you're deploying locally as a launchd service (macOS), see [`auggy start`](./
 | **Railway CLI** ([install](https://docs.railway.com/develop/cli)) | The deploy command shells out to `railway`. Same trust pattern as `git push` trusts `git`. |
 | `railway login` completed | Authenticates the Railway CLI session. `auggy deploy` does not store API tokens. |
 | A Railway project | Create one in the [Railway dashboard](https://railway.com/new). You'll provide the project ID on first deploy. |
-| `auggy create <name>` already run | Deploy operates on a registered agent. |
+| `auggy create <name>` already run | Deploy operates on an agent project. |
 
 ---
 
@@ -22,11 +22,12 @@ If you're deploying locally as a launchd service (macOS), see [`auggy start`](./
 
 ```bash
 # 1. Make sure the agent runs locally
-auggy run zip
+cd zip
+auggy run
 # (Ctrl-C to stop)
 
 # 2. Deploy to Railway
-auggy deploy zip
+auggy deploy
 ```
 
 The CLI walks you through:
@@ -45,7 +46,7 @@ The CLI walks you through:
 12. **Health verification** — polls `${url}/health` for a bounded window. Timeout is non-destructive; Railway may still finish booting.
 13. **Metadata write** — the cloud record lands in `<agent-dir>/.auggy-cloud.json` so subsequent `auggy deploy` runs are idempotent redeploys.
 
-Successful deploy output includes the public URL, `/health`, `/console`, and `/console/chat`. Follow later builds in the [Railway dashboard](https://railway.com) or with `auggy logs zip`.
+Successful deploy output includes the public URL, `/health`, `/console`, and `/console/chat`. Follow later builds in the [Railway dashboard](https://railway.com) or with `auggy logs`.
 
 ---
 
@@ -54,19 +55,19 @@ Successful deploy output includes the public URL, `/health`, `/console`, and `/c
 A re-run of the same command IS the redeploy. There's no separate `redeploy` verb.
 
 ```bash
-auggy deploy zip
+auggy deploy
 ```
 
 For scripted deploys into an existing project:
 
 ```bash
-auggy deploy zip --project <project-id>
+auggy deploy --project <project-id>
 ```
 
 To deploy into an existing Railway service instead of creating a new one:
 
 ```bash
-auggy deploy zip --project <project-id> --service my-existing-service
+auggy deploy --project <project-id> --service my-existing-service
 ```
 
 What changes vs. first deploy:
@@ -82,7 +83,7 @@ What changes vs. first deploy:
 ## Logs and recovery
 
 ```bash
-auggy logs zip
+auggy logs
 ```
 
 `auggy logs` reads the stored Railway cloud record, links a temporary Railway workspace to the saved project/service, and streams `railway logs`.
@@ -93,7 +94,7 @@ Use it when:
 - Railway reports a crash loop.
 - You changed `.env` or `agent.yaml` and need boot diagnostics.
 
-If the agent has not been deployed yet, `auggy logs zip` fails with a local message and points you back to `auggy deploy zip`.
+If the agent has not been deployed yet, `auggy logs` fails with a local message and points you back to `auggy deploy`.
 
 ---
 
@@ -157,12 +158,12 @@ The interpolation resolves at boot. First deploys work because the deploy comman
 
 ```bash
 # Remove from your local index AND destroy the Railway service
-auggy remove zip --cloud --yes
+auggy remove --cloud --yes
 ```
 
 What `--cloud` does:
 
-1. Local agent dir + index entry cleared (same as `auggy remove zip`).
+1. Local agent dir + index entry cleared (same as `auggy remove`).
 2. Railway service is deleted via `railway service delete --yes`.
 3. If Railway destruction fails, the warning is logged but local cleanup still proceeds — you may need to delete the service manually via the Railway dashboard.
 
@@ -186,10 +187,10 @@ The Railway volume is **NOT** automatically deleted (Railway retains it as a saf
 |---|---|
 | `railway: command not found` | Install the Railway CLI: https://docs.railway.com/develop/cli |
 | `Unauthorized. Run \`railway login\` first.` | Re-run `railway login` and follow the browser flow. |
-| `Agent "X" not registered` | Run `auggy create X` first, then `auggy deploy X`. |
+| `Agent "X" not registered` | Run `auggy create X` first, then `cd X && auggy deploy`. |
 | First-deploy fails at `railway volume add` | The Railway project may not support volumes on the free tier. Upgrade or pick a different project. |
-| Deploy preflight fails before Railway work | Run `auggy doctor <name>` and fix the reported config/env/dependency issue. |
-| Health check does not pass after deploy | Run `auggy logs <name>` and inspect the boot error. The cloud record is still written, so redeploy with `auggy deploy <name> --yes` after fixing. |
-| visitorAuth refuses to boot — "publicUrl required" | Check that your agent.yaml has `publicUrl: ${AUGGY_PUBLIC_URL}` and the deploy actually generated a domain. Re-run `auggy deploy <name>` to refresh. |
+| Deploy preflight fails before Railway work | Run `auggy doctor` and fix the reported config/env/dependency issue. |
+| Health check does not pass after deploy | Run `auggy logs` and inspect the boot error. The cloud record is still written, so redeploy with `auggy deploy --yes` after fixing. |
+| visitorAuth refuses to boot — "publicUrl required" | Check that your agent.yaml has `publicUrl: ${AUGGY_PUBLIC_URL}` and the deploy actually generated a domain. Re-run `auggy deploy` to refresh. |
 | Memory disappears after redeploy | Check the volume is mounted (Railway dashboard → service → Volumes). If empty, the symlink list in the Dockerfile may be missing your dbPath — check `src/cli/deploy/dockerfile.ts`'s `SQLITE_DB_NAMES`. |
 | Daily budget cap hit unexpectedly | autoSave extraction calls count against the cap. Run `evals/layered-memory/run.ts --smoke` to measure your per-extraction cost; lower the cadence in `agent.yaml`'s `layeredMemory.options.autoSave.extractionFrequency` if needed. |

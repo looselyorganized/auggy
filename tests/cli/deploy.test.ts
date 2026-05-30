@@ -198,6 +198,7 @@ describe("runDeploy", () => {
     );
 
     expect(calls.up).toBe(1);
+    expect(result.name).toBe("zip");
     expect(result.url).toBe("https://zip-production-abcd.up.railway.app");
     expect(result.serviceId).toBe("svc_def");
     expect(result.volumeId).toBe("zip-data");
@@ -275,11 +276,12 @@ describe("runDeploy", () => {
 
       const { cli, calls } = mockRailwayCli();
       const result = await runDeploy(
-        "project",
+        undefined,
         baseDeployOptions(cli, auggyDir, { cwd: projectDir }),
       );
 
       expect(calls.linkProject[0]?.cwd).toContain("auggy-deploy-project-");
+      expect(result.name).toBe("project");
       expect(result.serviceId).toBe("svc_def");
       expect(
         JSON.parse(readFileSync(join(projectDir, ".auggy-cloud.json"), "utf-8")),

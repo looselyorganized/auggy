@@ -113,21 +113,21 @@ Deploy checks:
 ```bash
 railway login
 auggy deploy
-auggy logs dx-smoke
+auggy logs
 ```
 
 Manual checks:
 
 - [ ] Deploy output includes public URL, `/health`, `/console`, and `/console/chat`
-- [ ] Public `/health` returns success or `auggy logs dx-smoke` gives actionable boot errors
+- [ ] Public `/health` returns success or `auggy logs` gives actionable boot errors
 - [ ] Public `/console/chat` opens
 - [ ] `auggy deploy --yes` works as a redeploy
 
 Cleanup:
 
 ```bash
+auggy remove --cloud --yes
 cd ..
-auggy remove dx-smoke --cloud --yes
 ```
 
 ### 2. Tag

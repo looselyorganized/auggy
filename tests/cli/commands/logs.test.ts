@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { seedAgentForTest, setCloud } from "../../../src/cli/agent-index";
@@ -67,7 +67,7 @@ describe("runLogs", () => {
     } catch {}
   });
 
-    test("fails when the agent is not found", async () => {
+  test("fails when the agent is not found", async () => {
     const { cli } = mockRailwayCli();
     await expect(runLogs("ghost", { auggyDir, railwayCli: cli })).rejects.toThrow(/not found/i);
   });
@@ -101,15 +101,37 @@ describe("runLogs", () => {
     const { cli, calls } = mockRailwayCli();
     await runLogs("zip", { auggyDir, railwayCli: cli });
 
-    expect(calls.map((call) => call.name)).toEqual([
-      "checkPresence",
-      "checkAuth",
-      "link",
-      "logs",
-    ]);
+    expect(calls.map((call) => call.name)).toEqual(["checkPresence", "checkAuth", "link", "logs"]);
     expect(calls.find((call) => call.name === "link")?.args).toMatchObject({
       projectId: "proj_abc",
-      serviceName: "zip",
+      serviceName: "svc_def",
     });
+  });
+
+  test("can stream logs from inside a project-local agent without a name", async () => {
+    const projectDir = mkdtempSync(join(tmpdir(), "auggy-logs-project-"));
+    try {
+      writeFileSync(join(projectDir, "agent.yaml"), "id: aug1_test\nname: local\n");
+      writeFileSync(
+        join(projectDir, ".auggy-cloud.json"),
+        JSON.stringify({
+          provider: "railway",
+          projectId: "proj_local",
+          serviceId: "svc_local",
+          url: "https://local.up.railway.app",
+          volumeId: "local-data",
+          deployedAt: "2026-05-12T00:00:00.000Z",
+        }),
+      );
+      const { cli, calls } = mockRailwayCli();
+      await runLogs(undefined, { cwd: projectDir, railwayCli: cli });
+
+      expect(calls.find((call) => call.name === "link")?.args).toMatchObject({
+        projectId: "proj_local",
+        serviceName: "svc_local",
+      });
+    } finally {
+      rmSync(projectDir, { recursive: true, force: true });
+    }
   });
 });

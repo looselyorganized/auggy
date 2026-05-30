@@ -65,6 +65,13 @@ describe("runRemove", () => {
     expect(getAgent("zip", { auggyDir })).toBeNull();
   });
 
+  test("--yes deletes the current project-local agent when name is omitted", async () => {
+    const dir = setupAgent("zip");
+    await runRemove(undefined, { yes: true, auggyDir, cwd: dir });
+    expect(existsSync(dir)).toBe(false);
+    expect(getAgent("zip", { auggyDir })).toBeNull();
+  });
+
   test("tolerates stale PID manifest (pid dead)", async () => {
     setupAgent("zip");
     writePidManifest(
@@ -182,6 +189,63 @@ describe("runRemove", () => {
     await runRemove("zip", { yes: true, cloud: true, auggyDir, railwayCli: mockCli });
     expect(calls.link).toBe(1);
     expect(calls.destroy).toBe(1);
+    expect(getAgent("zip", { auggyDir })).toBeNull();
+  });
+
+  test("--cloud from inside project-local agent links the saved Railway service id", async () => {
+    setupAgent("zip");
+    setCloud(
+      "zip",
+      {
+        provider: "railway",
+        projectId: "proj_abc",
+        serviceId: "svc_def",
+        url: "https://zip.up.railway.app",
+        volumeId: "zip-data",
+        deployedAt: "2026-05-12T00:00:00.000Z",
+      },
+      { auggyDir },
+    );
+    const dir = join(auggyDir, "agents", "zip");
+
+    const calls: Array<{ projectId: string; serviceName: string }> = [];
+    const mockCli = {
+      async checkPresence() {
+        return true as const;
+      },
+      async checkAuth() {
+        return "x@y.z";
+      },
+      async link(args: { projectId: string; serviceName: string }) {
+        calls.push(args);
+      },
+      async createProject() {
+        return "proj_created";
+      },
+      async linkProject() {},
+      async linkService() {},
+      async createService() {},
+      async setVariable() {},
+      async up() {},
+      async generateDomain() {
+        return "https://x";
+      },
+      async addVolume() {},
+      async status() {
+        return {
+          project: { id: "x", name: "x" },
+          service: { id: "x", name: "x" },
+          deployment: { status: "SUCCESS" },
+        };
+      },
+      async destroyService() {},
+      async logs() {},
+    };
+
+    await runRemove(undefined, { yes: true, cloud: true, auggyDir, cwd: dir, railwayCli: mockCli });
+    expect(calls).toEqual([
+      expect.objectContaining({ projectId: "proj_abc", serviceName: "svc_def" }),
+    ]);
     expect(getAgent("zip", { auggyDir })).toBeNull();
   });
 

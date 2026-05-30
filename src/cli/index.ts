@@ -15,9 +15,9 @@
  *   auggy restart <name>             Stop + start
  *   auggy status [name]              Show running agents
  *   auggy list                       List agent projects in this directory
- *   auggy remove <name> [--yes] [--cloud]  Delete an agent (dir + index, optionally Railway service)
+ *   auggy remove [name] [--yes] [--cloud]  Delete an agent project, optionally Railway service
  *   auggy deploy [name]             Deploy an agent to Railway
- *   auggy logs <name>               Show Railway logs for a deployed agent
+ *   auggy logs [name]               Show Railway logs for a deployed agent
  *   auggy chat                       Launch local GUI
  *   auggy eval [name]                Run portable security eval suite
  */
@@ -169,13 +169,11 @@ export function buildCli(): Command {
     });
 
   program
-    .command("remove <name>")
-    .description(
-      "Remove an agent (delete dir + clear index entry; --cloud also destroys Railway service)",
-    )
+    .command("remove [name]")
+    .description("Remove an agent project (--cloud also destroys the Railway service)")
     .option("--yes", "skip the confirmation prompt")
     .option("--cloud", "also destroy the agent's Railway service (when cloud-deployed)")
-    .action(async (name: string, opts: { yes?: boolean; cloud?: boolean }) => {
+    .action(async (name: string | undefined, opts: { yes?: boolean; cloud?: boolean }) => {
       try {
         await runRemove(name, { yes: opts.yes, cloud: opts.cloud });
       } catch (err) {
@@ -217,9 +215,9 @@ export function buildCli(): Command {
     });
 
   program
-    .command("logs <name>")
+    .command("logs [name]")
     .description("Show Railway logs for a deployed agent")
-    .action(async (name: string) => {
+    .action(async (name: string | undefined) => {
       try {
         const { runLogs } = await import("./commands/logs");
         await runLogs(name);
@@ -284,7 +282,7 @@ export function buildCli(): Command {
               task: (msg, run) => withBrailleSpinner(msg, run),
             },
           });
-          console.log(`\nSubmitted ${name} deployment to Railway.`);
+          console.log(`\nSubmitted ${result.name} deployment to Railway.`);
           console.log(`  URL:        ${result.url}`);
           console.log(`  Project:    ${result.projectId}`);
           console.log(`  Service:    ${result.serviceId}`);
@@ -296,8 +294,9 @@ export function buildCli(): Command {
             `  Sign-in:    username auggy, password AUGGY_WEB_TOKEN from this agent's .env`,
           );
           if (!result.health.ok) {
+            const rerun = name ? `auggy deploy ${name} --yes` : "auggy deploy --yes";
             console.log(
-              `\nCurrent health is not passing yet. Check \`railway logs\`, then rerun \`auggy deploy ${name} --yes\`.`,
+              `\nCurrent health is not passing yet. Check \`railway logs\`, then rerun \`${rerun}\`.`,
             );
           } else {
             console.log(

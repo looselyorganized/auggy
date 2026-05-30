@@ -52,4 +52,17 @@ describe("auggy CLI command table", () => {
     const subcommands = skill?.commands.map((cmd) => cmd.name());
     expect(subcommands).toEqual(["add", "create", "list", "remove"]);
   });
+
+  test("project-local cloud commands accept omitted names", () => {
+    const cli = buildCli();
+    expect(cli.commands.find((cmd) => cmd.name() === "deploy")?.helpInformation()).toContain(
+      "[name]",
+    );
+    expect(cli.commands.find((cmd) => cmd.name() === "logs")?.helpInformation()).toContain(
+      "[name]",
+    );
+    expect(cli.commands.find((cmd) => cmd.name() === "remove")?.helpInformation()).toContain(
+      "[name]",
+    );
+  });
 });
