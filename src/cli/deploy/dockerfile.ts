@@ -3,7 +3,7 @@
  *
  * The deploy command writes these strings into the staging dir before
  * `railway up`. ADR-021 cloud design: bake-in the volume symlink dance +
- * `auggy run --config /app/agent.yaml --no-open` invocation so `agent.yaml`'s
+ * `auggy dev --config /app/agent.yaml --internal-mode railway` invocation so `agent.yaml`'s
  * `dbPath: ./<name>.db` paths work unchanged in cloud.
  */
 
@@ -89,6 +89,6 @@ ${symlinks}
 # Dockerfile via \`bun install\`). v0.3.2 removed the global-install path
 # because the agent's pinned auggy version + engine adapter is what the
 # image must use, not whatever a stray global has.
-exec bunx auggy run --config /app/agent.yaml --no-open
+exec bunx auggy dev --config /app/agent.yaml --internal-mode railway
 `;
 }

@@ -64,11 +64,13 @@ describe("generateEntrypoint", () => {
 
   test("execs auggy via `bunx` with explicit /app/agent.yaml config", () => {
     const script = generateEntrypoint();
-    expect(script).toMatch(/exec bunx auggy run --config \/app\/agent\.yaml --no-open/);
+    expect(script).toMatch(
+      /exec bunx auggy dev --config \/app\/agent\.yaml --internal-mode railway/,
+    );
     // Negative assertion: the bare `auggy dev` shape would resolve to a
     // global install that the v0.3.2 split no longer ships.
     expect(script).not.toMatch(/exec auggy dev/);
-    expect(script).not.toMatch(/exec bunx auggy dev/);
+    expect(script).not.toMatch(/exec bunx auggy run/);
     // Negative assertion: passing a name asks the cloud image to perform
     // name discovery; the deployed app has one authoritative /app/agent.yaml.
     expect(script).not.toMatch(/"\$1"/);
