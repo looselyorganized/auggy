@@ -22,8 +22,8 @@
  * crash when agent.yaml interpolates `${AUGGY_PUBLIC_URL}` or similar.
  */
 
-import { writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { copyFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
 import { getAgentFromDir, setCloudForDir } from "../agent-index";
 import { formatDoctorChecks, hasDoctorFailures, runDoctor } from "./doctor";
 import { readAgentName, resolveConfigPath } from "../resolve-config";
@@ -32,6 +32,7 @@ import { generateDockerfile, generateEntrypoint } from "../deploy/dockerfile";
 import { waitForHealth, type HealthCheckOptions, type HealthCheckResult } from "../deploy/health";
 import type { RailwayCli } from "../deploy/railway-cli";
 import { loadSecretsPlan } from "../deploy/secrets";
+import { getAuggyVersion } from "../scaffold-package-json";
 
 export interface DeployLogger {
   info(msg: string): void;
@@ -105,6 +106,41 @@ function formatMissingServiceError(args: {
   );
 }
 
+function maybeVendorLocalAuggyTarball(args: {
+  agentDir: string;
+  stagingDir: string;
+  cwd?: string;
+}): string | null {
+  const version = getAuggyVersion();
+  const tarballName = `auggy-${version}.tgz`;
+  const candidates = [
+    args.cwd,
+    args.agentDir,
+    dirname(args.agentDir),
+    dirname(dirname(args.agentDir)),
+    process.cwd(),
+  ].filter((p): p is string => Boolean(p));
+
+  const tarballPath = candidates.map((root) => resolve(root, tarballName)).find(existsSync);
+  if (!tarballPath) return null;
+
+  const stagedPackagePath = join(args.stagingDir, "package.json");
+  if (!existsSync(stagedPackagePath)) return null;
+
+  const parsed = JSON.parse(readFileSync(stagedPackagePath, "utf-8")) as {
+    dependencies?: Record<string, string>;
+  };
+  const deps = parsed.dependencies;
+  if (!deps?.auggy) return null;
+  if (!/^\^?\d+\.\d+\.\d+/.test(deps.auggy)) return null;
+
+  const stagedTarballName = basename(tarballPath);
+  copyFileSync(tarballPath, join(args.stagingDir, stagedTarballName));
+  deps.auggy = `file:./${stagedTarballName}`;
+  writeFileSync(stagedPackagePath, `${JSON.stringify(parsed, null, 2)}\n`);
+  return stagedTarballName;
+}
+
 export async function runDeploy(nameArg: string | undefined, opts: DeployOptions): Promise<DeployResult> {
   if (opts.to !== "railway") {
     throw new Error(
@@ -161,6 +197,14 @@ export async function runDeploy(nameArg: string | undefined, opts: DeployOptions
   opts.logger.info(`Bundle staged at ${stagingDir}.`);
 
   // 5) Write Dockerfile + entrypoint into the staging dir.
+  const vendoredRuntime = maybeVendorLocalAuggyTarball({
+    agentDir,
+    stagingDir,
+    cwd: opts.cwd,
+  });
+  if (vendoredRuntime) {
+    opts.logger.info(`Vendored local Auggy runtime ${vendoredRuntime} into deploy bundle.`);
+  }
   writeFileSync(join(stagingDir, "Dockerfile"), generateDockerfile({ agentName: name }));
   writeFileSync(join(stagingDir, "auggy-entrypoint.sh"), generateEntrypoint());
 

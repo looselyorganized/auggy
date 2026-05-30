@@ -1,10 +1,11 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { getAgent, seedAgentForTest, setCloud } from "../../src/cli/agent-index";
 import { type DeployOptions, runDeploy } from "../../src/cli/commands/deploy";
 import type { RailwayCli } from "../../src/cli/deploy/railway-cli";
+import { getAuggyVersion } from "../../src/cli/scaffold-package-json";
 
 interface MockCliCalls {
   checkPresence: number;
@@ -618,5 +619,24 @@ describe("runDeploy", () => {
     expect(entrypoint).toMatch(
       /exec bunx auggy dev "\$1" --config \/app\/agent\.yaml --internal-mode railway/,
     );
+  });
+
+  test("vendors a local packed auggy runtime into the staging dir when available", async () => {
+    const version = getAuggyVersion();
+    const tarballName = `auggy-${version}.tgz`;
+    writeFileSync(join(dirname(agentDir), tarballName), "packed runtime");
+    const { cli, calls } = mockRailwayCli();
+    let stagingDir: string | undefined;
+    cli.linkProject = async (args) => {
+      stagingDir = args.cwd;
+      calls.linkProject.push(args);
+    };
+
+    await runDeploy("zip", baseDeployOptions(cli, auggyDir));
+
+    expect(stagingDir).toBeDefined();
+    expect(existsSync(join(stagingDir!, tarballName))).toBe(true);
+    const stagedPackage = JSON.parse(readFileSync(join(stagingDir!, "package.json"), "utf-8"));
+    expect(stagedPackage.dependencies.auggy).toBe(`file:./${tarballName}`);
   });
 });
