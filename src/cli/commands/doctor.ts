@@ -39,7 +39,10 @@ export interface DoctorCommandDeps {
   exit?: (code: number) => void;
 }
 
-export async function runDoctor(name: string | undefined, opts: DoctorOptions = {}): Promise<DoctorCheck[]> {
+export async function runDoctor(
+  name: string | undefined,
+  opts: DoctorOptions = {},
+): Promise<DoctorCheck[]> {
   const checks: DoctorCheck[] = [];
 
   let configPath: string;
@@ -246,7 +249,13 @@ function checkBundledSkills(agentDir: string, augments: AugmentConfig[]): Doctor
     const folder = augmentFolderForType(aug.type);
     if (!folder) continue;
 
-    const bundledSkillPath = resolve(import.meta.dir, "../../augments", folder, "skill", "SKILL.md");
+    const bundledSkillPath = resolve(
+      import.meta.dir,
+      "../../augments",
+      folder,
+      "skill",
+      "SKILL.md",
+    );
     if (!existsSync(bundledSkillPath)) continue;
 
     const mountedSkillPath = join(agentDir, "skills", folder, "SKILL.md");
@@ -261,7 +270,7 @@ function checkBundledSkills(agentDir: string, augments: AugmentConfig[]): Doctor
         name: `skill ${folder}`,
         status: "warn",
         message: `missing ${mountedSkillPath}`,
-        fix: `Run \`auggy add-skill ${folder} --agent ${nameForFix(agentDir)}\`, or re-add the augment.`,
+        fix: `Run \`auggy skill add ${folder} --agent ${nameForFix(agentDir)}\`, or re-add the augment.`,
       });
     }
   }

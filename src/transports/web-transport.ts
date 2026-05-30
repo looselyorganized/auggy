@@ -137,7 +137,7 @@ export interface WebTransportOptions {
    */
   adminRoute?: boolean;
   /**
-   * G36 — agent directory (typically `~/.auggy/agents/<name>/`). Used by
+   * G36 — agent project directory. Used by
    * the admin module to read/write `admin-overrides.json`. When unset,
    * admin overrides are skipped silently (the runtime falls back to yaml +
    * env values for the tunable knobs). The auggy CLI populates this at

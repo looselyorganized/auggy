@@ -1,21 +1,10 @@
 /**
- * auggy add-skill <augment> — repair/reinstall a bundled augment skill.
+ * `auggy skill` — manage bundled and user-authored agent skills.
  *
- * Companion command to the boot-time skill validator (PR α task 7) and the
- * scaffold-time auto-copy in `auggy create` / `auggy add`. When an operator
- * has an augment configured but no `skills/<augment>/SKILL.md` mounted (the
- * augment was added before bundled-skill copying existed, an upgrade brought
- * a new skill the operator wants, or the operator manually deleted the
- * folder), this command copies `src/augments/<augment>/skill/*` into the
- * agent directory at `<agent-dir>/skills/<augment>/`.
- *
- * The argument is the augment FOLDER NAME (kebab-case) — what the boot-time
- * validator emits in its remediation hint and what shows up under
- * `<agent-dir>/skills/`. Example: `auggy add-skill web-fetch`, NOT
- * `auggy add-skill webFetch` (the camelCase YAML `type:` field).
- *
- * Per ADR-025 Decision 5 + spec Decision 7. Idempotent — re-running
- * overwrites existing skill files (operator opt-in to updates).
+ * `auggy skill add <augment>` repairs/restores a bundled skill by copying
+ * `src/augments/<augment>/skill/*` into `<agent-dir>/skills/<augment>/`.
+ * The argument is the augment folder name (kebab-case), e.g. `web-fetch`,
+ * not the camelCase YAML `type:` field (`webFetch`).
  */
 
 import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
@@ -98,51 +87,6 @@ function installBundledSkill(augment: string, agentDir: string): void {
   if (!copied) {
     throw new Error(`failed to copy bundled skill for "${augment}" (source not found).`);
   }
-}
-
-export function addSkillCommand(deps: AddSkillCommandDeps = {}): Command {
-  const exit = deps.exit ?? ((code: number) => process.exit(code));
-
-  return new Command("add-skill")
-    .description("Repair or reinstall a bundled augment skill for an existing agent")
-    .argument("<augment>", "augment folder name (kebab-case), e.g. web-fetch, layered-memory, bash")
-    .option("--agent <name>", "agent project directory name (defaults to current directory)")
-    .addHelpText(
-      "after",
-      [
-        "",
-        "Normal augment installs already copy bundled skills. Use this only to repair",
-        "a missing/deleted skill folder or to opt into the latest bundled copy.",
-        "",
-        "Examples:",
-        "  cd my-agent && auggy add-skill web-fetch",
-        "  auggy add-skill layered-memory --agent my-agent",
-      ].join("\n"),
-    )
-    .action(async (augment: string, opts: { agent?: string }) => {
-      // 1. Resolve agent dir.
-      let agentDir: string;
-      try {
-        agentDir = resolveAgentDir(opts.agent, { auggyDir: deps.auggyDir, cwd: deps.cwd });
-      } catch (err) {
-        console.error(`Error: ${(err as Error).message}`);
-        exit(1);
-        return;
-      }
-
-      try {
-        installBundledSkill(augment, agentDir);
-      } catch (err) {
-        console.error(`Error: ${(err as Error).message}`);
-        exit(1);
-        return;
-      }
-
-      console.log(
-        `Installed bundled skill for "${augment}" -> ${join(agentDir, "skills", augment)}/`,
-      );
-      exit(0);
-    });
 }
 
 export function skillCommand(deps: AddSkillCommandDeps = {}): Command {

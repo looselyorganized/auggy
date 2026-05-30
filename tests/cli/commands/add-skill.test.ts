@@ -1,5 +1,5 @@
 /**
- * Tests for `auggy add-skill <augment>`. Companion to the boot-time skill
+ * Tests for `auggy skill add <augment>`. Companion to the boot-time skill
  * validator (PR α task 7) — installs `src/augments/<augment>/skill/*` into
  * `<agent-dir>/skills/<augment>/`.
  */
@@ -9,11 +9,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { seedAgentForTest } from "../../../src/cli/agent-index";
-import {
-  addSkillCommand,
-  resolveAgentDir,
-  skillCommand,
-} from "../../../src/cli/commands/add-skill";
+import { resolveAgentDir, skillCommand } from "../../../src/cli/commands/add-skill";
 
 const BUNDLED_WEB_FETCH_SKILL = resolve(
   import.meta.dir,
@@ -21,16 +17,13 @@ const BUNDLED_WEB_FETCH_SKILL = resolve(
 );
 
 let auggyDir: string;
-let agentParent: string;
 
 beforeEach(() => {
   auggyDir = mkdtempSync(join(tmpdir(), "auggy-add-skill-test-auggy-"));
-  agentParent = mkdtempSync(join(tmpdir(), "auggy-add-skill-test-agents-"));
 });
 
 afterEach(() => {
   rmSync(auggyDir, { recursive: true, force: true });
-  rmSync(agentParent, { recursive: true, force: true });
 });
 
 /** Helper: scaffold a minimal agent dir under auggyDir/agents/<name>/. */
@@ -40,46 +33,19 @@ function makeAgentDir(name: string): string {
   return dir;
 }
 
-/** Helper: minimal CWD-only agent dir for tests that exercise CWD detection. */
-function makeCwdAgentDir(name: string): string {
-  const dir = join(agentParent, name);
-  mkdirSync(dir, { recursive: true });
-  mkdirSync(join(dir, "skills"), { recursive: true });
-  writeFileSync(join(dir, "agent.yaml"), `id: aug1_${name}\nname: ${name}\n`);
-  return dir;
-}
-
-describe("auggy add-skill — command shape", () => {
-  test("registers as 'add-skill' subcommand with description", () => {
-    const cmd = addSkillCommand();
-    expect(cmd.name()).toBe("add-skill");
-    expect(cmd.description()).toContain("Repair");
-    expect(cmd.description()).toContain("bundled");
-  });
-
-  test("declares <augment> required argument", () => {
-    const cmd = addSkillCommand();
-    expect(cmd.helpInformation()).toContain("<augment>");
-  });
-
-  test("declares --agent option", () => {
-    const cmd = addSkillCommand();
-    const longs = cmd.options.map((o) => o.long);
-    expect(longs).toContain("--agent");
-  });
-
-  test("frames add-skill as repair/update in help text", () => {
-    const help = addSkillCommand().helpInformation();
-    expect(help).toMatch(/repair/i);
-    expect(help).toMatch(/reinstall/i);
-  });
-});
-
 describe("auggy skill — command shape", () => {
   test("registers skill namespace with add/create/list/remove", () => {
     const cmd = skillCommand();
     expect(cmd.name()).toBe("skill");
     expect(cmd.commands.map((sub) => sub.name())).toEqual(["add", "create", "list", "remove"]);
+  });
+
+  test("skill add declares the bundled augment argument and --agent option", () => {
+    const add = skillCommand().commands.find((sub) => sub.name() === "add");
+    expect(add).toBeDefined();
+    expect(add?.helpInformation()).toContain("<augment>");
+    expect(add?.options.map((o) => o.long)).toContain("--agent");
+    expect(add?.description()).toMatch(/bundled skill/i);
   });
 });
 
@@ -115,13 +81,13 @@ describe("resolveAgentDir", () => {
   });
 });
 
-describe("auggy add-skill — happy path (CWD-based)", () => {
+describe("auggy skill add — happy path (CWD-based)", () => {
   test("copies bundled skill into agent dir for an augment that ships one", async () => {
     const dir = makeAgentDir("zip");
 
     const exit = mock((_code: number) => {});
-    const cmd = addSkillCommand({ exit, auggyDir, cwd: dir });
-    await cmd.parseAsync(["web-fetch"], { from: "user" });
+    const cmd = skillCommand({ exit, auggyDir, cwd: dir });
+    await cmd.parseAsync(["add", "web-fetch"], { from: "user" });
 
     expect(exit).toHaveBeenCalledWith(0);
     const installed = join(dir, "skills", "web-fetch", "SKILL.md");
@@ -192,18 +158,18 @@ describe("auggy skill — user-authored skills", () => {
   });
 });
 
-describe("auggy add-skill — idempotent re-run", () => {
+describe("auggy skill add — idempotent re-run", () => {
   test("re-running succeeds and the file still matches the bundled source", async () => {
     const dir = makeAgentDir("zip");
 
     const exit1 = mock((_code: number) => {});
-    await addSkillCommand({ exit: exit1, auggyDir, cwd: dir }).parseAsync(["web-fetch"], {
+    await skillCommand({ exit: exit1, auggyDir, cwd: dir }).parseAsync(["add", "web-fetch"], {
       from: "user",
     });
     expect(exit1).toHaveBeenCalledWith(0);
 
     const exit2 = mock((_code: number) => {});
-    await addSkillCommand({ exit: exit2, auggyDir, cwd: dir }).parseAsync(["web-fetch"], {
+    await skillCommand({ exit: exit2, auggyDir, cwd: dir }).parseAsync(["add", "web-fetch"], {
       from: "user",
     });
     expect(exit2).toHaveBeenCalledWith(0);
@@ -213,7 +179,7 @@ describe("auggy add-skill — idempotent re-run", () => {
   });
 });
 
-describe("auggy add-skill — invalid input", () => {
+describe("auggy skill add — invalid input", () => {
   test("unknown augment name exits 1 with a helpful list of valid options", async () => {
     const dir = makeAgentDir("zip");
 
@@ -225,8 +191,8 @@ describe("auggy add-skill — invalid input", () => {
     };
 
     try {
-      const cmd = addSkillCommand({ exit, auggyDir, cwd: dir });
-      await cmd.parseAsync(["nonexistent-augment"], { from: "user" });
+      const cmd = skillCommand({ exit, auggyDir, cwd: dir });
+      await cmd.parseAsync(["add", "nonexistent-augment"], { from: "user" });
     } finally {
       console.error = origErr;
     }
@@ -254,8 +220,8 @@ describe("auggy add-skill — invalid input", () => {
       };
 
       try {
-        const cmd = addSkillCommand({ exit, auggyDir, cwd: empty });
-        await cmd.parseAsync(["web-fetch"], { from: "user" });
+        const cmd = skillCommand({ exit, auggyDir, cwd: empty });
+        await cmd.parseAsync(["add", "web-fetch"], { from: "user" });
       } finally {
         console.error = origErr;
       }
@@ -269,7 +235,7 @@ describe("auggy add-skill — invalid input", () => {
   });
 });
 
-describe("auggy add-skill — --agent flag", () => {
+describe("auggy skill add — --agent flag", () => {
   test("targets a project directory regardless of CWD", async () => {
     const dir = makeAgentDir("target");
 
@@ -277,8 +243,8 @@ describe("auggy add-skill — --agent flag", () => {
     const sibling = mkdtempSync(join(tmpdir(), "auggy-add-skill-sibling-"));
     try {
       const exit = mock((_code: number) => {});
-      const cmd = addSkillCommand({ exit, auggyDir, cwd: sibling });
-      await cmd.parseAsync(["web-fetch", "--agent", "target"], { from: "user" });
+      const cmd = skillCommand({ exit, auggyDir, cwd: sibling });
+      await cmd.parseAsync(["add", "web-fetch", "--agent", "target"], { from: "user" });
 
       expect(exit).toHaveBeenCalledWith(0);
       expect(existsSync(join(dir, "skills", "web-fetch", "SKILL.md"))).toBe(true);
@@ -288,7 +254,7 @@ describe("auggy add-skill — --agent flag", () => {
   });
 });
 
-describe("auggy add-skill — augment without a bundled skill", () => {
+describe("auggy skill add — augment without a bundled skill", () => {
   test("file-memory has no skill folder; command exits 1 with a clear message", async () => {
     const dir = makeAgentDir("zip");
 
@@ -300,8 +266,8 @@ describe("auggy add-skill — augment without a bundled skill", () => {
     };
 
     try {
-      const cmd = addSkillCommand({ exit, auggyDir, cwd: dir });
-      await cmd.parseAsync(["file-memory"], { from: "user" });
+      const cmd = skillCommand({ exit, auggyDir, cwd: dir });
+      await cmd.parseAsync(["add", "file-memory"], { from: "user" });
     } finally {
       console.error = origErr;
     }
@@ -312,13 +278,13 @@ describe("auggy add-skill — augment without a bundled skill", () => {
   });
 });
 
-describe("auggy add-skill — content overwrite on re-run", () => {
+describe("auggy skill add — content overwrite on re-run", () => {
   test("operator-modified skill is replaced with the bundled source", async () => {
     const dir = makeAgentDir("zip");
 
     // First copy.
     const exit1 = mock((_code: number) => {});
-    await addSkillCommand({ exit: exit1, auggyDir, cwd: dir }).parseAsync(["web-fetch"], {
+    await skillCommand({ exit: exit1, auggyDir, cwd: dir }).parseAsync(["add", "web-fetch"], {
       from: "user",
     });
     expect(exit1).toHaveBeenCalledWith(0);
@@ -331,7 +297,7 @@ describe("auggy add-skill — content overwrite on re-run", () => {
 
     // Re-run must overwrite.
     const exit2 = mock((_code: number) => {});
-    await addSkillCommand({ exit: exit2, auggyDir, cwd: dir }).parseAsync(["web-fetch"], {
+    await skillCommand({ exit: exit2, auggyDir, cwd: dir }).parseAsync(["add", "web-fetch"], {
       from: "user",
     });
     expect(exit2).toHaveBeenCalledWith(0);

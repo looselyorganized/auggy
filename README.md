@@ -28,24 +28,25 @@ npm i -g auggy
 auggy create zip
 
 # Configure secrets
-# Add your provider API key to ~/.auggy/agents/zip/.env
+# Add your provider API key to zip/.env
 
 # Run locally (foreground + opens chat)
-auggy run zip
+cd zip
+auggy run
 
 # Or install as a launchd service (macOS, always-on)
-auggy start zip
+auggy start
 
 # Add a built-in augment later, if needed
-auggy add zip visitor-auth
+auggy add visitor-auth
 
 # Create and install a local custom augment
-auggy augment create weather --dir ~/.auggy/agents/zip/augments/weather
-auggy augment test ~/.auggy/agents/zip/augments/weather
-auggy augment install zip ~/.auggy/agents/zip/augments/weather
+auggy augment create weather --dir augments/weather
+auggy augment test augments/weather
+auggy augment install zip augments/weather
 
 # Deploy to the cloud (requires Railway CLI + `railway login`)
-auggy deploy zip
+auggy deploy
 
 # Stream cloud logs
 auggy logs zip
@@ -151,9 +152,9 @@ augments:
 Scaffold, test, and install one with the CLI:
 
 ```bash
-auggy augment create my-augment --dir ~/.auggy/agents/zip/augments/my-augment
-auggy augment test ~/.auggy/agents/zip/augments/my-augment
-auggy augment install zip ~/.auggy/agents/zip/augments/my-augment
+auggy augment create my-augment --dir augments/my-augment
+auggy augment test augments/my-augment
+auggy augment install zip augments/my-augment
 ```
 
 The scaffold exports a factory function from `index.ts`:

@@ -258,11 +258,11 @@ Acceptance:
 
 - Public CLI examples use friendly names.
 
-### 8. Reframe `add-skill` As Repair *(implemented 2026-05-28)*
+### 8. Reframe Bundled Skill Repair *(superseded 2026-05-30)*
 
 Behavior:
 
-- Keep `auggy add-skill`.
+- Replace top-level `auggy add-skill` with `auggy skill add <augment>`.
 - Help text and docs describe it as a repair/update command, not part of
   normal augment installation.
 
@@ -274,7 +274,8 @@ Likely files:
 
 Tests:
 
-- Existing `add-skill` tests should continue to pass.
+- Existing bundled skill repair tests should continue to pass through the
+  `skill` namespace.
 
 Acceptance:
 

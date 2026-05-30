@@ -56,7 +56,7 @@ export function augmentFolderForType(type: string): string | null {
 
 /**
  * Inverse of `TYPE_TO_AUGMENT_FOLDER` — folder name → camelCase type. Used by
- * `auggy add-skill` to validate the operator-supplied folder argument and
+ * `auggy skill add` to validate the operator-supplied folder argument and
  * recover the type for `copyBundledSkill`. Built once and frozen so the set
  * of valid folder names is the canonical list maintained in this module.
  */

@@ -134,7 +134,7 @@ export function getAgentFromDir(localDir: string): IndexEntry | null {
 }
 
 /**
- * List all agents under `<auggyDir>/agents/`. Subdirectories without
+ * List all agent projects under the configured agent root. Subdirectories without
  * `agent.yaml` are skipped (incomplete scaffolds, `.tmp-*` staging dirs).
  * Hidden directories (leading `.`) are also skipped.
  */

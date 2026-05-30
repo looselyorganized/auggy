@@ -1116,7 +1116,7 @@ export interface NotifyAugmentOptions {
   destinations: NotifyDestination[];
   rateLimit?: NotifyRateLimitOptions;
   /**
-   * G36 — agent directory (typically `~/.auggy/agents/<name>/`). When set,
+   * G36 — agent project directory. When set,
    * `admin-overrides.json` is read at boot to apply runtime overrides
    * (currently: globalMaxPerHour). Admin actions persist back via this
    * path.
@@ -1210,7 +1210,7 @@ export interface AgentMailAugmentOptions {
   /** Inbound configuration. Phase A: `{ mode: "none" }` only. */
   inbound?: AgentMailInboundConfig;
   /**
-   * Agent directory (typically `~/.auggy/agents/<name>/`). When set,
+   * Agent project directory. When set,
    * `admin-overrides.json` is read at boot to apply runtime overrides
    * (currently: outbound.rateLimit.globalMaxPerHour). Admin actions persist
    * back via this path.

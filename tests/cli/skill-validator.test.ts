@@ -9,7 +9,7 @@
  *  - Mixed (some present, some missing) only warns on the missing ones
  *  - Agent boot still succeeds (resolveAugments returns; no throw)
  *  - Warning names the augment FOLDER (e.g. "web-fetch") rather than the
- *    operator's `name:` field (e.g. "fetch") — tied to `auggy add-skill`
+ *    operator's `name:` field (e.g. "fetch") — tied to `auggy skill add`
  */
 
 import { describe, test, expect, beforeEach, afterEach, spyOn } from "bun:test";
@@ -35,7 +35,7 @@ afterEach(() => {
 
 /**
  * Helper: write a populated SKILL.md at the standard path inside the test
- * agent dir. Mirrors what `auggy create` / `auggy add-skill` would do.
+ * agent dir. Mirrors what `auggy create` / `auggy skill add` would do.
  */
 function writeSkillFile(folder: string, body: string = "# skill") {
   const dir = join(TMP, "skills", folder);
@@ -72,7 +72,7 @@ describe("skill-validator — warning fires when skill missing", () => {
     expect(warnings).toContain('augment "web-fetch"');
     expect(warnings).toContain("1 tool");
     expect(warnings).toContain(join(TMP, "skills", "web-fetch", "SKILL.md"));
-    expect(warnings).toContain("auggy add-skill web-fetch");
+    expect(warnings).toContain("auggy skill add web-fetch");
   });
 });
 
@@ -151,8 +151,8 @@ describe("skill-validator — multiple missing skills produce distinct warnings"
     const warnings = allWarnings();
     expect(warnings).toContain('augment "web-fetch"');
     expect(warnings).toContain('augment "bash"');
-    expect(warnings).toContain("auggy add-skill web-fetch");
-    expect(warnings).toContain("auggy add-skill bash");
+    expect(warnings).toContain("auggy skill add web-fetch");
+    expect(warnings).toContain("auggy skill add bash");
   });
 });
 
@@ -221,15 +221,15 @@ describe("skill-validator — folder name vs operator name", () => {
 
     const warnings = allWarnings();
     // The warning blames the FOLDER (web-fetch) because that's what
-    // `auggy add-skill <folder>` takes — naming the operator's "fetch"
+    // `auggy skill add <folder>` takes — naming the operator's "fetch"
     // would dead-end the remediation hint.
     expect(warnings).toContain('augment "web-fetch"');
-    expect(warnings).toContain("auggy add-skill web-fetch");
+    expect(warnings).toContain("auggy skill add web-fetch");
     expect(warnings).toContain("skills/web-fetch/SKILL.md");
     // The operator's chosen name MUST NOT appear in the headline blame
     // (would mislead about the remediation command).
     expect(warnings).not.toContain('augment "fetch"');
-    expect(warnings).not.toContain("auggy add-skill fetch ");
+    expect(warnings).not.toContain("auggy skill add fetch ");
   });
 });
 
@@ -265,7 +265,7 @@ describe("skill-validator — namespace memory provider validation", () => {
     // 5 kernel-synthesized memory tools (memory_read/write/search/list/forget)
     expect(warnings).toContain("5 tools");
     expect(warnings).toContain(join(TMP, "skills", "layered-memory", "SKILL.md"));
-    expect(warnings).toContain("auggy add-skill layered-memory");
+    expect(warnings).toContain("auggy skill add layered-memory");
   });
 
   test("layered-memory WITH skill mounted → silent (no warning)", async () => {

@@ -242,7 +242,7 @@ describe("runDoctor", () => {
 
     const skill = checks.find((c) => c.name === "skill web-fetch");
     expect(skill?.status).toBe("warn");
-    expect(skill?.fix).toContain("add-skill web-fetch");
+    expect(skill?.fix).toContain("skill add web-fetch");
     expect(hasDoctorFailures(checks)).toBe(false);
   });
 });
@@ -260,9 +260,9 @@ describe("doctor formatting and command", () => {
   });
 
   test("doctor command exits 1 when checks fail", async () => {
-    const run = mock(async (): Promise<DoctorCheck[]> => [
-      { name: "dep", status: "fail", message: "missing" },
-    ]);
+    const run = mock(
+      async (): Promise<DoctorCheck[]> => [{ name: "dep", status: "fail", message: "missing" }],
+    );
     const exit = mock((_code: number) => {});
     const logs: string[] = [];
     const origLog = console.log;
@@ -283,9 +283,11 @@ describe("doctor formatting and command", () => {
   });
 
   test("doctor command can omit name for project-local agent dirs", async () => {
-    const run = mock(async (): Promise<DoctorCheck[]> => [
-      { name: "agent.yaml", status: "pass", message: "parsed zip" },
-    ]);
+    const run = mock(
+      async (): Promise<DoctorCheck[]> => [
+        { name: "agent.yaml", status: "pass", message: "parsed zip" },
+      ],
+    );
     const exit = mock((_code: number) => {});
 
     const cmd = doctorCommand({ runDoctor: run, exit });

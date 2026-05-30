@@ -148,7 +148,7 @@ auggy skill remove <name>
 - `auggy skill remove <name>` removes a user-authored skill, and should require
   confirmation when removing bundled augment skills.
 
-The old top-level `auggy add-skill` command should be replaced by the namespace
+The old top-level `auggy add-skill` command is replaced by the namespace
 command before v1.
 
 ## Deploy Contract
@@ -188,7 +188,7 @@ bunx auggy dev --config /app/agent.yaml --internal-mode railway
 
 4. Skill command namespace:
    - Add `auggy skill add/create/list/remove`.
-   - Replace top-level `auggy add-skill`.
+   - Replace top-level `auggy skill add`.
    - Keep bundled-skill repair separate from user-authored skill creation.
 
 5. Deploy project root:

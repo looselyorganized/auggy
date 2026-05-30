@@ -66,9 +66,10 @@ npm i -g auggy
 auggy --version
 
 auggy create dx-smoke
-# Add the selected provider key to ~/.auggy/agents/dx-smoke/.env
-auggy doctor dx-smoke
-auggy run dx-smoke
+cd dx-smoke
+# Add the selected provider key to .env
+auggy doctor
+auggy run
 ```
 
 Manual checks:
@@ -98,20 +99,20 @@ fi
 Augment checks:
 
 ```bash
-auggy add dx-smoke visitor-auth
-auggy doctor dx-smoke
+auggy add visitor-auth
+auggy doctor
 
-auggy augment create weather --dir ~/.auggy/agents/dx-smoke/augments/weather
-auggy augment test ~/.auggy/agents/dx-smoke/augments/weather
-auggy augment install dx-smoke ~/.auggy/agents/dx-smoke/augments/weather
-auggy doctor dx-smoke
+auggy augment create weather --dir augments/weather
+auggy augment test augments/weather
+auggy augment install dx-smoke augments/weather
+auggy doctor
 ```
 
 Deploy checks:
 
 ```bash
 railway login
-auggy deploy dx-smoke
+auggy deploy
 auggy logs dx-smoke
 ```
 
@@ -120,11 +121,12 @@ Manual checks:
 - [ ] Deploy output includes public URL, `/health`, `/console`, and `/console/chat`
 - [ ] Public `/health` returns success or `auggy logs dx-smoke` gives actionable boot errors
 - [ ] Public `/console/chat` opens
-- [ ] `auggy deploy dx-smoke --yes` works as a redeploy
+- [ ] `auggy deploy --yes` works as a redeploy
 
 Cleanup:
 
 ```bash
+cd ..
 auggy remove dx-smoke --cloud --yes
 ```
 

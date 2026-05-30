@@ -1,39 +1,40 @@
 # Storage Layout
 
-Operator reference for where Auggy puts agents on disk.
+Operator reference for where Auggy puts agent projects and local process state.
 
-## Default location
+## Agent project location
+
+An Auggy agent is a normal project folder wherever the operator creates it:
 
 ```
-~/.auggy/
-├── agents/                         # one subdirectory per agent
-│   └── <name>/
-│       ├── agent.yaml              # source-of-truth config (uses `identity:` shorthand)
-│       ├── .auggy-cloud.json       # cloud-deploy record (only present when deployed)
-│       ├── identity.md             # who the agent is — security rules + skill manifest
-│       ├── learned.md              # mutable learnings
-│       ├── memory.sqlite           # SQLite (layeredMemory, default scaffold)
-│       ├── budgets.db              # SQLite (budgets)
-│       ├── .env                    # secrets (gitignored)
-│       ├── skills/                 # bundled-skill copies (one folder per tool-providing augment)
-│       │   ├── layered-memory/SKILL.md
-│       │   ├── filesystem/SKILL.md (+ references/)
-│       │   └── ...                 # web-fetch, manifest, bash, notify, turn-control as configured
-│       ├── manifest/            # scaffolded if manifest is selected (file:// example)
-│       ├── workspace/
-│       └── augments/
-└── <name>.json                     # PID manifest (per running agent)
+<name>/
+├── agent.yaml              # source-of-truth config (uses `identity:` shorthand)
+├── .auggy-cloud.json       # cloud-deploy record (only present when deployed)
+├── identity.md             # who the agent is — security rules + skill manifest
+├── learned.md              # mutable learnings
+├── memory.sqlite           # SQLite (layeredMemory, default scaffold)
+├── budgets.db              # SQLite (budgets)
+├── .env                    # secrets (gitignored)
+├── .env.example            # required secret names, no values
+├── package.json            # agent-local runtime and augment dependencies
+├── skills/                 # bundled and user-authored skills
+│   ├── layered-memory/SKILL.md
+│   ├── filesystem/SKILL.md (+ references/)
+│   └── ...                 # web-fetch, bash, notify, turn-control as configured
+├── manifest/               # scaffolded if manifest is selected (file:// example)
+├── data/
+└── augments/               # installed augment metadata and custom augment source
 ```
 
-`auggy create <name>` scaffolds at `~/.auggy/agents/<name>/`. The directory IS
-the agent — there is no central index file that has to stay in sync with the
-filesystem.
+`auggy create <name>` scaffolds `./<name>/`. `auggy init` scaffolds the current
+directory. The directory IS the agent; there is no central index file that has
+to stay in sync with the filesystem.
 
 ### Default-scaffold details
 
 - `agent.yaml` uses the top-level `identity: ./identity.md` shorthand (parsed to a synthetic `fileMemory@placement:system` entry); `augments:` enumerates the rest.
 - `identity.md` is rendered from `src/scaffold-templates/identity.md` and ships with four baked-in security rules and a `## Available skills` manifest enumerating each tool-providing augment selected at scaffold time.
-- `skills/<augment>/` directories hold byte-for-byte copies of each augment's bundled `src/augments/<augment>/skill/` folder — copied automatically at `auggy create`/`auggy add` time. `auggy add-skill <augment>` is a repair/update command for missing, deleted, or intentionally refreshed bundled skills. The boot-time validator warns at startup if a tool-providing augment has no skill folder mounted.
+- `skills/<augment>/` directories hold byte-for-byte copies of each augment's bundled `src/augments/<augment>/skill/` folder — copied automatically at `auggy create`/`auggy add` time. `auggy skill add <augment>` is a repair/update command for missing, deleted, or intentionally refreshed bundled skills. The boot-time validator warns at startup if a tool-providing augment has no skill folder mounted.
 - `memory.sqlite` is the default `layeredMemory` backend (SQLite, namespace-scoped). The scaffold includes the augment by default; remove from `agent.yaml` if not needed.
 - `manifest/` is scaffolded only when `manifest` is selected; the example `manifest` + endpoint files plus `baseUrl: file://./manifest` give a working local config without needing to stand up an HTTP server.
 
@@ -64,16 +65,15 @@ timestamp.
 
 ## Atomic creation
 
-`auggy create <name>` writes the scaffold into a sibling
-`~/.auggy/agents/.tmp-<uuid>/` staging directory, then renames it into
-place. The rename is the atomic publish step — if the process is interrupted
-beforehand, the staging dir is swept on the next `auggy create` (or skipped
-by `auggy list`, which only enumerates dirs that look like complete agents).
+`auggy create <name>` writes the scaffold into a temp staging directory, then
+renames it into `./<name>`. `auggy init` stages the same scaffold and copies it
+into the current directory. If the process is interrupted beforehand, the temp
+directory is removed or left outside the agent project.
 
 ## Inspecting and removing
 
 ```bash
-auggy list                          # list agents from <auggyDir>/agents/
+auggy list                          # list agent projects below the current directory
 auggy remove <name>                 # delete the agent dir
 auggy remove <name> --yes           # skip the confirmation prompt
 auggy remove <name> --cloud         # also destroy the Railway service
@@ -83,7 +83,7 @@ auggy remove <name> --cloud         # also destroy the Railway service
 also refuses to delete a directory that lacks `agent.yaml`, as a guard
 against accidentally nuking unrelated paths.
 
-If you delete an agent's directory manually (`rm -rf ~/.auggy/agents/zip`),
+If you delete an agent's directory manually (`rm -rf ./zip`),
 that's the entire removal — there is no separate index entry to clean up.
 
 ## Migration from the legacy index

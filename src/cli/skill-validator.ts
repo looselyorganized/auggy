@@ -107,7 +107,7 @@ export function validateBundledSkills(
 
     // Custom augments (operator-authored) do not have a bundled skill folder
     // by convention; the operator owns their own teaching. Don't warn —
-    // the `auggy add-skill` command is built-in-only too.
+    // the `auggy skill add` command is built-in-only too.
     if (cfg.type === "custom") continue;
 
     const folder = augmentFolderForType(cfg.type);
@@ -133,7 +133,7 @@ export function validateBundledSkills(
           toolCount === 1 ? "" : "s"
         } with no skill mounted at\n` +
           `  ${skillPath}. Model will guess at tool usage.\n` +
-          `  Run \`auggy add-skill ${folder}\` to install the bundled teaching, OR copy\n` +
+          `  Run \`auggy skill add ${folder}\` to install the bundled teaching, OR copy\n` +
           `  src/augments/${folder}/skill/* into the agent's skills/${folder}/ directory.`,
       );
       continue;
