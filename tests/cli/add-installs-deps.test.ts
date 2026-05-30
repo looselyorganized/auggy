@@ -78,6 +78,9 @@ describe("runAdd mutates per-agent package.json", () => {
     // Pre-existing deps untouched.
     expect(pkg.dependencies.auggy).toBe("^0.3.1");
     expect(pkg.dependencies["@auggy/anthropic"]).toBe("^0.3.1");
+    const metadata = readFileSync(join(dir, "augments", "link", "augment.yaml"), "utf-8");
+    expect(metadata).toContain("kind: builtin");
+    expect(metadata).toContain("configType: link");
   });
 
   test("adding `supabaseMemory` merges @supabase/supabase-js", async () => {

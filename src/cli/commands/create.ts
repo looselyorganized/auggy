@@ -9,7 +9,7 @@
  *   - <name>/agent.yaml already exists at the canonical path
  */
 
-import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
 import { checkbox, confirm, select, input } from "@inquirer/prompts";
@@ -25,6 +25,7 @@ import {
 import { buildAgentPackageJson, getAuggyVersion } from "../scaffold-package-json";
 import { runBunInstall, type BunInstallSpawnFactory } from "../bun-install";
 import { withEscRestart, WizardRestartRequested } from "../wizard-restart";
+import { writeBuiltinAugmentMetadata, writeCustomAugmentsReadme } from "../augment-metadata";
 
 const PROVIDER_DEFAULTS: Record<Provider, { model: string; envVar: string }> = {
   anthropic: { model: "claude-sonnet-4-6", envVar: "ANTHROPIC_API_KEY" },
@@ -80,6 +81,11 @@ export interface CreateOpts {
   auggyDir?: string;
   /** Test seam: override process.cwd(). */
   cwd?: string;
+}
+
+export interface InitOpts extends CreateOpts {
+  /** Optional explicit agent name. Defaults to the current directory basename. */
+  name?: string;
 }
 
 interface WizardAnswers {
@@ -361,6 +367,29 @@ export async function runCreate(name: string, opts: CreateOpts): Promise<void> {
     );
   }
 
+  await runCreateIntoDir(name, finalDir, opts, "create");
+}
+
+export async function runInit(opts: InitOpts = {}): Promise<void> {
+  const finalDir = resolve(opts.cwd ?? process.cwd());
+  const name = opts.name?.trim() || basename(finalDir);
+  if (!name || name === "." || name === "/") {
+    throw new Error(
+      "Could not infer an agent name from the current directory. Pass `auggy init <name>`.",
+    );
+  }
+  if (existsSync(join(finalDir, "agent.yaml"))) {
+    throw new Error(`This directory is already an Auggy agent project: ${finalDir}`);
+  }
+  await runCreateIntoDir(name, finalDir, opts, "init");
+}
+
+async function runCreateIntoDir(
+  name: string,
+  finalDir: string,
+  opts: CreateOpts,
+  mode: "create" | "init",
+): Promise<void> {
   // Wizard loop — Esc at any prompt restarts from the engine-provider
   // step. We only print the welcome banner on the first attempt; restart
   // attempts skip it to keep the terminal scrollback clean.
@@ -409,12 +438,14 @@ export async function runCreate(name: string, opts: CreateOpts): Promise<void> {
     mkdirSync(join(tempDir, "skills"), { recursive: true });
     mkdirSync(join(tempDir, "data", "workspace"), { recursive: true });
     mkdirSync(join(tempDir, "augments"), { recursive: true });
+    writeCustomAugmentsReadme(tempDir);
 
     console.log();
     console.log(dim(" Installing augments..."));
     console.log();
     for (const entry of augments) {
       copyBundledSkill(entry.type, tempDir);
+      writeBuiltinAugmentMetadata(tempDir, entry);
       console.log(`   ${green("✓")} ${cream(entry.defaultName)} ${dim(`(${entry.type})`)}`);
     }
 
@@ -471,6 +502,7 @@ export async function runCreate(name: string, opts: CreateOpts): Promise<void> {
     }
 
     writeFileSync(join(tempDir, ".env"), buildEnv(autoGenLines, placeholderEnvVars));
+    writeFileSync(join(tempDir, ".env.example"), buildEnv([], placeholderEnvVars));
     writeFileSync(join(tempDir, ".gitignore"), GITIGNORE);
 
     const auggyVersion = getAuggyVersion();
@@ -501,7 +533,12 @@ export async function runCreate(name: string, opts: CreateOpts): Promise<void> {
   // renameSync throws ENOTEMPTY/EEXIST — we clean up the staging dir and
   // surface a clear error.
   try {
-    renameSync(tempDir, finalDir);
+    if (mode === "init") {
+      cpSync(tempDir, finalDir, { recursive: true });
+      rmSync(tempDir, { recursive: true, force: true });
+    } else {
+      renameSync(tempDir, finalDir);
+    }
   } catch (err) {
     try {
       rmSync(tempDir, { recursive: true, force: true });
@@ -568,8 +605,9 @@ export async function runCreate(name: string, opts: CreateOpts): Promise<void> {
   console.log(
     `   ${cream(`${step++}.`)}  Open ${finalDir} in your editor   ${dim("(identity.md, agent.yaml — optional)")}`,
   );
+  const runCommand = mode === "init" ? "auggy run" : `auggy run ${name}`;
   console.log(
-    `   ${cream(`${step++}.`)}  auggy run ${name}   ${dim("(boots + opens /console/chat in your browser)")}`,
+    `   ${cream(`${step++}.`)}  ${runCommand}   ${dim("(boots + opens /console/chat in your browser)")}`,
   );
   console.log();
 }

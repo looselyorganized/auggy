@@ -16,7 +16,9 @@ describe("auggy CLI command table", () => {
 
     expect(names).toContain("create");
     expect(names).toContain("add");
-    expect(names).toContain("add-skill");
+    expect(names).toContain("init");
+    expect(names).toContain("skill");
+    expect(names).not.toContain("add-skill");
     expect(names).toContain("run");
     expect(names).toContain("doctor");
     expect(names).toContain("augment");
@@ -43,5 +45,11 @@ describe("auggy CLI command table", () => {
     const create = buildCli().commands.find((cmd) => cmd.name() === "create");
     expect(create?.helpInformation()).not.toContain("--project");
     expect(create?.helpInformation()).toContain("standalone agent project");
+  });
+
+  test("skill namespace exposes add/create/list/remove", () => {
+    const skill = buildCli().commands.find((cmd) => cmd.name() === "skill");
+    const subcommands = skill?.commands.map((cmd) => cmd.name());
+    expect(subcommands).toEqual(["add", "create", "list", "remove"]);
   });
 });

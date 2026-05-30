@@ -5,7 +5,7 @@
  * Commands:
  *   auggy create <name>              Scaffold a new agent (interactive)
  *   auggy add [name] [augment]       Add augments to an existing agent
- *   auggy add-skill <augment>        Repair/reinstall a bundled skill
+ *   auggy skill add <augment>        Repair/reinstall a bundled skill
  *   auggy run [name] [--no-open]     Run agent in foreground; opens /console/chat by default
  *   auggy doctor [name]              Check whether an agent is ready to run
  *   auggy augment create <slug>      Scaffold a local custom augment
@@ -26,7 +26,7 @@ import { Command } from "commander";
 import pkg from "../../package.json" with { type: "json" };
 import { runCreate } from "./commands/create";
 import { runAdd } from "./commands/add";
-import { addSkillCommand } from "./commands/add-skill";
+import { skillCommand } from "./commands/add-skill";
 import { runCommand } from "./commands/run";
 import { doctorCommand } from "./commands/doctor";
 import { augmentCommand } from "./commands/augment";
@@ -79,7 +79,21 @@ export function buildCli(): Command {
       },
     );
 
-  program.addCommand(addSkillCommand());
+  program
+    .command("init [name]")
+    .description("Initialize the current directory as an Auggy agent project")
+    .option("--skip-install", "write package.json but don't run bun install")
+    .action(async (name: string | undefined, opts: { skipInstall?: boolean }) => {
+      try {
+        const { runInit } = await import("./commands/create");
+        await runInit({ name, skipInstall: opts.skipInstall });
+      } catch (err) {
+        console.error(`Error: ${(err as Error).message}`);
+        process.exit(1);
+      }
+    });
+
+  program.addCommand(skillCommand());
   program.addCommand(runCommand());
   program.addCommand(doctorCommand());
   program.addCommand(augmentCommand());
@@ -91,7 +105,10 @@ export function buildCli(): Command {
     .option("--open", "auto-launch the operator's browser to /console/chat once the agent is up")
     .option("--internal-mode <mode>", "(internal) process mode for PID manifest")
     .action(
-      async (name: string | undefined, opts: { config?: string; open?: boolean; internalMode?: string }) => {
+      async (
+        name: string | undefined,
+        opts: { config?: string; open?: boolean; internalMode?: string },
+      ) => {
         try {
           await runDev(name, opts);
         } catch (err) {
@@ -219,70 +236,80 @@ export function buildCli(): Command {
     .option("--project <project-id>", "deploy into an existing Railway project")
     .option("--service <name-or-id>", "deploy into an existing Railway service")
     .option("--yes", "skip the secrets-push confirmation prompt")
-    .action(async (name: string | undefined, opts: { to: string; project?: string; service?: string; yes?: boolean }) => {
-      try {
-        const { runDeploy } = await import("./commands/deploy");
-        const { createRailwayCli } = await import("./deploy/railway-cli");
-        const { input, confirm, select } = await import("@inquirer/prompts");
+    .action(
+      async (
+        name: string | undefined,
+        opts: { to: string; project?: string; service?: string; yes?: boolean },
+      ) => {
+        try {
+          const { runDeploy } = await import("./commands/deploy");
+          const { createRailwayCli } = await import("./deploy/railway-cli");
+          const { input, confirm, select } = await import("@inquirer/prompts");
 
-        const cli = createRailwayCli();
-        const result = await runDeploy(name, {
-          to: opts.to as "railway",
-          yes: opts.yes ?? false,
-          project: opts.project,
-          service: opts.service,
-          cli,
-          promptProjectTarget: () =>
-            select({
-              message: "Railway target:",
-              choices: [
-                { name: `Create a new Railway project for ${name ?? "this agent"}`, value: "new" as const },
-                { name: "Use an existing Railway project", value: "existing" as const },
-              ],
-            }),
-          promptProjectName: (defaultName) =>
-            input({
-              message: "New Railway project name:",
-              default: defaultName,
-              validate: (v) => v.trim().length > 0 || "project name required",
-            }),
-          promptProjectId: () =>
-            input({
-              message:
-                "Railway project ID (find it in the Railway dashboard URL or via `railway list`):",
-              validate: (v) => v.trim().length > 0 || "project ID required",
-            }),
-          promptConfirm: (message) => confirm({ message, default: false }),
-          logger: {
-            info: (msg) => console.log(msg),
-            warn: (msg) => console.warn(`warn: ${msg}`),
-            error: (msg) => console.error(`error: ${msg}`),
-            task: (msg, run) => withBrailleSpinner(msg, run),
-          },
-        });
-        console.log(`\nSubmitted ${name} deployment to Railway.`);
-        console.log(`  URL:        ${result.url}`);
-        console.log(`  Project:    ${result.projectId}`);
-        console.log(`  Service:    ${result.serviceId}`);
-        console.log(`  Volume:     ${result.volumeId} (mounted at /app/data)`);
-        console.log(`  Health:     ${result.health.url} (current public service)`);
-        console.log(`  Chat:       ${new URL("/console/chat", result.url).toString()}`);
-        console.log(`  Console:    ${new URL("/console", result.url).toString()}`);
-        console.log(`  Sign-in:    username auggy, password AUGGY_WEB_TOKEN from this agent's .env`);
-        if (!result.health.ok) {
+          const cli = createRailwayCli();
+          const result = await runDeploy(name, {
+            to: opts.to as "railway",
+            yes: opts.yes ?? false,
+            project: opts.project,
+            service: opts.service,
+            cli,
+            promptProjectTarget: () =>
+              select({
+                message: "Railway target:",
+                choices: [
+                  {
+                    name: `Create a new Railway project for ${name ?? "this agent"}`,
+                    value: "new" as const,
+                  },
+                  { name: "Use an existing Railway project", value: "existing" as const },
+                ],
+              }),
+            promptProjectName: (defaultName) =>
+              input({
+                message: "New Railway project name:",
+                default: defaultName,
+                validate: (v) => v.trim().length > 0 || "project name required",
+              }),
+            promptProjectId: () =>
+              input({
+                message:
+                  "Railway project ID (find it in the Railway dashboard URL or via `railway list`):",
+                validate: (v) => v.trim().length > 0 || "project ID required",
+              }),
+            promptConfirm: (message) => confirm({ message, default: false }),
+            logger: {
+              info: (msg) => console.log(msg),
+              warn: (msg) => console.warn(`warn: ${msg}`),
+              error: (msg) => console.error(`error: ${msg}`),
+              task: (msg, run) => withBrailleSpinner(msg, run),
+            },
+          });
+          console.log(`\nSubmitted ${name} deployment to Railway.`);
+          console.log(`  URL:        ${result.url}`);
+          console.log(`  Project:    ${result.projectId}`);
+          console.log(`  Service:    ${result.serviceId}`);
+          console.log(`  Volume:     ${result.volumeId} (mounted at /app/data)`);
+          console.log(`  Health:     ${result.health.url} (current public service)`);
+          console.log(`  Chat:       ${new URL("/console/chat", result.url).toString()}`);
+          console.log(`  Console:    ${new URL("/console", result.url).toString()}`);
           console.log(
-            `\nCurrent health is not passing yet. Check \`railway logs\`, then rerun \`auggy deploy ${name} --yes\`.`,
+            `  Sign-in:    username auggy, password AUGGY_WEB_TOKEN from this agent's .env`,
           );
-        } else {
-          console.log(
-            `\nCurrent health is passing. Follow the new build in the Railway dashboard or with \`railway logs\`.`,
-          );
+          if (!result.health.ok) {
+            console.log(
+              `\nCurrent health is not passing yet. Check \`railway logs\`, then rerun \`auggy deploy ${name} --yes\`.`,
+            );
+          } else {
+            console.log(
+              `\nCurrent health is passing. Follow the new build in the Railway dashboard or with \`railway logs\`.`,
+            );
+          }
+        } catch (err) {
+          console.error(`Error: ${(err as Error).message}`);
+          process.exit(1);
         }
-      } catch (err) {
-        console.error(`Error: ${(err as Error).message}`);
-        process.exit(1);
-      }
-    });
+      },
+    );
 
   program.addCommand(chatCommand());
   program.addCommand(evalCommand());

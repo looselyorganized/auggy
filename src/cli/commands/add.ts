@@ -26,6 +26,7 @@ import { readAgentName, resolveConfigPath } from "../resolve-config";
 import { mergePackageDeps } from "../scaffold-package-json";
 import { runBunInstall, type BunInstallSpawnFactory } from "../bun-install";
 import { parseEnvFile, serializeEnv, type EnvLine } from "../env-parse";
+import { writeBuiltinAugmentMetadata, writeCustomAugmentsReadme } from "../augment-metadata";
 
 export interface AddOpts {
   /** Path override for agent.yaml. */
@@ -47,8 +48,7 @@ export interface AddOpts {
 
 export async function runAdd(target: string | undefined, opts: AddOpts): Promise<void> {
   const localConfig = join(opts.cwd ?? process.cwd(), "agent.yaml");
-  const useProjectLocalArg =
-    !opts.config && !opts.augment && !!target && existsSync(localConfig);
+  const useProjectLocalArg = !opts.config && !opts.augment && !!target && existsSync(localConfig);
   const configPath = resolveConfigPath(useProjectLocalArg ? undefined : target, opts.config, {
     auggyDir: opts.auggyDir,
     cwd: opts.cwd,
@@ -159,8 +159,10 @@ export async function runAdd(target: string | undefined, opts: AddOpts): Promise
   // 'skills' augment surfaces them to the model automatically by rescanning
   // the skills/ dir on every context() call; no identity.md edit needed.
   console.log();
+  writeCustomAugmentsReadme(agentDir);
   for (const entry of selected) {
     copyBundledSkill(entry.type, agentDir);
+    writeBuiltinAugmentMetadata(agentDir, entry);
     console.log(`  ✓ ${entry.defaultName} (${entry.type})`);
   }
 
@@ -228,10 +230,7 @@ function updateEnvForAddedAugments(
   const envPath = join(agentDir, ".env");
   const lines: EnvLine[] = existsSync(envPath)
     ? parseEnvFile(readFileSync(envPath, "utf-8"))
-    : [
-        { kind: "comment", raw: "# Agent secrets — gitignored." },
-        { kind: "blank" },
-      ];
+    : [{ kind: "comment", raw: "# Agent secrets — gitignored." }, { kind: "blank" }];
 
   const existing = new Map<string, { index: number; value: string }>();
   lines.forEach((line, index) => {
@@ -321,7 +320,10 @@ function unique(values: string[]): string[] {
   return [...new Set(values)];
 }
 
-function resolveNonInteractiveSelection(specifier: string, available: CatalogEntry[]): CatalogEntry[] {
+function resolveNonInteractiveSelection(
+  specifier: string,
+  available: CatalogEntry[],
+): CatalogEntry[] {
   const entry = resolveCatalogEntry(specifier);
   if (!entry) {
     throw new Error(

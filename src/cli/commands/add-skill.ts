@@ -18,7 +18,7 @@
  * overwrites existing skill files (operator opt-in to updates).
  */
 
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { Command } from "commander";
 import { buildFolderToTypeMap, copyBundledSkill } from "../scaffold-skills";
@@ -82,6 +82,24 @@ interface AddSkillCommandDeps {
   cwd?: string;
 }
 
+function installBundledSkill(augment: string, agentDir: string): void {
+  const folderToType = buildFolderToTypeMap();
+  const type = folderToType.get(augment);
+  if (!type) {
+    const valid = [...folderToType.keys()].sort().join(", ");
+    throw new Error(`Unknown augment "${augment}".\n\n  Valid augment folder names: ${valid}`);
+  }
+
+  if (!bundledSkillExists(augment)) {
+    throw new Error(`"${augment}" augment ships no bundled skill. Nothing to add.`);
+  }
+
+  const copied = copyBundledSkill(type, agentDir);
+  if (!copied) {
+    throw new Error(`failed to copy bundled skill for "${augment}" (source not found).`);
+  }
+}
+
 export function addSkillCommand(deps: AddSkillCommandDeps = {}): Command {
   const exit = deps.exit ?? ((code: number) => process.exit(code));
 
@@ -112,41 +130,11 @@ export function addSkillCommand(deps: AddSkillCommandDeps = {}): Command {
         return;
       }
 
-      // 2. Validate the augment folder name.
-      const folderToType = buildFolderToTypeMap();
-      const type = folderToType.get(augment);
-      if (!type) {
-        const valid = [...folderToType.keys()].sort().join(", ");
-        console.error(
-          `Error: Unknown augment "${augment}".\n\n` + `  Valid augment folder names: ${valid}`,
-        );
-        exit(1);
-        return;
-      }
-
-      // 3. Verify the augment ships a bundled skill.
-      if (!bundledSkillExists(augment)) {
-        console.error(`Error: "${augment}" augment ships no bundled skill. Nothing to add-skill.`);
-        exit(1);
-        return;
-      }
-
-      // 4. Copy via the shared helper. Idempotent (overwrites existing files).
-      let copied: boolean;
       try {
-        copied = copyBundledSkill(type, agentDir);
+        installBundledSkill(augment, agentDir);
       } catch (err) {
-        console.error(`Error: failed to copy skill files: ${(err as Error).message}`);
-        exit(2);
-        return;
-      }
-
-      if (!copied) {
-        // Defensive — the bundledSkillExists check above should make this
-        // unreachable, but if copyBundledSkill returns false for any reason
-        // (e.g. mid-call filesystem disappearance) surface it as an error.
-        console.error(`Error: failed to copy bundled skill for "${augment}" (source not found).`);
-        exit(2);
+        console.error(`Error: ${(err as Error).message}`);
+        exit(1);
         return;
       }
 
@@ -155,4 +143,109 @@ export function addSkillCommand(deps: AddSkillCommandDeps = {}): Command {
       );
       exit(0);
     });
+}
+
+export function skillCommand(deps: AddSkillCommandDeps = {}): Command {
+  const exit = deps.exit ?? ((code: number) => process.exit(code));
+  const command = new Command("skill").description("Manage agent skills");
+
+  command
+    .command("add <augment>")
+    .description("Install or restore a bundled skill for an installed augment")
+    .option("--agent <name>", "agent project directory name (defaults to current directory)")
+    .action(async (augment: string, opts: { agent?: string }) => {
+      try {
+        const agentDir = resolveAgentDir(opts.agent, { auggyDir: deps.auggyDir, cwd: deps.cwd });
+        installBundledSkill(augment, agentDir);
+        console.log(
+          `Installed bundled skill for "${augment}" -> ${join(agentDir, "skills", augment)}/`,
+        );
+        exit(0);
+      } catch (err) {
+        console.error(`Error: ${(err as Error).message}`);
+        exit(1);
+      }
+    });
+
+  command
+    .command("create <name>")
+    .description("Create a user-authored skill in skills/<name>/SKILL.md")
+    .option("--agent <name>", "agent project directory name (defaults to current directory)")
+    .action(async (name: string, opts: { agent?: string }) => {
+      try {
+        if (!/^[a-z0-9][a-z0-9-]*$/.test(name)) {
+          throw new Error("Skill name must be kebab-case (letters, numbers, hyphens).");
+        }
+        const agentDir = resolveAgentDir(opts.agent, { auggyDir: deps.auggyDir, cwd: deps.cwd });
+        const dir = join(agentDir, "skills", name);
+        const path = join(dir, "SKILL.md");
+        if (existsSync(path)) throw new Error(`Skill already exists: ${path}`);
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(
+          path,
+          [
+            "---",
+            `name: ${name}`,
+            "description: Describe when the agent should use this skill.",
+            "---",
+            "",
+            `# ${name}`,
+            "",
+            "Write instructions, examples, and operating guidance for the agent here.",
+            "",
+          ].join("\n"),
+        );
+        console.log(`Created skill "${name}" -> ${path}`);
+        exit(0);
+      } catch (err) {
+        console.error(`Error: ${(err as Error).message}`);
+        exit(1);
+      }
+    });
+
+  command
+    .command("list")
+    .description("List skills installed in the current agent")
+    .option("--agent <name>", "agent project directory name (defaults to current directory)")
+    .action(async (opts: { agent?: string }) => {
+      try {
+        const agentDir = resolveAgentDir(opts.agent, { auggyDir: deps.auggyDir, cwd: deps.cwd });
+        const skillsDir = join(agentDir, "skills");
+        const names = existsSync(skillsDir)
+          ? readdirSync(skillsDir, { withFileTypes: true })
+              .filter((entry) => entry.isDirectory())
+              .map((entry) => entry.name)
+              .sort()
+          : [];
+        if (names.length === 0) {
+          console.log("No skills installed.");
+        } else {
+          for (const name of names) console.log(name);
+        }
+        exit(0);
+      } catch (err) {
+        console.error(`Error: ${(err as Error).message}`);
+        exit(1);
+      }
+    });
+
+  command
+    .command("remove <name>")
+    .description("Remove a skill folder from the current agent")
+    .option("--agent <name>", "agent project directory name (defaults to current directory)")
+    .action(async (name: string, opts: { agent?: string }) => {
+      try {
+        const agentDir = resolveAgentDir(opts.agent, { auggyDir: deps.auggyDir, cwd: deps.cwd });
+        const dir = join(agentDir, "skills", name);
+        if (!existsSync(dir)) throw new Error(`Skill not found: ${name}`);
+        rmSync(dir, { recursive: true, force: true });
+        console.log(`Removed skill "${name}".`);
+        exit(0);
+      } catch (err) {
+        console.error(`Error: ${(err as Error).message}`);
+        exit(1);
+      }
+    });
+
+  return command;
 }

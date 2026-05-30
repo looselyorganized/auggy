@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { parse as parseYaml } from "yaml";
@@ -23,7 +23,7 @@ import { createStubBunInstallSpawn, type SpawnCapture } from "../fixtures/bun-in
 let answers: Answers = {};
 mockInquirerPrompts(() => answers);
 
-const { runCreate } = await import("../../src/cli/commands/create");
+const { runCreate, runInit } = await import("../../src/cli/commands/create");
 const { PROVIDER_TO_PACKAGE } = await import("../../src/cli/scaffold-package-json");
 
 let auggyDir: string;
@@ -170,6 +170,19 @@ describe("runCreate scaffolding integration", () => {
     expect(existsSync(join(dir, "skills", "filesystem", "SKILL.md"))).toBe(true);
     expect(existsSync(join(dir, "skills", "web-fetch", "SKILL.md"))).toBe(true);
     expect(existsSync(join(dir, "skills", "turn-control", "SKILL.md"))).toBe(true);
+    expect(existsSync(join(dir, "augments", "web-fetch", "augment.yaml"))).toBe(true);
+    expect(existsSync(join(dir, "augments", "filesystem", "augment.yaml"))).toBe(true);
+    expect(existsSync(join(dir, "augments", "README.md"))).toBe(true);
+    const webFetchMeta = parseYaml(
+      readFileSync(join(dir, "augments", "web-fetch", "augment.yaml"), "utf-8"),
+    ) as Record<string, unknown>;
+    expect(webFetchMeta).toMatchObject({
+      name: "web-fetch",
+      kind: "builtin",
+      runtime: "auggy",
+      configType: "webFetch",
+      skill: "../../skills/web-fetch/SKILL.md",
+    });
 
     const env = readFileSync(join(dir, ".env"), "utf-8");
     expect(env).toMatch(/AUGGY_WEB_TOKEN=[a-f0-9]{64}/);
@@ -215,6 +228,7 @@ describe("runCreate scaffolding integration", () => {
     expect(existsSync(join(dir, "data", "workspace"))).toBe(true);
     expect(existsSync(join(dir, "workspace"))).toBe(false);
     expect(existsSync(join(dir, ".env"))).toBe(true);
+    expect(existsSync(join(dir, ".env.example"))).toBe(true);
     expect(existsSync(join(dir, ".gitignore"))).toBe(true);
     expect(existsSync(join(dir, "package.json"))).toBe(true);
   });
@@ -250,5 +264,33 @@ describe("runCreate scaffolding integration", () => {
     expect(memory?.options?.dbPath).toBe("./data/memory.sqlite");
     expect(budgets?.options?.dbPath).toBe("./data/budgets.db");
     expect(JSON.stringify(files?.options)).toContain("./data/workspace");
+  });
+
+  test("init scaffolds the current directory and run guidance omits the name", async () => {
+    answers = { provider: "anthropic", model: "claude-sonnet-4-6" };
+    const dir = join(projectParent, "current-agent");
+    mkdirSync(dir, { recursive: true });
+    const logs: string[] = [];
+    const originalLog = console.log;
+    console.log = (...args: unknown[]) => {
+      logs.push(args.map(String).join(" "));
+    };
+
+    try {
+      await runInit({
+        cwd: dir,
+        skipInstall: true,
+        bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
+      });
+    } finally {
+      console.log = originalLog;
+    }
+
+    expect(existsSync(join(dir, "agent.yaml"))).toBe(true);
+    expect(existsSync(join(dir, "package.json"))).toBe(true);
+    expect(existsSync(join(dir, "augments", "web-fetch", "augment.yaml"))).toBe(true);
+    expect(logs.join("\n")).toContain("auggy run");
+    expect(logs.join("\n")).not.toContain("auggy run current-agent");
+    expect(bunInstallCalls).toHaveLength(0);
   });
 });

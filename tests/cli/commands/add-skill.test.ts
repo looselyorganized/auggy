@@ -9,7 +9,11 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { seedAgentForTest } from "../../../src/cli/agent-index";
-import { addSkillCommand, resolveAgentDir } from "../../../src/cli/commands/add-skill";
+import {
+  addSkillCommand,
+  resolveAgentDir,
+  skillCommand,
+} from "../../../src/cli/commands/add-skill";
 
 const BUNDLED_WEB_FETCH_SKILL = resolve(
   import.meta.dir,
@@ -71,6 +75,14 @@ describe("auggy add-skill — command shape", () => {
   });
 });
 
+describe("auggy skill — command shape", () => {
+  test("registers skill namespace with add/create/list/remove", () => {
+    const cmd = skillCommand();
+    expect(cmd.name()).toBe("skill");
+    expect(cmd.commands.map((sub) => sub.name())).toEqual(["add", "create", "list", "remove"]);
+  });
+});
+
 describe("resolveAgentDir", () => {
   test("returns CWD when no --agent flag is supplied and CWD has agent.yaml", () => {
     const dir = makeAgentDir("local");
@@ -115,6 +127,68 @@ describe("auggy add-skill — happy path (CWD-based)", () => {
     const installed = join(dir, "skills", "web-fetch", "SKILL.md");
     expect(existsSync(installed)).toBe(true);
     expect(readFileSync(installed, "utf-8")).toBe(readFileSync(BUNDLED_WEB_FETCH_SKILL, "utf-8"));
+  });
+});
+
+describe("auggy skill — user-authored skills", () => {
+  test("skill create writes skills/<name>/SKILL.md", async () => {
+    const dir = makeAgentDir("zip");
+    const exit = mock((_code: number) => {});
+
+    await skillCommand({ exit, auggyDir, cwd: dir }).parseAsync(["create", "sales-playbook"], {
+      from: "user",
+    });
+
+    expect(exit).toHaveBeenCalledWith(0);
+    const skill = join(dir, "skills", "sales-playbook", "SKILL.md");
+    expect(readFileSync(skill, "utf-8")).toContain("name: sales-playbook");
+  });
+
+  test("skill add installs a bundled augment skill", async () => {
+    const dir = makeAgentDir("zip");
+    const exit = mock((_code: number) => {});
+
+    await skillCommand({ exit, auggyDir, cwd: dir }).parseAsync(["add", "web-fetch"], {
+      from: "user",
+    });
+
+    expect(exit).toHaveBeenCalledWith(0);
+    expect(existsSync(join(dir, "skills", "web-fetch", "SKILL.md"))).toBe(true);
+  });
+
+  test("skill list prints installed skill folders", async () => {
+    const dir = makeAgentDir("zip");
+    mkdirSync(join(dir, "skills", "sales-playbook"), { recursive: true });
+    writeFileSync(join(dir, "skills", "sales-playbook", "SKILL.md"), "# Sales\n");
+    const logs: string[] = [];
+    const origLog = console.log;
+    console.log = (msg: unknown) => {
+      logs.push(String(msg));
+    };
+
+    try {
+      await skillCommand({ exit: mock(() => {}), auggyDir, cwd: dir }).parseAsync(["list"], {
+        from: "user",
+      });
+    } finally {
+      console.log = origLog;
+    }
+
+    expect(logs).toContain("sales-playbook");
+  });
+
+  test("skill remove deletes a skill folder", async () => {
+    const dir = makeAgentDir("zip");
+    mkdirSync(join(dir, "skills", "sales-playbook"), { recursive: true });
+    writeFileSync(join(dir, "skills", "sales-playbook", "SKILL.md"), "# Sales\n");
+    const exit = mock((_code: number) => {});
+
+    await skillCommand({ exit, auggyDir, cwd: dir }).parseAsync(["remove", "sales-playbook"], {
+      from: "user",
+    });
+
+    expect(exit).toHaveBeenCalledWith(0);
+    expect(existsSync(join(dir, "skills", "sales-playbook"))).toBe(false);
   });
 });
 

@@ -24,6 +24,8 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { copyBundledSkill, renderIdentityFromTemplate } from "./scaffold-skills";
+import { writeBuiltinAugmentMetadata, writeCustomAugmentsReadme } from "./augment-metadata";
+import { AUGMENT_CATALOG } from "./augment-catalog";
 
 export interface ScaffoldOptions {
   /** Agent name. */
@@ -86,12 +88,17 @@ export function scaffoldAgent(opts: ScaffoldOptions): string {
   mkdirSync(join(dir, "skills"), { recursive: true });
   mkdirSync(join(dir, "workspace"), { recursive: true });
   mkdirSync(join(dir, "augments"), { recursive: true });
+  writeCustomAugmentsReadme(dir);
 
   // Copy bundled skill folders for each tool-providing augment. Idempotent —
   // re-running the scaffold overwrites; per ADR-025 Decision 2 operators opt
   // into updates by re-scaffolding.
   for (const type of skillProvidingTypes) {
     copyBundledSkill(type, dir);
+  }
+  for (const type of augmentTypes) {
+    const entry = AUGMENT_CATALOG.find((candidate) => candidate.type === type);
+    if (entry) writeBuiltinAugmentMetadata(dir, entry);
   }
 
   // Write identity.md from the bundled template (security rules only —
