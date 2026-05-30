@@ -572,7 +572,7 @@ async function runCreateIntoDir(
       console.log(`⚠ bun install failed in ${finalDir} (exit ${result.code}).`);
       console.log(`  Scaffolding is on disk.`);
       console.log(`  Retry:  cd ${finalDir} && bun install`);
-      console.log(`  Then:   auggy run ${name}`);
+      console.log(`  Then:   ${mode === "init" ? "auggy run" : `cd ${finalDir} && auggy run`}`);
       console.log();
     }
   }
@@ -586,11 +586,14 @@ async function runCreateIntoDir(
   console.log(` ${bold("Next steps:")}`);
   console.log();
   let step = 1;
+  if (mode === "create") {
+    console.log(`   ${cream(`${step++}.`)}  cd ${finalDir}`);
+  }
   if (opts.skipInstall) {
-    console.log(`   ${cream(`${step++}.`)}  cd ${finalDir} && bun install`);
+    console.log(`   ${cream(`${step++}.`)}  bun install`);
   } else if (!installOk) {
     console.log(
-      `   ${cream(`${step++}.`)}  cd ${finalDir} && bun install   ${dim("(retry — earlier attempt failed)")}`,
+      `   ${cream(`${step++}.`)}  bun install   ${dim("(retry — earlier attempt failed)")}`,
     );
   }
   const envVarsForNextSteps = collectEnvVars(augments, provider).filter(
@@ -599,15 +602,14 @@ async function runCreateIntoDir(
   if (ollamaNeedsBearer) envVarsForNextSteps.push("OLLAMA_API_KEY");
   if (envVarsForNextSteps.length > 0) {
     console.log(
-      `   ${cream(`${step++}.`)}  Fill in ${finalDir}/.env  ${dim(`(${envVarsForNextSteps.join(", ")})`)}`,
+      `   ${cream(`${step++}.`)}  Fill in .env  ${dim(`(${envVarsForNextSteps.join(", ")})`)}`,
     );
   }
   console.log(
-    `   ${cream(`${step++}.`)}  Open ${finalDir} in your editor   ${dim("(identity.md, agent.yaml — optional)")}`,
+    `   ${cream(`${step++}.`)}  Open . in your editor   ${dim("(identity.md, agent.yaml — optional)")}`,
   );
-  const runCommand = mode === "init" ? "auggy run" : `auggy run ${name}`;
   console.log(
-    `   ${cream(`${step++}.`)}  ${runCommand}   ${dim("(boots + opens /console/chat in your browser)")}`,
+    `   ${cream(`${step++}.`)}  auggy run   ${dim("(boots + opens /console/chat in your browser)")}`,
   );
   console.log();
 }

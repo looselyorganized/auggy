@@ -209,7 +209,9 @@ describe("runCreate scaffolding integration", () => {
       console.log = originalLog;
     }
 
-    expect(logs.join("\n")).toContain("auggy run demo-output");
+    expect(logs.join("\n")).toContain(`cd ${join(projectParent, "demo-output")}`);
+    expect(logs.join("\n")).toContain("auggy run");
+    expect(logs.join("\n")).not.toContain("auggy run demo-output");
     expect(logs.join("\n")).not.toContain("auggy dev demo-output --open");
   });
 
