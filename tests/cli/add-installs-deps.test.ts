@@ -141,7 +141,7 @@ describe("runAdd no-op cases", () => {
 
     const yaml = readFileSync(join(dir, "agent.yaml"), "utf-8");
     expect(yaml).toContain("type: webFetch");
-    expect(yaml).toContain("name: fetch");
+    expect(yaml).toContain("name: webFetch");
     expect(existsSync(join(dir, "skills", "web-fetch", "SKILL.md"))).toBe(true);
   });
 
@@ -156,7 +156,7 @@ describe("runAdd no-op cases", () => {
 
     const yaml = readFileSync(join(dir, "agent.yaml"), "utf-8");
     expect(yaml).toContain("type: webFetch");
-    expect(yaml).toContain("name: fetch");
+    expect(yaml).toContain("name: webFetch");
     expect(existsSync(join(dir, "skills", "web-fetch", "SKILL.md"))).toBe(true);
   });
 

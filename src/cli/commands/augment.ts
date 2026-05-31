@@ -57,6 +57,7 @@ export interface ListAugmentsOptions {
 }
 
 export interface ListedAugment {
+  label: string;
   name: string;
   type: string;
   source?: string;
@@ -111,10 +112,7 @@ export function augmentCommand(deps: AugmentCommandDeps = {}): Command {
           console.log("No augments installed.");
           return;
         }
-        for (const augment of result) {
-          const source = augment.source ? ` (${augment.source})` : "";
-          console.log(`${augment.name}  ${augment.type}${source}`);
-        }
+        console.log(formatAugmentList(result));
       } catch (err) {
         console.error(`Error: ${(err as Error).message}`);
         exit(1);
@@ -210,10 +208,29 @@ export function listAugments(opts: ListAugmentsOptions = {}): ListedAugment[] {
   const doc = readAgentYaml(configPath);
   const augments = readAugments(doc);
   return augments.map((augment) => ({
+    label: labelForAugment(stringField(augment.type), stringField(augment.name)),
     name: stringField(augment.name) ?? "(unnamed)",
     type: stringField(augment.type) ?? "(unknown)",
     source: stringField(augment.source) ?? undefined,
   }));
+}
+
+export function formatAugmentList(augments: ListedAugment[]): string {
+  const rows = augments.map((augment) => {
+    const cells = [augment.label, augment.type];
+    if (augment.type === "custom" && augment.source) cells.push(augment.source);
+    return cells;
+  });
+  const headers = ["AUGMENT", "TYPE", rows.some((row) => row.length > 2) ? "SOURCE" : ""].filter(
+    Boolean,
+  );
+  const allRows = [headers, ...rows];
+  const widths = headers.map((_, index) =>
+    Math.max(...allRows.map((row) => row[index]?.length ?? 0)),
+  );
+  return allRows
+    .map((row) => row.map((cell, index) => (cell ?? "").padEnd(widths[index] ?? 0)).join("  "))
+    .join("\n");
 }
 
 export function removeAugment(opts: RemoveAugmentOptions): RemoveAugmentResult {
@@ -289,6 +306,19 @@ function removeSkillForAugment(agentDir: string, name: string, type: string): st
 
 function stringField(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function labelForAugment(type: string | null, name: string | null): string {
+  const entry = type ? AUGMENT_CATALOG.find((catalogEntry) => catalogEntry.type === type) : null;
+  if (entry) return entry.label;
+  return humanizeIdentifier(name ?? type ?? "custom");
+}
+
+function humanizeIdentifier(value: string): string {
+  return value
+    .replace(/[-_]+/g, " ")
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/\b\w/g, (char) => char.toUpperCase());
 }
 
 export function installCustomAugment(

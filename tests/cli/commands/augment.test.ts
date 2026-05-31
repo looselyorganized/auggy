@@ -6,6 +6,7 @@ import { parse as parseYaml } from "yaml";
 import { seedAgentForTest } from "../../../src/cli/agent-index";
 import {
   augmentCommand,
+  formatAugmentList,
   installCustomAugment,
   listAugments,
   removeAugment,
@@ -182,12 +183,39 @@ describe("listAugments and removeAugment", () => {
       });
 
       expect(listAugments({ agentName: "zip", auggyDir })).toEqual([
-        { name: "fetch", type: "webFetch", source: undefined },
-        { name: "weather", type: "custom", source: "./augments/weather/index.ts" },
+        { label: "Web Fetch", name: "fetch", type: "webFetch", source: undefined },
+        {
+          label: "Weather",
+          name: "weather",
+          type: "custom",
+          source: "./augments/weather/index.ts",
+        },
       ]);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  test("formats augment list as human label plus code type", () => {
+    const text = formatAugmentList([
+      { label: "File Memory", name: "learned", type: "fileMemory" },
+      { label: "Web Fetch", name: "fetch", type: "webFetch" },
+      {
+        label: "Weather",
+        name: "weather",
+        type: "custom",
+        source: "./augments/weather/index.ts",
+      },
+    ]);
+
+    expect(text).toContain("AUGMENT");
+    expect(text).toContain("TYPE");
+    expect(text).toContain("SOURCE");
+    expect(text).toContain("File Memory");
+    expect(text).toContain("fileMemory");
+    expect(text).not.toContain("learned");
+    expect(text).toContain("Weather");
+    expect(text).toContain("./augments/weather/index.ts");
   });
 
   test("removes a built-in augment and its bundled skill folder", () => {

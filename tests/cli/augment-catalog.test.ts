@@ -15,9 +15,9 @@ describe("augment catalog", () => {
     expect(entry?.hasSkill).toBe(true);
   });
 
-  it("turnControl uses the conventional defaultName", () => {
+  it("turnControl uses its canonical type as defaultName", () => {
     const entry = AUGMENT_CATALOG.find((e) => e.type === "turnControl");
-    expect(entry?.defaultName).toBe("turn-control");
+    expect(entry?.defaultName).toBe("turnControl");
   });
 
   it("catalog includes a visitorAuth entry with required env vars", () => {
@@ -43,8 +43,8 @@ describe("augment catalog", () => {
     expect(resolveCatalogEntry("agent-mail")?.type).toBe("agentMail");
   });
 
-  it("resolves canonical type names and default instance names", () => {
-    expect(resolveCatalogEntry("webFetch")?.defaultName).toBe("fetch");
+  it("resolves canonical type names and legacy default-name aliases", () => {
+    expect(resolveCatalogEntry("webFetch")?.defaultName).toBe("webFetch");
     expect(resolveCatalogEntry("turn-control")?.type).toBe("turnControl");
   });
 

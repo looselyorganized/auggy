@@ -65,12 +65,12 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
   // the very first scaffold. The scaffold and the create command emit the
   // shorthand directly; the catalog never carries an identity row.
   {
-    label: "fileMemory (learned)",
+    label: "File Memory",
     tagline: "learned-behaviors store",
     description:
       "Mutable file the agent writes learned behaviors to (./learned.md). Mounted into the preamble.",
     type: "fileMemory",
-    defaultName: "learned",
+    defaultName: "fileMemory",
     defaultOptions: {
       label: "learned",
       source: "./learned.md",
@@ -84,12 +84,12 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
     hasSkill: false,
   },
   {
-    label: "layeredMemory",
+    label: "Layered Memory",
     tagline: "peer-scoped episodic memory (SQLite/Supabase)",
     description:
       "Per-peer episodic memory with provenance tracking. Stores facts the agent extracts from conversations. SQLite by default; Supabase for shared/cloud deployments.",
     type: "layeredMemory",
-    defaultName: "memory",
+    defaultName: "layeredMemory",
     defaultOptions: {
       backend: "sqlite",
       dbPath: "./memory.sqlite",
@@ -100,12 +100,12 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
     hasSkill: true,
   },
   {
-    label: "filesystem",
+    label: "Filesystem",
     tagline: "scoped read/write + skills directory",
     description:
       "Scoped file access with two mounts: ./skills (read-only, used to teach the agent via SKILL.md files) and ./workspace (read/write/delete scratchpad).",
     type: "filesystem",
-    defaultName: "files",
+    defaultName: "filesystem",
     defaultOptions: {
       mounts: [
         { name: "skills", path: "./skills", writable: false },
@@ -116,12 +116,12 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
     hasSkill: true,
   },
   {
-    label: "webTransport",
+    label: "Web Transport",
     tagline: "chat over HTTP+SSE + the /console operator UI",
     description:
       "Exposes the agent on a port: AG-UI chat endpoint (SSE), the /console operator surface, and /health. Bearer-gated on non-loopback; loopback is open. Required if you want anything besides the CLI to talk to the agent.",
     type: "webTransport",
-    defaultName: "web",
+    defaultName: "webTransport",
     defaultOptions: {
       port: 8080,
       auth: { type: "bearer", token: "${AUGGY_WEB_TOKEN}" },
@@ -137,12 +137,12 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
     hasSkill: false,
   },
   {
-    label: "webFetch",
+    label: "Web Fetch",
     tagline: "fetch URLs / scrape pages / call HTTP APIs",
     description:
       "Gives the agent a fetch tool: GET any public URL, parse HTML to text, pass JSON through. SSRF guard blocks loopback + private IPs by default.",
     type: "webFetch",
-    defaultName: "fetch",
+    defaultName: "webFetch",
     defaultOptions: {
       timeoutMs: 15000,
     },
@@ -150,12 +150,12 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
     hasSkill: true,
   },
   {
-    label: "supabaseMemory",
+    label: "Supabase Memory",
     tagline: "namespace memory in Supabase (legacy)",
     description:
       "Frozen older memory provider kept for migration paths. Use layeredMemory for new agents.",
     type: "supabaseMemory",
-    defaultName: "episodic",
+    defaultName: "supabaseMemory",
     defaultOptions: {
       namespace: "episode",
       table: "agent_memories",
@@ -173,7 +173,7 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
     packageDeps: { "@supabase/supabase-js": "^2.103.0" },
   },
   {
-    label: "manifest",
+    label: "Manifest",
     tagline: "registry of org-specific knowledge endpoints",
     description:
       "Catalog of files / URLs the agent can fetch to answer questions about your org or project. Defaults to ./manifest/ on disk; can point at an HTTP-served manifest.",
@@ -193,7 +193,7 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
   // Auto-mounted by `augment-resolver.ts` if not explicitly declared in
   // agent.yaml. See docs/solutions/architecture/adr-NNN-augment-catalog-policy.md.
   {
-    label: "bash",
+    label: "Bash",
     tagline: "scoped shell execution (allowlist + risk levels)",
     description:
       "Lets the agent run shell commands. Restricted by default to a small allowlist (echo, ls, cat, pwd, date). Configure risk level + allowlist in agent.yaml.",
@@ -207,7 +207,7 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
     hasSkill: true,
   },
   {
-    label: "budgets",
+    label: "Budgets",
     tagline: "spend caps per trust level (turns + $/day)",
     description:
       "Cost guard. Caps turns-per-thread, turns-per-day, and USD-per-day per trust level. Hard daily budget ceiling. SQLite-backed.",
@@ -228,7 +228,7 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
     hasSkill: false,
   },
   {
-    label: "notify",
+    label: "Notify",
     tagline: "outbound messaging (webhook / Telegram / email)",
     description:
       "Lets the agent ping you when something happens. Adapters: log-to-file (default), webhook, telegram, agentmail. Per-destination rate limit + dedup.",
@@ -256,12 +256,12 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
     hasSkill: true,
   },
   {
-    label: "agentMail",
+    label: "Agent Mail",
     tagline: "send email via AgentMail (Phase A: outbound only)",
     description:
       "Lets the agent send email (send / reply / forward) via AgentMail. Trust-level gate, recipient allowlist, rate limits, dedup, audit ring. Requires AGENTMAIL_API_KEY + AGENTMAIL_INBOX_ID.",
     type: "agentMail",
-    defaultName: "agentmail",
+    defaultName: "agentMail",
     defaultOptions: {
       apiKey: "${AGENTMAIL_API_KEY}",
       inboxId: "${AGENTMAIL_INBOX_ID}",
@@ -285,12 +285,12 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
     hasSkill: true,
   },
   {
-    label: "telegramTransport",
+    label: "Telegram Transport",
     tagline: "talk to the agent on Telegram (in + out)",
     description:
       "Bidirectional Telegram chat. Long-poll or webhook inbound. Four-path identity (creator user IDs, recognized via visitorAuth, anonymous). Requires TELEGRAM_BOT_TOKEN.",
     type: "telegramTransport",
-    defaultName: "telegram",
+    defaultName: "telegramTransport",
     defaultOptions: {
       botToken: "${TELEGRAM_BOT_TOKEN}",
       inbound: {
@@ -310,12 +310,12 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
     hasSkill: false,
   },
   {
-    label: "turnControl",
+    label: "Turn Control",
     tagline: "agent can pause + ask for clarification",
     description:
       "Gives the agent a request_input tool that ends the turn waiting for a reply. Recommended for chat-shaped agents (web/telegram) — without it the agent always produces a final answer.",
     type: "turnControl",
-    defaultName: "turn-control",
+    defaultName: "turnControl",
     defaultOptions: {},
     required: true,
     hasSkill: true,
@@ -344,12 +344,12 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
     packageDeps: { "@auggy/link": "^0.1.2" },
   },
   {
-    label: "visitorAuth",
+    label: "Visitor Auth",
     tagline: "email magic-link → recognized visitor",
     description:
       "Promotes anonymous chat visitors to recognized identity via email magic-link. Console mode (default) prints verify links to stdout for local testing; switch to agentmail transport for production mail delivery.",
     type: "visitorAuth",
-    defaultName: "visitor-auth",
+    defaultName: "visitorAuth",
     defaultOptions: {
       publicUrl: "${AUGGY_PUBLIC_URL}",
       dbPath: "./visitor-auth.db",
@@ -432,11 +432,9 @@ export function validAugmentSpecifiers(): string[] {
   return [...names].sort();
 }
 
-/** Get catalog entries that are not yet installed (by type + defaultName). */
+/** Get catalog entries that are not yet installed (by type). */
 export function getAvailableAugments(
   installed: Array<{ type: string; name: string }>,
 ): CatalogEntry[] {
-  return AUGMENT_CATALOG.filter(
-    (entry) => !installed.some((i) => i.type === entry.type && i.name === entry.defaultName),
-  );
+  return AUGMENT_CATALOG.filter((entry) => !installed.some((i) => i.type === entry.type));
 }
