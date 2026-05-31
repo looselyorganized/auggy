@@ -7,7 +7,7 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
-import { dirname, join, relative, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import { createServer } from "node:net";
 import { Command } from "commander";
 import { parseConfig } from "../config-parser";
@@ -299,12 +299,17 @@ export function hasDoctorFailures(checks: DoctorCheck[]): boolean {
 export interface FormatDoctorChecksOptions {
   relativeTo?: string;
   color?: boolean;
+  verbose?: boolean;
 }
 
 export function formatDoctorChecks(
   checks: DoctorCheck[],
   opts: FormatDoctorChecksOptions = {},
 ): string {
+  if (!opts.verbose) {
+    return checks.map((check) => formatDoctorCheckSummary(check, opts)).join("\n");
+  }
+
   return checks
     .map((check) => {
       const status = formatStatus(check.status, opts.color ?? false);
@@ -313,6 +318,31 @@ export function formatDoctorChecks(
       return check.fix ? `${head}\n     fix: ${compactPaths(check.fix, opts.relativeTo)}` : head;
     })
     .join("\n");
+}
+
+function formatDoctorCheckSummary(check: DoctorCheck, opts: FormatDoctorChecksOptions): string {
+  const status = formatStatus(check.status, opts.color ?? false);
+  const summary = summarizeDoctorCheck(check);
+  const head = `${status.padEnd(opts.color ? 13 : 4)} ${summary}`;
+  return check.fix ? `${head}\n     fix: ${compactPaths(check.fix, opts.relativeTo)}` : head;
+}
+
+function summarizeDoctorCheck(check: DoctorCheck): string {
+  if (check.status === "fail" || check.status === "warn") {
+    return `${check.name}: ${check.message}`;
+  }
+
+  if (check.name === "config path") return `config: ${basename(check.message)}`;
+  if (check.name === "agent.yaml") return `agent: ${check.message.replace(/^parsed\s+/, "")}`;
+  if (check.name === "package.json") return "package manifest: package.json";
+  if (check.name.startsWith("env ")) return `env: ${check.name.slice("env ".length)}`;
+  if (check.name.startsWith("dependency ")) {
+    return `dependency: ${check.name.slice("dependency ".length)}`;
+  }
+  if (check.name.startsWith("port "))
+    return `port: ${check.name.slice("port ".length)} ${check.message}`;
+  if (check.name.startsWith("skill ")) return `skill: ${check.name.slice("skill ".length)}`;
+  return `${check.name}: ${check.message}`;
 }
 
 function formatStatus(status: DoctorStatus, color: boolean): string {
@@ -361,6 +391,7 @@ export function doctorCommand(deps: DoctorCommandDeps = {}): Command {
           formatDoctorChecks(checks, {
             relativeTo: opts.verbose ? undefined : relativeOutputRoot(checks),
             color: process.stdout.isTTY,
+            verbose: opts.verbose,
           }),
         );
         exit(hasDoctorFailures(checks) ? 1 : 0);

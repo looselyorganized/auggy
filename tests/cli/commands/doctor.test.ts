@@ -248,18 +248,38 @@ describe("runDoctor", () => {
 });
 
 describe("doctor formatting and command", () => {
-  test("formatDoctorChecks prints status, message, and fix", () => {
+  test("formatDoctorChecks prints semantic default output", () => {
     const text = formatDoctorChecks([
-      { name: "config", status: "pass", message: "ok" },
+      { name: "config path", status: "pass", message: "/tmp/auggy-agent/agent.yaml" },
+      { name: "agent.yaml", status: "pass", message: "parsed zip" },
+      { name: "package.json", status: "pass", message: "/tmp/auggy-agent/package.json" },
+      { name: "env ANTHROPIC_API_KEY", status: "pass", message: "/tmp/auggy-agent/.env" },
+      {
+        name: "dependency @auggy/anthropic",
+        status: "pass",
+        message: "/tmp/auggy-agent/node_modules/@auggy/anthropic",
+      },
+      { name: "port 8080", status: "pass", message: "available" },
+      {
+        name: "skill web-fetch",
+        status: "pass",
+        message: "/tmp/auggy-agent/skills/web-fetch/SKILL.md",
+      },
       { name: "dep", status: "fail", message: "missing", fix: "run bun install" },
     ]);
 
-    expect(text).toContain("PASS config: ok");
+    expect(text).toContain("PASS config: agent.yaml");
+    expect(text).toContain("PASS agent: zip");
+    expect(text).toContain("PASS package manifest: package.json");
+    expect(text).toContain("PASS env: ANTHROPIC_API_KEY");
+    expect(text).toContain("PASS dependency: @auggy/anthropic");
+    expect(text).toContain("PASS port: 8080 available");
+    expect(text).toContain("PASS skill: web-fetch");
     expect(text).toContain("FAIL dep: missing");
     expect(text).toContain("fix: run bun install");
   });
 
-  test("formatDoctorChecks can compact paths relative to the agent dir", () => {
+  test("formatDoctorChecks verbose can compact paths relative to the agent dir", () => {
     const root = "/tmp/auggy-agent";
     const text = formatDoctorChecks(
       [
@@ -272,7 +292,7 @@ describe("doctor formatting and command", () => {
           fix: `Run \`cd ${root} && bun install\`.`,
         },
       ],
-      { relativeTo: root },
+      { relativeTo: root, verbose: true },
     );
 
     expect(text).toContain("PASS config path: agent.yaml");
@@ -281,7 +301,7 @@ describe("doctor formatting and command", () => {
     expect(text).toContain("cd . && bun install");
   });
 
-  test("doctor command uses compact paths by default", async () => {
+  test("doctor command uses semantic output by default", async () => {
     const run = mock(
       async (): Promise<DoctorCheck[]> => [
         {
@@ -310,8 +330,9 @@ describe("doctor formatting and command", () => {
       console.log = origLog;
     }
 
-    expect(logs.join("\n")).toContain("agent.yaml");
-    expect(logs.join("\n")).toContain("node_modules/auggy");
+    expect(logs.join("\n")).toContain("PASS config: agent.yaml");
+    expect(logs.join("\n")).toContain("PASS dependency: auggy");
+    expect(logs.join("\n")).not.toContain("node_modules/auggy");
     expect(logs.join("\n")).not.toContain("/tmp/auggy-agent/node_modules/auggy");
   });
 
