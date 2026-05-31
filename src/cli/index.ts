@@ -4,7 +4,10 @@
  *
  * Commands:
  *   auggy create <name>              Scaffold a new agent (interactive)
- *   auggy add [name] [augment]       Add augments to an existing agent
+ *   auggy add [name] [augment]       Add augments to an existing agent (shortcut)
+ *   auggy augment add <augment>      Add an augment to an agent
+ *   auggy augment remove <augment>   Remove an augment from an agent
+ *   auggy augment list               List augments in an agent
  *   auggy skill add <augment>        Repair/reinstall a bundled skill
  *   auggy run [name] [--no-open]     Run agent in foreground; opens /console/chat by default
  *   auggy doctor [name]              Check whether an agent is ready to run

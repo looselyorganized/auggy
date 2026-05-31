@@ -8,7 +8,7 @@
 
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { confirm } from "@inquirer/prompts";
 import { getAgentFromDir } from "../agent-index";
 import { createRailwayCli, type RailwayCli } from "../deploy/railway-cli";
@@ -45,6 +45,15 @@ export async function runRemove(name: string | undefined, opts: RemoveOptions = 
   const entry = getAgentFromDir(localDir);
   const configName = readConfigName(localDir);
   const displayName = configName ?? name ?? "this agent";
+  const cwd = opts.cwd ?? process.cwd();
+  const localConfig = resolve(cwd, "agent.yaml");
+  if (name && localConfig === resolve(configPath) && name !== configName) {
+    throw new Error(
+      `Refusing to remove the current agent project for argument "${name}".\n\n` +
+        `If you meant to remove an augment, run:\n` +
+        `  auggy augment remove ${name}`,
+    );
+  }
   if (!entry) {
     throw new Error(
       `Agent "${displayName}" not found.\n\n  Run from inside an agent project or its parent.`,

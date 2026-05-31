@@ -4,15 +4,51 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { seedAgentForTest } from "../../../src/cli/agent-index";
-import { augmentCommand, installCustomAugment } from "../../../src/cli/commands/augment";
+import {
+  augmentCommand,
+  installCustomAugment,
+  listAugments,
+  removeAugment,
+} from "../../../src/cli/commands/augment";
 
 describe("auggy augment command", () => {
   test("registers the augment command with create subcommand", () => {
     const cmd = augmentCommand();
     expect(cmd.name()).toBe("augment");
     expect(cmd.commands.map((c) => c.name())).toContain("create");
+    expect(cmd.commands.map((c) => c.name())).toContain("add");
+    expect(cmd.commands.map((c) => c.name())).toContain("list");
+    expect(cmd.commands.map((c) => c.name())).toContain("remove");
     expect(cmd.commands.map((c) => c.name())).toContain("install");
     expect(cmd.commands.map((c) => c.name())).toContain("test");
+  });
+
+  test("add dispatches to runAdd for project-local augment add", async () => {
+    const runAdd = mock(async () => {});
+
+    const cmd = augmentCommand({ runAdd });
+    await cmd.parseAsync(["add", "visitor-auth", "--skip-install"], { from: "user" });
+
+    expect(runAdd).toHaveBeenCalledWith("visitor-auth", {
+      augment: undefined,
+      config: undefined,
+      skipInstall: true,
+      auggyDir: undefined,
+    });
+  });
+
+  test("add dispatches to runAdd for named agent add", async () => {
+    const runAdd = mock(async () => {});
+
+    const cmd = augmentCommand({ runAdd, auggyDir: "/tmp/auggy" });
+    await cmd.parseAsync(["add", "visitor-auth", "--agent", "zip"], { from: "user" });
+
+    expect(runAdd).toHaveBeenCalledWith("zip", {
+      augment: "visitor-auth",
+      config: undefined,
+      skipInstall: undefined,
+      auggyDir: "/tmp/auggy",
+    });
   });
 
   test("create dispatches to scaffold helper", async () => {
@@ -100,7 +136,10 @@ describe("auggy augment command", () => {
     const root = mkdtempSync(join(tmpdir(), "augment-test-command-"));
     const augmentDir = join(root, "weather");
     mkdirSync(augmentDir, { recursive: true });
-    writeFileSync(join(augmentDir, "index.ts"), "export default function weather() { return { name: 'weather' }; }\n");
+    writeFileSync(
+      join(augmentDir, "index.ts"),
+      "export default function weather() { return { name: 'weather' }; }\n",
+    );
     const origLog = console.log;
     console.log = (msg: unknown) => {
       logs.push(String(msg));
@@ -116,6 +155,109 @@ describe("auggy augment command", () => {
 
     expect(validate).toHaveBeenCalledWith(join(augmentDir, "index.ts"));
     expect(logs.join("\n")).toContain('Valid custom augment "weather" (1 tool).');
+  });
+});
+
+describe("listAugments and removeAugment", () => {
+  test("lists installed augments from an agent project", () => {
+    const root = mkdtempSync(join(tmpdir(), "augment-list-"));
+    try {
+      const auggyDir = join(root, "auggy");
+      seedAgentForTest("zip", {
+        auggyDir,
+        yaml: [
+          "id: aug1_a3f7c2e1-8b4d-4f9e-a6c1-2d8e9f0b3a5c",
+          "name: zip",
+          "engine:",
+          "  provider: anthropic",
+          "  model: claude-sonnet-4-6",
+          "augments:",
+          "  - name: fetch",
+          "    type: webFetch",
+          "  - name: weather",
+          "    type: custom",
+          "    source: ./augments/weather/index.ts",
+          "",
+        ].join("\n"),
+      });
+
+      expect(listAugments({ agentName: "zip", auggyDir })).toEqual([
+        { name: "fetch", type: "webFetch", source: undefined },
+        { name: "weather", type: "custom", source: "./augments/weather/index.ts" },
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("removes a built-in augment and its bundled skill folder", () => {
+    const root = mkdtempSync(join(tmpdir(), "augment-remove-"));
+    try {
+      const auggyDir = join(root, "auggy");
+      const agentDir = seedAgentForTest("zip", {
+        auggyDir,
+        yaml: [
+          "id: aug1_a3f7c2e1-8b4d-4f9e-a6c1-2d8e9f0b3a5c",
+          "name: zip",
+          "engine:",
+          "  provider: anthropic",
+          "  model: claude-sonnet-4-6",
+          "augments:",
+          "  - name: web",
+          "    type: webTransport",
+          "  - name: visitor-auth",
+          "    type: visitorAuth",
+          "",
+        ].join("\n"),
+      });
+      mkdirSync(join(agentDir, "skills", "visitor-auth"), { recursive: true });
+      writeFileSync(
+        join(agentDir, "skills", "visitor-auth", "SKILL.md"),
+        "---\nname: visitor-auth\n",
+      );
+
+      const result = removeAugment({ agentName: "zip", augment: "visitor-auth", auggyDir });
+
+      expect(result).toMatchObject({
+        name: "visitor-auth",
+        type: "visitorAuth",
+        skillRemoved: join("skills", "visitor-auth"),
+      });
+      expect(existsSync(join(agentDir, "skills", "visitor-auth"))).toBe(false);
+      const parsed = parseYaml(readFileSync(join(agentDir, "agent.yaml"), "utf-8")) as {
+        augments: Array<Record<string, unknown>>;
+      };
+      expect(parsed.augments.map((augment) => augment.name)).toEqual(["web"]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("refuses to remove required augments", () => {
+    const root = mkdtempSync(join(tmpdir(), "augment-remove-required-"));
+    try {
+      const auggyDir = join(root, "auggy");
+      seedAgentForTest("zip", {
+        auggyDir,
+        yaml: [
+          "id: aug1_a3f7c2e1-8b4d-4f9e-a6c1-2d8e9f0b3a5c",
+          "name: zip",
+          "engine:",
+          "  provider: anthropic",
+          "  model: claude-sonnet-4-6",
+          "augments:",
+          "  - name: fetch",
+          "    type: webFetch",
+          "",
+        ].join("\n"),
+      });
+
+      expect(() => removeAugment({ agentName: "zip", augment: "fetch", auggyDir })).toThrow(
+        /required/,
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 
@@ -138,7 +280,10 @@ describe("installCustomAugment", () => {
       });
       const customDir = join(agentDir, "augments", "weather");
       mkdirSync(customDir, { recursive: true });
-      writeFileSync(join(customDir, "index.ts"), "export default function weather() { return { name: 'weather' }; }\n");
+      writeFileSync(
+        join(customDir, "index.ts"),
+        "export default function weather() { return { name: 'weather' }; }\n",
+      );
       writeFileSync(join(customDir, "SKILL.md"), "---\nname: weather\n---\n");
 
       const result = installCustomAugment({
@@ -186,7 +331,10 @@ describe("installCustomAugment", () => {
       });
       const customDir = join(agentDir, "augments", "weather");
       mkdirSync(customDir, { recursive: true });
-      writeFileSync(join(customDir, "index.ts"), "export default function weather() { return { name: 'weather' }; }\n");
+      writeFileSync(
+        join(customDir, "index.ts"),
+        "export default function weather() { return { name: 'weather' }; }\n",
+      );
 
       expect(() =>
         installCustomAugment({ agentName: "zip", sourcePath: customDir, auggyDir }),

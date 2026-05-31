@@ -1,15 +1,20 @@
 import { Command } from "commander";
-import { existsSync, mkdirSync, readFileSync, writeFileSync, cpSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
+import { AUGMENT_CATALOG, resolveCatalogEntry } from "../augment-catalog";
+import { runAdd, type AddOpts } from "./add";
 import { resolveConfigPath } from "../resolve-config";
 import { scaffoldCustomAugment } from "../scaffold-custom-augment";
 import { validateCustomAugment } from "../augment-validator";
+import { augmentFolderForType } from "../scaffold-skills";
 
 export interface AugmentCommandDeps {
   scaffoldCustomAugment?: typeof scaffoldCustomAugment;
   installCustomAugment?: typeof installCustomAugment;
   validateCustomAugment?: typeof validateCustomAugment;
+  runAdd?: typeof runAdd;
+  removeAugment?: typeof removeAugment;
   exit?: (code: number) => void;
   auggyDir?: string;
 }
@@ -29,13 +34,113 @@ export interface InstallCustomAugmentResult {
   skillCopied: boolean;
 }
 
+export interface RemoveAugmentOptions {
+  agentName?: string;
+  augment: string;
+  config?: string;
+  auggyDir?: string;
+  cwd?: string;
+}
+
+export interface RemoveAugmentResult {
+  configPath: string;
+  name: string;
+  type: string;
+  skillRemoved: string | null;
+}
+
+export interface ListAugmentsOptions {
+  agentName?: string;
+  config?: string;
+  auggyDir?: string;
+  cwd?: string;
+}
+
+export interface ListedAugment {
+  name: string;
+  type: string;
+  source?: string;
+}
+
 export function augmentCommand(deps: AugmentCommandDeps = {}): Command {
   const scaffold = deps.scaffoldCustomAugment ?? scaffoldCustomAugment;
   const install = deps.installCustomAugment ?? installCustomAugment;
   const validate = deps.validateCustomAugment ?? validateCustomAugment;
+  const add = deps.runAdd ?? runAdd;
+  const remove = deps.removeAugment ?? removeAugment;
   const exit = deps.exit ?? ((code: number) => process.exit(code));
 
-  const command = new Command("augment").description("Create and manage custom augments");
+  const command = new Command("augment").description("Add, remove, list, and create augments");
+
+  command
+    .command("add <augment>")
+    .description("Add an augment to an agent")
+    .option("--agent <name>", "agent project name when running from a parent directory")
+    .option("--config <path>", "path to agent.yaml")
+    .option("--skip-install", "mutate package.json but don't run bun install")
+    .action(
+      async (augment: string, opts: { agent?: string; config?: string; skipInstall?: boolean }) => {
+        try {
+          const addOpts: AddOpts = {
+            augment: opts.agent || opts.config ? augment : undefined,
+            config: opts.config,
+            skipInstall: opts.skipInstall,
+            auggyDir: deps.auggyDir,
+          };
+          await add(opts.agent ?? (opts.config ? undefined : augment), addOpts);
+        } catch (err) {
+          console.error(`Error: ${(err as Error).message}`);
+          exit(1);
+        }
+      },
+    );
+
+  command
+    .command("list")
+    .description("List augments installed in an agent")
+    .option("--agent <name>", "agent project name when running from a parent directory")
+    .option("--config <path>", "path to agent.yaml")
+    .action((opts: { agent?: string; config?: string }) => {
+      try {
+        const result = listAugments({
+          agentName: opts.agent,
+          config: opts.config,
+          auggyDir: deps.auggyDir,
+        });
+        if (result.length === 0) {
+          console.log("No augments installed.");
+          return;
+        }
+        for (const augment of result) {
+          const source = augment.source ? ` (${augment.source})` : "";
+          console.log(`${augment.name}  ${augment.type}${source}`);
+        }
+      } catch (err) {
+        console.error(`Error: ${(err as Error).message}`);
+        exit(1);
+      }
+    });
+
+  command
+    .command("remove <augment>")
+    .description("Remove an augment from an agent")
+    .option("--agent <name>", "agent project name when running from a parent directory")
+    .option("--config <path>", "path to agent.yaml")
+    .action((augment: string, opts: { agent?: string; config?: string }) => {
+      try {
+        const result = remove({
+          agentName: opts.agent,
+          augment,
+          config: opts.config,
+          auggyDir: deps.auggyDir,
+        });
+        console.log(`Removed augment "${result.name}" (${result.type}) from ${result.configPath}.`);
+        if (result.skillRemoved) console.log(`Removed skill ${result.skillRemoved}.`);
+      } catch (err) {
+        console.error(`Error: ${(err as Error).message}`);
+        exit(1);
+      }
+    });
 
   command
     .command("create <slug>")
@@ -85,7 +190,9 @@ export function augmentCommand(deps: AugmentCommandDeps = {}): Command {
       try {
         const sourceFile = resolveSourceFile(resolve(sourcePath));
         const result = await validate(sourceFile);
-        console.log(`Valid custom augment "${result.name}" (${result.toolCount} tool${result.toolCount === 1 ? "" : "s"}).`);
+        console.log(
+          `Valid custom augment "${result.name}" (${result.toolCount} tool${result.toolCount === 1 ? "" : "s"}).`,
+        );
       } catch (err) {
         console.error(`Error: ${(err as Error).message}`);
         exit(1);
@@ -95,7 +202,98 @@ export function augmentCommand(deps: AugmentCommandDeps = {}): Command {
   return command;
 }
 
-export function installCustomAugment(opts: InstallCustomAugmentOptions): InstallCustomAugmentResult {
+export function listAugments(opts: ListAugmentsOptions = {}): ListedAugment[] {
+  const configPath = resolveConfigPath(opts.agentName, opts.config, {
+    auggyDir: opts.auggyDir,
+    cwd: opts.cwd,
+  });
+  const doc = readAgentYaml(configPath);
+  const augments = readAugments(doc);
+  return augments.map((augment) => ({
+    name: stringField(augment.name) ?? "(unnamed)",
+    type: stringField(augment.type) ?? "(unknown)",
+    source: stringField(augment.source) ?? undefined,
+  }));
+}
+
+export function removeAugment(opts: RemoveAugmentOptions): RemoveAugmentResult {
+  const configPath = resolveConfigPath(opts.agentName, opts.config, {
+    auggyDir: opts.auggyDir,
+    cwd: opts.cwd,
+  });
+  const agentDir = dirname(configPath);
+  const doc = readAgentYaml(configPath);
+  const augments = readAugments(doc);
+  const index = findAugmentIndex(augments, opts.augment);
+  if (index === -1) {
+    throw new Error(`Augment "${opts.augment}" is not installed in ${configPath}.`);
+  }
+
+  const [removed] = augments.splice(index, 1);
+  const removedName = stringField(removed?.name) ?? opts.augment;
+  const removedType = stringField(removed?.type) ?? "custom";
+  const catalogEntry = AUGMENT_CATALOG.find((entry) => entry.type === removedType);
+  if (catalogEntry?.required) {
+    throw new Error(`Augment "${removedName}" (${removedType}) is required and cannot be removed.`);
+  }
+
+  doc.augments = augments;
+  writeFileSync(configPath, `# Agent configuration\n\n${stringifyYaml(doc)}`);
+
+  const skillRemoved = removeSkillForAugment(agentDir, removedName, removedType);
+  return { configPath, name: removedName, type: removedType, skillRemoved };
+}
+
+function readAgentYaml(configPath: string): Record<string, unknown> {
+  const raw = parseYaml(readFileSync(configPath, "utf-8"));
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error(`${configPath}: not a valid agent.yaml object`);
+  }
+  return raw as Record<string, unknown>;
+}
+
+function readAugments(doc: Record<string, unknown>): Record<string, unknown>[] {
+  return Array.isArray(doc.augments) ? (doc.augments as Record<string, unknown>[]) : [];
+}
+
+function findAugmentIndex(augments: Record<string, unknown>[], specifier: string): number {
+  const normalized = specifier.trim();
+  const direct = augments.findIndex(
+    (augment) => augment.name === normalized || augment.type === normalized,
+  );
+  if (direct !== -1) return direct;
+
+  const catalogType = resolveCatalogType(normalized);
+  if (!catalogType) return -1;
+  return augments.findIndex((augment) => augment.type === catalogType);
+}
+
+function resolveCatalogType(specifier: string): string | null {
+  try {
+    return resolveCatalogEntry(specifier)?.type ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function removeSkillForAugment(agentDir: string, name: string, type: string): string | null {
+  const candidates = [...new Set([augmentFolderForType(type), name].filter(Boolean) as string[])];
+  for (const candidate of candidates) {
+    const skillDir = join(agentDir, "skills", candidate);
+    if (!existsSync(skillDir)) continue;
+    rmSync(skillDir, { recursive: true, force: true });
+    return join("skills", candidate);
+  }
+  return null;
+}
+
+function stringField(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+export function installCustomAugment(
+  opts: InstallCustomAugmentOptions,
+): InstallCustomAugmentResult {
   const configPath = resolveConfigPath(opts.agentName, opts.config, { auggyDir: opts.auggyDir });
   const agentDir = dirname(configPath);
   const sourceEntry = resolve(opts.sourcePath);
@@ -142,7 +340,11 @@ function normalizeRelativePath(path: string): string {
   return normalized.startsWith(".") ? normalized : `./${normalized}`;
 }
 
-function copyCustomSkillIfPresent(sourceFile: string, agentDir: string, augmentName: string): boolean {
+function copyCustomSkillIfPresent(
+  sourceFile: string,
+  agentDir: string,
+  augmentName: string,
+): boolean {
   const sourceDir = dirname(sourceFile);
   const skillPath = join(sourceDir, "SKILL.md");
   if (!existsSync(skillPath)) return false;

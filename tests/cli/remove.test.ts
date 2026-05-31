@@ -72,6 +72,18 @@ describe("runRemove", () => {
     expect(getAgent("zip", { auggyDir })).toBeNull();
   });
 
+  test("refuses named removal inside an agent project when the name is not the agent name", async () => {
+    const dir = setupAgent(
+      "zip",
+      "id: aug1_test\nname: zip\naugments:\n  - name: visitor-auth\n    type: visitorAuth\n",
+    );
+
+    await expect(runRemove("visitor-auth", { yes: true, auggyDir, cwd: dir })).rejects.toThrow(
+      /auggy augment remove visitor-auth/,
+    );
+    expect(existsSync(dir)).toBe(true);
+  });
+
   test("tolerates stale PID manifest (pid dead)", async () => {
     setupAgent("zip");
     writePidManifest(
