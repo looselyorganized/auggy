@@ -205,10 +205,22 @@ export async function runAdd(target: string | undefined, opts: AddOpts): Promise
 
   console.log();
   if (opts.skipInstall && pkgUpdate) {
-    console.log(`Run \`cd ${agentDir} && bun install\`, then \`auggy restart ${name}\`.`);
+    console.log(`Run \`cd ${agentDir} && bun install\`.`);
+    console.log(formatApplyInstructions(name, agentDir, opts.cwd));
   } else if (installOk) {
-    console.log(`Restart to apply: auggy restart ${name}`);
+    console.log(formatApplyInstructions(name, agentDir, opts.cwd));
   }
+}
+
+function formatApplyInstructions(name: string, agentDir: string, cwd: string | undefined): string {
+  const localConfig = join(cwd ?? process.cwd(), "agent.yaml");
+  const projectLocal = existsSync(localConfig) && dirname(localConfig) === agentDir;
+  const runCommand = projectLocal ? "auggy run" : `auggy run ${name}`;
+  return [
+    "Apply changes:",
+    `  - Foreground run: press Ctrl-C in the running terminal, then \`${runCommand}\`.`,
+    `  - Background/service run: \`auggy restart ${name}\`.`,
+  ].join("\n");
 }
 
 const AUTO_GENERATED_ADD_ENV_VARS = new Set([

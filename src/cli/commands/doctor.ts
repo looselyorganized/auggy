@@ -7,7 +7,7 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { createServer } from "node:net";
 import { Command } from "commander";
 import { parseConfig } from "../config-parser";
@@ -35,7 +35,7 @@ export interface DoctorOptions {
 }
 
 export interface DoctorCommandDeps {
-  runDoctor?: (name: string, opts: DoctorOptions) => Promise<DoctorCheck[]>;
+  runDoctor?: (name: string | undefined, opts: DoctorOptions) => Promise<DoctorCheck[]>;
   exit?: (code: number) => void;
 }
 
@@ -296,13 +296,53 @@ export function hasDoctorFailures(checks: DoctorCheck[]): boolean {
   return checks.some((c) => c.status === "fail");
 }
 
-export function formatDoctorChecks(checks: DoctorCheck[]): string {
+export interface FormatDoctorChecksOptions {
+  relativeTo?: string;
+  color?: boolean;
+}
+
+export function formatDoctorChecks(
+  checks: DoctorCheck[],
+  opts: FormatDoctorChecksOptions = {},
+): string {
   return checks
     .map((check) => {
-      const head = `${check.status.toUpperCase().padEnd(4)} ${check.name}: ${check.message}`;
-      return check.fix ? `${head}\n     fix: ${check.fix}` : head;
+      const status = formatStatus(check.status, opts.color ?? false);
+      const message = compactPaths(check.message, opts.relativeTo);
+      const head = `${status.padEnd(opts.color ? 13 : 4)} ${check.name}: ${message}`;
+      return check.fix ? `${head}\n     fix: ${compactPaths(check.fix, opts.relativeTo)}` : head;
     })
     .join("\n");
+}
+
+function formatStatus(status: DoctorStatus, color: boolean): string {
+  const label = status.toUpperCase();
+  if (!color) return label;
+  const code = status === "pass" ? 32 : status === "warn" ? 33 : 31;
+  return `\x1b[${code}m${label}\x1b[0m`;
+}
+
+function compactPaths(text: string, root: string | undefined): string {
+  if (!root) return text;
+  const normalizedRoot = resolve(root);
+  return text.replace(/\/[^\s`'")]+/g, (candidate) => {
+    const normalizedCandidate = resolve(candidate);
+    if (
+      normalizedCandidate !== normalizedRoot &&
+      !normalizedCandidate.startsWith(`${normalizedRoot}/`)
+    ) {
+      return candidate;
+    }
+    const compact = relative(normalizedRoot, normalizedCandidate) || ".";
+    return compact.startsWith("..") ? candidate : compact;
+  });
+}
+
+function relativeOutputRoot(checks: DoctorCheck[]): string | undefined {
+  const configPath = checks.find(
+    (check) => check.name === "config path" && check.status === "pass",
+  )?.message;
+  return configPath ? dirname(configPath) : undefined;
 }
 
 export function doctorCommand(deps: DoctorCommandDeps = {}): Command {
@@ -313,10 +353,16 @@ export function doctorCommand(deps: DoctorCommandDeps = {}): Command {
     .description("Check whether an agent is ready to run")
     .argument("[name]", "agent name (defaults to ./agent.yaml)")
     .option("--config <path>", "path to agent.yaml")
-    .action(async (name: string, opts: { config?: string }) => {
+    .option("--verbose", "show absolute paths")
+    .action(async (name: string | undefined, opts: { config?: string; verbose?: boolean }) => {
       try {
         const checks = await run(name, { config: opts.config });
-        console.log(formatDoctorChecks(checks));
+        console.log(
+          formatDoctorChecks(checks, {
+            relativeTo: opts.verbose ? undefined : relativeOutputRoot(checks),
+            color: process.stdout.isTTY,
+          }),
+        );
         exit(hasDoctorFailures(checks) ? 1 : 0);
       } catch (err) {
         console.error(`Error: ${(err as Error).message}`);

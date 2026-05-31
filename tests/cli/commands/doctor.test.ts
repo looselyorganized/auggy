@@ -259,6 +259,62 @@ describe("doctor formatting and command", () => {
     expect(text).toContain("fix: run bun install");
   });
 
+  test("formatDoctorChecks can compact paths relative to the agent dir", () => {
+    const root = "/tmp/auggy-agent";
+    const text = formatDoctorChecks(
+      [
+        { name: "config path", status: "pass", message: `${root}/agent.yaml` },
+        { name: "package.json", status: "pass", message: `${root}/package.json` },
+        {
+          name: "dependency auggy",
+          status: "fail",
+          message: `missing ${root}/node_modules/auggy`,
+          fix: `Run \`cd ${root} && bun install\`.`,
+        },
+      ],
+      { relativeTo: root },
+    );
+
+    expect(text).toContain("PASS config path: agent.yaml");
+    expect(text).toContain("PASS package.json: package.json");
+    expect(text).toContain("missing node_modules/auggy");
+    expect(text).toContain("cd . && bun install");
+  });
+
+  test("doctor command uses compact paths by default", async () => {
+    const run = mock(
+      async (): Promise<DoctorCheck[]> => [
+        {
+          name: "config path",
+          status: "pass",
+          message: "/tmp/auggy-agent/agent.yaml",
+        },
+        {
+          name: "dependency auggy",
+          status: "pass",
+          message: "/tmp/auggy-agent/node_modules/auggy",
+        },
+      ],
+    );
+    const exit = mock((_code: number) => {});
+    const logs: string[] = [];
+    const origLog = console.log;
+    console.log = (msg: unknown) => {
+      logs.push(String(msg));
+    };
+
+    try {
+      const cmd = doctorCommand({ runDoctor: run, exit });
+      await cmd.parseAsync([], { from: "user" });
+    } finally {
+      console.log = origLog;
+    }
+
+    expect(logs.join("\n")).toContain("agent.yaml");
+    expect(logs.join("\n")).toContain("node_modules/auggy");
+    expect(logs.join("\n")).not.toContain("/tmp/auggy-agent/node_modules/auggy");
+  });
+
   test("doctor command exits 1 when checks fail", async () => {
     const run = mock(
       async (): Promise<DoctorCheck[]> => [{ name: "dep", status: "fail", message: "missing" }],

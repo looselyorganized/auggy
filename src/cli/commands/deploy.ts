@@ -25,6 +25,7 @@
 import { copyFileSync, existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { getAgentFromDir, setCloudForDir } from "../agent-index";
+import { parseConfig } from "../config-parser";
 import { formatDoctorChecks, hasDoctorFailures, runDoctor } from "./doctor";
 import { readAgentName, resolveConfigPath } from "../resolve-config";
 import { stageBundle } from "../deploy/bundle";
@@ -203,6 +204,7 @@ export async function runDeploy(
   if (hasDoctorFailures(preflight)) {
     throw new Error(`Deploy preflight failed:\n${formatDoctorChecks(preflight)}`);
   }
+  assertRailwayDeploySafeConfig(configPath);
   opts.logger.info(`Deploy preflight passed.`);
 
   // 2) Presence + auth checks (fail fast before any subprocess work).
@@ -426,6 +428,37 @@ export async function runDeploy(
   });
 
   return result;
+}
+
+function assertRailwayDeploySafeConfig(configPath: string): void {
+  const config = parseConfig(configPath);
+  const visitorAuth = config.augments.find((augment) => augment.type === "visitorAuth");
+  if (!visitorAuth) return;
+
+  const options = visitorAuth.options ?? {};
+  const agentMail = asRecord(options.agentMail);
+  if (agentMail?.transport !== "console") return;
+  if (options.allowConsoleInProduction === true) return;
+
+  throw new Error(
+    [
+      "Deploy preflight failed:",
+      'visitor-auth is configured with agentMail.transport: "console".',
+      "",
+      "Console magic links are local-only. On Railway they would be written to service logs,",
+      "which can leak sign-in credentials through dashboards or log shipping.",
+      "",
+      "Fix one of these before deploying:",
+      "  - Configure visitor-auth agentMail with apiKey + inboxId for production email.",
+      "  - Or set visitorAuth.allowConsoleInProduction: true in agent.yaml to acknowledge the risk.",
+    ].join("\n"),
+  );
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
 }
 
 function ensureTrailingSlash(url: string): string {

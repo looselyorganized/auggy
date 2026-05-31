@@ -277,19 +277,33 @@ export function buildCli(): Command {
             promptConfirm: (message) => confirm({ message, default: false }),
             logger: {
               info: (msg) => console.log(msg),
-              warn: (msg) => console.warn(`warn: ${msg}`),
+              warn: (msg) => console.warn(formatWarning(msg)),
               error: (msg) => console.error(`error: ${msg}`),
               task: (msg, run) => withBrailleSpinner(msg, run),
             },
           });
-          console.log(`\nSubmitted ${result.name} deployment to Railway.`);
+          console.log(
+            result.health.ok
+              ? `\n${result.name} is live on Railway.`
+              : `\nRailway build submitted for ${result.name}.`,
+          );
           console.log(`  URL:        ${result.url}`);
           console.log(`  Project:    ${result.projectId}`);
           console.log(`  Service:    ${result.serviceId}`);
           console.log(`  Volume:     ${result.volumeId} (mounted at /app/data)`);
-          console.log(`  Health:     ${result.health.url} (current public service)`);
-          console.log(`  Chat:       ${new URL("/console/chat", result.url).toString()}`);
-          console.log(`  Console:    ${new URL("/console", result.url).toString()}`);
+          console.log(
+            `  Health:     ${result.health.url}${result.health.ok ? "" : " (not healthy yet)"}`,
+          );
+          console.log(
+            `  Chat:       ${new URL("/console/chat", result.url).toString()}${
+              result.health.ok ? "" : " (when healthy)"
+            }`,
+          );
+          console.log(
+            `  Console:    ${new URL("/console", result.url).toString()}${
+              result.health.ok ? "" : " (when healthy)"
+            }`,
+          );
           console.log(
             `  Sign-in:    username auggy, password AUGGY_WEB_TOKEN from this agent's .env`,
           );
@@ -318,4 +332,9 @@ export function buildCli(): Command {
 
 if (import.meta.main) {
   buildCli().parse();
+}
+
+function formatWarning(msg: string): string {
+  const label = process.stderr.isTTY ? "\x1b[33mWARN\x1b[0m" : "WARN";
+  return `\n${label}: ${msg}\n`;
 }

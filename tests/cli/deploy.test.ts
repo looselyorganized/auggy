@@ -393,6 +393,79 @@ describe("runDeploy", () => {
     expect(getAgent("zip", { auggyDir })?.cloud).toBeNull();
   });
 
+  test("aborts before Railway calls when visitor-auth uses console mail for deploy", async () => {
+    const agentYamlPath = join(agentDir, "agent.yaml");
+    writeFileSync(
+      agentYamlPath,
+      `${readFileSync(agentYamlPath, "utf-8")}  - name: visitor-auth
+    type: visitorAuth
+    options:
+      publicUrl: \${AUGGY_PUBLIC_URL}
+      dbPath: ./visitor-auth.db
+      agentMail:
+        transport: console
+      signingKey: \${VISITOR_SIGNING_KEY}
+      agentBinding: \${AUGGY_AGENT_ID}
+`,
+    );
+    writeFileSync(
+      join(agentDir, ".env"),
+      [
+        "ANTHROPIC_API_KEY=sk-test",
+        "AUGGY_WEB_TOKEN=tok-1",
+        "AUGGY_PUBLIC_URL=http://localhost:8080",
+        "VISITOR_SIGNING_KEY=signing-test",
+        "AUGGY_AGENT_ID=zip",
+        "",
+      ].join("\n"),
+    );
+
+    const { cli, calls } = mockRailwayCli();
+    await expect(runDeploy("zip", baseDeployOptions(cli, auggyDir))).rejects.toThrow(
+      /visitor-auth is configured with agentMail\.transport: "console"/,
+    );
+
+    expect(calls.checkPresence).toBe(0);
+    expect(calls.checkAuth).toBe(0);
+    expect(calls.up).toBe(0);
+    expect(getAgent("zip", { auggyDir })?.cloud).toBeNull();
+  });
+
+  test("allows visitor-auth console mail deploy when explicitly acknowledged", async () => {
+    const agentYamlPath = join(agentDir, "agent.yaml");
+    writeFileSync(
+      agentYamlPath,
+      `${readFileSync(agentYamlPath, "utf-8")}  - name: visitor-auth
+    type: visitorAuth
+    options:
+      publicUrl: \${AUGGY_PUBLIC_URL}
+      dbPath: ./visitor-auth.db
+      agentMail:
+        transport: console
+      signingKey: \${VISITOR_SIGNING_KEY}
+      agentBinding: \${AUGGY_AGENT_ID}
+      allowConsoleInProduction: true
+`,
+    );
+    writeFileSync(
+      join(agentDir, ".env"),
+      [
+        "ANTHROPIC_API_KEY=sk-test",
+        "AUGGY_WEB_TOKEN=tok-1",
+        "AUGGY_PUBLIC_URL=http://localhost:8080",
+        "VISITOR_SIGNING_KEY=signing-test",
+        "AUGGY_AGENT_ID=zip",
+        "",
+      ].join("\n"),
+    );
+
+    const { cli, calls } = mockRailwayCli();
+    await runDeploy("zip", baseDeployOptions(cli, auggyDir));
+
+    expect(calls.checkPresence).toBe(1);
+    expect(calls.up).toBe(1);
+  });
+
   test("--yes flag skips the confirmation prompt", async () => {
     const { cli } = mockRailwayCli();
     let promptCalled = false;
