@@ -85,6 +85,7 @@ export async function runDoctor(
   }
 
   checks.push(checkPackageManifest(agentDir));
+  checks.push(...checkConfigEnvReferences(configPath, agentDir));
   checks.push(...checkProviderEnv(agentDir, config));
   checks.push(...checkAgentDependencies(agentDir, config));
   checks.push(...(await checkWebPorts(config, opts.isPortAvailable ?? isPortAvailable)));
@@ -109,6 +110,55 @@ function checkPackageManifest(agentDir: string): DoctorCheck {
     message: `missing ${packagePath}`,
     fix: "Re-run create for this agent, or add package.json with auggy + the selected engine adapter, then run bun install.",
   };
+}
+
+function checkConfigEnvReferences(configPath: string, agentDir: string): DoctorCheck[] {
+  const vars = collectEnvReferences(readFileSync(configPath, "utf-8"));
+  if (vars.length === 0) return [];
+
+  const envPath = join(agentDir, ".env");
+  const env = readEnvValues(envPath);
+
+  return vars.map((key) => {
+    const value = env.values.get(key) ?? process.env[key];
+    if (value?.trim()) {
+      return {
+        name: `env ${key}`,
+        status: "pass",
+        message: env.values.has(key) ? envPath : "shell environment",
+      };
+    }
+
+    return {
+      name: `env ${key}`,
+      status: "fail",
+      message: env.error ? `could not read ${envPath}: ${env.error}` : `missing value in ${envPath}`,
+      fix: `Set ${key}=<value> in ${envPath}.`,
+    };
+  });
+}
+
+function collectEnvReferences(text: string): string[] {
+  const vars = new Set<string>();
+  for (const match of text.matchAll(/\$\{([A-Z_][A-Z0-9_]*)\}/g)) {
+    const key = match[1];
+    if (key) vars.add(key);
+  }
+  return [...vars].sort();
+}
+
+function readEnvValues(envPath: string): { values: Map<string, string>; error?: string } {
+  const values = new Map<string, string>();
+  if (!existsSync(envPath)) return { values };
+
+  try {
+    for (const line of parseEnvFile(readFileSync(envPath, "utf-8"))) {
+      if (line.kind === "kv") values.set(line.key, line.value);
+    }
+    return { values };
+  } catch (err) {
+    return { values, error: (err as Error).message };
+  }
 }
 
 const PROVIDER_ENV_VARS: Partial<Record<ParsedConfig["engine"]["provider"], string>> = {

@@ -13,17 +13,22 @@ import {
 
 let auggyDir: string;
 let originalWebToken: string | undefined;
+let originalVisitorSigningKey: string | undefined;
 
 beforeEach(() => {
   auggyDir = mkdtempSync(join(tmpdir(), "doctor-test-auggy-"));
   originalWebToken = process.env.AUGGY_WEB_TOKEN;
+  originalVisitorSigningKey = process.env.VISITOR_SIGNING_KEY;
   delete process.env.AUGGY_WEB_TOKEN;
+  delete process.env.VISITOR_SIGNING_KEY;
 });
 
 afterEach(() => {
   rmSync(auggyDir, { recursive: true, force: true });
   if (originalWebToken === undefined) delete process.env.AUGGY_WEB_TOKEN;
   else process.env.AUGGY_WEB_TOKEN = originalWebToken;
+  if (originalVisitorSigningKey === undefined) delete process.env.VISITOR_SIGNING_KEY;
+  else process.env.VISITOR_SIGNING_KEY = originalVisitorSigningKey;
 });
 
 function agentDirFor(name: string): string {
@@ -40,6 +45,7 @@ function writeAgent(
     installDeps?: boolean;
     installSkill?: boolean;
     providerKey?: string;
+    includeVisitorAuth?: boolean;
   } = {},
 ): string {
   const provider = opts.provider ?? "anthropic";
@@ -56,7 +62,7 @@ function writeAgent(
         : "OPENROUTER_API_KEY";
   writeFileSync(
     join(dir, ".env"),
-    `AUGGY_WEB_TOKEN=${envToken}\n${providerEnvVar}=${providerKey}\n`,
+    `AUGGY_WEB_TOKEN=${envToken}\n${providerEnvVar}=${providerKey}\nVISITOR_SIGNING_KEY=visitor-secret\n`,
   );
 
   const config = {
@@ -80,6 +86,15 @@ function writeAgent(
         type: "webFetch",
         options: { timeoutMs: 15000 },
       },
+      ...(opts.includeVisitorAuth
+        ? [
+            {
+              name: "visitorAuth",
+              type: "visitorAuth",
+              options: { signingKey: "${VISITOR_SIGNING_KEY}" },
+            },
+          ]
+        : []),
     ],
   };
   writeFileSync(join(dir, "agent.yaml"), stringify(config));
@@ -111,6 +126,13 @@ function writeAgent(
   if (opts.installSkill) {
     mkdirSync(join(dir, "skills", "webFetch"), { recursive: true });
     writeFileSync(join(dir, "skills", "webFetch", "SKILL.md"), "---\nname: webFetch\n---\n");
+    if (opts.includeVisitorAuth) {
+      mkdirSync(join(dir, "skills", "visitorAuth"), { recursive: true });
+      writeFileSync(
+        join(dir, "skills", "visitorAuth", "SKILL.md"),
+        "---\nname: visitorAuth\n---\n",
+      );
+    }
   }
 
   return dir;
@@ -190,6 +212,20 @@ describe("runDoctor", () => {
 
     const providerEnv = checks.find((c) => c.name === "env ANTHROPIC_API_KEY");
     expect(providerEnv?.status).toBe("pass");
+    expect(hasDoctorFailures(checks)).toBe(false);
+  });
+
+  test("passes env checks for agent.yaml placeholders such as visitorAuth signing key", async () => {
+    writeAgent("zip", { installDeps: true, installSkill: true, includeVisitorAuth: true });
+
+    const checks = await runDoctor("zip", {
+      auggyDir,
+      isPortAvailable: async () => true,
+    });
+
+    expect(checks.find((c) => c.name === "env AUGGY_WEB_TOKEN")?.status).toBe("pass");
+    expect(checks.find((c) => c.name === "env VISITOR_SIGNING_KEY")?.status).toBe("pass");
+    expect(formatDoctorChecks(checks)).toContain("PASS env: VISITOR_SIGNING_KEY");
     expect(hasDoctorFailures(checks)).toBe(false);
   });
 
