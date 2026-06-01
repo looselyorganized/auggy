@@ -3,56 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { seedAgentForTest, setCloud } from "../../../src/cli/agent-index";
-import { runLogs } from "../../../src/cli/commands/logs";
-import type { RailwayCli } from "../../../src/cli/deploy/railway-cli";
-
-function mockRailwayCli() {
-  const calls: Array<{ name: string; args?: unknown }> = [];
-  const cli: RailwayCli = {
-    async checkPresence() {
-      calls.push({ name: "checkPresence" });
-      return true as const;
-    },
-    async checkAuth() {
-      calls.push({ name: "checkAuth" });
-      return "operator@example.com";
-    },
-    async link(args) {
-      calls.push({ name: "link", args });
-    },
-    async createProject(args) {
-      calls.push({ name: "createProject", args });
-      return "proj_created";
-    },
-    async linkProject(args) {
-      calls.push({ name: "linkProject", args });
-    },
-    async linkService(args) {
-      calls.push({ name: "linkService", args });
-    },
-    async createService(args) {
-      calls.push({ name: "createService", args });
-    },
-    async logs(args) {
-      calls.push({ name: "logs", args });
-    },
-    async setVariable() {},
-    async up() {},
-    async generateDomain() {
-      return "https://zip.up.railway.app";
-    },
-    async addVolume() {},
-    async status() {
-      return {
-        project: { id: "proj_abc", name: "zip" },
-        service: { id: "svc_def", name: "zip" },
-        deployment: { status: "SUCCESS" },
-      };
-    },
-    async destroyService() {},
-  };
-  return { cli, calls };
-}
+import { formatRailwayLogsMessage, runLogs } from "../../../src/cli/commands/logs";
 
 describe("runLogs", () => {
   let auggyDir: string;
@@ -68,8 +19,7 @@ describe("runLogs", () => {
   });
 
   test("fails when the agent is not found", async () => {
-    const { cli } = mockRailwayCli();
-    await expect(runLogs("ghost", { auggyDir, railwayCli: cli })).rejects.toThrow(/not found/i);
+    await expect(runLogs("ghost", { auggyDir })).rejects.toThrow(/not found/i);
   });
 
   test("fails when the agent has no cloud record", async () => {
@@ -77,11 +27,10 @@ describe("runLogs", () => {
       auggyDir,
       yaml: "id: aug1_a3f7c2e1-8b4d-4f9e-a6c1-2d8e9f0b3a5c\nname: zip\n",
     });
-    const { cli } = mockRailwayCli();
-    await expect(runLogs("zip", { auggyDir, railwayCli: cli })).rejects.toThrow(/not deployed/i);
+    await expect(runLogs("zip", { auggyDir })).rejects.toThrow(/not deployed/i);
   });
 
-  test("links to the saved Railway project and streams logs", async () => {
+  test("prints a Railway dashboard handoff for deployed agents", async () => {
     seedAgentForTest("zip", {
       auggyDir,
       yaml: "id: aug1_a3f7c2e1-8b4d-4f9e-a6c1-2d8e9f0b3a5c\nname: zip\n",
@@ -98,17 +47,17 @@ describe("runLogs", () => {
       },
       { auggyDir },
     );
-    const { cli, calls } = mockRailwayCli();
-    await runLogs("zip", { auggyDir, railwayCli: cli });
+    const message = await captureLog(() => runLogs("zip", { auggyDir }));
 
-    expect(calls.map((call) => call.name)).toEqual(["checkPresence", "checkAuth", "link", "logs"]);
-    expect(calls.find((call) => call.name === "link")?.args).toMatchObject({
-      projectId: "proj_abc",
-      serviceName: "svc_def",
-    });
+    expect(message).toContain('Railway logs for "zip" are available in Railway.');
+    expect(message).toContain("https://railway.com/project/proj_abc/service/svc_def");
+    expect(message).toContain("App URL:      https://zip.up.railway.app");
+    expect(message).toContain("Project:      proj_abc");
+    expect(message).toContain("Service:      svc_def");
+    expect(message).toContain("Logs or Observability");
   });
 
-  test("can stream logs from inside a project-local agent without a name", async () => {
+  test("can show Railway log handoff from inside a project-local agent without a name", async () => {
     const projectDir = mkdtempSync(join(tmpdir(), "auggy-logs-project-"));
     try {
       writeFileSync(join(projectDir, "agent.yaml"), "id: aug1_test\nname: local\n");
@@ -123,15 +72,40 @@ describe("runLogs", () => {
           deployedAt: "2026-05-12T00:00:00.000Z",
         }),
       );
-      const { cli, calls } = mockRailwayCli();
-      await runLogs(undefined, { cwd: projectDir, railwayCli: cli });
+      const message = await captureLog(() => runLogs(undefined, { cwd: projectDir }));
 
-      expect(calls.find((call) => call.name === "link")?.args).toMatchObject({
-        projectId: "proj_local",
-        serviceName: "svc_local",
-      });
+      expect(message).toContain('Railway logs for "local" are available in Railway.');
+      expect(message).toContain("https://railway.com/project/proj_local/service/svc_local");
     } finally {
       rmSync(projectDir, { recursive: true, force: true });
     }
   });
+
+  test("formats Railway dashboard URLs with encoded IDs", () => {
+    const message = formatRailwayLogsMessage("zip", {
+      provider: "railway",
+      projectId: "proj a/b",
+      serviceId: "svc c/d",
+      url: "https://zip.up.railway.app",
+      volumeId: "zip-data",
+      deployedAt: "2026-05-12T00:00:00.000Z",
+    });
+
+    expect(message).toContain("https://railway.com/project/proj%20a%2Fb/service/svc%20c%2Fd");
+  });
 });
+
+async function captureLog(run: () => Promise<string>): Promise<string> {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (message?: unknown) => {
+    logs.push(String(message ?? ""));
+  };
+  try {
+    const message = await run();
+    expect(logs.join("\n")).toBe(message);
+    return message;
+  } finally {
+    console.log = originalLog;
+  }
+}
