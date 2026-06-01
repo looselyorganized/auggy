@@ -60,11 +60,19 @@ export interface DeployOptions {
   promptConfirm: (message: string) => Promise<boolean>;
   logger: DeployLogger;
   healthCheck?: HealthCheckOptions | false;
+  deployWait?: DeployWaitOptions | false;
   /**
    * Existing Railway service name/id to deploy into. Omit on first deploy to
    * create a new service named after the agent.
    */
   service?: string;
+}
+
+export interface DeployWaitOptions {
+  timeoutMs?: number;
+  intervalMs?: number;
+  sleep?: (ms: number) => Promise<void>;
+  now?: () => number;
 }
 
 export interface DeployResult {
@@ -77,6 +85,8 @@ export interface DeployResult {
 }
 
 const VOLUME_MOUNT_PATH = "/app/data";
+const DEFAULT_DEPLOY_WAIT_TIMEOUT_MS = 10 * 60_000;
+const DEFAULT_DEPLOY_WAIT_INTERVAL_MS = 5_000;
 
 function isRailwayServiceNotFoundError(err: unknown): boolean {
   return /Service ".*" not found/i.test((err as Error).message ?? "");
@@ -379,7 +389,32 @@ export async function runDeploy(
     `Build started. Railway will build the image, deploy it, then start the service.`,
   );
 
-  // 12) Verify the public health endpoint. Timeout is non-destructive: the
+  // 12) Wait for Railway to report a terminal deployment state when the CLI
+  //     exposes one. If status is unavailable or shape-shifts, fall back to
+  //     the health check instead of blocking forever.
+  const deployWait =
+    opts.deployWait === false
+      ? {
+          state: "unknown" as const,
+          status: await opts.cli.status({ cwd: stagingDir }),
+          reason: "deployment wait disabled",
+        }
+      : await withProgress(opts, `Waiting for Railway deployment`, () =>
+          waitForRailwayDeployment(opts, stagingDir),
+        );
+  if (deployWait.state === "ready") {
+    opts.logger.info(`Railway deployment finished: ${deployWait.statusText}.`);
+  } else if (deployWait.state === "failed") {
+    throw new Error(
+      `Railway deployment failed with status ${deployWait.statusText}. Check \`railway logs\` for details.`,
+    );
+  } else {
+    opts.logger.info(
+      `Railway deployment status not final yet; continuing with health check (${deployWait.reason}).`,
+    );
+  }
+
+  // 13) Verify the public health endpoint. Timeout is non-destructive: the
   //     deploy may still finish, but the operator needs recovery commands.
   const healthCheckOptions = opts.healthCheck === false ? undefined : opts.healthCheck;
   const health =
@@ -389,27 +424,31 @@ export async function runDeploy(
           waitForHealth(url, healthCheckOptions),
         );
   if (health.ok) {
-    opts.logger.info(`Current public health verified: ${health.url}`);
+    opts.logger.info(`Deployment health verified: ${health.url}`);
   } else {
     const reason = health.status
       ? `last HTTP status ${health.status}`
       : health.error
         ? `last error: ${health.error}`
         : "no attempts completed";
-    opts.logger.warn(
-      `Current public service is not healthy yet (${reason}). Try \`railway logs\`, then \`auggy deploy ${name} --yes\` after fixing the service.`,
+    opts.logger.info(
+      `Deployment health is pending (${reason}). Railway may still be building or starting the service.`,
     );
   }
 
-  // 13) Capture service metadata for the CloudRecord.
-  const status = await withProgress(opts, `Reading Railway service status`, () =>
-    opts.cli.status({ cwd: stagingDir }),
-  );
+  // 14) Capture service metadata for the CloudRecord.
+  const status = deployWait.status ?? (await opts.cli.status({ cwd: stagingDir }));
   opts.logger.info(`Service status: ${formatRailwayServiceStatus(status, health.ok)}.`);
 
-  // 14) Write CloudRecord to the agent index.
+  // 15) Write CloudRecord to the agent index.
+  const statusRecord = asRecord(status);
+  const serviceRecord = asRecord(statusRecord?.service);
   const serviceId =
-    status.service?.id ?? status.service?.name ?? opts.service ?? existingCloud?.serviceId ?? name;
+    stringField(serviceRecord?.id) ??
+    stringField(serviceRecord?.name) ??
+    opts.service ??
+    existingCloud?.serviceId ??
+    name;
   const result: DeployResult = {
     name,
     url,
@@ -467,6 +506,64 @@ function ensureTrailingSlash(url: string): string {
 
 function withProgress<T>(opts: DeployOptions, message: string, run: () => Promise<T>): Promise<T> {
   return opts.logger.task ? opts.logger.task(message, run) : run();
+}
+
+type RailwayDeploymentWaitResult =
+  | { state: "ready"; status: unknown; statusText: string }
+  | { state: "failed"; status: unknown; statusText: string }
+  | { state: "unknown"; status?: unknown; reason: string };
+
+async function waitForRailwayDeployment(
+  opts: DeployOptions,
+  stagingDir: string,
+): Promise<RailwayDeploymentWaitResult> {
+  const wait: DeployWaitOptions = opts.deployWait === false ? {} : (opts.deployWait ?? {});
+  const sleep =
+    wait.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const now = wait.now ?? (() => Date.now());
+  const timeoutMs = wait.timeoutMs ?? DEFAULT_DEPLOY_WAIT_TIMEOUT_MS;
+  const intervalMs = wait.intervalMs ?? DEFAULT_DEPLOY_WAIT_INTERVAL_MS;
+  const deadline = now() + timeoutMs;
+  let lastStatus: unknown;
+  let lastStatusText: string | null = null;
+
+  while (true) {
+    const status = await opts.cli.status({ cwd: stagingDir });
+    lastStatus = status;
+    const statusText = findRailwayStatusValue(status);
+    if (!statusText) {
+      return { state: "unknown", status, reason: "Railway CLI did not report deployment status" };
+    }
+    lastStatusText = statusText;
+    const category = categorizeRailwayDeploymentStatus(statusText);
+    if (category === "ready") return { state: "ready", status, statusText };
+    if (category === "failed") return { state: "failed", status, statusText };
+
+    if (now() >= deadline) {
+      return {
+        state: "unknown",
+        status: lastStatus,
+        reason: `timed out waiting for terminal status; last status ${lastStatusText}`,
+      };
+    }
+
+    await sleep(intervalMs);
+  }
+}
+
+function categorizeRailwayDeploymentStatus(status: string): "ready" | "failed" | "pending" {
+  const normalized = status.trim().toUpperCase().replace(/[\s-]+/g, "_");
+  if (["SUCCESS", "SUCCEEDED", "DEPLOYED", "HEALTHY", "READY", "ACTIVE"].includes(normalized)) {
+    return "ready";
+  }
+  if (
+    ["FAILED", "FAILURE", "CRASHED", "REMOVED", "CANCELED", "CANCELLED", "ERROR"].includes(
+      normalized,
+    )
+  ) {
+    return "failed";
+  }
+  return "pending";
 }
 
 function formatRailwayServiceStatus(status: unknown, healthOk: boolean): string {

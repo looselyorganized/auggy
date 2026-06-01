@@ -314,7 +314,7 @@ export function buildCli(): Command {
           if (!result.health.ok) {
             const rerun = name ? `auggy deploy ${name} --yes` : "auggy deploy --yes";
             console.log(
-              `\nCurrent health is not passing yet. Check \`railway logs\`, then rerun \`${rerun}\`.`,
+              `\nHealth is pending while Railway finishes the build/startup. If it does not become healthy, check \`railway logs\`, then rerun \`${rerun}\`.`,
             );
           } else {
             console.log(

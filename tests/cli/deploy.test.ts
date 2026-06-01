@@ -124,6 +124,11 @@ function baseDeployOptions(
       timeoutMs: 1,
       intervalMs: 1,
     },
+    deployWait: {
+      sleep: async () => {},
+      timeoutMs: 1,
+      intervalMs: 1,
+    },
     ...opts,
   };
 }
@@ -505,16 +510,22 @@ describe("runDeploy", () => {
     expect(taskMessages).toContain("Generating public Railway URL");
     expect(taskMessages).toContain("Pushing 3 env var(s)");
     expect(taskMessages).toContain("Starting Railway build");
+    expect(taskMessages).toContain("Waiting for Railway deployment");
     expect(taskMessages).toContain("Verifying deployment health");
   });
 
-  test("health timeout warns but still records the deployment", async () => {
+  test("health timeout reports pending health but still records the deployment", async () => {
     const warnings: string[] = [];
+    const infos: string[] = [];
     const { cli, calls } = mockRailwayCli();
     const result = await runDeploy(
       "zip",
       baseDeployOptions(cli, auggyDir, {
-        logger: { info: () => {}, warn: (msg) => warnings.push(msg), error: () => {} },
+        logger: {
+          info: (msg) => infos.push(msg),
+          warn: (msg) => warnings.push(msg),
+          error: () => {},
+        },
         healthCheck: {
           fetch: async () => new Response(null, { status: 503 }),
           sleep: async () => {},
@@ -533,12 +544,70 @@ describe("runDeploy", () => {
       status: 503,
       url: "https://zip-production-abcd.up.railway.app/health",
     });
-    expect(warnings.join("\n")).toMatch(/Current public service is not healthy yet/);
-    expect(warnings.join("\n")).toMatch(/railway logs/);
+    expect(infos.join("\n")).toMatch(/Deployment health is pending/);
+    expect(infos.join("\n")).toMatch(/Railway may still be building/);
+    expect(warnings).toHaveLength(0);
     expect(calls.status).toBe(1);
     expect(getAgent("zip", { auggyDir })?.cloud).toMatchObject({
       url: "https://zip-production-abcd.up.railway.app",
     });
+  });
+
+  test("waits for Railway deployment to reach success before checking health", async () => {
+    const infos: string[] = [];
+    const { cli, calls } = mockRailwayCli();
+    const statuses = ["BUILDING", "DEPLOYING", "SUCCESS"];
+    cli.status = async () => {
+      calls.status++;
+      const status = statuses.shift() ?? "SUCCESS";
+      return {
+        project: { id: "proj_abc", name: "lorf" },
+        service: { id: "svc_def", name: "zip" },
+        deployment: { status },
+      };
+    };
+
+    const result = await runDeploy(
+      "zip",
+      baseDeployOptions(cli, auggyDir, {
+        logger: { info: (msg) => infos.push(msg), warn: () => {}, error: () => {} },
+        deployWait: {
+          sleep: async () => {},
+          now: (() => {
+            let ticks = 0;
+            return () => ticks++;
+          })(),
+          timeoutMs: 10,
+          intervalMs: 1,
+        },
+      }),
+    );
+
+    expect(result.health.ok).toBe(true);
+    expect(calls.status).toBe(3);
+    expect(infos.join("\n")).toMatch(/Railway deployment finished: SUCCESS/);
+  });
+
+  test("throws when Railway deployment reaches a failed terminal status", async () => {
+    const { cli } = mockRailwayCli();
+    cli.status = async () => ({
+      project: { id: "proj_abc", name: "lorf" },
+      service: { id: "svc_def", name: "zip" },
+      deployment: { status: "FAILED" },
+    });
+
+    await expect(
+      runDeploy(
+        "zip",
+        baseDeployOptions(cli, auggyDir, {
+          deployWait: {
+            sleep: async () => {},
+            timeoutMs: 1,
+            intervalMs: 1,
+          },
+        }),
+      ),
+    ).rejects.toThrow(/Railway deployment failed with status FAILED/);
   });
 
   test("missing Railway deployment status does not crash after build is queued", async () => {
@@ -576,7 +645,8 @@ describe("runDeploy", () => {
     expect(infos.join("\n")).toMatch(
       /Service status: not reported yet; build may still be deploying/,
     );
-    expect(warnings.join("\n")).toMatch(/Current public service is not healthy yet/);
+    expect(infos.join("\n")).toMatch(/Deployment health is pending/);
+    expect(warnings).toHaveLength(0);
     expect(getAgent("zip", { auggyDir })?.cloud).toMatchObject({
       serviceId: "zip",
       url: "https://zip-production-abcd.up.railway.app",
