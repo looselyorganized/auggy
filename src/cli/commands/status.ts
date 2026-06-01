@@ -6,6 +6,7 @@
  */
 
 import { listPidManifests, readPidManifest, isProcessAlive } from "../pid-registry";
+import { displayPath } from "../display-path";
 
 function formatUptime(startedAt: string): string {
   const ms = Date.now() - new Date(startedAt).getTime();
@@ -85,8 +86,8 @@ async function showDetail(name: string): Promise<void> {
   console.log(`PID: ${manifest.pid}`);
   console.log(`Mode: ${manifest.mode}`);
   console.log(`Uptime: ${formatUptime(manifest.startedAt)}`);
-  console.log(`Config: ${manifest.configPath}`);
-  console.log(`Agent dir: ${manifest.agentDir}`);
+  console.log(`Config: ${displayPath(manifest.configPath)}`);
+  console.log(`Agent dir: ${displayPath(manifest.agentDir)}`);
 
   if (manifest.port) {
     console.log(`Port: ${manifest.port}`);

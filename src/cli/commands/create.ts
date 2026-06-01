@@ -27,6 +27,7 @@ import { runBunInstall, type BunInstallSpawnFactory } from "../bun-install";
 import { withEscRestart, WizardRestartRequested } from "../wizard-restart";
 import { writeBuiltinAugmentMetadata, writeCustomAugmentsReadme } from "../augment-metadata";
 import { writeKnowledgeScaffold } from "../scaffold-knowledge";
+import { displayPath } from "../display-path";
 
 const PROVIDER_DEFAULTS: Record<Provider, { model: string; envVar: string }> = {
   anthropic: { model: "claude-sonnet-4-6", envVar: "ANTHROPIC_API_KEY" },
@@ -559,10 +560,12 @@ async function runCreateIntoDir(
     installOk = result.ok;
     if (!installOk) {
       console.log();
-      console.log(`⚠ bun install failed in ${finalDir} (exit ${result.code}).`);
+      console.log(`⚠ bun install failed in ${displayPath(finalDir, opts.cwd)} (exit ${result.code}).`);
       console.log(`  Scaffolding is on disk.`);
-      console.log(`  Retry:  cd ${finalDir} && bun install`);
-      console.log(`  Then:   ${mode === "init" ? "auggy run" : `cd ${finalDir} && auggy run`}`);
+      console.log(`  Retry:  cd ${displayPath(finalDir, opts.cwd)} && bun install`);
+      console.log(
+        `  Then:   ${mode === "init" ? "auggy run" : `cd ${displayPath(finalDir, opts.cwd)} && auggy run`}`,
+      );
       console.log();
     }
   }
@@ -571,7 +574,7 @@ async function runCreateIntoDir(
   console.log(dim(" ─────────────────────────────────────────────"));
   console.log();
   console.log(` ${green("✓")} ${bold(cream(`Agent "${name}" created`))}`);
-  console.log(`   ${dim(finalDir)}`);
+  console.log(`   ${dim(displayPath(finalDir, opts.cwd))}`);
   console.log();
   console.log(` ${bold("Next steps:")}`);
   console.log();

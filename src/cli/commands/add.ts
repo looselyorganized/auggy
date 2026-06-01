@@ -12,7 +12,7 @@
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { dirname, join } from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { checkbox, confirm } from "@inquirer/prompts";
 import {
@@ -28,6 +28,7 @@ import { runBunInstall, type BunInstallSpawnFactory } from "../bun-install";
 import { parseEnvFile, serializeEnv, type EnvLine } from "../env-parse";
 import { writeBuiltinAugmentMetadata, writeCustomAugmentsReadme } from "../augment-metadata";
 import { writeKnowledgeScaffold } from "../scaffold-knowledge";
+import { displayPath } from "../display-path";
 
 export interface AddOpts {
   /** Path override for agent.yaml. */
@@ -110,7 +111,9 @@ export async function runAdd(target: string | undefined, opts: AddOpts): Promise
     // different sinks see it on the right stream. Matches the convention
     // for thrown errors at src/cli/index.ts.
     console.error();
-    console.error(`Error: ${pkgPath} does not exist. This is not a complete Auggy agent project.`);
+    console.error(
+      `Error: ${displayPath(pkgPath, opts.cwd)} does not exist. This is not a complete Auggy agent project.`,
+    );
     console.error("Run `auggy init` in this directory, or create a fresh project with");
     console.error(`\`auggy create ${name}\`, then re-run \`auggy add\`.`);
     console.error();
@@ -183,14 +186,19 @@ export async function runAdd(target: string | undefined, opts: AddOpts): Promise
     console.log();
     console.log("Knowledge scaffold:");
     console.log(
-      `  ${formatAddDisplayPath(join(agentDir, "knowledge", "local", "manifest"), opts.cwd)}`,
+      `  ${displayPath(join(agentDir, "knowledge", "local", "manifest"), opts.cwd)}`,
     );
     console.log(
-      `  ${formatAddDisplayPath(join(agentDir, "knowledge", "local", "mission.md"), opts.cwd)}`,
+      `  ${displayPath(join(agentDir, "knowledge", "local", "mission.md"), opts.cwd)}`,
     );
     console.log(
-      `  ${formatAddDisplayPath(join(agentDir, "knowledge", "local", "team.md"), opts.cwd)}`,
+      `  ${displayPath(join(agentDir, "knowledge", "local", "team.md"), opts.cwd)}`,
     );
+    console.log();
+    console.log("Add knowledge:");
+    console.log("  - Add markdown files under knowledge/local/");
+    console.log("  - Add each file as an endpoint in knowledge/local/manifest");
+    console.log("  - Add API-backed sources in knowledge/sources.json");
   }
 
   // === Run bun install (last; failure leaves intentional partial state) ===
@@ -207,9 +215,9 @@ export async function runAdd(target: string | undefined, opts: AddOpts): Promise
     installOk = result.ok;
     if (!installOk) {
       console.log();
-      console.log(`⚠ bun install failed in ${agentDir} (exit ${result.code}).`);
+      console.log(`⚠ bun install failed in ${displayPath(agentDir, opts.cwd)} (exit ${result.code}).`);
       console.log("  agent.yaml + package.json are already updated.");
-      console.log(`  Retry:  cd ${agentDir} && bun install`);
+      console.log(`  Retry:  cd ${displayPath(agentDir, opts.cwd)} && bun install`);
       console.log();
       process.exitCode = 1;
     }
@@ -233,7 +241,7 @@ export async function runAdd(target: string | undefined, opts: AddOpts): Promise
 
   console.log();
   if (opts.skipInstall && pkgUpdate) {
-    console.log(`Run \`cd ${agentDir} && bun install\`.`);
+    console.log(`Run \`cd ${displayPath(agentDir, opts.cwd)} && bun install\`.`);
     console.log(formatApplyInstructions(name, agentDir, opts.cwd));
   } else if (installOk) {
     console.log(formatApplyInstructions(name, agentDir, opts.cwd));
@@ -285,11 +293,6 @@ function knowledgeValues(raw: Record<string, unknown>, agentDir: string) {
     orgPurpose: purpose,
     operatorName: "the operator",
   };
-}
-
-function formatAddDisplayPath(path: string, cwd: string | undefined = process.cwd()): string {
-  const rel = relative(resolve(cwd), resolve(path));
-  return rel && !rel.startsWith("..") && !isAbsolute(rel) ? rel : path;
 }
 
 function formatApplyInstructions(name: string, agentDir: string, cwd: string | undefined): string {

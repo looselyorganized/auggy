@@ -8,6 +8,7 @@ import { resolveConfigPath } from "../resolve-config";
 import { scaffoldCustomAugment } from "../scaffold-custom-augment";
 import { validateCustomAugment } from "../augment-validator";
 import { augmentFolderForType } from "../scaffold-skills";
+import { displayPath } from "../display-path";
 
 export interface AugmentCommandDeps {
   scaffoldCustomAugment?: typeof scaffoldCustomAugment;
@@ -140,7 +141,9 @@ export function augmentCommand(deps: AugmentCommandDeps = {}): Command {
           config: opts.config,
           auggyDir: deps.auggyDir,
         });
-        console.log(`Removed augment "${result.name}" (${result.type}) from ${result.configPath}.`);
+        console.log(
+          `Removed augment "${result.name}" (${result.type}) from ${displayPath(result.configPath)}.`,
+        );
         if (result.skillRemoved) console.log(`Removed skill ${result.skillRemoved}.`);
       } catch (err) {
         console.error(`Error: ${(err as Error).message}`);
@@ -160,7 +163,7 @@ export function augmentCommand(deps: AugmentCommandDeps = {}): Command {
           targetDir: opts.dir,
           force: opts.force ?? false,
         });
-        console.log(`Created custom augment "${slug}" at ${dir}`);
+        console.log(`Created custom augment "${slug}" at ${displayPath(dir)}`);
       } catch (err) {
         console.error(`Error: ${(err as Error).message}`);
         exit(1);
@@ -179,9 +182,11 @@ export function augmentCommand(deps: AugmentCommandDeps = {}): Command {
           config: opts.config,
           auggyDir: deps.auggyDir,
         });
-        console.log(`Installed custom augment "${result.name}" in ${result.configPath}`);
+        console.log(
+          `Installed custom augment "${result.name}" in ${displayPath(result.configPath)}`,
+        );
         if (result.skillCopied) {
-          console.log(`Copied skill to ${join(result.agentDir, "skills", result.name)}/`);
+          console.log(`Copied skill to ${displayPath(join(result.agentDir, "skills", result.name))}/`);
         }
       } catch (err) {
         console.error(`Error: ${(err as Error).message}`);

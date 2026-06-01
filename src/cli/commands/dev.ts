@@ -15,7 +15,7 @@
  *   8. Wait for signal → agent.stop() → cleanup
  */
 
-import { dirname, isAbsolute, relative, resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { defineAgent } from "../../agent";
 import { parseConfig } from "../config-parser";
 import { resolveEngine } from "../engine-resolver";
@@ -24,6 +24,7 @@ import { writePidManifest, removePidManifest } from "../pid-registry";
 import { resolveConfigPath } from "../resolve-config";
 import { openBrowser } from "../open-browser";
 import type { AgentConfig, Augment, ModelClient } from "../../types";
+import { displayPath } from "../display-path";
 
 /**
  * Extract the webTransport port from augment configs (for the PID manifest
@@ -98,8 +99,7 @@ export function formatRunDisplayPath(
   path: string,
   cwd: string | undefined = process.cwd(),
 ): string {
-  const rel = relative(resolve(cwd), resolve(path));
-  return rel && !rel.startsWith("..") && !isAbsolute(rel) ? rel : path;
+  return displayPath(path, cwd);
 }
 
 export async function runDev(name: string | undefined, opts: DevOpts): Promise<void> {

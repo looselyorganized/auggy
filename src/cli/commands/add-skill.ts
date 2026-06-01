@@ -10,6 +10,7 @@ import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:
 import { join, resolve } from "node:path";
 import { Command } from "commander";
 import { buildFolderToTypeMap, copyBundledSkill } from "../scaffold-skills";
+import { displayPath } from "../display-path";
 
 function bundledSkillExists(type: string): boolean {
   const dir = resolve(import.meta.dir, "../../augments", type, "skill", "SKILL.md");
@@ -97,7 +98,7 @@ export function skillCommand(deps: AddSkillCommandDeps = {}): Command {
         const agentDir = resolveAgentDir(opts.agent, { auggyDir: deps.auggyDir, cwd: deps.cwd });
         installBundledSkill(skill, agentDir);
         console.log(
-          `Installed bundled skill for "${skill}" -> ${join(agentDir, "skills", skill)}/`,
+          `Installed bundled skill for "${skill}" -> ${displayPath(join(agentDir, "skills", skill), deps.cwd)}/`,
         );
         exit(0);
       } catch (err) {
@@ -118,7 +119,7 @@ export function skillCommand(deps: AddSkillCommandDeps = {}): Command {
         const agentDir = resolveAgentDir(opts.agent, { auggyDir: deps.auggyDir, cwd: deps.cwd });
         const dir = join(agentDir, "skills", name);
         const path = join(dir, "SKILL.md");
-        if (existsSync(path)) throw new Error(`Skill already exists: ${path}`);
+        if (existsSync(path)) throw new Error(`Skill already exists: ${displayPath(path, deps.cwd)}`);
         mkdirSync(dir, { recursive: true });
         writeFileSync(
           path,
@@ -134,7 +135,7 @@ export function skillCommand(deps: AddSkillCommandDeps = {}): Command {
             "",
           ].join("\n"),
         );
-        console.log(`Created skill "${name}" -> ${path}`);
+        console.log(`Created skill "${name}" -> ${displayPath(path, deps.cwd)}`);
         exit(0);
       } catch (err) {
         console.error(`Error: ${(err as Error).message}`);

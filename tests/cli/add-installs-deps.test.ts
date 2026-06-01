@@ -166,13 +166,22 @@ describe("runAdd no-op cases", () => {
 
   test("adding knowledge scaffolds knowledge sources and skill", async () => {
     const dir = setupAgent("with-knowledge");
+    const originalLog = console.log;
+    const logs: string[] = [];
+    console.log = (...args: unknown[]) => {
+      logs.push(args.map(String).join(" "));
+    };
 
-    await runAdd("with-knowledge", {
-      config: join(dir, "agent.yaml"),
-      auggyDir,
-      augment: "knowledge",
-      bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
-    });
+    try {
+      await runAdd("with-knowledge", {
+        config: join(dir, "agent.yaml"),
+        auggyDir,
+        augment: "knowledge",
+        bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
+      });
+    } finally {
+      console.log = originalLog;
+    }
 
     const yaml = readFileSync(join(dir, "agent.yaml"), "utf-8");
     expect(yaml).toContain("type: knowledge");
@@ -182,6 +191,10 @@ describe("runAdd no-op cases", () => {
     expect(existsSync(join(dir, "knowledge", "local", "mission.md"))).toBe(true);
     expect(existsSync(join(dir, "knowledge", "local", "team.md"))).toBe(true);
     expect(existsSync(join(dir, "skills", "knowledge", "SKILL.md"))).toBe(true);
+    const output = logs.join("\n");
+    expect(output).toContain("Add knowledge:");
+    expect(output).toContain("Add markdown files under knowledge/local/");
+    expect(output).toContain("Add API-backed sources in knowledge/sources.json");
   });
 
   test("project-local no args opens the picker for the cwd agent", async () => {
