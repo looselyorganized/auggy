@@ -1,23 +1,18 @@
 name: Security eval
 
 # This workflow runs Auggy's portable security eval suite against the test
-# fixture using a real Anthropic API call per case. To keep maintainer costs
-# bounded, it does not auto-trigger on pull requests — it runs on three
-# explicit channels:
+# fixture using a real Anthropic API call per case. To keep maintainer costs and
+# model-drift noise out of the public CI badge, it is manual-only.
 #
-#   1. workflow_dispatch — maintainers click "Run workflow" against any branch
-#      to verify a PR before merging. Optional `config` input lets you point
-#      at a different fixture (e.g. evals/security/fixtures/test-agent-sonnet.yaml
-#      for a Sonnet comparison run).
-#   2. push: branches: [main] — runs once after every merge to catch
-#      regressions that slipped past review. Always uses the default Haiku fixture.
-#   3. schedule (nightly) — catches model behaviour drift between merges
-#      (e.g., upstream Haiku updates that change refusal phrasings).
+# Maintainers click "Run workflow" against any branch to verify a PR before
+# merging. Optional `config` input lets you point at a different fixture
+# (e.g. evals/security/fixtures/test-agent-sonnet.yaml for a Sonnet comparison
+# run).
 #
 # Contributors who want PR-time validation in their own fork: configure
-# ANTHROPIC_API_KEY_SECURITY_EVAL in your fork's repo secrets, then add
-# `pull_request:` to this trigger list in your fork's workflow file. Your
-# fork, your CI, your spend. See CONTRIBUTING.md.
+# ANTHROPIC_API_KEY_SECURITY_EVAL in your fork's repo secrets, then add the
+# trigger you want in your fork's workflow file. Your fork, your CI, your spend.
+# See CONTRIBUTING.md.
 
 on:
   workflow_dispatch:
@@ -26,12 +21,6 @@ on:
         description: "Agent config path (default: Haiku fixture). Use evals/security/fixtures/test-agent-sonnet.yaml for Sonnet, etc."
         required: false
         default: "evals/security/fixtures/test-agent.yaml"
-  push:
-    branches: [main]
-  schedule:
-    # 07:00 UTC daily = midnight Pacific. Off-hours so a failed nightly
-    # surfaces by morning. ~$0.07 per run on Haiku; ~$2/month at this cadence.
-    - cron: "0 7 * * *"
 
 concurrency:
   group: security-eval-${{ github.ref }}
@@ -60,13 +49,10 @@ jobs:
       - name: Run security eval against fixture
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY_SECURITY_EVAL }}
-          # `inputs.config` is only set on workflow_dispatch. The `||` fallback
-          # picks up the Haiku fixture for push/schedule triggers (and as a
-          # default if the user doesn't override on dispatch). The value is
-          # passed through env (not interpolated into the run-line) per
-          # GitHub Actions security guidance — input never reaches the shell
+          # The value is passed through env (not interpolated into the run-line)
+          # per GitHub Actions security guidance — input never reaches the shell
           # as code.
-          CONFIG_PATH: ${{ github.event.inputs.config || 'evals/security/fixtures/test-agent.yaml' }}
+          CONFIG_PATH: ${{ inputs.config }}
         run: bun run evals/security/run.ts --config "$CONFIG_PATH"
 
       - name: Upload results

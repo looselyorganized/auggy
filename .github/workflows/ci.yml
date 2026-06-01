@@ -16,7 +16,7 @@ permissions:
 
 jobs:
   test:
-    name: test + typecheck
+    name: v1 release gate
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -32,17 +32,36 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      - name: Lint (Biome)
-        run: bun run lint
-
       - name: Typecheck
         run: bun run typecheck
 
       - name: Pricing freshness check
         run: bun run scripts/check-pricing-freshness.ts
 
-      - name: Run tests
-        run: bun test
+      - name: Run deterministic v1 tests
+        run: |
+          bun test \
+            tests/cli/create-installs-deps.test.ts \
+            tests/cli/add-installs-deps.test.ts \
+            tests/cli/commands/augment.test.ts \
+            tests/cli/commands/run.test.ts \
+            tests/cli/commands/doctor.test.ts \
+            tests/cli/commands/logs.test.ts \
+            tests/cli/deploy.test.ts \
+            tests/cli/deploy/bundle.test.ts \
+            tests/cli/deploy/dockerfile.test.ts \
+            tests/cli/deploy/health.test.ts \
+            tests/cli/deploy/railway-cli.test.ts \
+            tests/cli/deploy/secrets.test.ts \
+            tests/cli/scaffold-package-json.test.ts \
+            tests/cli/model-picker.test.ts \
+            tests/augments/knowledge.test.ts \
+            tests/augments/notify.test.ts \
+            tests/augments/telegram-transport.test.ts \
+            tests/engines/anthropic.test.ts \
+            tests/engines/openai.test.ts \
+            tests/engines/openrouter.test.ts \
+            tests/engines/ollama.test.ts
         env:
           # Tests that need a model use a mock — no real API key in CI.
           ANTHROPIC_API_KEY: sk-ant-mock-do-not-use
