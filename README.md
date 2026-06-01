@@ -17,6 +17,10 @@ Auggy is a modular agent runtime for building self-hosted, long-running AI
 agents. Agents are composed from **augments**: swappable primitives for memory,
 tools, transports, knowledge, notifications, and deployment.
 
+Auggy supports multiple engine families out of the box: **Anthropic**,
+**OpenAI**, **OpenRouter**, and **Ollama**. Pick one during `auggy create`;
+change it later in `agent.yaml`.
+
 The happy path is simple: create an agent, fill one `.env` key, run it, and
 chat in the browser.
 
