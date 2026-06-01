@@ -58,6 +58,14 @@ interface BundledSkill {
   augmentName: string;
   path: string;
   content: string;
+  body: string;
+}
+
+function skillBody(content: string): string {
+  if (!content.startsWith("---\n")) return content;
+  const end = content.indexOf("\n---", 4);
+  if (end < 0) return content;
+  return content.slice(end + "\n---".length);
 }
 
 function discoverBundledSkills(): BundledSkill[] {
@@ -71,6 +79,7 @@ function discoverBundledSkills(): BundledSkill[] {
       augmentName: entry,
       path: skillPath,
       content: readFileSync(skillPath, "utf-8"),
+      body: skillBody(readFileSync(skillPath, "utf-8")),
     });
   }
   return out;
@@ -99,7 +108,7 @@ describe("bundled-skill content audit", () => {
     // skill content sweep. Matching against a normalized haystack closes the gap.
     const failures: string[] = [];
     for (const skill of skills) {
-      const haystack = skill.content.toLowerCase();
+      const haystack = skill.body.toLowerCase();
       for (const forbidden of FORBIDDEN_SUBSTRINGS) {
         const needle = forbidden.toLowerCase();
         const idx = haystack.indexOf(needle);
@@ -107,8 +116,8 @@ describe("bundled-skill content audit", () => {
           // Surrounding context from the ORIGINAL casing, not the lowercased
           // haystack — so the failure message reads naturally.
           const start = Math.max(0, idx - 30);
-          const end = Math.min(skill.content.length, idx + forbidden.length + 30);
-          const snippet = skill.content.slice(start, end).replace(/\n/g, "\\n");
+          const end = Math.min(skill.body.length, idx + forbidden.length + 30);
+          const snippet = skill.body.slice(start, end).replace(/\n/g, "\\n");
           failures.push(
             `${skill.augmentName}: forbidden "${forbidden}" (case-insensitive) near …${snippet}…`,
           );
@@ -123,12 +132,12 @@ describe("bundled-skill content audit", () => {
     for (const skill of skills) {
       for (const word of FORBIDDEN_WHOLE_WORDS) {
         const re = new RegExp(`\\b${word}\\b`, "i");
-        const match = skill.content.match(re);
+        const match = skill.body.match(re);
         if (match && match.index !== undefined) {
           const idx = match.index;
           const start = Math.max(0, idx - 30);
-          const end = Math.min(skill.content.length, idx + word.length + 30);
-          const snippet = skill.content.slice(start, end).replace(/\n/g, "\\n");
+          const end = Math.min(skill.body.length, idx + word.length + 30);
+          const snippet = skill.body.slice(start, end).replace(/\n/g, "\\n");
           failures.push(`${skill.augmentName}: forbidden whole-word "${word}" near …${snippet}…`);
         }
       }
@@ -139,7 +148,7 @@ describe("bundled-skill content audit", () => {
   test("skill body has at least one tool-name reference (snake_case identifier)", () => {
     const failures: string[] = [];
     for (const skill of skills) {
-      const hasToolName = /\b[a-z]+_[a-z_]+\b/.test(skill.content);
+      const hasToolName = /\b[a-z]+_[a-z_]+\b/.test(skill.body);
       if (!hasToolName) {
         failures.push(
           `${skill.augmentName}: SKILL.md has no apparent tool-name reference (snake_case identifier)`,

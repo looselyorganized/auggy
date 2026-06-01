@@ -5,10 +5,10 @@
  *   <name>/
  *     agent.yaml         Config (source of truth) — uses `identity:` shorthand
  *     .env               Secrets template (gitignored)
- *     identity.md        Who the agent is — security rules + skill manifest
+ *     identity.md        Who the agent is — security rules + voice
  *     learned.md         What the agent has learned (mutable)
  *     skills/            Skill folders (read-only fs mount), one per
- *                        tool-providing augment, copied from src/augments/<name>/skill/
+ *                        tool-providing augment plus starter authoring skills
  *     workspace/         Agent's mutable workspace
  *     data/              Runtime state (ignored; used by project scaffolds)
  *     augments/          Custom augments directory
@@ -16,20 +16,21 @@
  *
  * Per ADR-025 (augment-as-folder + skill bundling) and the PR α foundation
  * spec: scaffold copies bundled skills, uses the `identity:` YAML shorthand,
- * includes layeredMemory by default, and writes identity.md from a template
- * with the four security rules baked in.
+ * writes identity.md from a template with the four security rules baked in.
  */
 
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
-import { copyBundledSkill, renderIdentityFromTemplate } from "./scaffold-skills";
+import { copyBundledSkill, copyStarterSkills, renderIdentityFromTemplate } from "./scaffold-skills";
 import { writeBuiltinAugmentMetadata, writeCustomAugmentsReadme } from "./augment-metadata";
 import { AUGMENT_CATALOG } from "./augment-catalog";
 
 export interface ScaffoldOptions {
   /** Agent name. */
   name: string;
+  /** Human-facing display name. Defaults to `name`. */
+  displayName?: string;
   /** Target directory (defaults to ./<name>). */
   targetDir?: string;
   /** Optional purpose string for the agent (default: "a helpful assistant"). */
@@ -60,6 +61,7 @@ export function scaffoldAgent(opts: ScaffoldOptions): string {
   }
 
   const id = `aug1_${randomUUID()}`;
+  const displayName = opts.displayName?.trim() || opts.name;
   const purpose = opts.purpose ?? DEFAULT_PURPOSE;
   const operatorName = opts.operatorName ?? DEFAULT_OPERATOR_NAME;
 
@@ -89,6 +91,7 @@ export function scaffoldAgent(opts: ScaffoldOptions): string {
   mkdirSync(join(dir, "workspace"), { recursive: true });
   mkdirSync(join(dir, "augments"), { recursive: true });
   writeCustomAugmentsReadme(dir);
+  copyStarterSkills(dir);
 
   // Copy bundled skill folders for each tool-providing augment. Idempotent —
   // re-running the scaffold overwrites; per ADR-025 Decision 2 operators opt
@@ -107,6 +110,7 @@ export function scaffoldAgent(opts: ScaffoldOptions): string {
     join(dir, "identity.md"),
     renderIdentityFromTemplate({
       agentName: opts.name,
+      displayName,
       purpose,
       operatorName,
     }),
@@ -116,7 +120,10 @@ export function scaffoldAgent(opts: ScaffoldOptions): string {
   writeFileSync(join(dir, "learned.md"), "");
 
   // Write agent.yaml using the identity: shorthand (per α-5).
-  writeFileSync(join(dir, "agent.yaml"), agentYamlTemplate(id, opts.name, purpose, operatorName));
+  writeFileSync(
+    join(dir, "agent.yaml"),
+    agentYamlTemplate(id, opts.name, displayName, purpose, operatorName),
+  );
 
   // Write .env with empty values — operator fills in secrets before first run.
   writeFileSync(join(dir, ".env"), ENV_TEMPLATE);
@@ -150,6 +157,7 @@ function yamlScalar(s: string): string {
 function agentYamlTemplate(
   id: string,
   name: string,
+  displayName: string,
   purpose: string,
   operatorName: string,
 ): string {
@@ -158,6 +166,7 @@ function agentYamlTemplate(
 
 id: ${yamlScalar(id)}
 name: ${yamlScalar(name)}
+displayName: ${yamlScalar(displayName)}
 purpose: ${yamlScalar(purpose)}
 operators:
   - ${yamlScalar(operatorName)}
@@ -169,7 +178,7 @@ identity: ./identity.md
 
 engine:
   provider: anthropic        # or: openai, openrouter
-  model: claude-sonnet-4-6   # openai: gpt-5 | openrouter: qwen/qwen3.5-397b-a17b
+  model: claude-sonnet-4-6   # openai: gpt-5.4-mini | openrouter: qwen/qwen3.5-397b-a17b
   maxContextTokens: 200000   # for openrouter, set per-model — defaults vary
   maxTokens: 4096            # sent as max_completion_tokens for openai/openrouter
   # reasoningEffort: medium  # optional: none|minimal|low|medium|high|xhigh

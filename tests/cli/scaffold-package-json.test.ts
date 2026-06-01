@@ -21,6 +21,7 @@ function makeEntry(partial: Partial<CatalogEntry>): CatalogEntry {
     defaultName: partial.defaultName ?? "test",
     defaultOptions: partial.defaultOptions ?? {},
     required: partial.required ?? false,
+    stability: partial.stability ?? "stable",
     hasSkill: partial.hasSkill ?? false,
     envVars: partial.envVars,
     packageDeps: partial.packageDeps,

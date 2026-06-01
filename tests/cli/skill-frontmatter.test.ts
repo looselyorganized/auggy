@@ -59,7 +59,7 @@ describe("bundled skill frontmatter", () => {
     ["filesystem", "filesystem"],
     ["layeredMemory", "layeredMemory"],
     ["webFetch", "webFetch"],
-    ["manifest", "manifest"],
+    ["knowledge", "knowledge"],
     ["bash", "bash"],
     ["notify", "notify"],
     ["turnControl", "turnControl"],

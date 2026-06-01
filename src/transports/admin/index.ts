@@ -48,6 +48,7 @@ import { parse as parseYaml } from "yaml";
 interface AgentMeta {
   id?: string;
   name?: string;
+  displayName?: string;
   purpose?: string;
   engine?: {
     provider?: string;
@@ -68,6 +69,7 @@ function readAgentMeta(agentDir: string | undefined): AgentMeta | null {
     return {
       id: typeof r.id === "string" ? r.id : undefined,
       name: typeof r.name === "string" ? r.name : undefined,
+      displayName: typeof r.displayName === "string" ? r.displayName : undefined,
       purpose: typeof r.purpose === "string" ? r.purpose : undefined,
       engine:
         r.engine && typeof r.engine === "object" && !Array.isArray(r.engine)

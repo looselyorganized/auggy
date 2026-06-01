@@ -39,7 +39,7 @@ export interface SidebarProps {
 }
 
 export function Sidebar({ agentMeta, fallbackName, visibility }: SidebarProps) {
-  const name = agentMeta?.name ?? fallbackName ?? "—";
+  const name = agentMeta?.displayName ?? agentMeta?.name ?? fallbackName ?? "—";
   const id = agentMeta?.id;
   const operators = agentMeta?.operators ?? [];
 

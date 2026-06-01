@@ -12,16 +12,13 @@ An Auggy agent is a normal project folder wherever the operator creates it:
 ├── .auggy-cloud.json       # cloud-deploy record (only present when deployed)
 ├── identity.md             # who the agent is — security rules + skill manifest
 ├── learned.md              # mutable learnings
-├── memory.sqlite           # SQLite (layeredMemory, default scaffold)
-├── budgets.db              # SQLite (budgets)
 ├── .env                    # secrets (gitignored)
 ├── .env.example            # required secret names, no values
 ├── package.json            # agent-local runtime and augment dependencies
 ├── skills/                 # bundled and user-authored skills
-│   ├── layeredMemory/SKILL.md
 │   ├── filesystem/SKILL.md (+ references/)
-│   └── ...                 # webFetch, bash, notify, turnControl as configured
-├── manifest/               # scaffolded if manifest is selected (file:// example)
+│   └── ...                 # webFetch, turnControl, and added augments
+├── knowledge/              # scaffolded by `auggy augment add knowledge`
 ├── data/
 └── augments/               # installed augment metadata and custom augment source
 ```
@@ -35,8 +32,8 @@ to stay in sync with the filesystem.
 - `agent.yaml` uses the top-level `identity: ./identity.md` shorthand (parsed to a synthetic `fileMemory@placement:system` entry); `augments:` enumerates the rest.
 - `identity.md` is rendered from `src/scaffold-templates/identity.md` and ships with four baked-in security rules and a `## Available skills` manifest enumerating each tool-providing augment selected at scaffold time.
 - `skills/<augment>/` directories hold byte-for-byte copies of each augment's bundled `src/augments/<augment>/skill/` folder — copied automatically at `auggy create`/`auggy add` time. `auggy skill add <augment>` is a repair/update command for missing, deleted, or intentionally refreshed bundled skills. The boot-time validator warns at startup if a tool-providing augment has no skill folder mounted.
-- `memory.sqlite` is the default `layeredMemory` backend (SQLite, namespace-scoped). The scaffold includes the augment by default; remove from `agent.yaml` if not needed.
-- `manifest/` is scaffolded only when `manifest` is selected; the example `manifest` + endpoint files plus `baseUrl: file://./manifest` give a working local config without needing to stand up an HTTP server.
+- `data/` is the durable runtime data mount. Core create uses `data/workspace`; optional augments such as `layeredMemory` and `budgets` place their SQLite files under `data/` when added.
+- `knowledge/` is scaffolded by `auggy augment add knowledge`; the example `sources.json`, `local/manifest`, and endpoint files give a working local config without needing to stand up an HTTP server.
 
 ## Cloud-deploy state
 

@@ -70,12 +70,14 @@ describe("parseConfig", () => {
       "agent.yaml",
       minimalConfig({
         purpose: "test purpose",
+        displayName: "Jim",
         operators: ["op-1"],
         settings: { compactionStrategy: "truncate", maxInferenceLoops: 5 },
       }),
     );
     const config = parseConfig(path);
     expect(config.purpose).toBe("test purpose");
+    expect(config.displayName).toBe("Jim");
     expect(config.operators).toEqual(["op-1"]);
     expect(config.settings.compactionStrategy).toBe("truncate");
     expect(config.settings.maxInferenceLoops).toBe(5);

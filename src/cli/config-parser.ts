@@ -128,7 +128,7 @@ const BUILTIN_TYPES = new Set([
   "filesystem",
   "webTransport",
   "webFetch",
-  "manifest",
+  "knowledge",
   "skills",
   "bash",
   "budgets",
@@ -818,6 +818,13 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
   } else if (!VALID_NAME_RE.test(raw.name)) {
     errors.push(`name: must be alphanumeric with hyphens/underscores (got "${raw.name}")`);
   }
+  if (raw.displayName !== undefined) {
+    if (typeof raw.displayName !== "string") {
+      errors.push("displayName: must be a string");
+    } else if (raw.displayName.trim().length === 0) {
+      errors.push("displayName: must be a non-empty string when set");
+    }
+  }
 
   // identity shorthand (optional) — synthesizes an equivalent fileMemory
   // entry prepended to augments[]. Conflict detection happens after the
@@ -1109,6 +1116,7 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
   return {
     id: raw.id as string,
     name: raw.name as string,
+    displayName: raw.displayName as string | undefined,
     purpose: raw.purpose as string | undefined,
     identity: identityShorthand,
     engine: engine as unknown as EngineConfig,

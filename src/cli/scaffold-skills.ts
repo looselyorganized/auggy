@@ -1,14 +1,15 @@
 /**
  * Scaffold-skill helpers — copy bundled `src/augments/<name>/skill/` folders
  * into a scaffolded agent's `<agent-dir>/skills/<augment-name>/` directory,
- * and render identity.md from the bundled template.
+ * copy starter skills into `<agent-dir>/skills/`, and render identity.md from
+ * the bundled template.
  *
  * Per ADR-025 (augment-as-folder + skill bundling) Decision 3 and ADR-030
  * (model-facing skill surface separation): identity.md no longer carries
  * the skill manifest. The runtime's `skills` augment surfaces the listing
  * from each SKILL.md's YAML frontmatter; this module only handles disk-copy
- * + template substitution for the three identity-level placeholders
- * (AGENT_NAME, PURPOSE, OPERATOR_NAME).
+ * + template substitution for the identity-level placeholders
+ * (AGENT_NAME, DISPLAY_NAME, PURPOSE, OPERATOR_NAME).
  */
 
 import { cpSync, existsSync, readFileSync, readdirSync } from "node:fs";
@@ -19,6 +20,7 @@ import { join, resolve } from "node:path";
 // ---------------------------------------------------------------------------
 
 const AUGMENTS_ROOT = resolve(import.meta.dir, "../augments");
+const STARTER_SKILLS_ROOT = resolve(import.meta.dir, "../scaffold-starter-skills");
 
 function augmentSourceDir(type: string): string {
   return resolve(AUGMENTS_ROOT, type);
@@ -77,6 +79,28 @@ export function copyBundledSkill(type: string, agentDir: string): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// Starter skill copy
+// ---------------------------------------------------------------------------
+
+/**
+ * Copy default, non-augment skills into a newly scaffolded agent. These skills
+ * are part of the agent authoring experience, not runtime augments, so they
+ * live outside `src/augments/` and are not exposed through `auggy augment`.
+ */
+export function copyStarterSkills(agentDir: string): string[] {
+  if (!existsSync(STARTER_SKILLS_ROOT)) return [];
+  const copied: string[] = [];
+  for (const entry of readdirSync(STARTER_SKILLS_ROOT, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const src = join(STARTER_SKILLS_ROOT, entry.name);
+    const dest = join(agentDir, "skills", entry.name);
+    cpSync(src, dest, { recursive: true });
+    copied.push(entry.name);
+  }
+  return copied.sort();
+}
+
+// ---------------------------------------------------------------------------
 // identity.md template substitution
 // ---------------------------------------------------------------------------
 
@@ -98,6 +122,8 @@ function readIdentityTemplate(): string {
 export interface IdentityTemplateValues {
   /** The agent's name as written in agent.yaml. */
   agentName: string;
+  /** Human-facing display name. Defaults to `agentName`. */
+  displayName?: string;
   /** A one-sentence agent purpose ("a helpful assistant" by default). */
   purpose: string;
   /** The operator's name ("the operator" by default). */
@@ -107,8 +133,8 @@ export interface IdentityTemplateValues {
 /**
  * Render identity.md from the bundled template using the provided values.
  *
- * Substitution targets three placeholder tokens by exact name (`{AGENT_NAME}`,
- * `{PURPOSE}`, `{OPERATOR_NAME}`) — not a generic `{...}` regex — so
+ * Substitution targets known placeholder tokens by exact name (`{AGENT_NAME}`,
+ * `{DISPLAY_NAME}`, `{PURPOSE}`, `{OPERATOR_NAME}`) — not a generic `{...}` regex — so
  * operator-supplied values containing literal braces pass through unmodified.
  * Single-pass replacement means an operator-supplied value containing
  * `{AGENT_NAME}` or any other placeholder is emitted verbatim and is NOT
@@ -127,17 +153,23 @@ export interface IdentityTemplateValues {
  */
 export function renderIdentityFromTemplate(values: IdentityTemplateValues): string {
   const template = readIdentityTemplate();
+  const displayName = values.displayName ?? values.agentName;
 
-  return template.replace(/\{(AGENT_NAME|PURPOSE|OPERATOR_NAME)\}/g, (match, token: string) => {
-    switch (token) {
-      case "AGENT_NAME":
-        return values.agentName;
-      case "PURPOSE":
-        return values.purpose;
-      case "OPERATOR_NAME":
-        return values.operatorName;
-      default:
-        return match;
-    }
-  });
+  return template.replace(
+    /\{(AGENT_NAME|DISPLAY_NAME|PURPOSE|OPERATOR_NAME)\}/g,
+    (match, token: string) => {
+      switch (token) {
+        case "AGENT_NAME":
+          return values.agentName;
+        case "DISPLAY_NAME":
+          return displayName;
+        case "PURPOSE":
+          return values.purpose;
+        case "OPERATOR_NAME":
+          return values.operatorName;
+        default:
+          return match;
+      }
+    },
+  );
 }

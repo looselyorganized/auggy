@@ -64,9 +64,25 @@ describe("parseOllamaList", () => {
 
 describe("partitionByRecommended", () => {
   it("splits installed models into recommended-for-tool-calling and other", () => {
-    const installed = ["qwen3:8b", "qwen3:14b", "gemma4:31b", "llama3.2:3b", "mistral:7b"];
+    const installed = [
+      "qwen3.6:27b",
+      "qwen3.5:9b",
+      "qwen3:8b",
+      "gemma4:31b",
+      "glm-5.1",
+      "deepseek-v3.2",
+      "llama3.2:3b",
+      "mistral:7b",
+    ];
     const { recommended, other } = partitionByRecommended(installed);
-    expect(recommended).toEqual(["qwen3:8b", "qwen3:14b", "gemma4:31b"]);
+    expect(recommended).toEqual([
+      "qwen3.6:27b",
+      "qwen3.5:9b",
+      "qwen3:8b",
+      "gemma4:31b",
+      "glm-5.1",
+      "deepseek-v3.2",
+    ]);
     expect(other).toEqual(["llama3.2:3b", "mistral:7b"]);
   });
 
@@ -75,8 +91,8 @@ describe("partitionByRecommended", () => {
   });
 
   it("treats unsized model IDs (no colon) the same as tagged ones", () => {
-    const { recommended, other } = partitionByRecommended(["qwen3", "gemma4", "llama3.2"]);
-    expect(recommended).toEqual(["qwen3", "gemma4"]);
+    const { recommended, other } = partitionByRecommended(["qwen3.6", "qwen3", "gemma4", "llama3.2"]);
+    expect(recommended).toEqual(["qwen3.6", "qwen3", "gemma4"]);
     expect(other).toEqual(["llama3.2"]);
   });
 

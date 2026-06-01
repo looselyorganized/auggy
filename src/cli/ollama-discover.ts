@@ -128,29 +128,33 @@ export function parseOllamaList(raw: string): string[] {
 }
 
 /**
- * Recommended tool-capable model families on Ollama (mid-2026).
+ * Recommended tool-capable model families on Ollama (verified 2026-06-01).
  *
- * Evidence base (BFCL V4, last updated 2026-04-12):
- * - qwen3:8b    — 42.57 (rank 39),   verified tool calling
- * - qwen3:14b   — 41.03 (rank 43)
- * - qwen3:32b   — 48.71 (rank 29),   best local Qwen3
- * - qwen3.5     — Qwen self-reports 72.9 on the 397B; smaller variants
- *                  inherit the training emphasis on structured output
- * - gemma4(:31b) — Google self-reports BFCL-V4 63.1 for 31B; not on the
- *                  independent leaderboard yet
+ * Evidence base:
+ * - Ollama's tool-calling docs demonstrate structured tools with qwen3.
+ * - Ollama's current "Tools" catalog surfaces qwen3.6, qwen3.5, gemma4,
+ *   glm-5.1, and deepseek-v3.2 as tool-capable families.
  *
  * Explicitly dropped:
  * - llama3.2 (1B/3B) — BFCL V4 21.95 / 10.82 (ranks 98 / 107) AND
  *   emits tool calls in non-standard "pythonic text" format, not the
  *   structured tool_use channel Ollama's API expects. See vLLM #9991.
  *
- * Families match by prefix: a discovered "qwen3:8b" or "qwen3:14b-instruct"
- * both match "qwen3". Order is the recommendation order.
+ * Families match by prefix: a discovered "qwen3.6:27b" or
+ * "qwen3:14b-instruct" both match their family. Order is recommendation
+ * order, not lexical order.
  */
-export const RECOMMENDED_OLLAMA_FAMILIES: readonly string[] = ["qwen3", "qwen3.5", "gemma4"];
+export const RECOMMENDED_OLLAMA_FAMILIES: readonly string[] = [
+  "qwen3.6",
+  "qwen3.5",
+  "qwen3",
+  "gemma4",
+  "glm-5.1",
+  "deepseek-v3.2",
+];
 
 /** Suggested first-pull when the user has no tool-capable model installed. */
-export const RECOMMENDED_FIRST_PULL = "qwen3:8b";
+export const RECOMMENDED_FIRST_PULL = "qwen3.5:9b";
 
 /**
  * Partition discovered models into "recommended for tool calling" and

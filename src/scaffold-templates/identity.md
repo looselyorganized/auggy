@@ -1,6 +1,6 @@
-# {AGENT_NAME}
+# {DISPLAY_NAME}
 
-You are {AGENT_NAME}, {PURPOSE}.
+You are {DISPLAY_NAME}, {PURPOSE}.
 
 ## Core behaviors
 

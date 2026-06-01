@@ -4,6 +4,7 @@ import { join } from "node:path";
 import {
   augmentFolderForType,
   copyBundledSkill,
+  copyStarterSkills,
   renderIdentityFromTemplate,
 } from "../../src/cli/scaffold-skills";
 
@@ -17,7 +18,7 @@ describe("augmentFolderForType", () => {
   test("uses canonical type names as agent-facing folders", () => {
     expect(augmentFolderForType("layeredMemory")).toBe("layeredMemory");
     expect(augmentFolderForType("webFetch")).toBe("webFetch");
-    expect(augmentFolderForType("manifest")).toBe("manifest");
+    expect(augmentFolderForType("knowledge")).toBe("knowledge");
     expect(augmentFolderForType("turnControl")).toBe("turnControl");
   });
 
@@ -157,5 +158,19 @@ describe("copyBundledSkill", () => {
     const fresh = readFileSync(skillPath, "utf-8");
     expect(fresh).not.toBe("STALE CONTENT");
     expect(fresh).toContain("name: filesystem");
+  });
+});
+
+describe("copyStarterSkills", () => {
+  test("copies the default auggy authoring skill", () => {
+    const agentDir = join(TMP, "agent");
+    mkdirSync(agentDir, { recursive: true });
+
+    expect(copyStarterSkills(agentDir)).toContain("auggy");
+    const skillPath = join(agentDir, "skills", "auggy", "SKILL.md");
+    expect(existsSync(skillPath)).toBe(true);
+    const skill = readFileSync(skillPath, "utf-8");
+    expect(skill).toContain("name: auggy");
+    expect(skill).toContain("auggy augment create");
   });
 });

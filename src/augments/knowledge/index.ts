@@ -1,18 +1,18 @@
 /**
- * Manifest augment — read-only registry of information endpoints the agent
+ * Knowledge augment — read-only registry of information endpoints the agent
  * can access (files, URLs, etc.).
  *
  * Connects an Auggy agent to an organization's knowledge API. Two stages of
  * progressive disclosure:
  *   1. Manifest (always in context, ~200 tokens) — org identity + endpoint list
- *   2. Endpoint content (on demand via manifest_fetch) — full docs, fetched when relevant
+ *   2. Endpoint content (on demand via knowledge_fetch) — full docs, fetched when relevant
  *
  * Outbound messaging (org_escalate, rate limits) moved to the notify augment
  * in roadmap item 6 (2026-04-28). For escalation, mount the notify augment
  * alongside this one.
  *
  * Boot is graceful: if the org API is unreachable, the agent starts without
- * manifest and logs a warning. manifest_fetch will fail with clear errors until
+ * manifest and logs a warning. knowledge_fetch will fail with clear errors until
  * the API is reachable.
  *
  * URL schemes (per α-6 / spec §Decision 8):
@@ -27,7 +27,7 @@
  */
 
 import { readFile, realpath, stat } from "node:fs/promises";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { resolve, normalize, relative, isAbsolute, sep } from "node:path";
 import { z } from "zod";
 import type { Augment, ContextBlock } from "../../types";
@@ -62,10 +62,199 @@ export interface ManifestOptions {
   client?: HttpClient;
 }
 
+export interface KnowledgeRootOptions {
+  /** Absolute path to the knowledge directory containing sources.json. */
+  root: string;
+  /** Optional pre-built HTTP client shared by HTTP sources, mostly for tests. */
+  client?: HttpClient;
+  /** Default manifest cache TTL in milliseconds. Default 1 hour. */
+  cacheTtlMs?: number;
+}
+
+interface KnowledgeSourceConfig {
+  name: string;
+  description?: string;
+  baseUrl: string;
+  token?: string;
+  tokenEnv?: string;
+  cacheTtlMs?: number;
+}
+
+interface KnowledgeSourcesFile {
+  sources: KnowledgeSourceConfig[];
+}
+
 interface ManifestEndpoint {
   path: string;
   description: string;
   method?: string;
+}
+
+export function knowledgeRoot(opts: KnowledgeRootOptions): Augment {
+  let cachedSources: Array<KnowledgeSourceConfig & { augment: Augment }> | null = null;
+
+  async function loadSources(): Promise<Array<KnowledgeSourceConfig & { augment: Augment }>> {
+    if (cachedSources) return cachedSources;
+
+    const sourcePath = resolve(opts.root, "sources.json");
+    const raw = await readFile(sourcePath, "utf-8");
+    const parsed = validateSourcesFile(JSON.parse(raw));
+
+    cachedSources = parsed.sources.map((source) => {
+      const baseUrl = resolveKnowledgeSourceBaseUrl(source.baseUrl, opts.root);
+      const token = source.token ?? (source.tokenEnv ? process.env[source.tokenEnv] : undefined);
+      return {
+        ...source,
+        baseUrl,
+        token,
+        augment: knowledge({
+          baseUrl,
+          token,
+          cacheTtlMs: source.cacheTtlMs ?? opts.cacheTtlMs,
+          client: opts.client,
+        }),
+      };
+    });
+
+    return cachedSources;
+  }
+
+  const fetchTool = defineTool({
+    name: "knowledge_fetch",
+    description: "Fetch knowledge from one of the configured knowledge sources.",
+    category: "search",
+    input: z.object({
+      source: z.string().describe("The knowledge source name from the context block"),
+      endpoint: z.string().describe("The endpoint path listed by that source"),
+      prompt: z.string().optional().describe("Optional: what you want to know from the content"),
+    }),
+    execute: async ({ source, endpoint, prompt }) => {
+      const sources = await loadSources();
+      const selected = sources.find((s) => s.name === source);
+      if (!selected) {
+        return JSON.stringify({
+          error: `Knowledge source not found: ${JSON.stringify(source)}`,
+          availableSources: sources.map((s) => s.name),
+        });
+      }
+
+      const tool = selected.augment.tools?.find((t) => t.name === "knowledge_fetch");
+      if (!tool) {
+        return JSON.stringify({ error: `Knowledge source ${source} has no fetch tool` });
+      }
+
+      const content = await tool.execute({ endpoint, prompt });
+      try {
+        const parsed = JSON.parse(content as string) as Record<string, unknown>;
+        return JSON.stringify({ source, ...parsed });
+      } catch {
+        return JSON.stringify({ source, endpoint, content });
+      }
+    },
+  });
+
+  return {
+    name: "knowledge",
+    type: "knowledge",
+    tools: [fetchTool],
+    async context(turn, budget) {
+      const sources = await loadSources();
+      const blocks: string[] = ["# Knowledge", ""];
+
+      for (const source of sources) {
+        const childContext = await source.augment.context?.(turn, budget);
+        const childBlocks =
+          typeof childContext === "string" ? [{ content: childContext }] : (childContext ?? []);
+        const content = childBlocks[0]?.content;
+        if (!content) continue;
+        blocks.push(`## ${source.name}${source.description ? ` — ${source.description}` : ""}`);
+        blocks.push("");
+        blocks.push(
+          content.replace(
+            /Use `knowledge_fetch` to retrieve any of these when relevant to the conversation:/g,
+            `Use \`knowledge_fetch({ source: "${source.name}", endpoint })\` to retrieve any of these when relevant to the conversation:`,
+          ),
+        );
+        blocks.push("");
+      }
+
+      if (blocks.length <= 2) return [];
+      return [
+        {
+          source: "knowledge",
+          content: blocks.join("\n").trim(),
+          priority: "high",
+          placement: "system",
+          eviction: "drop",
+          provenance: "augment",
+          origin: "operator",
+        },
+      ];
+    },
+    async onBoot() {
+      try {
+        const sources = await loadSources();
+        for (const source of sources) {
+          await source.augment.onBoot?.();
+        }
+      } catch (err) {
+        console.warn(
+          `[knowledge] sources.json unavailable at ${opts.root}: ${(err as Error).message}`,
+        );
+      }
+    },
+  };
+}
+
+function validateSourcesFile(raw: unknown): KnowledgeSourcesFile {
+  if (raw === null || typeof raw !== "object") {
+    throw new Error("knowledge/sources.json must be an object");
+  }
+  const sources = (raw as Record<string, unknown>).sources;
+  if (!Array.isArray(sources) || sources.length === 0) {
+    throw new Error("knowledge/sources.json must contain a non-empty sources array");
+  }
+
+  const out: KnowledgeSourceConfig[] = [];
+  const names = new Set<string>();
+  for (const source of sources) {
+    if (source === null || typeof source !== "object") {
+      throw new Error("knowledge source entries must be objects");
+    }
+    const s = source as Record<string, unknown>;
+    if (typeof s.name !== "string" || !s.name.trim()) {
+      throw new Error("knowledge source name must be a non-empty string");
+    }
+    if (names.has(s.name)) {
+      throw new Error(`duplicate knowledge source name: ${s.name}`);
+    }
+    names.add(s.name);
+    if (typeof s.baseUrl !== "string" || !s.baseUrl.trim()) {
+      throw new Error(`knowledge source ${s.name} baseUrl must be a non-empty string`);
+    }
+    out.push({
+      name: s.name,
+      description: typeof s.description === "string" ? s.description : undefined,
+      baseUrl: s.baseUrl,
+      token: typeof s.token === "string" ? s.token : undefined,
+      tokenEnv: typeof s.tokenEnv === "string" ? s.tokenEnv : undefined,
+      cacheTtlMs: typeof s.cacheTtlMs === "number" ? s.cacheTtlMs : undefined,
+    });
+  }
+
+  return { sources: out };
+}
+
+function resolveKnowledgeSourceBaseUrl(baseUrl: string, root: string): string {
+  if (!/^file:/i.test(baseUrl)) return baseUrl;
+
+  const afterScheme = baseUrl.replace(/^file:/i, "");
+  const isAbsoluteFileUrl =
+    afterScheme.startsWith("///") || (afterScheme.startsWith("/") && !afterScheme.startsWith("//"));
+  if (isAbsoluteFileUrl) return baseUrl;
+
+  const relPath = afterScheme.replace(/^\/+/, "");
+  return pathToFileURL(resolve(root, relPath)).href;
 }
 
 interface Manifest {
@@ -133,14 +322,14 @@ function parseFileBaseUrl(baseUrl: string): string {
     absPath = fileURLToPath(trimmed);
   } catch (err) {
     throw new Error(
-      `manifest: invalid file:// URL "${baseUrl}" — must be absolute (file:///abs/path). ` +
+      `knowledge: invalid file:// URL "${baseUrl}" — must be absolute (file:///abs/path). ` +
         `Relative file:// URLs must be resolved by the augment-resolver against the agent dir before construction. ` +
         `(${(err as Error).message})`,
     );
   }
   if (!isAbsolute(absPath)) {
     throw new Error(
-      `manifest: file:// URL "${baseUrl}" did not resolve to an absolute path (got "${absPath}").`,
+      `knowledge: file:// URL "${baseUrl}" did not resolve to an absolute path (got "${absPath}").`,
     );
   }
   return absPath;
@@ -233,7 +422,7 @@ async function safeResolveUnderBase(realBaseDir: string, requestedPath: string):
   // Layer 1: null-byte rejection.
   if (requestedPath.includes("\0")) {
     throw new Error(
-      `manifest: rejected path containing null byte: ${JSON.stringify(requestedPath)}`,
+      `knowledge: rejected path containing null byte: ${JSON.stringify(requestedPath)}`,
     );
   }
 
@@ -242,7 +431,7 @@ async function safeResolveUnderBase(realBaseDir: string, requestedPath: string):
   if (decoded.includes("\0")) {
     // Re-check after decode — `%00` decodes to `\0`.
     throw new Error(
-      `manifest: rejected path containing null byte after decode: ${JSON.stringify(requestedPath)}`,
+      `knowledge: rejected path containing null byte after decode: ${JSON.stringify(requestedPath)}`,
     );
   }
 
@@ -251,13 +440,13 @@ async function safeResolveUnderBase(realBaseDir: string, requestedPath: string):
   // 3a: `..` segment — `^..` or `/../` or trailing `/..`.
   if (/(?:^|\/)\.\.(?:\/|$)/.test(decoded)) {
     throw new Error(
-      `manifest: rejected traversal — path contains '..' segment: ${JSON.stringify(requestedPath)}`,
+      `knowledge: rejected traversal — path contains '..' segment: ${JSON.stringify(requestedPath)}`,
     );
   }
   // 3b: doubled leading slash — `//foo` is an attempt to disturb root semantics.
   if (decoded.startsWith("//")) {
     throw new Error(
-      `manifest: rejected traversal — path begins with doubled slash: ${JSON.stringify(requestedPath)}`,
+      `knowledge: rejected traversal — path begins with doubled slash: ${JSON.stringify(requestedPath)}`,
     );
   }
   // 3c: surviving encoded traversal marker. After decode-once, any literal
@@ -265,7 +454,7 @@ async function safeResolveUnderBase(realBaseDir: string, requestedPath: string):
   // double-encoding attempt that must not be silently accepted.
   if (/%2[eE]/.test(decoded)) {
     throw new Error(
-      `manifest: rejected traversal — path contains encoded traversal marker that survived decode: ${JSON.stringify(requestedPath)}`,
+      `knowledge: rejected traversal — path contains encoded traversal marker that survived decode: ${JSON.stringify(requestedPath)}`,
     );
   }
 
@@ -283,7 +472,7 @@ async function safeResolveUnderBase(realBaseDir: string, requestedPath: string):
   // (e.g. "C:\\Windows\\..."), UNC paths, and any other absolute shape that
   // shouldn't escape relative-join semantics.
   if (isAbsolute(stripped)) {
-    throw new Error(`manifest: rejected absolute-looking path: ${JSON.stringify(requestedPath)}`);
+    throw new Error(`knowledge: rejected absolute-looking path: ${JSON.stringify(requestedPath)}`);
   }
 
   // Layer 6+7: resolve under base, realpath, boundary check.
@@ -304,7 +493,7 @@ async function safeResolveUnderBase(realBaseDir: string, requestedPath: string):
 
   if (!isWithinBase(realCandidate, realBaseDir)) {
     throw new Error(
-      `manifest: rejected traversal — ${JSON.stringify(requestedPath)} resolves outside base ${realBaseDir}`,
+      `knowledge: rejected traversal — ${JSON.stringify(requestedPath)} resolves outside base ${realBaseDir}`,
     );
   }
 
@@ -317,7 +506,7 @@ async function safeResolveUnderBase(realBaseDir: string, requestedPath: string):
 
 const DEFAULT_CACHE_TTL = 60 * 60 * 1000; // 1 hour
 
-export function manifest(opts: ManifestOptions): Augment {
+export function knowledge(opts: ManifestOptions): Augment {
   const isFile = FILE_SCHEME_RE.test(opts.baseUrl);
 
   // For HTTP/HTTPS: keep existing behavior (trim trailing slash, init client).
@@ -333,12 +522,12 @@ export function manifest(opts: ManifestOptions): Augment {
         // narrow. Never actually called when isFile is true.
         createHttpClient({
           timeoutMs: 10_000,
-          userAgent: "auggy-manifest/0.2",
+          userAgent: "auggy-knowledge/0.2",
           defaultHeaders: opts.token ? { authorization: `Bearer ${opts.token}` } : {},
         }))
       : createHttpClient({
           timeoutMs: 10_000,
-          userAgent: "auggy-manifest/0.2",
+          userAgent: "auggy-knowledge/0.2",
           defaultHeaders: opts.token ? { authorization: `Bearer ${opts.token}` } : {},
         });
   const cacheTtl = opts.cacheTtlMs ?? DEFAULT_CACHE_TTL;
@@ -346,7 +535,7 @@ export function manifest(opts: ManifestOptions): Augment {
   let cachedManifest: Manifest | null = null;
   let cacheExpiresAt = 0;
   // Cached realpath of the file:// base dir. Populated on first manifest
-  // fetch (or first manifest_fetch if the manifest hadn't been read). Stays
+  // fetch (or first knowledge_fetch if the manifest hadn't been read). Stays
   // null until then; subsequent calls reuse the cached value.
   let cachedRealBase: string | null = null;
 
@@ -360,11 +549,11 @@ export function manifest(opts: ManifestOptions): Augment {
     // clean error if the operator pointed baseUrl at something invalid.
     const baseStat = await stat(fileBasePath).catch((err: unknown) => {
       throw new Error(
-        `manifest: file:// base "${fileBasePath}" not accessible: ${(err as Error).message}`,
+        `knowledge: file:// base "${fileBasePath}" not accessible: ${(err as Error).message}`,
       );
     });
     if (!baseStat.isDirectory()) {
-      throw new Error(`manifest: file:// base "${fileBasePath}" is not a directory`);
+      throw new Error(`knowledge: file:// base "${fileBasePath}" is not a directory`);
     }
     cachedRealBase = await realpath(fileBasePath);
     return cachedRealBase;
@@ -388,7 +577,7 @@ export function manifest(opts: ManifestOptions): Augment {
         const validated = validateManifest(parsed);
         if (validated === null) {
           console.warn(
-            `[manifest] manifest at ${fileBasePath}/manifest has invalid shape — running without a loaded manifest. Will retry on next fetch.`,
+            `[knowledge] manifest at ${fileBasePath}/manifest has invalid shape — running without a loaded manifest. Will retry on next fetch.`,
           );
           return cachedManifest;
         }
@@ -397,7 +586,7 @@ export function manifest(opts: ManifestOptions): Augment {
         return cachedManifest;
       } catch (err) {
         console.warn(
-          `[manifest] failed to read file:// manifest from ${fileBasePath}: ${(err as Error).message}`,
+          `[knowledge] failed to read file:// manifest from ${fileBasePath}: ${(err as Error).message}`,
         );
         return cachedManifest;
       }
@@ -406,14 +595,14 @@ export function manifest(opts: ManifestOptions): Augment {
     try {
       const res = await client.get(`${httpBaseUrl}/manifest`);
       if (res.status !== 200) {
-        console.warn(`[manifest] manifest returned ${res.status}: ${res.body.slice(0, 200)}`);
+        console.warn(`[knowledge] manifest returned ${res.status}: ${res.body.slice(0, 200)}`);
         return cachedManifest;
       }
       const parsed: unknown = JSON.parse(res.body);
       const validated = validateManifest(parsed);
       if (validated === null) {
         console.warn(
-          `[manifest] manifest at ${httpBaseUrl}/manifest has invalid shape — running without a loaded manifest. Will retry on next fetch.`,
+          `[knowledge] manifest at ${httpBaseUrl}/manifest has invalid shape — running without a loaded manifest. Will retry on next fetch.`,
         );
         return cachedManifest;
       }
@@ -421,7 +610,7 @@ export function manifest(opts: ManifestOptions): Augment {
       cacheExpiresAt = Date.now() + cacheTtl;
       return cachedManifest;
     } catch (err) {
-      console.warn(`[manifest] failed to fetch manifest: ${(err as Error).message}`);
+      console.warn(`[knowledge] failed to fetch manifest: ${(err as Error).message}`);
       return cachedManifest;
     }
   }
@@ -443,7 +632,7 @@ export function manifest(opts: ManifestOptions): Augment {
     lines.push("");
     lines.push("## Available org knowledge");
     lines.push("");
-    lines.push("Use `manifest_fetch` to retrieve any of these when relevant to the conversation:");
+    lines.push("Use `knowledge_fetch` to retrieve any of these when relevant to the conversation:");
     lines.push("");
 
     for (const ep of manifest.endpoints) {
@@ -493,7 +682,7 @@ export function manifest(opts: ManifestOptions): Augment {
   }
 
   // ---------------------------------------------------------------------------
-  // manifest_fetch tool — file:// branch
+  // knowledge_fetch tool — file:// branch
   // ---------------------------------------------------------------------------
 
   async function fetchFromFile(endpoint: string, prompt?: string): Promise<string> {
@@ -572,7 +761,7 @@ export function manifest(opts: ManifestOptions): Augment {
   }
 
   // ---------------------------------------------------------------------------
-  // manifest_fetch tool — HTTP branch (unchanged)
+  // knowledge_fetch tool — HTTP branch (unchanged)
   // ---------------------------------------------------------------------------
 
   async function fetchFromHttp(endpoint: string, prompt?: string): Promise<string> {
@@ -626,11 +815,11 @@ export function manifest(opts: ManifestOptions): Augment {
   }
 
   // ---------------------------------------------------------------------------
-  // manifest_fetch tool
+  // knowledge_fetch tool
   // ---------------------------------------------------------------------------
 
   const manifestFetchTool = defineTool({
-    name: "manifest_fetch",
+    name: "knowledge_fetch",
     description:
       "Fetch knowledge from the organization's API. Use the endpoint paths from the manifest.",
     category: "search",
@@ -698,8 +887,8 @@ export function manifest(opts: ManifestOptions): Augment {
   };
 
   return {
-    name: "manifest",
-    type: "manifest",
+    name: "knowledge",
+    type: "knowledge",
     category: "memory",
     capabilities: ["context", "tools"],
     tools: [manifestFetchTool],
@@ -710,7 +899,7 @@ export function manifest(opts: ManifestOptions): Augment {
       if (!manifest) return [];
 
       const block: ContextBlock = {
-        source: "manifest",
+        source: "knowledge",
         content: buildContextBlock(manifest),
         placement: "system",
         priority: "required",
@@ -730,11 +919,11 @@ export function manifest(opts: ManifestOptions): Augment {
         const manifest = await fetchManifest(true);
         if (manifest) {
           console.log(
-            `[manifest] loaded file:// manifest for ${manifest.org} (${manifest.endpoints.length} endpoints)`,
+            `[knowledge] loaded local knowledge for ${manifest.org} (${manifest.endpoints.length} endpoints)`,
           );
         } else {
           console.warn(
-            `[manifest] file:// manifest at ${fileBasePath}/manifest unreadable — running without a loaded manifest. Will retry on first manifest_fetch call.`,
+            `[knowledge] file:// manifest at ${fileBasePath}/manifest unreadable — running without a loaded manifest. Will retry on first knowledge_fetch call.`,
           );
         }
         return;
@@ -749,18 +938,18 @@ export function manifest(opts: ManifestOptions): Augment {
         if (manifest) break;
         if (i < delays.length - 1) {
           console.warn(
-            `[manifest] manifest fetch failed, retrying in ${delays[i + 1]! / 1000}s...`,
+            `[knowledge] manifest fetch failed, retrying in ${delays[i + 1]! / 1000}s...`,
           );
         }
       }
 
       if (manifest) {
         console.log(
-          `[manifest] loaded manifest for ${manifest.org} (${manifest.endpoints.length} endpoints)`,
+          `[knowledge] loaded remote knowledge for ${manifest.org} (${manifest.endpoints.length} endpoints)`,
         );
       } else {
         console.warn(
-          "[manifest] org API unreachable — running without a loaded manifest. Will retry on first manifest_fetch call.",
+          "[knowledge] org API unreachable — running without a loaded manifest. Will retry on first knowledge_fetch call.",
         );
       }
     },

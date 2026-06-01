@@ -18,7 +18,7 @@ export type BuiltinAugmentType =
   | "filesystem"
   | "webTransport"
   | "webFetch"
-  | "manifest"
+  | "knowledge"
   | "skills"
   | "bash"
   | "budgets"
@@ -188,6 +188,8 @@ export interface ParsedConfig {
   id: string;
   /** Human-readable agent name (used for CLI addressing). */
   name: string;
+  /** Human-facing display name shown in chat/UI. Defaults to `name` when omitted. */
+  displayName?: string;
   /** Optional purpose description. */
   purpose?: string;
   /**

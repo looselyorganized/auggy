@@ -22,6 +22,7 @@ describe("scaffoldAgent", () => {
     expect(existsSync(join(dir, "skills"))).toBe(true);
     // Per ADR-025: scaffold copies bundled skills from src/augments/<name>/skill/.
     // Default scaffold installs filesystem + layeredMemory + webFetch + turnControl.
+    expect(existsSync(join(dir, "skills", "auggy", "SKILL.md"))).toBe(true);
     expect(existsSync(join(dir, "skills", "filesystem", "SKILL.md"))).toBe(true);
     expect(existsSync(join(dir, "skills", "layeredMemory", "SKILL.md"))).toBe(true);
     expect(existsSync(join(dir, "skills", "webFetch", "SKILL.md"))).toBe(true);
@@ -54,9 +55,11 @@ describe("scaffoldAgent", () => {
   });
 
   test("identity.md contains the agent name and is free of skill-listing content (ADR-030)", () => {
-    const dir = scaffoldAgent({ name: "zip", targetDir: join(TMP, "zip") });
+    const dir = scaffoldAgent({ name: "zip", displayName: "Jim", targetDir: join(TMP, "zip") });
     const identity = readFileSync(join(dir, "identity.md"), "utf-8");
-    expect(identity).toContain("# zip");
+    const yaml = readFileSync(join(dir, "agent.yaml"), "utf-8");
+    expect(identity).toContain("# Jim");
+    expect(yaml).toContain('displayName: "Jim"');
     // ADR-030: identity is identity. The skill listing lives in the
     // 'skills' augment's emitted context block, not in identity.md.
     expect(identity).not.toContain("Available skills");
@@ -108,6 +111,16 @@ describe("scaffoldAgent", () => {
     expect(skill).toContain("---");
     expect(skill).toContain("name: layeredMemory");
     expect(skill).toContain("description:");
+  });
+
+  test("starter auggy skill has valid frontmatter and authoring guidance", () => {
+    const dir = scaffoldAgent({ name: "zip", targetDir: join(TMP, "zip") });
+    const skill = readFileSync(join(dir, "skills", "auggy", "SKILL.md"), "utf-8");
+    expect(skill).toContain("---");
+    expect(skill).toContain("name: auggy");
+    expect(skill).toContain("description:");
+    expect(skill).toContain("auggy augment create");
+    expect(skill).toContain("auggy skill create");
   });
 
   test(".gitignore excludes .env and workspace", () => {
@@ -229,6 +242,7 @@ describe("scaffoldAgent", () => {
       const identity = readFileSync(join(dir, "identity.md"), "utf-8");
 
       expect(identity).not.toContain("{AGENT_NAME}");
+      expect(identity).not.toContain("{DISPLAY_NAME}");
       expect(identity).not.toContain("{PURPOSE}");
       expect(identity).not.toContain("{OPERATOR_NAME}");
       expect(identity).not.toContain("{SKILL_MANIFEST}");

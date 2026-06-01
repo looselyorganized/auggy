@@ -571,6 +571,7 @@ describe("webTransport HTTP server", () => {
     const agent = defineAgent(
       {
         name: "researcher",
+        displayName: "Jim",
         purpose: "testing",
         model: "mock",
         augments: [aug],
@@ -583,11 +584,12 @@ describe("webTransport HTTP server", () => {
       const resp = await fetch(`http://localhost:${port}/.well-known/agent-card.json`);
       expect(resp.status).toBe(200);
       const card = (await resp.json()) as {
-        provider: { name: string };
+        provider: { name: string; displayName?: string };
         purpose: string;
         capabilities: { transport: boolean };
       };
       expect(card.provider.name).toBe("researcher");
+      expect(card.provider.displayName).toBe("Jim");
       expect(card.purpose).toBe("testing");
       expect(card.capabilities.transport).toBe(true);
     } finally {
@@ -1464,7 +1466,7 @@ describe("webTransport allowAnonymous (G3)", () => {
     });
   });
 
-  it("emits boot log line announcing resolved value and source", async () => {
+  it("emits a concise boot log line for anonymous posture", async () => {
     const logs: string[] = [];
     const originalLog = console.log;
     console.log = (...args: unknown[]) => {
@@ -1481,10 +1483,9 @@ describe("webTransport allowAnonymous (G3)", () => {
           expect(
             logs.find(
               (l) =>
-                l.includes("[web-transport]") &&
-                l.includes("allowAnonymous=false") &&
-                l.includes("source: default") &&
-                l.includes("NODE_ENV=production"),
+                l.includes("[web]") &&
+                l.includes("anonymous chat disabled") &&
+                l.includes("production default"),
             ),
           ).toBeDefined();
         } finally {
@@ -1496,7 +1497,31 @@ describe("webTransport allowAnonymous (G3)", () => {
     }
   });
 
-  it("warns when allowAnonymous=true via default + visitor-auth augment missing", async () => {
+  it("emits friendly local chat boot log for default local anonymous posture", async () => {
+    const logs: string[] = [];
+    const originalLog = console.log;
+    console.log = (...args: unknown[]) => {
+      logs.push(args.map((a) => String(a)).join(" "));
+    };
+    try {
+      await withEnv({ NODE_ENV: undefined, AUGGY_ALLOW_ANONYMOUS: undefined }, async () => {
+        const model = createMockModel();
+        const port = 18997;
+        const aug = webTransport({ port, auth: { type: "bearer", token: "t" } });
+        const agent = defineAgent({ name: "t", model: "mock", augments: [aug] }, model);
+        await agent.start();
+        try {
+          expect(logs).toContain("[web] anonymous local chat enabled");
+        } finally {
+          await agent.stop();
+        }
+      });
+    } finally {
+      console.log = originalLog;
+    }
+  });
+
+  it("does not warn for local default allowAnonymous=true + visitor-auth augment missing", async () => {
     const warnings: string[] = [];
     const originalWarn = console.warn;
     console.warn = (...args: unknown[]) => {
@@ -1511,16 +1536,49 @@ describe("webTransport allowAnonymous (G3)", () => {
         await agent.start();
         try {
           expect(
-            warnings.find(
-              (w) =>
-                w.includes("allowAnonymous=true") &&
-                w.includes("visitor-auth augment is not mounted"),
-            ),
-          ).toBeDefined();
+            warnings.filter((w) => w.includes("anonymous public chat is enabled")),
+          ).toHaveLength(0);
         } finally {
           await agent.stop();
         }
       });
+    } finally {
+      console.warn = originalWarn;
+    }
+  });
+
+  it("warns when anonymous chat is public-ish and visitor-auth augment is missing", async () => {
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args.map((a) => String(a)).join(" "));
+    };
+    try {
+      await withEnv(
+        {
+          NODE_ENV: undefined,
+          AUGGY_ALLOW_ANONYMOUS: undefined,
+          AUGGY_PUBLIC_URL: "https://example.com",
+        },
+        async () => {
+          const model = createMockModel();
+          const port = 18999;
+          const aug = webTransport({ port, auth: { type: "bearer", token: "t" } });
+          const agent = defineAgent({ name: "t", model: "mock", augments: [aug] }, model);
+          await agent.start();
+          try {
+            expect(
+              warnings.find(
+                (w) =>
+                  w.includes("anonymous public chat is enabled") &&
+                  w.includes("auggy augment add visitorAuth"),
+              ),
+            ).toBeDefined();
+          } finally {
+            await agent.stop();
+          }
+        },
+      );
     } finally {
       console.warn = originalWarn;
     }
@@ -1543,13 +1601,9 @@ describe("webTransport allowAnonymous (G3)", () => {
       const agent = defineAgent({ name: "t", model: "mock", augments: [aug] }, model);
       await agent.start();
       try {
-        expect(
-          warnings.filter(
-            (w) =>
-              w.includes("allowAnonymous=true") &&
-              w.includes("visitor-auth augment is not mounted"),
-          ),
-        ).toHaveLength(0);
+        expect(warnings.filter((w) => w.includes("anonymous public chat is enabled"))).toHaveLength(
+          0,
+        );
       } finally {
         await agent.stop();
       }

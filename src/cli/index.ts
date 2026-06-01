@@ -67,11 +67,12 @@ export function buildCli(): Command {
     .description("Add augments to an existing agent")
     .option("--config <path>", "path to agent.yaml")
     .option("--skip-install", "mutate package.json but don't run bun install")
+    .option("--yes", "skip preview augment confirmation prompts")
     .action(
       async (
         target: string | undefined,
         augment: string | undefined,
-        opts: { config?: string; skipInstall?: boolean },
+        opts: { config?: string; skipInstall?: boolean; yes?: boolean },
       ) => {
         try {
           await runAdd(target, { ...opts, augment });

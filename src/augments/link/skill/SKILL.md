@@ -157,7 +157,7 @@ User: "Ask frontier to summarize the paper at arxiv.org/abs/2510.12345"
 
 ```
 User: "What does CTC stand for in our org?"
-  → You already have `manifest` mounted; fetch it from there directly.
+  → You already have `knowledge` mounted; fetch it from there directly.
      No need to ask another agent something you can look up yourself.
 ```
 

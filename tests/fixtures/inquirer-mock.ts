@@ -25,12 +25,16 @@ export interface Answers {
   provider?: string;
   /** `auggy create` model prompt. Defaults to "claude-sonnet-4-6". */
   model?: string;
+  /** `auggy create` display-name input. Defaults to the prompt default. */
+  displayName?: string;
   /** `auggy create` operator-name input. Defaults to "tester". */
   operatorName?: string;
   /** `auggy create` agent-purpose input. Defaults to "testing". */
   purpose?: string;
   /** Catalog entry `type`s to include in the augment checkbox selection. */
   augmentTypes?: string[];
+  /** Optional provider or bearer API key returned by masked password prompts. */
+  apiKey?: string;
 }
 
 /**
@@ -52,10 +56,13 @@ export function mockInquirerPrompts(getAnswers: () => Answers): void {
     },
     input: async (config: { message: string; default?: string }) => {
       const answers = getAnswers();
+      if (config.message.startsWith("Agent display name"))
+        return answers.displayName ?? config.default ?? "";
       if (config.message.startsWith("Operator name")) return answers.operatorName ?? "tester";
       if (config.message.startsWith("Agent purpose")) return answers.purpose ?? "testing";
       return config.default ?? "";
     },
+    password: async () => getAnswers().apiKey ?? "",
     checkbox: async (config: {
       choices: Array<{
         value: { type: string };

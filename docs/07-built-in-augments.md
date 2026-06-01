@@ -12,7 +12,7 @@ Fourteen augments ship in `src/augments/` (plus `webTransport` under `src/transp
 - **`telegramTransport`** — bidirectional Telegram bot transport
 - **`filesystem`** — multi-mount scoped file access
 - **`webFetch`** — URL fetch with HTML→text rendering
-- **`manifest`** — read-only registry of information endpoints (HTTP or `file://` baseUrl) the agent can fetch on demand
+- **`knowledge`** — read-only registry of local-file and API-backed knowledge sources the agent can fetch on demand
 - **`skills`** — model-facing skill surface; lists mounted skills (name + description from each SKILL.md's YAML frontmatter) per [ADR-030](../../docs/solutions/architecture/adr-030-model-facing-skill-surface-separation.md)
 - **`bash`** — scoped shell execution
 - **`budgets`** — per-trust-level turn budgets + dollar ceiling
@@ -34,18 +34,25 @@ Fresh agents are scaffolded for the shortest path to chat:
 - `filesystem` with read-only `./skills` and writable `./workspace`
 - `webTransport` for `/console`, `/console/chat`, `/agent/run`, and `/health`
 - `webFetch`
-- `budgets`
 - `turnControl`
 
-The `skills` augment is runtime infrastructure and is auto-mounted when needed. `layeredMemory`, `visitorAuth`, `telegramTransport`, `manifest`, `bash`, `notify`, `agentMail`, and `link` remain opt-in via `auggy add <agent> <augment>` so first boot is not blocked by extra services or background extraction.
+The `skills` augment is runtime infrastructure and is auto-mounted when needed.
+Stable add-ons (`knowledge`, `notify`, `telegramTransport`) are installed after
+first chat with `auggy augment add <name>`. Preview augments (`layeredMemory`,
+`budgets`, `visitorAuth`, `link`, `agentMail`, `bash`, `supabaseMemory`) remain
+available behind an explicit confirmation because their production DX or
+security edge cases are still being hardened.
 
-`auggy add` installs the augment config, package dependencies, and bundled skill together. `auggy skill add` is a repair/update command for restoring a bundled skill folder, not part of the normal install path.
+`auggy augment list` is the discovery surface. `auggy augment add` installs the
+augment config, package dependencies, and bundled skill together. `auggy skill
+add` is a repair/update command for restoring a bundled skill folder, not part
+of the normal install path.
 
 ### Augment-as-folder + bundled-skill convention
 
 Every built-in augment lives at `src/augments/<name>/index.ts` (folder shape, per [ADR-025](../../docs/solutions/architecture/adr-025-augment-folder-and-skill-bundling.md)). Augments that contribute model-callable tools ship a bundled `<name>/skill/SKILL.md` colocated in the same folder; `auggy create` and `auggy add` copy it to `<agent-dir>/skills/<name>/SKILL.md`, and `auggy skill add <name>` installs it retroactively. A boot-time validator warns at agent startup if a tool-providing augment is mounted without a skill — applies to both factory-declared `tools[]` and namespace memory providers (kernel-synthesized `memory_*` tools). Tool-less augments (transports, static memory providers, admission gates) skip the skill folder.
 
-Augments shipping a bundled skill at v1.0: `filesystem`, `layeredMemory`, `webFetch`, `manifest`, `bash`, `notify`, `agentMail`, `turnControl`, `visitorAuth`, `link`. The `skills` augment is the model-facing surface that lists them — it carries no SKILL.md of its own.
+Augments shipping a bundled skill at v1.0: `filesystem`, `layeredMemory`, `webFetch`, `knowledge`, `bash`, `notify`, `agentMail`, `turnControl`, `visitorAuth`, `link`. The `skills` augment is the model-facing surface that lists them — it carries no SKILL.md of its own.
 
 ### Model-facing surface (ADR-030)
 
@@ -498,6 +505,7 @@ A typical agent setup uses both:
 ```ts
 const agent = defineAgent({
   name: "zip",
+  displayName: "Zip",
   purpose: "LORF front-door agent",
   model: "claude-sonnet-4-6",
   augments: [
@@ -713,60 +721,126 @@ The console dashboard API exposes a **Notify** block with:
 
 The override persists across restart when `agentDir` is set in the augment config.
 
-## `manifest` — Read-only info-endpoint registry
+## `knowledge` — Read-only knowledge source registry
 
 ```ts
-import { manifest } from "augment-1";
+import { knowledgeRoot } from "auggy";
 
-const org = manifest({
-  baseUrl: process.env.MANIFEST_URL!,
-  token: process.env.MANIFEST_TOKEN,
+const orgKnowledge = knowledgeRoot({
+  root: "./knowledge",
 });
 ```
 
 ### What it is
 
-A read-only augment that connects an agent to an organization's knowledge API. It provides two stages of progressive disclosure:
+A read-only augment that connects an agent to local project knowledge and optional remote knowledge APIs. It provides two stages of progressive disclosure:
 
-1. **Manifest** — always in context (~200 tokens): org identity, purpose, operator, phase, and a list of available endpoints with descriptions. The agent uses this to know what the organization is and which content endpoints are available.
-2. **Endpoint content** — on demand via `manifest_fetch`: the agent fetches the full content of a specific endpoint when the conversation calls for it (docs, ADRs, initiative details, etc.).
+1. **Source manifests** — always in context (~200 tokens per source): org identity, purpose, operator, phase, and a list of available endpoints with descriptions. The agent uses this to know which source covers which topic.
+2. **Endpoint content** — on demand via `knowledge_fetch`: the agent fetches the full content of a specific endpoint when the conversation calls for it (docs, ADRs, initiative details, etc.).
 
 ### Tool surface
 
-`manifest` exposes exactly **one tool**: `manifest_fetch`.
+`knowledge` exposes exactly **one tool**: `knowledge_fetch`.
 
 ```
-manifest_fetch({ path: string })
+knowledge_fetch({ source: string, endpoint: string })
 ```
 
-Fetches the content at `<baseUrl><path>`. The agent calls this when the visitor's question warrants pulling in specific org knowledge — for example, `manifest_fetch({ path: "/vision" })` to retrieve the full vision document.
+Fetches the content at the selected source and endpoint. The agent calls this when the visitor's question warrants pulling in specific org knowledge — for example, `knowledge_fetch({ source: "local", endpoint: "/vision" })` to retrieve the full vision document.
 
-The manifest lists all available paths. The agent reads the descriptions and decides which (if any) to fetch — this is the progressive disclosure model: the skeleton is always present, the detail is fetched on demand.
+Each source manifest lists available paths. The agent reads the descriptions and decides which source and endpoint to fetch — this is the progressive disclosure model: the skeleton is always present, the detail is fetched on demand.
 
-> **Note:** Outbound messaging was removed from `manifest` in roadmap item 6 (commit `59d82c7` on main). `manifest` is now a read-only manifest registry — no write operations, no escalation. Mount the `notify` augment alongside `manifest` for outbound messaging capability.
+> **Note:** Outbound messaging lives in `notify`. `knowledge` is read-only — no write operations, no escalation.
 
 ### Configuration
 
 ```ts
-export interface ManifestOptions {
-  baseUrl: string;        // Base URL: "http://...", "https://...", or "file://<dir>"
-  token?: string;         // Optional auth token (HTTP only)
+export interface KnowledgeRootOptions {
+  root: string;           // Directory containing sources.json
   cacheTtlMs?: number;    // Manifest cache TTL in ms. Default 1 hour.
   client?: HttpClient;    // Optional pre-built HTTP client (for testing)
 }
 ```
 
-### `file://` baseUrl
+### `knowledge/sources.json`
 
-`baseUrl` accepts a `file://` URL (relative or absolute) for local-filesystem-backed manifests. `auggy create` scaffolds an `manifest/` example dir + `baseUrl: file://./manifest` so an adopter has a working manifest config without standing up an HTTP server. Manifest fetch and `manifest_fetch` resolve paths under the configured base directory; realpath validation rejects any path that escapes (mirrors the filesystem augment's defense). HTTP/HTTPS baseUrls retain their original semantics.
+`auggy create` scaffolds `knowledge/sources.json` plus a `knowledge/local/` source so an adopter has working local knowledge without standing up an HTTP server.
+
+```json
+{
+  "sources": [
+    {
+      "name": "local",
+      "description": "Local project knowledge maintained with this agent",
+      "baseUrl": "file://./local"
+    }
+  ]
+}
+```
+
+Each source directory contains a `manifest` file plus endpoint files. `file://` sources resolve under the configured source directory; realpath validation rejects any path that escapes (mirrors the filesystem augment's defense). HTTP/HTTPS baseUrls retain their original semantics.
+
+### Local setup
+
+The fastest path is to keep source URLs out of `agent.yaml` and edit files inside `knowledge/`:
+
+```text
+knowledge/
+  sources.json
+  local/
+    manifest
+    mission.md
+    team.md
+```
+
+To add a local topic:
+
+1. Create a markdown file under `knowledge/local/`, for example `pricing.md`.
+2. Add an endpoint to `knowledge/local/manifest`:
+
+```json
+{
+  "path": "/pricing",
+  "description": "Pricing, plans, and billing policy"
+}
+```
+
+3. Restart the agent. The model will see `/pricing` in the `local` source and can call:
+
+```ts
+knowledge_fetch({ source: "local", endpoint: "/pricing" })
+```
+
+The endpoint path maps to a file in the same source directory. `/pricing` resolves to `knowledge/local/pricing` first, then falls back to `knowledge/local/pricing.md`.
+
+### Remote setup
+
+To add a remote source, add a second entry to `knowledge/sources.json`:
+
+```json
+{
+  "name": "docs",
+  "description": "Published product documentation",
+  "baseUrl": "https://docs.example.com/knowledge"
+}
+```
+
+The remote service must expose:
+
+```text
+GET /manifest
+GET /<endpoint listed in manifest>
+```
+
+Use source names that explain where the content lives (`local`, `docs`, `handbook`, `api`) and endpoint descriptions that explain when the model should fetch each endpoint. This is the key DX rule: source selection and endpoint selection are driven by descriptions, not hidden routing logic.
 
 ### Boot behavior
 
-Boot is graceful: if the org API is unreachable at startup (HTTP) or the configured directory is missing (`file://`), the agent starts without manifest and logs a warning. `manifest_fetch` will return clear error messages until the API becomes reachable. This prevents a temporarily unavailable knowledge API from taking down a running agent.
+Boot is graceful: if a source is unreachable at startup (HTTP) or the configured directory is missing (`file://`), the agent starts without that source's manifest and logs a warning. `knowledge_fetch` will return clear error messages until the source becomes reachable. This prevents a temporarily unavailable knowledge API from taking down a running agent.
 
 ### Bundled skill
 
-This augment ships `src/augments/manifest/skill/SKILL.md` with model teaching on the `manifest_fetch` tool — manifest semantics, when to fetch endpoints, progressive-disclosure rationale. Copied into `<agent-dir>/skills/manifest/SKILL.md` at `auggy create`/`auggy add` time; install retroactively with `auggy skill add manifest`.
+This augment ships `src/augments/knowledge/skill/SKILL.md` with model teaching on the `knowledge_fetch` tool — source manifests, when to fetch endpoints, progressive-disclosure rationale. Copied into `<agent-dir>/skills/knowledge/SKILL.md` at `auggy create`/`auggy add` time; install retroactively with `auggy skill add knowledge`.
 
 ## `telegramTransport` — Bidirectional Telegram bot transport
 

@@ -175,7 +175,13 @@ export function ChatTab() {
 
   const agentName = useMemo(() => {
     if (!data) return "agent";
-    return data.agentMeta?.name ?? data.card.provider.name ?? "agent";
+    return (
+      data.agentMeta?.displayName ??
+      data.card.provider.displayName ??
+      data.agentMeta?.name ??
+      data.card.provider.name ??
+      "agent"
+    );
   }, [data]);
 
   if (loading && !data) {

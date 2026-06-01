@@ -7,6 +7,7 @@ describe("getModelChoices", () => {
     const ids = choices.map((c) => c.id);
     expect(ids).toContain("claude-haiku-4-5");
     expect(ids).toContain("claude-sonnet-4-6");
+    expect(ids).toContain("claude-opus-4-8");
     expect(ids).toContain("claude-opus-4-6");
     expect(ids).toContain("claude-opus-4-7");
     expect(choices.every((c) => typeof c.inputUsdPerMtok === "number")).toBe(true);
@@ -15,6 +16,9 @@ describe("getModelChoices", () => {
   test("openai returns all openai table keys", () => {
     const choices = getModelChoices("openai");
     const ids = choices.map((c) => c.id);
+    expect(ids).toContain("gpt-5.5");
+    expect(ids).toContain("gpt-5.4");
+    expect(ids).toContain("gpt-5.4-mini");
     expect(ids).toContain("gpt-5");
     expect(ids).toContain("gpt-5-mini");
   });
@@ -23,6 +27,8 @@ describe("getModelChoices", () => {
     const choices = getModelChoices("openrouter");
     const ids = choices.map((c) => c.id);
     expect(ids).toContain("anthropic/claude-sonnet-4-6");
+    expect(ids).toContain("anthropic/claude-opus-4-8");
+    expect(ids).toContain("openai/gpt-5.4-mini");
     expect(ids).toContain("openai/gpt-5");
     expect(ids).toContain("anthropic/claude-haiku-4-5");
     expect(ids).toContain("openai/gpt-5-mini");

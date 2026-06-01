@@ -329,6 +329,60 @@ function isRailwayRuntime(): boolean {
   );
 }
 
+function isLoopbackHostname(hostname: string): boolean {
+  const normalized = hostname
+    .toLowerCase()
+    .replace(/^\[/, "")
+    .replace(/\]$/, "")
+    .replace(/\.$/, "");
+  return (
+    normalized === "localhost" ||
+    normalized === "127.0.0.1" ||
+    normalized === "::1" ||
+    normalized.endsWith(".localhost")
+  );
+}
+
+function hasPublicAuggyUrl(value: string | undefined): boolean {
+  if (!value) return false;
+  try {
+    const url = new URL(value);
+    return !isLoopbackHostname(url.hostname);
+  } catch {
+    return false;
+  }
+}
+
+function isPublicishRuntime(): boolean {
+  return (
+    process.env.NODE_ENV === "production" ||
+    isRailwayRuntime() ||
+    hasPublicAuggyUrl(process.env.AUGGY_PUBLIC_URL)
+  );
+}
+
+function formatAnonymousPostureLine(
+  allowAnonymous: boolean,
+  source: "default" | "env" | "yaml",
+): string {
+  if (allowAnonymous && source === "default" && !isPublicishRuntime()) {
+    return "[web] anonymous local chat enabled";
+  }
+
+  const sourceLabel =
+    source === "yaml"
+      ? "agent.yaml"
+      : source === "env"
+        ? "AUGGY_ALLOW_ANONYMOUS"
+        : process.env.NODE_ENV === "production"
+          ? "production default"
+          : "local default";
+
+  return allowAnonymous
+    ? `[web] anonymous chat enabled (${sourceLabel})`
+    : `[web] anonymous chat disabled (${sourceLabel})`;
+}
+
 function shouldTrustForwardedProto(
   req: Request,
   server: { requestIP?: (req: Request) => { address?: string } | null } | undefined,
@@ -840,27 +894,21 @@ export function webTransport(opts: WebTransportOptions): Augment {
         }
       }
 
-      // Operator-facing posture line. Always emitted so operators always see
-      // the resolved value AND its source. Source detail helps distinguish
-      // "I set this in yaml" from "Railway set NODE_ENV=production for me".
-      const sourceDetail =
-        allowAnonymousResolution.source === "env"
-          ? `env, AUGGY_ALLOW_ANONYMOUS=${process.env.AUGGY_ALLOW_ANONYMOUS}`
-          : allowAnonymousResolution.source === "default"
-            ? `default, NODE_ENV=${process.env.NODE_ENV ?? "unset"}`
-            : "yaml";
-      console.log(`[web-transport] allowAnonymous=${allowAnonymous} (source: ${sourceDetail})`);
+      console.log(formatAnonymousPostureLine(allowAnonymous, allowAnonymousResolution.source));
 
-      // visitorAuth-missing warning. Fires only when allowAnonymous=true via
-      // default or env — i.e., the operator hasn't explicitly chosen this in
-      // yaml. If they wrote `allowAnonymous: true` in yaml, they've signaled
-      // intent and we don't second-guess.
-      if (allowAnonymous && !visitorAuthMounted && allowAnonymousResolution.source !== "yaml") {
+      // visitorAuth-missing warning. Local default runs stay quiet; public or
+      // production-like anonymous surfaces get a concise operator warning
+      // unless the operator explicitly acknowledged the posture in yaml.
+      if (
+        allowAnonymous &&
+        !visitorAuthMounted &&
+        allowAnonymousResolution.source !== "yaml" &&
+        isPublicishRuntime()
+      ) {
         console.warn(
-          `[web-transport] WARNING: allowAnonymous=true but visitor-auth augment is not mounted. ` +
-            `Anonymous visitors have no documented upgrade path to recognized identity. ` +
-            `Consider \`auggy add visitorAuth\`. To suppress this warning explicitly, ` +
-            `set \`allowAnonymous: true\` in agent.yaml (you are doing this on purpose).`,
+          `[web-transport] WARNING: anonymous public chat is enabled. ` +
+            `Add \`auggy augment add visitorAuth\` for email sign-in, ` +
+            `or set \`allowAnonymous: true\` in agent.yaml to acknowledge.`,
         );
       }
     },

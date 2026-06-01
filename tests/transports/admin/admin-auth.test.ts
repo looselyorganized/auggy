@@ -77,9 +77,24 @@ describe("admin-auth — loopback bypass", () => {
 });
 
 describe("admin-auth — HTTP Basic (non-loopback only)", () => {
-  it("returns 401 + WWW-Authenticate when no Authorization header", () => {
+  it("redirects browser GETs without Authorization to the console login screen", () => {
     const result = checkAdminAuth({
       req: makeReq({}, "https://my-agent.fly.dev/console"),
+      bearer: "test-token",
+      agentName: "zip",
+      callerIp: "10.0.0.5",
+    });
+    expect(result.kind).toBe("unauthorized");
+    if (result.kind === "unauthorized") {
+      expect(result.response.status).toBe(303);
+      expect(result.response.headers.get("location")).toBe("/console/login?next=%2Fconsole");
+      expect(result.response.headers.get("cache-control")).toBe("no-store");
+    }
+  });
+
+  it("returns 401 + WWW-Authenticate for API requests without Authorization", async () => {
+    const result = checkAdminAuth({
+      req: makeReq({}, "https://my-agent.fly.dev/console/api/dashboard"),
       bearer: "test-token",
       agentName: "zip",
       callerIp: "10.0.0.5",
@@ -87,21 +102,11 @@ describe("admin-auth — HTTP Basic (non-loopback only)", () => {
     expect(result.kind).toBe("unauthorized");
     if (result.kind === "unauthorized") {
       expect(result.response.status).toBe(401);
-      expect(result.response.headers.get("www-authenticate")).toBe('Basic realm="auggy-admin zip"');
-    }
-  });
-
-  it("401 response body is empty", async () => {
-    const result = checkAdminAuth({
-      req: makeReq({}, "https://my-agent.fly.dev/console"),
-      bearer: "test-token",
-      agentName: "zip",
-      callerIp: "10.0.0.5",
-    });
-    expect(result.kind).toBe("unauthorized");
-    if (result.kind === "unauthorized") {
+      expect(result.response.headers.get("www-authenticate")).toBe(
+        'Basic realm="auggy-admin zip (username auggy, password AUGGY_WEB_TOKEN)"',
+      );
       const body = await result.response.text();
-      expect(body).toBe("");
+      expect(body).toBe(JSON.stringify({ error: "unauthorized" }));
     }
   });
 

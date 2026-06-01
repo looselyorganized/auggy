@@ -8,10 +8,17 @@ import { lookup, getFreshness, priceOpenAIResponse } from "@/engines/openai/pric
 
 describe("openai lookup", () => {
   it("returns rates for known models", () => {
-    const r = lookup("gpt-5");
+    const r = lookup("gpt-5.5");
     expect(r).toBeTruthy();
     expect(r!.inputUsdPerMtok).toBe(5.0);
-    expect(r!.outputUsdPerMtok).toBe(20.0);
+    expect(r!.outputUsdPerMtok).toBe(30.0);
+  });
+
+  it("returns correct gpt-5.4-mini rates", () => {
+    const r = lookup("gpt-5.4-mini");
+    expect(r).toBeTruthy();
+    expect(r!.inputUsdPerMtok).toBe(0.75);
+    expect(r!.outputUsdPerMtok).toBe(4.5);
   });
 
   it("returns correct gpt-5-mini rates", () => {

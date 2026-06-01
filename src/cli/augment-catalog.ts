@@ -36,6 +36,8 @@ export interface CatalogEntry {
   defaultOptions: Record<string, unknown>;
   /** Whether this augment is always included (not deselectable). */
   required: boolean;
+  /** v1.0 product surface. Core is installed by create; stable is supported post-create; preview warns on add. */
+  stability: "core" | "stable" | "preview";
   /** Env vars this augment needs (shown in .env.example). */
   envVars?: string[];
   /**
@@ -81,6 +83,7 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
       eviction: "drop",
     },
     required: true,
+    stability: "core",
     hasSkill: false,
   },
   {
@@ -97,6 +100,7 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
       retentionDays: 90,
     },
     required: false,
+    stability: "preview",
     hasSkill: true,
   },
   {
@@ -113,6 +117,7 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
       ],
     },
     required: true,
+    stability: "core",
     hasSkill: true,
   },
   {
@@ -133,6 +138,7 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
       },
     },
     required: true,
+    stability: "core",
     envVars: ["AUGGY_WEB_TOKEN", "AUGGY_AGENT_ID"],
     hasSkill: false,
   },
@@ -147,6 +153,7 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
       timeoutMs: 15000,
     },
     required: true,
+    stability: "core",
     hasSkill: true,
   },
   {
@@ -168,24 +175,23 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
       supabaseKey: "${SUPABASE_SERVICE_KEY}",
     },
     required: false,
+    stability: "preview",
     envVars: ["SUPABASE_URL", "SUPABASE_SERVICE_KEY"],
     hasSkill: false,
     packageDeps: { "@supabase/supabase-js": "^2.103.0" },
   },
   {
-    label: "Manifest",
-    tagline: "registry of org-specific knowledge endpoints",
+    label: "Knowledge",
+    tagline: "local docs and API-backed knowledge sources",
     description:
-      "Catalog of files / URLs the agent can fetch to answer questions about your org or project. Defaults to ./manifest/ on disk; can point at an HTTP-served manifest.",
-    type: "manifest",
-    defaultName: "manifest",
+      "Catalog of local files and remote knowledge APIs the agent can fetch to answer questions about your org or project. Defaults to ./knowledge/ on disk.",
+    type: "knowledge",
+    defaultName: "knowledge",
     defaultOptions: {
-      // Default to file:// scheme pointing at the scaffolded example dir
-      // (per α-6 + spec §Decision 9). Operators wanting an HTTP-served
-      // manifest replace this with `${MANIFEST_URL}` and provide the env.
-      baseUrl: "file://./manifest",
+      root: "./knowledge",
     },
     required: false,
+    stability: "stable",
     hasSkill: true,
   },
   // `skills` (ADR-030 model-facing skill surface) is NOT in the catalog.
@@ -204,6 +210,7 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
       allowedCommands: ["echo", "ls", "cat", "pwd", "date"],
     },
     required: false,
+    stability: "preview",
     hasSkill: true,
   },
   {
@@ -224,12 +231,13 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
       anonymousGlobalLimit: 30,
       dailyBudgetUsd: 5,
     },
-    required: true,
+    required: false,
+    stability: "preview",
     hasSkill: false,
   },
   {
     label: "Notify",
-    tagline: "outbound messaging (webhook / Telegram / email)",
+    tagline: "send outbound alerts to operators",
     description:
       "Lets the agent ping you when something happens. Adapters: log-to-file (default), webhook, telegram, agentmail. Per-destination rate limit + dedup.",
     type: "notify",
@@ -250,6 +258,7 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
       },
     },
     required: false,
+    stability: "stable",
     // No env vars in the default scaffold — log-to-file needs none.
     // Operators switching to webhook destinations will add ORG_NOTIFY_URL
     // (or similar) manually.
@@ -281,12 +290,13 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
       inbound: { mode: "none" },
     },
     required: false,
+    stability: "preview",
     envVars: ["AGENTMAIL_API_KEY", "AGENTMAIL_INBOX_ID"],
     hasSkill: true,
   },
   {
     label: "Telegram Transport",
-    tagline: "talk to the agent on Telegram (in + out)",
+    tagline: "chat with the agent from Telegram",
     description:
       "Bidirectional Telegram chat. Long-poll or webhook inbound. Four-path identity (creator user IDs, recognized via visitorAuth, anonymous). Requires TELEGRAM_BOT_TOKEN.",
     type: "telegramTransport",
@@ -306,6 +316,7 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
       },
     },
     required: false,
+    stability: "stable",
     envVars: ["TELEGRAM_BOT_TOKEN"],
     hasSkill: false,
   },
@@ -318,10 +329,11 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
     defaultName: "turnControl",
     defaultOptions: {},
     required: true,
+    stability: "core",
     hasSkill: true,
   },
   {
-    label: "link",
+    label: "Link",
     tagline: "peer-to-peer A2A (auggy ↔ auggy / A2A peers)",
     description:
       "Lets two agents talk to each other directly over the A2A v0.2 protocol. No central service. Opens a port for inbound + dials configured peers outbound.",
@@ -339,6 +351,7 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
       peers: {},
     },
     required: false,
+    stability: "preview",
     envVars: ["AUGGY_AGENT_ID", "AUGGY_AGENT_NAME", "AUGGY_LINK_PUBLIC_URL"],
     hasSkill: true,
     packageDeps: { "@auggy/link": "^0.1.2" },
@@ -369,6 +382,7 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
       layeredMemoryDbPath: "./memory.db",
     },
     required: false,
+    stability: "preview",
     // AGENTMAIL_API_KEY + AGENTMAIL_INBOX_ID intentionally omitted — they're
     // only needed when the operator switches `agentMail.transport` to
     // "agentmail". AUGGY_PUBLIC_URL, VISITOR_SIGNING_KEY, AUGGY_AGENT_ID

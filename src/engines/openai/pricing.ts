@@ -8,6 +8,9 @@ import {
 
 // USD per million tokens. Update via PR when OpenAI changes pricing.
 const TABLE: Record<string, Pricing> = {
+  "gpt-5.5": { inputUsdPerMtok: 5.0, outputUsdPerMtok: 30.0 },
+  "gpt-5.4": { inputUsdPerMtok: 2.5, outputUsdPerMtok: 15.0 },
+  "gpt-5.4-mini": { inputUsdPerMtok: 0.75, outputUsdPerMtok: 4.5 },
   "gpt-5": { inputUsdPerMtok: 5.0, outputUsdPerMtok: 20.0 },
   "gpt-5-mini": { inputUsdPerMtok: 1.0, outputUsdPerMtok: 4.0 },
 };
@@ -20,7 +23,7 @@ export function listModels(): string[] {
   return Object.keys(TABLE);
 }
 
-const VERIFIED_AT = "2026-04-27";
+const VERIFIED_AT = "2026-06-01";
 
 export function lookup(model: string): Pricing | null {
   return TABLE[model] ?? null;
@@ -34,14 +37,14 @@ export interface OpenAIUsage {
   prompt_tokens: number;
   completion_tokens: number;
   cached_tokens?: number;
-  /** Reasoning tokens are billed at the output rate for o-series / gpt-5.1. */
+  /** Reasoning tokens are billed at the output rate for reasoning-capable GPT models. */
   reasoning_tokens?: number;
 }
 
 /**
  * Price an OpenAI Chat Completions response.
  *
- * Reasoning tokens (o-series, gpt-5.1) are folded into outputTokens because
+ * Reasoning tokens are folded into outputTokens because
  * they are billed at the output rate.
  *
  * Returns `{ priced: false, reason }` when the model is not in the table and

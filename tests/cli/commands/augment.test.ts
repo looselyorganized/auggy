@@ -6,8 +6,10 @@ import { parse as parseYaml } from "yaml";
 import { seedAgentForTest } from "../../../src/cli/agent-index";
 import {
   augmentCommand,
+  formatAugmentCatalog,
   formatAugmentList,
   installCustomAugment,
+  listAugmentCatalog,
   listAugments,
   removeAugment,
 } from "../../../src/cli/commands/augment";
@@ -34,6 +36,7 @@ describe("auggy augment command", () => {
       augment: undefined,
       config: undefined,
       skipInstall: true,
+      yes: undefined,
       auggyDir: undefined,
     });
   });
@@ -48,6 +51,7 @@ describe("auggy augment command", () => {
       augment: "visitorAuth",
       config: undefined,
       skipInstall: undefined,
+      yes: undefined,
       auggyDir: "/tmp/auggy",
     });
   });
@@ -227,6 +231,59 @@ describe("listAugments and removeAugment", () => {
     expect(text).toContain("built-in");
     expect(text).toContain("custom");
     expect(text).toContain("./augments/weather/index.ts");
+  });
+
+  test("formats catalog list with installed, available, and preview sections", () => {
+    const root = mkdtempSync(join(tmpdir(), "augment-catalog-list-"));
+    try {
+      const auggyDir = join(root, "auggy");
+      seedAgentForTest("zip", {
+        auggyDir,
+        yaml: [
+          "id: aug1_a3f7c2e1-8b4d-4f9e-a6c1-2d8e9f0b3a5c",
+          "name: zip",
+          "engine:",
+          "  provider: anthropic",
+          "  model: claude-sonnet-4-6",
+          "augments:",
+          "  - name: webFetch",
+          "    type: webFetch",
+          "",
+        ].join("\n"),
+      });
+
+      const list = listAugmentCatalog({ agentName: "zip", auggyDir });
+      const text = formatAugmentCatalog(list);
+
+      expect(text).toContain("Installed:");
+      expect(text).toContain("webFetch");
+      expect(text).toContain("Available:");
+      expect(text).toContain("knowledge");
+      expect(text).toContain("# Local docs and API-backed knowledge sources");
+      expect(text).not.toContain("Knowledge - local docs");
+      expect(text).toContain("Preview:");
+      expect(text).toContain("visitorAuth");
+      expect(text).toContain("auggy augment add <name>");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("catalog list works outside an agent project", () => {
+    const root = mkdtempSync(join(tmpdir(), "augment-catalog-standalone-"));
+    try {
+      const list = listAugmentCatalog({ cwd: root });
+      const text = formatAugmentCatalog(list);
+
+      expect(text).toContain("Installed:");
+      expect(text).toContain("none");
+      expect(text).toContain("Available:");
+      expect(text).toContain("knowledge");
+      expect(text).toContain("Preview:");
+      expect(text).toContain("visitorAuth");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   test("removes a built-in augment and its bundled skill folder", () => {

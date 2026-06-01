@@ -81,22 +81,18 @@ describe("runCreate writes per-agent package.json", () => {
     expect(pkg.dependencies[PROVIDER_TO_PACKAGE.anthropic]).toBeUndefined();
   });
 
-  test("selecting `link` augment merges @auggy/link from catalog packageDeps", async () => {
-    answers = {
-      provider: "anthropic",
-      model: "claude-sonnet-4-6",
-      augmentTypes: ["link"],
-    };
+  test("create does not install post-create augment package deps", async () => {
+    answers = { provider: "anthropic", model: "claude-sonnet-4-6" };
 
-    await runCreate("demo-with-link", {
+    await runCreate("demo-core-only", {
       cwd: projectParent,
       bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
     });
 
     const pkg = JSON.parse(
-      readFileSync(join(agentDirFor("demo-with-link"), "package.json"), "utf-8"),
+      readFileSync(join(agentDirFor("demo-core-only"), "package.json"), "utf-8"),
     );
-    expect(pkg.dependencies["@auggy/link"]).toBe("^0.1.2");
+    expect(pkg.dependencies["@auggy/link"]).toBeUndefined();
     expect(pkg.dependencies["@auggy/anthropic"]).toBeDefined();
   });
 });
@@ -164,9 +160,9 @@ describe("runCreate scaffolding integration", () => {
       "filesystem",
       "webTransport",
       "webFetch",
-      "budgets",
       "turnControl",
     ]);
+    expect(existsSync(join(dir, "skills", "auggy", "SKILL.md"))).toBe(true);
     expect(existsSync(join(dir, "skills", "filesystem", "SKILL.md"))).toBe(true);
     expect(existsSync(join(dir, "skills", "webFetch", "SKILL.md"))).toBe(true);
     expect(existsSync(join(dir, "skills", "turnControl", "SKILL.md"))).toBe(true);
@@ -209,14 +205,49 @@ describe("runCreate scaffolding integration", () => {
       console.log = originalLog;
     }
 
-    expect(logs.join("\n")).toContain(`cd ${join(projectParent, "demo-output")}`);
+    expect(logs.join("\n")).toContain("cd demo-output");
+    expect(logs.join("\n")).toContain("Set .env");
     expect(logs.join("\n")).toContain("auggy run");
     expect(logs.join("\n")).not.toContain("auggy run demo-output");
     expect(logs.join("\n")).not.toContain("auggy dev demo-output --open");
   });
 
+  test("provided API key is written to .env and removes the env next step", async () => {
+    answers = {
+      provider: "anthropic",
+      model: "claude-sonnet-4-6",
+      apiKey: "sk-ant-test",
+    };
+    const originalLog = console.log;
+    const logs: string[] = [];
+    console.log = (...args: unknown[]) => {
+      logs.push(args.map(String).join(" "));
+    };
+
+    try {
+      await runCreate("demo-key", {
+        cwd: projectParent,
+        skipInstall: true,
+        bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
+      });
+    } finally {
+      console.log = originalLog;
+    }
+
+    const dir = agentDirFor("demo-key");
+    const env = readFileSync(join(dir, ".env"), "utf-8");
+    const envExample = readFileSync(join(dir, ".env.example"), "utf-8");
+    expect(env).toContain("ANTHROPIC_API_KEY=sk-ant-test");
+    expect(envExample).toContain("ANTHROPIC_API_KEY=");
+    expect(envExample).not.toContain("sk-ant-test");
+    expect(logs.join("\n")).not.toContain("Set .env");
+    expect(logs.join("\n")).toContain("Open in your editor");
+    expect(logs.join("\n")).toContain("identity.md");
+    expect(logs.join("\n")).toContain("auggy run");
+  });
+
   test("agent.yaml + identity.md + skills/ + data/workspace all scaffolded", async () => {
-    answers = { provider: "anthropic", model: "claude-sonnet-4-6" };
+    answers = { provider: "anthropic", model: "claude-sonnet-4-6", displayName: "Jim" };
 
     await runCreate("demo-full", {
       cwd: projectParent,
@@ -228,20 +259,41 @@ describe("runCreate scaffolding integration", () => {
     expect(existsSync(join(dir, "identity.md"))).toBe(true);
     expect(existsSync(join(dir, "learned.md"))).toBe(true);
     expect(existsSync(join(dir, "skills"))).toBe(true);
+    expect(existsSync(join(dir, "skills", "auggy", "SKILL.md"))).toBe(true);
     expect(existsSync(join(dir, "data", "workspace"))).toBe(true);
     expect(existsSync(join(dir, "workspace"))).toBe(false);
     expect(existsSync(join(dir, ".env"))).toBe(true);
     expect(existsSync(join(dir, ".env.example"))).toBe(true);
     expect(existsSync(join(dir, ".gitignore"))).toBe(true);
     expect(existsSync(join(dir, "package.json"))).toBe(true);
+    const config = parseYaml(readFileSync(join(dir, "agent.yaml"), "utf-8")) as {
+      displayName: string;
+    };
+    const identity = readFileSync(join(dir, "identity.md"), "utf-8");
+    expect(config.displayName).toBe("Jim");
+    expect(identity).toContain("# Jim");
+    expect(identity).toContain("You are Jim,");
+  });
+
+  test("create leaves knowledge for post-create augment add", async () => {
+    answers = { provider: "anthropic", model: "claude-sonnet-4-6" };
+
+    await runCreate("demo-knowledge-later", {
+      cwd: projectParent,
+      bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
+    });
+
+    const dir = agentDirFor("demo-knowledge-later");
+    const config = parseYaml(readFileSync(join(dir, "agent.yaml"), "utf-8")) as {
+      augments: Array<{ type: string; options?: Record<string, unknown> }>;
+    };
+    expect(config.augments.some((aug) => aug.type === "knowledge")).toBe(false);
+    expect(existsSync(join(dir, "knowledge"))).toBe(false);
+    expect(existsSync(join(dir, "skills", "knowledge", "SKILL.md"))).toBe(false);
   });
 
   test("create writes a standalone project directory", async () => {
-    answers = {
-      provider: "anthropic",
-      model: "claude-sonnet-4-6",
-      augmentTypes: ["layeredMemory"],
-    };
+    answers = { provider: "anthropic", model: "claude-sonnet-4-6" };
 
     await runCreate("demo-project", {
       cwd: projectParent,
@@ -261,11 +313,9 @@ describe("runCreate scaffolding integration", () => {
     const config = parseYaml(readFileSync(join(dir, "agent.yaml"), "utf-8")) as {
       augments: Array<{ type: string; options?: Record<string, unknown> }>;
     };
-    const memory = config.augments.find((aug) => aug.type === "layeredMemory");
-    const budgets = config.augments.find((aug) => aug.type === "budgets");
     const files = config.augments.find((aug) => aug.type === "filesystem");
-    expect(memory?.options?.dbPath).toBe("./data/memory.sqlite");
-    expect(budgets?.options?.dbPath).toBe("./data/budgets.db");
+    expect(config.augments.some((aug) => aug.type === "layeredMemory")).toBe(false);
+    expect(config.augments.some((aug) => aug.type === "budgets")).toBe(false);
     expect(JSON.stringify(files?.options)).toContain("./data/workspace");
   });
 

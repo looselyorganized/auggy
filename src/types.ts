@@ -528,6 +528,7 @@ export interface Storage {
 
 export interface AgentCardProvider {
   name: string;
+  displayName?: string;
   version?: string;
   contact?: string;
 }
@@ -998,6 +999,7 @@ export type CompactionStrategy = "summarize" | "truncate" | "sliding-window";
 
 export interface AgentConfig {
   name: string;
+  displayName?: string;
   purpose?: string;
   model: string;
   augments: Augment[];

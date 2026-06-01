@@ -9,6 +9,12 @@ import {
 // USD per million tokens. Update via PR when Anthropic changes pricing.
 // Cache rates: write = 1.25× input, read = 0.1× input (per Anthropic docs).
 const TABLE: Record<string, Pricing> = {
+  "claude-opus-4-8": {
+    inputUsdPerMtok: 5.0,
+    outputUsdPerMtok: 25.0,
+    cacheWriteUsdPerMtok: 6.25,
+    cacheReadUsdPerMtok: 0.5,
+  },
   "claude-opus-4-7": {
     inputUsdPerMtok: 15.0,
     outputUsdPerMtok: 75.0,
@@ -33,6 +39,12 @@ const TABLE: Record<string, Pricing> = {
     cacheWriteUsdPerMtok: 1.0,
     cacheReadUsdPerMtok: 0.08,
   },
+  "claude-haiku-4-5-20251001": {
+    inputUsdPerMtok: 1.0,
+    outputUsdPerMtok: 5.0,
+    cacheWriteUsdPerMtok: 1.25,
+    cacheReadUsdPerMtok: 0.1,
+  },
 };
 
 /**
@@ -43,7 +55,7 @@ export function listModels(): string[] {
   return Object.keys(TABLE);
 }
 
-const VERIFIED_AT = "2026-04-27";
+const VERIFIED_AT = "2026-06-01";
 
 export function lookup(model: string): Pricing | null {
   return TABLE[model] ?? null;

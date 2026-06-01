@@ -24,6 +24,7 @@ export function generateAgentCard(config: AgentConfig): AgentCard {
   return {
     provider: {
       name: config.name,
+      displayName: config.displayName,
     },
     purpose: config.purpose,
     capabilities: {

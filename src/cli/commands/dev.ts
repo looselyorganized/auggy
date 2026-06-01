@@ -15,7 +15,7 @@
  *   8. Wait for signal → agent.stop() → cleanup
  */
 
-import { resolve, dirname } from "node:path";
+import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { defineAgent } from "../../agent";
 import { parseConfig } from "../config-parser";
 import { resolveEngine } from "../engine-resolver";
@@ -62,6 +62,44 @@ export interface DevOpts {
    * `--open` flag is plumbed through `opts.open` directly.
    */
   onReady?: (info: DevReadyInfo) => void;
+}
+
+export function formatDevReadyMessage(args: {
+  agentName: string;
+  port: number | null;
+  configPath: string;
+  deployCommand: string;
+}): string {
+  const lines = [`Agent "${args.agentName}" is live.`, ""];
+
+  if (args.port) {
+    const consoleUrl = `http://localhost:${args.port}/console`;
+    lines.push(`  Chat:     ${consoleUrl}/chat`);
+    lines.push(`  Console:  ${consoleUrl}`);
+    lines.push(`  Health:   http://localhost:${args.port}/health`);
+    lines.push("");
+  }
+
+  lines.push("Extend it:");
+  lines.push("  auggy augment list");
+  lines.push("  auggy augment add <name>");
+  lines.push("  auggy augment create <name>");
+  lines.push("");
+  lines.push("Deploy it:");
+  lines.push(`  ${args.deployCommand.padEnd(20)} Deploy to Railway`);
+  lines.push("");
+  lines.push(`Config: ${args.configPath}`);
+  lines.push("Press Ctrl-C to stop.");
+
+  return lines.join("\n");
+}
+
+export function formatRunDisplayPath(
+  path: string,
+  cwd: string | undefined = process.cwd(),
+): string {
+  const rel = relative(resolve(cwd), resolve(path));
+  return rel && !rel.startsWith("..") && !isAbsolute(rel) ? rel : path;
 }
 
 export async function runDev(name: string | undefined, opts: DevOpts): Promise<void> {
@@ -111,6 +149,7 @@ export async function runDev(name: string | undefined, opts: DevOpts): Promise<v
     augments = await resolveAugments(config.augments, agentDir);
     agentConfig = {
       name: agentName,
+      displayName: config.displayName,
       purpose: config.purpose,
       model: config.engine.model,
       augments,
@@ -152,17 +191,18 @@ export async function runDev(name: string | undefined, opts: DevOpts): Promise<v
   });
 
   // Start the agent.
+  console.log("Starting services:");
   await agent.start();
 
   const consoleUrl = port ? `http://localhost:${port}/console` : null;
-  console.log(`Agent "${agentName}" running (PID ${process.pid})`);
-  if (consoleUrl) {
-    console.log(`  Chat:      ${consoleUrl}/chat`);
-    console.log(`  Console:   ${consoleUrl}`);
-    console.log(`  Health:    http://localhost:${port}/health`);
-  }
-  console.log(`  Config:    ${configPath}`);
-  console.log(`  Press Ctrl-C to stop.`);
+  console.log(
+    `\n${formatDevReadyMessage({
+      agentName,
+      port,
+      configPath: formatRunDisplayPath(configPath, opts.cwd),
+      deployCommand: name ? `auggy deploy ${agentName}` : "auggy deploy",
+    })}`,
+  );
 
   // --open: pop the operator's browser to the chat surface. Small delay so
   // the banner lands first, then the browser opens — cleaner than racing

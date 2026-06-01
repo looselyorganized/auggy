@@ -311,17 +311,20 @@ Why this shape:
 - **Per-environment override** without redeploying: set `AUGGY_ALLOW_ANONYMOUS=true` in the Railway env panel to flip a deployed agent into demo mode (no yaml edit, no redeploy).
 - **Operator's deliberate choice** in yaml beats both: if you wrote `allowAnonymous: false` in yaml, env vars cannot override you.
 
-At boot, `webTransport` emits an operator-facing log line announcing both the resolved value and its source:
+At boot, `webTransport` emits an operator-facing posture line:
 
 ```
-[web-transport] allowAnonymous=true (source: default, NODE_ENV=unset)
-[web-transport] allowAnonymous=false (source: env, AUGGY_ALLOW_ANONYMOUS=false)
-[web-transport] allowAnonymous=true (source: yaml)
+[web] anonymous local chat enabled
+[web] anonymous chat disabled (production default)
+[web] anonymous chat enabled (agent.yaml)
 ```
 
-If `allowAnonymous` resolves to `true` AND the `visitor-auth` augment is not mounted, AND the value came from `env` or `default` (not explicit yaml), a startup warning fires reminding the operator that anonymous visitors have no documented upgrade path to recognized identity. When `allowAnonymous: true` is explicit in yaml, the warning is suppressed — the operator has signaled intent.
+If `allowAnonymous` resolves to `true`, the `visitorAuth` augment is not mounted, the value came from `env` or `default` (not explicit yaml), and the runtime looks publicly reachable (`NODE_ENV=production`, Railway env vars, or a non-local `AUGGY_PUBLIC_URL`), a startup warning fires. Local default runs stay quiet. When `allowAnonymous: true` is explicit in yaml, the warning is suppressed because the operator has signaled intent.
 
-The budgets augment (default scaffold) caps cost for anonymous traffic — typically 5 turns per thread, 30 turns globally per day, and a $5/day global ceiling. visitorAuth (when mounted) gives anonymous visitors a magic-link path to upgrade to recognized identity for higher trust + budget tiers.
+The optional `budgets` augment caps cost for anonymous traffic — typically 5
+turns per thread, 30 turns globally per day, and a $5/day global ceiling.
+`visitorAuth` (when mounted) gives anonymous visitors a magic-link path to
+upgrade to recognized identity for higher trust + budget tiers.
 
 #### 3. Validate the body
 

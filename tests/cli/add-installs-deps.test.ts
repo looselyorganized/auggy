@@ -70,6 +70,7 @@ describe("runAdd mutates per-agent package.json", () => {
     await runAdd("with-link", {
       config: join(dir, "agent.yaml"),
       auggyDir,
+      yes: true,
       bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
     });
 
@@ -90,6 +91,7 @@ describe("runAdd mutates per-agent package.json", () => {
     await runAdd("with-supa", {
       config: join(dir, "agent.yaml"),
       auggyDir,
+      yes: true,
       bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
     });
 
@@ -104,6 +106,7 @@ describe("runAdd mutates per-agent package.json", () => {
     await runAdd("with-link", {
       config: join(dir, "agent.yaml"),
       auggyDir,
+      yes: true,
       bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
     });
 
@@ -119,6 +122,7 @@ describe("runAdd mutates per-agent package.json", () => {
       config: join(dir, "agent.yaml"),
       auggyDir,
       skipInstall: true,
+      yes: true,
       bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
     });
 
@@ -160,6 +164,26 @@ describe("runAdd no-op cases", () => {
     expect(existsSync(join(dir, "skills", "webFetch", "SKILL.md"))).toBe(true);
   });
 
+  test("adding knowledge scaffolds knowledge sources and skill", async () => {
+    const dir = setupAgent("with-knowledge");
+
+    await runAdd("with-knowledge", {
+      config: join(dir, "agent.yaml"),
+      auggyDir,
+      augment: "knowledge",
+      bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
+    });
+
+    const yaml = readFileSync(join(dir, "agent.yaml"), "utf-8");
+    expect(yaml).toContain("type: knowledge");
+    expect(yaml).toContain("root: ./knowledge");
+    expect(existsSync(join(dir, "knowledge", "sources.json"))).toBe(true);
+    expect(existsSync(join(dir, "knowledge", "local", "manifest"))).toBe(true);
+    expect(existsSync(join(dir, "knowledge", "local", "mission.md"))).toBe(true);
+    expect(existsSync(join(dir, "knowledge", "local", "team.md"))).toBe(true);
+    expect(existsSync(join(dir, "skills", "knowledge", "SKILL.md"))).toBe(true);
+  });
+
   test("project-local no args opens the picker for the cwd agent", async () => {
     const dir = setupAgent("local-picker");
     answers = { augmentTypes: ["bash"] };
@@ -167,6 +191,7 @@ describe("runAdd no-op cases", () => {
     await runAdd(undefined, {
       cwd: dir,
       auggyDir,
+      yes: true,
       bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
     });
 
@@ -181,11 +206,43 @@ describe("runAdd no-op cases", () => {
       config: join(dir, "agent.yaml"),
       auggyDir,
       augment: "layeredMemory",
+      yes: true,
       bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
     });
 
     const yaml = readFileSync(join(dir, "agent.yaml"), "utf-8");
     expect(yaml).toContain("type: layeredMemory");
+  });
+
+  test("preview augment add declines without --yes when operator does not confirm", async () => {
+    const dir = setupAgent("preview-decline");
+    const before = readFileSync(join(dir, "agent.yaml"), "utf-8");
+
+    await runAdd("preview-decline", {
+      config: join(dir, "agent.yaml"),
+      auggyDir,
+      augment: "layeredMemory",
+      bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
+    });
+
+    expect(readFileSync(join(dir, "agent.yaml"), "utf-8")).toBe(before);
+    expect(existsSync(join(dir, "skills", "layeredMemory", "SKILL.md"))).toBe(false);
+    expect(bunInstallCalls).toHaveLength(0);
+  });
+
+  test("stable augment add does not require preview confirmation", async () => {
+    const dir = setupAgent("stable-add");
+
+    await runAdd("stable-add", {
+      config: join(dir, "agent.yaml"),
+      auggyDir,
+      augment: "notify",
+      bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
+    });
+
+    const yaml = readFileSync(join(dir, "agent.yaml"), "utf-8");
+    expect(yaml).toContain("type: notify");
+    expect(existsSync(join(dir, "skills", "notify", "SKILL.md"))).toBe(true);
   });
 
   test("adding visitorAuth generates VISITOR_SIGNING_KEY in .env", async () => {
@@ -195,6 +252,7 @@ describe("runAdd no-op cases", () => {
       config: join(dir, "agent.yaml"),
       auggyDir,
       augment: "visitorAuth",
+      yes: true,
       bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
     });
 
@@ -218,6 +276,7 @@ describe("runAdd no-op cases", () => {
       config: join(dir, "agent.yaml"),
       auggyDir,
       augment: "visitorAuth",
+      yes: true,
       bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
     });
 
@@ -262,6 +321,7 @@ describe("runAdd no-op cases", () => {
     await runAdd("with-bash", {
       config: join(dir, "agent.yaml"),
       auggyDir,
+      yes: true,
       bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
     });
 
@@ -287,6 +347,7 @@ describe("runAdd package manifest preflight", () => {
       await runAdd("missing-package", {
         config: join(dir, "agent.yaml"),
         auggyDir,
+        yes: true,
         bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
       });
 
@@ -323,6 +384,7 @@ describe("runAdd package manifest preflight", () => {
     await runAdd("happy-path", {
       config: join(dir, "agent.yaml"),
       auggyDir,
+      yes: true,
       bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
     });
 

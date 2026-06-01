@@ -65,7 +65,7 @@ export interface CsrfToken {
 }
 
 export interface AgentCardLite {
-  provider: { name: string; description?: string };
+  provider: { name: string; displayName?: string; description?: string };
   purpose?: string;
   capabilities?: Record<string, unknown>;
   skills?: Array<{ name: string; description?: string; category?: string }>;
@@ -81,6 +81,7 @@ export type AugmentCategory = "transports" | "capabilities" | "memory" | "guardr
 export interface AgentMeta {
   id?: string;
   name?: string;
+  displayName?: string;
   purpose?: string;
   engine?: {
     provider?: string;

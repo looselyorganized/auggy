@@ -26,7 +26,7 @@ const FALLBACK = "An Auggy agent";
  * `web-transport.ts` so per-request cost is just Response construction.
  */
 export function renderInfoPage(card: AgentCard): string {
-  const rawName = card.provider.name;
+  const rawName = card.provider.displayName ?? card.provider.name;
   const hasName = rawName.trim() !== "";
   const escapedName = hasName ? escapeHtml(rawName) : "";
   const title = hasName ? `${escapedName} — Auggy agent` : FALLBACK;

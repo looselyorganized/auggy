@@ -88,9 +88,9 @@ export type { SupabaseMemoryOptions } from "./augments/supabaseMemory";
 export { filesystem } from "./augments/filesystem";
 export type { FilesystemOptions, FsMount } from "./augments/filesystem";
 
-// === Built-in augments (org) ===
-export { manifest } from "./augments/manifest";
-export type { ManifestOptions } from "./augments/manifest";
+// === Built-in augments (knowledge) ===
+export { knowledge, knowledgeRoot } from "./augments/knowledge";
+export type { KnowledgeRootOptions, ManifestOptions } from "./augments/knowledge";
 
 // === Built-in augments (web) ===
 export { webFetch } from "./augments/webFetch";

@@ -12,9 +12,9 @@
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
-import { checkbox } from "@inquirer/prompts";
+import { checkbox, confirm } from "@inquirer/prompts";
 import {
   getAvailableAugments,
   resolveCatalogEntry,
@@ -27,6 +27,7 @@ import { mergePackageDeps } from "../scaffold-package-json";
 import { runBunInstall, type BunInstallSpawnFactory } from "../bun-install";
 import { parseEnvFile, serializeEnv, type EnvLine } from "../env-parse";
 import { writeBuiltinAugmentMetadata, writeCustomAugmentsReadme } from "../augment-metadata";
+import { writeKnowledgeScaffold } from "../scaffold-knowledge";
 
 export interface AddOpts {
   /** Path override for agent.yaml. */
@@ -44,6 +45,8 @@ export interface AddOpts {
   auggyDir?: string;
   /** Test seam: override process.cwd() for project-local resolution. */
   cwd?: string;
+  /** Skip preview augment confirmation prompts. */
+  yes?: boolean;
 }
 
 export async function runAdd(target: string | undefined, opts: AddOpts): Promise<void> {
@@ -76,13 +79,19 @@ export async function runAdd(target: string | undefined, opts: AddOpts): Promise
     : await checkbox<CatalogEntry>({
         message: "Select augments to add:",
         choices: available.map((entry) => ({
-          name: `${entry.label} — ${entry.description}`,
+          name: `${entry.label}${entry.stability === "preview" ? " (preview)" : ""} - ${entry.description}`,
           value: entry,
         })),
       });
 
   if (selected.length === 0) {
     console.log("No augments selected.");
+    return;
+  }
+
+  const proceed = await confirmPreviewAugments(selected, opts.yes);
+  if (!proceed) {
+    console.log("No changes made.");
     return;
   }
 
@@ -159,10 +168,29 @@ export async function runAdd(target: string | undefined, opts: AddOpts): Promise
   // the skills/ dir on every context() call; no identity.md edit needed.
   console.log();
   writeCustomAugmentsReadme(agentDir);
+  let knowledgeAdded = false;
   for (const entry of selected) {
     copyBundledSkill(entry.type, agentDir);
     writeBuiltinAugmentMetadata(agentDir, entry);
+    if (entry.type === "knowledge") {
+      writeKnowledgeScaffold(agentDir, knowledgeValues(raw, agentDir));
+      knowledgeAdded = true;
+    }
     console.log(`  ✓ ${entry.defaultName} (${entry.type})`);
+  }
+
+  if (knowledgeAdded) {
+    console.log();
+    console.log("Knowledge scaffold:");
+    console.log(
+      `  ${formatAddDisplayPath(join(agentDir, "knowledge", "local", "manifest"), opts.cwd)}`,
+    );
+    console.log(
+      `  ${formatAddDisplayPath(join(agentDir, "knowledge", "local", "mission.md"), opts.cwd)}`,
+    );
+    console.log(
+      `  ${formatAddDisplayPath(join(agentDir, "knowledge", "local", "team.md"), opts.cwd)}`,
+    );
   }
 
   // === Run bun install (last; failure leaves intentional partial state) ===
@@ -210,6 +238,58 @@ export async function runAdd(target: string | undefined, opts: AddOpts): Promise
   } else if (installOk) {
     console.log(formatApplyInstructions(name, agentDir, opts.cwd));
   }
+}
+
+async function confirmPreviewAugments(selected: CatalogEntry[], yes: boolean | undefined) {
+  const preview = selected.filter((entry) => entry.stability === "preview");
+  if (preview.length === 0 || yes) return true;
+
+  console.log();
+  console.log("Preview augment selected:");
+  for (const entry of preview) {
+    console.log(`  - ${entry.defaultName}: ${previewCaveat(entry)}`);
+  }
+  return confirm({
+    message:
+      "Preview augments are available for testing, but their v1.0 production surface is still being hardened. Proceed?",
+    default: false,
+  });
+}
+
+function previewCaveat(entry: CatalogEntry): string {
+  switch (entry.type) {
+    case "visitorAuth":
+      return "identity, token, and production email flows need deliberate setup";
+    case "budgets":
+      return "spend-limit behavior needs more production soak";
+    case "layeredMemory":
+      return "long-term memory semantics and storage choices are still being hardened";
+    case "link":
+      return "agent-to-agent networking has more edge cases to test";
+    case "agentMail":
+      return "email delivery and policy controls need production hardening";
+    default:
+      return "production DX is still being hardened";
+  }
+}
+
+function knowledgeValues(raw: Record<string, unknown>, agentDir: string) {
+  const name =
+    typeof raw.name === "string" && raw.name.trim() ? raw.name.trim() : nameForEnv(agentDir);
+  const purpose =
+    typeof raw.purpose === "string" && raw.purpose.trim()
+      ? raw.purpose.trim()
+      : "project knowledge for this agent";
+  return {
+    orgName: name,
+    orgPurpose: purpose,
+    operatorName: "the operator",
+  };
+}
+
+function formatAddDisplayPath(path: string, cwd: string | undefined = process.cwd()): string {
+  const rel = relative(resolve(cwd), resolve(path));
+  return rel && !rel.startsWith("..") && !isAbsolute(rel) ? rel : path;
 }
 
 function formatApplyInstructions(name: string, agentDir: string, cwd: string | undefined): string {

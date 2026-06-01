@@ -86,16 +86,20 @@ export function getModelChoices(provider: Provider): ModelChoice[] {
       // those. This curated list is the FALLBACK shown when discovery is
       // unavailable (ollama not installed, daemon down, remote ollama).
       //
-      // Curated for tool-call reliability based on BFCL V4 (2026-04-12).
-      // Models with weak tool-use scores (notably Llama 3.2 1B/3B at
-      // BFCL ranks 107/98) are deliberately excluded — they emit tool
-      // calls as plain text rather than via the structured channel and
-      // produce hallucinated failures in agentic flows.
+      // Curated for tool-call reliability from Ollama's current "tools"
+      // catalog plus the structured tool-call examples in Ollama docs.
+      // Models with weak/ambiguous structured tool-use behavior are
+      // deliberately excluded from the default list.
       return [
+        { id: "qwen3.6:27b", inputUsdPerMtok: 0, outputUsdPerMtok: 0 },
+        { id: "qwen3.5:9b", inputUsdPerMtok: 0, outputUsdPerMtok: 0 },
+        { id: "qwen3.5:27b", inputUsdPerMtok: 0, outputUsdPerMtok: 0 },
         { id: "qwen3:8b", inputUsdPerMtok: 0, outputUsdPerMtok: 0 },
         { id: "qwen3:14b", inputUsdPerMtok: 0, outputUsdPerMtok: 0 },
         { id: "qwen3:32b", inputUsdPerMtok: 0, outputUsdPerMtok: 0 },
         { id: "gemma4", inputUsdPerMtok: 0, outputUsdPerMtok: 0 },
+        { id: "glm-5.1", inputUsdPerMtok: 0, outputUsdPerMtok: 0 },
+        { id: "deepseek-v3.2", inputUsdPerMtok: 0, outputUsdPerMtok: 0 },
       ];
     default: {
       const _exhaustive: never = provider;

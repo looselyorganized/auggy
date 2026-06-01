@@ -1,9 +1,9 @@
 /**
- * Tests for the manifest augment.
+ * Tests for the knowledge augment.
  *
  * Coverage map (per α-6 spec / Codex review focus #3):
  *   - Positive cases: file:// (absolute + relative-via-resolver) manifest read,
- *     manifest_fetch under file:// (literal + .md fallback), HTTP backward compat
+ *     knowledge_fetch under file:// (literal + .md fallback), HTTP backward compat
  *   - Path-traversal attacks (must REJECT): `..`, double-`..`, deep-`..`,
  *     URL-encoded `..`, double-encoded `..`, absolute-looking path,
  *     mid-path `..`, double slash, null byte, symlink escape
@@ -15,7 +15,7 @@ import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
 import { writeFile, mkdir, symlink } from "node:fs/promises";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { manifest, isWithinBase } from "@/augments/manifest";
+import { knowledge, isWithinBase } from "@/augments/knowledge";
 import { resolveAugments } from "@/cli/augment-resolver";
 import { createTempDir } from "@tests/fixtures/temp-dir";
 import { asStringTool } from "@tests/fixtures/tool-helpers";
@@ -45,14 +45,14 @@ const stubTurn: TurnState = {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Run manifest_fetch on the given augment, returning the parsed JSON envelope. */
+/** Run knowledge_fetch on the given augment, returning the parsed JSON envelope. */
 async function callManifestFetch(
   aug: Augment,
   endpoint: string,
   prompt?: string,
 ): Promise<Record<string, unknown>> {
-  const tool = aug.tools!.find((t) => t.name === "manifest_fetch");
-  if (!tool) throw new Error("manifest_fetch tool not found on augment");
+  const tool = aug.tools!.find((t) => t.name === "knowledge_fetch");
+  if (!tool) throw new Error("knowledge_fetch tool not found on augment");
   const result = await asStringTool(tool).execute(prompt ? { endpoint, prompt } : { endpoint });
   return JSON.parse(result) as Record<string, unknown>;
 }
@@ -169,7 +169,7 @@ describe("manifest file:// scheme", () => {
 
   beforeEach(async () => {
     tmp = await createTempDir();
-    baseDir = join(tmp.path, "manifest");
+    baseDir = join(tmp.path, "knowledge");
     baseUrl = pathToFileURL(baseDir).href;
     await writeExampleManifest(baseDir);
     console.warn = mock(() => {});
@@ -187,7 +187,7 @@ describe("manifest file:// scheme", () => {
   // ---------------------------------------------------------------------------
 
   it("reads manifest from file:///<absolute-path>", async () => {
-    const aug = manifest({ baseUrl });
+    const aug = knowledge({ baseUrl });
     const block = await getManifestBlock(aug);
     expect(block).not.toBeNull();
     expect(block!.content).toContain("Test Org");
@@ -198,14 +198,19 @@ describe("manifest file:// scheme", () => {
   });
 
   it("resolves file://./relative paths via the augment-resolver against agentDir", async () => {
-    // file://./<rel> must be resolved by the resolver against agentDir; the
-    // augment receives an absolute file:// URL and reads correctly.
+    // The resolver turns the configured knowledge root into a mounted
+    // knowledge augment; source-local file:// URLs resolve relative to that
+    // root before the child augment is constructed.
+    await writeFile(
+      join(baseDir, "sources.json"),
+      `${JSON.stringify({ sources: [{ name: "local", baseUrl: "file://." }] }, null, 2)}\n`,
+    );
     const augments = await resolveAugments(
       [
         {
           name: "org",
-          type: "manifest",
-          options: { baseUrl: "file://./manifest" },
+          type: "knowledge",
+          options: { root: "./knowledge" },
         },
       ],
       tmp.path,
@@ -217,8 +222,8 @@ describe("manifest file:// scheme", () => {
     expect(block!.content).toContain("Test Org");
   });
 
-  it("manifest_fetch reads /mission via the .md fallback", async () => {
-    const aug = manifest({ baseUrl });
+  it("knowledge_fetch reads /mission via the .md fallback", async () => {
+    const aug = knowledge({ baseUrl });
     // Prime the manifest so the augment's base-dir cache populates.
     await getManifestBlock(aug);
     const result = await callManifestFetch(aug, "/mission");
@@ -255,7 +260,7 @@ describe("manifest file:// scheme", () => {
       delete: async () => fakeResponse(""),
       head: async () => fakeResponse(""),
     };
-    const aug = manifest({ baseUrl: "https://example.com", client: fakeClient });
+    const aug = knowledge({ baseUrl: "https://example.com", client: fakeClient });
     const block = await getManifestBlock(aug);
     expect(block).not.toBeNull();
     expect(block!.content).toContain("Test Org");
@@ -304,28 +309,28 @@ describe("manifest file:// scheme", () => {
   }
 
   it("rejects /../etc/passwd (no leak)", async () => {
-    const aug = manifest({ baseUrl });
+    const aug = knowledge({ baseUrl });
     await getManifestBlock(aug);
     const res = await callManifestFetch(aug, "/../etc/passwd");
     expectNoLeak(res);
   });
 
   it("rejects /../../etc/passwd (no leak)", async () => {
-    const aug = manifest({ baseUrl });
+    const aug = knowledge({ baseUrl });
     await getManifestBlock(aug);
     const res = await callManifestFetch(aug, "/../../etc/passwd");
     expectNoLeak(res);
   });
 
   it("rejects /../../../../../etc/passwd deep escape (no leak)", async () => {
-    const aug = manifest({ baseUrl });
+    const aug = knowledge({ baseUrl });
     await getManifestBlock(aug);
     const res = await callManifestFetch(aug, "/../../../../../etc/passwd");
     expectNoLeak(res);
   });
 
   it("rejects /%2e%2e/etc/passwd URL-encoded `..` (no leak)", async () => {
-    const aug = manifest({ baseUrl });
+    const aug = knowledge({ baseUrl });
     await getManifestBlock(aug);
     // Single-decoded once: "%2e%2e" → ".." → normalize collapses against
     // the leading slash → resolved path is inside the base → ENOENT.
@@ -334,7 +339,7 @@ describe("manifest file:// scheme", () => {
   });
 
   it("rejects /%252e%252e/etc/passwd double-encoded (no leak)", async () => {
-    const aug = manifest({ baseUrl });
+    const aug = knowledge({ baseUrl });
     await getManifestBlock(aug);
     // Decode-once policy: "%252e%252e" → "%2e%2e" (NOT "..").
     // Stays as a literal segment under the base → ENOENT, no escape.
@@ -343,7 +348,7 @@ describe("manifest file:// scheme", () => {
   });
 
   it("rejects an absolute-looking endpoint /etc/passwd (no leak)", async () => {
-    const aug = manifest({ baseUrl });
+    const aug = knowledge({ baseUrl });
     await getManifestBlock(aug);
     // Manifest convention: `/`-prefix means "rooted at base". The leading
     // `/` is stripped before join, so this becomes `<base>/etc/passwd`
@@ -353,14 +358,14 @@ describe("manifest file:// scheme", () => {
   });
 
   it("rejects mid-path traversal /foo/../../etc/passwd (no leak)", async () => {
-    const aug = manifest({ baseUrl });
+    const aug = knowledge({ baseUrl });
     await getManifestBlock(aug);
     const res = await callManifestFetch(aug, "/foo/../../etc/passwd");
     expectNoLeak(res);
   });
 
   it("rejects double-slash //etc/passwd (no leak)", async () => {
-    const aug = manifest({ baseUrl });
+    const aug = knowledge({ baseUrl });
     await getManifestBlock(aug);
     const res = await callManifestFetch(aug, "//etc/passwd");
     expectNoLeak(res);
@@ -370,7 +375,7 @@ describe("manifest file:// scheme", () => {
     // Allowlist the path so the High-1 check passes; defense-in-depth at
     // the null-byte layer in safeResolveUnderBase must still fire.
     await writeManifestWithEntries(baseDir, [{ path: "/\0bad", description: "test" }]);
-    const aug = manifest({ baseUrl });
+    const aug = knowledge({ baseUrl });
     await getManifestBlock(aug);
     const res = await callManifestFetch(aug, "/\0bad");
     expect(res.error as string).toMatch(/null byte/i);
@@ -380,7 +385,7 @@ describe("manifest file:// scheme", () => {
     // Same defense-in-depth posture: allowlist the literal request path so
     // the null-byte-after-decode rejection inside safeResolveUnderBase fires.
     await writeManifestWithEntries(baseDir, [{ path: "/safe%00.md", description: "test" }]);
-    const aug = manifest({ baseUrl });
+    const aug = knowledge({ baseUrl });
     await getManifestBlock(aug);
     const res = await callManifestFetch(aug, "/safe%00.md");
     expect(res.error as string).toMatch(/null byte/i);
@@ -399,7 +404,7 @@ describe("manifest file:// scheme", () => {
       { path: "/evil-link/passwd", description: "deliberately suspicious" },
     ]);
 
-    const aug = manifest({ baseUrl });
+    const aug = knowledge({ baseUrl });
     await getManifestBlock(aug);
     // The literal request path under the base is `/evil-link/passwd`.
     // safeResolveUnderBase joins to `<base>/evil-link/passwd`, then
@@ -413,23 +418,23 @@ describe("manifest file:// scheme", () => {
   // High-1: manifest allowlist (file:// branch)
   //
   // Per spec §Decision 9, the manifest is the authoritative endpoint
-  // contract. manifest_fetch must refuse any path that isn't listed in
+  // contract. knowledge_fetch must refuse any path that isn't listed in
   // manifest.endpoints[].path (strict equality, no prefix matching). When
   // no manifest is loaded at all (file unreadable / HTTP 404 / network
   // failure) every fetch must be refused with a clear error so the model
   // doesn't fall through to filesystem reads on an undefined contract.
   // ---------------------------------------------------------------------------
 
-  it("allowlist (file://): manifest_fetch refuses an unlisted path", async () => {
-    const aug = manifest({ baseUrl });
+  it("allowlist (file://): knowledge_fetch refuses an unlisted path", async () => {
+    const aug = knowledge({ baseUrl });
     await getManifestBlock(aug);
     const res = await callManifestFetch(aug, "/unlisted");
     expect(res.error as string).toMatch(/not in the manifest/i);
     expect(res.content).toBeUndefined();
   });
 
-  it("allowlist (file://): manifest_fetch allows a listed path", async () => {
-    const aug = manifest({ baseUrl });
+  it("allowlist (file://): knowledge_fetch allows a listed path", async () => {
+    const aug = knowledge({ baseUrl });
     await getManifestBlock(aug);
     const res = await callManifestFetch(aug, "/mission");
     expect(res.error).toBeUndefined();
@@ -437,11 +442,11 @@ describe("manifest file:// scheme", () => {
     expect(res.content as string).toContain("Test Org — Mission");
   });
 
-  it("allowlist (file://): manifest_fetch refuses when no manifest is loaded", async () => {
+  it("allowlist (file://): knowledge_fetch refuses when no manifest is loaded", async () => {
     // Empty base dir — manifest file doesn't exist; fetchManifest returns null.
     const emptyDir = join(tmp.path, "empty-org");
     await mkdir(emptyDir, { recursive: true });
-    const aug = manifest({ baseUrl: pathToFileURL(emptyDir).href });
+    const aug = knowledge({ baseUrl: pathToFileURL(emptyDir).href });
     // Don't call getManifestBlock — leave cachedManifest null.
     const res = await callManifestFetch(aug, "/mission");
     expect(res.error as string).toMatch(/no manifest loaded/i);
@@ -452,7 +457,7 @@ describe("manifest file:// scheme", () => {
   // High-1: manifest allowlist (HTTP branch)
   // ---------------------------------------------------------------------------
 
-  it("allowlist (HTTP): manifest_fetch refuses an unlisted path", async () => {
+  it("allowlist (HTTP): knowledge_fetch refuses an unlisted path", async () => {
     function fakeResponse(body: string, status = 200): HttpResponse {
       return {
         finalUrl: "https://example.com/x",
@@ -479,14 +484,14 @@ describe("manifest file:// scheme", () => {
       delete: async () => fakeResponse(""),
       head: async () => fakeResponse(""),
     };
-    const aug = manifest({ baseUrl: "https://example.com", client: fakeClient });
+    const aug = knowledge({ baseUrl: "https://example.com", client: fakeClient });
     await getManifestBlock(aug);
     const res = await callManifestFetch(aug, "/unlisted");
     expect(res.error as string).toMatch(/not in the manifest/i);
     expect(JSON.stringify(res)).not.toContain("LEAK");
   });
 
-  it("allowlist (HTTP): manifest_fetch allows a listed path", async () => {
+  it("allowlist (HTTP): knowledge_fetch allows a listed path", async () => {
     function fakeResponse(body: string, status = 200): HttpResponse {
       return {
         finalUrl: "https://example.com/x",
@@ -515,7 +520,7 @@ describe("manifest file:// scheme", () => {
       delete: async () => fakeResponse(""),
       head: async () => fakeResponse(""),
     };
-    const aug = manifest({ baseUrl: "https://example.com", client: fakeClient });
+    const aug = knowledge({ baseUrl: "https://example.com", client: fakeClient });
     await getManifestBlock(aug);
     const res = await callManifestFetch(aug, "/mission");
     expect(res.error).toBeUndefined();
@@ -523,7 +528,7 @@ describe("manifest file:// scheme", () => {
     expect(res.content as string).toContain("Mission body");
   });
 
-  it("allowlist (HTTP): manifest_fetch refuses when no manifest is loaded", async () => {
+  it("allowlist (HTTP): knowledge_fetch refuses when no manifest is loaded", async () => {
     // /manifest returns 404 — fetchManifest returns null, allowlist refuses.
     function fakeResponse(body: string, status = 200): HttpResponse {
       return {
@@ -543,7 +548,7 @@ describe("manifest file:// scheme", () => {
       delete: async () => fakeResponse(""),
       head: async () => fakeResponse(""),
     };
-    const aug = manifest({ baseUrl: "https://example.com", client: fakeClient });
+    const aug = knowledge({ baseUrl: "https://example.com", client: fakeClient });
     // Don't call getManifestBlock — leave cachedManifest null even after the
     // first allowlist check forces a fetch (which 404s and returns null).
     const res = await callManifestFetch(aug, "/mission");
@@ -564,7 +569,7 @@ describe("manifest file:// scheme", () => {
 
   it("traversal layer: rejects /../etc/passwd even when allowlisted", async () => {
     await writeManifestWithEntries(baseDir, [{ path: "/../etc/passwd", description: "evil" }]);
-    const aug = manifest({ baseUrl });
+    const aug = knowledge({ baseUrl });
     await getManifestBlock(aug);
     const res = await callManifestFetch(aug, "/../etc/passwd");
     expect(res.error as string).toMatch(/'\.\.' segment/i);
@@ -574,7 +579,7 @@ describe("manifest file:// scheme", () => {
 
   it("traversal layer: rejects //etc/passwd even when allowlisted", async () => {
     await writeManifestWithEntries(baseDir, [{ path: "//etc/passwd", description: "evil" }]);
-    const aug = manifest({ baseUrl });
+    const aug = knowledge({ baseUrl });
     await getManifestBlock(aug);
     const res = await callManifestFetch(aug, "//etc/passwd");
     expect(res.error as string).toMatch(/doubled slash/i);
@@ -588,7 +593,7 @@ describe("manifest file:// scheme", () => {
     // string still contains a literal `%2e` — the traversal layer must
     // refuse rather than silently treat it as opaque.
     await writeManifestWithEntries(baseDir, [{ path: "/%252e/foo", description: "evil" }]);
-    const aug = manifest({ baseUrl });
+    const aug = knowledge({ baseUrl });
     await getManifestBlock(aug);
     const res = await callManifestFetch(aug, "/%252e/foo");
     expect(res.error as string).toMatch(/encoded traversal marker/i);
@@ -603,7 +608,7 @@ describe("manifest file:// scheme", () => {
     // Allowlist the path so the High-1 check passes — the test is exercising
     // the ENOENT path inside fetchFromFile, not the allowlist.
     await writeManifestWithEntries(baseDir, [{ path: "/no-such-endpoint", description: "test" }]);
-    const aug = manifest({ baseUrl });
+    const aug = knowledge({ baseUrl });
     await getManifestBlock(aug);
     const res = await callManifestFetch(aug, "/no-such-endpoint");
     expect(res.error).toBeDefined();
@@ -617,7 +622,7 @@ describe("manifest file:// scheme", () => {
     // Allowlist `/subdir` so the High-1 check passes — the test exercises
     // the directory-handling path inside fetchFromFile.
     await writeManifestWithEntries(baseDir, [{ path: "/subdir", description: "test" }]);
-    const aug = manifest({ baseUrl });
+    const aug = knowledge({ baseUrl });
     await getManifestBlock(aug);
     // Hit `/subdir`. The literal path is a directory; readFile gets EISDIR.
     // The .md fallback then tries `/subdir.md`, which doesn't exist → ENOENT.
@@ -628,10 +633,10 @@ describe("manifest file:// scheme", () => {
   it("returns null manifest gracefully when manifest JSON is malformed", async () => {
     // Overwrite manifest with bad JSON.
     await writeFile(join(baseDir, "manifest"), "{not valid json");
-    const aug = manifest({ baseUrl });
+    const aug = knowledge({ baseUrl });
     const block = await getManifestBlock(aug);
     expect(block).toBeNull();
-    // manifest_fetch should still respond with a structured error.
+    // knowledge_fetch should still respond with a structured error.
     const res = await callManifestFetch(aug, "/mission");
     // The base dir is still readable; the .md fallback path works.
     // What matters: the augment didn't crash on bad manifest JSON.
@@ -642,14 +647,29 @@ describe("manifest file:// scheme", () => {
   // End-to-end (18) — α-4's scaffolded example dir + α-6's file:// reader
   // ---------------------------------------------------------------------------
 
-  it("end-to-end: scaffold-shaped manifest/ dir works through resolveAugments", async () => {
-    // Mimic what α-4's writeManifestExample produces (manifest + mission.md
-    // + team.md + README.md), then construct the augment via the same path
-    // the CLI uses — resolveAugments with `file://./manifest` and
-    // agentDir = the temp dir.
+  it("end-to-end: scaffold-shaped knowledge/ dir works through resolveAugments", async () => {
+    // Mimic what create writes: knowledge/sources.json + local/manifest +
+    // local endpoint files. The CLI config only points at the knowledge root.
     const e2eRoot = join(tmp.path, "e2e-agent");
-    const orgDir = join(e2eRoot, "manifest");
+    const knowledgeDir = join(e2eRoot, "knowledge");
+    const orgDir = join(knowledgeDir, "local");
     await mkdir(orgDir, { recursive: true });
+    await writeFile(
+      join(knowledgeDir, "sources.json"),
+      `${JSON.stringify(
+        {
+          sources: [
+            {
+              name: "local",
+              description: "Local project knowledge",
+              baseUrl: "file://./local",
+            },
+          ],
+        },
+        null,
+        2,
+      )}\n`,
+    );
     await writeFile(
       join(orgDir, "manifest"),
       `${JSON.stringify(
@@ -674,8 +694,8 @@ describe("manifest file:// scheme", () => {
       [
         {
           name: "org",
-          type: "manifest",
-          options: { baseUrl: "file://./manifest" },
+          type: "knowledge",
+          options: { root: "./knowledge" },
         },
       ],
       e2eRoot,
@@ -690,13 +710,21 @@ describe("manifest file:// scheme", () => {
     expect(block!.content).toContain("end-to-end test");
 
     // /mission via .md fallback.
-    const mission = await callManifestFetch(aug, "/mission");
+    const tool = aug.tools!.find((t) => t.name === "knowledge_fetch");
+    if (!tool) throw new Error("knowledge_fetch tool not found on augment");
+    const mission = JSON.parse(
+      await asStringTool(tool).execute({ source: "local", endpoint: "/mission" }),
+    ) as Record<string, unknown>;
     expect(mission.endpoint).toBe("/mission");
+    expect(mission.source).toBe("local");
     expect(mission.content as string).toContain("E2E mission body");
 
     // /team via .md fallback.
-    const team = await callManifestFetch(aug, "/team");
+    const team = JSON.parse(
+      await asStringTool(tool).execute({ source: "local", endpoint: "/team" }),
+    ) as Record<string, unknown>;
     expect(team.endpoint).toBe("/team");
+    expect(team.source).toBe("local");
     expect(team.content as string).toContain("E2E team body");
   });
 });
@@ -710,16 +738,16 @@ describe("manifest construction", () => {
     // The augment surface is intentionally absolute-only. Relative file://
     // URLs are the resolver's job. Direct factory construction with a
     // relative form must error so misuse is loud.
-    expect(() => manifest({ baseUrl: "file://./manifest" })).toThrow();
+    expect(() => knowledge({ baseUrl: "file://./manifest" })).toThrow();
   });
 
   it("accepts file:///<absolute-path> directly", () => {
-    expect(() => manifest({ baseUrl: "file:///tmp/some/path" })).not.toThrow();
+    expect(() => knowledge({ baseUrl: "file:///tmp/some/path" })).not.toThrow();
   });
 
   it("accepts http:// and https:// without parsing as file://", () => {
-    expect(() => manifest({ baseUrl: "http://localhost:3000" })).not.toThrow();
-    expect(() => manifest({ baseUrl: "https://example.com" })).not.toThrow();
+    expect(() => knowledge({ baseUrl: "http://localhost:3000" })).not.toThrow();
+    expect(() => knowledge({ baseUrl: "https://example.com" })).not.toThrow();
   });
 });
 
@@ -731,7 +759,7 @@ describe("manifest construction", () => {
 // downstream — allowlist throws on `undefined.endpoints`; onBoot crashes on
 // `manifest.endpoints.length`. Validator at the cache boundary fails closed:
 // invalid manifests are not cached; warn + treat as "no manifest loaded";
-// manifest_fetch returns a clean refusal envelope.
+// knowledge_fetch returns a clean refusal envelope.
 
 describe("manifest manifest shape validation", () => {
   let tmp: { path: string; cleanup: () => Promise<void> };
@@ -743,7 +771,7 @@ describe("manifest manifest shape validation", () => {
 
   beforeEach(async () => {
     tmp = await createTempDir();
-    baseDir = join(tmp.path, "manifest");
+    baseDir = join(tmp.path, "knowledge");
     baseUrl = pathToFileURL(baseDir).href;
     await mkdir(baseDir, { recursive: true });
     console.warn = mock(() => {});
@@ -758,11 +786,11 @@ describe("manifest manifest shape validation", () => {
 
   it("rejects empty-object manifest (no org/purpose/endpoints fields)", async () => {
     await writeFile(join(baseDir, "manifest"), "{}");
-    const aug = manifest({ baseUrl });
+    const aug = knowledge({ baseUrl });
     // No manifest = the augment treats it as "no manifest loaded".
     const block = await getManifestBlock(aug);
     expect(block).toBeNull();
-    // manifest_fetch should produce the manifest-refusal envelope, not crash.
+    // knowledge_fetch should produce the manifest-refusal envelope, not crash.
     const res = await callManifestFetch(aug, "/anything");
     expect(res.error).toBeDefined();
     expect(typeof res.error).toBe("string");
@@ -774,7 +802,7 @@ describe("manifest manifest shape validation", () => {
       join(baseDir, "manifest"),
       JSON.stringify({ org: "Test", purpose: "test", endpoints: null }),
     );
-    const aug = manifest({ baseUrl });
+    const aug = knowledge({ baseUrl });
     const block = await getManifestBlock(aug);
     expect(block).toBeNull();
     const res = await callManifestFetch(aug, "/anything");
@@ -791,7 +819,7 @@ describe("manifest manifest shape validation", () => {
         endpoints: [{ description: "missing path field" }],
       }),
     );
-    const aug = manifest({ baseUrl });
+    const aug = knowledge({ baseUrl });
     const block = await getManifestBlock(aug);
     expect(block).toBeNull();
     const res = await callManifestFetch(aug, "/anything");
@@ -804,7 +832,7 @@ describe("manifest manifest shape validation", () => {
       join(baseDir, "manifest"),
       JSON.stringify({ org: 42, purpose: "test", endpoints: [] }),
     );
-    const aug = manifest({ baseUrl });
+    const aug = knowledge({ baseUrl });
     const block = await getManifestBlock(aug);
     expect(block).toBeNull();
   });
@@ -818,7 +846,7 @@ describe("manifest manifest shape validation", () => {
         endpoints: [{ path: "/foo" }],
       }),
     );
-    const aug = manifest({ baseUrl });
+    const aug = knowledge({ baseUrl });
     const block = await getManifestBlock(aug);
     expect(block).toBeNull();
   });
@@ -835,7 +863,7 @@ describe("manifest manifest shape validation", () => {
       }),
     );
     await writeFile(join(baseDir, "foo"), "foo-content");
-    const aug = manifest({ baseUrl });
+    const aug = knowledge({ baseUrl });
     const block = await getManifestBlock(aug);
     expect(block).not.toBeNull();
     expect(block!.content).toContain("Test");

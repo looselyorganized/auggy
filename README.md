@@ -58,8 +58,10 @@ Bun executes them directly without a build step.
 
 Fresh agents include the local chat surface by default: identity shorthand,
 learned file memory, scoped filesystem + skills, web chat transport, web
-fetch, turn control, and budgets. After `create`, the only required first-run
-edit for hosted engines is the selected provider API key in the agent `.env`.
+fetch, and turn control. After `create`, the only required first-run edit for
+hosted engines is the selected provider API key in the agent `.env`. Add more
+capabilities after first chat with `auggy augment list` and
+`auggy augment add <name>`.
 
 > For local development against an in-progress branch, use the workspace install:
 > `git clone …augment-1 && cd augment-1 && bun install && bun link`.
@@ -74,6 +76,7 @@ Write a YAML config. The CLI resolves your augments, boots the kernel, and start
 ```yaml
 id: aug1_a3f7c2e1-8b4d-4f9e-a6c1-2d8e9f0b3a5c
 name: zip
+displayName: Zip
 purpose: "Front-door agent"
 
 engine:
@@ -93,9 +96,9 @@ augments:
       eviction: never
 
   - name: org
-    type: manifest
+    type: knowledge
     options:
-      baseUrl: ${ORG_CONTEXT_URL}
+      root: ./knowledge
 
   - name: web
     type: webTransport
@@ -135,17 +138,22 @@ augments:
 | `filesystem` | Multi-mount scoped file access (6 tools, realpath security) |
 | `webTransport` | AG-UI SSE chat transport (HTTP, four-path identity resolution, CORS, rate limiting, Idempotency-Key dedup) |
 | `webFetch` | URL fetch with HTML-to-text and JSON passthrough |
-| `manifest` | Org knowledge via manifest API (manifest_fetch tool) |
+| `knowledge` | Org knowledge via local files or API-backed sources (`knowledge_fetch` tool) |
 | `notify` | Outbound operator messaging (webhook + Telegram adapters, per-peer rate limits) |
 | `bash` | Scoped shell execution (allowlist, cwd, timeout; default `perTrustLevel` blocks `shell_exec`/`run_script` for public + agent) |
 | `budgets` | Per-trust-level turn budgets + per-peer dollar ceiling via 2PC turn-gate (BATS-style budget-aware preamble + post-hoc cost commit) |
+
+`auggy create` installs the core chat-ready set. `auggy augment list` shows
+stable add-ons (`knowledge`, `notify`, `telegramTransport`) separately from
+preview augments that are available for testing but still being hardened for
+production DX.
 
 ## Engines
 
 | Provider | Model examples | Config |
 |----------|---------------|--------|
-| `anthropic` | claude-sonnet-4-6, claude-opus-4-6 | `ANTHROPIC_API_KEY` env |
-| `openai` | gpt-5, o3 | `OPENAI_API_KEY` env |
+| `anthropic` | claude-sonnet-4-6, claude-opus-4-8, claude-haiku-4-5 | `ANTHROPIC_API_KEY` env |
+| `openai` | gpt-5.5, gpt-5.4, gpt-5.4-mini | `OPENAI_API_KEY` env |
 | `openrouter` | qwen/qwen3.5-397b-a17b, any model | `OPENROUTER_API_KEY` env |
 
 ## Custom augments

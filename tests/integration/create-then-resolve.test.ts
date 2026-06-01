@@ -42,7 +42,7 @@ function fabricateNodeModules(
 let auggyDir: string;
 
 function agentDirFor(name: string): string {
-  return join(auggyDir, "agents", name);
+  return join(auggyDir, name);
 }
 
 beforeEach(() => {
@@ -59,7 +59,7 @@ describe("end-to-end: create → fabricate install → resolveEngine", () => {
     answers = { provider: "anthropic", model: "claude-sonnet-4-6" };
 
     await runCreate("demo-anthropic", {
-      auggyDir,
+      cwd: auggyDir,
       skipInstall: true,
       bunInstallSpawn: createStubBunInstallSpawn(),
     });
@@ -86,7 +86,7 @@ describe("end-to-end: create → fabricate install → resolveEngine", () => {
     process.env.OPENAI_API_KEY = "sk-test-fabricated";
 
     await runCreate("demo-openai", {
-      auggyDir,
+      cwd: auggyDir,
       skipInstall: true,
       bunInstallSpawn: createStubBunInstallSpawn(),
     });
@@ -111,7 +111,7 @@ describe("end-to-end: create → fabricate install → resolveEngine", () => {
     process.env.OPENROUTER_API_KEY = "sk-or-test-fabricated";
 
     await runCreate("demo-openrouter", {
-      auggyDir,
+      cwd: auggyDir,
       skipInstall: true,
       bunInstallSpawn: createStubBunInstallSpawn(),
     });
@@ -131,7 +131,7 @@ describe("end-to-end: create → fabricate install → resolveEngine", () => {
     answers = { provider: "anthropic", model: "claude-sonnet-4-6" };
 
     await runCreate("demo-no-install", {
-      auggyDir,
+      cwd: auggyDir,
       skipInstall: true,
       bunInstallSpawn: createStubBunInstallSpawn(),
     });

@@ -2,7 +2,7 @@ import { Command } from "commander";
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
-import { AUGMENT_CATALOG, resolveCatalogEntry } from "../augment-catalog";
+import { AUGMENT_CATALOG, resolveCatalogEntry, type CatalogEntry } from "../augment-catalog";
 import { runAdd, type AddOpts } from "./add";
 import { resolveConfigPath } from "../resolve-config";
 import { scaffoldCustomAugment } from "../scaffold-custom-augment";
@@ -64,6 +64,12 @@ export interface ListedAugment {
   source?: string;
 }
 
+export interface AugmentCatalogList {
+  installed: ListedAugment[];
+  available: CatalogEntry[];
+  preview: CatalogEntry[];
+}
+
 export function augmentCommand(deps: AugmentCommandDeps = {}): Command {
   const scaffold = deps.scaffoldCustomAugment ?? scaffoldCustomAugment;
   const install = deps.installCustomAugment ?? installCustomAugment;
@@ -80,13 +86,18 @@ export function augmentCommand(deps: AugmentCommandDeps = {}): Command {
     .option("--agent <name>", "agent project name when running from a parent directory")
     .option("--config <path>", "path to agent.yaml")
     .option("--skip-install", "mutate package.json but don't run bun install")
+    .option("--yes", "skip preview augment confirmation prompts")
     .action(
-      async (augment: string, opts: { agent?: string; config?: string; skipInstall?: boolean }) => {
+      async (
+        augment: string,
+        opts: { agent?: string; config?: string; skipInstall?: boolean; yes?: boolean },
+      ) => {
         try {
           const addOpts: AddOpts = {
             augment: opts.agent || opts.config ? augment : undefined,
             config: opts.config,
             skipInstall: opts.skipInstall,
+            yes: opts.yes,
             auggyDir: deps.auggyDir,
           };
           await add(opts.agent ?? (opts.config ? undefined : augment), addOpts);
@@ -104,16 +115,12 @@ export function augmentCommand(deps: AugmentCommandDeps = {}): Command {
     .option("--config <path>", "path to agent.yaml")
     .action((opts: { agent?: string; config?: string }) => {
       try {
-        const result = listAugments({
+        const result = listAugmentCatalog({
           agentName: opts.agent,
           config: opts.config,
           auggyDir: deps.auggyDir,
         });
-        if (result.length === 0) {
-          console.log("No augments installed.");
-          return;
-        }
-        console.log(formatAugmentList(result));
+        console.log(formatAugmentCatalog(result));
       } catch (err) {
         console.error(`Error: ${(err as Error).message}`);
         exit(1);
@@ -236,6 +243,79 @@ export function formatAugmentList(augments: ListedAugment[]): string {
   return allRows
     .map((row) => row.map((cell, index) => (cell ?? "").padEnd(widths[index] ?? 0)).join("  "))
     .join("\n");
+}
+
+export function listAugmentCatalog(opts: ListAugmentsOptions = {}): AugmentCatalogList {
+  const installed = listInstalledForCatalog(opts);
+  const installedTypes = new Set(installed.map((augment) => augment.type));
+  return {
+    installed,
+    available: AUGMENT_CATALOG.filter(
+      (entry) => entry.stability === "stable" && !installedTypes.has(entry.type),
+    ),
+    preview: AUGMENT_CATALOG.filter(
+      (entry) => entry.stability === "preview" && !installedTypes.has(entry.type),
+    ),
+  };
+}
+
+function listInstalledForCatalog(opts: ListAugmentsOptions): ListedAugment[] {
+  try {
+    return listAugments(opts);
+  } catch (err) {
+    const message = (err as Error).message;
+    const catalogOnly = !opts.agentName && !opts.config && message.startsWith("No agent specified");
+    if (catalogOnly) return [];
+    throw err;
+  }
+}
+
+export function formatAugmentCatalog(list: AugmentCatalogList): string {
+  return [
+    formatCatalogSection("Installed", list.installed, formatInstalledAugment),
+    list.available.length > 0
+      ? formatCatalogSection("Available", list.available, formatCatalogEntry)
+      : "",
+    list.preview.length > 0
+      ? formatCatalogSection("Preview", list.preview, formatCatalogEntry)
+      : "",
+    "Add one:\n  auggy augment add <name>",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+function formatCatalogSection<T>(
+  title: string,
+  rows: T[],
+  formatRow: (row: T, width: number) => string,
+): string {
+  if (rows.length === 0) return `${title}:\n  none`;
+  const width = Math.max(...rows.map((row) => catalogIdentifier(row).length));
+  return [`${title}:`, ...rows.map((row) => formatRow(row, width))].join("\n");
+}
+
+function catalogIdentifier(row: unknown): string {
+  if (isCatalogEntry(row)) return row.defaultName;
+  return (row as ListedAugment).type;
+}
+
+function formatInstalledAugment(augment: ListedAugment, width: number): string {
+  const suffix = augment.category === "custom" && augment.source ? ` (${augment.source})` : "";
+  return `  ${augment.type.padEnd(width)}  ${augment.label}${suffix}`;
+}
+
+function formatCatalogEntry(entry: CatalogEntry, width: number): string {
+  return `  ${entry.defaultName.padEnd(width)}  # ${capitalize(entry.tagline)}`;
+}
+
+function isCatalogEntry(value: unknown): value is CatalogEntry {
+  return !!value && typeof value === "object" && "defaultName" in value;
+}
+
+function capitalize(value: string): string {
+  if (!value) return value;
+  return `${value[0]?.toUpperCase()}${value.slice(1)}`;
 }
 
 export function removeAugment(opts: RemoveAugmentOptions): RemoveAugmentResult {

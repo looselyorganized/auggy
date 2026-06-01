@@ -9,7 +9,12 @@ import { ChatTab } from "@/routes/ChatTab";
 export function App() {
   const dashboard = useDashboard();
   const provider = dashboard.data?.card.provider;
-  const agentName = dashboard.data?.agentMeta?.name ?? provider?.name ?? "auggy";
+  const agentName =
+    dashboard.data?.agentMeta?.displayName ??
+    provider?.displayName ??
+    dashboard.data?.agentMeta?.name ??
+    provider?.name ??
+    "auggy";
   const agentDescription = dashboard.data?.agentMeta?.purpose ?? dashboard.data?.card.purpose;
   const online: "online" | "offline" | "unknown" = dashboard.error
     ? "offline"

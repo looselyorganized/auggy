@@ -16,13 +16,12 @@
 
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
-import { pathToFileURL } from "node:url";
 import { fileMemory } from "../augments/fileMemory";
 import { supabaseMemory } from "../augments/supabaseMemory";
 import { filesystem } from "../augments/filesystem";
 import { webTransport } from "../transports/web-transport";
 import { webFetch } from "../augments/webFetch";
-import { manifest } from "../augments/manifest";
+import { knowledgeRoot } from "../augments/knowledge";
 import { skills } from "../augments/skills";
 import { bash } from "../augments/bash";
 import { notify } from "../augments/notify";
@@ -59,53 +58,6 @@ import { validateBundledSkills } from "./skill-validator";
 function resolvePath(path: string, agentDir: string): string {
   if (path.startsWith("/")) return path;
   return resolve(agentDir, path);
-}
-
-/**
- * Resolve an manifest baseUrl, normalizing relative `file://...` shapes
- * against the agent dir so the augment factory only ever sees absolute
- * file:// URLs.
- *
- * Accepted inputs:
- *   - `http://...` / `https://...` — passed through unchanged
- *   - `file:///abs/path`           — passed through unchanged (already absolute)
- *   - `file://./relative/path`     — resolved against agentDir, returned as
- *     an absolute file:// URL via `pathToFileURL`
- *   - `file://relative/path`       — same; tolerated for ergonomics. The two-
- *     slash relative form mirrors how operators tend to write `file://`-style
- *     URLs in YAML config (`file://./manifest`).
- *
- * Rationale: keeping the relative→absolute conversion in the resolver avoids
- * threading an `agentDir` construction parameter through to the augment
- * factory (per ADR-024 — no new kernel surface; per the manifest augment's
- * design — the factory accepts only absolute file:// URLs).
- */
-function resolveManifestBaseUrl(baseUrl: string, agentDir: string): string {
-  if (!/^file:/i.test(baseUrl)) return baseUrl;
-
-  // Distinguishing absolute vs relative after stripping the `file:` scheme
-  // is ambiguous — both forms can produce a leading slash. So we count
-  // leading slashes BEFORE stripping:
-  //   - `file:///abs/path` (three slashes) — POSIX-form absolute URL
-  //   - `file:/abs/path`   (one slash, no `//`) — uncommon but valid absolute
-  //   - `file://./rel`     (two slashes + `.`) — relative; this codebase's
-  //     convention for "relative to agent dir"
-  //   - `file://rel/path`  (two slashes, no `.`) — also relative; tolerated
-  //     for ergonomics (mirrors how operators write the URL in YAML config)
-  const afterScheme = baseUrl.replace(/^file:/i, "");
-  const isAbsoluteFileUrl =
-    afterScheme.startsWith("///") || (afterScheme.startsWith("/") && !afterScheme.startsWith("//"));
-
-  if (isAbsoluteFileUrl) {
-    // Already absolute — pass through unchanged.
-    return baseUrl;
-  }
-
-  // Relative form. Compute the absolute path against agentDir and return as a
-  // proper file:// URL.
-  const relPath = afterScheme.replace(/^\/+/, "");
-  const absPath = resolve(agentDir, relPath);
-  return pathToFileURL(absPath).href;
 }
 
 // ---------------------------------------------------------------------------
@@ -515,10 +467,9 @@ export async function resolveAugments(
       case "webFetch":
         augment = resolveWebFetch(opts);
         break;
-      case "manifest":
-        augment = manifest({
-          baseUrl: resolveManifestBaseUrl(opts.baseUrl as string, agentDir),
-          token: opts.token as string | undefined,
+      case "knowledge":
+        augment = knowledgeRoot({
+          root: resolvePath((opts.root as string | undefined) ?? "./knowledge", agentDir),
           cacheTtlMs: opts.cacheTtlMs as number | undefined,
         });
         break;

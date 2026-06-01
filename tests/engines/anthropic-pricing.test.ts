@@ -27,6 +27,15 @@ describe("anthropic lookup", () => {
     expect(r!.cacheWriteUsdPerMtok).toBe(1.0);
     expect(r!.cacheReadUsdPerMtok).toBe(0.08);
   });
+
+  it("returns correct opus 4.8 rates", () => {
+    const r = lookup("claude-opus-4-8");
+    expect(r).toBeTruthy();
+    expect(r!.inputUsdPerMtok).toBe(5.0);
+    expect(r!.outputUsdPerMtok).toBe(25.0);
+    expect(r!.cacheWriteUsdPerMtok).toBe(6.25);
+    expect(r!.cacheReadUsdPerMtok).toBe(0.5);
+  });
 });
 
 describe("anthropic getFreshness", () => {
@@ -38,7 +47,7 @@ describe("anthropic getFreshness", () => {
   it("is not stale as of the verified date", () => {
     // Inject 'now' as the verified date itself → age 0.
     const { freshness } = require("@/engines/_shared/cost");
-    const f = freshness("2026-04-27", 90, new Date("2026-04-27T12:00:00Z"));
+    const f = freshness("2026-06-01", 90, new Date("2026-06-01T12:00:00Z"));
     expect(f.stale).toBe(false);
   });
 });

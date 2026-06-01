@@ -263,6 +263,7 @@ describe("handleAdminRoute — auth", () => {
       [
         "id: agent_123",
         "name: Zip",
+        "displayName: Jim",
         "purpose: Help the operator ship.",
         "engine:",
         "  provider: anthropic",
@@ -279,6 +280,7 @@ describe("handleAdminRoute — auth", () => {
       agentMeta: {
         id?: string;
         name?: string;
+        displayName?: string;
         purpose?: string;
         engine?: { provider?: string; model?: string };
       };
@@ -286,6 +288,7 @@ describe("handleAdminRoute — auth", () => {
     expect(body.agentMeta).toEqual({
       id: "agent_123",
       name: "Zip",
+      displayName: "Jim",
       purpose: "Help the operator ship.",
       engine: { provider: "anthropic", model: "claude-sonnet-4-6" },
     });

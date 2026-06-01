@@ -10,12 +10,12 @@
  */
 
 import { cpSync, existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
-import { checkbox, confirm, select, input } from "@inquirer/prompts";
+import { confirm, input, password, select } from "@inquirer/prompts";
 import { stringify } from "yaml";
 import { AUGMENT_CATALOG, type CatalogEntry } from "../augment-catalog";
-import { copyBundledSkill, renderIdentityFromTemplate } from "../scaffold-skills";
+import { copyBundledSkill, copyStarterSkills, renderIdentityFromTemplate } from "../scaffold-skills";
 import { getModelChoices, formatChoiceLabel, type Provider } from "../model-picker";
 import {
   listInstalledOllamaModels,
@@ -26,10 +26,11 @@ import { buildAgentPackageJson, getAuggyVersion } from "../scaffold-package-json
 import { runBunInstall, type BunInstallSpawnFactory } from "../bun-install";
 import { withEscRestart, WizardRestartRequested } from "../wizard-restart";
 import { writeBuiltinAugmentMetadata, writeCustomAugmentsReadme } from "../augment-metadata";
+import { writeKnowledgeScaffold } from "../scaffold-knowledge";
 
 const PROVIDER_DEFAULTS: Record<Provider, { model: string; envVar: string }> = {
   anthropic: { model: "claude-sonnet-4-6", envVar: "ANTHROPIC_API_KEY" },
-  openai: { model: "gpt-5", envVar: "OPENAI_API_KEY" },
+  openai: { model: "gpt-5.4-mini", envVar: "OPENAI_API_KEY" },
   openrouter: {
     model: "anthropic/claude-sonnet-4-6",
     envVar: "OPENROUTER_API_KEY",
@@ -44,12 +45,7 @@ const PROVIDER_DEFAULTS: Record<Provider, { model: string; envVar: string }> = {
  * Env vars the scaffold computes itself — written to `.env` as concrete
  * values, never surfaced to the operator as "fill in this placeholder."
  */
-const AUTO_GENERATED_ENV_VARS = new Set([
-  "AUGGY_WEB_TOKEN",
-  "AUGGY_AGENT_ID",
-  "AUGGY_PUBLIC_URL",
-  "VISITOR_SIGNING_KEY",
-]);
+const AUTO_GENERATED_ENV_VARS = new Set(["AUGGY_WEB_TOKEN", "AUGGY_AGENT_ID", "AUGGY_PUBLIC_URL"]);
 
 const DEFAULT_OPERATOR_NAME = "the operator";
 const DEFAULT_PURPOSE = "a helpful assistant";
@@ -91,14 +87,16 @@ export interface InitOpts extends CreateOpts {
 interface WizardAnswers {
   provider: Provider;
   model: string;
+  displayName: string;
   operatorName: string;
   purpose: string;
   augments: CatalogEntry[];
   orgName: string;
   orgPurpose: string;
-  manifestSelected: boolean;
+  knowledgeSelected: boolean;
   ollamaBaseURL: string | undefined;
   ollamaNeedsBearer: boolean;
+  providedEnv: Record<string, string>;
 }
 
 /**
@@ -111,7 +109,7 @@ interface WizardAnswers {
  * lazy thunk preserves ESM live-binding of the prompt imports (tests
  * replace `@inquirer/prompts` via `mock.module`).
  */
-async function runWizard(): Promise<WizardAnswers> {
+async function runWizard(agentName: string): Promise<WizardAnswers> {
   // Interactive engine selection.
   const provider = await withEscRestart((ctx) =>
     select<Provider>(
@@ -258,7 +256,45 @@ async function runWizard(): Promise<WizardAnswers> {
     model = modelSelection;
   }
 
-  // Operator + purpose prompts.
+  const providedEnv: Record<string, string> = {};
+  const providerEnvVar = PROVIDER_DEFAULTS[provider].envVar;
+  if (providerEnvVar) {
+    const key = await withEscRestart((ctx) =>
+      password(
+        {
+          message: `${providerLabel(provider)} API key (optional):`,
+          mask: "*",
+        },
+        ctx,
+      ),
+    );
+    if (key.trim()) providedEnv[providerEnvVar] = key.trim();
+  }
+  if (ollamaNeedsBearer) {
+    const key = await withEscRestart((ctx) =>
+      password(
+        {
+          message: "Ollama bearer token (optional):",
+          mask: "*",
+        },
+        ctx,
+      ),
+    );
+    if (key.trim()) providedEnv.OLLAMA_API_KEY = key.trim();
+  }
+
+  // Identity prompts.
+  const displayNameAnswer = await withEscRestart((ctx) =>
+    input(
+      {
+        message: "Agent display name (shown in chat):",
+        default: agentName,
+      },
+      ctx,
+    ),
+  );
+  const displayName = displayNameAnswer.trim() || agentName;
+
   const operatorName = await withEscRestart((ctx) =>
     input(
       {
@@ -278,82 +314,28 @@ async function runWizard(): Promise<WizardAnswers> {
     ),
   );
 
-  // Interactive augment selection.
-  //
-  // Two-step visual: print the always-included augments above the picker
-  // as a dimmed header (no checkbox, no scrollable position) so they don't
-  // compete for attention or confuse first-runners about what's actually
-  // a choice. Then run checkbox() only on the optional entries with
-  // one-line taglines + a detail panel for the focused row.
-  const requiredEntries = AUGMENT_CATALOG.filter((e) => e.required);
-  const optionalEntries = AUGMENT_CATALOG.filter((e) => !e.required);
+  const augments = AUGMENT_CATALOG.filter((e) => e.stability === "core");
 
-  if (requiredEntries.length > 0) {
-    console.log();
-    console.log(dim("  Always included:"));
-    for (const entry of requiredEntries) {
-      console.log(`    ${dim("•")}  ${entry.label.padEnd(20)} ${dim(entry.tagline)}`);
-    }
-    console.log();
+  console.log();
+  console.log(dim("  Included:"));
+  for (const entry of augments) {
+    console.log(`    ${dim("-")}  ${entry.label.padEnd(20)} ${dim(entry.tagline)}`);
   }
-
-  const selected = await withEscRestart((ctx) =>
-    checkbox(
-      {
-        message: "Pick the rest:",
-        choices: optionalEntries.map((entry) => ({
-          name: `${entry.label.padEnd(20)} ${entry.tagline}`,
-          value: entry,
-          description: entry.description,
-        })),
-      },
-      ctx,
-    ),
-  );
-
-  const augments = [...requiredEntries];
-  for (const entry of selected) {
-    if (!augments.includes(entry)) {
-      augments.push(entry);
-    }
-  }
-
-  // Conditional org prompts — only ask when manifest is selected.
-  const manifestSelected = augments.some((e) => e.type === "manifest");
-  let orgName = DEFAULT_ORG_NAME;
-  let orgPurpose = DEFAULT_ORG_PURPOSE;
-  if (manifestSelected) {
-    orgName = await withEscRestart((ctx) =>
-      input(
-        {
-          message: "Org name:",
-          default: DEFAULT_ORG_NAME,
-        },
-        ctx,
-      ),
-    );
-    orgPurpose = await withEscRestart((ctx) =>
-      input(
-        {
-          message: "Org purpose (one sentence):",
-          default: DEFAULT_ORG_PURPOSE,
-        },
-        ctx,
-      ),
-    );
-  }
+  console.log();
 
   return {
     provider,
     model,
+    displayName,
     operatorName,
     purpose,
     augments,
-    orgName,
-    orgPurpose,
-    manifestSelected,
+    orgName: DEFAULT_ORG_NAME,
+    orgPurpose: DEFAULT_ORG_PURPOSE,
+    knowledgeSelected: false,
     ollamaBaseURL,
     ollamaNeedsBearer,
+    providedEnv,
   };
 }
 
@@ -398,7 +380,7 @@ async function runCreateIntoDir(
   for (;;) {
     if (attempt === 0) printWelcome();
     try {
-      answers = await runWizard();
+      answers = await runWizard(name);
       break;
     } catch (err) {
       if (err instanceof WizardRestartRequested) {
@@ -415,14 +397,16 @@ async function runCreateIntoDir(
   const {
     provider,
     model,
+    displayName,
     operatorName,
     purpose,
     augments,
     orgName,
     orgPurpose,
-    manifestSelected,
+    knowledgeSelected,
     ollamaBaseURL,
     ollamaNeedsBearer,
+    providedEnv,
   } = answers;
 
   const id = `aug1_${randomUUID()}`;
@@ -439,6 +423,7 @@ async function runCreateIntoDir(
     mkdirSync(join(tempDir, "data", "workspace"), { recursive: true });
     mkdirSync(join(tempDir, "augments"), { recursive: true });
     writeCustomAugmentsReadme(tempDir);
+    copyStarterSkills(tempDir);
 
     console.log();
     console.log(dim(" Installing augments..."));
@@ -456,6 +441,7 @@ async function runCreateIntoDir(
       {
         provider,
         model,
+        displayName,
         operatorName,
         purpose,
         ollamaBaseURL,
@@ -468,6 +454,7 @@ async function runCreateIntoDir(
       join(tempDir, "identity.md"),
       renderIdentityFromTemplate({
         agentName: name,
+        displayName,
         purpose,
         operatorName,
       }),
@@ -477,16 +464,16 @@ async function runCreateIntoDir(
       writeFileSync(join(tempDir, "learned.md"), "");
     }
 
-    if (manifestSelected) {
-      writeManifestExample(tempDir, { orgName, orgPurpose, operatorName });
+    if (knowledgeSelected) {
+      writeKnowledgeScaffold(tempDir, { orgName, orgPurpose, operatorName }, { overwrite: true });
     }
 
     // Build .env with both auto-generated values AND empty placeholders for
     // env vars the operator still needs to fill.
     const placeholderEnvVars = collectEnvVars(augments, provider).filter(
-      (v) => !AUTO_GENERATED_ENV_VARS.has(v),
+      (v) => !AUTO_GENERATED_ENV_VARS.has(v) && !providedEnv[v],
     );
-    if (ollamaNeedsBearer) placeholderEnvVars.push("OLLAMA_API_KEY");
+    if (ollamaNeedsBearer && !providedEnv.OLLAMA_API_KEY) placeholderEnvVars.push("OLLAMA_API_KEY");
 
     const autoGenLines: string[] = [];
     if (augments.some((e) => e.type === "webTransport")) {
@@ -497,12 +484,15 @@ async function runCreateIntoDir(
         (webTransportEntry?.defaultOptions as { port?: number } | undefined)?.port ?? 8080;
       autoGenLines.push(`AUGGY_PUBLIC_URL=http://localhost:${port}`);
     }
-    if (augments.some((e) => e.type === "visitorAuth")) {
-      autoGenLines.push(`VISITOR_SIGNING_KEY=${randomBytes(32).toString("hex")}`);
+    for (const [key, value] of Object.entries(providedEnv)) {
+      autoGenLines.push(`${key}=${value}`);
     }
-
     writeFileSync(join(tempDir, ".env"), buildEnv(autoGenLines, placeholderEnvVars));
-    writeFileSync(join(tempDir, ".env.example"), buildEnv([], placeholderEnvVars));
+    const exampleEnvVars = collectEnvVars(augments, provider).filter(
+      (v) => !AUTO_GENERATED_ENV_VARS.has(v),
+    );
+    if (ollamaNeedsBearer) exampleEnvVars.push("OLLAMA_API_KEY");
+    writeFileSync(join(tempDir, ".env.example"), buildEnv([], exampleEnvVars));
     writeFileSync(join(tempDir, ".gitignore"), GITIGNORE);
 
     const auggyVersion = getAuggyVersion();
@@ -587,7 +577,7 @@ async function runCreateIntoDir(
   console.log();
   let step = 1;
   if (mode === "create") {
-    console.log(`   ${cream(`${step++}.`)}  cd ${finalDir}`);
+    console.log(`   ${cream(`${step++}.`)}  cd ${relativeCreatePath(finalDir, opts.cwd)}`);
   }
   if (opts.skipInstall) {
     console.log(`   ${cream(`${step++}.`)}  bun install`);
@@ -597,21 +587,24 @@ async function runCreateIntoDir(
     );
   }
   const envVarsForNextSteps = collectEnvVars(augments, provider).filter(
-    (v) => !AUTO_GENERATED_ENV_VARS.has(v),
+    (v) => !AUTO_GENERATED_ENV_VARS.has(v) && !providedEnv[v],
   );
-  if (ollamaNeedsBearer) envVarsForNextSteps.push("OLLAMA_API_KEY");
+  if (ollamaNeedsBearer && !providedEnv.OLLAMA_API_KEY) envVarsForNextSteps.push("OLLAMA_API_KEY");
   if (envVarsForNextSteps.length > 0) {
     console.log(
-      `   ${cream(`${step++}.`)}  Fill in .env  ${dim(`(${envVarsForNextSteps.join(", ")})`)}`,
+      `   ${cream(`${step++}.`)}  Set .env   ${dim(`(${envVarsForNextSteps.join(", ")})`)}`,
     );
+  } else {
+    console.log(`   ${cream(`${step++}.`)}  Open in your editor   ${dim("(identity.md, .env)")}`);
   }
-  console.log(
-    `   ${cream(`${step++}.`)}  Open . in your editor   ${dim("(identity.md, agent.yaml — optional)")}`,
-  );
-  console.log(
-    `   ${cream(`${step++}.`)}  auggy run   ${dim("(boots + opens /console/chat in your browser)")}`,
-  );
+  console.log(`   ${cream(`${step++}.`)}  auggy run`);
   console.log();
+}
+
+function relativeCreatePath(finalDir: string, cwd: string | undefined): string {
+  const baseDir = resolve(cwd ?? process.cwd());
+  if (dirname(finalDir) === baseDir) return basename(finalDir);
+  return finalDir;
 }
 
 function printCustomModelWarning(modelId: string): void {
@@ -631,6 +624,19 @@ function printCustomModelWarning(modelId: string): void {
   console.log();
   console.log(`Confirm at the next prompt to proceed, or decline to abort.`);
   console.log();
+}
+
+function providerLabel(provider: Provider): string {
+  switch (provider) {
+    case "anthropic":
+      return "Anthropic";
+    case "openai":
+      return "OpenAI";
+    case "openrouter":
+      return "OpenRouter";
+    case "ollama":
+      return "Ollama";
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -673,6 +679,7 @@ function buildAgentYaml(
   engine: {
     provider: Provider;
     model: string;
+    displayName: string;
     operatorName: string;
     purpose: string;
     ollamaBaseURL?: string;
@@ -692,6 +699,7 @@ function buildAgentYaml(
   const config: Record<string, unknown> = {
     id,
     name,
+    displayName: engine.displayName,
     purpose: engine.purpose,
     operators: [engine.operatorName],
     identity: "./identity.md",
@@ -786,42 +794,6 @@ function buildEnv(autoGenLines: string[], placeholderVars: string[]): string {
     for (const v of placeholderVars) lines.push(`${v}=`);
   }
   return `${lines.join("\n")}\n`;
-}
-
-/**
- * Write a minimal example `manifest/` directory the manifest augment
- * can read with `baseUrl: file://./manifest` (α-6).
- */
-function writeManifestExample(
-  agentDir: string,
-  values: { orgName: string; orgPurpose: string; operatorName: string },
-): void {
-  const manifestDir = join(agentDir, "manifest");
-  mkdirSync(manifestDir, { recursive: true });
-
-  const manifest = {
-    org: values.orgName,
-    purpose: values.orgPurpose,
-    operator: values.operatorName,
-    phase: "active",
-    endpoints: [
-      { path: "/mission", description: "Org mission and active focus" },
-      { path: "/team", description: "People and roles" },
-    ],
-  };
-  writeFileSync(join(manifestDir, "manifest"), `${JSON.stringify(manifest, null, 2)}\n`);
-  writeFileSync(
-    join(manifestDir, "mission.md"),
-    `# ${values.orgName} — Mission\n\n${values.orgPurpose}\n`,
-  );
-  writeFileSync(
-    join(manifestDir, "team.md"),
-    `# ${values.orgName} — Team\n\n- ${values.operatorName} (operator)\n`,
-  );
-  writeFileSync(
-    join(manifestDir, "README.md"),
-    `# Manifest (example)\n\nThis directory backs the manifest augment via the\n\`baseUrl: file://./manifest\` config in agent.yaml.\n\n- \`manifest\` — JSON listing the endpoints the augment exposes\n- \`mission.md\`, \`team.md\` — endpoint targets the manifest references\n\nReplace these files with your real content, or change \`baseUrl\` in\n\`agent.yaml\` to point at an HTTP-served manifest if you'd rather host\nit elsewhere.\n`,
-  );
 }
 
 const GITIGNORE = `.env

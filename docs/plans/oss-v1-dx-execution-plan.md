@@ -149,10 +149,13 @@ Behavior:
   - `filesystem`
   - `skills`
   - `turnControl`
-  - `budgets`
   - `webFetch`
-- `layeredMemory` should be optional unless background extraction is proven
-  zero-surprise for first run.
+- `auggy create` should not prompt for optional augments. `auggy augment list`
+  should present stable add-ons (`knowledge`, `notify`, `telegramTransport`)
+  and preview augments separately.
+- Preview augments (`layeredMemory`, `budgets`, `visitorAuth`, `link`,
+  `agentMail`, `bash`, `supabaseMemory`) should require explicit confirmation
+  when added.
 
 Likely files:
 
@@ -169,7 +172,7 @@ Tests:
 - `.env` asks only for the selected provider key plus selected optional augment
   secrets.
 - Bundled skills are copied for selected tool-providing augments.
-- Optional profile selections still work.
+- Optional augments install through `auggy augment add <name>`.
 
 Acceptance:
 

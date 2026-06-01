@@ -94,7 +94,12 @@ function AgentDetailsButton({
   const publicUrl = origin || "unknown";
   const agentCardUrl = origin ? `${origin}/.well-known/agent-card.json` : "";
   const healthUrl = origin ? `${origin}/health` : "";
-  const agentName = dashboard?.agentMeta?.name ?? dashboard?.card.provider.name ?? "auggy";
+  const agentName =
+    dashboard?.agentMeta?.displayName ??
+    dashboard?.card.provider.displayName ??
+    dashboard?.agentMeta?.name ??
+    dashboard?.card.provider.name ??
+    "auggy";
   const agentId = dashboard?.agentMeta?.id;
   const purpose = dashboard?.agentMeta?.purpose ?? dashboard?.card.purpose;
   const modelLabel = formatModelLabel(dashboard);
