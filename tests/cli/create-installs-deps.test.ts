@@ -226,6 +226,7 @@ describe("runCreate scaffolding integration", () => {
     const dir = agentDirFor("demo-full");
     expect(existsSync(join(dir, "agent.yaml"))).toBe(true);
     expect(existsSync(join(dir, "identity.md"))).toBe(true);
+    expect(existsSync(join(dir, "learned.md"))).toBe(true);
     expect(existsSync(join(dir, "skills"))).toBe(true);
     expect(existsSync(join(dir, "data", "workspace"))).toBe(true);
     expect(existsSync(join(dir, "workspace"))).toBe(false);

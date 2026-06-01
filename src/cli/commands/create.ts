@@ -473,7 +473,7 @@ async function runCreateIntoDir(
       }),
     );
 
-    if (augments.some((e) => e.defaultName === "learned")) {
+    if (augments.some((e) => e.type === "fileMemory")) {
       writeFileSync(join(tempDir, "learned.md"), "");
     }
 
