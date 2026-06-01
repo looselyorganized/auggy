@@ -14,6 +14,7 @@ describe("formatDevReadyMessage", () => {
     expect(out).toContain("  Chat:     http://localhost:8080/console/chat");
     expect(out).toContain("  Console:  http://localhost:8080/console");
     expect(out).toContain("  Health:   http://localhost:8080/health");
+    expect(out).toContain("  Home:     http://localhost:8080/");
     expect(out).toContain("Extend it:");
     expect(out).toContain("  auggy augment list");
     expect(out).toContain("  auggy augment add <name>");

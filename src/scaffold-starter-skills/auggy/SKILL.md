@@ -111,7 +111,7 @@ knowledge/
   local/
     manifest
     mission.md
-    team.md
+    context.md
 ```
 
 Add a new local topic by creating a markdown file:

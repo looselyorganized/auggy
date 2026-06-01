@@ -29,8 +29,8 @@ export function writeKnowledgeScaffold(
     operator: values.operatorName,
     phase: "active",
     endpoints: [
-      { path: "/mission", description: "Org mission and active focus" },
-      { path: "/team", description: "People and roles" },
+      { path: "/mission", description: "Agent purpose, project context, and active focus" },
+      { path: "/context", description: "Project background, terminology, workflows, and policies" },
     ],
   };
 
@@ -54,12 +54,12 @@ export function writeKnowledgeScaffold(
   writeText(join(localDir, "manifest"), `${JSON.stringify(manifest, null, 2)}\n`, opts);
   writeText(
     join(localDir, "mission.md"),
-    `# Mission\n\nThis agent helps with ${values.orgPurpose}\n\n## What This Agent Should Know\n\n- The project or organization is called ${values.orgName}.\n- The operator is ${values.operatorName}.\n- The current goal is ${values.orgPurpose}\n\n## Useful Context\n\nAdd product notes, project goals, policies, FAQs, domain context, or recurring decisions here.\n`,
+    `# Mission\n\n_Add information about this agent's mission here._\n\n## What It Should Know\n\n_Add project or organization information, operator details, product context, policies, FAQs, and domain context here._\n\n## Useful Context\n\n_Add recurring decisions, important links, support notes, constraints, or other context this agent should use when helping visitors._\n`,
     opts,
   );
   writeText(
-    join(localDir, "team.md"),
-    `# Team\n\n## Operator\n\n- ${values.operatorName}: primary operator and owner of this agent.\n\n## Contacts\n\nAdd people, roles, escalation paths, support contacts, or teams the agent should know about.\n`,
+    join(localDir, "context.md"),
+    `# Context\n\n## Background\n\n_Add project, product, organization, or domain background here._\n\n## Terms\n\n_Add vocabulary, abbreviations, entities, or concepts the agent should understand._\n\n## Workflows And Policies\n\n_Add recurring workflows, rules, policies, support notes, constraints, or escalation paths here._\n\n## Team Members\n\n_Add relevant team members, roles, ownership areas, or collaborators here if useful._\n\n## Contacts\n\n_Add support contacts, escalation paths, vendors, or external contacts here if useful._\n`,
     opts,
   );
   writeText(join(knowledgeDir, "README.md"), knowledgeReadme(), opts);
@@ -86,7 +86,7 @@ This directory is the agent's private knowledge base. It is mounted by \`agent.y
 
 - \`sources.json\` lists the knowledge sources the agent can use.
 - \`local/manifest\` describes the local endpoints the agent is allowed to fetch.
-- \`local/mission.md\` and \`local/team.md\` are starter endpoint files.
+- \`local/mission.md\` and \`local/context.md\` are starter endpoint files.
 
 ## Add Local Knowledge
 

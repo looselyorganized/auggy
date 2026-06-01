@@ -84,21 +84,6 @@ describe("runAdd mutates per-agent package.json", () => {
     expect(metadata).toContain("configType: link");
   });
 
-  test("adding `supabaseMemory` merges @supabase/supabase-js", async () => {
-    const dir = setupAgent("with-supa");
-    answers = { augmentTypes: ["supabaseMemory"] };
-
-    await runAdd("with-supa", {
-      config: join(dir, "agent.yaml"),
-      auggyDir,
-      yes: true,
-      bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
-    });
-
-    const pkg = JSON.parse(readFileSync(join(dir, "package.json"), "utf-8"));
-    expect(pkg.dependencies["@supabase/supabase-js"]).toBe("^2.103.0");
-  });
-
   test("invokes bun install in agent dir when packageDeps are added", async () => {
     const dir = setupAgent("with-link");
     answers = { augmentTypes: ["link"] };
@@ -189,12 +174,46 @@ describe("runAdd no-op cases", () => {
     expect(existsSync(join(dir, "knowledge", "sources.json"))).toBe(true);
     expect(existsSync(join(dir, "knowledge", "local", "manifest"))).toBe(true);
     expect(existsSync(join(dir, "knowledge", "local", "mission.md"))).toBe(true);
-    expect(existsSync(join(dir, "knowledge", "local", "team.md"))).toBe(true);
+    expect(existsSync(join(dir, "knowledge", "local", "context.md"))).toBe(true);
     expect(existsSync(join(dir, "skills", "knowledge", "SKILL.md"))).toBe(true);
+    const mission = readFileSync(join(dir, "knowledge", "local", "mission.md"), "utf-8");
+    const context = readFileSync(join(dir, "knowledge", "local", "context.md"), "utf-8");
+    expect(mission).toContain("_Add information about this agent's mission here._");
+    expect(mission).toContain("_Add project or organization information");
+    expect(mission).not.toContain("This agent helps with a helpful assistant");
+    expect(context).toContain("## Team Members");
+    expect(context).toContain("_Add relevant team members");
+    expect(context).not.toContain("the operator: primary operator");
     const output = logs.join("\n");
+    expect(output).toContain("skill: ");
+    expect(output).toContain("skills/knowledge/SKILL.md");
     expect(output).toContain("Add knowledge:");
-    expect(output).toContain("Add markdown files under knowledge/local/");
+    expect(output).toContain("Edit, rename, or delete the starter markdown files");
+    expect(output).toContain("Add more markdown files under knowledge/local/");
     expect(output).toContain("Add API-backed sources in knowledge/sources.json");
+  });
+
+  test("adding knowledge uses configured metadata in the source manifest", async () => {
+    const dir = setupAgent("with-operator");
+    const yaml = readFileSync(join(dir, "agent.yaml"), "utf-8");
+    writeFileSync(
+      join(dir, "agent.yaml"),
+      yaml.replace("engine:\n", "purpose: Help visitors.\noperators:\n  - Mike\nengine:\n"),
+    );
+
+    await runAdd("with-operator", {
+      config: join(dir, "agent.yaml"),
+      auggyDir,
+      augment: "knowledge",
+      bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
+    });
+
+    const manifest = JSON.parse(
+      readFileSync(join(dir, "knowledge", "local", "manifest"), "utf-8"),
+    ) as Record<string, unknown>;
+    expect(manifest.org).toBe("with-operator");
+    expect(manifest.operator).toBe("Mike");
+    expect(manifest.purpose).toBe("Help visitors.");
   });
 
   test("project-local no args opens the picker for the cwd agent", async () => {
@@ -245,17 +264,75 @@ describe("runAdd no-op cases", () => {
 
   test("stable augment add does not require preview confirmation", async () => {
     const dir = setupAgent("stable-add");
+    const originalLog = console.log;
+    const logs: string[] = [];
+    console.log = (...args: unknown[]) => {
+      logs.push(args.map(String).join(" "));
+    };
 
-    await runAdd("stable-add", {
-      config: join(dir, "agent.yaml"),
-      auggyDir,
-      augment: "notify",
-      bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
-    });
+    try {
+      await runAdd("stable-add", {
+        config: join(dir, "agent.yaml"),
+        auggyDir,
+        augment: "notify",
+        bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
+      });
+    } finally {
+      console.log = originalLog;
+    }
 
     const yaml = readFileSync(join(dir, "agent.yaml"), "utf-8");
     expect(yaml).toContain("type: notify");
     expect(existsSync(join(dir, "skills", "notify", "SKILL.md"))).toBe(true);
+    const output = logs.join("\n");
+    expect(output).toContain("Use notify:");
+    expect(output).toContain("skill: ");
+    expect(output).toContain("skills/notify/SKILL.md");
+    expect(output).toContain("Default destination: creator -> ./notifications.jsonl");
+    expect(output).toContain("For real delivery, edit notify.destinations in agent.yaml");
+  });
+
+  test("adding telegramTransport explains required Telegram setup", async () => {
+    const dir = setupAgent("with-telegram");
+    const originalLog = console.log;
+    const logs: string[] = [];
+    console.log = (...args: unknown[]) => {
+      logs.push(args.map(String).join(" "));
+    };
+
+    try {
+      await runAdd("with-telegram", {
+        config: join(dir, "agent.yaml"),
+        auggyDir,
+        augment: "telegramTransport",
+        bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
+      });
+    } finally {
+      console.log = originalLog;
+    }
+
+    const yaml = readFileSync(join(dir, "agent.yaml"), "utf-8");
+    expect(yaml).toContain("type: telegramTransport");
+    expect(yaml).toContain("botToken: ${TELEGRAM_BOT_TOKEN}");
+    expect(yaml).toContain("mode: polling");
+    expect(yaml).toContain("creatorUserIds");
+    expect(yaml).toContain("creatorUserIdsEnv: TELEGRAM_CREATOR_USER_IDS");
+
+    const env = readFileSync(join(dir, ".env"), "utf-8");
+    expect(env).toContain("TELEGRAM_BOT_TOKEN=");
+    expect(env).toContain("TELEGRAM_CREATOR_USER_IDS=");
+    expect(existsSync(join(dir, "skills", "telegramTransport", "SKILL.md"))).toBe(false);
+
+    const output = logs.join("\n");
+    expect(output).toContain("Use Telegram:");
+    expect(output).toContain("Set TELEGRAM_BOT_TOKEN in .env");
+    expect(output).toContain("Set TELEGRAM_CREATOR_USER_IDS in .env");
+    expect(output).toContain("Default inbound mode: polling");
+    expect(output).toContain("@userinfobot");
+    expect(output).toContain("telegramTransport.inbound to webhook");
+    expect(output).toContain("Add these to your .env:");
+    expect(output).toContain("TELEGRAM_BOT_TOKEN=");
+    expect(output).toContain("TELEGRAM_CREATOR_USER_IDS=");
   });
 
   test("adding visitorAuth generates VISITOR_SIGNING_KEY in .env", async () => {

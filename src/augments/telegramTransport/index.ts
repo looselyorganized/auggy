@@ -80,9 +80,10 @@ export function resolveTelegramIdentity(
 ): PeerIdentity {
   const { userId, threadId } = input;
   const mode = auth.anonymousIdentityMode ?? "ephemeral";
+  const creatorUserIds = resolveTelegramCreatorUserIds(auth);
 
   // Order matches item 5's web-transport: creator → agent → recognized → anonymous.
-  if (auth.creatorUserIds?.includes(userId)) {
+  if (creatorUserIds.includes(userId)) {
     return {
       id: `tg_user_${userId}`,
       kind: "human",
@@ -121,6 +122,33 @@ export function resolveTelegramIdentity(
   };
 }
 
+function normalizeTelegramAuthOptions(auth: TelegramAuthOptions): TelegramAuthOptions {
+  return {
+    ...auth,
+    creatorUserIds: resolveTelegramCreatorUserIds(auth),
+  };
+}
+
+function resolveTelegramCreatorUserIds(auth: TelegramAuthOptions): number[] {
+  const out = [...(auth.creatorUserIds ?? [])];
+  if (!auth.creatorUserIdsEnv) return out;
+  const raw = process.env[auth.creatorUserIdsEnv];
+  if (!raw?.trim()) return out;
+
+  for (const part of raw.split(",")) {
+    const trimmed = part.trim();
+    if (!trimmed) continue;
+    const value = Number(trimmed);
+    if (!Number.isSafeInteger(value)) {
+      throw new Error(
+        `telegramTransport: ${auth.creatorUserIdsEnv} must be a comma-separated list of numeric Telegram user IDs`,
+      );
+    }
+    out.push(value);
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 // Augment factory — full lifecycle (T14)
 // ---------------------------------------------------------------------------
@@ -136,6 +164,7 @@ interface InternalOptions extends TelegramTransportOptions {
 }
 
 export function telegramTransport(opts: TelegramTransportOptions): Augment {
+  const auth = normalizeTelegramAuthOptions(opts.auth);
   const internal = opts as InternalOptions;
   const clientFactory =
     internal._clientFactory ?? (() => createTelegramBotClient({ botToken: opts.botToken }));
@@ -165,7 +194,7 @@ export function telegramTransport(opts: TelegramTransportOptions): Augment {
   const identify = (raw: unknown): PeerIdentity | null => {
     const r = raw as { userId?: number; threadId?: string };
     if (typeof r?.userId !== "number" || typeof r?.threadId !== "string") return null;
-    return resolveTelegramIdentity({ userId: r.userId, threadId: r.threadId }, opts.auth);
+    return resolveTelegramIdentity({ userId: r.userId, threadId: r.threadId }, auth);
   };
 
   const transport: TransportSpec = {
@@ -216,7 +245,7 @@ export function telegramTransport(opts: TelegramTransportOptions): Augment {
     const userId = update.message.from.id;
     const chatId = update.message.chat.id;
     const threadId = `tg-chat-${chatId}`;
-    const peer = resolveTelegramIdentity({ userId, threadId }, opts.auth);
+    const peer = resolveTelegramIdentity({ userId, threadId }, auth);
 
     // Remember chat_id for the outbound callback.
     threadChatIds.set(threadId, chatId);
@@ -282,7 +311,7 @@ export function telegramTransport(opts: TelegramTransportOptions): Augment {
               : []),
             {
               label: "Admitted agents",
-              value: String(opts.auth.admittedAgents?.length ?? 0),
+              value: String(auth.admittedAgents?.length ?? 0),
             },
           ],
         },
@@ -307,7 +336,7 @@ export function telegramTransport(opts: TelegramTransportOptions): Augment {
     adminInfo,
 
     async onBoot(): Promise<void> {
-      await validateAdmittedAgents(opts.auth.admittedAgents, client);
+      await validateAdmittedAgents(auth.admittedAgents, client);
 
       if (opts.inbound.mode === "polling") {
         pollHandle = runPollLoop({

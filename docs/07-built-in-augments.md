@@ -6,7 +6,7 @@
 
 Fourteen augments ship in `src/augments/` (plus `webTransport` under `src/transports/`):
 - **`fileMemory`** — file-backed static memory provider
-- **`supabaseMemory`** — Supabase-backed namespace memory provider
+- **`supabaseMemory`** — Supabase-backed namespace memory provider (legacy runtime, not exposed in the v1.0 CLI catalog)
 - **`layeredMemory`** — peer-scoped episodic memory with L0–L3 provenance tiers (SQLite-backed)
 - **`webTransport`** — AG-UI HTTP transport (covered in [06-transports.md](./06-transports.md), not repeated here)
 - **`telegramTransport`** — bidirectional Telegram bot transport
@@ -39,9 +39,10 @@ Fresh agents are scaffolded for the shortest path to chat:
 The `skills` augment is runtime infrastructure and is auto-mounted when needed.
 Stable add-ons (`knowledge`, `notify`, `telegramTransport`) are installed after
 first chat with `auggy augment add <name>`. Preview augments (`layeredMemory`,
-`budgets`, `visitorAuth`, `link`, `agentMail`, `bash`, `supabaseMemory`) remain
-available behind an explicit confirmation because their production DX or
-security edge cases are still being hardened.
+`budgets`, `visitorAuth`, `link`, `agentMail`, `bash`) remain available behind
+an explicit confirmation because their production DX or security edge cases are
+still being hardened. `supabaseMemory` remains in the runtime for legacy/manual
+configs, but is intentionally not shown in the v1.0 CLI catalog.
 
 `auggy augment list` is the discovery surface. `auggy augment add` installs the
 augment config, package dependencies, and bundled skill together. `auggy skill
@@ -790,7 +791,7 @@ knowledge/
   local/
     manifest
     mission.md
-    team.md
+    context.md
 ```
 
 To add a local topic:
@@ -855,8 +856,8 @@ augments:
         polling:
           timeoutSec: 30
       auth:
-        creatorUserIds:
-          - 123456789
+        creatorUserIds: []
+        creatorUserIdsEnv: TELEGRAM_CREATOR_USER_IDS
         anonymousIdentityMode: ephemeral
 ```
 
@@ -879,7 +880,7 @@ Every inbound Telegram update resolves to a `PeerIdentity` via four paths in pri
 
 | Priority | Check | Trust level | `peer.id` |
 |---|---|---|---|
-| 1 | `creatorUserIds` contains sender ID | `"creator"` | `tg_user_<userId>` |
+| 1 | `creatorUserIds` or `creatorUserIdsEnv` contains sender ID | `"creator"` | `tg_user_<userId>` |
 | 2 | `admittedAgents` has matching `telegramUserId` | `"agent"` | Agent's logical `id` field |
 | 3 | `recognizedUserIds` contains sender ID | `"public"` / `"recognized"` | `tg_user_<userId>` |
 | 4 | None of the above | `"public"` / `"anonymous"` | `tg_anon_<threadId>` (ephemeral) or `tg_user_<userId>` (durable) |

@@ -78,6 +78,7 @@ export function formatDevReadyMessage(args: {
     lines.push(`  Chat:     ${consoleUrl}/chat`);
     lines.push(`  Console:  ${consoleUrl}`);
     lines.push(`  Health:   http://localhost:${args.port}/health`);
+    lines.push(`  Home:     http://localhost:${args.port}/`);
     lines.push("");
   }
 

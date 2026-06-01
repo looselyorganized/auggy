@@ -16,10 +16,11 @@ The transport handles **inbound** only. Proactive outbound messages to Telegram 
 
 2. **Find your Telegram user ID.** Send any message to @userinfobot. It replies with your numeric `id`. Alternatively, temporarily start the bot with no `creatorUserIds` configured and call `https://api.telegram.org/bot<token>/getUpdates` after sending the bot a message — your `message.from.id` appears in the response.
 
-3. **Set the bot token as an env var.** The CLI scaffold generates `TELEGRAM_BOT_TOKEN` as the expected variable name:
+3. **Set Telegram env vars.** The CLI scaffold generates `TELEGRAM_BOT_TOKEN` for the bot and `TELEGRAM_CREATOR_USER_IDS` for comma-separated creator user IDs:
 
    ```bash
-   export TELEGRAM_BOT_TOKEN=123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi
+   TELEGRAM_BOT_TOKEN=123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi
+   TELEGRAM_CREATOR_USER_IDS=123456789
    ```
 
 4. **Start a conversation with the bot.** Telegram bots can only message users who have sent the bot at least one message. Open your bot in Telegram and press Start (or send any text). This primes the chat for both inbound polling and outbound `sendMessage`.
@@ -39,8 +40,8 @@ augments:
         polling:
           timeoutSec: 30
       auth:
-        creatorUserIds:
-          - 123456789
+        creatorUserIds: []
+        creatorUserIdsEnv: TELEGRAM_CREATOR_USER_IDS
         anonymousIdentityMode: ephemeral
 ```
 
@@ -91,6 +92,7 @@ augments:
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `creatorUserIds` | `number[]` | `[]` | Telegram user IDs that receive `trustLevel: "creator"`. |
+| `creatorUserIdsEnv` | `string` | — | Env var containing comma-separated creator user IDs. The CLI scaffold uses `TELEGRAM_CREATOR_USER_IDS`. |
 | `admittedAgents` | `TelegramAdmittedAgent[]` | `[]` | Agent peers with their Telegram user IDs. Each receives `trustLevel: "agent"`. |
 | `recognizedUserIds` | `number[]` | `[]` | Known public users. Each receives `trustLevel: "public"`, `publicSubstate: "recognized"`. |
 | `anonymousIdentityMode` | `"ephemeral" \| "durable"` | `"ephemeral"` | `peer.id` shape for anonymous public users. See §6. |

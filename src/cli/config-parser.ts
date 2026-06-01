@@ -723,8 +723,22 @@ function validateTelegramTransportOptions(
 
   const auth = opts.auth as Record<string, unknown> | undefined;
   if (auth !== undefined && typeof auth === "object") {
-    if (auth.creatorUserIds !== undefined && !Array.isArray(auth.creatorUserIds)) {
-      errors.push(`${prefix}.auth.creatorUserIds: must be an array of numbers`);
+    if (auth.creatorUserIds !== undefined) {
+      if (!Array.isArray(auth.creatorUserIds)) {
+        errors.push(`${prefix}.auth.creatorUserIds: must be an array of numbers`);
+      } else {
+        for (let i = 0; i < auth.creatorUserIds.length; i++) {
+          if (typeof auth.creatorUserIds[i] !== "number") {
+            errors.push(`${prefix}.auth.creatorUserIds[${i}]: must be a number`);
+          }
+        }
+      }
+    }
+    if (
+      auth.creatorUserIdsEnv !== undefined &&
+      (typeof auth.creatorUserIdsEnv !== "string" || !auth.creatorUserIdsEnv)
+    ) {
+      errors.push(`${prefix}.auth.creatorUserIdsEnv: must be a non-empty string`);
     }
     if (auth.recognizedUserIds !== undefined && !Array.isArray(auth.recognizedUserIds)) {
       errors.push(`${prefix}.auth.recognizedUserIds: must be an array of numbers`);

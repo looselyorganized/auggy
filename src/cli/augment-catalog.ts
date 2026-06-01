@@ -157,30 +157,6 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
     hasSkill: true,
   },
   {
-    label: "Supabase Memory",
-    tagline: "namespace memory in Supabase (legacy)",
-    description:
-      "Frozen older memory provider kept for migration paths. Use layeredMemory for new agents.",
-    type: "supabaseMemory",
-    defaultName: "supabaseMemory",
-    defaultOptions: {
-      namespace: "episode",
-      table: "agent_memories",
-      mutable: true,
-      origin: "peer-derived",
-      priority: "normal",
-      placement: "preamble",
-      eviction: "drop",
-      supabaseUrl: "${SUPABASE_URL}",
-      supabaseKey: "${SUPABASE_SERVICE_KEY}",
-    },
-    required: false,
-    stability: "preview",
-    envVars: ["SUPABASE_URL", "SUPABASE_SERVICE_KEY"],
-    hasSkill: false,
-    packageDeps: { "@supabase/supabase-js": "^2.103.0" },
-  },
-  {
     label: "Knowledge",
     tagline: "local docs and API-backed knowledge sources",
     description:
@@ -312,12 +288,13 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
       },
       auth: {
         creatorUserIds: [],
+        creatorUserIdsEnv: "TELEGRAM_CREATOR_USER_IDS",
         anonymousIdentityMode: "ephemeral",
       },
     },
     required: false,
     stability: "stable",
-    envVars: ["TELEGRAM_BOT_TOKEN"],
+    envVars: ["TELEGRAM_BOT_TOKEN", "TELEGRAM_CREATOR_USER_IDS"],
     hasSkill: false,
   },
   {

@@ -1246,6 +1246,8 @@ export type TelegramAnonymousIdentityMode = "ephemeral" | "durable";
 
 export interface TelegramAuthOptions {
   creatorUserIds?: number[];
+  /** Env var containing comma-separated Telegram user IDs that resolve as creator. */
+  creatorUserIdsEnv?: string;
   admittedAgents?: TelegramAdmittedAgent[];
   recognizedUserIds?: number[];
   /**

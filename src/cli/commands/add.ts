@@ -172,14 +172,25 @@ export async function runAdd(target: string | undefined, opts: AddOpts): Promise
   console.log();
   writeCustomAugmentsReadme(agentDir);
   let knowledgeAdded = false;
+  let notifyAdded = false;
+  let telegramTransportAdded = false;
   for (const entry of selected) {
-    copyBundledSkill(entry.type, agentDir);
+    const skillCopied = copyBundledSkill(entry.type, agentDir);
     writeBuiltinAugmentMetadata(agentDir, entry);
     if (entry.type === "knowledge") {
       writeKnowledgeScaffold(agentDir, knowledgeValues(raw, agentDir));
       knowledgeAdded = true;
     }
+    if (entry.type === "notify") {
+      notifyAdded = true;
+    }
+    if (entry.type === "telegramTransport") {
+      telegramTransportAdded = true;
+    }
     console.log(`  ✓ ${entry.defaultName} (${entry.type})`);
+    if (skillCopied) {
+      console.log(`    skill: ${displayPath(join(agentDir, "skills", entry.type), opts.cwd)}/SKILL.md`);
+    }
   }
 
   if (knowledgeAdded) {
@@ -192,13 +203,33 @@ export async function runAdd(target: string | undefined, opts: AddOpts): Promise
       `  ${displayPath(join(agentDir, "knowledge", "local", "mission.md"), opts.cwd)}`,
     );
     console.log(
-      `  ${displayPath(join(agentDir, "knowledge", "local", "team.md"), opts.cwd)}`,
+      `  ${displayPath(join(agentDir, "knowledge", "local", "context.md"), opts.cwd)}`,
     );
     console.log();
     console.log("Add knowledge:");
-    console.log("  - Add markdown files under knowledge/local/");
+    console.log("  - Edit, rename, or delete the starter markdown files");
+    console.log("  - Add more markdown files under knowledge/local/");
     console.log("  - Add each file as an endpoint in knowledge/local/manifest");
     console.log("  - Add API-backed sources in knowledge/sources.json");
+  }
+
+  if (notifyAdded) {
+    console.log();
+    console.log("Use notify:");
+    console.log("  - Default destination: creator -> ./notifications.jsonl");
+    console.log("  - Ask the agent to notify creator when something needs attention");
+    console.log("  - For real delivery, edit notify.destinations in agent.yaml");
+    console.log("  - Supported transports: webhook, Telegram, Agent Mail, log-to-file");
+  }
+
+  if (telegramTransportAdded) {
+    console.log();
+    console.log("Use Telegram:");
+    console.log("  - Set TELEGRAM_BOT_TOKEN in .env");
+    console.log("  - Set TELEGRAM_CREATOR_USER_IDS in .env (comma-separated numeric user IDs)");
+    console.log("  - Default inbound mode: polling");
+    console.log("  - Find your Telegram user ID with @userinfobot");
+    console.log("  - For production webhooks, switch telegramTransport.inbound to webhook in agent.yaml");
   }
 
   // === Run bun install (last; failure leaves intentional partial state) ===
@@ -288,11 +319,20 @@ function knowledgeValues(raw: Record<string, unknown>, agentDir: string) {
     typeof raw.purpose === "string" && raw.purpose.trim()
       ? raw.purpose.trim()
       : "project knowledge for this agent";
+  const operatorName = readFirstOperator(raw) ?? "the operator";
   return {
     orgName: name,
     orgPurpose: purpose,
-    operatorName: "the operator",
+    operatorName,
   };
+}
+
+function readFirstOperator(raw: Record<string, unknown>): string | null {
+  if (!Array.isArray(raw.operators)) return null;
+  for (const candidate of raw.operators) {
+    if (typeof candidate === "string" && candidate.trim()) return candidate.trim();
+  }
+  return null;
 }
 
 function formatApplyInstructions(name: string, agentDir: string, cwd: string | undefined): string {
@@ -301,8 +341,8 @@ function formatApplyInstructions(name: string, agentDir: string, cwd: string | u
   const runCommand = projectLocal ? "auggy run" : `auggy run ${name}`;
   return [
     "Apply changes:",
-    `  - Foreground run: press Ctrl-C in the running terminal, then \`${runCommand}\`.`,
-    `  - Background/service run: \`auggy restart ${name}\`.`,
+    `  - Foreground: Ctrl-C, then \`${runCommand}\`.`,
+    `  - Background: \`auggy restart ${name}\`.`,
   ].join("\n");
 }
 

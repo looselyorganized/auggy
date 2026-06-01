@@ -154,8 +154,9 @@ Behavior:
   should present stable add-ons (`knowledge`, `notify`, `telegramTransport`)
   and preview augments separately.
 - Preview augments (`layeredMemory`, `budgets`, `visitorAuth`, `link`,
-  `agentMail`, `bash`, `supabaseMemory`) should require explicit confirmation
-  when added.
+  `agentMail`, `bash`) should require explicit confirmation when added.
+  `supabaseMemory` stays as legacy runtime support, but is not exposed in the
+  v1.0 CLI catalog.
 
 Likely files:
 

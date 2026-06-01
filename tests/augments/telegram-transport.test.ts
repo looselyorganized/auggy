@@ -25,6 +25,38 @@ describe("resolveTelegramIdentity", () => {
     expect(peer.publicSubstate).toBeUndefined();
   });
 
+  it("creator user IDs can come from a comma-separated env var", () => {
+    const previous = process.env.TELEGRAM_CREATOR_USER_IDS_TEST;
+    process.env.TELEGRAM_CREATOR_USER_IDS_TEST = "222, 333";
+    try {
+      const peer = resolveTelegramIdentity(
+        { userId: 333, threadId: "thread-1" },
+        { creatorUserIdsEnv: "TELEGRAM_CREATOR_USER_IDS_TEST" },
+      );
+      expect(peer.trustLevel).toBe("creator");
+      expect(peer.id).toBe("tg_user_333");
+    } finally {
+      if (previous === undefined) delete process.env.TELEGRAM_CREATOR_USER_IDS_TEST;
+      else process.env.TELEGRAM_CREATOR_USER_IDS_TEST = previous;
+    }
+  });
+
+  it("throws clearly when creator user ID env var is not numeric", () => {
+    const previous = process.env.TELEGRAM_CREATOR_USER_IDS_TEST;
+    process.env.TELEGRAM_CREATOR_USER_IDS_TEST = "222,not-a-number";
+    try {
+      expect(() =>
+        resolveTelegramIdentity(
+          { userId: 222, threadId: "thread-1" },
+          { creatorUserIdsEnv: "TELEGRAM_CREATOR_USER_IDS_TEST" },
+        ),
+      ).toThrow("comma-separated list of numeric Telegram user IDs");
+    } finally {
+      if (previous === undefined) delete process.env.TELEGRAM_CREATOR_USER_IDS_TEST;
+      else process.env.TELEGRAM_CREATOR_USER_IDS_TEST = previous;
+    }
+  });
+
   it("admittedAgents user_id → agent trust level + configured agent id", () => {
     const peer = resolveTelegramIdentity({ userId: 555444333, threadId: "thread-1" }, baseAuth);
     expect(peer.trustLevel).toBe("agent");
