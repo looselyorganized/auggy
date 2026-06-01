@@ -37,7 +37,6 @@ import { readOverrides, writeOverrides } from "../../lib/admin-overrides";
 import type {
   AdminActionResult,
   AdminInfoBlock,
-  AgentMailAugmentOptions,
   Augment,
   ToolExecuteContext,
   TrustLevel,

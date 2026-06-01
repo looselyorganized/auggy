@@ -552,7 +552,10 @@ async function waitForRailwayDeployment(
 }
 
 function categorizeRailwayDeploymentStatus(status: string): "ready" | "failed" | "pending" {
-  const normalized = status.trim().toUpperCase().replace(/[\s-]+/g, "_");
+  const normalized = status
+    .trim()
+    .toUpperCase()
+    .replace(/[\s-]+/g, "_");
   if (["SUCCESS", "SUCCEEDED", "DEPLOYED", "HEALTHY", "READY", "ACTIVE"].includes(normalized)) {
     return "ready";
   }

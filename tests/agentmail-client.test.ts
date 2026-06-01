@@ -43,20 +43,21 @@ function mockHttp(
 
 describe("createAgentMailClient", () => {
   test("posts to /inboxes/{id}/messages with bearer auth", async () => {
-    let captured: any = null;
+    let captured: { url: string; body: Record<string, unknown> } | null = null;
     let capturedAuth = "";
     const client = createAgentMailClient({
       apiKey: "am_test",
       http: mockHttp((url, body, headers) => {
-        captured = { url, body };
+        captured = { url, body: body as Record<string, unknown> };
         capturedAuth = headers?.authorization ?? "";
         return { status: 200, body: JSON.stringify({ message_id: "msg_1", thread_id: "thd_1" }) };
       }),
     });
     const r = await client.send({ inboxId: "inb_x", to: ["a@b.com"], subject: "s", text: "t" });
-    expect(captured.url).toBe("https://api.agentmail.to/v0/inboxes/inb_x/messages");
+    const sent = captured as unknown as { url: string; body: Record<string, unknown> };
+    expect(sent.url).toBe("https://api.agentmail.to/v0/inboxes/inb_x/messages");
     expect(capturedAuth).toBe("Bearer am_test");
-    expect(captured.body.subject).toBe("s");
+    expect(sent.body.subject).toBe("s");
     expect(r.status).toBe("sent");
     if (r.status === "sent") {
       expect(r.messageId).toBe("msg_1");

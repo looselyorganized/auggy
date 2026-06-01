@@ -63,7 +63,7 @@ describe("collectAugmentRoutes", () => {
   });
 
   test("rejects path that does not start with '/'", () => {
-    const result = collectAugmentRoutes([aug("a", [route("GET", "no-slash" as any)])]);
+    const result = collectAugmentRoutes([aug("a", [route("GET", "no-slash")])]);
     expect(result.errors).toHaveLength(1);
     expect(result.errors[0]).toContain("must start with '/'");
   });
@@ -88,10 +88,10 @@ describe("collectAugmentRoutes", () => {
   });
 
   test("rejects routes with invalid auth values", () => {
-    const r = (path: string, auth: any): AugmentHttpRoute => ({
+    const r = (path: string, auth: unknown): AugmentHttpRoute => ({
       method: "GET",
       path,
-      auth,
+      auth: auth as AugmentHttpRoute["auth"],
       handler: async () => new Response("ok"),
     });
     const result = collectAugmentRoutes([

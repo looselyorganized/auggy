@@ -119,7 +119,8 @@ export function skillCommand(deps: AddSkillCommandDeps = {}): Command {
         const agentDir = resolveAgentDir(opts.agent, { auggyDir: deps.auggyDir, cwd: deps.cwd });
         const dir = join(agentDir, "skills", name);
         const path = join(dir, "SKILL.md");
-        if (existsSync(path)) throw new Error(`Skill already exists: ${displayPath(path, deps.cwd)}`);
+        if (existsSync(path))
+          throw new Error(`Skill already exists: ${displayPath(path, deps.cwd)}`);
         mkdirSync(dir, { recursive: true });
         writeFileSync(
           path,

@@ -23,7 +23,7 @@ function mockHttp(
 
 describe("createTelegramBotClient", () => {
   it("posts sendMessage with chat_id and text", async () => {
-    let captured: { url?: string; body?: any } = {};
+    let captured: { url?: string; body?: unknown } = {};
     const client = createTelegramBotClient({
       botToken: "TESTTOKEN",
       client: mockHttp((_method, url, body) => {
@@ -42,7 +42,7 @@ describe("createTelegramBotClient", () => {
   });
 
   it("getUpdates posts offset and timeout", async () => {
-    let captured: any = {};
+    let captured: { url?: string; body?: unknown } = {};
     const client = createTelegramBotClient({
       botToken: "T",
       client: mockHttp((_m, u, b) => {
@@ -56,7 +56,7 @@ describe("createTelegramBotClient", () => {
   });
 
   it("setWebhook posts url and secret_token", async () => {
-    let captured: any = {};
+    let captured: { url?: string; body?: unknown } = {};
     const client = createTelegramBotClient({
       botToken: "T",
       client: mockHttp((_m, u, b) => {

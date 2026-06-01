@@ -130,12 +130,12 @@ export interface ToolExecuteContext {
   threadId: string;
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// biome-ignore lint/suspicious/noExplicitAny: Tool is covariant over arbitrary model-facing schemas.
 export interface Tool<TInput = any> {
   name: string;
   description: string;
   category: ToolCategory;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // biome-ignore lint/suspicious/noExplicitAny: ZodType internals vary by schema and should not constrain Tool callers.
   input: z.ZodType<TInput, any, any>;
   inputJsonSchema?: Record<string, unknown>;
   execute: (input: TInput, context?: ToolExecuteContext) => Promise<string | ToolResult>;

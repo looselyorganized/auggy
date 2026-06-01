@@ -7,7 +7,7 @@
  */
 
 import { existsSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { resolve } from "node:path";
 import { createSqliteVisitorAuthStore } from "../../augments/visitorAuth/storage/sqlite-store";
 import { parseAugmentConfigOnly } from "../yaml-helpers";
 import { resolveConfigPath } from "../resolve-config";
@@ -24,7 +24,10 @@ interface ResolvedAgentPaths {
 }
 
 function resolveAgentPaths(agentName: string, opts: VisitorsCommandOptions): ResolvedAgentPaths {
-  const yamlPath = resolveConfigPath(agentName, undefined, { auggyDir: opts.auggyDir, cwd: opts.cwd });
+  const yamlPath = resolveConfigPath(agentName, undefined, {
+    auggyDir: opts.auggyDir,
+    cwd: opts.cwd,
+  });
   const agentDir = resolve(yamlPath, "..");
   // parseAugmentConfigOnly handles env-var interpolation (F15) so that
   // `dbPath: ${MY_DB_PATH}` in agent.yaml resolves correctly here.

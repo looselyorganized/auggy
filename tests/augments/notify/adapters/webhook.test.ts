@@ -35,30 +35,34 @@ const dest: WebhookNotifyDestination = {
 describe("webhookAdapter", () => {
   it("POSTs JSON payload to configured URL", async () => {
     let capturedUrl = "";
-    let capturedBody: any = null;
+    let capturedBody: Record<string, unknown> | null = null;
     const adapter = createWebhookAdapter({
       client: mockHttp((url, body) => {
         capturedUrl = url;
-        capturedBody = body;
+        capturedBody = body as Record<string, unknown>;
         return { status: 200, body: JSON.stringify({ status: "sent" }) };
       }),
     });
     const result = await adapter.deliver(dest, { summary: "test alert", reason: "test" });
     expect(capturedUrl).toBe("https://example.com/notify");
-    expect(capturedBody).toEqual({ summary: "test alert", reason: "test", channel: "notify" });
+    expect(capturedBody as unknown).toEqual({
+      summary: "test alert",
+      reason: "test",
+      channel: "notify",
+    });
     expect(result.status).toBe("sent");
   });
 
   it("includes optional visitor field when provided", async () => {
-    let body: any;
+    let body: Record<string, unknown> | undefined;
     const adapter = createWebhookAdapter({
       client: mockHttp((_u, b) => {
-        body = b;
+        body = b as Record<string, unknown>;
         return { status: 200, body: "{}" };
       }),
     });
     await adapter.deliver(dest, { summary: "x", visitor: "v1" });
-    expect(body.visitor).toBe("v1");
+    expect((body as Record<string, unknown>).visitor).toBe("v1");
   });
 
   it("forwards configured headers", async () => {

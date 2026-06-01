@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { Augment, Tool, ToolCategory, ToolExecuteContext, ToolResult } from "./types";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// biome-ignore lint/suspicious/noExplicitAny: Tool schemas intentionally accept any Zod input/output shape.
 export function defineTool<T extends z.ZodType<any, any, any>>(opts: {
   name: string;
   description: string;

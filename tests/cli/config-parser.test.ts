@@ -1028,8 +1028,11 @@ describe("notify augment agentmail transport validation", () => {
     expect(config.augments).toHaveLength(2);
     const notifyAugment = config.augments.find((a) => a.type === "notify");
     expect(notifyAugment).toBeDefined();
-    expect((notifyAugment?.options as any).destinations).toHaveLength(1);
-    expect((notifyAugment?.options as any).destinations[0].transport).toBe("agentmail");
+    const options = notifyAugment?.options as {
+      destinations: Array<{ transport: string }>;
+    };
+    expect(options.destinations).toHaveLength(1);
+    expect(options.destinations[0]?.transport).toBe("agentmail");
   });
 
   test("rejects agentmail destination missing apiKey", () => {

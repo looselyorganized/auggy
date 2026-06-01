@@ -15,7 +15,11 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { confirm, input, password, select } from "@inquirer/prompts";
 import { stringify } from "yaml";
 import { AUGMENT_CATALOG, type CatalogEntry } from "../augment-catalog";
-import { copyBundledSkill, copyStarterSkills, renderIdentityFromTemplate } from "../scaffold-skills";
+import {
+  copyBundledSkill,
+  copyStarterSkills,
+  renderIdentityFromTemplate,
+} from "../scaffold-skills";
 import { getModelChoices, formatChoiceLabel, type Provider } from "../model-picker";
 import {
   listInstalledOllamaModels,
@@ -560,7 +564,9 @@ async function runCreateIntoDir(
     installOk = result.ok;
     if (!installOk) {
       console.log();
-      console.log(`⚠ bun install failed in ${displayPath(finalDir, opts.cwd)} (exit ${result.code}).`);
+      console.log(
+        `⚠ bun install failed in ${displayPath(finalDir, opts.cwd)} (exit ${result.code}).`,
+      );
       console.log(`  Scaffolding is on disk.`);
       console.log(`  Retry:  cd ${displayPath(finalDir, opts.cwd)} && bun install`);
       console.log(

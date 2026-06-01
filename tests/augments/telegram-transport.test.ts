@@ -252,7 +252,7 @@ describe("telegramTransport — polling lifecycle", () => {
       inbound: { mode: "polling", polling: { timeoutSec: 0 } },
       auth: { creatorUserIds: [100] },
       _clientFactory: () => client,
-    } as any);
+    } as unknown as Parameters<typeof telegramTransport>[0]);
     // Wire the kernel into the transport before booting receivers.
     await aug.transport!.register(kernel, "telegram-transport");
     await aug.onBoot?.();
@@ -284,7 +284,7 @@ describe("telegramTransport — polling lifecycle", () => {
       inbound: { mode: "polling", polling: { timeoutSec: 0 } },
       auth: { anonymousIdentityMode: "ephemeral" },
       _clientFactory: () => client,
-    } as any);
+    } as unknown as Parameters<typeof telegramTransport>[0]);
     await aug.transport!.register(kernel, "telegram-transport");
     await aug.onBoot?.();
     await new Promise((r) => setTimeout(r, 30));
@@ -315,7 +315,7 @@ describe("telegramTransport — polling lifecycle", () => {
       inbound: { mode: "polling", polling: { timeoutSec: 0 } },
       auth: {},
       _clientFactory: () => client,
-    } as any);
+    } as unknown as Parameters<typeof telegramTransport>[0]);
     await aug.transport!.register(kernel, "telegram-transport");
     await aug.onBoot?.();
     await new Promise((r) => setTimeout(r, 30));
@@ -330,7 +330,7 @@ describe("telegramTransport — polling lifecycle", () => {
       inbound: { mode: "polling", polling: { timeoutSec: 0 } },
       auth: { creatorUserIds: [42] },
       _clientFactory: () => client,
-    } as any);
+    } as unknown as Parameters<typeof telegramTransport>[0]);
     const peer = aug.transport!.identify({ userId: 42, threadId: "tg-chat-42" });
     expect(peer?.trustLevel).toBe("creator");
     expect(peer?.id).toBe("tg_user_42");
@@ -343,7 +343,7 @@ describe("telegramTransport — polling lifecycle", () => {
       inbound: { mode: "polling", polling: { timeoutSec: 0 } },
       auth: {},
       _clientFactory: () => client,
-    } as any);
+    } as unknown as Parameters<typeof telegramTransport>[0]);
     expect(aug.transport!.identify({})).toBeNull();
     expect(aug.transport!.identify(null)).toBeNull();
   });

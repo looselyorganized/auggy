@@ -361,8 +361,9 @@ describe("railway-cli", () => {
       retryDelayMs: 1,
       sleep: async () => {},
     });
-    await expect(cli.addVolume({ name: "zip-data", mountPath: "/app/data", cwd: "/tmp/staging" }))
-      .rejects.toThrow(/unexpected argument/);
+    await expect(
+      cli.addVolume({ name: "zip-data", mountPath: "/app/data", cwd: "/tmp/staging" }),
+    ).rejects.toThrow(/unexpected argument/);
     expect(calls).toHaveLength(1);
   });
 

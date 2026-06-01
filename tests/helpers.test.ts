@@ -10,7 +10,7 @@ const stubTurn: TurnState = {
     type: "message",
     turnId: "t1",
     timestamp: Date.now(),
-    payload: {} as any,
+    payload: {},
   },
   peer: null,
   toolCallsSoFar: 0,

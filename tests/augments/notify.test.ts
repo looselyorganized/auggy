@@ -52,7 +52,7 @@ function getNotifyTool(aug: ReturnType<typeof notify>) {
 
 describe("notify augment", () => {
   it("delivers to named destination", async () => {
-    const deliveries: Array<{ destination: string; result: any }> = [];
+    const deliveries: Array<{ destination: string; result: "sent" | "failed" }> = [];
     const aug = notify({
       ...baseOpts,
       adapters: { webhook: mockAdapter(deliveries), telegram: mockAdapter([]) },

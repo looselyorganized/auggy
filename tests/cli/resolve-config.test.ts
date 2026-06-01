@@ -46,9 +46,7 @@ describe("resolveConfigPath", () => {
     const projectDir = mkdtempSync(join(agentParent, "project-"));
     const projectConfig = join(projectDir, "agent.yaml");
     writeFileSync(projectConfig, "id: aug1_project\nname: project\n");
-    expect(resolveConfigPath("zip", undefined, { auggyDir, cwd: projectDir })).toBe(
-      projectConfig,
-    );
+    expect(resolveConfigPath("zip", undefined, { auggyDir, cwd: projectDir })).toBe(projectConfig);
   });
 
   test("project-local agent.yaml can resolve without an agent name", () => {

@@ -18,8 +18,7 @@ function fakeInput(partial?: Partial<GraderInput>): GraderInput {
  * the async union for test assertions and casts the spec so inline objects
  * work without `as const` at every call site.
  */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function grade(spec: any, input: GraderInput): GraderResult {
+function grade(spec: unknown, input: GraderInput): GraderResult {
   const s = spec as GraderSpec;
   const r = getGrader(s)(s, input);
   if (r instanceof Promise) throw new Error("Expected sync grader in unit test");

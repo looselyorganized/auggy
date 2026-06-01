@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,7 +9,6 @@ import type {
   ForwardMessageInput,
   SendMessageError,
   SendMessageInput,
-  SendMessageResult,
 } from "../../../src/agentmail-client";
 import type {
   AdminActionResult,

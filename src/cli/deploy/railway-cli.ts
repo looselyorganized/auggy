@@ -119,7 +119,8 @@ export interface RailwayCli {
 export function createRailwayCli(opts: CreateRailwayCliOptions = {}): RailwayCli {
   const spawn = opts.spawn ?? defaultSpawn;
   const interactiveSpawn = opts.interactiveSpawn ?? defaultInteractiveSpawn;
-  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const sleep =
+    opts.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const retryDelayMs = opts.retryDelayMs ?? 750;
 
   async function runRailway(
@@ -230,23 +231,35 @@ export function createRailwayCli(opts: CreateRailwayCliOptions = {}): RailwayCli
     },
 
     async createService({ serviceName, cwd }) {
-      await runOrThrow(["add", "--service", serviceName], { cwd }, {
-        retryTransient: true,
-        acceptNonZero: (result) => isAlreadyExistsFailure(result.stdout, result.stderr),
-      });
+      await runOrThrow(
+        ["add", "--service", serviceName],
+        { cwd },
+        {
+          retryTransient: true,
+          acceptNonZero: (result) => isAlreadyExistsFailure(result.stdout, result.stderr),
+        },
+      );
       await runOrThrow(["service", "link", serviceName], { cwd }, { retryTransient: true });
     },
 
     async setVariable({ key, value, cwd }) {
       try {
-        await runOrThrow(["variable", "set", `${key}=${value}`, "--skip-deploys"], { cwd }, {
-          retryTransient: true,
-        });
+        await runOrThrow(
+          ["variable", "set", `${key}=${value}`, "--skip-deploys"],
+          { cwd },
+          {
+            retryTransient: true,
+          },
+        );
       } catch (err) {
         if (!isTransientRailwayFailure("", String((err as Error).message))) throw err;
-        const { stdout } = await runOrThrow(["variable", "list", "--json"], { cwd }, {
-          retryTransient: true,
-        });
+        const { stdout } = await runOrThrow(
+          ["variable", "list", "--json"],
+          { cwd },
+          {
+            retryTransient: true,
+          },
+        );
         if (!variableListHasKey(stdout, key)) throw err;
       }
     },
@@ -266,12 +279,16 @@ export function createRailwayCli(opts: CreateRailwayCliOptions = {}): RailwayCli
     },
 
     async addVolume({ mountPath, cwd }) {
-      await runOrThrow(["volume", "add", "--mount-path", mountPath], { cwd }, {
-        retryTransient: true,
-        acceptNonZero: (result) =>
-          isAlreadyExistsFailure(result.stdout, result.stderr) ||
-          /\bvolume\b[\s\S]*\bmounted at\b/i.test(`${result.stdout}\n${result.stderr}`),
-      });
+      await runOrThrow(
+        ["volume", "add", "--mount-path", mountPath],
+        { cwd },
+        {
+          retryTransient: true,
+          acceptNonZero: (result) =>
+            isAlreadyExistsFailure(result.stdout, result.stderr) ||
+            /\bvolume\b[\s\S]*\bmounted at\b/i.test(`${result.stdout}\n${result.stderr}`),
+        },
+      );
     },
 
     async status({ cwd }) {
@@ -355,7 +372,7 @@ function jsonHasVariableKey(value: unknown, key: string): boolean {
   if (!value || typeof value !== "object") return false;
 
   const record = value as Record<string, unknown>;
-  if (Object.prototype.hasOwnProperty.call(record, key)) return true;
+  if (Object.hasOwn(record, key)) return true;
   for (const field of ["key", "name", "variable"]) {
     if (record[field] === key) return true;
   }

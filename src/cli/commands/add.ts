@@ -189,22 +189,18 @@ export async function runAdd(target: string | undefined, opts: AddOpts): Promise
     }
     console.log(`  ✓ ${entry.defaultName} (${entry.type})`);
     if (skillCopied) {
-      console.log(`    skill: ${displayPath(join(agentDir, "skills", entry.type), opts.cwd)}/SKILL.md`);
+      console.log(
+        `    skill: ${displayPath(join(agentDir, "skills", entry.type), opts.cwd)}/SKILL.md`,
+      );
     }
   }
 
   if (knowledgeAdded) {
     console.log();
     console.log("Knowledge scaffold:");
-    console.log(
-      `  ${displayPath(join(agentDir, "knowledge", "local", "manifest"), opts.cwd)}`,
-    );
-    console.log(
-      `  ${displayPath(join(agentDir, "knowledge", "local", "mission.md"), opts.cwd)}`,
-    );
-    console.log(
-      `  ${displayPath(join(agentDir, "knowledge", "local", "context.md"), opts.cwd)}`,
-    );
+    console.log(`  ${displayPath(join(agentDir, "knowledge", "local", "manifest"), opts.cwd)}`);
+    console.log(`  ${displayPath(join(agentDir, "knowledge", "local", "mission.md"), opts.cwd)}`);
+    console.log(`  ${displayPath(join(agentDir, "knowledge", "local", "context.md"), opts.cwd)}`);
     console.log();
     console.log("Add knowledge:");
     console.log("  - Edit, rename, or delete the starter markdown files");
@@ -229,7 +225,9 @@ export async function runAdd(target: string | undefined, opts: AddOpts): Promise
     console.log("  - Set TELEGRAM_CREATOR_USER_IDS in .env (comma-separated numeric user IDs)");
     console.log("  - Default inbound mode: polling");
     console.log("  - Find your Telegram user ID with @userinfobot");
-    console.log("  - For production webhooks, switch telegramTransport.inbound to webhook in agent.yaml");
+    console.log(
+      "  - For production webhooks, switch telegramTransport.inbound to webhook in agent.yaml",
+    );
   }
 
   // === Run bun install (last; failure leaves intentional partial state) ===
@@ -246,7 +244,9 @@ export async function runAdd(target: string | undefined, opts: AddOpts): Promise
     installOk = result.ok;
     if (!installOk) {
       console.log();
-      console.log(`⚠ bun install failed in ${displayPath(agentDir, opts.cwd)} (exit ${result.code}).`);
+      console.log(
+        `⚠ bun install failed in ${displayPath(agentDir, opts.cwd)} (exit ${result.code}).`,
+      );
       console.log("  agent.yaml + package.json are already updated.");
       console.log(`  Retry:  cd ${displayPath(agentDir, opts.cwd)} && bun install`);
       console.log();

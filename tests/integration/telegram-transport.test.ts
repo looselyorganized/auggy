@@ -115,7 +115,7 @@ describe("telegram-transport integration with real kernel", () => {
             // Internal test-only override — passes a mock client to avoid
             // real Telegram API calls.
             _clientFactory: () => client,
-          } as any),
+          } as unknown as Parameters<typeof telegramTransport>[0]),
         ],
       },
       model,

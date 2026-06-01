@@ -147,7 +147,7 @@ describe("multi-transport integration: webTransport + telegramTransport", () => 
             auth: { creatorUserIds: [555] },
             // Test-only: inject a mock client to avoid real Telegram API calls.
             _clientFactory: () => tgClient,
-          } as any),
+          } as unknown as Parameters<typeof telegramTransport>[0]),
           webTransport({
             port,
             auth: { type: "bearer", token: "WEBSECRET" },

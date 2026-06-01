@@ -132,7 +132,9 @@ function checkConfigEnvReferences(configPath: string, agentDir: string): DoctorC
     return {
       name: `env ${key}`,
       status: "fail",
-      message: env.error ? `could not read ${envPath}: ${env.error}` : `missing value in ${envPath}`,
+      message: env.error
+        ? `could not read ${envPath}: ${env.error}`
+        : `missing value in ${envPath}`,
       fix: `Set ${key}=<value> in ${envPath}.`,
     };
   });

@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { writeFile, mkdir, symlink, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { filesystem, isWithinMount } from "@/augments/filesystem";
+import type { TurnState } from "@/types";
 import { createTempDir } from "@tests/fixtures/temp-dir";
 import { asStringTool } from "@tests/fixtures/tool-helpers";
 
@@ -504,7 +505,7 @@ describe("filesystem augment", () => {
       await aug.onBoot!();
 
       expect(aug.context).toBeDefined();
-      const blocks = (await aug.context!({} as any, undefined)) as Array<{
+      const blocks = (await aug.context!({} as unknown as TurnState, undefined)) as Array<{
         content: string;
         priority: string;
       }>;

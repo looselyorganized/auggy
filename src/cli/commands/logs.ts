@@ -28,10 +28,7 @@ export async function runLogs(name: string | undefined, opts: LogsOptions = {}):
   return message;
 }
 
-export function formatRailwayLogsMessage(
-  name: string,
-  cloud: NonNullable<CloudRecord>,
-): string {
+export function formatRailwayLogsMessage(name: string, cloud: NonNullable<CloudRecord>): string {
   return [
     `Railway logs for "${name}" are available in Railway.`,
     "",

@@ -186,7 +186,9 @@ export function augmentCommand(deps: AugmentCommandDeps = {}): Command {
           `Installed custom augment "${result.name}" in ${displayPath(result.configPath)}`,
         );
         if (result.skillCopied) {
-          console.log(`Copied skill to ${displayPath(join(result.agentDir, "skills", result.name))}/`);
+          console.log(
+            `Copied skill to ${displayPath(join(result.agentDir, "skills", result.name))}/`,
+          );
         }
       } catch (err) {
         console.error(`Error: ${(err as Error).message}`);

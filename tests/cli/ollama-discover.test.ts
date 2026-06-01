@@ -91,7 +91,12 @@ describe("partitionByRecommended", () => {
   });
 
   it("treats unsized model IDs (no colon) the same as tagged ones", () => {
-    const { recommended, other } = partitionByRecommended(["qwen3.6", "qwen3", "gemma4", "llama3.2"]);
+    const { recommended, other } = partitionByRecommended([
+      "qwen3.6",
+      "qwen3",
+      "gemma4",
+      "llama3.2",
+    ]);
     expect(recommended).toEqual(["qwen3.6", "qwen3", "gemma4"]);
     expect(other).toEqual(["llama3.2"]);
   });

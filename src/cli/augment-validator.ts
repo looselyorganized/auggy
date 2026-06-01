@@ -6,9 +6,7 @@ export interface AugmentValidationResult {
   toolCount: number;
 }
 
-export async function validateCustomAugment(
-  sourcePath: string,
-): Promise<AugmentValidationResult> {
+export async function validateCustomAugment(sourcePath: string): Promise<AugmentValidationResult> {
   const modulePath = resolve(sourcePath);
   const mod = await import(`${modulePath}?t=${Date.now()}`);
   const factory = mod.default;
@@ -21,7 +19,10 @@ export async function validateCustomAugment(
   return { name: augment.name, toolCount: augment.tools?.length ?? 0 };
 }
 
-export function validateAugmentShape(augment: unknown, label = "custom augment"): asserts augment is Augment {
+export function validateAugmentShape(
+  augment: unknown,
+  label = "custom augment",
+): asserts augment is Augment {
   if (!augment || typeof augment !== "object" || Array.isArray(augment)) {
     throw new Error(`${label}: factory must return an augment object.`);
   }
