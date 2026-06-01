@@ -21,7 +21,7 @@ Auggy (augment-1) is a modular agent runtime in TypeScript/Bun, purpose-built fo
 ## Quick start
 
 ```bash
-# Install the CLI globally (requires Bun: https://bun.sh/install)
+# Install the CLI globally (requires Node >=20.17 and Bun >=1.2)
 npm i -g auggy
 
 # Create a chat-ready agent
@@ -52,8 +52,9 @@ auggy deploy
 auggy logs
 ```
 
-The `auggy` binary requires [Bun](https://bun.sh) at runtime. The package
-ships TypeScript sources; Bun executes them directly without a build step.
+The `auggy` package requires Node >=20.17 for npm install compatibility and
+[Bun](https://bun.sh) >=1.2 at runtime. The package ships TypeScript sources;
+Bun executes them directly without a build step.
 
 Fresh agents include the local chat surface by default: identity shorthand,
 learned file memory, scoped filesystem + skills, web chat transport, web

@@ -65,6 +65,7 @@
     "CHANGELOG.md"
   ],
   "engines": {
+    "node": ">=20.17.0",
     "bun": ">=1.2.0"
   },
   "workspaces": [
