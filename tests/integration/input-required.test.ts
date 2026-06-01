@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach } from "bun:test";
 import { defineAgent } from "@/agent";
 import { webTransport } from "@/transports/web-transport";
-import { turnControl } from "@/augments/turn-control";
+import { turnControl } from "@/augments/turnControl";
 import { createMockModel } from "@tests/fixtures/mock-model";
 import type { AgentHandle } from "@/types";
 

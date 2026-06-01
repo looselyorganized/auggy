@@ -26,7 +26,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { defineAgent } from "@/agent";
-import { layeredMemory } from "@/augments/layered-memory";
+import { layeredMemory } from "@/augments/layeredMemory";
 import type {
   Augment,
   CostResult,
@@ -287,7 +287,7 @@ describe("auto-save end-to-end", () => {
     // the flush fires, visitorAuth has already migrated existing DB rows from
     // anon-<threadId> to vis_<uuid>. If the flush wrote new facts under the
     // old anon id, it would recreate the orphaned-history regression. See
-    // augments/layered-memory/index.ts maybeFlushOnPromotion comment for full
+    // augments/layeredMemory/index.ts maybeFlushOnPromotion comment for full
     // rationale.
     const dir = await createTempDir();
     cleanup = dir.cleanup;

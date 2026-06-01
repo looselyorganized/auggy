@@ -1,5 +1,5 @@
 ---
-name: agent-mail
+name: agentMail
 description: Send email through the AgentMail augment. Use to compose outbound messages, reply to inbound mail, or forward conversations to teammates. Covers when to use vs `notify` vs chat, what to omit from outbound, recipient/rate-limit semantics, and how to interpret `rate_limited` and `failed` results.
 ---
 

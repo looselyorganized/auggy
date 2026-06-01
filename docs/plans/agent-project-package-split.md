@@ -19,7 +19,7 @@ my-agent/
   .gitignore
   .auggy-cloud.json        # only after deploy
   augments/
-    web-fetch/
+    webFetch/
       augment.yaml
       README.md
     filesystem/
@@ -30,7 +30,7 @@ my-agent/
       index.ts             # custom only
       SKILL.md             # custom only, if applicable
   skills/
-    web-fetch/
+    webFetch/
       SKILL.md
     filesystem/
       SKILL.md
@@ -94,7 +94,7 @@ auggy init
 Initializes the current directory as an agent project.
 
 ```bash
-auggy add visitor-auth
+auggy add visitorAuth
 ```
 
 Adds an augment to the current agent project. It mutates `agent.yaml`, updates
@@ -107,11 +107,11 @@ install unless skipped.
 For built-in augments:
 
 ```yaml
-name: web-fetch
+name: webFetch
 kind: builtin
 runtime: auggy
 configType: webFetch
-skill: ../../skills/web-fetch/SKILL.md
+skill: ../../skills/webFetch/SKILL.md
 ```
 
 For custom augments:
@@ -140,7 +140,7 @@ auggy skill list
 auggy skill remove <name>
 ```
 
-- `auggy skill add web-fetch` installs or restores the bundled skill for an
+- `auggy skill add webFetch` installs or restores the bundled skill for an
   installed augment.
 - `auggy skill create sales-playbook` creates a user-authored skill at
   `skills/sales-playbook/SKILL.md`.

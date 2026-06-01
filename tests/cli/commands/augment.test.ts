@@ -28,9 +28,9 @@ describe("auggy augment command", () => {
     const runAdd = mock(async () => {});
 
     const cmd = augmentCommand({ runAdd });
-    await cmd.parseAsync(["add", "visitor-auth", "--skip-install"], { from: "user" });
+    await cmd.parseAsync(["add", "visitorAuth", "--skip-install"], { from: "user" });
 
-    expect(runAdd).toHaveBeenCalledWith("visitor-auth", {
+    expect(runAdd).toHaveBeenCalledWith("visitorAuth", {
       augment: undefined,
       config: undefined,
       skipInstall: true,
@@ -42,10 +42,10 @@ describe("auggy augment command", () => {
     const runAdd = mock(async () => {});
 
     const cmd = augmentCommand({ runAdd, auggyDir: "/tmp/auggy" });
-    await cmd.parseAsync(["add", "visitor-auth", "--agent", "zip"], { from: "user" });
+    await cmd.parseAsync(["add", "visitorAuth", "--agent", "zip"], { from: "user" });
 
     expect(runAdd).toHaveBeenCalledWith("zip", {
-      augment: "visitor-auth",
+      augment: "visitorAuth",
       config: undefined,
       skipInstall: undefined,
       auggyDir: "/tmp/auggy",
@@ -183,11 +183,18 @@ describe("listAugments and removeAugment", () => {
       });
 
       expect(listAugments({ agentName: "zip", auggyDir })).toEqual([
-        { label: "Web Fetch", name: "fetch", type: "webFetch", source: undefined },
+        {
+          label: "Web Fetch",
+          name: "fetch",
+          type: "webFetch",
+          category: "built-in",
+          source: undefined,
+        },
         {
           label: "Weather",
           name: "weather",
           type: "custom",
+          category: "custom",
           source: "./augments/weather/index.ts",
         },
       ]);
@@ -198,23 +205,27 @@ describe("listAugments and removeAugment", () => {
 
   test("formats augment list as human label plus code type", () => {
     const text = formatAugmentList([
-      { label: "File Memory", name: "learned", type: "fileMemory" },
-      { label: "Web Fetch", name: "fetch", type: "webFetch" },
+      { label: "File Memory", name: "learned", type: "fileMemory", category: "built-in" },
+      { label: "Web Fetch", name: "fetch", type: "webFetch", category: "built-in" },
       {
         label: "Weather",
         name: "weather",
         type: "custom",
+        category: "custom",
         source: "./augments/weather/index.ts",
       },
     ]);
 
     expect(text).toContain("AUGMENT");
     expect(text).toContain("TYPE");
+    expect(text).toContain("CATEGORY");
     expect(text).toContain("SOURCE");
     expect(text).toContain("File Memory");
     expect(text).toContain("fileMemory");
     expect(text).not.toContain("learned");
     expect(text).toContain("Weather");
+    expect(text).toContain("built-in");
+    expect(text).toContain("custom");
     expect(text).toContain("./augments/weather/index.ts");
   });
 
@@ -233,25 +244,25 @@ describe("listAugments and removeAugment", () => {
           "augments:",
           "  - name: web",
           "    type: webTransport",
-          "  - name: visitor-auth",
+          "  - name: visitorAuth",
           "    type: visitorAuth",
           "",
         ].join("\n"),
       });
-      mkdirSync(join(agentDir, "skills", "visitor-auth"), { recursive: true });
+      mkdirSync(join(agentDir, "skills", "visitorAuth"), { recursive: true });
       writeFileSync(
-        join(agentDir, "skills", "visitor-auth", "SKILL.md"),
-        "---\nname: visitor-auth\n",
+        join(agentDir, "skills", "visitorAuth", "SKILL.md"),
+        "---\nname: visitorAuth\n",
       );
 
-      const result = removeAugment({ agentName: "zip", augment: "visitor-auth", auggyDir });
+      const result = removeAugment({ agentName: "zip", augment: "visitorAuth", auggyDir });
 
       expect(result).toMatchObject({
-        name: "visitor-auth",
+        name: "visitorAuth",
         type: "visitorAuth",
-        skillRemoved: join("skills", "visitor-auth"),
+        skillRemoved: join("skills", "visitorAuth"),
       });
-      expect(existsSync(join(agentDir, "skills", "visitor-auth"))).toBe(false);
+      expect(existsSync(join(agentDir, "skills", "visitorAuth"))).toBe(false);
       const parsed = parseYaml(readFileSync(join(agentDir, "agent.yaml"), "utf-8")) as {
         augments: Array<Record<string, unknown>>;
       };

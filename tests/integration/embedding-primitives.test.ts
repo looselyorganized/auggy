@@ -16,7 +16,7 @@
  *
  * Out of scope (covered elsewhere): agent path (src/transports/* tests),
  * full AG-UI event taxonomy (transport unit tests), visitorAuth verify-page
- * GET/POST mechanics (tests/augments/visitor-auth/*), Idempotency-Key
+ * GET/POST mechanics (tests/augments/visitorAuth/*), Idempotency-Key
  * behavior (tests/integration/budgets-and-trust.test.ts).
  *
  * If you change webTransport.identify or visitorAuth's upgrade flow, run this
@@ -27,7 +27,7 @@ import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { join } from "node:path";
 import { defineAgent } from "@/agent";
 import { webTransport } from "@/transports/web-transport";
-import { visitorAuth } from "../../src/augments/visitor-auth/index";
+import { visitorAuth } from "../../src/augments/visitorAuth/index";
 import { createMockModel } from "@tests/fixtures/mock-model";
 import { createTempDir } from "@tests/fixtures/temp-dir";
 import type { AgentHandle, Augment, PeerIdentity, TurnState } from "@/types";

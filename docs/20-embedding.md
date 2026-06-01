@@ -130,7 +130,7 @@ For creator-side chat (the operator chatting with their own agent), Auggy ships 
 - visitorAuth flow with console adapter → upgraded `vis_<uuid>` token (Path 3 via verify)
 - `x-peer-id` header is ignored for identity regardless of request shape (regression guard)
 
-Six tests. **Out of scope for this test file:** agent-path identity (Path 2, covered in `src/transports/web-transport.test.ts`), full AG-UI event taxonomy (`docs/06-transports.md` + transport unit tests), visitorAuth verify-page GET/POST mechanics (`tests/augments/visitor-auth/*.test.ts`), Idempotency-Key behavior (`tests/integration/budgets-and-trust.test.ts`).
+Six tests. **Out of scope for this test file:** agent-path identity (Path 2, covered in `src/transports/web-transport.test.ts`), full AG-UI event taxonomy (`docs/06-transports.md` + transport unit tests), visitorAuth verify-page GET/POST mechanics (`tests/augments/visitorAuth/*.test.ts`), Idempotency-Key behavior (`tests/integration/budgets-and-trust.test.ts`).
 
 If you change webTransport identity resolution or visitorAuth's upgrade flow, run this test to verify the documented identity-path contract still holds.
 

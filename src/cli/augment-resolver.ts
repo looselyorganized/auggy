@@ -17,20 +17,20 @@
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { fileMemory } from "../augments/file-memory";
-import { supabaseMemory } from "../augments/supabase-memory";
+import { fileMemory } from "../augments/fileMemory";
+import { supabaseMemory } from "../augments/supabaseMemory";
 import { filesystem } from "../augments/filesystem";
 import { webTransport } from "../transports/web-transport";
-import { webFetch } from "../augments/web-fetch";
+import { webFetch } from "../augments/webFetch";
 import { manifest } from "../augments/manifest";
 import { skills } from "../augments/skills";
 import { bash } from "../augments/bash";
 import { notify } from "../augments/notify";
-import { agentMail } from "../augments/agent-mail";
-import { telegramTransport } from "../augments/telegram-transport";
-import { turnControl, type TurnControlOptions } from "../augments/turn-control";
-import { visitorAuth } from "../augments/visitor-auth";
-import type { VisitorAuthOptions, VisitorAuthAugmentExtras } from "../augments/visitor-auth/types";
+import { agentMail } from "../augments/agentMail";
+import { telegramTransport } from "../augments/telegramTransport";
+import { turnControl, type TurnControlOptions } from "../augments/turnControl";
+import { visitorAuth } from "../augments/visitorAuth";
+import type { VisitorAuthOptions, VisitorAuthAugmentExtras } from "../augments/visitorAuth/types";
 // `link` (value) used to be statically imported here, which transitively
 // loaded `@auggy/link` at boot regardless of whether any agent selected the
 // link augment (Codex 1st-pass finding #3). After Phase 5 the value is
@@ -129,7 +129,7 @@ async function resolveLayeredMemory(
   opts: Record<string, unknown>,
   agentDir: string,
 ): Promise<Augment> {
-  const { layeredMemory } = await import("../augments/layered-memory");
+  const { layeredMemory } = await import("../augments/layeredMemory");
   const backend = (opts.backend as string | undefined) ?? "sqlite";
   const namespace = (opts.namespace as string | undefined) ?? "ep";
   const retentionDays = opts.retentionDays as number | undefined;

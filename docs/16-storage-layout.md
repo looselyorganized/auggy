@@ -18,9 +18,9 @@ An Auggy agent is a normal project folder wherever the operator creates it:
 ├── .env.example            # required secret names, no values
 ├── package.json            # agent-local runtime and augment dependencies
 ├── skills/                 # bundled and user-authored skills
-│   ├── layered-memory/SKILL.md
+│   ├── layeredMemory/SKILL.md
 │   ├── filesystem/SKILL.md (+ references/)
-│   └── ...                 # web-fetch, bash, notify, turn-control as configured
+│   └── ...                 # webFetch, bash, notify, turnControl as configured
 ├── manifest/               # scaffolded if manifest is selected (file:// example)
 ├── data/
 └── augments/               # installed augment metadata and custom augment source

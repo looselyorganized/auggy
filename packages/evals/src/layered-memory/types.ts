@@ -15,7 +15,7 @@
  */
 
 import type { TrustLevel } from "auggy/internal/types";
-import type { StoreEntry } from "auggy/internal/augments/layered-memory/storage/types";
+import type { StoreEntry } from "auggy/internal/augments/layeredMemory/storage/types";
 
 // ---------------------------------------------------------------------------
 // Fixture shape (YAML on disk)

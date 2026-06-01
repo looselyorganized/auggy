@@ -2,7 +2,7 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { visitorAuth } from "@/augments/visitor-auth";
+import { visitorAuth } from "@/augments/visitorAuth";
 
 /**
  * Security eval suite for visitorAuth's request_auth tool.

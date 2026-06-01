@@ -2,7 +2,7 @@ import { describe, test, expect } from "bun:test";
 import {
   buildVerifySuccessPage,
   buildVerifyFailurePage,
-} from "../../../src/augments/visitor-auth/verify-page";
+} from "../../../src/augments/visitorAuth/verify-page";
 
 describe("buildVerifySuccessPage", () => {
   test("includes no-referrer meta tag", () => {

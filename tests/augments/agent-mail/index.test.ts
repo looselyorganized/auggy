@@ -2,7 +2,7 @@ import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { agentMail } from "../../../src/augments/agent-mail";
+import { agentMail } from "../../../src/augments/agentMail";
 import type {
   AgentMailClient,
   ReplyMessageInput,

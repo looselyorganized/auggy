@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import { turnControl } from "@/augments/turn-control";
+import { turnControl } from "@/augments/turnControl";
 import type { ToolResult } from "@/types";
 
 describe("turnControl augment", () => {

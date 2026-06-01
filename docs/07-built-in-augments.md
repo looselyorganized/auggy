@@ -479,7 +479,7 @@ Auto-save extraction runs as an admitted internal turn — it flows through the 
 
 #### Bundled skill
 
-The bundled `src/augments/layered-memory/skill/SKILL.md` teaches the model when and how to use `memory_write`, `memory_search`, `memory_list`, and `memory_forget`, plus a section on interpreting `[AGENT-DERIVED]` entries and the privacy boundaries that apply to both manual and auto-saved writes. Copied into `<agent-dir>/skills/layered-memory/SKILL.md` at `auggy create`/`auggy add` time; install retroactively with `auggy skill add layered-memory`.
+The bundled `src/augments/layeredMemory/skill/SKILL.md` teaches the model when and how to use `memory_write`, `memory_search`, `memory_list`, and `memory_forget`, plus a section on interpreting `[AGENT-DERIVED]` entries and the privacy boundaries that apply to both manual and auto-saved writes. Copied into `<agent-dir>/skills/layeredMemory/SKILL.md` at `auggy create`/`auggy add` time; install retroactively with `auggy skill add layeredMemory`.
 
 ### Console/API info
 
@@ -852,7 +852,7 @@ The SSRF filter lives in `src/http.ts` as the exported helper `rejectUnsafeUrl(u
 
 ### Bundled skill
 
-This augment ships `src/augments/web-fetch/skill/SKILL.md` with model teaching on the `web_fetch` tool — when to fetch vs ask, prompt-aware summarization, blocked-URL handling. Copied into `<agent-dir>/skills/web-fetch/SKILL.md` at `auggy create`/`auggy add` time; install retroactively with `auggy skill add web-fetch`.
+This augment ships `src/augments/webFetch/skill/SKILL.md` with model teaching on the `web_fetch` tool — when to fetch vs ask, prompt-aware summarization, blocked-URL handling. Copied into `<agent-dir>/skills/webFetch/SKILL.md` at `auggy create`/`auggy add` time; install retroactively with `auggy skill add webFetch`.
 
 ## `bash` — Scoped shell execution
 
@@ -1048,7 +1048,7 @@ The closure variable backing the daily cap is mutated on flip, so the new cap ta
 ```yaml
 augments:
   - type: visitorAuth
-    name: visitor-auth
+    name: visitorAuth
     options:
       publicUrl: ${AUGGY_PUBLIC_URL}
       dbPath: ./visitor-auth.db
@@ -1074,7 +1074,7 @@ It adds three things to the agent: a model-callable `request_auth({method: "emai
 
 ### Bundled skill
 
-`visitorAuth` ships `src/augments/visitor-auth/skill/SKILL.md` with model teaching on the `request_auth` tool — when to offer verification, confused-deputy awareness, and rate-limit messaging. Copied into `<agent-dir>/skills/visitor-auth/SKILL.md` at `auggy create`/`auggy add` time; install retroactively with `auggy skill add visitor-auth`.
+`visitorAuth` ships `src/augments/visitorAuth/skill/SKILL.md` with model teaching on the `request_auth` tool — when to offer verification, confused-deputy awareness, and rate-limit messaging. Copied into `<agent-dir>/skills/visitorAuth/SKILL.md` at `auggy create`/`auggy add` time; install retroactively with `auggy skill add visitorAuth`.
 
 For the full operator reference (config, env vars, security posture, ops commands, troubleshooting), see [docs/19-visitor-auth.md](./19-visitor-auth.md).
 

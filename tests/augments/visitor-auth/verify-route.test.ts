@@ -2,7 +2,7 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { visitorAuth } from "../../../src/augments/visitor-auth";
+import { visitorAuth } from "../../../src/augments/visitorAuth";
 import { verifyVisitorToken, deriveSigningKey } from "../../../src/transports/visitor-token";
 
 let tmp: string;
@@ -460,7 +460,7 @@ describe("visitorAuth verify route", () => {
 
     // Step 2: Operator revokes.
     const { createSqliteVisitorAuthStore } = await import(
-      "../../../src/augments/visitor-auth/storage/sqlite-store"
+      "../../../src/augments/visitorAuth/storage/sqlite-store"
     );
     const seedStore = createSqliteVisitorAuthStore({ dbPath });
     seedStore.initialize();
@@ -900,7 +900,7 @@ describe("visitorAuth verify route", () => {
 
     // And the row in verified_visitors must match both tokens' visitorId.
     const { createSqliteVisitorAuthStore } = await import(
-      "../../../src/augments/visitor-auth/storage/sqlite-store"
+      "../../../src/augments/visitorAuth/storage/sqlite-store"
     );
     const checkStore = createSqliteVisitorAuthStore({ dbPath });
     checkStore.initialize();

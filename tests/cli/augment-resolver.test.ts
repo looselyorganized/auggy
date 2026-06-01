@@ -783,7 +783,7 @@ describe("resolveAugments — C1 wiring (fix F17)", () => {
       // a second request, and assert a new token IS issued (= anonymous path).
       // This requires DB-level access. Use createSqliteVisitorAuthStore from the store.
       const { createSqliteVisitorAuthStore } = await import(
-        "../../src/augments/visitor-auth/storage/sqlite-store"
+        "../../src/augments/visitorAuth/storage/sqlite-store"
       );
       const seedStore = createSqliteVisitorAuthStore({
         dbPath: join(TMP, "f17-va.db"),

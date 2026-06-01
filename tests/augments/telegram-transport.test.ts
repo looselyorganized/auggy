@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import { resolveTelegramIdentity } from "../../src/augments/telegram-transport";
+import { resolveTelegramIdentity } from "../../src/augments/telegramTransport";
 import type {
   AgentCard,
   OutboundMessage,
@@ -87,7 +87,7 @@ describe("resolveTelegramIdentity", () => {
   });
 });
 
-import { validateAdmittedAgents, telegramTransport } from "../../src/augments/telegram-transport";
+import { validateAdmittedAgents, telegramTransport } from "../../src/augments/telegramTransport";
 import type { TelegramBotClient } from "../../src/telegram-client";
 import type { TelegramUpdate } from "../../src/telegram-client";
 

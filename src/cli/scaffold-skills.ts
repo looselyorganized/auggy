@@ -11,59 +11,32 @@
  * (AGENT_NAME, PURPOSE, OPERATOR_NAME).
  */
 
-import { cpSync, existsSync, readFileSync } from "node:fs";
+import { cpSync, existsSync, readFileSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 // ---------------------------------------------------------------------------
 // Augment-name resolution
 // ---------------------------------------------------------------------------
 
-/**
- * Map an augment `type` (the YAML `type:` field, e.g. `webFetch`) to the
- * folder name under `src/augments/`. The folder convention is kebab-case;
- * the type identifier is camelCase. This lookup is the inverse of the
- * augment-resolver dispatch.
- *
- * Returned name doubles as the `<agent-dir>/skills/<name>/` directory name
- * so the scaffolded layout matches what the runtime `skills` augment scans.
- */
-const TYPE_TO_AUGMENT_FOLDER: Record<string, string> = {
-  filesystem: "filesystem",
-  layeredMemory: "layered-memory",
-  webFetch: "web-fetch",
-  manifest: "manifest",
-  bash: "bash",
-  notify: "notify",
-  turnControl: "turn-control",
-  visitorAuth: "visitor-auth",
-  // Augments below intentionally have no skill folder today (no model-callable
-  // tools, transport-only, or legacy). Listed for completeness so a lookup
-  // never silently returns undefined for a known type.
-  fileMemory: "file-memory",
-  supabaseMemory: "supabase-memory",
-  budgets: "budgets",
-  webTransport: "web-transport",
-  telegramTransport: "telegram-transport",
-  // ADR-030: the 'skills' augment is the runtime skill surface itself; it
-  // carries no SKILL.md of its own (the augment IS the listing).
-  skills: "skills",
-};
+const AUGMENTS_ROOT = resolve(import.meta.dir, "../augments");
 
-/** Return the augment folder name for a YAML `type:` value, or `null` if unknown. */
+function augmentSourceDir(type: string): string {
+  return resolve(AUGMENTS_ROOT, type);
+}
+
+/** Return the agent skill folder name for a YAML `type:` value, or `null` if unknown. */
 export function augmentFolderForType(type: string): string | null {
-  return TYPE_TO_AUGMENT_FOLDER[type] ?? null;
+  if (!type) return null;
+  return existsSync(augmentSourceDir(type)) ? type : null;
 }
 
 /**
- * Inverse of `TYPE_TO_AUGMENT_FOLDER` — folder name → camelCase type. Used by
- * `auggy skill add` to validate the operator-supplied folder argument and
- * recover the type for `copyBundledSkill`. Built once and frozen so the set
- * of valid folder names is the canonical list maintained in this module.
+ * Valid built-in skill names are canonical augment type names.
  */
 export function buildFolderToTypeMap(): ReadonlyMap<string, string> {
   const map = new Map<string, string>();
-  for (const [type, folder] of Object.entries(TYPE_TO_AUGMENT_FOLDER)) {
-    map.set(folder, type);
+  for (const entry of readdirSync(AUGMENTS_ROOT, { withFileTypes: true })) {
+    if (entry.isDirectory()) map.set(entry.name, entry.name);
   }
   return map;
 }
@@ -78,7 +51,7 @@ export function buildFolderToTypeMap(): ReadonlyMap<string, string> {
  * bundled skill folder.
  */
 function bundledSkillDir(folder: string): string | null {
-  const dir = resolve(import.meta.dir, "../augments", folder, "skill");
+  const dir = resolve(AUGMENTS_ROOT, folder, "skill");
   return existsSync(dir) ? dir : null;
 }
 
@@ -96,11 +69,9 @@ function bundledSkillDir(folder: string): string | null {
  * operators opt into updates by re-scaffolding).
  */
 export function copyBundledSkill(type: string, agentDir: string): boolean {
-  const folder = TYPE_TO_AUGMENT_FOLDER[type];
-  if (!folder) return false;
-  const src = bundledSkillDir(folder);
+  const src = bundledSkillDir(type);
   if (!src) return false;
-  const dest = join(agentDir, "skills", folder);
+  const dest = join(agentDir, "skills", type);
   cpSync(src, dest, { recursive: true });
   return true;
 }

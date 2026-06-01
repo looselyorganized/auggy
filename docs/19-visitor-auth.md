@@ -27,7 +27,7 @@ augments:
         # wins. enabled is also forced to true automatically.
 
   - type: visitorAuth
-    name: visitor-auth
+    name: visitorAuth
     options:
       publicUrl: ${AUGGY_PUBLIC_URL}              # e.g. https://zip.example.com
       dbPath: ./visitor-auth.db
@@ -53,7 +53,7 @@ OSS adopters who haven't configured AgentMail can still exercise the full magic-
 Switch via `agentMail.transport: "console"` in `agent.yaml`:
 
 ```yaml
-- name: visitor-auth
+- name: visitorAuth
   type: visitorAuth
   options:
     publicUrl: http://localhost:8080

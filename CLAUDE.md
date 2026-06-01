@@ -185,7 +185,7 @@ tests/                    # 1617 tests across 128 files
 ├── cli/                  # CLI tests (config parser, resolvers, PID, plist, scaffold, manifest)
 ├── evals/                # Security eval harness (grader pipeline)
 ├── http.test.ts          # HTTP client tests (redirects, body size, auth stripping)
-└── (augments/web-fetch.test.ts — entity decoding, script strip, JSON pass)
+└── (augments/webFetch.test.ts — entity decoding, script strip, JSON pass)
 
 scripts/
 ├── hello.ts              # Hello-world composition (real Claude, file identity, web transport)

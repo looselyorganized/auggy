@@ -1,5 +1,5 @@
 import { describe, test, expect, afterAll } from "bun:test";
-import { webFetch, normalizeFetchUrl } from "../../src/augments/web-fetch";
+import { webFetch, normalizeFetchUrl } from "../../src/augments/webFetch";
 import { asStringTool } from "../fixtures/tool-helpers";
 
 // ---------------------------------------------------------------------------

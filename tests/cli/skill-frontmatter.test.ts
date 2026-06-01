@@ -57,13 +57,13 @@ describe("readSkillFrontmatter", () => {
 describe("bundled skill frontmatter", () => {
   const bundledSkills = [
     ["filesystem", "filesystem"],
-    ["layered-memory", "layered-memory"],
-    ["web-fetch", "web-fetch"],
+    ["layeredMemory", "layeredMemory"],
+    ["webFetch", "webFetch"],
     ["manifest", "manifest"],
     ["bash", "bash"],
     ["notify", "notify"],
-    ["turn-control", "turn-control"],
-    ["visitor-auth", "visitor-auth"],
+    ["turnControl", "turnControl"],
+    ["visitorAuth", "visitorAuth"],
   ] as const;
 
   for (const [folder, expectedName] of bundledSkills) {

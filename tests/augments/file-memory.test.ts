@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { writeFile, readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { fileMemory } from "@/augments/file-memory";
+import { fileMemory } from "@/augments/fileMemory";
 import { createTempDir } from "@tests/fixtures/temp-dir";
 
 describe("fileMemory", () => {

@@ -12,7 +12,7 @@
 import { existsSync } from "node:fs";
 import { Database } from "bun:sqlite";
 import { join, resolve } from "node:path";
-import { createSqliteVisitorAuthStore } from "../../augments/visitor-auth/storage/sqlite-store";
+import { createSqliteVisitorAuthStore } from "../../augments/visitorAuth/storage/sqlite-store";
 import { parseAugmentConfigOnly } from "../yaml-helpers";
 import { resolveConfigPath } from "../resolve-config";
 

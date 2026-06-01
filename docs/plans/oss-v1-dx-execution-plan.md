@@ -219,7 +219,7 @@ Likely files:
 
 Tests:
 
-- `auggy add zip web-fetch` mutates `agent.yaml`.
+- `auggy add zip webFetch` mutates `agent.yaml`.
 - Bundled skill is copied.
 - Package deps are merged when needed.
 - `bun install` runs only when deps changed.
@@ -230,17 +230,19 @@ Acceptance:
 
 - Common augment adds do not require a checkbox wizard.
 
-### 7. Add Human-Friendly Augment Aliases *(implemented 2026-05-28)*
+### 7. Use One Canonical Augment Vocabulary *(implemented 2026-05-31)*
 
 Behavior:
 
-- Operators can use kebab-case and product names:
-  - `web-fetch` -> `webFetch`
-  - `visitor-auth` -> `visitorAuth`
-  - `telegram` -> `telegramTransport`
-  - `memory` -> `layeredMemory`
-  - `agent-mail` -> `agentMail`
-- Canonical YAML type names remain unchanged.
+- Operators use the same code identifier in commands, `agent.yaml`,
+  installed augment metadata, and bundled skill folders:
+  - `webFetch`
+  - `visitorAuth`
+  - `telegramTransport`
+  - `layeredMemory`
+  - `agentMail`
+- Kebab-case aliases such as `web-fetch` and friendly aliases such as `memory`
+  are intentionally rejected so the system has one code vocabulary.
 
 Likely files:
 

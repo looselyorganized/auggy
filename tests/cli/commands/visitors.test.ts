@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runVisitorsList, type VisitorsCommandOptions } from "../../../src/cli/commands/visitors";
-import { createSqliteVisitorAuthStore } from "../../../src/augments/visitor-auth/storage/sqlite-store";
+import { createSqliteVisitorAuthStore } from "../../../src/augments/visitorAuth/storage/sqlite-store";
 import { seedAgentForTest } from "../../../src/cli/agent-index";
 
 let tmp: string;
@@ -17,7 +17,7 @@ beforeEach(() => {
     auggyDir,
     yaml: `augments:
   - type: visitorAuth
-    name: visitor-auth
+    name: visitorAuth
     options:
       publicUrl: https://zip.test
       dbPath: ./visitor-auth.db

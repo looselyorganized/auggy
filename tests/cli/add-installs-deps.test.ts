@@ -135,20 +135,20 @@ describe("runAdd no-op cases", () => {
     await runAdd("with-fetch", {
       config: join(dir, "agent.yaml"),
       auggyDir,
-      augment: "web-fetch",
+      augment: "webFetch",
       bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
     });
 
     const yaml = readFileSync(join(dir, "agent.yaml"), "utf-8");
     expect(yaml).toContain("type: webFetch");
     expect(yaml).toContain("name: webFetch");
-    expect(existsSync(join(dir, "skills", "web-fetch", "SKILL.md"))).toBe(true);
+    expect(existsSync(join(dir, "skills", "webFetch", "SKILL.md"))).toBe(true);
   });
 
   test("project-local single arg is treated as augment when cwd has agent.yaml", async () => {
     const dir = setupAgent("local-add");
 
-    await runAdd("web-fetch", {
+    await runAdd("webFetch", {
       cwd: dir,
       auggyDir,
       bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
@@ -157,7 +157,7 @@ describe("runAdd no-op cases", () => {
     const yaml = readFileSync(join(dir, "agent.yaml"), "utf-8");
     expect(yaml).toContain("type: webFetch");
     expect(yaml).toContain("name: webFetch");
-    expect(existsSync(join(dir, "skills", "web-fetch", "SKILL.md"))).toBe(true);
+    expect(existsSync(join(dir, "skills", "webFetch", "SKILL.md"))).toBe(true);
   });
 
   test("project-local no args opens the picker for the cwd agent", async () => {
@@ -174,13 +174,13 @@ describe("runAdd no-op cases", () => {
     expect(yaml).toContain("type: bash");
   });
 
-  test("non-interactive friendly alias works for memory", async () => {
+  test("non-interactive canonical augment argument works for layeredMemory", async () => {
     const dir = setupAgent("with-memory");
 
     await runAdd("with-memory", {
       config: join(dir, "agent.yaml"),
       auggyDir,
-      augment: "memory",
+      augment: "layeredMemory",
       bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
     });
 
@@ -188,13 +188,13 @@ describe("runAdd no-op cases", () => {
     expect(yaml).toContain("type: layeredMemory");
   });
 
-  test("adding visitor-auth generates VISITOR_SIGNING_KEY in .env", async () => {
+  test("adding visitorAuth generates VISITOR_SIGNING_KEY in .env", async () => {
     const dir = setupAgent("with-auth");
 
     await runAdd("with-auth", {
       config: join(dir, "agent.yaml"),
       auggyDir,
-      augment: "visitor-auth",
+      augment: "visitorAuth",
       bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
     });
 
@@ -207,17 +207,17 @@ describe("runAdd no-op cases", () => {
     expect(signingKey).toBeTruthy();
     expect(env).toContain("AUGGY_AGENT_ID=existing-agent");
     expect(env).toContain("AUGGY_PUBLIC_URL=http://localhost:18080");
-    expect(existsSync(join(dir, "skills", "visitor-auth", "SKILL.md"))).toBe(true);
+    expect(existsSync(join(dir, "skills", "visitorAuth", "SKILL.md"))).toBe(true);
   });
 
-  test("adding visitor-auth fills blank generated env vars", async () => {
+  test("adding visitorAuth fills blank generated env vars", async () => {
     const dir = setupAgent("with-auth-blank");
     writeFileSync(join(dir, ".env"), "AUGGY_AGENT_ID=\nAUGGY_PUBLIC_URL=\nVISITOR_SIGNING_KEY=\n");
 
     await runAdd("with-auth-blank", {
       config: join(dir, "agent.yaml"),
       auggyDir,
-      augment: "visitor-auth",
+      augment: "visitorAuth",
       bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
     });
 
@@ -237,7 +237,7 @@ describe("runAdd no-op cases", () => {
         augment: "not-real",
         bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
       }),
-    ).rejects.toThrow(/Unknown augment "not-real".*web-fetch/s);
+    ).rejects.toThrow(/Unknown augment "not-real".*webFetch/s);
   });
 
   test("non-interactive already-installed augment makes no changes", async () => {
@@ -247,7 +247,7 @@ describe("runAdd no-op cases", () => {
     await runAdd("already-fetch", {
       config: join(dir, "agent.yaml"),
       auggyDir,
-      augment: "web-fetch",
+      augment: "webFetch",
       bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
     });
 

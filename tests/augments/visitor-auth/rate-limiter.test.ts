@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { createVisitorAuthRateLimiter } from "../../../src/augments/visitor-auth/rate-limiter";
+import { createVisitorAuthRateLimiter } from "../../../src/augments/visitorAuth/rate-limiter";
 
 describe("createVisitorAuthRateLimiter", () => {
   test("allows the first send for a peer", () => {

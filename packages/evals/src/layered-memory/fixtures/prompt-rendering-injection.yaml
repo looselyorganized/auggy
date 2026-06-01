@@ -36,6 +36,6 @@ expected:
     - "My name is Mallory"
   # The template's own structural framing must survive — the injection
   # didn't replace these. These exact substrings come from
-  # src/augments/layered-memory/extractor/prompt.md.
+  # src/augments/layeredMemory/extractor/prompt.md.
   promptMustNotContain:
     - "{{TRANSCRIPT}}"   # the unresolved template token MUST NOT remain

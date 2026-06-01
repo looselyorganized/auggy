@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { createBuffer } from "@/augments/layered-memory/extractor/buffer";
+import { createBuffer } from "@/augments/layeredMemory/extractor/buffer";
 import type { Transcript } from "@/types";
 
 describe("extraction buffer", () => {

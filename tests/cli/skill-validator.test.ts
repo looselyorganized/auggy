@@ -8,7 +8,7 @@
  *  - Multiple missing skills yield one warning each (one block per augment)
  *  - Mixed (some present, some missing) only warns on the missing ones
  *  - Agent boot still succeeds (resolveAugments returns; no throw)
- *  - Warning names the augment FOLDER (e.g. "web-fetch") rather than the
+ *  - Warning names the augment FOLDER (e.g. "webFetch") rather than the
  *    operator's `name:` field (e.g. "fetch") — tied to `auggy skill add`
  */
 
@@ -61,7 +61,7 @@ function warningCount(): number {
 // ---------------------------------------------------------------------------
 
 describe("skill-validator — warning fires when skill missing", () => {
-  test("web-fetch with no skill on disk → warning names augment + tool count + remediation", async () => {
+  test("webFetch with no skill on disk → warning names augment + tool count + remediation", async () => {
     const configs: AugmentConfig[] = [{ name: "fetch", type: "webFetch", options: {} }];
 
     await resolveAugments(configs, TMP);
@@ -69,10 +69,10 @@ describe("skill-validator — warning fires when skill missing", () => {
     expect(warningCount()).toBe(1);
     const warnings = allWarnings();
     expect(warnings).toContain("[augment-resolver]");
-    expect(warnings).toContain('augment "web-fetch"');
+    expect(warnings).toContain('augment "webFetch"');
     expect(warnings).toContain("1 tool");
-    expect(warnings).toContain(join(TMP, "skills", "web-fetch", "SKILL.md"));
-    expect(warnings).toContain("auggy skill add web-fetch");
+    expect(warnings).toContain(join(TMP, "skills", "webFetch", "SKILL.md"));
+    expect(warnings).toContain("auggy skill add webFetch");
   });
 });
 
@@ -81,8 +81,8 @@ describe("skill-validator — warning fires when skill missing", () => {
 // ---------------------------------------------------------------------------
 
 describe("skill-validator — no warning when skill present", () => {
-  test("web-fetch with SKILL.md mounted → silent", async () => {
-    writeSkillFile("web-fetch");
+  test("webFetch with SKILL.md mounted → silent", async () => {
+    writeSkillFile("webFetch");
 
     const configs: AugmentConfig[] = [{ name: "fetch", type: "webFetch", options: {} }];
 
@@ -97,10 +97,10 @@ describe("skill-validator — no warning when skill present", () => {
 // ---------------------------------------------------------------------------
 
 describe("skill-validator — tool-less augment exempt", () => {
-  test("fileMemory has no tools → no warning regardless of skills/file-memory state", async () => {
+  test("fileMemory has no tools → no warning regardless of skills/fileMemory state", async () => {
     writeFileSync(join(TMP, "identity.md"), "# Identity");
 
-    // No skills/file-memory dir exists. fileMemory has no `tools[]`, so
+    // No skills/fileMemory dir exists. fileMemory has no `tools[]`, so
     // the validator skips it without ever probing.
     const configs: AugmentConfig[] = [
       {
@@ -129,7 +129,7 @@ describe("skill-validator — tool-less augment exempt", () => {
 // ---------------------------------------------------------------------------
 
 describe("skill-validator — multiple missing skills produce distinct warnings", () => {
-  test("web-fetch + bash both missing → two warnings, each blames the right augment", async () => {
+  test("webFetch + bash both missing → two warnings, each blames the right augment", async () => {
     const configs: AugmentConfig[] = [
       { name: "fetch", type: "webFetch", options: {} },
       {
@@ -149,9 +149,9 @@ describe("skill-validator — multiple missing skills produce distinct warnings"
 
     expect(warningCount()).toBe(2);
     const warnings = allWarnings();
-    expect(warnings).toContain('augment "web-fetch"');
+    expect(warnings).toContain('augment "webFetch"');
     expect(warnings).toContain('augment "bash"');
-    expect(warnings).toContain("auggy skill add web-fetch");
+    expect(warnings).toContain("auggy skill add webFetch");
     expect(warnings).toContain("auggy skill add bash");
   });
 });
@@ -161,8 +161,8 @@ describe("skill-validator — multiple missing skills produce distinct warnings"
 // ---------------------------------------------------------------------------
 
 describe("skill-validator — mixed presence", () => {
-  test("web-fetch has skill, bash doesn't → exactly one warning (for bash)", async () => {
-    writeSkillFile("web-fetch");
+  test("webFetch has skill, bash doesn't → exactly one warning (for bash)", async () => {
+    writeSkillFile("webFetch");
 
     const configs: AugmentConfig[] = [
       { name: "fetch", type: "webFetch", options: {} },
@@ -182,7 +182,7 @@ describe("skill-validator — mixed presence", () => {
     const warnings = allWarnings();
     expect(warnings).toContain('augment "bash"');
     // Negative — silence on the augment whose skill IS present:
-    expect(warnings).not.toContain('augment "web-fetch"');
+    expect(warnings).not.toContain('augment "webFetch"');
   });
 });
 
@@ -211,7 +211,7 @@ describe("skill-validator — boot still succeeds despite warnings", () => {
 // ---------------------------------------------------------------------------
 
 describe("skill-validator — folder name vs operator name", () => {
-  test('operator names augment "fetch" (type webFetch); warning still says "web-fetch"', async () => {
+  test('operator names augment "fetch" (type webFetch); warning still says "webFetch"', async () => {
     const configs: AugmentConfig[] = [
       // Operator-chosen name diverges from the augment folder name.
       { name: "fetch", type: "webFetch", options: {} },
@@ -220,12 +220,12 @@ describe("skill-validator — folder name vs operator name", () => {
     await resolveAugments(configs, TMP);
 
     const warnings = allWarnings();
-    // The warning blames the FOLDER (web-fetch) because that's what
+    // The warning blames the FOLDER (webFetch) because that's what
     // `auggy skill add <folder>` takes — naming the operator's "fetch"
     // would dead-end the remediation hint.
-    expect(warnings).toContain('augment "web-fetch"');
-    expect(warnings).toContain("auggy skill add web-fetch");
-    expect(warnings).toContain("skills/web-fetch/SKILL.md");
+    expect(warnings).toContain('augment "webFetch"');
+    expect(warnings).toContain("auggy skill add webFetch");
+    expect(warnings).toContain("skills/webFetch/SKILL.md");
     // The operator's chosen name MUST NOT appear in the headline blame
     // (would mislead about the remediation command).
     expect(warnings).not.toContain('augment "fetch"');
@@ -234,7 +234,7 @@ describe("skill-validator — folder name vs operator name", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Case 8: namespace memory provider (layered-memory) — kernel-synthesized
+// Case 8: namespace memory provider (layeredMemory) — kernel-synthesized
 // memory-bus tools count too. Operator-perspective: the model gets
 // memory_read / memory_write / memory_search / memory_list / memory_forget
 // regardless of where the tools were factored from. A missing skill is
@@ -242,7 +242,7 @@ describe("skill-validator — folder name vs operator name", () => {
 // ---------------------------------------------------------------------------
 
 describe("skill-validator — namespace memory provider validation", () => {
-  test("layered-memory with no skill → warning names augment + memory tool count + remediation", async () => {
+  test("layeredMemory with no skill → warning names augment + memory tool count + remediation", async () => {
     const configs: AugmentConfig[] = [
       {
         name: "memory",
@@ -261,15 +261,15 @@ describe("skill-validator — namespace memory provider validation", () => {
     expect(warningCount()).toBe(1);
     const warnings = allWarnings();
     expect(warnings).toContain("[augment-resolver]");
-    expect(warnings).toContain('augment "layered-memory"');
+    expect(warnings).toContain('augment "layeredMemory"');
     // 5 kernel-synthesized memory tools (memory_read/write/search/list/forget)
     expect(warnings).toContain("5 tools");
-    expect(warnings).toContain(join(TMP, "skills", "layered-memory", "SKILL.md"));
-    expect(warnings).toContain("auggy skill add layered-memory");
+    expect(warnings).toContain(join(TMP, "skills", "layeredMemory", "SKILL.md"));
+    expect(warnings).toContain("auggy skill add layeredMemory");
   });
 
-  test("layered-memory WITH skill mounted → silent (no warning)", async () => {
-    writeSkillFile("layered-memory");
+  test("layeredMemory WITH skill mounted → silent (no warning)", async () => {
+    writeSkillFile("layeredMemory");
 
     const configs: AugmentConfig[] = [
       {

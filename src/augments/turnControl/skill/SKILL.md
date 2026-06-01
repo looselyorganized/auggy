@@ -1,5 +1,5 @@
 ---
-name: turn-control
+name: turnControl
 description: Pause the current turn and ask the user a specific, answerable question when you genuinely need their input to proceed. Use when blocked on missing information that you cannot reasonably guess; do NOT use as a closing pleasantry.
 ---
 

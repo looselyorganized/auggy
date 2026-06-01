@@ -182,7 +182,7 @@ settings:
   maxInferenceLoops: 10
 
 augments:
-  - name: learned
+  - name: fileMemory
     type: fileMemory
     options:
       label: learned
@@ -193,7 +193,7 @@ augments:
       placement: preamble
       eviction: drop
 
-  - name: memory
+  - name: layeredMemory
     type: layeredMemory
     options:
       backend: sqlite
@@ -216,7 +216,7 @@ augments:
       anonymousGlobalLimit: 30
       dailyBudgetUsd: 5
 
-  - name: files
+  - name: filesystem
     type: filesystem
     options:
       mounts:
@@ -236,15 +236,15 @@ augments:
     options:
       dir: ./skills
 
-  - name: fetch
+  - name: webFetch
     type: webFetch
     options:
       timeoutMs: 15000
 
-  - name: turn-control
+  - name: turnControl
     type: turnControl
 
-  - name: web
+  - name: webTransport
     type: webTransport
     options:
       port: 8080

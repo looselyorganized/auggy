@@ -397,7 +397,7 @@ describe("runDeploy", () => {
     const agentYamlPath = join(agentDir, "agent.yaml");
     writeFileSync(
       agentYamlPath,
-      `${readFileSync(agentYamlPath, "utf-8")}  - name: visitor-auth
+      `${readFileSync(agentYamlPath, "utf-8")}  - name: visitorAuth
     type: visitorAuth
     options:
       publicUrl: \${AUGGY_PUBLIC_URL}
@@ -435,7 +435,7 @@ describe("runDeploy", () => {
     const agentYamlPath = join(agentDir, "agent.yaml");
     writeFileSync(
       agentYamlPath,
-      `${readFileSync(agentYamlPath, "utf-8")}  - name: visitor-auth
+      `${readFileSync(agentYamlPath, "utf-8")}  - name: visitorAuth
     type: visitorAuth
     options:
       publicUrl: \${AUGGY_PUBLIC_URL}

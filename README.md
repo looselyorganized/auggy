@@ -38,7 +38,7 @@ auggy run
 auggy start
 
 # Add a built-in augment later, if needed
-auggy add visitor-auth
+auggy add visitorAuth
 
 # Create and install a local custom augment
 auggy augment create weather --dir augments/weather

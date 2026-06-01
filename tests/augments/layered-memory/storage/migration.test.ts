@@ -3,7 +3,7 @@ import { Database } from "bun:sqlite";
 import { join } from "node:path";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { createSqliteStore } from "@/augments/layered-memory/storage/sqlite-store";
+import { createSqliteStore } from "@/augments/layeredMemory/storage/sqlite-store";
 
 describe("SQLite migration — fact-fields", () => {
   let tmpDir: string;

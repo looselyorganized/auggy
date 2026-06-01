@@ -24,7 +24,7 @@ import { describe, it, expect, beforeEach, afterEach, spyOn } from "bun:test";
 import { join } from "node:path";
 import { defineAgent } from "@/agent";
 import { webTransport } from "@/transports/web-transport";
-import { visitorAuth } from "../../src/augments/visitor-auth/index";
+import { visitorAuth } from "../../src/augments/visitorAuth/index";
 import { createMockModel } from "@tests/fixtures/mock-model";
 import { createTempDir } from "@tests/fixtures/temp-dir";
 import type { AgentHandle } from "@/types";

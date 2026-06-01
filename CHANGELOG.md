@@ -62,7 +62,7 @@ Hotfix: a fresh `npm i -g auggy@0.4.0` followed by ANY auggy command (even `augg
 ### Architecture
 
 - **`evals/` → `packages/evals/`** — promoted from a repo-root dev-tools directory into a real workspace package published to npm as `@auggy/evals@0.4.1`. Mirrors the engine-adapter split shipped in 0.4.0: optional, opt-in, version-locked with `auggy` core. The package ships fixtures + graders + harness + runners for the security, auto-save, layered-memory, alara, modularity, and quality suites.
-- **`auggy/internal/*` subpath exports** — exposes 10 additional internal paths so the `@auggy/evals` package can import auggy's internals (layered-memory store + extractor, CLI config/engine/augment resolvers, agent/helpers/types) without going through deep relative paths. Same convention as the pre-existing `auggy/internal/cost` etc. Path: `auggy/internal/{agent,helpers,types,cli/*,augments/layered-memory/**}`.
+- **`auggy/internal/*` subpath exports** — exposes 10 additional internal paths so the `@auggy/evals` package can import auggy's internals (layered-memory store + extractor, CLI config/engine/augment resolvers, agent/helpers/types) without going through deep relative paths. Same convention as the pre-existing `auggy/internal/cost` etc. Path: `auggy/internal/{agent,helpers,types,cli/*,augments/layeredMemory/**}`.
 - **Lazy import in `src/cli/commands/eval.ts`** — replaces the top-level static imports of `evals/security/run` + `evals/auto-save/run` with a `loadEvalsModule()` helper that dynamically imports `@auggy/evals` at action time. Missing-package state surfaces as a clear install hint instead of a module-load crash that takes down `auggy --version`.
 
 ### Process
@@ -139,7 +139,7 @@ The deployable-runtime release. First npm-installable Auggy CLI with shipped fea
 #### Quality
 
 - **`evals/layered-memory/` integration eval suite.** Seven fixtures × seven structural graders measure end-to-end autoSave behavior under real `agent.inject()` machinery: `factual-recall`, `peer-isolation`, `prompt-rendering`, `cost-overhead`, `false-extract`, `cross-session-recall` (multi-session persistence headliner), and `cross-identity-promotion` (anon → recognized flush). Mock-mode runner is deterministic, no API key required, <100ms. Live Haiku smoke (`evals/layered-memory/smoke.ts`) validates end-to-end against a real model with seven pass criteria at ~$0.005 spend. (See `evals/layered-memory/README.md`.)
-- **`extractJsonArray` JSON extractor.** Replaces the strict `JSON.parse` in `src/augments/layered-memory/extractor/parse.ts` with balanced-bracket extraction — structurally robust to any model wrapper style (markdown fences, leading/trailing prose, language tags, single-line layout, CRLF, escaped quotes, nested objects). Closed the 100% extraction-failure rate on Haiku 4.5 caught by the smoke test.
+- **`extractJsonArray` JSON extractor.** Replaces the strict `JSON.parse` in `src/augments/layeredMemory/extractor/parse.ts` with balanced-bracket extraction — structurally robust to any model wrapper style (markdown fences, leading/trailing prose, language tags, single-line layout, CRLF, escaped quotes, nested objects). Closed the 100% extraction-failure rate on Haiku 4.5 caught by the smoke test.
 
 ### Changed
 

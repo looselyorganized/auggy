@@ -2,8 +2,8 @@ import { describe, test, expect } from "bun:test";
 import {
   emailAppearsInRecentMessages,
   isWellFormedEmail,
-} from "../../../src/augments/visitor-auth/email-validation";
-import type { RecentVisitorMessage } from "../../../src/augments/visitor-auth/types";
+} from "../../../src/augments/visitorAuth/email-validation";
+import type { RecentVisitorMessage } from "../../../src/augments/visitorAuth/types";
 
 const m = (text: string, messageId = "msg"): RecentVisitorMessage => ({ text, messageId });
 

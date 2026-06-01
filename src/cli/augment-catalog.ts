@@ -379,45 +379,18 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
   },
 ];
 
-const AUGMENT_ALIASES: Record<string, string> = {
-  "agent-mail": "agentMail",
-  agentmail: "agentMail",
-  auth: "visitorAuth",
-  fetch: "webFetch",
-  files: "filesystem",
-  link: "link",
-  memory: "layeredMemory",
-  notify: "notify",
-  shell: "bash",
-  telegram: "telegramTransport",
-  "turn-control": "turnControl",
-  "visitor-auth": "visitorAuth",
-  web: "webTransport",
-  "web-fetch": "webFetch",
-  "web-transport": "webTransport",
-};
-
 /**
- * Resolve a user-facing augment specifier to a catalog entry. Accepts YAML
- * type names (`webFetch`), default instance names (`turn-control`), labels
- * (`layeredMemory`), and friendly aliases (`memory`, `telegram`).
+ * Resolve an augment specifier to a catalog entry. Augment commands use one
+ * code vocabulary: the YAML `type:`/`name:` identifier (`webFetch`,
+ * `visitorAuth`, etc.). Human labels are display-only.
  */
 export function resolveCatalogEntry(specifier: string): CatalogEntry | null {
   const normalized = specifier.trim();
   if (!normalized) return null;
 
-  const aliasTarget = AUGMENT_ALIASES[normalized] ?? AUGMENT_ALIASES[normalized.toLowerCase()];
-  const target = aliasTarget ?? normalized;
-  const lower = target.toLowerCase();
-
   return (
     AUGMENT_CATALOG.find(
-      (entry) =>
-        entry.type === target ||
-        entry.defaultName === target ||
-        entry.label.toLowerCase() === lower ||
-        entry.type.toLowerCase() === lower ||
-        entry.defaultName.toLowerCase() === lower,
+      (entry) => entry.type === normalized || entry.defaultName === normalized,
     ) ?? null
   );
 }
@@ -428,7 +401,6 @@ export function validAugmentSpecifiers(): string[] {
     names.add(entry.type);
     names.add(entry.defaultName);
   }
-  for (const alias of Object.keys(AUGMENT_ALIASES)) names.add(alias);
   return [...names].sort();
 }
 

@@ -35,22 +35,19 @@ describe("augment catalog", () => {
     expect(entry!.hasSkill).toBe(true);
   });
 
-  it("resolves friendly augment aliases", () => {
-    expect(resolveCatalogEntry("web-fetch")?.type).toBe("webFetch");
-    expect(resolveCatalogEntry("visitor-auth")?.type).toBe("visitorAuth");
-    expect(resolveCatalogEntry("telegram")?.type).toBe("telegramTransport");
-    expect(resolveCatalogEntry("memory")?.type).toBe("layeredMemory");
-    expect(resolveCatalogEntry("agent-mail")?.type).toBe("agentMail");
-  });
-
-  it("resolves canonical type names and legacy default-name aliases", () => {
+  it("resolves canonical type names", () => {
     expect(resolveCatalogEntry("webFetch")?.defaultName).toBe("webFetch");
-    expect(resolveCatalogEntry("turn-control")?.type).toBe("turnControl");
+    expect(resolveCatalogEntry("turnControl")?.type).toBe("turnControl");
+    expect(resolveCatalogEntry("visitorAuth")?.type).toBe("visitorAuth");
+    expect(resolveCatalogEntry("layeredMemory")?.type).toBe("layeredMemory");
+    expect(resolveCatalogEntry("agentMail")?.type).toBe("agentMail");
   });
 
-  it("returns null for unknown augment specifiers and includes aliases in valid specifiers", () => {
+  it("returns null for unknown or legacy augment specifiers", () => {
     expect(resolveCatalogEntry("not-real")).toBeNull();
-    expect(validAugmentSpecifiers()).toContain("web-fetch");
+    expect(resolveCatalogEntry("web-fetch")).toBeNull();
+    expect(resolveCatalogEntry("memory")).toBeNull();
+    expect(validAugmentSpecifiers()).not.toContain("web-fetch");
     expect(validAugmentSpecifiers()).toContain("webFetch");
   });
 });

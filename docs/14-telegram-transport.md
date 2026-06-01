@@ -1,6 +1,6 @@
 # 14 — Telegram Transport Augment Reference
 
-> Operator reference for the `telegramTransport` augment — bidirectional Telegram I/O with long-poll or webhook inbound, four-path identity resolution, and coexistence with `notify`. Source: `src/augments/telegram-transport/index.ts`, `src/augments/telegram-transport/polling.ts`, `src/augments/telegram-transport/webhook.ts`, `src/types.ts`.
+> Operator reference for the `telegramTransport` augment — bidirectional Telegram I/O with long-poll or webhook inbound, four-path identity resolution, and coexistence with `notify`. Source: `src/augments/telegramTransport/index.ts`, `src/augments/telegramTransport/polling.ts`, `src/augments/telegramTransport/webhook.ts`, `src/types.ts`.
 
 ## 1. Overview
 
@@ -233,6 +233,6 @@ Caddy forwards headers by default, so no explicit header passthrough directive i
 - [06-transports.md](./06-transports.md) — transport contract, AG-UI protocol, queue mechanics
 - [12-budgets.md](./12-budgets.md) — trust-level budget caps that apply to Telegram peers
 - [13-notify.md](./13-notify.md) — proactive outbound via the `notify` augment; coexistence with this transport
-- `src/augments/telegram-transport/index.ts` — augment factory, identity resolver, lifecycle
-- `src/augments/telegram-transport/polling.ts` — long-poll loop
-- `src/augments/telegram-transport/webhook.ts` — webhook HTTP server
+- `src/augments/telegramTransport/index.ts` — augment factory, identity resolver, lifecycle
+- `src/augments/telegramTransport/polling.ts` — long-poll loop
+- `src/augments/telegramTransport/webhook.ts` — webhook HTTP server

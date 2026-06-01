@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { handleExtractionTurn } from "@/augments/layered-memory/extractor/inject-handler";
+import { handleExtractionTurn } from "@/augments/layeredMemory/extractor/inject-handler";
 import type { Transcript } from "@/types";
 
 const sampleTranscript: Transcript = {

@@ -168,20 +168,20 @@ describe("runCreate scaffolding integration", () => {
       "turnControl",
     ]);
     expect(existsSync(join(dir, "skills", "filesystem", "SKILL.md"))).toBe(true);
-    expect(existsSync(join(dir, "skills", "web-fetch", "SKILL.md"))).toBe(true);
-    expect(existsSync(join(dir, "skills", "turn-control", "SKILL.md"))).toBe(true);
-    expect(existsSync(join(dir, "augments", "web-fetch", "augment.yaml"))).toBe(true);
+    expect(existsSync(join(dir, "skills", "webFetch", "SKILL.md"))).toBe(true);
+    expect(existsSync(join(dir, "skills", "turnControl", "SKILL.md"))).toBe(true);
+    expect(existsSync(join(dir, "augments", "webFetch", "augment.yaml"))).toBe(true);
     expect(existsSync(join(dir, "augments", "filesystem", "augment.yaml"))).toBe(true);
     expect(existsSync(join(dir, "augments", "README.md"))).toBe(true);
     const webFetchMeta = parseYaml(
-      readFileSync(join(dir, "augments", "web-fetch", "augment.yaml"), "utf-8"),
+      readFileSync(join(dir, "augments", "webFetch", "augment.yaml"), "utf-8"),
     ) as Record<string, unknown>;
     expect(webFetchMeta).toMatchObject({
-      name: "web-fetch",
+      name: "webFetch",
       kind: "builtin",
       runtime: "auggy",
       configType: "webFetch",
-      skill: "../../skills/web-fetch/SKILL.md",
+      skill: "../../skills/webFetch/SKILL.md",
     });
 
     const env = readFileSync(join(dir, ".env"), "utf-8");
@@ -290,7 +290,7 @@ describe("runCreate scaffolding integration", () => {
 
     expect(existsSync(join(dir, "agent.yaml"))).toBe(true);
     expect(existsSync(join(dir, "package.json"))).toBe(true);
-    expect(existsSync(join(dir, "augments", "web-fetch", "augment.yaml"))).toBe(true);
+    expect(existsSync(join(dir, "augments", "webFetch", "augment.yaml"))).toBe(true);
     expect(logs.join("\n")).toContain("auggy run");
     expect(logs.join("\n")).not.toContain("auggy run current-agent");
     expect(bunInstallCalls).toHaveLength(0);

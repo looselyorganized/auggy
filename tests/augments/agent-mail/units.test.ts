@@ -4,7 +4,7 @@ import {
   createRateLimitState,
   hashSubject,
   recordSend,
-} from "../../../src/augments/agent-mail/rate-limit";
+} from "../../../src/augments/agentMail/rate-limit";
 import {
   containsSmtpDotSequence,
   normalizeSubject,
@@ -12,7 +12,7 @@ import {
   redactRecipients,
   scanForSensitive,
   validateOutbound,
-} from "../../../src/augments/agent-mail/outbound";
+} from "../../../src/augments/agentMail/outbound";
 
 // ---------------------------------------------------------------------------
 // rate-limit pure helpers

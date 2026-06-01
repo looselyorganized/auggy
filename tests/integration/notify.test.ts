@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { writeFileSync } from "node:fs";
 import { defineAgent } from "@/index";
 import { notify } from "@/augments/notify";
-import { fileMemory } from "@/augments/file-memory";
+import { fileMemory } from "@/augments/fileMemory";
 import { createMockModel } from "@tests/fixtures/mock-model";
 import { createTempDir } from "@tests/fixtures/temp-dir";
 

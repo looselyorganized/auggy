@@ -859,7 +859,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
         console.warn(
           `[web-transport] WARNING: allowAnonymous=true but visitor-auth augment is not mounted. ` +
             `Anonymous visitors have no documented upgrade path to recognized identity. ` +
-            `Consider \`auggy add visitor-auth\`. To suppress this warning explicitly, ` +
+            `Consider \`auggy add visitorAuth\`. To suppress this warning explicitly, ` +
             `set \`allowAnonymous: true\` in agent.yaml (you are doing this on purpose).`,
         );
       }

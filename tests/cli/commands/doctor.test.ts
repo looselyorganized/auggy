@@ -109,8 +109,8 @@ function writeAgent(
   }
 
   if (opts.installSkill) {
-    mkdirSync(join(dir, "skills", "web-fetch"), { recursive: true });
-    writeFileSync(join(dir, "skills", "web-fetch", "SKILL.md"), "---\nname: web-fetch\n---\n");
+    mkdirSync(join(dir, "skills", "webFetch"), { recursive: true });
+    writeFileSync(join(dir, "skills", "webFetch", "SKILL.md"), "---\nname: webFetch\n---\n");
   }
 
   return dir;
@@ -240,9 +240,9 @@ describe("runDoctor", () => {
       isPortAvailable: async () => true,
     });
 
-    const skill = checks.find((c) => c.name === "skill web-fetch");
+    const skill = checks.find((c) => c.name === "skill webFetch");
     expect(skill?.status).toBe("warn");
-    expect(skill?.fix).toContain("skill add web-fetch");
+    expect(skill?.fix).toContain("skill add webFetch");
     expect(hasDoctorFailures(checks)).toBe(false);
   });
 });
@@ -261,9 +261,9 @@ describe("doctor formatting and command", () => {
       },
       { name: "port 8080", status: "pass", message: "available" },
       {
-        name: "skill web-fetch",
+        name: "skill webFetch",
         status: "pass",
-        message: "/tmp/auggy-agent/skills/web-fetch/SKILL.md",
+        message: "/tmp/auggy-agent/skills/webFetch/SKILL.md",
       },
       { name: "dep", status: "fail", message: "missing", fix: "run bun install" },
     ]);
@@ -274,7 +274,7 @@ describe("doctor formatting and command", () => {
     expect(text).toContain("PASS env: ANTHROPIC_API_KEY");
     expect(text).toContain("PASS dependency: @auggy/anthropic");
     expect(text).toContain("PASS port: 8080 available");
-    expect(text).toContain("PASS skill: web-fetch");
+    expect(text).toContain("PASS skill: webFetch");
     expect(text).toContain("FAIL dep: missing");
     expect(text).toContain("fix: run bun install");
   });

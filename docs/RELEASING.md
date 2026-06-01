@@ -99,7 +99,7 @@ fi
 Augment checks:
 
 ```bash
-auggy add visitor-auth
+auggy add visitorAuth
 auggy doctor
 
 auggy augment create weather --dir augments/weather

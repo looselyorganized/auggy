@@ -18,7 +18,7 @@
  * info so operators can audit; the skill teaches the model what to omit.
  */
 
-import { isWellFormedEmail } from "../visitor-auth/email-validation";
+import { isWellFormedEmail } from "../visitorAuth/email-validation";
 import type { AgentMailOutboundOptions } from "../../types";
 
 export interface ValidatedOutbound {

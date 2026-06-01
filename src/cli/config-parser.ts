@@ -118,8 +118,8 @@ function walkAndInterpolate(obj: unknown, path: string, missing: string[]): unkn
 // ---------------------------------------------------------------------------
 
 const AUG1_ID_RE = /^aug1_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-/** Agent and augment names: lowercase alphanumeric, hyphens, underscores. No dots, slashes, spaces. */
-export const VALID_NAME_RE = /^[a-z0-9][a-z0-9_-]*$/;
+/** Agent and augment names: code identifiers; no dots, slashes, or spaces. */
+export const VALID_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
 const VALID_COMPACTION = new Set(["truncate", "summarize", "sliding-window"]);
 const BUILTIN_TYPES = new Set([
   "fileMemory",
@@ -240,7 +240,7 @@ function validateBudgetsOptions(
 /**
  * Valid extraction-frequency values for layered-memory's autoSave block.
  * Aligned with `ExtractionFrequency` in
- * `src/augments/layered-memory/extractor/frequency.ts` — kept duplicated
+ * `src/augments/layeredMemory/extractor/frequency.ts` — kept duplicated
  * here to avoid pulling augment runtime imports into the CLI parser.
  */
 const VALID_EXTRACTION_FREQUENCIES = new Set([
@@ -816,9 +816,7 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
   if (typeof raw.name !== "string" || raw.name.length === 0) {
     errors.push("name: required, non-empty string");
   } else if (!VALID_NAME_RE.test(raw.name)) {
-    errors.push(
-      `name: must be lowercase alphanumeric with hyphens/underscores (got "${raw.name}")`,
-    );
+    errors.push(`name: must be alphanumeric with hyphens/underscores (got "${raw.name}")`);
   }
 
   // identity shorthand (optional) — synthesizes an equivalent fileMemory
@@ -999,7 +997,7 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
         errors.push(`${prefix}.name: required, non-empty string`);
       } else if (!VALID_NAME_RE.test(aug.name)) {
         errors.push(
-          `${prefix}.name: must be lowercase alphanumeric with hyphens/underscores (got "${aug.name}")`,
+          `${prefix}.name: must be alphanumeric with hyphens/underscores (got "${aug.name}")`,
         );
       } else if (names.has(aug.name)) {
         errors.push(`${prefix}.name: duplicate name "${aug.name}"`);

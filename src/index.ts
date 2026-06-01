@@ -81,10 +81,10 @@ export { extractText, textPart, dataPart } from "./parts";
 export { createTokenizer } from "./tokenizer";
 
 // === Built-in augments ===
-export { fileMemory } from "./augments/file-memory";
-export type { FileMemoryOptions } from "./augments/file-memory";
-export { supabaseMemory } from "./augments/supabase-memory";
-export type { SupabaseMemoryOptions } from "./augments/supabase-memory";
+export { fileMemory } from "./augments/fileMemory";
+export type { FileMemoryOptions } from "./augments/fileMemory";
+export { supabaseMemory } from "./augments/supabaseMemory";
+export type { SupabaseMemoryOptions } from "./augments/supabaseMemory";
 export { filesystem } from "./augments/filesystem";
 export type { FilesystemOptions, FsMount } from "./augments/filesystem";
 
@@ -93,11 +93,11 @@ export { manifest } from "./augments/manifest";
 export type { ManifestOptions } from "./augments/manifest";
 
 // === Built-in augments (web) ===
-export { webFetch } from "./augments/web-fetch";
-export type { WebFetchOptions, WebFetchResult } from "./augments/web-fetch";
+export { webFetch } from "./augments/webFetch";
+export type { WebFetchOptions, WebFetchResult } from "./augments/webFetch";
 
 // === Built-in augments (mail) ===
-export { agentMail } from "./augments/agent-mail";
+export { agentMail } from "./augments/agentMail";
 export type {
   AgentMailAugmentOptions,
   AgentMailOutboundOptions,

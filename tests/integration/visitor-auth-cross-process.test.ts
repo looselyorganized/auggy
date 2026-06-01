@@ -42,7 +42,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
-import { createSqliteVisitorAuthStore } from "../../src/augments/visitor-auth/storage/sqlite-store";
+import { createSqliteVisitorAuthStore } from "../../src/augments/visitorAuth/storage/sqlite-store";
 
 describe("visitor-auth cross-process SQLite (F19)", () => {
   it("the store enables WAL mode (PRAGMA journal_mode = 'wal')", () => {
@@ -97,7 +97,7 @@ describe("visitor-auth cross-process SQLite (F19)", () => {
       // Inline script: opens the store, calls revokeByEmail, exits.
       const scriptPath = join(tmp, "revoke-script.ts");
       const repoRoot = join(import.meta.dir, "..", "..");
-      const storeImport = join(repoRoot, "src/augments/visitor-auth/storage/sqlite-store.ts");
+      const storeImport = join(repoRoot, "src/augments/visitorAuth/storage/sqlite-store.ts");
       writeFileSync(
         scriptPath,
         `

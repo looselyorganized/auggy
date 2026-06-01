@@ -23,9 +23,9 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { join } from "node:path";
 import { writeFileSync } from "node:fs";
 import { defineAgent } from "@/agent";
-import { telegramTransport } from "@/augments/telegram-transport";
+import { telegramTransport } from "@/augments/telegramTransport";
 import { webTransport } from "@/transports/web-transport";
-import { fileMemory } from "@/augments/file-memory";
+import { fileMemory } from "@/augments/fileMemory";
 import { createMockModel } from "@tests/fixtures/mock-model";
 import { createTempDir } from "@tests/fixtures/temp-dir";
 import type { TelegramBotClient, TelegramUpdate } from "@/telegram-client";
@@ -38,7 +38,7 @@ import type { AgentHandle } from "@/types";
 /**
  * Returns a randomized port in the ephemeral range to avoid collisions with
  * other test files running in parallel. Mirrors the helper used in
- * tests/augments/telegram-transport/webhook.test.ts.
+ * tests/augments/telegramTransport/webhook.test.ts.
  */
 function freePort(): number {
   return 30000 + Math.floor(Math.random() * 9999);

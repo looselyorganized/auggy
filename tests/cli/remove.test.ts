@@ -75,11 +75,11 @@ describe("runRemove", () => {
   test("refuses named removal inside an agent project when the name is not the agent name", async () => {
     const dir = setupAgent(
       "zip",
-      "id: aug1_test\nname: zip\naugments:\n  - name: visitor-auth\n    type: visitorAuth\n",
+      "id: aug1_test\nname: zip\naugments:\n  - name: visitorAuth\n    type: visitorAuth\n",
     );
 
-    await expect(runRemove("visitor-auth", { yes: true, auggyDir, cwd: dir })).rejects.toThrow(
-      /auggy augment remove visitor-auth/,
+    await expect(runRemove("visitorAuth", { yes: true, auggyDir, cwd: dir })).rejects.toThrow(
+      /auggy augment remove visitorAuth/,
     );
     expect(existsSync(dir)).toBe(true);
   });

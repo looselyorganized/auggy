@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import { startWebhookServer } from "../../../src/augments/telegram-transport/webhook";
+import { startWebhookServer } from "../../../src/augments/telegramTransport/webhook";
 import type { TelegramUpdate } from "../../../src/telegram-client";
 
 function freePort(): number {

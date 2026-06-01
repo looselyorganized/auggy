@@ -2,8 +2,8 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createSqliteVisitorAuthStore } from "../../../src/augments/visitor-auth/storage/sqlite-store";
-import type { VisitorAuthStore } from "../../../src/augments/visitor-auth/storage/types";
+import { createSqliteVisitorAuthStore } from "../../../src/augments/visitorAuth/storage/sqlite-store";
+import type { VisitorAuthStore } from "../../../src/augments/visitorAuth/storage/types";
 
 let tmp: string;
 let store: VisitorAuthStore;

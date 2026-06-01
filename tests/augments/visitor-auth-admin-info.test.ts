@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { visitorAuth } from "@/augments/visitor-auth";
+import { visitorAuth } from "@/augments/visitorAuth";
 import type { Augment } from "@/types";
 
 let tempDir: string;

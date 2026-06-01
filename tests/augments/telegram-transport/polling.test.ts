@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import { runPollLoop, type PollLoopHandle } from "../../../src/augments/telegram-transport/polling";
+import { runPollLoop, type PollLoopHandle } from "../../../src/augments/telegramTransport/polling";
 import type { TelegramBotClient, TelegramUpdate } from "../../../src/telegram-client";
 
 function mockClient(updateBatches: TelegramUpdate[][]): {

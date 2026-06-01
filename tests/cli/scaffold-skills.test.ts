@@ -14,14 +14,14 @@ afterEach(() => {
 });
 
 describe("augmentFolderForType", () => {
-  test("maps camelCase types to kebab-case folders", () => {
-    expect(augmentFolderForType("layeredMemory")).toBe("layered-memory");
-    expect(augmentFolderForType("webFetch")).toBe("web-fetch");
+  test("uses canonical type names as agent-facing folders", () => {
+    expect(augmentFolderForType("layeredMemory")).toBe("layeredMemory");
+    expect(augmentFolderForType("webFetch")).toBe("webFetch");
     expect(augmentFolderForType("manifest")).toBe("manifest");
-    expect(augmentFolderForType("turnControl")).toBe("turn-control");
+    expect(augmentFolderForType("turnControl")).toBe("turnControl");
   });
 
-  test("returns the type unchanged when already kebab-case", () => {
+  test("returns one-word canonical names unchanged", () => {
     expect(augmentFolderForType("filesystem")).toBe("filesystem");
     expect(augmentFolderForType("bash")).toBe("bash");
     expect(augmentFolderForType("notify")).toBe("notify");

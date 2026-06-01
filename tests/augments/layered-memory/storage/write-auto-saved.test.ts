@@ -1,11 +1,11 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { join } from "node:path";
-import { createSqliteStore } from "@/augments/layered-memory/storage/sqlite-store";
-import { createSupabaseStore } from "@/augments/layered-memory/storage/supabase-store";
-import type { LayeredSupabaseClient } from "@/augments/layered-memory/storage/supabase-store";
+import { createSqliteStore } from "@/augments/layeredMemory/storage/sqlite-store";
+import { createSupabaseStore } from "@/augments/layeredMemory/storage/supabase-store";
+import type { LayeredSupabaseClient } from "@/augments/layeredMemory/storage/supabase-store";
 import { createMockSupabase } from "@tests/fixtures/mock-supabase";
 import { createTempDir } from "@tests/fixtures/temp-dir";
-import type { MemoryStore } from "@/augments/layered-memory/storage/types";
+import type { MemoryStore } from "@/augments/layeredMemory/storage/types";
 
 describe("writeAutoSavedEntry (sqlite)", () => {
   let store: MemoryStore;

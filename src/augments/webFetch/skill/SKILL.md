@@ -1,5 +1,5 @@
 ---
-name: web-fetch
+name: webFetch
 description: When and how to use the web_fetch tool to retrieve a URL, read a web page, or call an HTTP API. Read this before fetching anything from the network.
 ---
 

@@ -13,7 +13,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { defineAgent } from "@/agent";
-import { layeredMemory } from "@/augments/layered-memory";
+import { layeredMemory } from "@/augments/layeredMemory";
 import type {
   Augment,
   InboundMessage,

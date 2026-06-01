@@ -10,9 +10,9 @@
  */
 
 import { defineAgent } from "auggy/internal/agent";
-import { layeredMemory } from "auggy/internal/augments/layered-memory";
-import type { ExtractionFrequencyConfig } from "auggy/internal/augments/layered-memory/extractor/frequency";
-import type { ExtractionEngine } from "auggy/internal/augments/layered-memory/extractor/inject-handler";
+import { layeredMemory } from "auggy/internal/augments/layeredMemory";
+import type { ExtractionFrequencyConfig } from "auggy/internal/augments/layeredMemory/extractor/frequency";
+import type { ExtractionEngine } from "auggy/internal/augments/layeredMemory/extractor/inject-handler";
 import type {
   Augment,
   CostResult,

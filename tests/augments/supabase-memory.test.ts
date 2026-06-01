@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import { supabaseMemory } from "@/augments/supabase-memory";
+import { supabaseMemory } from "@/augments/supabaseMemory";
 import { createMockSupabase } from "@tests/fixtures/mock-supabase";
 import type { NamespaceMemoryProvider } from "@/types";
 

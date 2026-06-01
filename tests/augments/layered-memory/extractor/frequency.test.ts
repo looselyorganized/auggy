@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { shouldExtract } from "@/augments/layered-memory/extractor/frequency";
+import { shouldExtract } from "@/augments/layeredMemory/extractor/frequency";
 
 describe("shouldExtract", () => {
   const config = {

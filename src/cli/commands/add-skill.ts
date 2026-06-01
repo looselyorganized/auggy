@@ -1,10 +1,9 @@
 /**
  * `auggy skill` — manage bundled and user-authored agent skills.
  *
- * `auggy skill add <augment>` repairs/restores a bundled skill by copying
- * `src/augments/<augment>/skill/*` into `<agent-dir>/skills/<augment>/`.
- * The argument is the augment folder name (kebab-case), e.g. `web-fetch`,
- * not the camelCase YAML `type:` field (`webFetch`).
+ * `auggy skill add <skill>` repairs/restores a bundled skill by copying
+ * `src/augments/<skill>/skill/*` into `<agent-dir>/skills/<skill>/`.
+ * The argument is the canonical augment type/name, e.g. `webFetch`.
  */
 
 import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
@@ -12,12 +11,8 @@ import { join, resolve } from "node:path";
 import { Command } from "commander";
 import { buildFolderToTypeMap, copyBundledSkill } from "../scaffold-skills";
 
-/**
- * Resolve the on-disk path to the bundled skill SKILL.md for a folder, used
- * to verify the augment ships a skill at all before attempting to copy.
- */
-function bundledSkillExists(folder: string): boolean {
-  const dir = resolve(import.meta.dir, "../../augments", folder, "skill", "SKILL.md");
+function bundledSkillExists(type: string): boolean {
+  const dir = resolve(import.meta.dir, "../../augments", type, "skill", "SKILL.md");
   return existsSync(dir);
 }
 
@@ -71,21 +66,21 @@ interface AddSkillCommandDeps {
   cwd?: string;
 }
 
-function installBundledSkill(augment: string, agentDir: string): void {
+function installBundledSkill(skill: string, agentDir: string): void {
   const folderToType = buildFolderToTypeMap();
-  const type = folderToType.get(augment);
+  const type = folderToType.get(skill);
   if (!type) {
     const valid = [...folderToType.keys()].sort().join(", ");
-    throw new Error(`Unknown augment "${augment}".\n\n  Valid augment folder names: ${valid}`);
+    throw new Error(`Unknown skill "${skill}".\n\n  Valid built-in skills: ${valid}`);
   }
 
-  if (!bundledSkillExists(augment)) {
-    throw new Error(`"${augment}" augment ships no bundled skill. Nothing to add.`);
+  if (!bundledSkillExists(type)) {
+    throw new Error(`"${skill}" augment ships no bundled skill. Nothing to add.`);
   }
 
   const copied = copyBundledSkill(type, agentDir);
   if (!copied) {
-    throw new Error(`failed to copy bundled skill for "${augment}" (source not found).`);
+    throw new Error(`failed to copy bundled skill for "${skill}" (source not found).`);
   }
 }
 
@@ -94,15 +89,15 @@ export function skillCommand(deps: AddSkillCommandDeps = {}): Command {
   const command = new Command("skill").description("Manage agent skills");
 
   command
-    .command("add <augment>")
+    .command("add <skill>")
     .description("Install or restore a bundled skill for an installed augment")
     .option("--agent <name>", "agent project directory name (defaults to current directory)")
-    .action(async (augment: string, opts: { agent?: string }) => {
+    .action(async (skill: string, opts: { agent?: string }) => {
       try {
         const agentDir = resolveAgentDir(opts.agent, { auggyDir: deps.auggyDir, cwd: deps.cwd });
-        installBundledSkill(augment, agentDir);
+        installBundledSkill(skill, agentDir);
         console.log(
-          `Installed bundled skill for "${augment}" -> ${join(agentDir, "skills", augment)}/`,
+          `Installed bundled skill for "${skill}" -> ${join(agentDir, "skills", skill)}/`,
         );
         exit(0);
       } catch (err) {

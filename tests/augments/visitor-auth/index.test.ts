@@ -2,9 +2,9 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { visitorAuth } from "../../../src/augments/visitor-auth";
-import { createSqliteVisitorAuthStore } from "../../../src/augments/visitor-auth/storage/sqlite-store";
-import { createVisitorAuthRateLimiter } from "../../../src/augments/visitor-auth/rate-limiter";
+import { visitorAuth } from "../../../src/augments/visitorAuth";
+import { createSqliteVisitorAuthStore } from "../../../src/augments/visitorAuth/storage/sqlite-store";
+import { createVisitorAuthRateLimiter } from "../../../src/augments/visitorAuth/rate-limiter";
 import type { AgentMailClient } from "../../../src/agentmail-client";
 import type { ToolExecuteContext, ContextBlock } from "../../../src/types";
 
@@ -1194,7 +1194,7 @@ describe("context() block", () => {
     await aug.onBoot?.();
     const peerId = "vis_aaaa";
     const { createSqliteVisitorAuthStore } = await import(
-      "../../../src/augments/visitor-auth/storage/sqlite-store"
+      "../../../src/augments/visitorAuth/storage/sqlite-store"
     );
     const seedStore = createSqliteVisitorAuthStore({ dbPath });
     seedStore.initialize();
@@ -1236,7 +1236,7 @@ describe("context() block", () => {
     });
     await aug.onBoot?.();
     const { createSqliteVisitorAuthStore } = await import(
-      "../../../src/augments/visitor-auth/storage/sqlite-store"
+      "../../../src/augments/visitorAuth/storage/sqlite-store"
     );
     const seedStore = createSqliteVisitorAuthStore({ dbPath });
     seedStore.initialize();
@@ -1273,7 +1273,7 @@ describe("context() block", () => {
     });
     await aug.onBoot?.();
     const { createSqliteVisitorAuthStore } = await import(
-      "../../../src/augments/visitor-auth/storage/sqlite-store"
+      "../../../src/augments/visitorAuth/storage/sqlite-store"
     );
     const seedStore = createSqliteVisitorAuthStore({ dbPath });
     seedStore.initialize();
@@ -1432,7 +1432,7 @@ describe("notifyOnFirstVerify", () => {
 
     // Probe the ledger directly to confirm it was NOT marked.
     const { createSqliteVisitorAuthStore: makeStore } = await import(
-      "../../../src/augments/visitor-auth/storage/sqlite-store"
+      "../../../src/augments/visitorAuth/storage/sqlite-store"
     );
     const probeStore = makeStore({ dbPath });
     probeStore.initialize();
@@ -1466,7 +1466,7 @@ describe("notifyOnFirstVerify", () => {
 
     // Probe the ledger: must be marked now that send succeeded.
     const { createSqliteVisitorAuthStore: makeStore } = await import(
-      "../../../src/augments/visitor-auth/storage/sqlite-store"
+      "../../../src/augments/visitorAuth/storage/sqlite-store"
     );
     const probeStore = makeStore({ dbPath });
     probeStore.initialize();

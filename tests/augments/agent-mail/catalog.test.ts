@@ -9,7 +9,7 @@ describe("agentMail catalog entry", () => {
   });
 
   test("uses the conventional defaultName", () => {
-    expect(entry!.defaultName).toBe("agentmail");
+    expect(entry!.defaultName).toBe("agentMail");
   });
 
   test("declares AGENTMAIL_API_KEY and AGENTMAIL_INBOX_ID env vars", () => {

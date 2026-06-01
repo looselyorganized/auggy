@@ -60,6 +60,7 @@ export interface ListedAugment {
   label: string;
   name: string;
   type: string;
+  category: "built-in" | "custom";
   source?: string;
 }
 
@@ -211,19 +212,23 @@ export function listAugments(opts: ListAugmentsOptions = {}): ListedAugment[] {
     label: labelForAugment(stringField(augment.type), stringField(augment.name)),
     name: stringField(augment.name) ?? "(unnamed)",
     type: stringField(augment.type) ?? "(unknown)",
+    category: stringField(augment.type) === "custom" ? "custom" : "built-in",
     source: stringField(augment.source) ?? undefined,
   }));
 }
 
 export function formatAugmentList(augments: ListedAugment[]): string {
   const rows = augments.map((augment) => {
-    const cells = [augment.label, augment.type];
+    const cells = [augment.label, augment.type, augment.category];
     if (augment.type === "custom" && augment.source) cells.push(augment.source);
     return cells;
   });
-  const headers = ["AUGMENT", "TYPE", rows.some((row) => row.length > 2) ? "SOURCE" : ""].filter(
-    Boolean,
-  );
+  const headers = [
+    "AUGMENT",
+    "TYPE",
+    "CATEGORY",
+    rows.some((row) => row.length > 3) ? "SOURCE" : "",
+  ].filter(Boolean);
   const allRows = [headers, ...rows];
   const widths = headers.map((_, index) =>
     Math.max(...allRows.map((row) => row[index]?.length ?? 0)),

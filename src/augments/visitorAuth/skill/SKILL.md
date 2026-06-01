@@ -1,5 +1,5 @@
 ---
-name: visitor-auth
+name: visitorAuth
 description: Use to verify a visitor's email and promote them from anonymous to recognized identity, so memory and recognition persist across sessions
 ---
 

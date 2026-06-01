@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { join } from "node:path";
-import { layeredMemory } from "@/augments/layered-memory";
+import { layeredMemory } from "@/augments/layeredMemory";
 import { createTempDir } from "@tests/fixtures/temp-dir";
 import type { Augment, NamespaceMemoryProvider } from "@/types";
 

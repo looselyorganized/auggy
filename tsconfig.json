@@ -36,18 +36,18 @@
       "auggy/internal/cli/config-parser": ["./src/cli/config-parser.ts"],
       "auggy/internal/cli/engine-resolver": ["./src/cli/engine-resolver.ts"],
       "auggy/internal/cli/augment-resolver": ["./src/cli/augment-resolver.ts"],
-      "auggy/internal/augments/layered-memory": ["./src/augments/layered-memory/index.ts"],
-      "auggy/internal/augments/layered-memory/storage/types": [
-        "./src/augments/layered-memory/storage/types.ts"
+      "auggy/internal/augments/layeredMemory": ["./src/augments/layeredMemory/index.ts"],
+      "auggy/internal/augments/layeredMemory/storage/types": [
+        "./src/augments/layeredMemory/storage/types.ts"
       ],
-      "auggy/internal/augments/layered-memory/storage/sqlite-store": [
-        "./src/augments/layered-memory/storage/sqlite-store.ts"
+      "auggy/internal/augments/layeredMemory/storage/sqlite-store": [
+        "./src/augments/layeredMemory/storage/sqlite-store.ts"
       ],
-      "auggy/internal/augments/layered-memory/extractor/inject-handler": [
-        "./src/augments/layered-memory/extractor/inject-handler.ts"
+      "auggy/internal/augments/layeredMemory/extractor/inject-handler": [
+        "./src/augments/layeredMemory/extractor/inject-handler.ts"
       ],
-      "auggy/internal/augments/layered-memory/extractor/frequency": [
-        "./src/augments/layered-memory/extractor/frequency.ts"
+      "auggy/internal/augments/layeredMemory/extractor/frequency": [
+        "./src/augments/layeredMemory/extractor/frequency.ts"
       ]
     }
   },

@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { parseExtractionResponse } from "@/augments/layered-memory/extractor/parse";
+import { parseExtractionResponse } from "@/augments/layeredMemory/extractor/parse";
 
 describe("parseExtractionResponse", () => {
   test("parses valid JSON array of facts", () => {

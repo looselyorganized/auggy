@@ -21,11 +21,11 @@ describe("scaffoldAgent", () => {
     expect(existsSync(join(dir, ".gitignore"))).toBe(true);
     expect(existsSync(join(dir, "skills"))).toBe(true);
     // Per ADR-025: scaffold copies bundled skills from src/augments/<name>/skill/.
-    // Default scaffold installs filesystem + layered-memory + web-fetch + turn-control.
+    // Default scaffold installs filesystem + layeredMemory + webFetch + turnControl.
     expect(existsSync(join(dir, "skills", "filesystem", "SKILL.md"))).toBe(true);
-    expect(existsSync(join(dir, "skills", "layered-memory", "SKILL.md"))).toBe(true);
-    expect(existsSync(join(dir, "skills", "web-fetch", "SKILL.md"))).toBe(true);
-    expect(existsSync(join(dir, "skills", "turn-control", "SKILL.md"))).toBe(true);
+    expect(existsSync(join(dir, "skills", "layeredMemory", "SKILL.md"))).toBe(true);
+    expect(existsSync(join(dir, "skills", "webFetch", "SKILL.md"))).toBe(true);
+    expect(existsSync(join(dir, "skills", "turnControl", "SKILL.md"))).toBe(true);
     expect(existsSync(join(dir, "workspace"))).toBe(true);
     expect(existsSync(join(dir, "augments"))).toBe(true);
   });
@@ -102,11 +102,11 @@ describe("scaffoldAgent", () => {
     expect(yaml).toContain("LORF front-door agent");
   });
 
-  test("layered-memory SKILL.md has valid frontmatter", () => {
+  test("layeredMemory SKILL.md has valid frontmatter", () => {
     const dir = scaffoldAgent({ name: "zip", targetDir: join(TMP, "zip") });
-    const skill = readFileSync(join(dir, "skills", "layered-memory", "SKILL.md"), "utf-8");
+    const skill = readFileSync(join(dir, "skills", "layeredMemory", "SKILL.md"), "utf-8");
     expect(skill).toContain("---");
-    expect(skill).toContain("name: layered-memory");
+    expect(skill).toContain("name: layeredMemory");
     expect(skill).toContain("description:");
   });
 
@@ -164,7 +164,7 @@ describe("scaffoldAgent", () => {
     const config = parseConfig(join(dir, "agent.yaml"));
     const turnCtl = config.augments.find((a) => a.type === "turnControl");
     expect(turnCtl).toBeDefined();
-    expect(turnCtl!.name).toBe("turn-control");
+    expect(turnCtl!.name).toBe("turnControl");
     delete process.env.AUGGY_WEB_TOKEN;
     delete process.env.VISITOR_SIGNING_KEY;
     delete process.env.AUGGY_AGENT_ID;

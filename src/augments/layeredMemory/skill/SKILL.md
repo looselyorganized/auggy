@@ -1,5 +1,5 @@
 ---
-name: layered-memory
+name: layeredMemory
 description: When and how to use memory_write, memory_search, memory_list, memory_forget for peer-scoped episodic memory. Read this before saving or recalling anything about a peer.
 ---
 

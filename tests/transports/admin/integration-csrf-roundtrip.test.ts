@@ -15,7 +15,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defineAgent } from "@/agent";
 import { budgets } from "@/augments/budgets";
-import { layeredMemory } from "@/augments/layered-memory";
+import { layeredMemory } from "@/augments/layeredMemory";
 import { webTransport } from "@/transports/web-transport";
 import { createMockModel } from "@tests/fixtures/mock-model";
 

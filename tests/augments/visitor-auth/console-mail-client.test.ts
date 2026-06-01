@@ -1,5 +1,5 @@
 import { describe, expect, it, spyOn } from "bun:test";
-import { createConsoleMailClient } from "@/augments/visitor-auth/console-mail-client";
+import { createConsoleMailClient } from "@/augments/visitorAuth/console-mail-client";
 
 describe("createConsoleMailClient", () => {
   it("send writes a header line containing recipient + subject to the sink", async () => {
