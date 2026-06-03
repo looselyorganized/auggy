@@ -323,7 +323,7 @@ function previewCaveat(entry: CatalogEntry): string {
     case "agentMail":
       return "email delivery and policy controls need production hardening";
     case "mcp":
-      return "MCP config DX is ready; tool discovery/call forwarding lands in the next slice";
+      return "external tool servers require deliberate trust, auth, and cloud transport setup";
     default:
       return "production DX is still being hardened";
   }

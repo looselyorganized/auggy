@@ -100,11 +100,13 @@ describe("resolveAugments — filesystem", () => {
 });
 
 describe("resolveAugments — mcp", () => {
-  test("resolves the MCP augment placeholder without mounting tools yet", async () => {
+  test("resolves the MCP augment with lifecycle-managed tools", async () => {
     const augments = await resolveAugments([{ name: "mcp", type: "mcp", options: {} }], TMP);
     expect(augments).toHaveLength(1);
     expect(augments[0]!.name).toBe("mcp");
-    expect(augments[0]!.tools).toBeUndefined();
+    expect(augments[0]!.tools).toEqual([]);
+    expect(augments[0]!.onBoot).toBeDefined();
+    expect(augments[0]!.onShutdown).toBeDefined();
     expect(augments[0]!.adminInfo).toBeDefined();
   });
 });

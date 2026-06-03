@@ -89,6 +89,42 @@ describe("mcp config helpers", () => {
     }
   });
 
+  test("cloud diagnostics fail remote MCP without HTTPS", () => {
+    const { dir, cleanup } = tempAgent();
+    try {
+      setMcpServer(dir, "remote", {
+        type: "streamable-http",
+        url: "http://mcp.example.com/mcp",
+      });
+      expect(
+        diagnoseMcpConfig(dir, { cloud: true }).find((check) => check.name === "mcp remote cloud")
+          ?.status,
+      ).toBe("fail");
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("cloud diagnostics fail literal secret-like headers", () => {
+    const { dir, cleanup } = tempAgent();
+    try {
+      setMcpServer(dir, "remote", {
+        type: "streamable-http",
+        url: "https://mcp.example.com/mcp",
+        headers: { Authorization: "Bearer abcdefghijklmnopqrstuvwxyz123456" },
+      });
+      expect(
+        diagnoseMcpConfig(dir, { cloud: true }).find((check) => check.name === "mcp remote secrets")
+          ?.status,
+      ).toBe("fail");
+      expect(
+        diagnoseMcpConfig(dir).find((check) => check.name === "mcp remote secrets")?.status,
+      ).toBe("warn");
+    } finally {
+      cleanup();
+    }
+  });
+
   test("parseMcpServerJson validates object shape", () => {
     expect(parseMcpServerJson('{"type":"http","url":"https://example.com/mcp"}').url).toBe(
       "https://example.com/mcp",

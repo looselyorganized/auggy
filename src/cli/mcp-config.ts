@@ -9,6 +9,7 @@ export interface McpServerConfig {
   transport?: string;
   command?: string;
   args?: string[];
+  cwd?: string;
   url?: string;
   env?: Record<string, string>;
   headers?: Record<string, string>;
@@ -161,6 +162,17 @@ export function diagnoseMcpConfig(
       failed = true;
     }
 
+    const literalSecrets = collectLiteralSecretFields(server);
+    if (literalSecrets.length > 0) {
+      out.push({
+        name: `mcp ${name} secrets`,
+        status: opts.cloud ? "fail" : "warn",
+        message: `literal secret-like values in ${literalSecrets.join(", ")}`,
+        fix: `Move secrets to .env and reference them as \${ENV_NAME}.`,
+      });
+      if (opts.cloud) failed = true;
+    }
+
     if (opts.cloud && transport === "stdio") {
       const policy = mcpCloudPolicy(config, name, server);
       if (policy === "disabled" || policy === "localOnly" || policy === "local-only") {
@@ -178,6 +190,19 @@ export function diagnoseMcpConfig(
         });
       }
       continue;
+    }
+
+    if (opts.cloud && isRemoteTransport(transport)) {
+      const url = typeof server.url === "string" ? server.url : "";
+      if (!url.startsWith("https://")) {
+        out.push({
+          name: `mcp ${name} cloud`,
+          status: "fail",
+          message: "remote MCP servers must use HTTPS for cloud deploys",
+          fix: "Use an https:// MCP endpoint.",
+        });
+        failed = true;
+      }
     }
 
     if (failed) continue;
@@ -288,6 +313,32 @@ function collectServerEnvReferences(server: McpServerConfig): string[] {
     }
   }
   return [...refs].sort();
+}
+
+function collectLiteralSecretFields(server: McpServerConfig): string[] {
+  const out: string[] = [];
+  for (const [scope, record] of [
+    ["env", server.env],
+    ["headers", server.headers],
+  ] as const) {
+    for (const [key, value] of Object.entries(record ?? {})) {
+      if (value.includes("${")) continue;
+      if (isSecretishKey(key) || isSecretishValue(value)) out.push(`${scope}.${key}`);
+    }
+  }
+  return out.sort();
+}
+
+function isSecretishKey(key: string): boolean {
+  return /(token|secret|password|authorization|api[_-]?key)/i.test(key);
+}
+
+function isSecretishValue(value: string): boolean {
+  return /^(bearer\s+)?[A-Za-z0-9_.-]{24,}$/i.test(value.trim());
+}
+
+function isRemoteTransport(transport: ReturnType<typeof classifyMcpTransport>): boolean {
+  return transport === "http" || transport === "sse" || transport === "streamable-http";
 }
 
 function readAgentEnv(agentDir: string): Map<string, string> {

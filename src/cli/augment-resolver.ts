@@ -500,7 +500,14 @@ export async function resolveAugments(
         break;
       }
       case "mcp":
-        augment = mcp({ config: opts.config as string | undefined });
+        augment = mcp({
+          agentDir,
+          config: opts.config as string | undefined,
+          timeoutMs: opts.timeoutMs as number | undefined,
+          maxResultBytes: opts.maxResultBytes as number | undefined,
+          maxSchemaBytes: opts.maxSchemaBytes as number | undefined,
+          maxConcurrentCalls: opts.maxConcurrentCalls as number | undefined,
+        });
         break;
       case "agentMail": {
         augment = agentMail({

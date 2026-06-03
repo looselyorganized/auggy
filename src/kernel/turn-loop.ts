@@ -112,21 +112,10 @@ export function createTurnLoop(opts: {
 }): TurnLoop {
   const { augments, model, tokenizer, config } = opts;
 
-  const capabilityTable = createCapabilityTable(augments);
   const traceEmitter = createTraceEmitter();
   const historyManagers = new Map<string, HistoryManager>();
   const historyLastAccess = new Map<string, number>();
   const MAX_HISTORY_THREADS = 500;
-
-  // Collect all tools with their owning augment
-  const toolRegistry = new Map<string, { tool: Tool; augment: string }>();
-  const allTools: Tool[] = [];
-  for (const aug of augments) {
-    for (const tool of aug.tools ?? []) {
-      toolRegistry.set(tool.name, { tool, augment: aug.name });
-      allTools.push(tool);
-    }
-  }
 
   function getOrCreateHistory(threadId: string): HistoryManager {
     let hm = historyManagers.get(threadId);
@@ -611,6 +600,18 @@ export function createTurnLoop(opts: {
         model.maxContextTokens * ((budgetConfig.historyPercent ?? 40) / 100),
       );
       const historyMessages = history.getHistory(historyBudget);
+
+      // Collect tools per turn so augment tools populated during onBoot
+      // (for example MCP-discovered tools) are visible to the kernel.
+      const capabilityTable = createCapabilityTable(augments);
+      const toolRegistry = new Map<string, { tool: Tool; augment: string }>();
+      const allTools: Tool[] = [];
+      for (const aug of augments) {
+        for (const tool of aug.tools ?? []) {
+          toolRegistry.set(tool.name, { tool, augment: aug.name });
+          allTools.push(tool);
+        }
+      }
 
       // Select tools
       const toolSelection = selectTools(allTools, turnState, {

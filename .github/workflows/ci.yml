@@ -60,6 +60,7 @@ jobs:
             tests/cli/deploy/secrets.test.ts \
             tests/cli/scaffold-package-json.test.ts \
             tests/cli/model-picker.test.ts \
+            tests/augments/mcp.test.ts \
             tests/augments/knowledge.test.ts \
             tests/augments/notify.test.ts \
             tests/augments/telegram-transport.test.ts \
