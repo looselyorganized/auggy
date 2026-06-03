@@ -17,6 +17,7 @@ Fourteen augments ship in `src/augments/` (plus `webTransport` under `src/transp
 - **`bash`** — scoped shell execution
 - **`budgets`** — per-trust-level turn budgets + dollar ceiling
 - **`notify`** — outbound messaging to operator-configured destinations
+- **`mcp`** — external MCP server tools bridged into Auggy tools
 - **`agentMail`** — outbound email via AgentMail with per-peer trust gate, allowlist, rate limits, audit ring (Phase A; inbound in Phase B)
 - **`turnControl`** — `request_input` for hand-off prompts
 - **`visitorAuth`** — email magic-link verification; promotes anonymous → recognized
@@ -39,7 +40,7 @@ Fresh agents are scaffolded for the shortest path to chat:
 The `skills` augment is runtime infrastructure and is auto-mounted when needed.
 Stable add-ons (`knowledge`, `notify`, `telegramTransport`) are installed after
 first chat with `auggy augment add <name>`. Preview augments (`layeredMemory`,
-`budgets`, `visitorAuth`, `link`, `agentMail`, `bash`) remain available behind
+`mcp`, `budgets`, `visitorAuth`, `link`, `agentMail`, `bash`) remain available behind
 an explicit confirmation because their production DX or security edge cases are
 still being hardened. `supabaseMemory` remains in the runtime for legacy/manual
 configs, but is intentionally not shown in the v1.0 CLI catalog.
@@ -53,7 +54,7 @@ of the normal install path.
 
 Every built-in augment lives at `src/augments/<name>/index.ts` (folder shape, per [ADR-025](../../docs/solutions/architecture/adr-025-augment-folder-and-skill-bundling.md)). Augments that contribute model-callable tools ship a bundled `<name>/skill/SKILL.md` colocated in the same folder; `auggy create` and `auggy add` copy it to `<agent-dir>/skills/<name>/SKILL.md`, and `auggy skill add <name>` installs it retroactively. A boot-time validator warns at agent startup if a tool-providing augment is mounted without a skill — applies to both factory-declared `tools[]` and namespace memory providers (kernel-synthesized `memory_*` tools). Tool-less augments (transports, static memory providers, admission gates) skip the skill folder.
 
-Augments shipping a bundled skill at v1.0: `filesystem`, `layeredMemory`, `webFetch`, `knowledge`, `bash`, `notify`, `agentMail`, `turnControl`, `visitorAuth`, `link`. The `skills` augment is the model-facing surface that lists them — it carries no SKILL.md of its own.
+Augments shipping a bundled skill at v1.0: `filesystem`, `layeredMemory`, `webFetch`, `knowledge`, `bash`, `notify`, `mcp`, `agentMail`, `turnControl`, `visitorAuth`, `link`. The `skills` augment is the model-facing surface that lists them — it carries no SKILL.md of its own.
 
 ### Model-facing surface (ADR-030)
 

@@ -57,6 +57,7 @@ docs/**/
 !docs/20-embedding.md
 !docs/21-console.md
 !docs/22-agent-mail.md
+!docs/24-mcp.md
 !docs/plans/
 !docs/plans/*.md
 !docs/ROADMAP.md

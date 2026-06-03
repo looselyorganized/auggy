@@ -138,6 +138,12 @@ Stable add-ons:
 | `notify` | Outbound notifications to an operator or service |
 | `telegramTransport` | Bidirectional chat with the agent from Telegram |
 
+Preview add-ons:
+
+| Augment | Add it when you want... |
+| --- | --- |
+| `mcp` | Tools from local or remote MCP servers |
+
 Preview augments are visible in `auggy augment list`, but the default v1 path
 keeps first run focused on local chat.
 
@@ -188,6 +194,55 @@ TELEGRAM_CREATOR_USER_IDS=123456789
 Use `@BotFather` to create a bot and `@userinfobot` to find your Telegram user
 ID. Creator IDs are comma-separated numeric Telegram user IDs.
 
+## MCP
+
+```bash
+auggy augment add mcp
+```
+
+MCP servers live in `.mcp.json` at the agent root. Auggy discovers MCP tools at
+boot and exposes them as Auggy tools named `mcp_<server>_<tool>`.
+
+Local stdio MCP:
+
+```json
+{
+  "mcpServers": {
+    "smoke": {
+      "type": "stdio",
+      "command": "bun",
+      "args": ["../augment-1/examples/mcp-stdio-server/server.ts"]
+    }
+  }
+}
+```
+
+Remote HTTPS MCP for cloud agents:
+
+```json
+{
+  "mcpServers": {
+    "github": {
+      "type": "streamable-http",
+      "url": "https://mcp.example.com/mcp",
+      "headers": {
+        "Authorization": "Bearer ${GITHUB_MCP_TOKEN}"
+      }
+    }
+  }
+}
+```
+
+Put secrets in `.env`, then check setup:
+
+```bash
+auggy mcp doctor
+auggy mcp doctor --cloud
+```
+
+Railway deploy blocks enabled `stdio` MCP servers by default. Use remote HTTPS
+MCP for cloud, or mark local servers `cloud: "localOnly"` in `.mcp.json`.
+
 ## Deploy To Railway
 
 Auggy has a first-class Railway deploy path:
@@ -221,6 +276,7 @@ auggy deploy --yes
 | `auggy augment install <path>` | Install a custom local augment |
 | `auggy skill create <name>` | Create a skill folder |
 | `auggy skill add <name>` | Reinstall a bundled augment skill |
+| `auggy mcp init/list/show/add-json/remove/doctor` | Manage `.mcp.json` MCP servers |
 | `auggy deploy` | Deploy the current agent to Railway |
 | `auggy logs` | Open Railway logs for a deployed agent |
 | `auggy start` / `stop` / `restart` | Manage a background local agent |
@@ -258,6 +314,7 @@ npm i -g ./auggy-*.tgz
 - [Built-in augments](docs/07-built-in-augments.md)
 - [Skills](docs/11-skills.md)
 - [Deploy to Railway](docs/18-deploy.md)
+- [MCP](docs/24-mcp.md)
 - [Console](docs/21-console.md)
 - [Reference docs](docs/README.md)
 
