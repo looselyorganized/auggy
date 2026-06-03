@@ -40,6 +40,7 @@ import { runRestart } from "./commands/restart";
 import { runStatus } from "./commands/status";
 import { chatCommand } from "./commands/chat";
 import { evalCommand } from "./commands/eval";
+import { mcpCommand } from "./commands/mcp";
 import { runRemove } from "./commands/remove";
 import { runLs } from "./commands/ls";
 import { withBrailleSpinner } from "./spinner";
@@ -101,6 +102,7 @@ export function buildCli(): Command {
   program.addCommand(runCommand());
   program.addCommand(doctorCommand());
   program.addCommand(augmentCommand());
+  program.addCommand(mcpCommand());
 
   program
     .command("dev [name]")

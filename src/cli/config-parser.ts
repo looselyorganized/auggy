@@ -133,6 +133,7 @@ const BUILTIN_TYPES = new Set([
   "bash",
   "budgets",
   "notify",
+  "mcp",
   "agentMail",
   "telegramTransport",
   "turnControl",

@@ -29,6 +29,7 @@ import { parseEnvFile, serializeEnv, type EnvLine } from "../env-parse";
 import { writeBuiltinAugmentMetadata, writeCustomAugmentsReadme } from "../augment-metadata";
 import { writeKnowledgeScaffold } from "../scaffold-knowledge";
 import { displayPath } from "../display-path";
+import { ensureMcpConfig } from "../mcp-config";
 
 export interface AddOpts {
   /** Path override for agent.yaml. */
@@ -173,6 +174,7 @@ export async function runAdd(target: string | undefined, opts: AddOpts): Promise
   writeCustomAugmentsReadme(agentDir);
   let knowledgeAdded = false;
   let notifyAdded = false;
+  let mcpAdded = false;
   let telegramTransportAdded = false;
   for (const entry of selected) {
     const skillCopied = copyBundledSkill(entry.type, agentDir);
@@ -183,6 +185,10 @@ export async function runAdd(target: string | undefined, opts: AddOpts): Promise
     }
     if (entry.type === "notify") {
       notifyAdded = true;
+    }
+    if (entry.type === "mcp") {
+      ensureMcpConfig(agentDir);
+      mcpAdded = true;
     }
     if (entry.type === "telegramTransport") {
       telegramTransportAdded = true;
@@ -216,6 +222,15 @@ export async function runAdd(target: string | undefined, opts: AddOpts): Promise
     console.log("  - Ask the agent to notify creator when something needs attention");
     console.log("  - For real delivery, edit notify.destinations in agent.yaml");
     console.log("  - Supported transports: webhook, Telegram, Agent Mail, log-to-file");
+  }
+
+  if (mcpAdded) {
+    console.log();
+    console.log("Add MCP servers:");
+    console.log("  - Config file: .mcp.json");
+    console.log("  - Add a server: auggy mcp add-json <name> '<json>'");
+    console.log("  - Check setup: auggy mcp doctor");
+    console.log("  - Cloud agents should use remote HTTP MCP servers, not local stdio");
   }
 
   if (telegramTransportAdded) {
@@ -307,6 +322,8 @@ function previewCaveat(entry: CatalogEntry): string {
       return "agent-to-agent networking has more edge cases to test";
     case "agentMail":
       return "email delivery and policy controls need production hardening";
+    case "mcp":
+      return "MCP config DX is ready; tool discovery/call forwarding lands in the next slice";
     default:
       return "production DX is still being hardened";
   }

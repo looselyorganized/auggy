@@ -23,6 +23,7 @@ export type BuiltinAugmentType =
   | "bash"
   | "budgets"
   | "notify"
+  | "mcp"
   | "agentMail"
   | "telegramTransport"
   | "turnControl"

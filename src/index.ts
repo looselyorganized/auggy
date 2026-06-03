@@ -92,6 +92,10 @@ export type { FilesystemOptions, FsMount } from "./augments/filesystem";
 export { knowledge, knowledgeRoot } from "./augments/knowledge";
 export type { KnowledgeRootOptions, ManifestOptions } from "./augments/knowledge";
 
+// === Built-in augments (MCP) ===
+export { mcp } from "./augments/mcp";
+export type { McpAugmentOptions } from "./augments/mcp";
+
 // === Built-in augments (web) ===
 export { webFetch } from "./augments/webFetch";
 export type { WebFetchOptions, WebFetchResult } from "./augments/webFetch";

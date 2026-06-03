@@ -47,9 +47,11 @@ jobs:
             tests/cli/create-installs-deps.test.ts \
             tests/cli/add-installs-deps.test.ts \
             tests/cli/commands/augment.test.ts \
+            tests/cli/commands/mcp.test.ts \
             tests/cli/commands/run.test.ts \
             tests/cli/commands/doctor.test.ts \
             tests/cli/commands/logs.test.ts \
+            tests/cli/mcp-config.test.ts \
             tests/cli/deploy.test.ts \
             tests/cli/deploy/bundle.test.ts \
             tests/cli/deploy/dockerfile.test.ts \

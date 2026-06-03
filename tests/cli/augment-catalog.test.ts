@@ -35,12 +35,21 @@ describe("augment catalog", () => {
     expect(entry!.hasSkill).toBe(true);
   });
 
+  it("catalog includes MCP as a preview augment with a bundled skill", () => {
+    const entry = AUGMENT_CATALOG.find((e) => e.type === "mcp");
+    expect(entry).toBeDefined();
+    expect(entry?.defaultName).toBe("mcp");
+    expect(entry?.stability).toBe("preview");
+    expect(entry?.hasSkill).toBe(true);
+  });
+
   it("resolves canonical type names", () => {
     expect(resolveCatalogEntry("webFetch")?.defaultName).toBe("webFetch");
     expect(resolveCatalogEntry("turnControl")?.type).toBe("turnControl");
     expect(resolveCatalogEntry("visitorAuth")?.type).toBe("visitorAuth");
     expect(resolveCatalogEntry("layeredMemory")?.type).toBe("layeredMemory");
     expect(resolveCatalogEntry("agentMail")?.type).toBe("agentMail");
+    expect(resolveCatalogEntry("mcp")?.type).toBe("mcp");
   });
 
   it("returns null for unknown or legacy augment specifiers", () => {

@@ -46,6 +46,7 @@ function writeAgent(
     installSkill?: boolean;
     providerKey?: string;
     includeVisitorAuth?: boolean;
+    includeMcp?: boolean;
   } = {},
 ): string {
   const provider = opts.provider ?? "anthropic";
@@ -95,6 +96,14 @@ function writeAgent(
             },
           ]
         : []),
+      ...(opts.includeMcp
+        ? [
+            {
+              name: "mcp",
+              type: "mcp",
+            },
+          ]
+        : []),
     ],
   };
   writeFileSync(join(dir, "agent.yaml"), stringify(config));
@@ -132,6 +141,10 @@ function writeAgent(
         join(dir, "skills", "visitorAuth", "SKILL.md"),
         "---\nname: visitorAuth\n---\n",
       );
+    }
+    if (opts.includeMcp) {
+      mkdirSync(join(dir, "skills", "mcp"), { recursive: true });
+      writeFileSync(join(dir, "skills", "mcp", "SKILL.md"), "---\nname: mcp\n---\n");
     }
   }
 
@@ -280,6 +293,35 @@ describe("runDoctor", () => {
     expect(skill?.status).toBe("warn");
     expect(skill?.fix).toContain("skill add webFetch");
     expect(hasDoctorFailures(checks)).toBe(false);
+  });
+
+  test("checks mcp config and cloud-hostile stdio during deploy preflight", async () => {
+    const dir = writeAgent("zip", { installDeps: true, installSkill: true, includeMcp: true });
+    writeFileSync(
+      join(dir, ".mcp.json"),
+      JSON.stringify(
+        {
+          mcpServers: {
+            local: { type: "stdio", command: "npx", args: ["-y", "server"] },
+          },
+        },
+        null,
+        2,
+      ),
+    );
+
+    const localChecks = await runDoctor("zip", {
+      auggyDir,
+      isPortAvailable: async () => true,
+    });
+    expect(localChecks.find((check) => check.name === "mcp local")?.status).toBe("pass");
+
+    const cloudChecks = await runDoctor("zip", {
+      auggyDir,
+      isPortAvailable: async () => true,
+      cloud: true,
+    });
+    expect(cloudChecks.find((check) => check.name === "mcp local cloud")?.status).toBe("fail");
   });
 });
 

@@ -16,6 +16,7 @@ import { PROVIDER_TO_PACKAGE } from "../scaffold-package-json";
 import { AUGMENT_CATALOG } from "../augment-catalog";
 import { augmentFolderForType } from "../scaffold-skills";
 import { parseEnvFile } from "../env-parse";
+import { diagnoseMcpConfig } from "../mcp-config";
 import type { AugmentConfig, ParsedConfig } from "../types";
 
 export type DoctorStatus = "pass" | "warn" | "fail";
@@ -32,6 +33,7 @@ export interface DoctorOptions {
   auggyDir?: string;
   cwd?: string;
   isPortAvailable?: (port: number) => Promise<boolean>;
+  cloud?: boolean;
 }
 
 export interface DoctorCommandDeps {
@@ -90,8 +92,14 @@ export async function runDoctor(
   checks.push(...checkAgentDependencies(agentDir, config));
   checks.push(...(await checkWebPorts(config, opts.isPortAvailable ?? isPortAvailable)));
   checks.push(...checkBundledSkills(agentDir, config.augments));
+  checks.push(...checkMcp(agentDir, config, opts.cloud ?? false));
 
   return checks;
+}
+
+function checkMcp(agentDir: string, config: ParsedConfig, cloud: boolean): DoctorCheck[] {
+  if (!config.augments.some((aug) => aug.type === "mcp")) return [];
+  return diagnoseMcpConfig(agentDir, { cloud });
 }
 
 function checkPackageManifest(agentDir: string): DoctorCheck {
@@ -394,6 +402,7 @@ function summarizeDoctorCheck(check: DoctorCheck): string {
   if (check.name.startsWith("port "))
     return `port: ${check.name.slice("port ".length)} ${check.message}`;
   if (check.name.startsWith("skill ")) return `skill: ${check.name.slice("skill ".length)}`;
+  if (check.name === "mcp config") return "mcp config: .mcp.json";
   return `${check.name}: ${check.message}`;
 }
 

@@ -25,6 +25,7 @@ import { knowledgeRoot } from "../augments/knowledge";
 import { skills } from "../augments/skills";
 import { bash } from "../augments/bash";
 import { notify } from "../augments/notify";
+import { mcp } from "../augments/mcp";
 import { agentMail } from "../augments/agentMail";
 import { telegramTransport } from "../augments/telegramTransport";
 import { turnControl, type TurnControlOptions } from "../augments/turnControl";
@@ -498,6 +499,9 @@ export async function resolveAugments(
         });
         break;
       }
+      case "mcp":
+        augment = mcp({ config: opts.config as string | undefined });
+        break;
       case "agentMail": {
         augment = agentMail({
           apiKey: opts.apiKey as string,

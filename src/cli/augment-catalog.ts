@@ -241,6 +241,18 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
     hasSkill: true,
   },
   {
+    label: "MCP",
+    tagline: "call external MCP servers",
+    description:
+      "Lets the agent use tools exposed by MCP servers. Server definitions live in .mcp.json so they stay portable across Claude Code/Cursor-style MCP configs. Local stdio servers work locally; cloud deploys require remote HTTP MCP or explicitly disabled local servers.",
+    type: "mcp",
+    defaultName: "mcp",
+    defaultOptions: {},
+    required: false,
+    stability: "preview",
+    hasSkill: true,
+  },
+  {
     label: "Agent Mail",
     tagline: "send email via AgentMail (Phase A: outbound only)",
     description:

@@ -216,6 +216,27 @@ describe("runAdd no-op cases", () => {
     expect(manifest.purpose).toBe("Help visitors.");
   });
 
+  test("adding mcp mounts the augment and creates .mcp.json", async () => {
+    const dir = setupAgent("with-mcp");
+
+    await runAdd("with-mcp", {
+      config: join(dir, "agent.yaml"),
+      auggyDir,
+      augment: "mcp",
+      yes: true,
+      bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
+    });
+
+    const yaml = readFileSync(join(dir, "agent.yaml"), "utf-8");
+    expect(yaml).toContain("type: mcp");
+    expect(yaml).toContain("name: mcp");
+    expect(existsSync(join(dir, ".mcp.json"))).toBe(true);
+    expect(JSON.parse(readFileSync(join(dir, ".mcp.json"), "utf-8"))).toEqual({
+      mcpServers: {},
+    });
+    expect(existsSync(join(dir, "skills", "mcp", "SKILL.md"))).toBe(true);
+  });
+
   test("project-local no args opens the picker for the cwd agent", async () => {
     const dir = setupAgent("local-picker");
     answers = { augmentTypes: ["bash"] };

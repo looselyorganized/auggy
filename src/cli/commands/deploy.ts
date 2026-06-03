@@ -206,6 +206,7 @@ export async function runDeploy(
     auggyDir: opts.auggyDir,
     config: configPath,
     isPortAvailable: async () => true,
+    cloud: true,
   });
   const warnings = preflight.filter((check) => check.status === "warn");
   for (const warning of warnings) {
