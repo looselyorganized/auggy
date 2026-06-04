@@ -339,14 +339,15 @@ function MessageList({
               "What context do you have about this agent?",
               "Run a small tool-use smoke test.",
             ].map((prompt) => (
-              <button
+              <Button
                 key={prompt}
                 type="button"
+                variant="outline"
                 onClick={() => onPrompt(prompt)}
-                className="min-h-11 rounded-md border bg-card/85 px-3 py-2 text-left text-sm shadow-sm transition-colors hover:bg-muted"
+                className="h-auto min-h-11 justify-start whitespace-normal bg-card/85 px-3 py-2 text-left text-sm shadow-sm hover:bg-muted"
               >
                 {prompt}
-              </button>
+              </Button>
             ))}
           </div>
         </div>
@@ -432,10 +433,11 @@ function ToolCallView({ tc }: { tc: ToolCall }) {
         tc.status === "completed" && "border-muted bg-muted/30",
       )}
     >
-      <button
+      <Button
         type="button"
+        variant="ghost"
         onClick={() => setExpanded((e) => !e)}
-        className="flex w-full items-center gap-2 px-2 py-1.5 text-left transition-colors hover:bg-muted/40"
+        className="h-auto w-full justify-start rounded-none px-2 py-1.5 text-left hover:bg-muted/40 [&_svg]:size-3"
         aria-expanded={expanded}
       >
         {expanded ? (
@@ -459,7 +461,7 @@ function ToolCallView({ tc }: { tc: ToolCall }) {
         >
           {tc.status === "running" ? "running…" : tc.status}
         </span>
-      </button>
+      </Button>
       {expanded && (
         <div className="space-y-2 border-t bg-background/50 p-2 text-[11px]">
           {tc.args !== undefined && (

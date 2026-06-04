@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Check, Copy, ExternalLink } from "lucide-react";
 import { useActionDispatcher } from "@/components/admin/useActionDispatcher";
 import { Badge } from "@/components/ui/badge";
@@ -20,8 +20,11 @@ export function IntegrationsTab() {
     data?.card.provider.name ??
     "agent";
   const webPosture = useMemo(() => readWebPosture(data), [data]);
-  const publicIntegration = webPosture.publicIntegration === "true";
-  const publicIntegrationOverridden = webPosture.publicIntegrationSource === "/console override";
+  const resolvedPublicIntegration = webPosture.publicIntegration === "true";
+  const [optimisticPublicIntegration, setOptimisticPublicIntegration] = useState<boolean | null>(
+    null,
+  );
+  const publicIntegration = optimisticPublicIntegration ?? resolvedPublicIntegration;
   const publicFrontendUrl = webPosture.publicFrontendUrl;
   const runUrl = origin ? `${origin}/agent/run` : "/agent/run";
   const cardUrl = origin
@@ -36,23 +39,18 @@ export function IntegrationsTab() {
     window.setTimeout(() => setCopied((current) => (current === label ? null : current)), 1200);
   }
 
+  useEffect(() => {
+    setOptimisticPublicIntegration(null);
+  }, [resolvedPublicIntegration]);
+
   async function togglePublicIntegration() {
     const next = !publicIntegration;
+    setOptimisticPublicIntegration(next);
     await dispatch({
       actionId: "posture-public-integration-set",
       values: { value: String(next) },
-      confirmRequired: true,
-      confirmMessage: next
-        ? "Publish public /agent discovery and unauthenticated agent-card JSON?"
-        : "Make developer discovery private? /agent will return 404 and agent-card JSON will require bearer auth.",
-    });
-  }
-
-  async function resetPublicIntegration() {
-    await dispatch({
-      actionId: "posture-public-integration-reset",
-      confirmRequired: true,
-      confirmMessage: "Reset developer discovery to the value in agent.yaml?",
+      confirmRequired: false,
+      refresh: "deferred",
     });
   }
 
@@ -92,7 +90,8 @@ export function IntegrationsTab() {
     publicFrontendUrl: https://your-app.example.com/chat`;
 
   return (
-    <div className="mx-auto grid h-full w-full max-w-5xl gap-4 overflow-auto p-3 sm:p-4">
+    <div className="h-full w-full overflow-y-auto">
+      <div className="mx-auto grid w-full max-w-5xl gap-4 p-3 sm:p-4">
       <section className="grid gap-2">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
@@ -143,17 +142,6 @@ export function IntegrationsTab() {
                 </p>
               </div>
               <div className="flex shrink-0 items-center gap-2">
-                {publicIntegrationOverridden ? (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="h-8"
-                    disabled={busy}
-                    onClick={() => void resetPublicIntegration()}
-                  >
-                    Reset
-                  </Button>
-                ) : null}
                 <Switch
                   checked={publicIntegration}
                   disabled={busy || !data}
@@ -216,6 +204,7 @@ export function IntegrationsTab() {
             />
           </CardContent>
         </Card>
+      </div>
       </div>
     </div>
   );
@@ -305,7 +294,6 @@ function CodeBlock({
 function readWebPosture(data: DashboardData | null): {
   publicFrontendUrl?: string;
   publicIntegration?: string;
-  publicIntegrationSource?: string;
 } {
   const rows =
     data?.blocks
@@ -317,6 +305,5 @@ function readWebPosture(data: DashboardData | null): {
   return {
     publicFrontendUrl: frontend && frontend !== "(unset)" ? frontend : undefined,
     publicIntegration: publicIntegration?.value,
-    publicIntegrationSource: publicIntegration?.source,
   };
 }

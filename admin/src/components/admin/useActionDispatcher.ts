@@ -10,6 +10,8 @@ export interface DispatchOpts {
   values?: Record<string, string>;
   confirmRequired: boolean;
   confirmMessage?: string;
+  /** Dashboard refresh timing after the action posts. Defaults to immediate. */
+  refresh?: "immediate" | "deferred" | "none";
   /** Surface a destructive style on the confirm dialog. Defaults to false. */
   destructive?: boolean;
 }
@@ -57,9 +59,17 @@ export function useActionDispatcher(): UseActionDispatcher {
           return;
         }
         push(result.ok ? "success" : "error", result.message || (result.ok ? "Done." : "Failed."));
-        await refresh();
+        const refreshMode = opts.refresh ?? "immediate";
+        if (refreshMode === "immediate") {
+          await refresh();
+        } else if (refreshMode === "deferred") {
+          globalThis.setTimeout(() => void refresh(), 350);
+        }
       } catch (err) {
         push("error", `Action failed: ${(err as Error).message}`);
+        if (opts.refresh === "deferred") {
+          globalThis.setTimeout(() => void refresh(), 350);
+        }
       } finally {
         setBusy(false);
       }

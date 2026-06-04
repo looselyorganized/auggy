@@ -688,21 +688,6 @@ export function webTransport(opts: WebTransportOptions): Augment {
     writeOverrides(opts.agentDir, current);
   }
 
-  async function clearPublicIntegrationOverride(): Promise<void> {
-    if (!opts.agentDir) return;
-    const current = readOverrides(opts.agentDir);
-    if (!current) return;
-    if (current.overrides.webTransport) {
-      delete (current.overrides.webTransport as Record<string, unknown>).publicIntegration;
-      if (Object.keys(current.overrides.webTransport).length === 0) {
-        delete (current.overrides as Record<string, unknown>).webTransport;
-      }
-    }
-    current.lastModified = new Date().toISOString();
-    current.lastModifiedBy = "creator";
-    writeOverrides(opts.agentDir, current);
-  }
-
   async function adminInfo(): Promise<AdminInfoBlock> {
     const sourceLabel =
       allowAnonymousResolution.source === ("admin-override" as string)
@@ -734,7 +719,6 @@ export function webTransport(opts: WebTransportOptions): Augment {
               value: String(publicIntegration),
               source:
                 publicIntegrationSource === "admin-override" ? "/console override" : "yaml",
-              resetAction: { id: "posture-public-integration-reset", label: "Reset to yaml" },
             },
             { label: "Port", value: String(opts.port) },
             {
@@ -770,7 +754,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
               type: "boolean",
               required: true,
               helpText:
-                "Publishes /agent and unauthenticated agent-card discovery. Does not publish /agent/run.",
+                "Persists across restart via admin-overrides.json. Publishes /agent and unauthenticated agent-card discovery; does not publish /agent/run.",
             },
           ],
         },
@@ -833,22 +817,6 @@ export function webTransport(opts: WebTransportOptions): Augment {
       return {
         ok: true,
         message: `developer discovery ${value ? "published" : "made private"}`,
-      };
-    },
-    "posture-public-integration-reset": async (): Promise<AdminActionResult> => {
-      try {
-        await clearPublicIntegrationOverride();
-      } catch (err) {
-        return {
-          ok: false,
-          message: `could not clear override: ${(err as Error).message}`,
-        };
-      }
-      publicIntegrationSource = "yaml";
-      setPublicIntegration(opts.publicIntegration === true);
-      return {
-        ok: true,
-        message: `developer discovery reset to yaml: ${publicIntegration}`,
       };
     },
   };
@@ -978,7 +946,6 @@ export function webTransport(opts: WebTransportOptions): Augment {
         publicIntegration = overrides.overrides.webTransport.publicIntegration;
         publicIntegrationSource = "admin-override";
       }
-
       // G36 — build the action registry from declared adminInfo + adminActions.
       // buildAdminActionRegistry throws on missing handlers or action-id
       // collisions; surface fires at boot, not at first POST.
