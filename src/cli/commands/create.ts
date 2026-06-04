@@ -26,7 +26,11 @@ import {
   partitionByRecommended,
   RECOMMENDED_FIRST_PULL,
 } from "../ollama-discover";
-import { buildAgentPackageJson, getAuggyVersion } from "../scaffold-package-json";
+import {
+  buildAgentPackageJson,
+  getAuggyPackageSpecifierOverride,
+  getAuggyVersion,
+} from "../scaffold-package-json";
 import { runBunInstall, type BunInstallSpawnFactory } from "../bun-install";
 import { withEscRestart, WizardRestartRequested } from "../wizard-restart";
 import { writeBuiltinAugmentMetadata, writeCustomAugmentsReadme } from "../augment-metadata";
@@ -506,6 +510,7 @@ async function runCreateIntoDir(
       buildAgentPackageJson({
         agentName: name,
         auggyVersion,
+        auggyPackageSpecifier: getAuggyPackageSpecifierOverride(),
         provider,
         augments,
       }),

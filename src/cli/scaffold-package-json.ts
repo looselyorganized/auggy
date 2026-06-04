@@ -41,6 +41,8 @@ export interface BuildAgentPackageJsonInput {
   agentName: string;
   /** auggy core version this scaffold was built against (caret-pinned). */
   auggyVersion: string;
+  /** Optional explicit core package specifier for local pack/install smoke tests. */
+  auggyPackageSpecifier?: string;
   /** Selected engine provider — chooses the adapter package. */
   provider: Provider;
   /** Selected augments — drives the per-augment `packageDeps` merge. */
@@ -54,9 +56,10 @@ export interface BuildAgentPackageJsonInput {
  */
 export function buildAgentPackageJson(input: BuildAgentPackageJsonInput): string {
   const versionRange = `^${input.auggyVersion}`;
+  const auggySpecifier = input.auggyPackageSpecifier?.trim() || versionRange;
 
   const dependencies: Record<string, string> = {
-    auggy: versionRange,
+    auggy: auggySpecifier,
     [PROVIDER_TO_PACKAGE[input.provider]]: versionRange,
   };
 
@@ -128,6 +131,19 @@ export function mergePackageDeps(
  */
 export function getAuggyVersion(): string {
   return pkg.version;
+}
+
+/**
+ * Optional escape hatch for release smoke tests.
+ *
+ * Normal users should get semver ranges from npm. Local tarball verification
+ * can set `AUGGY_SCAFFOLD_AUGGY_SPEC=file:/abs/path/auggy-x.y.z.tgz` so the
+ * generated agent installs the exact runtime tarball being tested instead of
+ * whatever version is currently published on the registry.
+ */
+export function getAuggyPackageSpecifierOverride(env = process.env): string | undefined {
+  const spec = env.AUGGY_SCAFFOLD_AUGGY_SPEC?.trim();
+  return spec || undefined;
 }
 
 /**

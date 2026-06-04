@@ -444,21 +444,27 @@ export function doctorCommand(deps: DoctorCommandDeps = {}): Command {
     .description("Check whether an agent is ready to run")
     .argument("[name]", "agent name (defaults to ./agent.yaml)")
     .option("--config <path>", "path to agent.yaml")
+    .option("--cloud", "include cloud deploy preflight checks")
     .option("--verbose", "show absolute paths")
-    .action(async (name: string | undefined, opts: { config?: string; verbose?: boolean }) => {
-      try {
-        const checks = await run(name, { config: opts.config });
-        console.log(
-          formatDoctorChecks(checks, {
-            relativeTo: opts.verbose ? undefined : relativeOutputRoot(checks),
-            color: process.stdout.isTTY,
-            verbose: opts.verbose,
-          }),
-        );
-        exit(hasDoctorFailures(checks) ? 1 : 0);
-      } catch (err) {
-        console.error(`Error: ${(err as Error).message}`);
-        exit(1);
-      }
-    });
+    .action(
+      async (
+        name: string | undefined,
+        opts: { config?: string; cloud?: boolean; verbose?: boolean },
+      ) => {
+        try {
+          const checks = await run(name, { config: opts.config, cloud: opts.cloud });
+          console.log(
+            formatDoctorChecks(checks, {
+              relativeTo: opts.verbose ? undefined : relativeOutputRoot(checks),
+              color: process.stdout.isTTY,
+              verbose: opts.verbose,
+            }),
+          );
+          exit(hasDoctorFailures(checks) ? 1 : 0);
+        } catch (err) {
+          console.error(`Error: ${(err as Error).message}`);
+          exit(1);
+        }
+      },
+    );
 }

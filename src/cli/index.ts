@@ -56,6 +56,7 @@ export function buildCli(): Command {
     .option("--skip-install", "write package.json but don't run bun install")
     .action(async (name: string, opts: { skipInstall?: boolean }) => {
       try {
+        assertInteractiveCommand("auggy create");
         await runCreate(name, opts);
       } catch (err) {
         console.error(`Error: ${(err as Error).message}`);
@@ -90,6 +91,7 @@ export function buildCli(): Command {
     .option("--skip-install", "write package.json but don't run bun install")
     .action(async (name: string | undefined, opts: { skipInstall?: boolean }) => {
       try {
+        assertInteractiveCommand("auggy init");
         const { runInit } = await import("./commands/create");
         await runInit({ name, skipInstall: opts.skipInstall });
       } catch (err) {
@@ -334,6 +336,14 @@ export function buildCli(): Command {
   program.addCommand(evalCommand());
 
   return program;
+}
+
+function assertInteractiveCommand(command: string): void {
+  if (process.stdin.isTTY) return;
+  throw new Error(
+    `${command} is interactive and needs a terminal.\n\n` +
+      "  Run it directly in your shell, or use a terminal/PTY in automation.",
+  );
 }
 
 if (import.meta.main) {

@@ -2,6 +2,7 @@ import { describe, test, expect } from "bun:test";
 import {
   PROVIDER_TO_PACKAGE,
   buildAgentPackageJson,
+  getAuggyPackageSpecifierOverride,
   mergePackageDeps,
   getAuggyVersion,
 } from "../../src/cli/scaffold-package-json";
@@ -51,6 +52,22 @@ describe("buildAgentPackageJson", () => {
     expect(parsed.type).toBe("module");
     expect(parsed.dependencies).toEqual({
       auggy: "^0.3.1",
+      "@auggy/anthropic": "^0.3.1",
+    });
+  });
+
+  test("can override only the auggy core specifier for local tarball smoke tests", () => {
+    const text = buildAgentPackageJson({
+      agentName: "demo",
+      auggyVersion: "0.3.1",
+      auggyPackageSpecifier: "file:/tmp/auggy-0.3.1.tgz",
+      provider: "anthropic",
+      augments: [],
+    });
+
+    const parsed = JSON.parse(text);
+    expect(parsed.dependencies).toEqual({
+      auggy: "file:/tmp/auggy-0.3.1.tgz",
       "@auggy/anthropic": "^0.3.1",
     });
   });
@@ -226,6 +243,24 @@ describe("mergePackageDeps", () => {
     const result = mergePackageDeps(existing, { "@auggy/link": "^0.1.2" });
     expect(result.added).toEqual(["@auggy/link"]);
     expect(JSON.parse(result.text).dependencies).toEqual({ "@auggy/link": "^0.1.2" });
+  });
+});
+
+describe("getAuggyPackageSpecifierOverride", () => {
+  test("returns trimmed env override when present", () => {
+    expect(
+      getAuggyPackageSpecifierOverride({
+        AUGGY_SCAFFOLD_AUGGY_SPEC: "  file:/tmp/auggy.tgz  ",
+      } as NodeJS.ProcessEnv),
+    ).toBe("file:/tmp/auggy.tgz");
+  });
+
+  test("ignores blank env override", () => {
+    expect(
+      getAuggyPackageSpecifierOverride({
+        AUGGY_SCAFFOLD_AUGGY_SPEC: "   ",
+      } as NodeJS.ProcessEnv),
+    ).toBeUndefined();
   });
 });
 

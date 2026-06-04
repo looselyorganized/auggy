@@ -432,9 +432,20 @@ describe("doctor formatting and command", () => {
       console.log = origLog;
     }
 
-    expect(run).toHaveBeenCalledWith("zip", { config: undefined });
+    expect(run).toHaveBeenCalledWith("zip", { config: undefined, cloud: undefined });
     expect(exit).toHaveBeenCalledWith(1);
     expect(logs.join("\n")).toContain("FAIL dep");
+  });
+
+  test("doctor command passes --cloud through to runDoctor", async () => {
+    const run = mock(async (): Promise<DoctorCheck[]> => []);
+    const exit = mock((_code: number) => {});
+
+    const cmd = doctorCommand({ runDoctor: run, exit });
+    await cmd.parseAsync(["zip", "--cloud"], { from: "user" });
+
+    expect(run).toHaveBeenCalledWith("zip", { config: undefined, cloud: true });
+    expect(exit).toHaveBeenCalledWith(0);
   });
 
   test("doctor command can omit name for project-local agent dirs", async () => {
@@ -448,7 +459,7 @@ describe("doctor formatting and command", () => {
     const cmd = doctorCommand({ runDoctor: run, exit });
     await cmd.parseAsync([], { from: "user" });
 
-    expect(run).toHaveBeenCalledWith(undefined, { config: undefined });
+    expect(run).toHaveBeenCalledWith(undefined, { config: undefined, cloud: undefined });
     expect(exit).toHaveBeenCalledWith(0);
   });
 });
