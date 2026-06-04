@@ -75,6 +75,7 @@
   "scripts": {
     "test": "bun test",
     "test:watch": "bun test --watch",
+    "smoke:release": "bash scripts/release-smoke.sh",
     "typecheck": "bunx tsc --noEmit",
     "lint": "bunx --bun @biomejs/biome check",
     "lint:fix": "bunx --bun @biomejs/biome check --write",
