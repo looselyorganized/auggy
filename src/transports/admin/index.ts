@@ -37,6 +37,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
 
+const AUGGY_VERSION = readPackageVersion();
+
 /**
  * Minimal agent.yaml top-level summary surfaced to the SPA so the sidebar
  * can show the agent's identity from config (which is the operator's source
@@ -91,6 +93,19 @@ function readAgentMeta(agentDir: string | undefined): AgentMeta | null {
     };
   } catch {
     return null;
+  }
+}
+
+function readPackageVersion(): string {
+  try {
+    const pkg = JSON.parse(
+      readFileSync(new URL("../../../package.json", import.meta.url), "utf-8"),
+    ) as { version?: unknown };
+    return typeof pkg.version === "string" && pkg.version.trim() !== ""
+      ? pkg.version
+      : "unknown";
+  } catch {
+    return "unknown";
   }
 }
 
@@ -539,6 +554,7 @@ async function handleDashboardJson(ctx: AdminRouteContext, agentName: string): P
   return new Response(
     JSON.stringify({
       card: ctx.kernel.getAgentCard(),
+      auggyVersion: AUGGY_VERSION,
       agentMeta,
       augments,
       blocks,

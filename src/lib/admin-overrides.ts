@@ -9,8 +9,9 @@ import { z } from "zod";
  * with mode 0o600. Read once at agent boot; the closure values are the
  * runtime source of truth thereafter.
  *
- * v1.0 supports four runtime-tunable knobs:
+ * v1.0 supports five runtime-tunable knobs:
  *   - webTransport.allowAnonymous
+ *   - webTransport.publicIntegration
  *   - budgets.dailyBudgetUsd
  *   - notify.globalMaxPerHour
  *   - agentMail.globalMaxPerHour
@@ -23,7 +24,9 @@ const AdminOverridesV1Schema = z.object({
   lastModified: z.string().datetime(),
   lastModifiedBy: z.string(),
   overrides: z.object({
-    webTransport: z.object({ allowAnonymous: z.boolean().optional() }).optional(),
+    webTransport: z
+      .object({ allowAnonymous: z.boolean().optional(), publicIntegration: z.boolean().optional() })
+      .optional(),
     budgets: z.object({ dailyBudgetUsd: z.number().positive().optional() }).optional(),
     notify: z.object({ globalMaxPerHour: z.number().int().positive().optional() }).optional(),
     agentMail: z.object({ globalMaxPerHour: z.number().int().positive().optional() }).optional(),

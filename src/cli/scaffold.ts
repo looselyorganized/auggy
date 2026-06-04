@@ -263,6 +263,11 @@ augments:
       # When true, visitors can chat without a bearer token; budgets cap cost
       # and visitor-auth (if mounted) gives them an upgrade path.
       # allowAnonymous: false
+      # Publish developer discovery — keep false/private unless you want other
+      # developers to see GET /agent and GET /.well-known/agent-card.json
+      # without a bearer. This does NOT make /agent/run public and does NOT
+      # expose /console.
+      # publicIntegration: false
       auth:
         type: bearer
         token: \${AUGGY_WEB_TOKEN}

@@ -247,10 +247,12 @@ describe("handleAdminRoute — auth", () => {
     expect(res.headers.get("content-type")).toContain("application/json");
     const body = (await res.json()) as {
       card: { provider: { name: string } };
+      auggyVersion?: string;
       blocks: unknown[];
       csrfTokens: unknown[];
     };
     expect(body.card.provider.name).toBe("zip");
+    expect(body.auggyVersion).toBe("0.4.4");
     expect(Array.isArray(body.blocks)).toBe(true);
     expect(Array.isArray(body.csrfTokens)).toBe(true);
   });

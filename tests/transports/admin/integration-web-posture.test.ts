@@ -66,6 +66,9 @@ describe("webTransport adminInfo — posture row (G36 phase 3)", () => {
       expect(labels.some((l) => l.toLowerCase().includes("allowanonymous"))).toBe(true);
       // CSRF token minted for the posture-flip action.
       expect(data.csrfTokens.some((t) => t.actionId === "posture-flip")).toBe(true);
+      expect(data.csrfTokens.some((t) => t.actionId === "posture-public-integration-set")).toBe(
+        true,
+      );
     } finally {
       await agent.stop();
     }
@@ -174,6 +177,103 @@ describe("webTransport adminInfo — posture row (G36 phase 3)", () => {
 
       const parsed = JSON.parse(readFileSync(overrideFile, "utf8"));
       expect(parsed.overrides.webTransport?.allowAnonymous).toBeUndefined();
+    } finally {
+      await agent.stop();
+      rmSync(agentDir, { recursive: true, force: true });
+    }
+  });
+
+  it("POST /console/action/posture-public-integration-set publishes and privatizes discovery", async () => {
+    const agentDir = tempAgentDir();
+    const port = 19313;
+    const model = createMockModel();
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: "test-token" },
+      allowAnonymous: false,
+      publicIntegration: false,
+      agentDir,
+    });
+    const agent = defineAgent({ name: "zip", model: "mock", augments: [aug] }, model);
+    await agent.start();
+
+    try {
+      let resp = await fetch(`http://127.0.0.1:${port}/agent`);
+      expect(resp.status).toBe(404);
+      resp = await fetch(`http://127.0.0.1:${port}/.well-known/agent-card.json`);
+      expect(resp.status).toBe(404);
+
+      const publishCsrf = await generateCsrfToken({
+        bearer: "test-token",
+        agentName: "zip",
+        actionId: "posture-public-integration-set",
+      });
+      resp = await fetch(
+        `http://127.0.0.1:${port}/console/action/posture-public-integration-set`,
+        {
+          method: "POST",
+          headers: {
+            authorization: basicHeader("test-token"),
+            "content-type": "application/x-www-form-urlencoded",
+          },
+          body: new URLSearchParams({ _csrf: publishCsrf, value: "true" }).toString(),
+          redirect: "manual",
+        },
+      );
+      expect(resp.status).toBe(303);
+      await resp.text();
+
+      const overrideFile = join(agentDir, "admin-overrides.json");
+      expect(existsSync(overrideFile)).toBe(true);
+      let parsed = JSON.parse(readFileSync(overrideFile, "utf8"));
+      expect(parsed.overrides.webTransport.publicIntegration).toBe(true);
+
+      resp = await fetch(`http://127.0.0.1:${port}/agent`);
+      expect(resp.status).toBe(200);
+      expect(await resp.text()).toContain("Integration details");
+      resp = await fetch(`http://127.0.0.1:${port}/.well-known/agent-card.json`);
+      expect(resp.status).toBe(200);
+
+      let data = await fetchDashboard(port, "test-token");
+      let postureBlock = data.blocks.find((b) => b.title?.includes("Posture"));
+      let publicRow = postureBlock!.sections
+        .filter((s) => s.kind === "keyValue")
+        .flatMap((s) => (s as { rows: Array<{ label: string; value: string }> }).rows)
+        .find((r) => r.label === "publicIntegration");
+      expect(publicRow?.value).toBe("true");
+
+      const privateCsrf = await generateCsrfToken({
+        bearer: "test-token",
+        agentName: "zip",
+        actionId: "posture-public-integration-set",
+      });
+      resp = await fetch(
+        `http://127.0.0.1:${port}/console/action/posture-public-integration-set`,
+        {
+          method: "POST",
+          headers: {
+            authorization: basicHeader("test-token"),
+            "content-type": "application/x-www-form-urlencoded",
+          },
+          body: new URLSearchParams({ _csrf: privateCsrf, value: "false" }).toString(),
+          redirect: "manual",
+        },
+      );
+      expect(resp.status).toBe(303);
+      await resp.text();
+
+      parsed = JSON.parse(readFileSync(overrideFile, "utf8"));
+      expect(parsed.overrides.webTransport.publicIntegration).toBe(false);
+      resp = await fetch(`http://127.0.0.1:${port}/agent`);
+      expect(resp.status).toBe(404);
+
+      data = await fetchDashboard(port, "test-token");
+      postureBlock = data.blocks.find((b) => b.title?.includes("Posture"));
+      publicRow = postureBlock!.sections
+        .filter((s) => s.kind === "keyValue")
+        .flatMap((s) => (s as { rows: Array<{ label: string; value: string }> }).rows)
+        .find((r) => r.label === "publicIntegration");
+      expect(publicRow?.value).toBe("false");
     } finally {
       await agent.stop();
       rmSync(agentDir, { recursive: true, force: true });

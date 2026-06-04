@@ -83,7 +83,9 @@ describe("full agent integration", () => {
 
     try {
       // --- agent card is served from the config ---
-      const cardResp = await fetch(`http://localhost:${port}/.well-known/agent-card.json`);
+      const cardResp = await fetch(`http://localhost:${port}/.well-known/agent-card.json`, {
+        headers: { authorization: "Bearer integration-token" },
+      });
       expect(cardResp.status).toBe(200);
       const card = (await cardResp.json()) as {
         provider: { name: string };

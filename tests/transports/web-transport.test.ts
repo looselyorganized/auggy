@@ -561,12 +561,54 @@ describe("webTransport HTTP server", () => {
     }
   });
 
-  it("serves the Agent Card at /.well-known/agent-card.json automatically", async () => {
+  it("keeps the Agent Card private by default", async () => {
+    const model = createMockModel();
+    const port = 18995;
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: "test-token" },
+    });
+    const agent = defineAgent(
+      {
+        name: "researcher",
+        displayName: "Jim",
+        purpose: "testing",
+        model: "mock",
+        augments: [aug],
+      },
+      model,
+    );
+    await agent.start();
+
+    try {
+      const resp = await fetch(`http://localhost:${port}/.well-known/agent-card.json`);
+      expect(resp.status).toBe(404);
+
+      const authed = await fetch(`http://localhost:${port}/.well-known/agent-card.json`, {
+        headers: { authorization: "Bearer test-token" },
+      });
+      expect(authed.status).toBe(200);
+      const card = (await authed.json()) as {
+        provider: { name: string; displayName?: string };
+        purpose: string;
+        capabilities: { transport: boolean };
+      };
+      expect(card.provider.name).toBe("researcher");
+      expect(card.provider.displayName).toBe("Jim");
+      expect(card.purpose).toBe("testing");
+      expect(card.capabilities.transport).toBe(true);
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("serves the Agent Card publicly when publicIntegration is enabled", async () => {
     const model = createMockModel();
     const port = 18905;
     const aug = webTransport({
       port,
       auth: { type: "bearer", token: "test-token" },
+      publicIntegration: true,
     });
     const agent = defineAgent(
       {
@@ -1661,7 +1703,8 @@ describe("webTransport / (root) route", () => {
       expect(resp.headers.get("content-type")).toBe("text/html; charset=utf-8");
       const body = await resp.text();
       expect(body).toContain("<title>zip — Auggy agent</title>");
-      expect(body).toContain("<h1>zip</h1>");
+      expect(body).toContain("<h1>This agent backend is online.</h1>");
+      expect(body).toContain("zip is ready");
       expect(body).toContain('<meta name="robots" content="noindex, nofollow">');
     } finally {
       await agent.stop();
@@ -1715,13 +1758,14 @@ describe("webTransport / (root) route", () => {
     }
   });
 
-  it("/health and /.well-known/agent-card.json are unaffected by publicFrontendUrl", async () => {
+  it("/health and public agent-card discovery are unaffected by publicFrontendUrl when publicIntegration is enabled", async () => {
     const model = createMockModel();
     const port = 18968;
     const aug = webTransport({
       port,
       auth: { type: "bearer", token: "test-token" },
       publicFrontendUrl: "https://example.com/chat",
+      publicIntegration: true,
     });
     const agent = defineAgent(
       { name: "researcher", purpose: "testing", model: "mock", augments: [aug] },
@@ -1743,6 +1787,95 @@ describe("webTransport / (root) route", () => {
       expect(card.status).toBe(200);
       const cardBody = (await card.json()) as { provider: { name: string } };
       expect(cardBody.provider.name).toBe("researcher");
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("GET /agent returns 404 by default", async () => {
+    const model = createMockModel();
+    const port = 19006;
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: "test-token" },
+    });
+    const agent = defineAgent({ name: "test", model: "mock", augments: [aug] }, model);
+    await agent.start();
+
+    try {
+      const resp = await fetch(`http://localhost:${port}/agent`, { redirect: "manual" });
+      expect(resp.status).toBe(404);
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("GET /agent returns public integration HTML when publicIntegration is enabled", async () => {
+    const model = createMockModel();
+    const port = 19007;
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: "test-token" },
+      publicIntegration: true,
+    });
+    const agent = defineAgent(
+      { name: "zip", purpose: "concierge agent", model: "mock", augments: [aug] },
+      model,
+    );
+    await agent.start();
+
+    try {
+      const resp = await fetch(`http://localhost:${port}/agent`, { redirect: "manual" });
+      expect(resp.status).toBe(200);
+      expect(resp.headers.get("content-type")).toBe("text/html; charset=utf-8");
+      const body = await resp.text();
+      expect(body).toContain("<title>zip — integration</title>");
+      expect(body).toContain("POST /agent/run");
+      expect(body).toContain("/.well-known/agent-card.json");
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("HEAD /agent mirrors GET headers when publicIntegration is enabled", async () => {
+    const model = createMockModel();
+    const port = 19008;
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: "test-token" },
+      publicIntegration: true,
+    });
+    const agent = defineAgent({ name: "zip", model: "mock", augments: [aug] }, model);
+    await agent.start();
+
+    try {
+      const resp = await fetch(`http://localhost:${port}/agent`, {
+        method: "HEAD",
+        redirect: "manual",
+      });
+      expect(resp.status).toBe(200);
+      expect(resp.headers.get("content-type")).toBe("text/html; charset=utf-8");
+      expect(await resp.text()).toBe("");
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("GET /agent/ redirects to /agent only when publicIntegration is enabled", async () => {
+    const model = createMockModel();
+    const port = 19009;
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: "test-token" },
+      publicIntegration: true,
+    });
+    const agent = defineAgent({ name: "zip", model: "mock", augments: [aug] }, model);
+    await agent.start();
+
+    try {
+      const resp = await fetch(`http://localhost:${port}/agent/`, { redirect: "manual" });
+      expect(resp.status).toBe(308);
+      expect(resp.headers.get("location")).toBe("/agent");
     } finally {
       await agent.stop();
     }
