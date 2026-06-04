@@ -137,11 +137,6 @@ Stable add-ons:
 | `knowledge` | Local markdown docs and API-backed knowledge sources |
 | `notify` | Outbound notifications to an operator or service |
 | `telegramTransport` | Bidirectional chat with the agent from Telegram |
-
-Preview add-ons:
-
-| Augment | Add it when you want... |
-| --- | --- |
 | `mcp` | Tools from local or remote MCP servers |
 
 Preview augments are visible in `auggy augment list`, but the default v1 path
@@ -200,8 +195,10 @@ ID. Creator IDs are comma-separated numeric Telegram user IDs.
 auggy augment add mcp
 ```
 
-MCP servers live in `.mcp.json` at the agent root. Auggy discovers MCP tools at
-boot and exposes them as Auggy tools named `mcp_<server>_<tool>`.
+MCP servers live in `.mcp.json` at the agent root. `agent.yaml` mounts the
+augment; `.mcp.json` is the source of truth for server definitions. Auggy
+discovers MCP tools at boot and exposes them as Auggy tools named
+`mcp_<server>_<tool>`.
 
 Local stdio MCP:
 
@@ -238,10 +235,23 @@ Put secrets in `.env`, then check setup:
 ```bash
 auggy mcp doctor
 auggy mcp doctor --cloud
+auggy doctor --cloud
 ```
 
 Railway deploy blocks enabled `stdio` MCP servers by default. Use remote HTTPS
-MCP for cloud, or mark local servers `cloud: "localOnly"` in `.mcp.json`.
+MCP for cloud, or mark local-only servers disabled for cloud:
+
+```json
+{
+  "auggy": {
+    "servers": {
+      "smoke": {
+        "cloud": "disabled"
+      }
+    }
+  }
+}
+```
 
 ## Deploy To Railway
 

@@ -5,9 +5,11 @@ in `.mcp.json` at the agent root.
 
 ```bash
 auggy augment add mcp
-auggy mcp init
 auggy mcp doctor
 ```
+
+`auggy augment add mcp` creates `.mcp.json` if needed. Use `auggy mcp init`
+only when you want to create or repair the MCP config file manually.
 
 `agent.yaml` only mounts the augment:
 
@@ -18,6 +20,16 @@ augments:
 ```
 
 `.mcp.json` is the source of truth for server definitions.
+
+This keeps MCP in one place. You do not copy server command strings into
+`agent.yaml`; `agent.yaml` says "this agent uses MCP," and `.mcp.json` says
+"these are the servers."
+
+Supported connection classes:
+
+- `stdio` for local development. Auggy starts the server as a child process.
+- Remote `streamable-http`, `sse`, or `http` servers. Cloud deploys require
+  `https://` URLs.
 
 ## Local stdio MCP
 
@@ -55,6 +67,11 @@ auggy mcp doctor
 auggy run
 ```
 
+Local `stdio` servers are not deploy-safe by default because Railway cannot run
+arbitrary local development commands unless they are intentionally packaged and
+operated as part of the cloud service. Keep them local, or replace them with
+remote HTTPS MCP servers before deploy.
+
 ## Remote HTTPS MCP
 
 Use remote Streamable HTTP MCP servers for cloud agents:
@@ -83,17 +100,20 @@ Check cloud compatibility:
 
 ```bash
 auggy mcp doctor --cloud
+auggy doctor --cloud
 ```
 
 ## Cloud Deploy Rules
 
-Railway deploy preflight checks MCP config.
+Railway deploy preflight checks MCP config. `auggy deploy` runs the same cloud
+checks before it touches Railway.
 
 Passes:
 
 - HTTPS `streamable-http`
 - HTTPS `sse` legacy servers
-- `stdio` servers marked `cloud: "localOnly"` or `cloud: "disabled"`
+- HTTPS `http` servers
+- `stdio` servers marked `cloud: "disabled"` or `cloud: "localOnly"`
 
 Fails:
 
@@ -116,12 +136,16 @@ Local-only example:
   "auggy": {
     "servers": {
       "localTools": {
-        "cloud": "localOnly"
+        "cloud": "disabled"
       }
     }
   }
 }
 ```
+
+Use `cloud: "disabled"` when a local server should remain available during
+local development but be ignored by cloud deploy preflight. `cloud:
+"localOnly"` is accepted as an alias.
 
 ## Tool Policy
 

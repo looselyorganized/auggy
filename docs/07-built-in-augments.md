@@ -38,12 +38,13 @@ Fresh agents are scaffolded for the shortest path to chat:
 - `turnControl`
 
 The `skills` augment is runtime infrastructure and is auto-mounted when needed.
-Stable add-ons (`knowledge`, `notify`, `telegramTransport`) are installed after
-first chat with `auggy augment add <name>`. Preview augments (`layeredMemory`,
-`mcp`, `budgets`, `visitorAuth`, `link`, `agentMail`, `bash`) remain available behind
-an explicit confirmation because their production DX or security edge cases are
-still being hardened. `supabaseMemory` remains in the runtime for legacy/manual
-configs, but is intentionally not shown in the v1.0 CLI catalog.
+Stable add-ons (`knowledge`, `notify`, `telegramTransport`, `mcp`) are installed
+after first chat with `auggy augment add <name>`. Preview augments
+(`layeredMemory`, `budgets`, `visitorAuth`, `link`, `agentMail`, `bash`) remain
+available behind an explicit confirmation because their production DX or
+security edge cases are still being hardened. `supabaseMemory` remains in the
+runtime for legacy/manual configs, but is intentionally not shown in the v1.0
+CLI catalog.
 
 `auggy augment list` is the discovery surface. `auggy augment add` installs the
 augment config, package dependencies, and bundled skill together. `auggy skill
