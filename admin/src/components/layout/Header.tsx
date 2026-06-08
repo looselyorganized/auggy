@@ -20,7 +20,7 @@ export interface HeaderProps {
   dashboard: DashboardData | null;
 }
 
-export function Header({ agentName, agentDescription, port, online, dashboard }: HeaderProps) {
+export function Header({ port, online, dashboard }: HeaderProps) {
   const [theme, setThemeState] = useState<Theme>(() => getTheme());
 
   useEffect(() => {
@@ -35,25 +35,17 @@ export function Header({ agentName, agentDescription, port, online, dashboard }:
   };
 
   const ThemeIcon = theme === "light" ? Sun : theme === "dark" ? Moon : Monitor;
-  const dot =
-    online === "online"
-      ? "bg-emerald-500"
-      : online === "offline"
-        ? "bg-slate-400"
-        : "bg-amber-500";
   const modelLabel = formatModelLabel(dashboard);
 
   return (
-    <header className="flex h-14 items-center justify-between gap-3 border-b bg-background px-4">
+    <header className="flex h-16 items-center justify-between gap-3 border-b bg-background/90 px-4">
       <div className="flex min-w-0 items-center gap-3 overflow-hidden">
-        <span className={`inline-block size-2 shrink-0 rounded-full ${dot}`} />
-        <div className="flex min-w-0 items-baseline gap-2 overflow-hidden">
-          <h1 className="truncate text-sm font-semibold">{agentName}</h1>
-          {agentDescription && (
-            <span className="truncate text-xs text-muted-foreground">
-              {agentDescription}
-            </span>
-          )}
+        <span className="grid size-8 shrink-0 place-items-center rounded-md border border-foreground bg-foreground text-[13px] font-extrabold text-background">
+          A1
+        </span>
+        <div className="hidden shrink-0 sm:block">
+          <p className="text-sm font-semibold leading-4">Auggy</p>
+          <p className="text-xs text-muted-foreground">Creator console</p>
         </div>
         {port !== undefined && (
           <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
@@ -103,6 +95,7 @@ function AgentDetailsButton({
   const agentId = dashboard?.agentMeta?.id;
   const purpose = dashboard?.agentMeta?.purpose ?? dashboard?.card.purpose;
   const modelLabel = formatModelLabel(dashboard);
+  const auggyVersion = dashboard?.auggyVersion;
   const transports = dashboard?.augments.filter((a) => a.isTransport).map((a) => a.type) ?? [];
   const augmentCount = dashboard?.augments.length ?? 0;
 
@@ -116,6 +109,7 @@ function AgentDetailsButton({
   const diagnostics = [
     `agent=${agentName}`,
     agentId ? `id=${agentId}` : undefined,
+    auggyVersion ? `auggy=${auggyVersion}` : undefined,
     modelLabel ? `engine=${modelLabel}` : undefined,
     `status=${online}`,
     publicUrl ? `url=${publicUrl}` : undefined,
@@ -141,6 +135,7 @@ function AgentDetailsButton({
           <DetailGrid
             rows={[
               ["Status", online],
+              ["Auggy version", auggyVersion ? `v${auggyVersion}` : "unknown"],
               ["Engine", modelLabel ?? "unknown"],
               ["Agent UUID", agentId ?? "not set"],
               ["Runtime URL", publicUrl],

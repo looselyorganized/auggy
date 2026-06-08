@@ -115,7 +115,7 @@ Transport implementations and shared transport infrastructure.
 | File | Responsibility |
 |------|---------------|
 | `ag-ui-events.ts` | AG-UI event types (the wire format for the chat protocol), constructor helpers, `translateKernelEvent(ke)` (kernel event → AG-UI events), `serializeSSE(event)`. |
-| `web-transport.ts` | The built-in HTTP transport. Exposes `POST /agent/run` (AG-UI SSE), `GET /health`, `GET /.well-known/agent-card.json`. Uses Bun.serve and ReadableStream for true streaming. |
+| `web-transport.ts` | The built-in HTTP transport. Exposes `POST /agent/run` (AG-UI SSE), `GET /health`, optional public `GET /agent`, and policy-gated `GET /.well-known/agent-card.json`. Uses Bun.serve and ReadableStream for true streaming. |
 
 See [06-transports.md](./06-transports.md) for the transport contract and the AG-UI protocol details.
 

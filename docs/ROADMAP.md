@@ -21,7 +21,7 @@ the production-readiness story.
 
 - **[walkthrough]** Run end-to-end DX walkthrough — `auggy create → run → chat → visitor-auth → memory → notify → deploy`. Includes error-path coverage, security-eval check, observability spot-check, all surfaces actually used by a fresh operator. *Currently active; the gate everything else defers to.* (G8)
 - **[console]** Chat-first `/console` surface. `/console` redirects to `/console/chat`; the first screen is chat plus a compact Details dialog for agent identity, URLs, engine, transport summary, and copy diagnostics. Config/admin tabs are deferred until adopter signal proves they belong in the browser. Per `docs/21-console.md`.
-- **[chat]** Minimal info endpoint at `GET /` when no `publicFrontendUrl` is set. Replaces the current 404 with a small HTML response (agent name, agent-card link, "this is an Auggy agent backend" tagline). (G2 revised)
+- **[chat]** Minimal info endpoint at `GET /` when no `publicFrontendUrl` is set. Replaces the current 404 with a small HTML response (agent name, public-safe purpose, creator console link, "this is an Auggy agent backend" tagline). (G2 revised)
 - **[examples]** `examples/concierge/` — vertical web-channel example (boutique store website chat + stubbed inventory + visitor-auth + notify-to-operator). Demonstrates the augment composition pattern with a concrete domain that maps to the v1.0 thesis. (G7)
 - **[deploy]** Verify `auggy deploy <name>` works end-to-end on a fresh adopter machine. Doc the limits, the manual steps that remain, the recovery path on failure.
 - **[release-process]** Publish `auggy` v1.0 on npm with notes. Tag the release. Confirm the chat-dist artifact pipeline / admin-dist packaging works in CI for the first GA.

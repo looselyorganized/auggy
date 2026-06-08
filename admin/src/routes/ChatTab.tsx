@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ChevronDown, ChevronRight, Send, Square } from "lucide-react";
+import { ChevronDown, ChevronRight, RotateCcw, Send, Square } from "lucide-react";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -46,8 +46,8 @@ export function ChatTab() {
   // Cleanup on unmount — kill any in-flight stream.
   useEffect(() => () => abortRef.current?.abort(), []);
 
-  const sendMessage = useCallback(async () => {
-    const text = input.trim();
+  const sendMessage = useCallback(async (overrideText?: string) => {
+    const text = (overrideText ?? input).trim();
     if (!text || streaming) return;
 
     const userMsg: Message = { id: crypto.randomUUID(), role: "user", content: text };
@@ -206,55 +206,78 @@ export function ChatTab() {
   }
 
   return (
-    <div className="mx-auto flex h-full w-full max-w-4xl flex-col p-3 sm:p-4">
-      <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-md border bg-background">
-        <MessageList messages={messages} streaming={streaming} agentName={agentName} />
-        {streamError && (
-          <div className="border-t border-destructive/30 bg-destructive/5 px-4 py-2 text-xs text-destructive">
-            {streamError}
-          </div>
-        )}
-        <footer className="border-t bg-muted/30 p-3">
-          <div className="flex items-end gap-2">
-            <Textarea
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={handleKeyDown}
-              placeholder={`Message ${agentName}…`}
-              rows={2}
-              disabled={streaming}
-              className="resize-none bg-background"
-              aria-label={`Message ${agentName}`}
-            />
-            {streaming ? (
-              <Button onClick={handleStop} variant="outline" size="icon" aria-label="Stop">
-                <Square className="size-4" />
-              </Button>
-            ) : (
-              <Button
-                onClick={() => void sendMessage()}
-                disabled={!input.trim()}
-                size="icon"
-                aria-label="Send"
-              >
-                <Send className="size-4" />
-              </Button>
-            )}
-          </div>
-          {messages.length > 0 && (
-            <div className="mt-1.5 flex justify-end">
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={handleClear}
-                disabled={streaming}
-                className="h-6 px-2 text-xs"
-              >
-                Clear
-              </Button>
+    <div className="relative h-full overflow-hidden bg-background">
+      <div
+        className="pointer-events-none absolute inset-0 opacity-45"
+        aria-hidden="true"
+        style={{
+          backgroundImage:
+            "linear-gradient(hsl(var(--border) / 0.45) 1px, transparent 1px), linear-gradient(90deg, hsl(var(--border) / 0.45) 1px, transparent 1px)",
+          backgroundSize: "32px 32px",
+        }}
+      />
+      <div className="pointer-events-none absolute inset-x-0 top-0 h-24 bg-gradient-to-b from-background to-transparent" />
+
+      <MessageList
+        messages={messages}
+        streaming={streaming}
+        agentName={agentName}
+        onPrompt={(prompt) => void sendMessage(prompt)}
+      />
+
+      <div className="absolute inset-x-0 bottom-0 z-10 px-3 pb-3 sm:px-6 sm:pb-6">
+        <div className="mx-auto max-w-3xl">
+          {streamError && (
+            <div className="mb-2 rounded-md border border-destructive/30 bg-background/95 px-3 py-2 text-xs text-destructive shadow-sm">
+              {streamError}
             </div>
           )}
-        </footer>
+          <div className="rounded-lg border bg-card/95 p-2 shadow-lg backdrop-blur">
+            <div className="flex items-end gap-2">
+              <Textarea
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={handleKeyDown}
+                placeholder={`Message ${agentName}...`}
+                rows={2}
+                disabled={streaming}
+                className="max-h-40 min-h-[3.5rem] resize-none border-0 bg-transparent px-2 py-2 shadow-none focus-visible:ring-0"
+                aria-label={`Message ${agentName}`}
+              />
+              {streaming ? (
+                <Button onClick={handleStop} variant="outline" size="icon" aria-label="Stop">
+                  <Square className="size-4" />
+                </Button>
+              ) : (
+                <Button
+                  onClick={() => void sendMessage()}
+                  disabled={!input.trim()}
+                  size="icon"
+                  aria-label="Send"
+                >
+                  <Send className="size-4" />
+                </Button>
+              )}
+            </div>
+            <div className="mt-1 flex items-center justify-between gap-3 px-1">
+              <div className="truncate text-[11px] text-muted-foreground">
+                Enter to send, Shift+Enter for a new line
+              </div>
+              {messages.length > 0 && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={handleClear}
+                  disabled={streaming}
+                  className="h-7 shrink-0 px-2 text-xs"
+                >
+                  <RotateCcw className="mr-1.5 size-3.5" />
+                  New thread
+                </Button>
+              )}
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -268,10 +291,12 @@ function MessageList({
   messages,
   streaming,
   agentName,
+  onPrompt,
 }: {
   messages: Message[];
   streaming: boolean;
   agentName: string;
+  onPrompt: (prompt: string) => void;
 }) {
   const endRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -297,9 +322,34 @@ function MessageList({
 
   if (messages.length === 0) {
     return (
-      <div className="flex flex-1 items-center justify-center p-8 text-center">
-        <div className="space-y-1">
-          <p className="text-sm font-medium">Talk to {agentName}</p>
+      <div className="relative z-[1] flex h-full items-center justify-center px-4 pb-36 text-center">
+        <div className="w-full max-w-2xl">
+          <p className="mb-2 text-sm font-medium text-muted-foreground">Testing as creator</p>
+          <h2 className="text-2xl font-semibold tracking-normal sm:text-3xl">
+            Talk to {agentName}
+          </h2>
+          <p className="mx-auto mt-3 max-w-xl text-sm text-muted-foreground">
+            Use this workspace to test behavior, tool calls, memory, and integration posture before
+            publishing a frontend.
+          </p>
+          <div className="mt-6 grid gap-2 sm:grid-cols-2">
+            {[
+              "What can you help with?",
+              "Summarize your current capabilities.",
+              "What context do you have about this agent?",
+              "Run a small tool-use smoke test.",
+            ].map((prompt) => (
+              <Button
+                key={prompt}
+                type="button"
+                variant="outline"
+                onClick={() => onPrompt(prompt)}
+                className="h-auto min-h-11 justify-start whitespace-normal bg-card/85 px-3 py-2 text-left text-sm shadow-sm hover:bg-muted"
+              >
+                {prompt}
+              </Button>
+            ))}
+          </div>
         </div>
       </div>
     );
@@ -308,19 +358,21 @@ function MessageList({
   return (
     <div
       ref={containerRef}
-      className="flex-1 space-y-4 overflow-y-auto p-4"
+      className="relative z-[1] h-full overflow-y-auto px-4 pb-44 pt-8 sm:px-6"
       role="log"
       aria-live="polite"
     >
-      {messages.map((m) => (
-        <MessageView key={m.id} message={m} />
-      ))}
-      {streaming && (
-        <div className="ml-16 inline-block animate-pulse font-mono text-xs text-muted-foreground">
-          ▍
-        </div>
-      )}
-      <div ref={endRef} />
+      <div className="mx-auto flex max-w-3xl flex-col gap-6">
+        {messages.map((m) => (
+          <MessageView key={m.id} message={m} />
+        ))}
+        {streaming && (
+          <div className="inline-block animate-pulse font-mono text-xs text-muted-foreground">
+            ▍
+          </div>
+        )}
+        <div ref={endRef} />
+      </div>
     </div>
   );
 }
@@ -328,11 +380,18 @@ function MessageList({
 function MessageView({ message }: { message: Message }) {
   const isUser = message.role === "user";
   return (
-    <article className="grid grid-cols-[3.5rem_1fr] items-start gap-2">
-      <div className="pt-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-        {isUser ? "you" : "agent"}
-      </div>
-      <div className="space-y-2 text-sm">
+    <article className={cn("flex", isUser ? "justify-end" : "justify-start")}>
+      <div
+        className={cn(
+          "max-w-[88%] space-y-2 text-sm sm:max-w-[78%]",
+          isUser
+            ? "rounded-lg border bg-card px-4 py-3 shadow-sm"
+            : "rounded-lg border border-transparent bg-background/70 px-4 py-3",
+        )}
+      >
+        <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+          {isUser ? "you" : "agent"}
+        </div>
         {message.content && (
           <p className={cn("whitespace-pre-wrap break-words", isUser && "text-foreground")}>
             {message.content}
@@ -374,10 +433,11 @@ function ToolCallView({ tc }: { tc: ToolCall }) {
         tc.status === "completed" && "border-muted bg-muted/30",
       )}
     >
-      <button
+      <Button
         type="button"
+        variant="ghost"
         onClick={() => setExpanded((e) => !e)}
-        className="flex w-full items-center gap-2 px-2 py-1.5 text-left transition-colors hover:bg-muted/40"
+        className="h-auto w-full justify-start rounded-none px-2 py-1.5 text-left hover:bg-muted/40 [&_svg]:size-3"
         aria-expanded={expanded}
       >
         {expanded ? (
@@ -401,7 +461,7 @@ function ToolCallView({ tc }: { tc: ToolCall }) {
         >
           {tc.status === "running" ? "running…" : tc.status}
         </span>
-      </button>
+      </Button>
       {expanded && (
         <div className="space-y-2 border-t bg-background/50 p-2 text-[11px]">
           {tc.args !== undefined && (

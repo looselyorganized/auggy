@@ -139,6 +139,8 @@ export interface SkillsInfo {
 
 export interface DashboardData {
   card: AgentCardLite;
+  /** Auggy package/runtime version from package.json. */
+  auggyVersion: string;
   /** Top-level identity read from agent.yaml; null when unavailable. */
   agentMeta: AgentMeta | null;
   augments: AugmentSummary[];

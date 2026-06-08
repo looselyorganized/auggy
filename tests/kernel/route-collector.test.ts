@@ -1,5 +1,9 @@
 import { describe, test, expect } from "bun:test";
-import { collectAugmentRoutes, RESERVED_PATHS } from "../../src/kernel/route-collector";
+import {
+  collectAugmentRoutes,
+  RESERVED_PATHS,
+  RESERVED_PREFIXES,
+} from "../../src/kernel/route-collector";
 import type { Augment, AugmentHttpRoute } from "../../src/types";
 
 function aug(name: string, routes: AugmentHttpRoute[]): Augment {
@@ -38,10 +42,19 @@ describe("collectAugmentRoutes", () => {
     expect(result.errors[0]).toContain("reserved");
   });
 
-  test("rejects all four reserved paths", () => {
+  test("rejects all reserved paths", () => {
     for (const path of RESERVED_PATHS) {
       const result = collectAugmentRoutes([aug("a", [route("GET", path)])]);
       expect(result.errors[0]).toContain(path);
+    }
+  });
+
+  test("rejects routes under reserved prefixes", () => {
+    for (const prefix of RESERVED_PREFIXES) {
+      const path = `${prefix}custom`;
+      const result = collectAugmentRoutes([aug("a", [route("GET", path)])]);
+      expect(result.errors[0]).toContain(prefix);
+      expect(result.errors[0]).toContain("reserved");
     }
   });
 

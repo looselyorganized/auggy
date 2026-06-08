@@ -19,6 +19,7 @@ import type { Augment, AugmentHttpRoute } from "../types";
  */
 export const RESERVED_PATHS: readonly string[] = Object.freeze([
   "/",
+  "/agent",
   "/agent/run",
   "/health",
   "/.well-known/agent-card.json",
@@ -31,7 +32,7 @@ export const RESERVED_PATHS: readonly string[] = Object.freeze([
  * `/console/action/*` so augments can't shadow the built-in dispatch.
  * (S9 fix from adversarial review.)
  */
-export const RESERVED_PREFIXES: readonly string[] = Object.freeze(["/console/"]);
+export const RESERVED_PREFIXES: readonly string[] = Object.freeze(["/agent/", "/console/"]);
 
 export interface CollectedRoute extends AugmentHttpRoute {
   /** Augment name that registered this route — for error messages and logging. */
