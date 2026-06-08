@@ -1,11 +1,10 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ChevronDown, ChevronRight, RotateCcw, Send, Square } from "lucide-react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { ChevronDown, ChevronRight, RotateCcw, Square } from "lucide-react";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { useDashboardContext } from "@/components/admin/DashboardContext";
 import { findCsrfToken } from "@/lib/api";
-import { formatModelLabel } from "@/lib/dashboard-format";
 import { cn } from "@/lib/utils";
 import { parseSSEStream, type AGUIEvent } from "@/lib/ag-ui-parse";
 
@@ -185,17 +184,16 @@ export function ChatTab() {
   };
 
   const agentName = useMemo(() => {
-    if (!data) return "agent";
+    if (!data) return "Agent";
     return (
       data.agentMeta?.displayName ??
       data.card.provider.displayName ??
       data.agentMeta?.name ??
       data.card.provider.name ??
-      "agent"
+      "Agent"
     );
   }, [data]);
-  const modelLabel = useMemo(() => formatModelLabel(data), [data]);
-  const responseLabel = modelLabel ?? agentName;
+  const responseLabel = agentName;
 
   if (loading && !data) {
     return (
@@ -259,18 +257,9 @@ export function ChatTab() {
                 className="max-h-48 min-h-[5rem] resize-none border-0 bg-transparent px-2 py-2 shadow-none focus-visible:ring-0"
                 aria-label={`Message ${agentName}`}
               />
-              {streaming ? (
+              {streaming && (
                 <Button onClick={handleStop} variant="outline" size="icon" aria-label="Stop">
                   <Square className="size-4" />
-                </Button>
-              ) : (
-                <Button
-                  onClick={() => void sendMessage()}
-                  disabled={!input.trim()}
-                  size="icon"
-                  aria-label="Send"
-                >
-                  <Send className="size-4" />
                 </Button>
               )}
             </div>
@@ -414,11 +403,7 @@ function MessageView({ message, responseLabel }: { message: Message; responseLab
         <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
           {isUser ? "you" : responseLabel}
         </div>
-        {message.content && (
-          <p className={cn("whitespace-pre-wrap break-words", isUser && "text-foreground")}>
-            {message.content}
-          </p>
-        )}
+        {message.content && <MarkdownContent content={message.content} isUser={isUser} />}
         {message.toolCalls && message.toolCalls.length > 0 && (
           <div className="space-y-1.5">
             {message.toolCalls.map((tc) => (
@@ -434,6 +419,197 @@ function MessageView({ message, responseLabel }: { message: Message; responseLab
       </div>
     </article>
   );
+}
+
+function MarkdownContent({ content, isUser }: { content: string; isUser: boolean }) {
+  return (
+    <div
+      className={cn(
+        "space-y-3 break-words leading-6",
+        isUser ? "text-foreground" : "text-foreground/95",
+      )}
+    >
+      {renderMarkdownBlocks(content)}
+    </div>
+  );
+}
+
+function renderMarkdownBlocks(markdown: string): ReactNode[] {
+  const lines = markdown.replace(/\r\n/g, "\n").split("\n");
+  const blocks: ReactNode[] = [];
+  let i = 0;
+
+  while (i < lines.length) {
+    const line = lines[i] ?? "";
+    if (line.trim() === "") {
+      i += 1;
+      continue;
+    }
+
+    if (line.trimStart().startsWith("```")) {
+      const language = line.trim().slice(3).trim();
+      const code: string[] = [];
+      i += 1;
+      while (i < lines.length && !(lines[i] ?? "").trimStart().startsWith("```")) {
+        code.push(lines[i] ?? "");
+        i += 1;
+      }
+      if (i < lines.length) i += 1;
+      blocks.push(
+        <pre key={blocks.length} className="overflow-x-auto rounded-md bg-muted/60 p-3 text-xs">
+          <code className="font-mono" data-language={language || undefined}>
+            {code.join("\n")}
+          </code>
+        </pre>,
+      );
+      continue;
+    }
+
+    if (isTableStart(lines, i)) {
+      const tableLines = [lines[i] ?? "", lines[i + 1] ?? ""];
+      i += 2;
+      while (i < lines.length && isPipeRow(lines[i] ?? "")) {
+        tableLines.push(lines[i] ?? "");
+        i += 1;
+      }
+      blocks.push(<MarkdownTable key={blocks.length} lines={tableLines} />);
+      continue;
+    }
+
+    if (isListItem(line)) {
+      const items: string[] = [];
+      const ordered = /^\s*\d+\.\s+/.test(line);
+      while (i < lines.length && isListItem(lines[i] ?? "")) {
+        items.push((lines[i] ?? "").replace(/^\s*(?:[-*]|\d+\.)\s+/, ""));
+        i += 1;
+      }
+      const Tag = ordered ? "ol" : "ul";
+      blocks.push(
+        <Tag
+          key={blocks.length}
+          className={cn("space-y-1 pl-5", ordered ? "list-decimal" : "list-disc")}
+        >
+          {items.map((item, index) => (
+            <li key={index}>{renderInlineMarkdown(item)}</li>
+          ))}
+        </Tag>,
+      );
+      continue;
+    }
+
+    const paragraph: string[] = [];
+    while (
+      i < lines.length &&
+      lines[i]?.trim() !== "" &&
+      !isTableStart(lines, i) &&
+      !isListItem(lines[i] ?? "") &&
+      !(lines[i] ?? "").trimStart().startsWith("```")
+    ) {
+      paragraph.push(lines[i] ?? "");
+      i += 1;
+    }
+    blocks.push(
+      <p key={blocks.length} className="whitespace-pre-wrap">
+        {renderInlineMarkdown(paragraph.join("\n"))}
+      </p>,
+    );
+  }
+
+  return blocks;
+}
+
+function MarkdownTable({ lines }: { lines: string[] }) {
+  const headers = splitTableRow(lines[0] ?? "");
+  const rows = lines.slice(2).map(splitTableRow);
+
+  return (
+    <div className="overflow-x-auto rounded-md border">
+      <table className="min-w-full border-collapse text-left text-xs">
+        <thead className="bg-muted/60 text-muted-foreground">
+          <tr>
+            {headers.map((cell, index) => (
+              <th key={index} className="border-b px-3 py-2 font-semibold">
+                {renderInlineMarkdown(cell)}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row, rowIndex) => (
+            <tr key={rowIndex} className="border-b last:border-b-0">
+              {headers.map((_, cellIndex) => (
+                <td key={cellIndex} className="px-3 py-2 align-top">
+                  {renderInlineMarkdown(row[cellIndex] ?? "")}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function renderInlineMarkdown(text: string): ReactNode[] {
+  const nodes: ReactNode[] = [];
+  const pattern = /(`[^`]+`|\*\*[^*]+\*\*|__[^_]+__|\*[^*]+\*|_[^_]+_)/g;
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = pattern.exec(text)) !== null) {
+    if (match.index > lastIndex) nodes.push(text.slice(lastIndex, match.index));
+    const token = match[0];
+    const key = nodes.length;
+    if (token.startsWith("`")) {
+      nodes.push(
+        <code key={key} className="rounded bg-muted px-1 py-0.5 font-mono text-[0.92em]">
+          {token.slice(1, -1)}
+        </code>,
+      );
+    } else if (token.startsWith("**") || token.startsWith("__")) {
+      nodes.push(
+        <strong key={key} className="font-semibold">
+          {token.slice(2, -2)}
+        </strong>,
+      );
+    } else {
+      nodes.push(
+        <em key={key} className="italic">
+          {token.slice(1, -1)}
+        </em>,
+      );
+    }
+    lastIndex = pattern.lastIndex;
+  }
+
+  if (lastIndex < text.length) nodes.push(text.slice(lastIndex));
+  return nodes.map((node, index) => <Fragment key={index}>{node}</Fragment>);
+}
+
+function isListItem(line: string): boolean {
+  return /^\s*(?:[-*]|\d+\.)\s+/.test(line);
+}
+
+function isTableStart(lines: string[], index: number): boolean {
+  return isPipeRow(lines[index] ?? "") && isTableSeparator(lines[index + 1] ?? "");
+}
+
+function isPipeRow(line: string): boolean {
+  return line.includes("|") && splitTableRow(line).length > 1;
+}
+
+function isTableSeparator(line: string): boolean {
+  const cells = splitTableRow(line);
+  return cells.length > 1 && cells.every((cell) => /^:?-{3,}:?$/.test(cell.trim()));
+}
+
+function splitTableRow(line: string): string[] {
+  return line
+    .trim()
+    .replace(/^\|/, "")
+    .replace(/\|$/, "")
+    .split("|")
+    .map((cell) => cell.trim());
 }
 
 // ---------------------------------------------------------------------------
