@@ -89,9 +89,9 @@ export interface WebTransportOptions {
    */
   publicFrontendUrl?: string;
   /**
-   * Opt-in public integration discovery. Default: false.
+   * Opt-in public developer discovery. Default: false.
    *
-   * When true, GET /agent serves a conservative public integration page and
+   * When true, GET /agent serves a conservative public developer surface and
    * GET /.well-known/agent-card.json is public. When false, /agent returns
    * 404 and the agent card requires the web bearer token.
    */

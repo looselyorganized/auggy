@@ -1702,9 +1702,9 @@ describe("webTransport / (root) route", () => {
       expect(resp.status).toBe(200);
       expect(resp.headers.get("content-type")).toBe("text/html; charset=utf-8");
       const body = await resp.text();
-      expect(body).toContain("<title>zip — Auggy agent</title>");
-      expect(body).toContain("<h1>This agent backend is online.</h1>");
-      expect(body).toContain("zip is ready");
+      expect(body).toContain("<title>zip — agent-native app backend</title>");
+      expect(body).toContain("<h1>Agent-native app backend.</h1>");
+      expect(body).toContain("zip is running");
       expect(body).toContain('<meta name="robots" content="noindex, nofollow">');
     } finally {
       await agent.stop();
@@ -1810,7 +1810,7 @@ describe("webTransport / (root) route", () => {
     }
   });
 
-  it("GET /agent returns public integration HTML when publicIntegration is enabled", async () => {
+  it("GET /agent returns public developer surface HTML when publicIntegration is enabled", async () => {
     const model = createMockModel();
     const port = 19007;
     const aug = webTransport({
@@ -1829,7 +1829,8 @@ describe("webTransport / (root) route", () => {
       expect(resp.status).toBe(200);
       expect(resp.headers.get("content-type")).toBe("text/html; charset=utf-8");
       const body = await resp.text();
-      expect(body).toContain("<title>zip — integration</title>");
+      expect(body).toContain("<title>zip — developer surface</title>");
+      expect(body).toContain("Developer surface for zip.");
       expect(body).toContain("POST /agent/run");
       expect(body).toContain("/.well-known/agent-card.json");
     } finally {

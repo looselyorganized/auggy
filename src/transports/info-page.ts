@@ -240,52 +240,53 @@ ${actions
  */
 export function renderInfoPage(card: AgentCard, opts: InfoPageOptions = {}): string {
   const { escapedName, escapedPurpose, hasName, hasPurpose, heading } = getAgentText(card);
-  const title = hasName ? `${escapedName} — Auggy agent` : FALLBACK;
+  const title = hasName ? `${escapedName} — agent-native app backend` : FALLBACK;
   const alternateLink = opts.publicIntegration
     ? `  <link rel="alternate" type="application/json" href="/.well-known/agent-card.json">\n`
     : "";
   const integrationValue = opts.publicIntegration ? '<a href="/agent">Published</a>' : "Private";
   const integrationLink = opts.publicIntegration
-    ? `\n          <p>Developers can review the <a href="/agent">public integration page</a>.</p>`
+    ? `\n          <p>Developers can review the <a href="/agent">public developer surface</a>.</p>`
     : "";
 
   const body = [
     `  <div class="signal" aria-hidden="true"></div>`,
     renderStatusRow({
-      ariaLabel: "Agent status",
-      subtitle: "Default backend home",
+      ariaLabel: "Runtime status",
+      subtitle: "Agent-native app runtime",
       title: "Auggy",
-      status: "Agent running",
+      status: "Runtime online",
     }),
-    renderContent(`      <section class="hero" aria-label="Agent home">
+    renderContent(`      <section class="hero" aria-label="Agent-native app backend">
         <div class="hero-main">
-          <p class="eyebrow">${heading} is ready</p>
-          <h1>This agent backend is online.</h1>
-          <p class="purpose">${hasPurpose ? escapedPurpose : "No public frontend is configured yet. Use the console to test and configure the agent, or publish a frontend when this is ready for visitors."}</p>
+          <p class="eyebrow">${heading} is running</p>
+          <h1>Agent-native app backend.</h1>
+          <p class="purpose">${hasPurpose ? escapedPurpose : "This Auggy runtime can serve deterministic app routes and agent-mediated workflows from the same modular augments."}</p>
 ${renderActions([
   { href: "/console", label: "Open console", primary: true },
-  ...(opts.publicIntegration ? [{ href: "/agent", label: "Integration page" }] : []),
+  ...(opts.publicIntegration ? [{ href: "/agent", label: "Developer surface" }] : []),
 ])}
         </div>
-        <aside class="panel" aria-label="Agent summary">
-          <h2>Agent summary</h2>
-          <p>Public-safe metadata for orientation. Operational details live in <code>/console</code>.</p>
+        <aside class="panel" aria-label="Runtime surfaces">
+          <h2>Runtime surfaces</h2>
+          <p>Conversation, app routes, identity, memory, tools, and operator controls can live in one deployable agent project.</p>
           ${renderMetaRows([
             ["Name", heading],
-            ["Frontend", "Not configured"],
+            ["Conversation", "POST /agent/run"],
             ["Integration", integrationValue],
           ])}
         </aside>
       </section>
       <section class="below">
 ${renderPanel({
-  title: "For the creator",
-  body: `          <p>Use the console for chat testing, identity, credentials, skills, memory, and frontend publishing.</p>
+  title: "Routes for app behavior",
+  body: `          <p>Custom augments can serve deterministic HTTP routes for forms, webhooks, catalog lookup, bookings, orders, and other normal frontend traffic.</p>
           <div class="actions"><a class="button" href="/console/integrations">Integration setup</a></div>`,
 })}
 ${renderPanel({
-  title: "For visitors",
-  body: `          <div class="notice"><strong>No public chat frontend is attached yet.</strong>This URL is currently the agent backend home. Normal visitors should use the frontend configured by the creator.</div>${integrationLink}`,
+  title: "Tools for agent workflows",
+  body: `          <p>Use model-callable tools when conversation, judgment, memory, or escalation should mediate the workflow.</p>
+          <div class="notice"><strong>One capability, two faces.</strong>A domain augment can expose an app route such as <code>POST /transactions/create</code> and a safe tool such as <code>lookup_transaction</code> over the same data.</div>${integrationLink}`,
 })}
       </section>`),
   ].join("\n");
@@ -305,21 +306,21 @@ ${renderPanel({
  */
 export function renderAgentIntegrationPage(card: AgentCard): string {
   const { escapedName, escapedPurpose, hasName, hasPurpose, heading } = getAgentText(card);
-  const title = hasName ? `${escapedName} — integration` : "Agent integration";
+  const title = hasName ? `${escapedName} — developer surface` : "Developer surface";
   const purposeParagraph = hasPurpose ? `\n          <p>${escapedPurpose}</p>` : "";
   const body = [
     `  <div class="signal" aria-hidden="true"></div>`,
     renderStatusRow({
-      ariaLabel: "Integration status",
-      subtitle: "Public integration surface",
+      ariaLabel: "Developer surface status",
+      subtitle: "Public developer surface",
       title: heading,
-      status: "Integration published",
+      status: "Developer discovery published",
     }),
-    renderContent(`      <section class="hero" aria-label="Agent integration overview">
+    renderContent(`      <section class="hero" aria-label="Developer surface overview">
         <div class="hero-main">
-          <p class="eyebrow">Connect a client to this agent</p>
-          <h1>Integration details for ${heading}.</h1>
-          <p class="lede">This page is safe to share with developers. It explains how to discover the agent, where to send AG-UI requests, and where creator-only setup lives.</p>${purposeParagraph}
+          <p class="eyebrow">Build against this agent-native app</p>
+          <h1>Developer surface for ${heading}.</h1>
+          <p class="lede">Use <code>/agent/run</code> for AG-UI conversation. Use custom augment routes for deterministic app and API traffic.</p>${purposeParagraph}
 ${renderActions([
   { href: "/.well-known/agent-card.json", label: "View agent card JSON", primary: true },
   { href: "/console/integrations", label: "Creator setup" },
@@ -327,11 +328,11 @@ ${renderActions([
 ])}
         </div>
         <aside class="panel" aria-label="Protocol summary">
-          <h2>Protocol summary</h2>
-          <p>Stable public metadata. Creator-only details stay in <code>/console</code>.</p>
+          <h2>Surface summary</h2>
+          <p>Public-safe metadata. Creator-only setup, credentials, and diagnostics stay in <code>/console</code>.</p>
           ${renderFacts([
-            ["Protocol", "AG-UI over HTTP"],
-            ["Run endpoint", "POST /agent/run"],
+            ["Conversation", "POST /agent/run"],
+            ["App routes", "Custom augment routes"],
             ["Discovery", "/.well-known/agent-card.json"],
             ["Auth", "Bearer token required"],
           ])}
@@ -339,17 +340,17 @@ ${renderActions([
       </section>
       <section class="grid">
 ${renderPanel({
-  title: "Start here",
+  title: "When to use what",
   body: `          <ul class="steps">
-            <li><span class="mark">1</span><span>Fetch the agent card to inspect capabilities, interfaces, and declared metadata.</span></li>
-            <li><span class="mark">2</span><span>Build or configure an AG-UI client that sends messages to <code>POST /agent/run</code>.</span></li>
-            <li><span class="mark">3</span><span>Use credentials or an access flow provided by the agent creator.</span></li>
+            <li><span class="mark">1</span><span>Use <code>/agent/run</code> when the agent should reason, remember, ask, or mediate.</span></li>
+            <li><span class="mark">2</span><span>Use custom routes when a frontend or webhook needs deterministic app behavior.</span></li>
+            <li><span class="mark">3</span><span>Put both in one augment when they belong to the same business capability.</span></li>
           </ul>
           <pre>curl /.well-known/agent-card.json</pre>`,
 })}
 ${renderPanel({
-  title: "Minimal request shape",
-  body: `          <p>This page shows shape, not secrets. Replace the token with credentials from the agent creator.</p>
+  title: "Conversation request shape",
+  body: `          <p>This is the AG-UI chat path, not the required path for every app request. Replace the token with credentials from the agent creator.</p>
           <pre>POST /agent/run
 Authorization: Bearer &lt;token&gt;
 Content-Type: application/json
@@ -360,7 +361,7 @@ Content-Type: application/json
     { "role": "user", "content": "What can you help with?" }
   ]
 }</pre>
-          <div class="note">Credential management, CORS posture, generated snippets, and frontend redirect setup belong in <code>/console/integrations</code>.</div>`,
+          <div class="note">Credential management, CORS posture, generated snippets, custom route docs, and frontend redirect setup belong in <code>/console/integrations</code>.</div>`,
 })}
       </section>`),
   ].join("\n");

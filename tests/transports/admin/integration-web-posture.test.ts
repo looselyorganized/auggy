@@ -233,7 +233,7 @@ describe("webTransport adminInfo — posture row (G36 phase 3)", () => {
 
       resp = await fetch(`http://127.0.0.1:${port}/agent`);
       expect(resp.status).toBe(200);
-      expect(await resp.text()).toContain("Integration details");
+      expect(await resp.text()).toContain("Developer surface");
       resp = await fetch(`http://127.0.0.1:${port}/`);
       expect(resp.status).toBe(200);
       expect(await resp.text()).toContain('<a href="/agent">Published</a>');
