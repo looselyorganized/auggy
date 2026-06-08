@@ -25,6 +25,7 @@ const PUBLIC_PAGE_THEME_SCRIPT = `<script>
   var legacyThemeKey = "auggy-admin-theme";
   var integrationKey = "auggy-public-integration";
   var media = window.matchMedia("(prefers-color-scheme: dark)");
+  var currentTheme = "light";
   function storedTheme() {
     try {
       var theme = localStorage.getItem(themeKey) || localStorage.getItem(legacyThemeKey);
@@ -35,7 +36,24 @@ const PUBLIC_PAGE_THEME_SCRIPT = `<script>
   }
   function applyTheme() {
     var theme = storedTheme() || (media.matches ? "dark" : "light");
+    currentTheme = theme;
     document.documentElement.classList.toggle("dark", theme === "dark");
+    updateToggle();
+  }
+  function setTheme(theme) {
+    try {
+      localStorage.setItem(themeKey, theme);
+      localStorage.removeItem(legacyThemeKey);
+    } catch (_) {}
+    applyTheme();
+  }
+  function updateToggle() {
+    var button = document.getElementById("theme-toggle");
+    if (!button) return;
+    var next = currentTheme === "dark" ? "light" : "dark";
+    button.textContent = next === "dark" ? "Dark mode" : "Light mode";
+    button.setAttribute("aria-label", "Theme: " + currentTheme + ". Switch to " + next + ".");
+    button.setAttribute("title", "Theme: " + currentTheme);
   }
   applyTheme();
   media.addEventListener("change", function () {
@@ -44,6 +62,14 @@ const PUBLIC_PAGE_THEME_SCRIPT = `<script>
   window.addEventListener("storage", function (event) {
     if (event.key === themeKey || event.key === legacyThemeKey) applyTheme();
     if (event.key === integrationKey) window.location.reload();
+  });
+  document.addEventListener("DOMContentLoaded", function () {
+    var button = document.getElementById("theme-toggle");
+    if (!button) return;
+    updateToggle();
+    button.addEventListener("click", function () {
+      setTheme(currentTheme === "dark" ? "light" : "dark");
+    });
   });
 })();
 </script>`;
@@ -60,7 +86,10 @@ const PUBLIC_PAGE_CSS = `
     .status-row { width: min(1060px, calc(100% - 48px)); margin: 24px auto 0; display: flex; align-items: center; justify-content: space-between; gap: 16px; }
     .brand-title { margin: 0; font-size: 15px; font-weight: 760; line-height: 1.2; }
     .brand-subtitle { margin: 1px 0 0; color: var(--muted-foreground); font-size: 12px; }
+    .status-actions { display: inline-flex; align-items: center; gap: 8px; }
     .status-pill { display: inline-flex; min-height: 30px; align-items: center; gap: 8px; padding: 0 10px; border: 1px solid #cfe5dc; border-radius: 999px; background: var(--ok-bg); color: var(--ok); font-size: 12px; font-weight: 760; white-space: nowrap; }
+    .theme-toggle { min-height: 30px; border: 1px solid var(--border); border-radius: 999px; background: var(--card); color: var(--foreground); padding: 0 10px; font: inherit; font-size: 12px; font-weight: 760; cursor: pointer; white-space: nowrap; }
+    .theme-toggle:hover { background: var(--muted); }
     .dot { width: 8px; height: 8px; border-radius: 50%; background: #1ea66a; box-shadow: 0 0 0 4px rgba(30, 166, 106, 0.12); }
     .content { min-width: 0; padding: 28px 24px 42px; }
     .content-inner { width: min(1060px, 100%); margin: 0 auto; }
@@ -88,7 +117,7 @@ const PUBLIC_PAGE_CSS = `
     .steps { display: grid; gap: 9px; margin: 0; padding: 0; list-style: none; }
     .steps li { display: grid; grid-template-columns: 24px minmax(0, 1fr); gap: 10px; align-items: start; color: var(--foreground); font-size: 13px; }
     .mark { width: 22px; height: 22px; display: inline-grid; place-items: center; border-radius: 50%; background: var(--muted); color: var(--foreground); font-size: 12px; font-weight: 900; }
-    @media (max-width: 900px) { .hero, .below, .grid { grid-template-columns: 1fr; } .status-row { width: calc(100% - 36px); margin-top: 18px; } .content { padding: 18px; } .hero-main { padding: 22px; } }
+    @media (max-width: 900px) { .hero, .below, .grid { grid-template-columns: 1fr; } .status-row { width: calc(100% - 36px); margin-top: 18px; align-items: flex-start; } .status-actions { align-items: flex-end; flex-direction: column; } .content { padding: 18px; } .hero-main { padding: 22px; } }
 `;
 
 export interface InfoPageOptions {
@@ -171,7 +200,10 @@ function renderStatusRow({
       <p class="brand-title">${title}</p>
       <p class="brand-subtitle">${subtitle}</p>
     </div>
-    <div class="status-pill"><span class="dot" aria-hidden="true"></span> ${status}</div>
+    <div class="status-actions">
+      <button id="theme-toggle" class="theme-toggle" type="button">Theme</button>
+      <div class="status-pill"><span class="dot" aria-hidden="true"></span> ${status}</div>
+    </div>
   </div>`;
 }
 

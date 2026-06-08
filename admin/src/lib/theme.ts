@@ -35,8 +35,15 @@ export function subscribeSystemTheme(onChange: () => void): () => void {
   const handler = () => {
     if (!hasStoredTheme()) onChange();
   };
+  const storageHandler = (event: StorageEvent) => {
+    if (event.key === STORAGE_KEY || event.key === LEGACY_STORAGE_KEY) onChange();
+  };
   mq.addEventListener("change", handler);
-  return () => mq.removeEventListener("change", handler);
+  window.addEventListener("storage", storageHandler);
+  return () => {
+    mq.removeEventListener("change", handler);
+    window.removeEventListener("storage", storageHandler);
+  };
 }
 
 function hasStoredTheme(): boolean {
