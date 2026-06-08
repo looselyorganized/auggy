@@ -374,7 +374,9 @@ export async function isPortAvailable(port: number): Promise<boolean> {
     server.once("listening", () => {
       server.close(() => resolvePort(true));
     });
-    server.listen(port, "127.0.0.1");
+    // Match webTransport/Bun's broad bind semantics. A loopback-only probe can
+    // miss an existing wildcard/IPv6 listener and report a false "available".
+    server.listen(port);
   });
 }
 

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { stringify } from "yaml";
@@ -7,6 +8,7 @@ import {
   doctorCommand,
   formatDoctorChecks,
   hasDoctorFailures,
+  isPortAvailable,
   runDoctor,
   type DoctorCheck,
 } from "../../../src/cli/commands/doctor";
@@ -281,6 +283,22 @@ describe("runDoctor", () => {
     expect(port?.fix).toContain("19090");
   });
 
+  test("detects wildcard listeners when checking port availability", async () => {
+    const reservedPort = await reservePort();
+    const server = createServer();
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.once("listening", resolve);
+      server.listen(reservedPort);
+    });
+
+    try {
+      await expect(isPortAvailable(reservedPort)).resolves.toBe(false);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
   test("warns when a bundled skill is missing", async () => {
     writeAgent("zip", { installDeps: true, installSkill: false });
 
@@ -324,6 +342,20 @@ describe("runDoctor", () => {
     expect(cloudChecks.find((check) => check.name === "mcp local cloud")?.status).toBe("fail");
   });
 });
+
+async function reservePort(): Promise<number> {
+  const server = createServer();
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.once("listening", resolve);
+    server.listen(0);
+  });
+  const address = server.address();
+  const port = typeof address === "object" && address ? address.port : undefined;
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+  if (typeof port !== "number") throw new Error("could not reserve test port");
+  return port;
+}
 
 describe("doctor formatting and command", () => {
   test("formatDoctorChecks prints semantic default output", () => {
