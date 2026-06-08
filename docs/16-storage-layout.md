@@ -35,6 +35,20 @@ to stay in sync with the filesystem.
 - `data/` is the durable runtime data mount. Core create uses `data/workspace`; optional augments such as `layeredMemory` and `budgets` place their SQLite files under `data/` when added.
 - `knowledge/` is scaffolded by `auggy augment add knowledge`; the example `sources.json`, `local/manifest`, and endpoint files give a working local config without needing to stand up an HTTP server.
 
+## Runtime source
+
+Agent projects install Auggy as a package dependency. The runtime source is
+inspectable at `node_modules/auggy/src` after `bun install`.
+
+Auggy does not copy its runtime TypeScript source into every generated agent
+project. Keeping the runtime in `node_modules` means agents receive runtime and
+security updates through the normal package manager path instead of carrying a
+vendored copy that can drift from the published runtime. Custom augments are the
+exception: they live as local source under `augments/<name>/` because they
+belong to the agent project.
+
+Use `auggy doctor --verbose` to show the installed runtime source path.
+
 ## Cloud-deploy state
 
 `<agent-dir>/.auggy-cloud.json` exists **only when the agent has been

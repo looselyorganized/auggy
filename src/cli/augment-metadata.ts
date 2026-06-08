@@ -11,28 +11,10 @@ export function writeBuiltinAugmentMetadata(agentDir: string, entry: CatalogEntr
     name: folder,
     kind: "builtin",
     runtime: "auggy",
-    configType: entry.type,
   };
   if (entry.hasSkill) metadata.skill = `../../skills/${folder}/SKILL.md`;
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, "augment.yaml"), stringify(metadata));
-  writeFileSync(
-    join(dir, "README.md"),
-    [
-      `# ${folder}`,
-      "",
-      "This is an installed built-in Auggy augment.",
-      "",
-      "- Runtime implementation: provided by the `auggy` package",
-      `- agent.yaml type: \`${entry.type}\``,
-      entry.hasSkill
-        ? `- Skill: [../../skills/${folder}/SKILL.md](../../skills/${folder}/SKILL.md)`
-        : "- Skill: none",
-      "",
-      "Do not edit built-in runtime code here. Add custom local augments as sibling folders.",
-      "",
-    ].join("\n"),
-  );
 }
 
 export function writeCustomAugmentsReadme(agentDir: string): void {
@@ -45,9 +27,14 @@ export function writeCustomAugmentsReadme(agentDir: string): void {
       "",
       "Installed augment metadata and custom local augments for this agent live here.",
       "",
-      "Built-in augments have an `augment.yaml` and README only; their implementation",
-      "comes from the installed `auggy` package. Custom augments include local source",
-      "such as `index.ts`.",
+      "Built-in augments have an `augment.yaml` metadata file only. Their runtime",
+      "implementation comes from the installed `auggy` package, which you can inspect",
+      "at `node_modules/auggy/src` after `bun install`.",
+      "",
+      "Auggy keeps the runtime as a package instead of copying its TypeScript source",
+      "into every agent so agents can receive runtime and security updates through the",
+      "normal package manager path. Custom augments are different: they include local",
+      "source such as `index.ts` inside this directory because they belong to this agent.",
       "",
     ].join("\n"),
   );

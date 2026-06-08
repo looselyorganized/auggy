@@ -60,6 +60,14 @@ const DEFAULT_OPERATOR_NAME = "the operator";
 const DEFAULT_PURPOSE = "a helpful assistant";
 const DEFAULT_ORG_NAME = "Test Org";
 const DEFAULT_ORG_PURPOSE = "for testing only";
+const WORKSPACE_README = `# Workspace
+
+This is the agent's writable scratch space.
+
+Files the agent creates, edits, downloads, drafts, or organizes should go here.
+Runtime data and generated artifacts belong here instead of next to agent.yaml,
+identity.md, or .env.
+`;
 
 // ANSI color helpers. Truecolor #FBF7EB ("cream") matches the facility palette.
 // Strips to plain text when stdout is not a TTY so piped output stays clean.
@@ -430,6 +438,7 @@ async function runCreateIntoDir(
     mkdirSync(tempDir, { recursive: true });
     mkdirSync(join(tempDir, "skills"), { recursive: true });
     mkdirSync(join(tempDir, "data", "workspace"), { recursive: true });
+    writeFileSync(join(tempDir, "data", "workspace", "README.md"), WORKSPACE_README);
     mkdirSync(join(tempDir, "augments"), { recursive: true });
     writeCustomAugmentsReadme(tempDir);
     copyStarterSkills(tempDir);

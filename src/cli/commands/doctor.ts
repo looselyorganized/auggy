@@ -90,6 +90,7 @@ export async function runDoctor(
   checks.push(...checkConfigEnvReferences(configPath, agentDir));
   checks.push(...checkProviderEnv(agentDir, config));
   checks.push(...checkAgentDependencies(agentDir, config));
+  checks.push(...checkRuntimeSource(agentDir));
   checks.push(...(await checkWebPorts(config, opts.isPortAvailable ?? isPortAvailable)));
   checks.push(...checkBundledSkills(agentDir, config.augments));
   checks.push(...checkMcp(agentDir, config, opts.cloud ?? false));
@@ -250,6 +251,31 @@ function checkAgentDependencies(agentDir: string, config: ParsedConfig): DoctorC
   });
 }
 
+function checkRuntimeSource(agentDir: string): DoctorCheck[] {
+  const packageRoot = join(agentDir, "node_modules", "auggy");
+  if (!existsSync(packageRoot)) return [];
+
+  const sourceRoot = join(packageRoot, "src");
+  if (existsSync(sourceRoot)) {
+    return [
+      {
+        name: "runtime auggy",
+        status: "pass",
+        message: sourceRoot,
+      },
+    ];
+  }
+
+  return [
+    {
+      name: "runtime auggy",
+      status: "warn",
+      message: `source not found at ${sourceRoot}`,
+      fix: "Reinstall the agent dependencies with `bun install`.",
+    },
+  ];
+}
+
 function collectRequiredPackages(config: ParsedConfig): string[] {
   const packages = new Set<string>(["auggy", PROVIDER_TO_PACKAGE[config.engine.provider]]);
   for (const aug of config.augments) {
@@ -367,7 +393,10 @@ export function formatDoctorChecks(
   opts: FormatDoctorChecksOptions = {},
 ): string {
   if (!opts.verbose) {
-    return checks.map((check) => formatDoctorCheckSummary(check, opts)).join("\n");
+    return checks
+      .filter((check) => !(check.name === "runtime auggy" && check.status === "pass"))
+      .map((check) => formatDoctorCheckSummary(check, opts))
+      .join("\n");
   }
 
   return checks

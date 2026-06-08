@@ -128,7 +128,7 @@ function writeAgent(
   }
 
   if (opts.installDeps) {
-    mkdirSync(join(dir, "node_modules", "auggy"), { recursive: true });
+    mkdirSync(join(dir, "node_modules", "auggy", "src"), { recursive: true });
     mkdirSync(join(dir, "node_modules", "@auggy", provider), { recursive: true });
   }
 
@@ -392,6 +392,11 @@ describe("doctor formatting and command", () => {
           status: "pass",
           message: "/tmp/auggy-agent/node_modules/auggy",
         },
+        {
+          name: "runtime auggy",
+          status: "pass",
+          message: "/tmp/auggy-agent/node_modules/auggy/src",
+        },
       ],
     );
     const exit = mock((_code: number) => {});
@@ -410,8 +415,44 @@ describe("doctor formatting and command", () => {
 
     expect(logs.join("\n")).toContain("PASS config: agent.yaml");
     expect(logs.join("\n")).toContain("PASS dependency: auggy");
+    expect(logs.join("\n")).not.toContain("runtime auggy");
     expect(logs.join("\n")).not.toContain("node_modules/auggy");
     expect(logs.join("\n")).not.toContain("/tmp/auggy-agent/node_modules/auggy");
+  });
+
+  test("doctor command shows runtime source in verbose output", async () => {
+    const run = mock(
+      async (): Promise<DoctorCheck[]> => [
+        {
+          name: "config path",
+          status: "pass",
+          message: "/tmp/auggy-agent/agent.yaml",
+        },
+        {
+          name: "runtime auggy",
+          status: "pass",
+          message: "/tmp/auggy-agent/node_modules/auggy/src",
+        },
+      ],
+    );
+    const exit = mock((_code: number) => {});
+    const logs: string[] = [];
+    const origLog = console.log;
+    console.log = (msg: unknown) => {
+      logs.push(String(msg));
+    };
+
+    try {
+      const cmd = doctorCommand({ runDoctor: run, exit });
+      await cmd.parseAsync(["--verbose"], { from: "user" });
+    } finally {
+      console.log = origLog;
+    }
+
+    expect(logs.join("\n")).toContain(
+      "PASS runtime auggy: /tmp/auggy-agent/node_modules/auggy/src",
+    );
+    expect(exit).toHaveBeenCalledWith(0);
   });
 
   test("doctor command exits 1 when checks fail", async () => {
