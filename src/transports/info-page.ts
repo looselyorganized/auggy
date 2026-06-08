@@ -19,8 +19,38 @@ function escapeHtml(s: string): string {
 
 const FALLBACK = "An Auggy agent";
 
+const PUBLIC_PAGE_THEME_SCRIPT = `<script>
+(function () {
+  var themeKey = "auggy-theme";
+  var legacyThemeKey = "auggy-admin-theme";
+  var integrationKey = "auggy-public-integration";
+  var media = window.matchMedia("(prefers-color-scheme: dark)");
+  function storedTheme() {
+    try {
+      var theme = localStorage.getItem(themeKey) || localStorage.getItem(legacyThemeKey);
+      return theme === "light" || theme === "dark" ? theme : null;
+    } catch (_) {
+      return null;
+    }
+  }
+  function applyTheme() {
+    var theme = storedTheme() || (media.matches ? "dark" : "light");
+    document.documentElement.classList.toggle("dark", theme === "dark");
+  }
+  applyTheme();
+  media.addEventListener("change", function () {
+    if (!storedTheme()) applyTheme();
+  });
+  window.addEventListener("storage", function (event) {
+    if (event.key === themeKey || event.key === legacyThemeKey) applyTheme();
+    if (event.key === integrationKey) window.location.reload();
+  });
+})();
+</script>`;
+
 const PUBLIC_PAGE_CSS = `
     :root { color-scheme: light; --background: #f5f1e7; --foreground: #181a1e; --card: #fffaf0; --muted: #e9e2d2; --muted-foreground: #6f6457; --border: #d8cdb6; --primary: #181a1e; --primary-foreground: #f5f1e7; --accent: #e85d24; --ok: #176b5d; --ok-bg: #edf6f2; --warn: #8c5a18; --warn-bg: #fff7e8; --code: #ece6d9; --code-bg: #181a1e; --code-fg: #f5f1e7; --note-border: #f0dfbd; }
+    :root.dark { color-scheme: dark; --background: #181a1e; --foreground: #f5f1e7; --card: #24262b; --muted: #2f3137; --muted-foreground: #c1b9ab; --border: #3d3f46; --primary: #f5f1e7; --primary-foreground: #181a1e; --accent: #e85d24; --ok: #5fd1a6; --ok-bg: #17342e; --warn: #f1b45f; --warn-bg: #322716; --code: #2f3137; --code-bg: #0f1115; --code-fg: #f5f1e7; --note-border: #574521; }
     * { box-sizing: border-box; }
     body { margin: 0; min-height: 100vh; background: var(--background); color: var(--foreground); font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 14px; line-height: 1.55; -webkit-font-smoothing: antialiased; }
     a { color: inherit; text-decoration-thickness: 1px; text-underline-offset: 2px; }
@@ -115,7 +145,8 @@ function renderPublicDocument({
   <meta property="og:title" content="${title}">
   <meta property="og:description" content="${description}">
   <meta property="og:type" content="website">
-${extraHead}  <style>${PUBLIC_PAGE_CSS}
+${extraHead}  ${PUBLIC_PAGE_THEME_SCRIPT}
+  <style>${PUBLIC_PAGE_CSS}
   </style>
 </head>
 <body>

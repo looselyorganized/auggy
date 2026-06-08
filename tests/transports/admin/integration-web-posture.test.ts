@@ -202,6 +202,9 @@ describe("webTransport adminInfo — posture row (G36 phase 3)", () => {
       expect(resp.status).toBe(404);
       resp = await fetch(`http://127.0.0.1:${port}/.well-known/agent-card.json`);
       expect(resp.status).toBe(404);
+      resp = await fetch(`http://127.0.0.1:${port}/`);
+      expect(resp.status).toBe(200);
+      expect(await resp.text()).toContain("Private");
 
       const publishCsrf = await generateCsrfToken({
         bearer: "test-token",
@@ -231,6 +234,9 @@ describe("webTransport adminInfo — posture row (G36 phase 3)", () => {
       resp = await fetch(`http://127.0.0.1:${port}/agent`);
       expect(resp.status).toBe(200);
       expect(await resp.text()).toContain("Integration details");
+      resp = await fetch(`http://127.0.0.1:${port}/`);
+      expect(resp.status).toBe(200);
+      expect(await resp.text()).toContain('<a href="/agent">Published</a>');
       resp = await fetch(`http://127.0.0.1:${port}/.well-known/agent-card.json`);
       expect(resp.status).toBe(200);
 
@@ -266,6 +272,9 @@ describe("webTransport adminInfo — posture row (G36 phase 3)", () => {
       expect(parsed.overrides.webTransport.publicIntegration).toBe(false);
       resp = await fetch(`http://127.0.0.1:${port}/agent`);
       expect(resp.status).toBe(404);
+      resp = await fetch(`http://127.0.0.1:${port}/`);
+      expect(resp.status).toBe(200);
+      expect(await resp.text()).toContain("Private");
 
       data = await fetchDashboard(port, "test-token");
       postureBlock = data.blocks.find((b) => b.title?.includes("Posture"));

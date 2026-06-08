@@ -42,9 +42,18 @@ export function ChatTab() {
   const [streamError, setStreamError] = useState<string | null>(null);
   const [threadId, setThreadId] = useState<string>(() => crypto.randomUUID());
   const abortRef = useRef<AbortController | null>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const wasStreamingRef = useRef(false);
 
   // Cleanup on unmount — kill any in-flight stream.
   useEffect(() => () => abortRef.current?.abort(), []);
+
+  useEffect(() => {
+    if (wasStreamingRef.current && !streaming) {
+      requestAnimationFrame(() => inputRef.current?.focus({ preventScroll: true }));
+    }
+    wasStreamingRef.current = streaming;
+  }, [streaming]);
 
   const sendMessage = useCallback(async (overrideText?: string) => {
     const text = (overrideText ?? input).trim();
@@ -171,6 +180,7 @@ export function ChatTab() {
     setMessages([]);
     setThreadId(crypto.randomUUID());
     setStreamError(null);
+    requestAnimationFrame(() => inputRef.current?.focus({ preventScroll: true }));
   };
 
   const agentName = useMemo(() => {
@@ -235,6 +245,7 @@ export function ChatTab() {
           <div className="rounded-lg border bg-card/95 p-2 shadow-lg backdrop-blur">
             <div className="flex items-end gap-2">
               <Textarea
+                ref={inputRef}
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={handleKeyDown}

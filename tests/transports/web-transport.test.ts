@@ -1985,7 +1985,7 @@ describe("webTransport / (root) route", () => {
     }
   });
 
-  it("GET / sets Cache-Control: public, max-age=300 on the info page (G2)", async () => {
+  it("GET / revalidates the info page because console posture can change it (G2)", async () => {
     const model = createMockModel();
     const port = 19004;
     const aug = webTransport({
@@ -2004,7 +2004,7 @@ describe("webTransport / (root) route", () => {
         redirect: "manual",
       });
       expect(resp.status).toBe(200);
-      expect(resp.headers.get("cache-control")).toBe("public, max-age=300");
+      expect(resp.headers.get("cache-control")).toBe("public, max-age=0, must-revalidate");
       await resp.text();
     } finally {
       await agent.stop();

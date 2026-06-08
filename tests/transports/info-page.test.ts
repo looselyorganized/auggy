@@ -94,6 +94,14 @@ describe("renderInfoPage — HTML structure", () => {
     const html = renderInfoPage(mockCard({ name: "zip", purpose: "concierge agent" }));
     expect(html).toContain('<p class="purpose">concierge agent</p>');
   });
+
+  it("includes the shared public/console theme sync script", () => {
+    const html = renderInfoPage(mockCard({ name: "zip", purpose: "concierge agent" }));
+    expect(html).toContain("auggy-theme");
+    expect(html).toContain("auggy-admin-theme");
+    expect(html).toContain("auggy-public-integration");
+    expect(html).toContain('document.documentElement.classList.toggle("dark"');
+  });
 });
 
 describe("renderAgentIntegrationPage", () => {

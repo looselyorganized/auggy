@@ -8,6 +8,8 @@ import { useDashboardContext } from "@/components/admin/DashboardContext";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import type { DashboardData } from "@/lib/types";
 
+const PUBLIC_INTEGRATION_SIGNAL_KEY = "auggy-public-integration";
+
 export function IntegrationsTab() {
   const { data, loading, error, updateData } = useDashboardContext();
   const { dispatch, busy } = useActionDispatcher();
@@ -54,6 +56,7 @@ export function IntegrationsTab() {
     });
     if (ok) {
       updateData((current) => patchPublicIntegration(current, next));
+      signalPublicIntegrationChange(next);
     } else {
       setOptimisticPublicIntegration(null);
     }
@@ -213,6 +216,14 @@ export function IntegrationsTab() {
       </div>
     </div>
   );
+}
+
+function signalPublicIntegrationChange(value: boolean): void {
+  try {
+    localStorage.setItem(PUBLIC_INTEGRATION_SIGNAL_KEY, `${value}:${Date.now()}`);
+  } catch {
+    /* localStorage unavailable */
+  }
 }
 
 function patchPublicIntegration(data: DashboardData, value: boolean): DashboardData {

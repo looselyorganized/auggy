@@ -33,6 +33,8 @@ import {
 } from "./admin/index";
 import { renderAgentIntegrationPage, renderInfoPage } from "./info-page";
 
+const PUBLIC_PAGE_CACHE_CONTROL = "public, max-age=0, must-revalidate";
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -1426,7 +1428,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
             if (infoPageHtml === null) return new Response(null, { status: 404 });
             const headers = new Headers({
               "content-type": "text/html; charset=utf-8",
-              "cache-control": "public, max-age=300",
+              "cache-control": PUBLIC_PAGE_CACHE_CONTROL,
             });
             // RFC 9110 §9.3.2 — HEAD's headers SHOULD match GET's. Set
             // Content-Length explicitly. Bun's auto-compute behavior on
@@ -1456,7 +1458,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
             }
             const headers = new Headers({
               "content-type": "text/html; charset=utf-8",
-              "cache-control": "public, max-age=300",
+              "cache-control": PUBLIC_PAGE_CACHE_CONTROL,
             });
             headers.set("content-length", String(agentIntegrationPageByteLength));
             return new Response(req.method === "HEAD" ? null : agentIntegrationPageHtml, {

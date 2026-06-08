@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Check, Copy, Info, Moon, Monitor, Sun } from "lucide-react";
+import { Check, Copy, Info, Moon, Sun } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -25,16 +25,17 @@ export function Header({ port, online, dashboard }: HeaderProps) {
 
   useEffect(() => {
     apply(theme);
-    return subscribeSystemTheme(() => apply(theme));
+    return subscribeSystemTheme(() => setThemeState(getTheme()));
   }, [theme]);
 
   const cycle = () => {
-    const next: Theme = theme === "light" ? "dark" : theme === "dark" ? "system" : "light";
+    const next: Theme = theme === "light" ? "dark" : "light";
     setTheme(next);
     setThemeState(next);
   };
 
-  const ThemeIcon = theme === "light" ? Sun : theme === "dark" ? Moon : Monitor;
+  const ThemeIcon = theme === "dark" ? Moon : Sun;
+  const nextTheme = theme === "light" ? "dark" : "light";
   const modelLabel = formatModelLabel(dashboard);
 
   return (
@@ -64,7 +65,7 @@ export function Header({ port, online, dashboard }: HeaderProps) {
           variant="ghost"
           size="icon"
           onClick={cycle}
-          aria-label={`Theme: ${theme}. Click to switch.`}
+          aria-label={`Theme: ${theme}. Switch to ${nextTheme}.`}
           title={`Theme: ${theme}`}
         >
           <ThemeIcon className="size-4" />
