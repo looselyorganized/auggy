@@ -101,9 +101,7 @@ describe("renderInfoPage — HTML structure", () => {
     expect(html).toContain("auggy-admin-theme");
     expect(html).toContain("auggy-public-integration");
     expect(html).toContain('document.documentElement.classList.toggle("dark"');
-    expect(html).toContain('id="theme-toggle"');
-    expect(html).toContain("Dark mode");
-    expect(html).toContain("Light mode");
+    expect(html).not.toContain('id="theme-toggle"');
   });
 });
 
