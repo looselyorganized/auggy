@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { useDashboardContext } from "@/components/admin/DashboardContext";
 import { findCsrfToken } from "@/lib/api";
+import { formatModelLabel } from "@/lib/dashboard-format";
 import { cn } from "@/lib/utils";
 import { parseSSEStream, type AGUIEvent } from "@/lib/ag-ui-parse";
 
@@ -193,6 +194,8 @@ export function ChatTab() {
       "agent"
     );
   }, [data]);
+  const modelLabel = useMemo(() => formatModelLabel(data), [data]);
+  const responseLabel = modelLabel ?? agentName;
 
   if (loading && !data) {
     return (
@@ -232,6 +235,7 @@ export function ChatTab() {
         messages={messages}
         streaming={streaming}
         agentName={agentName}
+        responseLabel={responseLabel}
         onPrompt={(prompt) => void sendMessage(prompt)}
       />
 
@@ -242,7 +246,7 @@ export function ChatTab() {
               {streamError}
             </div>
           )}
-          <div className="rounded-lg border bg-card/95 p-2 shadow-lg backdrop-blur">
+          <div className="rounded-lg border bg-card/95 p-3 shadow-lg backdrop-blur">
             <div className="flex items-end gap-2">
               <Textarea
                 ref={inputRef}
@@ -250,9 +254,9 @@ export function ChatTab() {
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={handleKeyDown}
                 placeholder={`Message ${agentName}...`}
-                rows={2}
+                rows={3}
                 disabled={streaming}
-                className="max-h-40 min-h-[3.5rem] resize-none border-0 bg-transparent px-2 py-2 shadow-none focus-visible:ring-0"
+                className="max-h-48 min-h-[5rem] resize-none border-0 bg-transparent px-2 py-2 shadow-none focus-visible:ring-0"
                 aria-label={`Message ${agentName}`}
               />
               {streaming ? (
@@ -270,22 +274,27 @@ export function ChatTab() {
                 </Button>
               )}
             </div>
-            <div className="mt-1 flex items-center justify-between gap-3 px-1">
-              <div className="truncate text-[11px] text-muted-foreground">
-                Enter to send, Shift+Enter for a new line
+            <div className="mt-2 flex items-center justify-between gap-3 px-1">
+              <div className="min-w-0 truncate font-mono text-[11px] text-muted-foreground">
+                {responseLabel}
               </div>
-              {messages.length > 0 && (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={handleClear}
-                  disabled={streaming}
-                  className="h-7 shrink-0 px-2 text-xs"
-                >
-                  <RotateCcw className="mr-1.5 size-3.5" />
-                  New thread
-                </Button>
-              )}
+              <div className="flex shrink-0 items-center gap-2 text-[11px] text-muted-foreground">
+                <span className="hidden sm:inline">Enter to send</span>
+                <span className="hidden text-muted-foreground/40 sm:inline">|</span>
+                <span className="hidden sm:inline">Shift+Enter for a new line</span>
+                {messages.length > 0 && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={handleClear}
+                    disabled={streaming}
+                    className="h-7 shrink-0 px-2 text-xs"
+                  >
+                    <RotateCcw className="mr-1.5 size-3.5" />
+                    New thread
+                  </Button>
+                )}
+              </div>
             </div>
           </div>
         </div>
@@ -302,11 +311,13 @@ function MessageList({
   messages,
   streaming,
   agentName,
+  responseLabel,
   onPrompt,
 }: {
   messages: Message[];
   streaming: boolean;
   agentName: string;
+  responseLabel: string;
   onPrompt: (prompt: string) => void;
 }) {
   const endRef = useRef<HTMLDivElement>(null);
@@ -375,7 +386,7 @@ function MessageList({
     >
       <div className="mx-auto flex max-w-3xl flex-col gap-6">
         {messages.map((m) => (
-          <MessageView key={m.id} message={m} />
+          <MessageView key={m.id} message={m} responseLabel={responseLabel} />
         ))}
         {streaming && (
           <div className="inline-block animate-pulse font-mono text-xs text-muted-foreground">
@@ -388,7 +399,7 @@ function MessageList({
   );
 }
 
-function MessageView({ message }: { message: Message }) {
+function MessageView({ message, responseLabel }: { message: Message; responseLabel: string }) {
   const isUser = message.role === "user";
   return (
     <article className={cn("flex", isUser ? "justify-end" : "justify-start")}>
@@ -401,7 +412,7 @@ function MessageView({ message }: { message: Message }) {
         )}
       >
         <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-          {isUser ? "you" : "agent"}
+          {isUser ? "you" : responseLabel}
         </div>
         {message.content && (
           <p className={cn("whitespace-pre-wrap break-words", isUser && "text-foreground")}>

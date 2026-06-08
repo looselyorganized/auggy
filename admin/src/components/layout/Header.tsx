@@ -10,6 +10,7 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { apply, getTheme, setTheme, subscribeSystemTheme, type Theme } from "@/lib/theme";
+import { formatModelLabel } from "@/lib/dashboard-format";
 import type { DashboardData } from "@/lib/types";
 
 export interface HeaderProps {
@@ -36,8 +37,6 @@ export function Header({ port, online, dashboard }: HeaderProps) {
 
   const ThemeIcon = theme === "dark" ? Moon : Sun;
   const nextTheme = theme === "light" ? "dark" : "light";
-  const modelLabel = formatModelLabel(dashboard);
-
   return (
     <header className="flex h-16 items-center justify-between gap-3 border-b bg-background/90 px-4">
       <div className="flex min-w-0 items-center gap-3 overflow-hidden">
@@ -51,11 +50,6 @@ export function Header({ port, online, dashboard }: HeaderProps) {
         {port !== undefined && (
           <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
             :{port}
-          </span>
-        )}
-        {modelLabel && (
-          <span className="hidden shrink-0 rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground sm:inline">
-            {modelLabel}
           </span>
         )}
       </div>
@@ -200,13 +194,4 @@ function DetailGrid({
       ))}
     </div>
   );
-}
-
-function formatModelLabel(dashboard: DashboardData | null): string | null {
-  const provider = dashboard?.agentMeta?.engine?.provider;
-  const model = dashboard?.agentMeta?.engine?.model;
-  if (provider && model) return `${provider} / ${model}`;
-  if (provider) return provider;
-  if (model) return model;
-  return null;
 }
