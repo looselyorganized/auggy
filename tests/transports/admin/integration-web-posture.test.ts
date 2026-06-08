@@ -279,4 +279,41 @@ describe("webTransport adminInfo — posture row (G36 phase 3)", () => {
       rmSync(agentDir, { recursive: true, force: true });
     }
   });
+
+  it("POST /console/api/chat proxies to /agent/run and invokes the model", async () => {
+    const port = 19314;
+    const model = createMockModel({ response: "hello from console chat" });
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: "test-token" },
+      allowAnonymous: false,
+    });
+    const agent = defineAgent({ name: "zip", model: "mock", augments: [aug] }, model);
+    await agent.start();
+
+    try {
+      const csrf = await generateCsrfToken({
+        bearer: "test-token",
+        agentName: "zip",
+        actionId: "console-chat",
+      });
+      const resp = await fetch(`http://127.0.0.1:${port}/console/api/chat`, {
+        method: "POST",
+        headers: {
+          authorization: basicHeader("test-token"),
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ csrf, message: "say hello", threadId: "thread-1" }),
+      });
+      expect(resp.status).toBe(200);
+      const text = await resp.text();
+      expect(text).toContain("RUN_STARTED");
+      expect(text).toContain("TEXT_MESSAGE_CONTENT");
+      expect(text).toContain("hello from console chat");
+      expect(model.calls).toHaveLength(1);
+      expect(model.calls[0]!.messages.at(-1)?.content).toBe("say hello");
+    } finally {
+      await agent.stop();
+    }
+  });
 });

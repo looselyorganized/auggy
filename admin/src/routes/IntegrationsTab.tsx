@@ -9,7 +9,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import type { DashboardData } from "@/lib/types";
 
 export function IntegrationsTab() {
-  const { data, loading, error } = useDashboardContext();
+  const { data, loading, error, updateData } = useDashboardContext();
   const { dispatch, busy } = useActionDispatcher();
   const [copied, setCopied] = useState<string | null>(null);
   const origin = typeof window === "undefined" ? "" : window.location.origin;
@@ -46,12 +46,17 @@ export function IntegrationsTab() {
   async function togglePublicIntegration() {
     const next = !publicIntegration;
     setOptimisticPublicIntegration(next);
-    await dispatch({
+    const ok = await dispatch({
       actionId: "posture-public-integration-set",
       values: { value: String(next) },
       confirmRequired: false,
-      refresh: "deferred",
+      refresh: "none",
     });
+    if (ok) {
+      updateData((current) => patchPublicIntegration(current, next));
+    } else {
+      setOptimisticPublicIntegration(null);
+    }
   }
 
   if (loading && !data) {
@@ -208,6 +213,29 @@ export function IntegrationsTab() {
       </div>
     </div>
   );
+}
+
+function patchPublicIntegration(data: DashboardData, value: boolean): DashboardData {
+  return {
+    ...data,
+    blocks: data.blocks.map((block) => {
+      if (block.augmentName !== "web" || block.title !== "Posture") return block;
+      return {
+        ...block,
+        sections: block.sections.map((section) => {
+          if (section.kind !== "keyValue") return section;
+          return {
+            ...section,
+            rows: section.rows.map((row) =>
+              row.label === "publicIntegration"
+                ? { ...row, value: String(value), source: "/console override" }
+                : row,
+            ),
+          };
+        }),
+      };
+    }),
+  };
 }
 
 function Endpoint({

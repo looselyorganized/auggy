@@ -17,7 +17,7 @@ export interface DispatchOpts {
 }
 
 export interface UseActionDispatcher {
-  dispatch: (opts: DispatchOpts) => Promise<void>;
+  dispatch: (opts: DispatchOpts) => Promise<boolean>;
   busy: boolean;
 }
 
@@ -36,19 +36,19 @@ export function useActionDispatcher(): UseActionDispatcher {
 
   const dispatch = useCallback(
     async (opts: DispatchOpts) => {
-      if (busy) return;
+      if (busy) return false;
       if (opts.confirmRequired) {
         const ok = await confirm({
           message: opts.confirmMessage ?? "Confirm this action?",
           destructive: opts.destructive,
         });
-        if (!ok) return;
+        if (!ok) return false;
       }
       const csrf = findCsrfToken(data?.csrfTokens ?? [], opts.actionId, opts.rowKey);
       if (!csrf) {
         push("error", `No CSRF token available for ${opts.actionId}. Reloading…`);
         await refresh();
-        return;
+        return false;
       }
       setBusy(true);
       try {
@@ -56,7 +56,7 @@ export function useActionDispatcher(): UseActionDispatcher {
         if (result.csrfExpired) {
           push("warn", "Session expired — refreshing.");
           window.location.reload();
-          return;
+          return false;
         }
         push(result.ok ? "success" : "error", result.message || (result.ok ? "Done." : "Failed."));
         const refreshMode = opts.refresh ?? "immediate";
@@ -65,11 +65,13 @@ export function useActionDispatcher(): UseActionDispatcher {
         } else if (refreshMode === "deferred") {
           globalThis.setTimeout(() => void refresh(), 350);
         }
+        return result.ok;
       } catch (err) {
         push("error", `Action failed: ${(err as Error).message}`);
         if (opts.refresh === "deferred") {
           globalThis.setTimeout(() => void refresh(), 350);
         }
+        return false;
       } finally {
         setBusy(false);
       }

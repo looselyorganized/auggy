@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { lazy, Suspense, type ReactNode } from "react";
 import { NavLink, Navigate, Route, Routes } from "react-router-dom";
 import { MessageSquare, Plug } from "lucide-react";
 import { Header } from "@/components/layout/Header";
@@ -6,9 +6,12 @@ import { ToastProvider } from "@/lib/toast";
 import { ConfirmProvider } from "@/lib/confirm";
 import { DashboardProvider } from "@/components/admin/DashboardContext";
 import { useDashboard } from "@/hooks/useDashboard";
-import { ChatTab } from "@/routes/ChatTab";
-import { IntegrationsTab } from "@/routes/IntegrationsTab";
 import { cn } from "@/lib/utils";
+
+const ChatTab = lazy(() => import("@/routes/ChatTab").then((m) => ({ default: m.ChatTab })));
+const IntegrationsTab = lazy(() =>
+  import("@/routes/IntegrationsTab").then((m) => ({ default: m.IntegrationsTab })),
+);
 
 export function App() {
   const dashboard = useDashboard();
@@ -66,18 +69,28 @@ export function App() {
                 </ConsoleNavLink>
               </nav>
               <main className="min-h-0 flex-1 overflow-hidden bg-muted/30 pb-12 sm:pb-0">
-                <Routes>
-                  <Route path="/" element={<Navigate to="/chat" replace />} />
-                  <Route path="/chat" element={<ChatTab />} />
-                  <Route path="/integrations" element={<IntegrationsTab />} />
-                  <Route path="*" element={<Navigate to="/chat" replace />} />
-                </Routes>
+                <Suspense fallback={<ConsoleRouteFallback />}>
+                  <Routes>
+                    <Route path="/" element={<Navigate to="/chat" replace />} />
+                    <Route path="/chat" element={<ChatTab />} />
+                    <Route path="/integrations" element={<IntegrationsTab />} />
+                    <Route path="*" element={<Navigate to="/chat" replace />} />
+                  </Routes>
+                </Suspense>
               </main>
             </div>
           </div>
         </DashboardProvider>
       </ConfirmProvider>
     </ToastProvider>
+  );
+}
+
+function ConsoleRouteFallback() {
+  return (
+    <div className="grid h-full place-items-center p-4 text-sm text-muted-foreground">
+      Loading...
+    </div>
   );
 }
 
