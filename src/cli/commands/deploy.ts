@@ -31,7 +31,11 @@ import { readAgentName, resolveConfigPath } from "../resolve-config";
 import { stageBundle } from "../deploy/bundle";
 import { generateDockerfile, generateEntrypoint } from "../deploy/dockerfile";
 import { waitForHealth, type HealthCheckOptions, type HealthCheckResult } from "../deploy/health";
-import { RailwayWorkspaceRequiredError, type RailwayCli } from "../deploy/railway-cli";
+import {
+  RailwayWorkspaceRequiredError,
+  type RailwayCli,
+  type RailwayWorkspace,
+} from "../deploy/railway-cli";
 import { loadSecretsPlan } from "../deploy/secrets";
 import { getAuggyVersion } from "../scaffold-package-json";
 
@@ -56,8 +60,8 @@ export interface DeployOptions {
   promptProjectName: (defaultName: string) => Promise<string>;
   /** Prompt the operator for a Railway project ID. */
   promptProjectId: () => Promise<string>;
-  /** Prompt the operator for a Railway workspace ID or name when Railway requires one. */
-  promptWorkspace: () => Promise<string>;
+  /** Prompt the operator for a Railway workspace ID or name. */
+  promptWorkspace: (workspaces: RailwayWorkspace[]) => Promise<string>;
   /** Prompt the operator for yes/no confirmation. Receives a human-readable message. */
   promptConfirm: (message: string) => Promise<boolean>;
   logger: DeployLogger;
@@ -264,15 +268,16 @@ export async function runDeploy(
     const target = await opts.promptProjectTarget();
     if (target === "new") {
       const projectName = await opts.promptProjectName(name);
+      const initialWorkspace = await resolveWorkspaceForNewProject(opts);
       const createProject = (workspace?: string) =>
         withProgress(opts, `Creating Railway project ${projectName}`, () =>
           opts.cli.createProject({ projectName, workspace, cwd: stagingDir }),
         );
       try {
-        projectId = await createProject(opts.workspace);
+        projectId = await createProject(initialWorkspace);
       } catch (err) {
         if (!(err instanceof RailwayWorkspaceRequiredError)) throw err;
-        const workspace = await opts.promptWorkspace();
+        const workspace = await opts.promptWorkspace([]);
         projectId = await createProject(workspace);
       }
       projectAlreadyLinked = true;
@@ -519,6 +524,28 @@ function ensureTrailingSlash(url: string): string {
 
 function withProgress<T>(opts: DeployOptions, message: string, run: () => Promise<T>): Promise<T> {
   return opts.logger.task ? opts.logger.task(message, run) : run();
+}
+
+async function resolveWorkspaceForNewProject(opts: DeployOptions): Promise<string | undefined> {
+  const explicit = opts.workspace?.trim();
+  if (explicit) return explicit;
+
+  let workspaces: RailwayWorkspace[] = [];
+  try {
+    workspaces = await withProgress(opts, `Finding Railway workspaces`, () =>
+      opts.cli.listWorkspaces(),
+    );
+  } catch {
+    workspaces = [];
+  }
+
+  if (workspaces.length === 0) return undefined;
+  if (workspaces.length === 1) {
+    const workspace = workspaces[0]!;
+    opts.logger.info(`Using Railway workspace "${workspace.name}".`);
+    return workspace.id;
+  }
+  return opts.promptWorkspace(workspaces);
 }
 
 type RailwayDeploymentWaitResult =

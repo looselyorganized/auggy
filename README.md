@@ -265,6 +265,9 @@ Deploy stages the current agent, pushes `.env` secrets to Railway, creates or
 links a service, mounts persistent data at `/app/data`, starts a build, waits
 for Railway deployment status when available, then verifies `/health`.
 
+When creating a new Railway project, Auggy selects from your existing Railway
+workspaces. For scripted deploys, pass `--workspace <workspace-id-or-name>`.
+
 Useful follow-ups:
 
 ```bash

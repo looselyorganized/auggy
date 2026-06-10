@@ -10,6 +10,7 @@ import { getAuggyVersion } from "../../src/cli/scaffold-package-json";
 interface MockCliCalls {
   checkPresence: number;
   checkAuth: number;
+  listWorkspaces: number;
   link: Array<{ projectId: string; serviceName: string; cwd: string }>;
   setVariable: Array<{ key: string; value: string }>;
   up: number;
@@ -28,6 +29,7 @@ function mockRailwayCli(): { cli: RailwayCli; calls: MockCliCalls; capturedCwds:
   const calls: MockCliCalls = {
     checkPresence: 0,
     checkAuth: 0,
+    listWorkspaces: 0,
     link: [],
     setVariable: [],
     up: 0,
@@ -50,6 +52,10 @@ function mockRailwayCli(): { cli: RailwayCli; calls: MockCliCalls; capturedCwds:
     async checkAuth() {
       calls.checkAuth++;
       return "operator@example.com";
+    },
+    async listWorkspaces() {
+      calls.listWorkspaces++;
+      return [];
     },
     async link({ projectId, serviceName, cwd }) {
       calls.link.push({ projectId, serviceName, cwd });
@@ -271,6 +277,64 @@ describe("runDeploy", () => {
     expect(result.projectId).toBe("proj_created_workspace");
   });
 
+  test("first deploy selects from discovered Railway workspaces before creating a project", async () => {
+    const { cli, calls } = mockRailwayCli();
+    cli.listWorkspaces = async () => {
+      calls.listWorkspaces++;
+      return [
+        { id: "workspace_a", name: "Team A" },
+        { id: "workspace_b", name: "Team B" },
+      ];
+    };
+    let promptedWorkspaces: unknown = null;
+
+    await runDeploy(
+      "zip",
+      baseDeployOptions(cli, auggyDir, {
+        promptProjectTarget: async () => "new",
+        promptProjectName: async () => "zip-project",
+        promptWorkspace: async (workspaces) => {
+          promptedWorkspaces = workspaces;
+          return "workspace_b";
+        },
+      }),
+    );
+
+    expect(promptedWorkspaces).toEqual([
+      { id: "workspace_a", name: "Team A" },
+      { id: "workspace_b", name: "Team B" },
+    ]);
+    expect(calls.createProject).toEqual([
+      expect.objectContaining({ projectName: "zip-project", workspace: "workspace_b" }),
+    ]);
+  });
+
+  test("first deploy uses the only discovered Railway workspace without prompting", async () => {
+    const { cli, calls } = mockRailwayCli();
+    cli.listWorkspaces = async () => {
+      calls.listWorkspaces++;
+      return [{ id: "workspace_only", name: "Personal Projects" }];
+    };
+    let promptWorkspaceCalled = false;
+
+    await runDeploy(
+      "zip",
+      baseDeployOptions(cli, auggyDir, {
+        promptProjectTarget: async () => "new",
+        promptProjectName: async () => "zip-project",
+        promptWorkspace: async () => {
+          promptWorkspaceCalled = true;
+          return "manual_workspace";
+        },
+      }),
+    );
+
+    expect(promptWorkspaceCalled).toBe(false);
+    expect(calls.createProject).toEqual([
+      expect.objectContaining({ projectName: "zip-project", workspace: "workspace_only" }),
+    ]);
+  });
+
   test("--workspace is used when creating a new Railway project", async () => {
     const { cli, calls } = mockRailwayCli();
     await runDeploy(
@@ -285,6 +349,7 @@ describe("runDeploy", () => {
     expect(calls.createProject).toEqual([
       expect.objectContaining({ projectName: "zip-project", workspace: "looselyorganized" }),
     ]);
+    expect(calls.listWorkspaces).toBe(0);
   });
 
   test("first deploy can run from a project-local agent.yaml outside ~/.auggy", async () => {

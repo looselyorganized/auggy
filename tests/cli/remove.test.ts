@@ -170,6 +170,9 @@ describe("runRemove", () => {
       async checkAuth() {
         return "x@y.z";
       },
+      async listWorkspaces() {
+        return [];
+      },
       async link() {
         calls.link++;
       },
@@ -228,6 +231,9 @@ describe("runRemove", () => {
       async checkAuth() {
         return "x@y.z";
       },
+      async listWorkspaces() {
+        return [];
+      },
       async link(args: { projectId: string; serviceName: string }) {
         calls.push(args);
       },
@@ -282,6 +288,9 @@ describe("runRemove", () => {
       },
       async checkAuth() {
         return "x@y.z";
+      },
+      async listWorkspaces() {
+        return [];
       },
       async link() {},
       async createProject() {

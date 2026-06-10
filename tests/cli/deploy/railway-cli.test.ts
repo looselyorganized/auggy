@@ -85,6 +85,37 @@ describe("railway-cli", () => {
     expect(calls[0]!.cmd).toEqual(["railway", "init", "--name", "zip", "--json"]);
   });
 
+  test("listWorkspaces reads and dedupes workspaces from `railway list --json`", async () => {
+    const { factory, calls } = mockSpawn(() => ({
+      stdout: JSON.stringify([
+        {
+          workspace: { id: "workspace_b", name: "Team B" },
+          id: "project_1",
+          name: "one",
+        },
+        {
+          workspace: { id: "workspace_a", name: "Team A" },
+          id: "project_2",
+          name: "two",
+        },
+        {
+          workspace: { id: "workspace_b", name: "Team B" },
+          id: "project_3",
+          name: "three",
+        },
+      ]),
+      stderr: "",
+      exitCode: 0,
+    }));
+    const cli = createRailwayCli({ spawn: factory });
+
+    await expect(cli.listWorkspaces()).resolves.toEqual([
+      { id: "workspace_a", name: "Team A" },
+      { id: "workspace_b", name: "Team B" },
+    ]);
+    expect(calls[0]!.cmd).toEqual(["railway", "list", "--json"]);
+  });
+
   test("createProject includes --workspace when provided", async () => {
     const { factory, calls } = mockSpawn(() => ({
       stdout: JSON.stringify({ project: { id: "proj_created" } }),

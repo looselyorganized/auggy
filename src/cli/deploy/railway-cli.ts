@@ -82,6 +82,11 @@ export interface RailwayStatus {
   deployment?: { status?: string };
 }
 
+export interface RailwayWorkspace {
+  id: string;
+  name: string;
+}
+
 const defaultSpawn: RailwaySpawnFactory = (cmd, opts = {}) => {
   const proc = Bun.spawn(cmd, {
     cwd: opts.cwd,
@@ -112,6 +117,7 @@ const defaultInteractiveSpawn: RailwayInteractiveSpawnFactory = (cmd, opts = {})
 export interface RailwayCli {
   checkPresence(): Promise<true>;
   checkAuth(): Promise<string>;
+  listWorkspaces(): Promise<RailwayWorkspace[]>;
   createProject(args: { projectName: string; workspace?: string; cwd: string }): Promise<string>;
   linkProject(args: { projectId: string; cwd: string }): Promise<void>;
   linkService(args: { serviceName: string; cwd: string }): Promise<void>;
@@ -216,6 +222,11 @@ export function createRailwayCli(opts: CreateRailwayCliOptions = {}): RailwayCli
       // Output forms observed: "Logged in as foo@example.com" or just "foo@example.com".
       const match = stdout.match(/(?:Logged in as\s+)?([^\s]+@[^\s]+|\S+)$/m);
       return match ? match[1]!.trim() : stdout.trim();
+    },
+
+    async listWorkspaces() {
+      const { stdout } = await runOrThrow(["list", "--json"], {}, { retryTransient: true });
+      return extractWorkspaces(stdout);
     },
 
     async createProject({ projectName, workspace, cwd }) {
@@ -348,6 +359,39 @@ function extractProjectId(stdout: string): string | null {
   }
   const match = stdout.match(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/i);
   return match?.[0] ?? null;
+}
+
+function extractWorkspaces(stdout: string): RailwayWorkspace[] {
+  const parsed = JSON.parse(stdout) as unknown;
+  const workspaces = new Map<string, RailwayWorkspace>();
+  collectWorkspaces(parsed, workspaces);
+  return [...workspaces.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function collectWorkspaces(value: unknown, workspaces: Map<string, RailwayWorkspace>): void {
+  if (Array.isArray(value)) {
+    for (const item of value) collectWorkspaces(item, workspaces);
+    return;
+  }
+  if (!value || typeof value !== "object") return;
+
+  const record = value as Record<string, unknown>;
+  const workspace = readWorkspace(record.workspace);
+  if (workspace) {
+    workspaces.set(workspace.id, workspace);
+  }
+  for (const item of Object.values(record)) {
+    collectWorkspaces(item, workspaces);
+  }
+}
+
+function readWorkspace(value: unknown): RailwayWorkspace | null {
+  if (!value || typeof value !== "object") return null;
+  const record = value as Record<string, unknown>;
+  const id = typeof record.id === "string" ? record.id.trim() : "";
+  const name = typeof record.name === "string" ? record.name.trim() : "";
+  if (!id || !name) return null;
+  return { id, name };
 }
 
 function isWorkspaceRequiredFailure(value: string): boolean {

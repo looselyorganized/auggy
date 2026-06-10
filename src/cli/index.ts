@@ -287,11 +287,27 @@ export function buildCli(): Command {
                   "Railway project ID (find it in the Railway dashboard URL or via `railway list`):",
                 validate: (v) => v.trim().length > 0 || "project ID required",
               }),
-            promptWorkspace: () =>
-              input({
-                message: "Railway workspace ID or name:",
+            promptWorkspace: async (workspaces) => {
+              const manual = "__manual__";
+              if (workspaces.length > 0) {
+                const selected = await select({
+                  message: "Create this project in Railway workspace:",
+                  choices: [
+                    ...workspaces.map((workspace) => ({
+                      name: workspace.name,
+                      value: workspace.id,
+                    })),
+                    { name: "Enter workspace manually", value: manual },
+                  ],
+                });
+                if (selected !== manual) return selected;
+              }
+              return input({
+                message:
+                  "Railway workspace name or ID (personal/team workspace, not project name):",
                 validate: (v) => v.trim().length > 0 || "workspace required",
-              }),
+              });
+            },
             promptConfirm: (message) => confirm({ message, default: false }),
             logger: {
               info: (msg) => console.log(msg),

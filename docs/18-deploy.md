@@ -34,7 +34,7 @@ The CLI walks you through:
 
 1. **Local preflight** — runs doctor-style checks for config, env placeholders, package manifest, and agent-local dependencies before touching Railway.
 2. **Presence + auth checks** — confirms `railway` is installed and logged in.
-3. **Project selection** — create a new Railway project, or use an existing project via prompt / `--project <project-id>`.
+3. **Project selection** — create a new Railway project, or use an existing project via prompt / `--project <project-id>`. When creating a project, Auggy selects from Railway workspaces discovered by `railway list --json`; pass `--workspace <workspace-id-or-name>` for scripted deploys.
 4. **Bundle staging** — copies your agent directory minus `.env`, `*.db*`, `workspace/`, `node_modules/`, `.git/`, `.worktrees/`, `.claude/`, `.DS_Store`, `*.tmp` into a temp dir. The agent's `package.json` + `bun.lock` are included so the image can install your pinned deps.
 5. **Dockerfile + entrypoint generation** — written into the staging dir. Static; not operator-tunable at v1.0. The image copies `package.json` + `bun.lock` first, runs `bun install` to materialize `node_modules/` inside the image, then COPYs the rest of the agent dir; the entrypoint invokes `bunx auggy dev` so it uses the per-agent install rather than a global `auggy`.
 6. **Secrets diff + confirm** — shows what's about to be pushed to Railway (with values redacted). Decline aborts the deploy. Pass `--yes` to skip.
@@ -69,6 +69,14 @@ To deploy into an existing Railway service instead of creating a new one:
 ```bash
 auggy deploy --project <project-id> --service my-existing-service
 ```
+
+Railway terms:
+
+- **Workspace**: the personal/team Railway account that owns projects.
+- **Project**: the Railway project Auggy creates or links.
+- **Service**: the deployable app inside the project.
+
+Auggy helps select an existing workspace. It does not create Railway workspaces; create one in Railway first, then rerun `auggy deploy`.
 
 What changes vs. first deploy:
 
