@@ -4,11 +4,13 @@ import type {
   AugmentHttpRoute,
   AugmentHttpRouteAuth,
   HttpMethod,
+  RouteAuthContext,
   Tool,
   ToolCategory,
   ToolExecuteContext,
   ToolResult,
 } from "./types";
+import { joinRoutePaths } from "./kernel/route-pattern";
 
 // biome-ignore lint/suspicious/noExplicitAny: Tool schemas intentionally accept any Zod input/output shape.
 export function defineTool<T extends z.ZodType<any, any, any>>(opts: {
@@ -32,12 +34,15 @@ export function defineAugment(opts: Augment): Augment {
   return opts;
 }
 
-export interface RouteContextBase {
+export interface RouteContextBase<TParams = Record<string, string>> {
   request: Request;
   signal: AbortSignal;
+  auth: RouteAuthContext;
+  params: TParams;
   route: {
     method: HttpMethod;
     path: string;
+    params: TParams;
   };
 }
 
@@ -53,21 +58,27 @@ interface RouteOptionsBase {
   rateLimit?: RouteRateLimit;
 }
 
-export interface DefineGetRouteOptions<TQuery extends AnySchema | undefined = undefined>
-  extends RouteOptionsBase {
+export interface DefineGetRouteOptions<
+  TQuery extends AnySchema | undefined = undefined,
+  TParams extends AnySchema | undefined = undefined,
+> extends RouteOptionsBase {
   query?: TQuery;
+  params?: TParams;
   handler: (
-    ctx: RouteContextBase & {
+    ctx: RouteContextBase<TParams extends AnySchema ? z.infer<TParams> : Record<string, string>> & {
       query: TQuery extends AnySchema ? z.infer<TQuery> : undefined;
     },
   ) => Promise<Response> | Response;
 }
 
-export interface DefinePostRouteOptions<TBody extends AnySchema | undefined = undefined>
-  extends RouteOptionsBase {
+export interface DefinePostRouteOptions<
+  TBody extends AnySchema | undefined = undefined,
+  TParams extends AnySchema | undefined = undefined,
+> extends RouteOptionsBase {
   body?: TBody;
+  params?: TParams;
   handler: (
-    ctx: RouteContextBase & {
+    ctx: RouteContextBase<TParams extends AnySchema ? z.infer<TParams> : Record<string, string>> & {
       body: TBody extends AnySchema ? z.infer<TBody> : undefined;
     },
   ) => Promise<Response> | Response;
@@ -122,30 +133,46 @@ function queryObject(searchParams: URLSearchParams): Record<string, string | str
 }
 
 export const defineRoute = {
-  get<TQuery extends AnySchema | undefined = undefined>(
-    path: string,
-    opts: DefineGetRouteOptions<TQuery>,
-  ): AugmentHttpRoute {
-    return routeBase("GET", path, opts, async (request, { signal }) => {
+  get<
+    TQuery extends AnySchema | undefined = undefined,
+    TParams extends AnySchema | undefined = undefined,
+  >(path: string, opts: DefineGetRouteOptions<TQuery, TParams>): AugmentHttpRoute {
+    return routeBase("GET", path, opts, async (request, { signal, auth, params, routePath }) => {
       const parsedQuery = opts.query
         ? opts.query.safeParse(queryObject(new URL(request.url).searchParams))
         : { success: true as const, data: undefined };
       if (!parsedQuery.success) return badRequest();
 
+      const rawParams = params ?? {};
+      const parsedParams = opts.params
+        ? opts.params.safeParse(rawParams)
+        : { success: true as const, data: rawParams };
+      if (!parsedParams.success) return badRequest();
+
       return await opts.handler({
         request,
         signal,
-        route: { method: "GET", path },
+        auth: auth ?? { mode: opts.auth },
+        params: parsedParams.data as TParams extends AnySchema
+          ? z.infer<TParams>
+          : Record<string, string>,
+        route: {
+          method: "GET",
+          path: routePath ?? path,
+          params: parsedParams.data as TParams extends AnySchema
+            ? z.infer<TParams>
+            : Record<string, string>,
+        },
         query: parsedQuery.data as TQuery extends AnySchema ? z.infer<TQuery> : undefined,
       });
     });
   },
 
-  post<TBody extends AnySchema | undefined = undefined>(
-    path: string,
-    opts: DefinePostRouteOptions<TBody>,
-  ): AugmentHttpRoute {
-    return routeBase("POST", path, opts, async (request, { signal }) => {
+  post<
+    TBody extends AnySchema | undefined = undefined,
+    TParams extends AnySchema | undefined = undefined,
+  >(path: string, opts: DefinePostRouteOptions<TBody, TParams>): AugmentHttpRoute {
+    return routeBase("POST", path, opts, async (request, { signal, auth, params, routePath }) => {
       let rawBody: unknown;
       if (opts.body) {
         try {
@@ -160,12 +187,43 @@ export const defineRoute = {
         : { success: true as const, data: undefined };
       if (!parsedBody.success) return badRequest();
 
+      const rawParams = params ?? {};
+      const parsedParams = opts.params
+        ? opts.params.safeParse(rawParams)
+        : { success: true as const, data: rawParams };
+      if (!parsedParams.success) return badRequest();
+
       return await opts.handler({
         request,
         signal,
-        route: { method: "POST", path },
+        auth: auth ?? { mode: opts.auth },
+        params: parsedParams.data as TParams extends AnySchema
+          ? z.infer<TParams>
+          : Record<string, string>,
+        route: {
+          method: "POST",
+          path: routePath ?? path,
+          params: parsedParams.data as TParams extends AnySchema
+            ? z.infer<TParams>
+            : Record<string, string>,
+        },
         body: parsedBody.data as TBody extends AnySchema ? z.infer<TBody> : undefined,
       });
+    });
+  },
+
+  group(prefix: string, routes: readonly AugmentHttpRoute[]): AugmentHttpRoute[] {
+    return routes.map((route) => {
+      const path = joinRoutePaths(prefix, route.path);
+      return {
+        ...route,
+        path,
+        handler: (request, opts) =>
+          route.handler(request, {
+            ...opts,
+            routePath: opts.routePath ?? path,
+          }),
+      };
     });
   },
 };

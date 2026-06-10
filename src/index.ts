@@ -54,6 +54,7 @@ export type {
   // Storage
   Storage,
   // Transport
+  RouteAuthContext,
   TransportSpec,
   TransportKernel,
   // Agent Card
@@ -75,6 +76,7 @@ export { generateAgentCard } from "./agent-card";
 
 // === Helpers ===
 export { defineAugment, defineRoute, defineTool, json } from "./helpers";
+export type { DefineGetRouteOptions, DefinePostRouteOptions, RouteContextBase } from "./helpers";
 export { extractText, textPart, dataPart } from "./parts";
 
 // === Tokenizer (for augment authors who need token counting) ===

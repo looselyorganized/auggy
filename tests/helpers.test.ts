@@ -99,6 +99,69 @@ describe("defineRoute", () => {
     expect(await res.json()).toEqual({ method: "GET", need: "gifting", tag: ["a", "b"] });
   });
 
+  it("supplies auth context when a helper route is invoked directly", async () => {
+    const route = defineRoute.get("/private", {
+      auth: "bearer",
+      handler: ({ auth }) => json({ auth: auth.mode }),
+    });
+
+    const res = await route.handler(new Request("http://localhost/private"), {
+      signal: AbortSignal.timeout(1000),
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ auth: "bearer" });
+  });
+
+  it("creates a GET route that validates path params", async () => {
+    const route = defineRoute.get("/services/:id", {
+      auth: "none",
+      params: z.object({ id: z.string().regex(/^svc_/) }),
+      handler: ({ params, route }) =>
+        json({ id: params.id, routePath: route.path, routeParams: route.params }),
+    });
+
+    const ok = await route.handler(new Request("http://localhost/services/svc_123"), {
+      signal: AbortSignal.timeout(1000),
+      params: { id: "svc_123" },
+      routePath: "/services/:id",
+    });
+
+    expect(ok.status).toBe(200);
+    expect(await ok.json()).toEqual({
+      id: "svc_123",
+      routePath: "/services/:id",
+      routeParams: { id: "svc_123" },
+    });
+
+    const invalid = await route.handler(new Request("http://localhost/services/bad"), {
+      signal: AbortSignal.timeout(1000),
+      params: { id: "bad" },
+      routePath: "/services/:id",
+    });
+
+    expect(invalid.status).toBe(400);
+  });
+
+  it("groups routes under a prefix without losing handler route context", async () => {
+    const [route] = defineRoute.group("/services", [
+      defineRoute.get("/:id", {
+        auth: "none",
+        handler: ({ route, params }) => json({ path: route.path, id: params.id }),
+      }),
+    ]);
+
+    expect(route?.path).toBe("/services/:id");
+
+    const res = await route!.handler(new Request("http://localhost/services/design"), {
+      signal: AbortSignal.timeout(1000),
+      params: { id: "design" },
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ path: "/services/:id", id: "design" });
+  });
+
   it("returns a 400 response when GET query validation fails", async () => {
     const route = defineRoute.get("/services", {
       auth: "none",

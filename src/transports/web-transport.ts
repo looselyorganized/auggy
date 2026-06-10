@@ -22,6 +22,7 @@ import {
   type VisitorTokenPayload,
 } from "./visitor-token";
 import { withTimeout, TimeoutError } from "../kernel/timeout";
+import { matchRoutePath, parseRoutePattern } from "../kernel/route-pattern";
 import { resolveConfigBool } from "../config";
 import { readOverrides, writeOverrides } from "../lib/admin-overrides";
 import type { AdminActionResult, AdminInfoBlock } from "../types";
@@ -490,6 +491,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
   // (which extends AugmentHttpRoute with augmentName) — we cast where needed.
   let augmentRoutes: readonly import("../types").AugmentHttpRoute[] = [];
   let augmentRouteMap: Map<string, import("../types").AugmentHttpRoute> = new Map();
+  let augmentPatternRoutes: readonly import("../types").AugmentHttpRoute[] = [];
 
   // G36 — action registry built at register() time by buildAdminActionRegistry.
   // Empty when adminRoute is disabled or no augment declares adminInfo.
@@ -928,6 +930,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
       kernel = k;
       augmentRoutes = k.getAugmentRoutes();
       augmentRouteMap = new Map();
+      const patternRoutes: import("../types").AugmentHttpRoute[] = [];
 
       if (opts.publicIntegration !== undefined && typeof opts.publicIntegration !== "boolean") {
         throw new Error("[web-transport] publicIntegration must be a boolean when configured");
@@ -980,7 +983,12 @@ export function webTransport(opts: WebTransportOptions): Augment {
 
       let visitorAuthMounted = false;
       for (const r of augmentRoutes) {
-        augmentRouteMap.set(`${r.method} ${r.path}`, r);
+        const parsedPattern = parseRoutePattern(r.path);
+        if (parsedPattern.ok && parsedPattern.pattern.isPattern) {
+          patternRoutes.push(r);
+        } else {
+          augmentRouteMap.set(`${r.method} ${r.path}`, r);
+        }
         // Operator-visible audit: log every auth: "none" route so an operator
         // grepping the boot log can spot unauthenticated surfaces.
         // Runtime values are CollectedRoute (extends AugmentHttpRoute with augmentName).
@@ -992,6 +1000,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
           );
         }
       }
+      augmentPatternRoutes = Object.freeze(patternRoutes);
 
       console.log(formatAnonymousPostureLine(allowAnonymous, allowAnonymousResolution.source));
 
@@ -1021,6 +1030,22 @@ export function webTransport(opts: WebTransportOptions): Augment {
     const expected = `Bearer ${opts.auth.token}`;
     // Use timing-safe comparison to prevent token extraction via timing side-channel.
     return timingSafeEqual(header, expected);
+  }
+
+  function findAugmentRoute(
+    method: string,
+    pathname: string,
+  ): { route: import("../types").AugmentHttpRoute; params: Record<string, string> } | null {
+    const exact = augmentRouteMap.get(`${method} ${pathname}`);
+    if (exact) return { route: exact, params: {} };
+
+    for (const route of augmentPatternRoutes) {
+      if (route.method !== method) continue;
+      const params = matchRoutePath(route.path, pathname);
+      if (params) return { route, params };
+    }
+
+    return null;
   }
 
   async function handleAgentRun(req: Request): Promise<Response> {
@@ -1473,9 +1498,11 @@ export function webTransport(opts: WebTransportOptions): Augment {
             return handleAgentCard(req);
           }
 
-          // PR γ.1 — augment-registered routes. Dispatched by exact (method, path).
-          const augmentRoute = augmentRouteMap.get(`${req.method} ${url.pathname}`);
-          if (augmentRoute) {
+          // PR γ.1 + v1.x — augment-registered routes. Exact routes win first;
+          // parameterized routes (`/items/:id`) are matched after exact paths.
+          const augmentRouteMatch = findAugmentRoute(req.method, url.pathname);
+          if (augmentRouteMatch) {
+            const { route: augmentRoute, params } = augmentRouteMatch;
             // Finding 4: Default-deny — anything not explicitly "none" requires bearer.
             // The collector rejects unknown auth values at boot, but defense in depth
             // keeps dispatch fail-closed against runtime mutations.
@@ -1534,7 +1561,13 @@ export function webTransport(opts: WebTransportOptions): Augment {
               const timer = setTimeout(() => controller.abort(), timeoutMs);
               try {
                 return await withTimeout(
-                  () => augmentRoute.handler(dispatchReq, { signal: controller.signal }),
+                  () =>
+                    augmentRoute.handler(dispatchReq, {
+                      signal: controller.signal,
+                      auth: { mode: augmentRoute.auth },
+                      params,
+                      routePath: augmentRoute.path,
+                    }),
                   timeoutMs,
                 );
               } finally {
@@ -1556,9 +1589,15 @@ export function webTransport(opts: WebTransportOptions): Augment {
           // Method-mismatch detection: if any registered augment route matches
           // the path but a different method, return 405 with Allow header listing
           // all methods supported for that path (RFC 9110 §15.5.6).
-          const allowedMethods = augmentRoutes
-            .filter((r) => r.path === url.pathname && r.method !== req.method)
-            .map((r) => r.method);
+          const allowedMethods = [
+            ...new Set(
+              augmentRoutes
+                .filter(
+                  (r) => r.method !== req.method && matchRoutePath(r.path, url.pathname) !== null,
+                )
+                .map((r) => r.method),
+            ),
+          ];
           if (allowedMethods.length > 0) {
             return new Response("Method Not Allowed", {
               status: 405,

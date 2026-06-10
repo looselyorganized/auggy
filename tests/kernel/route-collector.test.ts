@@ -69,6 +69,62 @@ describe("collectAugmentRoutes", () => {
     expect(result.errors[0]).toContain("/shared");
   });
 
+  test("rejects ambiguous parameterized routes with the same match shape", () => {
+    const result = collectAugmentRoutes([
+      aug("a", [route("GET", "/orders/:id")]),
+      aug("b", [route("GET", "/orders/:orderId")]),
+    ]);
+
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0]).toContain("overlapping");
+    expect(result.errors[0]).toContain("/orders/:orderId");
+  });
+
+  test("rejects overlapping parameterized routes with different shapes", () => {
+    const result = collectAugmentRoutes([
+      aug("a", [route("GET", "/:section/new")]),
+      aug("b", [route("GET", "/items/:id")]),
+    ]);
+
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0]).toContain("overlapping");
+    expect(result.errors[0]).toContain("/:section/new");
+    expect(result.errors[0]).toContain("/items/:id");
+  });
+
+  test("allows parameterized routes that cannot match the same path", () => {
+    const result = collectAugmentRoutes([
+      aug("a", [route("GET", "/items/:id")]),
+      aug("b", [route("GET", "/orders/:id")]),
+    ]);
+
+    expect(result.errors).toEqual([]);
+    expect(result.routes.map((r) => r.path)).toEqual(["/items/:id", "/orders/:id"]);
+  });
+
+  test("allows a specific static route next to a broader parameterized route", () => {
+    const result = collectAugmentRoutes([
+      aug("a", [route("GET", "/orders/new")]),
+      aug("b", [route("GET", "/orders/:id")]),
+    ]);
+
+    expect(result.errors).toEqual([]);
+    expect(result.routes.map((r) => r.path)).toEqual(["/orders/new", "/orders/:id"]);
+  });
+
+  test("rejects invalid parameter segment shapes", () => {
+    const result = collectAugmentRoutes([
+      aug("a", [route("GET", "/orders/:")]),
+      aug("b", [route("GET", "/orders/:bad-id")]),
+      aug("c", [route("GET", "/orders/:id/:id")]),
+    ]);
+
+    expect(result.errors).toHaveLength(3);
+    expect(result.errors[0]).toContain("invalid path parameter");
+    expect(result.errors[1]).toContain("invalid path parameter");
+    expect(result.errors[2]).toContain("duplicate path parameter");
+  });
+
   test("allows the same path with different methods (GET + POST)", () => {
     const result = collectAugmentRoutes([aug("a", [route("GET", "/x"), route("POST", "/x")])]);
     expect(result.routes).toHaveLength(2);
