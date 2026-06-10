@@ -76,7 +76,12 @@ export { generateAgentCard } from "./agent-card";
 
 // === Helpers ===
 export { defineAugment, defineRoute, defineTool, json } from "./helpers";
-export type { DefineGetRouteOptions, DefinePostRouteOptions, RouteContextBase } from "./helpers";
+export type {
+  DefineGetRouteOptions,
+  DefinePostRouteOptions,
+  RouteContext,
+  RouteContextBase,
+} from "./helpers";
 export { extractText, textPart, dataPart } from "./parts";
 
 // === Tokenizer (for augment authors who need token counting) ===
