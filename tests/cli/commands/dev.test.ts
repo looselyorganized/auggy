@@ -36,6 +36,24 @@ describe("formatDevReadyMessage", () => {
     expect(out).toMatch(/ {2}auggy deploy zip\s+Deploy to Railway/);
   });
 
+  test("prints a cloud boot banner without local next steps", () => {
+    const out = formatDevReadyMessage({
+      agentName: "zip",
+      port: 8080,
+      configPath: "agent.yaml",
+      deployCommand: "auggy deploy zip",
+      runtime: "railway",
+    });
+
+    expect(out).toContain('Agent "zip" is live.');
+    expect(out).toContain("  Health:   http://localhost:8080/health");
+    expect(out).toContain("Config: agent.yaml");
+    expect(out).toContain("Runtime: Railway");
+    expect(out).not.toContain("Extend it:");
+    expect(out).not.toContain("Deploy it:");
+    expect(out).not.toContain("Press Ctrl-C to stop.");
+  });
+
   test("formats config paths relative to the command cwd", () => {
     expect(formatRunDisplayPath("/repo/dx-agent/agent.yaml", "/repo")).toBe("dx-agent/agent.yaml");
     expect(formatRunDisplayPath("/repo/dx-agent/agent.yaml", "/repo/dx-agent")).toBe("agent.yaml");

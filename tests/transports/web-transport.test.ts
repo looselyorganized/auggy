@@ -1592,9 +1592,14 @@ describe("webTransport allowAnonymous (G3)", () => {
 
   it("warns when anonymous chat is public-ish and visitor-auth augment is missing", async () => {
     const warnings: string[] = [];
+    const logs: string[] = [];
     const originalWarn = console.warn;
+    const originalLog = console.log;
     console.warn = (...args: unknown[]) => {
       warnings.push(args.map((a) => String(a)).join(" "));
+    };
+    console.log = (...args: unknown[]) => {
+      logs.push(args.map((a) => String(a)).join(" "));
     };
     try {
       await withEnv(
@@ -1617,6 +1622,7 @@ describe("webTransport allowAnonymous (G3)", () => {
                   w.includes("auggy augment add visitorAuth"),
               ),
             ).toBeDefined();
+            expect(logs).toContain("[web] anonymous chat enabled (public default)");
           } finally {
             await agent.stop();
           }
@@ -1624,6 +1630,7 @@ describe("webTransport allowAnonymous (G3)", () => {
       );
     } finally {
       console.warn = originalWarn;
+      console.log = originalLog;
     }
   });
 

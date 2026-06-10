@@ -70,6 +70,7 @@ export function formatDevReadyMessage(args: {
   port: number | null;
   configPath: string;
   deployCommand: string;
+  runtime?: "local" | "railway";
 }): string {
   const lines = [`Agent "${args.agentName}" is live.`, ""];
 
@@ -82,16 +83,22 @@ export function formatDevReadyMessage(args: {
     lines.push("");
   }
 
-  lines.push("Extend it:");
-  lines.push("  auggy augment list");
-  lines.push("  auggy augment add <name>");
-  lines.push("  auggy augment create <name>");
-  lines.push("");
-  lines.push("Deploy it:");
-  lines.push(`  ${args.deployCommand.padEnd(20)} Deploy to Railway`);
-  lines.push("");
+  if (args.runtime !== "railway") {
+    lines.push("Extend it:");
+    lines.push("  auggy augment list");
+    lines.push("  auggy augment add <name>");
+    lines.push("  auggy augment create <name>");
+    lines.push("");
+    lines.push("Deploy it:");
+    lines.push(`  ${args.deployCommand.padEnd(20)} Deploy to Railway`);
+    lines.push("");
+  }
   lines.push(`Config: ${args.configPath}`);
-  lines.push("Press Ctrl-C to stop.");
+  if (args.runtime === "railway") {
+    lines.push("Runtime: Railway");
+  } else {
+    lines.push("Press Ctrl-C to stop.");
+  }
 
   return lines.join("\n");
 }
@@ -202,6 +209,7 @@ export async function runDev(name: string | undefined, opts: DevOpts): Promise<v
       port,
       configPath: formatRunDisplayPath(configPath, opts.cwd),
       deployCommand: name ? `auggy deploy ${agentName}` : "auggy deploy",
+      runtime: opts.internalMode === "railway" ? "railway" : "local",
     })}`,
   );
 

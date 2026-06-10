@@ -389,7 +389,8 @@ function formatAnonymousPostureLine(
   allowAnonymous: boolean,
   source: "default" | "env" | "yaml",
 ): string {
-  if (allowAnonymous && source === "default" && !isPublicishRuntime()) {
+  const publicishRuntime = isPublicishRuntime();
+  if (allowAnonymous && source === "default" && !publicishRuntime) {
     return "[web] anonymous local chat enabled";
   }
 
@@ -400,7 +401,9 @@ function formatAnonymousPostureLine(
         ? "AUGGY_ALLOW_ANONYMOUS"
         : process.env.NODE_ENV === "production"
           ? "production default"
-          : "local default";
+          : publicishRuntime
+            ? "public default"
+            : "local default";
 
   return allowAnonymous
     ? `[web] anonymous chat enabled (${sourceLabel})`

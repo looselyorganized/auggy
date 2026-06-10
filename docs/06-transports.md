@@ -318,6 +318,7 @@ At boot, `webTransport` emits an operator-facing posture line:
 ```
 [web] anonymous local chat enabled
 [web] anonymous chat disabled (production default)
+[web] anonymous chat enabled (public default)
 [web] anonymous chat enabled (agent.yaml)
 ```
 
