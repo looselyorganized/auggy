@@ -72,23 +72,44 @@ describe("auggy CLI command table", () => {
   });
 
   test("formats deploy progress as concise operator-facing lines", () => {
-    expect(formatDeployInfoLine("Deploy preflight passed.")).toBe("✔ Deploy preflight passed");
-    expect(formatDeployInfoLine("Railway CLI ready.")).toBe("✔ Railway CLI ready");
-    expect(formatDeployInfoLine("Bundle staged at /tmp/auggy-deploy-x.")).toBeNull();
+    expect(formatDeployInfoLine("Deploy preflight passed.", { color: false })).toBe(
+      "✔ Deploy preflight passed",
+    );
+    expect(formatDeployInfoLine("Railway CLI ready.", { color: false })).toBe(
+      "✔ Railway CLI ready",
+    );
     expect(
-      formatDeployInfoLine("Vendored local Auggy runtime auggy-0.4.4.tgz into deploy bundle."),
+      formatDeployInfoLine("Bundle staged at /tmp/auggy-deploy-x.", { color: false }),
     ).toBeNull();
-    expect(formatDeployInfoLine('Using Railway workspace "Michael Hofweller\'s Projects".')).toBe(
-      "✔ Railway workspace: Michael Hofweller's Projects",
+    expect(
+      formatDeployInfoLine("Vendored local Auggy runtime auggy-0.4.4.tgz into deploy bundle.", {
+        color: false,
+      }),
+    ).toBeNull();
+    expect(
+      formatDeployInfoLine('Using Railway workspace "Michael Hofweller\'s Projects".', {
+        color: false,
+      }),
+    ).toBe("✔ Railway workspace: Michael Hofweller's Projects");
+    expect(
+      formatDeployInfoLine("Created Railway project dx-agent (proj_123).", { color: false }),
+    ).toBe("✔ Created Railway project dx-agent (proj_123)");
+    expect(
+      formatDeployInfoLine('Volume "dx-agent-data" mounted at /app/data.', { color: false }),
+    ).toBe("✔ Mounted volume dx-agent-data at /app/data");
+    expect(
+      formatDeployInfoLine("Deployment health verified: https://agent.test/health", {
+        color: false,
+      }),
+    ).toBe("✔ Health check passed: https://agent.test/health");
+  });
+
+  test("formats deploy success marks in green for TTY output", () => {
+    expect(formatDeployInfoLine("Deploy preflight passed.", { color: true })).toBe(
+      "\x1b[32m✔\x1b[0m Deploy preflight passed",
     );
-    expect(formatDeployInfoLine("Created Railway project dx-agent (proj_123).")).toBe(
-      "✔ Created Railway project dx-agent (proj_123)",
-    );
-    expect(formatDeployInfoLine('Volume "dx-agent-data" mounted at /app/data.')).toBe(
-      "✔ Mounted volume dx-agent-data at /app/data",
-    );
-    expect(formatDeployInfoLine("Deployment health verified: https://agent.test/health")).toBe(
-      "✔ Health check passed: https://agent.test/health",
+    expect(formatDeployInfoLine("Railway CLI ready.", { color: true })).toBe(
+      "\x1b[32m✔\x1b[0m Railway CLI ready",
     );
   });
 

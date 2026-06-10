@@ -47,9 +47,7 @@ import { runRemove } from "./commands/remove";
 import { runLs } from "./commands/ls";
 import { withBrailleSpinner } from "./spinner";
 import type { DeployResult } from "./commands/deploy";
-
-const CHECK = "✔";
-const CROSS = "✖";
+import { failureMark, successMark, warningLabel, type CliStyleOptions } from "./_shared/styles";
 
 export function buildCli(): Command {
   const program = new Command();
@@ -322,7 +320,7 @@ export function buildCli(): Command {
               error: (msg) => console.error(`error: ${msg}`),
               task: (msg, run) =>
                 withBrailleSpinner(msg, run, {
-                  failureText: `${CROSS} ${msg}`,
+                  failureText: `${failureMark()} ${msg}`,
                 }),
             },
           });
@@ -353,56 +351,57 @@ if (import.meta.main) {
 }
 
 function formatWarning(msg: string): string {
-  const label = process.stderr.isTTY ? "\x1b[33mWARN\x1b[0m" : "WARN";
-  return `\n${label}: ${msg}\n`;
+  return `\n${warningLabel({ color: process.stderr.isTTY })}: ${msg}\n`;
 }
 
-export function formatDeployInfoLine(msg: string): string | null {
+export function formatDeployInfoLine(msg: string, style: CliStyleOptions = {}): string | null {
+  const check = successMark(style);
+
   if (/^Bundle staged at /.test(msg)) return null;
   if (/^Vendored local Auggy runtime /.test(msg)) return null;
   if (/^Linked staging dir /.test(msg)) return null;
 
-  if (msg === "Deploy preflight passed.") return `${CHECK} Deploy preflight passed`;
-  if (msg === "Railway CLI ready.") return `${CHECK} Railway CLI ready`;
+  if (msg === "Deploy preflight passed.") return `${check} Deploy preflight passed`;
+  if (msg === "Railway CLI ready.") return `${check} Railway CLI ready`;
   if (msg === "Build started. Railway will build the image, deploy it, then start the service.") {
-    return `${CHECK} Build started`;
+    return `${check} Build started`;
   }
 
   let match = msg.match(/^Using Railway workspace "(.+)"\.$/);
-  if (match) return `${CHECK} Railway workspace: ${match[1]}`;
+  if (match) return `${check} Railway workspace: ${match[1]}`;
 
   match = msg.match(/^Created Railway project (.+) \((.+)\)\.$/);
-  if (match) return `${CHECK} Created Railway project ${match[1]} (${match[2]})`;
+  if (match) return `${check} Created Railway project ${match[1]} (${match[2]})`;
 
   match = msg.match(/^First deploy of (.+) to existing Railway project (.+)\.$/);
-  if (match) return `${CHECK} Railway project: ${match[2]}`;
+  if (match) return `${check} Railway project: ${match[2]}`;
 
   match = msg.match(/^Redeploying (.+) to Railway project (.+)\.$/);
-  if (match) return `${CHECK} Railway project: ${match[2]}`;
+  if (match) return `${check} Railway project: ${match[2]}`;
 
   match = msg.match(/^Created Railway service (.+)\.$/);
-  if (match) return `${CHECK} Created Railway service ${match[1]}`;
+  if (match) return `${check} Created Railway service ${match[1]}`;
 
   match = msg.match(/^Using existing Railway service (.+)\.$/);
-  if (match) return `${CHECK} Railway service: ${match[1]}`;
+  if (match) return `${check} Railway service: ${match[1]}`;
 
   match = msg.match(/^Volume "(.+)" mounted at (.+)\.$/);
-  if (match) return `${CHECK} Mounted volume ${match[1]} at ${match[2]}`;
+  if (match) return `${check} Mounted volume ${match[1]} at ${match[2]}`;
 
   match = msg.match(/^Public URL: (.+)$/);
-  if (match) return `${CHECK} Public URL: ${match[1]}`;
+  if (match) return `${check} Public URL: ${match[1]}`;
 
   match = msg.match(/^Pushed (.+ env var\(s\)) to Railway\.$/);
-  if (match) return `${CHECK} Pushed ${match[1]} to Railway`;
+  if (match) return `${check} Pushed ${match[1]} to Railway`;
 
   match = msg.match(/^Railway deployment finished: (.+)\.$/);
-  if (match) return `${CHECK} Build successful (${match[1]})`;
+  if (match) return `${check} Build successful (${match[1]})`;
 
   match = msg.match(/^Deployment health verified: (.+)$/);
-  if (match) return `${CHECK} Health check passed: ${match[1]}`;
+  if (match) return `${check} Health check passed: ${match[1]}`;
 
   match = msg.match(/^Service status: (.+)\.$/);
-  if (match) return `${CHECK} Railway status: ${match[1]}`;
+  if (match) return `${check} Railway status: ${match[1]}`;
 
   match = msg.match(
     /^Railway deployment status not final yet; continuing with health check \((.+)\)\.$/,
