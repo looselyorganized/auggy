@@ -29,6 +29,16 @@ export class RailwayNotLoggedInError extends Error {
   }
 }
 
+export class RailwayWorkspaceRequiredError extends Error {
+  constructor(detail: string) {
+    super(
+      `Railway workspace required: ${detail}\n` +
+        "Run `auggy deploy --workspace <workspace>` or enter a Railway workspace when prompted.",
+    );
+    this.name = "RailwayWorkspaceRequiredError";
+  }
+}
+
 interface SpawnHandle {
   exited: Promise<number>;
   stdout: ReadableStream<Uint8Array>;
@@ -102,7 +112,7 @@ const defaultInteractiveSpawn: RailwayInteractiveSpawnFactory = (cmd, opts = {})
 export interface RailwayCli {
   checkPresence(): Promise<true>;
   checkAuth(): Promise<string>;
-  createProject(args: { projectName: string; cwd: string }): Promise<string>;
+  createProject(args: { projectName: string; workspace?: string; cwd: string }): Promise<string>;
   linkProject(args: { projectId: string; cwd: string }): Promise<void>;
   linkService(args: { serviceName: string; cwd: string }): Promise<void>;
   link(args: { projectId: string; serviceName: string; cwd: string }): Promise<void>;
@@ -208,8 +218,22 @@ export function createRailwayCli(opts: CreateRailwayCliOptions = {}): RailwayCli
       return match ? match[1]!.trim() : stdout.trim();
     },
 
-    async createProject({ projectName, cwd }) {
-      const { stdout } = await runOrThrow(["init", "--name", projectName, "--json"], { cwd });
+    async createProject({ projectName, workspace, cwd }) {
+      const args = ["init", "--name", projectName];
+      const cleanWorkspace = workspace?.trim();
+      if (cleanWorkspace) args.push("--workspace", cleanWorkspace);
+      args.push("--json");
+
+      let stdout: string;
+      try {
+        ({ stdout } = await runOrThrow(args, { cwd }));
+      } catch (err) {
+        const message = (err as Error).message;
+        if (!cleanWorkspace && isWorkspaceRequiredFailure(message)) {
+          throw new RailwayWorkspaceRequiredError(message);
+        }
+        throw err;
+      }
       const fromInit = extractProjectId(stdout);
       if (fromInit) return fromInit;
       const status = await this.status({ cwd });
@@ -324,6 +348,10 @@ function extractProjectId(stdout: string): string | null {
   }
   const match = stdout.match(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/i);
   return match?.[0] ?? null;
+}
+
+function isWorkspaceRequiredFailure(value: string): boolean {
+  return /--workspace required/i.test(value) || /workspace required/i.test(value);
 }
 
 function isTransientRailwayFailure(stdout: string, stderr: string): boolean {

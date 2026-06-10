@@ -31,7 +31,7 @@ import { readAgentName, resolveConfigPath } from "../resolve-config";
 import { stageBundle } from "../deploy/bundle";
 import { generateDockerfile, generateEntrypoint } from "../deploy/dockerfile";
 import { waitForHealth, type HealthCheckOptions, type HealthCheckResult } from "../deploy/health";
-import type { RailwayCli } from "../deploy/railway-cli";
+import { RailwayWorkspaceRequiredError, type RailwayCli } from "../deploy/railway-cli";
 import { loadSecretsPlan } from "../deploy/secrets";
 import { getAuggyVersion } from "../scaffold-package-json";
 
@@ -56,6 +56,8 @@ export interface DeployOptions {
   promptProjectName: (defaultName: string) => Promise<string>;
   /** Prompt the operator for a Railway project ID. */
   promptProjectId: () => Promise<string>;
+  /** Prompt the operator for a Railway workspace ID or name when Railway requires one. */
+  promptWorkspace: () => Promise<string>;
   /** Prompt the operator for yes/no confirmation. Receives a human-readable message. */
   promptConfirm: (message: string) => Promise<boolean>;
   logger: DeployLogger;
@@ -66,6 +68,8 @@ export interface DeployOptions {
    * create a new service named after the agent.
    */
   service?: string;
+  /** Railway workspace ID or name used when creating a new project. */
+  workspace?: string;
 }
 
 export interface DeployWaitOptions {
@@ -260,9 +264,17 @@ export async function runDeploy(
     const target = await opts.promptProjectTarget();
     if (target === "new") {
       const projectName = await opts.promptProjectName(name);
-      projectId = await withProgress(opts, `Creating Railway project ${projectName}`, () =>
-        opts.cli.createProject({ projectName, cwd: stagingDir }),
-      );
+      const createProject = (workspace?: string) =>
+        withProgress(opts, `Creating Railway project ${projectName}`, () =>
+          opts.cli.createProject({ projectName, workspace, cwd: stagingDir }),
+        );
+      try {
+        projectId = await createProject(opts.workspace);
+      } catch (err) {
+        if (!(err instanceof RailwayWorkspaceRequiredError)) throw err;
+        const workspace = await opts.promptWorkspace();
+        projectId = await createProject(workspace);
+      }
       projectAlreadyLinked = true;
       opts.logger.info(`Created Railway project ${projectName} (${projectId}).`);
     } else {

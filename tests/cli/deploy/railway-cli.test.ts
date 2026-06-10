@@ -3,6 +3,7 @@ import {
   createRailwayCli,
   RailwayCliMissingError,
   RailwayNotLoggedInError,
+  RailwayWorkspaceRequiredError,
   type RailwaySpawnFactory,
   type RailwayInteractiveSpawnFactory,
 } from "../../../src/cli/deploy/railway-cli";
@@ -82,6 +83,44 @@ describe("railway-cli", () => {
     const id = await cli.createProject({ projectName: "zip", cwd: "/tmp/staging" });
     expect(id).toBe("proj_created");
     expect(calls[0]!.cmd).toEqual(["railway", "init", "--name", "zip", "--json"]);
+  });
+
+  test("createProject includes --workspace when provided", async () => {
+    const { factory, calls } = mockSpawn(() => ({
+      stdout: JSON.stringify({ project: { id: "proj_created" } }),
+      stderr: "",
+      exitCode: 0,
+    }));
+    const cli = createRailwayCli({ spawn: factory });
+    const id = await cli.createProject({
+      projectName: "zip",
+      workspace: "looselyorganized",
+      cwd: "/tmp/staging",
+    });
+
+    expect(id).toBe("proj_created");
+    expect(calls[0]!.cmd).toEqual([
+      "railway",
+      "init",
+      "--name",
+      "zip",
+      "--workspace",
+      "looselyorganized",
+      "--json",
+    ]);
+  });
+
+  test("createProject throws a typed workspace error when Railway requires --workspace", async () => {
+    const { factory } = mockSpawn(() => ({
+      stdout: "",
+      stderr: "--workspace required in non-interactive mode (multiple workspaces available)",
+      exitCode: 1,
+    }));
+    const cli = createRailwayCli({ spawn: factory });
+
+    await expect(
+      cli.createProject({ projectName: "zip", cwd: "/tmp/staging" }),
+    ).rejects.toBeInstanceOf(RailwayWorkspaceRequiredError);
   });
 
   test("createProject falls back to status when init output has no id", async () => {

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { getAgent, seedAgentForTest, setCloud } from "../../src/cli/agent-index";
 import { type DeployOptions, runDeploy } from "../../src/cli/commands/deploy";
-import type { RailwayCli } from "../../src/cli/deploy/railway-cli";
+import { RailwayWorkspaceRequiredError, type RailwayCli } from "../../src/cli/deploy/railway-cli";
 import { getAuggyVersion } from "../../src/cli/scaffold-package-json";
 
 interface MockCliCalls {
@@ -18,7 +18,7 @@ interface MockCliCalls {
   status: number;
   destroyService: number;
   logs: number;
-  createProject: Array<{ projectName: string; cwd: string }>;
+  createProject: Array<{ projectName: string; workspace?: string; cwd: string }>;
   linkProject: Array<{ projectId: string; cwd: string }>;
   linkService: Array<{ serviceName: string; cwd: string }>;
   createService: Array<{ serviceName: string; cwd: string }>;
@@ -55,8 +55,8 @@ function mockRailwayCli(): { cli: RailwayCli; calls: MockCliCalls; capturedCwds:
       calls.link.push({ projectId, serviceName, cwd });
       capturedCwds.push(cwd);
     },
-    async createProject({ projectName, cwd }) {
-      calls.createProject.push({ projectName, cwd });
+    async createProject({ projectName, workspace, cwd }) {
+      calls.createProject.push({ projectName, workspace, cwd });
       capturedCwds.push(cwd);
       return "proj_created";
     },
@@ -116,6 +116,7 @@ function baseDeployOptions(
     promptProjectTarget: async () => "existing",
     promptProjectName: async (defaultName) => defaultName,
     promptProjectId: async () => "proj_abc",
+    promptWorkspace: async () => "workspace_abc",
     promptConfirm: async () => true,
     logger: { info: () => {}, warn: () => {}, error: () => {} },
     healthCheck: {
@@ -237,6 +238,53 @@ describe("runDeploy", () => {
     expect(calls.createService).toEqual([expect.objectContaining({ serviceName: "zip" })]);
     expect(result.projectId).toBe("proj_created");
     expect(getAgent("zip", { auggyDir })?.cloud?.projectId).toBe("proj_created");
+  });
+
+  test("first deploy prompts for Railway workspace when project creation requires it", async () => {
+    const { cli, calls } = mockRailwayCli();
+    let promptWorkspaceCalled = false;
+    cli.createProject = async ({ projectName, workspace, cwd }) => {
+      calls.createProject.push({ projectName, workspace, cwd });
+      if (!workspace) {
+        throw new RailwayWorkspaceRequiredError("--workspace required");
+      }
+      return "proj_created_workspace";
+    };
+
+    const result = await runDeploy(
+      "zip",
+      baseDeployOptions(cli, auggyDir, {
+        promptProjectTarget: async () => "new",
+        promptProjectName: async () => "zip-project",
+        promptWorkspace: async () => {
+          promptWorkspaceCalled = true;
+          return "looselyorganized";
+        },
+      }),
+    );
+
+    expect(promptWorkspaceCalled).toBe(true);
+    expect(calls.createProject).toEqual([
+      expect.objectContaining({ projectName: "zip-project", workspace: undefined }),
+      expect.objectContaining({ projectName: "zip-project", workspace: "looselyorganized" }),
+    ]);
+    expect(result.projectId).toBe("proj_created_workspace");
+  });
+
+  test("--workspace is used when creating a new Railway project", async () => {
+    const { cli, calls } = mockRailwayCli();
+    await runDeploy(
+      "zip",
+      baseDeployOptions(cli, auggyDir, {
+        workspace: "looselyorganized",
+        promptProjectTarget: async () => "new",
+        promptProjectName: async () => "zip-project",
+      }),
+    );
+
+    expect(calls.createProject).toEqual([
+      expect.objectContaining({ projectName: "zip-project", workspace: "looselyorganized" }),
+    ]);
   });
 
   test("first deploy can run from a project-local agent.yaml outside ~/.auggy", async () => {
