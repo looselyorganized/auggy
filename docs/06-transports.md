@@ -661,6 +661,8 @@ export function myAugment(): Augment {
 
 - `"bearer"` — the route inherits webTransport's bearer-token check. Use for any route that represents a creator-authenticated action.
 - `"none"` — the route accepts any caller. Use ONLY for genuinely public callbacks (email click-backs, OAuth redirects). The boot log emits a `console.warn` per `auth: "none"` route so operators see the unauthenticated surfaces.
+- `"visitor.optional"` — the route accepts anonymous callers but resolves a recognized visitor when a valid `x-visitor-token` is present. The boot log warns because the route is still anonymous-callable.
+- `"visitor.required"` — the route requires a valid `x-visitor-token` minted by `visitorAuth`. Missing, invalid, expired, wrong-agent, or revoked tokens return `401 {"error":"visitor-auth-required"}`. Handler auth context includes `visitorId` and, when `visitorAuth` is mounted, `email`, `verifiedAt`, and `reverifyDueAt`.
 
 ### Reserved paths
 
@@ -715,7 +717,7 @@ CIDR ranges are not yet supported (v1 keeps it simple); list the exact IPs.
 | Status | Trigger |
 |---|---|
 | 200 | Handler returned a 2xx Response. |
-| 401 | `auth: "bearer"` route, missing/wrong bearer token. |
+| 401 | `auth: "bearer"` route with missing/wrong bearer token, or `auth: "visitor.required"` route with missing/invalid visitor token. |
 | 404 | No augment route matches the requested (method, path). |
 | 405 | Augment registered the path for a different method. `Allow:` header lists the registered method. |
 | 413 | Request `content-length` exceeded `maxBodyBytes`. |
@@ -727,10 +729,10 @@ CIDR ranges are not yet supported (v1 keeps it simple); list the exact IPs.
 
 - HTTP only — no WebSocket route registration at v1.
 - Methods: `GET` and `POST`. PUT/DELETE/PATCH not supported (no consumer needs them; smaller surface).
-- Exact path match — no patterns (`/items/:id`) or prefix routes.
+- Exact paths and full-segment path params are supported (`/items/:id`). Prefix routes are not supported.
 - No streaming response support — handlers return discrete `Response` objects. AG-UI's SSE stays exclusive to `/agent/run`.
 - Routes are frozen at `agent.start()` — no dynamic add/remove during runtime.
-- Per-route auth schemes are `bearer | none` only. For OAuth/HMAC/custom schemes, augments wrap their handler with the additional check.
+- Per-route auth schemes are `bearer`, `none`, `visitor.optional`, and `visitor.required`. For OAuth/HMAC/custom schemes, augments wrap their handler with the additional check.
 
 ## The `/console` route
 

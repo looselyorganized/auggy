@@ -9,6 +9,34 @@
 - Context block: per-turn summary of the active peer's verification state.
 - SQLite store: `<agent-dir>/visitor-auth.db` — token + verified-visitor tables.
 
+## App-backend route auth
+
+When `visitorAuth` is mounted, augment HTTP routes can use visitor-token auth in
+addition to the existing `none` and `bearer` modes:
+
+```ts
+defineRoute.get("/catalog", {
+  auth: "visitor.optional",
+  handler: async ({ auth }) => {
+    // auth.state is "anonymous" or "recognized"
+  },
+});
+
+defineRoute.get("/orders/:id", {
+  auth: "visitor.required",
+  handler: async ({ auth }) => {
+    // auth.state is "recognized"; auth.visitorId and auth.email are available
+  },
+});
+```
+
+- `visitor.optional` accepts anonymous callers and passes `{ mode: "visitor", state: "anonymous" }` when no valid `x-visitor-token` is present.
+- `visitor.required` requires a valid `x-visitor-token`; missing, invalid, expired, wrong-agent, or revoked tokens return `401 { "error": "visitor-auth-required" }`.
+- Recognized route context includes `visitorId`, token timestamps, and visitorAuth metadata (`email`, `verifiedAt`, `reverifyDueAt`). Email is looked up from the visitorAuth store; it is not embedded in the browser token.
+
+This is the app-backend path: deterministic frontend routes can require a
+verified visitor without routing every request through the model.
+
 ## Configuration
 
 Add to `agent.yaml`:

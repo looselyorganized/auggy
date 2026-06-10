@@ -161,4 +161,54 @@ describe("createOpenApiDocument", () => {
       },
     });
   });
+
+  test("exports visitor route auth as x-visitor-token security", () => {
+    const doc = createOpenApiDocument({
+      agent: { name: "zip", configPath: "/tmp/zip/agent.yaml" },
+      summary: {
+        totalRoutes: 2,
+        publicRoutes: 1,
+        privateRoutes: 1,
+        publicRoutePaths: ["GET /catalog"],
+      },
+      routes: [
+        {
+          method: "GET",
+          path: "/catalog",
+          augmentName: "catalog",
+          auth: "visitor.optional",
+          params: [],
+          public: true,
+          security: "public",
+        },
+        {
+          method: "GET",
+          path: "/orders/:id",
+          augmentName: "orders",
+          auth: "visitor.required",
+          params: ["id"],
+          public: false,
+          security: "private",
+        },
+      ],
+    }) as {
+      paths: Record<string, Record<string, Record<string, unknown>>>;
+      components?: Record<string, unknown>;
+    };
+
+    expect(doc.paths["/catalog"]?.get?.security).toEqual([{}, { visitorTokenAuth: [] }]);
+    expect(doc.paths["/orders/{id}"]?.get?.security).toEqual([{ visitorTokenAuth: [] }]);
+    expect(doc.paths["/orders/{id}"]?.get?.responses).toMatchObject({
+      "401": { description: "Unauthorized" },
+    });
+    expect(doc.components).toEqual({
+      securitySchemes: {
+        visitorTokenAuth: {
+          type: "apiKey",
+          in: "header",
+          name: "x-visitor-token",
+        },
+      },
+    });
+  });
 });

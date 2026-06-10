@@ -262,9 +262,9 @@ Useful CLI affordances:
 
 The current route surface is intentionally narrow:
 
-- Exact-match routes
+- Exact routes and full-segment path params
 - `GET` and `POST`
-- `auth: "bearer"` or `auth: "none"`
+- `auth: "bearer"`, `"none"`, `"visitor.optional"`, or `"visitor.required"`
 - Per-route body cap
 - Per-route timeout
 - Per-route rate limit

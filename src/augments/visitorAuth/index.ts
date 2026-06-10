@@ -441,6 +441,24 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
     return !!row?.revoked;
   }
 
+  function resolveVisitorIdentity(visitorId: string): {
+    visitorId: string;
+    email: string;
+    verifiedAt: number;
+    reverifyDueAt: number;
+  } | null {
+    if (!booted) return null;
+    if (store.isVisitorIdRevoked(visitorId)) return null;
+    const row = store.findVisitorById(visitorId);
+    if (!row || row.revoked) return null;
+    return {
+      visitorId: row.visitorId,
+      email: row.email,
+      verifiedAt: row.verifiedAt,
+      reverifyDueAt: row.reverifyDueAt,
+    };
+  }
+
   async function adminInfo(): Promise<AdminInfoBlock> {
     const visitors = store.listVerifiedVisitors();
     const isProd = process.env.NODE_ENV === "production";
@@ -513,7 +531,8 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
     },
   };
 
-  const augment: Augment & { isVisitorRevoked: (visitorId: string) => boolean } = {
+  const augment: Augment &
+    Pick<VisitorAuthAugmentExtras, "isVisitorRevoked" | "resolveVisitorIdentity"> = {
     name: "visitor-auth",
     type: "visitorAuth",
     category: "guardrails",
@@ -522,6 +541,7 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
     adminInfo,
     adminActions,
     isVisitorRevoked,
+    resolveVisitorIdentity,
     httpRoutes: [
       // -----------------------------------------------------------------------
       // GET /visitor-auth/verify?token=<uuid>

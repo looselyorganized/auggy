@@ -34,6 +34,10 @@ curl -X POST "http://localhost:8080/leads/create" \
   -d '{"name":"Ada","email":"ada@example.com","need":"A birthday gift package","timeline":"this week","budgetUsd":250}'
 ```
 
-`auggy doctor` lists the custom routes and marks `auth: "none"` routes as public.
+`auggy doctor` lists the custom routes and marks public routes (`auth: "none"` or
+`auth: "visitor.optional"`) as public.
 
-This example intentionally keeps app routes public. In production, prefer `auth: "bearer"` unless the route is meant for anonymous visitors or external callbacks.
+This example intentionally keeps app routes public. In production, prefer
+`auth: "visitor.required"` for customer-specific data, `auth: "bearer"` for
+creator/admin actions, and `auth: "none"` only for intentionally public routes
+or external callbacks.

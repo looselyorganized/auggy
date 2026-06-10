@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { collectAugmentRoutes } from "../../src/kernel/route-collector";
 import { createRouteManifest, summarizeRouteManifest } from "../../src/kernel/route-manifest";
-import type { Augment, AugmentHttpRoute } from "../../src/types";
+import type { Augment, AugmentHttpRoute, AugmentHttpRouteAuth } from "../../src/types";
 
 function aug(name: string, routes: AugmentHttpRoute[]): Augment {
   return { name, httpRoutes: routes };
@@ -10,7 +10,7 @@ function aug(name: string, routes: AugmentHttpRoute[]): Augment {
 function route(
   method: "GET" | "POST",
   path: string,
-  auth: "bearer" | "none" = "bearer",
+  auth: AugmentHttpRouteAuth = "bearer",
   extra: Partial<AugmentHttpRoute> = {},
 ): AugmentHttpRoute {
   return { method, path, auth, handler: async () => new Response("ok"), ...extra };
@@ -81,15 +81,17 @@ describe("route manifest", () => {
   test("summarizes public and private route posture", () => {
     const collected = collectAugmentRoutes([
       aug("public", [route("GET", "/services", "none")]),
+      aug("visitor-aware", [route("GET", "/recommendations", "visitor.optional")]),
+      aug("visitor-private", [route("GET", "/orders/:id", "visitor.required")]),
       aug("private", [route("POST", "/orders/create", "bearer")]),
     ]);
     const manifest = createRouteManifest(collected.routes);
 
     expect(summarizeRouteManifest(manifest)).toEqual({
-      totalRoutes: 2,
-      publicRoutes: 1,
-      privateRoutes: 1,
-      publicRoutePaths: ["GET /services"],
+      totalRoutes: 4,
+      publicRoutes: 2,
+      privateRoutes: 2,
+      publicRoutePaths: ["GET /services", "GET /recommendations"],
     });
   });
 });

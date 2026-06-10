@@ -53,6 +53,53 @@ describe("visitorAuth (skeleton)", () => {
     expect(aug.httpRoutes?.[1]?.method).toBe("POST");
   });
 
+  test("resolveVisitorIdentity returns metadata for active visitors and null for revoked visitors", async () => {
+    const store = createSqliteVisitorAuthStore({ dbPath });
+    store.initialize();
+    store.recordVerifiedVisitor({
+      visitorId: "vis_active",
+      email: "alice@example.com",
+      verifiedAt: 1000,
+      lastSeenAt: 1000,
+      reverifyDueAt: 2000,
+      revoked: false,
+      revokedAt: null,
+      revokedReason: null,
+    });
+    store.recordVerifiedVisitor({
+      visitorId: "vis_revoked",
+      email: "bob@example.com",
+      verifiedAt: 1000,
+      lastSeenAt: 1000,
+      reverifyDueAt: 2000,
+      revoked: true,
+      revokedAt: 1500,
+      revokedReason: "test",
+    });
+    store.close();
+
+    const aug = visitorAuth({
+      publicUrl: "https://example.com",
+      dbPath,
+      agentMail: { apiKey: "am_x", inboxId: "ibx_x" },
+      signingKey: "sig",
+      _agentMailClient: fakeAgentMail(),
+    });
+    await aug.onBoot?.();
+    try {
+      expect(aug.resolveVisitorIdentity("vis_active")).toEqual({
+        visitorId: "vis_active",
+        email: "alice@example.com",
+        verifiedAt: 1000,
+        reverifyDueAt: 2000,
+      });
+      expect(aug.resolveVisitorIdentity("vis_revoked")).toBeNull();
+      expect(aug.resolveVisitorIdentity("vis_missing")).toBeNull();
+    } finally {
+      await aug.onShutdown?.();
+    }
+  });
+
   test("factory throws for missing publicUrl", () => {
     expect(() =>
       visitorAuth({

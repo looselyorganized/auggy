@@ -183,7 +183,10 @@ function resolveSkills(opts: Record<string, unknown>, agentDir: string): Augment
 function resolveWebTransport(
   opts: Record<string, unknown>,
   agentDir: string,
-  lateBindings: { revocationCheck: ((id: string) => boolean) | null },
+  lateBindings: {
+    revocationCheck: ((id: string) => boolean) | null;
+    identityLookup: VisitorAuthAugmentExtras["resolveVisitorIdentity"] | null;
+  },
 ): Augment {
   const vtBase = opts.visitorTokens as
     | { enabled?: boolean; ttlSeconds?: number; signingKey?: string; agentBinding?: string }
@@ -201,6 +204,7 @@ function resolveWebTransport(
       ? {
           ...vtBase,
           revocationCheck: (id: string) => lateBindings.revocationCheck?.(id) ?? false,
+          identityLookup: (id: string) => lateBindings.identityLookup?.(id) ?? null,
         }
       : undefined,
     // G3: explicit yaml value must reach webTransport so the yaml > env >
@@ -359,8 +363,12 @@ export async function resolveAugments(
   // Deferred-closure for C1: webTransport gets a stable callback reference
   // before visitorAuth is resolved; the callback reads lateBindings.revocationCheck
   // which is populated after the loop completes.
-  const lateBindings: { revocationCheck: ((id: string) => boolean) | null } = {
+  const lateBindings: {
+    revocationCheck: ((id: string) => boolean) | null;
+    identityLookup: VisitorAuthAugmentExtras["resolveVisitorIdentity"] | null;
+  } = {
     revocationCheck: null,
+    identityLookup: null,
   };
 
   // Fix F2 — single-source signingKey + conservative handling of operator's
@@ -561,6 +569,9 @@ export async function resolveAugments(
   const va = vaIdx >= 0 ? (augments[vaIdx] as Augment & VisitorAuthAugmentExtras) : undefined;
   if (va?.isVisitorRevoked) {
     lateBindings.revocationCheck = va.isVisitorRevoked.bind(va);
+  }
+  if (va?.resolveVisitorIdentity) {
+    lateBindings.identityLookup = va.resolveVisitorIdentity.bind(va);
   }
 
   // Fix F18: throw when multiple visitorAuth augments are declared.

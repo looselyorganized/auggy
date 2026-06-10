@@ -394,7 +394,7 @@ async function checkAugmentRoutes(
       message: `${summary.totalRoutes} route(s): ${summary.publicRoutes} public, ${summary.privateRoutes} private`,
       fix:
         summary.publicRoutes > 0
-          ? 'Review public routes and confirm auth: "none" is intentional.'
+          ? 'Review public routes and confirm auth: "none" or auth: "visitor.optional" is intentional.'
           : undefined,
     },
   ];
@@ -405,7 +405,7 @@ async function checkAugmentRoutes(
       status: route.public ? "warn" : "pass",
       message: formatRouteManifestEntry(route),
       fix: route.public
-        ? 'Set auth: "bearer" unless this route is intentionally public.'
+        ? 'Set auth: "bearer" or auth: "visitor.required" unless this route is intentionally public.'
         : undefined,
     });
   }

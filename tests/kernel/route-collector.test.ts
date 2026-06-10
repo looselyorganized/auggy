@@ -4,7 +4,7 @@ import {
   RESERVED_PATHS,
   RESERVED_PREFIXES,
 } from "../../src/kernel/route-collector";
-import type { Augment, AugmentHttpRoute } from "../../src/types";
+import type { Augment, AugmentHttpRoute, AugmentHttpRouteAuth } from "../../src/types";
 
 function aug(name: string, routes: AugmentHttpRoute[]): Augment {
   return { name, httpRoutes: routes };
@@ -13,7 +13,7 @@ function aug(name: string, routes: AugmentHttpRoute[]): Augment {
 function route(
   method: "GET" | "POST",
   path: string,
-  auth: "bearer" | "none" = "bearer",
+  auth: AugmentHttpRouteAuth = "bearer",
 ): AugmentHttpRoute {
   return { method, path, auth, handler: async () => new Response("ok") };
 }
@@ -129,6 +129,17 @@ describe("collectAugmentRoutes", () => {
     const result = collectAugmentRoutes([aug("a", [route("GET", "/x"), route("POST", "/x")])]);
     expect(result.routes).toHaveLength(2);
     expect(result.errors).toEqual([]);
+  });
+
+  test("allows visitor route auth modes", () => {
+    const result = collectAugmentRoutes([
+      aug("visitors", [
+        route("GET", "/profile", "visitor.required"),
+        route("GET", "/recommendations", "visitor.optional"),
+      ]),
+    ]);
+    expect(result.errors).toEqual([]);
+    expect(result.routes.map((r) => r.auth)).toEqual(["visitor.required", "visitor.optional"]);
   });
 
   test("rejects path that does not start with '/'", () => {
