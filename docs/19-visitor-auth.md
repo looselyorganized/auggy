@@ -166,6 +166,7 @@ Local-only flows are always admitted without ceremony:
 | `https://demo.example.com` | console mode **rejected** unless `allowConsoleInProduction: true` |
 
 For production-grade deployments serving external visitors, use the AgentMail transport (the default).
+AgentMail recommends sending both plain-text and HTML email bodies for deliverability; visitorAuth does this for verification emails.
 
 ### `notifyOnFirstVerify` is incompatible with console mode
 
@@ -175,7 +176,7 @@ The `notifyOnFirstVerify` option (operator-alert email on each new visitor) cann
 
 | Variable | Why |
 |---|---|
-| `AGENTMAIL_API_KEY` | AgentMail bearer token (`am_*`) |
+| `AGENTMAIL_API_KEY` | AgentMail bearer token (`am_*`). Prefer an inbox-scoped, permission-whitelisted key with `inbox_read` and `message_send`. |
 | `AGENTMAIL_INBOX_ID` | Inbox the verify email is sent FROM |
 | `AUGGY_PUBLIC_URL` | Base URL operators reach the agent at; embedded in the magic link |
 | `VISITOR_SIGNING_KEY` | HMAC key for visitor tokens; set only in `visitorAuth` — auto-injected into webTransport |
@@ -184,6 +185,7 @@ The `notifyOnFirstVerify` option (operator-alert email on each new visitor) cann
 ## Key constraints
 
 - Set `signingKey` only in `visitorAuth`. The augment-resolver auto-injects it into `webTransport.visitorTokens` at boot. Setting it in both places triggers a warning and `visitorAuth`'s value takes precedence. If they differ, visitor tokens minted by visitorAuth will fail webTransport's verification.
+- AgentMail keys should be least-privilege. visitorAuth uses `inbox_read` during boot healthcheck and `message_send` for verification delivery, so a permission-whitelisted key needs both.
 - `publicUrl` MUST point to a host where the agent's `/visitor-auth/verify` route is reachable from the public internet. If you're running behind a tunnel (ngrok, Cloudflare), use the tunnel URL; if you're running on Railway, use the Railway domain.
 - Per-anonymous-peer rate limits are **in-memory only** — restart resets state. The verified_visitors UNIQUE-on-email constraint catches accidental double-verification.
 
@@ -227,7 +229,6 @@ If a revoke is interrupted (e.g., Ctrl-C between the visitor-auth UPDATE and the
 - Strong identity (KYC). Email-bound is durable, not strong.
 - Cookie-based cross-tab handoff (only localStorage, same-origin).
 - Operator-customizable verify-success HTML.
-- HTML-bodied verify emails (plain-text only at v1).
 
 ## Troubleshooting
 
@@ -238,4 +239,5 @@ If a revoke is interrupted (e.g., Ctrl-C between the visitor-auth UPDATE and the
 | Verify link returns 410 "expired" | More than 15 minutes between send and click | Re-issue |
 | Verify link returns 410 "consumed" | Token was already used (visitor double-clicked, or someone with the link beat them) | Re-issue |
 | Visitor verifies but agent doesn't recognize them next visit | Cleared localStorage, or `VISITOR_SIGNING_KEY` rotated | Re-verify |
+| AgentMail healthcheck returns 403 | API key lacks access to the configured inbox, or a permission whitelist omitted `inbox_read` | Use an inbox-scoped key for `AGENTMAIL_INBOX_ID` with `inbox_read` and `message_send` |
 | `auggy visitors --revoke` errors "memory.db not found" | layeredMemory hasn't created its DB yet, or path mismatch | Check `layeredMemoryDbPath` in `agent.yaml` |

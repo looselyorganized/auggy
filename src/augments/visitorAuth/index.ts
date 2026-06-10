@@ -125,6 +125,14 @@ function looksLikePlaceholder(value: string): boolean {
   return /^\$\{[A-Z0-9_]+\}$/.test(value);
 }
 
+function emailHtmlEscape(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;");
+}
+
 /**
  * True iff the hostname of the given URL is loopback / private / link-local —
  * i.e. unreachable from the public internet under normal routing. Used by the
@@ -308,14 +316,26 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
   function buildEmailBody(
     verifyUrl: string,
     ttlMinutes: number,
-  ): { subject: string; text: string } {
+  ): { subject: string; text: string; html: string } {
     const subject = `${subjectPrefix}Verify your email`;
     const text =
       `Click the link below to verify your email.\n\n` +
       `${verifyUrl}\n\n` +
       `The link expires in ${ttlMinutes} minutes and may only be used once. ` +
       `If you didn't request this, ignore this email.`;
-    return { subject, text };
+    const safeUrl = emailHtmlEscape(verifyUrl);
+    const html = `<!doctype html>
+<html>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"></head>
+<body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;line-height:1.5;color:#111827;">
+  <p>Click the button below to verify your email.</p>
+  <p><a href="${safeUrl}" style="display:inline-block;padding:10px 16px;background:#111827;color:#ffffff;text-decoration:none;border-radius:6px;">Verify email</a></p>
+  <p>Or copy and paste this link into your browser:</p>
+  <p><a href="${safeUrl}">${safeUrl}</a></p>
+  <p style="color:#6b7280;font-size:13px;">The link expires in ${ttlMinutes} minutes and may only be used once. If you didn't request this, ignore this email.</p>
+</body>
+</html>`;
+    return { subject, text, html };
   }
 
   async function requestEmailVerification(input: {
@@ -389,7 +409,7 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
       sourceMessageId,
     });
     const verifyUrl = buildVerifyUrl(token);
-    const { subject, text } = buildEmailBody(verifyUrl, tokenTtlMin);
+    const { subject, text, html } = buildEmailBody(verifyUrl, tokenTtlMin);
 
     // Send via agentmail-client.ts (direct — see plan §"Spec deviation").
     // In console mode `mailInboxId` is the routing placeholder "console";
@@ -399,6 +419,7 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
       to: [email],
       subject,
       text,
+      html,
       labels: ["visitor-auth", "verify"],
     });
 
@@ -909,9 +930,13 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
       if (health.status !== "ok") {
         const httpStatus = health.httpStatus;
         if (httpStatus === 401 || httpStatus === 403 || httpStatus === 404) {
+          const permissionHint =
+            httpStatus === 403
+              ? " If this is a permission-whitelisted AgentMail key, include inbox_read for boot healthcheck and message_send for verification delivery."
+              : "";
           throw new Error(
             `visitorAuth: AgentMail inbox "${mailInboxId}" healthcheck failed with HTTP ${httpStatus}: ${health.detail}. ` +
-              `Check AGENTMAIL_API_KEY and AGENTMAIL_INBOX_ID in .env and restart.`,
+              `Check AGENTMAIL_API_KEY and AGENTMAIL_INBOX_ID in .env and restart.${permissionHint}`,
           );
         }
         console.warn(

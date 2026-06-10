@@ -279,6 +279,23 @@ describe("visitorAuth (skeleton)", () => {
     });
   }
 
+  test("onBoot 403 points permission-whitelisted AgentMail keys at inbox_read + message_send", async () => {
+    const aug = visitorAuth({
+      publicUrl: "https://example.com",
+      dbPath,
+      agentMail: { apiKey: "am_x", inboxId: "ibx_x" },
+      signingKey: "sig",
+      _agentMailClient: fakeAgentMail({
+        getInbox: async () => ({
+          status: "failed",
+          detail: "403 forbidden",
+          httpStatus: 403,
+        }),
+      }),
+    });
+    await expect(aug.onBoot?.()).rejects.toThrow(/inbox_read.*message_send/);
+  });
+
   for (const httpStatus of [500, 502, 503, 504, 429] as const) {
     test(`onBoot warns and continues on AgentMail healthcheck HTTP ${httpStatus} (transient)`, async () => {
       const aug = visitorAuth({
@@ -589,6 +606,8 @@ describe("request_auth tool", () => {
     expect(sendCalls).toHaveLength(1);
     expect(sendCalls[0]?.to).toEqual(["alice@example.com"]);
     expect(sendCalls[0]?.text).toMatch(/https:\/\/zip\.test\/visitor-auth\/verify\?token=/);
+    expect(sendCalls[0]?.html).toMatch(/https:\/\/zip\.test\/visitor-auth\/verify\?token=/);
+    expect(sendCalls[0]?.html).toMatch(/Verify email/);
     expect(sendCalls[0]?.subject).toMatch(/verify/i);
     await aug.onShutdown?.();
   });
