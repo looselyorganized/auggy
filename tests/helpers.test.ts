@@ -81,8 +81,13 @@ describe("defineRoute", () => {
         need: z.string().min(1),
         tag: z.union([z.string(), z.array(z.string())]).optional(),
       }),
-      handler: ({ query, route }) =>
-        json({ method: route.method, need: query.need, tag: query.tag }),
+      handler: ({ query, body, route }) =>
+        json({
+          method: route.method,
+          need: query.need,
+          tag: query.tag,
+          bodyIsUndefined: body === undefined,
+        }),
     });
 
     expect(route.method).toBe("GET");
@@ -96,7 +101,12 @@ describe("defineRoute", () => {
 
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toBe("application/json");
-    expect(await res.json()).toEqual({ method: "GET", need: "gifting", tag: ["a", "b"] });
+    expect(await res.json()).toEqual({
+      method: "GET",
+      need: "gifting",
+      tag: ["a", "b"],
+      bodyIsUndefined: true,
+    });
   });
 
   it("supplies auth context when a helper route is invoked directly", async () => {
@@ -200,6 +210,55 @@ describe("defineRoute", () => {
 
     expect(res.status).toBe(201);
     expect(await res.json()).toEqual({ saved: true, email: "ada@example.com" });
+  });
+
+  it("creates a POST route that validates query params and JSON body", async () => {
+    const route = defineRoute.post("/leads/create/:source", {
+      auth: "none",
+      params: z.object({ source: z.string().min(1) }),
+      query: z.object({ dryRun: z.enum(["true", "false"]).optional() }),
+      body: z.object({
+        email: z.string().email(),
+        serviceId: z.string().min(1),
+      }),
+      handler: ({ body, query, params, route }) =>
+        json({
+          email: body.email,
+          dryRun: query.dryRun,
+          source: params.source,
+          routePath: route.path,
+        }),
+    });
+
+    const res = await route.handler(
+      new Request("http://localhost/leads/create/referral?dryRun=true", {
+        method: "POST",
+        body: JSON.stringify({ email: "ada@example.com", serviceId: "gifting" }),
+      }),
+      {
+        signal: AbortSignal.timeout(1000),
+        params: { source: "referral" },
+        routePath: "/leads/create/:source",
+      },
+    );
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      email: "ada@example.com",
+      dryRun: "true",
+      source: "referral",
+      routePath: "/leads/create/:source",
+    });
+
+    const invalidQuery = await route.handler(
+      new Request("http://localhost/leads/create/referral?dryRun=maybe", {
+        method: "POST",
+        body: JSON.stringify({ email: "ada@example.com", serviceId: "gifting" }),
+      }),
+      { signal: AbortSignal.timeout(1000), params: { source: "referral" } },
+    );
+
+    expect(invalidQuery.status).toBe(400);
   });
 
   it("returns a 400 response when POST body is invalid JSON or fails schema validation", async () => {
