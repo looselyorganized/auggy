@@ -617,7 +617,9 @@ export type HttpMethod = "GET" | "POST";
  *   recognized visitor context when `x-visitor-token` is valid. Public posture.
  * - `"visitor.required"` — the route requires a valid `x-visitor-token` and
  *   receives recognized visitor context. Missing, invalid, expired, wrong-agent,
- *   or revoked tokens fail before the handler runs.
+ *   or revoked tokens fail before the handler runs. `email` metadata is present
+ *   only when the transport is wired with visitorAuth / identityLookup; the token
+ *   itself carries only visitor id + agent binding + timestamps.
  */
 export type AugmentHttpRouteAuth = "bearer" | "none" | "visitor.optional" | "visitor.required";
 

@@ -662,7 +662,7 @@ export function myAugment(): Augment {
 - `"bearer"` — the route inherits webTransport's bearer-token check. Use for any route that represents a creator-authenticated action.
 - `"none"` — the route accepts any caller. Use ONLY for genuinely public callbacks (email click-backs, OAuth redirects). The boot log emits a `console.warn` per `auth: "none"` route so operators see the unauthenticated surfaces.
 - `"visitor.optional"` — the route accepts anonymous callers but resolves a recognized visitor when a valid `x-visitor-token` is present. The boot log warns because the route is still anonymous-callable.
-- `"visitor.required"` — the route requires a valid `x-visitor-token` minted by `visitorAuth`. Missing, invalid, expired, wrong-agent, or revoked tokens return `401 {"error":"visitor-auth-required"}`. Handler auth context includes `visitorId` and, when `visitorAuth` is mounted, `email`, `verifiedAt`, and `reverifyDueAt`.
+- `"visitor.required"` — the route requires a valid `x-visitor-token`. Missing, invalid, expired, wrong-agent, or revoked tokens return `401 {"error":"visitor-auth-required"}`. Handler auth context always includes `visitorId`; when `visitorAuth` or another `identityLookup` is mounted, it can also include `email`, `verifiedAt`, and `reverifyDueAt`.
 
 ### Reserved paths
 

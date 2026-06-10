@@ -165,8 +165,6 @@ export interface RequestAuthResult {
   message: string;
   /** Present iff status === "sent". TTL of the issued token. */
   expiresInSec?: number;
-  /** Present for app-backend request routes so frontends can preserve continuity. */
-  threadId?: string;
 }
 
 /**

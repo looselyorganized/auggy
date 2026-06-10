@@ -243,7 +243,7 @@ Optional fields on the destination:
 
 - **Suppression list is permanent.** A bounced or complained address is suppressed by AgentMail with no documented removal API. Test with a real recipient before pinning a destination in production.
 - **Key scoping.** The OTP-issued key from `agent.sign_up` is org-scoped (full access). Mint an inbox-scoped key with whitelist permissions (`message_send` only) and use that in `.env`. The org-scoped key should be rotated or kept for console use only.
-- **Recipient cap.** AgentMail supports at most 50 recipients across an email send/reply/forward. Auggy rejects over-cap AgentMail sends before making the network request.
+- **Recipient cap.** AgentMail supports at most 50 recipients across an email send/reply/forward. Auggy rejects explicit recipient arrays over that cap before making the network request; `replyAll` can still expand server-side and may be rejected by AgentMail.
 - **No idempotency on send.** AgentMail's `messages.send` does not accept an idempotency key as of this writing. Duplicate sends are possible if a network blip lands during the request. For high-stakes messages, rely on the notify augment's existing dedup window (`rateLimit.dedupThreshold`).
 - **Free tier hard cap.** 100 emails/day. The runtime's `dailyBudgetUsd` does not model AgentMail tier limits — the operator should be aware that AgentMail can refuse delivery independently of runtime budgets.
 - **Tier-side WebSocket and webhook inbound** are **not** part of this adapter. This is outbound-only. For bidirectional email (visitors emailing the agent), see the planned `emailTransport` augment.

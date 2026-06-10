@@ -895,24 +895,21 @@ describe("visitorAuth app request route", () => {
     });
   }
 
-  test("sends a magic link without a model turn and preserves provided threadId", async () => {
+  test("sends a magic link without a model turn", async () => {
     const { aug, sendCalls } = buildAug();
     await aug.onBoot?.();
 
-    const res = await aug.httpRoutes![2]!.handler(
-      requestBody({ email: "Alice@Example.com", threadId: "thread-app-1" }),
-      { signal: new AbortController().signal },
-    );
+    const res = await aug.httpRoutes![2]!.handler(requestBody({ email: "Alice@Example.com" }), {
+      signal: new AbortController().signal,
+    });
 
     expect(res.status).toBe(200);
     const result = (await res.json()) as {
       status: string;
       expiresInSec: number;
-      threadId: string;
     };
     expect(result).toMatchObject({
       status: "sent",
-      threadId: "thread-app-1",
     });
     expect(result.expiresInSec).toBeGreaterThan(0);
     expect(sendCalls).toHaveLength(1);
@@ -921,20 +918,17 @@ describe("visitorAuth app request route", () => {
     await aug.onShutdown?.();
   });
 
-  test("generates a threadId when the app request does not provide one", async () => {
-    const { aug } = buildAug();
+  test("rejects caller-supplied threadId so public apps cannot claim anonymous chat memory", async () => {
+    const { aug, sendCalls } = buildAug();
     await aug.onBoot?.();
 
-    const res = await aug.httpRoutes![2]!.handler(requestBody({ email: "alice@example.com" }), {
-      signal: new AbortController().signal,
-    });
-
-    expect(res.status).toBe(200);
-    const result = (await res.json()) as { status: string; threadId: string };
-    expect(result.status).toBe("sent");
-    expect(result.threadId).toMatch(
-      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+    const res = await aug.httpRoutes![2]!.handler(
+      requestBody({ email: "alice@example.com", threadId: "victim-thread" }),
+      { signal: new AbortController().signal },
     );
+
+    expect(res.status).toBe(400);
+    expect(sendCalls).toHaveLength(0);
     await aug.onShutdown?.();
   });
 
@@ -959,16 +953,14 @@ describe("visitorAuth app request route", () => {
     const { aug } = buildAug({ rateLimit: { perHour: 1, perDay: 3 } });
     await aug.onBoot?.();
 
-    const first = await aug.httpRoutes![2]!.handler(
-      requestBody({ email: "alice@example.com", threadId: "thread-a" }),
-      { signal: new AbortController().signal },
-    );
+    const first = await aug.httpRoutes![2]!.handler(requestBody({ email: "alice@example.com" }), {
+      signal: new AbortController().signal,
+    });
     expect(first.status).toBe(200);
 
-    const second = await aug.httpRoutes![2]!.handler(
-      requestBody({ email: "alice@example.com", threadId: "thread-b" }),
-      { signal: new AbortController().signal },
-    );
+    const second = await aug.httpRoutes![2]!.handler(requestBody({ email: "alice@example.com" }), {
+      signal: new AbortController().signal,
+    });
     expect(second.status).toBe(429);
     expect(await second.json()).toMatchObject({
       status: "rejected",
@@ -981,10 +973,9 @@ describe("visitorAuth app request route", () => {
     const { aug, sendCalls } = buildAug();
     await aug.onBoot?.();
 
-    const request = await aug.httpRoutes![2]!.handler(
-      requestBody({ email: "alice@example.com", threadId: "thread-route-verify" }),
-      { signal: new AbortController().signal },
-    );
+    const request = await aug.httpRoutes![2]!.handler(requestBody({ email: "alice@example.com" }), {
+      signal: new AbortController().signal,
+    });
     expect(request.status).toBe(200);
     const verifyUrl = sendCalls[0]!.text.match(/(https:\/\/[^\s]+)/)![1]!;
     const token = new URL(verifyUrl).searchParams.get("token")!;

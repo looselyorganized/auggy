@@ -21,8 +21,7 @@ POST /visitor-auth/request
 content-type: application/json
 
 {
-  "email": "visitor@example.com",
-  "threadId": "chat-thread-123"
+  "email": "visitor@example.com"
 }
 ```
 
@@ -32,16 +31,19 @@ Response:
 {
   "status": "sent",
   "message": "Verification email sent to visitor@example.com. The link expires in 15 minutes.",
-  "expiresInSec": 900,
-  "threadId": "chat-thread-123"
+  "expiresInSec": 900
 }
 ```
 
-- `threadId` is optional. When provided, visitorAuth binds the pending link to
-  `anon-${threadId}`, matching web chat's anonymous peer id so verification can
-  migrate anonymous memory to the verified `vis_<uuid>` id.
-- If omitted, visitorAuth generates and returns a `threadId`; frontends should
-  keep it if they want continuity after the visitor verifies.
+- This public route intentionally does **not** accept a caller-supplied
+  `threadId`. Public callers cannot prove they own an anonymous chat thread, so
+  binding arbitrary `anon-${threadId}` state here would let one visitor claim
+  another visitor's anonymous memory.
+- Route-initiated verification uses an internal `auth:<uuid>` peer id and does
+  not migrate existing anonymous chat memory. If you need anonymous memory
+  migration today, use the model-tool path (`request_auth`) from the active
+  visitor turn. A future signed anonymous-session binding can make app-route
+  migration safe.
 - The route is still protected by body validation, route rate limiting, and
   visitorAuth's per-email send limit.
 
@@ -61,17 +63,23 @@ defineRoute.get("/catalog", {
 defineRoute.get("/orders/:id", {
   auth: "visitor.required",
   handler: async ({ auth }) => {
-    // auth.state is "recognized"; auth.visitorId and auth.email are available
+    // auth.state is "recognized"; auth.visitorId is available
+    // auth.email is available when visitorAuth / identityLookup is wired
   },
 });
 ```
 
 - `visitor.optional` accepts anonymous callers and passes `{ mode: "visitor", state: "anonymous" }` when no valid `x-visitor-token` is present.
 - `visitor.required` requires a valid `x-visitor-token`; missing, invalid, expired, wrong-agent, or revoked tokens return `401 { "error": "visitor-auth-required" }`.
-- Recognized route context includes `visitorId`, token timestamps, and visitorAuth metadata (`email`, `verifiedAt`, `reverifyDueAt`). Email is looked up from the visitorAuth store; it is not embedded in the browser token.
+- Recognized route context always includes `visitorId` and token timestamps.
+  When visitorAuth is mounted through the Auggy CLI, route context also includes
+  visitorAuth metadata (`email`, `verifiedAt`, `reverifyDueAt`). Email is
+  looked up from the visitorAuth store; it is not embedded in the browser
+  token. Programmatic `webTransport` users who configure visitor tokens without
+  `identityLookup` will receive token identity only.
 
-This is the app-backend path: deterministic frontend routes can require a
-verified visitor without routing every request through the model.
+This is the app-backend path: deterministic frontend routes can require a valid
+visitor token without routing every request through the model.
 
 ## Configuration
 

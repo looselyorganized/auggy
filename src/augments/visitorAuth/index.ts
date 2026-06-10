@@ -50,18 +50,14 @@ const DEFAULT_REVERIFY_DAYS = 90;
 const DEFAULT_RATE_LIMIT = { perHour: 1, perDay: 3 };
 const VERIFY_PATH = "/visitor-auth/verify";
 const REQUEST_PATH = "/visitor-auth/request";
+const APP_REQUEST_PEER_PREFIX = "auth:";
 
-const requestAuthRouteBody = z.object({
-  email: z.string(),
-  threadId: z
-    .string()
-    .trim()
-    .min(1)
-    .max(128)
-    .regex(/^[A-Za-z0-9._:-]+$/)
-    .optional(),
-  messageId: z.string().trim().min(1).max(256).optional(),
-});
+const requestAuthRouteBody = z
+  .object({
+    email: z.string(),
+    messageId: z.string().trim().min(1).max(256).optional(),
+  })
+  .strict();
 
 type RequestAuthCode = NonNullable<RequestAuthResult["code"]>;
 
@@ -445,7 +441,6 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
       status: "sent",
       message: `Verification email sent to ${email}. The link expires in ${tokenTtlMin} minutes.`,
       expiresInSec: Math.floor(ttlMs / 1000),
-      threadId: input.threadId,
     };
   }
 
@@ -813,15 +808,18 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
             }
           }
 
-          // Anonymous→recognized peer-id migration. The verify route knows the
-          // OLD peer-id (consume.peerId from the token row) and the NEW vis_<uuid>
-          // (minted above; reuses existing visitorId on re-verify). Best-effort;
-          // failures are logged and don't block success.
-          migratePeerIdOnVerify(
-            opts.layeredMemoryDbPath === undefined ? "./memory.db" : opts.layeredMemoryDbPath,
-            consume.peerId!,
-            minted.payload.visitorId,
-          );
+          // Anonymous→recognized peer-id migration. The model-tool path binds
+          // to a real peer id from turn context, so it can migrate that peer's
+          // anonymous memory. The public app request route uses an internal
+          // auth:<uuid> peer id and must not let callers claim arbitrary
+          // anon-<threadId> memory.
+          if (consume.peerId && !consume.peerId.startsWith(APP_REQUEST_PEER_PREFIX)) {
+            migratePeerIdOnVerify(
+              opts.layeredMemoryDbPath === undefined ? "./memory.db" : opts.layeredMemoryDbPath,
+              consume.peerId,
+              minted.payload.visitorId,
+            );
+          }
 
           // Operator notification on first verify per email (optional).
           if (opts.notifyOnFirstVerify) {
@@ -872,11 +870,11 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
         maxBodyBytes: 8_192,
         rateLimit: { maxPerMinute: 20 },
         handler: async ({ body }) => {
-          const threadId = body.threadId ?? crypto.randomUUID();
+          const authRequestId = crypto.randomUUID();
           const result = await requestEmailVerification({
             email: body.email,
-            peerId: `anon-${threadId}`,
-            threadId,
+            peerId: `${APP_REQUEST_PEER_PREFIX}${authRequestId}`,
+            threadId: authRequestId,
             sourceMessageId: body.messageId ?? null,
             requireRecentEmail: false,
           });
