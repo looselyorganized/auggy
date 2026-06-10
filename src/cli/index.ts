@@ -398,7 +398,7 @@ export function formatDeployInfoLine(msg: string, style: CliStyleOptions = {}): 
   if (match) return `${check} Build successful (${match[1]})`;
 
   match = msg.match(/^Deployment health verified: (.+)$/);
-  if (match) return `${check} Health check passed: ${match[1]}`;
+  if (match) return `${check} Service is healthy: ${match[1]}`;
 
   match = msg.match(/^Service status: (.+)\.$/);
   if (match) return `${check} Railway status: ${match[1]}`;

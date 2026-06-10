@@ -101,7 +101,7 @@ describe("auggy CLI command table", () => {
       formatDeployInfoLine("Deployment health verified: https://agent.test/health", {
         color: false,
       }),
-    ).toBe("✔ Health check passed: https://agent.test/health");
+    ).toBe("✔ Service is healthy: https://agent.test/health");
   });
 
   test("formats deploy success marks in green for TTY output", () => {
