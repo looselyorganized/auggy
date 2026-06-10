@@ -626,7 +626,8 @@ export type AugmentHttpRouteAuth = "bearer" | "none";
 export interface AugmentHttpRoute {
   method: HttpMethod;
   /**
-   * Exact-match path. v1 does not support patterns or parameters.
+   * Route path. Static paths are exact-match. Parameterized paths support
+   * full-segment `:param` placeholders such as `/orders/:id`.
    * Must start with `/`. Reserved paths (cannot be registered):
    *   - "/"
    *   - "/agent/run"
@@ -664,7 +665,20 @@ export interface AugmentHttpRoute {
    * as 500 with an opaque body; the actual error is logged with the route
    * path for triage.
    */
-  handler: (req: Request, opts: { signal: AbortSignal }) => Promise<Response>;
+  handler: (
+    req: Request,
+    opts: {
+      signal: AbortSignal;
+      /** Path parameters resolved by the HTTP dispatcher for `:param` routes. */
+      params?: Record<string, string>;
+      /**
+       * Effective path after helper transforms such as `defineRoute.group()`.
+       * Raw handlers can ignore this; helper-generated handlers use it for
+       * accurate route context.
+       */
+      routePath?: string;
+    },
+  ) => Promise<Response>;
 }
 
 // === Turn Gate (2PC admission) ===

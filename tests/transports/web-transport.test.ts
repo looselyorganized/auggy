@@ -1,6 +1,7 @@
 import { describe, it, expect } from "bun:test";
 import { z } from "zod";
 import { isLoopback, normalizeIp, webTransport } from "@/transports/web-transport";
+import { defineRoute, json } from "@/helpers";
 import { defineAgent } from "@/agent";
 import { createMockModel } from "@tests/fixtures/mock-model";
 import { createIdentityAugment } from "@tests/fixtures/mock-augment";
@@ -2072,6 +2073,116 @@ describe("webTransport augment-registered routes", () => {
       expect(resp.status).toBe(200);
       const body = (await resp.json()) as { echo: string };
       expect(body.echo).toBe("hello");
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("dispatches parameterized routes and passes decoded params to the handler", async () => {
+    const model = createMockModel();
+    const port = 19300;
+    const aug = webTransport({ port, auth: { type: "bearer", token: "test-token" } });
+    const fixture: Augment = {
+      name: "items",
+      httpRoutes: [
+        defineRoute.get("/items/:id", {
+          auth: "none",
+          handler: ({ params, route }) =>
+            json({ id: params.id, path: route.path, routeParams: route.params }),
+        }),
+      ],
+    };
+    const agent = defineAgent({ name: "test", model: "mock", augments: [fixture, aug] }, model);
+    await agent.start();
+    try {
+      const resp = await fetch(`http://localhost:${port}/items/hello%20world`);
+      expect(resp.status).toBe(200);
+      expect(await resp.json()).toEqual({
+        id: "hello world",
+        path: "/items/:id",
+        routeParams: { id: "hello world" },
+      });
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("exact routes take precedence over parameterized routes", async () => {
+    const model = createMockModel();
+    const port = 19301;
+    const aug = webTransport({ port, auth: { type: "bearer", token: "test-token" } });
+    const fixture: Augment = {
+      name: "items",
+      httpRoutes: [
+        defineRoute.get("/items/:id", {
+          auth: "none",
+          handler: ({ params }) => json({ kind: "param", id: params.id }),
+        }),
+        defineRoute.get("/items/new", {
+          auth: "none",
+          handler: () => json({ kind: "exact" }),
+        }),
+      ],
+    };
+    const agent = defineAgent({ name: "test", model: "mock", augments: [fixture, aug] }, model);
+    await agent.start();
+    try {
+      const exact = await fetch(`http://localhost:${port}/items/new`);
+      expect(exact.status).toBe(200);
+      expect(await exact.json()).toEqual({ kind: "exact" });
+
+      const param = await fetch(`http://localhost:${port}/items/123`);
+      expect(param.status).toBe(200);
+      expect(await param.json()).toEqual({ kind: "param", id: "123" });
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("returns 400 when parameter validation fails", async () => {
+    const model = createMockModel();
+    const port = 19302;
+    const aug = webTransport({ port, auth: { type: "bearer", token: "test-token" } });
+    const fixture: Augment = {
+      name: "items",
+      httpRoutes: [
+        defineRoute.get("/items/:id", {
+          auth: "none",
+          params: z.object({ id: z.string().regex(/^\d+$/) }),
+          handler: ({ params }) => json({ id: params.id }),
+        }),
+      ],
+    };
+    const agent = defineAgent({ name: "test", model: "mock", augments: [fixture, aug] }, model);
+    await agent.start();
+    try {
+      const resp = await fetch(`http://localhost:${port}/items/not-a-number`);
+      expect(resp.status).toBe(400);
+      expect(await resp.json()).toEqual({ error: "bad-request", message: "Invalid request" });
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("GET request to a POST-only parameterized route returns 405 with Allow header", async () => {
+    const model = createMockModel();
+    const port = 19303;
+    const aug = webTransport({ port, auth: { type: "bearer", token: "test-token" } });
+    const fixture: Augment = {
+      name: "items",
+      httpRoutes: [
+        defineRoute.post("/items/:id", {
+          auth: "none",
+          handler: ({ params }) => json({ id: params.id }),
+        }),
+      ],
+    };
+    const agent = defineAgent({ name: "test", model: "mock", augments: [fixture, aug] }, model);
+    await agent.start();
+    try {
+      const resp = await fetch(`http://localhost:${port}/items/123`);
+      expect(resp.status).toBe(405);
+      expect(resp.headers.get("allow")).toBe("POST");
     } finally {
       await agent.stop();
     }

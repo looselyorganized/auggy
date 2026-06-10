@@ -12,6 +12,7 @@
  */
 
 import type { Augment, AugmentHttpRoute } from "../types";
+import { parseRoutePattern, routePatternsOverlap } from "./route-pattern";
 
 /**
  * Paths reserved by webTransport. Augments that try to register these get
@@ -51,6 +52,7 @@ export function collectAugmentRoutes(augments: readonly Augment[]): CollectAugme
   const errors: string[] = [];
   // (method, path) → first augment to register it; second registrant errors.
   const seen = new Map<string, string>();
+  const patternRoutes: Array<{ method: string; path: string; augmentName: string }> = [];
 
   for (const aug of augments) {
     if (!aug.httpRoutes || aug.httpRoutes.length === 0) continue;
@@ -64,6 +66,14 @@ export function collectAugmentRoutes(augments: readonly Augment[]): CollectAugme
       if (!r.path.startsWith("/")) {
         errors.push(
           `Augment "${aug.name}" registered HTTP route ${r.method} "${r.path}" — path must start with '/'.`,
+        );
+        continue;
+      }
+
+      const parsedPattern = parseRoutePattern(r.path);
+      if (!parsedPattern.ok) {
+        errors.push(
+          `Augment "${aug.name}" registered HTTP route ${r.method} "${r.path}" — ${parsedPattern.error}.`,
         );
         continue;
       }
@@ -102,6 +112,19 @@ export function collectAugmentRoutes(augments: readonly Augment[]): CollectAugme
           `Augments "${firstAug}" and "${aug.name}" both registered HTTP route ${r.method} "${r.path}". Path collisions are not allowed.`,
         );
         continue;
+      }
+
+      if (parsedPattern.pattern.isPattern) {
+        const overlapping = patternRoutes.find(
+          (existing) => existing.method === r.method && routePatternsOverlap(existing.path, r.path),
+        );
+        if (overlapping) {
+          errors.push(
+            `Augments "${overlapping.augmentName}" and "${aug.name}" registered overlapping HTTP route patterns ${r.method} "${overlapping.path}" and "${r.path}". Parameterized route collisions are not allowed.`,
+          );
+          continue;
+        }
+        patternRoutes.push({ method: r.method, path: r.path, augmentName: aug.name });
       }
       seen.set(key, aug.name);
 
