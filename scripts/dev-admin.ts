@@ -36,7 +36,7 @@ import { fileMemory } from "@/augments/fileMemory";
 import { filesystem } from "@/augments/filesystem";
 import { layeredMemory } from "@/augments/layeredMemory";
 import { notify } from "@/augments/notify";
-import { orgContext } from "@/augments/org-context";
+import { knowledge } from "@/augments/knowledge";
 import { skills } from "@/augments/skills";
 import { turnControl } from "@/augments/turnControl";
 import { webFetch } from "@/augments/webFetch";
@@ -45,7 +45,10 @@ import { copyBundledSkill } from "@/cli/scaffold-skills";
 import { createMockModel } from "@tests/fixtures/mock-model";
 
 const BEARER = "dev-admin";
-const PORT = 8081;
+const PORT = Number(process.env.PORT ?? 8081);
+if (!Number.isInteger(PORT) || PORT <= 0) {
+  throw new Error(`Invalid PORT: ${process.env.PORT}`);
+}
 
 const agentDir = mkdtempSync(join(tmpdir(), "auggy-admin-demo-"));
 console.log(`[dev-admin] tempDir = ${agentDir}`);
@@ -123,6 +126,16 @@ writeFileSync(
     "operators:",
     "  - Mike",
     "identity: ./identity.md",
+    "augments:",
+    "  - name: web",
+    "    type: webTransport",
+    "    options:",
+    `      port: ${PORT}`,
+    "      allowAnonymous: false",
+    "      publicIntegration: true",
+    "      auth:",
+    "        type: bearer",
+    `        token: ${BEARER}`,
     "",
   ].join("\n"),
   "utf-8",
@@ -163,12 +176,14 @@ await mem.memory!.write!("demo:vis_alice:greeting", "hello world", {
 const agent = defineAgent(
   {
     name: "demo",
+    purpose: "dev-mode demo agent for the admin SPA",
     model: "mock",
     augments: [
       webTransport({
         port: PORT,
         auth: { type: "bearer", token: BEARER },
         allowAnonymous: false,
+        publicIntegration: true,
         adminRoute: true,
         agentDir,
       }),
@@ -189,7 +204,7 @@ const agent = defineAgent(
       }),
       mem,
       webFetch({ timeoutMs: 15000 }),
-      orgContext({ baseUrl: `file://${orgDir}` }),
+      knowledge({ baseUrl: `file://${orgDir}` }),
       bash({ risk: "restricted", allowedCommands: ["ls", "pwd", "echo", "cat", "date"] }),
       budgets({
         dbPath: join(agentDir, "budgets.db"),

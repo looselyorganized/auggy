@@ -83,10 +83,11 @@ function UnpromotedRow({
     <Card>
       <CardHeader className="p-3">
         <div className="flex items-center justify-between gap-3">
-          <button
+          <Button
             type="button"
+            variant="ghost"
             onClick={() => expandable && setOpen((o) => !o)}
-            className="flex flex-1 items-center gap-3 text-left disabled:cursor-default"
+            className="h-auto flex-1 justify-start gap-3 px-0 py-0 text-left hover:bg-transparent disabled:cursor-default disabled:opacity-100"
             aria-expanded={expandable ? open : undefined}
             disabled={!expandable}
           >
@@ -103,7 +104,7 @@ function UnpromotedRow({
             {augment.name !== augment.type && (
               <span className="font-mono text-xs text-muted-foreground">{augment.name}</span>
             )}
-          </button>
+          </Button>
           <div className="flex shrink-0 items-center gap-3 text-xs text-muted-foreground">
             {augment.version && <span className="font-mono">v{augment.version}</span>}
             {!expandable && <span className="italic">no settings</span>}

@@ -31,7 +31,9 @@ import {
   handleAdminRoute,
   resolveDistDir,
 } from "./admin/index";
-import { renderInfoPage } from "./info-page";
+import { renderAgentIntegrationPage, renderInfoPage } from "./info-page";
+
+const PUBLIC_PAGE_CACHE_CONTROL = "public, max-age=0, must-revalidate";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -86,6 +88,14 @@ export interface WebTransportOptions {
    * a polished frontend (LORF platform/chat, future spine visitor chat, custom).
    */
   publicFrontendUrl?: string;
+  /**
+   * Opt-in public developer discovery. Default: false.
+   *
+   * When true, GET /agent serves a conservative public developer surface and
+   * GET /.well-known/agent-card.json is public. When false, /agent returns
+   * 404 and the agent card requires the web bearer token.
+   */
+  publicIntegration?: boolean;
   /**
    * Allow-list of upstream proxies whose `X-Forwarded-For` / `X-Real-IP`
    * headers are trusted for per-route per-IP rate limiting (F16).
@@ -498,6 +508,10 @@ export function webTransport(opts: WebTransportOptions): Augment {
   let validatedPublicFrontendUrl: string | undefined;
   let infoPageHtml: string | null = null;
   let infoPageByteLength = 0;
+  let agentIntegrationPageHtml: string | null = null;
+  let agentIntegrationPageByteLength = 0;
+  let publicIntegration = opts.publicIntegration === true;
+  let publicIntegrationSource: "yaml" | "admin-override" = "yaml";
 
   // PR γ.1 — per-route rate-limit state. Sliding-window timestamps keyed by
   // "<METHOD> <path>". NOT per-peer — auth-none routes have no peer.
@@ -603,6 +617,27 @@ export function webTransport(opts: WebTransportOptions): Augment {
     allowAnonymous = value;
   }
 
+  function renderPublicPages(card: ReturnType<TransportKernel["getAgentCard"]>): void {
+    if (validatedPublicFrontendUrl === undefined) {
+      infoPageHtml = renderInfoPage(card, { publicIntegration });
+      infoPageByteLength = new TextEncoder().encode(infoPageHtml).byteLength;
+    }
+    if (publicIntegration) {
+      agentIntegrationPageHtml = renderAgentIntegrationPage(card);
+      agentIntegrationPageByteLength = new TextEncoder().encode(
+        agentIntegrationPageHtml,
+      ).byteLength;
+    } else {
+      agentIntegrationPageHtml = null;
+      agentIntegrationPageByteLength = 0;
+    }
+  }
+
+  function setPublicIntegration(value: boolean): void {
+    publicIntegration = value;
+    if (kernel) renderPublicPages(kernel.getAgentCard());
+  }
+
   async function persistAllowAnonymousOverride(value: boolean): Promise<void> {
     if (!opts.agentDir) {
       throw new Error("agentDir not configured; admin overrides cannot persist");
@@ -618,6 +653,25 @@ export function webTransport(opts: WebTransportOptions): Augment {
     current.overrides.webTransport = {
       ...current.overrides.webTransport,
       allowAnonymous: value,
+    };
+    writeOverrides(opts.agentDir, current);
+  }
+
+  async function persistPublicIntegrationOverride(value: boolean): Promise<void> {
+    if (!opts.agentDir) {
+      throw new Error("agentDir not configured; admin overrides cannot persist");
+    }
+    const current = readOverrides(opts.agentDir) ?? {
+      version: 1 as const,
+      lastModified: new Date().toISOString(),
+      lastModifiedBy: "creator",
+      overrides: {},
+    };
+    current.lastModified = new Date().toISOString();
+    current.lastModifiedBy = "creator";
+    current.overrides.webTransport = {
+      ...current.overrides.webTransport,
+      publicIntegration: value,
     };
     writeOverrides(opts.agentDir, current);
   }
@@ -663,6 +717,11 @@ export function webTransport(opts: WebTransportOptions): Augment {
               label: "publicFrontendUrl",
               value: opts.publicFrontendUrl ?? "(unset)",
             },
+            {
+              label: "publicIntegration",
+              value: String(publicIntegration),
+              source: publicIntegrationSource === "admin-override" ? "/console override" : "yaml",
+            },
             { label: "Port", value: String(opts.port) },
             {
               label: "Trusted proxies",
@@ -683,6 +742,21 @@ export function webTransport(opts: WebTransportOptions): Augment {
               type: "boolean",
               required: true,
               helpText: "Demo-mode on/off. Persists across restart via admin-overrides.json.",
+            },
+          ],
+        },
+        {
+          id: "posture-public-integration-set",
+          label: "Set publicIntegration",
+          confirmRequired: true,
+          inputs: [
+            {
+              name: "value",
+              label: "publicIntegration",
+              type: "boolean",
+              required: true,
+              helpText:
+                "Persists across restart via admin-overrides.json. Publishes /agent and unauthenticated agent-card discovery; does not publish /agent/run.",
             },
           ],
         },
@@ -727,6 +801,25 @@ export function webTransport(opts: WebTransportOptions): Augment {
         }
       ).source = reResolved.source;
       return { ok: true, message: `allowAnonymous reset to yaml: ${reResolved.value}` };
+    },
+    "posture-public-integration-set": async (
+      params: Record<string, string>,
+    ): Promise<AdminActionResult> => {
+      const value = params.value === "true";
+      try {
+        await persistPublicIntegrationOverride(value);
+      } catch (err) {
+        return {
+          ok: false,
+          message: `could not persist override: ${(err as Error).message}; agent state unchanged`,
+        };
+      }
+      publicIntegrationSource = "admin-override";
+      setPublicIntegration(value);
+      return {
+        ok: true,
+        message: `developer discovery ${value ? "published" : "made private"}`,
+      };
     },
   };
 
@@ -836,6 +929,10 @@ export function webTransport(opts: WebTransportOptions): Augment {
       augmentRoutes = k.getAugmentRoutes();
       augmentRouteMap = new Map();
 
+      if (opts.publicIntegration !== undefined && typeof opts.publicIntegration !== "boolean") {
+        throw new Error("[web-transport] publicIntegration must be a boolean when configured");
+      }
+
       // G36 — apply admin-overrides on top of yaml/env/default.
       // The override file is read once at boot; the closure values are the
       // runtime source of truth thereafter.
@@ -847,7 +944,10 @@ export function webTransport(opts: WebTransportOptions): Augment {
         // resolveConfigBool's union doesn't yet include "admin-override".
         (allowAnonymousResolution as unknown as { source: string }).source = "admin-override";
       }
-
+      if (overrides?.overrides.webTransport?.publicIntegration !== undefined) {
+        publicIntegration = overrides.overrides.webTransport.publicIntegration;
+        publicIntegrationSource = "admin-override";
+      }
       // G36 — build the action registry from declared adminInfo + adminActions.
       // buildAdminActionRegistry throws on missing handlers or action-id
       // collisions; surface fires at boot, not at first POST.
@@ -871,13 +971,12 @@ export function webTransport(opts: WebTransportOptions): Augment {
           );
         }
         validatedPublicFrontendUrl = opts.publicFrontendUrl;
-      } else {
-        // No publicFrontendUrl set — info page will be served at GET / and
-        // mirrored at HEAD /. Eagerly render so HEAD's Content-Length matches
-        // GET's body length per RFC 9110 §9.3.2.
-        infoPageHtml = renderInfoPage(k.getAgentCard());
-        infoPageByteLength = new TextEncoder().encode(infoPageHtml).byteLength;
       }
+      // No publicFrontendUrl set — info page will be served at GET / and
+      // mirrored at HEAD /. Eagerly render so HEAD's Content-Length matches
+      // GET's body length per RFC 9110 §9.3.2. /agent also uses this cache
+      // and is invalidated by the publicIntegration admin toggle.
+      renderPublicPages(k.getAgentCard());
 
       let visitorAuthMounted = false;
       for (const r of augmentRoutes) {
@@ -1208,7 +1307,10 @@ export function webTransport(opts: WebTransportOptions): Augment {
     return json({ status: "healthy" }, 200);
   }
 
-  function handleAgentCard(): Response {
+  function handleAgentCard(req: Request): Response {
+    if (!publicIntegration && !isValidAuth(req.headers.get("authorization") ?? "")) {
+      return new Response(null, { status: 404 });
+    }
     if (!kernel) {
       return json({ error: "transport not registered" }, 500);
     }
@@ -1326,7 +1428,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
             if (infoPageHtml === null) return new Response(null, { status: 404 });
             const headers = new Headers({
               "content-type": "text/html; charset=utf-8",
-              "cache-control": "public, max-age=300",
+              "cache-control": PUBLIC_PAGE_CACHE_CONTROL,
             });
             // RFC 9110 §9.3.2 — HEAD's headers SHOULD match GET's. Set
             // Content-Length explicitly. Bun's auto-compute behavior on
@@ -1343,11 +1445,32 @@ export function webTransport(opts: WebTransportOptions): Augment {
           if (req.method === "POST" && url.pathname === "/agent/run") {
             return handleAgentRun(req);
           }
+          if ((req.method === "GET" || req.method === "HEAD") && url.pathname === "/agent/") {
+            if (!publicIntegration) return new Response(null, { status: 404 });
+            return new Response(null, {
+              status: 308,
+              headers: { location: "/agent" },
+            });
+          }
+          if ((req.method === "GET" || req.method === "HEAD") && url.pathname === "/agent") {
+            if (!publicIntegration || agentIntegrationPageHtml === null) {
+              return new Response(null, { status: 404 });
+            }
+            const headers = new Headers({
+              "content-type": "text/html; charset=utf-8",
+              "cache-control": PUBLIC_PAGE_CACHE_CONTROL,
+            });
+            headers.set("content-length", String(agentIntegrationPageByteLength));
+            return new Response(req.method === "HEAD" ? null : agentIntegrationPageHtml, {
+              status: 200,
+              headers,
+            });
+          }
           if (req.method === "GET" && url.pathname === "/health") {
             return handleHealth();
           }
           if (req.method === "GET" && url.pathname === "/.well-known/agent-card.json") {
-            return handleAgentCard();
+            return handleAgentCard(req);
           }
 
           // PR γ.1 — augment-registered routes. Dispatched by exact (method, path).

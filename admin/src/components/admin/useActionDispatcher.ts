@@ -10,12 +10,14 @@ export interface DispatchOpts {
   values?: Record<string, string>;
   confirmRequired: boolean;
   confirmMessage?: string;
+  /** Dashboard refresh timing after the action posts. Defaults to immediate. */
+  refresh?: "immediate" | "deferred" | "none";
   /** Surface a destructive style on the confirm dialog. Defaults to false. */
   destructive?: boolean;
 }
 
 export interface UseActionDispatcher {
-  dispatch: (opts: DispatchOpts) => Promise<void>;
+  dispatch: (opts: DispatchOpts) => Promise<boolean>;
   busy: boolean;
 }
 
@@ -34,19 +36,19 @@ export function useActionDispatcher(): UseActionDispatcher {
 
   const dispatch = useCallback(
     async (opts: DispatchOpts) => {
-      if (busy) return;
+      if (busy) return false;
       if (opts.confirmRequired) {
         const ok = await confirm({
           message: opts.confirmMessage ?? "Confirm this action?",
           destructive: opts.destructive,
         });
-        if (!ok) return;
+        if (!ok) return false;
       }
       const csrf = findCsrfToken(data?.csrfTokens ?? [], opts.actionId, opts.rowKey);
       if (!csrf) {
         push("error", `No CSRF token available for ${opts.actionId}. Reloading…`);
         await refresh();
-        return;
+        return false;
       }
       setBusy(true);
       try {
@@ -54,12 +56,22 @@ export function useActionDispatcher(): UseActionDispatcher {
         if (result.csrfExpired) {
           push("warn", "Session expired — refreshing.");
           window.location.reload();
-          return;
+          return false;
         }
         push(result.ok ? "success" : "error", result.message || (result.ok ? "Done." : "Failed."));
-        await refresh();
+        const refreshMode = opts.refresh ?? "immediate";
+        if (refreshMode === "immediate") {
+          await refresh();
+        } else if (refreshMode === "deferred") {
+          globalThis.setTimeout(() => void refresh(), 350);
+        }
+        return result.ok;
       } catch (err) {
         push("error", `Action failed: ${(err as Error).message}`);
+        if (opts.refresh === "deferred") {
+          globalThis.setTimeout(() => void refresh(), 350);
+        }
+        return false;
       } finally {
         setBusy(false);
       }

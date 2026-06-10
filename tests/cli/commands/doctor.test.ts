@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { stringify } from "yaml";
@@ -7,6 +8,7 @@ import {
   doctorCommand,
   formatDoctorChecks,
   hasDoctorFailures,
+  isPortAvailable,
   runDoctor,
   type DoctorCheck,
 } from "../../../src/cli/commands/doctor";
@@ -47,6 +49,7 @@ function writeAgent(
     providerKey?: string;
     includeVisitorAuth?: boolean;
     includeMcp?: boolean;
+    customRoutes?: "valid" | "reserved" | "duplicate";
   } = {},
 ): string {
   const provider = opts.provider ?? "anthropic";
@@ -104,9 +107,26 @@ function writeAgent(
             },
           ]
         : []),
+      ...(opts.customRoutes
+        ? [
+            {
+              name: "concierge-services",
+              type: "custom",
+              source: "./augments/concierge-services/index.ts",
+            },
+          ]
+        : []),
     ],
   };
   writeFileSync(join(dir, "agent.yaml"), stringify(config));
+
+  if (opts.customRoutes) {
+    mkdirSync(join(dir, "augments", "concierge-services"), { recursive: true });
+    writeFileSync(
+      join(dir, "augments", "concierge-services", "index.ts"),
+      customRouteModule(opts.customRoutes),
+    );
+  }
 
   if (opts.includePackageJson !== false) {
     writeFileSync(
@@ -128,7 +148,7 @@ function writeAgent(
   }
 
   if (opts.installDeps) {
-    mkdirSync(join(dir, "node_modules", "auggy"), { recursive: true });
+    mkdirSync(join(dir, "node_modules", "auggy", "src"), { recursive: true });
     mkdirSync(join(dir, "node_modules", "@auggy", provider), { recursive: true });
   }
 
@@ -149,6 +169,72 @@ function writeAgent(
   }
 
   return dir;
+}
+
+function customRouteModule(kind: "valid" | "reserved" | "duplicate"): string {
+  if (kind === "reserved") {
+    return `
+      export default function conciergeServices() {
+        return {
+          name: "concierge-services",
+          httpRoutes: [
+            {
+              method: "GET",
+              path: "/console",
+              auth: "none",
+              handler: async () => new Response(JSON.stringify({ ok: true })),
+            },
+          ],
+        };
+      }
+    `;
+  }
+
+  if (kind === "duplicate") {
+    return `
+      export default function conciergeServices() {
+        return {
+          name: "concierge-services",
+          httpRoutes: [
+            {
+              method: "GET",
+              path: "/services",
+              auth: "none",
+              handler: async () => new Response(JSON.stringify({ ok: true })),
+            },
+            {
+              method: "GET",
+              path: "/services",
+              auth: "bearer",
+              handler: async () => new Response(JSON.stringify({ ok: true })),
+            },
+          ],
+        };
+      }
+    `;
+  }
+
+  return `
+        export default function conciergeServices() {
+          return {
+            name: "concierge-services",
+            httpRoutes: [
+              {
+                method: "GET",
+                path: "/services",
+                auth: "none",
+                handler: async () => new Response(JSON.stringify({ ok: true })),
+              },
+              {
+                method: "POST",
+                path: "/leads/create",
+                auth: "bearer",
+                handler: async () => new Response(JSON.stringify({ ok: true })),
+              },
+            ],
+          };
+        }
+      `;
 }
 
 describe("runDoctor", () => {
@@ -242,6 +328,70 @@ describe("runDoctor", () => {
     expect(hasDoctorFailures(checks)).toBe(false);
   });
 
+  test("lists custom augment routes and warns for public routes", async () => {
+    writeAgent("zip", {
+      installDeps: true,
+      installSkill: true,
+      customRoutes: "valid",
+    });
+
+    const checks = await runDoctor("zip", {
+      auggyDir,
+      isPortAvailable: async () => true,
+    });
+
+    const publicRoute = checks.find((c) => c.name === "route GET /services");
+    const bearerRoute = checks.find((c) => c.name === "route POST /leads/create");
+
+    expect(publicRoute?.status).toBe("warn");
+    expect(publicRoute?.message).toBe("concierge-services none PUBLIC");
+    expect(publicRoute?.fix).toContain("intentionally public");
+    expect(bearerRoute?.status).toBe("pass");
+    expect(bearerRoute?.message).toBe("concierge-services bearer");
+    expect(formatDoctorChecks(checks)).toContain(
+      "WARN route: GET /services concierge-services none PUBLIC",
+    );
+  });
+
+  test("fails when a custom augment route uses a reserved path", async () => {
+    writeAgent("zip", {
+      installDeps: true,
+      installSkill: true,
+      customRoutes: "reserved",
+    });
+
+    const checks = await runDoctor("zip", {
+      auggyDir,
+      isPortAvailable: async () => true,
+    });
+
+    const routeFailure = checks.find((c) => c.name === "augment routes");
+    expect(routeFailure?.status).toBe("fail");
+    expect(routeFailure?.message).toContain('GET "/console"');
+    expect(routeFailure?.message).toContain("reserved by webTransport");
+    expect(routeFailure?.fix).toContain("Fix the route path");
+    expect(hasDoctorFailures(checks)).toBe(true);
+  });
+
+  test("fails when custom augment routes collide", async () => {
+    writeAgent("zip", {
+      installDeps: true,
+      installSkill: true,
+      customRoutes: "duplicate",
+    });
+
+    const checks = await runDoctor("zip", {
+      auggyDir,
+      isPortAvailable: async () => true,
+    });
+
+    const routeFailure = checks.find((c) => c.name === "augment routes");
+    expect(routeFailure?.status).toBe("fail");
+    expect(routeFailure?.message).toContain('GET "/services"');
+    expect(routeFailure?.message).toContain("Path collisions are not allowed");
+    expect(hasDoctorFailures(checks)).toBe(true);
+  });
+
   test("fails when package.json is missing", async () => {
     writeAgent("zip", { includePackageJson: false });
 
@@ -279,6 +429,22 @@ describe("runDoctor", () => {
     const port = checks.find((c) => c.name === "port 19090");
     expect(port?.status).toBe("fail");
     expect(port?.fix).toContain("19090");
+  });
+
+  test("detects wildcard listeners when checking port availability", async () => {
+    const reservedPort = await reservePort();
+    const server = createServer();
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.once("listening", resolve);
+      server.listen(reservedPort);
+    });
+
+    try {
+      await expect(isPortAvailable(reservedPort)).resolves.toBe(false);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 
   test("warns when a bundled skill is missing", async () => {
@@ -324,6 +490,20 @@ describe("runDoctor", () => {
     expect(cloudChecks.find((check) => check.name === "mcp local cloud")?.status).toBe("fail");
   });
 });
+
+async function reservePort(): Promise<number> {
+  const server = createServer();
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.once("listening", resolve);
+    server.listen(0);
+  });
+  const address = server.address();
+  const port = typeof address === "object" && address ? address.port : undefined;
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+  if (typeof port !== "number") throw new Error("could not reserve test port");
+  return port;
+}
 
 describe("doctor formatting and command", () => {
   test("formatDoctorChecks prints semantic default output", () => {
@@ -392,6 +572,11 @@ describe("doctor formatting and command", () => {
           status: "pass",
           message: "/tmp/auggy-agent/node_modules/auggy",
         },
+        {
+          name: "runtime auggy",
+          status: "pass",
+          message: "/tmp/auggy-agent/node_modules/auggy/src",
+        },
       ],
     );
     const exit = mock((_code: number) => {});
@@ -410,8 +595,44 @@ describe("doctor formatting and command", () => {
 
     expect(logs.join("\n")).toContain("PASS config: agent.yaml");
     expect(logs.join("\n")).toContain("PASS dependency: auggy");
+    expect(logs.join("\n")).not.toContain("runtime auggy");
     expect(logs.join("\n")).not.toContain("node_modules/auggy");
     expect(logs.join("\n")).not.toContain("/tmp/auggy-agent/node_modules/auggy");
+  });
+
+  test("doctor command shows runtime source in verbose output", async () => {
+    const run = mock(
+      async (): Promise<DoctorCheck[]> => [
+        {
+          name: "config path",
+          status: "pass",
+          message: "/tmp/auggy-agent/agent.yaml",
+        },
+        {
+          name: "runtime auggy",
+          status: "pass",
+          message: "/tmp/auggy-agent/node_modules/auggy/src",
+        },
+      ],
+    );
+    const exit = mock((_code: number) => {});
+    const logs: string[] = [];
+    const origLog = console.log;
+    console.log = (msg: unknown) => {
+      logs.push(String(msg));
+    };
+
+    try {
+      const cmd = doctorCommand({ runDoctor: run, exit });
+      await cmd.parseAsync(["--verbose"], { from: "user" });
+    } finally {
+      console.log = origLog;
+    }
+
+    expect(logs.join("\n")).toContain(
+      "PASS runtime auggy: /tmp/auggy-agent/node_modules/auggy/src",
+    );
+    expect(exit).toHaveBeenCalledWith(0);
   });
 
   test("doctor command exits 1 when checks fail", async () => {

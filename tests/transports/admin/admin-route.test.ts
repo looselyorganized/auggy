@@ -247,10 +247,12 @@ describe("handleAdminRoute — auth", () => {
     expect(res.headers.get("content-type")).toContain("application/json");
     const body = (await res.json()) as {
       card: { provider: { name: string } };
+      auggyVersion?: string;
       blocks: unknown[];
       csrfTokens: unknown[];
     };
     expect(body.card.provider.name).toBe("zip");
+    expect(body.auggyVersion).toBe("0.4.4");
     expect(Array.isArray(body.blocks)).toBe(true);
     expect(Array.isArray(body.csrfTokens)).toBe(true);
   });
@@ -479,6 +481,51 @@ describe("handleAdminRoute — POST action dispatch", () => {
     const res = await handleAdminRoute(req, await makeCtx({ augments: [aug] }));
     expect(res.status).toBe(303);
     expect(res.headers.get("location")).toContain(encodeURIComponent("internal error"));
+  });
+
+  it("POST /console/action with JSON accept invokes handler and returns JSON for SPA actions", async () => {
+    let receivedParams: Record<string, string> | undefined;
+    const aug: Augment = {
+      name: "test",
+      adminInfo: async () => ({
+        augmentName: "test",
+        title: "Test",
+        sections: [],
+        actions: [
+          {
+            id: "json-action",
+            label: "JSON",
+            confirmRequired: false,
+            inputs: [{ name: "value", label: "Value", type: "text", required: true }],
+          },
+        ],
+      }),
+      adminActions: {
+        "json-action": async (params) => {
+          receivedParams = params;
+          return { ok: true, message: "updated" };
+        },
+      },
+    };
+    const csrf = await generateCsrfToken({
+      bearer: "test-bearer",
+      agentName: "zip",
+      actionId: "json-action",
+    });
+    const req = new Request("http://127.0.0.1:8080/console/action/json-action", {
+      method: "POST",
+      headers: {
+        authorization: basicHeader("test-bearer"),
+        accept: "application/json",
+        "content-type": "application/x-www-form-urlencoded",
+      },
+      body: new URLSearchParams({ _csrf: csrf, value: "enabled" }).toString(),
+    });
+    const res = await handleAdminRoute(req, await makeCtx({ augments: [aug] }));
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("application/json");
+    expect(await res.json()).toEqual({ ok: true, message: "updated", csrfExpired: false });
+    expect(receivedParams).toEqual({ value: "enabled" });
   });
 
   it("POST /console/api/chat without CSRF → 400 (cross-site forgery defense)", async () => {

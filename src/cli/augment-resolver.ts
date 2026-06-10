@@ -208,6 +208,7 @@ function resolveWebTransport(
     // allowAnonymous is silently dropped and the env/default rule wins every
     // time — breaking the "operator's most-explicit choice wins" contract.
     allowAnonymous: opts.allowAnonymous as boolean | undefined,
+    publicIntegration: opts.publicIntegration as boolean | undefined,
     // Wire the agent dir through to webTransport so the /console module can
     // read/write `.env`, `identity.md`, and admin-overrides.json. Without
     // this, the Credentials and Identity tabs render "agent directory not

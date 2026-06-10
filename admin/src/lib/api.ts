@@ -41,20 +41,14 @@ export function findCsrfToken(
 }
 
 export interface ActionPostResult {
-  /** Flash message extracted from the redirect's `?msg=` query param. */
   message: string;
-  /** True iff the server returned 303 (action dispatched successfully). */
   ok: boolean;
-  /** True iff the CSRF token was rejected as expired (page needs a reload). */
   csrfExpired: boolean;
 }
 
 /**
- * Post an admin action. Mirrors the server's existing HTML-form contract
- * (`application/x-www-form-urlencoded` body, `_csrf` field, 303 redirect to
- * `/console?msg=...`). We read the Location header instead of following the
- * redirect so the SPA can surface the flash message inline rather than
- * navigating away.
+ * Post an admin action. The SPA asks for JSON so browsers do not hide the
+ * server's 303 form redirect behind an opaque `status: 0` response.
  */
 export async function postAction(
   actionId: string,
@@ -68,25 +62,17 @@ export async function postAction(
   const body = new URLSearchParams({ _csrf: csrfToken, ...values }).toString();
   const res = await adminFetch(path, {
     method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
+    headers: {
+      accept: "application/json",
+      "content-type": "application/x-www-form-urlencoded",
+    },
     body,
-    redirect: "manual",
   });
 
-  // The server distinguishes expired CSRF (200 + auto-refresh HTML) from
-  // tampered (403) and from missing handlers (404). 303 = success.
-  if (res.status === 303) {
-    const location = res.headers.get("location") ?? "";
-    const msg = new URL(location, "http://localhost").searchParams.get("msg") ?? "";
-    return { ok: true, csrfExpired: false, message: msg };
+  if (res.headers.get("content-type")?.includes("application/json")) {
+    return (await res.json()) as ActionPostResult;
   }
-  if (res.status === 200) {
-    // Expired CSRF — the server replies with a refresh page.
-    const text = await res.text();
-    if (text.includes("Session expired")) {
-      return { ok: false, csrfExpired: true, message: "Session expired — refreshing…" };
-    }
-  }
+
   if (res.status === 403) {
     return { ok: false, csrfExpired: false, message: "Forbidden (CSRF or auth check failed)" };
   }

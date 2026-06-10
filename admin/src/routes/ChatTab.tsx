@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ChevronDown, ChevronRight, Send, Square } from "lucide-react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { ChevronDown, ChevronRight, RotateCcw, Square } from "lucide-react";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -42,12 +42,21 @@ export function ChatTab() {
   const [streamError, setStreamError] = useState<string | null>(null);
   const [threadId, setThreadId] = useState<string>(() => crypto.randomUUID());
   const abortRef = useRef<AbortController | null>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const wasStreamingRef = useRef(false);
 
   // Cleanup on unmount — kill any in-flight stream.
   useEffect(() => () => abortRef.current?.abort(), []);
 
-  const sendMessage = useCallback(async () => {
-    const text = input.trim();
+  useEffect(() => {
+    if (wasStreamingRef.current && !streaming) {
+      requestAnimationFrame(() => inputRef.current?.focus({ preventScroll: true }));
+    }
+    wasStreamingRef.current = streaming;
+  }, [streaming]);
+
+  const sendMessage = useCallback(async (overrideText?: string) => {
+    const text = (overrideText ?? input).trim();
     if (!text || streaming) return;
 
     const userMsg: Message = { id: crypto.randomUUID(), role: "user", content: text };
@@ -171,18 +180,20 @@ export function ChatTab() {
     setMessages([]);
     setThreadId(crypto.randomUUID());
     setStreamError(null);
+    requestAnimationFrame(() => inputRef.current?.focus({ preventScroll: true }));
   };
 
   const agentName = useMemo(() => {
-    if (!data) return "agent";
+    if (!data) return "Agent";
     return (
       data.agentMeta?.displayName ??
       data.card.provider.displayName ??
       data.agentMeta?.name ??
       data.card.provider.name ??
-      "agent"
+      "Agent"
     );
   }, [data]);
+  const responseLabel = agentName;
 
   if (loading && !data) {
     return (
@@ -206,55 +217,76 @@ export function ChatTab() {
   }
 
   return (
-    <div className="mx-auto flex h-full w-full max-w-4xl flex-col p-3 sm:p-4">
-      <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-md border bg-background">
-        <MessageList messages={messages} streaming={streaming} agentName={agentName} />
-        {streamError && (
-          <div className="border-t border-destructive/30 bg-destructive/5 px-4 py-2 text-xs text-destructive">
-            {streamError}
-          </div>
-        )}
-        <footer className="border-t bg-muted/30 p-3">
-          <div className="flex items-end gap-2">
-            <Textarea
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={handleKeyDown}
-              placeholder={`Message ${agentName}…`}
-              rows={2}
-              disabled={streaming}
-              className="resize-none bg-background"
-              aria-label={`Message ${agentName}`}
-            />
-            {streaming ? (
-              <Button onClick={handleStop} variant="outline" size="icon" aria-label="Stop">
-                <Square className="size-4" />
-              </Button>
-            ) : (
-              <Button
-                onClick={() => void sendMessage()}
-                disabled={!input.trim()}
-                size="icon"
-                aria-label="Send"
-              >
-                <Send className="size-4" />
-              </Button>
-            )}
-          </div>
-          {messages.length > 0 && (
-            <div className="mt-1.5 flex justify-end">
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={handleClear}
-                disabled={streaming}
-                className="h-6 px-2 text-xs"
-              >
-                Clear
-              </Button>
+    <div className="relative h-full overflow-hidden bg-background">
+      <div
+        className="pointer-events-none absolute inset-0 opacity-45"
+        aria-hidden="true"
+        style={{
+          backgroundImage:
+            "linear-gradient(hsl(var(--border) / 0.45) 1px, transparent 1px), linear-gradient(90deg, hsl(var(--border) / 0.45) 1px, transparent 1px)",
+          backgroundSize: "32px 32px",
+        }}
+      />
+      <div className="pointer-events-none absolute inset-x-0 top-0 h-24 bg-gradient-to-b from-background to-transparent" />
+
+      <MessageList
+        messages={messages}
+        streaming={streaming}
+        agentName={agentName}
+        responseLabel={responseLabel}
+        onPrompt={(prompt) => void sendMessage(prompt)}
+      />
+
+      <div className="absolute inset-x-0 bottom-0 z-10 px-3 pb-3 sm:px-6 sm:pb-6">
+        <div className="mx-auto max-w-3xl">
+          {streamError && (
+            <div className="mb-2 rounded-md border border-destructive/30 bg-background/95 px-3 py-2 text-xs text-destructive shadow-sm">
+              {streamError}
             </div>
           )}
-        </footer>
+          <div className="rounded-lg border bg-card/95 p-3 shadow-lg backdrop-blur">
+            <div className="flex items-end gap-2">
+              <Textarea
+                ref={inputRef}
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={handleKeyDown}
+                placeholder={`Message ${agentName}...`}
+                rows={3}
+                disabled={streaming}
+                className="max-h-48 min-h-[5rem] resize-none border-0 bg-transparent px-2 py-2 shadow-none focus-visible:ring-0"
+                aria-label={`Message ${agentName}`}
+              />
+              {streaming && (
+                <Button onClick={handleStop} variant="outline" size="icon" aria-label="Stop">
+                  <Square className="size-4" />
+                </Button>
+              )}
+            </div>
+            <div className="mt-2 flex items-center justify-between gap-3 px-1">
+              <div className="min-w-0 truncate font-mono text-[11px] text-muted-foreground">
+                {responseLabel}
+              </div>
+              <div className="flex shrink-0 items-center gap-2 text-[11px] text-muted-foreground">
+                <span className="hidden sm:inline">Enter to send</span>
+                <span className="hidden text-muted-foreground/40 sm:inline">|</span>
+                <span className="hidden sm:inline">Shift+Enter for a new line</span>
+                {messages.length > 0 && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={handleClear}
+                    disabled={streaming}
+                    className="h-7 shrink-0 px-2 text-xs"
+                  >
+                    <RotateCcw className="mr-1.5 size-3.5" />
+                    New thread
+                  </Button>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -268,10 +300,14 @@ function MessageList({
   messages,
   streaming,
   agentName,
+  responseLabel,
+  onPrompt,
 }: {
   messages: Message[];
   streaming: boolean;
   agentName: string;
+  responseLabel: string;
+  onPrompt: (prompt: string) => void;
 }) {
   const endRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -297,9 +333,34 @@ function MessageList({
 
   if (messages.length === 0) {
     return (
-      <div className="flex flex-1 items-center justify-center p-8 text-center">
-        <div className="space-y-1">
-          <p className="text-sm font-medium">Talk to {agentName}</p>
+      <div className="relative z-[1] flex h-full items-center justify-center px-4 pb-36 text-center">
+        <div className="w-full max-w-2xl">
+          <p className="mb-2 text-sm font-medium text-muted-foreground">Testing as creator</p>
+          <h2 className="text-2xl font-semibold tracking-normal sm:text-3xl">
+            Talk to {agentName}
+          </h2>
+          <p className="mx-auto mt-3 max-w-xl text-sm text-muted-foreground">
+            Use this workspace to test behavior, tool calls, memory, and integration posture before
+            publishing a frontend.
+          </p>
+          <div className="mt-6 grid gap-2 sm:grid-cols-2">
+            {[
+              "What can you help with?",
+              "Summarize your current capabilities.",
+              "What context do you have about this agent?",
+              "Run a small tool-use smoke test.",
+            ].map((prompt) => (
+              <Button
+                key={prompt}
+                type="button"
+                variant="outline"
+                onClick={() => onPrompt(prompt)}
+                className="h-auto min-h-11 justify-start whitespace-normal bg-card/85 px-3 py-2 text-left text-sm shadow-sm hover:bg-muted"
+              >
+                {prompt}
+              </Button>
+            ))}
+          </div>
         </div>
       </div>
     );
@@ -308,36 +369,41 @@ function MessageList({
   return (
     <div
       ref={containerRef}
-      className="flex-1 space-y-4 overflow-y-auto p-4"
+      className="relative z-[1] h-full overflow-y-auto px-4 pb-44 pt-8 sm:px-6"
       role="log"
       aria-live="polite"
     >
-      {messages.map((m) => (
-        <MessageView key={m.id} message={m} />
-      ))}
-      {streaming && (
-        <div className="ml-16 inline-block animate-pulse font-mono text-xs text-muted-foreground">
-          ▍
-        </div>
-      )}
-      <div ref={endRef} />
+      <div className="mx-auto flex max-w-3xl flex-col gap-6">
+        {messages.map((m) => (
+          <MessageView key={m.id} message={m} responseLabel={responseLabel} />
+        ))}
+        {streaming && (
+          <div className="inline-block animate-pulse font-mono text-xs text-muted-foreground">
+            ▍
+          </div>
+        )}
+        <div ref={endRef} />
+      </div>
     </div>
   );
 }
 
-function MessageView({ message }: { message: Message }) {
+function MessageView({ message, responseLabel }: { message: Message; responseLabel: string }) {
   const isUser = message.role === "user";
   return (
-    <article className="grid grid-cols-[3.5rem_1fr] items-start gap-2">
-      <div className="pt-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-        {isUser ? "you" : "agent"}
-      </div>
-      <div className="space-y-2 text-sm">
-        {message.content && (
-          <p className={cn("whitespace-pre-wrap break-words", isUser && "text-foreground")}>
-            {message.content}
-          </p>
+    <article className={cn("flex", isUser ? "justify-end" : "justify-start")}>
+      <div
+        className={cn(
+          "max-w-[88%] space-y-2 text-sm sm:max-w-[78%]",
+          isUser
+            ? "rounded-lg border bg-card px-4 py-3 shadow-sm"
+            : "rounded-lg border border-transparent bg-background/70 px-4 py-3",
         )}
+      >
+        <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+          {isUser ? "you" : responseLabel}
+        </div>
+        {message.content && <MarkdownContent content={message.content} isUser={isUser} />}
         {message.toolCalls && message.toolCalls.length > 0 && (
           <div className="space-y-1.5">
             {message.toolCalls.map((tc) => (
@@ -353,6 +419,197 @@ function MessageView({ message }: { message: Message }) {
       </div>
     </article>
   );
+}
+
+function MarkdownContent({ content, isUser }: { content: string; isUser: boolean }) {
+  return (
+    <div
+      className={cn(
+        "space-y-3 break-words leading-6",
+        isUser ? "text-foreground" : "text-foreground/95",
+      )}
+    >
+      {renderMarkdownBlocks(content)}
+    </div>
+  );
+}
+
+function renderMarkdownBlocks(markdown: string): ReactNode[] {
+  const lines = markdown.replace(/\r\n/g, "\n").split("\n");
+  const blocks: ReactNode[] = [];
+  let i = 0;
+
+  while (i < lines.length) {
+    const line = lines[i] ?? "";
+    if (line.trim() === "") {
+      i += 1;
+      continue;
+    }
+
+    if (line.trimStart().startsWith("```")) {
+      const language = line.trim().slice(3).trim();
+      const code: string[] = [];
+      i += 1;
+      while (i < lines.length && !(lines[i] ?? "").trimStart().startsWith("```")) {
+        code.push(lines[i] ?? "");
+        i += 1;
+      }
+      if (i < lines.length) i += 1;
+      blocks.push(
+        <pre key={blocks.length} className="overflow-x-auto rounded-md bg-muted/60 p-3 text-xs">
+          <code className="font-mono" data-language={language || undefined}>
+            {code.join("\n")}
+          </code>
+        </pre>,
+      );
+      continue;
+    }
+
+    if (isTableStart(lines, i)) {
+      const tableLines = [lines[i] ?? "", lines[i + 1] ?? ""];
+      i += 2;
+      while (i < lines.length && isPipeRow(lines[i] ?? "")) {
+        tableLines.push(lines[i] ?? "");
+        i += 1;
+      }
+      blocks.push(<MarkdownTable key={blocks.length} lines={tableLines} />);
+      continue;
+    }
+
+    if (isListItem(line)) {
+      const items: string[] = [];
+      const ordered = /^\s*\d+\.\s+/.test(line);
+      while (i < lines.length && isListItem(lines[i] ?? "")) {
+        items.push((lines[i] ?? "").replace(/^\s*(?:[-*]|\d+\.)\s+/, ""));
+        i += 1;
+      }
+      const Tag = ordered ? "ol" : "ul";
+      blocks.push(
+        <Tag
+          key={blocks.length}
+          className={cn("space-y-1 pl-5", ordered ? "list-decimal" : "list-disc")}
+        >
+          {items.map((item, index) => (
+            <li key={index}>{renderInlineMarkdown(item)}</li>
+          ))}
+        </Tag>,
+      );
+      continue;
+    }
+
+    const paragraph: string[] = [];
+    while (
+      i < lines.length &&
+      lines[i]?.trim() !== "" &&
+      !isTableStart(lines, i) &&
+      !isListItem(lines[i] ?? "") &&
+      !(lines[i] ?? "").trimStart().startsWith("```")
+    ) {
+      paragraph.push(lines[i] ?? "");
+      i += 1;
+    }
+    blocks.push(
+      <p key={blocks.length} className="whitespace-pre-wrap">
+        {renderInlineMarkdown(paragraph.join("\n"))}
+      </p>,
+    );
+  }
+
+  return blocks;
+}
+
+function MarkdownTable({ lines }: { lines: string[] }) {
+  const headers = splitTableRow(lines[0] ?? "");
+  const rows = lines.slice(2).map(splitTableRow);
+
+  return (
+    <div className="overflow-x-auto rounded-md border">
+      <table className="min-w-full border-collapse text-left text-xs">
+        <thead className="bg-muted/60 text-muted-foreground">
+          <tr>
+            {headers.map((cell, index) => (
+              <th key={index} className="border-b px-3 py-2 font-semibold">
+                {renderInlineMarkdown(cell)}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row, rowIndex) => (
+            <tr key={rowIndex} className="border-b last:border-b-0">
+              {headers.map((_, cellIndex) => (
+                <td key={cellIndex} className="px-3 py-2 align-top">
+                  {renderInlineMarkdown(row[cellIndex] ?? "")}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function renderInlineMarkdown(text: string): ReactNode[] {
+  const nodes: ReactNode[] = [];
+  const pattern = /(`[^`]+`|\*\*[^*]+\*\*|__[^_]+__|\*[^*]+\*|_[^_]+_)/g;
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = pattern.exec(text)) !== null) {
+    if (match.index > lastIndex) nodes.push(text.slice(lastIndex, match.index));
+    const token = match[0];
+    const key = nodes.length;
+    if (token.startsWith("`")) {
+      nodes.push(
+        <code key={key} className="rounded bg-muted px-1 py-0.5 font-mono text-[0.92em]">
+          {token.slice(1, -1)}
+        </code>,
+      );
+    } else if (token.startsWith("**") || token.startsWith("__")) {
+      nodes.push(
+        <strong key={key} className="font-semibold">
+          {token.slice(2, -2)}
+        </strong>,
+      );
+    } else {
+      nodes.push(
+        <em key={key} className="italic">
+          {token.slice(1, -1)}
+        </em>,
+      );
+    }
+    lastIndex = pattern.lastIndex;
+  }
+
+  if (lastIndex < text.length) nodes.push(text.slice(lastIndex));
+  return nodes.map((node, index) => <Fragment key={index}>{node}</Fragment>);
+}
+
+function isListItem(line: string): boolean {
+  return /^\s*(?:[-*]|\d+\.)\s+/.test(line);
+}
+
+function isTableStart(lines: string[], index: number): boolean {
+  return isPipeRow(lines[index] ?? "") && isTableSeparator(lines[index + 1] ?? "");
+}
+
+function isPipeRow(line: string): boolean {
+  return line.includes("|") && splitTableRow(line).length > 1;
+}
+
+function isTableSeparator(line: string): boolean {
+  const cells = splitTableRow(line);
+  return cells.length > 1 && cells.every((cell) => /^:?-{3,}:?$/.test(cell.trim()));
+}
+
+function splitTableRow(line: string): string[] {
+  return line
+    .trim()
+    .replace(/^\|/, "")
+    .replace(/\|$/, "")
+    .split("|")
+    .map((cell) => cell.trim());
 }
 
 // ---------------------------------------------------------------------------
@@ -374,10 +631,11 @@ function ToolCallView({ tc }: { tc: ToolCall }) {
         tc.status === "completed" && "border-muted bg-muted/30",
       )}
     >
-      <button
+      <Button
         type="button"
+        variant="ghost"
         onClick={() => setExpanded((e) => !e)}
-        className="flex w-full items-center gap-2 px-2 py-1.5 text-left transition-colors hover:bg-muted/40"
+        className="h-auto w-full justify-start rounded-none px-2 py-1.5 text-left hover:bg-muted/40 [&_svg]:size-3"
         aria-expanded={expanded}
       >
         {expanded ? (
@@ -401,7 +659,7 @@ function ToolCallView({ tc }: { tc: ToolCall }) {
         >
           {tc.status === "running" ? "running…" : tc.status}
         </span>
-      </button>
+      </Button>
       {expanded && (
         <div className="space-y-2 border-t bg-background/50 p-2 text-[11px]">
           {tc.args !== undefined && (

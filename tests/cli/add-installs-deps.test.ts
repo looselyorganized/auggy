@@ -81,7 +81,7 @@ describe("runAdd mutates per-agent package.json", () => {
     expect(pkg.dependencies["@auggy/anthropic"]).toBe("^0.3.1");
     const metadata = readFileSync(join(dir, "augments", "link", "augment.yaml"), "utf-8");
     expect(metadata).toContain("kind: builtin");
-    expect(metadata).toContain("configType: link");
+    expect(metadata).not.toContain("configType:");
   });
 
   test("invokes bun install in agent dir when packageDeps are added", async () => {

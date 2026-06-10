@@ -17,6 +17,8 @@ import { AUGMENT_CATALOG } from "../augment-catalog";
 import { augmentFolderForType } from "../scaffold-skills";
 import { parseEnvFile } from "../env-parse";
 import { diagnoseMcpConfig } from "../mcp-config";
+import { collectAugmentRoutes } from "../../kernel/route-collector";
+import type { Augment } from "../../types";
 import type { AugmentConfig, ParsedConfig } from "../types";
 
 export type DoctorStatus = "pass" | "warn" | "fail";
@@ -90,8 +92,10 @@ export async function runDoctor(
   checks.push(...checkConfigEnvReferences(configPath, agentDir));
   checks.push(...checkProviderEnv(agentDir, config));
   checks.push(...checkAgentDependencies(agentDir, config));
+  checks.push(...checkRuntimeSource(agentDir));
   checks.push(...(await checkWebPorts(config, opts.isPortAvailable ?? isPortAvailable)));
   checks.push(...checkBundledSkills(agentDir, config.augments));
+  checks.push(...(await checkAugmentRoutes(agentDir, config.augments)));
   checks.push(...checkMcp(agentDir, config, opts.cloud ?? false));
 
   return checks;
@@ -250,6 +254,31 @@ function checkAgentDependencies(agentDir: string, config: ParsedConfig): DoctorC
   });
 }
 
+function checkRuntimeSource(agentDir: string): DoctorCheck[] {
+  const packageRoot = join(agentDir, "node_modules", "auggy");
+  if (!existsSync(packageRoot)) return [];
+
+  const sourceRoot = join(packageRoot, "src");
+  if (existsSync(sourceRoot)) {
+    return [
+      {
+        name: "runtime auggy",
+        status: "pass",
+        message: sourceRoot,
+      },
+    ];
+  }
+
+  return [
+    {
+      name: "runtime auggy",
+      status: "warn",
+      message: `source not found at ${sourceRoot}`,
+      fix: "Reinstall the agent dependencies with `bun install`.",
+    },
+  ];
+}
+
 function collectRequiredPackages(config: ParsedConfig): string[] {
   const packages = new Set<string>(["auggy", PROVIDER_TO_PACKAGE[config.engine.provider]]);
   for (const aug of config.augments) {
@@ -337,6 +366,69 @@ function checkBundledSkills(agentDir: string, augments: AugmentConfig[]): Doctor
   return out;
 }
 
+async function checkAugmentRoutes(
+  agentDir: string,
+  configs: AugmentConfig[],
+): Promise<DoctorCheck[]> {
+  const customConfigs = configs.filter((aug) => aug.type === "custom");
+  if (customConfigs.length === 0) return [];
+
+  const augments: Augment[] = [];
+  for (const config of customConfigs) {
+    try {
+      const augment = await loadCustomAugmentForDoctor(agentDir, config);
+      augments.push({ ...augment, name: config.name });
+    } catch (err) {
+      return [
+        {
+          name: "augment routes",
+          status: "fail",
+          message: `could not inspect custom augment "${config.name}": ${(err as Error).message}`,
+          fix: "Run `bun install`, then check the custom augment source path and default export.",
+        },
+      ];
+    }
+  }
+
+  const collected = collectAugmentRoutes(augments);
+  if (collected.errors.length > 0) {
+    return collected.errors.map((message) => ({
+      name: "augment routes",
+      status: "fail",
+      message,
+      fix: "Fix the route path, auth mode, or duplicate registration in the custom augment.",
+    }));
+  }
+
+  return collected.routes.map((route) => ({
+    name: `route ${route.method} ${route.path}`,
+    status: route.auth === "none" ? "warn" : "pass",
+    message: `${route.augmentName} ${route.auth}${route.auth === "none" ? " PUBLIC" : ""}`,
+    fix:
+      route.auth === "none"
+        ? 'Set auth: "bearer" unless this route is intentionally public.'
+        : undefined,
+  }));
+}
+
+async function loadCustomAugmentForDoctor(
+  agentDir: string,
+  config: AugmentConfig,
+): Promise<Augment> {
+  if (!config.source) {
+    throw new Error("source path is required");
+  }
+
+  const absPath = config.source.startsWith("/") ? config.source : resolve(agentDir, config.source);
+  const mod = (await import(absPath)) as Record<string, unknown>;
+  const factory = mod.default;
+  if (typeof factory !== "function") {
+    throw new Error(`"${absPath}" must have a default export function`);
+  }
+
+  return factory(config.options ?? {}) as Augment;
+}
+
 function nameForFix(agentDir: string): string {
   return agentDir.split(/[\\/]/).filter(Boolean).at(-1) ?? "<name>";
 }
@@ -348,7 +440,9 @@ export async function isPortAvailable(port: number): Promise<boolean> {
     server.once("listening", () => {
       server.close(() => resolvePort(true));
     });
-    server.listen(port, "127.0.0.1");
+    // Match webTransport/Bun's broad bind semantics. A loopback-only probe can
+    // miss an existing wildcard/IPv6 listener and report a false "available".
+    server.listen(port);
   });
 }
 
@@ -367,7 +461,10 @@ export function formatDoctorChecks(
   opts: FormatDoctorChecksOptions = {},
 ): string {
   if (!opts.verbose) {
-    return checks.map((check) => formatDoctorCheckSummary(check, opts)).join("\n");
+    return checks
+      .filter((check) => !(check.name === "runtime auggy" && check.status === "pass"))
+      .map((check) => formatDoctorCheckSummary(check, opts))
+      .join("\n");
   }
 
   return checks
@@ -388,6 +485,9 @@ function formatDoctorCheckSummary(check: DoctorCheck, opts: FormatDoctorChecksOp
 }
 
 function summarizeDoctorCheck(check: DoctorCheck): string {
+  if (check.name.startsWith("route ")) {
+    return `route: ${check.name.slice("route ".length)} ${check.message}`;
+  }
   if (check.status === "fail" || check.status === "warn") {
     return `${check.name}: ${check.message}`;
   }

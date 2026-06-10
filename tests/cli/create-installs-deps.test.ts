@@ -169,6 +169,10 @@ describe("runCreate scaffolding integration", () => {
     expect(existsSync(join(dir, "augments", "webFetch", "augment.yaml"))).toBe(true);
     expect(existsSync(join(dir, "augments", "filesystem", "augment.yaml"))).toBe(true);
     expect(existsSync(join(dir, "augments", "README.md"))).toBe(true);
+    expect(existsSync(join(dir, "augments", "webFetch", "README.md"))).toBe(false);
+    const augmentReadme = readFileSync(join(dir, "augments", "README.md"), "utf-8");
+    expect(augmentReadme).toContain("node_modules/auggy/src");
+    expect(augmentReadme).toContain("runtime and security updates");
     const webFetchMeta = parseYaml(
       readFileSync(join(dir, "augments", "webFetch", "augment.yaml"), "utf-8"),
     ) as Record<string, unknown>;
@@ -176,9 +180,9 @@ describe("runCreate scaffolding integration", () => {
       name: "webFetch",
       kind: "builtin",
       runtime: "auggy",
-      configType: "webFetch",
       skill: "../../skills/webFetch/SKILL.md",
     });
+    expect(webFetchMeta.configType).toBeUndefined();
 
     const env = readFileSync(join(dir, ".env"), "utf-8");
     expect(env).toMatch(/AUGGY_WEB_TOKEN=[a-f0-9]{64}/);
@@ -261,6 +265,10 @@ describe("runCreate scaffolding integration", () => {
     expect(existsSync(join(dir, "skills"))).toBe(true);
     expect(existsSync(join(dir, "skills", "auggy", "SKILL.md"))).toBe(true);
     expect(existsSync(join(dir, "data", "workspace"))).toBe(true);
+    expect(existsSync(join(dir, "data", "workspace", "README.md"))).toBe(true);
+    expect(readFileSync(join(dir, "data", "workspace", "README.md"), "utf-8")).toContain(
+      "writable scratch space",
+    );
     expect(existsSync(join(dir, "workspace"))).toBe(false);
     expect(existsSync(join(dir, ".env"))).toBe(true);
     expect(existsSync(join(dir, ".env.example"))).toBe(true);

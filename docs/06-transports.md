@@ -230,6 +230,7 @@ export interface WebTransportOptions {
     signingKey?: string;     // derive from VISITOR_SIGNING_KEY; ephemeral if absent
   };
   publicFrontendUrl?: string;    // optional 302 redirect target for GET /
+  publicIntegration?: boolean;   // publish developer discovery: /agent + public agent-card JSON
 }
 ```
 
@@ -238,9 +239,10 @@ export interface WebTransportOptions {
 | Method | Path | Purpose |
 |--------|------|---------|
 | `POST` | `/agent/run` | AG-UI SSE endpoint. Streams events for one turn. |
-| `GET` | `/` | Optional 302 redirect to `publicFrontendUrl` (default 404). |
+| `GET` | `/` | Optional 302 redirect to `publicFrontendUrl`; otherwise a minimal public placeholder. |
+| `GET` | `/agent` | Optional published developer integration page when `publicIntegration: true`. |
 | `GET` | `/health` | Liveness check. Returns `{status: "healthy"}`. |
-| `GET` | `/.well-known/agent-card.json` | Agent card discovery. |
+| `GET` | `/.well-known/agent-card.json` | Agent card discovery. Published only when `publicIntegration: true`; otherwise bearer-only. |
 | (anything else) | `404 Not Found` |
 
 ### `POST /agent/run` — the main path
@@ -461,14 +463,35 @@ Trivial. Used by load balancers / orchestrators to know the agent is up. v1 does
 ### `GET /.well-known/agent-card.json`
 
 ```ts
-function handleAgentCard(): Response {
+function handleAgentCard(req: Request): Response {
+  if (!publicIntegration && !isValidAuth(req.headers.get("authorization") ?? "")) {
+    return new Response(null, { status: 404 });
+  }
   return json(kernel.getAgentCard(), 200);
 }
 ```
 
 Returns the JSON-encoded `AgentCard`. The card was generated once at `defineAgent` time and cached.
 
-The path `/.well-known/agent-card.json` is an A2A convention — A2A discovery clients know to check this path on any agent host.
+The path `/.well-known/agent-card.json` is an A2A convention — A2A discovery clients know to check this path on any agent host. Auggy keeps that discovery private by default: unauthenticated requests return `404` unless the creator sets `webTransport.options.publicIntegration: true`. Creator/developer requests with the web bearer can still fetch the card while public discovery is disabled.
+
+`publicIntegration: true` publishes developer discovery surfaces only. It does **not** make `POST /agent/run` unauthenticated, does **not** expose `/console`, and does **not** publish secrets or operator-only setup details.
+
+### `GET /agent` and `HEAD /agent` — optional published developer integration page
+
+`/agent` is the human-readable companion to the agent card. It is disabled by default and returns `404`.
+
+When `publicIntegration: true`, `GET /agent` returns a conservative public HTML page containing:
+
+- Agent name and public-safe purpose
+- Protocol-level summary
+- Link to `/.well-known/agent-card.json`
+- Generic `POST /agent/run` request shape with no secrets
+- Generic authentication guidance
+
+`HEAD /agent` mirrors the `GET /agent` headers with an empty body. `GET /agent/` redirects to `/agent` only when developer discovery is published.
+
+Operator-only integration details belong in `/console/integrations`, including exact auth posture, CORS, generated snippets, frontend redirect config, and diagnostics.
 
 ### `GET /` and `HEAD /` — agent info endpoint + optional frontend redirect (G2)
 
@@ -493,10 +516,11 @@ The path `/.well-known/agent-card.json` is an A2A convention — A2A discovery c
 
 - Agent name (from the agent card's `provider.name`) in `<title>` and `<h1>` (falls back to `"An Auggy agent"` when the name is empty or whitespace-only)
 - Agent purpose (from `card.purpose`) in `<meta description>` + Open Graph + a body paragraph (omitted when purpose is undefined, empty, or whitespace-only)
-- `<link rel="alternate" type="application/json" href="/.well-known/agent-card.json">` so machine clients can find the structured form
+- A link to `/agent` only when `publicIntegration: true`
+- `<link rel="alternate" type="application/json" href="/.well-known/agent-card.json">` only when `publicIntegration: true`
 - `<meta name="robots" content="noindex, nofollow">` so well-behaved search crawlers don't index passively
 - Open Graph tags (`og:title`, `og:description`, `og:type`) so Slack/Discord/iMessage link previews render usefully when the URL is shared
-- Brief copy pointing the visitor at: inspecting the agent card, bringing their own AG-UI client to `POST /agent/run`, or asking the operator to configure `publicFrontendUrl`
+- Brief copy pointing creators at `/console` and `publicFrontendUrl`
 
 Response headers include `Cache-Control: public, max-age=300` — five-minute browser/CDN cache to prevent thundering from uptime monitors and link-preview refreshes.
 
@@ -504,9 +528,9 @@ The HTML body is rendered once at agent boot and cached in the transport — per
 
 **`HEAD /` mirrors `GET /`** — same status code, same headers (including `Content-Length` matching the GET body, per RFC 9110 §9.3.2), body omitted. Both branches handle HEAD identically to GET.
 
-**Other methods on `/`** (POST, PUT, DELETE, PATCH) continue to return `404 Not Found`. CORS preflight (`OPTIONS /`) is unchanged. `/agent/run`, `/health`, and `/.well-known/agent-card.json` are unaffected by `publicFrontendUrl`.
+**Other methods on `/`** (POST, PUT, DELETE, PATCH) continue to return `404 Not Found`. CORS preflight (`OPTIONS /`) is unchanged. `/agent/run`, `/health`, `/agent`, and `/.well-known/agent-card.json` are unaffected by `publicFrontendUrl`.
 
-**Auth posture.** The info page is unauthenticated regardless of `webTransport.allowAnonymous`. Rationale: the same fields are already served unauthenticated at `/.well-known/agent-card.json`; gating discovery behind visitor-auth would block link previews and monitors with no security benefit.
+**Auth posture.** The default `/` page is unauthenticated and intentionally minimal. Developer discovery is separate and private by default: `publicIntegration: true` is the creator's explicit decision to publish `/agent` and the agent card. It does not change `/agent/run` authentication or `/console` access.
 
 For local operator testing, run `auggy chat` instead — it provides a polished
 chat surface against agents you've started with `auggy dev`, without exposing a
@@ -643,9 +667,16 @@ export function myAugment(): Augment {
 Augments cannot register these paths (collision throws at `agent.start()`):
 
 - `/`
+- `/agent`
 - `/agent/run`
 - `/health`
 - `/.well-known/agent-card.json`
+- `/console`
+
+Augments also cannot register routes under reserved prefixes:
+
+- `/agent/`
+- `/console/`
 
 Convention: scope routes under `/<augment-name>/...` to make collisions across third-party augments extremely unlikely.
 

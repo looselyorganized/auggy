@@ -129,6 +129,7 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
     defaultName: "webTransport",
     defaultOptions: {
       port: 8080,
+      publicIntegration: false,
       auth: { type: "bearer", token: "${AUGGY_WEB_TOKEN}" },
       visitorTokens: {
         // signingKey is NOT set here — visitorAuth is the single source of truth

@@ -173,7 +173,7 @@ describe("runDeploy", () => {
         },
       })}\n`,
     );
-    mkdirSync(join(agentDir, "node_modules", "auggy"), { recursive: true });
+    mkdirSync(join(agentDir, "node_modules", "auggy", "src"), { recursive: true });
     mkdirSync(join(agentDir, "node_modules", "@auggy", "anthropic"), { recursive: true });
   });
 

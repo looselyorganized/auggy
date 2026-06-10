@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Check, Copy, Info, Moon, Monitor, Sun } from "lucide-react";
+import { Check, Copy, Info, Moon, Sun } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -10,6 +10,7 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { apply, getTheme, setTheme, subscribeSystemTheme, type Theme } from "@/lib/theme";
+import { formatModelLabel } from "@/lib/dashboard-format";
 import type { DashboardData } from "@/lib/types";
 
 export interface HeaderProps {
@@ -20,49 +21,35 @@ export interface HeaderProps {
   dashboard: DashboardData | null;
 }
 
-export function Header({ agentName, agentDescription, port, online, dashboard }: HeaderProps) {
+export function Header({ port, online, dashboard }: HeaderProps) {
   const [theme, setThemeState] = useState<Theme>(() => getTheme());
 
   useEffect(() => {
     apply(theme);
-    return subscribeSystemTheme(() => apply(theme));
+    return subscribeSystemTheme(() => setThemeState(getTheme()));
   }, [theme]);
 
   const cycle = () => {
-    const next: Theme = theme === "light" ? "dark" : theme === "dark" ? "system" : "light";
+    const next: Theme = theme === "light" ? "dark" : "light";
     setTheme(next);
     setThemeState(next);
   };
 
-  const ThemeIcon = theme === "light" ? Sun : theme === "dark" ? Moon : Monitor;
-  const dot =
-    online === "online"
-      ? "bg-emerald-500"
-      : online === "offline"
-        ? "bg-slate-400"
-        : "bg-amber-500";
-  const modelLabel = formatModelLabel(dashboard);
-
+  const ThemeIcon = theme === "dark" ? Moon : Sun;
+  const nextTheme = theme === "light" ? "dark" : "light";
   return (
-    <header className="flex h-14 items-center justify-between gap-3 border-b bg-background px-4">
+    <header className="flex h-16 items-center justify-between gap-3 border-b bg-background/90 px-4">
       <div className="flex min-w-0 items-center gap-3 overflow-hidden">
-        <span className={`inline-block size-2 shrink-0 rounded-full ${dot}`} />
-        <div className="flex min-w-0 items-baseline gap-2 overflow-hidden">
-          <h1 className="truncate text-sm font-semibold">{agentName}</h1>
-          {agentDescription && (
-            <span className="truncate text-xs text-muted-foreground">
-              {agentDescription}
-            </span>
-          )}
+        <span className="grid size-8 shrink-0 place-items-center rounded-md border border-foreground bg-foreground text-[13px] font-extrabold text-background">
+          A1
+        </span>
+        <div className="hidden shrink-0 sm:block">
+          <p className="text-sm font-semibold leading-4">Auggy</p>
+          <p className="text-xs text-muted-foreground">Creator console</p>
         </div>
         {port !== undefined && (
           <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
             :{port}
-          </span>
-        )}
-        {modelLabel && (
-          <span className="hidden shrink-0 rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground sm:inline">
-            {modelLabel}
           </span>
         )}
       </div>
@@ -72,7 +59,7 @@ export function Header({ agentName, agentDescription, port, online, dashboard }:
           variant="ghost"
           size="icon"
           onClick={cycle}
-          aria-label={`Theme: ${theme}. Click to switch.`}
+          aria-label={`Theme: ${theme}. Switch to ${nextTheme}.`}
           title={`Theme: ${theme}`}
         >
           <ThemeIcon className="size-4" />
@@ -103,6 +90,7 @@ function AgentDetailsButton({
   const agentId = dashboard?.agentMeta?.id;
   const purpose = dashboard?.agentMeta?.purpose ?? dashboard?.card.purpose;
   const modelLabel = formatModelLabel(dashboard);
+  const auggyVersion = dashboard?.auggyVersion;
   const transports = dashboard?.augments.filter((a) => a.isTransport).map((a) => a.type) ?? [];
   const augmentCount = dashboard?.augments.length ?? 0;
 
@@ -116,6 +104,7 @@ function AgentDetailsButton({
   const diagnostics = [
     `agent=${agentName}`,
     agentId ? `id=${agentId}` : undefined,
+    auggyVersion ? `auggy=${auggyVersion}` : undefined,
     modelLabel ? `engine=${modelLabel}` : undefined,
     `status=${online}`,
     publicUrl ? `url=${publicUrl}` : undefined,
@@ -141,6 +130,7 @@ function AgentDetailsButton({
           <DetailGrid
             rows={[
               ["Status", online],
+              ["Auggy version", auggyVersion ? `v${auggyVersion}` : "unknown"],
               ["Engine", modelLabel ?? "unknown"],
               ["Agent UUID", agentId ?? "not set"],
               ["Runtime URL", publicUrl],
@@ -204,13 +194,4 @@ function DetailGrid({
       ))}
     </div>
   );
-}
-
-function formatModelLabel(dashboard: DashboardData | null): string | null {
-  const provider = dashboard?.agentMeta?.engine?.provider;
-  const model = dashboard?.agentMeta?.engine?.model;
-  if (provider && model) return `${provider} / ${model}`;
-  if (provider) return provider;
-  if (model) return model;
-  return null;
 }

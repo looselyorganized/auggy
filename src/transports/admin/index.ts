@@ -37,6 +37,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
 
+const AUGGY_VERSION = readPackageVersion();
+
 /**
  * Minimal agent.yaml top-level summary surfaced to the SPA so the sidebar
  * can show the agent's identity from config (which is the operator's source
@@ -91,6 +93,17 @@ function readAgentMeta(agentDir: string | undefined): AgentMeta | null {
     };
   } catch {
     return null;
+  }
+}
+
+function readPackageVersion(): string {
+  try {
+    const pkg = JSON.parse(
+      readFileSync(new URL("../../../package.json", import.meta.url), "utf-8"),
+    ) as { version?: unknown };
+    return typeof pkg.version === "string" && pkg.version.trim() !== "" ? pkg.version : "unknown";
+  } catch {
+    return "unknown";
   }
 }
 
@@ -539,6 +552,7 @@ async function handleDashboardJson(ctx: AdminRouteContext, agentName: string): P
   return new Response(
     JSON.stringify({
       card: ctx.kernel.getAgentCard(),
+      auggyVersion: AUGGY_VERSION,
       agentMeta,
       augments,
       blocks,
@@ -589,12 +603,15 @@ async function handleActionPost(
   rowKey: string | undefined,
   agentName: string,
 ): Promise<Response> {
+  const wantsJson = req.headers.get("accept")?.includes("application/json") === true;
   let form: URLSearchParams;
   try {
     const text = await req.text();
     form = new URLSearchParams(text);
   } catch {
-    return new Response(null, { status: 400 });
+    return wantsJson
+      ? actionJson({ ok: false, message: "invalid form body", csrfExpired: false }, 400)
+      : new Response(null, { status: 400 });
   }
 
   // S7 fix — CSRF validation distinguishes expired (graceful refresh) from
@@ -609,6 +626,12 @@ async function handleActionPost(
   });
   if (!csrfResult.valid) {
     if (csrfResult.reason === "expired") {
+      if (wantsJson) {
+        return actionJson(
+          { ok: false, message: "Session expired — refreshing…", csrfExpired: true },
+          419,
+        );
+      }
       return new Response(EXPIRED_CSRF_HTML, {
         status: 200,
         headers: {
@@ -617,13 +640,22 @@ async function handleActionPost(
         },
       });
     }
-    return new Response(null, { status: 403 });
+    return wantsJson
+      ? actionJson(
+          { ok: false, message: "Forbidden (CSRF or auth check failed)", csrfExpired: false },
+          403,
+        )
+      : new Response(null, { status: 403 });
   }
 
   // S8 — registry lookup replaces (a) the iterate-augments-for-handler
   // search and (b) the second adminInfo() call to retrieve input declarations.
   const entry = ctx.actionRegistry.get(actionId);
-  if (!entry) return new Response(null, { status: 404 });
+  if (!entry) {
+    return wantsJson
+      ? actionJson({ ok: false, message: "Action not found", csrfExpired: false }, 404)
+      : new Response(null, { status: 404 });
+  }
 
   // Coerce inputs using the registered declaration
   const rawInputs: Record<string, string | undefined> = {};
@@ -632,7 +664,10 @@ async function handleActionPost(
   }
   const coerce = coerceInputs(entry.inputs, rawInputs);
   if (!coerce.ok) {
-    return flashRedirect(`invalid ${coerce.field}: ${coerce.reason}`);
+    const message = `invalid ${coerce.field}: ${coerce.reason}`;
+    return wantsJson
+      ? actionJson({ ok: false, message, csrfExpired: false })
+      : flashRedirect(message);
   }
 
   // Invoke handler, wrap in try/catch
@@ -655,13 +690,28 @@ async function handleActionPost(
     } message=${JSON.stringify(result.message)}`,
   );
 
-  return flashRedirect(result.message);
+  return wantsJson
+    ? actionJson({ ok: result.ok, message: result.message, csrfExpired: false })
+    : flashRedirect(result.message);
 }
 
 function flashRedirect(message: string): Response {
   return new Response(null, {
     status: 303,
     headers: { location: `/console?msg=${encodeURIComponent(message)}` },
+  });
+}
+
+function actionJson(
+  body: { ok: boolean; message: string; csrfExpired: boolean },
+  status = 200,
+): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: {
+      "content-type": "application/json",
+      "cache-control": "no-store",
+    },
   });
 }
 

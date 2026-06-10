@@ -110,7 +110,6 @@ For built-in augments:
 name: webFetch
 kind: builtin
 runtime: auggy
-configType: webFetch
 skill: ../../skills/webFetch/SKILL.md
 ```
 
@@ -124,9 +123,10 @@ entry: ./index.ts
 skill: ./SKILL.md
 ```
 
-`runtime` declares where the implementation comes from. `configType` declares
-the `agent.yaml` type this installed augment maps to. Built-in implementation
-files are not copied into agent projects.
+`runtime` declares where the implementation comes from. Built-in implementation
+files are not copied into agent projects; they live in `node_modules/auggy/src`
+after install. The corresponding `agent.yaml` type is the installed augment's
+`name`.
 
 ## Skill Commands
 

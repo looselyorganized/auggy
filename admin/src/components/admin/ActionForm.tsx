@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import { useActionDispatcher } from "./useActionDispatcher";
 import type { AdminAction } from "@/lib/types";
 
@@ -39,14 +40,12 @@ export function ActionForm({ action }: { action: AdminAction }) {
         if (inp.type === "boolean") {
           return (
             <div key={inp.name} className="flex items-center gap-2">
-              <input
+              <Switch
                 id={id}
-                type="checkbox"
                 checked={values[inp.name] === "true"}
-                onChange={(e) =>
-                  setValues((v) => ({ ...v, [inp.name]: e.target.checked ? "true" : "false" }))
+                onCheckedChange={(checked) =>
+                  setValues((v) => ({ ...v, [inp.name]: checked ? "true" : "false" }))
                 }
-                className="size-4 rounded border-input"
               />
               <Label htmlFor={id}>{inp.label}</Label>
               {inp.helpText && (
