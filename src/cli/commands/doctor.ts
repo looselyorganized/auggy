@@ -18,6 +18,11 @@ import { augmentFolderForType } from "../scaffold-skills";
 import { parseEnvFile } from "../env-parse";
 import { diagnoseMcpConfig } from "../mcp-config";
 import { collectAugmentRoutes } from "../../kernel/route-collector";
+import {
+  createRouteManifest,
+  summarizeRouteManifest,
+  type RouteManifestEntry,
+} from "../../kernel/route-manifest";
 import type { Augment } from "../../types";
 import type { AugmentConfig, ParsedConfig } from "../types";
 
@@ -400,15 +405,39 @@ async function checkAugmentRoutes(
     }));
   }
 
-  return collected.routes.map((route) => ({
-    name: `route ${route.method} ${route.path}`,
-    status: route.auth === "none" ? "warn" : "pass",
-    message: `${route.augmentName} ${route.auth}${route.auth === "none" ? " PUBLIC" : ""}`,
-    fix:
-      route.auth === "none"
+  const manifest = createRouteManifest(collected.routes);
+  const summary = summarizeRouteManifest(manifest);
+
+  const checks: DoctorCheck[] = [
+    {
+      name: "augment route posture",
+      status: summary.publicRoutes > 0 ? "warn" : "pass",
+      message: `${summary.totalRoutes} route(s): ${summary.publicRoutes} public, ${summary.privateRoutes} private`,
+      fix:
+        summary.publicRoutes > 0
+          ? 'Review public routes and confirm auth: "none" is intentional.'
+          : undefined,
+    },
+  ];
+
+  for (const route of manifest) {
+    checks.push({
+      name: `route ${route.method} ${route.path}`,
+      status: route.public ? "warn" : "pass",
+      message: formatRouteManifestEntry(route),
+      fix: route.public
         ? 'Set auth: "bearer" unless this route is intentionally public.'
         : undefined,
-  }));
+    });
+  }
+
+  return checks;
+}
+
+function formatRouteManifestEntry(route: RouteManifestEntry): string {
+  const params = route.params.length > 0 ? route.params.join(",") : "-";
+  const rateLimit = route.rateLimit ? ` rate=${route.rateLimit.maxPerMinute}/min` : "";
+  return `${route.augmentName} ${route.security.toUpperCase()} auth=${route.auth} params=${params}${rateLimit}`;
 }
 
 async function loadCustomAugmentForDoctor(
@@ -485,6 +514,9 @@ function formatDoctorCheckSummary(check: DoctorCheck, opts: FormatDoctorChecksOp
 }
 
 function summarizeDoctorCheck(check: DoctorCheck): string {
+  if (check.name === "augment route posture") {
+    return `route posture: ${check.message}`;
+  }
   if (check.name.startsWith("route ")) {
     return `route: ${check.name.slice("route ".length)} ${check.message}`;
   }

@@ -342,14 +342,21 @@ describe("runDoctor", () => {
 
     const publicRoute = checks.find((c) => c.name === "route GET /services");
     const bearerRoute = checks.find((c) => c.name === "route POST /leads/create");
+    const posture = checks.find((c) => c.name === "augment route posture");
 
+    expect(posture?.status).toBe("warn");
+    expect(posture?.message).toBe("2 route(s): 1 public, 1 private");
+    expect(posture?.fix).toContain("Review public routes");
     expect(publicRoute?.status).toBe("warn");
-    expect(publicRoute?.message).toBe("concierge-services none PUBLIC");
+    expect(publicRoute?.message).toBe("concierge-services PUBLIC auth=none params=-");
     expect(publicRoute?.fix).toContain("intentionally public");
     expect(bearerRoute?.status).toBe("pass");
-    expect(bearerRoute?.message).toBe("concierge-services bearer");
+    expect(bearerRoute?.message).toBe("concierge-services PRIVATE auth=bearer params=-");
     expect(formatDoctorChecks(checks)).toContain(
-      "WARN route: GET /services concierge-services none PUBLIC",
+      "WARN route posture: 2 route(s): 1 public, 1 private",
+    );
+    expect(formatDoctorChecks(checks)).toContain(
+      "WARN route: GET /services concierge-services PUBLIC auth=none params=-",
     );
   });
 
