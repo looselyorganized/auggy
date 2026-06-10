@@ -74,7 +74,7 @@ export { defineAgent } from "./agent";
 export { generateAgentCard } from "./agent-card";
 
 // === Helpers ===
-export { defineAugment, defineTool } from "./helpers";
+export { defineAugment, defineRoute, defineTool, json } from "./helpers";
 export { extractText, textPart, dataPart } from "./parts";
 
 // === Tokenizer (for augment authors who need token counting) ===

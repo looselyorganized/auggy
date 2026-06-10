@@ -1,0 +1,4 @@
+name: notify
+kind: builtin
+runtime: auggy
+skill: ../../skills/notify/SKILL.md

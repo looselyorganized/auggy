@@ -1,0 +1,4 @@
+name: turnControl
+kind: builtin
+runtime: auggy
+skill: ../../skills/turnControl/SKILL.md

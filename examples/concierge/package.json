@@ -1,0 +1,13 @@
+{
+  "name": "auggy-agent-concierge",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "bun test augments/concierge-services/concierge-services.test.ts"
+  },
+  "dependencies": {
+    "@auggy/anthropic": "^0.4.4",
+    "auggy": "^0.4.4",
+    "zod": "^4.4.3"
+  }
+}

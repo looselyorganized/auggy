@@ -1,0 +1,9 @@
+{
+  "sources": [
+    {
+      "name": "local",
+      "description": "Local project knowledge maintained with this agent",
+      "baseUrl": "file://./local"
+    }
+  ]
+}

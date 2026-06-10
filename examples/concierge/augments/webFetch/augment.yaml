@@ -1,0 +1,4 @@
+name: webFetch
+kind: builtin
+runtime: auggy
+skill: ../../skills/webFetch/SKILL.md

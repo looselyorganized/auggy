@@ -1,0 +1,12 @@
+service: Harbor & Pine Concierge
+description: Local knowledge for the concierge example.
+endpoints:
+  - id: mission
+    path: ./mission.md
+    description: Business mission and service posture.
+  - id: services
+    path: ./services.md
+    description: Service catalog and matching hints.
+  - id: policies
+    path: ./policies.md
+    description: Lead capture and escalation policies.

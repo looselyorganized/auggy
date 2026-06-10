@@ -17,6 +17,8 @@ import { AUGMENT_CATALOG } from "../augment-catalog";
 import { augmentFolderForType } from "../scaffold-skills";
 import { parseEnvFile } from "../env-parse";
 import { diagnoseMcpConfig } from "../mcp-config";
+import { collectAugmentRoutes } from "../../kernel/route-collector";
+import type { Augment } from "../../types";
 import type { AugmentConfig, ParsedConfig } from "../types";
 
 export type DoctorStatus = "pass" | "warn" | "fail";
@@ -93,6 +95,7 @@ export async function runDoctor(
   checks.push(...checkRuntimeSource(agentDir));
   checks.push(...(await checkWebPorts(config, opts.isPortAvailable ?? isPortAvailable)));
   checks.push(...checkBundledSkills(agentDir, config.augments));
+  checks.push(...(await checkAugmentRoutes(agentDir, config.augments)));
   checks.push(...checkMcp(agentDir, config, opts.cloud ?? false));
 
   return checks;
@@ -363,6 +366,66 @@ function checkBundledSkills(agentDir: string, augments: AugmentConfig[]): Doctor
   return out;
 }
 
+async function checkAugmentRoutes(agentDir: string, configs: AugmentConfig[]): Promise<DoctorCheck[]> {
+  const customConfigs = configs.filter((aug) => aug.type === "custom");
+  if (customConfigs.length === 0) return [];
+
+  const augments: Augment[] = [];
+  for (const config of customConfigs) {
+    try {
+      const augment = await loadCustomAugmentForDoctor(agentDir, config);
+      augments.push({ ...augment, name: config.name });
+    } catch (err) {
+      return [
+        {
+          name: "augment routes",
+          status: "fail",
+          message: `could not inspect custom augment "${config.name}": ${(err as Error).message}`,
+          fix: "Run `bun install`, then check the custom augment source path and default export.",
+        },
+      ];
+    }
+  }
+
+  const collected = collectAugmentRoutes(augments);
+  if (collected.errors.length > 0) {
+    return collected.errors.map((message) => ({
+      name: "augment routes",
+      status: "fail",
+      message,
+      fix: "Fix the route path, auth mode, or duplicate registration in the custom augment.",
+    }));
+  }
+
+  return collected.routes.map((route) => ({
+    name: `route ${route.method} ${route.path}`,
+    status: route.auth === "none" ? "warn" : "pass",
+    message: `${route.augmentName} ${route.auth}${route.auth === "none" ? " PUBLIC" : ""}`,
+    fix:
+      route.auth === "none"
+        ? 'Set auth: "bearer" unless this route is intentionally public.'
+        : undefined,
+  }));
+}
+
+async function loadCustomAugmentForDoctor(
+  agentDir: string,
+  config: AugmentConfig,
+): Promise<Augment> {
+  if (!config.source) {
+    throw new Error("source path is required");
+  }
+
+  const absPath = config.source.startsWith("/") ? config.source : resolve(agentDir, config.source);
+  const mod = (await import(absPath)) as Record<string, unknown>;
+  const factory = mod.default;
+  if (typeof factory !== "function") {
+    throw new Error(`"${absPath}" must have a default export function`);
+  }
+
+  return factory(config.options ?? {}) as Augment;
+}
+
 function nameForFix(agentDir: string): string {
   return agentDir.split(/[\\/]/).filter(Boolean).at(-1) ?? "<name>";
 }
@@ -419,6 +482,9 @@ function formatDoctorCheckSummary(check: DoctorCheck, opts: FormatDoctorChecksOp
 }
 
 function summarizeDoctorCheck(check: DoctorCheck): string {
+  if (check.name.startsWith("route ")) {
+    return `route: ${check.name.slice("route ".length)} ${check.message}`;
+  }
   if (check.status === "fail" || check.status === "warn") {
     return `${check.name}: ${check.message}`;
   }

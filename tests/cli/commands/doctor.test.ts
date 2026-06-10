@@ -49,6 +49,7 @@ function writeAgent(
     providerKey?: string;
     includeVisitorAuth?: boolean;
     includeMcp?: boolean;
+    customRoutes?: "valid" | "reserved" | "duplicate";
   } = {},
 ): string {
   const provider = opts.provider ?? "anthropic";
@@ -106,9 +107,26 @@ function writeAgent(
             },
           ]
         : []),
+      ...(opts.customRoutes
+        ? [
+            {
+              name: "concierge-services",
+              type: "custom",
+              source: "./augments/concierge-services/index.ts",
+            },
+          ]
+        : []),
     ],
   };
   writeFileSync(join(dir, "agent.yaml"), stringify(config));
+
+  if (opts.customRoutes) {
+    mkdirSync(join(dir, "augments", "concierge-services"), { recursive: true });
+    writeFileSync(
+      join(dir, "augments", "concierge-services", "index.ts"),
+      customRouteModule(opts.customRoutes),
+    );
+  }
 
   if (opts.includePackageJson !== false) {
     writeFileSync(
@@ -151,6 +169,72 @@ function writeAgent(
   }
 
   return dir;
+}
+
+function customRouteModule(kind: "valid" | "reserved" | "duplicate"): string {
+  if (kind === "reserved") {
+    return `
+      export default function conciergeServices() {
+        return {
+          name: "concierge-services",
+          httpRoutes: [
+            {
+              method: "GET",
+              path: "/console",
+              auth: "none",
+              handler: async () => new Response(JSON.stringify({ ok: true })),
+            },
+          ],
+        };
+      }
+    `;
+  }
+
+  if (kind === "duplicate") {
+    return `
+      export default function conciergeServices() {
+        return {
+          name: "concierge-services",
+          httpRoutes: [
+            {
+              method: "GET",
+              path: "/services",
+              auth: "none",
+              handler: async () => new Response(JSON.stringify({ ok: true })),
+            },
+            {
+              method: "GET",
+              path: "/services",
+              auth: "bearer",
+              handler: async () => new Response(JSON.stringify({ ok: true })),
+            },
+          ],
+        };
+      }
+    `;
+  }
+
+  return `
+        export default function conciergeServices() {
+          return {
+            name: "concierge-services",
+            httpRoutes: [
+              {
+                method: "GET",
+                path: "/services",
+                auth: "none",
+                handler: async () => new Response(JSON.stringify({ ok: true })),
+              },
+              {
+                method: "POST",
+                path: "/leads/create",
+                auth: "bearer",
+                handler: async () => new Response(JSON.stringify({ ok: true })),
+              },
+            ],
+          };
+        }
+      `;
 }
 
 describe("runDoctor", () => {
@@ -242,6 +326,70 @@ describe("runDoctor", () => {
     expect(checks.find((c) => c.name === "env VISITOR_SIGNING_KEY")?.status).toBe("pass");
     expect(formatDoctorChecks(checks)).toContain("PASS env: VISITOR_SIGNING_KEY");
     expect(hasDoctorFailures(checks)).toBe(false);
+  });
+
+  test("lists custom augment routes and warns for public routes", async () => {
+    writeAgent("zip", {
+      installDeps: true,
+      installSkill: true,
+      customRoutes: "valid",
+    });
+
+    const checks = await runDoctor("zip", {
+      auggyDir,
+      isPortAvailable: async () => true,
+    });
+
+    const publicRoute = checks.find((c) => c.name === "route GET /services");
+    const bearerRoute = checks.find((c) => c.name === "route POST /leads/create");
+
+    expect(publicRoute?.status).toBe("warn");
+    expect(publicRoute?.message).toBe("concierge-services none PUBLIC");
+    expect(publicRoute?.fix).toContain("intentionally public");
+    expect(bearerRoute?.status).toBe("pass");
+    expect(bearerRoute?.message).toBe("concierge-services bearer");
+    expect(formatDoctorChecks(checks)).toContain(
+      "WARN route: GET /services concierge-services none PUBLIC",
+    );
+  });
+
+  test("fails when a custom augment route uses a reserved path", async () => {
+    writeAgent("zip", {
+      installDeps: true,
+      installSkill: true,
+      customRoutes: "reserved",
+    });
+
+    const checks = await runDoctor("zip", {
+      auggyDir,
+      isPortAvailable: async () => true,
+    });
+
+    const routeFailure = checks.find((c) => c.name === "augment routes");
+    expect(routeFailure?.status).toBe("fail");
+    expect(routeFailure?.message).toContain('GET "/console"');
+    expect(routeFailure?.message).toContain("reserved by webTransport");
+    expect(routeFailure?.fix).toContain("Fix the route path");
+    expect(hasDoctorFailures(checks)).toBe(true);
+  });
+
+  test("fails when custom augment routes collide", async () => {
+    writeAgent("zip", {
+      installDeps: true,
+      installSkill: true,
+      customRoutes: "duplicate",
+    });
+
+    const checks = await runDoctor("zip", {
+      auggyDir,
+      isPortAvailable: async () => true,
+    });
+
+    const routeFailure = checks.find((c) => c.name === "augment routes");
+    expect(routeFailure?.status).toBe("fail");
+    expect(routeFailure?.message).toContain('GET "/services"');
+    expect(routeFailure?.message).toContain("Path collisions are not allowed");
+    expect(hasDoctorFailures(checks)).toBe(true);
   });
 
   test("fails when package.json is missing", async () => {

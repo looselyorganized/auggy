@@ -1,0 +1,4 @@
+name: knowledge
+kind: builtin
+runtime: auggy
+skill: ../../skills/knowledge/SKILL.md
