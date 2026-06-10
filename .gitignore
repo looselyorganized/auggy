@@ -38,31 +38,6 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 # Finder (MacOS) folder config
 .DS_Store
 
-# Internal docs — keep local, do not publish (most files are red-team
-# notes, raw planning, dated research). Carve-outs allow specific public-
-# ready reference docs to stay tracked.
-docs/*
-docs/**/
-!docs/02-architecture-overview.md
-!docs/todos.md
-!docs/06-transports.md
-!docs/07-built-in-augments.md
-!docs/13-notify.md
-!docs/14-telegram-transport.md
-!docs/15-chat.md
-!docs/16-storage-layout.md
-!docs/17-turn-control.md
-!docs/18-deploy.md
-!docs/19-visitor-auth.md
-!docs/20-embedding.md
-!docs/21-console.md
-!docs/22-agent-mail.md
-!docs/24-mcp.md
-!docs/plans/
-!docs/plans/*.md
-!docs/ROADMAP.md
-!docs/RELEASING.md
-
 # Local git worktrees (subagent-driven-development)
 .worktrees/
 
