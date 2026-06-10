@@ -17,6 +17,7 @@ import { AUGMENT_CATALOG } from "../augment-catalog";
 import { augmentFolderForType } from "../scaffold-skills";
 import { parseEnvFile } from "../env-parse";
 import { diagnoseMcpConfig } from "../mcp-config";
+import { describeEnginePricing, hasUsdBudgetCaps } from "../model-registry";
 import { formatRouteManifestEntry, inspectCustomAugmentRoutes } from "../route-inspector";
 import type { AugmentConfig, ParsedConfig } from "../types";
 
@@ -92,12 +93,34 @@ export async function runDoctor(
   checks.push(...checkProviderEnv(agentDir, config));
   checks.push(...checkAgentDependencies(agentDir, config));
   checks.push(...checkRuntimeSource(agentDir));
+  checks.push(checkModelPricing(config));
   checks.push(...(await checkWebPorts(config, opts.isPortAvailable ?? isPortAvailable)));
   checks.push(...checkBundledSkills(agentDir, config.augments));
   checks.push(...(await checkAugmentRoutes(agentDir, config.augments)));
   checks.push(...checkMcp(agentDir, config, opts.cloud ?? false));
 
   return checks;
+}
+
+function checkModelPricing(config: ParsedConfig): DoctorCheck {
+  const pricing = describeEnginePricing(config.engine);
+  if (pricing.status !== "unknown") {
+    return {
+      name: "model pricing",
+      status: "pass",
+      message: pricing.message,
+    };
+  }
+
+  const usdBudgets = hasUsdBudgetCaps(config.augments);
+  return {
+    name: "model pricing",
+    status: "warn",
+    message: pricing.message,
+    fix: usdBudgets
+      ? "Add engine.costOverride in agent.yaml so budgets can enforce USD caps for this model."
+      : "Allowed. Add engine.costOverride before enabling USD budget caps.",
+  };
 }
 
 function checkMcp(agentDir: string, config: ParsedConfig, cloud: boolean): DoctorCheck[] {
@@ -486,6 +509,7 @@ function summarizeDoctorCheck(check: DoctorCheck): string {
   if (check.name.startsWith("dependency ")) {
     return `dependency: ${check.name.slice("dependency ".length)}`;
   }
+  if (check.name === "model pricing") return `model pricing: ${check.message}`;
   if (check.name.startsWith("port "))
     return `port: ${check.name.slice("port ".length)} ${check.message}`;
   if (check.name.startsWith("skill ")) return `skill: ${check.name.slice("skill ".length)}`;

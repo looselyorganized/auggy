@@ -11,6 +11,7 @@
  *   auggy skill add <augment>        Repair/reinstall a bundled skill
  *   auggy run [name] [--no-open]     Run agent in foreground; opens /console/chat by default
  *   auggy doctor [name]              Check whether an agent is ready to run
+ *   auggy models list [provider]     List known/provider engine models
  *   auggy routes [name]              Show custom HTTP routes registered by an agent
  *   auggy augment create <slug>      Scaffold a local custom augment
  *   auggy dev [name] [--open]        Run agent in foreground; --open pops /console in browser
@@ -43,6 +44,7 @@ import { runStatus } from "./commands/status";
 import { chatCommand } from "./commands/chat";
 import { evalCommand } from "./commands/eval";
 import { mcpCommand } from "./commands/mcp";
+import { modelsCommand } from "./commands/models";
 import { runRemove } from "./commands/remove";
 import { runLs } from "./commands/ls";
 import { withBrailleSpinner } from "./spinner";
@@ -107,6 +109,7 @@ export function buildCli(): Command {
   program.addCommand(skillCommand());
   program.addCommand(runCommand());
   program.addCommand(doctorCommand());
+  program.addCommand(modelsCommand());
   program.addCommand(routesCommand());
   program.addCommand(augmentCommand());
   program.addCommand(mcpCommand());
