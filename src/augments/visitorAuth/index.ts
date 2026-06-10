@@ -14,7 +14,7 @@
 import { existsSync } from "node:fs";
 import { Database } from "bun:sqlite";
 import { z } from "zod";
-import { defineTool } from "../../helpers";
+import { defineRoute, defineTool, json } from "../../helpers";
 import { createAgentMailClient, type AgentMailClient } from "../../agentmail-client";
 import { createConsoleMailClient } from "./console-mail-client";
 import { createVisitorToken, deriveSigningKey } from "../../transports/visitor-token";
@@ -49,6 +49,21 @@ const DEFAULT_TOKEN_TTL_MIN = 15;
 const DEFAULT_REVERIFY_DAYS = 90;
 const DEFAULT_RATE_LIMIT = { perHour: 1, perDay: 3 };
 const VERIFY_PATH = "/visitor-auth/verify";
+const REQUEST_PATH = "/visitor-auth/request";
+
+const requestAuthRouteBody = z.object({
+  email: z.string(),
+  threadId: z
+    .string()
+    .trim()
+    .min(1)
+    .max(128)
+    .regex(/^[A-Za-z0-9._:-]+$/)
+    .optional(),
+  messageId: z.string().trim().min(1).max(256).optional(),
+});
+
+type RequestAuthCode = NonNullable<RequestAuthResult["code"]>;
 
 /** Internal options exposed for tests — production callers do not pass these. */
 export interface VisitorAuthInternalOptions extends VisitorAuthOptions {
@@ -303,6 +318,124 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
     return { subject, text };
   }
 
+  async function requestEmailVerification(input: {
+    email: string;
+    peerId: string;
+    threadId: string;
+    sourceMessageId?: string | null;
+    recentMessages?: RecentVisitorMessage[];
+    requireRecentEmail: boolean;
+  }): Promise<RequestAuthResult> {
+    const fail = (
+      status: "rejected" | "failed",
+      code: RequestAuthCode,
+      message: string,
+    ): RequestAuthResult => ({ status, code, message });
+
+    if (!booted) {
+      return fail(
+        "failed",
+        "not_booted",
+        "visitorAuth has not finished booting; try again shortly.",
+      );
+    }
+
+    const email = input.email.trim().toLowerCase();
+    if (!isWellFormedEmail(email)) {
+      return fail("rejected", "malformed_email", "Email address is malformed.");
+    }
+
+    let sourceMessageId = input.sourceMessageId ?? null;
+    if (input.requireRecentEmail) {
+      const match = emailAppearsInRecentMessages(email, input.recentMessages ?? []);
+      if (!match.matched) {
+        return fail(
+          "rejected",
+          "email_not_recent",
+          "Email was not found in the visitor's recent messages. Refusing to send to an address the visitor did not type.",
+        );
+      }
+      sourceMessageId = match.messageId || null;
+    }
+
+    // Per-email rate limit (fix H1: threadId rotation bypass).
+    // Keying on email prevents an attacker from rotating peer.id / threadId
+    // to escape the rate limit. The "email:" prefix namespaces the key so
+    // future per-IP keying (e.g. "ip:...") can coexist without collision.
+    const t = now();
+    const rlKey = `email:${email}`;
+    const rl = rateLimiter.check(rlKey, t);
+    if (!rl.allowed) {
+      const wait = Math.ceil(rl.retryAfterSec / 60);
+      return fail(
+        "rejected",
+        "rate_limited",
+        `Verification rate limit reached for this visitor (${rl.reason}). Try again in ~${wait} minute(s).`,
+      );
+    }
+
+    // Invalidate any prior open token for this peer; only one open at a time.
+    store.invalidateOpenTokensForPeer(input.peerId, t);
+
+    // Mint a fresh token + write the row + build URL.
+    const token = crypto.randomUUID();
+    const ttlMs = tokenTtlMin * 60_000;
+    store.issueToken({
+      token,
+      email,
+      peerId: input.peerId,
+      threadId: input.threadId,
+      expiresAt: t + ttlMs,
+      sourceMessageId,
+    });
+    const verifyUrl = buildVerifyUrl(token);
+    const { subject, text } = buildEmailBody(verifyUrl, tokenTtlMin);
+
+    // Send via agentmail-client.ts (direct — see plan §"Spec deviation").
+    // In console mode `mailInboxId` is the routing placeholder "console";
+    // the ConsoleMailClient ignores it and prints the verify URL instead.
+    const sendResult = await agentMail.send({
+      inboxId: mailInboxId,
+      to: [email],
+      subject,
+      text,
+      labels: ["visitor-auth", "verify"],
+    });
+
+    if (sendResult.status !== "sent") {
+      // Mark THIS token consumed so it can't be redeemed despite the visitor
+      // never receiving it. Use the token-scoped variant (F3): a peer-wide
+      // invalidate would steamroll a sibling concurrent request_auth call's
+      // token if one was issued in between (the line-192 pre-invalidate kills
+      // OUR pending token from the sibling's perspective; OUR failure cleanup
+      // must not return the favor).
+      store.invalidateTokenIfStillOpen(token, t + 1);
+      return fail(
+        "failed",
+        "send_failed",
+        `Failed to send verification email: ${sendResult.detail ?? "unknown error"}`,
+      );
+    }
+
+    // Record the rate-limit tick AFTER successful send (keyed to email, not peer).
+    rateLimiter.record(rlKey, t);
+
+    return {
+      status: "sent",
+      message: `Verification email sent to ${email}. The link expires in ${tokenTtlMin} minutes.`,
+      expiresInSec: Math.floor(ttlMs / 1000),
+      threadId: input.threadId,
+    };
+  }
+
+  function requestAuthHttpStatus(result: RequestAuthResult): number {
+    if (result.status === "sent") return 200;
+    if (result.code === "rate_limited") return 429;
+    if (result.code === "not_booted") return 503;
+    if (result.code === "send_failed") return 502;
+    return 400;
+  }
+
   const requestAuthTool = defineTool({
     name: "request_auth",
     description:
@@ -316,103 +449,29 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
       input: { method: "email"; email: string },
       ctx?: ToolExecuteContext,
     ): Promise<string> => {
-      const fail = (status: "rejected" | "failed", message: string): string =>
-        JSON.stringify({ status, message } satisfies RequestAuthResult);
-
-      if (!booted) {
-        return fail("failed", "visitorAuth has not finished booting; try again shortly.");
-      }
       if (!ctx?.peer) {
-        return fail("failed", "request_auth requires turn context with a peer identity.");
+        return JSON.stringify({
+          status: "failed",
+          code: "missing_peer",
+          message: "request_auth requires turn context with a peer identity.",
+        } satisfies RequestAuthResult);
       }
       if (input.method !== "email") {
-        return fail(
-          "rejected",
-          `method "${input.method}" not supported in this build; only "email" is available.`,
-        );
-      }
-      const email = input.email.trim().toLowerCase();
-      if (!isWellFormedEmail(email)) {
-        return fail("rejected", "Email address is malformed.");
+        return JSON.stringify({
+          status: "rejected",
+          code: "unsupported_method",
+          message: `method "${input.method}" not supported in this build; only "email" is available.`,
+        } satisfies RequestAuthResult);
       }
 
-      // Email-in-recent-message validation (fix #4).
-      const recent = recentByPeer.get(ctx.peer.id) ?? [];
-      const match = emailAppearsInRecentMessages(email, recent);
-      if (!match.matched) {
-        return fail(
-          "rejected",
-          "Email was not found in the visitor's recent messages. Refusing to send to an address the visitor did not type.",
-        );
-      }
-
-      // Per-email rate limit (fix H1: threadId rotation bypass).
-      // Keying on email prevents an attacker from rotating peer.id / threadId
-      // to escape the rate limit. The "email:" prefix namespaces the key so
-      // future per-IP keying (e.g. "ip:...") can coexist without collision.
-      const t = now();
-      const rlKey = `email:${email}`;
-      const rl = rateLimiter.check(rlKey, t);
-      if (!rl.allowed) {
-        const wait = Math.ceil(rl.retryAfterSec / 60);
-        return fail(
-          "rejected",
-          `Verification rate limit reached for this visitor (${rl.reason}). Try again in ~${wait} minute(s).`,
-        );
-      }
-
-      // Invalidate any prior open token for this peer; only one open at a time.
-      store.invalidateOpenTokensForPeer(ctx.peer.id, t);
-
-      // Mint a fresh token + write the row + build URL.
-      const token = crypto.randomUUID();
-      const ttlMs = tokenTtlMin * 60_000;
-      store.issueToken({
-        token,
-        email,
+      const result = await requestEmailVerification({
+        email: input.email,
         peerId: ctx.peer.id,
         threadId: ctx.threadId,
-        expiresAt: t + ttlMs,
-        // `||` (not `??`) so empty-string from emailAppearsInRecentMessages
-        // (when the recent message had no messageId) becomes null, not "".
-        sourceMessageId: match.messageId || null,
+        recentMessages: recentByPeer.get(ctx.peer.id) ?? [],
+        requireRecentEmail: true,
       });
-      const verifyUrl = buildVerifyUrl(token);
-      const { subject, text } = buildEmailBody(verifyUrl, tokenTtlMin);
-
-      // Send via agentmail-client.ts (direct — see plan §"Spec deviation").
-      // In console mode `mailInboxId` is the routing placeholder "console";
-      // the ConsoleMailClient ignores it and prints the verify URL instead.
-      const sendResult = await agentMail.send({
-        inboxId: mailInboxId,
-        to: [email],
-        subject,
-        text,
-        labels: ["visitor-auth", "verify"],
-      });
-
-      if (sendResult.status !== "sent") {
-        // Mark THIS token consumed so it can't be redeemed despite the visitor
-        // never receiving it. Use the token-scoped variant (F3): a peer-wide
-        // invalidate would steamroll a sibling concurrent request_auth call's
-        // token if one was issued in between (the line-192 pre-invalidate kills
-        // OUR pending token from the sibling's perspective; OUR failure cleanup
-        // must not return the favor).
-        store.invalidateTokenIfStillOpen(token, t + 1);
-        return fail(
-          "failed",
-          `Failed to send verification email: ${sendResult.detail ?? "unknown error"}`,
-        );
-      }
-
-      // Record the rate-limit tick AFTER successful send (keyed to email, not peer).
-      rateLimiter.record(rlKey, t);
-
-      return JSON.stringify({
-        status: "sent",
-        message: `Verification email sent to ${email}. The link expires in ${tokenTtlMin} minutes.`,
-        expiresInSec: Math.floor(ttlMs / 1000),
-      } satisfies RequestAuthResult);
+      return JSON.stringify(result);
     },
   });
 
@@ -786,6 +845,23 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
           );
         },
       },
+      defineRoute.post(REQUEST_PATH, {
+        auth: "visitor.optional",
+        body: requestAuthRouteBody,
+        maxBodyBytes: 8_192,
+        rateLimit: { maxPerMinute: 20 },
+        handler: async ({ body }) => {
+          const threadId = body.threadId ?? crypto.randomUUID();
+          const result = await requestEmailVerification({
+            email: body.email,
+            peerId: `anon-${threadId}`,
+            threadId,
+            sourceMessageId: body.messageId ?? null,
+            requireRecentEmail: false,
+          });
+          return json(result, requestAuthHttpStatus(result));
+        },
+      }),
     ],
     async onBoot() {
       // Fail-fast on placeholder env-var leakage (operator forgot to set .env).

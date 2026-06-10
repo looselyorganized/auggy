@@ -42,7 +42,7 @@ describe("visitorAuth (skeleton)", () => {
     expect(aug.name).toBe("visitor-auth");
     expect(aug.capabilities).toContain("tools");
     expect(aug.capabilities).toContain("context");
-    expect(aug.httpRoutes).toHaveLength(2);
+    expect(aug.httpRoutes).toHaveLength(3);
     // GET route: confirm page (does not consume token — survives mail-scanner prefetch).
     expect(aug.httpRoutes?.[0]?.path).toBe("/visitor-auth/verify");
     expect(aug.httpRoutes?.[0]?.auth).toBe("none");
@@ -51,6 +51,10 @@ describe("visitorAuth (skeleton)", () => {
     expect(aug.httpRoutes?.[1]?.path).toBe("/visitor-auth/verify");
     expect(aug.httpRoutes?.[1]?.auth).toBe("none");
     expect(aug.httpRoutes?.[1]?.method).toBe("POST");
+    // POST route: deterministic app-backend request for a magic link.
+    expect(aug.httpRoutes?.[2]?.path).toBe("/visitor-auth/request");
+    expect(aug.httpRoutes?.[2]?.auth).toBe("visitor.optional");
+    expect(aug.httpRoutes?.[2]?.method).toBe("POST");
   });
 
   test("resolveVisitorIdentity returns metadata for active visitors and null for revoked visitors", async () => {
@@ -837,6 +841,147 @@ describe("request_auth tool", () => {
     expect(probe.tokenStatus(tokenA, t)).toBe("consumed");
     probe.close();
 
+    await aug.onShutdown?.();
+  });
+});
+
+describe("visitorAuth app request route", () => {
+  function buildAug(overrides?: {
+    sendImpl?: AgentMailClient["send"];
+    rateLimit?: { perHour: number; perDay: number };
+  }) {
+    const sendCalls: Array<Parameters<AgentMailClient["send"]>[0]> = [];
+    const aug = visitorAuth({
+      publicUrl: "https://zip.test",
+      dbPath,
+      agentMail: { apiKey: "am_x", inboxId: "ibx_x" },
+      signingKey: "sig",
+      rateLimit: overrides?.rateLimit ?? { perHour: 1, perDay: 3 },
+      _agentMailClient: fakeAgentMail({
+        send: async (input) => {
+          sendCalls.push(input);
+          if (overrides?.sendImpl) return overrides.sendImpl(input);
+          return { status: "sent", messageId: "m1", threadId: "t1" };
+        },
+      }),
+    });
+    return { aug, sendCalls };
+  }
+
+  function requestBody(body: unknown): Request {
+    return new Request("https://zip.test/visitor-auth/request", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  }
+
+  test("sends a magic link without a model turn and preserves provided threadId", async () => {
+    const { aug, sendCalls } = buildAug();
+    await aug.onBoot?.();
+
+    const res = await aug.httpRoutes![2]!.handler(
+      requestBody({ email: "Alice@Example.com", threadId: "thread-app-1" }),
+      { signal: new AbortController().signal },
+    );
+
+    expect(res.status).toBe(200);
+    const result = (await res.json()) as {
+      status: string;
+      expiresInSec: number;
+      threadId: string;
+    };
+    expect(result).toMatchObject({
+      status: "sent",
+      threadId: "thread-app-1",
+    });
+    expect(result.expiresInSec).toBeGreaterThan(0);
+    expect(sendCalls).toHaveLength(1);
+    expect(sendCalls[0]?.to).toEqual(["alice@example.com"]);
+    expect(sendCalls[0]?.text).toMatch(/https:\/\/zip\.test\/visitor-auth\/verify\?token=/);
+    await aug.onShutdown?.();
+  });
+
+  test("generates a threadId when the app request does not provide one", async () => {
+    const { aug } = buildAug();
+    await aug.onBoot?.();
+
+    const res = await aug.httpRoutes![2]!.handler(requestBody({ email: "alice@example.com" }), {
+      signal: new AbortController().signal,
+    });
+
+    expect(res.status).toBe(200);
+    const result = (await res.json()) as { status: string; threadId: string };
+    expect(result.status).toBe("sent");
+    expect(result.threadId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+    );
+    await aug.onShutdown?.();
+  });
+
+  test("rejects malformed email with a stable code", async () => {
+    const { aug, sendCalls } = buildAug();
+    await aug.onBoot?.();
+
+    const res = await aug.httpRoutes![2]!.handler(requestBody({ email: "not-an-email" }), {
+      signal: new AbortController().signal,
+    });
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({
+      status: "rejected",
+      code: "malformed_email",
+    });
+    expect(sendCalls).toHaveLength(0);
+    await aug.onShutdown?.();
+  });
+
+  test("uses the same per-email rate limit as the tool route", async () => {
+    const { aug } = buildAug({ rateLimit: { perHour: 1, perDay: 3 } });
+    await aug.onBoot?.();
+
+    const first = await aug.httpRoutes![2]!.handler(
+      requestBody({ email: "alice@example.com", threadId: "thread-a" }),
+      { signal: new AbortController().signal },
+    );
+    expect(first.status).toBe(200);
+
+    const second = await aug.httpRoutes![2]!.handler(
+      requestBody({ email: "alice@example.com", threadId: "thread-b" }),
+      { signal: new AbortController().signal },
+    );
+    expect(second.status).toBe(429);
+    expect(await second.json()).toMatchObject({
+      status: "rejected",
+      code: "rate_limited",
+    });
+    await aug.onShutdown?.();
+  });
+
+  test("route-issued magic link verifies through the existing POST verify flow", async () => {
+    const { aug, sendCalls } = buildAug();
+    await aug.onBoot?.();
+
+    const request = await aug.httpRoutes![2]!.handler(
+      requestBody({ email: "alice@example.com", threadId: "thread-route-verify" }),
+      { signal: new AbortController().signal },
+    );
+    expect(request.status).toBe(200);
+    const verifyUrl = sendCalls[0]!.text.match(/(https:\/\/[^\s]+)/)![1]!;
+    const token = new URL(verifyUrl).searchParams.get("token")!;
+
+    const verify = await aug.httpRoutes![1]!.handler(
+      new Request("https://zip.test/visitor-auth/verify", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ token }),
+      }),
+      { signal: new AbortController().signal },
+    );
+
+    expect(verify.status).toBe(200);
+    const html = await verify.text();
+    expect(html).toContain("auggy-visitor-token");
     await aug.onShutdown?.();
   });
 });

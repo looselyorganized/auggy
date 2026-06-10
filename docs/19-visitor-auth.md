@@ -5,9 +5,45 @@
 ## What it adds to the agent
 
 - Tool: `request_auth({method: "email", email})` — model-callable; sends the verification email.
+- HTTP route: `POST /visitor-auth/request` — public visitor-aware; deterministic app-backend request for a verification email.
 - HTTP route: `GET /visitor-auth/verify?token=<uuid>` — public-unauthenticated; mounts on the agent's webTransport.
+- HTTP route: `POST /visitor-auth/verify` — public-unauthenticated; consumes the magic-link token and writes the browser visitor token.
 - Context block: per-turn summary of the active peer's verification state.
 - SQLite store: `<agent-dir>/visitor-auth.db` — token + verified-visitor tables.
+
+## App-backend magic link request
+
+Use the deterministic route when a frontend owns the sign-in form and should not
+ask the model to call `request_auth`:
+
+```http
+POST /visitor-auth/request
+content-type: application/json
+
+{
+  "email": "visitor@example.com",
+  "threadId": "chat-thread-123"
+}
+```
+
+Response:
+
+```json
+{
+  "status": "sent",
+  "message": "Verification email sent to visitor@example.com. The link expires in 15 minutes.",
+  "expiresInSec": 900,
+  "threadId": "chat-thread-123"
+}
+```
+
+- `threadId` is optional. When provided, visitorAuth binds the pending link to
+  `anon-${threadId}`, matching web chat's anonymous peer id so verification can
+  migrate anonymous memory to the verified `vis_<uuid>` id.
+- If omitted, visitorAuth generates and returns a `threadId`; frontends should
+  keep it if they want continuity after the visitor verifies.
+- The route is still protected by body validation, route rate limiting, and
+  visitorAuth's per-email send limit.
 
 ## App-backend route auth
 

@@ -154,9 +154,19 @@ export interface VisitorAuthAugmentExtras {
 /** Return shape of `request_auth({...})`. JSON-stringified by the tool. */
 export interface RequestAuthResult {
   status: "sent" | "rejected" | "failed";
+  code?:
+    | "not_booted"
+    | "missing_peer"
+    | "unsupported_method"
+    | "malformed_email"
+    | "email_not_recent"
+    | "rate_limited"
+    | "send_failed";
   message: string;
   /** Present iff status === "sent". TTL of the issued token. */
   expiresInSec?: number;
+  /** Present for app-backend request routes so frontends can preserve continuity. */
+  threadId?: string;
 }
 
 /**
