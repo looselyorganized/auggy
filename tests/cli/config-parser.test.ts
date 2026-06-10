@@ -129,6 +129,29 @@ describe("validation errors", () => {
     expect(() => parseConfig(path)).toThrow('duplicate name "dup"');
   });
 
+  test("defaults omitted built-in augment name to its type", () => {
+    const path = writeYaml(
+      "agent.yaml",
+      minimalConfig({
+        augments: [{ type: "webFetch", options: { timeoutMs: 5000 } }],
+      }),
+    );
+
+    const config = parseConfig(path);
+    expect(config.augments[0]).toMatchObject({ name: "webFetch", type: "webFetch" });
+  });
+
+  test("requires explicit name for custom augments", () => {
+    const path = writeYaml(
+      "agent.yaml",
+      minimalConfig({
+        augments: [{ type: "custom", source: "./augments/weather/index.ts", options: {} }],
+      }),
+    );
+
+    expect(() => parseConfig(path)).toThrow('name: required for type "custom"');
+  });
+
   test("rejects unknown augment type", () => {
     const path = writeYaml(
       "agent.yaml",

@@ -191,8 +191,7 @@ settings:
   maxInferenceLoops: 10
 
 augments:
-  - name: fileMemory
-    type: fileMemory
+  - type: fileMemory
     options:
       label: learned
       source: ./learned.md
@@ -202,16 +201,14 @@ augments:
       placement: preamble
       eviction: drop
 
-  - name: layeredMemory
-    type: layeredMemory
+  - type: layeredMemory
     options:
       backend: sqlite
       namespace: ${yamlScalar(name)}
       dbPath: ./memory.sqlite
       retentionDays: 90
 
-  - name: budgets
-    type: budgets
+  - type: budgets
     options:
       dbPath: ./budgets.db
       caps:
@@ -225,8 +222,7 @@ augments:
       anonymousGlobalLimit: 30
       dailyBudgetUsd: 5
 
-  - name: filesystem
-    type: filesystem
+  - type: filesystem
     options:
       mounts:
         - name: skills
@@ -240,21 +236,17 @@ augments:
   # ADR-030: surfaces the skill manifest to the model (name + description from
   # each SKILL.md's YAML frontmatter). Activation is fs_read via the filesystem
   # mount above. Required for the model to discover its skills.
-  - name: skills
-    type: skills
+  - type: skills
     options:
       dir: ./skills
 
-  - name: webFetch
-    type: webFetch
+  - type: webFetch
     options:
       timeoutMs: 15000
 
-  - name: turnControl
-    type: turnControl
+  - type: turnControl
 
-  - name: webTransport
-    type: webTransport
+  - type: webTransport
     options:
       port: 8080
       # Anonymous public chat — precedence is yaml > env > default.

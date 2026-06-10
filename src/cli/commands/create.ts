@@ -734,7 +734,6 @@ function buildAgentYaml(
     augments: augments.map((entry) => {
       const options = optionsForLayout(entry, name, layout);
       return {
-        name: entry.defaultName,
         type: entry.type,
         options,
       };

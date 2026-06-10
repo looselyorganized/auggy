@@ -299,10 +299,8 @@ describe("listAugments and removeAugment", () => {
           "  provider: anthropic",
           "  model: claude-sonnet-4-6",
           "augments:",
-          "  - name: web",
-          "    type: webTransport",
-          "  - name: visitorAuth",
-          "    type: visitorAuth",
+          "  - type: webTransport",
+          "  - type: visitorAuth",
           "",
         ].join("\n"),
       });
@@ -323,7 +321,7 @@ describe("listAugments and removeAugment", () => {
       const parsed = parseYaml(readFileSync(join(agentDir, "agent.yaml"), "utf-8")) as {
         augments: Array<Record<string, unknown>>;
       };
-      expect(parsed.augments.map((augment) => augment.name)).toEqual(["web"]);
+      expect(parsed.augments.map((augment) => augment.type)).toEqual(["webTransport"]);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

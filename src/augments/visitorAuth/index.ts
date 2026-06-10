@@ -255,7 +255,8 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
             `dashboards, log-shipping pipelines, etc.), which leaks verification ` +
             `credentials. Either configure agentMail with apiKey + inboxId ` +
             `(recommended for any non-localhost deployment), or set ` +
-            `\`visitorAuth.allowConsoleInProduction: true\` in agent.yaml to ` +
+            `\`allowConsoleInProduction: true\` under the visitorAuth options block ` +
+            `in agent.yaml to ` +
             `acknowledge the risk explicitly.`,
         );
       }

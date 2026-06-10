@@ -512,8 +512,9 @@ function assertRailwayDeploySafeConfig(configPath: string): void {
       '      transport: "agentmail"',
       "      apiKey: ${AGENTMAIL_API_KEY}",
       "      inboxId: ${AGENTMAIL_INBOX_ID}",
-      "  - Smoke test only: set visitorAuth.allowConsoleInProduction: true in agent.yaml",
-      "    to acknowledge that magic links will appear in Railway logs.",
+      "  - Smoke test only: add this under the visitorAuth options block in agent.yaml:",
+      "      allowConsoleInProduction: true",
+      "    This acknowledges that magic links will appear in Railway logs.",
     ].join("\n"),
   );
 }

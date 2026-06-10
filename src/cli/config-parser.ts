@@ -1014,47 +1014,61 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
     for (let i = 0; i < augments.length; i++) {
       const aug = augments[i] as Record<string, unknown>;
       const prefix = `augments[${i}]`;
+      const type = typeof aug.type === "string" ? aug.type : undefined;
 
-      if (typeof aug.name !== "string" || aug.name.length === 0) {
-        errors.push(`${prefix}.name: required, non-empty string`);
-      } else if (!VALID_NAME_RE.test(aug.name)) {
-        errors.push(
-          `${prefix}.name: must be alphanumeric with hyphens/underscores (got "${aug.name}")`,
-        );
-      } else if (names.has(aug.name)) {
-        errors.push(`${prefix}.name: duplicate name "${aug.name}"`);
-      } else {
-        names.add(aug.name);
-      }
-
-      if (typeof aug.type !== "string") {
+      if (typeof type !== "string") {
         errors.push(`${prefix}.type: required string`);
-      } else if (!BUILTIN_TYPES.has(aug.type) && aug.type !== "custom") {
+      } else if (!BUILTIN_TYPES.has(type) && type !== "custom") {
         errors.push(
-          `${prefix}.type: unknown type "${aug.type}" (expected one of: ${[...BUILTIN_TYPES, "custom"].join(", ")})`,
+          `${prefix}.type: unknown type "${type}" (expected one of: ${[...BUILTIN_TYPES, "custom"].join(", ")})`,
         );
       }
 
-      if (aug.type === "custom" && typeof aug.source !== "string") {
+      const hasExplicitName = typeof aug.name === "string" && aug.name.length > 0;
+      const effectiveName =
+        hasExplicitName || type === undefined || type === "custom" || !BUILTIN_TYPES.has(type)
+          ? aug.name
+          : type;
+      if (!hasExplicitName && typeof effectiveName === "string") {
+        aug.name = effectiveName;
+      }
+
+      if (typeof effectiveName !== "string" || effectiveName.length === 0) {
+        errors.push(
+          type === "custom"
+            ? `${prefix}.name: required for type "custom"`
+            : `${prefix}.name: required, non-empty string`,
+        );
+      } else if (!VALID_NAME_RE.test(effectiveName)) {
+        errors.push(
+          `${prefix}.name: must be alphanumeric with hyphens/underscores (got "${effectiveName}")`,
+        );
+      } else if (names.has(effectiveName)) {
+        errors.push(`${prefix}.name: duplicate name "${effectiveName}"`);
+      } else {
+        names.add(effectiveName);
+      }
+
+      if (type === "custom" && typeof aug.source !== "string") {
         errors.push(`${prefix}.source: required for type "custom"`);
       }
 
-      if (aug.type === "budgets") {
+      if (type === "budgets") {
         const opts = (aug.options ?? {}) as Record<string, unknown>;
         validateBudgetsOptions(opts, prefix, errors);
-      } else if (aug.type === "notify") {
+      } else if (type === "notify") {
         const notifyOpts = (aug.options ?? {}) as Record<string, unknown>;
         validateNotifyOptions(notifyOpts, `${prefix}.options`, errors);
-      } else if (aug.type === "agentMail") {
+      } else if (type === "agentMail") {
         const amOpts = (aug.options ?? {}) as Record<string, unknown>;
         validateAgentMailOptions(amOpts, `${prefix}.options`, errors);
-      } else if (aug.type === "telegramTransport") {
+      } else if (type === "telegramTransport") {
         const tgOpts = (aug.options ?? {}) as Record<string, unknown>;
         validateTelegramTransportOptions(tgOpts, `${prefix}.options`, errors);
-      } else if (aug.type === "layeredMemory") {
+      } else if (type === "layeredMemory") {
         const lmOpts = (aug.options ?? {}) as Record<string, unknown>;
         validateLayeredMemoryOptions(lmOpts, prefix, errors);
-      } else if (aug.type === "link") {
+      } else if (type === "link") {
         const linkOpts = (aug.options ?? {}) as Record<string, unknown>;
         validateLinkOptions(linkOpts, prefix, errors);
       }

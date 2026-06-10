@@ -130,7 +130,7 @@ describe("runAdd no-op cases", () => {
 
     const yaml = readFileSync(join(dir, "agent.yaml"), "utf-8");
     expect(yaml).toContain("type: webFetch");
-    expect(yaml).toContain("name: webFetch");
+    expect(yaml).not.toContain("name: webFetch");
     expect(existsSync(join(dir, "skills", "webFetch", "SKILL.md"))).toBe(true);
   });
 
@@ -145,7 +145,7 @@ describe("runAdd no-op cases", () => {
 
     const yaml = readFileSync(join(dir, "agent.yaml"), "utf-8");
     expect(yaml).toContain("type: webFetch");
-    expect(yaml).toContain("name: webFetch");
+    expect(yaml).not.toContain("name: webFetch");
     expect(existsSync(join(dir, "skills", "webFetch", "SKILL.md"))).toBe(true);
   });
 
@@ -229,7 +229,7 @@ describe("runAdd no-op cases", () => {
 
     const yaml = readFileSync(join(dir, "agent.yaml"), "utf-8");
     expect(yaml).toContain("type: mcp");
-    expect(yaml).toContain("name: mcp");
+    expect(yaml).not.toContain("name: mcp");
     expect(existsSync(join(dir, ".mcp.json"))).toBe(true);
     expect(JSON.parse(readFileSync(join(dir, ".mcp.json"), "utf-8"))).toEqual({
       mcpServers: {},

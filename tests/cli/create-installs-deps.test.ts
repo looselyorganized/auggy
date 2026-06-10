@@ -153,7 +153,7 @@ describe("runCreate scaffolding integration", () => {
 
     const dir = agentDirFor("demo-defaults");
     const config = parseYaml(readFileSync(join(dir, "agent.yaml"), "utf-8")) as {
-      augments: Array<{ type: string; name: string }>;
+      augments: Array<{ type: string; name?: string }>;
     };
     expect(config.augments.map((a) => a.type)).toEqual([
       "fileMemory",
@@ -162,6 +162,7 @@ describe("runCreate scaffolding integration", () => {
       "webFetch",
       "turnControl",
     ]);
+    expect(config.augments.every((a) => a.name === undefined)).toBe(true);
     expect(existsSync(join(dir, "skills", "auggy", "SKILL.md"))).toBe(true);
     expect(existsSync(join(dir, "skills", "filesystem", "SKILL.md"))).toBe(true);
     expect(existsSync(join(dir, "skills", "webFetch", "SKILL.md"))).toBe(true);

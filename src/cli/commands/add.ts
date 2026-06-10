@@ -64,9 +64,9 @@ export async function runAdd(target: string | undefined, opts: AddOpts): Promise
 
   // Parse current config.
   const raw = parseYaml(readFileSync(configPath, "utf-8")) as Record<string, unknown>;
-  const currentAugments = (raw.augments ?? []) as Array<{ type: string; name: string }>;
+  const currentAugments = (raw.augments ?? []) as Array<{ type: string; name?: string }>;
 
-  console.log(`Currently installed: ${currentAugments.map((a) => a.name).join(", ")}`);
+  console.log(`Currently installed: ${currentAugments.map((a) => a.name ?? a.type).join(", ")}`);
 
   // Find what's available to add.
   const available = getAvailableAugments(currentAugments);
@@ -129,10 +129,9 @@ export async function runAdd(target: string | undefined, opts: AddOpts): Promise
   // any persisted mutation.
   for (const entry of selected) {
     currentAugments.push({
-      name: entry.defaultName,
       type: entry.type,
       ...({ options: entry.defaultOptions } as Record<string, unknown>),
-    } as { type: string; name: string });
+    } as { type: string; name?: string });
   }
   raw.augments = currentAugments;
   const newYaml = `# Agent configuration\n\n${stringifyYaml(raw)}`;

@@ -410,7 +410,7 @@ export function validAugmentSpecifiers(): string[] {
 
 /** Get catalog entries that are not yet installed (by type). */
 export function getAvailableAugments(
-  installed: Array<{ type: string; name: string }>,
+  installed: Array<{ type: string; name?: string }>,
 ): CatalogEntry[] {
   return AUGMENT_CATALOG.filter((entry) => !installed.some((i) => i.type === entry.type));
 }

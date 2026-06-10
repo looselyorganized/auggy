@@ -224,7 +224,7 @@ export function listAugments(opts: ListAugmentsOptions = {}): ListedAugment[] {
   const augments = readAugments(doc);
   return augments.map((augment) => ({
     label: labelForAugment(stringField(augment.type), stringField(augment.name)),
-    name: stringField(augment.name) ?? "(unnamed)",
+    name: stringField(augment.name) ?? stringField(augment.type) ?? "(unnamed)",
     type: stringField(augment.type) ?? "(unknown)",
     category: stringField(augment.type) === "custom" ? "custom" : "built-in",
     source: stringField(augment.source) ?? undefined,
@@ -339,8 +339,8 @@ export function removeAugment(opts: RemoveAugmentOptions): RemoveAugmentResult {
   }
 
   const [removed] = augments.splice(index, 1);
-  const removedName = stringField(removed?.name) ?? opts.augment;
   const removedType = stringField(removed?.type) ?? "custom";
+  const removedName = stringField(removed?.name) ?? removedType;
   const catalogEntry = AUGMENT_CATALOG.find((entry) => entry.type === removedType);
   if (catalogEntry?.required) {
     throw new Error(`Augment "${removedName}" (${removedType}) is required and cannot be removed.`);

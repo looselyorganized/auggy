@@ -1,4 +1,4 @@
-# `visitor-auth` — operator reference
+# `visitorAuth` — operator reference
 
 `visitorAuth` is the email magic-link verification augment. It lets a public-anonymous visitor verify ownership of an email address and become public-recognized — same `vis_<uuid>` identity returns across sessions, memory continuity, etc. First member of the auth-augment family.
 
