@@ -43,15 +43,34 @@ describe("formatDevReadyMessage", () => {
       configPath: "agent.yaml",
       deployCommand: "auggy deploy zip",
       runtime: "railway",
+      publicUrl: "https://zip-production.up.railway.app",
     });
 
     expect(out).toContain('Agent "zip" is live.');
-    expect(out).toContain("  Health:   http://localhost:8080/health");
+    expect(out).toContain("  Chat:     https://zip-production.up.railway.app/console/chat");
+    expect(out).toContain("  Console:  https://zip-production.up.railway.app/console");
+    expect(out).toContain("  Health:   https://zip-production.up.railway.app/health");
+    expect(out).toContain("  Home:     https://zip-production.up.railway.app");
     expect(out).toContain("Config: agent.yaml");
     expect(out).toContain("Runtime: Railway");
+    expect(out).not.toContain("http://localhost:8080");
     expect(out).not.toContain("Extend it:");
     expect(out).not.toContain("Deploy it:");
     expect(out).not.toContain("Press Ctrl-C to stop.");
+  });
+
+  test("falls back to container-local URLs when Railway public URL is unavailable", () => {
+    const out = formatDevReadyMessage({
+      agentName: "zip",
+      port: 8080,
+      configPath: "agent.yaml",
+      deployCommand: "auggy deploy zip",
+      runtime: "railway",
+      publicUrl: "",
+    });
+
+    expect(out).toContain("  Health:   http://localhost:8080/health");
+    expect(out).toContain("Runtime: Railway");
   });
 
   test("formats config paths relative to the command cwd", () => {

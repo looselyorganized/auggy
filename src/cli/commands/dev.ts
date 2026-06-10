@@ -71,15 +71,16 @@ export function formatDevReadyMessage(args: {
   configPath: string;
   deployCommand: string;
   runtime?: "local" | "railway";
+  publicUrl?: string | undefined;
 }): string {
   const lines = [`Agent "${args.agentName}" is live.`, ""];
 
-  if (args.port) {
-    const consoleUrl = `http://localhost:${args.port}/console`;
-    lines.push(`  Chat:     ${consoleUrl}/chat`);
-    lines.push(`  Console:  ${consoleUrl}`);
-    lines.push(`  Health:   http://localhost:${args.port}/health`);
-    lines.push(`  Home:     http://localhost:${args.port}/`);
+  const urls = resolveReadyUrls(args);
+  if (urls) {
+    lines.push(`  Chat:     ${urls.chat}`);
+    lines.push(`  Console:  ${urls.console}`);
+    lines.push(`  Health:   ${urls.health}`);
+    lines.push(`  Home:     ${urls.home}`);
     lines.push("");
   }
 
@@ -101,6 +102,46 @@ export function formatDevReadyMessage(args: {
   }
 
   return lines.join("\n");
+}
+
+function resolveReadyUrls(args: {
+  port: number | null;
+  runtime?: "local" | "railway";
+  publicUrl?: string | undefined;
+}): { chat: string; console: string; health: string; home: string } | null {
+  if (args.runtime === "railway") {
+    const publicBase = normalizePublicUrl(args.publicUrl);
+    if (publicBase) {
+      return {
+        chat: `${publicBase}/console/chat`,
+        console: `${publicBase}/console`,
+        health: `${publicBase}/health`,
+        home: publicBase,
+      };
+    }
+  }
+
+  if (!args.port) return null;
+  const localBase = `http://localhost:${args.port}`;
+  return {
+    chat: `${localBase}/console/chat`,
+    console: `${localBase}/console`,
+    health: `${localBase}/health`,
+    home: `${localBase}/`,
+  };
+}
+
+function normalizePublicUrl(value: string | undefined): string | null {
+  const trimmed = value?.trim();
+  if (!trimmed) return null;
+
+  try {
+    const url = new URL(trimmed);
+    if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+    return url.origin;
+  } catch {
+    return null;
+  }
 }
 
 export function formatRunDisplayPath(
@@ -210,6 +251,7 @@ export async function runDev(name: string | undefined, opts: DevOpts): Promise<v
       configPath: formatRunDisplayPath(configPath, opts.cwd),
       deployCommand: name ? `auggy deploy ${agentName}` : "auggy deploy",
       runtime: opts.internalMode === "railway" ? "railway" : "local",
+      publicUrl: process.env.AUGGY_PUBLIC_URL,
     })}`,
   );
 
