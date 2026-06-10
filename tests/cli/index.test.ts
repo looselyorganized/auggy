@@ -4,6 +4,7 @@ mock.module("@inquirer/prompts", () => ({
   checkbox: async () => [],
   confirm: async () => true,
   input: async () => "",
+  password: async () => "",
   select: async (config: { choices?: Array<{ value: unknown }> }) => config.choices?.[0]?.value,
 }));
 
@@ -21,6 +22,7 @@ describe("auggy CLI command table", () => {
     expect(names).not.toContain("add-skill");
     expect(names).toContain("run");
     expect(names).toContain("doctor");
+    expect(names).toContain("routes");
     expect(names).toContain("augment");
     expect(names).toContain("mcp");
     expect(names).toContain("dev");
