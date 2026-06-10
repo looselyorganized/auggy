@@ -17,13 +17,7 @@ import { AUGMENT_CATALOG } from "../augment-catalog";
 import { augmentFolderForType } from "../scaffold-skills";
 import { parseEnvFile } from "../env-parse";
 import { diagnoseMcpConfig } from "../mcp-config";
-import { collectAugmentRoutes } from "../../kernel/route-collector";
-import {
-  createRouteManifest,
-  summarizeRouteManifest,
-  type RouteManifestEntry,
-} from "../../kernel/route-manifest";
-import type { Augment } from "../../types";
+import { formatRouteManifestEntry, inspectCustomAugmentRoutes } from "../route-inspector";
 import type { AugmentConfig, ParsedConfig } from "../types";
 
 export type DoctorStatus = "pass" | "warn" | "fail";
@@ -378,35 +372,20 @@ async function checkAugmentRoutes(
   const customConfigs = configs.filter((aug) => aug.type === "custom");
   if (customConfigs.length === 0) return [];
 
-  const augments: Augment[] = [];
-  for (const config of customConfigs) {
-    try {
-      const augment = await loadCustomAugmentForDoctor(agentDir, config);
-      augments.push({ ...augment, name: config.name });
-    } catch (err) {
-      return [
-        {
-          name: "augment routes",
-          status: "fail",
-          message: `could not inspect custom augment "${config.name}": ${(err as Error).message}`,
-          fix: "Run `bun install`, then check the custom augment source path and default export.",
-        },
-      ];
-    }
-  }
-
-  const collected = collectAugmentRoutes(augments);
-  if (collected.errors.length > 0) {
-    return collected.errors.map((message) => ({
+  const inspected = await inspectCustomAugmentRoutes(agentDir, customConfigs);
+  if (inspected.issues.length > 0) {
+    return inspected.issues.map((issue) => ({
       name: "augment routes",
       status: "fail",
-      message,
-      fix: "Fix the route path, auth mode, or duplicate registration in the custom augment.",
+      message: issue.message,
+      fix:
+        issue.kind === "load"
+          ? "Run `bun install`, then check the custom augment source path and default export."
+          : "Fix the route path, auth mode, or duplicate registration in the custom augment.",
     }));
   }
 
-  const manifest = createRouteManifest(collected.routes);
-  const summary = summarizeRouteManifest(manifest);
+  const { manifest, summary } = inspected;
 
   const checks: DoctorCheck[] = [
     {
@@ -432,30 +411,6 @@ async function checkAugmentRoutes(
   }
 
   return checks;
-}
-
-function formatRouteManifestEntry(route: RouteManifestEntry): string {
-  const params = route.params.length > 0 ? route.params.join(",") : "-";
-  const rateLimit = route.rateLimit ? ` rate=${route.rateLimit.maxPerMinute}/min` : "";
-  return `${route.augmentName} ${route.security.toUpperCase()} auth=${route.auth} params=${params}${rateLimit}`;
-}
-
-async function loadCustomAugmentForDoctor(
-  agentDir: string,
-  config: AugmentConfig,
-): Promise<Augment> {
-  if (!config.source) {
-    throw new Error("source path is required");
-  }
-
-  const absPath = config.source.startsWith("/") ? config.source : resolve(agentDir, config.source);
-  const mod = (await import(absPath)) as Record<string, unknown>;
-  const factory = mod.default;
-  if (typeof factory !== "function") {
-    throw new Error(`"${absPath}" must have a default export function`);
-  }
-
-  return factory(config.options ?? {}) as Augment;
 }
 
 function nameForFix(agentDir: string): string {
