@@ -8,6 +8,8 @@ export interface SpinnerStream {
 export interface SpinnerOptions {
   stream?: SpinnerStream;
   intervalMs?: number;
+  successText?: string;
+  failureText?: string;
 }
 
 export async function withBrailleSpinner<T>(
@@ -31,10 +33,12 @@ export async function withBrailleSpinner<T>(
     const result = await run();
     clearInterval(interval);
     stream.write(`\r\x1b[2K`);
+    if (opts.successText) stream.write(`${opts.successText}\n`);
     return result;
   } catch (err) {
     clearInterval(interval);
     stream.write(`\r\x1b[2K`);
+    if (opts.failureText) stream.write(`${opts.failureText}\n`);
     throw err;
   }
 }

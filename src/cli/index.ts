@@ -46,6 +46,10 @@ import { mcpCommand } from "./commands/mcp";
 import { runRemove } from "./commands/remove";
 import { runLs } from "./commands/ls";
 import { withBrailleSpinner } from "./spinner";
+import type { DeployResult } from "./commands/deploy";
+
+const CHECK = "✔";
+const CROSS = "✖";
 
 export function buildCli(): Command {
   const program = new Command();
@@ -310,47 +314,19 @@ export function buildCli(): Command {
             },
             promptConfirm: (message) => confirm({ message, default: false }),
             logger: {
-              info: (msg) => console.log(msg),
+              info: (msg) => {
+                const line = formatDeployInfoLine(msg);
+                if (line) console.log(line);
+              },
               warn: (msg) => console.warn(formatWarning(msg)),
               error: (msg) => console.error(`error: ${msg}`),
-              task: (msg, run) => withBrailleSpinner(msg, run),
+              task: (msg, run) =>
+                withBrailleSpinner(msg, run, {
+                  failureText: `${CROSS} ${msg}`,
+                }),
             },
           });
-          console.log(
-            result.health.ok
-              ? `\n${result.name} is live on Railway.`
-              : `\nRailway build submitted for ${result.name}.`,
-          );
-          console.log(`  URL:        ${result.url}`);
-          console.log(`  Project:    ${result.projectId}`);
-          console.log(`  Service:    ${result.serviceId}`);
-          console.log(`  Volume:     ${result.volumeId} (mounted at /app/data)`);
-          console.log(
-            `  Health:     ${result.health.url}${result.health.ok ? "" : " (not healthy yet)"}`,
-          );
-          console.log(
-            `  Chat:       ${new URL("/console/chat", result.url).toString()}${
-              result.health.ok ? "" : " (when healthy)"
-            }`,
-          );
-          console.log(
-            `  Console:    ${new URL("/console", result.url).toString()}${
-              result.health.ok ? "" : " (when healthy)"
-            }`,
-          );
-          console.log(
-            `  Sign-in:    username auggy, password AUGGY_WEB_TOKEN from this agent's .env`,
-          );
-          if (!result.health.ok) {
-            const rerun = name ? `auggy deploy ${name} --yes` : "auggy deploy --yes";
-            console.log(
-              `\nHealth is pending while Railway finishes the build/startup. If it does not become healthy, check \`railway logs\`, then rerun \`${rerun}\`.`,
-            );
-          } else {
-            console.log(
-              `\nCurrent health is passing. Follow the new build in the Railway dashboard or with \`railway logs\`.`,
-            );
-          }
+          console.log(formatDeployResultMessage(result, { nameArg: name }));
         } catch (err) {
           console.error(`Error: ${(err as Error).message}`);
           process.exit(1);
@@ -379,4 +355,103 @@ if (import.meta.main) {
 function formatWarning(msg: string): string {
   const label = process.stderr.isTTY ? "\x1b[33mWARN\x1b[0m" : "WARN";
   return `\n${label}: ${msg}\n`;
+}
+
+export function formatDeployInfoLine(msg: string): string | null {
+  if (/^Bundle staged at /.test(msg)) return null;
+  if (/^Vendored local Auggy runtime /.test(msg)) return null;
+  if (/^Linked staging dir /.test(msg)) return null;
+
+  if (msg === "Deploy preflight passed.") return `${CHECK} Deploy preflight passed`;
+  if (msg === "Railway CLI ready.") return `${CHECK} Railway CLI ready`;
+  if (msg === "Build started. Railway will build the image, deploy it, then start the service.") {
+    return `${CHECK} Build started`;
+  }
+
+  let match = msg.match(/^Using Railway workspace "(.+)"\.$/);
+  if (match) return `${CHECK} Railway workspace: ${match[1]}`;
+
+  match = msg.match(/^Created Railway project (.+) \((.+)\)\.$/);
+  if (match) return `${CHECK} Created Railway project ${match[1]} (${match[2]})`;
+
+  match = msg.match(/^First deploy of (.+) to existing Railway project (.+)\.$/);
+  if (match) return `${CHECK} Railway project: ${match[2]}`;
+
+  match = msg.match(/^Redeploying (.+) to Railway project (.+)\.$/);
+  if (match) return `${CHECK} Railway project: ${match[2]}`;
+
+  match = msg.match(/^Created Railway service (.+)\.$/);
+  if (match) return `${CHECK} Created Railway service ${match[1]}`;
+
+  match = msg.match(/^Using existing Railway service (.+)\.$/);
+  if (match) return `${CHECK} Railway service: ${match[1]}`;
+
+  match = msg.match(/^Volume "(.+)" mounted at (.+)\.$/);
+  if (match) return `${CHECK} Mounted volume ${match[1]} at ${match[2]}`;
+
+  match = msg.match(/^Public URL: (.+)$/);
+  if (match) return `${CHECK} Public URL: ${match[1]}`;
+
+  match = msg.match(/^Pushed (.+ env var\(s\)) to Railway\.$/);
+  if (match) return `${CHECK} Pushed ${match[1]} to Railway`;
+
+  match = msg.match(/^Railway deployment finished: (.+)\.$/);
+  if (match) return `${CHECK} Build successful (${match[1]})`;
+
+  match = msg.match(/^Deployment health verified: (.+)$/);
+  if (match) return `${CHECK} Health check passed: ${match[1]}`;
+
+  match = msg.match(/^Service status: (.+)\.$/);
+  if (match) return `${CHECK} Railway status: ${match[1]}`;
+
+  match = msg.match(
+    /^Railway deployment status not final yet; continuing with health check \((.+)\)\.$/,
+  );
+  if (match) return `Railway status pending: ${match[1]}`;
+
+  match = msg.match(
+    /^Deployment health is pending \((.+)\)\. Railway may still be building or starting the service\.$/,
+  );
+  if (match) return `Health check pending: ${match[1]}`;
+
+  return msg;
+}
+
+export function formatDeployResultMessage(
+  result: DeployResult,
+  opts: { nameArg?: string | undefined } = {},
+): string {
+  const rerun = opts.nameArg ? `auggy deploy ${opts.nameArg} --yes` : "auggy deploy --yes";
+  const chatUrl = new URL("/console/chat", result.url).toString();
+  const consoleUrl = new URL("/console", result.url).toString();
+  const healthSuffix = result.health.ok ? "" : " (pending)";
+  const appSuffix = result.health.ok ? "" : " (when healthy)";
+  const lines = [
+    "",
+    result.health.ok
+      ? `${result.name} is live on Railway.`
+      : `Railway build submitted for ${result.name}.`,
+    "",
+    `  Chat:     ${chatUrl}${appSuffix}`,
+    `  Console:  ${consoleUrl}${appSuffix}`,
+    `  Health:   ${result.health.url}${healthSuffix}`,
+    `  Home:     ${result.url}`,
+    "",
+    result.health.ok ? "Manage it:" : "Next:",
+    "  auggy logs",
+    `  ${rerun.padEnd(24)} Redeploy`,
+    "",
+    "Details:",
+    `  Project:  ${result.projectId}`,
+    `  Service:  ${result.serviceId}`,
+    `  Volume:   ${result.volumeId} (mounted at /app/data)`,
+    `  Sign-in:  username auggy, password AUGGY_WEB_TOKEN from .env`,
+  ];
+
+  if (!result.health.ok) {
+    lines.push("");
+    lines.push("Health is pending. Check `auggy logs`, then redeploy after fixing the service.");
+  }
+
+  return lines.join("\n");
 }

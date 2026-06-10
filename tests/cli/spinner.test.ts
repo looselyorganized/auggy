@@ -34,4 +34,50 @@ describe("withBrailleSpinner", () => {
 
     expect(writes).toEqual([]);
   });
+
+  test("can print success text after clearing a TTY spinner", async () => {
+    const writes: string[] = [];
+    const stream: SpinnerStream = {
+      isTTY: true,
+      write(chunk: string) {
+        writes.push(chunk);
+      },
+    };
+
+    await withBrailleSpinner("Starting Railway build", async () => undefined, {
+      stream,
+      intervalMs: 1_000,
+      successText: "✔ Build started",
+    });
+
+    expect(writes.at(-2)).toBe("\r\x1b[2K");
+    expect(writes.at(-1)).toBe("✔ Build started\n");
+  });
+
+  test("can print failure text after clearing a TTY spinner", async () => {
+    const writes: string[] = [];
+    const stream: SpinnerStream = {
+      isTTY: true,
+      write(chunk: string) {
+        writes.push(chunk);
+      },
+    };
+
+    await expect(
+      withBrailleSpinner(
+        "Starting Railway build",
+        async () => {
+          throw new Error("boom");
+        },
+        {
+          stream,
+          intervalMs: 1_000,
+          failureText: "✖ Starting Railway build",
+        },
+      ),
+    ).rejects.toThrow("boom");
+
+    expect(writes.at(-2)).toBe("\r\x1b[2K");
+    expect(writes.at(-1)).toBe("✖ Starting Railway build\n");
+  });
 });
