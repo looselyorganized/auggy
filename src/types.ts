@@ -616,6 +616,8 @@ export type HttpMethod = "GET" | "POST";
  */
 export type AugmentHttpRouteAuth = "bearer" | "none";
 
+export type RouteAuthContext = { mode: "none" } | { mode: "bearer" };
+
 /**
  * One HTTP route registered by an augment. Routes are collected at
  * `agent.start()` AFTER `lifecycle.boot()` succeeds (so `onBoot`-populated
@@ -669,6 +671,12 @@ export interface AugmentHttpRoute {
     req: Request,
     opts: {
       signal: AbortSignal;
+      /**
+       * Auth mode enforced by the dispatcher for this route. v1.x exposes the
+       * current mode only; visitor/agent identity resolution is intentionally
+       * deferred until route context has a stable trust model.
+       */
+      auth?: RouteAuthContext;
       /** Path parameters resolved by the HTTP dispatcher for `:param` routes. */
       params?: Record<string, string>;
       /**

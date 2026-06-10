@@ -99,6 +99,20 @@ describe("defineRoute", () => {
     expect(await res.json()).toEqual({ method: "GET", need: "gifting", tag: ["a", "b"] });
   });
 
+  it("supplies auth context when a helper route is invoked directly", async () => {
+    const route = defineRoute.get("/private", {
+      auth: "bearer",
+      handler: ({ auth }) => json({ auth: auth.mode }),
+    });
+
+    const res = await route.handler(new Request("http://localhost/private"), {
+      signal: AbortSignal.timeout(1000),
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ auth: "bearer" });
+  });
+
   it("creates a GET route that validates path params", async () => {
     const route = defineRoute.get("/services/:id", {
       auth: "none",

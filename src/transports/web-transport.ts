@@ -1564,6 +1564,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
                   () =>
                     augmentRoute.handler(dispatchReq, {
                       signal: controller.signal,
+                      auth: { mode: augmentRoute.auth },
                       params,
                       routePath: augmentRoute.path,
                     }),

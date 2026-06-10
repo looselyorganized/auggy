@@ -4,6 +4,7 @@ import type {
   AugmentHttpRoute,
   AugmentHttpRouteAuth,
   HttpMethod,
+  RouteAuthContext,
   Tool,
   ToolCategory,
   ToolExecuteContext,
@@ -36,6 +37,7 @@ export function defineAugment(opts: Augment): Augment {
 export interface RouteContextBase<TParams = Record<string, string>> {
   request: Request;
   signal: AbortSignal;
+  auth: RouteAuthContext;
   params: TParams;
   route: {
     method: HttpMethod;
@@ -135,7 +137,7 @@ export const defineRoute = {
     TQuery extends AnySchema | undefined = undefined,
     TParams extends AnySchema | undefined = undefined,
   >(path: string, opts: DefineGetRouteOptions<TQuery, TParams>): AugmentHttpRoute {
-    return routeBase("GET", path, opts, async (request, { signal, params, routePath }) => {
+    return routeBase("GET", path, opts, async (request, { signal, auth, params, routePath }) => {
       const parsedQuery = opts.query
         ? opts.query.safeParse(queryObject(new URL(request.url).searchParams))
         : { success: true as const, data: undefined };
@@ -150,6 +152,7 @@ export const defineRoute = {
       return await opts.handler({
         request,
         signal,
+        auth: auth ?? { mode: opts.auth },
         params: parsedParams.data as TParams extends AnySchema
           ? z.infer<TParams>
           : Record<string, string>,
@@ -169,7 +172,7 @@ export const defineRoute = {
     TBody extends AnySchema | undefined = undefined,
     TParams extends AnySchema | undefined = undefined,
   >(path: string, opts: DefinePostRouteOptions<TBody, TParams>): AugmentHttpRoute {
-    return routeBase("POST", path, opts, async (request, { signal, params, routePath }) => {
+    return routeBase("POST", path, opts, async (request, { signal, auth, params, routePath }) => {
       let rawBody: unknown;
       if (opts.body) {
         try {
@@ -193,6 +196,7 @@ export const defineRoute = {
       return await opts.handler({
         request,
         signal,
+        auth: auth ?? { mode: opts.auth },
         params: parsedParams.data as TParams extends AnySchema
           ? z.infer<TParams>
           : Record<string, string>,

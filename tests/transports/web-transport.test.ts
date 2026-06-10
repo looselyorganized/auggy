@@ -2237,6 +2237,44 @@ describe("webTransport augment-registered routes", () => {
     }
   });
 
+  it("passes route auth context to raw augment route handlers", async () => {
+    const model = createMockModel();
+    const port = 19304;
+    const aug = webTransport({ port, auth: { type: "bearer", token: "test-token" } });
+    const fixture: Augment = {
+      name: "auth-context",
+      httpRoutes: [
+        {
+          method: "GET",
+          path: "/ctx/public",
+          auth: "none",
+          handler: async (_req, opts) => json({ auth: opts.auth?.mode ?? null }),
+        },
+        {
+          method: "GET",
+          path: "/ctx/private",
+          auth: "bearer",
+          handler: async (_req, opts) => json({ auth: opts.auth?.mode ?? null }),
+        },
+      ],
+    };
+    const agent = defineAgent({ name: "test", model: "mock", augments: [fixture, aug] }, model);
+    await agent.start();
+    try {
+      const publicResp = await fetch(`http://localhost:${port}/ctx/public`);
+      expect(publicResp.status).toBe(200);
+      expect(await publicResp.json()).toEqual({ auth: "none" });
+
+      const privateResp = await fetch(`http://localhost:${port}/ctx/private`, {
+        headers: { authorization: "Bearer test-token" },
+      });
+      expect(privateResp.status).toBe(200);
+      expect(await privateResp.json()).toEqual({ auth: "bearer" });
+    } finally {
+      await agent.stop();
+    }
+  });
+
   it("handler that throws returns 500 with opaque body", async () => {
     const model = createMockModel();
     const port = 18974;
