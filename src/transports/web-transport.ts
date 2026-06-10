@@ -1,6 +1,10 @@
 import type {
   Augment,
+  AugmentHttpRoute,
+  AugmentHttpRouteAuth,
   PeerIdentity,
+  RouteAuthContext,
+  RouteVisitorIdentity,
   TransportSpec,
   TransportKernel,
   TurnTrigger,
@@ -70,6 +74,15 @@ export interface WebTransportOptions {
      * without waiting for their HMAC TTL to expire.
      */
     revocationCheck?: (visitorId: string) => boolean;
+    /**
+     * Optional visitor-auth metadata lookup. The signed token intentionally
+     * carries only a stable visitor id; this hook lets route handlers receive
+     * email / verification metadata from visitorAuth without putting PII in the
+     * browser token.
+     */
+    identityLookup?: (
+      visitorId: string,
+    ) => Omit<RouteVisitorIdentity, "agentId" | "issuedAt" | "expiresAt"> | null;
     /**
      * Stable identifier for this agent used to scope visitor tokens (fix C2).
      * MUST match visitorAuth's `agentBinding` option. Default: `"auggy"`.
@@ -989,14 +1002,18 @@ export function webTransport(opts: WebTransportOptions): Augment {
         } else {
           augmentRouteMap.set(`${r.method} ${r.path}`, r);
         }
-        // Operator-visible audit: log every auth: "none" route so an operator
-        // grepping the boot log can spot unauthenticated surfaces.
+        // Operator-visible audit: log every public route so an operator
+        // grepping the boot log can spot anonymous-callable surfaces.
         // Runtime values are CollectedRoute (extends AugmentHttpRoute with augmentName).
         const augmentName = (r as { augmentName?: string }).augmentName ?? "(unknown)";
         if (augmentName === "visitor-auth") visitorAuthMounted = true;
         if (r.auth === "none") {
           console.warn(
             `[web-transport] augment "${augmentName}" registered ${r.method} ${r.path} with auth: "none" — public, unauthenticated.`,
+          );
+        } else if (r.auth === "visitor.optional") {
+          console.warn(
+            `[web-transport] augment "${augmentName}" registered ${r.method} ${r.path} with auth: "visitor.optional" — public, visitor-aware.`,
           );
         }
       }
@@ -1032,10 +1049,89 @@ export function webTransport(opts: WebTransportOptions): Augment {
     return timingSafeEqual(header, expected);
   }
 
+  async function resolveVisitorRouteAuth(
+    req: Request,
+  ): Promise<Extract<RouteAuthContext, { mode: "visitor" }>> {
+    const anonymous: Extract<RouteAuthContext, { mode: "visitor" }> = {
+      mode: "visitor",
+      state: "anonymous",
+    };
+    if (!visitorTokensEnabled || !signingKey) return anonymous;
+
+    const tokenHeader = req.headers.get("x-visitor-token");
+    if (!tokenHeader) return anonymous;
+
+    const payload = await verifyVisitorToken(signingKey, tokenHeader);
+    if (!payload) return anonymous;
+
+    try {
+      if (opts.visitorTokens?.revocationCheck?.(payload.visitorId)) {
+        return anonymous;
+      }
+    } catch {
+      return anonymous;
+    }
+
+    const expectedBinding = opts.visitorTokens?.agentBinding;
+    if (expectedBinding !== undefined && payload.agentId !== expectedBinding) {
+      return anonymous;
+    }
+
+    let identity: Omit<RouteVisitorIdentity, "agentId" | "issuedAt" | "expiresAt"> | null = null;
+    try {
+      identity = opts.visitorTokens?.identityLookup?.(payload.visitorId) ?? null;
+    } catch {
+      return anonymous;
+    }
+    if (opts.visitorTokens?.identityLookup && !identity) {
+      return anonymous;
+    }
+    if (identity && identity.visitorId !== payload.visitorId) {
+      return anonymous;
+    }
+
+    return {
+      mode: "visitor",
+      state: "recognized",
+      visitorId: payload.visitorId,
+      agentId: payload.agentId,
+      issuedAt: payload.issuedAt,
+      expiresAt: payload.expiresAt,
+      ...(identity ?? {}),
+    };
+  }
+
+  async function authorizeAugmentRoute(
+    req: Request,
+    auth: AugmentHttpRouteAuth,
+  ): Promise<{ ok: true; context: RouteAuthContext } | { ok: false; response: Response }> {
+    if (auth === "none") {
+      return { ok: true, context: { mode: "none" } };
+    }
+
+    if (auth === "bearer") {
+      const authHeader = req.headers.get("authorization") ?? "";
+      if (!isValidAuth(authHeader)) {
+        return { ok: false, response: json({ error: "unauthorized" }, 401) };
+      }
+      return { ok: true, context: { mode: "bearer" } };
+    }
+
+    if (auth === "visitor.optional" || auth === "visitor.required") {
+      const visitorAuth = await resolveVisitorRouteAuth(req);
+      if (auth === "visitor.required" && visitorAuth.state !== "recognized") {
+        return { ok: false, response: json({ error: "visitor-auth-required" }, 401) };
+      }
+      return { ok: true, context: visitorAuth };
+    }
+
+    return { ok: false, response: json({ error: "route-auth-misconfigured" }, 500) };
+  }
+
   function findAugmentRoute(
     method: string,
     pathname: string,
-  ): { route: import("../types").AugmentHttpRoute; params: Record<string, string> } | null {
+  ): { route: AugmentHttpRoute; params: Record<string, string> } | null {
     const exact = augmentRouteMap.get(`${method} ${pathname}`);
     if (exact) return { route: exact, params: {} };
 
@@ -1503,16 +1599,8 @@ export function webTransport(opts: WebTransportOptions): Augment {
           const augmentRouteMatch = findAugmentRoute(req.method, url.pathname);
           if (augmentRouteMatch) {
             const { route: augmentRoute, params } = augmentRouteMatch;
-            // Finding 4: Default-deny — anything not explicitly "none" requires bearer.
-            // The collector rejects unknown auth values at boot, but defense in depth
-            // keeps dispatch fail-closed against runtime mutations.
-            if (augmentRoute.auth !== "none") {
-              const authHeader = req.headers.get("authorization") ?? "";
-              if (!isValidAuth(authHeader)) {
-                return json({ error: "unauthorized" }, 401);
-              }
-            }
-            // auth: "none" — no check; fall through to body cap
+            const routeAuth = await authorizeAugmentRoute(req, augmentRoute.auth);
+            if (!routeAuth.ok) return routeAuth.response;
 
             // Finding 2 — body-size cap. Buffer the request body up to maxBodyBytes
             // bytes, enforcing actual byte-count (not just content-length header).
@@ -1564,7 +1652,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
                   () =>
                     augmentRoute.handler(dispatchReq, {
                       signal: controller.signal,
-                      auth: { mode: augmentRoute.auth },
+                      auth: routeAuth.context,
                       params,
                       routePath: augmentRoute.path,
                     }),

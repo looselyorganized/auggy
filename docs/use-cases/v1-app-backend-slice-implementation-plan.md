@@ -24,15 +24,20 @@ Do not call it:
 - Web framework
 - Finished 1-8 roadmap
 
-## Current runtime facts
+## Runtime facts at original slice start
 
-Existing primitives to build on:
+Original primitives this slice built on:
 
 - Augments already support `httpRoutes?: AugmentHttpRoute[]`.
 - `webTransport` already collects and dispatches augment routes.
 - Route auth is currently `auth: "bearer" | "none"`.
 - Routes are currently exact-match `GET` and `POST`.
 - Dispatcher already enforces body cap, timeout, route-level rate limit, and bearer auth for non-`none`.
+
+Current runtime has since added route groups, path params, route manifests,
+OpenAPI export, and visitor route auth (`visitor.optional` /
+`visitor.required`). Treat this document as the original implementation plan,
+not the current API reference.
 
 Relevant files:
 
@@ -319,7 +324,7 @@ Low-rework choices:
 - Use Zod now.
 - Keep helper names close to future route builder.
 - Keep domain logic separate from route/tool wrappers.
-- Keep auth as current `bearer | none` and document limits.
+- Keep auth explicit and document limits.
 - Avoid example-only routing hacks.
 
 High-rework choices to avoid:

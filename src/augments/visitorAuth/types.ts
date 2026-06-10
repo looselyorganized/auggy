@@ -138,11 +138,30 @@ export interface VisitorAuthAugmentExtras {
    * Intended to be wired as `webTransport.visitorTokens.revocationCheck`.
    */
   isVisitorRevoked(visitorId: string): boolean;
+  /**
+   * Resolve a verified visitor by `vis_<uuid>` id. Returns null for unknown or
+   * revoked visitors. Used by app-route auth to attach email / verification
+   * metadata to route handlers without embedding PII in the visitor token.
+   */
+  resolveVisitorIdentity(visitorId: string): {
+    visitorId: string;
+    email: string;
+    verifiedAt: number;
+    reverifyDueAt: number;
+  } | null;
 }
 
 /** Return shape of `request_auth({...})`. JSON-stringified by the tool. */
 export interface RequestAuthResult {
   status: "sent" | "rejected" | "failed";
+  code?:
+    | "not_booted"
+    | "missing_peer"
+    | "unsupported_method"
+    | "malformed_email"
+    | "email_not_recent"
+    | "rate_limited"
+    | "send_failed";
   message: string;
   /** Present iff status === "sent". TTL of the issued token. */
   expiresInSec?: number;

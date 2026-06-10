@@ -613,10 +613,31 @@ export type HttpMethod = "GET" | "POST";
  *   public callbacks like email magic-link clicks (PR γ.2 visitorAuth) where
  *   the visitor can't supply a bearer token. Boot logs a warning per
  *   `auth: "none"` route so operators can't miss them.
+ * - `"visitor.optional"` — the route accepts anonymous callers but receives
+ *   recognized visitor context when `x-visitor-token` is valid. Public posture.
+ * - `"visitor.required"` — the route requires a valid `x-visitor-token` and
+ *   receives recognized visitor context. Missing, invalid, expired, wrong-agent,
+ *   or revoked tokens fail before the handler runs. `email` metadata is present
+ *   only when the transport is wired with visitorAuth / identityLookup; the token
+ *   itself carries only visitor id + agent binding + timestamps.
  */
-export type AugmentHttpRouteAuth = "bearer" | "none";
+export type AugmentHttpRouteAuth = "bearer" | "none" | "visitor.optional" | "visitor.required";
 
-export type RouteAuthContext = { mode: "none" } | { mode: "bearer" };
+export interface RouteVisitorIdentity {
+  visitorId: string;
+  agentId: string;
+  issuedAt: number;
+  expiresAt: number;
+  email?: string;
+  verifiedAt?: number;
+  reverifyDueAt?: number;
+}
+
+export type RouteAuthContext =
+  | { mode: "none" }
+  | { mode: "bearer" }
+  | { mode: "visitor"; state: "anonymous" }
+  | ({ mode: "visitor"; state: "recognized" } & RouteVisitorIdentity);
 
 export interface AugmentHttpRouteRequestJsonSchema {
   /** JSON Schema for `:param` path params, usually generated from `defineRoute`'s Zod schema. */

@@ -5,9 +5,81 @@
 ## What it adds to the agent
 
 - Tool: `request_auth({method: "email", email})` — model-callable; sends the verification email.
+- HTTP route: `POST /visitor-auth/request` — public visitor-aware; deterministic app-backend request for a verification email.
 - HTTP route: `GET /visitor-auth/verify?token=<uuid>` — public-unauthenticated; mounts on the agent's webTransport.
+- HTTP route: `POST /visitor-auth/verify` — public-unauthenticated; consumes the magic-link token and writes the browser visitor token.
 - Context block: per-turn summary of the active peer's verification state.
 - SQLite store: `<agent-dir>/visitor-auth.db` — token + verified-visitor tables.
+
+## App-backend magic link request
+
+Use the deterministic route when a frontend owns the sign-in form and should not
+ask the model to call `request_auth`:
+
+```http
+POST /visitor-auth/request
+content-type: application/json
+
+{
+  "email": "visitor@example.com"
+}
+```
+
+Response:
+
+```json
+{
+  "status": "sent",
+  "message": "Verification email sent to visitor@example.com. The link expires in 15 minutes.",
+  "expiresInSec": 900
+}
+```
+
+- This public route intentionally does **not** accept a caller-supplied
+  `threadId`. Public callers cannot prove they own an anonymous chat thread, so
+  binding arbitrary `anon-${threadId}` state here would let one visitor claim
+  another visitor's anonymous memory.
+- Route-initiated verification uses an internal `auth:<uuid>` peer id and does
+  not migrate existing anonymous chat memory. If you need anonymous memory
+  migration today, use the model-tool path (`request_auth`) from the active
+  visitor turn. A future signed anonymous-session binding can make app-route
+  migration safe.
+- The route is still protected by body validation, route rate limiting, and
+  visitorAuth's per-email send limit.
+
+## App-backend route auth
+
+When `visitorAuth` is mounted, augment HTTP routes can use visitor-token auth in
+addition to the existing `none` and `bearer` modes:
+
+```ts
+defineRoute.get("/catalog", {
+  auth: "visitor.optional",
+  handler: async ({ auth }) => {
+    // auth.state is "anonymous" or "recognized"
+  },
+});
+
+defineRoute.get("/orders/:id", {
+  auth: "visitor.required",
+  handler: async ({ auth }) => {
+    // auth.state is "recognized"; auth.visitorId is available
+    // auth.email is available when visitorAuth / identityLookup is wired
+  },
+});
+```
+
+- `visitor.optional` accepts anonymous callers and passes `{ mode: "visitor", state: "anonymous" }` when no valid `x-visitor-token` is present.
+- `visitor.required` requires a valid `x-visitor-token`; missing, invalid, expired, wrong-agent, or revoked tokens return `401 { "error": "visitor-auth-required" }`.
+- Recognized route context always includes `visitorId` and token timestamps.
+  When visitorAuth is mounted through the Auggy CLI, route context also includes
+  visitorAuth metadata (`email`, `verifiedAt`, `reverifyDueAt`). Email is
+  looked up from the visitorAuth store; it is not embedded in the browser
+  token. Programmatic `webTransport` users who configure visitor tokens without
+  `identityLookup` will receive token identity only.
+
+This is the app-backend path: deterministic frontend routes can require a valid
+visitor token without routing every request through the model.
 
 ## Configuration
 
@@ -102,6 +174,7 @@ Local-only flows are always admitted without ceremony:
 | `https://demo.example.com` | console mode **rejected** unless `allowConsoleInProduction: true` |
 
 For production-grade deployments serving external visitors, use the AgentMail transport (the default).
+AgentMail recommends sending both plain-text and HTML email bodies for deliverability; visitorAuth does this for verification emails.
 
 ### `notifyOnFirstVerify` is incompatible with console mode
 
@@ -111,7 +184,7 @@ The `notifyOnFirstVerify` option (operator-alert email on each new visitor) cann
 
 | Variable | Why |
 |---|---|
-| `AGENTMAIL_API_KEY` | AgentMail bearer token (`am_*`) |
+| `AGENTMAIL_API_KEY` | AgentMail bearer token (`am_*`). Prefer an inbox-scoped, permission-whitelisted key with `inbox_read` and `message_send`. |
 | `AGENTMAIL_INBOX_ID` | Inbox the verify email is sent FROM |
 | `AUGGY_PUBLIC_URL` | Base URL operators reach the agent at; embedded in the magic link |
 | `VISITOR_SIGNING_KEY` | HMAC key for visitor tokens; set only in `visitorAuth` — auto-injected into webTransport |
@@ -120,6 +193,7 @@ The `notifyOnFirstVerify` option (operator-alert email on each new visitor) cann
 ## Key constraints
 
 - Set `signingKey` only in `visitorAuth`. The augment-resolver auto-injects it into `webTransport.visitorTokens` at boot. Setting it in both places triggers a warning and `visitorAuth`'s value takes precedence. If they differ, visitor tokens minted by visitorAuth will fail webTransport's verification.
+- AgentMail keys should be least-privilege. visitorAuth uses `inbox_read` during boot healthcheck and `message_send` for verification delivery, so a permission-whitelisted key needs both.
 - `publicUrl` MUST point to a host where the agent's `/visitor-auth/verify` route is reachable from the public internet. If you're running behind a tunnel (ngrok, Cloudflare), use the tunnel URL; if you're running on Railway, use the Railway domain.
 - Per-anonymous-peer rate limits are **in-memory only** — restart resets state. The verified_visitors UNIQUE-on-email constraint catches accidental double-verification.
 
@@ -163,7 +237,6 @@ If a revoke is interrupted (e.g., Ctrl-C between the visitor-auth UPDATE and the
 - Strong identity (KYC). Email-bound is durable, not strong.
 - Cookie-based cross-tab handoff (only localStorage, same-origin).
 - Operator-customizable verify-success HTML.
-- HTML-bodied verify emails (plain-text only at v1).
 
 ## Troubleshooting
 
@@ -174,4 +247,5 @@ If a revoke is interrupted (e.g., Ctrl-C between the visitor-auth UPDATE and the
 | Verify link returns 410 "expired" | More than 15 minutes between send and click | Re-issue |
 | Verify link returns 410 "consumed" | Token was already used (visitor double-clicked, or someone with the link beat them) | Re-issue |
 | Visitor verifies but agent doesn't recognize them next visit | Cleared localStorage, or `VISITOR_SIGNING_KEY` rotated | Re-verify |
+| AgentMail healthcheck returns 403 | API key lacks access to the configured inbox, or a permission whitelist omitted `inbox_read` | Use an inbox-scoped key for `AGENTMAIL_INBOX_ID` with `inbox_read` and `message_send` |
 | `auggy visitors --revoke` errors "memory.db not found" | layeredMemory hasn't created its DB yet, or path mismatch | Check `layeredMemoryDbPath` in `agent.yaml` |

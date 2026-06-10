@@ -53,11 +53,18 @@ describe("createAgentMailClient", () => {
         return { status: 200, body: JSON.stringify({ message_id: "msg_1", thread_id: "thd_1" }) };
       }),
     });
-    const r = await client.send({ inboxId: "inb_x", to: ["a@b.com"], subject: "s", text: "t" });
+    const r = await client.send({
+      inboxId: "inb_x",
+      to: ["a@b.com"],
+      subject: "s",
+      text: "t",
+      html: "<p>t</p>",
+    });
     const sent = captured as unknown as { url: string; body: Record<string, unknown> };
     expect(sent.url).toBe("https://api.agentmail.to/v0/inboxes/inb_x/messages");
     expect(capturedAuth).toBe("Bearer am_test");
     expect(sent.body.subject).toBe("s");
+    expect(sent.body.html).toBe("<p>t</p>");
     expect(r.status).toBe("sent");
     if (r.status === "sent") {
       expect(r.messageId).toBe("msg_1");
@@ -97,6 +104,45 @@ describe("createAgentMailClient", () => {
     const r = await client.send({ inboxId: "inb_x", to: ["a@b.com"], subject: "s", text: "t" });
     expect(r.status).toBe("failed");
     if (r.status === "failed") expect(r.detail).toContain("ECONNREFUSED");
+  });
+
+  test("rejects send requests with no recipients before hitting AgentMail", async () => {
+    const client = createAgentMailClient({
+      apiKey: "am_test",
+      http: {
+        post: async () => {
+          throw new Error("should not post");
+        },
+        get: async () => {
+          throw new Error("should not get");
+        },
+      },
+    });
+    const r = await client.send({ inboxId: "inb_x", to: [], subject: "s", text: "t" });
+    expect(r.status).toBe("failed");
+    if (r.status === "failed") expect(r.detail).toMatch(/at least one recipient/);
+  });
+
+  test("rejects send requests over AgentMail's 50-recipient cap before hitting AgentMail", async () => {
+    const client = createAgentMailClient({
+      apiKey: "am_test",
+      http: {
+        post: async () => {
+          throw new Error("should not post");
+        },
+        get: async () => {
+          throw new Error("should not get");
+        },
+      },
+    });
+    const r = await client.send({
+      inboxId: "inb_x",
+      to: Array.from({ length: 51 }, (_, i) => `user${i}@example.com`),
+      subject: "s",
+      text: "t",
+    });
+    expect(r.status).toBe("failed");
+    if (r.status === "failed") expect(r.detail).toMatch(/50 recipients/);
   });
 });
 

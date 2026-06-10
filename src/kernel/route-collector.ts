@@ -97,9 +97,14 @@ export function collectAugmentRoutes(augments: readonly Augment[]): CollectAugme
 
       // Auth-mode validation — reject unknown values at boot to prevent
       // fail-open dispatch on typos / dynamic-config bugs.
-      if (r.auth !== "bearer" && r.auth !== "none") {
+      if (
+        r.auth !== "bearer" &&
+        r.auth !== "none" &&
+        r.auth !== "visitor.optional" &&
+        r.auth !== "visitor.required"
+      ) {
         errors.push(
-          `Augment "${aug.name}" registered HTTP route ${r.method} "${r.path}" with invalid auth "${r.auth}" — must be "bearer" or "none".`,
+          `Augment "${aug.name}" registered HTTP route ${r.method} "${r.path}" with invalid auth "${r.auth}" — must be "bearer", "none", "visitor.optional", or "visitor.required".`,
         );
         continue;
       }

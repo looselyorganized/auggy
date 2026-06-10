@@ -15,6 +15,7 @@ export function createOpenApiDocument(report: OpenApiRoutesReport): JsonObject {
   const paths: JsonObject = {};
   const operationIds = new Set<string>();
   const hasBearerRoutes = report.routes.some((route) => route.auth === "bearer");
+  const hasVisitorRoutes = report.routes.some((route) => route.auth.startsWith("visitor."));
 
   for (const route of report.routes) {
     const openApiPath = toOpenApiPath(route.path);
@@ -30,14 +31,27 @@ export function createOpenApiDocument(report: OpenApiRoutesReport): JsonObject {
       version: "0.1.0",
     },
     paths,
-    ...(hasBearerRoutes
+    ...(hasBearerRoutes || hasVisitorRoutes
       ? {
           components: {
             securitySchemes: {
-              bearerAuth: {
-                type: "http",
-                scheme: "bearer",
-              },
+              ...(hasBearerRoutes
+                ? {
+                    bearerAuth: {
+                      type: "http",
+                      scheme: "bearer",
+                    },
+                  }
+                : {}),
+              ...(hasVisitorRoutes
+                ? {
+                    visitorTokenAuth: {
+                      type: "apiKey",
+                      in: "header",
+                      name: "x-visitor-token",
+                    },
+                  }
+                : {}),
             },
           },
         }
@@ -54,7 +68,7 @@ function operationForRoute(route: RouteManifestEntry, operationIds: Set<string>)
     operationId: uniqueOperationId(route, operationIds),
     tags: [route.augmentName],
     summary: `${route.method} ${route.path}`,
-    security: route.auth === "bearer" ? [{ bearerAuth: [] }] : [],
+    security: securityForRoute(route),
     parameters: parametersForRoute(route),
     ...(route.requestJsonSchema?.body ? { requestBody: requestBody(route) } : {}),
     responses: responsesForRoute(route),
@@ -104,10 +118,19 @@ function responsesForRoute(route: RouteManifestEntry): JsonObject {
   return {
     "200": { description: "OK" },
     "400": { description: "Bad request" },
-    ...(route.auth === "bearer" ? { "401": { description: "Unauthorized" } } : {}),
+    ...(route.auth === "bearer" || route.auth === "visitor.required"
+      ? { "401": { description: "Unauthorized" } }
+      : {}),
     ...(route.rateLimit ? { "429": { description: "Rate limited" } } : {}),
     "500": { description: "Internal server error" },
   };
+}
+
+function securityForRoute(route: RouteManifestEntry): JsonObject[] {
+  if (route.auth === "bearer") return [{ bearerAuth: [] }];
+  if (route.auth === "visitor.required") return [{ visitorTokenAuth: [] }];
+  if (route.auth === "visitor.optional") return [{}, { visitorTokenAuth: [] }];
+  return [];
 }
 
 function augmentRouteMetadata(route: RouteManifestEntry): JsonObject {

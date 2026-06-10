@@ -2275,6 +2275,190 @@ describe("webTransport augment-registered routes", () => {
     }
   });
 
+  it("auth: visitor.required accepts a valid visitor token and passes visitor metadata", async () => {
+    const model = createMockModel();
+    const port = 19305;
+    const signingKey = "visitor-route-secret";
+    const agentBinding = "test-agent";
+    const key = await deriveSigningKey(signingKey);
+    const issued = await createVisitorToken(key, agentBinding, 3600, "vis_known");
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: "test-token" },
+      visitorTokens: {
+        enabled: true,
+        signingKey,
+        agentBinding,
+        identityLookup: (visitorId) =>
+          visitorId === "vis_known"
+            ? {
+                visitorId,
+                email: "alice@example.com",
+                verifiedAt: 1000,
+                reverifyDueAt: 2000,
+              }
+            : null,
+      },
+    });
+    const fixture: Augment = {
+      name: "visitor-routes",
+      httpRoutes: [
+        {
+          method: "GET",
+          path: "/account",
+          auth: "visitor.required",
+          handler: async (_req, opts) => json(opts.auth),
+        },
+      ],
+    };
+    const agent = defineAgent({ name: "test", model: "mock", augments: [fixture, aug] }, model);
+    await agent.start();
+    try {
+      const resp = await fetch(`http://localhost:${port}/account`, {
+        headers: { "x-visitor-token": issued.token },
+      });
+      expect(resp.status).toBe(200);
+      expect(await resp.json()).toEqual({
+        mode: "visitor",
+        state: "recognized",
+        visitorId: "vis_known",
+        agentId: agentBinding,
+        issuedAt: issued.payload.issuedAt,
+        expiresAt: issued.payload.expiresAt,
+        email: "alice@example.com",
+        verifiedAt: 1000,
+        reverifyDueAt: 2000,
+      });
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("auth: visitor.required rejects missing, invalid, and revoked visitor tokens", async () => {
+    const model = createMockModel();
+    const port = 19306;
+    const signingKey = "visitor-route-secret";
+    const agentBinding = "test-agent";
+    const key = await deriveSigningKey(signingKey);
+    const revoked = await createVisitorToken(key, agentBinding, 3600, "vis_revoked");
+    const mismatched = await createVisitorToken(key, agentBinding, 3600, "vis_mismatch");
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: "test-token" },
+      visitorTokens: {
+        enabled: true,
+        signingKey,
+        agentBinding,
+        revocationCheck: (visitorId) => visitorId === "vis_revoked",
+        identityLookup: (visitorId) =>
+          visitorId === "vis_mismatch"
+            ? {
+                visitorId: "vis_someone_else",
+                email: "wrong@example.com",
+                verifiedAt: 1000,
+                reverifyDueAt: 2000,
+              }
+            : null,
+      },
+    });
+    const fixture: Augment = {
+      name: "visitor-routes",
+      httpRoutes: [
+        {
+          method: "GET",
+          path: "/account",
+          auth: "visitor.required",
+          handler: async (_req, opts) => json(opts.auth),
+        },
+      ],
+    };
+    const agent = defineAgent({ name: "test", model: "mock", augments: [fixture, aug] }, model);
+    await agent.start();
+    try {
+      const missing = await fetch(`http://localhost:${port}/account`);
+      expect(missing.status).toBe(401);
+      expect(await missing.json()).toEqual({ error: "visitor-auth-required" });
+
+      const invalid = await fetch(`http://localhost:${port}/account`, {
+        headers: { "x-visitor-token": "not.a.valid.token" },
+      });
+      expect(invalid.status).toBe(401);
+      expect(await invalid.json()).toEqual({ error: "visitor-auth-required" });
+
+      const revokedResp = await fetch(`http://localhost:${port}/account`, {
+        headers: { "x-visitor-token": revoked.token },
+      });
+      expect(revokedResp.status).toBe(401);
+      expect(await revokedResp.json()).toEqual({ error: "visitor-auth-required" });
+
+      const mismatch = await fetch(`http://localhost:${port}/account`, {
+        headers: { "x-visitor-token": mismatched.token },
+      });
+      expect(mismatch.status).toBe(401);
+      expect(await mismatch.json()).toEqual({ error: "visitor-auth-required" });
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("auth: visitor.optional passes anonymous or recognized route context", async () => {
+    const model = createMockModel();
+    const port = 19307;
+    const signingKey = "visitor-route-secret";
+    const agentBinding = "test-agent";
+    const key = await deriveSigningKey(signingKey);
+    const issued = await createVisitorToken(key, agentBinding, 3600, "vis_optional");
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: "test-token" },
+      visitorTokens: {
+        enabled: true,
+        signingKey,
+        agentBinding,
+        identityLookup: (visitorId) =>
+          visitorId === "vis_optional"
+            ? {
+                visitorId,
+                email: "optional@example.com",
+                verifiedAt: 1000,
+                reverifyDueAt: 2000,
+              }
+            : null,
+      },
+    });
+    const fixture: Augment = {
+      name: "visitor-routes",
+      httpRoutes: [
+        {
+          method: "GET",
+          path: "/recommendations",
+          auth: "visitor.optional",
+          handler: async (_req, opts) => json(opts.auth),
+        },
+      ],
+    };
+    const agent = defineAgent({ name: "test", model: "mock", augments: [fixture, aug] }, model);
+    await agent.start();
+    try {
+      const anon = await fetch(`http://localhost:${port}/recommendations`);
+      expect(anon.status).toBe(200);
+      expect(await anon.json()).toEqual({ mode: "visitor", state: "anonymous" });
+
+      const recognized = await fetch(`http://localhost:${port}/recommendations`, {
+        headers: { "x-visitor-token": issued.token },
+      });
+      expect(recognized.status).toBe(200);
+      expect(await recognized.json()).toMatchObject({
+        mode: "visitor",
+        state: "recognized",
+        visitorId: "vis_optional",
+        email: "optional@example.com",
+      });
+    } finally {
+      await agent.stop();
+    }
+  });
+
   it("handler that throws returns 500 with opaque body", async () => {
     const model = createMockModel();
     const port = 18974;

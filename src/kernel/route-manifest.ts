@@ -34,7 +34,7 @@ export function createRouteManifest(
     routes.map((route) => {
       const parsed = parseRoutePattern(route.path);
       const params = parsed.ok ? parsed.pattern.params : [];
-      const isPublic = route.auth === "none";
+      const isPublic = route.auth === "none" || route.auth === "visitor.optional";
       return Object.freeze({
         method: route.method,
         path: route.path,

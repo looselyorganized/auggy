@@ -10,6 +10,7 @@ import { createHttpClient } from "./http";
 import type { HttpClient } from "./http";
 
 const DEFAULT_BASE_URL = "https://api.agentmail.to/v0";
+const MAX_RECIPIENTS = 50;
 
 export interface AgentMailClientOptions {
   apiKey: string;
@@ -138,8 +139,24 @@ export function createAgentMailClient(opts: AgentMailClientOptions): AgentMailCl
     }
   }
 
+  function recipientError(to: string[] | undefined): SendMessageError | null {
+    if (to === undefined) return null;
+    if (to.length === 0) {
+      return { status: "failed", detail: "agentmail requires at least one recipient" };
+    }
+    if (to.length > MAX_RECIPIENTS) {
+      return {
+        status: "failed",
+        detail: `agentmail supports at most ${MAX_RECIPIENTS} recipients per send/reply/forward`,
+      };
+    }
+    return null;
+  }
+
   return {
     async send(input) {
+      const invalidRecipients = recipientError(input.to);
+      if (invalidRecipients) return invalidRecipients;
       const url = `${baseUrl}/inboxes/${input.inboxId}/messages`;
       const body = JSON.stringify({
         to: input.to,
@@ -151,6 +168,8 @@ export function createAgentMailClient(opts: AgentMailClientOptions): AgentMailCl
       return postSend(url, body);
     },
     async reply(input) {
+      const invalidRecipients = recipientError(input.to);
+      if (invalidRecipients) return invalidRecipients;
       const url = `${baseUrl}/inboxes/${input.inboxId}/messages/${input.messageId}/reply`;
       const body = JSON.stringify({
         text: input.text,
@@ -162,6 +181,8 @@ export function createAgentMailClient(opts: AgentMailClientOptions): AgentMailCl
       return postSend(url, body);
     },
     async forward(input) {
+      const invalidRecipients = recipientError(input.to);
+      if (invalidRecipients) return invalidRecipients;
       const url = `${baseUrl}/inboxes/${input.inboxId}/messages/${input.messageId}/forward`;
       const body = JSON.stringify({
         to: input.to,

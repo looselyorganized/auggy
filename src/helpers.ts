@@ -149,6 +149,11 @@ function requestJsonSchema(
   return Object.keys(schemas).length > 0 ? schemas : undefined;
 }
 
+function fallbackRouteAuth(auth: AugmentHttpRouteAuth): RouteAuthContext {
+  if (auth === "none" || auth === "bearer") return { mode: auth };
+  return { mode: "visitor", state: "anonymous" };
+}
+
 function queryObject(searchParams: URLSearchParams): Record<string, string | string[]> {
   const out: Record<string, string | string[]> = {};
   for (const [key, value] of searchParams.entries()) {
@@ -188,7 +193,7 @@ export const defineRoute = {
         return await opts.handler({
           request,
           signal,
-          auth: auth ?? { mode: opts.auth },
+          auth: auth ?? fallbackRouteAuth(opts.auth),
           params: parsedParams.data as TParams extends AnySchema
             ? z.infer<TParams>
             : Record<string, string>,
@@ -248,7 +253,7 @@ export const defineRoute = {
         return await opts.handler({
           request,
           signal,
-          auth: auth ?? { mode: opts.auth },
+          auth: auth ?? fallbackRouteAuth(opts.auth),
           params: parsedParams.data as TParams extends AnySchema
             ? z.infer<TParams>
             : Record<string, string>,
