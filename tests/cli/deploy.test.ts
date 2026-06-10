@@ -766,6 +766,32 @@ describe("runDeploy", () => {
     });
   });
 
+  test("healthy deploy with missing Railway deployment status reports clean success", async () => {
+    const infos: string[] = [];
+    const { cli } = mockRailwayCli();
+    cli.status = async () => ({
+      project: { id: "proj_abc", name: "lorf" },
+      service: { name: "zip" },
+    });
+
+    await runDeploy(
+      "zip",
+      baseDeployOptions(cli, auggyDir, {
+        logger: {
+          info: (msg) => infos.push(msg),
+          warn: () => {},
+          error: () => {},
+        },
+      }),
+    );
+
+    const output = infos.join("\n");
+    expect(output).toContain("Deployment health verified");
+    expect(output).toContain("Service status: healthy.");
+    expect(output).not.toContain("Railway deployment status not final yet");
+    expect(output).not.toContain("new build status was not reported yet");
+  });
+
   test("reads Railway deployment status from alternate CLI shapes", async () => {
     const infos: string[] = [];
     const { cli } = mockRailwayCli();

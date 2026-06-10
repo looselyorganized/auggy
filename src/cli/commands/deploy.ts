@@ -426,10 +426,6 @@ export async function runDeploy(
     throw new Error(
       `Railway deployment failed with status ${deployWait.statusText}. Check \`railway logs\` for details.`,
     );
-  } else {
-    opts.logger.info(
-      `Railway deployment status not final yet; continuing with health check (${deployWait.reason}).`,
-    );
   }
 
   // 13) Verify the public health endpoint. Timeout is non-destructive: the
@@ -444,6 +440,11 @@ export async function runDeploy(
   if (health.ok) {
     opts.logger.info(`Deployment health verified: ${health.url}`);
   } else {
+    if (deployWait.state === "unknown") {
+      opts.logger.info(
+        `Railway deployment status not final yet; continuing with health check (${deployWait.reason}).`,
+      );
+    }
     const reason = health.status
       ? `last HTTP status ${health.status}`
       : health.error
@@ -612,9 +613,7 @@ function categorizeRailwayDeploymentStatus(status: string): "ready" | "failed" |
 function formatRailwayServiceStatus(status: unknown, healthOk: boolean): string {
   const deploymentStatus = findRailwayStatusValue(status);
   if (deploymentStatus) return deploymentStatus;
-  return healthOk
-    ? "current service is healthy; new build status was not reported yet"
-    : "not reported yet; build may still be deploying";
+  return healthOk ? "healthy" : "not reported yet; build may still be deploying";
 }
 
 function findRailwayStatusValue(value: unknown): string | null {
