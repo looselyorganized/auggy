@@ -501,14 +501,19 @@ function assertRailwayDeploySafeConfig(configPath: string): void {
   throw new Error(
     [
       "Deploy preflight failed:",
-      'visitor-auth is configured with agentMail.transport: "console".',
+      'visitorAuth is using agentMail.transport: "console".',
       "",
-      "Console magic links are local-only. On Railway they would be written to service logs,",
-      "which can leak sign-in credentials through dashboards or log shipping.",
+      "Console magic links are for local development only. On Railway, they would be",
+      "written to service logs, which can leak sign-in credentials through dashboards",
+      "or log shipping.",
       "",
       "Fix one of these before deploying:",
-      "  - Configure visitor-auth agentMail with apiKey + inboxId for production email.",
-      "  - Or set visitorAuth.allowConsoleInProduction: true in agent.yaml to acknowledge the risk.",
+      "  - Recommended: configure visitorAuth.agentMail with AgentMail credentials:",
+      '      transport: "agentmail"',
+      "      apiKey: ${AGENTMAIL_API_KEY}",
+      "      inboxId: ${AGENTMAIL_INBOX_ID}",
+      "  - Smoke test only: set visitorAuth.allowConsoleInProduction: true in agent.yaml",
+      "    to acknowledge that magic links will appear in Railway logs.",
     ].join("\n"),
   );
 }

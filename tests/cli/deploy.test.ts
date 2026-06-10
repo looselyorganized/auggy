@@ -511,7 +511,7 @@ describe("runDeploy", () => {
     expect(getAgent("zip", { auggyDir })?.cloud).toBeNull();
   });
 
-  test("aborts before Railway calls when visitor-auth uses console mail for deploy", async () => {
+  test("aborts before Railway calls when visitorAuth uses console mail for deploy", async () => {
     const agentYamlPath = join(agentDir, "agent.yaml");
     writeFileSync(
       agentYamlPath,
@@ -540,7 +540,7 @@ describe("runDeploy", () => {
 
     const { cli, calls } = mockRailwayCli();
     await expect(runDeploy("zip", baseDeployOptions(cli, auggyDir))).rejects.toThrow(
-      /visitor-auth is configured with agentMail\.transport: "console"/,
+      /visitorAuth is using agentMail\.transport: "console"/,
     );
 
     expect(calls.checkPresence).toBe(0);
@@ -549,7 +549,7 @@ describe("runDeploy", () => {
     expect(getAgent("zip", { auggyDir })?.cloud).toBeNull();
   });
 
-  test("allows visitor-auth console mail deploy when explicitly acknowledged", async () => {
+  test("allows visitorAuth console mail deploy when explicitly acknowledged", async () => {
     const agentYamlPath = join(agentDir, "agent.yaml");
     writeFileSync(
       agentYamlPath,
