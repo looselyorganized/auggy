@@ -211,18 +211,15 @@ describe("webTransport adminInfo — posture row (G36 phase 3)", () => {
         agentName: "zip",
         actionId: "posture-public-integration-set",
       });
-      resp = await fetch(
-        `http://127.0.0.1:${port}/console/action/posture-public-integration-set`,
-        {
-          method: "POST",
-          headers: {
-            authorization: basicHeader("test-token"),
-            "content-type": "application/x-www-form-urlencoded",
-          },
-          body: new URLSearchParams({ _csrf: publishCsrf, value: "true" }).toString(),
-          redirect: "manual",
+      resp = await fetch(`http://127.0.0.1:${port}/console/action/posture-public-integration-set`, {
+        method: "POST",
+        headers: {
+          authorization: basicHeader("test-token"),
+          "content-type": "application/x-www-form-urlencoded",
         },
-      );
+        body: new URLSearchParams({ _csrf: publishCsrf, value: "true" }).toString(),
+        redirect: "manual",
+      });
       expect(resp.status).toBe(303);
       await resp.text();
 
@@ -253,18 +250,15 @@ describe("webTransport adminInfo — posture row (G36 phase 3)", () => {
         agentName: "zip",
         actionId: "posture-public-integration-set",
       });
-      resp = await fetch(
-        `http://127.0.0.1:${port}/console/action/posture-public-integration-set`,
-        {
-          method: "POST",
-          headers: {
-            authorization: basicHeader("test-token"),
-            "content-type": "application/x-www-form-urlencoded",
-          },
-          body: new URLSearchParams({ _csrf: privateCsrf, value: "false" }).toString(),
-          redirect: "manual",
+      resp = await fetch(`http://127.0.0.1:${port}/console/action/posture-public-integration-set`, {
+        method: "POST",
+        headers: {
+          authorization: basicHeader("test-token"),
+          "content-type": "application/x-www-form-urlencoded",
         },
-      );
+        body: new URLSearchParams({ _csrf: privateCsrf, value: "false" }).toString(),
+        redirect: "manual",
+      });
       expect(resp.status).toBe(303);
       await resp.text();
 

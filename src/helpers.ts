@@ -73,7 +73,11 @@ export interface DefinePostRouteOptions<TBody extends AnySchema | undefined = un
   ) => Promise<Response> | Response;
 }
 
-export function json(data: unknown, status = 200, headers?: Headers | Record<string, string>): Response {
+export function json(
+  data: unknown,
+  status = 200,
+  headers?: Headers | Record<string, string>,
+): Response {
   const responseHeaders = new Headers(headers);
   if (!responseHeaders.has("content-type")) {
     responseHeaders.set("content-type", "application/json");
@@ -142,7 +146,7 @@ export const defineRoute = {
     opts: DefinePostRouteOptions<TBody>,
   ): AugmentHttpRoute {
     return routeBase("POST", path, opts, async (request, { signal }) => {
-      let rawBody: unknown = undefined;
+      let rawBody: unknown;
       if (opts.body) {
         try {
           rawBody = await request.json();

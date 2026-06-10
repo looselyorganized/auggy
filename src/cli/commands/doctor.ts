@@ -366,7 +366,10 @@ function checkBundledSkills(agentDir: string, augments: AugmentConfig[]): Doctor
   return out;
 }
 
-async function checkAugmentRoutes(agentDir: string, configs: AugmentConfig[]): Promise<DoctorCheck[]> {
+async function checkAugmentRoutes(
+  agentDir: string,
+  configs: AugmentConfig[],
+): Promise<DoctorCheck[]> {
   const customConfigs = configs.filter((aug) => aug.type === "custom");
   if (customConfigs.length === 0) return [];
 

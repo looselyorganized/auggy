@@ -107,14 +107,14 @@ describe("renderInfoPage — HTML structure", () => {
 
 describe("renderAgentIntegrationPage", () => {
   it("renders the public developer surface and links the canonical agent card", () => {
-    const html = renderAgentIntegrationPage(
-      mockCard({ name: "zip", purpose: "concierge agent" }),
-    );
+    const html = renderAgentIntegrationPage(mockCard({ name: "zip", purpose: "concierge agent" }));
     expect(html).toContain("<title>zip — developer surface</title>");
     expect(html).toContain("<h1>Developer surface for zip.</h1>");
     expect(html).toContain("POST /agent/run");
     expect(html).toContain("Custom augment routes");
-    expect(html).toContain("Use custom routes when a frontend or webhook needs deterministic app behavior.");
+    expect(html).toContain(
+      "Use custom routes when a frontend or webhook needs deterministic app behavior.",
+    );
     expect(html).toContain(
       '<link rel="alternate" type="application/json" href="/.well-known/agent-card.json">',
     );

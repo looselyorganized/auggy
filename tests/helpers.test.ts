@@ -81,7 +81,8 @@ describe("defineRoute", () => {
         need: z.string().min(1),
         tag: z.union([z.string(), z.array(z.string())]).optional(),
       }),
-      handler: ({ query, route }) => json({ method: route.method, need: query.need, tag: query.tag }),
+      handler: ({ query, route }) =>
+        json({ method: route.method, need: query.need, tag: query.tag }),
     });
 
     expect(route.method).toBe("GET");

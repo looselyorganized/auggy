@@ -101,9 +101,7 @@ function readPackageVersion(): string {
     const pkg = JSON.parse(
       readFileSync(new URL("../../../package.json", import.meta.url), "utf-8"),
     ) as { version?: unknown };
-    return typeof pkg.version === "string" && pkg.version.trim() !== ""
-      ? pkg.version
-      : "unknown";
+    return typeof pkg.version === "string" && pkg.version.trim() !== "" ? pkg.version : "unknown";
   } catch {
     return "unknown";
   }
@@ -643,7 +641,10 @@ async function handleActionPost(
       });
     }
     return wantsJson
-      ? actionJson({ ok: false, message: "Forbidden (CSRF or auth check failed)", csrfExpired: false }, 403)
+      ? actionJson(
+          { ok: false, message: "Forbidden (CSRF or auth check failed)", csrfExpired: false },
+          403,
+        )
       : new Response(null, { status: 403 });
   }
 

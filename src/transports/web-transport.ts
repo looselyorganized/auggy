@@ -624,8 +624,9 @@ export function webTransport(opts: WebTransportOptions): Augment {
     }
     if (publicIntegration) {
       agentIntegrationPageHtml = renderAgentIntegrationPage(card);
-      agentIntegrationPageByteLength = new TextEncoder().encode(agentIntegrationPageHtml)
-        .byteLength;
+      agentIntegrationPageByteLength = new TextEncoder().encode(
+        agentIntegrationPageHtml,
+      ).byteLength;
     } else {
       agentIntegrationPageHtml = null;
       agentIntegrationPageByteLength = 0;
@@ -719,8 +720,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
             {
               label: "publicIntegration",
               value: String(publicIntegration),
-              source:
-                publicIntegrationSource === "admin-override" ? "/console override" : "yaml",
+              source: publicIntegrationSource === "admin-override" ? "/console override" : "yaml",
             },
             { label: "Port", value: String(opts.port) },
             {
