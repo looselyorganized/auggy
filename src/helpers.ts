@@ -3,6 +3,7 @@ import type {
   Augment,
   AugmentHttpRoute,
   AugmentHttpRouteAuth,
+  AugmentHttpRouteRequestJsonSchema,
   HttpMethod,
   RouteAuthContext,
   Tool,
@@ -124,6 +125,7 @@ function routeBase(
   path: string,
   opts: RouteOptionsBase,
   handler: AugmentHttpRoute["handler"],
+  requestJsonSchema?: AugmentHttpRouteRequestJsonSchema,
 ): AugmentHttpRoute {
   return {
     method,
@@ -133,7 +135,18 @@ function routeBase(
     ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
     ...(opts.maxBodyBytes !== undefined ? { maxBodyBytes: opts.maxBodyBytes } : {}),
     ...(opts.rateLimit ? { rateLimit: opts.rateLimit } : {}),
+    ...(requestJsonSchema ? { requestJsonSchema } : {}),
   };
+}
+
+function toJsonSchema(schema: AnySchema | undefined): Record<string, unknown> | undefined {
+  return schema ? (z.toJSONSchema(schema) as Record<string, unknown>) : undefined;
+}
+
+function requestJsonSchema(
+  schemas: AugmentHttpRouteRequestJsonSchema,
+): AugmentHttpRouteRequestJsonSchema | undefined {
+  return Object.keys(schemas).length > 0 ? schemas : undefined;
 }
 
 function queryObject(searchParams: URLSearchParams): Record<string, string | string[]> {
@@ -156,36 +169,45 @@ export const defineRoute = {
     TQuery extends AnySchema | undefined = undefined,
     TParams extends AnySchema | undefined = undefined,
   >(path: string, opts: DefineGetRouteOptions<TQuery, TParams>): AugmentHttpRoute {
-    return routeBase("GET", path, opts, async (request, { signal, auth, params, routePath }) => {
-      const parsedQuery = opts.query
-        ? opts.query.safeParse(queryObject(new URL(request.url).searchParams))
-        : { success: true as const, data: undefined };
-      if (!parsedQuery.success) return badRequest();
+    return routeBase(
+      "GET",
+      path,
+      opts,
+      async (request, { signal, auth, params, routePath }) => {
+        const parsedQuery = opts.query
+          ? opts.query.safeParse(queryObject(new URL(request.url).searchParams))
+          : { success: true as const, data: undefined };
+        if (!parsedQuery.success) return badRequest();
 
-      const rawParams = params ?? {};
-      const parsedParams = opts.params
-        ? opts.params.safeParse(rawParams)
-        : { success: true as const, data: rawParams };
-      if (!parsedParams.success) return badRequest();
+        const rawParams = params ?? {};
+        const parsedParams = opts.params
+          ? opts.params.safeParse(rawParams)
+          : { success: true as const, data: rawParams };
+        if (!parsedParams.success) return badRequest();
 
-      return await opts.handler({
-        request,
-        signal,
-        auth: auth ?? { mode: opts.auth },
-        params: parsedParams.data as TParams extends AnySchema
-          ? z.infer<TParams>
-          : Record<string, string>,
-        route: {
-          method: "GET",
-          path: routePath ?? path,
+        return await opts.handler({
+          request,
+          signal,
+          auth: auth ?? { mode: opts.auth },
           params: parsedParams.data as TParams extends AnySchema
             ? z.infer<TParams>
             : Record<string, string>,
-        },
-        query: parsedQuery.data as TQuery extends AnySchema ? z.infer<TQuery> : undefined,
-        body: undefined,
-      });
-    });
+          route: {
+            method: "GET",
+            path: routePath ?? path,
+            params: parsedParams.data as TParams extends AnySchema
+              ? z.infer<TParams>
+              : Record<string, string>,
+          },
+          query: parsedQuery.data as TQuery extends AnySchema ? z.infer<TQuery> : undefined,
+          body: undefined,
+        });
+      },
+      requestJsonSchema({
+        ...(opts.params ? { params: toJsonSchema(opts.params) } : {}),
+        ...(opts.query ? { query: toJsonSchema(opts.query) } : {}),
+      }),
+    );
   },
 
   post<
@@ -193,50 +215,60 @@ export const defineRoute = {
     TParams extends AnySchema | undefined = undefined,
     TQuery extends AnySchema | undefined = undefined,
   >(path: string, opts: DefinePostRouteOptions<TBody, TParams, TQuery>): AugmentHttpRoute {
-    return routeBase("POST", path, opts, async (request, { signal, auth, params, routePath }) => {
-      let rawBody: unknown;
-      if (opts.body) {
-        try {
-          rawBody = await request.json();
-        } catch {
-          return badRequest();
+    return routeBase(
+      "POST",
+      path,
+      opts,
+      async (request, { signal, auth, params, routePath }) => {
+        let rawBody: unknown;
+        if (opts.body) {
+          try {
+            rawBody = await request.json();
+          } catch {
+            return badRequest();
+          }
         }
-      }
 
-      const parsedBody = opts.body
-        ? opts.body.safeParse(rawBody)
-        : { success: true as const, data: undefined };
-      if (!parsedBody.success) return badRequest();
+        const parsedBody = opts.body
+          ? opts.body.safeParse(rawBody)
+          : { success: true as const, data: undefined };
+        if (!parsedBody.success) return badRequest();
 
-      const parsedQuery = opts.query
-        ? opts.query.safeParse(queryObject(new URL(request.url).searchParams))
-        : { success: true as const, data: undefined };
-      if (!parsedQuery.success) return badRequest();
+        const parsedQuery = opts.query
+          ? opts.query.safeParse(queryObject(new URL(request.url).searchParams))
+          : { success: true as const, data: undefined };
+        if (!parsedQuery.success) return badRequest();
 
-      const rawParams = params ?? {};
-      const parsedParams = opts.params
-        ? opts.params.safeParse(rawParams)
-        : { success: true as const, data: rawParams };
-      if (!parsedParams.success) return badRequest();
+        const rawParams = params ?? {};
+        const parsedParams = opts.params
+          ? opts.params.safeParse(rawParams)
+          : { success: true as const, data: rawParams };
+        if (!parsedParams.success) return badRequest();
 
-      return await opts.handler({
-        request,
-        signal,
-        auth: auth ?? { mode: opts.auth },
-        params: parsedParams.data as TParams extends AnySchema
-          ? z.infer<TParams>
-          : Record<string, string>,
-        route: {
-          method: "POST",
-          path: routePath ?? path,
+        return await opts.handler({
+          request,
+          signal,
+          auth: auth ?? { mode: opts.auth },
           params: parsedParams.data as TParams extends AnySchema
             ? z.infer<TParams>
             : Record<string, string>,
-        },
-        query: parsedQuery.data as TQuery extends AnySchema ? z.infer<TQuery> : undefined,
-        body: parsedBody.data as TBody extends AnySchema ? z.infer<TBody> : undefined,
-      });
-    });
+          route: {
+            method: "POST",
+            path: routePath ?? path,
+            params: parsedParams.data as TParams extends AnySchema
+              ? z.infer<TParams>
+              : Record<string, string>,
+          },
+          query: parsedQuery.data as TQuery extends AnySchema ? z.infer<TQuery> : undefined,
+          body: parsedBody.data as TBody extends AnySchema ? z.infer<TBody> : undefined,
+        });
+      },
+      requestJsonSchema({
+        ...(opts.params ? { params: toJsonSchema(opts.params) } : {}),
+        ...(opts.query ? { query: toJsonSchema(opts.query) } : {}),
+        ...(opts.body ? { body: toJsonSchema(opts.body) } : {}),
+      }),
+    );
   },
 
   group(prefix: string, routes: readonly AugmentHttpRoute[]): AugmentHttpRoute[] {

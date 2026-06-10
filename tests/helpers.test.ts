@@ -93,6 +93,13 @@ describe("defineRoute", () => {
     expect(route.method).toBe("GET");
     expect(route.path).toBe("/services");
     expect(route.auth).toBe("none");
+    expect(route.requestJsonSchema?.query).toMatchObject({
+      type: "object",
+      properties: {
+        need: { type: "string", minLength: 1 },
+      },
+      required: ["need"],
+    });
 
     const res = await route.handler(
       new Request("http://localhost/services?need=gifting&tag=a&tag=b"),
@@ -199,6 +206,14 @@ describe("defineRoute", () => {
 
     expect(route.method).toBe("POST");
     expect(route.auth).toBe("bearer");
+    expect(route.requestJsonSchema?.body).toMatchObject({
+      type: "object",
+      properties: {
+        email: { type: "string", format: "email" },
+        serviceId: { type: "string", minLength: 1 },
+      },
+      required: ["email", "serviceId"],
+    });
 
     const res = await route.handler(
       new Request("http://localhost/leads/create", {

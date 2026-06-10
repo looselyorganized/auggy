@@ -22,6 +22,13 @@ describe("route manifest", () => {
       aug("catalog", [
         route("GET", "/catalog/:id", "none", {
           rateLimit: { maxPerMinute: 30 },
+          requestJsonSchema: {
+            params: {
+              type: "object",
+              properties: { id: { type: "string" } },
+              required: ["id"],
+            },
+          },
         }),
       ]),
       aug("orders", [
@@ -46,6 +53,13 @@ describe("route manifest", () => {
         public: true,
         security: "public",
         rateLimit: { maxPerMinute: 30 },
+        requestJsonSchema: {
+          params: {
+            type: "object",
+            properties: { id: { type: "string" } },
+            required: ["id"],
+          },
+        },
       },
       {
         method: "POST",

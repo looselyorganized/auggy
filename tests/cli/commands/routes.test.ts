@@ -83,6 +83,22 @@ function customRouteModule(kind: "valid" | "reserved"): string {
             path: "/services/:serviceId",
             auth: "none",
             rateLimit: { maxPerMinute: 30 },
+            requestJsonSchema: {
+              params: {
+                type: "object",
+                properties: {
+                  serviceId: { type: "string", minLength: 1 },
+                },
+                required: ["serviceId"],
+              },
+              query: {
+                type: "object",
+                properties: {
+                  need: { type: "string", minLength: 1 },
+                },
+                required: ["need"],
+              },
+            },
             handler: async () => new Response(JSON.stringify({ ok: true })),
           },
           {
@@ -90,6 +106,22 @@ function customRouteModule(kind: "valid" | "reserved"): string {
             path: "/leads/:leadId/notes",
             auth: "bearer",
             maxBodyBytes: 65536,
+            requestJsonSchema: {
+              params: {
+                type: "object",
+                properties: {
+                  leadId: { type: "string", minLength: 1 },
+                },
+                required: ["leadId"],
+              },
+              body: {
+                type: "object",
+                properties: {
+                  note: { type: "string", minLength: 1 },
+                },
+                required: ["note"],
+              },
+            },
             handler: async () => new Response(JSON.stringify({ ok: true })),
           },
         ],
@@ -119,6 +151,9 @@ describe("runRoutes", () => {
     ]);
     expect(report.routes[0]?.params).toEqual(["serviceId"]);
     expect(report.routes[1]?.params).toEqual(["leadId"]);
+    expect(report.routes[0]?.requestJsonSchema?.query).toMatchObject({
+      properties: { need: { type: "string", minLength: 1 } },
+    });
   });
 
   test("defaults to project-local agent.yaml when name is omitted", async () => {
@@ -218,6 +253,83 @@ describe("routesCommand", () => {
     const parsed = JSON.parse(logs.join("\n")) as RoutesReport;
     expect(parsed.agent.name).toBe("zip");
     expect(parsed.routes[0]?.path).toBe("/services/:serviceId");
+  });
+
+  test("prints OpenAPI output", async () => {
+    const exit = mock((_code: number) => {});
+    const logs: string[] = [];
+    const origLog = console.log;
+    console.log = (msg: unknown) => {
+      logs.push(String(msg));
+    };
+
+    try {
+      const cmd = routesCommand({
+        exit,
+        runRoutes: async () => ({
+          agent: { name: "zip", configPath: "/tmp/zip/agent.yaml" },
+          summary: {
+            totalRoutes: 1,
+            publicRoutes: 1,
+            privateRoutes: 0,
+            publicRoutePaths: ["GET /services/:serviceId"],
+          },
+          routes: [
+            {
+              method: "GET",
+              path: "/services/:serviceId",
+              augmentName: "concierge-services",
+              auth: "none",
+              params: ["serviceId"],
+              public: true,
+              security: "public",
+              requestJsonSchema: {
+                params: {
+                  type: "object",
+                  properties: { serviceId: { type: "string" } },
+                  required: ["serviceId"],
+                },
+              },
+            },
+          ],
+        }),
+      });
+
+      await cmd.parseAsync(["zip", "--openapi"], { from: "user" });
+    } finally {
+      console.log = origLog;
+    }
+
+    expect(exit).toHaveBeenCalledWith(0);
+    const parsed = JSON.parse(logs.join("\n")) as {
+      openapi: string;
+      paths: Record<string, unknown>;
+    };
+    expect(parsed.openapi).toBe("3.1.0");
+    expect(parsed.paths["/services/{serviceId}"]).toBeDefined();
+  });
+
+  test("rejects conflicting machine-readable output flags", async () => {
+    const exit = mock((_code: number) => {});
+    const run = mock(async (): Promise<RoutesReport> => {
+      throw new Error("should not run");
+    });
+    const errors: string[] = [];
+    const origError = console.error;
+    console.error = (msg: unknown) => {
+      errors.push(String(msg));
+    };
+
+    try {
+      const cmd = routesCommand({ exit, runRoutes: run });
+      await cmd.parseAsync(["zip", "--json", "--openapi"], { from: "user" });
+    } finally {
+      console.error = origError;
+    }
+
+    expect(exit).toHaveBeenCalledWith(1);
+    expect(run).not.toHaveBeenCalled();
+    expect(errors.join("\n")).toContain("Choose either --json or --openapi.");
   });
 
   test("exits 1 when routes cannot be inspected", async () => {

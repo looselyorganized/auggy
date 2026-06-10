@@ -1,6 +1,7 @@
 import { dirname } from "node:path";
 import { Command } from "commander";
 import { parseConfig } from "../config-parser";
+import { createOpenApiDocument } from "../routes-openapi";
 import { resolveConfigPath } from "../resolve-config";
 import { inspectCustomAugmentRoutes } from "../route-inspector";
 import type { RouteManifestEntry, RouteManifestSummary } from "../../kernel/route-manifest";
@@ -106,18 +107,33 @@ export function routesCommand(deps: RoutesCommandDeps = {}): Command {
     .argument("[name]", "agent name")
     .option("--config <path>", "path to agent.yaml")
     .option("--json", "print the route manifest as JSON")
-    .action(async (name: string | undefined, opts: { config?: string; json?: boolean }) => {
-      try {
-        const report = await run(name, {
-          config: opts.config,
-          auggyDir: deps.auggyDir,
-          cwd: deps.cwd,
-        });
-        console.log(opts.json ? JSON.stringify(report, null, 2) : formatRoutesReport(report));
-        exit(0);
-      } catch (err) {
-        console.error(`Error: ${(err as Error).message}`);
-        exit(1);
-      }
-    });
+    .option("--openapi", "print an OpenAPI 3.1 document as JSON")
+    .action(
+      async (
+        name: string | undefined,
+        opts: { config?: string; json?: boolean; openapi?: boolean },
+      ) => {
+        try {
+          if (opts.json && opts.openapi) {
+            throw new Error("Choose either --json or --openapi.");
+          }
+          const report = await run(name, {
+            config: opts.config,
+            auggyDir: deps.auggyDir,
+            cwd: deps.cwd,
+          });
+          console.log(
+            opts.openapi
+              ? JSON.stringify(createOpenApiDocument(report), null, 2)
+              : opts.json
+                ? JSON.stringify(report, null, 2)
+                : formatRoutesReport(report),
+          );
+          exit(0);
+        } catch (err) {
+          console.error(`Error: ${(err as Error).message}`);
+          exit(1);
+        }
+      },
+    );
 }

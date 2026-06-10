@@ -1,4 +1,4 @@
-import type { AugmentHttpRouteAuth, HttpMethod } from "../types";
+import type { AugmentHttpRouteAuth, AugmentHttpRouteRequestJsonSchema, HttpMethod } from "../types";
 import type { CollectedRoute } from "./route-collector";
 import { parseRoutePattern } from "./route-pattern";
 
@@ -17,6 +17,7 @@ export interface RouteManifestEntry {
   rateLimit?: {
     maxPerMinute: number;
   };
+  requestJsonSchema?: AugmentHttpRouteRequestJsonSchema;
 }
 
 export interface RouteManifestSummary {
@@ -45,6 +46,7 @@ export function createRouteManifest(
         ...(route.timeoutMs !== undefined ? { timeoutMs: route.timeoutMs } : {}),
         ...(route.maxBodyBytes !== undefined ? { maxBodyBytes: route.maxBodyBytes } : {}),
         ...(route.rateLimit ? { rateLimit: { maxPerMinute: route.rateLimit.maxPerMinute } } : {}),
+        ...(route.requestJsonSchema ? { requestJsonSchema: route.requestJsonSchema } : {}),
       });
     }),
   );

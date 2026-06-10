@@ -618,6 +618,15 @@ export type AugmentHttpRouteAuth = "bearer" | "none";
 
 export type RouteAuthContext = { mode: "none" } | { mode: "bearer" };
 
+export interface AugmentHttpRouteRequestJsonSchema {
+  /** JSON Schema for `:param` path params, usually generated from `defineRoute`'s Zod schema. */
+  params?: Record<string, unknown>;
+  /** JSON Schema for parsed query params, usually generated from `defineRoute`'s Zod schema. */
+  query?: Record<string, unknown>;
+  /** JSON Schema for parsed JSON request body, usually generated from `defineRoute`'s Zod schema. */
+  body?: Record<string, unknown>;
+}
+
 /**
  * One HTTP route registered by an augment. Routes are collected at
  * `agent.start()` AFTER `lifecycle.boot()` succeeds (so `onBoot`-populated
@@ -659,6 +668,12 @@ export interface AugmentHttpRoute {
   rateLimit?: {
     maxPerMinute: number;
   };
+  /**
+   * Optional request schemas for operator tooling and OpenAPI-ish export.
+   * The dispatcher still validates via the route handler/helper; this metadata
+   * is descriptive and must not be treated as an authorization boundary.
+   */
+  requestJsonSchema?: AugmentHttpRouteRequestJsonSchema;
   /**
    * The handler. Receives the raw Request and an options bag carrying an
    * AbortSignal that fires on timeout. Handlers SHOULD listen for the
