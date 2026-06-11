@@ -23,7 +23,9 @@ import { createStubBunInstallSpawn, type SpawnCapture } from "../fixtures/bun-in
 let answers: Answers = {};
 mockInquirerPrompts(() => answers);
 
-const { runCreate, runInit } = await import("../../src/cli/commands/create");
+const { buildModelChoicesForCreate, runCreate, runInit } = await import(
+  "../../src/cli/commands/create"
+);
 const { PROVIDER_TO_PACKAGE } = await import("../../src/cli/scaffold-package-json");
 
 let auggyDir: string;
@@ -94,6 +96,46 @@ describe("runCreate writes per-agent package.json", () => {
     );
     expect(pkg.dependencies["@auggy/link"]).toBeUndefined();
     expect(pkg.dependencies["@auggy/anthropic"]).toBeDefined();
+  });
+});
+
+describe("create model choices", () => {
+  test("uses bundled model registry choices by default", async () => {
+    const result = await buildModelChoicesForCreate("anthropic");
+
+    expect(result.warnings).toEqual([]);
+    expect(result.choices.map((choice) => choice.value)).toContain("claude-sonnet-4-6");
+    expect(result.choices.find((choice) => choice.value === "claude-sonnet-4-6")?.name).toContain(
+      "$3/$15 per Mtok",
+    );
+  });
+
+  test("can build create choices from a refreshed provider registry", async () => {
+    const result = await buildModelChoicesForCreate("anthropic", {
+      refresh: true,
+      listRegistry: async () => ({
+        warnings: [],
+        models: [
+          {
+            provider: "anthropic",
+            id: "claude-fable-5",
+            displayName: "Claude Fable 5",
+            pricing: { inputUsdPerMtok: 2, outputUsdPerMtok: 10 },
+            source: "provider",
+            status: "live",
+            tools: true,
+          },
+        ],
+      }),
+    });
+
+    expect(result.choices).toEqual([
+      {
+        name: "claude-fable-5 — $2/$10 per Mtok, live",
+        value: "claude-fable-5",
+        priced: true,
+      },
+    ]);
   });
 });
 
@@ -249,6 +291,46 @@ describe("runCreate scaffolding integration", () => {
     expect(logs.join("\n")).toContain("Open in your editor");
     expect(logs.join("\n")).toContain("identity.md");
     expect(logs.join("\n")).toContain("auggy run");
+  });
+
+  test("--refresh-models can scaffold with a live registry model", async () => {
+    answers = { provider: "anthropic", model: "claude-fable-5" };
+    let called = false;
+
+    await runCreate("demo-live-model", {
+      cwd: projectParent,
+      skipInstall: true,
+      bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
+      refreshModels: true,
+      modelRegistry: async (opts) => {
+        called = true;
+        expect(opts).toBeDefined();
+        if (!opts) throw new Error("expected model registry options");
+        expect(opts.provider).toBe("anthropic");
+        expect(opts.refresh).toBe(true);
+        return {
+          warnings: [],
+          models: [
+            {
+              provider: "anthropic",
+              id: "claude-fable-5",
+              pricing: { inputUsdPerMtok: 2, outputUsdPerMtok: 10 },
+              source: "provider",
+              status: "live",
+              tools: true,
+            },
+          ],
+        };
+      },
+    });
+
+    const config = parseYaml(
+      readFileSync(join(agentDirFor("demo-live-model"), "agent.yaml"), "utf-8"),
+    ) as {
+      engine: { model: string };
+    };
+    expect(called).toBe(true);
+    expect(config.engine.model).toBe("claude-fable-5");
   });
 
   test("agent.yaml + identity.md + skills/ + data/workspace all scaffolded", async () => {

@@ -51,6 +51,7 @@ describe("auggy CLI command table", () => {
     const create = buildCli().commands.find((cmd) => cmd.name() === "create");
     expect(create?.helpInformation()).not.toContain("--project");
     expect(create?.helpInformation()).toContain("standalone agent project");
+    expect(create?.helpInformation()).toContain("--refresh-models");
   });
 
   test("skill namespace exposes add/create/list/remove", () => {

@@ -60,7 +60,8 @@ export function buildCli(): Command {
     .command("create <name>")
     .description("Scaffold a standalone agent project at ./<name> (interactive)")
     .option("--skip-install", "write package.json but don't run bun install")
-    .action(async (name: string, opts: { skipInstall?: boolean }) => {
+    .option("--refresh-models", "fetch live provider model catalogs before model selection")
+    .action(async (name: string, opts: { skipInstall?: boolean; refreshModels?: boolean }) => {
       try {
         assertInteractiveCommand("auggy create");
         await runCreate(name, opts);
@@ -95,16 +96,26 @@ export function buildCli(): Command {
     .command("init [name]")
     .description("Initialize the current directory as an Auggy agent project")
     .option("--skip-install", "write package.json but don't run bun install")
-    .action(async (name: string | undefined, opts: { skipInstall?: boolean }) => {
-      try {
-        assertInteractiveCommand("auggy init");
-        const { runInit } = await import("./commands/create");
-        await runInit({ name, skipInstall: opts.skipInstall });
-      } catch (err) {
-        console.error(`Error: ${(err as Error).message}`);
-        process.exit(1);
-      }
-    });
+    .option("--refresh-models", "fetch live provider model catalogs before model selection")
+    .action(
+      async (
+        name: string | undefined,
+        opts: { skipInstall?: boolean; refreshModels?: boolean },
+      ) => {
+        try {
+          assertInteractiveCommand("auggy init");
+          const { runInit } = await import("./commands/create");
+          await runInit({
+            name,
+            skipInstall: opts.skipInstall,
+            refreshModels: opts.refreshModels,
+          });
+        } catch (err) {
+          console.error(`Error: ${(err as Error).message}`);
+          process.exit(1);
+        }
+      },
+    );
 
   program.addCommand(skillCommand());
   program.addCommand(runCommand());

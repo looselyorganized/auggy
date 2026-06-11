@@ -20,7 +20,14 @@ import {
   copyStarterSkills,
   renderIdentityFromTemplate,
 } from "../scaffold-skills";
-import { getModelChoices, formatChoiceLabel, type Provider } from "../model-picker";
+import {
+  formatPricing,
+  listModelRegistry,
+  listStaticModels,
+  type ModelRegistryEntry,
+  type ModelRegistryResult,
+} from "../model-registry";
+import type { Provider } from "../types";
 import {
   listInstalledOllamaModels,
   partitionByRecommended,
@@ -94,6 +101,10 @@ export interface CreateOpts {
   auggyDir?: string;
   /** Test seam: override process.cwd(). */
   cwd?: string;
+  /** Fetch live provider model catalogs before model selection. */
+  refreshModels?: boolean;
+  /** Test seam: inject model registry lookup. */
+  modelRegistry?: typeof listModelRegistry;
 }
 
 export interface InitOpts extends CreateOpts {
@@ -116,6 +127,17 @@ interface WizardAnswers {
   providedEnv: Record<string, string>;
 }
 
+interface CreateModelChoice {
+  name: string;
+  value: string;
+  priced: boolean;
+}
+
+interface CreateModelChoiceResult {
+  choices: CreateModelChoice[];
+  warnings: string[];
+}
+
 /**
  * Drive the interactive wizard. Returns the collected answers on success.
  * Pressing Esc at any prompt throws `WizardRestartRequested`; the caller
@@ -126,7 +148,7 @@ interface WizardAnswers {
  * lazy thunk preserves ESM live-binding of the prompt imports (tests
  * replace `@inquirer/prompts` via `mock.module`).
  */
-async function runWizard(agentName: string): Promise<WizardAnswers> {
+async function runWizard(agentName: string, opts: CreateOpts = {}): Promise<WizardAnswers> {
   // Interactive engine selection.
   const provider = await withEscRestart((ctx) =>
     select<Provider>(
@@ -199,10 +221,11 @@ async function runWizard(agentName: string): Promise<WizardAnswers> {
   // and the BFCL-evidence shortlist.
   const CUSTOM_SENTINEL = "__custom__";
   const isOllamaLocal = provider === "ollama" && !ollamaBaseURL;
-  let modelChoices: Array<{ name: string; value: string }> = getModelChoices(provider).map((c) => ({
-    name: formatChoiceLabel(c),
-    value: c.id,
-  }));
+  const modelChoiceResult = await buildModelChoicesForCreate(provider, {
+    refresh: opts.refreshModels,
+    listRegistry: opts.modelRegistry,
+  });
+  let modelChoices = modelChoiceResult.choices;
 
   if (isOllamaLocal) {
     const installed = await listInstalledOllamaModels();
@@ -212,10 +235,12 @@ async function runWizard(agentName: string): Promise<WizardAnswers> {
         ...recommended.map((id) => ({
           name: `${id} ${dim("(installed, recommended for tool calling)")}`,
           value: id,
+          priced: true,
         })),
         ...other.map((id) => ({
           name: `${id} ${dim("(installed)")}`,
           value: id,
+          priced: true,
         })),
       ];
     } else {
@@ -238,6 +263,15 @@ async function runWizard(agentName: string): Promise<WizardAnswers> {
     }
   }
 
+  const modelWarnings = opts.refreshModels && !isOllamaLocal ? modelChoiceResult.warnings : [];
+  if (modelWarnings.length > 0) {
+    console.log();
+    for (const warning of modelWarnings) {
+      console.log(`  ${dim(`Model refresh: ${warning}`)}`);
+    }
+    console.log();
+  }
+
   const modelSelection = await withEscRestart((ctx) =>
     select<string>(
       {
@@ -252,9 +286,19 @@ async function runWizard(agentName: string): Promise<WizardAnswers> {
   );
 
   let model: string;
+  const selectedChoice = modelChoices.find((choice) => choice.value === modelSelection);
   if (modelSelection === CUSTOM_SENTINEL) {
     model = await withEscRestart((ctx) => input({ message: "Custom model ID:" }, ctx));
-    printCustomModelWarning(model);
+    await confirmUnpricedModel(model);
+  } else {
+    model = modelSelection;
+    if (selectedChoice && !selectedChoice.priced) {
+      await confirmUnpricedModel(model);
+    }
+  }
+
+  async function confirmUnpricedModel(modelId: string): Promise<void> {
+    printCustomModelWarning(modelId);
     const proceed = await withEscRestart((ctx) =>
       confirm(
         {
@@ -269,8 +313,6 @@ async function runWizard(agentName: string): Promise<WizardAnswers> {
         "Aborted by operator. Pick a priced model or add `engine.costOverride` to agent.yaml after scaffolding.",
       );
     }
-  } else {
-    model = modelSelection;
   }
 
   const providedEnv: Record<string, string> = {};
@@ -397,7 +439,7 @@ async function runCreateIntoDir(
   for (;;) {
     if (attempt === 0) printWelcome();
     try {
-      answers = await runWizard(name);
+      answers = await runWizard(name, opts);
       break;
     } catch (err) {
       if (err instanceof WizardRestartRequested) {
@@ -660,6 +702,80 @@ function providerLabel(provider: Provider): string {
     case "ollama":
       return "Ollama";
   }
+}
+
+export async function buildModelChoicesForCreate(
+  provider: Provider,
+  opts: {
+    refresh?: boolean;
+    listRegistry?: typeof listModelRegistry;
+  } = {},
+): Promise<CreateModelChoiceResult> {
+  const listRegistry = opts.listRegistry ?? listModelRegistry;
+  let result: ModelRegistryResult;
+  if (opts.refresh) {
+    try {
+      result = await listRegistry({ provider, refresh: true });
+    } catch (err) {
+      result = {
+        models: listStaticModels(provider),
+        warnings: [`${provider}: ${(err as Error).message}; using bundled fallback`],
+      };
+    }
+  } else {
+    result = { models: listStaticModels(provider), warnings: [] };
+  }
+
+  let models = result.models.filter((model) => model.provider === provider);
+  models = models.filter((model) => model.tools !== false);
+  if (opts.refresh) models = models.slice(0, 50);
+
+  if (models.length === 0) {
+    models = listStaticModels(provider);
+    result = {
+      ...result,
+      warnings: [...result.warnings, `${provider}: live refresh returned no usable models`],
+    };
+  }
+
+  return {
+    choices: dedupeCreateModelChoices(models.map(modelToCreateChoice)),
+    warnings: result.warnings,
+  };
+}
+
+function modelToCreateChoice(model: ModelRegistryEntry): CreateModelChoice {
+  const details = [model.pricing ? formatPricing(model.pricing) : "pricing unknown"];
+  if (model.contextWindow) details.push(`${formatModelTokens(model.contextWindow)} context`);
+  if (model.source === "provider") details.push("live");
+  return {
+    name: `${model.id} — ${details.join(", ")}`,
+    value: model.id,
+    priced: model.pricing !== undefined,
+  };
+}
+
+function dedupeCreateModelChoices(choices: CreateModelChoice[]): CreateModelChoice[] {
+  const seen = new Set<string>();
+  const out: CreateModelChoice[] = [];
+  for (const choice of choices) {
+    if (seen.has(choice.value)) continue;
+    seen.add(choice.value);
+    out.push(choice);
+  }
+  return out;
+}
+
+function formatModelTokens(value: number): string {
+  if (value >= 1_000_000) return `${formatCompactNumber(value / 1_000_000)}M`;
+  if (value >= 1_000) return `${formatCompactNumber(value / 1_000)}k`;
+  return String(value);
+}
+
+function formatCompactNumber(value: number): string {
+  if (Number.isInteger(value)) return String(value);
+  if (value >= 100) return String(Math.round(value));
+  return value.toFixed(1).replace(/\.0$/, "");
 }
 
 // ---------------------------------------------------------------------------
