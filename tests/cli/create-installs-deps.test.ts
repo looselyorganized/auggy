@@ -178,6 +178,61 @@ describe("create model choices", () => {
       },
     });
   });
+
+  test("auto-refreshes live provider models on cache miss when enabled", async () => {
+    const calls: Array<{ refresh?: boolean; useCache?: boolean; writeCache?: boolean }> = [];
+    const result = await buildModelChoicesForCreate("anthropic", {
+      autoRefresh: true,
+      useCache: true,
+      env: { ANTHROPIC_API_KEY: "sk-ant-test" },
+      listRegistry: async (opts) => {
+        calls.push({
+          refresh: opts?.refresh,
+          useCache: opts?.useCache,
+          writeCache: opts?.writeCache,
+        });
+        if (opts?.refresh) {
+          return {
+            warnings: [],
+            models: [
+              {
+                provider: "anthropic",
+                id: "claude-fable-5",
+                displayName: "Claude Fable 5",
+                pricing: { inputUsdPerMtok: 2, outputUsdPerMtok: 10 },
+                source: "provider",
+                status: "live",
+                tools: true,
+              },
+            ],
+          };
+        }
+        return {
+          warnings: [],
+          models: [
+            {
+              provider: "anthropic",
+              id: "claude-sonnet-4-6",
+              pricing: { inputUsdPerMtok: 3, outputUsdPerMtok: 15 },
+              source: "static",
+              status: "known",
+              tools: true,
+            },
+          ],
+        };
+      },
+    });
+
+    expect(calls).toEqual([
+      { refresh: undefined, useCache: true, writeCache: undefined },
+      { refresh: true, useCache: true, writeCache: true },
+    ]);
+    expect(result.source).toBe("live");
+    expect(result.choices[0]).toMatchObject({
+      name: "claude-fable-5 — $2/$10 per Mtok, live",
+      value: "claude-fable-5",
+    });
+  });
 });
 
 describe("runCreate invokes bun install in agent dir", () => {
@@ -384,6 +439,79 @@ describe("runCreate scaffolding integration", () => {
       },
       registry: {
         refreshRequested: true,
+      },
+    });
+  });
+
+  test("first create auto-refreshes models after provider key is supplied", async () => {
+    answers = { provider: "anthropic", model: "claude-fable-5", apiKey: "sk-ant-test" };
+    const calls: Array<{ refresh?: boolean; useCache?: boolean; writeCache?: boolean }> = [];
+
+    await runCreate("demo-auto-live-model", {
+      cwd: projectParent,
+      skipInstall: true,
+      useModelCache: true,
+      bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
+      modelRegistry: async (opts) => {
+        calls.push({
+          refresh: opts?.refresh,
+          useCache: opts?.useCache,
+          writeCache: opts?.writeCache,
+        });
+        if (opts?.refresh) {
+          expect(opts.env?.ANTHROPIC_API_KEY).toBe("sk-ant-test");
+          return {
+            warnings: [],
+            models: [
+              {
+                provider: "anthropic",
+                id: "claude-fable-5",
+                pricing: { inputUsdPerMtok: 2, outputUsdPerMtok: 10 },
+                source: "provider",
+                status: "live",
+                tools: true,
+              },
+            ],
+          };
+        }
+        return {
+          warnings: [],
+          models: [
+            {
+              provider: "anthropic",
+              id: "claude-sonnet-4-6",
+              pricing: { inputUsdPerMtok: 3, outputUsdPerMtok: 15 },
+              source: "static",
+              status: "known",
+              tools: true,
+            },
+          ],
+        };
+      },
+    });
+
+    const dir = agentDirFor("demo-auto-live-model");
+    const config = parseYaml(readFileSync(join(dir, "agent.yaml"), "utf-8")) as {
+      engine: { model: string };
+    };
+    const snapshot = JSON.parse(readFileSync(join(dir, ".auggy", "models.lock.json"), "utf-8"));
+    const env = readFileSync(join(dir, ".env"), "utf-8");
+
+    expect(calls).toEqual([
+      { refresh: undefined, useCache: true, writeCache: undefined },
+      { refresh: true, useCache: true, writeCache: true },
+    ]);
+    expect(config.engine.model).toBe("claude-fable-5");
+    expect(env).toContain("ANTHROPIC_API_KEY=sk-ant-test");
+    expect(snapshot).toMatchObject({
+      selected: {
+        provider: "anthropic",
+        model: "claude-fable-5",
+        source: "provider",
+        pricingKnown: true,
+      },
+      registry: {
+        refreshRequested: false,
       },
     });
   });

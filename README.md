@@ -295,9 +295,10 @@ auggy deploy --yes
 | `auggy logs` | Open Railway logs for a deployed agent |
 | `auggy start` / `stop` / `restart` | Manage a background local agent |
 
-`auggy create` starts from bundled, known-priced model choices. If you run
-`auggy models list anthropic --refresh`, Auggy saves that provider list and
-future creates can offer those saved models without another provider fetch.
+`auggy create` asks for the selected provider's API key before model selection.
+If a key is provided, Auggy fetches and saves the latest provider model list.
+If not, it uses saved models from a previous refresh or falls back to bundled,
+known-priced choices.
 
 ## Requirements
 
