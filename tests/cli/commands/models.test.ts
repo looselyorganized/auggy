@@ -9,7 +9,10 @@ import {
   modelsCommand,
   runModelsDoctor,
 } from "../../../src/cli/commands/models";
-import type { ModelRegistryResult } from "../../../src/cli/model-registry";
+import type {
+  ListModelRegistryOptions,
+  ModelRegistryResult,
+} from "../../../src/cli/model-registry";
 
 const roots: string[] = [];
 
@@ -149,6 +152,48 @@ describe("modelsCommand", () => {
       await command.parseAsync(["list", "openai", "--json"], { from: "user" });
 
       expect(JSON.parse(logs[0] ?? "{}").models[0].id).toBe("gpt-5");
+      expect(exit).not.toHaveBeenCalledWith(1);
+    } finally {
+      console.log = origLog;
+    }
+  });
+
+  test("list --refresh writes the provider cache", async () => {
+    const exit = mock((_code: number) => {});
+    const logs: string[] = [];
+    const origLog = console.log;
+    let seen: ListModelRegistryOptions | undefined;
+    console.log = (msg: unknown) => {
+      logs.push(String(msg));
+    };
+
+    try {
+      const command = modelsCommand({
+        exit,
+        listModelRegistry: async (opts) => {
+          seen = opts;
+          return {
+            warnings: [],
+            models: [
+              {
+                provider: "anthropic",
+                id: "claude-fable-5",
+                source: "provider",
+                status: "live",
+              },
+            ],
+          };
+        },
+      });
+      await command.parseAsync(["list", "anthropic", "--refresh"], { from: "user" });
+
+      expect(seen).toMatchObject({
+        provider: "anthropic",
+        refresh: true,
+        useCache: true,
+        writeCache: true,
+      });
+      expect(logs.join("\n")).toContain("claude-fable-5");
       expect(exit).not.toHaveBeenCalledWith(1);
     } finally {
       console.log = origLog;

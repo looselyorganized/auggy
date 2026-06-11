@@ -290,9 +290,15 @@ auggy deploy --yes
 | `auggy skill create <name>` | Create a skill folder |
 | `auggy skill add <name>` | Reinstall a bundled augment skill |
 | `auggy mcp init/list/show/add-json/remove/doctor` | Manage `.mcp.json` MCP servers |
+| `auggy models list [provider] --refresh` | Fetch and save the latest provider model list |
 | `auggy deploy` | Deploy the current agent to Railway |
 | `auggy logs` | Open Railway logs for a deployed agent |
 | `auggy start` / `stop` / `restart` | Manage a background local agent |
+
+`auggy create` asks for the selected provider's API key before model selection.
+If a key is provided, Auggy fetches and saves the latest provider model list.
+If not, it uses saved models from a previous refresh or falls back to bundled,
+known-priced choices.
 
 ## Requirements
 

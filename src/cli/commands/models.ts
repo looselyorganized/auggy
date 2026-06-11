@@ -42,7 +42,12 @@ export function modelsCommand(deps: ModelsCommandDeps = {}): Command {
     .action(async (providerArg: string | undefined, opts: ModelsListOptions) => {
       try {
         const provider = parseProvider(providerArg);
-        const result = await listRegistry({ provider, refresh: opts.refresh });
+        const result = await listRegistry({
+          provider,
+          refresh: opts.refresh,
+          useCache: true,
+          writeCache: opts.refresh === true,
+        });
         const requestedLimit = parseLimit(opts.limit);
         const limit = opts.json
           ? requestedLimit

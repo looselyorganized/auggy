@@ -8,10 +8,11 @@ PACK_CACHE="$SMOKE_DIR/npm-pack-cache"
 INSTALL_CACHE="$SMOKE_DIR/npm-install-cache"
 GLOBAL_PREFIX="$SMOKE_DIR/npm-global"
 LOG_DIR="$SMOKE_DIR/logs"
+SMOKE_HOME="$SMOKE_DIR/home"
 SERVER_PID=""
 FAILED=""
 
-mkdir -p "$LOG_DIR"
+mkdir -p "$LOG_DIR" "$SMOKE_HOME"
 
 cleanup() {
   if [[ -n "$SERVER_PID" ]] && kill -0 "$SERVER_PID" 2>/dev/null; then
@@ -90,7 +91,7 @@ CLI="$GLOBAL_PREFIX/bin/auggy"
   || fail "installed CLI version does not match package.json"
 
 info "verify non-TTY create fails clearly"
-if "$CLI" create no-tty-agent --skip-install >"$LOG_DIR/no-tty-create.log" 2>&1; then
+if HOME="$SMOKE_HOME" "$CLI" create no-tty-agent --skip-install >"$LOG_DIR/no-tty-create.log" 2>&1; then
   fail "non-TTY create unexpectedly succeeded"
 fi
 grep -q "interactive and needs a terminal" "$LOG_DIR/no-tty-create.log" \
@@ -114,6 +115,7 @@ info "create agent through PTY"
     sleep 0.2
     printf '\n'
   ) | script -q /dev/null env \
+    HOME="$SMOKE_HOME" \
     AUGGY_SCAFFOLD_AUGGY_SPEC="file:$TARBALL" \
     "$CLI" create "$AGENT_NAME" --skip-install
 ) >"$LOG_DIR/create.log" 2>&1
@@ -135,13 +137,13 @@ perl -0pi -e 's/ANTHROPIC_API_KEY=\n/ANTHROPIC_API_KEY=sk-ant-smoke-not-real\n/'
 info "doctor"
 (
   cd "$AGENT_DIR"
-  "$CLI" doctor
+  HOME="$SMOKE_HOME" "$CLI" doctor
 )
 
 info "run agent and check health"
 (
   cd "$AGENT_DIR"
-  "$CLI" run --no-open >"$LOG_DIR/run.log" 2>&1
+  HOME="$SMOKE_HOME" "$CLI" run --no-open >"$LOG_DIR/run.log" 2>&1
 ) &
 SERVER_PID="$!"
 
@@ -160,26 +162,26 @@ SERVER_PID=""
 info "add knowledge and MCP"
 (
   cd "$AGENT_DIR"
-  "$CLI" augment add knowledge
-  "$CLI" augment add mcp --yes
-  "$CLI" mcp add-json example-stdio \
+  HOME="$SMOKE_HOME" "$CLI" augment add knowledge
+  HOME="$SMOKE_HOME" "$CLI" augment add mcp --yes
+  HOME="$SMOKE_HOME" "$CLI" mcp add-json example-stdio \
     "{\"type\":\"stdio\",\"command\":\"bun\",\"args\":[\"$ROOT/examples/mcp-stdio-server/server.ts\"],\"cwd\":\"$ROOT\"}"
 )
 
 info "MCP local doctor passes"
 (
   cd "$AGENT_DIR"
-  "$CLI" mcp doctor
+  HOME="$SMOKE_HOME" "$CLI" mcp doctor
 )
 
 info "cloud preflight blocks local stdio MCP"
-if (cd "$AGENT_DIR" && "$CLI" doctor --cloud >"$LOG_DIR/doctor-cloud.log" 2>&1); then
+if (cd "$AGENT_DIR" && HOME="$SMOKE_HOME" "$CLI" doctor --cloud >"$LOG_DIR/doctor-cloud.log" 2>&1); then
   fail "doctor --cloud unexpectedly passed with stdio MCP"
 fi
 grep -q "stdio MCP servers do not run safely on Railway" "$LOG_DIR/doctor-cloud.log" \
   || fail "doctor --cloud did not explain stdio MCP cloud risk"
 
-if (cd "$AGENT_DIR" && "$CLI" deploy --yes >"$LOG_DIR/deploy-preflight.log" 2>&1); then
+if (cd "$AGENT_DIR" && HOME="$SMOKE_HOME" "$CLI" deploy --yes >"$LOG_DIR/deploy-preflight.log" 2>&1); then
   fail "deploy unexpectedly passed with stdio MCP"
 fi
 grep -q "Deploy preflight failed" "$LOG_DIR/deploy-preflight.log" \

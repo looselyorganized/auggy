@@ -111,6 +111,10 @@ export interface CreateOpts {
   cwd?: string;
   /** Fetch live provider model catalogs before model selection. */
   refreshModels?: boolean;
+  /** Use the saved provider model cache from previous refreshes. Production CLI enables this. */
+  useModelCache?: boolean;
+  /** Test seam: override the provider model cache directory. */
+  modelCacheDir?: string;
   /** Test seam: inject model registry lookup. */
   modelRegistry?: typeof listModelRegistry;
 }
@@ -146,6 +150,7 @@ interface CreateModelChoice {
 interface CreateModelChoiceResult {
   choices: CreateModelChoice[];
   warnings: string[];
+  source: "static" | "cached" | "live";
 }
 
 /**
@@ -223,6 +228,33 @@ async function runWizard(agentName: string, opts: CreateOpts = {}): Promise<Wiza
     }
   }
 
+  const providedEnv: Record<string, string> = {};
+  const providerEnvVar = PROVIDER_DEFAULTS[provider].envVar;
+  if (providerEnvVar) {
+    const key = await withEscRestart((ctx) =>
+      password(
+        {
+          message: `${providerLabel(provider)} API key (optional):`,
+          mask: "*",
+        },
+        ctx,
+      ),
+    );
+    if (key.trim()) providedEnv[providerEnvVar] = key.trim();
+  }
+  if (ollamaNeedsBearer) {
+    const key = await withEscRestart((ctx) =>
+      password(
+        {
+          message: "Ollama bearer token (optional):",
+          mask: "*",
+        },
+        ctx,
+      ),
+    );
+    if (key.trim()) providedEnv.OLLAMA_API_KEY = key.trim();
+  }
+
   // Model selection: dropdown of priced models + Custom escape hatch.
   //
   // For ollama-local, discover what's installed on the box (`ollama list`)
@@ -231,8 +263,17 @@ async function runWizard(agentName: string, opts: CreateOpts = {}): Promise<Wiza
   // and the BFCL-evidence shortlist.
   const CUSTOM_SENTINEL = "__custom__";
   const isOllamaLocal = provider === "ollama" && !ollamaBaseURL;
+  const autoRefreshModels =
+    opts.useModelCache === true &&
+    !opts.refreshModels &&
+    provider !== "ollama" &&
+    canAutoRefreshProviderModels(provider, providedEnv);
   const modelChoiceResult = await buildModelChoicesForCreate(provider, {
     refresh: opts.refreshModels,
+    autoRefresh: autoRefreshModels,
+    useCache: opts.useModelCache === true,
+    cacheDir: opts.modelCacheDir,
+    env: providedEnv,
     listRegistry: opts.modelRegistry,
   });
   let modelChoices = modelChoiceResult.choices;
@@ -289,7 +330,8 @@ async function runWizard(agentName: string, opts: CreateOpts = {}): Promise<Wiza
     }
   }
 
-  const modelWarnings = opts.refreshModels && !isOllamaLocal ? modelChoiceResult.warnings : [];
+  const modelWarnings =
+    (opts.refreshModels || autoRefreshModels) && !isOllamaLocal ? modelChoiceResult.warnings : [];
   if (modelWarnings.length > 0) {
     console.log();
     for (const warning of modelWarnings) {
@@ -342,33 +384,6 @@ async function runWizard(agentName: string, opts: CreateOpts = {}): Promise<Wiza
         "Aborted by operator. Pick a priced model or add `engine.costOverride` to agent.yaml after scaffolding.",
       );
     }
-  }
-
-  const providedEnv: Record<string, string> = {};
-  const providerEnvVar = PROVIDER_DEFAULTS[provider].envVar;
-  if (providerEnvVar) {
-    const key = await withEscRestart((ctx) =>
-      password(
-        {
-          message: `${providerLabel(provider)} API key (optional):`,
-          mask: "*",
-        },
-        ctx,
-      ),
-    );
-    if (key.trim()) providedEnv[providerEnvVar] = key.trim();
-  }
-  if (ollamaNeedsBearer) {
-    const key = await withEscRestart((ctx) =>
-      password(
-        {
-          message: "Ollama bearer token (optional):",
-          mask: "*",
-        },
-        ctx,
-      ),
-    );
-    if (key.trim()) providedEnv.OLLAMA_API_KEY = key.trim();
   }
 
   // Identity prompts.
@@ -745,14 +760,27 @@ export async function buildModelChoicesForCreate(
   provider: Provider,
   opts: {
     refresh?: boolean;
+    autoRefresh?: boolean;
+    useCache?: boolean;
+    cacheDir?: string;
+    env?: Record<string, string | undefined>;
     listRegistry?: typeof listModelRegistry;
   } = {},
 ): Promise<CreateModelChoiceResult> {
   const listRegistry = opts.listRegistry ?? listModelRegistry;
   let result: ModelRegistryResult;
+  let source: CreateModelChoiceResult["source"] = "static";
   if (opts.refresh) {
     try {
-      result = await listRegistry({ provider, refresh: true });
+      result = await listRegistry({
+        provider,
+        refresh: true,
+        useCache: opts.useCache,
+        writeCache: opts.useCache,
+        cacheDir: opts.cacheDir,
+        env: opts.env,
+      });
+      source = inferModelChoiceSource(result.models);
     } catch (err) {
       result = {
         models: listStaticModels(provider),
@@ -760,7 +788,31 @@ export async function buildModelChoicesForCreate(
       };
     }
   } else {
-    result = { models: listStaticModels(provider), warnings: [] };
+    result = await listRegistry({
+      provider,
+      useCache: opts.useCache,
+      cacheDir: opts.cacheDir,
+    });
+    source = inferModelChoiceSource(result.models);
+    if (opts.autoRefresh && source !== "cached") {
+      try {
+        result = await listRegistry({
+          provider,
+          refresh: true,
+          useCache: opts.useCache,
+          writeCache: opts.useCache,
+          cacheDir: opts.cacheDir,
+          env: opts.env,
+        });
+        source = inferModelChoiceSource(result.models);
+      } catch (err) {
+        result = {
+          models: listStaticModels(provider),
+          warnings: [`${provider}: ${(err as Error).message}; using bundled fallback`],
+        };
+        source = "static";
+      }
+    }
   }
 
   let models = result.models.filter((model) => model.provider === provider);
@@ -773,18 +825,37 @@ export async function buildModelChoicesForCreate(
       ...result,
       warnings: [...result.warnings, `${provider}: live refresh returned no usable models`],
     };
+    source = "static";
   }
 
   return {
     choices: dedupeCreateModelChoices(models.map(modelToCreateChoice)),
     warnings: result.warnings,
+    source,
   };
+}
+
+function canAutoRefreshProviderModels(
+  provider: Provider,
+  providedEnv: Record<string, string>,
+): boolean {
+  if (provider === "openrouter") return true;
+  const envVar = PROVIDER_DEFAULTS[provider].envVar;
+  return Boolean(envVar && (providedEnv[envVar]?.trim() || process.env[envVar]?.trim()));
+}
+
+function inferModelChoiceSource(models: ModelRegistryEntry[]): CreateModelChoiceResult["source"] {
+  if (models.some((model) => model.status === "live")) return "live";
+  if (models.some((model) => model.status === "cached" || model.source === "provider")) {
+    return "cached";
+  }
+  return "static";
 }
 
 function modelToCreateChoice(model: ModelRegistryEntry): CreateModelChoice {
   const details = [model.pricing ? formatPricing(model.pricing) : "pricing unknown"];
   if (model.contextWindow) details.push(`${formatModelTokens(model.contextWindow)} context`);
-  if (model.source === "provider") details.push("live");
+  if (model.source === "provider") details.push(model.status === "cached" ? "saved" : "live");
   return {
     name: `${model.id} — ${details.join(", ")}`,
     value: model.id,

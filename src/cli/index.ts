@@ -64,7 +64,7 @@ export function buildCli(): Command {
     .action(async (name: string, opts: { skipInstall?: boolean; refreshModels?: boolean }) => {
       try {
         assertInteractiveCommand("auggy create");
-        await runCreate(name, opts);
+        await runCreate(name, { ...opts, useModelCache: true });
       } catch (err) {
         console.error(`Error: ${(err as Error).message}`);
         process.exit(1);
@@ -109,6 +109,7 @@ export function buildCli(): Command {
             name,
             skipInstall: opts.skipInstall,
             refreshModels: opts.refreshModels,
+            useModelCache: true,
           });
         } catch (err) {
           console.error(`Error: ${(err as Error).message}`);
