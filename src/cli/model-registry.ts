@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { Pricing } from "../engines/_shared/cost";
@@ -448,7 +448,6 @@ function readProviderCache(
 ): ModelRegistryEntry[] {
   try {
     const path = modelRegistryCachePath(opts);
-    if (!existsSync(path)) return [];
     const value = JSON.parse(readFileSync(path, "utf-8"));
     const cache = parseModelRegistryCache(value);
     const cached = cache.providers[provider];
@@ -473,9 +472,7 @@ function writeProviderCache(
   const path = modelRegistryCachePath(opts);
   let cache: ModelRegistryCache = { schemaVersion: 1, providers: {} };
   try {
-    if (existsSync(path)) {
-      cache = parseModelRegistryCache(JSON.parse(readFileSync(path, "utf-8")));
-    }
+    cache = parseModelRegistryCache(JSON.parse(readFileSync(path, "utf-8")));
   } catch {
     cache = { schemaVersion: 1, providers: {} };
   }
