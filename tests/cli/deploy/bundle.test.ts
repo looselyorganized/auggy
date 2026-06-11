@@ -55,6 +55,8 @@ describe("stageBundle", () => {
     writeFileSync(join(agentDir, ".worktrees", "feat-x", "marker"), "ignore");
     mkdirSync(join(agentDir, ".claude"));
     writeFileSync(join(agentDir, ".claude", "settings.json"), "{}");
+    mkdirSync(join(agentDir, ".auggy"));
+    writeFileSync(join(agentDir, ".auggy", "models.lock.json"), "{}");
     mkdirSync(join(agentDir, "skills", "facility"), { recursive: true });
     writeFileSync(join(agentDir, "skills", "facility", "SKILL.md"), "# skill");
     writeFileSync(join(agentDir, ".DS_Store"), "junk");
@@ -81,7 +83,7 @@ describe("stageBundle", () => {
     expect(existsSync(join(staged, "bun.lock"))).toBe(true);
   });
 
-  test("excludes .env, *.db*, workspace/, data/, node_modules/, .git/, .DS_Store, .worktrees/, .claude/", () => {
+  test("excludes .env, *.db*, workspace/, data/, node_modules/, .git/, .DS_Store, .worktrees/, .claude/, .auggy/", () => {
     seedAgentDir();
     const staged = stageBundle({ agentDir, agentName: "zip" });
     cleanup.push(staged);
@@ -98,6 +100,7 @@ describe("stageBundle", () => {
     expect(existsSync(join(staged, ".git"))).toBe(false);
     expect(existsSync(join(staged, ".worktrees"))).toBe(false);
     expect(existsSync(join(staged, ".claude"))).toBe(false);
+    expect(existsSync(join(staged, ".auggy"))).toBe(false);
     expect(existsSync(join(staged, ".DS_Store"))).toBe(false);
   });
 

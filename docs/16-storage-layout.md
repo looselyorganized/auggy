@@ -9,6 +9,7 @@ An Auggy agent is a normal project folder wherever the operator creates it:
 ```
 <name>/
 ├── agent.yaml              # source-of-truth config (uses `identity:` shorthand)
+├── .auggy/models.lock.json # model metadata snapshot from create/refresh
 ├── .auggy-cloud.json       # cloud-deploy record (only present when deployed)
 ├── identity.md             # who the agent is — security rules + skill manifest
 ├── learned.md              # mutable learnings
@@ -34,6 +35,16 @@ to stay in sync with the filesystem.
 - `skills/<augment>/` directories hold byte-for-byte copies of each augment's bundled `src/augments/<augment>/skill/` folder — copied automatically at `auggy create`/`auggy add` time. `auggy skill add <augment>` is a repair/update command for missing, deleted, or intentionally refreshed bundled skills. The boot-time validator warns at startup if a tool-providing augment has no skill folder mounted.
 - `data/` is the durable runtime data mount. Core create uses `data/workspace`; optional augments such as `layeredMemory` and `budgets` place their SQLite files under `data/` when added.
 - `knowledge/` is scaffolded by `auggy augment add knowledge`; the example `sources.json`, `local/manifest`, and endpoint files give a working local config without needing to stand up an HTTP server.
+
+## Model snapshot
+
+`<agent-dir>/.auggy/models.lock.json` records what Auggy knew about the selected
+engine model when the agent was scaffolded. `agent.yaml` remains the source of
+truth; the snapshot is local metadata for diagnostics, pricing visibility, and
+future model recommendations.
+
+The file contains no secrets. It is intentionally not needed at runtime and is
+excluded from Railway deploy bundles.
 
 ## Runtime source
 

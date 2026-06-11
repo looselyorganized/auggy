@@ -27,6 +27,14 @@ import {
   type ModelRegistryEntry,
   type ModelRegistryResult,
 } from "../model-registry";
+import {
+  createModelSnapshot,
+  customModelSelection,
+  selectionFromModelRegistryEntry,
+  writeModelSnapshot,
+  type ModelSnapshot,
+  type ModelSnapshotSelection,
+} from "../model-snapshot";
 import type { Provider } from "../types";
 import {
   listInstalledOllamaModels,
@@ -115,6 +123,7 @@ export interface InitOpts extends CreateOpts {
 interface WizardAnswers {
   provider: Provider;
   model: string;
+  modelSnapshot: ModelSnapshot;
   displayName: string;
   operatorName: string;
   purpose: string;
@@ -131,6 +140,7 @@ interface CreateModelChoice {
   name: string;
   value: string;
   priced: boolean;
+  snapshot: ModelSnapshotSelection;
 }
 
 interface CreateModelChoiceResult {
@@ -236,11 +246,27 @@ async function runWizard(agentName: string, opts: CreateOpts = {}): Promise<Wiza
           name: `${id} ${dim("(installed, recommended for tool calling)")}`,
           value: id,
           priced: true,
+          snapshot: {
+            provider: "ollama" as const,
+            model: id,
+            source: "provider" as const,
+            status: "installed" as const,
+            pricingKnown: true,
+            pricing: { inputUsdPerMtok: 0, outputUsdPerMtok: 0 },
+          },
         })),
         ...other.map((id) => ({
           name: `${id} ${dim("(installed)")}`,
           value: id,
           priced: true,
+          snapshot: {
+            provider: "ollama" as const,
+            model: id,
+            source: "provider" as const,
+            status: "installed" as const,
+            pricingKnown: true,
+            pricing: { inputUsdPerMtok: 0, outputUsdPerMtok: 0 },
+          },
         })),
       ];
     } else {
@@ -286,12 +312,15 @@ async function runWizard(agentName: string, opts: CreateOpts = {}): Promise<Wiza
   );
 
   let model: string;
+  let selectedSnapshot: ModelSnapshotSelection;
   const selectedChoice = modelChoices.find((choice) => choice.value === modelSelection);
   if (modelSelection === CUSTOM_SENTINEL) {
     model = await withEscRestart((ctx) => input({ message: "Custom model ID:" }, ctx));
+    selectedSnapshot = customModelSelection(provider, model);
     await confirmUnpricedModel(model);
   } else {
     model = modelSelection;
+    selectedSnapshot = selectedChoice?.snapshot ?? customModelSelection(provider, model);
     if (selectedChoice && !selectedChoice.priced) {
       await confirmUnpricedModel(model);
     }
@@ -385,6 +414,12 @@ async function runWizard(agentName: string, opts: CreateOpts = {}): Promise<Wiza
   return {
     provider,
     model,
+    modelSnapshot: createModelSnapshot({
+      provider,
+      refreshRequested: opts.refreshModels === true,
+      warnings: modelChoiceResult.warnings,
+      selected: selectedSnapshot,
+    }),
     displayName,
     operatorName,
     purpose,
@@ -456,6 +491,7 @@ async function runCreateIntoDir(
   const {
     provider,
     model,
+    modelSnapshot,
     displayName,
     operatorName,
     purpose,
@@ -509,6 +545,7 @@ async function runCreateIntoDir(
       { project: true },
     );
     writeFileSync(join(tempDir, "agent.yaml"), config);
+    writeModelSnapshot(tempDir, modelSnapshot);
 
     writeFileSync(
       join(tempDir, "identity.md"),
@@ -752,6 +789,7 @@ function modelToCreateChoice(model: ModelRegistryEntry): CreateModelChoice {
     name: `${model.id} — ${details.join(", ")}`,
     value: model.id,
     priced: model.pricing !== undefined,
+    snapshot: selectionFromModelRegistryEntry(model),
   };
 }
 

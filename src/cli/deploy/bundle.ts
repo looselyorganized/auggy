@@ -1,8 +1,8 @@
 /**
  * Bundle staging — copies an agent dir into a fresh temp directory minus the
  * exclusions defined by ADR-021 (`.env`, `workspace/`, `data/`, `*.db*`, `node_modules/`,
- * `.git/`, `.DS_Store`, `*.tmp`) plus this PR's additions (`.worktrees/`,
- * `.claude/`).
+ * `.git/`, `.DS_Store`, `*.tmp`) plus local tooling metadata (`.worktrees/`,
+ * `.claude/`, `.auggy/`).
  *
  * The deploy command runs `railway up` from the staging dir so volume-bound
  * state (SQLite files) and secrets (`.env`) never enter the Railway image.
@@ -26,6 +26,7 @@ const EXCLUDED_NAMES = new Set([
   "data",
   ".worktrees",
   ".claude",
+  ".auggy",
 ]);
 
 function isExcluded(name: string): boolean {

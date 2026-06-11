@@ -314,6 +314,66 @@ describe("runDoctor", () => {
     expect(hasDoctorFailures(checks)).toBe(false);
   });
 
+  test("passes when model snapshot matches agent.yaml", async () => {
+    const dir = writeAgent("zip", { installDeps: true, installSkill: true });
+    mkdirSync(join(dir, ".auggy"), { recursive: true });
+    writeFileSync(
+      join(dir, ".auggy", "models.lock.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        createdAt: "2026-06-10T00:00:00.000Z",
+        selected: {
+          provider: "anthropic",
+          model: "claude-sonnet-4-6",
+          source: "static",
+          pricingKnown: true,
+          pricing: { inputUsdPerMtok: 3, outputUsdPerMtok: 15 },
+        },
+        registry: { provider: "anthropic", refreshRequested: false, warnings: [] },
+      }),
+    );
+
+    const checks = await runDoctor("zip", {
+      auggyDir,
+      isPortAvailable: async () => true,
+    });
+
+    const snapshot = checks.find((c) => c.name === "model snapshot");
+    expect(snapshot?.status).toBe("pass");
+    expect(snapshot?.message).toContain("static");
+    expect(formatDoctorChecks(checks)).toContain("PASS model snapshot: static, priced");
+  });
+
+  test("warns when model snapshot drifts from agent.yaml", async () => {
+    const dir = writeAgent("zip", { installDeps: true, installSkill: true });
+    mkdirSync(join(dir, ".auggy"), { recursive: true });
+    writeFileSync(
+      join(dir, ".auggy", "models.lock.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        createdAt: "2026-06-10T00:00:00.000Z",
+        selected: {
+          provider: "anthropic",
+          model: "claude-old",
+          source: "static",
+          pricingKnown: false,
+        },
+        registry: { provider: "anthropic", refreshRequested: false, warnings: [] },
+      }),
+    );
+
+    const checks = await runDoctor("zip", {
+      auggyDir,
+      isPortAvailable: async () => true,
+    });
+
+    const snapshot = checks.find((c) => c.name === "model snapshot");
+    expect(snapshot?.status).toBe("warn");
+    expect(snapshot?.message).toContain("does not match agent.yaml");
+    expect(snapshot?.fix).toContain(".auggy/models.lock.json");
+    expect(hasDoctorFailures(checks)).toBe(false);
+  });
+
   test("passes env checks for agent.yaml placeholders such as visitorAuth signing key", async () => {
     writeAgent("zip", { installDeps: true, installSkill: true, includeVisitorAuth: true });
 

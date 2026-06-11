@@ -18,6 +18,11 @@ import { augmentFolderForType } from "../scaffold-skills";
 import { parseEnvFile } from "../env-parse";
 import { diagnoseMcpConfig } from "../mcp-config";
 import { describeEnginePricing, hasUsdBudgetCaps } from "../model-registry";
+import {
+  MODEL_SNAPSHOT_RELATIVE_PATH,
+  formatModelSnapshotRef,
+  readModelSnapshot,
+} from "../model-snapshot";
 import { formatRouteManifestEntry, inspectCustomAugmentRoutes } from "../route-inspector";
 import type { AugmentConfig, ParsedConfig } from "../types";
 
@@ -94,12 +99,51 @@ export async function runDoctor(
   checks.push(...checkAgentDependencies(agentDir, config));
   checks.push(...checkRuntimeSource(agentDir));
   checks.push(checkModelPricing(config));
+  checks.push(...checkModelSnapshot(agentDir, config));
   checks.push(...(await checkWebPorts(config, opts.isPortAvailable ?? isPortAvailable)));
   checks.push(...checkBundledSkills(agentDir, config.augments));
   checks.push(...(await checkAugmentRoutes(agentDir, config.augments)));
   checks.push(...checkMcp(agentDir, config, opts.cloud ?? false));
 
   return checks;
+}
+
+function checkModelSnapshot(agentDir: string, config: ParsedConfig): DoctorCheck[] {
+  const result = readModelSnapshot(agentDir);
+  if (result.kind === "missing") return [];
+  if (result.kind === "invalid") {
+    return [
+      {
+        name: "model snapshot",
+        status: "warn",
+        message: `${MODEL_SNAPSHOT_RELATIVE_PATH}: ${result.error}`,
+        fix: `Delete ${MODEL_SNAPSHOT_RELATIVE_PATH}, or recreate the agent to regenerate it.`,
+      },
+    ];
+  }
+
+  const selected = result.snapshot.selected;
+  if (selected.provider !== config.engine.provider || selected.model !== config.engine.model) {
+    return [
+      {
+        name: "model snapshot",
+        status: "warn",
+        message: `${formatModelSnapshotRef(selected)} does not match agent.yaml ${config.engine.provider}/${config.engine.model}`,
+        fix: `Update or delete ${MODEL_SNAPSHOT_RELATIVE_PATH}; agent.yaml remains the source of truth.`,
+      },
+    ];
+  }
+
+  const created = result.snapshot.createdAt.slice(0, 10);
+  const source = selected.source === "provider" ? (selected.status ?? "provider") : selected.source;
+  const pricing = selected.pricingKnown ? "priced" : "unpriced";
+  return [
+    {
+      name: "model snapshot",
+      status: "pass",
+      message: `${source}, ${pricing}, captured ${created}`,
+    },
+  ];
 }
 
 function checkModelPricing(config: ParsedConfig): DoctorCheck {
@@ -510,6 +554,7 @@ function summarizeDoctorCheck(check: DoctorCheck): string {
     return `dependency: ${check.name.slice("dependency ".length)}`;
   }
   if (check.name === "model pricing") return `model pricing: ${check.message}`;
+  if (check.name === "model snapshot") return `model snapshot: ${check.message}`;
   if (check.name.startsWith("port "))
     return `port: ${check.name.slice("port ".length)} ${check.message}`;
   if (check.name.startsWith("skill ")) return `skill: ${check.name.slice("skill ".length)}`;

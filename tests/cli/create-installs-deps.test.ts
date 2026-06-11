@@ -129,13 +129,17 @@ describe("create model choices", () => {
       }),
     });
 
-    expect(result.choices).toEqual([
-      {
-        name: "claude-fable-5 — $2/$10 per Mtok, live",
-        value: "claude-fable-5",
-        priced: true,
+    expect(result.choices[0]).toMatchObject({
+      name: "claude-fable-5 — $2/$10 per Mtok, live",
+      value: "claude-fable-5",
+      priced: true,
+      snapshot: {
+        provider: "anthropic",
+        model: "claude-fable-5",
+        source: "provider",
+        pricingKnown: true,
       },
-    ]);
+    });
   });
 });
 
@@ -329,8 +333,22 @@ describe("runCreate scaffolding integration", () => {
     ) as {
       engine: { model: string };
     };
+    const snapshot = JSON.parse(
+      readFileSync(join(agentDirFor("demo-live-model"), ".auggy", "models.lock.json"), "utf-8"),
+    );
     expect(called).toBe(true);
     expect(config.engine.model).toBe("claude-fable-5");
+    expect(snapshot).toMatchObject({
+      selected: {
+        provider: "anthropic",
+        model: "claude-fable-5",
+        source: "provider",
+        pricingKnown: true,
+      },
+      registry: {
+        refreshRequested: true,
+      },
+    });
   });
 
   test("agent.yaml + identity.md + skills/ + data/workspace all scaffolded", async () => {
@@ -356,7 +374,23 @@ describe("runCreate scaffolding integration", () => {
     expect(existsSync(join(dir, ".env"))).toBe(true);
     expect(existsSync(join(dir, ".env.example"))).toBe(true);
     expect(existsSync(join(dir, ".gitignore"))).toBe(true);
+    expect(existsSync(join(dir, ".auggy", "models.lock.json"))).toBe(true);
     expect(existsSync(join(dir, "package.json"))).toBe(true);
+    const snapshot = JSON.parse(readFileSync(join(dir, ".auggy", "models.lock.json"), "utf-8"));
+    expect(snapshot).toMatchObject({
+      schemaVersion: 1,
+      selected: {
+        provider: "anthropic",
+        model: "claude-sonnet-4-6",
+        source: "static",
+        pricingKnown: true,
+      },
+      registry: {
+        provider: "anthropic",
+        refreshRequested: false,
+        warnings: [],
+      },
+    });
     const config = parseYaml(readFileSync(join(dir, "agent.yaml"), "utf-8")) as {
       displayName: string;
     };
