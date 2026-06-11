@@ -44,6 +44,7 @@ require_cmd npm
 require_cmd bun
 require_cmd curl
 require_cmd script
+require_cmd tar
 
 info "typecheck"
 (cd "$ROOT" && bunx tsc --noEmit)
@@ -52,6 +53,35 @@ info "pack auggy"
 PACK_NAME="$(cd "$ROOT" && npm_config_cache="$PACK_CACHE" npm pack --silent)"
 TARBALL="$ROOT/$PACK_NAME"
 [[ -f "$TARBALL" ]] || fail "npm pack did not create $TARBALL"
+
+info "verify package contents"
+PACK_LIST="$LOG_DIR/tarball-files.txt"
+tar -tf "$TARBALL" >"$PACK_LIST"
+
+require_pack_entry() {
+  grep -qx "package/$1" "$PACK_LIST" || fail "tarball missing package/$1"
+}
+
+reject_pack_pattern() {
+  if grep -Eq "$1" "$PACK_LIST"; then
+    fail "$2"
+  fi
+}
+
+require_pack_entry "src/cli/index.ts"
+require_pack_entry "src/cli/model-registry.ts"
+require_pack_entry "src/cli/model-snapshot.ts"
+require_pack_entry "admin/dist/index.html"
+require_pack_entry "README.md"
+require_pack_entry "CHANGELOG.md"
+require_pack_entry "LICENSE"
+grep -Eq '^package/admin/dist/assets/.+\.js$' "$PACK_LIST" \
+  || fail "tarball missing built console JavaScript"
+grep -Eq '^package/admin/dist/assets/.+\.css$' "$PACK_LIST" \
+  || fail "tarball missing built console CSS"
+reject_pack_pattern '\.map$' "tarball includes source maps"
+reject_pack_pattern '^package/(\.env|node_modules/|\.git/|\.auggy/|docs/|tests/)' \
+  "tarball includes local-only files"
 
 info "install packed CLI"
 npm_config_cache="$INSTALL_CACHE" npm install -g --prefix "$GLOBAL_PREFIX" "$TARBALL"

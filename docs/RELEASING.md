@@ -60,6 +60,16 @@ In a dedicated branch off `main` (name suggestion: `release/X.Y.Z`):
 
 This is the v1.0 release gate. Run it from a shell/profile that does not have an existing Auggy state directory. Do not skip the manual browser checks; this gate exists to catch first-run and packaging failures that unit tests miss.
 
+First run the automated release smoke:
+
+```bash
+bun run smoke:release
+```
+
+This packs the local CLI, verifies the tarball contents, installs it into an
+isolated prefix, scaffolds a fresh agent through a PTY, boots `/health`, and
+checks the MCP cloud-preflight failure path.
+
 ```bash
 mv ~/.auggy ~/.auggy.backup-$(date +%Y%m%d%H%M%S) 2>/dev/null || true
 npm i -g auggy
@@ -78,23 +88,11 @@ Manual checks:
 - [ ] Sending a message returns a model response
 - [ ] Missing-provider-key failure, if reproduced, names the exact `.env` path and key
 
-Package artifact checks:
+Package artifact checks are covered by `bun run smoke:release`:
 
-```bash
-(cd admin && bun run build)
-npm pack --dry-run
-npm pack
-tar -tf auggy-*.tgz | grep 'admin/dist/index.html'
-if tar -tf auggy-*.tgz | grep '\.map$'; then
-  echo "unexpected source map in package"
-  exit 1
-fi
-```
-
-- [ ] Tarball includes `admin/dist/index.html`
+- [ ] Tarball includes CLI source, `README.md`, `CHANGELOG.md`, `LICENSE`, and `admin/dist/index.html`
 - [ ] Tarball includes built console JS/CSS
-- [ ] Tarball does not include `admin/dist/*.map`
-- [ ] Package size is reasonable for CLI install
+- [ ] Tarball excludes source maps and local-only state (`.env`, `.git/`, `.auggy/`, `node_modules/`, `docs/`, `tests/`)
 
 Augment checks:
 
