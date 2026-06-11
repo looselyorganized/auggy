@@ -290,9 +290,14 @@ auggy deploy --yes
 | `auggy skill create <name>` | Create a skill folder |
 | `auggy skill add <name>` | Reinstall a bundled augment skill |
 | `auggy mcp init/list/show/add-json/remove/doctor` | Manage `.mcp.json` MCP servers |
+| `auggy models list [provider] --refresh` | Fetch and save the latest provider model list |
 | `auggy deploy` | Deploy the current agent to Railway |
 | `auggy logs` | Open Railway logs for a deployed agent |
 | `auggy start` / `stop` / `restart` | Manage a background local agent |
+
+`auggy create` starts from bundled, known-priced model choices. If you run
+`auggy models list anthropic --refresh`, Auggy saves that provider list and
+future creates can offer those saved models without another provider fetch.
 
 ## Requirements
 

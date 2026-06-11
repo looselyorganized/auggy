@@ -1,3 +1,6 @@
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
 import type { Pricing } from "../engines/_shared/cost";
 import * as anthropicPricing from "../engines/anthropic/pricing";
 import * as openaiPricing from "../engines/openai/pricing";
@@ -5,7 +8,9 @@ import * as openrouterPricing from "../engines/openrouter/pricing";
 import type { AugmentConfig, EngineConfig, Provider } from "./types";
 
 export type ModelRegistrySource = "static" | "provider";
-export type ModelRegistryStatus = "known" | "live" | "installed";
+export type ModelRegistryStatus = "known" | "live" | "cached" | "installed";
+
+export const MODEL_REGISTRY_CACHE_FILENAME = "model-registry-cache.json";
 
 export interface ModelRegistryEntry {
   provider: Provider;
@@ -31,6 +36,9 @@ export interface ListModelRegistryOptions {
   fetch?: FetchLike;
   env?: Record<string, string | undefined>;
   ollamaBaseURL?: string;
+  useCache?: boolean;
+  writeCache?: boolean;
+  cacheDir?: string;
 }
 
 export type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
@@ -39,6 +47,16 @@ export interface EnginePricingStatus {
   status: "known" | "override" | "free" | "unknown";
   message: string;
   pricing?: Pricing;
+}
+
+interface ModelRegistryCache {
+  schemaVersion: 1;
+  providers: Partial<Record<Provider, CachedProviderModels>>;
+}
+
+interface CachedProviderModels {
+  fetchedAt: string;
+  models: ModelRegistryEntry[];
 }
 
 export async function listModelRegistry(
@@ -53,11 +71,24 @@ export async function listModelRegistry(
   for (const provider of providers) {
     if (opts.refresh) {
       try {
-        models.push(...(await fetchProviderModels(provider, opts)));
+        const liveModels = await fetchProviderModels(provider, opts);
+        models.push(...liveModels);
+        if (opts.writeCache) writeProviderCache(provider, liveModels, opts);
         continue;
       } catch (err) {
+        const cached = opts.useCache ? readProviderCache(provider, opts) : [];
+        if (cached.length > 0) {
+          warnings.push(`${provider}: ${(err as Error).message}; using saved model cache`);
+          models.push(...cached);
+          continue;
+        }
         warnings.push(`${provider}: ${(err as Error).message}; using bundled fallback`);
       }
+    }
+    const cached = opts.useCache ? readProviderCache(provider, opts) : [];
+    if (cached.length > 0) {
+      models.push(...cached);
+      continue;
     }
     models.push(...listStaticModels(provider));
   }
@@ -66,6 +97,10 @@ export async function listModelRegistry(
     models: sortModelEntries(dedupeModels(models)),
     warnings,
   };
+}
+
+export function modelRegistryCachePath(opts: { cacheDir?: string } = {}): string {
+  return join(opts.cacheDir ?? join(homedir(), ".auggy"), MODEL_REGISTRY_CACHE_FILENAME);
 }
 
 export function listStaticModels(provider?: Provider): ModelRegistryEntry[] {
@@ -405,6 +440,121 @@ function recordField(value: unknown, key: string): Record<string, unknown> | nul
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   return value as Record<string, unknown>;
+}
+
+function readProviderCache(
+  provider: Provider,
+  opts: ListModelRegistryOptions,
+): ModelRegistryEntry[] {
+  try {
+    const path = modelRegistryCachePath(opts);
+    if (!existsSync(path)) return [];
+    const value = JSON.parse(readFileSync(path, "utf-8"));
+    const cache = parseModelRegistryCache(value);
+    const cached = cache.providers[provider];
+    if (!cached || cached.models.length === 0) return [];
+    return cached.models.map((model) => ({
+      ...model,
+      source: "provider" as const,
+      status: model.status === "installed" ? ("installed" as const) : ("cached" as const),
+      fetchedAt: model.fetchedAt ?? cached.fetchedAt,
+    }));
+  } catch {
+    return [];
+  }
+}
+
+function writeProviderCache(
+  provider: Provider,
+  models: ModelRegistryEntry[],
+  opts: ListModelRegistryOptions,
+): void {
+  if (models.length === 0) return;
+  const path = modelRegistryCachePath(opts);
+  let cache: ModelRegistryCache = { schemaVersion: 1, providers: {} };
+  try {
+    if (existsSync(path)) {
+      cache = parseModelRegistryCache(JSON.parse(readFileSync(path, "utf-8")));
+    }
+  } catch {
+    cache = { schemaVersion: 1, providers: {} };
+  }
+
+  const fetchedAt = new Date().toISOString();
+  cache.providers[provider] = {
+    fetchedAt,
+    models: models
+      .filter((model) => model.provider === provider)
+      .map((model) => ({ ...model, fetchedAt: model.fetchedAt ?? fetchedAt })),
+  };
+
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, `${JSON.stringify(cache, null, 2)}\n`);
+}
+
+function parseModelRegistryCache(value: unknown): ModelRegistryCache {
+  const raw = asRecord(value);
+  if (raw?.schemaVersion !== 1) return { schemaVersion: 1, providers: {} };
+  const providersRaw = asRecord(raw.providers);
+  if (!providersRaw) return { schemaVersion: 1, providers: {} };
+
+  const providers: Partial<Record<Provider, CachedProviderModels>> = {};
+  for (const provider of ["anthropic", "openai", "openrouter", "ollama"] as const) {
+    const providerRaw = asRecord(providersRaw[provider]);
+    if (!providerRaw) continue;
+    const fetchedAt =
+      typeof providerRaw.fetchedAt === "string" && providerRaw.fetchedAt
+        ? providerRaw.fetchedAt
+        : new Date(0).toISOString();
+    const models = Array.isArray(providerRaw.models)
+      ? providerRaw.models.flatMap((model) => parseCachedModel(provider, model))
+      : [];
+    if (models.length > 0) providers[provider] = { fetchedAt, models };
+  }
+
+  return { schemaVersion: 1, providers };
+}
+
+function parseCachedModel(provider: Provider, value: unknown): ModelRegistryEntry[] {
+  const raw = asRecord(value);
+  if (!raw) return [];
+  const id = typeof raw.id === "string" && raw.id.trim() ? raw.id : undefined;
+  if (!id) return [];
+  const pricing = parseCachedPricing(raw.pricing);
+  return [
+    {
+      provider,
+      id,
+      displayName:
+        typeof raw.displayName === "string" && raw.displayName.trim() ? raw.displayName : undefined,
+      contextWindow: typeof raw.contextWindow === "number" ? raw.contextWindow : undefined,
+      maxOutputTokens: typeof raw.maxOutputTokens === "number" ? raw.maxOutputTokens : undefined,
+      pricing,
+      tools: typeof raw.tools === "boolean" ? raw.tools : undefined,
+      source: "provider",
+      status: raw.status === "installed" ? "installed" : "cached",
+      fetchedAt: typeof raw.fetchedAt === "string" ? raw.fetchedAt : undefined,
+    },
+  ];
+}
+
+function parseCachedPricing(value: unknown): Pricing | undefined {
+  const raw = asRecord(value);
+  if (!raw) return undefined;
+  const input = raw.inputUsdPerMtok;
+  const output = raw.outputUsdPerMtok;
+  if (typeof input !== "number" || typeof output !== "number") return undefined;
+  if (!Number.isFinite(input) || !Number.isFinite(output) || input < 0 || output < 0) {
+    return undefined;
+  }
+  const pricing: Pricing = { inputUsdPerMtok: input, outputUsdPerMtok: output };
+  if (typeof raw.cacheWriteUsdPerMtok === "number" && raw.cacheWriteUsdPerMtok >= 0) {
+    pricing.cacheWriteUsdPerMtok = raw.cacheWriteUsdPerMtok;
+  }
+  if (typeof raw.cacheReadUsdPerMtok === "number" && raw.cacheReadUsdPerMtok >= 0) {
+    pricing.cacheReadUsdPerMtok = raw.cacheReadUsdPerMtok;
+  }
+  return pricing;
 }
 
 function arrayField(value: unknown, key: string): unknown[] {

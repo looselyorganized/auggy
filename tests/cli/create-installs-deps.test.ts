@@ -141,6 +141,43 @@ describe("create model choices", () => {
       },
     });
   });
+
+  test("uses saved provider model cache when enabled", async () => {
+    const result = await buildModelChoicesForCreate("anthropic", {
+      useCache: true,
+      listRegistry: async (opts) => {
+        expect(opts).toBeDefined();
+        if (!opts) throw new Error("missing model registry options");
+        expect(opts.useCache).toBe(true);
+        expect(opts.refresh).toBeUndefined();
+        return {
+          warnings: [],
+          models: [
+            {
+              provider: "anthropic",
+              id: "claude-fable-5",
+              displayName: "Claude Fable 5",
+              source: "provider",
+              status: "cached",
+              tools: true,
+            },
+          ],
+        };
+      },
+    });
+
+    expect(result.choices[0]).toMatchObject({
+      name: "claude-fable-5 — pricing unknown, saved",
+      value: "claude-fable-5",
+      priced: false,
+      snapshot: {
+        provider: "anthropic",
+        model: "claude-fable-5",
+        source: "provider",
+        pricingKnown: false,
+      },
+    });
+  });
 });
 
 describe("runCreate invokes bun install in agent dir", () => {

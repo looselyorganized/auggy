@@ -46,6 +46,11 @@ future model recommendations.
 The file contains no secrets. It is intentionally not needed at runtime and is
 excluded from Railway deploy bundles.
 
+Separately, `auggy models list <provider> --refresh` stores a machine-local
+provider cache at `~/.auggy/model-registry-cache.json`. That cache helps future
+`auggy create` runs offer recently fetched provider models without another
+network call. It is not copied into agent projects and is not deployed.
+
 ## Runtime source
 
 Agent projects install Auggy as a package dependency. The runtime source is

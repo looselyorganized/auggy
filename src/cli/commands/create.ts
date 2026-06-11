@@ -111,6 +111,10 @@ export interface CreateOpts {
   cwd?: string;
   /** Fetch live provider model catalogs before model selection. */
   refreshModels?: boolean;
+  /** Use the saved provider model cache from previous refreshes. Production CLI enables this. */
+  useModelCache?: boolean;
+  /** Test seam: override the provider model cache directory. */
+  modelCacheDir?: string;
   /** Test seam: inject model registry lookup. */
   modelRegistry?: typeof listModelRegistry;
 }
@@ -233,6 +237,8 @@ async function runWizard(agentName: string, opts: CreateOpts = {}): Promise<Wiza
   const isOllamaLocal = provider === "ollama" && !ollamaBaseURL;
   const modelChoiceResult = await buildModelChoicesForCreate(provider, {
     refresh: opts.refreshModels,
+    useCache: opts.useModelCache === true,
+    cacheDir: opts.modelCacheDir,
     listRegistry: opts.modelRegistry,
   });
   let modelChoices = modelChoiceResult.choices;
@@ -745,6 +751,8 @@ export async function buildModelChoicesForCreate(
   provider: Provider,
   opts: {
     refresh?: boolean;
+    useCache?: boolean;
+    cacheDir?: string;
     listRegistry?: typeof listModelRegistry;
   } = {},
 ): Promise<CreateModelChoiceResult> {
@@ -752,7 +760,13 @@ export async function buildModelChoicesForCreate(
   let result: ModelRegistryResult;
   if (opts.refresh) {
     try {
-      result = await listRegistry({ provider, refresh: true });
+      result = await listRegistry({
+        provider,
+        refresh: true,
+        useCache: opts.useCache,
+        writeCache: opts.useCache,
+        cacheDir: opts.cacheDir,
+      });
     } catch (err) {
       result = {
         models: listStaticModels(provider),
@@ -760,7 +774,11 @@ export async function buildModelChoicesForCreate(
       };
     }
   } else {
-    result = { models: listStaticModels(provider), warnings: [] };
+    result = await listRegistry({
+      provider,
+      useCache: opts.useCache,
+      cacheDir: opts.cacheDir,
+    });
   }
 
   let models = result.models.filter((model) => model.provider === provider);
@@ -784,7 +802,7 @@ export async function buildModelChoicesForCreate(
 function modelToCreateChoice(model: ModelRegistryEntry): CreateModelChoice {
   const details = [model.pricing ? formatPricing(model.pricing) : "pricing unknown"];
   if (model.contextWindow) details.push(`${formatModelTokens(model.contextWindow)} context`);
-  if (model.source === "provider") details.push("live");
+  if (model.source === "provider") details.push(model.status === "cached" ? "saved" : "live");
   return {
     name: `${model.id} — ${details.join(", ")}`,
     value: model.id,
