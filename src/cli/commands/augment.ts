@@ -221,13 +221,13 @@ export function listAugments(opts: ListAugmentsOptions = {}): ListedAugment[] {
     cwd: opts.cwd,
   });
   const doc = readAgentYaml(configPath);
-  const augments = readAugments(doc);
+  const augments = readAugments(doc, dirname(configPath));
   return augments.map((augment) => ({
-    label: labelForAugment(stringField(augment.type), stringField(augment.name)),
-    name: stringField(augment.name) ?? stringField(augment.type) ?? "(unnamed)",
-    type: stringField(augment.type) ?? "(unknown)",
-    category: stringField(augment.type) === "custom" ? "custom" : "built-in",
-    source: stringField(augment.source) ?? undefined,
+    label: labelForAugment(augment.type, augment.name),
+    name: augment.name,
+    type: augment.type,
+    category: augment.type === "custom" ? "custom" : "built-in",
+    source: augment.source,
   }));
 }
 
@@ -332,24 +332,27 @@ export function removeAugment(opts: RemoveAugmentOptions): RemoveAugmentResult {
   });
   const agentDir = dirname(configPath);
   const doc = readAgentYaml(configPath);
-  const augments = readAugments(doc);
+  const augments = readAugments(doc, agentDir);
   const index = findAugmentIndex(augments, opts.augment);
   if (index === -1) {
     throw new Error(`Augment "${opts.augment}" is not installed in ${configPath}.`);
   }
 
-  const [removed] = augments.splice(index, 1);
-  const removedType = stringField(removed?.type) ?? "custom";
-  const removedName = stringField(removed?.name) ?? removedType;
+  const removed = augments[index]!;
+  const removedType = removed.type;
+  const removedName = removed.name;
   const catalogEntry = AUGMENT_CATALOG.find((entry) => entry.type === removedType);
   if (catalogEntry?.required) {
     throw new Error(`Augment "${removedName}" (${removedType}) is required and cannot be removed.`);
   }
 
-  doc.augments = augments;
+  const rawAugments = Array.isArray(doc.augments) ? [...doc.augments] : [];
+  rawAugments.splice(removed.index, 1);
+  doc.augments = rawAugments;
   writeFileSync(configPath, `# Agent configuration\n\n${stringifyYaml(doc)}`);
 
   const skillRemoved = removeSkillForAugment(agentDir, removedName, removedType);
+  removeAugmentFolder(agentDir, removedName, removedType);
   return { configPath, name: removedName, type: removedType, skillRemoved };
 }
 
@@ -361,11 +364,56 @@ function readAgentYaml(configPath: string): Record<string, unknown> {
   return raw as Record<string, unknown>;
 }
 
-function readAugments(doc: Record<string, unknown>): Record<string, unknown>[] {
-  return Array.isArray(doc.augments) ? (doc.augments as Record<string, unknown>[]) : [];
+interface AugmentRecord {
+  index: number;
+  name: string;
+  type: string;
+  source?: string;
 }
 
-function findAugmentIndex(augments: Record<string, unknown>[], specifier: string): number {
+function readAugments(doc: Record<string, unknown>, agentDir: string): AugmentRecord[] {
+  if (!Array.isArray(doc.augments)) return [];
+
+  return doc.augments.map((entry, index) => {
+    if (typeof entry === "string") {
+      const metadata = readAugmentMetadata(agentDir, entry);
+      const type = stringField(metadata.type) ?? "(unknown)";
+      return {
+        index,
+        name: entry,
+        type,
+        source: stringField(metadata.source) ?? undefined,
+      };
+    }
+
+    if (entry && typeof entry === "object" && !Array.isArray(entry)) {
+      const record = entry as Record<string, unknown>;
+      const type = stringField(record.type) ?? "(unknown)";
+      return {
+        index,
+        name: stringField(record.name) ?? type,
+        type,
+        source: stringField(record.source) ?? undefined,
+      };
+    }
+
+    return { index, name: "(invalid)", type: "(invalid)" };
+  });
+}
+
+function readAugmentMetadata(agentDir: string, id: string): Record<string, unknown> {
+  const metadataPath = join(agentDir, "augments", id, "augment.yaml");
+  if (!existsSync(metadataPath)) {
+    throw new Error(`Augment "${id}" is listed in agent.yaml but ${metadataPath} is missing.`);
+  }
+  const parsed = parseYaml(readFileSync(metadataPath, "utf-8"));
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(`${metadataPath}: not a valid YAML object.`);
+  }
+  return parsed as Record<string, unknown>;
+}
+
+function findAugmentIndex(augments: AugmentRecord[], specifier: string): number {
   const normalized = specifier.trim();
   const direct = augments.findIndex(
     (augment) => augment.name === normalized || augment.type === normalized,
@@ -392,6 +440,17 @@ function removeSkillForAugment(agentDir: string, name: string, type: string): st
     if (!existsSync(skillDir)) continue;
     rmSync(skillDir, { recursive: true, force: true });
     return join("skills", candidate);
+  }
+  return null;
+}
+
+function removeAugmentFolder(agentDir: string, name: string, type: string): string | null {
+  const candidates = [...new Set([name, augmentFolderForType(type)].filter(Boolean) as string[])];
+  for (const candidate of candidates) {
+    const augmentDir = join(agentDir, "augments", candidate);
+    if (!existsSync(augmentDir)) continue;
+    rmSync(augmentDir, { recursive: true, force: true });
+    return join("augments", candidate);
   }
   return null;
 }
@@ -428,23 +487,30 @@ export function installCustomAugment(
   }
 
   const doc = raw as Record<string, unknown>;
-  const augments = Array.isArray(doc.augments) ? (doc.augments as Record<string, unknown>[]) : [];
+  if (!Array.isArray(doc.augments)) doc.augments = [];
+  const augments = readAugments(doc, agentDir);
   if (augments.some((a) => a.name === augmentName)) {
     throw new Error(`Augment "${augmentName}" is already declared in ${configPath}.`);
   }
 
-  const source = normalizeRelativePath(relative(agentDir, sourceFile));
-  augments.push({
-    name: augmentName,
-    type: "custom",
-    source,
-    options: {},
-  });
-  doc.augments = augments;
+  const augmentDir = join(agentDir, "augments", augmentName);
+  mkdirSync(augmentDir, { recursive: true });
+  const metadataSource = normalizeRelativePath(relative(augmentDir, sourceFile));
+  const agentSource = normalizeRelativePath(relative(agentDir, sourceFile));
+  writeFileSync(
+    join(augmentDir, "augment.yaml"),
+    stringifyYaml({
+      type: "custom",
+      source: metadataSource,
+      config: {},
+    }),
+  );
+
+  (doc.augments as unknown[]).push(augmentName);
   writeFileSync(configPath, `# Agent configuration\n\n${stringifyYaml(doc)}`);
 
   const skillCopied = copyCustomSkillIfPresent(sourceFile, agentDir, augmentName);
-  return { configPath, agentDir, source, name: augmentName, skillCopied };
+  return { configPath, agentDir, source: agentSource, name: augmentName, skillCopied };
 }
 
 function resolveSourceFile(sourceEntry: string): string {
@@ -468,10 +534,10 @@ function copyCustomSkillIfPresent(
   augmentName: string,
 ): boolean {
   const sourceDir = dirname(sourceFile);
-  const skillPath = join(sourceDir, "SKILL.md");
-  if (!existsSync(skillPath)) return false;
-  const destDir = join(agentDir, "skills", augmentName);
-  mkdirSync(destDir, { recursive: true });
-  cpSync(skillPath, join(destDir, "SKILL.md"));
+  const skillFile = join(sourceDir, "SKILL.md");
+  if (!existsSync(skillFile)) return false;
+  const dest = join(agentDir, "skills", augmentName);
+  mkdirSync(dest, { recursive: true });
+  cpSync(skillFile, join(dest, "SKILL.md"));
   return true;
 }

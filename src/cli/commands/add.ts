@@ -12,7 +12,7 @@
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { checkbox, confirm } from "@inquirer/prompts";
 import {
@@ -26,7 +26,11 @@ import { readAgentName, resolveConfigPath } from "../resolve-config";
 import { mergePackageDeps } from "../scaffold-package-json";
 import { runBunInstall, type BunInstallSpawnFactory } from "../bun-install";
 import { parseEnvFile, serializeEnv, type EnvLine } from "../env-parse";
-import { writeBuiltinAugmentMetadata, writeCustomAugmentsReadme } from "../augment-metadata";
+import {
+  augmentIdForCatalogEntry,
+  writeBuiltinAugmentMetadata,
+  writeCustomAugmentsReadme,
+} from "../augment-metadata";
 import { writeKnowledgeScaffold } from "../scaffold-knowledge";
 import { displayPath } from "../display-path";
 import { ensureMcpConfig } from "../mcp-config";
@@ -64,9 +68,10 @@ export async function runAdd(target: string | undefined, opts: AddOpts): Promise
 
   // Parse current config.
   const raw = parseYaml(readFileSync(configPath, "utf-8")) as Record<string, unknown>;
-  const currentAugments = (raw.augments ?? []) as Array<{ type: string; name?: string }>;
+  if (!Array.isArray(raw.augments)) raw.augments = [];
+  const currentAugments = readInstalledAugments(raw, agentDir);
 
-  console.log(`Currently installed: ${currentAugments.map((a) => a.name ?? a.type).join(", ")}`);
+  console.log(`Currently installed: ${currentAugments.map((a) => a.name).join(", ")}`);
 
   // Find what's available to add.
   const available = getAvailableAugments(currentAugments);
@@ -128,12 +133,8 @@ export async function runAdd(target: string | undefined, opts: AddOpts): Promise
   // error (e.g. invalid JSON in the existing package.json) can abort before
   // any persisted mutation.
   for (const entry of selected) {
-    currentAugments.push({
-      type: entry.type,
-      ...({ options: entry.defaultOptions } as Record<string, unknown>),
-    } as { type: string; name?: string });
+    (raw.augments as unknown[]).push(augmentIdForCatalogEntry(entry));
   }
-  raw.augments = currentAugments;
   const newYaml = `# Agent configuration\n\n${stringifyYaml(raw)}`;
 
   let pkgUpdate: { text: string; added: string[] } | null = null;
@@ -177,7 +178,7 @@ export async function runAdd(target: string | undefined, opts: AddOpts): Promise
   let telegramTransportAdded = false;
   for (const entry of selected) {
     const skillCopied = copyBundledSkill(entry.type, agentDir);
-    writeBuiltinAugmentMetadata(agentDir, entry);
+    writeBuiltinAugmentMetadata(agentDir, entry, optionsForAddedAugment(entry, name));
     if (entry.type === "knowledge") {
       writeKnowledgeScaffold(agentDir, knowledgeValues(raw, agentDir));
       knowledgeAdded = true;
@@ -219,7 +220,7 @@ export async function runAdd(target: string | undefined, opts: AddOpts): Promise
     console.log("Use notify:");
     console.log("  - Default destination: creator -> ./notifications.jsonl");
     console.log("  - Ask the agent to notify creator when something needs attention");
-    console.log("  - For real delivery, edit notify.destinations in agent.yaml");
+    console.log("  - For real delivery, edit augments/notify/augment.yaml");
     console.log("  - Supported transports: webhook, Telegram, Agent Mail, log-to-file");
   }
 
@@ -239,9 +240,7 @@ export async function runAdd(target: string | undefined, opts: AddOpts): Promise
     console.log("  - Set TELEGRAM_CREATOR_USER_IDS in .env (comma-separated numeric user IDs)");
     console.log("  - Default inbound mode: polling");
     console.log("  - Find your Telegram user ID with @userinfobot");
-    console.log(
-      "  - For production webhooks, switch telegramTransport.inbound to webhook in agent.yaml",
-    );
+    console.log("  - For production webhooks, edit augments/telegramTransport/augment.yaml");
   }
 
   // === Run bun install (last; failure leaves intentional partial state) ===
@@ -326,6 +325,90 @@ function previewCaveat(entry: CatalogEntry): string {
     default:
       return "production DX is still being hardened";
   }
+}
+
+interface InstalledAugment {
+  name: string;
+  type: string;
+}
+
+function readInstalledAugments(raw: Record<string, unknown>, agentDir: string): InstalledAugment[] {
+  const augments = raw.augments;
+  if (!Array.isArray(augments)) return [];
+
+  return augments.map((entry) => {
+    if (typeof entry === "string") {
+      const metadata = readAugmentMetadata(agentDir, entry);
+      return {
+        name: entry,
+        type: stringField(metadata.type) ?? entry,
+      };
+    }
+
+    if (entry && typeof entry === "object" && !Array.isArray(entry)) {
+      const record = entry as Record<string, unknown>;
+      const type = stringField(record.type) ?? "custom";
+      return {
+        name: stringField(record.name) ?? type,
+        type,
+      };
+    }
+
+    return { name: "(invalid)", type: "(invalid)" };
+  });
+}
+
+function readAugmentMetadata(agentDir: string, id: string): Record<string, unknown> {
+  const metadataPath = join(agentDir, "augments", id, "augment.yaml");
+  if (!existsSync(metadataPath)) {
+    throw new Error(`Augment "${id}" is listed in agent.yaml but ${metadataPath} is missing.`);
+  }
+  const parsed = parseYaml(readFileSync(metadataPath, "utf-8"));
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(`${metadataPath}: not a valid YAML object.`);
+  }
+  return parsed as Record<string, unknown>;
+}
+
+function optionsForAddedAugment(
+  entry: CatalogEntry,
+  agentName: string,
+): Record<string, unknown> | undefined {
+  const options =
+    entry.type === "layeredMemory"
+      ? { ...entry.defaultOptions, namespace: agentName }
+      : entry.defaultOptions;
+  if (!options || Object.keys(options).length === 0) return undefined;
+  return rewriteMutablePaths(options) as Record<string, unknown>;
+}
+
+function rewriteMutablePaths(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map((item) => rewriteMutablePaths(item));
+  if (!value || typeof value !== "object") return value;
+
+  const out: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(value)) {
+    if (key === "path" && child === "./workspace") {
+      out[key] = "./data/workspace";
+      continue;
+    }
+    if (typeof child === "string" && isMutableArtifactPath(key, child)) {
+      out[key] = `./data/${basename(child)}`;
+      continue;
+    }
+    out[key] = rewriteMutablePaths(child);
+  }
+  return out;
+}
+
+function isMutableArtifactPath(key: string, value: string): boolean {
+  if (!value.startsWith("./")) return false;
+  if (!/(Path|path)$/.test(key)) return false;
+  return /\.(db|sqlite|jsonl)$/.test(value);
+}
+
+function stringField(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
 function knowledgeValues(raw: Record<string, unknown>, agentDir: string) {
@@ -437,7 +520,7 @@ function generateEnvValueForAdd(
         ? rawConfig.name.trim()
         : nameForEnv(agentDir);
     case "AUGGY_PUBLIC_URL":
-      return `http://localhost:${findWebTransportPort(rawConfig) ?? 8080}`;
+      return `http://localhost:${findWebTransportPort(rawConfig, agentDir) ?? 8080}`;
     case "AUGGY_WEB_TOKEN":
       return randomBytes(32).toString("hex");
     case "VISITOR_SIGNING_KEY":
@@ -447,10 +530,19 @@ function generateEnvValueForAdd(
   }
 }
 
-function findWebTransportPort(rawConfig: Record<string, unknown>): number | null {
+function findWebTransportPort(rawConfig: Record<string, unknown>, agentDir: string): number | null {
   const augments = rawConfig.augments;
   if (!Array.isArray(augments)) return null;
   for (const aug of augments) {
+    if (typeof aug === "string") {
+      if (aug !== "webTransport") continue;
+      const metadata = readAugmentMetadata(agentDir, aug);
+      const config = metadata.config;
+      if (!config || typeof config !== "object" || Array.isArray(config)) continue;
+      const port = (config as Record<string, unknown>).port;
+      if (typeof port === "number" && Number.isInteger(port) && port > 0) return port;
+      continue;
+    }
     if (!aug || typeof aug !== "object") continue;
     const record = aug as Record<string, unknown>;
     if (record.type !== "webTransport") continue;

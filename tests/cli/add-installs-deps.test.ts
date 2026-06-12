@@ -2,6 +2,7 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { parse as parseYaml } from "yaml";
 import { mockInquirerPrompts, type Answers } from "../fixtures/inquirer-mock";
 import { createStubBunInstallSpawn, type SpawnCapture } from "../fixtures/bun-install-stub";
 
@@ -50,6 +51,20 @@ function setupAgent(name: string, augments: Array<{ type: string; name: string }
   return dir;
 }
 
+function readAgentAugments(dir: string): string[] {
+  const parsed = parseYaml(readFileSync(join(dir, "agent.yaml"), "utf-8")) as {
+    augments: string[];
+  };
+  return parsed.augments;
+}
+
+function readAugmentMetadata(dir: string, id: string): Record<string, unknown> {
+  return parseYaml(readFileSync(join(dir, "augments", id, "augment.yaml"), "utf-8")) as Record<
+    string,
+    unknown
+  >;
+}
+
 beforeEach(async () => {
   auggyDir = mkdtempSync(join(tmpdir(), "add-test-auggy-"));
   agentParent = mkdtempSync(join(tmpdir(), "add-test-agents-"));
@@ -79,9 +94,10 @@ describe("runAdd mutates per-agent package.json", () => {
     // Pre-existing deps untouched.
     expect(pkg.dependencies.auggy).toBe("^0.3.1");
     expect(pkg.dependencies["@auggy/anthropic"]).toBe("^0.3.1");
-    const metadata = readFileSync(join(dir, "augments", "link", "augment.yaml"), "utf-8");
-    expect(metadata).toContain("kind: builtin");
-    expect(metadata).not.toContain("configType:");
+    const metadata = readAugmentMetadata(dir, "link");
+    expect(metadata.type).toBe("link");
+    expect(JSON.stringify(metadata.config)).toContain("./data/link.db");
+    expect(metadata.kind).toBeUndefined();
   });
 
   test("invokes bun install in agent dir when packageDeps are added", async () => {
@@ -128,9 +144,8 @@ describe("runAdd no-op cases", () => {
       bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
     });
 
-    const yaml = readFileSync(join(dir, "agent.yaml"), "utf-8");
-    expect(yaml).toContain("type: webFetch");
-    expect(yaml).not.toContain("name: webFetch");
+    expect(readAgentAugments(dir)).toContain("webFetch");
+    expect(readAugmentMetadata(dir, "webFetch").type).toBe("webFetch");
     expect(existsSync(join(dir, "skills", "webFetch", "SKILL.md"))).toBe(true);
   });
 
@@ -143,9 +158,8 @@ describe("runAdd no-op cases", () => {
       bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
     });
 
-    const yaml = readFileSync(join(dir, "agent.yaml"), "utf-8");
-    expect(yaml).toContain("type: webFetch");
-    expect(yaml).not.toContain("name: webFetch");
+    expect(readAgentAugments(dir)).toContain("webFetch");
+    expect(readAugmentMetadata(dir, "webFetch").type).toBe("webFetch");
     expect(existsSync(join(dir, "skills", "webFetch", "SKILL.md"))).toBe(true);
   });
 
@@ -168,9 +182,11 @@ describe("runAdd no-op cases", () => {
       console.log = originalLog;
     }
 
-    const yaml = readFileSync(join(dir, "agent.yaml"), "utf-8");
-    expect(yaml).toContain("type: knowledge");
-    expect(yaml).toContain("root: ./knowledge");
+    expect(readAgentAugments(dir)).toContain("knowledge");
+    expect(readAugmentMetadata(dir, "knowledge")).toMatchObject({
+      type: "knowledge",
+      config: { root: "./knowledge" },
+    });
     expect(existsSync(join(dir, "knowledge", "sources.json"))).toBe(true);
     expect(existsSync(join(dir, "knowledge", "local", "manifest"))).toBe(true);
     expect(existsSync(join(dir, "knowledge", "local", "mission.md"))).toBe(true);
@@ -227,9 +243,8 @@ describe("runAdd no-op cases", () => {
       bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
     });
 
-    const yaml = readFileSync(join(dir, "agent.yaml"), "utf-8");
-    expect(yaml).toContain("type: mcp");
-    expect(yaml).not.toContain("name: mcp");
+    expect(readAgentAugments(dir)).toContain("mcp");
+    expect(readAugmentMetadata(dir, "mcp").type).toBe("mcp");
     expect(existsSync(join(dir, ".mcp.json"))).toBe(true);
     expect(JSON.parse(readFileSync(join(dir, ".mcp.json"), "utf-8"))).toEqual({
       mcpServers: {},
@@ -248,8 +263,7 @@ describe("runAdd no-op cases", () => {
       bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
     });
 
-    const yaml = readFileSync(join(dir, "agent.yaml"), "utf-8");
-    expect(yaml).toContain("type: bash");
+    expect(readAgentAugments(dir)).toContain("bash");
   });
 
   test("non-interactive canonical augment argument works for layeredMemory", async () => {
@@ -263,8 +277,11 @@ describe("runAdd no-op cases", () => {
       bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
     });
 
-    const yaml = readFileSync(join(dir, "agent.yaml"), "utf-8");
-    expect(yaml).toContain("type: layeredMemory");
+    expect(readAgentAugments(dir)).toContain("layeredMemory");
+    expect(readAugmentMetadata(dir, "layeredMemory")).toMatchObject({
+      type: "layeredMemory",
+      config: expect.objectContaining({ namespace: "with-memory" }),
+    });
   });
 
   test("preview augment add declines without --yes when operator does not confirm", async () => {
@@ -302,15 +319,15 @@ describe("runAdd no-op cases", () => {
       console.log = originalLog;
     }
 
-    const yaml = readFileSync(join(dir, "agent.yaml"), "utf-8");
-    expect(yaml).toContain("type: notify");
+    expect(readAgentAugments(dir)).toContain("notify");
+    expect(readAugmentMetadata(dir, "notify").type).toBe("notify");
     expect(existsSync(join(dir, "skills", "notify", "SKILL.md"))).toBe(true);
     const output = logs.join("\n");
     expect(output).toContain("Use notify:");
     expect(output).toContain("skill: ");
     expect(output).toContain("skills/notify/SKILL.md");
     expect(output).toContain("Default destination: creator -> ./notifications.jsonl");
-    expect(output).toContain("For real delivery, edit notify.destinations in agent.yaml");
+    expect(output).toContain("For real delivery, edit augments/notify/augment.yaml");
   });
 
   test("adding telegramTransport explains required Telegram setup", async () => {
@@ -332,12 +349,12 @@ describe("runAdd no-op cases", () => {
       console.log = originalLog;
     }
 
-    const yaml = readFileSync(join(dir, "agent.yaml"), "utf-8");
-    expect(yaml).toContain("type: telegramTransport");
-    expect(yaml).toContain("botToken: ${TELEGRAM_BOT_TOKEN}");
-    expect(yaml).toContain("mode: polling");
-    expect(yaml).toContain("creatorUserIds");
-    expect(yaml).toContain("creatorUserIdsEnv: TELEGRAM_CREATOR_USER_IDS");
+    expect(readAgentAugments(dir)).toContain("telegramTransport");
+    const telegramMeta = JSON.stringify(readAugmentMetadata(dir, "telegramTransport"));
+    expect(telegramMeta).toContain("${TELEGRAM_BOT_TOKEN}");
+    expect(telegramMeta).toContain("polling");
+    expect(telegramMeta).toContain("creatorUserIds");
+    expect(telegramMeta).toContain("TELEGRAM_CREATOR_USER_IDS");
 
     const env = readFileSync(join(dir, ".env"), "utf-8");
     expect(env).toContain("TELEGRAM_BOT_TOKEN=");
@@ -350,7 +367,7 @@ describe("runAdd no-op cases", () => {
     expect(output).toContain("Set TELEGRAM_CREATOR_USER_IDS in .env");
     expect(output).toContain("Default inbound mode: polling");
     expect(output).toContain("@userinfobot");
-    expect(output).toContain("telegramTransport.inbound to webhook");
+    expect(output).toContain("augments/telegramTransport/augment.yaml");
     expect(output).toContain("Add these to your .env:");
     expect(output).toContain("TELEGRAM_BOT_TOKEN=");
     expect(output).toContain("TELEGRAM_CREATOR_USER_IDS=");
@@ -367,9 +384,10 @@ describe("runAdd no-op cases", () => {
       bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
     });
 
-    const yaml = readFileSync(join(dir, "agent.yaml"), "utf-8");
-    expect(yaml).toContain("type: visitorAuth");
-    expect(yaml).toContain("signingKey: ${VISITOR_SIGNING_KEY}");
+    expect(readAgentAugments(dir)).toContain("visitorAuth");
+    expect(JSON.stringify(readAugmentMetadata(dir, "visitorAuth"))).toContain(
+      "${VISITOR_SIGNING_KEY}",
+    );
 
     const env = readFileSync(join(dir, ".env"), "utf-8");
     const signingKey = env.match(/^VISITOR_SIGNING_KEY=([a-f0-9]{64})$/m)?.[1];
@@ -439,8 +457,7 @@ describe("runAdd no-op cases", () => {
     expect(bunInstallCalls).toHaveLength(0);
 
     // agent.yaml still mutated.
-    const yaml = readFileSync(join(dir, "agent.yaml"), "utf-8");
-    expect(yaml).toContain("type: bash");
+    expect(readAgentAugments(dir)).toContain("bash");
   });
 });
 
@@ -500,8 +517,7 @@ describe("runAdd package manifest preflight", () => {
     });
 
     // 1. agent.yaml mutation present.
-    const yamlAfter = readFileSync(join(dir, "agent.yaml"), "utf-8");
-    expect(yamlAfter).toContain("type: link");
+    expect(readAgentAugments(dir)).toContain("link");
 
     // 2. package.json updated with the new dep.
     const pkgAfter = JSON.parse(readFileSync(join(dir, "package.json"), "utf-8")) as {

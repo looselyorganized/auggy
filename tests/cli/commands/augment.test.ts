@@ -299,11 +299,21 @@ describe("listAugments and removeAugment", () => {
           "  provider: anthropic",
           "  model: claude-sonnet-4-6",
           "augments:",
-          "  - type: webTransport",
-          "  - type: visitorAuth",
+          "  - webTransport",
+          "  - visitorAuth",
           "",
         ].join("\n"),
       });
+      mkdirSync(join(agentDir, "augments", "webTransport"), { recursive: true });
+      writeFileSync(
+        join(agentDir, "augments", "webTransport", "augment.yaml"),
+        "type: webTransport\n",
+      );
+      mkdirSync(join(agentDir, "augments", "visitorAuth"), { recursive: true });
+      writeFileSync(
+        join(agentDir, "augments", "visitorAuth", "augment.yaml"),
+        "type: visitorAuth\n",
+      );
       mkdirSync(join(agentDir, "skills", "visitorAuth"), { recursive: true });
       writeFileSync(
         join(agentDir, "skills", "visitorAuth", "SKILL.md"),
@@ -318,10 +328,11 @@ describe("listAugments and removeAugment", () => {
         skillRemoved: join("skills", "visitorAuth"),
       });
       expect(existsSync(join(agentDir, "skills", "visitorAuth"))).toBe(false);
+      expect(existsSync(join(agentDir, "augments", "visitorAuth"))).toBe(false);
       const parsed = parseYaml(readFileSync(join(agentDir, "agent.yaml"), "utf-8")) as {
-        augments: Array<Record<string, unknown>>;
+        augments: string[];
       };
-      expect(parsed.augments.map((augment) => augment.type)).toEqual(["webTransport"]);
+      expect(parsed.augments).toEqual(["webTransport"]);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -391,13 +402,17 @@ describe("installCustomAugment", () => {
       expect(existsSync(join(agentDir, "skills", "weather", "SKILL.md"))).toBe(true);
 
       const parsed = parseYaml(readFileSync(join(agentDir, "agent.yaml"), "utf-8")) as {
-        augments: Array<Record<string, unknown>>;
+        augments: string[];
       };
-      expect(parsed.augments[0]).toEqual({
-        name: "weather",
+      expect(parsed.augments).toEqual(["weather"]);
+
+      const metadata = parseYaml(
+        readFileSync(join(agentDir, "augments", "weather", "augment.yaml"), "utf-8"),
+      ) as Record<string, unknown>;
+      expect(metadata).toEqual({
         type: "custom",
-        source: "./augments/weather/index.ts",
-        options: {},
+        source: "./index.ts",
+        config: {},
       });
     } finally {
       rmSync(root, { recursive: true, force: true });
