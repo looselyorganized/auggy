@@ -88,6 +88,70 @@ describe("parseConfig", () => {
     const config = parseConfig(path);
     expect(config.settings).toBeDefined();
   });
+
+  test("loads string augment entries from augments/<id>/augment.yaml", () => {
+    mkdirSync(join(TMP, "augments", "webFetch"), { recursive: true });
+    writeFileSync(
+      join(TMP, "augments", "webFetch", "augment.yaml"),
+      stringify({
+        type: "webFetch",
+        config: { timeoutMs: 1234 },
+      }),
+    );
+
+    const path = writeYaml(
+      "agent.yaml",
+      minimalConfig({
+        augments: ["webFetch"],
+      }),
+    );
+    const config = parseConfig(path);
+
+    expect(config.augments).toHaveLength(1);
+    expect(config.augments[0]).toEqual({
+      name: "webFetch",
+      type: "webFetch",
+      options: { timeoutMs: 1234 },
+    });
+  });
+
+  test("normalizes custom augment source paths from the augment folder", () => {
+    mkdirSync(join(TMP, "augments", "weather"), { recursive: true });
+    writeFileSync(
+      join(TMP, "augments", "weather", "augment.yaml"),
+      stringify({
+        type: "custom",
+        source: "./index.ts",
+        config: { prefix: "wx" },
+      }),
+    );
+
+    const path = writeYaml(
+      "agent.yaml",
+      minimalConfig({
+        augments: ["weather"],
+      }),
+    );
+    const config = parseConfig(path);
+
+    expect(config.augments[0]).toEqual({
+      name: "weather",
+      type: "custom",
+      source: "./augments/weather/index.ts",
+      options: { prefix: "wx" },
+    });
+  });
+
+  test("rejects string augment entries without augment metadata", () => {
+    const path = writeYaml(
+      "agent.yaml",
+      minimalConfig({
+        augments: ["notify"],
+      }),
+    );
+
+    expect(() => parseConfig(path)).toThrow("missing augment metadata");
+  });
 });
 
 describe("validation errors", () => {

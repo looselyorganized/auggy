@@ -10,7 +10,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseAugmentConfigOnly } from "../../src/cli/yaml-helpers";
@@ -48,6 +48,32 @@ augments:
     expect(result).toEqual({
       dbPath: "/var/data/visitor-auth.db",
       publicUrl: "https://zip.test",
+    });
+  });
+
+  test("returns options for string augment entries backed by augments/<id>/augment.yaml", () => {
+    mkdirSync(join(tmp, "augments", "webTransport"), { recursive: true });
+    writeFileSync(
+      join(tmp, "augments", "webTransport", "augment.yaml"),
+      `
+type: webTransport
+config:
+  port: 9123
+  auth:
+    type: bearer
+    token: tok
+`,
+    );
+    const path = writeYaml(`
+augments:
+  - webTransport
+`);
+
+    const result = parseAugmentConfigOnly(path, "webTransport");
+
+    expect(result).toEqual({
+      port: 9123,
+      auth: { type: "bearer", token: "tok" },
     });
   });
 

@@ -25,7 +25,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { parse as parseYaml } from "yaml";
-import { interpolateEnvVars, loadEnvFile } from "./config-parser";
+import { expandAugmentFolderEntries, interpolateEnvVars, loadEnvFile } from "./config-parser";
 
 /**
  * Find the first augment of the given `type` in the YAML at `yamlPath` and
@@ -58,7 +58,10 @@ export function parseAugmentConfigOnly(
 
   // Interpolate the entire tree first — augment options can reference env
   // vars at arbitrary depth.
-  const interpolated = interpolateEnvVars(parsed) as Record<string, unknown>;
+  const interpolated = expandAugmentFolderEntries(
+    interpolateEnvVars(parsed) as Record<string, unknown>,
+    agentDir,
+  );
   const augments = (interpolated.augments ?? []) as Array<Record<string, unknown>>;
   const aug = augments.find((a) => a?.type === augmentType);
   if (!aug) return null;

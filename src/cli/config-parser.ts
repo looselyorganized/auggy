@@ -12,7 +12,7 @@
  */
 
 import { readFileSync, existsSync } from "node:fs";
-import { resolve, dirname, join } from "node:path";
+import { resolve, dirname, join, isAbsolute, relative } from "node:path";
 import { parse as parseYaml } from "yaml";
 import type {
   ParsedConfig,
@@ -821,6 +821,85 @@ function synthesizeIdentityAugment(source: string): AugmentConfig {
   };
 }
 
+function normalizeRelativePath(path: string): string {
+  const normalized = path.replace(/\\/g, "/");
+  return normalized.startsWith(".") ? normalized : `./${normalized}`;
+}
+
+function loadAugmentFolderEntry(
+  agentDir: string,
+  id: string,
+  prefix: string,
+): Record<string, unknown> {
+  if (!VALID_NAME_RE.test(id)) {
+    throw new Error(
+      `Invalid agent.yaml:\n  - ${prefix}: invalid augment id "${id}" (use letters, numbers, hyphens, or underscores)`,
+    );
+  }
+
+  const augmentDir = join(agentDir, "augments", id);
+  const metadataPath = join(augmentDir, "augment.yaml");
+  if (!existsSync(metadataPath)) {
+    throw new Error(
+      `Invalid agent.yaml:\n  - ${prefix}: missing augment metadata at ${metadataPath}`,
+    );
+  }
+
+  const raw = readFileSync(metadataPath, "utf-8");
+  const parsed = parseYaml(raw);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(`${metadataPath}: not a valid YAML object`);
+  }
+
+  let metadata: Record<string, unknown>;
+  try {
+    metadata = interpolateEnvVars(parsed, `augments.${id}`) as Record<string, unknown>;
+  } catch (err) {
+    const msg = (err as Error).message;
+    if (msg.startsWith("Missing environment variables:")) {
+      throw new Error(augmentMissingEnvError(msg, metadataPath, agentDir), { cause: err });
+    }
+    throw err;
+  }
+
+  const type = metadata.type;
+  const config = metadata.config ?? {};
+  if (config === null || typeof config !== "object" || Array.isArray(config)) {
+    throw new Error(`Invalid ${metadataPath}:\n  - config: must be an object when present`);
+  }
+
+  const out: Record<string, unknown> = {
+    name: id,
+    type,
+    options: config,
+  };
+
+  if (typeof metadata.source === "string") {
+    out.source = isAbsolute(metadata.source)
+      ? metadata.source
+      : normalizeRelativePath(relative(agentDir, resolve(augmentDir, metadata.source)));
+  }
+
+  return out;
+}
+
+export function expandAugmentFolderEntries(
+  raw: Record<string, unknown>,
+  agentDir: string,
+): Record<string, unknown> {
+  const augments = raw.augments;
+  if (!Array.isArray(augments)) return raw;
+
+  const expanded = augments.map((entry, index) => {
+    if (typeof entry === "string") {
+      return loadAugmentFolderEntry(agentDir, entry, `augments[${index}]`);
+    }
+    return entry;
+  });
+
+  return { ...raw, augments: expanded };
+}
+
 function validateConfig(raw: Record<string, unknown>): ParsedConfig {
   const errors: string[] = [];
 
@@ -1241,21 +1320,25 @@ export function parseConfig(yamlPath: string): ParsedConfig {
   } catch (err) {
     const msg = (err as Error).message;
     if (msg.startsWith("Missing environment variables:")) {
-      throw new Error(augmentMissingEnvError(msg, agentDir), { cause: err });
+      throw new Error(augmentMissingEnvError(msg, "agent.yaml", agentDir), { cause: err });
     }
     throw err;
   }
-  return validateConfig(interpolated);
+  return validateConfig(expandAugmentFolderEntries(interpolated, agentDir));
 }
 
-function augmentMissingEnvError(originalMsg: string, agentDir: string): string {
+function augmentMissingEnvError(
+  originalMsg: string,
+  sourceLabel: string,
+  agentDir: string,
+): string {
   const envPath = join(agentDir, ".env");
   const envExamplePath = join(agentDir, ".env.example");
 
   const lines: string[] = [
     originalMsg.replace(
       /^Missing environment variables:/,
-      "Missing environment variables in agent.yaml:",
+      `Missing environment variables in ${sourceLabel}:`,
     ),
     "",
     "Add values for the missing keys to the agent's .env file:",
