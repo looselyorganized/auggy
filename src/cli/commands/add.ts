@@ -174,6 +174,7 @@ export async function runAdd(target: string | undefined, opts: AddOpts): Promise
   writeCustomAugmentsReadme(agentDir);
   let knowledgeAdded = false;
   let notifyAdded = false;
+  let agentMailAdded = false;
   let mcpAdded = false;
   let telegramTransportAdded = false;
   for (const entry of selected) {
@@ -185,6 +186,9 @@ export async function runAdd(target: string | undefined, opts: AddOpts): Promise
     }
     if (entry.type === "notify") {
       notifyAdded = true;
+    }
+    if (entry.type === "agentMail") {
+      agentMailAdded = true;
     }
     if (entry.type === "mcp") {
       ensureMcpConfig(agentDir);
@@ -223,6 +227,15 @@ export async function runAdd(target: string | undefined, opts: AddOpts): Promise
     console.log("  - For real delivery, edit augments/notify/augment.yaml");
     console.log("  - Telegram alerts need a notify destination with botToken + chatId");
     console.log("  - Supported transports: webhook, Telegram, Agent Mail, log-to-file");
+  }
+
+  if (agentMailAdded) {
+    console.log();
+    console.log("Use AgentMail:");
+    console.log("  - Set AGENTMAIL_API_KEY and AGENTMAIL_INBOX_ID in .env");
+    console.log("  - Configure mail policy in augments/agentMail/augment.yaml");
+    console.log("  - Default mode: outbound email only, creator trust required");
+    console.log("  - For simple operator alerts, notify + Agent Mail is usually simpler");
   }
 
   if (mcpAdded) {

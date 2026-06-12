@@ -328,6 +328,7 @@ describe("runAdd no-op cases", () => {
     expect(output).toContain("skills/notify/SKILL.md");
     expect(output).toContain("Default destination: creator -> ./notifications.jsonl");
     expect(output).toContain("For real delivery, edit augments/notify/augment.yaml");
+    expect(output).toContain("Telegram alerts need a notify destination with botToken + chatId");
   });
 
   test("adding telegramTransport explains required Telegram setup", async () => {
@@ -367,10 +368,47 @@ describe("runAdd no-op cases", () => {
     expect(output).toContain("Set TELEGRAM_CREATOR_USER_IDS in .env");
     expect(output).toContain("Default inbound mode: polling");
     expect(output).toContain("@userinfobot");
+    expect(output).toContain("This enables Telegram chat with the agent");
+    expect(output).toContain(
+      "Proactive Telegram alerts are configured in augments/notify/augment.yaml",
+    );
     expect(output).toContain("augments/telegramTransport/augment.yaml");
     expect(output).toContain("Add these to your .env:");
     expect(output).toContain("TELEGRAM_BOT_TOKEN=");
     expect(output).toContain("TELEGRAM_CREATOR_USER_IDS=");
+  });
+
+  test("adding agentMail explains email setup", async () => {
+    const dir = setupAgent("with-agent-mail");
+    const originalLog = console.log;
+    const logs: string[] = [];
+    console.log = (...args: unknown[]) => {
+      logs.push(args.map(String).join(" "));
+    };
+
+    try {
+      await runAdd("with-agent-mail", {
+        config: join(dir, "agent.yaml"),
+        auggyDir,
+        augment: "agentMail",
+        yes: true,
+        bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
+      });
+    } finally {
+      console.log = originalLog;
+    }
+
+    expect(readAgentAugments(dir)).toContain("agentMail");
+    expect(existsSync(join(dir, "skills", "agentMail", "SKILL.md"))).toBe(true);
+
+    const output = logs.join("\n");
+    expect(output).toContain("Use AgentMail:");
+    expect(output).toContain("Set AGENTMAIL_API_KEY and AGENTMAIL_INBOX_ID in .env");
+    expect(output).toContain("Configure mail policy in augments/agentMail/augment.yaml");
+    expect(output).toContain("Default mode: outbound email only, creator trust required");
+    expect(output).toContain("notify + Agent Mail is usually simpler");
+    expect(output).toContain("AGENTMAIL_API_KEY=");
+    expect(output).toContain("AGENTMAIL_INBOX_ID=");
   });
 
   test("adding visitorAuth generates VISITOR_SIGNING_KEY in .env", async () => {
