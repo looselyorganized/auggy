@@ -1,6 +1,7 @@
 import { describe, test, expect, afterEach } from "bun:test";
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { parse as parseYaml } from "yaml";
 import { scaffoldAgent } from "../../src/cli/scaffold";
 import { parseConfig } from "../../src/cli/config-parser";
 
@@ -21,13 +22,13 @@ describe("scaffoldAgent", () => {
     expect(existsSync(join(dir, ".gitignore"))).toBe(true);
     expect(existsSync(join(dir, "skills"))).toBe(true);
     // Per ADR-025: scaffold copies bundled skills from src/augments/<name>/skill/.
-    // Default scaffold installs filesystem + layeredMemory + webFetch + turnControl.
+    // Default scaffold installs the core chat-ready augment profile.
     expect(existsSync(join(dir, "skills", "auggy", "SKILL.md"))).toBe(true);
     expect(existsSync(join(dir, "skills", "filesystem", "SKILL.md"))).toBe(true);
-    expect(existsSync(join(dir, "skills", "layeredMemory", "SKILL.md"))).toBe(true);
     expect(existsSync(join(dir, "skills", "webFetch", "SKILL.md"))).toBe(true);
     expect(existsSync(join(dir, "skills", "turnControl", "SKILL.md"))).toBe(true);
-    expect(existsSync(join(dir, "workspace"))).toBe(true);
+    expect(existsSync(join(dir, "data", "workspace"))).toBe(true);
+    expect(existsSync(join(dir, "workspace"))).toBe(false);
     expect(existsSync(join(dir, "augments"))).toBe(true);
   });
 
@@ -81,11 +82,12 @@ describe("scaffoldAgent", () => {
     delete process.env.AUGGY_AGENT_ID;
   });
 
-  test("ADR-030: default scaffold includes the 'skills' augment", () => {
+  test("ADR-030: skills are auto-mounted instead of listed in agent.yaml", () => {
     const dir = scaffoldAgent({ name: "zip", targetDir: join(TMP, "zip-skills") });
     const yaml = readFileSync(join(dir, "agent.yaml"), "utf-8");
-    expect(yaml).toContain("type: skills");
-    expect(yaml).toMatch(/dir:\s*\.\/skills/);
+    const parsed = parseYaml(yaml) as { augments: string[] };
+    expect(parsed.augments).not.toContain("skills");
+    expect(existsSync(join(dir, "skills", "auggy", "SKILL.md"))).toBe(true);
   });
 
   test("throws if target directory already exists", () => {
@@ -105,11 +107,11 @@ describe("scaffoldAgent", () => {
     expect(yaml).toContain("LORF front-door agent");
   });
 
-  test("layeredMemory SKILL.md has valid frontmatter", () => {
+  test("webFetch SKILL.md has valid frontmatter", () => {
     const dir = scaffoldAgent({ name: "zip", targetDir: join(TMP, "zip") });
-    const skill = readFileSync(join(dir, "skills", "layeredMemory", "SKILL.md"), "utf-8");
+    const skill = readFileSync(join(dir, "skills", "webFetch", "SKILL.md"), "utf-8");
     expect(skill).toContain("---");
-    expect(skill).toContain("name: layeredMemory");
+    expect(skill).toContain("name: webFetch");
     expect(skill).toContain("description:");
   });
 
@@ -130,13 +132,18 @@ describe("scaffoldAgent", () => {
     expect(gitignore).toContain("workspace/");
   });
 
-  test("agent.yaml includes a budgets augment block", () => {
+  test("agent.yaml defaults to the core chat-ready augment list", () => {
     const dir = scaffoldAgent({ name: "zip", targetDir: join(TMP, "zip") });
-    const yaml = readFileSync(join(dir, "agent.yaml"), "utf-8");
-    expect(yaml).toContain("type: budgets");
-    expect(yaml).toContain("dbPath: ./budgets.db");
-    expect(yaml).toContain("anonymousGlobalLimit: 30");
-    expect(yaml).toContain("dailyBudgetUsd: 5");
+    const parsed = parseYaml(readFileSync(join(dir, "agent.yaml"), "utf-8")) as {
+      augments: string[];
+    };
+    expect(parsed.augments).toEqual([
+      "fileMemory",
+      "filesystem",
+      "webTransport",
+      "webFetch",
+      "turnControl",
+    ]);
   });
 
   test(".gitignore includes budgets.db lines", () => {
@@ -148,16 +155,14 @@ describe("scaffoldAgent", () => {
     expect(gitignore).toContain("budgets.db-shm");
   });
 
-  test("generated agent.yaml with budgets parses through the config parser", () => {
-    const dir = scaffoldAgent({ name: "zip", targetDir: join(TMP, "zip-budgets") });
+  test("generated agent.yaml does not install preview budgets by default", () => {
+    const dir = scaffoldAgent({ name: "zip", targetDir: join(TMP, "zip-no-budgets") });
     process.env.AUGGY_WEB_TOKEN = "test-token";
     process.env.VISITOR_SIGNING_KEY = "test-signing-key";
     process.env.AUGGY_AGENT_ID = "zip";
     const config = parseConfig(join(dir, "agent.yaml"));
     const budgetsAugment = config.augments.find((a) => a.type === "budgets");
-    expect(budgetsAugment).toBeDefined();
-    expect(budgetsAugment!.name).toBe("budgets");
-    expect(budgetsAugment!.options!.dbPath).toBe("./budgets.db");
+    expect(budgetsAugment).toBeUndefined();
     delete process.env.AUGGY_WEB_TOKEN;
     delete process.env.VISITOR_SIGNING_KEY;
     delete process.env.AUGGY_AGENT_ID;
@@ -165,8 +170,10 @@ describe("scaffoldAgent", () => {
 
   test("scaffold includes turnControl by default", () => {
     const dir = scaffoldAgent({ name: "zip", targetDir: join(TMP, "zip-turnctl") });
-    const yaml = readFileSync(join(dir, "agent.yaml"), "utf-8");
-    expect(yaml).toContain("type: turnControl");
+    const parsed = parseYaml(readFileSync(join(dir, "agent.yaml"), "utf-8")) as {
+      augments: string[];
+    };
+    expect(parsed.augments).toContain("turnControl");
   });
 
   test("generated agent.yaml with turnControl parses through the config parser", () => {
@@ -249,7 +256,7 @@ describe("scaffoldAgent", () => {
     });
   });
 
-  describe("agent.yaml uses identity: shorthand + layeredMemory default", () => {
+  describe("agent.yaml uses identity shorthand + folder-backed augment config", () => {
     test("agent.yaml emits identity shorthand instead of explicit fileMemory@system", () => {
       const dir = scaffoldAgent({ name: "zip", targetDir: join(TMP, "zip-shorthand") });
       const yaml = readFileSync(join(dir, "agent.yaml"), "utf-8");
@@ -261,20 +268,16 @@ describe("scaffoldAgent", () => {
       expect(explicitSystemFileMemory).toBe(false);
     });
 
-    test("agent.yaml includes layeredMemory with sqlite backend by default", () => {
-      const dir = scaffoldAgent({ name: "zip", targetDir: join(TMP, "zip-lm") });
-      const yaml = readFileSync(join(dir, "agent.yaml"), "utf-8");
+    test("filesystem config lives in augments/filesystem/augment.yaml", () => {
+      const dir = scaffoldAgent({ name: "zip", targetDir: join(TMP, "zip-fs") });
+      const meta = parseYaml(
+        readFileSync(join(dir, "augments", "filesystem", "augment.yaml"), "utf-8"),
+      ) as { type: string; config: { mounts: Array<{ name: string; path: string }> } };
 
-      expect(yaml).toContain("type: layeredMemory");
-      expect(yaml).toContain("backend: sqlite");
-      expect(yaml).toContain("dbPath: ./memory.sqlite");
-    });
-
-    test("agent.yaml namespace for layeredMemory matches the agent name", () => {
-      const dir = scaffoldAgent({ name: "concierge", targetDir: join(TMP, "concierge-ns") });
-      const yaml = readFileSync(join(dir, "agent.yaml"), "utf-8");
-      // Optional quotes per yamlScalar.
-      expect(yaml).toMatch(/namespace: "?concierge"?\b/);
+      expect(meta.type).toBe("filesystem");
+      expect(meta.config.mounts.find((mount) => mount.name === "workspace")?.path).toBe(
+        "./data/workspace",
+      );
     });
 
     test(".gitignore excludes memory.sqlite (layeredMemory's default DB path)", () => {
@@ -329,22 +332,16 @@ describe("scaffoldAgent", () => {
   });
 
   describe("webTransport scaffold does not duplicate signingKey (post-F2 single-source)", () => {
-    test("scaffolded webTransport visitorTokens block does NOT contain signingKey", async () => {
+    test("scaffolded webTransport visitorTokens block does NOT contain signingKey", () => {
       // After Fix 4, signingKey is removed from webTransport's defaults: visitorAuth
       // owns it, and the resolver injects it at boot. A fresh scaffold must not
       // emit signingKey in webTransport's visitorTokens, or it would trigger the
       // duplicate-key warning on every start.
       const dir = scaffoldAgent({ name: "zip", targetDir: join(TMP, "zip-no-dupkey") });
-      const yaml = readFileSync(join(dir, "agent.yaml"), "utf-8");
-      const { parse } = await import("yaml");
-      const parsed = parse(yaml) as {
-        augments: Array<{ type: string; options?: Record<string, unknown> }>;
-      };
-      const webTransportAugment = parsed.augments.find((a) => a.type === "webTransport");
-      expect(webTransportAugment).toBeDefined();
-      const vtBlock = webTransportAugment!.options?.visitorTokens as
-        | Record<string, unknown>
-        | undefined;
+      const metadata = parseYaml(
+        readFileSync(join(dir, "augments", "webTransport", "augment.yaml"), "utf-8"),
+      ) as { config?: Record<string, unknown> };
+      const vtBlock = metadata.config?.visitorTokens as Record<string, unknown> | undefined;
       // signingKey must NOT be present in webTransport's visitorTokens.
       // It belongs to visitorAuth's config exclusively.
       expect(vtBlock?.signingKey).toBeUndefined();

@@ -48,7 +48,11 @@ import {
 } from "../scaffold-package-json";
 import { runBunInstall, type BunInstallSpawnFactory } from "../bun-install";
 import { withEscRestart, WizardRestartRequested } from "../wizard-restart";
-import { writeBuiltinAugmentMetadata, writeCustomAugmentsReadme } from "../augment-metadata";
+import {
+  augmentIdForCatalogEntry,
+  writeBuiltinAugmentMetadata,
+  writeCustomAugmentsReadme,
+} from "../augment-metadata";
 import { writeKnowledgeScaffold } from "../scaffold-knowledge";
 import { displayPath } from "../display-path";
 
@@ -541,24 +545,18 @@ async function runCreateIntoDir(
     console.log();
     for (const entry of augments) {
       copyBundledSkill(entry.type, tempDir);
-      writeBuiltinAugmentMetadata(tempDir, entry);
+      writeBuiltinAugmentMetadata(tempDir, entry, optionsForLayout(entry, name, { project: true }));
       console.log(`   ${green("✓")} ${cream(entry.defaultName)} ${dim(`(${entry.type})`)}`);
     }
 
-    const config = buildAgentYaml(
-      id,
-      name,
-      augments,
-      {
-        provider,
-        model,
-        displayName,
-        operatorName,
-        purpose,
-        ollamaBaseURL,
-      },
-      { project: true },
-    );
+    const config = buildAgentYaml(id, name, augments, {
+      provider,
+      model,
+      displayName,
+      operatorName,
+      purpose,
+      ollamaBaseURL,
+    });
     writeFileSync(join(tempDir, "agent.yaml"), config);
     writeModelSnapshot(tempDir, modelSnapshot);
 
@@ -932,7 +930,6 @@ function buildAgentYaml(
     purpose: string;
     ollamaBaseURL?: string;
   },
-  layout: { project: boolean } = { project: false },
 ): string {
   const engineBlock: Record<string, unknown> = {
     provider: engine.provider,
@@ -956,13 +953,7 @@ function buildAgentYaml(
       compactionStrategy: "truncate",
       maxInferenceLoops: 10,
     },
-    augments: augments.map((entry) => {
-      const options = optionsForLayout(entry, name, layout);
-      return {
-        type: entry.type,
-        options,
-      };
-    }),
+    augments: augments.map((entry) => augmentIdForCatalogEntry(entry)),
   };
 
   return `# Agent configuration\n\n${stringify(config)}`;

@@ -4,15 +4,21 @@ import { stringify } from "yaml";
 import type { CatalogEntry } from "./augment-catalog";
 import { augmentFolderForType } from "./scaffold-skills";
 
-export function writeBuiltinAugmentMetadata(agentDir: string, entry: CatalogEntry): void {
-  const folder = augmentFolderForType(entry.type) ?? entry.defaultName;
+export function augmentIdForCatalogEntry(entry: CatalogEntry): string {
+  return augmentFolderForType(entry.type) ?? entry.defaultName;
+}
+
+export function writeBuiltinAugmentMetadata(
+  agentDir: string,
+  entry: CatalogEntry,
+  config?: Record<string, unknown>,
+): void {
+  const folder = augmentIdForCatalogEntry(entry);
   const dir = join(agentDir, "augments", folder);
   const metadata: Record<string, unknown> = {
-    name: folder,
-    kind: "builtin",
-    runtime: "auggy",
+    type: entry.type,
   };
-  if (entry.hasSkill) metadata.skill = `../../skills/${folder}/SKILL.md`;
+  if (config && Object.keys(config).length > 0) metadata.config = config;
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, "augment.yaml"), stringify(metadata));
 }
