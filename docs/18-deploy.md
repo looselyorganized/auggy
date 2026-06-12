@@ -122,10 +122,14 @@ Each extraction call hits the configured extraction engine (Haiku 4.5 by default
 **Recommendation:** set a daily ceiling via the `budgets` augment:
 
 ```yaml
+# agent.yaml
 augments:
-  - type: budgets
-    options:
-      dailyBudgetUsd: 5.00
+  - budgets
+
+# augments/budgets/augment.yaml
+type: budgets
+config:
+  dailyBudgetUsd: 5.00
 ```
 
 This caps total daily spend (user-facing + extraction). If the cap is hit, the kernel's 2PC turn-gate refuses new turns until the next day. See [ADR-027](../../lo/docs/solutions/architecture/adr-027-internal-turn-admission.md) for how internal extraction turns flow through the same budget.
@@ -141,7 +145,8 @@ Railway mounts a volume at `/app/data`. The entrypoint script symlinks four SQLi
 - `/app/visitor-auth.db` → `/app/data/visitor-auth.db` (`visitorAuth` augment)
 - `/app/link.db` → `/app/data/link.db` (`link` augment, when present)
 
-agent.yaml's `dbPath: ./memory.db` works unchanged — the symlinks make it transparent.
+Augment config paths such as `dbPath: ./memory.db` work unchanged — the
+symlinks make it transparent.
 
 **Drift risk:** if a future augment ships with a different SQLite path, update `SQLITE_DB_NAMES` in `src/cli/deploy/dockerfile.ts` (and add it to this doc). The `cross-session-recall` grader in the layered-memory eval suite catches data loss empirically.
 
@@ -149,13 +154,14 @@ agent.yaml's `dbPath: ./memory.db` works unchanged — the symlinks make it tran
 
 ## visitorAuth on Railway
 
-The `visitorAuth` augment requires a `publicUrl` for magic-link email rendering. On Railway, the deploy command sets `AUGGY_PUBLIC_URL` to the generated domain BEFORE the first boot. In your agent.yaml:
+The `visitorAuth` augment requires a `publicUrl` for magic-link email
+rendering. On Railway, the deploy command sets `AUGGY_PUBLIC_URL` to the
+generated domain BEFORE the first boot. In `augments/visitorAuth/augment.yaml`:
 
 ```yaml
-augments:
-  - type: visitorAuth
-    options:
-      publicUrl: ${AUGGY_PUBLIC_URL}
+type: visitorAuth
+config:
+  publicUrl: ${AUGGY_PUBLIC_URL}
 ```
 
 The interpolation resolves at boot. First deploys work because the deploy command provisions the domain → sets the env var → triggers `railway up` in that order ([D7 of the deploy plan](../../../docs/superpowers/plans/2026-05-06-aug1-deploy-railway.md)).
@@ -199,6 +205,6 @@ The Railway volume is **NOT** automatically deleted (Railway retains it as a saf
 | First-deploy fails at `railway volume add` | The Railway project may not support volumes on the free tier. Upgrade or pick a different project. |
 | Deploy preflight fails before Railway work | Run `auggy doctor` and fix the reported config/env/dependency issue. |
 | Health check does not pass after deploy | Run `auggy logs` and inspect the boot error. The cloud record is still written, so redeploy with `auggy deploy --yes` after fixing. |
-| visitorAuth refuses to boot — "publicUrl required" | Check that your agent.yaml has `publicUrl: ${AUGGY_PUBLIC_URL}` and the deploy actually generated a domain. Re-run `auggy deploy` to refresh. |
+| visitorAuth refuses to boot — "publicUrl required" | Check that `augments/visitorAuth/augment.yaml` has `publicUrl: ${AUGGY_PUBLIC_URL}` and the deploy actually generated a domain. Re-run `auggy deploy` to refresh. |
 | Memory disappears after redeploy | Check the volume is mounted (Railway dashboard → service → Volumes). If empty, the symlink list in the Dockerfile may be missing your dbPath — check `src/cli/deploy/dockerfile.ts`'s `SQLITE_DB_NAMES`. |
-| Daily budget cap hit unexpectedly | autoSave extraction calls count against the cap. Run `evals/layered-memory/run.ts --smoke` to measure your per-extraction cost; lower the cadence in `agent.yaml`'s `layeredMemory.options.autoSave.extractionFrequency` if needed. |
+| Daily budget cap hit unexpectedly | autoSave extraction calls count against the cap. Run `evals/layered-memory/run.ts --smoke` to measure your per-extraction cost; lower the cadence in `augments/layeredMemory/augment.yaml` if needed. |

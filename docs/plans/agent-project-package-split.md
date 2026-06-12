@@ -64,13 +64,16 @@ agent project. Custom augment code lives under `augments/<name>/`.
 
 ## Principles
 
-- `agent.yaml` is the runtime source of truth.
+- `agent.yaml` is the runtime entry point: identity, engine, settings, and
+  enabled augment order.
+- `augments/<id>/augment.yaml` is the source of truth for that augment's type,
+  config, and optional custom source file.
 - `package.json` is the dependency/runtime version source of truth.
 - No default `~/.auggy/agents/<name>` registry for v1. No central agent index.
 - Deploy uploads one agent project, not a multi-agent registry.
 - Railway installs dependencies from the agent project's `package.json`.
 - First-party augments become separately installable packages over time.
-- `auggy add <augment>` installs only the selected augment's config, package
+- `auggy augment add <augment>` installs only the selected augment's config, package
   dependency, augment metadata, skill files, and env scaffolding.
 - `augments/` is the installed augment workspace. Built-ins get metadata only;
   custom augments get metadata plus implementation source.
@@ -94,39 +97,36 @@ auggy init
 Initializes the current directory as an agent project.
 
 ```bash
-auggy add visitorAuth
+auggy augment add visitorAuth
 ```
 
-Adds an augment to the current agent project. It mutates `agent.yaml`, updates
-`package.json` when needed, creates `augments/<name>/augment.yaml`, installs
-bundled skill files into `skills/<name>/`, updates `.env.example`, and runs
-install unless skipped.
+Adds an augment to the current agent project. It appends the augment id to
+`agent.yaml`, updates `package.json` when needed, creates
+`augments/<name>/augment.yaml`, installs bundled skill files into
+`skills/<name>/`, updates `.env.example`, and runs install unless skipped.
 
 ## Augment Metadata
 
 For built-in augments:
 
 ```yaml
-name: webFetch
-kind: builtin
-runtime: auggy
-skill: ../../skills/webFetch/SKILL.md
+type: webFetch
+config:
+  timeoutMs: 15000
 ```
 
 For custom augments:
 
 ```yaml
-name: weather
-kind: custom
-runtime: local
-entry: ./index.ts
-skill: ./SKILL.md
+type: custom
+source: ./index.ts
+config: {}
 ```
 
-`runtime` declares where the implementation comes from. Built-in implementation
-files are not copied into agent projects; they live in `node_modules/auggy/src`
-after install. The corresponding `agent.yaml` type is the installed augment's
-`name`.
+The folder name is the installed augment id. `type` selects the augment factory:
+built-ins use their factory id (`webFetch`, `notify`, etc.), custom augments use
+`custom` plus a local `source`. Built-in implementation files are not copied
+into agent projects; they live in `node_modules/auggy/src` after install.
 
 ## Skill Commands
 

@@ -30,46 +30,52 @@ The transport handles **inbound** only. Proactive outbound messages to Telegram 
 ### Polling mode (minimal)
 
 ```yaml
+# agent.yaml
 augments:
-  - name: telegram
-    type: telegramTransport
-    options:
-      botToken: ${TELEGRAM_BOT_TOKEN}
-      inbound:
-        mode: polling
-        polling:
-          timeoutSec: 30
-      auth:
-        creatorUserIds: []
-        creatorUserIdsEnv: TELEGRAM_CREATOR_USER_IDS
-        anonymousIdentityMode: ephemeral
+  - telegramTransport
+
+# augments/telegramTransport/augment.yaml
+type: telegramTransport
+config:
+  botToken: ${TELEGRAM_BOT_TOKEN}
+  inbound:
+    mode: polling
+    polling:
+      timeoutSec: 30
+  auth:
+    creatorUserIds: []
+    creatorUserIdsEnv: TELEGRAM_CREATOR_USER_IDS
+    anonymousIdentityMode: ephemeral
 ```
 
 ### Webhook mode
 
 ```yaml
+# agent.yaml
 augments:
-  - name: telegram
-    type: telegramTransport
-    options:
-      botToken: ${TELEGRAM_BOT_TOKEN}
-      inbound:
-        mode: webhook
-        webhook:
-          publicUrl: https://agent.example.com/telegram
-          port: 8081
-          secretToken: ${TELEGRAM_WEBHOOK_SECRET}
-          allowedUpdates:
-            - message
-      auth:
-        creatorUserIds:
-          - 123456789
-        admittedAgents:
-          - id: research-agent
-            telegramUserId: 987654321
-        recognizedUserIds:
-          - 111222333
-        anonymousIdentityMode: ephemeral
+  - telegramTransport
+
+# augments/telegramTransport/augment.yaml
+type: telegramTransport
+config:
+  botToken: ${TELEGRAM_BOT_TOKEN}
+  inbound:
+    mode: webhook
+    webhook:
+      publicUrl: https://agent.example.com/telegram
+      port: 8081
+      secretToken: ${TELEGRAM_WEBHOOK_SECRET}
+      allowedUpdates:
+        - message
+  auth:
+    creatorUserIds:
+      - 123456789
+    admittedAgents:
+      - id: research-agent
+        telegramUserId: 987654321
+    recognizedUserIds:
+      - 111222333
+    anonymousIdentityMode: ephemeral
 ```
 
 ### Top-level configuration fields

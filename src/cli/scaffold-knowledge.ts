@@ -73,13 +73,18 @@ function writeText(path: string, text: string, opts: KnowledgeScaffoldOptions): 
 function knowledgeReadme(): string {
   return `# Knowledge
 
-This directory is the agent's private knowledge base. It is mounted by \`agent.yaml\`:
+This directory is the agent's private knowledge base. Enable it in \`agent.yaml\`
+and configure it in \`augments/knowledge/augment.yaml\`:
 
 \`\`\`yaml
-- name: knowledge
-  type: knowledge
-  options:
-    root: ./knowledge
+# agent.yaml
+augments:
+  - knowledge
+
+# augments/knowledge/augment.yaml
+type: knowledge
+config:
+  root: ./knowledge
 \`\`\`
 
 ## Files

@@ -28,11 +28,11 @@ export interface CatalogEntry {
    * renders it below the list, not inline.
    */
   description: string;
-  /** The augment type identifier in agent.yaml. */
+  /** Augment factory identifier written to augments/<id>/augment.yaml. */
   type: string;
-  /** Default instance name in agent.yaml. */
+  /** Default installed id and folder name. */
   defaultName: string;
-  /** Default options for agent.yaml. */
+  /** Default config written to augment.yaml. */
   defaultOptions: Record<string, unknown>;
   /** Whether this augment is always included (not deselectable). */
   required: boolean;
@@ -179,7 +179,7 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
     label: "Bash",
     tagline: "scoped shell execution (allowlist + risk levels)",
     description:
-      "Lets the agent run shell commands. Restricted by default to a small allowlist (echo, ls, cat, pwd, date). Configure risk level + allowlist in agent.yaml.",
+      "Lets the agent run shell commands. Restricted by default to a small allowlist (echo, ls, cat, pwd, date). Configure risk level + allowlist in augments/bash/augment.yaml.",
     type: "bash",
     defaultName: "bash",
     defaultOptions: {

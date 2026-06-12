@@ -4,7 +4,7 @@
  *
  * Commands:
  *   auggy create <name>              Scaffold a new agent (interactive)
- *   auggy add [name] [augment]       Add augments to an existing agent (shortcut)
+ *   auggy add [name] [augment]       Shortcut for auggy augment add
  *   auggy augment add <augment>      Add an augment to an agent
  *   auggy augment remove <augment>   Remove an augment from an agent
  *   auggy augment list               List augments in an agent

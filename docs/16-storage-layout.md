@@ -21,7 +21,10 @@ An Auggy agent is a normal project folder wherever the operator creates it:
 │   └── ...                 # webFetch, turnControl, and added augments
 ├── knowledge/              # scaffolded by `auggy augment add knowledge`
 ├── data/
-└── augments/               # installed augment metadata and custom augment source
+└── augments/               # installed augment config and custom augment source
+    ├── filesystem/augment.yaml
+    ├── webFetch/augment.yaml
+    └── ...
 ```
 
 `auggy create <name>` scaffolds `./<name>/`. `auggy init` scaffolds the current
@@ -30,7 +33,7 @@ to stay in sync with the filesystem.
 
 ### Default-scaffold details
 
-- `agent.yaml` uses the top-level `identity: ./identity.md` shorthand (parsed to a synthetic `fileMemory@placement:system` entry); `augments:` enumerates the rest.
+- `agent.yaml` uses the top-level `identity: ./identity.md` shorthand (parsed to a synthetic `fileMemory@placement:system` entry); `augments:` lists enabled augment ids in boot order. Per-augment config lives in `augments/<id>/augment.yaml`.
 - `identity.md` is rendered from `src/scaffold-templates/identity.md` and ships with four baked-in security rules and a `## Available skills` manifest enumerating each tool-providing augment selected at scaffold time.
 - `skills/<augment>/` directories hold byte-for-byte copies of each augment's bundled `src/augments/<augment>/skill/` folder — copied automatically at `auggy create`/`auggy add` time. `auggy skill add <augment>` is a repair/update command for missing, deleted, or intentionally refreshed bundled skills. The boot-time validator warns at startup if a tool-providing augment has no skill folder mounted.
 - `data/` is the durable runtime data mount. Core create uses `data/workspace`; optional augments such as `layeredMemory` and `budgets` place their SQLite files under `data/` when added.
@@ -61,9 +64,10 @@ inspectable at `node_modules/auggy/src` after `bun install`.
 Auggy does not copy its runtime TypeScript source into every generated agent
 project. Keeping the runtime in `node_modules` means agents receive runtime and
 security updates through the normal package manager path instead of carrying a
-vendored copy that can drift from the published runtime. Custom augments are the
-exception: they live as local source under `augments/<name>/` because they
-belong to the agent project.
+vendored copy that can drift from the published runtime. Built-in augment
+folders contain project-owned config only. Custom augments are the exception:
+they live as local source under `augments/<name>/` because they belong to the
+agent project.
 
 Use `auggy doctor --verbose` to show the installed runtime source path.
 

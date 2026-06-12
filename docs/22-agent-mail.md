@@ -26,43 +26,46 @@ If you don't need either, mounting the MCP server is fine and arguably simpler.
 ## Configuration
 
 ```yaml
+# agent.yaml
 augments:
-  - name: agentmail
-    type: agentMail
-    options:
-      apiKey: ${AGENTMAIL_API_KEY}
-      inboxId: ${AGENTMAIL_INBOX_ID}
-      # apiBaseUrl: https://api.agentmail.to/v0  # override for sandbox
+  - agentMail
 
-      outbound:
-        # Default ["creator"] — agent and public peers cannot send unless added.
-        allowedTrustLevels: [creator]
+# augments/agentMail/augment.yaml
+type: agentMail
+config:
+  apiKey: ${AGENTMAIL_API_KEY}
+  inboxId: ${AGENTMAIL_INBOX_ID}
+  # apiBaseUrl: https://api.agentmail.to/v0  # override for sandbox
 
-        # When set, only these recipients may receive mail. Lowercased compare.
-        # Glob form: "*@example.com" matches any address at that domain.
-        # allowedRecipients:
-        #   - operator@acme.com
-        #   - "*@trusted.com"
+  outbound:
+    # Default ["creator"] — agent and public peers cannot send unless added.
+    allowedTrustLevels: [creator]
 
-        # Hard cap on recipients per send. AgentMail's absolute ceiling is 50;
-        # we default to 10 to make accidental list-blast impossible.
-        maxRecipients: 10
+    # When set, only these recipients may receive mail. Lowercased compare.
+    # Glob form: "*@example.com" matches any address at that domain.
+    # allowedRecipients:
+    #   - operator@acme.com
+    #   - "*@trusted.com"
 
-        bodyMaxBytes: 102400  # 100KB
-        allowHtml: false       # default; opt in if you specifically need HTML
+    # Hard cap on recipients per send. AgentMail's absolute ceiling is 50;
+    # we default to 10 to make accidental list-blast impossible.
+    maxRecipients: 10
 
-        # Prepended to every outbound subject so recipients can identify
-        # agent-sent mail. Cannot be empty.
-        subjectPrefix: "[Auggy] "
+    bodyMaxBytes: 102400  # 100KB
+    allowHtml: false       # default; opt in if you specifically need HTML
 
-        rateLimit:
-          enabled: true
-          globalMaxPerHour: 10
-          perRecipientCooldownMs: 300000  # 5 min between sends to same address
-          dedupWindowMs: 300000           # 5 min subject-hash dedup
+    # Prepended to every outbound subject so recipients can identify
+    # agent-sent mail. Cannot be empty.
+    subjectPrefix: "[Auggy] "
 
-      inbound:
-        mode: none  # Phase A only. Phase B will add "websocket"/"polling"; Phase C "webhook".
+    rateLimit:
+      enabled: true
+      globalMaxPerHour: 10
+      perRecipientCooldownMs: 300000  # 5 min between sends to same address
+      dedupWindowMs: 300000           # 5 min subject-hash dedup
+
+  inbound:
+    mode: none  # Phase A only. Phase B will add "websocket"/"polling"; Phase C "webhook".
 ```
 
 ## Environment variables

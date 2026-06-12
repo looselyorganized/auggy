@@ -11,19 +11,19 @@ auggy mcp doctor
 `auggy augment add mcp` creates `.mcp.json` if needed. Use `auggy mcp init`
 only when you want to create or repair the MCP config file manually.
 
-`agent.yaml` only mounts the augment:
+`agent.yaml` only enables the augment:
 
 ```yaml
 augments:
-  - name: mcp
-    type: mcp
+  - mcp
 ```
 
 `.mcp.json` is the source of truth for server definitions.
 
 This keeps MCP in one place. You do not copy server command strings into
-`agent.yaml`; `agent.yaml` says "this agent uses MCP," and `.mcp.json` says
-"these are the servers."
+`agent.yaml`; `agent.yaml` says "this agent uses MCP,"
+`augments/mcp/augment.yaml` says "use the built-in MCP augment," and
+`.mcp.json` says "these are the servers."
 
 Supported connection classes:
 

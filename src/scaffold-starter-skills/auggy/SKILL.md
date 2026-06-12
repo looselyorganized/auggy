@@ -1,6 +1,6 @@
 ---
 name: auggy
-description: Help the operator understand, customize, extend, and deploy this Auggy agent.
+description: Help the operator customize this Auggy agent: identity, config, augments, skills, knowledge, MCP, custom tools, and deploy.
 ---
 
 # Auggy Project Guide
@@ -10,25 +10,29 @@ create skills, create augments, inspect project files, or deploy the agent.
 
 This skill is for operator assistance. Do not expose secrets, do not edit files
 unless the operator asks, and do not claim runtime capabilities that are not
-present in `agent.yaml`.
+enabled in `agent.yaml`.
 
 ## Project Map
 
-- `agent.yaml`: runtime source of truth. It declares the engine, model, settings,
-  and mounted augments.
+- `agent.yaml`: runtime entry point. It declares the engine, model, settings,
+  and enabled augment order.
+- `augments/<id>/augment.yaml`: config for one enabled augment. Built-ins use
+  `type: <augmentName>`. Custom augments use `type: custom` plus `source`.
 - `identity.md`: the agent's voice, purpose, boundaries, and security rules.
   This is the best first edit for behavior/personality changes.
+- `package.json`: agent-local runtime and provider dependencies.
 - `.env`: local secrets and generated runtime values. Never read or print secret
   values unless the operator explicitly asks for a diagnostic.
 - `.env.example`: names of required secrets without values.
 - `skills/`: instruction packs the agent can read on demand. Skills teach the
   model how to use tools or follow domain workflows; they do not add runtime
   code by themselves.
-- `augments/`: metadata for built-in augments plus source for custom local
-  augments. Augments add runtime capabilities such as tools, transports, memory,
-  and knowledge sources.
+- `augments/`: config for built-in augments plus source for custom local
+  augments. Each enabled augment has `augments/<id>/augment.yaml`. Augments add
+  runtime capabilities such as tools, transports, memory, and knowledge sources.
 - `knowledge/`: local and remote knowledge source config, created by
   `auggy augment add knowledge`.
+- `.mcp.json`: MCP server definitions, created by `auggy augment add mcp`.
 - `data/`: mutable runtime data and workspace files. Treat it as local state.
 
 ## Fast Answers
@@ -42,6 +46,43 @@ the `knowledge` augment:
 ```bash
 auggy augment add knowledge
 ```
+
+If the operator asks "how do I configure an augment?", point them to:
+
+```text
+augments/<augment-id>/augment.yaml
+```
+
+After config changes, recommend:
+
+```bash
+auggy doctor
+auggy run
+```
+
+If the operator asks "how do I see available augments?", use:
+
+```bash
+auggy augment list
+```
+
+If the operator asks "how do I send notifications?", suggest:
+
+```bash
+auggy augment add notify
+```
+
+Then edit `augments/notify/augment.yaml` for real delivery destinations.
+
+If the operator asks "how do I add MCP tools?", suggest:
+
+```bash
+auggy augment add mcp
+auggy mcp doctor
+```
+
+Then edit `.mcp.json`. For cloud deploys, prefer remote HTTPS MCP servers over
+local stdio servers.
 
 If the operator asks "how do I teach you a repeatable workflow?", suggest a
 skill:
@@ -68,6 +109,30 @@ If the operator asks "how do I deploy you?", use:
 ```bash
 auggy deploy
 ```
+
+## Editing Config
+
+Use `agent.yaml` for project-level choices: agent identity, engine/provider,
+model, global settings, and the ordered list of enabled augments.
+
+Use `augments/<id>/augment.yaml` for per-augment config:
+
+```yaml
+type: webFetch
+config:
+  timeoutMs: 15000
+```
+
+For custom augments:
+
+```yaml
+type: custom
+source: ./index.ts
+config: {}
+```
+
+Put secrets in `.env` and reference them from config as `${NAME}`. After editing
+config or `.env`, run `auggy doctor` before restarting.
 
 ## Editing Identity
 
@@ -224,10 +289,24 @@ That creates:
 
 ```text
 augments/weather/
+  augment.yaml
   index.ts
   SKILL.md
   README.md
   weather.test.ts
+```
+
+The scaffolded `SKILL.md` lives beside the custom augment source while you build
+it. When the augment is installed into an agent, Auggy copies that skill to
+`skills/weather/SKILL.md`, matching the root skills layout used by built-in
+augments.
+
+The custom augment metadata looks like:
+
+```yaml
+type: custom
+source: ./index.ts
+config: {}
 ```
 
 The default augment exports a tool. A simplified example:
@@ -267,6 +346,15 @@ Install it into this agent from the parent directory:
 
 ```bash
 auggy augment install <agent-dir-name> ./<agent-dir-name>/augments/weather
+```
+
+If the custom augment should expose deterministic HTTP endpoints for an app
+frontend, add routes in `index.ts`, keep shared domain logic beside the augment,
+and inspect the result with:
+
+```bash
+auggy routes
+auggy routes --json
 ```
 
 After changing augments or skills, restart the agent:

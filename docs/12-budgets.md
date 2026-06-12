@@ -21,20 +21,25 @@ What it does **not** do:
 
 ## 2. Quick start
 
-Minimal `agent.yaml` excerpt (CLI format):
+Minimal CLI project config:
 
 ```yaml
+# agent.yaml
 augments:
-  - type: budgets
-    dbPath: ./data/budgets.db
-    caps:
-      public:
-        anonymous:
-          maxTurnsPerThread: 5
-        recognized:
-          maxTurnsPerThread: 20
-          maxTurnsPerDay: 50
-    anonymousGlobalLimit: 60
+  - budgets
+
+# augments/budgets/augment.yaml
+type: budgets
+config:
+  dbPath: ./data/budgets.db
+  caps:
+    public:
+      anonymous:
+        maxTurnsPerThread: 5
+      recognized:
+        maxTurnsPerThread: 20
+        maxTurnsPerDay: 50
+  anonymousGlobalLimit: 60
 ```
 
 Programmatic setup:
@@ -55,7 +60,9 @@ const budget = budgets({
 });
 ```
 
-Add it to your agent's `augments` array. No other wiring is needed — the kernel detects `turnGate` automatically.
+Enable it with `auggy augment add budgets` or add it to your agent's
+`augments` array and create `augments/budgets/augment.yaml`. No other wiring is
+needed — the kernel detects `turnGate` automatically.
 
 ## 3. Configuration reference
 

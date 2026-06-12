@@ -1,11 +1,11 @@
 /**
- * auggy add — add augments to an existing agent.
+ * auggy add — shortcut for auggy augment add.
  *
  * Lists currently installed vs available augments. User selects from
- * available. Updates agent.yaml and copies bundled
- * `src/augments/<name>/skill/` folders into the agent dir. Per ADR-030
- * the skill listing is owned by the runtime's 'skills' augment surface,
- * NOT injected into identity.md — so no identity-file rewrite happens
+ * available. Updates agent.yaml, writes augments/<id>/augment.yaml, and copies
+ * bundled `src/augments/<name>/skill/` folders into the agent dir. Per ADR-030
+ * the skill listing is owned by the runtime's 'skills' augment surface, NOT
+ * injected into identity.md — so no identity-file rewrite happens.
  * here. The model picks up new skills automatically because the 'skills'
  * augment rescans its mounted dir at every context() call.
  */
