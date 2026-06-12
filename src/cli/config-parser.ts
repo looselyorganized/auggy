@@ -839,16 +839,17 @@ function loadAugmentFolderEntry(
 
   const augmentDir = join(agentDir, "augments", id);
   const metadataPath = join(augmentDir, "augment.yaml");
+  const metadataLabel = relative(agentDir, metadataPath).replace(/\\/g, "/");
   if (!existsSync(metadataPath)) {
     throw new Error(
-      `Invalid agent.yaml:\n  - ${prefix}: missing augment metadata at ${metadataPath}`,
+      `Invalid agent.yaml:\n  - ${prefix}: missing augment metadata at ${metadataLabel}`,
     );
   }
 
   const raw = readFileSync(metadataPath, "utf-8");
   const parsed = parseYaml(raw);
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error(`${metadataPath}: not a valid YAML object`);
+    throw new Error(`${metadataLabel}: not a valid YAML object`);
   }
 
   let metadata: Record<string, unknown>;
@@ -857,7 +858,7 @@ function loadAugmentFolderEntry(
   } catch (err) {
     const msg = (err as Error).message;
     if (msg.startsWith("Missing environment variables:")) {
-      throw new Error(augmentMissingEnvError(msg, metadataPath, agentDir), { cause: err });
+      throw new Error(augmentMissingEnvError(msg, metadataLabel, agentDir), { cause: err });
     }
     throw err;
   }
@@ -865,7 +866,7 @@ function loadAugmentFolderEntry(
   const type = metadata.type;
   const config = metadata.config ?? {};
   if (config === null || typeof config !== "object" || Array.isArray(config)) {
-    throw new Error(`Invalid ${metadataPath}:\n  - config: must be an object when present`);
+    throw new Error(`Invalid ${metadataLabel}:\n  - config: must be an object when present`);
   }
 
   const out: Record<string, unknown> = {
@@ -1334,6 +1335,8 @@ function augmentMissingEnvError(
 ): string {
   const envPath = join(agentDir, ".env");
   const envExamplePath = join(agentDir, ".env.example");
+  const envLabel = relative(agentDir, envPath).replace(/\\/g, "/") || ".env";
+  const envExampleLabel = relative(agentDir, envExamplePath).replace(/\\/g, "/") || ".env.example";
 
   const lines: string[] = [
     originalMsg.replace(
@@ -1342,14 +1345,14 @@ function augmentMissingEnvError(
     ),
     "",
     "Add values for the missing keys to the agent's .env file:",
-    `  ${envPath}`,
+    `  ${envLabel}`,
   ];
 
   // Suggest cp ONLY when .env.example exists and .env doesn't.
   if (existsSync(envExamplePath) && !existsSync(envPath)) {
     lines.push("");
     lines.push("Or copy from the template:");
-    lines.push(`  cp ${envExamplePath} ${envPath}`);
+    lines.push(`  cp ${envExampleLabel} ${envLabel}`);
   }
 
   return lines.join("\n");

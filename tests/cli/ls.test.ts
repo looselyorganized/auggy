@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach, spyOn } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { runLs } from "../../src/cli/commands/ls";
@@ -38,13 +38,15 @@ describe("runLs", () => {
   });
 
   test("URL column shows /console URL for agents with webTransport", async () => {
-    seedAgentForTest("zip", {
+    const dir = seedAgentForTest("zip", {
       auggyDir,
-      yaml:
-        "id: aug1_zip\nname: zip\n" +
-        "augments:\n" +
-        "  - name: web\n    type: webTransport\n    options:\n      port: 8085\n",
+      yaml: "id: aug1_zip\nname: zip\naugments:\n  - webTransport\n",
     });
+    mkdirSync(join(dir, "augments", "webTransport"), { recursive: true });
+    writeFileSync(
+      join(dir, "augments", "webTransport", "augment.yaml"),
+      "type: webTransport\nconfig:\n  port: 8085\n",
+    );
     await runLs({ auggyDir });
     const output = logged.join("\n");
     expect(output).toContain("URL");

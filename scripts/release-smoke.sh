@@ -84,6 +84,27 @@ reject_pack_pattern '\.map$' "tarball includes source maps"
 reject_pack_pattern '^package/(\.env|node_modules/|\.git/|\.auggy/|docs/|tests/)' \
   "tarball includes local-only files"
 
+assert_augment_metadata() {
+  local id="$1"
+  local file="$AGENT_DIR/augments/$id/augment.yaml"
+  [[ -f "$file" ]] || fail "missing augment metadata: augments/$id/augment.yaml"
+  grep -qx "type: $id" "$file" || fail "augment metadata for $id missing type: $id"
+}
+
+assert_agent_uses_folder_backed_augments() {
+  local id
+  for id in "$@"; do
+    grep -qx "  - $id" "$AGENT_DIR/agent.yaml" || fail "agent.yaml missing augment id: $id"
+    assert_augment_metadata "$id"
+  done
+  if awk '/^augments:/{inside=1; next} /^[^[:space:]]/{inside=0} inside && /type:|name:|options:|config:|kind:|runtime:|configType:/{found=1} END{exit found ? 0 : 1}' "$AGENT_DIR/agent.yaml"; then
+    fail "agent.yaml contains inline augment object fields"
+  fi
+  if grep -R -nE '^(name|kind|runtime|configType):' "$AGENT_DIR/augments" >"$LOG_DIR/stale-augment-metadata.log"; then
+    fail "augment metadata contains stale v1 fields; see $LOG_DIR/stale-augment-metadata.log"
+  fi
+}
+
 info "install packed CLI"
 npm_config_cache="$INSTALL_CACHE" npm install -g --prefix "$GLOBAL_PREFIX" "$TARBALL"
 CLI="$GLOBAL_PREFIX/bin/auggy"
@@ -124,6 +145,7 @@ AGENT_DIR="$SMOKE_DIR/$AGENT_NAME"
 [[ -f "$AGENT_DIR/agent.yaml" ]] || fail "agent.yaml was not created"
 grep -q "\"auggy\": \"file:$TARBALL\"" "$AGENT_DIR/package.json" \
   || fail "agent package.json did not pin auggy to the packed tarball"
+assert_agent_uses_folder_backed_augments fileMemory filesystem webTransport webFetch turnControl
 
 info "install agent dependencies"
 (
@@ -167,6 +189,7 @@ info "add knowledge and MCP"
   HOME="$SMOKE_HOME" "$CLI" mcp add-json example-stdio \
     "{\"type\":\"stdio\",\"command\":\"bun\",\"args\":[\"$ROOT/examples/mcp-stdio-server/server.ts\"],\"cwd\":\"$ROOT\"}"
 )
+assert_agent_uses_folder_backed_augments fileMemory filesystem webTransport webFetch turnControl knowledge mcp
 
 info "MCP local doctor passes"
 (

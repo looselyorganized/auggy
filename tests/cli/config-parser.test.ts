@@ -931,6 +931,49 @@ describe("parseConfig — augmented missing-env-var error", () => {
     expect(caught!.message).not.toMatch(/cp .*\.env\.example/);
   });
 
+  test("names the augment metadata file when env is missing from folder-backed config", () => {
+    const yamlPath = join(dir, "agent.yaml");
+    writeFileSync(
+      yamlPath,
+      [
+        "id: aug1_00000000-0000-0000-0000-000000000000",
+        "name: test",
+        "engine:",
+        "  provider: anthropic",
+        "  model: claude-sonnet-4-6",
+        "augments:",
+        "  - webTransport",
+        "",
+      ].join("\n"),
+    );
+    mkdirSync(join(dir, "augments", "webTransport"), { recursive: true });
+    writeFileSync(
+      join(dir, "augments", "webTransport", "augment.yaml"),
+      [
+        "type: webTransport",
+        "config:",
+        "  auth:",
+        "    type: bearer",
+        "    token: ${MISSING_TOKEN}",
+        "",
+      ].join("\n"),
+    );
+
+    let caught: Error | null = null;
+    try {
+      parseConfig(yamlPath);
+    } catch (err) {
+      caught = err as Error;
+    }
+
+    expect(caught).not.toBeNull();
+    expect(caught!.message).toContain(
+      "Missing environment variables in augments/webTransport/augment.yaml",
+    );
+    expect(caught!.message).toContain("MISSING_TOKEN");
+    expect(caught!.message).toContain("  .env");
+  });
+
   test("treats empty .env placeholder values as missing", () => {
     const yamlPath = writeAgentYaml();
     writeFileSync(join(dir, ".env"), "MISSING_TOKEN=\n");

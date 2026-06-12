@@ -35,17 +35,15 @@ function writeAgent(root: string, name: string, opts: { routes?: "valid" | "rese
       provider: "anthropic",
       model: "claude-sonnet-4-6",
     },
-    augments: [
-      {
-        name: "concierge-services",
-        type: "custom",
-        source: "./augments/concierge-services/index.ts",
-      },
-    ],
+    augments: ["concierge-services"],
   };
 
   writeFileSync(join(dir, "agent.yaml"), stringify(config));
   mkdirSync(join(dir, "augments", "concierge-services"), { recursive: true });
+  writeFileSync(
+    join(dir, "augments", "concierge-services", "augment.yaml"),
+    stringify({ type: "custom", source: "./index.ts", config: {} }),
+  );
   writeFileSync(
     join(dir, "augments", "concierge-services", "index.ts"),
     customRouteModule(opts.routes ?? "valid"),
