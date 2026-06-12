@@ -221,6 +221,7 @@ export async function runAdd(target: string | undefined, opts: AddOpts): Promise
     console.log("  - Default destination: creator -> ./notifications.jsonl");
     console.log("  - Ask the agent to notify creator when something needs attention");
     console.log("  - For real delivery, edit augments/notify/augment.yaml");
+    console.log("  - Telegram alerts need a notify destination with botToken + chatId");
     console.log("  - Supported transports: webhook, Telegram, Agent Mail, log-to-file");
   }
 
@@ -236,10 +237,12 @@ export async function runAdd(target: string | undefined, opts: AddOpts): Promise
   if (telegramTransportAdded) {
     console.log();
     console.log("Use Telegram:");
+    console.log("  - This enables Telegram chat with the agent");
     console.log("  - Set TELEGRAM_BOT_TOKEN in .env");
     console.log("  - Set TELEGRAM_CREATOR_USER_IDS in .env (comma-separated numeric user IDs)");
     console.log("  - Default inbound mode: polling");
     console.log("  - Find your Telegram user ID with @userinfobot");
+    console.log("  - Proactive Telegram alerts are configured in augments/notify/augment.yaml");
     console.log("  - For production webhooks, edit augments/telegramTransport/augment.yaml");
   }
 

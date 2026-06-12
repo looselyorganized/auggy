@@ -974,6 +974,59 @@ describe("parseConfig — augmented missing-env-var error", () => {
     expect(caught!.message).toContain("  .env");
   });
 
+  test("treats empty shell env values as missing in folder-backed config", () => {
+    const previous = process.env.TELEGRAM_BOT_TOKEN;
+    process.env.TELEGRAM_BOT_TOKEN = "";
+
+    try {
+      const yamlPath = join(dir, "agent.yaml");
+      writeFileSync(
+        yamlPath,
+        [
+          "id: aug1_00000000-0000-0000-0000-000000000000",
+          "name: test",
+          "engine:",
+          "  provider: anthropic",
+          "  model: claude-sonnet-4-6",
+          "augments:",
+          "  - telegramTransport",
+          "",
+        ].join("\n"),
+      );
+      mkdirSync(join(dir, "augments", "telegramTransport"), { recursive: true });
+      writeFileSync(
+        join(dir, "augments", "telegramTransport", "augment.yaml"),
+        [
+          "type: telegramTransport",
+          "config:",
+          "  botToken: ${TELEGRAM_BOT_TOKEN}",
+          "  inbound:",
+          "    mode: polling",
+          "",
+        ].join("\n"),
+      );
+
+      let caught: Error | null = null;
+      try {
+        parseConfig(yamlPath);
+      } catch (err) {
+        caught = err as Error;
+      }
+
+      expect(caught).not.toBeNull();
+      expect(caught!.message).toContain(
+        "Missing environment variables in augments/telegramTransport/augment.yaml",
+      );
+      expect(caught!.message).toContain("TELEGRAM_BOT_TOKEN");
+    } finally {
+      if (previous === undefined) {
+        delete process.env.TELEGRAM_BOT_TOKEN;
+      } else {
+        process.env.TELEGRAM_BOT_TOKEN = previous;
+      }
+    }
+  });
+
   test("treats empty .env placeholder values as missing", () => {
     const yamlPath = writeAgentYaml();
     writeFileSync(join(dir, ".env"), "MISSING_TOKEN=\n");

@@ -504,7 +504,7 @@ export function installCustomAugment(
   const metadataSource = normalizeRelativePath(relative(augmentDir, sourceFile));
   const agentSource = normalizeRelativePath(relative(agentDir, sourceFile));
   const metadataPath = join(augmentDir, "augment.yaml");
-  if (!existsSync(metadataPath)) {
+  try {
     writeFileSync(
       metadataPath,
       stringifyYaml({
@@ -514,6 +514,8 @@ export function installCustomAugment(
       }),
       { flag: "wx", mode: 0o600 },
     );
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
   }
 
   (doc.augments as unknown[]).push(augmentName);

@@ -129,6 +129,27 @@ describe("telegramTransport config validation", () => {
     expect(() => parseConfig(path)).toThrow("botToken");
   });
 
+  it("reports folder-backed config paths for validation errors", () => {
+    const path = writeYaml(`${BASE}  - telegramTransport\n`);
+    mkdirSync(join(TMP, "augments", "telegramTransport"), { recursive: true });
+    writeFileSync(
+      join(TMP, "augments", "telegramTransport", "augment.yaml"),
+      [
+        "type: telegramTransport",
+        "config:",
+        '  botToken: ""',
+        "  inbound:",
+        "    mode: polling",
+        "  auth: {}",
+        "",
+      ].join("\n"),
+    );
+
+    expect(() => parseConfig(path)).toThrow(
+      "augments/telegramTransport/augment.yaml.config.botToken",
+    );
+  });
+
   it("rejects invalid anonymousIdentityMode value", () => {
     const path = writeYaml(
       BASE +
