@@ -9,6 +9,7 @@ import { scaffoldCustomAugment } from "../scaffold-custom-augment";
 import { validateCustomAugment } from "../augment-validator";
 import { augmentFolderForType } from "../scaffold-skills";
 import { displayPath } from "../display-path";
+import { VALID_NAME_RE } from "../config-parser";
 
 export interface AugmentCommandDeps {
   scaffoldCustomAugment?: typeof scaffoldCustomAugment;
@@ -480,6 +481,11 @@ export function installCustomAugment(
   const sourceEntry = resolve(opts.sourcePath);
   const sourceFile = resolveSourceFile(sourceEntry);
   const augmentName = basename(dirname(sourceFile));
+  if (!VALID_NAME_RE.test(augmentName)) {
+    throw new Error(
+      `Invalid augment name "${augmentName}". Use letters, numbers, hyphens, or underscores.`,
+    );
+  }
 
   const raw = parseYaml(readFileSync(configPath, "utf-8"));
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
@@ -497,14 +503,18 @@ export function installCustomAugment(
   mkdirSync(augmentDir, { recursive: true });
   const metadataSource = normalizeRelativePath(relative(augmentDir, sourceFile));
   const agentSource = normalizeRelativePath(relative(agentDir, sourceFile));
-  writeFileSync(
-    join(augmentDir, "augment.yaml"),
-    stringifyYaml({
-      type: "custom",
-      source: metadataSource,
-      config: {},
-    }),
-  );
+  const metadataPath = join(augmentDir, "augment.yaml");
+  if (!existsSync(metadataPath)) {
+    writeFileSync(
+      metadataPath,
+      stringifyYaml({
+        type: "custom",
+        source: metadataSource,
+        config: {},
+      }),
+      { flag: "wx", mode: 0o600 },
+    );
+  }
 
   (doc.augments as unknown[]).push(augmentName);
   writeFileSync(configPath, `# Agent configuration\n\n${stringifyYaml(doc)}`);

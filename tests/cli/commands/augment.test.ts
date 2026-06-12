@@ -452,4 +452,78 @@ describe("installCustomAugment", () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  test("rejects custom augment names that are not safe identifiers", () => {
+    const root = mkdtempSync(join(tmpdir(), "augment-install-"));
+    try {
+      const auggyDir = join(root, "auggy");
+      const agentDir = seedAgentForTest("zip", {
+        auggyDir,
+        yaml: [
+          "id: aug1_a3f7c2e1-8b4d-4f9e-a6c1-2d8e9f0b3a5c",
+          "name: zip",
+          "engine:",
+          "  provider: anthropic",
+          "  model: claude-sonnet-4-6",
+          "augments: []",
+          "",
+        ].join("\n"),
+      });
+      const customDir = join(agentDir, "augments", "bad.name");
+      mkdirSync(customDir, { recursive: true });
+      writeFileSync(
+        join(customDir, "index.ts"),
+        "export default function bad() { return { name: 'bad' }; }\n",
+      );
+
+      expect(() =>
+        installCustomAugment({ agentName: "zip", sourcePath: customDir, auggyDir }),
+      ).toThrow(/Invalid augment name/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("preserves an existing custom augment.yaml when installing", () => {
+    const root = mkdtempSync(join(tmpdir(), "augment-install-"));
+    try {
+      const auggyDir = join(root, "auggy");
+      const agentDir = seedAgentForTest("zip", {
+        auggyDir,
+        yaml: [
+          "id: aug1_a3f7c2e1-8b4d-4f9e-a6c1-2d8e9f0b3a5c",
+          "name: zip",
+          "engine:",
+          "  provider: anthropic",
+          "  model: claude-sonnet-4-6",
+          "augments: []",
+          "",
+        ].join("\n"),
+      });
+      const customDir = join(agentDir, "augments", "weather");
+      mkdirSync(customDir, { recursive: true });
+      writeFileSync(
+        join(customDir, "index.ts"),
+        "export default function weather() { return { name: 'weather' }; }\n",
+      );
+      writeFileSync(
+        join(customDir, "augment.yaml"),
+        "type: custom\nsource: ./index.ts\nconfig:\n  prefix: saved\n",
+      );
+
+      installCustomAugment({ agentName: "zip", sourcePath: customDir, auggyDir });
+
+      const metadata = parseYaml(readFileSync(join(customDir, "augment.yaml"), "utf-8")) as Record<
+        string,
+        unknown
+      >;
+      expect(metadata).toEqual({
+        type: "custom",
+        source: "./index.ts",
+        config: { prefix: "saved" },
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
