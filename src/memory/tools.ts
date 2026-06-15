@@ -13,6 +13,7 @@ import type { MemoryRegistry } from "./types";
 
 const DEFAULT_MAX_MEMORY_OPS_PER_TURN = 20;
 const EMERGENCY_CLEANUP_THRESHOLD = 1000;
+const MAX_DERIVED_TOPIC_LENGTH = 80;
 
 /**
  * Phase 1b Task 7: explicit serializer for memory_search results.
@@ -67,6 +68,23 @@ function assertMemoryAccess(
     return null;
   }
   return `Error: memory_${operation} on this label requires agent or creator trust. Current peer trust: ${trustLevel}.`;
+}
+
+function normalizeMemoryTopic(topic: string): string | null {
+  const normalized = topic
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, MAX_DERIVED_TOPIC_LENGTH);
+
+  return normalized.length > 0 ? normalized : null;
+}
+
+function labelForPeerTopic(prefix: string, peerId: string, topic: string): string | null {
+  const normalizedTopic = normalizeMemoryTopic(topic);
+  if (!normalizedTopic) return null;
+  return `${prefix}${peerId}:${normalizedTopic}`;
 }
 
 export interface CreateMemoryToolsResult {
@@ -141,15 +159,70 @@ export function createMemoryTools(
 
   const memoryWrite = defineTool({
     name: "memory_write",
-    description: "Write content to a memory block by label. Only mutable labels can be written.",
+    description:
+      "Write content to memory. Prefer topic + content for current-peer memory; exact label is still supported.",
     category: "memory",
     input: z.object({
-      label: z.string().describe("The label to write to"),
+      label: z.string().optional().describe("Optional exact memory label to write to"),
+      topic: z
+        .string()
+        .optional()
+        .describe("Optional topic to save under the current peer's scoped memory"),
+      provider: z
+        .string()
+        .optional()
+        .describe("Optional namespace memory provider name when multiple writable providers exist"),
       content: z.string().describe("The content to store"),
     }),
-    execute: async ({ label, content }, context?) => {
+    execute: async ({ label, topic, provider: providerName, content }, context?) => {
       const budgetErr = checkBudget(context?.turnId ?? "unknown");
       if (budgetErr) return budgetErr;
+
+      if (!label) {
+        if (!topic) {
+          return "Error: memory_write requires either an exact label or a topic.";
+        }
+        if (!context) {
+          return "Error: memory_write by topic requires turn context.";
+        }
+        if (!context.peer?.id) {
+          return "Error: memory_write by topic requires a current peer.";
+        }
+
+        const candidates = registry.namespaces
+          .filter((ns) => !providerName || ns.augment.name === providerName)
+          .filter((ns) => {
+            const spec = ns.augment.memory!;
+            return (
+              spec.owns.kind === "namespace" &&
+              Boolean(spec.write) &&
+              assertMemoryAccess("write", spec.defaults.origin, context) === null
+            );
+          });
+
+        if (candidates.length === 0) {
+          return providerName
+            ? `Error: No writable memory provider named "${providerName}" is available for this peer.`
+            : "Error: No writable current-peer memory provider is available.";
+        }
+        if (candidates.length > 1) {
+          const names = candidates.map((candidate) => candidate.augment.name).join(", ");
+          return `Error: Multiple writable memory providers are available (${names}). Retry with provider.`;
+        }
+
+        const candidate = candidates[0]!;
+        const spec = candidate.augment.memory! as NamespaceMemoryProvider;
+        const derivedLabel = labelForPeerTopic(spec.owns.prefix, context.peer.id, topic);
+        if (!derivedLabel) {
+          return "Error: memory_write topic must contain at least one letter or number.";
+        }
+
+        await spec.write!(derivedLabel, content, {
+          peerId: context.peer.id,
+          trustLevel: context.peer.trustLevel,
+        });
+        return `Successfully wrote to "${derivedLabel}"`;
+      }
 
       const provider = lookupProvider(registry, label);
       if (!provider) return `Error: No provider owns label "${label}"`;

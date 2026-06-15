@@ -18,9 +18,9 @@ const RECENT_NAMESPACE_MEMORY_LIMIT = 5;
  * constructs ContextBlocks using the provider's defaults.
  *
  * - Static providers: iterate all declared labels, call read() for each.
- * - Namespace providers: call search() with the inbound message text,
- *   but only for message triggers. Non-message triggers contribute no
- *   blocks from dynamic providers.
+ * - Namespace providers: for message triggers, list recent entries for the
+ *   current peer when supported, then call search() with the inbound message
+ *   text. Non-message triggers contribute no blocks from dynamic providers.
  *
  * Errors are re-thrown iff the augment is marked required, otherwise
  * they are swallowed so memory failures don't abort turns.

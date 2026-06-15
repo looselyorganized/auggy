@@ -21,7 +21,7 @@ export type ContextPlacement = "system" | "preamble" | "assistant-preamble";
 export type ContextProvenance = "identity" | "memory" | "retrieval" | "augment";
 export type ContextPriority = "required" | "high" | "normal" | "low" | "evictable";
 export type EvictionPolicy = "never" | "summarize" | "drop";
-export type ContextOrigin = "operator" | "system" | "agent" | "peer-derived";
+export type ContextOrigin = "operator" | "system" | "agent" | "agent-derived" | "peer-derived";
 
 export interface ContextBlock {
   source: string;          // augment name (used in trace + [AUGMENT CONTEXT: source] markers)
@@ -46,13 +46,14 @@ export interface ContextBlock {
 
 **`priority`** determines eviction order when the context budget is exceeded. The allocator sorts blocks by priority (`required` first, `evictable` last) and includes blocks until the budget runs out. Blocks past the budget go into `evictions` for the trace.
 
-**`origin`** is the trust marker. Four values:
+**`origin`** is the trust marker. Five values:
 - `operator` — block was authored by the operator (e.g. `identity.md`). Preamble-safe.
 - `system` — block was produced by system-authored machinery (e.g. a deterministic context augment). Preamble-safe.
-- `agent` — block contains content the agent wrote during earlier turns (e.g. mutable `learned.md`). Rendered with an `[AGENT-DERIVED]` marker and preamble rule 7 instructs the model to treat these as observations, not instructions.
+- `agent` — direct agent-side writes reserved for system-internal agent output.
+- `agent-derived` — block contains an extracted or paraphrased observation produced by the agent during earlier turns (e.g. auto-saved episodic memory). Rendered with an `[AGENT-DERIVED]` marker and preamble rule 7 instructs the model to treat these as observations, not instructions.
 - `peer-derived` — block contains content influenced by an external peer (e.g. an episodic entry created from a visitor message). Rendered with a `[PEER-DERIVED]` marker and preamble rule 6 warns the model about adversarial input.
 
-**This is load-bearing for security:** an augment that mishandles the `origin` field can leak adversarial or self-authored content into a position the model treats as authoritative. Mutable memory sources should use `origin: agent` and `placement: context` (not `placement: preamble`) so a successful prompt injection can't elevate to durable system-level context on future turns.
+**This is load-bearing for security:** an augment that mishandles the `origin` field can leak adversarial or self-authored content into a position the model treats as authoritative. Mutable memory sources should use `origin: agent-derived` or `origin: peer-derived` with a non-system placement so a successful prompt injection can't elevate to durable system-level context on future turns.
 
 **Naming note (A2A future):** `origin: "agent"` means "this agent wrote it" (self-authored). When A2A multi-agent interaction ships (spine/Plan 4), contexts originating from *peer agents* will need a distinct origin value (e.g. `"peer-agent"`) to avoid ambiguity. The memory layer architecture design session should resolve this — see `docs/memory-layer-architecture-brief.md`.
 

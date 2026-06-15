@@ -9,6 +9,9 @@ export interface McpRuntimePolicy {
   maxResultBytes?: number;
   maxSchemaBytes?: number;
   maxConcurrentCalls?: number;
+  maxTools?: number;
+  maxToolPages?: number;
+  includeToolDescriptions?: boolean;
 }
 
 export interface McpRuntimeServer {

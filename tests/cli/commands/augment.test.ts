@@ -259,10 +259,12 @@ describe("listAugments and removeAugment", () => {
       expect(text).toContain("webFetch");
       expect(text).toContain("Available:");
       expect(text).toContain("knowledge");
+      expect(text).toContain("visitorAuth");
+      expect(text).toContain("mcp");
       expect(text).toContain("# Local docs and API-backed knowledge sources");
       expect(text).not.toContain("Knowledge - local docs");
       expect(text).toContain("Preview:");
-      expect(text).toContain("visitorAuth");
+      expect(text).toContain("bash");
       expect(text).toContain("auggy augment add <name>");
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -279,8 +281,10 @@ describe("listAugments and removeAugment", () => {
       expect(text).toContain("none");
       expect(text).toContain("Available:");
       expect(text).toContain("knowledge");
-      expect(text).toContain("Preview:");
       expect(text).toContain("visitorAuth");
+      expect(text).toContain("mcp");
+      expect(text).toContain("Preview:");
+      expect(text).toContain("bash");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

@@ -386,6 +386,155 @@ describe("createMemoryTools", () => {
       expect(writes).toEqual(["visitor memory"]);
     });
 
+    it("derives a peer-scoped label from topic when writing namespace memory", async () => {
+      const writes: Array<{
+        label: string;
+        content: string;
+        peerId?: string;
+        trustLevel?: string;
+      }> = [];
+      const peerDerivedDefaults: MemoryDefaults = { ...defaults, origin: "peer-derived" };
+      const providers: Augment[] = [
+        {
+          name: "episodic",
+          memory: {
+            owns: { kind: "namespace", prefix: "ep:" },
+            defaults: peerDerivedDefaults,
+            search: async () => [],
+            write: async (label, content, opts) => {
+              writes.push({
+                label,
+                content,
+                peerId: opts?.peerId,
+                trustLevel: opts?.trustLevel,
+              });
+            },
+          },
+        },
+      ];
+      const registry = buildRegistry(providers);
+      const { tools } = createMemoryTools(registry);
+      const writeTool = tools.find((t) => t.name === "memory_write")!;
+      const result = await writeTool.execute(
+        { topic: "Favorite Topics!", content: "Sam likes route manifests." },
+        {
+          turnId: "t1",
+          peer: { id: "vis_1", kind: "human", trustLevel: "public", sourceAugment: "web" },
+          threadId: "th1",
+        },
+      );
+
+      expect(result).toMatch(/success/i);
+      expect(writes).toEqual([
+        {
+          label: "ep:vis_1:favorite-topics",
+          content: "Sam likes route manifests.",
+          peerId: "vis_1",
+          trustLevel: "public",
+        },
+      ]);
+    });
+
+    it("requires context when deriving memory labels from topic", async () => {
+      const peerDerivedDefaults: MemoryDefaults = { ...defaults, origin: "peer-derived" };
+      const providers: Augment[] = [
+        {
+          name: "episodic",
+          memory: {
+            owns: { kind: "namespace", prefix: "ep:" },
+            defaults: peerDerivedDefaults,
+            search: async () => [],
+            write: async () => {},
+          },
+        },
+      ];
+      const registry = buildRegistry(providers);
+      const { tools } = createMemoryTools(registry);
+      const writeTool = tools.find((t) => t.name === "memory_write")!;
+      const result = await writeTool.execute({ topic: "preferences", content: "No context" });
+      expect(result).toMatch(/requires turn context/i);
+    });
+
+    it("requires provider selection when topic write has multiple writable namespaces", async () => {
+      const peerDerivedDefaults: MemoryDefaults = { ...defaults, origin: "peer-derived" };
+      const providers: Augment[] = [
+        {
+          name: "episodic",
+          memory: {
+            owns: { kind: "namespace", prefix: "ep:" },
+            defaults: peerDerivedDefaults,
+            search: async () => [],
+            write: async () => {},
+          },
+        },
+        {
+          name: "crmMemory",
+          memory: {
+            owns: { kind: "namespace", prefix: "crm:" },
+            defaults: peerDerivedDefaults,
+            search: async () => [],
+            write: async () => {},
+          },
+        },
+      ];
+      const registry = buildRegistry(providers);
+      const { tools } = createMemoryTools(registry);
+      const writeTool = tools.find((t) => t.name === "memory_write")!;
+      const result = await writeTool.execute(
+        { topic: "preferences", content: "Ambiguous" },
+        {
+          turnId: "t1",
+          peer: { id: "vis_1", kind: "human", trustLevel: "public", sourceAugment: "web" },
+          threadId: "th1",
+        },
+      );
+      expect(result).toMatch(/multiple writable memory providers/i);
+      expect(result).toContain("episodic");
+      expect(result).toContain("crmMemory");
+    });
+
+    it("uses the selected provider when deriving memory labels from topic", async () => {
+      const writes: string[] = [];
+      const peerDerivedDefaults: MemoryDefaults = { ...defaults, origin: "peer-derived" };
+      const providers: Augment[] = [
+        {
+          name: "episodic",
+          memory: {
+            owns: { kind: "namespace", prefix: "ep:" },
+            defaults: peerDerivedDefaults,
+            search: async () => [],
+            write: async (label: string) => {
+              writes.push(`episodic:${label}`);
+            },
+          },
+        },
+        {
+          name: "crmMemory",
+          memory: {
+            owns: { kind: "namespace", prefix: "crm:" },
+            defaults: peerDerivedDefaults,
+            search: async () => [],
+            write: async (label: string) => {
+              writes.push(`crmMemory:${label}`);
+            },
+          },
+        },
+      ];
+      const registry = buildRegistry(providers);
+      const { tools } = createMemoryTools(registry);
+      const writeTool = tools.find((t) => t.name === "memory_write")!;
+      const result = await writeTool.execute(
+        { provider: "crmMemory", topic: "Buying Stage", content: "Sam is evaluating." },
+        {
+          turnId: "t1",
+          peer: { id: "vis_1", kind: "human", trustLevel: "public", sourceAugment: "web" },
+          threadId: "th1",
+        },
+      );
+      expect(result).toMatch(/success/i);
+      expect(writes).toEqual(["crmMemory:crm:vis_1:buying-stage"]);
+    });
+
     it("denies write when context is missing (fail-closed)", async () => {
       const providers: Augment[] = [
         {

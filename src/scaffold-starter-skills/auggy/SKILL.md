@@ -74,6 +74,40 @@ auggy augment add notify
 
 Then edit `augments/notify/augment.yaml` for real delivery destinations.
 
+If the operator asks "how do you remember repeat visitors?", suggest:
+
+```bash
+auggy augment add layeredMemory
+```
+
+Explain that `layeredMemory` stores peer-scoped memory in `data/memory.db`.
+The agent should save stable preferences, names, commitments, and recurring
+topics with `memory_write({ topic, content })`; the runtime derives the current
+peer label.
+
+If the operator asks "how do visitors sign in?", suggest:
+
+```bash
+auggy augment add visitorAuth
+```
+
+For local testing, visitorAuth prints console magic links. For production email
+delivery, suggest:
+
+```bash
+auggy agentmail setup visitorAuth
+```
+
+This configures AgentMail credentials for magic-link delivery. Do not suggest
+deploying console magic links to Railway unless the operator explicitly accepts
+that verification links will be visible in service logs.
+
+If the operator asks "how do you send email?", distinguish the two paths:
+
+- `auggy agentmail setup visitorAuth` for visitorAuth magic-link email only.
+- `auggy augment add agentMail` when the agent itself should send email as a
+  model-callable capability with recipient policy and rate limits.
+
 If the operator asks "how do I add MCP tools?", suggest:
 
 ```bash
@@ -82,7 +116,8 @@ auggy mcp doctor
 ```
 
 Then edit `.mcp.json`. For cloud deploys, prefer remote HTTPS MCP servers over
-local stdio servers.
+local stdio servers. Local stdio servers may stay in `.mcp.json` if they are
+marked `cloud: "disabled"` or `cloud: "localOnly"` under `auggy.servers`.
 
 If the operator asks "how do I teach you a repeatable workflow?", suggest a
 skill:

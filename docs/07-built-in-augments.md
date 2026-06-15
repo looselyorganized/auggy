@@ -38,9 +38,9 @@ Fresh agents are scaffolded for the shortest path to chat:
 - `turnControl`
 
 The `skills` augment is runtime infrastructure and is auto-mounted when needed.
-Stable add-ons (`knowledge`, `layeredMemory`, `notify`, `telegramTransport`)
-are installed after first chat with `auggy augment add <name>`. Preview
-augments (`budgets`, `mcp`, `visitorAuth`, `link`, `agentMail`, `bash`) remain
+Stable add-ons (`knowledge`, `layeredMemory`, `notify`, `telegramTransport`,
+`visitorAuth`, `agentMail`, `mcp`) are installed after first chat with
+`auggy augment add <name>`. Preview augments (`budgets`, `link`, `bash`) remain
 available behind an explicit confirmation because their production DX or
 security edge cases are still being hardened. `supabaseMemory` remains in the
 runtime for legacy/manual configs, but is intentionally not shown in the v1.0
@@ -110,7 +110,7 @@ export interface FileMemoryOptions {
   label: string;                    // the static label this provider owns
   source: string;                   // absolute file path
   mutable: boolean;                 // whether write() is exposed
-  origin: ContextOrigin;            // "operator" | "system" | "peer-derived"
+  origin: ContextOrigin;            // "operator" | "system" | "agent" | "agent-derived" | "peer-derived"
   priority: ContextPriority;        // "required" | "high" | "normal" | "low" | "evictable"
   placement: ContextPlacement;      // "system" | "preamble" | "assistant-preamble"
   eviction: EvictionPolicy;         // "never" | "summarize" | "drop"
@@ -446,7 +446,7 @@ config:
 
 `layeredMemory` is the primary peer-scoped episodic memory augment. Every entry is bound to the peer who is talking in the current turn — peers cannot read each other's entries. Storage is pluggable: SQLite (default, runs locally with WAL mode and prepared statements) or Supabase (manual/programmatic configs). All eleven day-one mitigations (provenance, supersession, verbatim flags, embedding versioning, retention classes) are present in the schema from the first write.
 
-`layeredMemory` registers as a namespace memory provider. The kernel's memory bus synthesizes four model-callable tools automatically: `memory_search`, `memory_write`, `memory_list`, and `memory_forget`.
+`layeredMemory` registers as a namespace memory provider. The kernel's memory bus synthesizes five model-callable tools automatically: `memory_read`, `memory_search`, `memory_write`, `memory_list`, and `memory_forget`.
 
 ### Retrieval and auto-save capability
 
@@ -457,10 +457,12 @@ against the inbound text. This is what makes a returning verified visitor's
 
 Auto-save is a capability of `layeredMemory` itself, not a separate augment. In
 CLI-created agents it is installed with `autoSave.enabled: false` for v1.0, so
-the model saves memory explicitly with `memory_write`. Programmatic users can
-enable auto-save by providing an extraction engine; when enabled, a background
-process runs after user-facing turns, extracts structured facts from the
-completed conversation transcript, and writes them to the peer's namespace with
+the model saves memory explicitly with `memory_write({ topic, content })`. The
+runtime derives the current peer label from turn context, so the model does not
+hand-build visitor IDs or internal labels. Programmatic users can enable
+auto-save by providing an extraction engine; when enabled, a background process
+runs after user-facing turns, extracts structured facts from the completed
+conversation transcript, and writes them to the peer's namespace with
 `origin: "agent-derived"`.
 
 The model never invokes auto-save directly. The only visible effect is that `memory_search` results sometimes include entries marked `[AGENT-DERIVED]`.
@@ -561,8 +563,8 @@ await agent.start();
 What happens at boot:
 1. `wireMemoryBus` builds the registry: `{ static: { "self" → fileMemory }, namespaces: [{ "episode:" → supabaseMemory }] }`. No conflicts.
 2. Both memory providers get synthesized `context()` functions.
-3. The synthetic `memory-bus` augment is appended with the four generic memory tools.
-4. `generateAgentCard` produces a card with `capabilities.memory: true`, `capabilities.transport: true`, and four memory tool skills.
+3. The synthetic `memory-bus` augment is appended with the five generic memory tools.
+4. `generateAgentCard` produces a card with `capabilities.memory: true` and `capabilities.transport: true`; model-facing tools stay out of the public A2A skills list.
 5. `lifecycle.boot()` runs: `fileMemory.onBoot()` reads `zip-soul.md`. `supabaseMemory` has no onBoot. `webTransport.onBoot()` starts Bun.serve on port 8080. `memory-bus` has no onBoot.
 6. The web transport is registered with a `TransportQueue` (concurrency 1, queue depth 50, rate limit 30/min/peer).
 7. The agent is now serving requests on `http://localhost:8080`.
@@ -1152,6 +1154,7 @@ config:
   publicUrl: ${AUGGY_PUBLIC_URL}
   dbPath: ./data/visitor-auth.db
   agentMail:
+    transport: agentmail
     apiKey: ${AGENTMAIL_API_KEY}
     inboxId: ${AGENTMAIL_INBOX_ID}
   signingKey: ${VISITOR_SIGNING_KEY}
@@ -1165,7 +1168,23 @@ config:
 
 The first member of the auth-augment family. `visitorAuth` lets a public-anonymous visitor verify ownership of an email address and become public-recognized — same `vis_<uuid>` identity returns across sessions, enabling memory continuity and trust elevation.
 
-It adds three things to the agent: a model-callable `request_auth({method: "email", email})` tool that sends the verification email; a public-unauthenticated HTTP route `GET /visitor-auth/verify?token=<uuid>` that mounts on the agent's `webTransport`; and a per-turn context block summarizing the active peer's verification state. Verification state is persisted in `<agent-dir>/data/visitor-auth.db` (token + verified-visitor tables).
+It adds a model-callable `request_auth({method: "email", email})` tool; a
+deterministic `POST /visitor-auth/request` app route for frontend-owned sign-in
+forms; verification routes (`GET /visitor-auth/verify?token=<uuid>` and
+`POST /visitor-auth/verify`) mounted on `webTransport`; and a per-turn context
+block summarizing the active peer's verification state. Verification state is
+persisted in `<agent-dir>/data/visitor-auth.db` (token + verified-visitor
+tables).
+
+Local testing uses `agentMail.transport: console`, which prints magic links to
+stdout. Production email should be configured with:
+
+```bash
+auggy agentmail setup visitorAuth
+```
+
+Deploy preflight rejects console magic links on public Railway deploys unless
+the operator explicitly acknowledges that links will appear in service logs.
 
 ### Key constraint
 
@@ -1182,7 +1201,7 @@ For the full operator reference (config, env vars, security posture, ops command
 The console dashboard API exposes a **Visitors** block with:
 
 - **KV row** — mail transport, inbox / console mode, public URL, agent binding.
-- **Status section** — `warn` level when `agentMail.transport === "console"` and `NODE_ENV=production` (operator-visible reminder that magic links print to logs).
+- **Status section** — shows the configured mail transport and warns when console magic links are being used outside a local-only setup.
 - **Table** — verified visitors (email, verified-at, revoked) with a per-row `visitor-revoke` action. Revoke uses the email as the rowKey; calls `revokeByEmail` + `addRevokedVisitorId` so the denylist survives `unrevokeAndRotate`.
 
 ## `link` — Peer-to-peer A2A v0.2 transport

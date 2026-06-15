@@ -13,7 +13,7 @@ If you're deploying locally as a launchd service (macOS), see [`auggy start`](./
 | **Bun** ≥ 1.2.0 ([install](https://bun.sh/install)) | The runtime; `auggy` is a TypeScript CLI executed by Bun. |
 | **Railway CLI** ([install](https://docs.railway.com/develop/cli)) | The deploy command shells out to `railway`. Same trust pattern as `git push` trusts `git`. |
 | `railway login` completed | Authenticates the Railway CLI session. `auggy deploy` does not store API tokens. |
-| A Railway project | Create one in the [Railway dashboard](https://railway.com/new). You'll provide the project ID on first deploy. |
+| A Railway workspace | Personal/team workspace that will own the project. `auggy deploy` can create the Railway project for you, or link an existing one. |
 | `auggy create <name>` already run | Deploy operates on an agent project. |
 
 ---
@@ -194,6 +194,37 @@ config:
 
 The interpolation resolves at boot. First deploys work because the deploy command provisions the domain → sets the env var → triggers `railway up` in that order ([D7 of the deploy plan](../../../docs/superpowers/plans/2026-05-06-aug1-deploy-railway.md)).
 
+For production magic-link email, run:
+
+```bash
+auggy agentmail setup visitorAuth
+```
+
+This provisions or configures the AgentMail inbox used by `visitorAuth`, writes
+`AGENTMAIL_API_KEY` and `AGENTMAIL_INBOX_ID` to `.env`, and updates
+`augments/visitorAuth/augment.yaml` to use `agentMail.transport: agentmail`.
+
+Console magic links are local-only. Deploy preflight fails if `visitorAuth` is
+still configured with `agentMail.transport: console`, unless
+`allowConsoleInProduction: true` is set under the `visitorAuth` config block to
+explicitly acknowledge that verification links will appear in Railway logs.
+
+## MCP on Railway
+
+MCP config lives in `.mcp.json`. `auggy deploy` runs cloud preflight before it
+touches Railway:
+
+- Remote MCP servers must use HTTPS (`streamable-http`, `sse`, or `http`).
+- Enabled `stdio` servers fail cloud preflight because they are local
+  development processes.
+- Local-only `stdio` servers can stay in `.mcp.json` if marked
+  `cloud: "disabled"` or `cloud: "localOnly"` under `auggy.servers`.
+- Missing `${ENV_VAR}` references and literal secret-looking values fail
+  preflight.
+
+Run `auggy mcp doctor --cloud` before deploy when adding or changing MCP
+servers.
+
 ---
 
 ## Tear-down
@@ -234,5 +265,7 @@ The Railway volume is **NOT** automatically deleted (Railway retains it as a saf
 | Deploy preflight fails before Railway work | Run `auggy doctor` and fix the reported config/env/dependency issue. |
 | Health check does not pass after deploy | Run `auggy logs` and inspect the boot error. The cloud record is still written, so redeploy with `auggy deploy --yes` after fixing. |
 | visitorAuth refuses to boot — "publicUrl required" | Check that `augments/visitorAuth/augment.yaml` has `publicUrl: ${AUGGY_PUBLIC_URL}` and the deploy actually generated a domain. Re-run `auggy deploy` to refresh. |
+| Deploy preflight fails because visitorAuth uses console mail | Run `auggy agentmail setup visitorAuth`, or set `allowConsoleInProduction: true` only for smoke tests where log-visible magic links are acceptable. |
+| Deploy preflight fails because MCP has an enabled `stdio` server | Use a remote HTTPS MCP server for cloud, or mark the local server `cloud: "disabled"` in `.mcp.json`. |
 | Memory disappears after redeploy | Check the volume is mounted (Railway dashboard → service → Volumes). If empty, the symlink list in the Dockerfile may be missing your dbPath — check `src/cli/deploy/dockerfile.ts`'s `SQLITE_DB_NAMES`. |
 | Daily budget cap hit unexpectedly | If you enabled autoSave with an extraction engine, extraction calls count against the cap. Run `evals/layered-memory/run.ts --smoke` to measure your per-extraction cost; lower the cadence in `augments/layeredMemory/augment.yaml` if needed. |

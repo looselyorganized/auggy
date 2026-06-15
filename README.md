@@ -65,7 +65,10 @@ Add a stable built-in augment:
 
 ```bash
 auggy augment add knowledge
+auggy augment add layeredMemory
+auggy augment add visitorAuth
 auggy augment add notify
+auggy augment add mcp
 auggy augment add telegramTransport
 ```
 
@@ -140,12 +143,16 @@ Stable add-ons:
 | Augment | Add it when you want... |
 | --- | --- |
 | `knowledge` | Local markdown docs and API-backed knowledge sources |
+| `layeredMemory` | Repeat visitor memory backed by SQLite |
+| `visitorAuth` | Email magic-link sign-in for recognized visitors |
+| `agentMail` | Model-callable outbound email through AgentMail |
 | `notify` | Outbound notifications to an operator or service |
 | `telegramTransport` | Bidirectional chat with the agent from Telegram |
 | `mcp` | Tools from local or remote MCP servers |
 
-Preview augments are visible in `auggy augment list`, but the default v1 path
-keeps first run focused on local chat.
+Preview augments (`bash`, `budgets`, `link`) are visible in
+`auggy augment list`, but require deliberate setup because their production
+policy surface is broader.
 
 ## Knowledge
 
@@ -168,6 +175,37 @@ Edit, rename, or delete the starter markdown files. Add more files under
 `knowledge/local/`, then list each endpoint in `knowledge/local/manifest`.
 API-backed sources live in `knowledge/sources.json`.
 
+## Memory And Visitors
+
+```bash
+auggy augment add layeredMemory
+auggy augment add visitorAuth
+```
+
+`layeredMemory` stores peer-scoped episodic memory in
+`data/memory.db`. The agent can explicitly save stable preferences,
+commitments, names, and recurring topics with:
+
+```ts
+memory_write({ topic: "preferences", content: "Sam prefers concise replies." })
+```
+
+The runtime derives the current peer label, so the model does not hand-build
+visitor IDs or internal memory labels.
+
+`visitorAuth` promotes an anonymous browser visitor into a recognized visitor
+with an email magic link. Pair it with `layeredMemory` when you want "welcome
+back" continuity across sessions.
+
+Local testing uses console magic links. For production email delivery:
+
+```bash
+auggy agentmail setup visitorAuth
+```
+
+Deploy preflight blocks console magic links on Railway unless you explicitly
+acknowledge that links will appear in service logs.
+
 ## Notifications
 
 ```bash
@@ -177,6 +215,17 @@ auggy augment add notify
 The default destination writes to `notifications.jsonl` so the augment works
 locally with no secrets. For real delivery, edit
 `augments/notify/augment.yaml` and add any required secrets to `.env`.
+
+## AgentMail
+
+```bash
+auggy augment add agentMail
+```
+
+Use this when the agent itself should send email through AgentMail with a
+trust gate, recipient allowlist, rate limits, and audit history. If you only
+need magic-link email for `visitorAuth`, use `auggy agentmail setup visitorAuth`
+instead of adding the full `agentMail` augment.
 
 ## Telegram
 
@@ -258,6 +307,11 @@ MCP for cloud, or mark local-only servers disabled for cloud:
 }
 ```
 
+MCP is treated as an external trust boundary. Auggy fails a server closed on
+missing env vars, duplicate exposed tool names, invalid config, or cloud-unsafe
+stdio usage. Tool discovery, schemas, descriptions, concurrent calls, and
+results are capped before they reach the model.
+
 ## Deploy To Railway
 
 Auggy has a first-class Railway deploy path:
@@ -271,7 +325,8 @@ links a service, mounts persistent data at `/app/data`, starts a build, waits
 for Railway deployment status when available, then verifies `/health`.
 
 When creating a new Railway project, Auggy selects from your existing Railway
-workspaces. For scripted deploys, pass `--workspace <workspace-id-or-name>`.
+workspaces and creates the project for you. For scripted deploys, pass
+`--workspace <workspace-id-or-name>`.
 
 Useful follow-ups:
 
@@ -338,6 +393,8 @@ npm i -g ./auggy-*.tgz
 - [Built-in augments](docs/07-built-in-augments.md)
 - [Skills](docs/11-skills.md)
 - [Deploy to Railway](docs/18-deploy.md)
+- [Visitor Auth](docs/19-visitor-auth.md)
+- [Agent Mail](docs/22-agent-mail.md)
 - [MCP](docs/24-mcp.md)
 - [Console](docs/21-console.md)
 - [Reference docs](docs/README.md)

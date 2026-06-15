@@ -45,6 +45,10 @@ export interface Answers {
  */
 export function mockInquirerPrompts(getAnswers: () => Answers): void {
   mock.module("@inquirer/prompts", () => ({
+    Separator: class Separator {
+      readonly type = "separator";
+      constructor(readonly separator = "") {}
+    },
     select: async (config: {
       message: string;
       choices: Array<{ name?: string; value: unknown }>;
@@ -64,11 +68,14 @@ export function mockInquirerPrompts(getAnswers: () => Answers): void {
     },
     password: async () => getAnswers().apiKey ?? "",
     checkbox: async (config: {
-      choices: Array<{
-        value: { type: string };
-        checked?: boolean;
-        disabled?: string | boolean;
-      }>;
+      choices: Array<
+        | {
+            value: { type: string };
+            checked?: boolean;
+            disabled?: string | boolean;
+          }
+        | { type: string }
+      >;
     }) => {
       // Required entries are pre-checked + disabled in the create flow; treat
       // the test's augmentTypes list as additional optional selections on top.
@@ -76,6 +83,7 @@ export function mockInquirerPrompts(getAnswers: () => Answers): void {
       // already post-filter), so the OR collapses to `wanted.has(...)` there.
       const wanted = new Set(getAnswers().augmentTypes ?? []);
       return config.choices
+        .filter((c): c is { value: { type: string }; checked?: boolean } => "value" in c)
         .filter((c) => c.checked || wanted.has(c.value.type))
         .map((c) => c.value);
     },

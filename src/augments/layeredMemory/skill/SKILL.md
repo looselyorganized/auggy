@@ -14,38 +14,30 @@ This memory is for things you learn turn-by-turn — preferences, names, commitm
 | Tool | What it does | When to call |
 |------|--------------|--------------|
 | `memory_search(query)` | Keyword search over the current peer's memory entries | When the peer references a specific prior topic, preference, or commitment |
-| `memory_write(label, content)` | Persist content under a peer-scoped label | When the peer introduces themselves, states a preference, makes a commitment, or asks to be remembered |
+| `memory_write({ topic, content })` | Persist content under a topic for the current peer | When the peer introduces themselves, states a preference, makes a commitment, or asks to be remembered |
 | `memory_list()` | List available labels and namespaces visible to this peer | When you want to confirm what's already stored before writing or searching |
 | `memory_forget(peerId)` | Wipe ALL episodic memory for a specific peer | Right-to-erasure requests. Requires elevated trust (operator or creator); a regular peer cannot trigger it |
 
 `memory_read(label)` exists but **does not work on episodic labels**. Episodic memory is peer-scoped, and reading by label would bypass that scoping. Use `memory_search` instead. (`memory_read` still works for non-episodic static labels like `self` — the agent's identity preamble — when those are configured.)
 
-## How labels are structured
+## How memory writes are scoped
 
-Labels in this layer must start with the configured **namespace prefix** (set by the operator — typically the agent's name with a colon). When a peer is talking with you, their entries must additionally be scoped to their peer ID.
-
-The shape:
+Use `topic` writes for episodic memory:
 
 ```
-<prefix><peerId>            ← write a single entry for this peer
-<prefix><peerId>:<topic>    ← write multiple entries grouped by topic
+memory_write({ topic: "preferences", content: "Sam prefers concise replies." })
+memory_write({ topic: "commitments", content: "Sam will send the budget on Tuesday." })
 ```
 
-**Examples** (assuming the namespace prefix is `concierge:` and the peer id is `vis_a1b2c3`):
+The runtime scopes the saved entry to the current peer. Do not invent peer IDs or hand-build internal labels. If a write fails because multiple memory providers are available, retry with the provider the error names.
 
-```
-concierge:vis_a1b2c3                    ← one umbrella entry
-concierge:vis_a1b2c3:preferences        ← topic-grouped
-concierge:vis_a1b2c3:commitments        ← topic-grouped
-```
-
-If you try to write a label that doesn't include the current peer's ID in the right shape, the write fails with a clear error. Don't try to outsmart this — it is a structural protection against one peer seeding entries against another.
+Exact label writes still exist for older or specialized static memory, but prefer topic writes for peer memory.
 
 ## When to call `memory_write`
 
 Save when the peer:
 
-- Introduces themselves by name (`memory_write("concierge:vis_a1b2c3", "Sam from Acme — interested in research tooling.")`)
+- Introduces themselves by name (`memory_write({ topic: "profile", content: "Sam from Acme is interested in research tooling." })`)
 - States a preference you should honor in future turns ("I prefer concise responses.")
 - Makes a commitment ("I'll get back to you Tuesday with the budget.")
 - Explicitly asks to be remembered ("Remember that I'm working on X.")
@@ -77,8 +69,8 @@ Use when you want to know what labels already exist for the current peer before 
 | Wrong | Correct |
 |-------|---------|
 | `memory_read("ep:...")` on an episodic label | `memory_search("relevant query")` |
-| Writing a label with the wrong namespace prefix | Use the prefix from the operator's config (typically the agent name with a colon) |
-| Writing a peer-scoped label without the peer's ID | Always shape labels as `<prefix><peerId>` or `<prefix><peerId>:<topic>` |
+| Hand-building peer IDs or labels | `memory_write({ topic: "preferences", content: "..." })` |
+| Writing without a clear future use | Skip the write |
 | Writing every turn as a "remember this" | Save only what you'd want to recall in a *future* conversation |
 | Searching with a long natural-language query | Keep queries to a few keywords |
 | Calling `memory_forget` on your own initiative | Only call it when the peer (or operator) explicitly requests erasure |
@@ -94,7 +86,7 @@ Use when you want to know what labels already exist for the current peer before 
 ### Peer states a preference or commitment
 
 1. (Optional) `memory_list()` to see if a related label already exists
-2. `memory_write("<prefix><peerId>:<topic>", "<concise description>")`
+2. `memory_write({ topic: "preferences", content: "<concise description>" })`
 3. Acknowledge briefly ("Got it, I'll remember that.") — don't over-explain
 
 ### Peer asks to be forgotten
