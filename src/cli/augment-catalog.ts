@@ -88,19 +88,20 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
   },
   {
     label: "Layered Memory",
-    tagline: "peer-scoped episodic memory (SQLite/Supabase)",
+    tagline: "peer-scoped memory for repeat visitors",
     description:
-      "Per-peer episodic memory with provenance tracking. Stores facts the agent extracts from conversations. SQLite by default; Supabase for shared/cloud deployments.",
+      "Per-peer episodic memory with provenance tracking. Stores remembered visitor and creator context in SQLite by default; Supabase is available for manual configs.",
     type: "layeredMemory",
     defaultName: "layeredMemory",
     defaultOptions: {
       backend: "sqlite",
-      dbPath: "./memory.sqlite",
+      dbPath: "./memory.db",
       namespace: "ep",
       retentionDays: 90,
+      autoSave: { enabled: false },
     },
     required: false,
-    stability: "preview",
+    stability: "stable",
     hasSkill: true,
   },
   {

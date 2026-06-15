@@ -13,7 +13,7 @@ This memory is for things you learn turn-by-turn — preferences, names, commitm
 
 | Tool | What it does | When to call |
 |------|--------------|--------------|
-| `memory_search(query)` | Full-text search over the current peer's memory entries | At the start of a turn with a returning peer; when the peer references something they said before |
+| `memory_search(query)` | Keyword search over the current peer's memory entries | When the peer references a specific prior topic, preference, or commitment |
 | `memory_write(label, content)` | Persist content under a peer-scoped label | When the peer introduces themselves, states a preference, makes a commitment, or asks to be remembered |
 | `memory_list()` | List available labels and namespaces visible to this peer | When you want to confirm what's already stored before writing or searching |
 | `memory_forget(peerId)` | Wipe ALL episodic memory for a specific peer | Right-to-erasure requests. Requires elevated trust (operator or creator); a regular peer cannot trigger it |
@@ -55,9 +55,9 @@ Save when the peer:
 
 ## When to call `memory_search`
 
-Call once at the **start of a turn with a returning peer** — that gives you the lightweight context they've built with you over time. Treat the results as background to inform tone and recall, not as a script to recite.
+Recent memory for the current peer is added to your context automatically at the start of a message turn. Treat that context as background to inform tone and recall, not as a script to recite.
 
-Call again later in the turn if the peer references something specific they said before ("like I mentioned earlier…", "going back to that thing about…"). A targeted search beats trying to scroll mental context.
+Call `memory_search` when the peer references something specific they said before ("like I mentioned earlier…", "going back to that thing about…") or when you need to retrieve entries about a concrete topic. A targeted search beats trying to scroll mental context.
 
 Keep query terms short — search uses keyword matching against entry content. Two or three meaningful words beats a sentence.
 
@@ -87,8 +87,8 @@ Use when you want to know what labels already exist for the current peer before 
 
 ### Returning peer says hello
 
-1. `memory_search("recent")` or a query relevant to the conversation
-2. Read the entries returned; let them inform your reply naturally — don't dump them back at the peer
+1. Use the recent peer-memory context already provided to you
+2. If the peer mentions a specific prior topic, call `memory_search` with two or three concrete keywords
 3. Continue the conversation; save NEW things you learn via `memory_write`
 
 ### Peer states a preference or commitment
@@ -107,7 +107,7 @@ Use when you want to know what labels already exist for the current peer before 
 
 ### What auto-save does
 
-A background process extracts facts after each turn (or per the operator's configured cadence) and writes them to your peer-scoped memory. **You never invoke this process directly — it runs on its own.** The only observable effect is that `memory_search` results sometimes include entries carrying the `[AGENT-DERIVED]` marker.
+Some agents may have a background process that extracts facts after turns and writes them to peer-scoped memory. **You never invoke this process directly.** When it is enabled, the observable effect is that memory context or `memory_search` results sometimes include entries carrying the `[AGENT-DERIVED]` marker.
 
 When you call `memory_search` and see an entry like:
 
@@ -132,14 +132,14 @@ If two entries about the same fact conflict, trust them in this order:
 
 ### When to call `memory_write` directly anyway
 
-The background process runs after each turn. You do not need to wait for it. Call `memory_write` mid-turn when:
+Do not rely on background extraction for important facts. Call `memory_write` mid-turn when:
 
 - The peer explicitly asks to be remembered ("save my email as foo@example.com")
 - You want to capture the peer's exact phrasing verbatim (commitments, technical specs, contact details)
 - You are correcting a fact you know to be wrong from a prior extraction
 - The signal is high enough that you do not want to risk it being missed
 
-Both writes coexist in memory. The background process does not overwrite your explicit `memory_write` calls, and your calls do not overwrite background-extracted entries — they accumulate and retrieval ranks them by the trust hierarchy above.
+Both writes can coexist in memory. Background extraction does not overwrite your explicit `memory_write` calls, and your calls do not overwrite background-extracted entries — they accumulate and retrieval ranks them by the trust hierarchy above.
 
 ### Privacy boundaries
 

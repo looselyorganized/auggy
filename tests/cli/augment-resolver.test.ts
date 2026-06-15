@@ -112,6 +112,37 @@ describe("resolveAugments — mcp", () => {
 });
 
 // ---------------------------------------------------------------------------
+// layeredMemory
+// ---------------------------------------------------------------------------
+
+describe("resolveAugments — layeredMemory", () => {
+  test("passes autoSave options through to the layeredMemory augment", async () => {
+    const augments = await resolveAugments(
+      [
+        {
+          name: "memory",
+          type: "layeredMemory",
+          options: {
+            backend: "sqlite",
+            dbPath: "./memory.sqlite",
+            namespace: "test",
+            autoSave: { enabled: false },
+          },
+        },
+      ],
+      TMP,
+    );
+
+    expect(augments).toHaveLength(1);
+    expect(augments[0]!.name).toBe("memory");
+    expect(augments[0]!.type).toBe("layeredMemory");
+    expect(augments[0]!.memory?.owns).toEqual({ kind: "namespace", prefix: "test:" });
+    expect(augments[0]!.scheduleAfterTurn).toBeUndefined();
+    expect(augments[0]!.handleInternalTurn).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // webTransport
 // ---------------------------------------------------------------------------
 

@@ -280,7 +280,11 @@ describe("runAdd no-op cases", () => {
     expect(readAgentAugments(dir)).toContain("layeredMemory");
     expect(readAugmentMetadata(dir, "layeredMemory")).toMatchObject({
       type: "layeredMemory",
-      config: expect.objectContaining({ namespace: "with-memory" }),
+      config: expect.objectContaining({
+        namespace: "with-memory",
+        dbPath: "./data/memory.db",
+        autoSave: { enabled: false },
+      }),
     });
   });
 
@@ -291,12 +295,12 @@ describe("runAdd no-op cases", () => {
     await runAdd("preview-decline", {
       config: join(dir, "agent.yaml"),
       auggyDir,
-      augment: "layeredMemory",
+      augment: "mcp",
       bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
     });
 
     expect(readFileSync(join(dir, "agent.yaml"), "utf-8")).toBe(before);
-    expect(existsSync(join(dir, "skills", "layeredMemory", "SKILL.md"))).toBe(false);
+    expect(existsSync(join(dir, "skills", "mcp", "SKILL.md"))).toBe(false);
     expect(bunInstallCalls).toHaveLength(0);
   });
 

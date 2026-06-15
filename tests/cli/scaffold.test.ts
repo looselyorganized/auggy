@@ -280,9 +280,10 @@ describe("scaffoldAgent", () => {
       );
     });
 
-    test(".gitignore excludes memory.sqlite (layeredMemory's default DB path)", () => {
+    test(".gitignore excludes layeredMemory database paths", () => {
       const dir = scaffoldAgent({ name: "zip", targetDir: join(TMP, "zip-gi") });
       const gitignore = readFileSync(join(dir, ".gitignore"), "utf-8");
+      expect(gitignore).toContain("memory.db");
       expect(gitignore).toContain("memory.sqlite");
     });
   });

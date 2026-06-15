@@ -314,7 +314,7 @@ The lifecycle manager will boot the synthetic augment last (it has no `onBoot`, 
 7. **Phase 2 — `onTurnStart`:** `memory-bus.onTurnStart()` resets `budget.calls = 0`.
 8. **Phase 4 — context pipeline:**
    - `identity.context(turnState)` (the synthesized one) calls `identity.memory.read("self")` and returns one block with the file contents at `placement: "system"`, `priority: "required"`.
-   - `episodic.context(turnState)` (the synthesized one) extracts the user's message text and calls `episodic.memory.search(text)`. Returns however many blocks come back, all at `placement: "preamble"`, `priority: "normal"`.
+   - `episodic.context(turnState)` (the synthesized one) lists the current peer's most recent entries, then extracts the user's message text and calls `episodic.memory.search(text)`. Duplicate entries are removed. Returned blocks keep each entry's own origin (`peer-derived` or `agent-derived`) and use the provider defaults for placement, priority, and eviction.
    - `webTransport` and `memory-bus` have no `context()`, so they're skipped.
 9. **Phase 6 — allocator:** assembles the prompt with identity in `systemBlocks`, episodic in `contextBlocks`.
 10. **Phase 7 — inference loop:** the model gets a tools list that includes `memory_read`, `memory_write`, `memory_search`, `memory_list` (plus any other augment's tools — none in this example). It can call them; they route through the registry to the right provider.
@@ -324,7 +324,7 @@ The lifecycle manager will boot the synthetic augment last (it has no `onBoot`, 
 
 Tests live in `tests/memory/`:
 - `registry.test.ts` (10 tests) — every conflict detection rule, lookup precedence
-- `context-synthesis.test.ts` (8 tests) — static synthesis, namespace synthesis, error handling, message-trigger gating
+- `context-synthesis.test.ts` — static synthesis, namespace synthesis, recent peer retrieval, deduplication, origin preservation, error handling, message-trigger gating
 - `tools.test.ts` (10 tests) — each of the four tools, the budget, error cases
 - `memory-bus.test.ts` (6 tests) — the wiring helper, including the new `maxToolCallsPerTurn` test added after the P2 finding
 

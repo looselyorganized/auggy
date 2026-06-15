@@ -256,4 +256,87 @@ describe("synthesizeContextFor namespace provider", () => {
     await wrapped.context!(turn, undefined);
     expect(receivedOpts).toEqual({ peerId: "vis_abc" });
   });
+
+  it("includes recent peer entries from listEntries before message search", async () => {
+    let receivedListOpts: { peerId?: string; limit?: number } | undefined;
+    const aug: Augment = {
+      name: "episodic",
+      memory: {
+        owns: { kind: "namespace", prefix: "ep:" },
+        defaults,
+        listEntries: async (opts) => {
+          receivedListOpts = opts;
+          return [{ label: "ep:vis_abc:name", content: "Visitor name is Mike" }];
+        },
+        search: async () => [],
+      },
+    };
+
+    const wrapped = synthesizeContextFor(aug);
+    const turn: TurnState = {
+      ...makeMessageTurnState("hey"),
+      peer: { id: "vis_abc", kind: "human", trustLevel: "public", sourceAugment: "web" },
+    };
+
+    const blocks = (await wrapped.context!(turn, undefined)) as ContextBlock[];
+    expect(receivedListOpts).toEqual({ peerId: "vis_abc", limit: 5 });
+    expect(blocks.map((b) => b.content)).toEqual(["Visitor name is Mike"]);
+  });
+
+  it("deduplicates entries returned by both recent listing and message search", async () => {
+    const duplicate: MemoryEntry = {
+      label: "ep:vis_abc:name",
+      content: "Visitor name is Mike",
+      createdAt: 123,
+    };
+    const aug: Augment = {
+      name: "episodic",
+      memory: {
+        owns: { kind: "namespace", prefix: "ep:" },
+        defaults,
+        listEntries: async () => [duplicate],
+        search: async () => [duplicate, { label: "ep:vis_abc:topic", content: "Likes pickleball" }],
+      },
+    };
+
+    const wrapped = synthesizeContextFor(aug);
+    const turn: TurnState = {
+      ...makeMessageTurnState("pickleball"),
+      peer: { id: "vis_abc", kind: "human", trustLevel: "public", sourceAugment: "web" },
+    };
+
+    const blocks = (await wrapped.context!(turn, undefined)) as ContextBlock[];
+    expect(blocks.map((b) => b.content)).toEqual(["Visitor name is Mike", "Likes pickleball"]);
+  });
+
+  it("preserves per-entry origin when building context blocks", async () => {
+    const aug: Augment = {
+      name: "episodic",
+      memory: {
+        owns: { kind: "namespace", prefix: "ep:" },
+        defaults,
+        search: async () => [
+          {
+            label: "ep:vis_abc:auto",
+            content: "Auto-extracted visitor preference",
+            origin: "agent-derived",
+          },
+          {
+            label: "ep:vis_abc:manual",
+            content: "Visitor explicitly asked to remember this",
+            origin: "peer-derived",
+          },
+        ],
+      },
+    };
+
+    const wrapped = synthesizeContextFor(aug);
+    const blocks = (await wrapped.context!(
+      makeMessageTurnState("remember"),
+      undefined,
+    )) as ContextBlock[];
+
+    expect(blocks[0]!.origin).toBe("agent-derived");
+    expect(blocks[1]!.origin).toBe("peer-derived");
+  });
 });

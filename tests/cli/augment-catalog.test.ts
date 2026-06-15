@@ -43,6 +43,17 @@ describe("augment catalog", () => {
     expect(entry?.hasSkill).toBe(true);
   });
 
+  it("catalog includes layeredMemory as stable production memory", () => {
+    const entry = AUGMENT_CATALOG.find((e) => e.type === "layeredMemory");
+    expect(entry).toBeDefined();
+    expect(entry?.stability).toBe("stable");
+    expect(entry?.defaultOptions).toMatchObject({
+      dbPath: "./memory.db",
+      autoSave: { enabled: false },
+    });
+    expect(entry?.hasSkill).toBe(true);
+  });
+
   it("resolves canonical type names", () => {
     expect(resolveCatalogEntry("webFetch")?.defaultName).toBe("webFetch");
     expect(resolveCatalogEntry("turnControl")?.type).toBe("turnControl");
