@@ -47,6 +47,7 @@ import {
   getAuggyVersion,
 } from "../scaffold-package-json";
 import { runBunInstall, type BunInstallSpawnFactory } from "../bun-install";
+import { checkAgentRuntimeInstall, type RuntimeInstallCheck } from "../runtime-install-check";
 import { withEscRestart, WizardRestartRequested } from "../wizard-restart";
 import {
   augmentIdForCatalogEntry,
@@ -109,6 +110,11 @@ export interface CreateOpts {
    * callers omit this and the helper uses the real `Bun.spawn`.
    */
   bunInstallSpawn?: BunInstallSpawnFactory;
+  /**
+   * Test seam: verify the agent-local Auggy runtime after dependency install.
+   * Production callers omit this and use the real filesystem check.
+   */
+  runtimeInstallCheck?: RuntimeInstallCheck;
   /** Deprecated test seam retained for older tests; create no longer uses ~/.auggy. */
   auggyDir?: string;
   /** Test seam: override process.cwd(). */
@@ -662,6 +668,7 @@ async function runCreateIntoDir(
   // the engine + augment packages. Fail-soft: a failed install leaves the
   // scaffolded dir intact and surfaces a clear retry command.
   let installOk = true;
+  let runtimeInstallOk = true;
   if (!opts.skipInstall) {
     console.log();
     console.log(dim(" Installing dependencies..."));
@@ -679,6 +686,17 @@ async function runCreateIntoDir(
         `  Then:   ${mode === "init" ? "auggy run" : `cd ${displayPath(finalDir, opts.cwd)} && auggy run`}`,
       );
       console.log();
+    } else if (!opts.bunInstallSpawn || opts.runtimeInstallCheck) {
+      const runtimeCheck = (opts.runtimeInstallCheck ?? checkAgentRuntimeInstall)(finalDir);
+      runtimeInstallOk = runtimeCheck.ok;
+      if (!runtimeInstallOk) {
+        console.log();
+        console.log(
+          `⚠ ${runtimeCheck.message ?? "Agent installed an incompatible Auggy runtime."}`,
+        );
+        if (runtimeCheck.fix) console.log(`  ${runtimeCheck.fix}`);
+        console.log();
+      }
     }
   }
 
@@ -700,6 +718,11 @@ async function runCreateIntoDir(
     console.log(
       `   ${cream(`${step++}.`)}  bun install   ${dim("(retry — earlier attempt failed)")}`,
     );
+  } else if (!runtimeInstallOk) {
+    console.log(
+      `   ${cream(`${step++}.`)}  Fix package.json   ${dim("(auggy dependency mismatch)")}`,
+    );
+    console.log(`   ${cream(`${step++}.`)}  bun install`);
   }
   const envVarsForNextSteps = collectEnvVars(augments, provider).filter(
     (v) => !AUTO_GENERATED_ENV_VARS.has(v) && !providedEnv[v],
