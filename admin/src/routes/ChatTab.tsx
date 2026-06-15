@@ -357,7 +357,7 @@ export function ChatTab() {
                     disabled={streaming}
                     className="h-7 shrink-0 px-2 text-xs"
                   >
-                    Clear visitor
+                    Sign out visitor
                   </Button>
                 )}
               </div>
