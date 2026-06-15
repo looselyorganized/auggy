@@ -195,11 +195,11 @@ export interface ParsedConfig {
   purpose?: string;
   /**
    * Optional shorthand path to an identity markdown file. When set, the
-   * parser synthesizes an equivalent fileMemory augment entry (label "self",
-   * placement "system", priority "required", origin "operator") and
-   * prepends it to `augments`. Operators wanting non-default options
-   * (e.g. `mutable: true`) should use the explicit fileMemory form
-   * instead — having both raises a parse error.
+   * parser prepends a fileMemory-backed identity config (label "self",
+   * placement "system", priority "required", origin "operator").
+   * Operators wanting non-default options (e.g. `mutable: true`) should
+   * use the explicit fileMemory form instead — having both raises a parse
+   * error.
    */
   identity?: string;
   /** Engine configuration. */

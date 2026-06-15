@@ -142,7 +142,7 @@ export function buildVerifySuccessPage(input: VerifySuccessPageInput): string {
   if (titleEl) titleEl.textContent = 'Verified.';
   if (storageWorks) {
     if (msgEl) {
-      msgEl.textContent = 'Email verified: ' + email + '. You may close this tab; your chat tab will pick up the new identity on its next message. If you opened this link on a different device, refresh your chat tab.';
+      msgEl.textContent = 'Email verified: ' + email + '. You may close this tab. In the console chat, choose Verified visitor to preview with this identity. If you opened this link on a different device, refresh your chat tab.';
     }
   } else {
     if (msgEl) msgEl.style.display = 'none';

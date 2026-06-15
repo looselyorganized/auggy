@@ -51,12 +51,12 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 
 describe("identity: shorthand parsing", () => {
-  test("synthesizes a fileMemory augment as the FIRST entry", () => {
+  test("prepends the fileMemory-backed identity config as the FIRST entry", () => {
     const path = writeYaml("agent.yaml", configWithoutIdentity({ identity: "./identity.md" }));
     const config = parseConfig(path);
 
     expect(config.identity).toBe("./identity.md");
-    // Synthesized identity must be prepended.
+    // Identity must be prepended so it lands in system context before other memory.
     expect(config.augments).toHaveLength(2);
     expect(config.augments[0]!.name).toBe("identity");
     expect(config.augments[0]!.type).toBe("fileMemory");
@@ -64,12 +64,12 @@ describe("identity: shorthand parsing", () => {
     expect(config.augments[1]!.name).toBe("fs");
   });
 
-  test("synthesized augment has the spec-defined option fields", () => {
+  test("backing identity config has the spec-defined option fields", () => {
     const path = writeYaml("agent.yaml", configWithoutIdentity({ identity: "./preamble.md" }));
     const config = parseConfig(path);
-    const synthesized = config.augments[0]!;
+    const identityConfig = config.augments[0]!;
 
-    expect(synthesized.options).toEqual({
+    expect(identityConfig.options).toEqual({
       label: "self",
       source: "./preamble.md",
       mutable: false,
@@ -189,7 +189,7 @@ describe("conflict detection", () => {
     );
     const config = parseConfig(path);
 
-    // Synthesized identity is first, the explicit non-system fileMemory follows.
+    // Identity is first, the explicit non-system fileMemory follows.
     expect(config.augments).toHaveLength(2);
     expect(config.augments[0]!.name).toBe("identity");
     expect((config.augments[0]!.options as Record<string, unknown>).placement).toBe("system");
@@ -210,7 +210,7 @@ describe("no identity (neither shorthand nor explicit)", () => {
     expect(config.identity).toBeUndefined();
     expect(config.augments).toHaveLength(1);
     expect(config.augments[0]!.name).toBe("fs");
-    // No synthesized identity entry.
+    // No backing identity entry.
     expect(config.augments.find((a) => a.name === "identity")).toBeUndefined();
   });
 });

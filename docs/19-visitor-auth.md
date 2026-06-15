@@ -49,7 +49,12 @@ POST /visitor-auth/request
 content-type: application/json
 
 {
-  "email": "visitor@example.com"
+  "email": "visitor@example.com",
+  "meta": {
+    "messageId": "msg_123",
+    "source": "console",
+    "returnTo": "/account"
+  }
 }
 ```
 
@@ -67,6 +72,11 @@ Response:
   `threadId`. Public callers cannot prove they own an anonymous chat thread, so
   binding arbitrary `anon-${threadId}` state here would let one visitor claim
   another visitor's anonymous memory.
+- `meta` is optional, non-authoritative request context for UI correlation and
+  audit trails. `meta.messageId` may be recorded with the issued token, but
+  `meta` never controls visitor identity, trust, or memory migration. Identity
+  is bound by Auggy runtime context, signed visitor tokens, or a future signed
+  anonymous-session binding.
 - Route-initiated verification uses an internal `auth:<uuid>` peer id and does
   not migrate existing anonymous chat memory. If you need anonymous memory
   migration today, use the model-tool path (`request_auth`) from the active

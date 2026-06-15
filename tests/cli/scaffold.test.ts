@@ -302,7 +302,7 @@ describe("scaffoldAgent", () => {
       // parseConfig throws if both forms are present (per α-5).
       expect(() => parseConfig(join(dir, "agent.yaml"))).not.toThrow();
 
-      // Confirm the synthesized identity entry is present after parsing.
+      // Confirm the fileMemory-backed identity entry is present after parsing.
       const config = parseConfig(join(dir, "agent.yaml"));
       const identityEntry = config.augments.find((a) => a.name === "identity");
       expect(identityEntry).toBeDefined();

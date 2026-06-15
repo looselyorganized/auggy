@@ -222,6 +222,8 @@ const CRED_DELETE_ACTION = "cred-delete";
 const CRED_RENAME_ACTION = "cred-rename";
 
 const CONSOLE_CHAT_ACTION = "console-chat";
+const CHAT_PREVIEW_MODES = new Set(["creator", "anonymous", "visitor"]);
+type ChatPreviewMode = "creator" | "anonymous" | "visitor";
 
 const LOGIN_RATE_LIMIT_WINDOW_MS = 60_000;
 const LOGIN_RATE_LIMIT_MAX = 10;
@@ -801,8 +803,11 @@ export async function buildAdminActionRegistry(
 
 /**
  * Proxies a chat message to the agent's own `/agent/run` SSE endpoint on
- * the same port. The bearer is attached server-side from
- * `AdminRouteContext.bearer` — the browser never sees it.
+ * the same port. The browser never sees the bearer. The console can preview
+ * three real runtime identities:
+ *   - creator: forwards bearer only
+ *   - anonymous: forwards no auth identity headers
+ *   - visitor: forwards a verified visitor token only
  *
  * CSRF: required. Even though HTTP Basic creds make the operator's browser
  * pre-authenticated, the chat endpoint is just as privileged as any other
@@ -822,7 +827,13 @@ async function handleChatProxy(
       503,
     );
   }
-  let body: { csrf?: unknown; message?: unknown; threadId?: unknown; visitorToken?: unknown };
+  let body: {
+    csrf?: unknown;
+    message?: unknown;
+    threadId?: unknown;
+    chatMode?: unknown;
+    visitorToken?: unknown;
+  };
   try {
     body = (await req.json()) as typeof body;
   } catch {
@@ -846,6 +857,10 @@ async function handleChatProxy(
   if (typeof body.message !== "string" || body.message.length === 0) {
     return jsonResponse({ error: "missing message" }, 400);
   }
+  const chatMode = parseChatPreviewMode(body.chatMode, body.visitorToken);
+  if (!chatMode) {
+    return jsonResponse({ error: "invalid chat preview mode" }, 400);
+  }
   const threadId = typeof body.threadId === "string" ? body.threadId : undefined;
   let visitorToken: string | undefined;
   if (typeof body.visitorToken === "string" && body.visitorToken.trim() !== "") {
@@ -854,13 +869,22 @@ async function handleChatProxy(
     }
     visitorToken = body.visitorToken;
   }
+  if (body.chatMode !== undefined && chatMode !== "visitor" && visitorToken) {
+    return jsonResponse({ error: "visitor token is only valid in visitor preview mode" }, 400);
+  }
+  if (chatMode === "visitor" && !visitorToken) {
+    return jsonResponse({ error: "visitor preview mode requires a visitor token" }, 400);
+  }
 
   let upstream: Response;
   const headers: Record<string, string> = {
     "content-type": "application/json",
-    authorization: `Bearer ${ctx.bearer}`,
   };
-  if (visitorToken) headers["x-visitor-token"] = visitorToken;
+  if (chatMode === "creator") {
+    headers.authorization = `Bearer ${ctx.bearer}`;
+  } else if (chatMode === "visitor") {
+    headers["x-visitor-token"] = visitorToken!;
+  }
   try {
     upstream = await fetch(`http://127.0.0.1:${ctx.selfPort}/agent/run`, {
       method: "POST",
@@ -882,6 +906,16 @@ async function handleChatProxy(
     status: upstream.status,
     headers: { "content-type": "text/event-stream" },
   });
+}
+
+function parseChatPreviewMode(mode: unknown, visitorToken: unknown): ChatPreviewMode | null {
+  if (mode === undefined) {
+    // Backward compatibility for older console bundles: previous versions
+    // always sent the visitor token when one existed, otherwise creator.
+    return typeof visitorToken === "string" && visitorToken.trim() !== "" ? "visitor" : "creator";
+  }
+  if (typeof mode !== "string" || !CHAT_PREVIEW_MODES.has(mode)) return null;
+  return mode as ChatPreviewMode;
 }
 
 // ===========================================================================
