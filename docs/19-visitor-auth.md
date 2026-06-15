@@ -9,7 +9,12 @@
 - HTTP route: `GET /visitor-auth/verify?token=<uuid>` — public-unauthenticated; mounts on the agent's webTransport.
 - HTTP route: `POST /visitor-auth/verify` — public-unauthenticated; consumes the magic-link token and writes the browser visitor token.
 - Context block: per-turn summary of the active peer's verification state.
-- SQLite store: `<agent-dir>/visitor-auth.db` — token + verified-visitor tables.
+- SQLite store: `<agent-dir>/data/visitor-auth.db` in CLI-created agents — token + verified-visitor tables.
+
+Pair `visitorAuth` with `layeredMemory` when you want repeat visitors to feel
+continuous. `visitorAuth` gives the browser a stable `vis_<uuid>` identity after
+email verification; `layeredMemory` stores and retrieves memory under that peer
+id.
 
 ## App-backend magic link request
 
@@ -107,7 +112,7 @@ config:
 type: visitorAuth
 config:
   publicUrl: ${AUGGY_PUBLIC_URL}              # e.g. https://zip.example.com
-  dbPath: ./visitor-auth.db
+  dbPath: ./data/visitor-auth.db
   agentMail:
     transport: agentmail
     apiKey: ${AGENTMAIL_API_KEY}
@@ -117,7 +122,7 @@ config:
   rateLimit: { perHour: 1, perDay: 3 }        # per anonymous peer
   reverifyAfterDays: 90
   tokenTtlMinutes: 15
-  layeredMemoryDbPath: ./memory.db            # null to disable peer-id migration
+  layeredMemoryDbPath: ./data/memory.db       # null to disable peer-id migration
   # Optional: notify operator on first verify per email
   notifyOnFirstVerify:
     to: ops@example.com
@@ -148,6 +153,11 @@ visitor token in browser localStorage. `/console/chat` and public frontends shou
 send that token as `x-visitor-token` on the next `/agent/run` request so the turn
 arrives as a recognized visitor with verified-email context.
 
+If `layeredMemory` is installed, future turns also receive the visitor's recent
+peer-scoped memory automatically. A generic returning message like "hey" can
+still include useful context such as prior preferences, open commitments, or
+the visitor's name.
+
 ## Console mode for local testing
 
 OSS adopters who haven't configured AgentMail can still exercise the full magic-link flow by switching the delivery transport to the console adapter. The verify URL prints to the agent's stdout instead of being sent via email — the operator copies the link from their terminal and opens it in a browser to complete verification.
@@ -159,7 +169,7 @@ Switch via `agentMail.transport: "console"` in
 type: visitorAuth
 config:
   publicUrl: http://localhost:8080
-  dbPath: ./visitor-auth.db
+  dbPath: ./data/visitor-auth.db
   agentMail:
     transport: "console"
   signingKey: ${VISITOR_SIGNING_KEY}
@@ -278,4 +288,4 @@ If a revoke is interrupted (e.g., Ctrl-C between the visitor-auth UPDATE and the
 | Verify link returns 410 "consumed" | Token was already used (visitor double-clicked, or someone with the link beat them) | Re-issue |
 | Visitor verifies but agent doesn't recognize them next visit | Cleared localStorage, or `VISITOR_SIGNING_KEY` rotated | Re-verify |
 | AgentMail healthcheck returns 403 | API key lacks access to the configured inbox, or a permission whitelist omitted `inbox_read` | Use an inbox-scoped key for `AGENTMAIL_INBOX_ID` with `inbox_read` and `message_send` |
-| `auggy visitors --revoke` errors "memory.db not found" | layeredMemory hasn't created its DB yet, or path mismatch | Check `layeredMemoryDbPath` in `augments/visitorAuth/augment.yaml` |
+| `auggy visitors --revoke` errors "memory.db not found" | layeredMemory hasn't created its DB yet, or path mismatch | Check `layeredMemoryDbPath` in `augments/visitorAuth/augment.yaml`; CLI-installed agents use `./data/memory.db` |

@@ -38,9 +38,9 @@ Fresh agents are scaffolded for the shortest path to chat:
 - `turnControl`
 
 The `skills` augment is runtime infrastructure and is auto-mounted when needed.
-Stable add-ons (`knowledge`, `notify`, `telegramTransport`, `mcp`) are installed
-after first chat with `auggy augment add <name>`. Preview augments
-(`layeredMemory`, `budgets`, `visitorAuth`, `link`, `agentMail`, `bash`) remain
+Stable add-ons (`knowledge`, `layeredMemory`, `notify`, `telegramTransport`)
+are installed after first chat with `auggy augment add <name>`. Preview
+augments (`budgets`, `mcp`, `visitorAuth`, `link`, `agentMail`, `bash`) remain
 available behind an explicit confirmation because their production DX or
 security edge cases are still being hardened. `supabaseMemory` remains in the
 runtime for legacy/manual configs, but is intentionally not shown in the v1.0
@@ -428,10 +428,10 @@ type: layeredMemory
 config:
   backend: sqlite
   namespace: ${AGENT_NAME}
-  dbPath: ./memory.sqlite
+  dbPath: ./data/memory.db
   retentionDays: 90
   autoSave:
-    enabled: true
+    enabled: false
     extractionFrequency:
       creator: every-turn
       agent: every-N-turns
@@ -444,13 +444,24 @@ config:
 
 ### What it is
 
-`layeredMemory` is the primary peer-scoped episodic memory augment. Every entry is bound to the peer who is talking in the current turn — peers cannot read each other's entries. Storage is pluggable: SQLite (default, runs locally with WAL mode and prepared statements) or Supabase (for cloud deployments). All eleven day-one mitigations (provenance, supersession, verbatim flags, embedding versioning, retention classes) are present in the schema from the first write.
+`layeredMemory` is the primary peer-scoped episodic memory augment. Every entry is bound to the peer who is talking in the current turn — peers cannot read each other's entries. Storage is pluggable: SQLite (default, runs locally with WAL mode and prepared statements) or Supabase (manual/programmatic configs). All eleven day-one mitigations (provenance, supersession, verbatim flags, embedding versioning, retention classes) are present in the schema from the first write.
 
 `layeredMemory` registers as a namespace memory provider. The kernel's memory bus synthesizes four model-callable tools automatically: `memory_search`, `memory_write`, `memory_list`, and `memory_forget`.
 
-### Auto-save capability
+### Retrieval and auto-save capability
 
-Auto-save is a capability of `layeredMemory` itself, not a separate augment. When enabled (the default), a background process runs after each user-facing turn, extracts structured facts from the completed conversation transcript, and writes them to the peer's namespace with `origin: "agent-derived"`.
+For namespace memory providers, the memory bus automatically adds the current
+peer's most recent entries to each message turn, then runs keyword search
+against the inbound text. This is what makes a returning verified visitor's
+"hey" turn useful even when the latest message has no searchable content.
+
+Auto-save is a capability of `layeredMemory` itself, not a separate augment. In
+CLI-created agents it is installed with `autoSave.enabled: false` for v1.0, so
+the model saves memory explicitly with `memory_write`. Programmatic users can
+enable auto-save by providing an extraction engine; when enabled, a background
+process runs after user-facing turns, extracts structured facts from the
+completed conversation transcript, and writes them to the peer's namespace with
+`origin: "agent-derived"`.
 
 The model never invokes auto-save directly. The only visible effect is that `memory_search` results sometimes include entries marked `[AGENT-DERIVED]`.
 
@@ -458,14 +469,14 @@ The model never invokes auto-save directly. The only visible effect is that `mem
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `autoSave.enabled` | `boolean` | `true` | Set `false` for explicit-only memory — model must call `memory_write` manually. |
+| `autoSave.enabled` | `boolean` | `false` in CLI scaffold; factory default `true` | Set `false` for explicit-only memory — model must call `memory_write` manually. |
 | `autoSave.extractionFrequency.creator` | frequency | `every-turn` | Extraction cadence for creator-trust peers. |
 | `autoSave.extractionFrequency.agent` | frequency | `every-N-turns` | Extraction cadence for agent-trust peers (conservative default; agent-to-agent volume may be high). |
 | `autoSave.extractionFrequency.public.recognized` | frequency | `every-turn` | Extraction cadence for recognized public peers. |
 | `autoSave.extractionFrequency.public.anonymous` | frequency | `session-end-only` | Extraction cadence for anonymous visitors. Keeps per-visitor extraction cost to one batched call at session end rather than every turn. |
 | `autoSave.everyNTurns` | `number` | `3` | N for `every-N-turns` frequency. |
 | `autoSave.confidenceThreshold` | `number` | `0.5` | Facts with confidence below this threshold are written but flagged low-confidence. |
-| `autoSave.engine` | engine config | (agent primary) | Optional: use a different (cheaper) model for extraction. Omit to use the agent's primary engine. |
+| `autoSave.engine` | extraction engine object | none | Required for auto-save extraction. Omit to use explicit-only memory. |
 
 **Frequency values:** `every-turn` | `every-N-turns` | `session-end-only` | `never`.
 
@@ -478,7 +489,9 @@ The model never invokes auto-save directly. The only visible effect is that `mem
 | `public.recognized` | `every-turn` | ~$0.20 (returning identified peer; relationship-relevant) |
 | `public.anonymous` | `session-end-only` | ~$0.05 (visitor traffic dominates cost; one batched call at session end) |
 
-Cost estimates are order-of-magnitude based on Haiku pricing × ~500 input tokens + ~200 output tokens per extraction call.
+Cost estimates are order-of-magnitude and apply only when an extraction engine
+is configured. They are based on a small extraction model × ~500 input tokens +
+~200 output tokens per extraction call.
 
 #### `[AGENT-DERIVED]` origin marker
 
@@ -1137,7 +1150,7 @@ augments:
 type: visitorAuth
 config:
   publicUrl: ${AUGGY_PUBLIC_URL}
-  dbPath: ./visitor-auth.db
+  dbPath: ./data/visitor-auth.db
   agentMail:
     apiKey: ${AGENTMAIL_API_KEY}
     inboxId: ${AGENTMAIL_INBOX_ID}
@@ -1145,14 +1158,14 @@ config:
   rateLimit: { perHour: 1, perDay: 3 }
   reverifyAfterDays: 90
   tokenTtlMinutes: 15
-  layeredMemoryDbPath: ./memory.db
+  layeredMemoryDbPath: ./data/memory.db
 ```
 
 ### What it is
 
 The first member of the auth-augment family. `visitorAuth` lets a public-anonymous visitor verify ownership of an email address and become public-recognized — same `vis_<uuid>` identity returns across sessions, enabling memory continuity and trust elevation.
 
-It adds three things to the agent: a model-callable `request_auth({method: "email", email})` tool that sends the verification email; a public-unauthenticated HTTP route `GET /visitor-auth/verify?token=<uuid>` that mounts on the agent's `webTransport`; and a per-turn context block summarizing the active peer's verification state. Verification state is persisted in `<agent-dir>/visitor-auth.db` (token + verified-visitor tables).
+It adds three things to the agent: a model-callable `request_auth({method: "email", email})` tool that sends the verification email; a public-unauthenticated HTTP route `GET /visitor-auth/verify?token=<uuid>` that mounts on the agent's `webTransport`; and a per-turn context block summarizing the active peer's verification state. Verification state is persisted in `<agent-dir>/data/visitor-auth.db` (token + verified-visitor tables).
 
 ### Key constraint
 

@@ -86,6 +86,10 @@ async function resolveLayeredMemory(
   const backend = (opts.backend as string | undefined) ?? "sqlite";
   const namespace = (opts.namespace as string | undefined) ?? "ep";
   const retentionDays = opts.retentionDays as number | undefined;
+  const autoSave =
+    opts.autoSave && typeof opts.autoSave === "object" && !Array.isArray(opts.autoSave)
+      ? (opts.autoSave as Parameters<typeof layeredMemory>[0]["autoSave"])
+      : undefined;
 
   if (backend === "sqlite") {
     const dbPath = opts.dbPath as string | undefined;
@@ -94,6 +98,7 @@ async function resolveLayeredMemory(
       dbPath: dbPath ? resolvePath(dbPath, agentDir) : resolvePath("./memory.db", agentDir),
       namespace,
       retentionDays,
+      autoSave,
     });
   }
 
@@ -115,6 +120,7 @@ async function resolveLayeredMemory(
       table: (opts.table as string | undefined) ?? "agent_memory",
       namespace,
       retentionDays,
+      autoSave,
     });
   }
 

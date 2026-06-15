@@ -108,7 +108,21 @@ If the agent has not been deployed yet, `auggy logs` fails with a local message 
 
 ## Cost surface
 
-Auggy's `layeredMemory` augment ships with `autoSave: true` by default and a per-trust-level cadence:
+The CLI installs `layeredMemory` with explicit memory writes enabled and
+auto-extraction disabled:
+
+```yaml
+# augments/layeredMemory/augment.yaml
+type: layeredMemory
+config:
+  backend: sqlite
+  dbPath: ./data/memory.db
+  autoSave:
+    enabled: false
+```
+
+If you enable auto-save programmatically with an extraction engine,
+`layeredMemory` uses this per-trust-level cadence by default:
 
 | Trust level | Cadence | Implication |
 |---|---|---|
@@ -117,7 +131,10 @@ Auggy's `layeredMemory` augment ships with `autoSave: true` by default and a per
 | `public.recognized` | every-turn | One extraction call per turn |
 | `public.anonymous` | session-end-only | One extraction call at session end |
 
-Each extraction call hits the configured extraction engine (Haiku 4.5 by default, ~$0.0005-0.001 per call). The autoSave eval suite (see `evals/layered-memory/`) measures the per-call cost on real Haiku — typically $0.0001-0.005 per extraction.
+Each extraction call hits the configured extraction engine. Auggy does not
+silently reuse the user-facing model for extraction, because that would make
+spend harder to reason about. The autoSave eval suite (see
+`evals/layered-memory/`) measures per-call cost for real extraction engines.
 
 **Recommendation:** set a daily ceiling via the `budgets` augment:
 
@@ -138,15 +155,26 @@ This caps total daily spend (user-facing + extraction). If the cap is hit, the k
 
 ## Persistent state
 
-Railway mounts a volume at `/app/data`. The entrypoint script symlinks four SQLite paths into the volume:
+Railway mounts a volume at `/app/data`. Agent-local mutable paths default to
+`./data/*`, so SQLite-backed augments persist across redeploys without extra
+configuration:
+
+- `/app/data/memory.db` (`layeredMemory` augment)
+- `/app/data/budgets.db` (`budgets` augment)
+- `/app/data/visitor-auth.db` (`visitorAuth` augment)
+- `/app/data/link.db` (`link` augment, when present)
+
+For manual configs that still use root-level DB paths, the entrypoint script
+also symlinks these paths into the volume:
 
 - `/app/memory.db` → `/app/data/memory.db` (`layeredMemory` augment)
 - `/app/budgets.db` → `/app/data/budgets.db` (`budgets` augment)
 - `/app/visitor-auth.db` → `/app/data/visitor-auth.db` (`visitorAuth` augment)
 - `/app/link.db` → `/app/data/link.db` (`link` augment, when present)
 
-Augment config paths such as `dbPath: ./memory.db` work unchanged — the
-symlinks make it transparent.
+Augment config paths such as `dbPath: ./data/memory.db` work directly on the
+mounted volume. Root paths such as `dbPath: ./memory.db` also work through the
+symlinks.
 
 **Drift risk:** if a future augment ships with a different SQLite path, update `SQLITE_DB_NAMES` in `src/cli/deploy/dockerfile.ts` (and add it to this doc). The `cross-session-recall` grader in the layered-memory eval suite catches data loss empirically.
 
@@ -207,4 +235,4 @@ The Railway volume is **NOT** automatically deleted (Railway retains it as a saf
 | Health check does not pass after deploy | Run `auggy logs` and inspect the boot error. The cloud record is still written, so redeploy with `auggy deploy --yes` after fixing. |
 | visitorAuth refuses to boot — "publicUrl required" | Check that `augments/visitorAuth/augment.yaml` has `publicUrl: ${AUGGY_PUBLIC_URL}` and the deploy actually generated a domain. Re-run `auggy deploy` to refresh. |
 | Memory disappears after redeploy | Check the volume is mounted (Railway dashboard → service → Volumes). If empty, the symlink list in the Dockerfile may be missing your dbPath — check `src/cli/deploy/dockerfile.ts`'s `SQLITE_DB_NAMES`. |
-| Daily budget cap hit unexpectedly | autoSave extraction calls count against the cap. Run `evals/layered-memory/run.ts --smoke` to measure your per-extraction cost; lower the cadence in `augments/layeredMemory/augment.yaml` if needed. |
+| Daily budget cap hit unexpectedly | If you enabled autoSave with an extraction engine, extraction calls count against the cap. Run `evals/layered-memory/run.ts --smoke` to measure your per-extraction cost; lower the cadence in `augments/layeredMemory/augment.yaml` if needed. |

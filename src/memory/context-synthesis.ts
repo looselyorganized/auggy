@@ -10,6 +10,8 @@ import type {
 } from "../types";
 import { extractText } from "../parts";
 
+const RECENT_NAMESPACE_MEMORY_LIMIT = 5;
+
 /**
  * Wrap a memory provider augment so it exposes a context() function
  * that automatically retrieves its blocks from read()/search() and
@@ -46,13 +48,28 @@ export function synthesizeContextFor(aug: Augment): Augment {
       if (turn.trigger.type !== "message") return [];
       const nsSpec = spec as NamespaceMemoryProvider;
       const payload = turn.trigger.payload as InboundMessage;
+      const peerId = turn.peer?.id;
+
+      if (peerId && nsSpec.listEntries) {
+        try {
+          const recent = await nsSpec.listEntries({
+            peerId,
+            limit: RECENT_NAMESPACE_MEMORY_LIMIT,
+          });
+          appendUniqueEntries(entries, recent);
+        } catch (err) {
+          if (isRequired) throw err;
+        }
+      }
+
       const query = extractText(payload?.parts ?? []);
-      if (!query) return [];
-      try {
-        const results = await nsSpec.search(query, { peerId: turn.peer?.id });
-        entries.push(...results);
-      } catch (err) {
-        if (isRequired) throw err;
+      if (query) {
+        try {
+          const results = await nsSpec.search(query, { peerId });
+          appendUniqueEntries(entries, results);
+        } catch (err) {
+          if (isRequired) throw err;
+        }
       }
     }
 
@@ -63,6 +80,20 @@ export function synthesizeContextFor(aug: Augment): Augment {
     ...aug,
     context,
   };
+}
+
+function appendUniqueEntries(target: MemoryEntry[], next: MemoryEntry[]): void {
+  const seen = new Set(target.map(memoryEntryKey));
+  for (const entry of next) {
+    const key = memoryEntryKey(entry);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    target.push(entry);
+  }
+}
+
+function memoryEntryKey(entry: MemoryEntry): string {
+  return `${entry.label}\0${entry.createdAt ?? ""}\0${entry.content}`;
 }
 
 function toContextBlock(
@@ -77,7 +108,7 @@ function toContextBlock(
     provenance: "memory",
     priority: defaults.priority,
     eviction: defaults.eviction,
-    origin: defaults.origin,
+    origin: entry.origin ?? defaults.origin,
     ttl: defaults.ttl,
   };
 }

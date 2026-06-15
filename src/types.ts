@@ -8,7 +8,7 @@ export type ContextPlacement = "system" | "preamble" | "assistant-preamble";
 export type ContextProvenance = "identity" | "memory" | "retrieval" | "augment";
 export type ContextPriority = "required" | "high" | "normal" | "low" | "evictable";
 export type EvictionPolicy = "never" | "summarize" | "drop";
-export type ContextOrigin = "operator" | "system" | "agent" | "peer-derived";
+export type ContextOrigin = "operator" | "system" | "agent" | "agent-derived" | "peer-derived";
 
 export interface ContextBlock {
   source: string;

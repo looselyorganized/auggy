@@ -176,6 +176,7 @@ export async function runAdd(target: string | undefined, opts: AddOpts): Promise
   let notifyAdded = false;
   let agentMailAdded = false;
   let mcpAdded = false;
+  let layeredMemoryAdded = false;
   let telegramTransportAdded = false;
   let visitorAuthAdded = false;
   for (const entry of selected) {
@@ -194,6 +195,9 @@ export async function runAdd(target: string | undefined, opts: AddOpts): Promise
     if (entry.type === "mcp") {
       ensureMcpConfig(agentDir);
       mcpAdded = true;
+    }
+    if (entry.type === "layeredMemory") {
+      layeredMemoryAdded = true;
     }
     if (entry.type === "telegramTransport") {
       telegramTransportAdded = true;
@@ -248,6 +252,15 @@ export async function runAdd(target: string | undefined, opts: AddOpts): Promise
     console.log("  - Local testing uses console magic links");
     console.log("  - Production email: auggy agentmail setup visitorAuth");
     console.log("  - This provisions AgentMail and updates augments/visitorAuth/augment.yaml");
+  }
+
+  if (layeredMemoryAdded) {
+    console.log();
+    console.log("Use layeredMemory:");
+    console.log("  - Stores peer-scoped memory in data/memory.db");
+    console.log("  - Recent memory is added to context automatically on future turns");
+    console.log("  - Ask the agent to remember stable preferences or commitments");
+    console.log("  - Auto-extraction is off by default; explicit memory_write is active now");
   }
 
   if (mcpAdded) {
