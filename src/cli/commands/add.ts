@@ -177,6 +177,7 @@ export async function runAdd(target: string | undefined, opts: AddOpts): Promise
   let agentMailAdded = false;
   let mcpAdded = false;
   let telegramTransportAdded = false;
+  let visitorAuthAdded = false;
   for (const entry of selected) {
     const skillCopied = copyBundledSkill(entry.type, agentDir);
     writeBuiltinAugmentMetadata(agentDir, entry, optionsForAddedAugment(entry, name));
@@ -196,6 +197,9 @@ export async function runAdd(target: string | undefined, opts: AddOpts): Promise
     }
     if (entry.type === "telegramTransport") {
       telegramTransportAdded = true;
+    }
+    if (entry.type === "visitorAuth") {
+      visitorAuthAdded = true;
     }
     console.log(`  ✓ ${entry.defaultName} (${entry.type})`);
     if (skillCopied) {
@@ -236,6 +240,14 @@ export async function runAdd(target: string | undefined, opts: AddOpts): Promise
     console.log("  - Configure mail policy in augments/agentMail/augment.yaml");
     console.log("  - Default mode: outbound email only, creator trust required");
     console.log("  - For simple operator alerts, notify + Agent Mail is usually simpler");
+  }
+
+  if (visitorAuthAdded) {
+    console.log();
+    console.log("Use visitorAuth:");
+    console.log("  - Local testing uses console magic links");
+    console.log("  - Production email: auggy agentmail setup visitorAuth");
+    console.log("  - This provisions AgentMail and updates augments/visitorAuth/augment.yaml");
   }
 
   if (mcpAdded) {

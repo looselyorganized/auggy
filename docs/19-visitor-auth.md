@@ -109,6 +109,7 @@ config:
   publicUrl: ${AUGGY_PUBLIC_URL}              # e.g. https://zip.example.com
   dbPath: ./visitor-auth.db
   agentMail:
+    transport: agentmail
     apiKey: ${AGENTMAIL_API_KEY}
     inboxId: ${AGENTMAIL_INBOX_ID}
     subjectPrefix: "[Verify] "
@@ -122,6 +123,30 @@ config:
     to: ops@example.com
     subjectPrefix: "[New verified visitor] "
 ```
+
+## AgentMail setup
+
+For production email delivery, prefer the setup command over hand-editing secrets:
+
+```bash
+auggy augment add visitorAuth
+auggy agentmail setup visitorAuth
+```
+
+The setup command has three modes:
+
+- `signup` — first AgentMail inbox, with a human email OTP.
+- `existing` — create a new inbox in an existing AgentMail account.
+- `manual` — use an existing inbox ID and runtime key.
+
+The command writes `AGENTMAIL_API_KEY` and `AGENTMAIL_INBOX_ID` to `.env`, switches
+`augments/visitorAuth/augment.yaml` to `agentMail.transport: agentmail`, and creates
+an inbox-scoped runtime key with only `inbox_read` and `message_send`.
+
+After a visitor clicks the verification link, the success page stores the signed
+visitor token in browser localStorage. `/console/chat` and public frontends should
+send that token as `x-visitor-token` on the next `/agent/run` request so the turn
+arrives as a recognized visitor with verified-email context.
 
 ## Console mode for local testing
 
@@ -178,7 +203,7 @@ Local-only flows are always admitted without ceremony:
 | `https://my-app.local` (mDNS) | console mode allowed |
 | `https://demo.example.com` | console mode **rejected** unless `allowConsoleInProduction: true` |
 
-For production-grade deployments serving external visitors, use the AgentMail transport (the default).
+For production-grade deployments serving external visitors, use the AgentMail transport.
 AgentMail recommends sending both plain-text and HTML email bodies for deliverability; visitorAuth does this for verification emails.
 
 ### `notifyOnFirstVerify` is incompatible with console mode

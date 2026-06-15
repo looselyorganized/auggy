@@ -27,6 +27,7 @@ describe("auggy CLI command table", () => {
     expect(names).toContain("models");
     expect(names).toContain("routes");
     expect(names).toContain("augment");
+    expect(names).toContain("agentmail");
     expect(names).toContain("mcp");
     expect(names).toContain("dev");
     expect(names).toContain("start");

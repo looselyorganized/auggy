@@ -12,7 +12,7 @@ Add `agentMail` when you want your agent to be able to:
 - Reply to inbound mail (Phase B — when a WebSocket / webhook delivers an inbound message into the turn loop)
 - Forward inbound mail to teammates or escalate to the operator
 
-If you only need email for visitor-auth magic links, you don't need this augment — `visitorAuth` continues to use the shared `agentmail-client.ts` directly. If you only need outbound notifications to a fixed destination (e.g. "ping the operator"), `notify` with the `agentmail` adapter is simpler.
+If you only need email for visitor-auth magic links, you don't need this augment — `visitorAuth` continues to use the shared `agentmail-client.ts` directly. Run `auggy agentmail setup visitorAuth` to provision or configure the AgentMail inbox used for magic links. If you only need outbound notifications to a fixed destination (e.g. "ping the operator"), `notify` with the `agentmail` adapter is simpler.
 
 ## Why an augment and not the MCP server
 

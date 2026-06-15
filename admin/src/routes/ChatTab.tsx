@@ -8,6 +8,8 @@ import { findCsrfToken } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { parseSSEStream, type AGUIEvent } from "@/lib/ag-ui-parse";
 
+const VISITOR_TOKEN_STORAGE_KEY = "auggy-visitor-token";
+
 // ---------------------------------------------------------------------------
 // Local message model — session-scoped, no localStorage persistence, no
 // per-source keying. If operators ask for chat history across reloads we'll
@@ -41,12 +43,24 @@ export function ChatTab() {
   const [streaming, setStreaming] = useState(false);
   const [streamError, setStreamError] = useState<string | null>(null);
   const [threadId, setThreadId] = useState<string>(() => crypto.randomUUID());
+  const [hasVisitorToken, setHasVisitorToken] = useState(() => Boolean(readVisitorToken()));
   const abortRef = useRef<AbortController | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const wasStreamingRef = useRef(false);
 
   // Cleanup on unmount — kill any in-flight stream.
   useEffect(() => () => abortRef.current?.abort(), []);
+
+  useEffect(() => {
+    const refreshVisitorTokenState = () => setHasVisitorToken(Boolean(readVisitorToken()));
+    refreshVisitorTokenState();
+    window.addEventListener("focus", refreshVisitorTokenState);
+    window.addEventListener("storage", refreshVisitorTokenState);
+    return () => {
+      window.removeEventListener("focus", refreshVisitorTokenState);
+      window.removeEventListener("storage", refreshVisitorTokenState);
+    };
+  }, []);
 
   useEffect(() => {
     if (wasStreamingRef.current && !streaming) {
@@ -58,6 +72,8 @@ export function ChatTab() {
   const sendMessage = useCallback(async (overrideText?: string) => {
     const text = (overrideText ?? input).trim();
     if (!text || streaming) return;
+    const visitorToken = readVisitorToken();
+    setHasVisitorToken(Boolean(visitorToken));
 
     const userMsg: Message = { id: crypto.randomUUID(), role: "user", content: text };
     const assistantMsg: Message = {
@@ -91,7 +107,7 @@ export function ChatTab() {
       const res = await fetch(url, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ csrf, message: text, threadId }),
+        body: JSON.stringify({ csrf, message: text, threadId, visitorToken }),
         signal: ctrl.signal,
       });
       if (res.status === 419) {
@@ -183,6 +199,16 @@ export function ChatTab() {
     requestAnimationFrame(() => inputRef.current?.focus({ preventScroll: true }));
   };
 
+  const handleClearVisitor = () => {
+    if (streaming) return;
+    clearVisitorToken();
+    setHasVisitorToken(false);
+    setMessages([]);
+    setThreadId(crypto.randomUUID());
+    setStreamError(null);
+    requestAnimationFrame(() => inputRef.current?.focus({ preventScroll: true }));
+  };
+
   const agentName = useMemo(() => {
     if (!data) return "Agent";
     return (
@@ -194,6 +220,7 @@ export function ChatTab() {
     );
   }, [data]);
   const responseLabel = agentName;
+  const identityLabel = hasVisitorToken ? "Testing as verified visitor" : "Testing as creator";
 
   if (loading && !data) {
     return (
@@ -234,6 +261,7 @@ export function ChatTab() {
         streaming={streaming}
         agentName={agentName}
         responseLabel={responseLabel}
+        identityLabel={identityLabel}
         onPrompt={(prompt) => void sendMessage(prompt)}
       />
 
@@ -264,8 +292,21 @@ export function ChatTab() {
               )}
             </div>
             <div className="mt-2 flex items-center justify-between gap-3 px-1">
-              <div className="min-w-0 truncate font-mono text-[11px] text-muted-foreground">
-                {responseLabel}
+              <div className="flex min-w-0 items-center gap-2">
+                <span className="truncate font-mono text-[11px] text-muted-foreground">
+                  {identityLabel}
+                </span>
+                {hasVisitorToken && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={handleClearVisitor}
+                    disabled={streaming}
+                    className="h-7 shrink-0 px-2 text-xs"
+                  >
+                    Clear visitor
+                  </Button>
+                )}
               </div>
               <div className="flex shrink-0 items-center gap-2 text-[11px] text-muted-foreground">
                 <span className="hidden sm:inline">Enter to send</span>
@@ -301,12 +342,14 @@ function MessageList({
   streaming,
   agentName,
   responseLabel,
+  identityLabel,
   onPrompt,
 }: {
   messages: Message[];
   streaming: boolean;
   agentName: string;
   responseLabel: string;
+  identityLabel: string;
   onPrompt: (prompt: string) => void;
 }) {
   const endRef = useRef<HTMLDivElement>(null);
@@ -335,7 +378,7 @@ function MessageList({
     return (
       <div className="relative z-[1] flex h-full items-center justify-center px-4 pb-36 text-center">
         <div className="w-full max-w-2xl">
-          <p className="mb-2 text-sm font-medium text-muted-foreground">Testing as creator</p>
+          <p className="mb-2 text-sm font-medium text-muted-foreground">{identityLabel}</p>
           <h2 className="text-2xl font-semibold tracking-normal sm:text-3xl">
             Talk to {agentName}
           </h2>
@@ -432,6 +475,23 @@ function MarkdownContent({ content, isUser }: { content: string; isUser: boolean
       {renderMarkdownBlocks(content)}
     </div>
   );
+}
+
+function readVisitorToken(): string | undefined {
+  try {
+    const value = localStorage.getItem(VISITOR_TOKEN_STORAGE_KEY);
+    return value && value.trim() !== "" ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function clearVisitorToken() {
+  try {
+    localStorage.removeItem(VISITOR_TOKEN_STORAGE_KEY);
+  } catch {
+    // Storage can be unavailable in private browsing or sandboxed contexts.
+  }
 }
 
 function renderMarkdownBlocks(markdown: string): ReactNode[] {
