@@ -31,7 +31,7 @@ Skills follow a three-level loading model inspired by Claude Code's AgentSkills 
 
 ### Level 1: Manifest (always in context, ~100 tokens)
 
-The agent's identity file contains a short list of available skills:
+The `skills` augment emits a short list of available skills:
 
 ```markdown
 ## Available skills
@@ -92,7 +92,7 @@ filesystem({
 })
 ```
 
-The agent's identity file lists the available skills (Level 1). The model reads them via `fs_read("skills/...")` when needed (Level 2). The model reads references via `fs_read("skills/.../references/...")` when needed deeper (Level 3).
+The `skills` augment lists the available skills (Level 1). The model reads them via `fs_read("skills/...")` when needed (Level 2). The model reads references via `fs_read("skills/.../references/...")` when needed deeper (Level 3).
 
 This is why the filesystem augment is load-bearing for the skill pattern. Without it, the model has no way to read skill files. **If an agent needs skills, it needs the filesystem augment with a read-only mount pointing at the skills directory.**
 
@@ -123,7 +123,7 @@ A good SKILL.md teaches judgment — when to use which tool, with what approach,
 ```markdown
 ---
 name: memory
-description: When/how to use memory_read, memory_write, memory_search, memory_list
+description: When/how to use memory_read, memory_write, memory_search, memory_list, memory_forget
 ---
 
 # Memory Tools
@@ -134,7 +134,7 @@ description: When/how to use memory_read, memory_write, memory_search, memory_li
 |---|---|---|
 | Need specific labeled content | memory_read | `memory_read("self")` for identity |
 | Need to find something by content | memory_search | `memory_search("coffee")` for relevant episodes |
-| Need to persist something | memory_write | `memory_write("notes", "Visitor likes coffee")` |
+| Need to persist peer memory | memory_write | `memory_write({ topic: "preferences", content: "Visitor likes coffee." })` |
 | Need to see what's available | memory_list | Check labels before reading |
 
 ## Common mistakes
@@ -142,16 +142,15 @@ description: When/how to use memory_read, memory_write, memory_search, memory_li
 | ❌ Wrong | ✅ Correct |
 |----------|-----------|
 | memory_search when you know the label | memory_read with the exact label |
-| Writing to an immutable label | Check memory_list — immutable labels don't accept writes |
+| Hand-building peer labels | Use topic writes; the runtime derives the current peer label |
+| Writing to an immutable label | Use topic writes for peer memory; exact labels may be immutable |
 | Searching with very long queries | Keep search queries to key phrases |
 
 ## Workflow: remembering visitor preferences
 
 1. Visitor mentions a preference ("I like coffee")
-2. Call memory_list to check if "notes" label exists and is writable
-3. Call memory_read("notes") to see current notes
-4. Call memory_write("notes", existing + new preference)
-5. Confirm to visitor: "I'll remember that"
+2. Call memory_write({ topic: "preferences", content: "Visitor likes coffee." })
+3. Confirm to visitor: "I'll remember that"
 ```
 
 ### What goes in references/

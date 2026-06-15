@@ -21,6 +21,13 @@ export interface McpServerAuggyPolicy {
   cloud?: "enabled" | "disabled" | "localOnly" | "local-only";
   allowedTools?: string[];
   blockedTools?: string[];
+  timeoutMs?: number;
+  maxResultBytes?: number;
+  maxSchemaBytes?: number;
+  maxConcurrentCalls?: number;
+  maxTools?: number;
+  maxToolPages?: number;
+  includeToolDescriptions?: boolean;
 }
 
 export interface McpConfig {
@@ -235,7 +242,7 @@ export function classifyMcpTransport(
   return "invalid";
 }
 
-function validateMcpConfigShape(value: unknown): McpConfig {
+export function validateMcpConfigShape(value: unknown): McpConfig {
   if (!isRecord(value)) throw new Error(`${MCP_CONFIG_FILENAME}: root must be an object`);
   const servers = value.mcpServers;
   if (!isRecord(servers)) throw new Error(`${MCP_CONFIG_FILENAME}: mcpServers must be an object`);
@@ -292,6 +299,24 @@ function validatePolicyShape(value: unknown, path: string): McpServerAuggyPolicy
   }
   if (out.blockedTools !== undefined && !isStringArray(out.blockedTools)) {
     throw new Error(`${path}.blockedTools: must be a string array`);
+  }
+  for (const key of [
+    "timeoutMs",
+    "maxResultBytes",
+    "maxSchemaBytes",
+    "maxConcurrentCalls",
+    "maxTools",
+    "maxToolPages",
+  ] as const) {
+    if (out[key] !== undefined && !isPositiveInteger(out[key])) {
+      throw new Error(`${path}.${key}: must be a positive integer`);
+    }
+  }
+  if (
+    out.includeToolDescriptions !== undefined &&
+    typeof out.includeToolDescriptions !== "boolean"
+  ) {
+    throw new Error(`${path}.includeToolDescriptions: must be a boolean`);
   }
   return out;
 }
@@ -369,4 +394,8 @@ function isStringArray(value: unknown): value is string[] {
 
 function isStringRecord(value: unknown): value is Record<string, string> {
   return isRecord(value) && Object.values(value).every((item) => typeof item === "string");
+}
+
+function isPositiveInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value > 0;
 }

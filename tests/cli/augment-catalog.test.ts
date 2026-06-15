@@ -33,13 +33,24 @@ describe("augment catalog", () => {
       expect.arrayContaining(["AUGGY_PUBLIC_URL", "VISITOR_SIGNING_KEY", "AUGGY_AGENT_ID"]),
     );
     expect(entry!.hasSkill).toBe(true);
+    expect(entry!.stability).toBe("stable");
   });
 
-  it("catalog includes MCP as a preview augment with a bundled skill", () => {
+  it("catalog treats Agent Mail as stable post-setup email infrastructure", () => {
+    const entry = AUGMENT_CATALOG.find((e) => e.type === "agentMail");
+    expect(entry).toBeDefined();
+    expect(entry?.stability).toBe("stable");
+    expect(entry?.envVars).toEqual(
+      expect.arrayContaining(["AGENTMAIL_API_KEY", "AGENTMAIL_INBOX_ID"]),
+    );
+    expect(entry?.hasSkill).toBe(true);
+  });
+
+  it("catalog includes MCP as a stable augment with a bundled skill", () => {
     const entry = AUGMENT_CATALOG.find((e) => e.type === "mcp");
     expect(entry).toBeDefined();
     expect(entry?.defaultName).toBe("mcp");
-    expect(entry?.stability).toBe("preview");
+    expect(entry?.stability).toBe("stable");
     expect(entry?.hasSkill).toBe(true);
   });
 

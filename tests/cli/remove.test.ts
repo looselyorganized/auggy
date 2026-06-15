@@ -6,6 +6,10 @@ import { tmpdir } from "node:os";
 // Mock @inquirer/prompts so we can drive the confirm() return value per-test.
 let confirmAnswer = true;
 mock.module("@inquirer/prompts", () => ({
+  Separator: class Separator {
+    readonly type = "separator";
+    constructor(readonly separator = "") {}
+  },
   checkbox: async () => [],
   confirm: async () => confirmAnswer,
   input: async () => "",

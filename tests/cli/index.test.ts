@@ -1,6 +1,10 @@
 import { describe, expect, mock, test } from "bun:test";
 
 mock.module("@inquirer/prompts", () => ({
+  Separator: class Separator {
+    readonly type = "separator";
+    constructor(readonly separator = "") {}
+  },
   checkbox: async () => [],
   confirm: async () => true,
   input: async () => "",

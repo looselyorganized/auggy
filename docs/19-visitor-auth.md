@@ -16,6 +16,29 @@ continuous. `visitorAuth` gives the browser a stable `vis_<uuid>` identity after
 email verification; `layeredMemory` stores and retrieves memory under that peer
 id.
 
+## Recommended v1 setup
+
+For a production visitor-auth experience:
+
+```bash
+auggy augment add layeredMemory
+auggy augment add visitorAuth
+auggy agentmail setup visitorAuth
+auggy doctor --cloud
+```
+
+This gives the agent:
+
+- repeat-visitor memory in `data/memory.db`
+- magic-link verification stored in `data/visitor-auth.db`
+- AgentMail delivery for production email
+- cloud preflight that rejects unsafe console magic links before deploy
+
+Local development can use `visitorAuth` without AgentMail; the console adapter
+prints magic links to the running agent's terminal. Do not use console magic
+links on public Railway deploys unless you explicitly accept that verification
+links will be visible in service logs.
+
 ## App-backend magic link request
 
 Use the deterministic route when a frontend owns the sign-in form and should not

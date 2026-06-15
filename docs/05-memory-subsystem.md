@@ -1,6 +1,6 @@
 # 05 — Memory Subsystem
 
-> The memory provider contract, the registry, the bus, context synthesis, and the four generic memory tools. Everything in `src/memory/`.
+> The memory provider contract, the registry, the bus, context synthesis, and the five generic memory tools. Everything in `src/memory/`.
 
 ## Why memory is its own subsystem
 
@@ -128,7 +128,7 @@ lookupProvider(registry, label) → Augment | null
 
 Routes a label to its owning augment. Static labels win over namespaces. Among multiple matching namespaces, longest prefix wins.
 
-Used by the four generic memory tools to figure out which provider to dispatch a request to.
+Used by the generic memory tools to figure out which provider to dispatch a request to.
 
 ## `src/memory/context-synthesis.ts` — `synthesizeContextFor`
 
@@ -163,21 +163,21 @@ Each retrieved entry becomes a `ContextBlock` with:
 
 Note that `metadata` from `MemoryEntry` is **not** transferred to the block — it's only available to code that calls `read()` or `search()` directly (e.g. via the generic tools).
 
-## `src/memory/tools.ts` — Four generic memory tools
+## `src/memory/tools.ts` — Five generic memory tools
 
 ```ts
 createMemoryTools(registry, opts) → {
-  tools: Tool[];                          // [memory_read, memory_write, memory_search, memory_list]
+  tools: Tool[];                          // [memory_read, memory_write, memory_search, memory_list, memory_forget]
   onTurnEnd: (turnId: string) => void;    // primary budget cleanup
   onTurnStart: () => void;                // emergency cleanup backstop
 }
 ```
 
-These four tools are mounted on the synthetic `memory-bus` augment (see below). They give the model a way to interact with memory at runtime.
+These five tools are mounted on the synthetic `memory-bus` augment (see below). They give the model a way to interact with memory at runtime.
 
 ### Unified trust gate
 
-All four tools enforce the same trust rule before executing:
+Read, write, search, and list enforce the same trust rule before executing:
 
 ```
 - Missing context        → DENY (fail-closed)
@@ -186,7 +186,7 @@ All four tools enforce the same trust rule before executing:
 - otherwise              → DENY (public, or any future level below agent)
 ```
 
-This is structural defense alongside the prompt-based defenses (red-team 2026-04-16). The rule is encoded in `assertMemoryAccess(operation, origin, context)` and applied identically across read, write, search, and list.
+This is structural defense alongside the prompt-based defenses (red-team 2026-04-16). The rule is encoded in `assertMemoryAccess(operation, origin, context)` and applied identically across read, write, search, and list. `memory_forget` has its own stricter destructive-action gate.
 
 Null peer (internal/scheduled triggers) is treated as creator trust per the convention from `effectiveTrustLevel` in capability-table.ts.
 
@@ -194,9 +194,36 @@ Null peer (internal/scheduled triggers) is treated as creator trust per the conv
 
 Routes the label to its owning provider via `lookupProvider`. Checks the trust gate against the provider's `defaults.origin`. If the provider is namespace-only and doesn't implement `read`, returns an error: `Error: Provider "name" does not support reading by label (use memory_search)`. Otherwise calls `provider.read(label)` and returns the entry as JSON, or `No entry found for label "..."` if `null`.
 
-### `memory_write(label: string, content: string)`
+### `memory_write({ topic?, label?, provider?, content })`
 
-Same routing. If the provider doesn't implement `write` (immutable), returns: `Error: Memory label "label" is immutable (owned by "name")`. Then checks the trust gate. Otherwise calls `provider.write(label, content)` and returns `Successfully wrote to "label"`.
+Writes content to memory. For peer-scoped namespace memory, prefer the
+topic-based form:
+
+```ts
+memory_write({
+  topic: "preferences",
+  content: "Sam prefers concise replies.",
+})
+```
+
+When `topic` is used, the runtime requires turn context and a current peer. It
+finds the single writable namespace provider available to that peer and derives
+a label from the provider namespace, the current peer id, and the normalized
+topic. The model does not invent visitor IDs or internal labels. If multiple
+writable namespace providers are visible, the tool returns an error naming the
+candidates; retry with `provider`.
+
+Exact label writes are still supported:
+
+```ts
+memory_write({ label: "learned", content: "..." })
+```
+
+For exact labels, routing is the same as `memory_read`: `lookupProvider` finds
+the owning provider. If the provider doesn't implement `write` (immutable), the
+tool returns `Error: Memory label "label" is immutable (owned by "name")`.
+Then it checks the trust gate, calls the provider's `write`, and returns
+`Successfully wrote to "label"`.
 
 ### `memory_search(query: string, providers?: string[])`
 
@@ -210,11 +237,30 @@ Returns a JSON object with two arrays, **filtered by what the current peer can a
 - `static` — every static label currently owned and readable by the peer
 - `namespaces` — every namespace prefix (with a `*` suffix) readable by the peer
 
-This is the discovery tool — the model uses it to figure out what memory is available before issuing a `memory_read` or `memory_search`. Untrusted peers see only `peer-derived` providers; operator/facility peers see everything.
+This is the discovery tool — the model uses it to figure out what memory is available before issuing a `memory_read` or `memory_search`. Untrusted peers see only `peer-derived` providers; creator/agent peers see everything.
+
+### `memory_forget(peerId: string)`
+
+Deletes all episodic entries for one peer across namespace providers that
+implement `forget`. This is the right-to-erasure tool. It is always gated to
+creator or agent trust, regardless of the provider's normal read/write origin.
+
+The return shape is:
+
+```json
+{
+  "status": "ok",
+  "deleted": 12,
+  "message": "Deleted 12 entries for peer \"vis_abc123\"."
+}
+```
+
+If one provider fails but another succeeds, the status is `partial` and the
+result includes an `errors` array.
 
 ### Per-turn budget
 
-All four tools share a per-turn budget keyed by `turnId` from `ToolExecuteContext`:
+All five tools share a per-turn budget keyed by `turnId` from `ToolExecuteContext`:
 
 ```ts
 const turnBudgets = new Map<string, number>();
@@ -296,7 +342,7 @@ const effectiveAugments = wiring.syntheticToolsAugment
 
 The synthetic augment is appended **at the end** of the augment list. This matters for the context pipeline order: every other augment's `context()` runs before the synthesized memory contexts, which run before any augments declared after memory providers in the user's config (there shouldn't be any in practice, but the order is well-defined).
 
-The lifecycle manager will boot the synthetic augment last (it has no `onBoot`, so this is a no-op). The capability table will see it as an augment with 4 tools and a 20-call limit. The agent card's Auggy extension will include all four memory tools.
+The lifecycle manager will boot the synthetic augment last (it has no `onBoot`, so this is a no-op). The capability table will see it as an augment with 5 tools and a 20-call limit. The agent card marks memory as available; model-facing tool details stay in the tool schema, not in the public A2A skills list.
 
 ## How it all fits together at runtime
 
@@ -306,9 +352,9 @@ The lifecycle manager will boot the synthetic augment last (it has no `onBoot`, 
    - Builds the registry: `static = { "self" → identity }`, `namespaces = [{ prefix: "episode:", augment: episodic }]`.
    - No conflicts, so no throw.
    - Synthesizes `context()` for both augments (since neither has a manual `context`).
-   - Creates the synthetic `memory-bus` augment with the four tools and the budget.
+   - Creates the synthetic `memory-bus` augment with the five tools and the budget.
 3. **`defineAgent`** continues with `effectiveAugments = [identity', episodic', webTransport, memory-bus]` (where `'` denotes the wrapped versions).
-4. **`generateAgentCard`** walks the effective config and produces a card with `capabilities.memory: true`, `capabilities.transport: true`, and 4 memory tools under `extensions.auggy.tools` (from `memory-bus.tools`).
+4. **`generateAgentCard`** walks the effective config and produces a card with `capabilities.memory: true` and `capabilities.transport: true`.
 5. **`agent.start()`** boots: `identity.onBoot()` reads the file into cache; `episodic` has no onBoot; `webTransport.onBoot()` starts Bun.serve; `memory-bus` has no onBoot.
 6. **A peer sends a message via `/agent/run`**. The trigger flows into the turn loop.
 7. **Phase 2 — `onTurnStart`:** `memory-bus.onTurnStart()` resets `budget.calls = 0`.
@@ -317,7 +363,7 @@ The lifecycle manager will boot the synthetic augment last (it has no `onBoot`, 
    - `episodic.context(turnState)` (the synthesized one) lists the current peer's most recent entries, then extracts the user's message text and calls `episodic.memory.search(text)`. Duplicate entries are removed. Returned blocks keep each entry's own origin (`peer-derived` or `agent-derived`) and use the provider defaults for placement, priority, and eviction.
    - `webTransport` and `memory-bus` have no `context()`, so they're skipped.
 9. **Phase 6 — allocator:** assembles the prompt with identity in `systemBlocks`, episodic in `contextBlocks`.
-10. **Phase 7 — inference loop:** the model gets a tools list that includes `memory_read`, `memory_write`, `memory_search`, `memory_list` (plus any other augment's tools — none in this example). It can call them; they route through the registry to the right provider.
+10. **Phase 7 — inference loop:** the model gets a tools list that includes `memory_read`, `memory_write`, `memory_search`, `memory_list`, `memory_forget` (plus any other augment's tools — none in this example). It can call them; they route through the registry to the right provider.
 11. **Tool calls:** if the model calls `memory_search({ query: "previous coffee chat" })`, the tool dispatches to every namespace provider's `search` (just `episodic` here) and returns results.
 
 ## What memory subsystem testing looks like
@@ -325,7 +371,7 @@ The lifecycle manager will boot the synthetic augment last (it has no `onBoot`, 
 Tests live in `tests/memory/`:
 - `registry.test.ts` (10 tests) — every conflict detection rule, lookup precedence
 - `context-synthesis.test.ts` — static synthesis, namespace synthesis, recent peer retrieval, deduplication, origin preservation, error handling, message-trigger gating
-- `tools.test.ts` (10 tests) — each of the four tools, the budget, error cases
+- `tools.test.ts` — each of the five tools, the budget, error cases
 - `memory-bus.test.ts` (6 tests) — the wiring helper, including the new `maxToolCallsPerTurn` test added after the P2 finding
 
 Plus the augment-level tests (`tests/augments/file-memory.test.ts`, `tests/augments/supabase-memory.test.ts`) and the integration test (`tests/integration/full-agent.test.ts`) that exercises the whole memory subsystem end to end through the web transport.
@@ -334,7 +380,7 @@ Plus the augment-level tests (`tests/augments/file-memory.test.ts`, `tests/augme
 
 - **Memory consolidation** (episodic → semantic on idle). Listed as Plan 7+ aspirational. Will run in `onIdle` hooks.
 - **Vector / semantic search.** `supabaseMemory.search` uses ILIKE for substring matching — not embeddings. A future provider can implement `search` with pgvector and the rest of the bus stays the same (the `MemoryProviderSpec` contract is search-agnostic).
-- **Budget per provider.** v1 has one shared budget across all four tools. A future enhancement could give each provider its own sub-budget (e.g. "this episodic store can only be queried 5 times per turn").
+- **Budget per provider.** v1 has one shared budget across all memory tools. A future enhancement could give each provider its own sub-budget (e.g. "this episodic store can only be queried 5 times per turn").
 - **Memory "permissions" beyond mutable/immutable.** v1's `MemoryDefaults.mutable` is the only access control. A more sophisticated model would have read/write/append permissions per peer trust level. Not in scope for v1.
 - **`memory_list` filtering.** v1 returns all labels and prefixes. Future could filter by category or by namespace.
 - **`memory_search` ranking across providers.** v1 returns each provider's results separately. Future could merge and rerank.

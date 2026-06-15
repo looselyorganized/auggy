@@ -18,7 +18,8 @@ import { createStubBunInstallSpawn, type SpawnCapture } from "../fixtures/bun-in
 let answers: Answers = { augmentTypes: [] };
 mockInquirerPrompts(() => answers);
 
-const { runAdd } = await import("../../src/cli/commands/add");
+const { runAdd, buildAddChoices } = await import("../../src/cli/commands/add");
+const { AUGMENT_CATALOG } = await import("../../src/cli/augment-catalog");
 
 let auggyDir: string;
 let agentParent: string;
@@ -134,6 +135,21 @@ describe("runAdd mutates per-agent package.json", () => {
 });
 
 describe("runAdd no-op cases", () => {
+  test("augment picker groups stable choices before preview choices with compact labels", () => {
+    const choices = buildAddChoices(AUGMENT_CATALOG);
+    const labels = choices.flatMap((choice) => ("value" in choice ? [choice.name] : []));
+
+    const visitorAuthIndex = labels.findIndex((label) => label.includes("visitorAuth"));
+    const bashIndex = labels.findIndex((label) => label.includes("bash"));
+
+    expect(visitorAuthIndex).toBeGreaterThanOrEqual(0);
+    expect(bashIndex).toBeGreaterThanOrEqual(0);
+    expect(visitorAuthIndex).toBeLessThan(bashIndex);
+    expect(labels.find((label) => label.includes("visitorAuth"))).not.toContain("[preview]");
+    expect(labels.find((label) => label.includes("bash"))).toContain("[preview]");
+    expect(labels.join("\n")).not.toContain("Lets the agent use tools exposed by MCP servers");
+  });
+
   test("non-interactive augment argument mutates yaml without invoking picker", async () => {
     const dir = setupAgent("with-fetch");
 
@@ -295,12 +311,12 @@ describe("runAdd no-op cases", () => {
     await runAdd("preview-decline", {
       config: join(dir, "agent.yaml"),
       auggyDir,
-      augment: "mcp",
+      augment: "bash",
       bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
     });
 
     expect(readFileSync(join(dir, "agent.yaml"), "utf-8")).toBe(before);
-    expect(existsSync(join(dir, "skills", "mcp", "SKILL.md"))).toBe(false);
+    expect(existsSync(join(dir, "skills", "bash", "SKILL.md"))).toBe(false);
     expect(bunInstallCalls).toHaveLength(0);
   });
 

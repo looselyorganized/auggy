@@ -251,12 +251,12 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
     defaultName: "mcp",
     defaultOptions: {},
     required: false,
-    stability: "preview",
+    stability: "stable",
     hasSkill: true,
   },
   {
     label: "Agent Mail",
-    tagline: "send email via AgentMail (Phase A: outbound only)",
+    tagline: "send email through AgentMail",
     description:
       "Lets the agent send email (send / reply / forward) via AgentMail. Trust-level gate, recipient allowlist, rate limits, dedup, audit ring. Requires AGENTMAIL_API_KEY + AGENTMAIL_INBOX_ID.",
     type: "agentMail",
@@ -280,7 +280,7 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
       inbound: { mode: "none" },
     },
     required: false,
-    stability: "preview",
+    stability: "stable",
     envVars: ["AGENTMAIL_API_KEY", "AGENTMAIL_INBOX_ID"],
     hasSkill: true,
   },
@@ -373,7 +373,7 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
       layeredMemoryDbPath: "./memory.db",
     },
     required: false,
-    stability: "preview",
+    stability: "stable",
     // AGENTMAIL_API_KEY + AGENTMAIL_INBOX_ID intentionally omitted — they're
     // only needed when the operator switches `agentMail.transport` to
     // "agentmail". AUGGY_PUBLIC_URL, VISITOR_SIGNING_KEY, AUGGY_AGENT_ID

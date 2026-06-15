@@ -14,7 +14,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { basename, dirname, join } from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
-import { checkbox, confirm } from "@inquirer/prompts";
+import { checkbox, confirm, Separator } from "@inquirer/prompts";
 import {
   getAvailableAugments,
   resolveCatalogEntry,
@@ -84,11 +84,9 @@ export async function runAdd(target: string | undefined, opts: AddOpts): Promise
   const selected = selectedAugment
     ? resolveNonInteractiveSelection(selectedAugment, available)
     : await checkbox<CatalogEntry>({
-        message: "Select augments to add:",
-        choices: available.map((entry) => ({
-          name: `${entry.label}${entry.stability === "preview" ? " (preview)" : ""} - ${entry.description}`,
-          value: entry,
-        })),
+        message: "Select augments to add",
+        pageSize: 12,
+        choices: buildAddChoices(available),
       });
 
   if (selected.length === 0) {
@@ -269,7 +267,7 @@ export async function runAdd(target: string | undefined, opts: AddOpts): Promise
     console.log("  - Config file: .mcp.json");
     console.log("  - Add a server: auggy mcp add-json <name> '<json>'");
     console.log("  - Check setup: auggy mcp doctor");
-    console.log("  - Cloud agents should use remote HTTP MCP servers, not local stdio");
+    console.log("  - Cloud agents need remote HTTP MCP, or local stdio marked cloud: disabled");
   }
 
   if (telegramTransportAdded) {
@@ -351,21 +349,54 @@ async function confirmPreviewAugments(selected: CatalogEntry[], yes: boolean | u
 
 function previewCaveat(entry: CatalogEntry): string {
   switch (entry.type) {
-    case "visitorAuth":
-      return "identity, token, and production email flows need deliberate setup";
     case "budgets":
       return "spend-limit behavior needs more production soak";
-    case "layeredMemory":
-      return "long-term memory semantics and storage choices are still being hardened";
+    case "bash":
+      return "shell access requires careful command allowlists";
     case "link":
       return "agent-to-agent networking has more edge cases to test";
-    case "agentMail":
-      return "email delivery and policy controls need production hardening";
     case "mcp":
       return "external tool servers require deliberate trust, auth, and cloud transport setup";
     default:
       return "production DX is still being hardened";
   }
+}
+
+type AddChoice = {
+  name: string;
+  short: string;
+  description: string;
+  value: CatalogEntry;
+};
+
+export function buildAddChoices(available: CatalogEntry[]): Array<AddChoice | Separator> {
+  const stable = available.filter((entry) => entry.stability === "stable");
+  const preview = available.filter((entry) => entry.stability === "preview");
+  const width = Math.max(0, ...available.map((entry) => entry.defaultName.length));
+  const choices: Array<AddChoice | Separator> = [];
+
+  if (stable.length > 0) {
+    choices.push(new Separator("-- Stable --"));
+    choices.push(...stable.map((entry) => toAddChoice(entry, width)));
+  }
+
+  if (preview.length > 0) {
+    if (choices.length > 0) choices.push(new Separator());
+    choices.push(new Separator("-- Preview: deliberate setup --"));
+    choices.push(...preview.map((entry) => toAddChoice(entry, width)));
+  }
+
+  return choices;
+}
+
+function toAddChoice(entry: CatalogEntry, width: number): AddChoice {
+  const badge = entry.stability === "preview" ? "[preview]" : "         ";
+  return {
+    name: `${entry.defaultName.padEnd(width)}  ${badge}  ${entry.tagline}`,
+    short: entry.defaultName,
+    description: entry.description,
+    value: entry,
+  };
 }
 
 interface InstalledAugment {

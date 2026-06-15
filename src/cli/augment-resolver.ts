@@ -45,6 +45,7 @@ import type {
 import type {
   AgentMailAugmentOptions,
   Augment,
+  ContextOrigin,
   NotifyAugmentOptions,
   TelegramTransportOptions,
 } from "../types";
@@ -70,7 +71,7 @@ function resolveFileMemory(opts: Record<string, unknown>, agentDir: string): Aug
     label: opts.label as string,
     source: resolvePath(opts.source as string, agentDir),
     mutable: opts.mutable as boolean,
-    origin: opts.origin as "operator" | "system" | "agent" | "peer-derived",
+    origin: opts.origin as ContextOrigin,
     priority: opts.priority as "required" | "high" | "normal" | "low" | "evictable",
     placement: opts.placement as "system" | "preamble" | "assistant-preamble",
     eviction: opts.eviction as "never" | "summarize" | "drop",
@@ -148,7 +149,7 @@ async function resolveSupabaseMemory(opts: Record<string, unknown>): Promise<Aug
     client,
     table: rest.table as string,
     mutable: rest.mutable as boolean,
-    origin: rest.origin as "operator" | "system" | "agent" | "peer-derived",
+    origin: rest.origin as ContextOrigin,
     priority: rest.priority as "required" | "high" | "normal" | "low" | "evictable",
     placement: rest.placement as "system" | "preamble" | "assistant-preamble",
     eviction: rest.eviction as "never" | "summarize" | "drop",

@@ -131,4 +131,47 @@ describe("mcp config helpers", () => {
     );
     expect(() => parseMcpServerJson("[]")).toThrow("must be an object");
   });
+
+  test("validates Auggy MCP policy caps", () => {
+    const { dir, cleanup } = tempAgent();
+    try {
+      writeFileSync(
+        join(dir, ".mcp.json"),
+        JSON.stringify(
+          {
+            mcpServers: {
+              remote: { type: "http", url: "https://example.com/mcp" },
+            },
+            auggy: {
+              servers: {
+                remote: {
+                  timeoutMs: 10_000,
+                  maxConcurrentCalls: 2,
+                  maxTools: 25,
+                  maxToolPages: 5,
+                  maxResultBytes: 65_536,
+                  maxSchemaBytes: 8_192,
+                  includeToolDescriptions: false,
+                },
+              },
+            },
+          },
+          null,
+          2,
+        ),
+      );
+      expect(readMcpConfig(dir).config.auggy?.servers?.remote?.maxTools).toBe(25);
+
+      writeFileSync(
+        join(dir, ".mcp.json"),
+        JSON.stringify({
+          mcpServers: { remote: { type: "http", url: "https://example.com/mcp" } },
+          auggy: { servers: { remote: { maxTools: 0 } } },
+        }),
+      );
+      expect(() => readMcpConfig(dir)).toThrow("maxTools");
+    } finally {
+      cleanup();
+    }
+  });
 });
