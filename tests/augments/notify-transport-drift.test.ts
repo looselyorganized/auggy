@@ -17,7 +17,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseConfig } from "@/cli/config-parser";
@@ -30,25 +30,35 @@ const MINIMAL_VALID: Record<(typeof NOTIFY_TRANSPORTS)[number], Record<string, u
   "log-to-file": { path: "./n.jsonl" },
 };
 
-function buildYaml(transport: string, extra: Record<string, unknown>): string {
+function writeNotifyAgent(transport: string, extra: Record<string, unknown>): string {
   const extraLines = Object.entries(extra)
-    .map(([k, v]) => `          ${k}: ${JSON.stringify(v)}`)
+    .map(([k, v]) => `      ${k}: ${JSON.stringify(v)}`)
     .join("\n");
-  return `id: aug1_00000000-0000-0000-0000-000000000000
+  const yamlPath = join(tempDir, "agent.yaml");
+  writeFileSync(
+    yamlPath,
+    `id: aug1_00000000-0000-0000-0000-000000000000
 name: t
 operators: [op]
 engine:
   provider: anthropic
   model: claude-sonnet-4-6
 augments:
-  - name: notify
-    type: notify
-    options:
-      destinations:
-        - name: x
-          transport: ${transport}
+  - notify
+`,
+  );
+  mkdirSync(join(tempDir, "augments", "notify"), { recursive: true });
+  writeFileSync(
+    join(tempDir, "augments", "notify", "augment.yaml"),
+    `type: notify
+config:
+  destinations:
+    - name: x
+      transport: ${transport}
 ${extraLines}
-`;
+`,
+  );
+  return yamlPath;
 }
 
 let tempDir: string;
@@ -62,8 +72,7 @@ afterEach(() => {
 describe("notify transport whitelist drift", () => {
   for (const transport of NOTIFY_TRANSPORTS) {
     it(`parser accepts transport=${transport}`, () => {
-      const yamlPath = join(tempDir, "agent.yaml");
-      writeFileSync(yamlPath, buildYaml(transport, MINIMAL_VALID[transport]));
+      const yamlPath = writeNotifyAgent(transport, MINIMAL_VALID[transport]);
       // parseConfig throws on validation errors. The failure mode this test
       // guards against is the `transport: must be ...` message specifically.
       // We don't expect-no-throw outright (other env-var validation may also

@@ -5,7 +5,7 @@
  * is the source of truth — an agent IS a directory at the canonical path,
  * so a "missing-dir" state cannot exist by construction.
  *
- * The URL column surfaces each agent's `/admin` URL (derived from its
+ * The URL column surfaces each agent's `/console` URL (derived from its
  * webTransport augment port) so operators don't have to dig into agent.yaml
  * to find the workbench. Agents without webTransport show `—`.
  */

@@ -9,10 +9,9 @@
  *     learned.md         What the agent has learned (mutable)
  *     skills/            Skill folders (read-only fs mount), one per
  *                        tool-providing augment plus starter authoring skills
- *     workspace/         Agent's mutable workspace
- *     data/              Runtime state (ignored; used by project scaffolds)
- *     augments/          Custom augments directory
- *     .gitignore         Ignores .env, workspace/, data/, *.log, *.db, memory.sqlite
+ *     data/workspace/    Agent's mutable workspace
+ *     augments/          Installed augment config + custom local augments
+ *     .gitignore         Ignores .env, data/, *.log, *.db, memory.sqlite
  *
  * Per ADR-025 (augment-as-folder + skill bundling) and the PR α foundation
  * spec: scaffold copies bundled skills, uses the `identity:` YAML shorthand,
@@ -23,8 +22,12 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { copyBundledSkill, copyStarterSkills, renderIdentityFromTemplate } from "./scaffold-skills";
-import { writeBuiltinAugmentMetadata, writeCustomAugmentsReadme } from "./augment-metadata";
-import { AUGMENT_CATALOG } from "./augment-catalog";
+import {
+  augmentIdForCatalogEntry,
+  writeBuiltinAugmentMetadata,
+  writeCustomAugmentsReadme,
+} from "./augment-metadata";
+import { AUGMENT_CATALOG, type CatalogEntry } from "./augment-catalog";
 
 export interface ScaffoldOptions {
   /** Agent name. */
@@ -48,6 +51,14 @@ export interface ScaffoldOptions {
 /** Default values used when prompts are skipped (non-interactive). */
 const DEFAULT_OPERATOR_NAME = "the operator";
 const DEFAULT_PURPOSE = "a helpful assistant";
+const WORKSPACE_README = `# Workspace
+
+This is the agent's writable scratch space.
+
+Files the agent creates, edits, downloads, drafts, or organizes should go here.
+Runtime data and generated artifacts belong here instead of next to agent.yaml,
+identity.md, or .env.
+`;
 
 /**
  * Scaffold a new agent directory.
@@ -69,26 +80,13 @@ export function scaffoldAgent(opts: ScaffoldOptions): string {
   // skill copy (which copies SKILL.md files into <agent>/skills/<augment>/).
   // The runtime `skills` augment surfaces them to the model from disk at
   // every context() call — no longer threaded into identity.md per ADR-030.
-  const augmentTypes = [
-    "fileMemory", // identity (mounted via shorthand) + learned.md
-    "filesystem",
-    "layeredMemory",
-    "budgets",
-    "webFetch",
-    "turnControl",
-    "webTransport",
-  ];
-
-  // Tool-providing types whose bundled skills should be copied. Subset of
-  // augmentTypes — fileMemory / budgets / webTransport contribute no tools.
-  const skillProvidingTypes = augmentTypes.filter((t) =>
-    ["filesystem", "layeredMemory", "webFetch", "turnControl"].includes(t),
-  );
+  const augmentTypes = ["fileMemory", "filesystem", "webTransport", "webFetch", "turnControl"];
 
   // Create directory structure.
   mkdirSync(dir, { recursive: true });
   mkdirSync(join(dir, "skills"), { recursive: true });
-  mkdirSync(join(dir, "workspace"), { recursive: true });
+  mkdirSync(join(dir, "data", "workspace"), { recursive: true });
+  writeFileSync(join(dir, "data", "workspace", "README.md"), WORKSPACE_README);
   mkdirSync(join(dir, "augments"), { recursive: true });
   writeCustomAugmentsReadme(dir);
   copyStarterSkills(dir);
@@ -96,12 +94,12 @@ export function scaffoldAgent(opts: ScaffoldOptions): string {
   // Copy bundled skill folders for each tool-providing augment. Idempotent —
   // re-running the scaffold overwrites; per ADR-025 Decision 2 operators opt
   // into updates by re-scaffolding.
-  for (const type of skillProvidingTypes) {
+  for (const type of augmentTypes) {
     copyBundledSkill(type, dir);
   }
   for (const type of augmentTypes) {
     const entry = AUGMENT_CATALOG.find((candidate) => candidate.type === type);
-    if (entry) writeBuiltinAugmentMetadata(dir, entry);
+    if (entry) writeBuiltinAugmentMetadata(dir, entry, optionsForScaffold(entry));
   }
 
   // Write identity.md from the bundled template (security rules only —
@@ -122,7 +120,7 @@ export function scaffoldAgent(opts: ScaffoldOptions): string {
   // Write agent.yaml using the identity: shorthand (per α-5).
   writeFileSync(
     join(dir, "agent.yaml"),
-    agentYamlTemplate(id, opts.name, displayName, purpose, operatorName),
+    agentYamlTemplate(id, opts.name, displayName, purpose, operatorName, augmentTypes),
   );
 
   // Write .env with empty values — operator fills in secrets before first run.
@@ -132,6 +130,27 @@ export function scaffoldAgent(opts: ScaffoldOptions): string {
   writeFileSync(join(dir, ".gitignore"), GITIGNORE_TEMPLATE);
 
   return dir;
+}
+
+function optionsForScaffold(entry: CatalogEntry): Record<string, unknown> | undefined {
+  const options = entry.defaultOptions;
+  if (!options || Object.keys(options).length === 0) return undefined;
+  return rewriteMutablePaths(options) as Record<string, unknown>;
+}
+
+function rewriteMutablePaths(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map((item) => rewriteMutablePaths(item));
+  if (!value || typeof value !== "object") return value;
+
+  const out: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(value)) {
+    if (key === "path" && child === "./workspace") {
+      out[key] = "./data/workspace";
+      continue;
+    }
+    out[key] = rewriteMutablePaths(child);
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -160,7 +179,14 @@ function agentYamlTemplate(
   displayName: string,
   purpose: string,
   operatorName: string,
+  augmentTypes: string[],
 ): string {
+  const augmentLines = augmentTypes
+    .map((type) => AUGMENT_CATALOG.find((entry) => entry.type === type))
+    .filter((entry): entry is CatalogEntry => Boolean(entry))
+    .map((entry) => `  - ${augmentIdForCatalogEntry(entry)}`)
+    .join("\n");
+
   return `# Agent configuration — the source of truth for this Auggy agent.
 # See docs at augment-1/docs/ for field reference.
 
@@ -191,83 +217,7 @@ settings:
   maxInferenceLoops: 10
 
 augments:
-  - type: fileMemory
-    options:
-      label: learned
-      source: ./learned.md
-      mutable: true
-      origin: system
-      priority: high
-      placement: preamble
-      eviction: drop
-
-  - type: layeredMemory
-    options:
-      backend: sqlite
-      namespace: ${yamlScalar(name)}
-      dbPath: ./memory.sqlite
-      retentionDays: 90
-
-  - type: budgets
-    options:
-      dbPath: ./budgets.db
-      caps:
-        public:
-          recognized:
-            maxTurnsPerThread: 20
-            maxTurnsPerDay: 50
-            maxUsdPerDay: 1
-          anonymous:
-            maxTurnsPerThread: 5
-      anonymousGlobalLimit: 30
-      dailyBudgetUsd: 5
-
-  - type: filesystem
-    options:
-      mounts:
-        - name: skills
-          path: ./skills
-          writable: false
-        - name: workspace
-          path: ./workspace
-          writable: true
-          deletable: true
-
-  # ADR-030: surfaces the skill manifest to the model (name + description from
-  # each SKILL.md's YAML frontmatter). Activation is fs_read via the filesystem
-  # mount above. Required for the model to discover its skills.
-  - type: skills
-    options:
-      dir: ./skills
-
-  - type: webFetch
-    options:
-      timeoutMs: 15000
-
-  - type: turnControl
-
-  - type: webTransport
-    options:
-      port: 8080
-      # Anonymous public chat — precedence is yaml > env > default.
-      # Default rule: NODE_ENV !== "production" (true locally, false in cloud).
-      # Uncomment + set explicitly to override. Env var: AUGGY_ALLOW_ANONYMOUS.
-      # When true, visitors can chat without a bearer token; budgets cap cost
-      # and visitor-auth (if mounted) gives them an upgrade path.
-      # allowAnonymous: false
-      # Publish developer discovery — keep false/private unless you want other
-      # developers to see GET /agent and GET /.well-known/agent-card.json
-      # without a bearer. This does NOT make /agent/run public and does NOT
-      # expose /console.
-      # publicIntegration: false
-      auth:
-        type: bearer
-        token: \${AUGGY_WEB_TOKEN}
-      visitorTokens:
-        # signingKey is NOT set here — visitorAuth is the single source of truth
-        # and the resolver injects it at boot. Setting it here would trigger the
-        # duplicate-key warning on every start.
-        agentBinding: \${AUGGY_AGENT_ID}
+${augmentLines}
 `;
 }
 

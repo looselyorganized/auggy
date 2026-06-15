@@ -83,57 +83,87 @@ visitor token without routing every request through the model.
 
 ## Configuration
 
-Add to `agent.yaml`:
+Enable both augments in `agent.yaml`, then configure them in their augment
+folders:
 
 ```yaml
+# agent.yaml
 augments:
-  - type: webTransport
-    name: web
-    options:
-      port: 8080
-      auth: { type: bearer, token: ${AUGGY_WEB_TOKEN} }
-      visitorTokens:
-        ttlSeconds: 7776000                       # 90 days
-        # signingKey is auto-injected from visitorAuth by the resolver —
-        # do NOT set it here. Duplicate keys trigger a warning and visitorAuth
-        # wins. enabled is also forced to true automatically.
+  - webTransport
+  - visitorAuth
 
-  - type: visitorAuth
-    name: visitorAuth
-    options:
-      publicUrl: ${AUGGY_PUBLIC_URL}              # e.g. https://zip.example.com
-      dbPath: ./visitor-auth.db
-      agentMail:
-        apiKey: ${AGENTMAIL_API_KEY}
-        inboxId: ${AGENTMAIL_INBOX_ID}
-        subjectPrefix: "[Verify] "
-      signingKey: ${VISITOR_SIGNING_KEY}          # also auto-wired into webTransport's visitorTokens
-      rateLimit: { perHour: 1, perDay: 3 }        # per anonymous peer
-      reverifyAfterDays: 90
-      tokenTtlMinutes: 15
-      layeredMemoryDbPath: ./memory.db            # null to disable peer-id migration
-      # Optional: notify operator on first verify per email
-      notifyOnFirstVerify:
-        to: ops@example.com
-        subjectPrefix: "[New verified visitor] "
+# augments/webTransport/augment.yaml
+type: webTransport
+config:
+  port: 8080
+  auth: { type: bearer, token: ${AUGGY_WEB_TOKEN} }
+  visitorTokens:
+    ttlSeconds: 7776000                       # 90 days
+    # signingKey is auto-injected from visitorAuth by the resolver —
+    # do NOT set it here. Duplicate keys trigger a warning and visitorAuth
+    # wins. enabled is also forced to true automatically.
+
+# augments/visitorAuth/augment.yaml
+type: visitorAuth
+config:
+  publicUrl: ${AUGGY_PUBLIC_URL}              # e.g. https://zip.example.com
+  dbPath: ./visitor-auth.db
+  agentMail:
+    transport: agentmail
+    apiKey: ${AGENTMAIL_API_KEY}
+    inboxId: ${AGENTMAIL_INBOX_ID}
+    subjectPrefix: "[Verify] "
+  signingKey: ${VISITOR_SIGNING_KEY}          # also auto-wired into webTransport's visitorTokens
+  rateLimit: { perHour: 1, perDay: 3 }        # per anonymous peer
+  reverifyAfterDays: 90
+  tokenTtlMinutes: 15
+  layeredMemoryDbPath: ./memory.db            # null to disable peer-id migration
+  # Optional: notify operator on first verify per email
+  notifyOnFirstVerify:
+    to: ops@example.com
+    subjectPrefix: "[New verified visitor] "
 ```
+
+## AgentMail setup
+
+For production email delivery, prefer the setup command over hand-editing secrets:
+
+```bash
+auggy augment add visitorAuth
+auggy agentmail setup visitorAuth
+```
+
+The setup command has three modes:
+
+- `signup` — first AgentMail inbox, with a human email OTP.
+- `existing` — create a new inbox in an existing AgentMail account.
+- `manual` — use an existing inbox ID and runtime key.
+
+The command writes `AGENTMAIL_API_KEY` and `AGENTMAIL_INBOX_ID` to `.env`, switches
+`augments/visitorAuth/augment.yaml` to `agentMail.transport: agentmail`, and creates
+an inbox-scoped runtime key with only `inbox_read` and `message_send`.
+
+After a visitor clicks the verification link, the success page stores the signed
+visitor token in browser localStorage. `/console/chat` and public frontends should
+send that token as `x-visitor-token` on the next `/agent/run` request so the turn
+arrives as a recognized visitor with verified-email context.
 
 ## Console mode for local testing
 
 OSS adopters who haven't configured AgentMail can still exercise the full magic-link flow by switching the delivery transport to the console adapter. The verify URL prints to the agent's stdout instead of being sent via email — the operator copies the link from their terminal and opens it in a browser to complete verification.
 
-Switch via `agentMail.transport: "console"` in `agent.yaml`:
+Switch via `agentMail.transport: "console"` in
+`augments/visitorAuth/augment.yaml`:
 
 ```yaml
-- name: visitorAuth
-  type: visitorAuth
-  options:
-    publicUrl: http://localhost:8080
-    dbPath: ./visitor-auth.db
-    agentMail:
-      transport: "console"
-    signingKey: ${VISITOR_SIGNING_KEY}
-    agentBinding: ${AUGGY_AGENT_ID}
+type: visitorAuth
+config:
+  publicUrl: http://localhost:8080
+  dbPath: ./visitor-auth.db
+  agentMail:
+    transport: "console"
+  signingKey: ${VISITOR_SIGNING_KEY}
+  agentBinding: ${AUGGY_AGENT_ID}
 ```
 
 When console mode is active, `request_auth` prints a line like:
@@ -156,7 +186,7 @@ Console mode is **rejected at boot** if EITHER of these is true:
 Either gate triggers the same rejection. Operator can explicitly acknowledge the risk via:
 
 ```yaml
-options:
+config:
   publicUrl: https://demo.example.com
   agentMail:
     transport: "console"
@@ -173,7 +203,7 @@ Local-only flows are always admitted without ceremony:
 | `https://my-app.local` (mDNS) | console mode allowed |
 | `https://demo.example.com` | console mode **rejected** unless `allowConsoleInProduction: true` |
 
-For production-grade deployments serving external visitors, use the AgentMail transport (the default).
+For production-grade deployments serving external visitors, use the AgentMail transport.
 AgentMail recommends sending both plain-text and HTML email bodies for deliverability; visitorAuth does this for verification emails.
 
 ### `notifyOnFirstVerify` is incompatible with console mode
@@ -248,4 +278,4 @@ If a revoke is interrupted (e.g., Ctrl-C between the visitor-auth UPDATE and the
 | Verify link returns 410 "consumed" | Token was already used (visitor double-clicked, or someone with the link beat them) | Re-issue |
 | Visitor verifies but agent doesn't recognize them next visit | Cleared localStorage, or `VISITOR_SIGNING_KEY` rotated | Re-verify |
 | AgentMail healthcheck returns 403 | API key lacks access to the configured inbox, or a permission whitelist omitted `inbox_read` | Use an inbox-scoped key for `AGENTMAIL_INBOX_ID` with `inbox_read` and `message_send` |
-| `auggy visitors --revoke` errors "memory.db not found" | layeredMemory hasn't created its DB yet, or path mismatch | Check `layeredMemoryDbPath` in `agent.yaml` |
+| `auggy visitors --revoke` errors "memory.db not found" | layeredMemory hasn't created its DB yet, or path mismatch | Check `layeredMemoryDbPath` in `augments/visitorAuth/augment.yaml` |

@@ -42,7 +42,7 @@ function mockHttp(
 }
 
 describe("createAgentMailClient", () => {
-  test("posts to /inboxes/{id}/messages with bearer auth", async () => {
+  test("posts to /inboxes/{id}/messages/send with bearer auth", async () => {
     let captured: { url: string; body: Record<string, unknown> } | null = null;
     let capturedAuth = "";
     const client = createAgentMailClient({
@@ -61,7 +61,7 @@ describe("createAgentMailClient", () => {
       html: "<p>t</p>",
     });
     const sent = captured as unknown as { url: string; body: Record<string, unknown> };
-    expect(sent.url).toBe("https://api.agentmail.to/v0/inboxes/inb_x/messages");
+    expect(sent.url).toBe("https://api.agentmail.to/v0/inboxes/inb_x/messages/send");
     expect(capturedAuth).toBe("Bearer am_test");
     expect(sent.body.subject).toBe("s");
     expect(sent.body.html).toBe("<p>t</p>");

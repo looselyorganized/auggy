@@ -157,7 +157,7 @@ export function createAgentMailClient(opts: AgentMailClientOptions): AgentMailCl
     async send(input) {
       const invalidRecipients = recipientError(input.to);
       if (invalidRecipients) return invalidRecipients;
-      const url = `${baseUrl}/inboxes/${input.inboxId}/messages`;
+      const url = `${baseUrl}/inboxes/${input.inboxId}/messages/send`;
       const body = JSON.stringify({
         to: input.to,
         subject: input.subject,

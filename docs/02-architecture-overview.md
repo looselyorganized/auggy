@@ -172,7 +172,7 @@ Turns Auggy from "write a `main.ts`" into "configure a YAML file and run `auggy 
 | `skill-frontmatter.ts` | YAML frontmatter parser for SKILL.md files (agentskills.io standard). |
 | `skill-validator.ts` | Boot-time validator: warns when a tool-providing augment lacks a mounted skill. |
 | `commands/create.ts` | `auggy create <name>` — interactive scaffold. |
-| `commands/add.ts` | `auggy add <name>` — add augments to an existing agent. |
+| `commands/add.ts` | `auggy add` shortcut for `auggy augment add`. |
 | `commands/dev.ts` | `auggy dev <name>` — foreground runner (core lifecycle). |
 | `commands/start.ts` | `auggy start <name>` — install as launchd service. |
 | `commands/stop.ts` | `auggy stop <name>` — SIGTERM or `launchctl unload`. |

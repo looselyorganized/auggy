@@ -4,7 +4,7 @@
  *
  * Commands:
  *   auggy create <name>              Scaffold a new agent (interactive)
- *   auggy add [name] [augment]       Add augments to an existing agent (shortcut)
+ *   auggy add [name] [augment]       Shortcut for auggy augment add
  *   auggy augment add <augment>      Add an augment to an agent
  *   auggy augment remove <augment>   Remove an augment from an agent
  *   auggy augment list               List augments in an agent
@@ -14,6 +14,7 @@
  *   auggy models list [provider]     List known/provider engine models
  *   auggy routes [name]              Show custom HTTP routes registered by an agent
  *   auggy augment create <slug>      Scaffold a local custom augment
+ *   auggy agentmail setup visitorAuth Configure AgentMail magic-link delivery
  *   auggy dev [name] [--open]        Run agent in foreground; --open pops /console in browser
  *   auggy start [name] [--config]    Install as launchd service (always-on)
  *   auggy stop <name>                Stop a running agent
@@ -36,6 +37,7 @@ import { runCommand } from "./commands/run";
 import { doctorCommand } from "./commands/doctor";
 import { routesCommand } from "./commands/routes";
 import { augmentCommand } from "./commands/augment";
+import { agentMailCommand } from "./commands/agentmail";
 import { runDev } from "./commands/dev";
 import { runStart } from "./commands/start";
 import { runStop } from "./commands/stop";
@@ -124,6 +126,7 @@ export function buildCli(): Command {
   program.addCommand(modelsCommand());
   program.addCommand(routesCommand());
   program.addCommand(augmentCommand());
+  program.addCommand(agentMailCommand());
   program.addCommand(mcpCommand());
 
   program

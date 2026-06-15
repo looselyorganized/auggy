@@ -419,24 +419,27 @@ The `origin: "peer-derived"` is critical for security. Episodic memory contains 
 ## `layeredMemory` — Peer-scoped episodic memory
 
 ```yaml
+# agent.yaml
 augments:
-  - name: memory
-    type: layeredMemory
-    options:
-      backend: sqlite
-      namespace: ${AGENT_NAME}
-      dbPath: ./memory.sqlite
-      retentionDays: 90
-      autoSave:
-        enabled: true
-        extractionFrequency:
-          creator: every-turn
-          agent: every-N-turns
-          public:
-            recognized: every-turn
-            anonymous: session-end-only
-        everyNTurns: 3
-        confidenceThreshold: 0.5
+  - layeredMemory
+
+# augments/layeredMemory/augment.yaml
+type: layeredMemory
+config:
+  backend: sqlite
+  namespace: ${AGENT_NAME}
+  dbPath: ./memory.sqlite
+  retentionDays: 90
+  autoSave:
+    enabled: true
+    extractionFrequency:
+      creator: every-turn
+      agent: every-N-turns
+      public:
+        recognized: every-turn
+        anonymous: session-end-only
+    everyNTurns: 3
+    confidenceThreshold: 0.5
 ```
 
 ### What it is
@@ -706,13 +709,13 @@ Creator-class senders (and null peers / scheduled triggers) bypass all rate limi
 
 ### Outbound messaging history
 
-`notify` is the successor to the `org_escalate` tool that was removed from `manifest` in roadmap item 6 (commit `59d82c7`). The capability is equivalent; the structural change is that the destination URL is now in `agent.yaml` config rather than embedded in the tool definition.
+`notify` is the successor to the `org_escalate` tool that was removed from `manifest` in roadmap item 6 (commit `59d82c7`). The capability is equivalent; the structural change is that the destination URL is now in augment config rather than embedded in the tool definition.
 
 For the full operator reference, see [docs/13-notify.md](./13-notify.md).
 
 ### Bundled skill
 
-This augment ships `src/augments/notify/skill/SKILL.md` with model teaching on the `notify` tool — destination semantics, when to escalate vs answer in-thread, dedup awareness. Copied into `<agent-dir>/skills/notify/SKILL.md` at `auggy create`/`auggy add` time; install retroactively with `auggy skill add notify`.
+This augment ships `src/augments/notify/skill/SKILL.md` with model teaching on the `notify` tool — destination semantics, when to escalate vs answer in-thread, dedup awareness. Copied into `<agent-dir>/skills/notify/SKILL.md` at `auggy create`/`auggy augment add` time; install retroactively with `auggy skill add notify`.
 
 ### Console/API info
 
@@ -785,7 +788,7 @@ Each source directory contains a `manifest` file plus endpoint files. `file://` 
 
 ### Local setup
 
-The fastest path is to keep source URLs out of `agent.yaml` and edit files inside `knowledge/`:
+The fastest path is to keep source URLs out of augment config and edit files inside `knowledge/`:
 
 ```text
 knowledge/
@@ -843,24 +846,27 @@ Boot is graceful: if a source is unreachable at startup (HTTP) or the configured
 
 ### Bundled skill
 
-This augment ships `src/augments/knowledge/skill/SKILL.md` with model teaching on the `knowledge_fetch` tool — source manifests, when to fetch endpoints, progressive-disclosure rationale. Copied into `<agent-dir>/skills/knowledge/SKILL.md` at `auggy create`/`auggy add` time; install retroactively with `auggy skill add knowledge`.
+This augment ships `src/augments/knowledge/skill/SKILL.md` with model teaching on the `knowledge_fetch` tool — source manifests, when to fetch endpoints, progressive-disclosure rationale. Copied into `<agent-dir>/skills/knowledge/SKILL.md` at `auggy create`/`auggy augment add` time; install retroactively with `auggy skill add knowledge`.
 
 ## `telegramTransport` — Bidirectional Telegram bot transport
 
 ```yaml
+# agent.yaml
 augments:
-  - name: telegram
-    type: telegramTransport
-    options:
-      botToken: ${TELEGRAM_BOT_TOKEN}
-      inbound:
-        mode: polling
-        polling:
-          timeoutSec: 30
-      auth:
-        creatorUserIds: []
-        creatorUserIdsEnv: TELEGRAM_CREATOR_USER_IDS
-        anonymousIdentityMode: ephemeral
+  - telegramTransport
+
+# augments/telegramTransport/augment.yaml
+type: telegramTransport
+config:
+  botToken: ${TELEGRAM_BOT_TOKEN}
+  inbound:
+    mode: polling
+    polling:
+      timeoutSec: 30
+  auth:
+    creatorUserIds: []
+    creatorUserIdsEnv: TELEGRAM_CREATOR_USER_IDS
+    anonymousIdentityMode: ephemeral
 ```
 
 ### What it is
@@ -1123,20 +1129,23 @@ The closure variable backing the daily cap is mutated on flip, so the new cap ta
 ## `visitorAuth` — Email magic-link verification
 
 ```yaml
+# agent.yaml
 augments:
-  - type: visitorAuth
-    name: visitorAuth
-    options:
-      publicUrl: ${AUGGY_PUBLIC_URL}
-      dbPath: ./visitor-auth.db
-      agentMail:
-        apiKey: ${AGENTMAIL_API_KEY}
-        inboxId: ${AGENTMAIL_INBOX_ID}
-      signingKey: ${VISITOR_SIGNING_KEY}
-      rateLimit: { perHour: 1, perDay: 3 }
-      reverifyAfterDays: 90
-      tokenTtlMinutes: 15
-      layeredMemoryDbPath: ./memory.db
+  - visitorAuth
+
+# augments/visitorAuth/augment.yaml
+type: visitorAuth
+config:
+  publicUrl: ${AUGGY_PUBLIC_URL}
+  dbPath: ./visitor-auth.db
+  agentMail:
+    apiKey: ${AGENTMAIL_API_KEY}
+    inboxId: ${AGENTMAIL_INBOX_ID}
+  signingKey: ${VISITOR_SIGNING_KEY}
+  rateLimit: { perHour: 1, perDay: 3 }
+  reverifyAfterDays: 90
+  tokenTtlMinutes: 15
+  layeredMemoryDbPath: ./memory.db
 ```
 
 ### What it is
@@ -1151,7 +1160,7 @@ It adds three things to the agent: a model-callable `request_auth({method: "emai
 
 ### Bundled skill
 
-`visitorAuth` ships `src/augments/visitorAuth/skill/SKILL.md` with model teaching on the `request_auth` tool — when to offer verification, confused-deputy awareness, and rate-limit messaging. Copied into `<agent-dir>/skills/visitorAuth/SKILL.md` at `auggy create`/`auggy add` time; install retroactively with `auggy skill add visitorAuth`.
+`visitorAuth` ships `src/augments/visitorAuth/skill/SKILL.md` with model teaching on the `request_auth` tool — when to offer verification, confused-deputy awareness, and rate-limit messaging. Copied into `<agent-dir>/skills/visitorAuth/SKILL.md` at `auggy create`/`auggy augment add` time; install retroactively with `auggy skill add visitorAuth`.
 
 For the full operator reference (config, env vars, security posture, ops commands, troubleshooting), see [docs/19-visitor-auth.md](./19-visitor-auth.md).
 
@@ -1166,30 +1175,33 @@ The console dashboard API exposes a **Visitors** block with:
 ## `link` — Peer-to-peer A2A v0.2 transport
 
 ```yaml
+# agent.yaml
 augments:
-  - type: link
-    name: link
-    options:
-      port: 8081
-      dbPath: ./link.db
-      agentCard:
-        id: <agent-uuid>
-        name: zip
-        description: Front-door agent
-        endpointUrl: https://zip.example.org
-        capabilities:
-          - "answers visitor questions about LORF"
-      peers:
-        researcher:
-          url: https://researcher.example.org
-          bearer: ${RESEARCHER_BEARER}
-          participantId: <peer-uuid>
-          inboundBearer: ${RESEARCHER_INBOUND_BEARER}
-          inboundBearerId: <inbound-bearer-uuid>
-          purpose: "Research specialist. Knows recent ML literature."
-          examples:
-            - "What's the state of test-time compute scaling?"
-            - "Find recent papers on agent benchmarks"
+  - link
+
+# augments/link/augment.yaml
+type: link
+config:
+  port: 8081
+  dbPath: ./link.db
+  agentCard:
+    id: <agent-uuid>
+    name: zip
+    description: Front-door agent
+    endpointUrl: https://zip.example.org
+    capabilities:
+      - "answers visitor questions about LORF"
+  peers:
+    researcher:
+      url: https://researcher.example.org
+      bearer: ${RESEARCHER_BEARER}
+      participantId: <peer-uuid>
+      inboundBearer: ${RESEARCHER_INBOUND_BEARER}
+      inboundBearerId: <inbound-bearer-uuid>
+      purpose: "Research specialist. Knows recent ML literature."
+      examples:
+        - "What's the state of test-time compute scaling?"
+        - "Find recent papers on agent benchmarks"
 ```
 
 ### What it is
@@ -1203,7 +1215,7 @@ You're running two or more Auggy agents that need to talk to each other. The oth
 ### Tools (2)
 
 - **`link_send(to, text)`** — send a text message to a configured peer. Returns the peer's synchronous reply text (when available) or a task id (when the peer chose async handling).
-- **`link_list()`** — enumerate configured peers as `{ peers: [{ name, purpose?, examples? }] }`. The LLM uses this to discover *who* it can reach and *what each peer is good for*. `purpose` and `examples` come from agent.yaml; both are optional. Beware: bad examples mislead the model more than they help — keep them tight or omit.
+- **`link_list()`** — enumerate configured peers as `{ peers: [{ name, purpose?, examples? }] }`. The LLM uses this to discover *who* it can reach and *what each peer is good for*. `purpose` and `examples` come from `augments/link/augment.yaml`; both are optional. Beware: bad examples mislead the model more than they help — keep them tight or omit.
 
 ### Context block — peer roster
 
@@ -1232,22 +1244,25 @@ Names only — not purposes or examples — to keep preamble cost ~10 tokens per
 For more than a couple of peers, hardcoding `peers` in every agent's yaml becomes painful. The `peerSource` block points the augment at a JSON URL it fetches on boot; the registry serves the org's peer roster as a single source of truth.
 
 ```yaml
+# agent.yaml
 augments:
-  - type: link
-    name: link
-    options:
-      port: 8081
-      dbPath: ./link.db
-      agentCard:
-        id: <self-uuid>
-        name: zip
-        description: Front-door agent
-        endpointUrl: https://zip.example.org:8081
-      peerSource:
-        type: registry
-        url: https://lorf-context.up.railway.app/peers.json
-        cacheSeconds: 60     # default 60; lower for snappier propagation
-      # peers: {...}         # optional — fallback if registry is unreachable
+  - link
+
+# augments/link/augment.yaml
+type: link
+config:
+  port: 8081
+  dbPath: ./link.db
+  agentCard:
+    id: <self-uuid>
+    name: zip
+    description: Front-door agent
+    endpointUrl: https://zip.example.org:8081
+  peerSource:
+    type: registry
+    url: https://lorf-context.up.railway.app/peers.json
+    cacheSeconds: 60     # default 60; lower for snappier propagation
+  # peers: {...}         # optional — fallback if registry is unreachable
 ```
 
 The registry response shape (the **stable wire contract**):
@@ -1308,7 +1323,7 @@ All admitted peers are minted as `trust: "agent"` at v1.0 — there is no per-pe
 
 ### Forward-compat with the coordinator
 
-When the coordinator service ships (ADR-022 sequencing item 3), the peer list — and per-peer purpose/examples — move from agent.yaml to a participant registry served by the coordinator. The LLM-facing shape (`link_list` returning `{name, purpose?, examples?}`) stays the same; only the source flips. Today's agent.yaml-described peers are forward-compatible.
+When the coordinator service ships (ADR-022 sequencing item 3), the peer list — and per-peer purpose/examples — move from `augments/link/augment.yaml` to a participant registry served by the coordinator. The LLM-facing shape (`link_list` returning `{name, purpose?, examples?}`) stays the same; only the source flips. Today's augment-config-described peers are forward-compatible.
 
 ### Bundled skill
 

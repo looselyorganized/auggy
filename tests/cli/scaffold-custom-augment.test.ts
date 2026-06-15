@@ -21,6 +21,7 @@ describe("scaffoldCustomAugment", () => {
     const result = scaffoldCustomAugment({ slug: "weather", targetDir: target });
 
     expect(result).toBe(target);
+    expect(existsSync(join(target, "augment.yaml"))).toBe(true);
     expect(existsSync(join(target, "index.ts"))).toBe(true);
     expect(existsSync(join(target, "SKILL.md"))).toBe(true);
     expect(existsSync(join(target, "README.md"))).toBe(true);
@@ -31,6 +32,10 @@ describe("scaffoldCustomAugment", () => {
     expect(source).toContain('name: "weather"');
     expect(source).toContain('name: "weather_echo"');
     expect(source).toContain("export default function weather");
+
+    const metadata = readFileSync(join(target, "augment.yaml"), "utf-8");
+    expect(metadata).toContain("type: custom");
+    expect(metadata).toContain("source: ./index.ts");
   });
 
   test("supports hyphenated slugs", () => {

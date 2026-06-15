@@ -822,7 +822,7 @@ async function handleChatProxy(
       503,
     );
   }
-  let body: { csrf?: unknown; message?: unknown; threadId?: unknown };
+  let body: { csrf?: unknown; message?: unknown; threadId?: unknown; visitorToken?: unknown };
   try {
     body = (await req.json()) as typeof body;
   } catch {
@@ -847,15 +847,24 @@ async function handleChatProxy(
     return jsonResponse({ error: "missing message" }, 400);
   }
   const threadId = typeof body.threadId === "string" ? body.threadId : undefined;
+  let visitorToken: string | undefined;
+  if (typeof body.visitorToken === "string" && body.visitorToken.trim() !== "") {
+    if (body.visitorToken.length > 4096 || /[\r\n]/.test(body.visitorToken)) {
+      return jsonResponse({ error: "invalid visitor token" }, 400);
+    }
+    visitorToken = body.visitorToken;
+  }
 
   let upstream: Response;
+  const headers: Record<string, string> = {
+    "content-type": "application/json",
+    authorization: `Bearer ${ctx.bearer}`,
+  };
+  if (visitorToken) headers["x-visitor-token"] = visitorToken;
   try {
     upstream = await fetch(`http://127.0.0.1:${ctx.selfPort}/agent/run`, {
       method: "POST",
-      headers: {
-        "content-type": "application/json",
-        authorization: `Bearer ${ctx.bearer}`,
-      },
+      headers,
       body: JSON.stringify({
         messages: [{ role: "user", content: body.message }],
         threadId,

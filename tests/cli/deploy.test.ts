@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { stringify } from "yaml";
 import { getAgent, seedAgentForTest, setCloud } from "../../src/cli/agent-index";
 import { type DeployOptions, runDeploy } from "../../src/cli/commands/deploy";
 import { RailwayWorkspaceRequiredError, type RailwayCli } from "../../src/cli/deploy/railway-cli";
@@ -140,6 +141,22 @@ function baseDeployOptions(
   };
 }
 
+function writeAugmentMetadata(
+  agentDir: string,
+  id: string,
+  metadata: Record<string, unknown>,
+): void {
+  mkdirSync(join(agentDir, "augments", id), { recursive: true });
+  writeFileSync(join(agentDir, "augments", id, "augment.yaml"), stringify(metadata));
+}
+
+function appendAugmentId(agentDir: string, id: string): void {
+  writeFileSync(
+    join(agentDir, "agent.yaml"),
+    `${readFileSync(join(agentDir, "agent.yaml"), "utf-8")}  - ${id}\n`,
+  );
+}
+
 describe("runDeploy", () => {
   let auggyDir: string;
   let agentDir: string;
@@ -156,15 +173,19 @@ describe("runDeploy", () => {
         "  provider: anthropic",
         "  model: claude-sonnet-4-6",
         "augments:",
-        "  - name: web",
-        "    type: webTransport",
-        "    options:",
-        "      port: 8080",
-        "      auth:",
-        "        type: bearer",
-        "        token: ${AUGGY_WEB_TOKEN}",
+        "  - webTransport",
         "",
       ].join("\n"),
+    });
+    writeAugmentMetadata(agentDir, "webTransport", {
+      type: "webTransport",
+      config: {
+        port: 8080,
+        auth: {
+          type: "bearer",
+          token: "${AUGGY_WEB_TOKEN}",
+        },
+      },
     });
     writeFileSync(join(agentDir, "identity.md"), "# Zip\n");
     writeFileSync(join(agentDir, ".env"), "ANTHROPIC_API_KEY=sk-test\nAUGGY_WEB_TOKEN=tok-1\n");
@@ -365,16 +386,20 @@ describe("runDeploy", () => {
           "  provider: anthropic",
           "  model: claude-sonnet-4-6",
           "augments:",
-          "  - name: web",
-          "    type: webTransport",
-          "    options:",
-          "      port: 8080",
-          "      auth:",
-          "        type: bearer",
-          "        token: ${AUGGY_WEB_TOKEN}",
+          "  - webTransport",
           "",
         ].join("\n"),
       );
+      writeAugmentMetadata(projectDir, "webTransport", {
+        type: "webTransport",
+        config: {
+          port: 8080,
+          auth: {
+            type: "bearer",
+            token: "${AUGGY_WEB_TOKEN}",
+          },
+        },
+      });
       writeFileSync(join(projectDir, "identity.md"), "# Project\n");
       writeFileSync(join(projectDir, ".env"), "ANTHROPIC_API_KEY=sk-test\nAUGGY_WEB_TOKEN=tok-1\n");
       writeFileSync(
@@ -490,10 +515,10 @@ describe("runDeploy", () => {
   });
 
   test("aborts before Railway calls when local deploy preflight fails", async () => {
-    const agentYamlPath = join(agentDir, "agent.yaml");
+    const webTransportMetadataPath = join(agentDir, "augments", "webTransport", "augment.yaml");
     writeFileSync(
-      agentYamlPath,
-      readFileSync(agentYamlPath, "utf-8").replace(
+      webTransportMetadataPath,
+      readFileSync(webTransportMetadataPath, "utf-8").replace(
         "${AUGGY_WEB_TOKEN}",
         "${AUGGY_DEPLOY_PREFLIGHT_MISSING_TOKEN}",
       ),
@@ -512,20 +537,17 @@ describe("runDeploy", () => {
   });
 
   test("aborts before Railway calls when visitorAuth uses console mail for deploy", async () => {
-    const agentYamlPath = join(agentDir, "agent.yaml");
-    writeFileSync(
-      agentYamlPath,
-      `${readFileSync(agentYamlPath, "utf-8")}  - name: visitorAuth
-    type: visitorAuth
-    options:
-      publicUrl: \${AUGGY_PUBLIC_URL}
-      dbPath: ./visitor-auth.db
-      agentMail:
-        transport: console
-      signingKey: \${VISITOR_SIGNING_KEY}
-      agentBinding: \${AUGGY_AGENT_ID}
-`,
-    );
+    appendAugmentId(agentDir, "visitorAuth");
+    writeAugmentMetadata(agentDir, "visitorAuth", {
+      type: "visitorAuth",
+      config: {
+        publicUrl: "${AUGGY_PUBLIC_URL}",
+        dbPath: "./visitor-auth.db",
+        agentMail: { transport: "console" },
+        signingKey: "${VISITOR_SIGNING_KEY}",
+        agentBinding: "${AUGGY_AGENT_ID}",
+      },
+    });
     writeFileSync(
       join(agentDir, ".env"),
       [
@@ -540,7 +562,7 @@ describe("runDeploy", () => {
 
     const { cli, calls } = mockRailwayCli();
     await expect(runDeploy("zip", baseDeployOptions(cli, auggyDir))).rejects.toThrow(
-      /visitorAuth is using agentMail\.transport: "console"/,
+      /visitorAuth is using agentMail\.transport: "console"[\s\S]*augments\/visitorAuth\/augment\.yaml/,
     );
 
     expect(calls.checkPresence).toBe(0);
@@ -550,21 +572,18 @@ describe("runDeploy", () => {
   });
 
   test("allows visitorAuth console mail deploy when explicitly acknowledged", async () => {
-    const agentYamlPath = join(agentDir, "agent.yaml");
-    writeFileSync(
-      agentYamlPath,
-      `${readFileSync(agentYamlPath, "utf-8")}  - name: visitorAuth
-    type: visitorAuth
-    options:
-      publicUrl: \${AUGGY_PUBLIC_URL}
-      dbPath: ./visitor-auth.db
-      agentMail:
-        transport: console
-      signingKey: \${VISITOR_SIGNING_KEY}
-      agentBinding: \${AUGGY_AGENT_ID}
-      allowConsoleInProduction: true
-`,
-    );
+    appendAugmentId(agentDir, "visitorAuth");
+    writeAugmentMetadata(agentDir, "visitorAuth", {
+      type: "visitorAuth",
+      config: {
+        publicUrl: "${AUGGY_PUBLIC_URL}",
+        dbPath: "./visitor-auth.db",
+        agentMail: { transport: "console" },
+        signingKey: "${VISITOR_SIGNING_KEY}",
+        agentBinding: "${AUGGY_AGENT_ID}",
+        allowConsoleInProduction: true,
+      },
+    });
     writeFileSync(
       join(agentDir, ".env"),
       [

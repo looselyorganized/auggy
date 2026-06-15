@@ -22,11 +22,19 @@ export function scaffoldCustomAugment(opts: CustomAugmentScaffoldOptions): strin
   }
 
   mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "augment.yaml"), augmentYamlTemplate());
   writeFileSync(join(dir, "index.ts"), indexTemplate(slug));
   writeFileSync(join(dir, "SKILL.md"), skillTemplate(slug));
   writeFileSync(join(dir, "README.md"), readmeTemplate(slug));
   writeFileSync(join(dir, `${slug}.test.ts`), testTemplate(slug));
   return dir;
+}
+
+function augmentYamlTemplate(): string {
+  return `type: custom
+source: ./index.ts
+config: {}
+`;
 }
 
 function pascalCase(slug: string): string {

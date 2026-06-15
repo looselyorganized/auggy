@@ -606,7 +606,7 @@ export async function resolveAugments(
       throw new Error(
         `Cross-augment config mismatch: visitorAuth.agentBinding (${vaBinding ?? "unset"}) ` +
           `must match webTransport.visitorTokens.agentBinding (${wtBinding ?? "unset"}). ` +
-          `Set them both to the same value (e.g., \${AUGGY_AGENT_ID}) in agent.yaml.`,
+          `Set them both to the same value (e.g., \${AUGGY_AGENT_ID}) in augments/visitorAuth/augment.yaml and augments/webTransport/augment.yaml.`,
       );
     }
   }

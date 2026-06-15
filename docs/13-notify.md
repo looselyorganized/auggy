@@ -10,7 +10,9 @@ Destinations are declared in config, not in the agent prompt. The agent always r
 
 What it does:
 
-- **Named destinations** — operator declares webhook and/or Telegram targets in `agent.yaml`; the agent calls `notify({ to: "<name>", ... })`.
+- **Named destinations** — operator declares webhook and/or Telegram targets in
+  `augments/notify/augment.yaml`; the agent calls
+  `notify({ to: "<name>", ... })`.
 - **Three adapters** — `webhook` (HTTP POST), `telegram` (sendMessage via `src/telegram-client.ts`), and `agentmail` (HTTP POST via `src/agentmail-client.ts`).
 - **Rate limiting** — cooldown, dedup, global hourly cap, per-peer cooldown. Creator-class senders bypass all limits.
 
@@ -22,44 +24,53 @@ What it does **not** do:
 
 ## 2. Configuration
 
-### Minimal `agent.yaml` excerpt
+### Minimal CLI project config
 
 ```yaml
+# agent.yaml
 augments:
-  - name: notify
-    type: notify
-    options:
-      destinations:
-        - name: creator
-          transport: webhook
-          url: ${ORG_NOTIFY_URL}
+  - notify
+
+# augments/notify/augment.yaml
+type: notify
+config:
+  destinations:
+    - name: creator
+      transport: webhook
+      url: ${ORG_NOTIFY_URL}
 ```
 
 ### Full example — webhook + telegram destinations with rate limiting
 
 ```yaml
+# augments/notify/augment.yaml
+type: notify
+config:
+  destinations:
+    - name: creator
+      transport: webhook
+      url: ${ORG_NOTIFY_URL}
+      headers:
+        X-Api-Key: ${NOTIFY_API_KEY}
+    - name: alerts
+      transport: telegram
+      botToken: ${TELEGRAM_BOT_TOKEN}
+      chatId: ${TELEGRAM_CHAT_ID}
+      parseMode: Markdown
+  rateLimit:
+    enabled: true
+    cooldownMs: 120000
+    globalMaxPerHour: 5
+    dedupWindowMs: 300000
+    dedupThreshold: 0.6
+    perPeerCooldownMs: 30000
+```
+
+The `notify` id must also be enabled in `agent.yaml`:
+
+```yaml
 augments:
-  - name: notify
-    type: notify
-    options:
-      destinations:
-        - name: creator
-          transport: webhook
-          url: ${ORG_NOTIFY_URL}
-          headers:
-            X-Api-Key: ${NOTIFY_API_KEY}
-        - name: alerts
-          transport: telegram
-          botToken: ${TELEGRAM_BOT_TOKEN}
-          chatId: ${TELEGRAM_CHAT_ID}
-          parseMode: Markdown
-      rateLimit:
-        enabled: true
-        cooldownMs: 120000
-        globalMaxPerHour: 5
-        dedupWindowMs: 300000
-        dedupThreshold: 0.6
-        perPeerCooldownMs: 30000
+  - notify
 ```
 
 ### Programmatic setup
@@ -203,18 +214,17 @@ Fields are only included when present. `reason` and `visitor` lines are omitted 
 Sends outbound email via [AgentMail](https://www.agentmail.to/docs/welcome). Each destination carries the API key, source inbox, and recipient — multiple `agentmail` destinations may share an API key (the adapter caches the http client per key implicitly via the shared `createHttpClient`).
 
 ````yaml
-augments:
-  - name: notify
-    type: notify
-    options:
-      destinations:
-        - name: creator-mail
-          transport: agentmail
-          apiKey: ${AGENTMAIL_API_KEY}
-          inboxId: ${AGENTMAIL_INBOX_ID}
-          to: operator@example.com
-          subjectPrefix: "[Zip] "
-          labels: ["alert"]
+# augments/notify/augment.yaml
+type: notify
+config:
+  destinations:
+    - name: creator-mail
+      transport: agentmail
+      apiKey: ${AGENTMAIL_API_KEY}
+      inboxId: ${AGENTMAIL_INBOX_ID}
+      to: operator@example.com
+      subjectPrefix: "[Zip] "
+      labels: ["alert"]
 ````
 
 Required env vars:
@@ -277,22 +287,21 @@ Peers with `trustLevel === "creator"` and null peers (internal/scheduled trigger
 
 The `org_escalate` tool was removed in v0.2.0 and replaced by `notify`. For agents using the old tool, the migration is a rename with one structural change: the destination is now declared in config rather than the tool call.
 
-**Example migration (operator-supplied `agent.yaml`):**
+**Example migration (operator-supplied `augments/notify/augment.yaml`):**
 
 ```yaml
-- name: notify
-  type: notify
-  options:
-    destinations:
-      - name: creator
-        transport: webhook
-        url: ${ORG_CONTEXT_URL}/notify
-    rateLimit:
-      cooldownMs: 120000
-      dedupWindowMs: 300000
-      dedupThreshold: 0.6
-      globalMaxPerHour: 5
-      perPeerCooldownMs: 30000
+type: notify
+config:
+  destinations:
+    - name: creator
+      transport: webhook
+      url: ${ORG_CONTEXT_URL}/notify
+  rateLimit:
+    cooldownMs: 120000
+    dedupWindowMs: 300000
+    dedupThreshold: 0.6
+    globalMaxPerHour: 5
+    perPeerCooldownMs: 30000
 ```
 
 The receiving endpoint (`${ORG_CONTEXT_URL}/notify`) is unchanged — the webhook adapter sends the same `summary`, `reason`, and `visitor` fields the old tool sent. The only change is that the URL is now in config rather than the tool definition, and the tool call becomes:
@@ -307,7 +316,8 @@ instead of the old:
 org_escalate({ summary: "...", reason: "...", visitor: "..." })
 ```
 
-The `org_escalate` skill file in agent skills directories can be replaced with the `notify` skill scaffolded by `auggy add notify`.
+The `org_escalate` skill file in agent skills directories can be replaced with
+the `notify` skill scaffolded by `auggy augment add notify`.
 
 ## 7. Common operator mistakes
 
@@ -315,7 +325,7 @@ The `org_escalate` skill file in agent skills directories can be replaced with t
 |---|---|---|
 | Destination `name` typo in agent prompt or skill | Tool returns `{ status: "failed", message: "Unknown destination 'ops'. Configured destinations: creator." }` | Use the exact name string from config; check spelling |
 | Missing `summary` field | Zod validation fails before the tool executes; tool call returns an error | `summary` is required — ensure the skill teaches this |
-| Putting `chatId` or raw Telegram user IDs in the agent identity file | Agent may try to pass raw IDs as `to:` argument | Named destinations only; IDs stay in `agent.yaml` |
+| Putting `chatId` or raw Telegram user IDs in the agent identity file | Agent may try to pass raw IDs as `to:` argument | Named destinations only; IDs stay in `augments/notify/augment.yaml` |
 | Setting `globalMaxPerHour: 0` expecting unlimited | `0` means the cap is always exceeded — all notifications are blocked | Omit `rateLimit` entirely or set `enabled: false` for uncapped |
 | Sharing a `cooldownMs` value that is much larger than `perPeerCooldownMs` | Per-peer cooldown is defaulted to `cooldownMs` when not set; if you set a large global cooldown and leave `perPeerCooldownMs` unset, all peers share the large cooldown | Set `perPeerCooldownMs` explicitly when the two should differ |
 | Using the same bot token for both `notify` (telegram destination) and `telegramTransport` inbound | Fine — they are independent; sending and receiving are concurrent-safe | No fix needed; this is intentional design |
@@ -330,7 +340,7 @@ The `org_escalate` skill file in agent skills directories can be replaced with t
 
 **Tool returns `status: "failed"` with a destination error**
 
-- Check that the destination `name` in the tool call exactly matches the name in `agent.yaml`. The lookup is case-sensitive.
+- Check that the destination `name` in the tool call exactly matches the name in `augments/notify/augment.yaml`. The lookup is case-sensitive.
 - If using env interpolation (`${ORG_NOTIFY_URL}`), verify the env var is set at agent start time. Unresolved env vars produce a literal `${...}` string in the URL.
 
 **Webhook returns non-2xx**

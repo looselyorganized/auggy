@@ -94,14 +94,19 @@ my-agent/
   .env
   .env.example
   augments/
+    filesystem/
+      augment.yaml
+    webFetch/
+      augment.yaml
   skills/
   data/
 ```
 
-`agent.yaml` is the entry point. `.env` holds secrets. `skills/` holds markdown
-instructions the agent can read. `augments/` is where custom local augments live.
-Runtime code is installed through the agent's `package.json`, so each agent is
-portable and pinned to the Auggy version it was created with.
+`agent.yaml` is the entry point: identity, engine, and enabled augment order.
+Each enabled augment has config in `augments/<id>/augment.yaml`. `.env` holds
+secrets. `skills/` holds markdown instructions the agent can read. Runtime code
+is installed through the agent's `package.json`, so each agent is portable and
+pinned to the Auggy version it was created with.
 
 ## Core Concepts
 
@@ -170,8 +175,8 @@ auggy augment add notify
 ```
 
 The default destination writes to `notifications.jsonl` so the augment works
-locally with no secrets. For real delivery, edit `notify.destinations` in
-`agent.yaml` and add any required secrets to `.env`.
+locally with no secrets. For real delivery, edit
+`augments/notify/augment.yaml` and add any required secrets to `.env`.
 
 ## Telegram
 
@@ -195,7 +200,7 @@ ID. Creator IDs are comma-separated numeric Telegram user IDs.
 auggy augment add mcp
 ```
 
-MCP servers live in `.mcp.json` at the agent root. `agent.yaml` mounts the
+MCP servers live in `.mcp.json` at the agent root. `agent.yaml` enables the
 augment; `.mcp.json` is the source of truth for server definitions. Auggy
 discovers MCP tools at boot and exposes them as Auggy tools named
 `mcp_<server>_<tool>`.

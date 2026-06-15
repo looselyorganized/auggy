@@ -10,6 +10,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { createServer } from "node:net";
 import { Command } from "commander";
+import { parse as parseYaml } from "yaml";
 import { parseConfig } from "../config-parser";
 import { resolveConfigPath } from "../resolve-config";
 import { PROVIDER_TO_PACKAGE } from "../scaffold-package-json";
@@ -191,7 +192,7 @@ function checkPackageManifest(agentDir: string): DoctorCheck {
 }
 
 function checkConfigEnvReferences(configPath: string, agentDir: string): DoctorCheck[] {
-  const vars = collectEnvReferences(readFileSync(configPath, "utf-8"));
+  const vars = collectConfigEnvReferences(configPath, agentDir);
   if (vars.length === 0) return [];
 
   const envPath = join(agentDir, ".env");
@@ -224,6 +225,31 @@ function collectEnvReferences(text: string): string[] {
     const key = match[1];
     if (key) vars.add(key);
   }
+  return [...vars].sort();
+}
+
+function collectConfigEnvReferences(configPath: string, agentDir: string): string[] {
+  const vars = new Set<string>();
+  const add = (keys: string[]) => {
+    for (const key of keys) vars.add(key);
+  };
+
+  const agentYaml = readFileSync(configPath, "utf-8");
+  add(collectEnvReferences(agentYaml));
+
+  const parsed = parseYaml(agentYaml);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return [...vars].sort();
+
+  const augments = (parsed as Record<string, unknown>).augments;
+  if (!Array.isArray(augments)) return [...vars].sort();
+
+  for (const entry of augments) {
+    if (typeof entry !== "string") continue;
+    const metadataPath = join(agentDir, "augments", entry, "augment.yaml");
+    if (!existsSync(metadataPath)) continue;
+    add(collectEnvReferences(readFileSync(metadataPath, "utf-8")));
+  }
+
   return [...vars].sort();
 }
 
@@ -391,7 +417,7 @@ async function checkWebPorts(
         name: `port ${port}`,
         status: "fail",
         message: "already in use",
-        fix: `Stop the process using port ${port}, or change webTransport.options.port in agent.yaml.`,
+        fix: `Stop the process using port ${port}, or change config.port in augments/${aug.name}/augment.yaml.`,
       });
     }
   }

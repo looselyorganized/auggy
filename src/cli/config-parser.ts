@@ -12,7 +12,7 @@
  */
 
 import { readFileSync, existsSync } from "node:fs";
-import { resolve, dirname, join } from "node:path";
+import { resolve, dirname, join, isAbsolute, relative } from "node:path";
 import { parse as parseYaml } from "yaml";
 import type {
   ParsedConfig,
@@ -93,7 +93,7 @@ function walkAndInterpolate(obj: unknown, path: string, missing: string[]): unkn
   if (typeof obj === "string") {
     return obj.replace(ENV_VAR_RE, (_match, varName: string) => {
       const value = process.env[varName];
-      if (value === undefined) {
+      if (value === undefined || value === "") {
         missing.push(`${varName} (referenced in ${path || "root"})`);
         return `\${${varName}}`;
       }
@@ -121,6 +121,7 @@ const AUG1_ID_RE = /^aug1_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-
 /** Agent and augment names: code identifiers; no dots, slashes, or spaces. */
 export const VALID_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
 const VALID_COMPACTION = new Set(["truncate", "summarize", "sliding-window"]);
+const AUGMENT_SOURCE_LABEL_FIELD = "__auggySourceLabel";
 const BUILTIN_TYPES = new Set([
   "fileMemory",
   "supabaseMemory",
@@ -172,11 +173,11 @@ function validateBudgetCaps(caps: Record<string, unknown>, path: string, errors:
  */
 function validateBudgetsOptions(
   opts: Record<string, unknown>,
-  prefix: string,
+  optionsPrefix: string,
   errors: string[],
 ): void {
   if (typeof opts.dbPath !== "string" || opts.dbPath.length === 0) {
-    errors.push(`${prefix}.options.dbPath: required string`);
+    errors.push(`${optionsPrefix}.dbPath: required string`);
   }
 
   const numericPositive: Array<keyof typeof opts> = [
@@ -187,25 +188,25 @@ function validateBudgetsOptions(
   for (const field of numericPositive) {
     if (opts[field] !== undefined) {
       if (typeof opts[field] !== "number" || (opts[field] as number) <= 0) {
-        errors.push(`${prefix}.options.${field}: must be a positive number`);
+        errors.push(`${optionsPrefix}.${field}: must be a positive number`);
       }
     }
   }
 
   if (opts.caps !== undefined) {
     if (typeof opts.caps !== "object" || opts.caps === null || Array.isArray(opts.caps)) {
-      errors.push(`${prefix}.options.caps: must be an object`);
+      errors.push(`${optionsPrefix}.caps: must be an object`);
       return;
     }
     const caps = opts.caps as Record<string, unknown>;
 
     if (caps.agent !== undefined) {
       if (typeof caps.agent !== "object" || caps.agent === null || Array.isArray(caps.agent)) {
-        errors.push(`${prefix}.options.caps.agent: must be an object`);
+        errors.push(`${optionsPrefix}.caps.agent: must be an object`);
       } else {
         validateBudgetCaps(
           caps.agent as Record<string, unknown>,
-          `${prefix}.options.caps.agent`,
+          `${optionsPrefix}.caps.agent`,
           errors,
         );
       }
@@ -213,7 +214,7 @@ function validateBudgetsOptions(
 
     if (caps.public !== undefined) {
       if (typeof caps.public !== "object" || caps.public === null || Array.isArray(caps.public)) {
-        errors.push(`${prefix}.options.caps.public: must be an object`);
+        errors.push(`${optionsPrefix}.caps.public: must be an object`);
       } else {
         const pub = caps.public as Record<string, unknown>;
         for (const substate of ["anonymous", "recognized"] as const) {
@@ -223,11 +224,11 @@ function validateBudgetsOptions(
               pub[substate] === null ||
               Array.isArray(pub[substate])
             ) {
-              errors.push(`${prefix}.options.caps.public.${substate}: must be an object`);
+              errors.push(`${optionsPrefix}.caps.public.${substate}: must be an object`);
             } else {
               validateBudgetCaps(
                 pub[substate] as Record<string, unknown>,
-                `${prefix}.options.caps.public.${substate}`,
+                `${optionsPrefix}.caps.public.${substate}`,
                 errors,
               );
             }
@@ -311,22 +312,22 @@ function validateExtractionFrequency(ef: unknown, prefix: string, errors: string
  */
 function validateLayeredMemoryOptions(
   opts: Record<string, unknown>,
-  prefix: string,
+  optionsPrefix: string,
   errors: string[],
 ): void {
   if (opts.autoSave === undefined) return;
   if (opts.autoSave === null || typeof opts.autoSave !== "object" || Array.isArray(opts.autoSave)) {
-    errors.push(`${prefix}.options.autoSave: must be an object`);
+    errors.push(`${optionsPrefix}.autoSave: must be an object`);
     return;
   }
   const a = opts.autoSave as Record<string, unknown>;
 
   if (a.enabled !== undefined && typeof a.enabled !== "boolean") {
-    errors.push(`${prefix}.options.autoSave.enabled: must be a boolean`);
+    errors.push(`${optionsPrefix}.autoSave.enabled: must be a boolean`);
   }
   if (a.everyNTurns !== undefined) {
     if (typeof a.everyNTurns !== "number" || a.everyNTurns <= 0) {
-      errors.push(`${prefix}.options.autoSave.everyNTurns: must be a positive number`);
+      errors.push(`${optionsPrefix}.autoSave.everyNTurns: must be a positive number`);
     }
   }
   if (a.confidenceThreshold !== undefined) {
@@ -336,17 +337,17 @@ function validateLayeredMemoryOptions(
       a.confidenceThreshold > 1
     ) {
       errors.push(
-        `${prefix}.options.autoSave.confidenceThreshold: must be a number between 0 and 1`,
+        `${optionsPrefix}.autoSave.confidenceThreshold: must be a number between 0 and 1`,
       );
     }
   }
   if (a.promptTemplate !== undefined && typeof a.promptTemplate !== "string") {
-    errors.push(`${prefix}.options.autoSave.promptTemplate: must be a string (path to file)`);
+    errors.push(`${optionsPrefix}.autoSave.promptTemplate: must be a string (path to file)`);
   }
   if (a.extractionFrequency !== undefined) {
     validateExtractionFrequency(
       a.extractionFrequency,
-      `${prefix}.options.autoSave.extractionFrequency`,
+      `${optionsPrefix}.autoSave.extractionFrequency`,
       errors,
     );
   }
@@ -369,24 +370,24 @@ function validateLayeredMemoryOptions(
  */
 function validateLinkOptions(
   opts: Record<string, unknown>,
-  prefix: string,
+  optionsPrefix: string,
   errors: string[],
 ): void {
   if (opts.port !== undefined && (typeof opts.port !== "number" || opts.port < 0)) {
-    errors.push(`${prefix}.options.port: must be a non-negative number`);
+    errors.push(`${optionsPrefix}.port: must be a non-negative number`);
   }
   if (typeof opts.dbPath !== "string" || opts.dbPath.length === 0) {
-    errors.push(`${prefix}.options.dbPath: required non-empty string`);
+    errors.push(`${optionsPrefix}.dbPath: required non-empty string`);
   }
 
   const card = opts.agentCard;
   if (!card || typeof card !== "object" || Array.isArray(card)) {
-    errors.push(`${prefix}.options.agentCard: required object`);
+    errors.push(`${optionsPrefix}.agentCard: required object`);
   } else {
     const c = card as Record<string, unknown>;
     for (const field of ["id", "name", "description", "endpointUrl"] as const) {
       if (typeof c[field] !== "string" || (c[field] as string).length === 0) {
-        errors.push(`${prefix}.options.agentCard.${field}: required non-empty string`);
+        errors.push(`${optionsPrefix}.agentCard.${field}: required non-empty string`);
       }
     }
     if (c.capabilities !== undefined) {
@@ -394,7 +395,7 @@ function validateLinkOptions(
         !Array.isArray(c.capabilities) ||
         (c.capabilities as unknown[]).some((v) => typeof v !== "string")
       ) {
-        errors.push(`${prefix}.options.agentCard.capabilities: must be an array of strings`);
+        errors.push(`${optionsPrefix}.agentCard.capabilities: must be an array of strings`);
       }
     }
   }
@@ -402,10 +403,10 @@ function validateLinkOptions(
   const peers = opts.peers;
   if (peers !== undefined) {
     if (!peers || typeof peers !== "object" || Array.isArray(peers)) {
-      errors.push(`${prefix}.options.peers: must be an object keyed by peer name`);
+      errors.push(`${optionsPrefix}.peers: must be an object keyed by peer name`);
     } else {
       for (const [name, value] of Object.entries(peers as Record<string, unknown>)) {
-        const peerPrefix = `${prefix}.options.peers.${name}`;
+        const peerPrefix = `${optionsPrefix}.peers.${name}`;
         if (!value || typeof value !== "object" || Array.isArray(value)) {
           errors.push(`${peerPrefix}: must be an object`);
           continue;
@@ -429,23 +430,23 @@ function validateLinkOptions(
   const peerSource = opts.peerSource;
   if (peerSource !== undefined) {
     if (!peerSource || typeof peerSource !== "object" || Array.isArray(peerSource)) {
-      errors.push(`${prefix}.options.peerSource: must be an object`);
+      errors.push(`${optionsPrefix}.peerSource: must be an object`);
     } else {
       const ps = peerSource as Record<string, unknown>;
       if (ps.type !== "registry") {
         errors.push(
-          `${prefix}.options.peerSource.type: must be "registry" (no other source types at v1)`,
+          `${optionsPrefix}.peerSource.type: must be "registry" (no other source types at v1)`,
         );
       }
       if (typeof ps.url !== "string" || (ps.url as string).length === 0) {
-        errors.push(`${prefix}.options.peerSource.url: required non-empty string`);
+        errors.push(`${optionsPrefix}.peerSource.url: required non-empty string`);
       }
       if (
         ps.cacheSeconds !== undefined &&
         (typeof ps.cacheSeconds !== "number" || ps.cacheSeconds < 1)
       ) {
         errors.push(
-          `${prefix}.options.peerSource.cacheSeconds: must be a positive number (seconds)`,
+          `${optionsPrefix}.peerSource.cacheSeconds: must be a positive number (seconds)`,
         );
       }
     }
@@ -821,6 +822,87 @@ function synthesizeIdentityAugment(source: string): AugmentConfig {
   };
 }
 
+function normalizeRelativePath(path: string): string {
+  const normalized = path.replace(/\\/g, "/");
+  return normalized.startsWith(".") ? normalized : `./${normalized}`;
+}
+
+function loadAugmentFolderEntry(
+  agentDir: string,
+  id: string,
+  prefix: string,
+): Record<string, unknown> {
+  if (!VALID_NAME_RE.test(id)) {
+    throw new Error(
+      `Invalid agent.yaml:\n  - ${prefix}: invalid augment id "${id}" (use letters, numbers, hyphens, or underscores)`,
+    );
+  }
+
+  const augmentDir = join(agentDir, "augments", id);
+  const metadataPath = join(augmentDir, "augment.yaml");
+  const metadataLabel = relative(agentDir, metadataPath).replace(/\\/g, "/");
+  if (!existsSync(metadataPath)) {
+    throw new Error(
+      `Invalid agent.yaml:\n  - ${prefix}: missing augment metadata at ${metadataLabel}`,
+    );
+  }
+
+  const raw = readFileSync(metadataPath, "utf-8");
+  const parsed = parseYaml(raw);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(`${metadataLabel}: not a valid YAML object`);
+  }
+
+  let metadata: Record<string, unknown>;
+  try {
+    metadata = interpolateEnvVars(parsed, `augments.${id}`) as Record<string, unknown>;
+  } catch (err) {
+    const msg = (err as Error).message;
+    if (msg.startsWith("Missing environment variables:")) {
+      throw new Error(augmentMissingEnvError(msg, metadataLabel, agentDir), { cause: err });
+    }
+    throw err;
+  }
+
+  const type = metadata.type;
+  const config = metadata.config ?? {};
+  if (config === null || typeof config !== "object" || Array.isArray(config)) {
+    throw new Error(`Invalid ${metadataLabel}:\n  - config: must be an object when present`);
+  }
+
+  const out: Record<string, unknown> = {
+    name: id,
+    type,
+    options: config,
+    [AUGMENT_SOURCE_LABEL_FIELD]: metadataLabel,
+  };
+
+  if (typeof metadata.source === "string") {
+    out.source = isAbsolute(metadata.source)
+      ? metadata.source
+      : normalizeRelativePath(relative(agentDir, resolve(augmentDir, metadata.source)));
+  }
+
+  return out;
+}
+
+export function expandAugmentFolderEntries(
+  raw: Record<string, unknown>,
+  agentDir: string,
+): Record<string, unknown> {
+  const augments = raw.augments;
+  if (!Array.isArray(augments)) return raw;
+
+  const expanded = augments.map((entry, index) => {
+    if (typeof entry === "string") {
+      return loadAugmentFolderEntry(agentDir, entry, `augments[${index}]`);
+    }
+    return entry;
+  });
+
+  return { ...raw, augments: expanded };
+}
+
 function validateConfig(raw: Record<string, unknown>): ParsedConfig {
   const errors: string[] = [];
 
@@ -1014,13 +1096,19 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
     for (let i = 0; i < augments.length; i++) {
       const aug = augments[i] as Record<string, unknown>;
       const prefix = `augments[${i}]`;
+      const sourceLabel =
+        typeof aug[AUGMENT_SOURCE_LABEL_FIELD] === "string"
+          ? (aug[AUGMENT_SOURCE_LABEL_FIELD] as string)
+          : null;
+      const entryPrefix = sourceLabel ?? prefix;
+      const optionsPrefix = sourceLabel ? `${sourceLabel}.config` : `${prefix}.options`;
       const type = typeof aug.type === "string" ? aug.type : undefined;
 
       if (typeof type !== "string") {
-        errors.push(`${prefix}.type: required string`);
+        errors.push(`${entryPrefix}.type: required string`);
       } else if (!BUILTIN_TYPES.has(type) && type !== "custom") {
         errors.push(
-          `${prefix}.type: unknown type "${type}" (expected one of: ${[...BUILTIN_TYPES, "custom"].join(", ")})`,
+          `${entryPrefix}.type: unknown type "${type}" (expected one of: ${[...BUILTIN_TYPES, "custom"].join(", ")})`,
         );
       }
 
@@ -1036,41 +1124,41 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
       if (typeof effectiveName !== "string" || effectiveName.length === 0) {
         errors.push(
           type === "custom"
-            ? `${prefix}.name: required for type "custom"`
-            : `${prefix}.name: required, non-empty string`,
+            ? `${entryPrefix}.name: required for type "custom"`
+            : `${entryPrefix}.name: required, non-empty string`,
         );
       } else if (!VALID_NAME_RE.test(effectiveName)) {
         errors.push(
-          `${prefix}.name: must be alphanumeric with hyphens/underscores (got "${effectiveName}")`,
+          `${entryPrefix}.name: must be alphanumeric with hyphens/underscores (got "${effectiveName}")`,
         );
       } else if (names.has(effectiveName)) {
-        errors.push(`${prefix}.name: duplicate name "${effectiveName}"`);
+        errors.push(`${entryPrefix}.name: duplicate name "${effectiveName}"`);
       } else {
         names.add(effectiveName);
       }
 
       if (type === "custom" && typeof aug.source !== "string") {
-        errors.push(`${prefix}.source: required for type "custom"`);
+        errors.push(`${entryPrefix}.source: required for type "custom"`);
       }
 
       if (type === "budgets") {
         const opts = (aug.options ?? {}) as Record<string, unknown>;
-        validateBudgetsOptions(opts, prefix, errors);
+        validateBudgetsOptions(opts, optionsPrefix, errors);
       } else if (type === "notify") {
         const notifyOpts = (aug.options ?? {}) as Record<string, unknown>;
-        validateNotifyOptions(notifyOpts, `${prefix}.options`, errors);
+        validateNotifyOptions(notifyOpts, optionsPrefix, errors);
       } else if (type === "agentMail") {
         const amOpts = (aug.options ?? {}) as Record<string, unknown>;
-        validateAgentMailOptions(amOpts, `${prefix}.options`, errors);
+        validateAgentMailOptions(amOpts, optionsPrefix, errors);
       } else if (type === "telegramTransport") {
         const tgOpts = (aug.options ?? {}) as Record<string, unknown>;
-        validateTelegramTransportOptions(tgOpts, `${prefix}.options`, errors);
+        validateTelegramTransportOptions(tgOpts, optionsPrefix, errors);
       } else if (type === "layeredMemory") {
         const lmOpts = (aug.options ?? {}) as Record<string, unknown>;
-        validateLayeredMemoryOptions(lmOpts, prefix, errors);
+        validateLayeredMemoryOptions(lmOpts, optionsPrefix, errors);
       } else if (type === "link") {
         const linkOpts = (aug.options ?? {}) as Record<string, unknown>;
-        validateLinkOptions(linkOpts, prefix, errors);
+        validateLinkOptions(linkOpts, optionsPrefix, errors);
       }
     }
   }
@@ -1136,7 +1224,11 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
   // no conflict was detected, prepend the synthesized fileMemory entry so
   // identity loads first (matches the convention of operators putting it
   // at the top of agents.yaml manually today).
-  const parsedAugments = (augments as unknown[]).map((a) => a as AugmentConfig);
+  const parsedAugments = (augments as unknown[]).map((a) => {
+    const copy = { ...(a as Record<string, unknown>) };
+    delete copy[AUGMENT_SOURCE_LABEL_FIELD];
+    return copy as unknown as AugmentConfig;
+  });
   const finalAugments =
     identityShorthand !== undefined
       ? [synthesizeIdentityAugment(identityShorthand), ...parsedAugments]
@@ -1241,32 +1333,38 @@ export function parseConfig(yamlPath: string): ParsedConfig {
   } catch (err) {
     const msg = (err as Error).message;
     if (msg.startsWith("Missing environment variables:")) {
-      throw new Error(augmentMissingEnvError(msg, agentDir), { cause: err });
+      throw new Error(augmentMissingEnvError(msg, "agent.yaml", agentDir), { cause: err });
     }
     throw err;
   }
-  return validateConfig(interpolated);
+  return validateConfig(expandAugmentFolderEntries(interpolated, agentDir));
 }
 
-function augmentMissingEnvError(originalMsg: string, agentDir: string): string {
+function augmentMissingEnvError(
+  originalMsg: string,
+  sourceLabel: string,
+  agentDir: string,
+): string {
   const envPath = join(agentDir, ".env");
   const envExamplePath = join(agentDir, ".env.example");
+  const envLabel = relative(agentDir, envPath).replace(/\\/g, "/") || ".env";
+  const envExampleLabel = relative(agentDir, envExamplePath).replace(/\\/g, "/") || ".env.example";
 
   const lines: string[] = [
     originalMsg.replace(
       /^Missing environment variables:/,
-      "Missing environment variables in agent.yaml:",
+      `Missing environment variables in ${sourceLabel}:`,
     ),
     "",
     "Add values for the missing keys to the agent's .env file:",
-    `  ${envPath}`,
+    `  ${envLabel}`,
   ];
 
   // Suggest cp ONLY when .env.example exists and .env doesn't.
   if (existsSync(envExamplePath) && !existsSync(envPath)) {
     lines.push("");
     lines.push("Or copy from the template:");
-    lines.push(`  cp ${envExamplePath} ${envPath}`);
+    lines.push(`  cp ${envExampleLabel} ${envLabel}`);
   }
 
   return lines.join("\n");

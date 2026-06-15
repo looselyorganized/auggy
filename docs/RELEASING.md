@@ -97,7 +97,7 @@ Package artifact checks are covered by `bun run smoke:release`:
 Augment checks:
 
 ```bash
-auggy add visitorAuth
+auggy augment add visitorAuth
 auggy doctor
 
 auggy augment create weather --dir augments/weather

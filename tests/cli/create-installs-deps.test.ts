@@ -291,16 +291,15 @@ describe("runCreate scaffolding integration", () => {
 
     const dir = agentDirFor("demo-defaults");
     const config = parseYaml(readFileSync(join(dir, "agent.yaml"), "utf-8")) as {
-      augments: Array<{ type: string; name?: string }>;
+      augments: string[];
     };
-    expect(config.augments.map((a) => a.type)).toEqual([
+    expect(config.augments).toEqual([
       "fileMemory",
       "filesystem",
       "webTransport",
       "webFetch",
       "turnControl",
     ]);
-    expect(config.augments.every((a) => a.name === undefined)).toBe(true);
     expect(existsSync(join(dir, "skills", "auggy", "SKILL.md"))).toBe(true);
     expect(existsSync(join(dir, "skills", "filesystem", "SKILL.md"))).toBe(true);
     expect(existsSync(join(dir, "skills", "webFetch", "SKILL.md"))).toBe(true);
@@ -316,12 +315,13 @@ describe("runCreate scaffolding integration", () => {
       readFileSync(join(dir, "augments", "webFetch", "augment.yaml"), "utf-8"),
     ) as Record<string, unknown>;
     expect(webFetchMeta).toMatchObject({
-      name: "webFetch",
-      kind: "builtin",
-      runtime: "auggy",
-      skill: "../../skills/webFetch/SKILL.md",
+      type: "webFetch",
+      config: { timeoutMs: 15000 },
     });
-    expect(webFetchMeta.configType).toBeUndefined();
+    expect(webFetchMeta.name).toBeUndefined();
+    expect(webFetchMeta.kind).toBeUndefined();
+    expect(webFetchMeta.runtime).toBeUndefined();
+    expect(webFetchMeta.skill).toBeUndefined();
 
     const env = readFileSync(join(dir, ".env"), "utf-8");
     expect(env).toMatch(/AUGGY_WEB_TOKEN=[a-f0-9]{64}/);
@@ -575,9 +575,9 @@ describe("runCreate scaffolding integration", () => {
 
     const dir = agentDirFor("demo-knowledge-later");
     const config = parseYaml(readFileSync(join(dir, "agent.yaml"), "utf-8")) as {
-      augments: Array<{ type: string; options?: Record<string, unknown> }>;
+      augments: string[];
     };
-    expect(config.augments.some((aug) => aug.type === "knowledge")).toBe(false);
+    expect(config.augments).not.toContain("knowledge");
     expect(existsSync(join(dir, "knowledge"))).toBe(false);
     expect(existsSync(join(dir, "skills", "knowledge", "SKILL.md"))).toBe(false);
   });
@@ -601,12 +601,14 @@ describe("runCreate scaffolding integration", () => {
     expect(bunInstallCalls[0]?.cwd).toBe(dir);
 
     const config = parseYaml(readFileSync(join(dir, "agent.yaml"), "utf-8")) as {
-      augments: Array<{ type: string; options?: Record<string, unknown> }>;
+      augments: string[];
     };
-    const files = config.augments.find((aug) => aug.type === "filesystem");
-    expect(config.augments.some((aug) => aug.type === "layeredMemory")).toBe(false);
-    expect(config.augments.some((aug) => aug.type === "budgets")).toBe(false);
-    expect(JSON.stringify(files?.options)).toContain("./data/workspace");
+    expect(config.augments).not.toContain("layeredMemory");
+    expect(config.augments).not.toContain("budgets");
+    const filesystemMeta = parseYaml(
+      readFileSync(join(dir, "augments", "filesystem", "augment.yaml"), "utf-8"),
+    ) as { config?: Record<string, unknown> };
+    expect(JSON.stringify(filesystemMeta.config)).toContain("./data/workspace");
   });
 
   test("init scaffolds the current directory and run guidance omits the name", async () => {

@@ -10,7 +10,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseAugmentConfigOnly } from "../../src/cli/yaml-helpers";
@@ -35,15 +35,35 @@ function writeYaml(content: string): string {
   return path;
 }
 
+function writeFolderBackedAugment(id: string, type: string, config: string): void {
+  mkdirSync(join(tmp, "augments", id), { recursive: true });
+  writeFileSync(
+    join(tmp, "augments", id, "augment.yaml"),
+    `type: ${type}
+config:
+${config
+  .trimEnd()
+  .split("\n")
+  .map((line) => `  ${line}`)
+  .join("\n")}
+`,
+  );
+}
+
 describe("parseAugmentConfigOnly", () => {
   test("returns the augment options for a matching type", () => {
     const path = writeYaml(`
 augments:
-  - type: visitorAuth
-    options:
-      dbPath: /var/data/visitor-auth.db
-      publicUrl: https://zip.test
+  - visitorAuth
 `);
+    writeFolderBackedAugment(
+      "visitorAuth",
+      "visitorAuth",
+      `
+dbPath: /var/data/visitor-auth.db
+publicUrl: https://zip.test
+`,
+    );
     const result = parseAugmentConfigOnly(path, "visitorAuth");
     expect(result).toEqual({
       dbPath: "/var/data/visitor-auth.db",
@@ -51,12 +71,38 @@ augments:
     });
   });
 
+  test("returns options for string augment entries backed by augments/<id>/augment.yaml", () => {
+    mkdirSync(join(tmp, "augments", "webTransport"), { recursive: true });
+    writeFileSync(
+      join(tmp, "augments", "webTransport", "augment.yaml"),
+      `
+type: webTransport
+config:
+  port: 9123
+  auth:
+    type: bearer
+    token: tok
+`,
+    );
+    const path = writeYaml(`
+augments:
+  - webTransport
+`);
+
+    const result = parseAugmentConfigOnly(path, "webTransport");
+
+    expect(result).toEqual({
+      port: 9123,
+      auth: { type: "bearer", token: "tok" },
+    });
+  });
+
   test("returns null when no augment of the requested type is configured", () => {
     const path = writeYaml(`
 augments:
-  - type: notify
-    options: { destinations: [] }
+  - notify
 `);
+    writeFolderBackedAugment("notify", "notify", "destinations: []");
     const result = parseAugmentConfigOnly(path, "visitorAuth");
     expect(result).toBeNull();
   });
@@ -66,11 +112,16 @@ augments:
     process.env.YAML_HELPERS_TEST_PUBLIC_URL = "https://from-env.test";
     const path = writeYaml(`
 augments:
-  - type: visitorAuth
-    options:
-      dbPath: \${YAML_HELPERS_TEST_DB_PATH}
-      publicUrl: \${YAML_HELPERS_TEST_PUBLIC_URL}
+  - visitorAuth
 `);
+    writeFolderBackedAugment(
+      "visitorAuth",
+      "visitorAuth",
+      `
+dbPath: \${YAML_HELPERS_TEST_DB_PATH}
+publicUrl: \${YAML_HELPERS_TEST_PUBLIC_URL}
+`,
+    );
     const result = parseAugmentConfigOnly(path, "visitorAuth");
     expect(result?.dbPath).toBe("/data/from-env.db");
     expect(result?.publicUrl).toBe("https://from-env.test");
@@ -82,11 +133,16 @@ augments:
     writeFileSync(join(tmp, ".env"), "YAML_HELPERS_TEST_MEMORY_PATH=/from-dotenv/memory.db\n");
     const path = writeYaml(`
 augments:
-  - type: visitorAuth
-    options:
-      dbPath: ./visitor-auth.db
-      layeredMemoryDbPath: \${YAML_HELPERS_TEST_MEMORY_PATH}
+  - visitorAuth
 `);
+    writeFolderBackedAugment(
+      "visitorAuth",
+      "visitorAuth",
+      `
+dbPath: ./visitor-auth.db
+layeredMemoryDbPath: \${YAML_HELPERS_TEST_MEMORY_PATH}
+`,
+    );
     const result = parseAugmentConfigOnly(path, "visitorAuth");
     expect(result?.layeredMemoryDbPath).toBe("/from-dotenv/memory.db");
   });
@@ -100,10 +156,13 @@ augments:
   test("throws when an env-var reference cannot be resolved", () => {
     const path = writeYaml(`
 augments:
-  - type: visitorAuth
-    options:
-      dbPath: \${YAML_HELPERS_TEST_NEVER_DEFINED}
+  - visitorAuth
 `);
+    writeFolderBackedAugment(
+      "visitorAuth",
+      "visitorAuth",
+      "dbPath: ${YAML_HELPERS_TEST_NEVER_DEFINED}",
+    );
     expect(() => parseAugmentConfigOnly(path, "visitorAuth")).toThrow(
       /YAML_HELPERS_TEST_NEVER_DEFINED/,
     );
@@ -114,11 +173,11 @@ augments:
     // but the operator-only CLI should still pick a deterministic entry.
     const path = writeYaml(`
 augments:
-  - type: visitorAuth
-    options: { dbPath: ./first.db }
-  - type: visitorAuth
-    options: { dbPath: ./second.db }
+  - authOne
+  - authTwo
 `);
+    writeFolderBackedAugment("authOne", "visitorAuth", "dbPath: ./first.db");
+    writeFolderBackedAugment("authTwo", "visitorAuth", "dbPath: ./second.db");
     const result = parseAugmentConfigOnly(path, "visitorAuth");
     expect(result?.dbPath).toBe("./first.db");
   });

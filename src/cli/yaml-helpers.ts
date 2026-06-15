@@ -1,11 +1,11 @@
 /**
- * Shared helpers for CLI commands that read a single augment's options out of
- * agent.yaml without running the full agent-level config validation.
+ * Shared helpers for CLI commands that read a single augment's config out of
+ * the agent project without running the full agent-level config validation.
  *
  * The operator-only commands `auggy visitors <agent>` and
  * `auggy visitors <agent> --revoke` previously each open-coded the same
  * raw YAML parse — and neither of them ran env-var interpolation, so an
- * operator's `dbPath: ${MY_DB_PATH}` in agent.yaml would arrive as the
+ * operator's `dbPath: ${MY_DB_PATH}` in augment config would arrive as the
  * literal string `${MY_DB_PATH}` and produce a confusing path error
  * downstream (F15).
  *
@@ -14,8 +14,9 @@
  *   2. Load `.env` from the agent dir (matches `parseConfig`).
  *   3. Read + parse YAML.
  *   4. Interpolate env vars (matches `parseConfig`).
- *   5. Find the augment with the matching `type` field.
- *   6. Return its options object (or null when absent).
+ *   5. Expand folder-backed augment metadata.
+ *   6. Find the augment with the matching `type` field.
+ *   7. Return its options object (or null when absent).
  *
  * Skips agent-level field validation (`id`, `name`, `engine`, etc.) because
  * the operator-only paths don't need them and the validation would force
@@ -25,7 +26,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { parse as parseYaml } from "yaml";
-import { interpolateEnvVars, loadEnvFile } from "./config-parser";
+import { expandAugmentFolderEntries, interpolateEnvVars, loadEnvFile } from "./config-parser";
 
 /**
  * Find the first augment of the given `type` in the YAML at `yamlPath` and
@@ -58,7 +59,10 @@ export function parseAugmentConfigOnly(
 
   // Interpolate the entire tree first — augment options can reference env
   // vars at arbitrary depth.
-  const interpolated = interpolateEnvVars(parsed) as Record<string, unknown>;
+  const interpolated = expandAugmentFolderEntries(
+    interpolateEnvVars(parsed) as Record<string, unknown>,
+    agentDir,
+  );
   const augments = (interpolated.augments ?? []) as Array<Record<string, unknown>>;
   const aug = augments.find((a) => a?.type === augmentType);
   if (!aug) return null;

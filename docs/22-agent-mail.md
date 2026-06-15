@@ -12,7 +12,7 @@ Add `agentMail` when you want your agent to be able to:
 - Reply to inbound mail (Phase B — when a WebSocket / webhook delivers an inbound message into the turn loop)
 - Forward inbound mail to teammates or escalate to the operator
 
-If you only need email for visitor-auth magic links, you don't need this augment — `visitorAuth` continues to use the shared `agentmail-client.ts` directly. If you only need outbound notifications to a fixed destination (e.g. "ping the operator"), `notify` with the `agentmail` adapter is simpler.
+If you only need email for visitor-auth magic links, you don't need this augment — `visitorAuth` continues to use the shared `agentmail-client.ts` directly. Run `auggy agentmail setup visitorAuth` to provision or configure the AgentMail inbox used for magic links. If you only need outbound notifications to a fixed destination (e.g. "ping the operator"), `notify` with the `agentmail` adapter is simpler.
 
 ## Why an augment and not the MCP server
 
@@ -26,43 +26,46 @@ If you don't need either, mounting the MCP server is fine and arguably simpler.
 ## Configuration
 
 ```yaml
+# agent.yaml
 augments:
-  - name: agentmail
-    type: agentMail
-    options:
-      apiKey: ${AGENTMAIL_API_KEY}
-      inboxId: ${AGENTMAIL_INBOX_ID}
-      # apiBaseUrl: https://api.agentmail.to/v0  # override for sandbox
+  - agentMail
 
-      outbound:
-        # Default ["creator"] — agent and public peers cannot send unless added.
-        allowedTrustLevels: [creator]
+# augments/agentMail/augment.yaml
+type: agentMail
+config:
+  apiKey: ${AGENTMAIL_API_KEY}
+  inboxId: ${AGENTMAIL_INBOX_ID}
+  # apiBaseUrl: https://api.agentmail.to/v0  # override for sandbox
 
-        # When set, only these recipients may receive mail. Lowercased compare.
-        # Glob form: "*@example.com" matches any address at that domain.
-        # allowedRecipients:
-        #   - operator@acme.com
-        #   - "*@trusted.com"
+  outbound:
+    # Default ["creator"] — agent and public peers cannot send unless added.
+    allowedTrustLevels: [creator]
 
-        # Hard cap on recipients per send. AgentMail's absolute ceiling is 50;
-        # we default to 10 to make accidental list-blast impossible.
-        maxRecipients: 10
+    # When set, only these recipients may receive mail. Lowercased compare.
+    # Glob form: "*@example.com" matches any address at that domain.
+    # allowedRecipients:
+    #   - operator@acme.com
+    #   - "*@trusted.com"
 
-        bodyMaxBytes: 102400  # 100KB
-        allowHtml: false       # default; opt in if you specifically need HTML
+    # Hard cap on recipients per send. AgentMail's absolute ceiling is 50;
+    # we default to 10 to make accidental list-blast impossible.
+    maxRecipients: 10
 
-        # Prepended to every outbound subject so recipients can identify
-        # agent-sent mail. Cannot be empty.
-        subjectPrefix: "[Auggy] "
+    bodyMaxBytes: 102400  # 100KB
+    allowHtml: false       # default; opt in if you specifically need HTML
 
-        rateLimit:
-          enabled: true
-          globalMaxPerHour: 10
-          perRecipientCooldownMs: 300000  # 5 min between sends to same address
-          dedupWindowMs: 300000           # 5 min subject-hash dedup
+    # Prepended to every outbound subject so recipients can identify
+    # agent-sent mail. Cannot be empty.
+    subjectPrefix: "[Auggy] "
 
-      inbound:
-        mode: none  # Phase A only. Phase B will add "websocket"/"polling"; Phase C "webhook".
+    rateLimit:
+      enabled: true
+      globalMaxPerHour: 10
+      perRecipientCooldownMs: 300000  # 5 min between sends to same address
+      dedupWindowMs: 300000           # 5 min subject-hash dedup
+
+  inbound:
+    mode: none  # Phase A only. Phase B will add "websocket"/"polling"; Phase C "webhook".
 ```
 
 ## Environment variables

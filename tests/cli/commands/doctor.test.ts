@@ -77,51 +77,41 @@ function writeAgent(
       model: provider === "openai" ? "gpt-5" : "claude-sonnet-4-6",
     },
     augments: [
-      {
-        name: "web",
-        type: "webTransport",
-        options: {
-          port: opts.port ?? 18080,
-          auth: { type: "bearer", token: "${AUGGY_WEB_TOKEN}" },
-        },
-      },
-      {
-        name: "fetch",
-        type: "webFetch",
-        options: { timeoutMs: 15000 },
-      },
-      ...(opts.includeVisitorAuth
-        ? [
-            {
-              name: "visitorAuth",
-              type: "visitorAuth",
-              options: { signingKey: "${VISITOR_SIGNING_KEY}" },
-            },
-          ]
-        : []),
-      ...(opts.includeMcp
-        ? [
-            {
-              name: "mcp",
-              type: "mcp",
-            },
-          ]
-        : []),
-      ...(opts.customRoutes
-        ? [
-            {
-              name: "concierge-services",
-              type: "custom",
-              source: "./augments/concierge-services/index.ts",
-            },
-          ]
-        : []),
+      "webTransport",
+      "webFetch",
+      ...(opts.includeVisitorAuth ? ["visitorAuth"] : []),
+      ...(opts.includeMcp ? ["mcp"] : []),
+      ...(opts.customRoutes ? ["concierge-services"] : []),
     ],
   };
   writeFileSync(join(dir, "agent.yaml"), stringify(config));
+  writeAugmentMetadata(dir, "webTransport", {
+    type: "webTransport",
+    config: {
+      port: opts.port ?? 18080,
+      auth: { type: "bearer", token: "${AUGGY_WEB_TOKEN}" },
+    },
+  });
+  writeAugmentMetadata(dir, "webFetch", {
+    type: "webFetch",
+    config: { timeoutMs: 15000 },
+  });
+  if (opts.includeVisitorAuth) {
+    writeAugmentMetadata(dir, "visitorAuth", {
+      type: "visitorAuth",
+      config: { signingKey: "${VISITOR_SIGNING_KEY}" },
+    });
+  }
+  if (opts.includeMcp) {
+    writeAugmentMetadata(dir, "mcp", { type: "mcp", config: {} });
+  }
 
   if (opts.customRoutes) {
     mkdirSync(join(dir, "augments", "concierge-services"), { recursive: true });
+    writeFileSync(
+      join(dir, "augments", "concierge-services", "augment.yaml"),
+      stringify({ type: "custom", source: "./index.ts", config: {} }),
+    );
     writeFileSync(
       join(dir, "augments", "concierge-services", "index.ts"),
       customRouteModule(opts.customRoutes),
@@ -169,6 +159,11 @@ function writeAgent(
   }
 
   return dir;
+}
+
+function writeAugmentMetadata(dir: string, id: string, metadata: Record<string, unknown>): void {
+  mkdirSync(join(dir, "augments", id), { recursive: true });
+  writeFileSync(join(dir, "augments", id, "augment.yaml"), stringify(metadata));
 }
 
 function customRouteModule(kind: "valid" | "reserved" | "duplicate"): string {
@@ -284,6 +279,7 @@ describe("runDoctor", () => {
     const config = checks.find((c) => c.name === "agent.yaml");
     expect(config?.status).toBe("fail");
     expect(config?.message).toContain("AUGGY_WEB_TOKEN");
+    expect(config?.message).toContain("augments/webTransport/augment.yaml");
     expect(config?.message).toContain(".env");
   });
 
@@ -496,6 +492,7 @@ describe("runDoctor", () => {
     const port = checks.find((c) => c.name === "port 19090");
     expect(port?.status).toBe("fail");
     expect(port?.fix).toContain("19090");
+    expect(port?.fix).toContain("augments/webTransport/augment.yaml");
   });
 
   test("detects wildcard listeners when checking port availability", async () => {

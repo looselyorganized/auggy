@@ -585,6 +585,70 @@ describe("handleAdminRoute — POST action dispatch", () => {
     expect(res.status).toBe(403);
   });
 
+  it("POST /console/api/chat forwards a verified visitor token to /agent/run", async () => {
+    const csrf = await generateCsrfToken({
+      bearer: "test-bearer",
+      agentName: "zip",
+      actionId: "console-chat",
+    });
+    const originalFetch = globalThis.fetch;
+    const forwarded: { headers?: Headers } = {};
+    globalThis.fetch = (async (_input, init) => {
+      forwarded.headers = new Headers(init?.headers);
+      return new Response("event: RUN_STARTED\ndata: {}\n\n", {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      });
+    }) as typeof fetch;
+
+    try {
+      const req = new Request("http://127.0.0.1:8080/console/api/chat", {
+        method: "POST",
+        headers: {
+          authorization: basicHeader("test-bearer"),
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          csrf,
+          message: "am I verified?",
+          threadId: "abc",
+          visitorToken: "visitor.payload.signature",
+        }),
+      });
+      const res = await handleAdminRoute(req, await makeCtx({ selfPort: 9999 }));
+      expect(res.status).toBe(200);
+      expect(forwarded.headers?.get("authorization")).toBe("Bearer test-bearer");
+      expect(forwarded.headers?.get("x-visitor-token")).toBe("visitor.payload.signature");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("POST /console/api/chat rejects visitor tokens that cannot be forwarded as headers", async () => {
+    const csrf = await generateCsrfToken({
+      bearer: "test-bearer",
+      agentName: "zip",
+      actionId: "console-chat",
+    });
+    const req = new Request("http://127.0.0.1:8080/console/api/chat", {
+      method: "POST",
+      headers: {
+        authorization: basicHeader("test-bearer"),
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        csrf,
+        message: "hello",
+        threadId: "abc",
+        visitorToken: "visitor\r\nx-bad: yes",
+      }),
+    });
+    const res = await handleAdminRoute(req, await makeCtx({ selfPort: 9999 }));
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error?: string };
+    expect(body.error).toMatch(/visitor token/i);
+  });
+
   it("S7 — POST with expired CSRF token returns 200 + auto-refresh HTML (not 403)", async () => {
     const aug: Augment = {
       name: "test",

@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runVisitorsList, type VisitorsCommandOptions } from "../../../src/cli/commands/visitors";
@@ -16,18 +16,23 @@ beforeEach(() => {
   agentDir = seedAgentForTest("zip", {
     auggyDir,
     yaml: `augments:
-  - type: visitorAuth
-    name: visitorAuth
-    options:
-      publicUrl: https://zip.test
-      dbPath: ./visitor-auth.db
-      agentMail:
-        apiKey: am_x
-        inboxId: ibx_x
-      signingKey: sig
-      layeredMemoryDbPath: ./memory.db
+  - visitorAuth
 `,
   });
+  mkdirSync(join(agentDir, "augments", "visitorAuth"), { recursive: true });
+  writeFileSync(
+    join(agentDir, "augments", "visitorAuth", "augment.yaml"),
+    `type: visitorAuth
+config:
+  publicUrl: https://zip.test
+  dbPath: ./visitor-auth.db
+  agentMail:
+    apiKey: am_x
+    inboxId: ibx_x
+  signingKey: sig
+  layeredMemoryDbPath: ./memory.db
+`,
+  );
 });
 
 afterEach(() => {

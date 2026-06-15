@@ -88,6 +88,70 @@ describe("parseConfig", () => {
     const config = parseConfig(path);
     expect(config.settings).toBeDefined();
   });
+
+  test("loads string augment entries from augments/<id>/augment.yaml", () => {
+    mkdirSync(join(TMP, "augments", "webFetch"), { recursive: true });
+    writeFileSync(
+      join(TMP, "augments", "webFetch", "augment.yaml"),
+      stringify({
+        type: "webFetch",
+        config: { timeoutMs: 1234 },
+      }),
+    );
+
+    const path = writeYaml(
+      "agent.yaml",
+      minimalConfig({
+        augments: ["webFetch"],
+      }),
+    );
+    const config = parseConfig(path);
+
+    expect(config.augments).toHaveLength(1);
+    expect(config.augments[0]).toEqual({
+      name: "webFetch",
+      type: "webFetch",
+      options: { timeoutMs: 1234 },
+    });
+  });
+
+  test("normalizes custom augment source paths from the augment folder", () => {
+    mkdirSync(join(TMP, "augments", "weather"), { recursive: true });
+    writeFileSync(
+      join(TMP, "augments", "weather", "augment.yaml"),
+      stringify({
+        type: "custom",
+        source: "./index.ts",
+        config: { prefix: "wx" },
+      }),
+    );
+
+    const path = writeYaml(
+      "agent.yaml",
+      minimalConfig({
+        augments: ["weather"],
+      }),
+    );
+    const config = parseConfig(path);
+
+    expect(config.augments[0]).toEqual({
+      name: "weather",
+      type: "custom",
+      source: "./augments/weather/index.ts",
+      options: { prefix: "wx" },
+    });
+  });
+
+  test("rejects string augment entries without augment metadata", () => {
+    const path = writeYaml(
+      "agent.yaml",
+      minimalConfig({
+        augments: ["notify"],
+      }),
+    );
+
+    expect(() => parseConfig(path)).toThrow("missing augment metadata");
+  });
 });
 
 describe("validation errors", () => {
@@ -865,6 +929,102 @@ describe("parseConfig — augmented missing-env-var error", () => {
     expect(caught!.message).toMatch(/\.env/);
     expect(caught!.message).toMatch(/Add values for the missing keys/);
     expect(caught!.message).not.toMatch(/cp .*\.env\.example/);
+  });
+
+  test("names the augment metadata file when env is missing from folder-backed config", () => {
+    const yamlPath = join(dir, "agent.yaml");
+    writeFileSync(
+      yamlPath,
+      [
+        "id: aug1_00000000-0000-0000-0000-000000000000",
+        "name: test",
+        "engine:",
+        "  provider: anthropic",
+        "  model: claude-sonnet-4-6",
+        "augments:",
+        "  - webTransport",
+        "",
+      ].join("\n"),
+    );
+    mkdirSync(join(dir, "augments", "webTransport"), { recursive: true });
+    writeFileSync(
+      join(dir, "augments", "webTransport", "augment.yaml"),
+      [
+        "type: webTransport",
+        "config:",
+        "  auth:",
+        "    type: bearer",
+        "    token: ${MISSING_TOKEN}",
+        "",
+      ].join("\n"),
+    );
+
+    let caught: Error | null = null;
+    try {
+      parseConfig(yamlPath);
+    } catch (err) {
+      caught = err as Error;
+    }
+
+    expect(caught).not.toBeNull();
+    expect(caught!.message).toContain(
+      "Missing environment variables in augments/webTransport/augment.yaml",
+    );
+    expect(caught!.message).toContain("MISSING_TOKEN");
+    expect(caught!.message).toContain("  .env");
+  });
+
+  test("treats empty shell env values as missing in folder-backed config", () => {
+    const previous = process.env.TELEGRAM_BOT_TOKEN;
+    process.env.TELEGRAM_BOT_TOKEN = "";
+
+    try {
+      const yamlPath = join(dir, "agent.yaml");
+      writeFileSync(
+        yamlPath,
+        [
+          "id: aug1_00000000-0000-0000-0000-000000000000",
+          "name: test",
+          "engine:",
+          "  provider: anthropic",
+          "  model: claude-sonnet-4-6",
+          "augments:",
+          "  - telegramTransport",
+          "",
+        ].join("\n"),
+      );
+      mkdirSync(join(dir, "augments", "telegramTransport"), { recursive: true });
+      writeFileSync(
+        join(dir, "augments", "telegramTransport", "augment.yaml"),
+        [
+          "type: telegramTransport",
+          "config:",
+          "  botToken: ${TELEGRAM_BOT_TOKEN}",
+          "  inbound:",
+          "    mode: polling",
+          "",
+        ].join("\n"),
+      );
+
+      let caught: Error | null = null;
+      try {
+        parseConfig(yamlPath);
+      } catch (err) {
+        caught = err as Error;
+      }
+
+      expect(caught).not.toBeNull();
+      expect(caught!.message).toContain(
+        "Missing environment variables in augments/telegramTransport/augment.yaml",
+      );
+      expect(caught!.message).toContain("TELEGRAM_BOT_TOKEN");
+    } finally {
+      if (previous === undefined) {
+        delete process.env.TELEGRAM_BOT_TOKEN;
+      } else {
+        process.env.TELEGRAM_BOT_TOKEN = previous;
+      }
+    }
   });
 
   test("treats empty .env placeholder values as missing", () => {
