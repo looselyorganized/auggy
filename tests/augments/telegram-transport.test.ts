@@ -207,20 +207,22 @@ function makeMockClient(updates: TelegramUpdate[][]) {
  * captures the registered onOutbound callback so tests can simulate the
  * kernel emitting an outbound reply.
  */
-function makeMockKernel() {
+function makeMockKernel(opts: { handleInbound?: TransportKernel["handleInbound"] } = {}) {
   const handleInboundCalls: Array<{ trigger: TurnTrigger }> = [];
   const outboundCallbacks: Array<(peer: PeerIdentity, msg: OutboundMessage) => Promise<void>> = [];
   const kernel: TransportKernel = {
-    handleInbound: async (trigger) => {
-      handleInboundCalls.push({ trigger });
-      return {
-        turnId: trigger.turnId,
-        success: true,
-        status: "completed",
-        toolCalls: [],
-        trace: {} as TurnResult["trace"],
-      };
-    },
+    handleInbound:
+      opts.handleInbound ??
+      (async (trigger) => {
+        handleInboundCalls.push({ trigger });
+        return {
+          turnId: trigger.turnId,
+          success: true,
+          status: "completed",
+          toolCalls: [],
+          trace: {} as TurnResult["trace"],
+        };
+      }),
     onOutbound: (cb) => {
       outboundCallbacks.push(cb);
     },
@@ -302,6 +304,129 @@ describe("telegramTransport — polling lifecycle", () => {
     expect(sent).toHaveLength(1);
     expect(sent[0]?.chatId).toBe(555);
     expect(sent[0]?.text).toBe("response text");
+  });
+
+  it("sends generic failure reply when a failed turn contains provider auth details", async () => {
+    const updates: TelegramUpdate[] = [
+      {
+        update_id: 1,
+        message: {
+          message_id: 1,
+          chat: { id: 555, type: "private" },
+          from: { id: 555, is_bot: false },
+          date: 0,
+          text: "who are you?",
+        },
+      },
+    ];
+    const { client, sent } = makeMockClient([updates, []]);
+    const { kernel } = makeMockKernel({
+      handleInbound: async (trigger) => ({
+        turnId: trigger.turnId,
+        success: false,
+        status: "failed",
+        errorResponse: "HTTP 401: authentication_error: invalid x-api-key",
+        error: { message: "HTTP 401: authentication_error: invalid x-api-key", source: "engine" },
+        toolCalls: [],
+        trace: {} as TurnResult["trace"],
+      }),
+    });
+    const aug = telegramTransport({
+      botToken: "T",
+      inbound: { mode: "polling", polling: { timeoutSec: 0 } },
+      auth: { creatorUserIds: [555] },
+      _clientFactory: () => client,
+    } as unknown as Parameters<typeof telegramTransport>[0]);
+
+    await aug.transport!.register(kernel, "telegram-transport");
+    await aug.onBoot?.();
+    await new Promise((r) => setTimeout(r, 30));
+    await aug.onShutdown?.();
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.text).toBe(
+      "I hit a runtime error while handling that message. The operator has the details.",
+    );
+    expect(sent[0]?.text).not.toContain("x-api-key");
+    expect(sent[0]?.text).not.toContain("401");
+  });
+
+  it("preserves allowlisted user-safe failed turn messages", async () => {
+    const updates: TelegramUpdate[] = [
+      {
+        update_id: 1,
+        message: {
+          message_id: 1,
+          chat: { id: 555, type: "private" },
+          from: { id: 555, is_bot: false },
+          date: 0,
+          text: "again",
+        },
+      },
+    ];
+    const { client, sent } = makeMockClient([updates, []]);
+    const safeMessage = "Rate limit exceeded. Please wait before sending more messages.";
+    const { kernel } = makeMockKernel({
+      handleInbound: async (trigger) => ({
+        turnId: trigger.turnId,
+        success: false,
+        status: "rejected",
+        errorResponse: safeMessage,
+        toolCalls: [],
+        trace: {} as TurnResult["trace"],
+      }),
+    });
+    const aug = telegramTransport({
+      botToken: "T",
+      inbound: { mode: "polling", polling: { timeoutSec: 0 } },
+      auth: { creatorUserIds: [555] },
+      _clientFactory: () => client,
+    } as unknown as Parameters<typeof telegramTransport>[0]);
+
+    await aug.transport!.register(kernel, "telegram-transport");
+    await aug.onBoot?.();
+    await new Promise((r) => setTimeout(r, 30));
+    await aug.onShutdown?.();
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.text).toBe(safeMessage);
+  });
+
+  it("sends generic failure reply when kernel.handleInbound throws", async () => {
+    const updates: TelegramUpdate[] = [
+      {
+        update_id: 1,
+        message: {
+          message_id: 1,
+          chat: { id: 555, type: "private" },
+          from: { id: 555, is_bot: false },
+          date: 0,
+          text: "who are you?",
+        },
+      },
+    ];
+    const { client, sent } = makeMockClient([updates, []]);
+    const { kernel } = makeMockKernel({
+      handleInbound: async () => {
+        throw new Error("HTTP 401: authentication_error: invalid x-api-key");
+      },
+    });
+    const aug = telegramTransport({
+      botToken: "T",
+      inbound: { mode: "polling", polling: { timeoutSec: 0 } },
+      auth: { creatorUserIds: [555] },
+      _clientFactory: () => client,
+    } as unknown as Parameters<typeof telegramTransport>[0]);
+
+    await aug.transport!.register(kernel, "telegram-transport");
+    await aug.onBoot?.();
+    await new Promise((r) => setTimeout(r, 30));
+    await aug.onShutdown?.();
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.text).toBe(
+      "I hit a runtime error while handling that message. The operator has the details.",
+    );
   });
 
   it("ignores updates with no text (no kernel.handleInbound call)", async () => {
