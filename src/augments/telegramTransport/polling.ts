@@ -20,18 +20,53 @@ export function runPollLoop(opts: PollLoopOptions): PollLoopHandle {
 
   let stopped = false;
   let nextOffset: number | undefined;
+  let activePoll: AbortController | null = null;
+  let wakeBackoff: (() => void) | null = null;
+
+  function sleep(ms: number): Promise<void> {
+    if (stopped) return Promise.resolve();
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        wakeBackoff = null;
+        resolve();
+      }, ms);
+      wakeBackoff = () => {
+        clearTimeout(timer);
+        wakeBackoff = null;
+        resolve();
+      };
+    });
+  }
+
+  function isExpectedStopError(err: unknown): boolean {
+    if (!stopped) return false;
+    if (!(err instanceof Error)) return true;
+    return (
+      err.name === "AbortError" ||
+      err.name === "TimeoutError" ||
+      /abort|cancel|terminated/i.test(err.message)
+    );
+  }
 
   const done = (async () => {
-    while (true) {
+    while (!stopped) {
       let updates: TelegramUpdate[];
+      activePoll = new AbortController();
       try {
-        updates = await opts.client.getUpdates({ offset: nextOffset, timeoutSec });
+        updates = await opts.client.getUpdates({
+          offset: nextOffset,
+          timeoutSec,
+          signal: activePoll.signal,
+        });
       } catch (err) {
+        if (isExpectedStopError(err)) break;
         log.warn(
           `[telegram-transport.polling] getUpdates error: ${(err as Error).message} — retrying in ${errorBackoffMs}ms`,
         );
-        await new Promise((r) => setTimeout(r, errorBackoffMs));
+        await sleep(errorBackoffMs);
         continue;
+      } finally {
+        activePoll = null;
       }
       if (stopped) break;
       for (const update of updates) {
@@ -48,7 +83,10 @@ export function runPollLoop(opts: PollLoopOptions): PollLoopHandle {
 
   return {
     stop() {
+      if (stopped) return;
       stopped = true;
+      activePoll?.abort();
+      wakeBackoff?.();
     },
     done,
   };
