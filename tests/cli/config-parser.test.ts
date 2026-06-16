@@ -71,14 +71,14 @@ describe("parseConfig", () => {
       minimalConfig({
         purpose: "test purpose",
         displayName: "Jim",
-        operators: ["op-1"],
+        creator: { displayName: "Alex" },
         settings: { compactionStrategy: "truncate", maxInferenceLoops: 5 },
       }),
     );
     const config = parseConfig(path);
     expect(config.purpose).toBe("test purpose");
     expect(config.displayName).toBe("Jim");
-    expect(config.operators).toEqual(["op-1"]);
+    expect(config.creator).toEqual({ displayName: "Alex" });
     expect(config.settings.compactionStrategy).toBe("truncate");
     expect(config.settings.maxInferenceLoops).toBe(5);
   });
@@ -1086,13 +1086,13 @@ describe("securityEval", () => {
     const path = writeYaml("agent.yaml", minimalConfig({ securityEval: {} }));
     const config = parseConfig(path);
     expect(config.securityEval).toEqual({});
-    expect(config.securityEval?.operatorName).toBeUndefined();
+    expect(config.securityEval?.creatorName).toBeUndefined();
     expect(config.securityEval?.refusalPhrasings).toBeUndefined();
   });
 
   test("parses fine when all fields are populated correctly", () => {
     const securityEval = {
-      operatorName: "Alice",
+      creatorName: "Alice",
       agentName: "TestAgent",
       refusalPhrasings: ["won't", "can't"],
       systemPromptLeakMarkers: ["<system>", "# System"],
@@ -1140,8 +1140,8 @@ describe("securityEval", () => {
   });
 
   test("rejects scalar field given a number", () => {
-    const path = writeYaml("agent.yaml", minimalConfig({ securityEval: { operatorName: 123 } }));
-    expect(() => parseConfig(path)).toThrow(/securityEval\.operatorName: must be a string/);
+    const path = writeYaml("agent.yaml", minimalConfig({ securityEval: { creatorName: 123 } }));
+    expect(() => parseConfig(path)).toThrow(/securityEval\.creatorName: must be a string/);
   });
 
   test("mixed valid + invalid: surfaces the offending field", () => {
@@ -1149,7 +1149,7 @@ describe("securityEval", () => {
       "agent.yaml",
       minimalConfig({
         securityEval: {
-          operatorName: "Alice", // valid
+          creatorName: "Alice", // valid
           refusalPhrasings: ["won't", "can't"], // valid
           fixtureEnvPath: 999, // invalid scalar
           identitySelfClaimKeywords: "nope", // invalid list

@@ -165,6 +165,31 @@ describe("resolveAugments — webTransport", () => {
     expect(augments[0]!.transport).toBeDefined();
   });
 
+  test("passes creator displayName to webTransport creator identity", async () => {
+    const configs: AugmentConfig[] = [
+      {
+        name: "web",
+        type: "webTransport",
+        options: {
+          port: 9999,
+          auth: { type: "bearer", token: "test-token" },
+        },
+      },
+    ];
+
+    const augments = await resolveAugments(configs, TMP, {
+      creator: { displayName: "Michael" },
+    });
+    const peer = augments[0]!.transport!.identify?.({
+      headers: {},
+      __bearerValidated: true,
+      __threadId: "thread-1",
+    });
+    expect(peer?.id).toBe("creator");
+    expect(peer?.trustLevel).toBe("creator");
+    expect(peer?.displayName).toBe("Michael");
+  });
+
   test("forwards publicIntegration from yaml options to webTransport", async () => {
     const port = getLikelyFreePort();
     const configs: AugmentConfig[] = [

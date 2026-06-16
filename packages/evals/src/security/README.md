@@ -38,7 +38,7 @@ Env: needs `ANTHROPIC_API_KEY` (or `OPENAI_API_KEY` / `OPENROUTER_API_KEY` depen
 The suite parameterizes everything Zip-specific via `${var}` substitution at suite-load time. Every variable resolves through three layers (highest precedence first):
 
 1. **Operator override** — `agent.yaml#securityEval` (optional block, all fields optional).
-2. **Auto-derived from agent context** — agent name from `name`, operator name from `operators[0]`, system-prompt leak markers heuristically extracted from the identity preamble.
+2. **Auto-derived from agent context** — agent name from `name`, creator name from `creator.displayName`, system-prompt leak markers heuristically extracted from the identity preamble.
 3. **Defaults** — bundled with the suite at `defaults/`.
 
 ### Variable inventory
@@ -46,7 +46,7 @@ The suite parameterizes everything Zip-specific via `${var}` substitution at sui
 | Variable | Type | Resolution chain | Used in |
 |---|---|---|---|
 | `${agent_name}` | scalar | override → `agent.yaml#name` | impersonation prompts, fiction jailbreak |
-| `${operator_name}` | scalar | override → `operators[0]` → `"the operator"` | colleague-pretext, escalation, impersonation prompts |
+| `${operator_name}` | scalar | override → `creator.displayName` → `"the creator"` | colleague-pretext, escalation, impersonation prompts |
 | `${refusal_phrasings_any}` | list | defaults ∪ override | every attack case's refusal grader |
 | `${system_prompt_leak_markers_any}` | list | defaults ∪ auto-derived ∪ override | system-prompt extraction, fiction-jailbreak |
 | `${identity_self_claim_keywords_any}` | list | auto-derived ∪ override | benign-describes-identity-openly |
@@ -64,12 +64,12 @@ Substitution mechanics:
 - **Missing variable** (typo, unknown name): load-time error, names the variable AND the case id.
 - **Escape:** literal `${` written as `\$\{` survives interpolation.
 
-### Operator override (optional)
+### Creator/eval override (optional)
 
 ```yaml
 # In your agent.yaml
 securityEval:
-  operatorName: "Sam"                      # default: operators[0]
+  creatorName: "Sam"                       # default: creator.displayName
   agentName: "ConciergeBot"                # default: name
   refusalPhrasings: ["I cannot assist"]    # appended to defaults
   systemPromptLeakMarkers: ["I am ConciergeBot"]  # appended to auto-derived

@@ -195,14 +195,14 @@ export async function runDev(name: string | undefined, opts: DevOpts): Promise<v
   let agentConfig: AgentConfig;
   try {
     model = await resolveEngine(config.engine, agentDir);
-    augments = await resolveAugments(config.augments, agentDir);
+    augments = await resolveAugments(config.augments, agentDir, { creator: config.creator });
     agentConfig = {
       name: agentName,
       displayName: config.displayName,
+      creator: config.creator,
       purpose: config.purpose,
       model: config.engine.model,
       augments,
-      operators: config.operators,
       contextBudget: config.settings.contextBudget,
       compactionStrategy: config.settings.compactionStrategy,
       maxInferenceLoops: config.settings.maxInferenceLoops,

@@ -24,6 +24,45 @@ Supporting strategy notes:
 - [Agent-Native Websites](./use-cases/agent-native-websites.md)
 - [Augments Over Tools: Use Cases](./23-augments-over-tools-use-cases.md)
 
+## Source authority
+
+Use this order when docs appear to disagree:
+
+1. **Code in `src/`** defines current runtime behavior.
+2. **Numbered reference docs** (`01-24`) explain the current architecture and
+   should be updated when code changes.
+3. **`ROADMAP.md` and `docs/use-cases/`** describe product direction and
+   planned architecture. They may name concepts that do not exist yet.
+4. **`docs/plans/`, `docs/superpowers/*/archive/`, research papers, and
+   previews** are historical or exploratory unless another current reference
+   doc explicitly promotes them.
+
+Historical docs are still useful for rationale, but they are not contracts for
+today's runtime.
+
+## Current system invariants
+
+These are the baseline assumptions for current architecture work:
+
+- `agent.yaml` is the runtime source of truth for an agent project.
+- `identity.md` is stable operator-authored identity and policy context. It is
+  not a skill manifest and should not store learned peer facts.
+- `skills/` contains model-readable teaching files. The `skills` augment lists
+  mounted skills; the filesystem augment lets the model read them on demand.
+- `knowledge/` contains read-only reference sources installed by the
+  `knowledge` augment.
+- `data/` contains durable augment/runtime state such as SQLite files and
+  workspace data.
+- Secrets and external credentials live in `.env` or provider-owned systems,
+  not in prompt-visible files.
+- Runtime authentication and authorization are deterministic transport/runtime
+  decisions. The model does not decide who is authorized.
+- Current runtime trust levels are `creator`, `agent`, and `public`; future
+  roadmap work may add richer principals, roles, and channel bindings.
+- Learned or peer-derived memory must not be injected as operator-authored
+  system truth. Mutable memory should use derived origins and non-authoritative
+  placement unless explicitly promoted by an operator-controlled flow.
+
 ## Reference docs
 
 These docs should match the code in `src/`. If code and docs disagree, the code
@@ -72,6 +111,9 @@ they are not the canonical roadmap.
 
 - [OSS v1 DX Execution Plan](./plans/oss-v1-dx-execution-plan.md) — historical
   execution plan for v1 CLI/DX work.
+- [V1 Canonical Creator Identity](./plans/v1-canonical-creator-identity.md) —
+  accepted v1 identity decision for mapping verified creator surfaces to one
+  canonical runtime peer.
 - [Agent Project + Package Split Plan](./plans/agent-project-package-split.md)
   — historical/package-layout plan; remaining future work should be tracked in
   [`ROADMAP.md`](./ROADMAP.md).

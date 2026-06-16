@@ -18,11 +18,32 @@ const baseAuth: TelegramAuthOptions = {
 };
 
 describe("resolveTelegramIdentity", () => {
-  it("creator user_id → creator trust level + tg_user_ peer.id", () => {
+  it("creator user_id in a private chat → creator trust level + canonical peer.id", () => {
     const peer = resolveTelegramIdentity({ userId: 12345678, threadId: "thread-1" }, baseAuth);
     expect(peer.trustLevel).toBe("creator");
-    expect(peer.id).toBe("tg_user_12345678");
+    expect(peer.id).toBe("creator");
     expect(peer.publicSubstate).toBeUndefined();
+  });
+
+  it("creator displayName is attached after creator verification", () => {
+    const peer = resolveTelegramIdentity(
+      { userId: 12345678, threadId: "thread-1", displayName: "Mutable TG Name" },
+      baseAuth,
+      { displayName: "Michael" },
+    );
+    expect(peer.trustLevel).toBe("creator");
+    expect(peer.id).toBe("creator");
+    expect(peer.displayName).toBe("Michael");
+  });
+
+  it("creator user_id in a group chat is not promoted to creator trust by default", () => {
+    const peer = resolveTelegramIdentity(
+      { userId: 12345678, threadId: "thread-1", chatType: "group" },
+      baseAuth,
+    );
+    expect(peer.trustLevel).toBe("public");
+    expect(peer.publicSubstate).toBe("anonymous");
+    expect(peer.id).toBe("tg_anon_thread-1");
   });
 
   it("creator user IDs can come from a comma-separated env var", () => {
@@ -34,7 +55,7 @@ describe("resolveTelegramIdentity", () => {
         { creatorUserIdsEnv: "TELEGRAM_CREATOR_USER_IDS_TEST" },
       );
       expect(peer.trustLevel).toBe("creator");
-      expect(peer.id).toBe("tg_user_333");
+      expect(peer.id).toBe("creator");
     } finally {
       if (previous === undefined) delete process.env.TELEGRAM_CREATOR_USER_IDS_TEST;
       else process.env.TELEGRAM_CREATOR_USER_IDS_TEST = previous;
@@ -108,14 +129,15 @@ describe("resolveTelegramIdentity", () => {
     expect(a.id).toBe(b.id);
   });
 
-  it("admittedAgents takes precedence over creator if both match", () => {
+  it("creator match takes precedence over admittedAgents if both match", () => {
     const opts: TelegramAuthOptions = {
       creatorUserIds: [555],
       admittedAgents: [{ id: "agent-bot", telegramUserId: 555 }],
     };
     const peer = resolveTelegramIdentity({ userId: 555, threadId: "t" }, opts);
     expect(peer.trustLevel).toBe("creator");
-    // creator path wins by spec ordering — verify ordering matches item 5's web-transport
+    expect(peer.id).toBe("creator");
+    // Creator path wins by spec ordering.
   });
 });
 
@@ -458,7 +480,7 @@ describe("telegramTransport — polling lifecycle", () => {
     } as unknown as Parameters<typeof telegramTransport>[0]);
     const peer = aug.transport!.identify({ userId: 42, threadId: "tg-chat-42" });
     expect(peer?.trustLevel).toBe("creator");
-    expect(peer?.id).toBe("tg_user_42");
+    expect(peer?.id).toBe("creator");
   });
 
   it("transport.identify() returns null for malformed raw input", () => {

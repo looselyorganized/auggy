@@ -159,8 +159,8 @@ export interface AgentSettings {
  * full variable inventory.
  */
 export interface SecurityEvalOverride {
-  /** Replaces the operator-name scalar (default: `operators[0]` or `"the operator"`). */
-  operatorName?: string;
+  /** Replaces the creator-name scalar (default: `creator.displayName` or `"the creator"`). */
+  creatorName?: string;
   /** Replaces the agent-name scalar (default: `name`). */
   agentName?: string;
   /** Appended to default refusal phrasings. */
@@ -191,6 +191,10 @@ export interface ParsedConfig {
   name: string;
   /** Human-facing display name shown in chat/UI. Defaults to `name` when omitted. */
   displayName?: string;
+  /** Single v1 creator profile. Cosmetic; transport credentials prove trust. */
+  creator?: {
+    displayName?: string;
+  };
   /** Optional purpose description. */
   purpose?: string;
   /**
@@ -206,8 +210,6 @@ export interface ParsedConfig {
   engine: EngineConfig;
   /** Agent runtime settings. */
   settings: AgentSettings;
-  /** Optional operator peer IDs. */
-  operators?: string[];
   /** Augment declarations. */
   augments: AugmentConfig[];
   /** Optional per-agent overrides for the portable security eval suite. */

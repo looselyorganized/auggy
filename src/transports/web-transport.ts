@@ -2,6 +2,7 @@ import type {
   Augment,
   AugmentHttpRoute,
   AugmentHttpRouteAuth,
+  CreatorConfig,
   PeerIdentity,
   RouteAuthContext,
   RouteVisitorIdentity,
@@ -168,6 +169,8 @@ export interface WebTransportOptions {
    * scaffold time; direct callers may leave it undefined.
    */
   agentDir?: string;
+  /** Single v1 creator profile. Cosmetic only; bearer auth proves trust. */
+  creator?: CreatorConfig;
 }
 
 interface AGUIRunRequestBody {
@@ -909,7 +912,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
         kind: "human",
         trustLevel: "creator",
         sourceAugment: "web",
-        displayName: headers["x-peer-name"],
+        displayName: opts.creator?.displayName ?? headers["x-peer-name"],
         orgId: headers["x-org-id"],
       };
     }

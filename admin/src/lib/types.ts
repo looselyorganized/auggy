@@ -82,12 +82,14 @@ export interface AgentMeta {
   id?: string;
   name?: string;
   displayName?: string;
+  creator?: {
+    displayName?: string;
+  };
   purpose?: string;
   engine?: {
     provider?: string;
     model?: string;
   };
-  operators?: string[];
   identityPath?: string;
 }
 

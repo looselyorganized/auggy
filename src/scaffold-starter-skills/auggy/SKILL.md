@@ -1,15 +1,15 @@
 ---
 name: auggy
-description: Help the operator customize this Auggy agent: identity, config, augments, skills, knowledge, MCP, custom tools, and deploy.
+description: Help the creator customize this Auggy agent: identity, config, augments, skills, knowledge, MCP, custom tools, and deploy.
 ---
 
 # Auggy Project Guide
 
-Use this skill when the operator asks how to customize this agent, add knowledge,
+Use this skill when the creator asks how to customize this agent, add knowledge,
 create skills, create augments, inspect project files, or deploy the agent.
 
-This skill is for operator assistance. Do not expose secrets, do not edit files
-unless the operator asks, and do not claim runtime capabilities that are not
+This skill is for creator assistance. Do not expose secrets, do not edit files
+unless the creator asks, and do not claim runtime capabilities that are not
 enabled in `agent.yaml`.
 
 ## Project Map
@@ -22,7 +22,7 @@ enabled in `agent.yaml`.
   This is the best first edit for behavior/personality changes.
 - `package.json`: agent-local runtime and provider dependencies.
 - `.env`: local secrets and generated runtime values. Never read or print secret
-  values unless the operator explicitly asks for a diagnostic.
+  values unless the creator explicitly asks for a diagnostic.
 - `.env.example`: names of required secrets without values.
 - `skills/`: instruction packs the agent can read on demand. Skills teach the
   model how to use tools or follow domain workflows; they do not add runtime
@@ -37,17 +37,17 @@ enabled in `agent.yaml`.
 
 ## Fast Answers
 
-If the operator asks "how do I change who you are?", point them to
+If the creator asks "how do I change who you are?", point them to
 `identity.md`.
 
-If the operator asks "how do I add facts, docs, or product information?", suggest
+If the creator asks "how do I add facts, docs, or product information?", suggest
 the `knowledge` augment:
 
 ```bash
 auggy augment add knowledge
 ```
 
-If the operator asks "how do I configure an augment?", point them to:
+If the creator asks "how do I configure an augment?", point them to:
 
 ```text
 augments/<augment-id>/augment.yaml
@@ -60,13 +60,13 @@ auggy doctor
 auggy run
 ```
 
-If the operator asks "how do I see available augments?", use:
+If the creator asks "how do I see available augments?", use:
 
 ```bash
 auggy augment list
 ```
 
-If the operator asks "how do I send notifications?", suggest:
+If the creator asks "how do I send notifications?", suggest:
 
 ```bash
 auggy augment add notify
@@ -74,7 +74,7 @@ auggy augment add notify
 
 Then edit `augments/notify/augment.yaml` for real delivery destinations.
 
-If the operator asks "how do you remember repeat visitors?", suggest:
+If the creator asks "how do you remember repeat visitors?", suggest:
 
 ```bash
 auggy augment add layeredMemory
@@ -85,7 +85,7 @@ The agent should save stable preferences, names, commitments, and recurring
 topics with `memory_write({ topic, content })`; the runtime derives the current
 peer label.
 
-If the operator asks "how do visitors sign in?", suggest:
+If the creator asks "how do visitors sign in?", suggest:
 
 ```bash
 auggy augment add visitorAuth
@@ -99,16 +99,16 @@ auggy agentmail setup visitorAuth
 ```
 
 This configures AgentMail credentials for magic-link delivery. Do not suggest
-deploying console magic links to Railway unless the operator explicitly accepts
+deploying console magic links to Railway unless the creator explicitly accepts
 that verification links will be visible in service logs.
 
-If the operator asks "how do you send email?", distinguish the two paths:
+If the creator asks "how do you send email?", distinguish the two paths:
 
 - `auggy agentmail setup visitorAuth` for visitorAuth magic-link email only.
 - `auggy augment add agentMail` when the agent itself should send email as a
   model-callable capability with recipient policy and rate limits.
 
-If the operator asks "how do I add MCP tools?", suggest:
+If the creator asks "how do I add MCP tools?", suggest:
 
 ```bash
 auggy augment add mcp
@@ -119,27 +119,27 @@ Then edit `.mcp.json`. For cloud deploys, prefer remote HTTPS MCP servers over
 local stdio servers. Local stdio servers may stay in `.mcp.json` if they are
 marked `cloud: "disabled"` or `cloud: "localOnly"` under `auggy.servers`.
 
-If the operator asks "how do I teach you a repeatable workflow?", suggest a
+If the creator asks "how do I teach you a repeatable workflow?", suggest a
 skill:
 
 ```bash
 auggy skill create support-playbook
 ```
 
-If the operator asks "how do I give you a new tool or API call?", suggest a
+If the creator asks "how do I give you a new tool or API call?", suggest a
 custom augment:
 
 ```bash
 auggy augment create weather
 ```
 
-If the operator asks "how do I run you?", use:
+If the creator asks "how do I run you?", use:
 
 ```bash
 auggy run
 ```
 
-If the operator asks "how do I deploy you?", use:
+If the creator asks "how do I deploy you?", use:
 
 ```bash
 auggy deploy
@@ -421,7 +421,7 @@ transports, or storage.
 
 - Do not reveal `.env` values.
 - Do not write files, install packages, or change deployment config unless the
-  operator asks.
+  creator asks.
 - Prefer small, inspectable changes.
 - Keep custom augment tools narrow and well described.
 - Put secrets in `.env`, not source files, skills, identity, or knowledge docs.

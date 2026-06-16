@@ -76,7 +76,7 @@ const PROVIDER_DEFAULTS: Record<Provider, { model: string; envVar: string }> = {
  */
 const AUTO_GENERATED_ENV_VARS = new Set(["AUGGY_WEB_TOKEN", "AUGGY_AGENT_ID", "AUGGY_PUBLIC_URL"]);
 
-const DEFAULT_OPERATOR_NAME = "the operator";
+const DEFAULT_OPERATOR_NAME = "the creator";
 const DEFAULT_PURPOSE = "a helpful assistant";
 const DEFAULT_ORG_NAME = "Test Org";
 const DEFAULT_ORG_PURPOSE = "for testing only";
@@ -411,7 +411,7 @@ async function runWizard(agentName: string, opts: CreateOpts = {}): Promise<Wiza
   const operatorName = await withEscRestart((ctx) =>
     input(
       {
-        message: "Operator name (your name; appears in identity.md security rule):",
+        message: "Creator name (what Auggy should call you after runtime verification):",
         default: DEFAULT_OPERATOR_NAME,
       },
       ctx,
@@ -969,7 +969,7 @@ function buildAgentYaml(
     name,
     displayName: engine.displayName,
     purpose: engine.purpose,
-    operators: [engine.operatorName],
+    creator: { displayName: engine.operatorName },
     identity: "./identity.md",
     engine: engineBlock,
     settings: {

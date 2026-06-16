@@ -490,7 +490,7 @@ function knowledgeValues(raw: Record<string, unknown>, agentDir: string) {
     typeof raw.purpose === "string" && raw.purpose.trim()
       ? raw.purpose.trim()
       : "project knowledge for this agent";
-  const operatorName = readFirstOperator(raw) ?? "the operator";
+  const operatorName = readCreatorDisplayName(raw) ?? "the creator";
   return {
     orgName: name,
     orgPurpose: purpose,
@@ -498,12 +498,11 @@ function knowledgeValues(raw: Record<string, unknown>, agentDir: string) {
   };
 }
 
-function readFirstOperator(raw: Record<string, unknown>): string | null {
-  if (!Array.isArray(raw.operators)) return null;
-  for (const candidate of raw.operators) {
-    if (typeof candidate === "string" && candidate.trim()) return candidate.trim();
-  }
-  return null;
+function readCreatorDisplayName(raw: Record<string, unknown>): string | null {
+  const creator = raw.creator;
+  if (typeof creator !== "object" || creator === null || Array.isArray(creator)) return null;
+  const value = (creator as Record<string, unknown>).displayName;
+  return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
 function formatApplyInstructions(name: string, agentDir: string, cwd: string | undefined): string {

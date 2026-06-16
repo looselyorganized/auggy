@@ -46,6 +46,7 @@ import type {
   AgentMailAugmentOptions,
   Augment,
   ContextOrigin,
+  CreatorConfig,
   NotifyAugmentOptions,
   TelegramTransportOptions,
 } from "../types";
@@ -190,6 +191,7 @@ function resolveSkills(opts: Record<string, unknown>, agentDir: string): Augment
 function resolveWebTransport(
   opts: Record<string, unknown>,
   agentDir: string,
+  creator: CreatorConfig | undefined,
   lateBindings: {
     revocationCheck: ((id: string) => boolean) | null;
     identityLookup: VisitorAuthAugmentExtras["resolveVisitorIdentity"] | null;
@@ -225,6 +227,7 @@ function resolveWebTransport(
     // this, the Credentials and Identity tabs render "agent directory not
     // configured" errors.
     agentDir,
+    creator,
   });
 }
 
@@ -364,6 +367,7 @@ function resolveVisitorAuth(opts: Record<string, unknown>, agentDir: string): Au
 export async function resolveAugments(
   configs: AugmentConfig[],
   agentDir: string,
+  resolverOpts: { creator?: CreatorConfig } = {},
 ): Promise<Augment[]> {
   const augments: Augment[] = [];
 
@@ -479,7 +483,7 @@ export async function resolveAugments(
         augment = resolveFilesystem(opts, agentDir);
         break;
       case "webTransport":
-        augment = resolveWebTransport(opts, agentDir, lateBindings);
+        augment = resolveWebTransport(opts, agentDir, resolverOpts.creator, lateBindings);
         break;
       case "webFetch":
         augment = resolveWebFetch(opts);
@@ -538,7 +542,10 @@ export async function resolveAugments(
         break;
       }
       case "telegramTransport":
-        augment = telegramTransport(opts as unknown as TelegramTransportOptions);
+        augment = telegramTransport({
+          ...(opts as unknown as TelegramTransportOptions),
+          creator: resolverOpts.creator,
+        });
         break;
       case "turnControl":
         augment = turnControl(opts as TurnControlOptions);

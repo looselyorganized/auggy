@@ -41,7 +41,7 @@ export interface SidebarProps {
 export function Sidebar({ agentMeta, fallbackName, visibility }: SidebarProps) {
   const name = agentMeta?.displayName ?? agentMeta?.name ?? fallbackName ?? "—";
   const id = agentMeta?.id;
-  const operators = agentMeta?.operators ?? [];
+  const creatorName = agentMeta?.creator?.displayName;
 
   const visibleNav = NAV.filter((n) => visibility[n.key]);
 
@@ -62,12 +62,12 @@ export function Sidebar({ agentMeta, fallbackName, visibility }: SidebarProps) {
             {id}
           </div>
         )}
-        {operators.length > 0 && (
+        {creatorName && (
           <div
             className="mt-1 truncate text-[11px] text-muted-foreground"
-            title={`Operators: ${operators.join(", ")}`}
+            title={`Creator: ${creatorName}`}
           >
-            ops: {operators.join(", ")}
+            creator: {creatorName}
           </div>
         )}
       </div>

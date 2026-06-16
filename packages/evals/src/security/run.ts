@@ -364,14 +364,16 @@ export async function bootAgent(configPath: string): Promise<{
   );
 
   const model = await resolveEngine(parsed.engine, agentDir, evalImporter);
-  const augments = await resolveAugments(headlessAugmentConfigs, agentDir);
+  const augments = await resolveAugments(headlessAugmentConfigs, agentDir, {
+    creator: parsed.creator,
+  });
 
   const agentConfig: AgentConfig = {
     name: parsed.name,
+    creator: parsed.creator,
     purpose: parsed.purpose,
     model: parsed.engine.model,
     augments,
-    operators: parsed.operators,
     contextBudget: parsed.settings.contextBudget,
     compactionStrategy: parsed.settings.compactionStrategy,
     maxInferenceLoops: parsed.settings.maxInferenceLoops,
