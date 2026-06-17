@@ -1,4 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
+import { Database } from "bun:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -918,12 +919,58 @@ describe("visitorAuth app request route", () => {
     await aug.onShutdown?.();
   });
 
+  test("accepts route meta as non-authoritative audit context", async () => {
+    const { aug, sendCalls } = buildAug();
+    await aug.onBoot?.();
+
+    const res = await aug.httpRoutes![2]!.handler(
+      requestBody({
+        email: "alice@example.com",
+        meta: {
+          messageId: "msg-ui-123",
+          source: "console",
+          returnTo: "/account",
+        },
+      }),
+      { signal: new AbortController().signal },
+    );
+
+    expect(res.status).toBe(200);
+    expect(sendCalls).toHaveLength(1);
+    const verifyUrl = sendCalls[0]!.text.match(/(https:\/\/[^\s]+)/)![1]!;
+    const token = new URL(verifyUrl).searchParams.get("token")!;
+    const db = new Database(dbPath);
+    const row = db
+      .query("SELECT source_message_id FROM visitor_auth_tokens WHERE token = ?")
+      .get(token) as { source_message_id: string | null } | null;
+    db.close();
+    expect(row?.source_message_id).toBe("msg-ui-123");
+    await aug.onShutdown?.();
+  });
+
   test("rejects caller-supplied threadId so public apps cannot claim anonymous chat memory", async () => {
     const { aug, sendCalls } = buildAug();
     await aug.onBoot?.();
 
     const res = await aug.httpRoutes![2]!.handler(
       requestBody({ email: "alice@example.com", threadId: "victim-thread" }),
+      { signal: new AbortController().signal },
+    );
+
+    expect(res.status).toBe(400);
+    expect(sendCalls).toHaveLength(0);
+    await aug.onShutdown?.();
+  });
+
+  test("rejects identity-like meta keys so public apps cannot bind visitor identity", async () => {
+    const { aug, sendCalls } = buildAug();
+    await aug.onBoot?.();
+
+    const res = await aug.httpRoutes![2]!.handler(
+      requestBody({
+        email: "alice@example.com",
+        meta: { threadId: "victim-thread" },
+      }),
       { signal: new AbortController().signal },
     );
 

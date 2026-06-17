@@ -384,8 +384,14 @@ For a local CLI install from this checkout:
 
 ```bash
 npm pack
-npm i -g ./auggy-*.tgz
+PACK="$(ls -t auggy-*.tgz | head -1)"
+npm i -g "$PWD/$PACK"
+export AUGGY_SCAFFOLD_AUGGY_SPEC="file:$PWD/$PACK"
 ```
+
+That last export matters only for local tarball testing. It makes agents
+created by this CLI install the exact packed runtime under test instead of the
+latest `auggy` package already published on npm.
 
 ## Documentation
 

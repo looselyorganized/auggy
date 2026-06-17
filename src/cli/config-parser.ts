@@ -803,10 +803,11 @@ function validateIdentityShorthand(raw: unknown, errors: string[]): string | und
 }
 
 /**
- * Build the synthetic fileMemory entry equivalent to the `identity:`
- * shorthand. Per spec §Decision 4 of the PR α foundation spec.
+ * Build the fileMemory config that backs the `identity:` shorthand. This keeps
+ * `identity.md` first-class in agent.yaml while reusing the static-memory
+ * primitive at runtime.
  */
-function synthesizeIdentityAugment(source: string): AugmentConfig {
+function buildIdentityFileMemoryConfig(source: string): AugmentConfig {
   return {
     name: "identity",
     type: "fileMemory",
@@ -923,9 +924,9 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
     }
   }
 
-  // identity shorthand (optional) — synthesizes an equivalent fileMemory
-  // entry prepended to augments[]. Conflict detection happens after the
-  // augments array is validated below.
+  // identity shorthand (optional) — backed by a fileMemory config prepended
+  // to augments[]. Conflict detection happens after the augments array is
+  // validated below.
   const identityShorthand = validateIdentityShorthand(raw.identity, errors);
 
   // Engine.
@@ -1185,9 +1186,9 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
   // fires for placement:system; fileMemory entries with other placements
   // (e.g. "context") coexist with the shorthand without issue.
   //
-  // Separately, the synthesized augment is always named "identity", so the
+  // Separately, the backing config is always named "identity", so the
   // shorthand also reserves that name — an explicit augment also named
-  // "identity" would produce a duplicate after synthesis.
+  // "identity" would produce a duplicate after expansion.
   if (identityShorthand !== undefined && Array.isArray(augments)) {
     const hasExplicitSystemFileMemory = (augments as unknown[]).some((a) => {
       if (typeof a !== "object" || a === null) return false;
@@ -1221,9 +1222,8 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
   }
 
   // Build the final augments list. When the identity shorthand is set and
-  // no conflict was detected, prepend the synthesized fileMemory entry so
-  // identity loads first (matches the convention of operators putting it
-  // at the top of agents.yaml manually today).
+  // no conflict was detected, prepend its backing fileMemory config so
+  // identity loads first.
   const parsedAugments = (augments as unknown[]).map((a) => {
     const copy = { ...(a as Record<string, unknown>) };
     delete copy[AUGMENT_SOURCE_LABEL_FIELD];
@@ -1231,7 +1231,7 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
   });
   const finalAugments =
     identityShorthand !== undefined
-      ? [synthesizeIdentityAugment(identityShorthand), ...parsedAugments]
+      ? [buildIdentityFileMemoryConfig(identityShorthand), ...parsedAugments]
       : parsedAugments;
 
   return {

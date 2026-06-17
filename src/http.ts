@@ -148,6 +148,8 @@ export interface HttpRequestInit {
   headers?: Record<string, string>;
   /** Request body. Not valid for GET / HEAD. */
   body?: string | Uint8Array;
+  /** Optional caller-owned abort signal. Combined with the client's timeout. */
+  signal?: AbortSignal;
 }
 
 export interface HttpResponse {
@@ -216,6 +218,12 @@ export function createHttpClient(opts: HttpClientOptions = {}): HttpClient {
     }
 
     const controller = new AbortController();
+    const abortFromCaller = () => controller.abort(init.signal?.reason);
+    if (init.signal?.aborted) {
+      abortFromCaller();
+    } else {
+      init.signal?.addEventListener("abort", abortFromCaller, { once: true });
+    }
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     const originalOrigin = new URL(url).origin;
 
@@ -288,6 +296,7 @@ export function createHttpClient(opts: HttpClientOptions = {}): HttpClient {
       }
     } finally {
       clearTimeout(timer);
+      init.signal?.removeEventListener("abort", abortFromCaller);
     }
   };
 

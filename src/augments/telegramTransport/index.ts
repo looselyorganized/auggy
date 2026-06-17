@@ -29,6 +29,7 @@ import type {
   TelegramTransportOptions,
   TransportKernel,
   TransportSpec,
+  TurnResult,
   TurnTrigger,
 } from "../../types";
 import type { TelegramBotClient, TelegramUpdate } from "../../telegram-client";
@@ -182,6 +183,8 @@ export function telegramTransport(opts: TelegramTransportOptions): Augment {
    * pass into resolveTelegramIdentity and into the TurnTrigger.
    */
   const threadChatIds = new Map<string, number | string>();
+  const genericFailureReply =
+    "I hit a runtime error while handling that message. The operator has the details.";
 
   // ---------------------------------------------------------------------------
   // Identity resolver (TransportSpec.identify)
@@ -276,10 +279,43 @@ export function telegramTransport(opts: TelegramTransportOptions): Augment {
     const onEvent = (_e: KernelEvent): void => {};
 
     try {
-      await kernel.handleInbound(trigger, { onEvent });
+      const result = await kernel.handleInbound(trigger, { onEvent });
+      if (!result.success) {
+        console.warn(
+          `[telegram-transport] turn failed for threadId=${threadId}: status=${result.status}` +
+            `${result.error?.source ? ` source=${result.error.source}` : ""}` +
+            `${result.error?.message ? ` message=${result.error.message}` : ""}`,
+        );
+        await sendFailureReply(chatId, failureReplyForResult(result));
+      }
     } catch (err) {
       console.warn(
         `[telegram-transport] kernel.handleInbound failed for threadId=${threadId}: ${(err as Error).message}`,
+      );
+      await sendFailureReply(chatId, genericFailureReply);
+    }
+  }
+
+  function failureReplyForResult(result: TurnResult): string {
+    const candidate = result.errorResponse?.trim();
+    if (candidate && isSafePublicFailure(candidate)) return candidate;
+    return genericFailureReply;
+  }
+
+  function isSafePublicFailure(message: string): boolean {
+    return (
+      message === "Turn was aborted." ||
+      message.startsWith("Rate limit exceeded.") ||
+      message.startsWith("Too many pending messages.")
+    );
+  }
+
+  async function sendFailureReply(chatId: number | string, text: string): Promise<void> {
+    try {
+      await client.sendMessage(chatId, text);
+    } catch (err) {
+      console.warn(
+        `[telegram-transport] sendMessage failed for failure reply chatId=${chatId}: ${(err as Error).message}`,
       );
     }
   }

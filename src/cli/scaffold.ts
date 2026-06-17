@@ -197,9 +197,9 @@ purpose: ${yamlScalar(purpose)}
 operators:
   - ${yamlScalar(operatorName)}
 
-# identity shorthand — synthesizes a fileMemory@system entry from ./identity.md
-# at parse time. Operators wanting non-default options (e.g. mutable: true)
-# should drop this and add an explicit fileMemory augment instead.
+# identity.md is loaded into the agent's system context.
+# Operators wanting non-default memory options should replace this shorthand
+# with an explicit fileMemory augment.
 identity: ./identity.md
 
 engine:

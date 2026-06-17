@@ -2,12 +2,24 @@ import { describe, it, expect } from "bun:test";
 import type { HttpClient, HttpResponse } from "../src/http";
 import { createTelegramBotClient } from "../src/telegram-client";
 
+type HttpPostInit = Parameters<HttpClient["post"]>[1];
+
 function mockHttp(
-  handler: (method: string, url: string, body?: unknown) => { status: number; body: string },
+  handler: (
+    method: string,
+    url: string,
+    body?: unknown,
+    opts?: HttpPostInit,
+  ) => { status: number; body: string },
 ): Pick<HttpClient, "post"> {
   return {
     post: async (url, opts) => {
-      const result = handler("POST", url, opts?.body ? JSON.parse(opts.body as string) : undefined);
+      const result = handler(
+        "POST",
+        url,
+        opts?.body ? JSON.parse(opts.body as string) : undefined,
+        opts,
+      );
       const response: HttpResponse = {
         finalUrl: url,
         status: result.status,
@@ -53,6 +65,20 @@ describe("createTelegramBotClient", () => {
     await client.getUpdates({ offset: 100, timeoutSec: 30 });
     expect(captured.url).toBe("https://api.telegram.org/botT/getUpdates");
     expect(captured.body).toEqual({ offset: 100, timeout: 30 });
+  });
+
+  it("getUpdates passes abort signal to HTTP client", async () => {
+    const controller = new AbortController();
+    let capturedSignal: AbortSignal | undefined;
+    const client = createTelegramBotClient({
+      botToken: "T",
+      client: mockHttp((_m, _u, _b, opts) => {
+        capturedSignal = opts?.signal;
+        return { status: 200, body: JSON.stringify({ ok: true, result: [] }) };
+      }),
+    });
+    await client.getUpdates({ timeoutSec: 30, signal: controller.signal });
+    expect(capturedSignal).toBe(controller.signal);
   });
 
   it("setWebhook posts url and secret_token", async () => {

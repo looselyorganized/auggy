@@ -92,6 +92,16 @@ export function getAugmentPromotion(augment: AugmentLite): PromotionInfo {
   if (augment.type === "memoryBus") {
     return { kind: "hidden", reason: "Kernel-injected memory tools — not user-mounted." };
   }
+  // identity: ./identity.md is first-class agent configuration with its own
+  // Identity tab. It is backed by fileMemory internally, but showing that
+  // backing provider as a normal augment makes the composition view look like
+  // there are two fileMemory entries.
+  if (
+    augment.type === "fileMemory" &&
+    (augment.name === "identity" || augment.name === "file-memory-self")
+  ) {
+    return { kind: "hidden", reason: "Identity is configured in the Identity tab." };
+  }
 
   // Promoted — each has a dedicated operator-question tab.
   if (augment.type === "budgets") {
@@ -106,14 +116,6 @@ export function getAugmentPromotion(augment: AugmentLite): PromotionInfo {
   if (augment.type === "skills") {
     return { kind: "promoted", tab: "skills", tabLabel: "Skills" };
   }
-  // The identity-shorthand fileMemory uses label "self" → runtime name
-  // "file-memory-self". Other fileMemory mounts (e.g. "learned") stay
-  // unpromoted as their own Augments row.
-  if (augment.type === "fileMemory" && augment.name === "file-memory-self") {
-    return { kind: "promoted", tab: "identity", tabLabel: "Identity" };
-  }
-
   // Everything else — inline editable on the Augments tab.
   return { kind: "unpromoted" };
 }
-

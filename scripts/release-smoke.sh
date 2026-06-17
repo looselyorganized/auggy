@@ -9,6 +9,7 @@ INSTALL_CACHE="$SMOKE_DIR/npm-install-cache"
 GLOBAL_PREFIX="$SMOKE_DIR/npm-global"
 LOG_DIR="$SMOKE_DIR/logs"
 SMOKE_HOME="$SMOKE_DIR/home"
+SMOKE_PORT=""
 SERVER_PID=""
 FAILED=""
 
@@ -44,6 +45,7 @@ require_cmd() {
 require_cmd npm
 require_cmd bun
 require_cmd curl
+require_cmd node
 require_cmd script
 require_cmd tar
 
@@ -147,6 +149,13 @@ grep -q "\"auggy\": \"file:$TARBALL\"" "$AGENT_DIR/package.json" \
   || fail "agent package.json did not pin auggy to the packed tarball"
 assert_agent_uses_folder_backed_augments fileMemory filesystem webTransport webFetch turnControl
 
+SMOKE_PORT="$(
+  node -e 'const net=require("net"); const server=net.createServer(); server.listen(0,"127.0.0.1",()=>{console.log(server.address().port); server.close();});'
+)"
+[[ -n "$SMOKE_PORT" ]] || fail "could not allocate smoke port"
+perl -0pi -e "s/AUGGY_PUBLIC_URL=http:\/\/localhost:\d+/AUGGY_PUBLIC_URL=http:\/\/localhost:$SMOKE_PORT/" "$AGENT_DIR/.env"
+perl -0pi -e "s/(^[[:space:]]*port: )[0-9]+/\${1}$SMOKE_PORT/m" "$AGENT_DIR/augments/webTransport/augment.yaml"
+
 info "install agent dependencies"
 (
   cd "$AGENT_DIR"
@@ -170,12 +179,12 @@ info "run agent and check health"
 SERVER_PID="$!"
 
 for _ in {1..40}; do
-  if curl -fsS http://127.0.0.1:8080/health >/dev/null 2>&1; then
+  if curl -fsS "http://127.0.0.1:$SMOKE_PORT/health" >/dev/null 2>&1; then
     break
   fi
   sleep 0.25
 done
-curl -fsS http://127.0.0.1:8080/health | grep -q '"status":"healthy"' \
+curl -fsS "http://127.0.0.1:$SMOKE_PORT/health" | grep -q '"status":"healthy"' \
   || fail "agent health did not become healthy"
 kill "$SERVER_PID" 2>/dev/null || true
 wait "$SERVER_PID" 2>/dev/null || true

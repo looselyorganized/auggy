@@ -28,6 +28,7 @@ export interface GetUpdatesOptions {
   offset?: number;
   timeoutSec?: number;
   allowedUpdates?: string[];
+  signal?: AbortSignal;
 }
 
 export interface SetWebhookOptions {
@@ -87,10 +88,15 @@ export function createTelegramBotClient(opts: CreateTelegramBotClientOptions): T
   const http =
     opts.client ?? createHttpClient({ timeoutMs: 60_000, userAgent: "auggy-telegram/0.1" });
 
-  async function call<T>(method: string, body: Record<string, unknown>): Promise<T> {
+  async function call<T>(
+    method: string,
+    body: Record<string, unknown>,
+    opts: { signal?: AbortSignal } = {},
+  ): Promise<T> {
     const res = await http.post(url(method), {
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
+      signal: opts.signal,
     });
     let parsed: BotApiResponse<T>;
     try {
@@ -124,7 +130,7 @@ export function createTelegramBotClient(opts: CreateTelegramBotClientOptions): T
       if (getOpts.offset != null) body.offset = getOpts.offset;
       if (getOpts.timeoutSec != null) body.timeout = getOpts.timeoutSec;
       if (getOpts.allowedUpdates) body.allowed_updates = getOpts.allowedUpdates;
-      return await call<TelegramUpdate[]>("getUpdates", body);
+      return await call<TelegramUpdate[]>("getUpdates", body, { signal: getOpts.signal });
     },
 
     async setWebhook(webhookUrl, secretToken, webhookOpts) {

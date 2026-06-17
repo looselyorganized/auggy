@@ -33,7 +33,7 @@ to stay in sync with the filesystem.
 
 ### Default-scaffold details
 
-- `agent.yaml` uses the top-level `identity: ./identity.md` shorthand (parsed to a synthetic `fileMemory@placement:system` entry); `augments:` lists enabled augment ids in boot order. Per-augment config lives in `augments/<id>/augment.yaml`.
+- `agent.yaml` uses the top-level `identity: ./identity.md` shorthand; the runtime loads it through fileMemory with `placement: system`. `augments:` lists enabled augment ids in boot order. Per-augment config lives in `augments/<id>/augment.yaml`.
 - `identity.md` is rendered from `src/scaffold-templates/identity.md` and ships with four baked-in security rules and a `## Available skills` manifest enumerating each tool-providing augment selected at scaffold time.
 - `skills/<augment>/` directories hold byte-for-byte copies of each augment's bundled `src/augments/<augment>/skill/` folder — copied automatically at `auggy create`/`auggy add` time. `auggy skill add <augment>` is a repair/update command for missing, deleted, or intentionally refreshed bundled skills. The boot-time validator warns at startup if a tool-providing augment has no skill folder mounted.
 - `data/` is the durable runtime data mount. Core create uses `data/workspace`; optional augments such as `layeredMemory` and `budgets` place their SQLite files under `data/` when added.

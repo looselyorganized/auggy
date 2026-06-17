@@ -51,13 +51,67 @@ const DEFAULT_RATE_LIMIT = { perHour: 1, perDay: 3 };
 const VERIFY_PATH = "/visitor-auth/verify";
 const REQUEST_PATH = "/visitor-auth/request";
 const APP_REQUEST_PEER_PREFIX = "auth:";
+const REQUEST_AUTH_ROUTE_META_MAX_BYTES = 2_048;
+const REQUEST_AUTH_ROUTE_RESERVED_META_KEYS = new Set(["peerid", "threadid", "visitorid"]);
+
+const requestAuthRouteMetaValue = z.union([
+  z.string().max(512),
+  z.number().finite(),
+  z.boolean(),
+  z.null(),
+]);
+const requestAuthRouteMeta = z
+  .record(z.string().trim().min(1).max(64), requestAuthRouteMetaValue)
+  .superRefine((meta, ctx) => {
+    const serialized = JSON.stringify(meta);
+    if (serialized.length > REQUEST_AUTH_ROUTE_META_MAX_BYTES) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `meta must be ${REQUEST_AUTH_ROUTE_META_MAX_BYTES} bytes or less`,
+      });
+    }
+
+    for (const key of Object.keys(meta)) {
+      if (REQUEST_AUTH_ROUTE_RESERVED_META_KEYS.has(key.toLowerCase())) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [key],
+          message: `${key} is reserved; visitor identity is bound by Auggy runtime context`,
+        });
+      }
+    }
+
+    const sourceMessageId = meta.messageId ?? meta.sourceMessageId;
+    if (sourceMessageId !== undefined) {
+      if (typeof sourceMessageId !== "string") {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["messageId"],
+          message: "messageId must be a string",
+        });
+      } else if (sourceMessageId.trim().length > 256) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["messageId"],
+          message: "messageId must be 256 characters or fewer",
+        });
+      }
+    }
+  });
 
 const requestAuthRouteBody = z
   .object({
     email: z.string(),
-    messageId: z.string().trim().min(1).max(256).optional(),
+    meta: requestAuthRouteMeta.optional(),
   })
   .strict();
+
+function sourceMessageIdFromRouteMeta(meta: Record<string, unknown> | undefined): string | null {
+  const value = meta?.messageId ?? meta?.sourceMessageId;
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
 
 type RequestAuthCode = NonNullable<RequestAuthResult["code"]>;
 
@@ -876,7 +930,7 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
             email: body.email,
             peerId: `${APP_REQUEST_PEER_PREFIX}${authRequestId}`,
             threadId: authRequestId,
-            sourceMessageId: body.messageId ?? null,
+            sourceMessageId: sourceMessageIdFromRouteMeta(body.meta),
             requireRecentEmail: false,
           });
           return json(result, requestAuthHttpStatus(result));

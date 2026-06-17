@@ -9,6 +9,13 @@ import { cn } from "@/lib/utils";
 import { parseSSEStream, type AGUIEvent } from "@/lib/ag-ui-parse";
 
 const VISITOR_TOKEN_STORAGE_KEY = "auggy-visitor-token";
+type ChatPreviewMode = "creator" | "anonymous" | "visitor";
+
+const CHAT_PREVIEW_MODE_LABELS: Record<ChatPreviewMode, string> = {
+  creator: "Creator",
+  anonymous: "Anonymous",
+  visitor: "Verified visitor",
+};
 
 // ---------------------------------------------------------------------------
 // Local message model — session-scoped, no localStorage persistence, no
@@ -43,6 +50,7 @@ export function ChatTab() {
   const [streaming, setStreaming] = useState(false);
   const [streamError, setStreamError] = useState<string | null>(null);
   const [threadId, setThreadId] = useState<string>(() => crypto.randomUUID());
+  const [previewMode, setPreviewMode] = useState<ChatPreviewMode>("creator");
   const [hasVisitorToken, setHasVisitorToken] = useState(() => Boolean(readVisitorToken()));
   const abortRef = useRef<AbortController | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -63,6 +71,12 @@ export function ChatTab() {
   }, []);
 
   useEffect(() => {
+    if (!hasVisitorToken && previewMode === "visitor") {
+      setPreviewMode("creator");
+    }
+  }, [hasVisitorToken, previewMode]);
+
+  useEffect(() => {
     if (wasStreamingRef.current && !streaming) {
       requestAnimationFrame(() => inputRef.current?.focus({ preventScroll: true }));
     }
@@ -72,8 +86,13 @@ export function ChatTab() {
   const sendMessage = useCallback(async (overrideText?: string) => {
     const text = (overrideText ?? input).trim();
     if (!text || streaming) return;
-    const visitorToken = readVisitorToken();
-    setHasVisitorToken(Boolean(visitorToken));
+    const storedVisitorToken = readVisitorToken();
+    setHasVisitorToken(Boolean(storedVisitorToken));
+    const visitorToken = previewMode === "visitor" ? storedVisitorToken : undefined;
+    if (previewMode === "visitor" && !visitorToken) {
+      setStreamError("Verify a visitor first, then choose Verified visitor.");
+      return;
+    }
 
     const userMsg: Message = { id: crypto.randomUUID(), role: "user", content: text };
     const assistantMsg: Message = {
@@ -107,7 +126,7 @@ export function ChatTab() {
       const res = await fetch(url, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ csrf, message: text, threadId, visitorToken }),
+        body: JSON.stringify({ csrf, message: text, threadId, chatMode: previewMode, visitorToken }),
         signal: ctrl.signal,
       });
       if (res.status === 419) {
@@ -180,7 +199,7 @@ export function ChatTab() {
           break;
       }
     }
-  }, [input, streaming, threadId, data]);
+  }, [input, streaming, threadId, data, previewMode]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -203,6 +222,17 @@ export function ChatTab() {
     if (streaming) return;
     clearVisitorToken();
     setHasVisitorToken(false);
+    setPreviewMode("creator");
+    setMessages([]);
+    setThreadId(crypto.randomUUID());
+    setStreamError(null);
+    requestAnimationFrame(() => inputRef.current?.focus({ preventScroll: true }));
+  };
+
+  const handlePreviewModeChange = (mode: ChatPreviewMode) => {
+    if (streaming || mode === previewMode) return;
+    if (mode === "visitor" && !hasVisitorToken) return;
+    setPreviewMode(mode);
     setMessages([]);
     setThreadId(crypto.randomUUID());
     setStreamError(null);
@@ -220,7 +250,7 @@ export function ChatTab() {
     );
   }, [data]);
   const responseLabel = agentName;
-  const identityLabel = hasVisitorToken ? "Testing as verified visitor" : "Testing as creator";
+  const identityLabel = `Previewing as ${CHAT_PREVIEW_MODE_LABELS[previewMode].toLowerCase()}`;
 
   if (loading && !data) {
     return (
@@ -292,10 +322,33 @@ export function ChatTab() {
               )}
             </div>
             <div className="mt-2 flex items-center justify-between gap-3 px-1">
-              <div className="flex min-w-0 items-center gap-2">
+              <div className="flex min-w-0 flex-wrap items-center gap-2">
                 <span className="truncate font-mono text-[11px] text-muted-foreground">
                   {identityLabel}
                 </span>
+                <div className="flex shrink-0 items-center rounded-md border bg-background/80 p-0.5">
+                  {(["creator", "anonymous", "visitor"] as const).map((mode) => {
+                    const disabled = streaming || (mode === "visitor" && !hasVisitorToken);
+                    return (
+                      <Button
+                        key={mode}
+                        type="button"
+                        variant={previewMode === mode ? "secondary" : "ghost"}
+                        size="sm"
+                        onClick={() => handlePreviewModeChange(mode)}
+                        disabled={disabled}
+                        className="h-6 rounded-sm px-2 text-[11px]"
+                        title={
+                          mode === "visitor" && !hasVisitorToken
+                            ? "Verify a visitor first"
+                            : `Preview as ${CHAT_PREVIEW_MODE_LABELS[mode]}`
+                        }
+                      >
+                        {CHAT_PREVIEW_MODE_LABELS[mode]}
+                      </Button>
+                    );
+                  })}
+                </div>
                 {hasVisitorToken && (
                   <Button
                     variant="ghost"

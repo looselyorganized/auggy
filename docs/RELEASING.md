@@ -70,6 +70,22 @@ This packs the local CLI, verifies the tarball contents, installs it into an
 isolated prefix, scaffolds a fresh agent through a PTY, boots `/health`, and
 checks the MCP cloud-preflight failure path.
 
+If you manually test the local tarball before publishing, pin generated agents
+to that same tarball:
+
+```bash
+npm pack
+PACK="$(ls -t auggy-*.tgz | head -1)"
+npm i -g "$PWD/$PACK"
+export AUGGY_SCAFFOLD_AUGGY_SPEC="file:$PWD/$PACK"
+```
+
+Without `AUGGY_SCAFFOLD_AUGGY_SPEC`, `auggy create` writes the normal npm
+range (`^X.Y.Z`), so a pre-release smoke can accidentally install an older
+published package with the same version.
+
+For the post-publish walkthrough, use the public package:
+
 ```bash
 mv ~/.auggy ~/.auggy.backup-$(date +%Y%m%d%H%M%S) 2>/dev/null || true
 npm i -g auggy
