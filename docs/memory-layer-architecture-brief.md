@@ -1,14 +1,25 @@
 # Memory Layer Architecture — Planning Brief
 
-> **Status:** Resolved — design session completed 2026-04-23. See [ADR-018](../../docs/solutions/architecture/adr-018-layered-memory-augment.md) for the decision. Phase 1 implementation plan is next.
+> **Status:** Historical design brief, resolved 2026-04-23. Current runtime
+> behavior is documented in [05-memory-subsystem.md](./05-memory-subsystem.md)
+> and [07-built-in-augments.md](./07-built-in-augments.md).
 >
 > **Owner:** Michael
-> **Resolved:** 2026-04-23 — ADR-018 chose Direction B (L1 + L3 first) with full schema designed upfront for all four layers. Single `layeredMemory` augment, SQLite-first, 11 day-one mitigations in schema from Phase 1.
+> **Resolved direction:** Build `layeredMemory` as the peer-scoped episodic
+> memory layer first, with identity remaining operator-authored and immutable.
 > **Scope:** Large — multi-session design + implementation project
+>
+> **Current-state note:** This brief preserves the problem statement that led
+> to `layeredMemory`. Some "current" gaps below have since changed: the memory
+> bus now has structural trust gates and `memory_forget`; `layeredMemory`
+> provides peer-scoped episodic memory. The scaffolded `learned.md` fileMemory
+> path remains a transitional mutable store and should not be treated as
+> identity, authorization, or peer-profile authority.
 
 ## The Problem
 
-Auggy's current memory model is two-tier and ad hoc:
+At the time this brief was written, Auggy's memory model was two-tier and ad
+hoc:
 
 | Tier | Provider | What it holds | Mutability | Placement |
 |------|----------|---------------|------------|-----------|
@@ -18,7 +29,7 @@ Auggy's current memory model is two-tier and ad hoc:
 
 There's no principled hierarchy, no promotion/demotion rules, no per-layer trust gating, and no consolidation pipeline. Consequences:
 
-1. **No memory-write trust gating.** Layer 1 deferred memory-bus `perTrustLevel` defaults because we couldn't answer "which writes should untrusted peers be allowed to do?" without a label taxonomy. Currently any peer can write to any label — the 2026-04-14 red-team incident ("visitor told Zip to remember him as the creator") is the canonical example.
+1. **No memory-write trust gating.** Layer 1 deferred memory-bus `perTrustLevel` defaults because we couldn't answer "which writes should public peers be allowed to do?" without a label taxonomy. At the time, any peer could write to any label — the 2026-04-14 red-team incident ("visitor told Zip to remember him as the creator") was the canonical example.
 
 2. **No consolidation.** Episodic entries accumulate without synthesis. No path from raw conversation facts → structured knowledge → identity-adjacent context. Mason's "Missing Memory Hierarchy" paper identifies this as the core gap in current agent memory systems.
 
@@ -26,7 +37,7 @@ There's no principled hierarchy, no promotion/demotion rules, no per-layer trust
 
 4. **No peer-scoped retrieval.** `memory_search` returns entries from all peers. Visitor A's claims about visitor B can surface in visitor B's conversation. Cross-peer contamination is a known gap from the Layer 1 adversarial review.
 
-5. **learned.md placement was a security finding.** Codex adversarial review found that mutable `learned.md` loaded as system-preamble was a privilege-escalation vector. Layer 1 demoted it to `origin: agent, placement: context` with `[AGENT-DERIVED]` markers — but this is a band-aid, not a hierarchy.
+5. **learned.md placement was a security finding.** Codex adversarial review found that mutable `learned.md` loaded as privileged preamble/system-adjacent context was a privilege-escalation vector. The durable fix is not "prompt harder"; it is a hierarchy where promotion to high-privilege placement requires explicit consolidation or operator action.
 
 ## Research Grounding
 
@@ -82,9 +93,10 @@ L3 — Identity (operator-authored)
 - Demotion: L2 facts can be superseded (new consolidation overrides old). L1 entries can age out (retention policy). L3 is never demoted.
 
 **Memory-write trust gating (deferred from Layer 1):**
-- Untrusted peers: can trigger L0 writes (scratch) and L1 writes (episodic, tagged with their peer ID and `[PEER-DERIVED]`). Cannot write to L2 or L3.
-- Authenticated peers: same as untrusted for now (until Layer 3 operator auth exists).
-- Operator peers: can write to any layer.
+- Public peers: can trigger L0 writes (scratch) and L1 writes (episodic,
+  tagged with their peer ID and `[PEER-DERIVED]`). Cannot write to L2 or L3.
+- Agent/creator peers: can write according to provider policy and current
+  runtime gates.
 - The agent itself: can write to L0, L1, L2 (via consolidation). Cannot write to L3.
 
 ### Direction B: Consolidation-first (skip L0, defer L2)
@@ -120,7 +132,7 @@ This doesn't solve any of the trust/scoping/consolidation problems but it does s
 
 6. **Consolidation model:** Which model runs the consolidation? The agent's primary model (expensive, high quality)? A dedicated cheaper model (Haiku)? A rule-based extractor (no LLM, just heuristics)?
 
-7. **Interaction with Layer 1 trust gating:** Once the hierarchy exists, what are the exact `perTrustLevel` defaults for the memory-bus? Untrusted → can write L1 but not L2/L3? Or untrusted → can't write at all (consolidation pipeline handles L1 writes from conversation history automatically)?
+7. **Interaction with Layer 1 trust gating:** Once the hierarchy exists, what are the exact `perTrustLevel` defaults for the memory-bus? Public → can write L1 but not L2/L3? Or public → can't write at all (consolidation pipeline handles L1 writes from conversation history automatically)?
 
 8. **Migration:** How does the current two-tier setup (fileMemory + supabaseMemory) migrate to the hierarchy? Is it a breaking change to agent.yaml, or can it be additive?
 
@@ -128,7 +140,10 @@ This doesn't solve any of the trust/scoping/consolidation problems but it does s
 
 ## What the Design Session Should Produce
 
-1. **Architecture doc** at `docs/solutions/architecture/` — the layer taxonomy, provider mapping, promotion rules, trust gating per layer, schema changes.
+1. **Current reference docs** — the layer taxonomy, provider mapping, promotion
+   rules, trust gating per layer, and schema changes should be reflected in
+   [05-memory-subsystem.md](./05-memory-subsystem.md) and
+   [07-built-in-augments.md](./07-built-in-augments.md).
 2. **Migration plan** — how current agents transition from two-tier to the hierarchy.
 3. **Implementation plan** — phased, probably multi-session: (a) peer-scoped episodic with trust tags, (b) consolidation pipeline, (c) compaction integration, (d) eval coverage.
 4. **Decision on Direction A vs B** — full hierarchy vs consolidation-first.
@@ -137,7 +152,5 @@ This doesn't solve any of the trust/scoping/consolidation problems but it does s
 ## Related
 
 - `lo/docs/research-memory-architecture.md` — 21-paper survey
-- `lo/docs/solutions/architecture/three-layer-trust-architecture-20260414.md` — Layer 1 explicitly defers memory-bus trust gating to this work
 - `augment-1/docs/05-memory-subsystem.md` — current memory provider contract
 - `augment-1/src/memory/` — registry, bus, context-synthesis, tools
-- Memory index: `~/.claude/projects/.../memory/project_auggy_layered_memory.md` — project memory with entry-point info for the next session

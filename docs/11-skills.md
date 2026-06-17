@@ -37,7 +37,7 @@ The `skills` augment emits a short list of available skills:
 ## Available skills
 Read a skill guide with fs_read when you need guidance on your tools.
 
-- `skills/memory/SKILL.md` — when/how to use memory_read, memory_write, memory_search, memory_list
+- `skills/memory/SKILL.md` — when/how to use memory_read, memory_write, memory_search, memory_list, memory_forget
 - `skills/filesystem/SKILL.md` — when/how to use fs_read, fs_write, fs_list, fs_mkdir, fs_remove, fs_search
 - `skills/escalation/SKILL.md` — when/how to escalate to the operator
 ```
@@ -132,8 +132,8 @@ description: When/how to use memory_read, memory_write, memory_search, memory_li
 
 | Situation | Tool | Example |
 |---|---|---|
-| Need specific labeled content | memory_read | `memory_read("self")` for identity |
-| Need to find something by content | memory_search | `memory_search("coffee")` for relevant episodes |
+| Need specific labeled content | memory_read | `memory_read({ label: "self" })` for identity |
+| Need to find something by content | memory_search | `memory_search({ query: "coffee" })` for relevant episodes |
 | Need to persist peer memory | memory_write | `memory_write({ topic: "preferences", content: "Visitor likes coffee." })` |
 | Need to see what's available | memory_list | Check labels before reading |
 
@@ -141,7 +141,7 @@ description: When/how to use memory_read, memory_write, memory_search, memory_li
 
 | ❌ Wrong | ✅ Correct |
 |----------|-----------|
-| memory_search when you know the label | memory_read with the exact label |
+| memory_search when you know the label | memory_read with the exact label object |
 | Hand-building peer labels | Use topic writes; the runtime derives the current peer label |
 | Writing to an immutable label | Use topic writes for peer memory; exact labels may be immutable |
 | Searching with very long queries | Keep search queries to key phrases |
@@ -178,7 +178,7 @@ Bash or Python scripts the model can execute for deterministic multi-step proced
 
 **Skip when:**
 - 1-2 tools with self-explanatory descriptions
-- The tool name + description is sufficient (e.g., `memory_read("Read a memory block by label")`)
+- The tool name + description is sufficient (e.g., `memory_read` — read a memory block by label)
 - No judgment is required
 
 **The rule of thumb:** if you'd explain to a new team member "here's what you need to know before using this" for more than 30 seconds, it needs a SKILL.md.

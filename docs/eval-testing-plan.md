@@ -14,9 +14,9 @@ These are deterministic tests — no LLM involved. They verify that the runtime 
 
 | Test | What it verifies | Method |
 |------|-----------------|--------|
-| **Write survives restart** | `memory_write("learned", "X")` → stop agent → start agent → `memory_read("learned")` returns "X" | Integration test: boot agent, inject turn with tool call, stop, reboot, inject read, assert content |
+| **Write survives restart** | `memory_write({ label: "learned", content: "X" })` → stop agent → start agent → `memory_read({ label: "learned" })` returns "X" | Integration test: boot agent, inject turn with tool call, stop, reboot, inject read, assert content |
 | **Write is atomic** | Partial write during crash doesn't corrupt the file | Kill process mid-write (SIGKILL), reboot, verify file is either old or new content, never corrupt |
-| **Supabase memory persists** | `memory_write("episode:test", "X")` → restart → `memory_search("X")` returns it | Integration test with mock Supabase (or real Supabase in CI) |
+| **Supabase memory persists** | `memory_write({ label: "episode:test", content: "X" })` → restart → `memory_search({ query: "X" })` returns it | Integration test with mock Supabase (or real Supabase in CI) |
 | **Memory doesn't leak across agents** | Agent A's memory is invisible to Agent B | Boot two agents with different namespaces, write to A, search from B, assert empty |
 
 ### 1.2 Memory Growth

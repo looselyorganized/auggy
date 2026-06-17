@@ -1,6 +1,6 @@
 # V1 Canonical Creator Identity
 
-Status: accepted for v1.0 implementation.
+Status: implemented for v1.0 in PR #105.
 
 ## Decision
 
@@ -45,7 +45,7 @@ before v1 creates real user state.
 
 ## V1 Scope
 
-Implement:
+Implemented:
 
 - Add `creator.displayName` to scaffolded `agent.yaml`.
 - Remove `operators[]` from generated, parsed, and runtime agent config.

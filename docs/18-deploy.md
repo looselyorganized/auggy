@@ -149,7 +149,10 @@ config:
   dailyBudgetUsd: 5.00
 ```
 
-This caps total daily spend (user-facing + extraction). If the cap is hit, the kernel's 2PC turn-gate refuses new turns until the next day. See [ADR-027](../../lo/docs/solutions/architecture/adr-027-internal-turn-admission.md) for how internal extraction turns flow through the same budget.
+This caps total daily spend (user-facing + extraction). If the cap is hit,
+the kernel's 2PC turn-gate refuses new turns until the next day. Internal
+extraction turns flow through the same budget rather than using a separate
+spend surface.
 
 ---
 
@@ -248,7 +251,7 @@ The Railway volume is **NOT** automatically deleted (Railway retains it as a saf
 
 - **Auto-rollback** on failed deploys. If `railway up` succeeds but the agent crashes at boot, Railway's auto-restart loop kicks in but doesn't roll back to the previous build. Use `railway logs` to diagnose.
 - **Multi-instance / horizontal scaling.** One Railway service runs one Auggy instance. The SQLite-on-volume design assumes a single writer.
-- **Plugin abstraction for other providers.** `--to fly` / `--to render` are deferred until concrete demand ([ADR-021](../../../docs/solutions/architecture/adr-021-agent-storage-and-deployment-locations.md)).
+- **Plugin abstraction for other providers.** `--to fly` / `--to render` are deferred until concrete demand.
 - **Cross-machine cloud-record sync.** Each checkout has its own `<agent-dir>/.auggy-cloud.json`. Cloud deployment doesn't sync state back.
 - **Built-in observability.** Use Railway's metrics dashboard and `railway logs`. Long-term observability is a v2 concern.
 

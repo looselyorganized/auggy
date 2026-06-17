@@ -46,10 +46,10 @@ function serializeEntryWithOrigin(entry: MemoryEntry): MemoryEntry & { origin?: 
  * Rule:
  *   - Missing context        → DENY (fail-closed)
  *   - origin "peer-derived"  → ALLOW (peer-scoped memory is open to all)
- *   - trust ∈ {operator, facility} → ALLOW
- *   - otherwise              → DENY (untrusted, authenticated, or any future level)
+ *   - trust ∈ {creator, agent} → ALLOW
+ *   - otherwise              → DENY (public, or any future level below agent)
  *
- * Null peer (internal/scheduled triggers) is treated as operator trust,
+ * Null peer (internal/scheduled triggers) is treated as creator trust,
  * via the shared effectiveTrustLevel helper in capability-table.ts.
  */
 function assertMemoryAccess(
@@ -343,7 +343,7 @@ export function createMemoryTools(
   const memoryForget = defineTool({
     name: "memory_forget",
     description:
-      "Delete all episodic memory entries for a specific visitor. Use for right-to-erasure requests. Operator/facility only.",
+      "Delete all episodic memory entries for a specific visitor. Use for right-to-erasure requests. Creator/agent only.",
     category: "memory",
     input: z.object({
       peerId: z.string().describe("The visitor ID to forget (e.g. 'vis_abc123')"),

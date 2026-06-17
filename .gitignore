@@ -41,6 +41,10 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 # Local git worktrees (subagent-driven-development)
 .worktrees/
 
+# Local Auggy DX lab agents and reusable private smoke secrets
+.auggy-dx-lab/
+.env.dx.local
+
 # Claude Code session-local config (settings.local.json, scheduled_tasks.lock)
 .claude/
 
