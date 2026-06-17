@@ -490,11 +490,11 @@ function knowledgeValues(raw: Record<string, unknown>, agentDir: string) {
     typeof raw.purpose === "string" && raw.purpose.trim()
       ? raw.purpose.trim()
       : "project knowledge for this agent";
-  const operatorName = readCreatorDisplayName(raw) ?? "the creator";
+  const creatorName = readCreatorDisplayName(raw) ?? "the creator";
   return {
     orgName: name,
     orgPurpose: purpose,
-    operatorName,
+    creatorName,
   };
 }
 

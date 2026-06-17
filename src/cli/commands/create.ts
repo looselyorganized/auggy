@@ -581,7 +581,11 @@ async function runCreateIntoDir(
     }
 
     if (knowledgeSelected) {
-      writeKnowledgeScaffold(tempDir, { orgName, orgPurpose, operatorName }, { overwrite: true });
+      writeKnowledgeScaffold(
+        tempDir,
+        { orgName, orgPurpose, creatorName: operatorName },
+        { overwrite: true },
+      );
     }
 
     // Build .env with both auto-generated values AND empty placeholders for

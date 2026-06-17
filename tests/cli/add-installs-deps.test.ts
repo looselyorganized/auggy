@@ -226,14 +226,17 @@ describe("runAdd no-op cases", () => {
   });
 
   test("adding knowledge uses configured metadata in the source manifest", async () => {
-    const dir = setupAgent("with-operator");
+    const dir = setupAgent("with-creator");
     const yaml = readFileSync(join(dir, "agent.yaml"), "utf-8");
     writeFileSync(
       join(dir, "agent.yaml"),
-      yaml.replace("engine:\n", "purpose: Help visitors.\noperators:\n  - Mike\nengine:\n"),
+      yaml.replace(
+        "engine:\n",
+        "purpose: Help visitors.\ncreator:\n  displayName: Mike\nengine:\n",
+      ),
     );
 
-    await runAdd("with-operator", {
+    await runAdd("with-creator", {
       config: join(dir, "agent.yaml"),
       auggyDir,
       augment: "knowledge",
@@ -243,8 +246,8 @@ describe("runAdd no-op cases", () => {
     const manifest = JSON.parse(
       readFileSync(join(dir, "knowledge", "local", "manifest"), "utf-8"),
     ) as Record<string, unknown>;
-    expect(manifest.org).toBe("with-operator");
-    expect(manifest.operator).toBe("Mike");
+    expect(manifest.org).toBe("with-creator");
+    expect(manifest.creator).toBe("Mike");
     expect(manifest.purpose).toBe("Help visitors.");
   });
 

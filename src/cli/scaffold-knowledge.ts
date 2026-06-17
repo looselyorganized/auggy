@@ -4,7 +4,7 @@ import { join } from "node:path";
 export interface KnowledgeScaffoldValues {
   orgName: string;
   orgPurpose: string;
-  operatorName: string;
+  creatorName: string;
 }
 
 export interface KnowledgeScaffoldOptions {
@@ -26,7 +26,7 @@ export function writeKnowledgeScaffold(
   const manifest = {
     org: values.orgName,
     purpose: values.orgPurpose,
-    operator: values.operatorName,
+    creator: values.creatorName,
     phase: "active",
     endpoints: [
       { path: "/mission", description: "Agent purpose, project context, and active focus" },
@@ -54,7 +54,7 @@ export function writeKnowledgeScaffold(
   writeText(join(localDir, "manifest"), `${JSON.stringify(manifest, null, 2)}\n`, opts);
   writeText(
     join(localDir, "mission.md"),
-    `# Mission\n\n_Add information about this agent's mission here._\n\n## What It Should Know\n\n_Add project or organization information, operator details, product context, policies, FAQs, and domain context here._\n\n## Useful Context\n\n_Add recurring decisions, important links, support notes, constraints, or other context this agent should use when helping visitors._\n`,
+    `# Mission\n\n_Add information about this agent's mission here._\n\n## What It Should Know\n\n_Add project or organization information, creator details, product context, policies, FAQs, and domain context here._\n\n## Useful Context\n\n_Add recurring decisions, important links, support notes, constraints, or other context this agent should use when helping visitors._\n`,
     opts,
   );
   writeText(
