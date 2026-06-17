@@ -923,6 +923,25 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
       errors.push("displayName: must be a non-empty string when set");
     }
   }
+  let creator: ParsedConfig["creator"] | undefined;
+  if (raw.creator !== undefined) {
+    if (typeof raw.creator !== "object" || raw.creator === null || Array.isArray(raw.creator)) {
+      errors.push("creator: must be an object when set");
+    } else {
+      const rawCreator = raw.creator as Record<string, unknown>;
+      if (rawCreator.displayName !== undefined) {
+        if (typeof rawCreator.displayName !== "string") {
+          errors.push("creator.displayName: must be a string");
+        } else if (rawCreator.displayName.trim().length === 0) {
+          errors.push("creator.displayName: must be a non-empty string when set");
+        } else {
+          creator = { displayName: rawCreator.displayName.trim() };
+        }
+      } else {
+        creator = {};
+      }
+    }
+  }
 
   // identity shorthand (optional) — backed by a fileMemory config prepended
   // to augments[]. Conflict detection happens after the augments array is
@@ -1238,11 +1257,11 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
     id: raw.id as string,
     name: raw.name as string,
     displayName: raw.displayName as string | undefined,
+    creator,
     purpose: raw.purpose as string | undefined,
     identity: identityShorthand,
     engine: engine as unknown as EngineConfig,
     settings: settings as AgentSettings,
-    operators: raw.operators as string[] | undefined,
     augments: finalAugments,
     securityEval,
   };
@@ -1250,7 +1269,7 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
 
 /** Scalar fields on `securityEval` (each must be a string when present). */
 const SECURITY_EVAL_SCALAR_FIELDS = [
-  "operatorName",
+  "creatorName",
   "agentName",
   "fixtureEnvPath",
   "fixtureInternalUrl",

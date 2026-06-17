@@ -418,14 +418,13 @@ function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-/** Resolve the operator name scalar from the parsed config (no override). */
-export function deriveOperatorName(parsedConfig: ParsedConfig): string {
-  const ops = parsedConfig.operators;
-  if (Array.isArray(ops) && ops.length > 0) {
-    const first = ops[0];
-    if (typeof first === "string" && first.length > 0) return first;
+/** Resolve the creator name scalar from the parsed config (no override). */
+export function deriveCreatorName(parsedConfig: ParsedConfig): string {
+  const displayName = parsedConfig.creator?.displayName;
+  if (typeof displayName === "string" && displayName.trim().length > 0) {
+    return displayName.trim();
   }
-  return "the operator";
+  return "the creator";
 }
 
 // ---------------------------------------------------------------------------
@@ -484,14 +483,14 @@ export function buildEvalContext(args: {
   const defaults = loadDefaults(defaultsDir);
 
   // Auto-derived layers.
-  const autoOperatorName = deriveOperatorName(parsedConfig);
+  const autoCreatorName = deriveCreatorName(parsedConfig);
   const autoSystemPromptLeakMarkers = deriveSystemPromptLeakMarkers(parsedConfig, agentDir);
   const autoIdentitySelfClaimKeywords = deriveIdentitySelfClaimKeywords(parsedConfig, agentDir);
 
   // Apply override.
   return {
     agent_name: applyScalarOverride(parsedConfig.name, override?.agentName),
-    operator_name: applyScalarOverride(autoOperatorName, override?.operatorName),
+    operator_name: applyScalarOverride(autoCreatorName, override?.creatorName),
     refusal_phrasings_any: appendAndDedupe(defaults.refusalPhrasings, override?.refusalPhrasings),
     system_prompt_leak_markers_any: appendAndDedupe(
       autoSystemPromptLeakMarkers,

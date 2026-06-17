@@ -128,12 +128,18 @@ Every inbound Telegram update is resolved to a `PeerIdentity` before the kernel 
 
 | Priority | Mechanism | Trust level | `peer.id` | `peer.kind` |
 |---|---|---|---|---|
-| 1 | `creatorUserIds` contains `update.message.from.id` | `"creator"` | `tg_user_<userId>` | `"human"` |
+| 1 | `creatorUserIds` contains `update.message.from.id` **and the chat is private** | `"creator"` | `creator` | `"human"` |
 | 2 | `admittedAgents` entry has matching `telegramUserId` | `"agent"` | The `id` field from `admittedAgents` | `"agent"` |
 | 3 | `recognizedUserIds` contains `update.message.from.id` | `"public"` / `"recognized"` | `tg_user_<userId>` | `"human"` |
 | 4 | None of the above | `"public"` / `"anonymous"` | See §6 | `"human"` |
 
 The `peer.id` produced here is the identity the kernel uses for budgets, layered memory, and capability decisions throughout the turn.
+
+For v1, the creator has one canonical runtime identity across creator surfaces:
+`peer.id = "creator"`. The Telegram user ID proves the credential in private
+chat; it is not used as the creator's memory/budget key. Group, supergroup, and
+channel messages are not promoted to creator trust by default even when the
+sender's user ID appears in `creatorUserIds`.
 
 **Thread ID:** All updates within the same Telegram chat share `threadId = tg-chat-<chatId>`. This maps one Telegram chat to one conversation thread in Auggy — history, memory context, and budget counters are all scoped to this threadId.
 
@@ -207,7 +213,7 @@ Caddy forwards headers by default, so no explicit header passthrough directive i
 
 - Verify `TELEGRAM_BOT_TOKEN` is set and correct (`auggy status` shows whether the agent is running).
 - In polling mode, check agent logs for `[telegram-transport.polling] getUpdates error` — this indicates the token is invalid or the Telegram API is unreachable.
-- Confirm your Telegram user ID is in `creatorUserIds` (or the appropriate list). If the ID is wrong, your messages are resolved as `public-anonymous` and may be budget-capped or capability-restricted.
+- Confirm your Telegram user ID is in `creatorUserIds` (or the appropriate list). Creator trust is granted only in private chats by default. If the ID is wrong, or the message arrives from a group/supergroup/channel, your messages are resolved as public and may be budget-capped or capability-restricted.
 - Confirm the bot has not been blocked or deleted via @BotFather.
 
 **Messages arrive but the agent doesn't reply**

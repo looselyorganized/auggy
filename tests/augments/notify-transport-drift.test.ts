@@ -39,7 +39,8 @@ function writeNotifyAgent(transport: string, extra: Record<string, unknown>): st
     yamlPath,
     `id: aug1_00000000-0000-0000-0000-000000000000
 name: t
-operators: [op]
+creator:
+  displayName: op
 engine:
   provider: anthropic
   model: claude-sonnet-4-6

@@ -260,7 +260,7 @@ function resolveKnowledgeSourceBaseUrl(baseUrl: string, root: string): string {
 interface Manifest {
   org: string;
   purpose: string;
-  operator?: string;
+  creator?: string;
   phase?: string;
   endpoints: ManifestEndpoint[];
 }
@@ -292,7 +292,7 @@ function validateManifest(raw: unknown): Manifest | null {
     if (typeof e.description !== "string") return null;
     if (e.method !== undefined && typeof e.method !== "string") return null;
   }
-  if (m.operator !== undefined && typeof m.operator !== "string") return null;
+  if (m.creator !== undefined && typeof m.creator !== "string") return null;
   if (m.phase !== undefined && typeof m.phase !== "string") return null;
   return m as unknown as Manifest;
 }
@@ -622,8 +622,8 @@ export function knowledge(opts: ManifestOptions): Augment {
   function buildContextBlock(manifest: Manifest): string {
     const lines = [`# ${manifest.org} — Organization Context`, "", manifest.purpose, ""];
 
-    if (manifest.operator) {
-      lines.push(`**Operator:** ${manifest.operator}`);
+    if (manifest.creator) {
+      lines.push(`**Creator:** ${manifest.creator}`);
     }
     if (manifest.phase) {
       lines.push(`**Current phase:** ${manifest.phase}`);
@@ -863,7 +863,7 @@ export function knowledge(opts: ManifestOptions): Augment {
               rows: [
                 { label: "Org", value: manifest.org },
                 { label: "Purpose", value: manifest.purpose },
-                ...(manifest.operator ? [{ label: "Operator", value: manifest.operator }] : []),
+                ...(manifest.creator ? [{ label: "Creator", value: manifest.creator }] : []),
                 ...(manifest.phase ? [{ label: "Phase", value: manifest.phase }] : []),
                 { label: "Endpoints", value: String(manifest.endpoints.length) },
               ],

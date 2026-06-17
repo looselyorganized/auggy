@@ -39,17 +39,14 @@ export interface ScaffoldOptions {
   /** Optional purpose string for the agent (default: "a helpful assistant"). */
   purpose?: string;
   /**
-   * Operator name used to populate the operator-identity reference in the
-   * scaffolded identity.md security rules and the agent.yaml `operators[]`
-   * array. Defaults to "the operator" — matches the security-eval test
-   * fixture's fallback behavior so non-interactive scaffolding stays
-   * compatible with the canonical eval suite.
+   * Creator name used to populate the scaffolded identity.md security rules
+   * and the agent.yaml `creator.displayName` field.
    */
   operatorName?: string;
 }
 
 /** Default values used when prompts are skipped (non-interactive). */
-const DEFAULT_OPERATOR_NAME = "the operator";
+const DEFAULT_OPERATOR_NAME = "the creator";
 const DEFAULT_PURPOSE = "a helpful assistant";
 const WORKSPACE_README = `# Workspace
 
@@ -194,8 +191,8 @@ id: ${yamlScalar(id)}
 name: ${yamlScalar(name)}
 displayName: ${yamlScalar(displayName)}
 purpose: ${yamlScalar(purpose)}
-operators:
-  - ${yamlScalar(operatorName)}
+creator:
+  displayName: ${yamlScalar(operatorName)}
 
 # identity.md is loaded into the agent's system context.
 # Operators wanting non-default memory options should replace this shorthand

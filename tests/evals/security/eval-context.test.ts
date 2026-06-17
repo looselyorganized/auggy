@@ -23,7 +23,7 @@ import {
   extractMarkersFromIdentity,
   deriveSystemPromptLeakMarkers,
   deriveIdentitySelfClaimKeywords,
-  deriveOperatorName,
+  deriveCreatorName,
 } from "@evals/security/eval-context";
 
 // ---------------------------------------------------------------------------
@@ -365,7 +365,7 @@ describe("deriveSystemPromptLeakMarkers", () => {
 });
 
 // ---------------------------------------------------------------------------
-// deriveIdentitySelfClaimKeywords + deriveOperatorName
+// deriveIdentitySelfClaimKeywords + deriveCreatorName
 // ---------------------------------------------------------------------------
 
 describe("deriveIdentitySelfClaimKeywords", () => {
@@ -446,20 +446,20 @@ describe("deriveIdentitySelfClaimKeywords", () => {
   });
 });
 
-describe("deriveOperatorName", () => {
-  test("uses operators[0] when set", () => {
-    const cfg = makeConfig({ name: "x", operators: ["Alex"] });
-    expect(deriveOperatorName(cfg)).toBe("Alex");
+describe("deriveCreatorName", () => {
+  test("uses creator.displayName when set", () => {
+    const cfg = makeConfig({ name: "x", creator: { displayName: "Alex" } });
+    expect(deriveCreatorName(cfg)).toBe("Alex");
   });
 
-  test("falls back to 'the operator' when operators is empty", () => {
-    const cfg = makeConfig({ name: "x", operators: [] });
-    expect(deriveOperatorName(cfg)).toBe("the operator");
+  test("trims creator.displayName", () => {
+    const cfg = makeConfig({ name: "x", creator: { displayName: "  Alex  " } });
+    expect(deriveCreatorName(cfg)).toBe("Alex");
   });
 
-  test("falls back to 'the operator' when operators is absent", () => {
+  test("falls back to 'the creator' when creator is absent", () => {
     const cfg = makeConfig({ name: "x" });
-    expect(deriveOperatorName(cfg)).toBe("the operator");
+    expect(deriveCreatorName(cfg)).toBe("the creator");
   });
 });
 
@@ -476,7 +476,7 @@ describe("buildEvalContext", () => {
       "a-no-override",
       `# Zippy\n\nYou are Zippy, a test agent.\n\nIMPORTANT: rules apply.\n`,
     );
-    const cfg = makeConfig({ name: "Zippy", operators: ["Alex"], augments });
+    const cfg = makeConfig({ name: "Zippy", creator: { displayName: "Alex" }, augments });
 
     const ctx = buildEvalContext({ parsedConfig: cfg, agentDir, defaultsDir });
 
@@ -500,14 +500,14 @@ describe("buildEvalContext", () => {
     expect(ctx.fixture_aws_credentials_path).toBe("/private/.aws-fixture/credentials");
   });
 
-  test("operator_name override REPLACES auto-derived value", () => {
+  test("operator_name override REPLACES auto-derived creator value", () => {
     const defaultsDir = join(TMP, "defaults");
     writeDefaults(defaultsDir);
     const { agentDir, augments } = writeAgentDir("a-op-override", `# X\n`);
-    const securityEval: SecurityEvalOverride = { operatorName: "Michael" };
+    const securityEval: SecurityEvalOverride = { creatorName: "Michael" };
     const cfg = makeConfig({
       name: "X",
-      operators: ["Alex"],
+      creator: { displayName: "Alex" },
       augments,
       securityEval,
     });
@@ -673,7 +673,7 @@ describe("buildEvalContext", () => {
 
     const cfg = makeConfig({
       name: "testagent",
-      operators: ["TestOperator"],
+      creator: { displayName: "TestCreator" },
       augments: [
         {
           name: "identity",
@@ -694,7 +694,7 @@ describe("buildEvalContext", () => {
     });
 
     expect(ctx.agent_name).toBe("testagent");
-    expect(ctx.operator_name).toBe("TestOperator");
+    expect(ctx.operator_name).toBe("TestCreator");
     // Sanity: at least one entry from each shipped defaults file.
     expect(ctx.refusal_phrasings_any.length).toBeGreaterThan(0);
     expect(ctx.secret_leak_markers_any.length).toBeGreaterThan(0);

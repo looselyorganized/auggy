@@ -68,7 +68,7 @@ This is the most consequential thing `defineAgent` does. The memory bus:
 - Detects every augment with a `memory` field.
 - Builds the registry, throwing on conflicts.
 - Synthesizes `context()` for memory providers that don't already have one.
-- Creates the synthetic `memory-bus` augment (with the four generic tools and the budget reset hook) if any providers exist.
+- Creates the synthetic `memory-bus` augment (with the five generic tools and the budget reset hook) if any providers exist.
 - Returns the new augment list with synthesis applied.
 
 The result is `effectiveAugments` — what the rest of the kernel sees. **Every downstream component uses `effectiveAugments`, never the raw `config.augments`.** This is what makes the synthetic memory tools "real" from the kernel's perspective.
@@ -94,7 +94,7 @@ const agentCard: AgentCard = generateAgentCard(effectiveConfig);
 
 The card is built **once at construction time**, from the effective config. This means:
 
-- The `memory-bus`'s four generic tools show up under `extensions.auggy.tools` (because they're in `effectiveAugments`).
+- The `memory-bus`'s five generic tools show up under `extensions.auggy.tools` (because they're in `effectiveAugments`).
 - `capabilities.memory` is `true` if any augment has a `memory` field.
 - `capabilities.transport` is `true` if any augment has a `transport` field.
 - The card is cached for the agent's lifetime — calls to `agent.card()` and `transportKernel.getAgentCard()` return the same object.
@@ -451,6 +451,11 @@ There is **no method to mutate the augment list at runtime**. Once an agent is c
 
 ## What "creator" trust means here
 
-`AgentConfig.operators?: string[]` is reserved but unused in v1. The intent: a list of peer IDs that have `trustLevel: "creator"` regardless of how they authenticate. A future spine transport will use this to identify the human operator across different communication channels (web, Telegram, email, IRC).
+`AgentConfig.creator?.displayName` is the v1 human-facing name for the verified
+creator. It is cosmetic only. Transports prove creator trust with credentials
+such as the web bearer token or a configured Telegram creator user ID in a
+private chat.
 
-In v1, no peer ever gets `trustLevel: "creator"` via the web transport — the highest the web transport mints is configurable but defaults to `"public"`. The `creator` trust level is reserved for null-peer (internal/scheduled) triggers and future spine use.
+When creator credentials verify, transports mint `trustLevel: "creator"` and
+the canonical `peer.id = "creator"`. Null peer (internal/scheduled trigger) is
+also treated as creator for capability checks.

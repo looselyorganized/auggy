@@ -199,6 +199,14 @@ export interface PeerIdentity {
   orgId?: string;
 }
 
+export interface CreatorConfig {
+  /**
+   * Human-facing name for the runtime-verified creator. Cosmetic only; never
+   * used to prove trust.
+   */
+  displayName?: string;
+}
+
 // === Turn Types (spec §4) ===
 
 export type TurnTriggerType = "message" | "scheduled" | "event" | "continuation" | "internal";
@@ -1058,10 +1066,10 @@ export type CompactionStrategy = "summarize" | "truncate" | "sliding-window";
 export interface AgentConfig {
   name: string;
   displayName?: string;
+  creator?: CreatorConfig;
   purpose?: string;
   model: string;
   augments: Augment[];
-  operators?: string[];
   contextBudget?: {
     historyPercent?: number;
     toolSchemaPercent?: number;
@@ -1325,4 +1333,5 @@ export interface TelegramTransportOptions {
     webhook?: TelegramWebhookOptions;
   };
   auth: TelegramAuthOptions;
+  creator?: CreatorConfig;
 }

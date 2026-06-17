@@ -73,23 +73,28 @@ export async function validateAdmittedAgents(
 export interface ResolveIdentityInput {
   userId: number;
   threadId: string;
+  chatType?: string;
+  displayName?: string;
 }
 
 export function resolveTelegramIdentity(
   input: ResolveIdentityInput,
   auth: TelegramAuthOptions,
+  creator: TelegramTransportOptions["creator"] = undefined,
 ): PeerIdentity {
   const { userId, threadId } = input;
+  const chatType = input.chatType ?? "private";
   const mode = auth.anonymousIdentityMode ?? "ephemeral";
   const creatorUserIds = resolveTelegramCreatorUserIds(auth);
 
   // Order matches item 5's web-transport: creator → agent → recognized → anonymous.
-  if (creatorUserIds.includes(userId)) {
+  if (creatorUserIds.includes(userId) && chatType === "private") {
     return {
-      id: `tg_user_${userId}`,
+      id: "creator",
       kind: "human",
       trustLevel: "creator",
       sourceAugment: "telegram-transport",
+      displayName: creator?.displayName ?? input.displayName,
     };
   }
 
@@ -195,9 +200,18 @@ export function telegramTransport(opts: TelegramTransportOptions): Augment {
   // handleInbound so the kernel can pre-resolve peer identity if it wants to.
 
   const identify = (raw: unknown): PeerIdentity | null => {
-    const r = raw as { userId?: number; threadId?: string };
+    const r = raw as {
+      userId?: number;
+      threadId?: string;
+      chatType?: string;
+      displayName?: string;
+    };
     if (typeof r?.userId !== "number" || typeof r?.threadId !== "string") return null;
-    return resolveTelegramIdentity({ userId: r.userId, threadId: r.threadId }, auth);
+    return resolveTelegramIdentity(
+      { userId: r.userId, threadId: r.threadId, chatType: r.chatType, displayName: r.displayName },
+      auth,
+      opts.creator,
+    );
   };
 
   const transport: TransportSpec = {
@@ -247,8 +261,14 @@ export function telegramTransport(opts: TelegramTransportOptions): Augment {
 
     const userId = update.message.from.id;
     const chatId = update.message.chat.id;
+    const chatType = update.message.chat.type;
+    const displayName = update.message.from.first_name ?? update.message.from.username ?? undefined;
     const threadId = `tg-chat-${chatId}`;
-    const peer = resolveTelegramIdentity({ userId, threadId }, auth);
+    const peer = resolveTelegramIdentity(
+      { userId, threadId, chatType, displayName },
+      auth,
+      opts.creator,
+    );
 
     // Remember chat_id for the outbound callback.
     threadChatIds.set(threadId, chatId);

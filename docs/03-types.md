@@ -24,7 +24,7 @@ export type EvictionPolicy = "never" | "summarize" | "drop";
 export type ContextOrigin = "operator" | "system" | "agent" | "agent-derived" | "peer-derived";
 
 export interface ContextBlock {
-  source: string;          // augment name (used in trace + [AUGMENT CONTEXT: source] markers)
+  source: string;          // augment name, used in trace/evictions; not shown to the model
   content: string;
   placement: ContextPlacement;
   provenance: ContextProvenance;
@@ -140,7 +140,10 @@ The discriminator is `owns.kind`. Two flavors:
 
 `MemoryDefaults` are the values used by `synthesizeContextFor` when wrapping retrieved entries into `ContextBlock`s. Setting `mutable: true` here means "this provider supports writes via `write`," not "the provider's memory is *somehow* mutable" — it gates whether the synthetic `memory_write` tool can target labels owned by this provider.
 
-See [05-memory-subsystem.md](./05-memory-subsystem.md) for how the registry enforces uniqueness across providers and how `memory_read`/`memory_write`/`memory_search`/`memory_list` route to the right provider at runtime.
+See [05-memory-subsystem.md](./05-memory-subsystem.md) for how the registry
+enforces uniqueness across providers and how `memory_read`, `memory_write`,
+`memory_search`, `memory_list`, and `memory_forget` route to the right provider
+at runtime.
 
 ## Section 5 — Tools
 
@@ -187,6 +190,12 @@ export interface PeerIdentity {
   orgId?: string;
 }
 ```
+
+This is the current runtime trust contract. Product roadmap work is expected to
+grow a more granular authority model around principals, operators, staff,
+channel bindings, webhooks, and permission modes. That future model should
+compile down to deterministic runtime policy; it should not make the model
+responsible for deciding who a peer is or what they can do.
 
 Trust levels are ordered from most to least:
 - **`creator`** — the deployer of this specific agent. Bypasses budgets and all per-trust-level constraints. Null peer (internal/scheduled trigger) is treated as `creator`.
@@ -566,7 +575,9 @@ export interface Augment {
 
 This is the **single most important type in the entire framework.** Everything else exists to support this shape. An augment is anything you can put on this interface; the runtime only knows how to call these methods.
 
-**`name`** is required. Used in traces, in `[AUGMENT CONTEXT: name]` markers, in error messages, and in capability table per-augment limits.
+**`name`** is required. Used in traces, error messages, agent-card metadata,
+and capability table per-augment limits. Augment names are not rendered into
+model-facing context blocks.
 
 **`required: true`** means: if this augment's `context()` or `onTurnStart()` throws, abort the entire turn and return a `failed` result. Without `required`, augment failures are logged and skipped.
 
@@ -607,10 +618,13 @@ export type CompactionStrategy = "summarize" | "truncate" | "sliding-window";
 
 export interface AgentConfig {
   name: string;
+  displayName?: string;
+  creator?: {
+    displayName?: string;  // cosmetic; credentials still prove creator trust
+  };
   purpose?: string;
   model: string;
   augments: Augment[];
-  operators?: string[];
   contextBudget?: {
     historyPercent?: number;        // default 40
     toolSchemaPercent?: number;     // default 10

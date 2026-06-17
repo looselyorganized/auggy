@@ -911,14 +911,20 @@ The fix: `register(kernel, augmentName)` passes the operator-assigned name at re
 
 ### `peer.id` namespacing across transports
 
-Each transport uses a distinct `peer.id` prefix. This ensures no peer identity collisions across transport boundaries even if the same human uses both Telegram and the web chat:
+Most non-creator peer identities are namespaced by transport. The v1 creator is
+the deliberate exception: verified creator surfaces map to the canonical
+`peer.id = "creator"` so budgets and layered memory see one owner identity
+across web console and Telegram private chat.
 
 | Transport | Recognized / agent peers | Anonymous peers |
 |---|---|---|
-| `webTransport` | `vis_<uuid>` (visitor token) or `agent:<agentId>` | `anon-<threadId>` |
-| `telegramTransport` | `tg_user_<userId>` (creator/agent/recognized) | `tg_anon_<threadId>` (ephemeral) or `tg_user_<userId>` (durable) |
+| `webTransport` | `creator` (bearer), `vis_<uuid>` (visitor token), or `agent:<agentId>` | `anon-<threadId>` |
+| `telegramTransport` | `creator` (private chat from configured creator user ID), configured agent IDs, or `tg_user_<userId>` (recognized public) | `tg_anon_<threadId>` (ephemeral) or `tg_user_<userId>` (durable) |
 
-The prefixes are chosen to be non-overlapping by construction. A visitor token `vis_` UUID cannot coincide with a Telegram `tg_user_` ID. Memory writes, budget counters, and layered-memory scoping all key on `peer.id` — the prefix isolation means each transport's peers are fully independent.
+The non-creator prefixes are chosen to be non-overlapping by construction. A
+visitor token `vis_` UUID cannot coincide with a Telegram `tg_user_` ID. Memory
+writes, budget counters, and layered-memory scoping all key on `peer.id`, so
+identity mappings here are security-sensitive.
 
 ### Example `agent.yaml` — mounting both transports
 

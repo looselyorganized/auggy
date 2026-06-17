@@ -558,9 +558,13 @@ describe("runCreate scaffolding integration", () => {
     });
     const config = parseYaml(readFileSync(join(dir, "agent.yaml"), "utf-8")) as {
       displayName: string;
+      creator: { displayName: string };
+      operators?: unknown;
     };
     const identity = readFileSync(join(dir, "identity.md"), "utf-8");
     expect(config.displayName).toBe("Jim");
+    expect(config.creator.displayName).toBe("the creator");
+    expect("operators" in config).toBe(false);
     expect(identity).toContain("# Jim");
     expect(identity).toContain("You are Jim,");
   });
