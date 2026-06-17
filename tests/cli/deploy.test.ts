@@ -330,27 +330,27 @@ describe("runDeploy", () => {
     ]);
   });
 
-  test("first deploy uses the only discovered Railway workspace without prompting", async () => {
+  test("interactive first deploy prompts even with one discovered Railway workspace", async () => {
     const { cli, calls } = mockRailwayCli();
     cli.listWorkspaces = async () => {
       calls.listWorkspaces++;
       return [{ id: "workspace_only", name: "Personal Projects" }];
     };
-    let promptWorkspaceCalled = false;
+    let promptedWorkspaces: unknown = null;
 
     await runDeploy(
       "zip",
       baseDeployOptions(cli, auggyDir, {
         promptProjectTarget: async () => "new",
         promptProjectName: async () => "zip-project",
-        promptWorkspace: async () => {
-          promptWorkspaceCalled = true;
-          return "manual_workspace";
+        promptWorkspace: async (workspaces) => {
+          promptedWorkspaces = workspaces;
+          return "workspace_only";
         },
       }),
     );
 
-    expect(promptWorkspaceCalled).toBe(false);
+    expect(promptedWorkspaces).toEqual([{ id: "workspace_only", name: "Personal Projects" }]);
     expect(calls.createProject).toEqual([
       expect.objectContaining({ projectName: "zip-project", workspace: "workspace_only" }),
     ]);
@@ -398,6 +398,31 @@ describe("runDeploy", () => {
     expect(namePromptCalled).toBe(false);
     expect(calls.createProject).toEqual([
       expect.objectContaining({ projectName: "release-smoke", workspace: "workspace_abc" }),
+    ]);
+  });
+
+  test("--project-name uses the only discovered Railway workspace without prompting", async () => {
+    const { cli, calls } = mockRailwayCli();
+    cli.listWorkspaces = async () => {
+      calls.listWorkspaces++;
+      return [{ id: "workspace_only", name: "Personal Projects" }];
+    };
+    let promptWorkspaceCalled = false;
+
+    await runDeploy(
+      "zip",
+      baseDeployOptions(cli, auggyDir, {
+        projectName: "release-smoke",
+        promptWorkspace: async () => {
+          promptWorkspaceCalled = true;
+          return "manual_workspace";
+        },
+      }),
+    );
+
+    expect(promptWorkspaceCalled).toBe(false);
+    expect(calls.createProject).toEqual([
+      expect.objectContaining({ projectName: "release-smoke", workspace: "workspace_only" }),
     ]);
   });
 

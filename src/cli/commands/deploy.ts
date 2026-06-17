@@ -563,7 +563,7 @@ async function resolveWorkspaceForNewProject(opts: DeployOptions): Promise<strin
   }
 
   if (workspaces.length === 0) return undefined;
-  if (workspaces.length === 1) {
+  if (opts.projectName && workspaces.length === 1) {
     const workspace = workspaces[0]!;
     opts.logger.info(`Using Railway workspace "${workspace.name}".`);
     return workspace.id;
