@@ -32,11 +32,11 @@ How augments, tools, and skills relate — and what each one is for.
 │  │  The model sees them in its tool list and calls them.       │    │
 │  │                                                             │    │
 │  │   memory_read({ label })     fs_read({ path })              │    │
-│  │   memory_write({ label })    fs_write({ path, content })    │    │
-│  │   memory_search({ query })   fs_list({ path })              │    │
-│  │   memory_list()              fs_search({ path, pattern })   │    │
-│  │                              fs_mkdir({ path })             │    │
-│  │                              fs_remove({ path })            │    │
+│  │   memory_write({ topic,      fs_write({ path, content })    │    │
+│  │     content })               fs_list({ path })              │    │
+│  │   memory_search({ query })   fs_search({ path, pattern })   │    │
+│  │   memory_list()              fs_mkdir({ path })             │    │
+│  │   memory_forget({ peerId })  fs_remove({ path })            │    │
 │  └─────────────────────────────────────────────────────────────┘    │
 │                                                                     │
 │  MODEL READS ON DEMAND                                              │
@@ -188,8 +188,10 @@ Everything that exists in a running Auggy agent and how the pieces connect.
 │  │    memory_write      │  │    fs_write           │                      │
 │  │    memory_search     │  │    fs_list            │                      │
 │  │    memory_list       │  │    fs_mkdir           │                      │
-│  │  • onTurnStart       │  │    fs_remove          │                      │
-│  │    (budget reset)    │  │    fs_search          │                      │
+│  │    memory_forget     │  │    fs_remove          │                      │
+│  │                      │  │    fs_search          │                      │
+│  │  • onTurnStart       │  │                       │                      │
+│  │    (budget reset)    │  │                       │                      │
 │  └─────────────────────┘  └───────────────────────┘                      │
 │                                                                          │
 │  ┌─────────────────────┐                                                 │
@@ -373,7 +375,7 @@ POST /agent/run
 │        search("remember I like coffee") → [matching episodes]        │
 │        → ContextBlock[] { placement: "preamble", origin: "peer-derived" }
 │                                                                      │
-│  ► build preamble (trust: authenticated, peer: visitor)              │
+│  ► build preamble (trust: public/recognized, peer: visitor)          │
 │                                                                      │
 │  ► select tools: memory_read, memory_write, memory_search,          │
 │    memory_list, fs_read, fs_write, fs_list, fs_mkdir, fs_remove,    │
@@ -383,19 +385,19 @@ POST /agent/run
 │    systemBlocks: [preamble + identity]                               │
 │    contextBlocks: [notes + episodic results]                         │
 │    messages: [thread history]                                        │
-│    tools: [10 tool definitions]                                      │
+│    tools: [11 tool definitions]                                      │
 │                                                                      │
 │  ► INFERENCE CALL #1 ──────────────────────► Anthropic API           │
 │    model returns:                                                    │
 │      content: "I'll remember that for you."                          │
 │      toolCalls: [{ name: "memory_write",                             │
-│                    arguments: { label: "notes",                      │
-│                                 content: "Visitor likes coffee" } }] │
+│                    arguments: { topic: "preferences",                │
+│                                 content: "Visitor likes coffee." } }]│
 │      finishReason: "tool_use"                                        │
 │                                                                      │
 │    ► validate: capability table ✓, Zod schema ✓                      │
-│    ► execute: memory_write("notes", "Visitor likes coffee")          │
-│      └─ fileMemory writes to ./notes.md on disk                      │
+│    ► execute: memory_write({ topic, content })                       │
+│      └─ layeredMemory writes to the current peer namespace           │
 │    ► emit TOOL_CALL_START ────────────────────► SSE: data: {...}     │
 │    ► emit TOOL_CALL_ARGS ─────────────────────► SSE: data: {...}     │
 │    ► emit TOOL_CALL_RESULT ───────────────────► SSE: data: {...}     │

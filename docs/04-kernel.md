@@ -274,7 +274,10 @@ After computing `contextBudget`, the allocator:
 1. Sorts blocks by priority order (`required`, `high`, `normal`, `low`, `evictable`).
 2. Walks the sorted list, including blocks until adding the next would exceed the budget. Excluded blocks go into `evictions`.
 3. Distributes included blocks into `systemBlocks` / `contextBlocks` / `assistantPreambleStrings` based on `placement`.
-4. Wraps each block's content as `[AUGMENT CONTEXT: source]<peer-derived marker>\n<content>`.
+4. Suppresses augment-name wrappers before the model sees the prompt. The
+   block's `source` remains in traces and evictions, but only derived-origin
+   markers such as `[PEER-DERIVED]` and `[AGENT-DERIVED]` are rendered into
+   prompt text.
 
 `pipeline-only` blocks are always excluded from the model-facing arrays (they exist purely for downstream augments to read via `priorContext`).
 

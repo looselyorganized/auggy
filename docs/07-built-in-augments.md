@@ -13,7 +13,7 @@ Fourteen augments ship in `src/augments/` (plus `webTransport` under `src/transp
 - **`filesystem`** — multi-mount scoped file access
 - **`webFetch`** — URL fetch with HTML→text rendering
 - **`knowledge`** — read-only registry of local-file and API-backed knowledge sources the agent can fetch on demand
-- **`skills`** — model-facing skill surface; lists mounted skills (name + description from each SKILL.md's YAML frontmatter) per [ADR-030](../../docs/solutions/architecture/adr-030-model-facing-skill-surface-separation.md)
+- **`skills`** — model-facing skill surface; lists mounted skills (name + description from each SKILL.md's YAML frontmatter). See [11-skills.md](./11-skills.md).
 - **`bash`** — scoped shell execution
 - **`budgets`** — per-trust-level turn budgets + dollar ceiling
 - **`notify`** — outbound messaging to operator-configured destinations
@@ -21,7 +21,7 @@ Fourteen augments ship in `src/augments/` (plus `webTransport` under `src/transp
 - **`agentMail`** — outbound email via AgentMail with per-peer trust gate, allowlist, rate limits, audit ring (Phase A; inbound in Phase B)
 - **`turnControl`** — `request_input` for hand-off prompts
 - **`visitorAuth`** — email magic-link verification; promotes anonymous → recognized
-- **`link`** — peer-to-peer A2A v0.2 transport (the v1.0 Mesh entry, per [ADR-022](../../docs/solutions/architecture/adr-022-mesh-destination-link-entry.md))
+- **`link`** — peer-to-peer A2A v0.2 transport (preview mesh entry)
 
 The selection is deliberate. Together they cover: identity, episodic memory, web chat, Telegram chat, filesystem access, external knowledge, shell execution, cost management, operator alerting, turn-end input requests, and visitor email verification. Anything beyond this (model routing, evals, retrieval over special data sources) belongs in application-specific augments that live in the application's repo, not in Auggy itself.
 
@@ -53,13 +53,22 @@ of the normal install path.
 
 ### Augment-as-folder + bundled-skill convention
 
-Every built-in augment lives at `src/augments/<name>/index.ts` (folder shape, per [ADR-025](../../docs/solutions/architecture/adr-025-augment-folder-and-skill-bundling.md)). Augments that contribute model-callable tools ship a bundled `<name>/skill/SKILL.md` colocated in the same folder; `auggy create` and `auggy add` copy it to `<agent-dir>/skills/<name>/SKILL.md`, and `auggy skill add <name>` installs it retroactively. A boot-time validator warns at agent startup if a tool-providing augment is mounted without a skill — applies to both factory-declared `tools[]` and namespace memory providers (kernel-synthesized `memory_*` tools). Tool-less augments (transports, static memory providers, admission gates) skip the skill folder.
+Every built-in augment lives at `src/augments/<name>/index.ts` using the
+folder shape. Augments that contribute model-callable tools ship a bundled
+`<name>/skill/SKILL.md` colocated in the same folder; `auggy create` and
+`auggy add` copy it to `<agent-dir>/skills/<name>/SKILL.md`, and `auggy skill
+add <name>` installs it retroactively. A boot-time validator warns at agent
+startup if a tool-providing augment is mounted without a skill — applies to
+both factory-declared `tools[]` and namespace memory providers
+(kernel-synthesized `memory_*` tools). Tool-less augments (transports, static
+memory providers, admission gates) skip the skill folder.
 
 Augments shipping a bundled skill at v1.0: `filesystem`, `layeredMemory`, `webFetch`, `knowledge`, `bash`, `notify`, `mcp`, `agentMail`, `turnControl`, `visitorAuth`, `link`. The `skills` augment is the model-facing surface that lists them — it carries no SKILL.md of its own.
 
-### Model-facing surface (ADR-030)
+### Model-facing surface
 
-Per [ADR-030](../../docs/solutions/architecture/adr-030-model-facing-skill-surface-separation.md), the three Auggy primitives surface to the engine on three orthogonal channels:
+As described in [11-skills.md](./11-skills.md), the three Auggy primitives
+surface to the engine on three orthogonal channels:
 
 | Channel | What lands there | Cost model |
 | --- | --- | --- |
@@ -67,7 +76,7 @@ Per [ADR-030](../../docs/solutions/architecture/adr-030-model-facing-skill-surfa
 | **Skills** | The `skills` augment emits ONE system-placement context block listing each mounted skill's `name` + `description` from its SKILL.md YAML frontmatter (agentskills.io standard). Body is on-demand via `fs_read` | ~100 tokens per skill in idle context |
 | **Augments** | Invisible to the model. The augment as a concept is never named on the wire; only its *contributions* (tools, context blocks, skills) are visible | Zero model-facing cost |
 
-Identity.md is identity. The `## Available skills` section that used to live there moved to the `skills` augment's emitted block; the kernel allocator no longer wraps blocks with `[AUGMENT CONTEXT: <source>]`, so augment-name attribution is suppressed pre-send (still present in trace data for operator-facing diagnostics).
+Identity.md is identity. The `## Available skills` section that used to live there moved to the `skills` augment's emitted block; the kernel allocator no longer wraps context blocks with augment-source labels, so augment-name attribution is suppressed pre-send (still present in trace data for operator-facing diagnostics).
 
 ## `fileMemory` — File-backed static memory provider
 
@@ -95,7 +104,11 @@ Two main use cases:
 
 **1. Identity / soul.** The agent's foundational character — who it is, how it talks, what it knows about itself. Pinned (`mutable: false`), operator-origin, system-placement, never-evict. The model sees it on every turn as part of the system prompt. This is what makes Zip "Zip" instead of a generic assistant.
 
-**2. Self-notes.** A scratchpad the agent can update across turns. Mutable, system-origin, preamble-placement, drop-on-eviction. The model can read and write to it via the generic `memory_write` and `memory_read` tools. Useful for things like "remember the visitor's name" or "track open commitments."
+**2. Self-notes / learned behavior.** A scratchpad the agent can update across
+turns. Mutable file-backed memory is useful for low-risk learned behavior and
+open commitments. Do not use it for operator identity, authorization facts, or
+durable per-visitor profile data; peer-scoped memory belongs in
+`layeredMemory`.
 
 ### Why it's built in
 
@@ -201,7 +214,9 @@ async (turnState) => {
 };
 ```
 
-In the prompt, this becomes a `[AUGMENT CONTEXT: file-memory-self]`-prefixed block in the system position.
+In the prompt, this becomes a system-position block without an augment-name
+wrapper. The block's `source` remains available in traces and evictions, but
+the model does not see internal augment names.
 
 ## `supabaseMemory` — Supabase-backed namespace memory provider
 
@@ -603,7 +618,12 @@ A multi-mount filesystem augment following the Docker volumes model. The operato
 
 Two primary use cases:
 
-**1. Skill folder access.** The agent needs to read SKILL.md files and their supporting references on demand. This is **progressive disclosure** — the model reads skills via `fs_read` when it decides the conversation needs guidance. The filesystem augment IS the skill loader. Bundled skill folders for each tool-providing augment are copied into `<agent-dir>/skills/<augment-name>/` at scaffold time (see ADR-025).
+**1. Skill folder access.** The agent needs to read SKILL.md files and their
+supporting references on demand. This is **progressive disclosure** — the
+model reads skills via `fs_read` when it decides the conversation needs
+guidance. The filesystem augment IS the skill loader. Bundled skill folders
+for each tool-providing augment are copied into
+`<agent-dir>/skills/<augment-name>/` at scaffold time.
 
 **2. Agent workspace.** The agent needs to create, read, and manage files as part of its work — drafts, notes, reports, intermediate outputs.
 
@@ -1075,7 +1095,9 @@ The runtime soft cap is **not the hard limit on agent spend**. The hard limit is
 
 **For unattended cloud-deployed agents, configuring a provider-side spend cap is required, not optional.** The runtime soft cap is the friendly first line of defense; the provider hard cap is the backstop that fires regardless of any Auggy-level configuration error or runtime bug. The engine adapters surface a clear operator-actionable message when the provider cap is reached (see `src/engines/anthropic.ts` `rewrapCostCapError`).
 
-This is the v1.0 cost-cap architecture per [ADR-024](../../lo/docs/solutions/architecture/adr-024-kernel-surface-v1-lock.md). Pre-call cost estimation (a third architectural layer that gates the engine call before any spend) is explicitly deferred — provider caps are exact where pre-call estimation would only approximate.
+Pre-call cost estimation (a third architectural layer that gates the engine
+call before any spend) is explicitly deferred — provider caps are exact where
+pre-call estimation would only approximate.
 
 ### 2PC semantics
 
@@ -1238,7 +1260,10 @@ config:
 
 ### What it is
 
-The v1.0 Mesh entry point. Imports the `@auggy/link` library to expose this agent at an HTTP endpoint speaking A2A v0.2 (JSON-RPC), and to send outbound traffic to configured peers. Peer-to-peer with mutual bearer auth — no central service. Binds its own port, separate from `webTransport`. Per [ADR-022](../../docs/solutions/architecture/adr-022-mesh-destination-link-entry.md), this is the v1.0 stepping stone toward the coordinator service in sequencing item 3.
+The preview mesh entry point. Imports the `@auggy/link` library to expose this
+agent at an HTTP endpoint speaking A2A v0.2 (JSON-RPC), and to send outbound
+traffic to configured peers. Peer-to-peer with mutual bearer auth — no central
+service. Binds its own port, separate from `webTransport`.
 
 ### When to use it
 
@@ -1268,7 +1293,7 @@ Names only — not purposes or examples — to keep preamble cost ~10 tokens per
 | `participantId` | yes | Peer's UUID. Must match the peer's self-declared id for AddressBook lookup symmetry. |
 | `inboundBearer` | yes | Bearer this agent accepts on inbound *from* the peer. Independent of `bearer`; rotate separately. |
 | `inboundBearerId` | yes | Opaque audit id paired with `inboundBearer`; logged on verify, never on the wire. |
-| `purpose` | no | Natural-language description of what the peer is good for. Surfaced via `link_list`. Semantic, not structural — see [spine-north-star §4 Constraint 6](../../docs/spine-north-star.md). |
+| `purpose` | no | Natural-language description of what the peer is good for. Surfaced via `link_list`. Semantic, not structural. |
 | `examples` | no | 1–2 example asks suitable for delegation. Used by the LLM for few-shot routing. |
 
 ### `peerSource` — fetch peers from a registry
@@ -1343,19 +1368,31 @@ Names are uppercased; non-alphanumeric characters become underscores. Peer `data
 
 **Forward-compat:** when the coordinator service ships, the registry URL flips to point at the coordinator's `/participants` endpoint. Same JSON contract; no code changes in agents.
 
-For the full design + acceptance criteria, see [`docs/superpowers/specs/2026-05-20-link-peer-directory-v1.md`](../../docs/superpowers/specs/2026-05-20-link-peer-directory-v1.md) (in the LO repo).
+The current reference shape above is the authoritative in-repo description for
+the preview peer directory.
 
 ### AgentCard fields
 
-The `agentCard` block populates `/.well-known/agent.json` served at this agent's link endpoint. Anyone who can reach the URL can read it — keep descriptions and `capabilities[]` appropriately vague if you're cross-org. `capabilities` is a free-form `string[]` (sanctioned by [spine-north-star §4 Constraint 6](../../docs/spine-north-star.md): semantic, not structural).
+The `agentCard` block populates `/.well-known/agent.json` served at this
+agent's link endpoint. Anyone who can reach the URL can read it — keep
+descriptions and `capabilities[]` appropriately vague if you're cross-org.
+`capabilities` is a free-form `string[]`: semantic, not structural.
 
 ### Trust model — important caveat
 
-All admitted peers are minted as `trust: "agent"` at v1.0 — there is no per-peer trust override. If you need to admit a peer at *reduced* privilege, the only downgrade today is `public` (the visitor tier), which has the wrong semantic for "authenticated-but-restricted peer." This is a known authorization gap; see [docs/superpowers/specs/2026-05-13-link-authorization-model.md](../../docs/superpowers/specs/2026-05-13-link-authorization-model.md) for the full problem statement and planned phases.
+All admitted peers are minted as `trust: "agent"` today — there is no per-peer
+trust override. If you need to admit a peer at *reduced* privilege, the only
+downgrade today is `public` (the visitor tier), which has the wrong semantic
+for "authenticated-but-restricted peer." This is a known authorization gap and
+is one reason the roadmap calls for a more granular trust model.
 
 ### Forward-compat with the coordinator
 
-When the coordinator service ships (ADR-022 sequencing item 3), the peer list — and per-peer purpose/examples — move from `augments/link/augment.yaml` to a participant registry served by the coordinator. The LLM-facing shape (`link_list` returning `{name, purpose?, examples?}`) stays the same; only the source flips. Today's augment-config-described peers are forward-compatible.
+When a coordinator service ships, the peer list — and per-peer
+purpose/examples — can move from `augments/link/augment.yaml` to a participant
+registry served by the coordinator. The LLM-facing shape (`link_list`
+returning `{name, purpose?, examples?}`) stays the same; only the source
+flips. Today's augment-config-described peers are forward-compatible.
 
 ### Bundled skill
 

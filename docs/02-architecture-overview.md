@@ -69,7 +69,7 @@ See [03-types.md](./03-types.md) for the full type catalog.
 
 ### `src/agent.ts`
 Defines `defineAgent(config, model) → AgentHandle`. This is the primary entry point users call. Internally it:
-1. Wires the memory bus (`wireMemoryBus`) to synthesize context for memory providers and add the synthetic `memory-bus` augment with the four generic memory tools.
+1. Wires the memory bus (`wireMemoryBus`) to synthesize context for memory providers and add the synthetic `memory-bus` augment with the five generic memory tools.
 2. Generates the agent card from the *effective* config (with the synthetic augment included).
 3. Constructs a `LifecycleManager` and a `TurnLoop`.
 4. Returns an `AgentHandle` with `start()`, `stop()`, `health()`, `card()`, and `inject()`.
@@ -103,9 +103,9 @@ The memory subsystem. A separate concern from the kernel because memory is augme
 |------|---------------|
 | `types.ts` | `MemoryRegistry` interface (label → augment maps). |
 | `registry.ts` | `buildRegistry(providers)` — three-pass conflict detection (static-static, namespace-namespace overlap, static-falls-under-namespace). `lookupProvider(registry, label)` for routing. |
-| `memory-bus.ts` | `wireMemoryBus(augments)` — top-level helper called by `defineAgent`. Synthesizes `context()` for memory providers, builds the registry, creates the synthetic `memory-bus` augment with the four generic tools and a per-turn budget. |
+| `memory-bus.ts` | `wireMemoryBus(augments)` — top-level helper called by `defineAgent`. Synthesizes `context()` for memory providers, builds the registry, creates the synthetic `memory-bus` augment with the five generic tools and a per-turn budget. |
 | `context-synthesis.ts` | `synthesizeContextFor(aug)` — wraps a memory provider augment so it has a `context()` function that automatically retrieves blocks from `read()` (static) or `search(query)` (namespace). |
-| `tools.ts` | `createMemoryTools(registry)` — returns the four generic memory tools (`memory_read`, `memory_write`, `memory_search`, `memory_list`) with a shared per-turn budget. |
+| `tools.ts` | `createMemoryTools(registry)` — returns the five generic memory tools (`memory_read`, `memory_write`, `memory_search`, `memory_list`, `memory_forget`) with a shared per-turn budget. |
 
 See [05-memory-subsystem.md](./05-memory-subsystem.md) for the full picture.
 
@@ -130,7 +130,7 @@ Built-in augments. This directory is intentionally small — only augments that 
 | `filesystem/` | `filesystem(opts)` — multi-mount scoped file access (6 tools, realpath-based sandbox). Bundled `skill/SKILL.md` shipped alongside. |
 | `web-fetch/` | `webFetch(opts)` — URL fetch with HTML→text conversion and JSON passthrough. Uses the shared `src/http.ts` client. |
 | `knowledge/` | `knowledgeRoot(opts)` — org knowledge augment (source catalog + `knowledge_fetch`). Local files or HTTP-backed sources. |
-| `skills/` | `skills(opts)` — model-facing skill surface (ADR-030). Scans a configured `dir:` and emits a single system-placement context block listing each mounted skill from its SKILL.md frontmatter. |
+| `skills/` | `skills(opts)` — model-facing skill surface. Scans a configured `dir:` and emits a single system-placement context block listing each mounted skill from its SKILL.md frontmatter. |
 | `notify/` | `notify(opts)` — outbound messaging augment (webhook + Telegram adapters, per-peer rate limits). |
 | `bash/` | `bash(opts)` — scoped shell execution (allowlist, working dir, timeout). |
 | `turn-control/` | `turnControl(opts)` — `request_input` for hand-off prompts. |

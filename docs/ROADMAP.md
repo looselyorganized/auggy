@@ -19,7 +19,7 @@ What has to ship for the OSS launch to be defensible. Each item must
 be done before v1.0 cuts. Items are not just CLI niceties — they're
 the production-readiness story.
 
-- **[identity]** Canonical creator identity for v1 — one verified creator maps to `peer.id = "creator"` across web console and Telegram private chat, with `creator.displayName` as cosmetic model-facing name only. Implement before final DX walkthrough. Decision: `docs/plans/v1-canonical-creator-identity.md`.
+- **[augment-hardening]** Finish the v1 augment-hardening sprint. Current focus: `fileMemory` learned-memory authority, `filesystem` mount-root protection, `notify` destination authority, MCP per-server/per-tool trust enforcement, and explicit preview stance for `link`, `bash`, and `budgets`.
 - **[walkthrough]** Run end-to-end DX walkthrough — `auggy create → run → chat → visitor-auth → memory → notify → deploy`. Includes error-path coverage, security-eval check, observability spot-check, all surfaces actually used by a fresh operator. *Currently active; the gate everything else defers to.* (G8)
 - **[console]** Chat-first `/console` surface. `/console` redirects to `/console/chat`; the first screen is chat plus a compact Details dialog for agent identity, URLs, engine, transport summary, and copy diagnostics. Config/admin tabs are deferred until adopter signal proves they belong in the browser. Per `docs/21-console.md`.
 - **[chat]** Minimal info endpoint at `GET /` when no `publicFrontendUrl` is set. Replaces the current 404 with a small HTML response (agent name, public-safe purpose, creator console link, "this is an Auggy agent backend" tagline). (G2 revised)
@@ -28,6 +28,10 @@ the production-readiness story.
 - **[release-process]** Publish `auggy` v1.0 on npm with notes. Tag the release. Confirm the chat-dist artifact pipeline / admin-dist packaging works in CI for the first GA.
 
 **Note on security-eval expansion:** Deferred to v1.0 ship + post-OSS-launch. The current 10-case eval (from 2026-04-16 red-team) runs nightly as drift monitoring. New eval cases wait for adopter feedback to drive the corpus — writing them against a moving baseline produces constant rewrite cycles.
+
+Recently completed v1 decisions:
+
+- **[identity]** Canonical creator identity for v1 shipped in PR #105. One verified creator maps to `peer.id = "creator"` across web console and Telegram private chat; `creator.displayName` is cosmetic model-facing metadata, not an auth credential. Decision: `docs/plans/v1-canonical-creator-identity.md`.
 
 ---
 

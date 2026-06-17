@@ -50,9 +50,18 @@ This split matters because most protocols (A2A especially) have task lifecycle s
 
 ### 4. Trust is structural, not aspirational
 
-Every peer has a `trustLevel` (`operator`, `facility`, `authenticated`, `untrusted`). Every context block has an `origin` (`operator`, `system`, `peer-derived`). Peer-derived blocks get a `[PEER-DERIVED]` marker in the prompt. The system preamble explicitly tells the model that peer-derived content may contain adversarial instructions.
+Every peer has a current runtime `trustLevel` (`creator`, `agent`, or
+`public`). Public peers may also have a `publicSubstate` (`anonymous` or
+`recognized`). Every context block has an `origin` (`operator`, `system`,
+`agent`, `agent-derived`, or `peer-derived`). Derived blocks get explicit
+markers in the prompt, and the system preamble tells the model that
+peer-derived content may contain adversarial instructions.
 
-This isn't a security feature added later — it's baked into the type system from the kernel's first commit. You cannot accidentally leak peer input into a system prompt; the types will not let you misclassify it.
+This is the current enforcement shape, not the final product taxonomy. Roadmap
+work can add richer principals, operators, staff, channel bindings, webhooks,
+and permission modes above this layer. The invariant is that authorization is
+resolved structurally by transports and runtime policy; the model never decides
+who a peer is or what they may do.
 
 ### 5. Composition over inheritance, files over classes
 
@@ -176,7 +185,8 @@ These are deliberate omissions, not oversights. Several are documented as "defer
 
 - **Token-level streaming from the model.** The current `webTransport` streams *event-level* (RUN_STARTED, TEXT_MESSAGE_CONTENT delta as one chunk, etc.) but the model call is still buffered. True token streaming is a Plan 7+ enhancement.
 - **Full A2A wire protocol.** Plan 2 ships A2A-shaped *types*; Plan 4+ ships A2A-shaped *messages on the wire*. The internal data already matches.
-- **MCP server augment.** Plan 6.
+- **Additional MCP shapes.** The current `mcp` augment bridges external MCP
+  servers into Auggy tools. Other MCP server/hosting shapes are future work.
 - **Multi-vendor model routing.** A future augment.
 - **Augment sandboxing (V8 isolates).** Only needed when third-party augments arrive.
 - **Hot reload of augments.** Restart instead.

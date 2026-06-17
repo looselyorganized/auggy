@@ -50,10 +50,14 @@ A namespace provider declares **a prefix string** and owns every label that star
 
 `search(query)` is mandatory. This is the main retrieval path: given a query string, return relevant entries. Both substring and semantic search are valid implementations — the contract doesn't care.
 
-`read(label)`, `write(label, content)`, and `list()` are all optional:
+`read(label)`, `write(label, content)`, `list()`, and provider-specific
+destructive helpers such as `forget(peerId)` are optional:
 - `read` lets the model fetch a specific entry by exact label.
 - `write` enables the generic `memory_write` tool.
-- `list` is reserved for a future "list namespace contents" tool.
+- `list` lets `memory_list` expose namespace contents when the provider
+  supports it.
+- `forget` lets `memory_forget` delete peer-scoped episodic entries for
+  right-to-erasure flows.
 
 **Example:** `supabaseMemory` is a namespace provider with `prefix: "episode:"` (or whatever the user configured) backed by a Supabase table with `(label, content, metadata, created_at)` columns. `search` does ILIKE on content; `read` does eq on label; `write` does insert.
 
@@ -156,7 +160,8 @@ If `search` throws, the error is rethrown for **required** augments (which abort
 ### Block construction
 
 Each retrieved entry becomes a `ContextBlock` with:
-- `source` = augment name (so `[AUGMENT CONTEXT: source]` markers identify it)
+- `source` = augment name, retained for traces and evictions but not rendered
+  into the model-facing prompt
 - `content` = entry.content
 - `placement`, `priority`, `eviction`, `origin`, `ttl` = the provider's `defaults`
 - `provenance` = `"memory"` (always)
@@ -190,7 +195,7 @@ This is structural defense alongside the prompt-based defenses (red-team 2026-04
 
 Null peer (internal/scheduled triggers) is treated as creator trust per the convention from `effectiveTrustLevel` in capability-table.ts.
 
-### `memory_read(label: string)`
+### `memory_read({ label })`
 
 Routes the label to its owning provider via `lookupProvider`. Checks the trust gate against the provider's `defaults.origin`. If the provider is namespace-only and doesn't implement `read`, returns an error: `Error: Provider "name" does not support reading by label (use memory_search)`. Otherwise calls `provider.read(label)` and returns the entry as JSON, or `No entry found for label "..."` if `null`.
 
@@ -225,11 +230,13 @@ tool returns `Error: Memory label "label" is immutable (owned by "name")`.
 Then it checks the trust gate, calls the provider's `write`, and returns
 `Successfully wrote to "label"`.
 
-### `memory_search(query: string, providers?: string[])`
+### `memory_search({ query, providers? })`
 
 Filters the registry's namespace providers — optionally restricted to a list of provider names, then by the trust gate (provider's origin must be readable by the current peer). Calls `search(query)` on each remaining candidate in parallel via `Promise.allSettled`, and returns a JSON array of `{ provider, entries }` results (or `{ provider, error }` for failures).
 
-Note that this **only searches namespace providers** — static providers don't have `search`. If the model wants to read from a static provider, it uses `memory_read(label)`.
+Note that this **only searches namespace providers** — static providers don't
+have `search`. If the model wants to read from a static provider, it uses
+`memory_read({ label })`.
 
 ### `memory_list()`
 
@@ -239,7 +246,7 @@ Returns a JSON object with two arrays, **filtered by what the current peer can a
 
 This is the discovery tool — the model uses it to figure out what memory is available before issuing a `memory_read` or `memory_search`. Untrusted peers see only `peer-derived` providers; creator/agent peers see everything.
 
-### `memory_forget(peerId: string)`
+### `memory_forget({ peerId })`
 
 Deletes all episodic entries for one peer across namespace providers that
 implement `forget`. This is the right-to-erasure tool. It is always gated to
@@ -381,8 +388,13 @@ Plus the augment-level tests (`tests/augments/file-memory.test.ts`, `tests/augme
 - **Memory consolidation** (episodic → semantic on idle). Listed as Plan 7+ aspirational. Will run in `onIdle` hooks.
 - **Vector / semantic search.** `supabaseMemory.search` uses ILIKE for substring matching — not embeddings. A future provider can implement `search` with pgvector and the rest of the bus stays the same (the `MemoryProviderSpec` contract is search-agnostic).
 - **Budget per provider.** v1 has one shared budget across all memory tools. A future enhancement could give each provider its own sub-budget (e.g. "this episodic store can only be queried 5 times per turn").
-- **Memory "permissions" beyond mutable/immutable.** v1's `MemoryDefaults.mutable` is the only access control. A more sophisticated model would have read/write/append permissions per peer trust level. Not in scope for v1.
-- **`memory_list` filtering.** v1 returns all labels and prefixes. Future could filter by category or by namespace.
+- **Fine-grained memory permissions.** v1 has immutable/mutable provider
+  declarations plus the shared origin/trust gate described above. It does not
+  yet have per-label read/write/append grants, per-principal grants, or
+  operator-approved promotion rules.
+- **`memory_list` category filtering.** v1 filters labels and prefixes by what
+  the current peer can access. Future work could add category, namespace, or
+  provider-specific filters for large memory layouts.
 - **`memory_search` ranking across providers.** v1 returns each provider's results separately. Future could merge and rerank.
 
 These are all features that can be added without changing the existing contract. The contract is the load-bearing part — once it's right, the implementations are easier to swap.

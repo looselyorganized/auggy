@@ -91,6 +91,6 @@ A model may call `request_input` as a closing pleasantry ("Anything else?"), whi
 
 ## Reference
 
-- Spec: [`docs/superpowers/specs/2026-05-04-task-completion-signaling-design.md`](../../docs/superpowers/specs/2026-05-04-task-completion-signaling-design.md) (in the `lo/` meta-org folder)
-- Plan: [`docs/superpowers/plans/2026-05-04-task-completion-signaling.md`](../../docs/superpowers/plans/2026-05-04-task-completion-signaling.md)
-- Roadmap item: 9 — Task completion signaling
+- Current turn-state contract: [03-types.md](./03-types.md)
+- Kernel turn loop behavior: [04-kernel.md](./04-kernel.md)
+- Roadmap: [ROADMAP.md](./ROADMAP.md)

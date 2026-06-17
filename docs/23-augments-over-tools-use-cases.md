@@ -32,7 +32,8 @@ Augments can own:
 - Bundled skills and model-facing instructions
 - Audit trails and console surfaces
 
-The model does not need to see "augments" directly. Per ADR-030, Auggy separates the model-facing surfaces:
+The model does not need to see "augments" directly. As described in
+[11-skills.md](./11-skills.md), Auggy separates the model-facing surfaces:
 
 - **Tools**: callable schemas exposed to the engine
 - **Skills**: compact instructions and operating procedures
