@@ -24,6 +24,7 @@
 
 import { copyFileSync, existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { getAgentFromDir, setCloudForDir } from "../agent-index";
 import { parseConfig } from "../config-parser";
 import { formatDoctorChecks, hasDoctorFailures, runDoctor } from "./doctor";
@@ -163,9 +164,6 @@ function maybeVendorLocalAuggyTarball(args: {
     process.cwd(),
   ].filter((p): p is string => Boolean(p));
 
-  const tarballPath = candidates.map((root) => resolve(root, tarballName)).find(existsSync);
-  if (!tarballPath) return null;
-
   const stagedPackagePath = join(args.stagingDir, "package.json");
   if (!existsSync(stagedPackagePath)) return null;
 
@@ -174,13 +172,31 @@ function maybeVendorLocalAuggyTarball(args: {
   };
   const deps = parsed.dependencies;
   if (!deps?.auggy) return null;
-  if (!/^\^?\d+\.\d+\.\d+/.test(deps.auggy)) return null;
+  const tarballPath =
+    resolveFileAuggyTarball(deps.auggy, args.agentDir) ??
+    (/^\^?\d+\.\d+\.\d+/.test(deps.auggy)
+      ? candidates.map((root) => resolve(root, tarballName)).find(existsSync)
+      : null);
+  if (!tarballPath) return null;
 
   const stagedTarballName = basename(tarballPath);
   copyFileSync(tarballPath, join(args.stagingDir, stagedTarballName));
   deps.auggy = `file:./${stagedTarballName}`;
   writeFileSync(stagedPackagePath, `${JSON.stringify(parsed, null, 2)}\n`);
   return stagedTarballName;
+}
+
+function resolveFileAuggyTarball(spec: string, agentDir: string): string | null {
+  if (!spec.startsWith("file:")) return null;
+  const rawPath = spec.slice("file:".length);
+  let resolved: string;
+  try {
+    resolved = spec.startsWith("file://") ? fileURLToPath(spec) : resolve(agentDir, rawPath);
+  } catch {
+    return null;
+  }
+  if (!resolved.endsWith(".tgz")) return null;
+  return existsSync(resolved) ? resolved : null;
 }
 
 export async function runDeploy(

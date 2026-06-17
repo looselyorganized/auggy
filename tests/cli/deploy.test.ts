@@ -1046,4 +1046,40 @@ describe("runDeploy", () => {
       dockerfile.indexOf(`COPY ${tarballName} /app/`),
     );
   });
+
+  test("vendors an existing file: auggy tarball dependency before bun install", async () => {
+    const version = getAuggyVersion();
+    const tarballName = `auggy-${version}.tgz`;
+    writeFileSync(join(dirname(agentDir), tarballName), "packed runtime");
+    writeFileSync(
+      join(agentDir, "package.json"),
+      `${JSON.stringify({
+        name: "auggy-agent-zip",
+        private: true,
+        type: "module",
+        dependencies: {
+          auggy: `file:../${tarballName}`,
+          "@auggy/anthropic": "^0.3.1",
+        },
+      })}\n`,
+    );
+    const { cli, calls } = mockRailwayCli();
+    let stagingDir: string | undefined;
+    cli.linkProject = async (args) => {
+      stagingDir = args.cwd;
+      calls.linkProject.push(args);
+    };
+
+    await runDeploy("zip", baseDeployOptions(cli, auggyDir));
+
+    expect(stagingDir).toBeDefined();
+    expect(existsSync(join(stagingDir!, tarballName))).toBe(true);
+    const stagedPackage = JSON.parse(readFileSync(join(stagingDir!, "package.json"), "utf-8"));
+    expect(stagedPackage.dependencies.auggy).toBe(`file:./${tarballName}`);
+    const dockerfile = readFileSync(join(stagingDir!, "Dockerfile"), "utf-8");
+    expect(dockerfile.indexOf(`COPY ${tarballName} /app/`)).toBeGreaterThan(-1);
+    expect(dockerfile.indexOf("RUN bun install")).toBeGreaterThan(
+      dockerfile.indexOf(`COPY ${tarballName} /app/`),
+    );
+  });
 });
