@@ -324,7 +324,7 @@ if [[ ! -f "$AGENT_DIR/.mcp.json" ]] || ! grep -q '"example-stdio"' "$AGENT_DIR/
   (
     cd "$AGENT_DIR"
     "$CLI" mcp add-json example-stdio \
-      "{\"type\":\"stdio\",\"command\":\"bun\",\"args\":[\"$ROOT/examples/mcp-stdio-server/server.ts\"],\"cwd\":\"$ROOT\",\"cloud\":{\"enabled\":false,\"reason\":\"local stdio smoke server\"}}"
+      "{\"type\":\"stdio\",\"command\":\"bun\",\"args\":[\"$ROOT/examples/mcp-stdio-server/server.ts\"],\"cwd\":\"$ROOT\",\"auggy\":{\"cloud\":\"disabled\"}}"
   )
 fi
 

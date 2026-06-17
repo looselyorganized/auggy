@@ -373,6 +373,34 @@ describe("runDeploy", () => {
     expect(calls.listWorkspaces).toBe(0);
   });
 
+  test("--project-name creates a new Railway project without first-deploy prompts", async () => {
+    const { cli, calls } = mockRailwayCli();
+    let targetPromptCalled = false;
+    let namePromptCalled = false;
+
+    await runDeploy(
+      "zip",
+      baseDeployOptions(cli, auggyDir, {
+        projectName: "release-smoke",
+        workspace: "workspace_abc",
+        promptProjectTarget: async () => {
+          targetPromptCalled = true;
+          return "existing";
+        },
+        promptProjectName: async () => {
+          namePromptCalled = true;
+          return "prompted-name";
+        },
+      }),
+    );
+
+    expect(targetPromptCalled).toBe(false);
+    expect(namePromptCalled).toBe(false);
+    expect(calls.createProject).toEqual([
+      expect.objectContaining({ projectName: "release-smoke", workspace: "workspace_abc" }),
+    ]);
+  });
+
   test("first deploy can run from a project-local agent.yaml outside ~/.auggy", async () => {
     const projectDir = mkdtempSync(join(tmpdir(), "auggy-project-agent-"));
     try {

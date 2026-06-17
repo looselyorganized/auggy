@@ -11,6 +11,9 @@
  * pattern as `git push` trusts `git`. No token storage in this codebase.
  */
 
+import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { readAllText } from "../_shared/stream";
 
 export class RailwayCliMissingError extends Error {
@@ -59,9 +62,13 @@ export type RailwayInteractiveSpawnFactory = (
   opts?: { cwd?: string; env?: Record<string, string> },
 ) => InteractiveSpawnHandle;
 
+type RailwayFetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
+
 interface CreateRailwayCliOptions {
   spawn?: RailwaySpawnFactory;
   interactiveSpawn?: RailwayInteractiveSpawnFactory;
+  fetch?: RailwayFetch;
+  railwayConfigPath?: string;
   retryDelayMs?: number;
   sleep?: (ms: number) => Promise<void>;
 }
@@ -135,6 +142,8 @@ export interface RailwayCli {
 export function createRailwayCli(opts: CreateRailwayCliOptions = {}): RailwayCli {
   const spawn = opts.spawn ?? defaultSpawn;
   const interactiveSpawn = opts.interactiveSpawn ?? defaultInteractiveSpawn;
+  const fetchImpl: RailwayFetch = opts.fetch ?? fetch;
+  const railwayConfigPath = opts.railwayConfigPath ?? join(homedir(), ".railway", "config.json");
   const sleep =
     opts.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const retryDelayMs = opts.retryDelayMs ?? 750;
@@ -225,6 +234,12 @@ export function createRailwayCli(opts: CreateRailwayCliOptions = {}): RailwayCli
     },
 
     async listWorkspaces() {
+      const workspaces = await queryWorkspacesFromRailwayGraphql({
+        fetchImpl,
+        configPath: railwayConfigPath,
+      });
+      if (workspaces) return workspaces;
+
       const { stdout } = await runOrThrow(["list", "--json"], {}, { retryTransient: true });
       return extractWorkspaces(stdout);
     },
@@ -340,6 +355,63 @@ export function createRailwayCli(opts: CreateRailwayCliOptions = {}): RailwayCli
       await runInteractiveOrThrow(["logs"], { cwd });
     },
   };
+}
+
+async function queryWorkspacesFromRailwayGraphql(args: {
+  fetchImpl: RailwayFetch;
+  configPath: string;
+}): Promise<RailwayWorkspace[] | null> {
+  const token = readRailwayAccessToken(args.configPath);
+  if (!token) return null;
+
+  try {
+    const res = await args.fetchImpl("https://backboard.railway.com/graphql/v2", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        query: "{ me { workspaces { id name } } }",
+      }),
+    });
+    if (!res.ok) return null;
+    const parsed = (await res.json()) as unknown;
+    return readGraphqlWorkspaces(parsed);
+  } catch {
+    return null;
+  }
+}
+
+function readRailwayAccessToken(configPath: string): string | null {
+  try {
+    if (!existsSync(configPath)) return null;
+    const parsed = JSON.parse(readFileSync(configPath, "utf-8")) as unknown;
+    if (!parsed || typeof parsed !== "object") return null;
+    const user = (parsed as Record<string, unknown>).user;
+    if (!user || typeof user !== "object") return null;
+    const token = (user as Record<string, unknown>).accessToken;
+    return typeof token === "string" && token.trim() ? token.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
+function readGraphqlWorkspaces(value: unknown): RailwayWorkspace[] | null {
+  if (!value || typeof value !== "object") return null;
+  const data = (value as Record<string, unknown>).data;
+  if (!data || typeof data !== "object") return null;
+  const me = (data as Record<string, unknown>).me;
+  if (!me || typeof me !== "object") return null;
+  const workspaces = (me as Record<string, unknown>).workspaces;
+  if (!Array.isArray(workspaces)) return null;
+
+  const out = new Map<string, RailwayWorkspace>();
+  for (const workspace of workspaces) {
+    const read = readWorkspace(workspace);
+    if (read) out.set(read.id, read);
+  }
+  return [...out.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
 
 function extractProjectId(stdout: string): string | null {

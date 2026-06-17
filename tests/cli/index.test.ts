@@ -67,9 +67,9 @@ describe("auggy CLI command table", () => {
 
   test("project-local cloud commands accept omitted names", () => {
     const cli = buildCli();
-    expect(cli.commands.find((cmd) => cmd.name() === "deploy")?.helpInformation()).toContain(
-      "[name]",
-    );
+    const deployHelp = cli.commands.find((cmd) => cmd.name() === "deploy")?.helpInformation();
+    expect(deployHelp).toContain("[name]");
+    expect(deployHelp).toContain("--project-name <name>");
     expect(cli.commands.find((cmd) => cmd.name() === "logs")?.helpInformation()).toContain(
       "[name]",
     );

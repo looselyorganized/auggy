@@ -89,6 +89,24 @@ describe("mcp config helpers", () => {
     }
   });
 
+  test("cloud diagnostics accept per-server Auggy cloud policy", () => {
+    const { dir, cleanup } = tempAgent();
+    try {
+      setMcpServer(dir, "local", {
+        type: "stdio",
+        command: "npx",
+        args: ["-y", "server"],
+        auggy: { cloud: "disabled" },
+      });
+      expect(
+        diagnoseMcpConfig(dir, { cloud: true }).find((check) => check.name === "mcp local cloud")
+          ?.status,
+      ).toBe("warn");
+    } finally {
+      cleanup();
+    }
+  });
+
   test("cloud diagnostics fail remote MCP without HTTPS", () => {
     const { dir, cleanup } = tempAgent();
     try {

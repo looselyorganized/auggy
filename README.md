@@ -325,8 +325,13 @@ links a service, mounts persistent data at `/app/data`, starts a build, waits
 for Railway deployment status when available, then verifies `/health`.
 
 When creating a new Railway project, Auggy selects from your existing Railway
-workspaces and creates the project for you. For scripted deploys, pass
-`--workspace <workspace-id-or-name>`.
+workspaces and creates the project for you.
+
+For scripted first deploys:
+
+```bash
+auggy deploy --yes --project-name my-agent --workspace "My Workspace"
+```
 
 Useful follow-ups:
 

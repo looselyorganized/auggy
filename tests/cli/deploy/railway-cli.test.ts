@@ -1,4 +1,7 @@
 import { describe, test, expect } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   createRailwayCli,
   RailwayCliMissingError,
@@ -85,7 +88,53 @@ describe("railway-cli", () => {
     expect(calls[0]!.cmd).toEqual(["railway", "init", "--name", "zip", "--json"]);
   });
 
-  test("listWorkspaces reads and dedupes workspaces from `railway list --json`", async () => {
+  test("listWorkspaces reads workspaces directly from Railway GraphQL", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "railway-cli-test-"));
+    try {
+      const configPath = join(dir, "config.json");
+      writeFileSync(configPath, JSON.stringify({ user: { accessToken: "railway-token" } }));
+      const { factory, calls } = mockSpawn(() => ({
+        stdout: "[]",
+        stderr: "",
+        exitCode: 0,
+      }));
+      const fetchCalls: Array<{ url: string; init?: RequestInit }> = [];
+      const fetchImpl = async (url: string | URL | Request, init?: RequestInit) => {
+        fetchCalls.push({ url: String(url), init });
+        return new Response(
+          JSON.stringify({
+            data: {
+              me: {
+                workspaces: [
+                  { id: "workspace_b", name: "Team B" },
+                  { id: "workspace_a", name: "Team A" },
+                ],
+              },
+            },
+          }),
+        );
+      };
+      const cli = createRailwayCli({
+        spawn: factory,
+        fetch: fetchImpl,
+        railwayConfigPath: configPath,
+      });
+
+      await expect(cli.listWorkspaces()).resolves.toEqual([
+        { id: "workspace_a", name: "Team A" },
+        { id: "workspace_b", name: "Team B" },
+      ]);
+      expect(calls).toHaveLength(0);
+      expect(fetchCalls[0]?.url).toBe("https://backboard.railway.com/graphql/v2");
+      expect((fetchCalls[0]?.init?.headers as Record<string, string>).authorization).toBe(
+        "Bearer railway-token",
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("listWorkspaces falls back to `railway list --json` when GraphQL is unavailable", async () => {
     const { factory, calls } = mockSpawn(() => ({
       stdout: JSON.stringify([
         {
@@ -107,7 +156,14 @@ describe("railway-cli", () => {
       stderr: "",
       exitCode: 0,
     }));
-    const cli = createRailwayCli({ spawn: factory });
+    const fetchImpl = async () => {
+      throw new Error("network unavailable");
+    };
+    const cli = createRailwayCli({
+      spawn: factory,
+      fetch: fetchImpl,
+      railwayConfigPath: "/does/not/exist",
+    });
 
     await expect(cli.listWorkspaces()).resolves.toEqual([
       { id: "workspace_a", name: "Team A" },

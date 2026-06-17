@@ -54,6 +54,8 @@ export interface DeployOptions {
   cli: RailwayCli;
   /** Existing Railway project ID. When omitted on first deploy, operator chooses new/existing. */
   project?: string;
+  /** New Railway project name. When set on first deploy, creates a new project non-interactively. */
+  projectName?: string;
   /** Prompt the operator to create a new Railway project or use an existing one. */
   promptProjectTarget: () => Promise<"new" | "existing">;
   /** Prompt for a new Railway project name. */
@@ -265,9 +267,9 @@ export async function runDeploy(
     projectId = opts.project;
     opts.logger.info(`First deploy of ${name} to existing Railway project ${projectId}.`);
   } else {
-    const target = await opts.promptProjectTarget();
+    const target = opts.projectName ? "new" : await opts.promptProjectTarget();
     if (target === "new") {
-      const projectName = await opts.promptProjectName(name);
+      const projectName = opts.projectName?.trim() || (await opts.promptProjectName(name));
       const initialWorkspace = await resolveWorkspaceForNewProject(opts);
       const createProject = (workspace?: string) =>
         withProgress(opts, `Creating Railway project ${projectName}`, () =>

@@ -263,13 +263,21 @@ export function buildCli(): Command {
     .description("Deploy an agent to the cloud (--to railway)")
     .option("--to <provider>", "deploy target (only `railway` supported in v1.0)", "railway")
     .option("--project <project-id>", "deploy into an existing Railway project")
+    .option("--project-name <name>", "create a new Railway project with this name")
     .option("--service <name-or-id>", "deploy into an existing Railway service")
-    .option("--workspace <workspace>", "Railway workspace ID or name when creating a new project")
+    .option("--workspace <workspace>", "Railway workspace name or ID when creating a new project")
     .option("--yes", "skip the secrets-push confirmation prompt")
     .action(
       async (
         name: string | undefined,
-        opts: { to: string; project?: string; service?: string; workspace?: string; yes?: boolean },
+        opts: {
+          to: string;
+          project?: string;
+          projectName?: string;
+          service?: string;
+          workspace?: string;
+          yes?: boolean;
+        },
       ) => {
         try {
           const { runDeploy } = await import("./commands/deploy");
@@ -281,6 +289,7 @@ export function buildCli(): Command {
             to: opts.to as "railway",
             yes: opts.yes ?? false,
             project: opts.project,
+            projectName: opts.projectName,
             service: opts.service,
             workspace: opts.workspace,
             cli,
@@ -323,8 +332,7 @@ export function buildCli(): Command {
                 if (selected !== manual) return selected;
               }
               return input({
-                message:
-                  "Railway workspace name or ID (personal/team workspace, not project name):",
+                message: "Railway workspace name (personal/team workspace, not project name):",
                 validate: (v) => v.trim().length > 0 || "workspace required",
               });
             },
