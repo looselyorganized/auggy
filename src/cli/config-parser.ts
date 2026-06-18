@@ -182,13 +182,21 @@ function validateBudgetsOptions(
     "anonymousGlobalLimit",
     "dailyBudgetUsd",
     "cleanupWindowMs",
-    "retentionDays",
   ];
   for (const field of numericPositive) {
     if (opts[field] !== undefined) {
       if (typeof opts[field] !== "number" || (opts[field] as number) <= 0) {
         errors.push(`${optionsPrefix}.${field}: must be a positive number`);
       }
+    }
+  }
+  if (opts.retentionDays !== undefined) {
+    if (
+      typeof opts.retentionDays !== "number" ||
+      !Number.isInteger(opts.retentionDays) ||
+      opts.retentionDays <= 0
+    ) {
+      errors.push(`${optionsPrefix}.retentionDays: must be a positive integer`);
     }
   }
 

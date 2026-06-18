@@ -63,6 +63,12 @@ describe("BudgetStore", () => {
     store = createBudgetStore({ dbPath });
   });
 
+  it("rejects fractional retentionDays at store construction", () => {
+    expect(() => createBudgetStore({ dbPath, retentionDays: 1.5 })).toThrow(
+      "budgets.retentionDays must be a positive integer",
+    );
+  });
+
   // ── prepare: allow path ─────────────────────────────────
 
   it("prepare under cap → allow; confirm commits a visible row", async () => {

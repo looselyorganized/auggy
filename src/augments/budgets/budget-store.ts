@@ -605,8 +605,8 @@ export function createBudgetStore(config: BudgetStoreConfig): BudgetStore {
 
 function validateRetentionDays(value: number | undefined): number | undefined {
   if (value === undefined) return undefined;
-  if (!Number.isFinite(value) || value <= 0) {
-    throw new Error("budgets.retentionDays must be a positive number");
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new Error("budgets.retentionDays must be a positive integer");
   }
   return value;
 }
