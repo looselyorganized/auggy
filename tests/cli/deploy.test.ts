@@ -12,6 +12,7 @@ interface MockCliCalls {
   checkPresence: number;
   checkAuth: number;
   listWorkspaces: number;
+  listProjects: number;
   link: Array<{ projectId: string; serviceName: string; cwd: string }>;
   setVariable: Array<{ key: string; value: string }>;
   up: number;
@@ -31,6 +32,7 @@ function mockRailwayCli(): { cli: RailwayCli; calls: MockCliCalls; capturedCwds:
     checkPresence: 0,
     checkAuth: 0,
     listWorkspaces: 0,
+    listProjects: 0,
     link: [],
     setVariable: [],
     up: 0,
@@ -56,6 +58,10 @@ function mockRailwayCli(): { cli: RailwayCli; calls: MockCliCalls; capturedCwds:
     },
     async listWorkspaces() {
       calls.listWorkspaces++;
+      return [];
+    },
+    async listProjects() {
+      calls.listProjects++;
       return [];
     },
     async link({ projectId, serviceName, cwd }) {
@@ -328,6 +334,62 @@ describe("runDeploy", () => {
     expect(calls.createProject).toEqual([
       expect.objectContaining({ projectName: "zip-project", workspace: "workspace_b" }),
     ]);
+  });
+
+  test("first deploy selects workspace before choosing an existing project", async () => {
+    const { cli, calls } = mockRailwayCli();
+    cli.listWorkspaces = async () => {
+      calls.listWorkspaces++;
+      return [{ id: "workspace_a", name: "Team A" }];
+    };
+    cli.listProjects = async (args) => {
+      calls.listProjects++;
+      expect(args).toEqual({ workspace: "workspace_a" });
+      return [
+        {
+          id: "project_1",
+          name: "Existing API",
+          workspaceId: "workspace_a",
+          workspaceName: "Team A",
+        },
+      ];
+    };
+    const events: string[] = [];
+    let promptedProjects: unknown = null;
+
+    await runDeploy(
+      "zip",
+      baseDeployOptions(cli, auggyDir, {
+        promptWorkspace: async (workspaces) => {
+          events.push("workspace");
+          expect(workspaces).toEqual([{ id: "workspace_a", name: "Team A" }]);
+          return "workspace_a";
+        },
+        promptProjectTarget: async ({ workspace, projects } = {}) => {
+          events.push("target");
+          expect(workspace).toEqual({ id: "workspace_a", name: "Team A" });
+          expect(projects?.map((project) => project.id)).toEqual(["project_1"]);
+          return "existing";
+        },
+        promptProjectId: async (projects) => {
+          events.push("project");
+          promptedProjects = projects;
+          return "project_1";
+        },
+      }),
+    );
+
+    expect(events).toEqual(["workspace", "target", "project"]);
+    expect(promptedProjects).toEqual([
+      {
+        id: "project_1",
+        name: "Existing API",
+        workspaceId: "workspace_a",
+        workspaceName: "Team A",
+      },
+    ]);
+    expect(calls.linkProject).toEqual([expect.objectContaining({ projectId: "project_1" })]);
+    expect(calls.createProject).toEqual([]);
   });
 
   test("interactive first deploy prompts even with one discovered Railway workspace", async () => {

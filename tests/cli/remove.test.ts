@@ -177,6 +177,9 @@ describe("runRemove", () => {
       async listWorkspaces() {
         return [];
       },
+      async listProjects() {
+        return [];
+      },
       async link() {
         calls.link++;
       },
@@ -238,6 +241,9 @@ describe("runRemove", () => {
       async listWorkspaces() {
         return [];
       },
+      async listProjects() {
+        return [];
+      },
       async link(args: { projectId: string; serviceName: string }) {
         calls.push(args);
       },
@@ -294,6 +300,9 @@ describe("runRemove", () => {
         return "x@y.z";
       },
       async listWorkspaces() {
+        return [];
+      },
+      async listProjects() {
         return [];
       },
       async link() {},

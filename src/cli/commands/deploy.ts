@@ -35,6 +35,7 @@ import { waitForHealth, type HealthCheckOptions, type HealthCheckResult } from "
 import {
   RailwayWorkspaceRequiredError,
   type RailwayCli,
+  type RailwayProject,
   type RailwayWorkspace,
 } from "../deploy/railway-cli";
 import { loadSecretsPlan } from "../deploy/secrets";
@@ -58,11 +59,14 @@ export interface DeployOptions {
   /** New Railway project name. When set on first deploy, creates a new project non-interactively. */
   projectName?: string;
   /** Prompt the operator to create a new Railway project or use an existing one. */
-  promptProjectTarget: () => Promise<"new" | "existing">;
+  promptProjectTarget: (args?: {
+    workspace?: RailwayWorkspace | null;
+    projects?: RailwayProject[];
+  }) => Promise<"new" | "existing">;
   /** Prompt for a new Railway project name. */
   promptProjectName: (defaultName: string) => Promise<string>;
   /** Prompt the operator for a Railway project ID. */
-  promptProjectId: () => Promise<string>;
+  promptProjectId: (projects?: RailwayProject[]) => Promise<string>;
   /** Prompt the operator for a Railway workspace ID or name. */
   promptWorkspace: (workspaces: RailwayWorkspace[]) => Promise<string>;
   /** Prompt the operator for yes/no confirmation. Receives a human-readable message. */
@@ -283,16 +287,23 @@ export async function runDeploy(
     projectId = opts.project;
     opts.logger.info(`First deploy of ${name} to existing Railway project ${projectId}.`);
   } else {
-    const target = opts.projectName ? "new" : await opts.promptProjectTarget();
+    const workspace = await resolveWorkspaceForFirstDeploy(opts);
+    const workspaceValue = workspace?.id ?? workspace?.name;
+    const projects =
+      workspaceValue && !opts.projectName
+        ? await listProjectsForWorkspace(opts, workspaceValue)
+        : [];
+    const target = opts.projectName
+      ? "new"
+      : await opts.promptProjectTarget({ workspace, projects });
     if (target === "new") {
       const projectName = opts.projectName?.trim() || (await opts.promptProjectName(name));
-      const initialWorkspace = await resolveWorkspaceForNewProject(opts);
       const createProject = (workspace?: string) =>
         withProgress(opts, `Creating Railway project ${projectName}`, () =>
           opts.cli.createProject({ projectName, workspace, cwd: stagingDir }),
         );
       try {
-        projectId = await createProject(initialWorkspace);
+        projectId = await createProject(workspaceValue);
       } catch (err) {
         if (!(err instanceof RailwayWorkspaceRequiredError)) throw err;
         const workspace = await opts.promptWorkspace([]);
@@ -301,7 +312,7 @@ export async function runDeploy(
       projectAlreadyLinked = true;
       opts.logger.info(`Created Railway project ${projectName} (${projectId}).`);
     } else {
-      projectId = await opts.promptProjectId();
+      projectId = await opts.promptProjectId(projects);
       opts.logger.info(`First deploy of ${name} to existing Railway project ${projectId}.`);
     }
   }
@@ -549,9 +560,11 @@ function withProgress<T>(opts: DeployOptions, message: string, run: () => Promis
   return opts.logger.task ? opts.logger.task(message, run) : run();
 }
 
-async function resolveWorkspaceForNewProject(opts: DeployOptions): Promise<string | undefined> {
+async function resolveWorkspaceForFirstDeploy(
+  opts: DeployOptions,
+): Promise<RailwayWorkspace | null> {
   const explicit = opts.workspace?.trim();
-  if (explicit) return explicit;
+  if (explicit) return { id: explicit, name: explicit };
 
   let workspaces: RailwayWorkspace[] = [];
   try {
@@ -562,13 +575,32 @@ async function resolveWorkspaceForNewProject(opts: DeployOptions): Promise<strin
     workspaces = [];
   }
 
-  if (workspaces.length === 0) return undefined;
+  if (workspaces.length === 0) return null;
   if (opts.projectName && workspaces.length === 1) {
     const workspace = workspaces[0]!;
     opts.logger.info(`Using Railway workspace "${workspace.name}".`);
-    return workspace.id;
+    return workspace;
   }
-  return opts.promptWorkspace(workspaces);
+  const selected = await opts.promptWorkspace(workspaces);
+  return (
+    workspaces.find((workspace) => workspace.id === selected || workspace.name === selected) ?? {
+      id: selected,
+      name: selected,
+    }
+  );
+}
+
+async function listProjectsForWorkspace(
+  opts: DeployOptions,
+  workspace: string,
+): Promise<RailwayProject[]> {
+  try {
+    return await withProgress(opts, `Finding Railway projects`, () =>
+      opts.cli.listProjects({ workspace }),
+    );
+  } catch {
+    return [];
+  }
 }
 
 type RailwayDeploymentWaitResult =

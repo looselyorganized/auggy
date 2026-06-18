@@ -172,6 +172,82 @@ describe("railway-cli", () => {
     expect(calls[0]!.cmd).toEqual(["railway", "list", "--json"]);
   });
 
+  test("listProjects reads active projects and filters by workspace", async () => {
+    const { factory, calls } = mockSpawn(() => ({
+      stdout: JSON.stringify([
+        {
+          workspace: { id: "workspace_b", name: "Team B" },
+          id: "project_2",
+          name: "two",
+          deletedAt: null,
+        },
+        {
+          workspace: { id: "workspace_a", name: "Team A" },
+          id: "project_1",
+          name: "one",
+          deletedAt: null,
+        },
+        {
+          workspace: { id: "workspace_a", name: "Team A" },
+          id: "project_deleted",
+          name: "deleted",
+          deletedAt: "2026-06-18T00:00:00.000Z",
+        },
+      ]),
+      stderr: "",
+      exitCode: 0,
+    }));
+    const cli = createRailwayCli({ spawn: factory });
+
+    await expect(cli.listProjects({ workspace: "workspace_a" })).resolves.toEqual([
+      {
+        id: "project_1",
+        name: "one",
+        workspaceId: "workspace_a",
+        workspaceName: "Team A",
+      },
+    ]);
+    await expect(cli.listProjects({ workspace: "Team B" })).resolves.toEqual([
+      {
+        id: "project_2",
+        name: "two",
+        workspaceId: "workspace_b",
+        workspaceName: "Team B",
+      },
+    ]);
+    expect(calls.map((call) => call.cmd)).toEqual([
+      ["railway", "list", "--json"],
+      ["railway", "list", "--json"],
+    ]);
+  });
+
+  test("listProjects handles wrapped project lists without treating services as projects", async () => {
+    const { factory } = mockSpawn(() => ({
+      stdout: JSON.stringify({
+        projects: [
+          {
+            workspace: { id: "workspace_a", name: "Team A" },
+            id: "project_1",
+            name: "one",
+            services: [{ id: "service_1", name: "api" }],
+          },
+        ],
+      }),
+      stderr: "",
+      exitCode: 0,
+    }));
+    const cli = createRailwayCli({ spawn: factory });
+
+    await expect(cli.listProjects({ workspace: "workspace_a" })).resolves.toEqual([
+      {
+        id: "project_1",
+        name: "one",
+        workspaceId: "workspace_a",
+        workspaceName: "Team A",
+      },
+    ]);
+  });
+
   test("createProject includes --workspace when provided", async () => {
     const { factory, calls } = mockSpawn(() => ({
       stdout: JSON.stringify({ project: { id: "proj_created" } }),

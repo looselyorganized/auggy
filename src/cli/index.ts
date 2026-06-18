@@ -293,15 +293,21 @@ export function buildCli(): Command {
             service: opts.service,
             workspace: opts.workspace,
             cli,
-            promptProjectTarget: () =>
+            promptProjectTarget: ({ workspace, projects } = {}) =>
               select({
-                message: "Railway target:",
+                message: workspace ? `Railway project in ${workspace.name}:` : "Railway project:",
                 choices: [
                   {
                     name: `Create a new Railway project for ${name ?? "this agent"}`,
                     value: "new" as const,
                   },
-                  { name: "Use an existing Railway project", value: "existing" as const },
+                  {
+                    name:
+                      projects && projects.length > 0
+                        ? "Use an existing Railway project"
+                        : "Enter an existing Railway project ID",
+                    value: "existing" as const,
+                  },
                 ],
               }),
             promptProjectName: (defaultName) =>
@@ -310,17 +316,32 @@ export function buildCli(): Command {
                 default: defaultName,
                 validate: (v) => v.trim().length > 0 || "project name required",
               }),
-            promptProjectId: () =>
-              input({
+            promptProjectId: async (projects) => {
+              const manual = "__manual__";
+              if (projects && projects.length > 0) {
+                const selected = await select({
+                  message: "Existing Railway project:",
+                  choices: [
+                    ...projects.map((project) => ({
+                      name: project.name,
+                      value: project.id,
+                    })),
+                    { name: "Enter project ID manually", value: manual },
+                  ],
+                });
+                if (selected !== manual) return selected;
+              }
+              return input({
                 message:
                   "Railway project ID (find it in the Railway dashboard URL or via `railway list`):",
                 validate: (v) => v.trim().length > 0 || "project ID required",
-              }),
+              });
+            },
             promptWorkspace: async (workspaces) => {
               const manual = "__manual__";
               if (workspaces.length > 0) {
                 const selected = await select({
-                  message: "Create this project in Railway workspace:",
+                  message: "Railway workspace:",
                   choices: [
                     ...workspaces.map((workspace) => ({
                       name: workspace.name,

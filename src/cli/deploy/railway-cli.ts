@@ -94,6 +94,13 @@ export interface RailwayWorkspace {
   name: string;
 }
 
+export interface RailwayProject {
+  id: string;
+  name: string;
+  workspaceId?: string;
+  workspaceName?: string;
+}
+
 const defaultSpawn: RailwaySpawnFactory = (cmd, opts = {}) => {
   const proc = Bun.spawn(cmd, {
     cwd: opts.cwd,
@@ -125,6 +132,7 @@ export interface RailwayCli {
   checkPresence(): Promise<true>;
   checkAuth(): Promise<string>;
   listWorkspaces(): Promise<RailwayWorkspace[]>;
+  listProjects(args?: { workspace?: string }): Promise<RailwayProject[]>;
   createProject(args: { projectName: string; workspace?: string; cwd: string }): Promise<string>;
   linkProject(args: { projectId: string; cwd: string }): Promise<void>;
   linkService(args: { serviceName: string; cwd: string }): Promise<void>;
@@ -242,6 +250,11 @@ export function createRailwayCli(opts: CreateRailwayCliOptions = {}): RailwayCli
 
       const { stdout } = await runOrThrow(["list", "--json"], {}, { retryTransient: true });
       return extractWorkspaces(stdout);
+    },
+
+    async listProjects({ workspace } = {}) {
+      const { stdout } = await runOrThrow(["list", "--json"], {}, { retryTransient: true });
+      return extractProjects(stdout, workspace);
     },
 
     async createProject({ projectName, workspace, cwd }) {
@@ -440,6 +453,19 @@ function extractWorkspaces(stdout: string): RailwayWorkspace[] {
   return [...workspaces.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
 
+function extractProjects(stdout: string, workspace?: string): RailwayProject[] {
+  const parsed = JSON.parse(stdout) as unknown;
+  const projects = new Map<string, RailwayProject>();
+  collectProjects(parsed, projects);
+  const filter = workspace?.trim();
+  return [...projects.values()]
+    .filter((project) => {
+      if (!filter) return true;
+      return project.workspaceId === filter || project.workspaceName === filter;
+    })
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
 function collectWorkspaces(value: unknown, workspaces: Map<string, RailwayWorkspace>): void {
   if (Array.isArray(value)) {
     for (const item of value) collectWorkspaces(item, workspaces);
@@ -454,6 +480,30 @@ function collectWorkspaces(value: unknown, workspaces: Map<string, RailwayWorksp
   }
   for (const item of Object.values(record)) {
     collectWorkspaces(item, workspaces);
+  }
+}
+
+function collectProjects(value: unknown, projects: Map<string, RailwayProject>): void {
+  if (Array.isArray(value)) {
+    for (const item of value) collectProjects(item, projects);
+    return;
+  }
+  if (!value || typeof value !== "object") return;
+
+  const record = value as Record<string, unknown>;
+  collectProjects(record.projects, projects);
+
+  const id = typeof record.id === "string" ? record.id.trim() : "";
+  const name = typeof record.name === "string" ? record.name.trim() : "";
+  const deletedAt = record.deletedAt;
+  const workspace = readWorkspace(record.workspace);
+  if (id && name && workspace && !deletedAt) {
+    projects.set(id, {
+      id,
+      name,
+      workspaceId: workspace.id,
+      workspaceName: workspace.name,
+    });
   }
 }
 

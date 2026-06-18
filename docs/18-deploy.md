@@ -34,17 +34,18 @@ The CLI walks you through:
 
 1. **Local preflight** — runs doctor-style checks for config, env placeholders, package manifest, and agent-local dependencies before touching Railway.
 2. **Presence + auth checks** — confirms `railway` is installed and logged in.
-3. **Project selection** — create a new Railway project, or use an existing project via prompt / `--project <project-id>`. When creating a project, Auggy discovers Railway workspaces from your logged-in Railway CLI session and lets you choose one. For scripted deploys, pass `--project-name <name>` plus `--workspace <workspace-name-or-id>`.
-4. **Bundle staging** — copies your agent directory minus `.env`, `*.db*`, `workspace/`, `node_modules/`, `.git/`, `.worktrees/`, `.claude/`, `.DS_Store`, `*.tmp` into a temp dir. The agent's `package.json` + `bun.lock` are included so the image can install your pinned deps.
-5. **Dockerfile + entrypoint generation** — written into the staging dir. Static; not operator-tunable at v1.0. The image copies `package.json` + `bun.lock` first, runs `bun install` to materialize `node_modules/` inside the image, then COPYs the rest of the agent dir; the entrypoint invokes `bunx auggy dev` so it uses the per-agent install rather than a global `auggy`.
-6. **Secrets diff + confirm** — shows what's about to be pushed to Railway (with values redacted). Decline aborts the deploy. Pass `--yes` to skip.
-7. **Railway service selection** — by default Auggy creates a new service named `<name>` in the selected project. Pass `--service <name-or-id>` to deploy into an existing Railway service instead.
-8. **`railway volume add --mount-path /app/data`** — provisions a persistent volume mounted at `/app/data`. Holds SQLite-backed state across redeploys.
-9. **`railway domain`** — assigns a `<name>-production-xxxx.up.railway.app` URL.
-10. **Push env vars** — your `.env` entries + `AUGGY_PUBLIC_URL` (the just-generated URL) are pushed via `railway variables --set`.
-11. **`railway up --detach`** — uploads the bundle, kicks off the build and deploy.
-12. **Health verification** — polls `${url}/health` for a bounded window. Timeout is non-destructive; Railway may still finish booting.
-13. **Metadata write** — the cloud record lands in `<agent-dir>/.auggy-cloud.json` so subsequent `auggy deploy` runs are idempotent redeploys.
+3. **Workspace selection** — Auggy discovers Railway workspaces from your logged-in Railway CLI session and lets you choose where the deploy belongs.
+4. **Project selection** — create a new Railway project in that workspace, or use an existing project from that workspace. You can still pass `--project <project-id>` to skip prompts and deploy into a known existing project. For scripted first deploys, pass `--project-name <name>` plus `--workspace <workspace-name-or-id>`.
+5. **Bundle staging** — copies your agent directory minus `.env`, `*.db*`, `workspace/`, `node_modules/`, `.git/`, `.worktrees/`, `.claude/`, `.DS_Store`, `*.tmp` into a temp dir. The agent's `package.json` + `bun.lock` are included so the image can install your pinned deps.
+6. **Dockerfile + entrypoint generation** — written into the staging dir. Static; not operator-tunable at v1.0. The image copies `package.json` + `bun.lock` first, runs `bun install` to materialize `node_modules/` inside the image, then COPYs the rest of the agent dir; the entrypoint invokes `bunx auggy dev` so it uses the per-agent install rather than a global `auggy`.
+7. **Secrets diff + confirm** — shows what's about to be pushed to Railway (with values redacted). Decline aborts the deploy. Pass `--yes` to skip.
+8. **Railway service selection** — by default Auggy creates a new service named `<name>` in the selected project. Pass `--service <name-or-id>` to deploy into an existing Railway service instead.
+9. **`railway volume add --mount-path /app/data`** — provisions a persistent volume mounted at `/app/data`. Holds SQLite-backed state across redeploys.
+10. **`railway domain`** — assigns a `<name>-production-xxxx.up.railway.app` URL.
+11. **Push env vars** — your `.env` entries + `AUGGY_PUBLIC_URL` (the just-generated URL) are pushed via `railway variables --set`.
+12. **`railway up --detach`** — uploads the bundle, kicks off the build and deploy.
+13. **Health verification** — polls `${url}/health` for a bounded window. Timeout is non-destructive; Railway may still finish booting.
+14. **Metadata write** — the cloud record lands in `<agent-dir>/.auggy-cloud.json` so subsequent `auggy deploy` runs are idempotent redeploys.
 
 Successful deploy output includes the public URL, `/health`, `/console`, and `/console/chat`. Follow later builds in the [Railway dashboard](https://railway.com) or with `auggy logs`.
 
