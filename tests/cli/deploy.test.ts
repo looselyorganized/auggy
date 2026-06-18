@@ -651,6 +651,30 @@ describe("runDeploy", () => {
     expect(getAgent("zip", { auggyDir })?.cloud).toBeNull();
   });
 
+  test("aborts before Railway calls when webTransport is not on port 8080", async () => {
+    writeAugmentMetadata(agentDir, "webTransport", {
+      type: "webTransport",
+      config: {
+        port: 18080,
+        auth: {
+          type: "bearer",
+          token: "${AUGGY_WEB_TOKEN}",
+        },
+      },
+    });
+    const { cli, calls } = mockRailwayCli();
+
+    await expect(runDeploy("zip", baseDeployOptions(cli, auggyDir))).rejects.toThrow(
+      /webTransport must listen on port 8080 for Railway deploys \(found 18080\)/,
+    );
+
+    expect(calls.checkPresence).toBe(0);
+    expect(calls.checkAuth).toBe(0);
+    expect(calls.link).toEqual([]);
+    expect(calls.up).toBe(0);
+    expect(getAgent("zip", { auggyDir })?.cloud).toBeNull();
+  });
+
   test("aborts before Railway calls when visitorAuth uses console mail for deploy", async () => {
     appendAugmentId(agentDir, "visitorAuth");
     writeAugmentMetadata(agentDir, "visitorAuth", {

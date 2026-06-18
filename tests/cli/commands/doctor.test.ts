@@ -88,7 +88,7 @@ function writeAgent(
   writeAugmentMetadata(dir, "webTransport", {
     type: "webTransport",
     config: {
-      port: opts.port ?? 18080,
+      port: opts.port ?? 8080,
       auth: { type: "bearer", token: "${AUGGY_WEB_TOKEN}" },
     },
   });
@@ -244,7 +244,7 @@ describe("runDoctor", () => {
     expect(hasDoctorFailures(checks)).toBe(false);
     expect(checks.some((c) => c.name === "agent.yaml" && c.status === "pass")).toBe(true);
     expect(checks.some((c) => c.name === "dependency auggy" && c.status === "pass")).toBe(true);
-    expect(checks.some((c) => c.name === "port 18080" && c.status === "pass")).toBe(true);
+    expect(checks.some((c) => c.name === "port 8080" && c.status === "pass")).toBe(true);
   });
 
   test("passes a ready project-local scaffold without an agent name", async () => {

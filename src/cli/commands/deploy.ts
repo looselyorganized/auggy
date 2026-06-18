@@ -519,6 +519,24 @@ export async function runDeploy(
 
 function assertRailwayDeploySafeConfig(configPath: string): void {
   const config = parseConfig(configPath);
+  const webTransport = config.augments.find((augment) => augment.type === "webTransport");
+  const webPort = webTransport?.options?.port;
+  if (webPort !== 8080) {
+    throw new Error(
+      [
+        "Deploy preflight failed:",
+        `webTransport must listen on port 8080 for Railway deploys (found ${webPort ?? "unset"}).`,
+        "",
+        "Auggy's generated Railway Dockerfile exposes port 8080. A different",
+        "webTransport port can boot successfully inside the container while Railway",
+        "still returns 502 because the proxy cannot reach the app.",
+        "",
+        "Fix:",
+        "  - Set `port: 8080` under config in augments/webTransport/augment.yaml.",
+      ].join("\n"),
+    );
+  }
+
   const visitorAuth = config.augments.find((augment) => augment.type === "visitorAuth");
   if (!visitorAuth) return;
 

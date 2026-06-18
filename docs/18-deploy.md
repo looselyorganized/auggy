@@ -15,6 +15,7 @@ If you're deploying locally as a launchd service (macOS), see [`auggy start`](./
 | `railway login` completed | Authenticates the Railway CLI session. `auggy deploy` does not store API tokens. |
 | A Railway workspace | Personal/team workspace that will own the project. `auggy deploy` can create the Railway project for you, or link an existing one. |
 | `auggy create <name>` already run | Deploy operates on an agent project. |
+| `webTransport` on port `8080` | The generated Railway Dockerfile exposes `8080`; other ports can boot in-container but return 502 through Railway. |
 
 ---
 
@@ -273,6 +274,7 @@ The Railway volume is **NOT** automatically deleted (Railway retains it as a saf
 | `Agent "X" not registered` | Run `auggy create X` first, then `cd X && auggy deploy`. |
 | First-deploy fails at `railway volume add` | The Railway project may not support volumes on the free tier. Upgrade or pick a different project. |
 | Deploy preflight fails before Railway work | Run `auggy doctor` and fix the reported config/env/dependency issue. |
+| Deploy preflight fails because webTransport is not on 8080 | Set `port: 8080` under `config` in `augments/webTransport/augment.yaml`. |
 | Health check does not pass after deploy | Run `auggy logs` and inspect the boot error. The cloud record is still written, so redeploy with `auggy deploy --yes` after fixing. |
 | visitorAuth refuses to boot — "publicUrl required" | Check that `augments/visitorAuth/augment.yaml` has `publicUrl: ${AUGGY_PUBLIC_URL}` and the deploy actually generated a domain. Re-run `auggy deploy` to refresh. |
 | Deploy preflight fails because visitorAuth uses console mail | Run `auggy agentmail setup visitorAuth`, or set `allowConsoleInProduction: true` only for smoke tests where log-visible magic links are acceptable. |
