@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { join } from "node:path";
 import { budgets } from "@/augments/budgets";
+import type { BudgetThresholdNotificationPayload } from "@/augments/budgets/types";
 import { createTempDir } from "@tests/fixtures/temp-dir";
 import type { Augment, PeerIdentity, TurnState } from "@/types";
 
@@ -513,6 +514,68 @@ describe("budgets augment", () => {
       /dailyBudgetUsd reached/,
     );
     await t3.rollback();
+  });
+
+  it("dailyBudgetUsd threshold notifications fire once for the highest newly crossed threshold", async () => {
+    const notifications: BudgetThresholdNotificationPayload[] = [];
+    augment = budgets({
+      dbPath,
+      dailyBudgetUsd: 1.0,
+      caps: { public: { recognized: { maxTurnsPerThread: 100 } } },
+      notifications: { destination: "ops", thresholds: [0.5, 0.8, 1] },
+      notificationDispatcher: async (payload) => {
+        notifications.push(payload);
+      },
+    });
+
+    const peer = makePeer({
+      id: uniqueId("vis"),
+      trustLevel: "public",
+      publicSubstate: "recognized",
+    });
+    const threadId = "thread-thresholds";
+
+    async function commitPriced(costUsd: number): Promise<void> {
+      const turnId = uniqueTurnId();
+      const ticket = await augment.turnGate!.prepare({
+        turnId,
+        peer,
+        threadId,
+        trigger: makeTurnState(peer, threadId).trigger,
+      });
+      expect(ticket.decision.allow).toBe(true);
+      await ticket.confirm();
+      await augment.turnGate!.commit!({
+        turnId,
+        peer,
+        threadId,
+        cost: { priced: true, costUsd },
+      });
+    }
+
+    await commitPriced(0.85);
+    expect(notifications).toHaveLength(1);
+    expect(notifications[0]).toMatchObject({
+      destination: "ops",
+      threshold: 0.8,
+      totalUsd: 0.85,
+      dailyBudgetUsd: 1,
+      peerId: peer.id,
+      threadId,
+    });
+    expect(notifications[0]!.summary).toContain("80%");
+
+    await commitPriced(0.05);
+    expect(notifications).toHaveLength(1);
+
+    await commitPriced(0.15);
+    expect(notifications).toHaveLength(2);
+    expect(notifications[1]).toMatchObject({
+      threshold: 1,
+      totalUsd: 1.05,
+      dailyBudgetUsd: 1,
+    });
+    expect(notifications[1]!.summary).toContain("100%");
   });
 
   // ── 9. Unpriced commit semantics ─────────────────────────────────────────

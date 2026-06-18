@@ -653,6 +653,95 @@ describe("resolveAugments — budgets", () => {
     // Should resolve cleanly without throwing.
     await expect(augments[0]!.onShutdown!()).resolves.toBeUndefined();
   });
+
+  test("rejects budgets threshold notifications without a matching notify destination", async () => {
+    const configs: AugmentConfig[] = [
+      {
+        name: "budgets",
+        type: "budgets",
+        options: {
+          dbPath: "./budgets.db",
+          dailyBudgetUsd: 1,
+          notifications: { destination: "ops", thresholds: [0.8] },
+        },
+      },
+    ];
+
+    await expect(resolveAugments(configs, TMP)).rejects.toThrow(
+      'budgets.notifications.destination "ops"',
+    );
+  });
+
+  test("routes budgets threshold notifications through a notify destination", async () => {
+    const logPath = join(TMP, "notifications.jsonl");
+    const configs: AugmentConfig[] = [
+      {
+        name: "budgets",
+        type: "budgets",
+        options: {
+          dbPath: "./budgets-thresholds.db",
+          dailyBudgetUsd: 1,
+          caps: { public: { recognized: { maxTurnsPerThread: 10 } } },
+          notifications: { destination: "ops", thresholds: [0.5, 0.8, 1] },
+        },
+      },
+      {
+        name: "notify",
+        type: "notify",
+        options: {
+          destinations: [{ name: "ops", transport: "log-to-file", path: logPath }],
+          rateLimit: { enabled: false },
+        },
+      },
+    ];
+
+    const augments = await resolveAugments(configs, TMP);
+    const budgetAugment = augments.find((augment) => augment.name === "budgets");
+    expect(budgetAugment?.turnGate).toBeDefined();
+    const peer = {
+      id: "vis-threshold",
+      kind: "human",
+      trustLevel: "public",
+      publicSubstate: "recognized",
+      sourceAugment: "web-transport",
+    } as const;
+    const threadId = "thread-threshold";
+    const turnId = "turn-threshold";
+
+    try {
+      const ticket = await budgetAugment!.turnGate!.prepare({
+        turnId,
+        peer,
+        threadId,
+        trigger: {
+          type: "message",
+          turnId,
+          threadId,
+          timestamp: Date.now(),
+          payload: { parts: [], sourceAugment: "web-transport", peer, timestamp: Date.now() },
+        },
+      });
+      expect(ticket.decision.allow).toBe(true);
+      await ticket.confirm();
+      await budgetAugment!.turnGate!.commit!({
+        turnId,
+        peer,
+        threadId,
+        cost: { priced: true, costUsd: 0.85 },
+      });
+
+      const record = JSON.parse(readFileSync(logPath, "utf8").trim()) as {
+        destination: string;
+        summary: string;
+        reason: string;
+      };
+      expect(record.destination).toBe("ops");
+      expect(record.summary).toContain("80%");
+      expect(record.reason).toContain("$0.85 of $1.00");
+    } finally {
+      await budgetAugment?.onShutdown?.();
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------

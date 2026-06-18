@@ -13,6 +13,35 @@ export interface BudgetCaps {
   maxTurnsPerDay?: number;
 }
 
+export interface BudgetThresholdNotifications {
+  /** Set false to keep the config block documented but inactive. */
+  enabled?: boolean;
+  /** Named notify destination to receive threshold alerts. */
+  destination: string;
+  /**
+   * DailyBudgetUsd fractions to alert on. Values are ratios in (0, 1].
+   * Defaults to [0.5, 0.8, 1].
+   */
+  thresholds?: number[];
+}
+
+export interface BudgetThresholdNotificationPayload {
+  destination: string;
+  threshold: number;
+  day: string;
+  totalUsd: number;
+  dailyBudgetUsd: number;
+  peerId: string;
+  turnId: string;
+  threadId: string;
+  summary: string;
+  reason: string;
+}
+
+export type BudgetThresholdNotificationDispatcher = (
+  payload: BudgetThresholdNotificationPayload,
+) => Promise<void>;
+
 /**
  * Differentiated caps for the public trust level, split by publicSubstate.
  * anonymous (no identity): tighter defaults (5 turns/thread, no daily).
@@ -49,6 +78,11 @@ export interface BudgetsConfig {
    * peers). Blocks admission once the day's total crosses this threshold.
    */
   dailyBudgetUsd?: number;
+  /**
+   * Optional operator notifications when priced daily spend crosses configured
+   * fractions of dailyBudgetUsd. Requires resolver wiring to a notify destination.
+   */
+  notifications?: BudgetThresholdNotifications;
   /** Milliseconds before a pending reservation is swept to 'allow:incomplete'. Default: 3_600_000. */
   cleanupWindowMs?: number;
   /**
@@ -92,4 +126,12 @@ export interface BudgetStoreConfig {
   dbPath: string;
   /** Milliseconds before a pending reservation is swept. Default: 3_600_000. */
   cleanupWindowMs?: number;
+}
+
+export interface BudgetCommitRecord {
+  turnId: string;
+  peerId: string;
+  day: string;
+  priced: boolean;
+  costUsd: number;
 }

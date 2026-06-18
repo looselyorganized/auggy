@@ -83,6 +83,7 @@ needed — the kernel detects `turnGate` automatically.
 | `caps.public.recognized` | `BudgetCaps` | no | none (uncapped) | Caps for `public` peers with `publicSubstate === "recognized"`. |
 | `anonymousGlobalLimit` | `number` | no | none | Max anonymous requests per rolling 60-second window (facility-wide). |
 | `dailyBudgetUsd` | `number` | no | none | Facility-wide daily USD ceiling (sum of all priced turns). |
+| `notifications` | `object` | no | none | Optional notify-backed alerts when priced spend crosses `dailyBudgetUsd` thresholds. |
 | `cleanupWindowMs` | `number` | no | 3,600,000 | Milliseconds before a stuck pending reservation is swept to `allow:incomplete`. |
 
 ### `BudgetCaps` fields
@@ -94,6 +95,27 @@ needed — the kernel detects `turnGate` automatically.
 | `maxUsdPerDay` | `number` | Maximum USD spend per peer per calendar day. Post-hoc (see §9). |
 
 All `BudgetCaps` fields are optional. Omit a field to leave that dimension unconstrained. An empty `BudgetCaps` (`{}`) is valid but has no effect.
+
+### `notifications` fields
+
+Budget notifications are optional and only apply when `dailyBudgetUsd` is configured. They require the `notify` augment to be mounted with a matching destination name.
+
+```yaml
+config:
+  dbPath: ./data/budgets.db
+  dailyBudgetUsd: 50
+  notifications:
+    destination: creator
+    thresholds: [0.5, 0.8, 1.0]
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `enabled` | `boolean` | Set `false` to keep the block documented but inactive. |
+| `destination` | `string` | Name of a destination declared in the `notify` augment. Required when enabled. |
+| `thresholds` | `number[]` | Spend ratios in `(0, 1]`; defaults to `[0.5, 0.8, 1]`. |
+
+Threshold alerts fire after priced cost commit, not during admission. If one turn crosses several thresholds, budgets sends only the highest newly crossed threshold and marks lower crossed thresholds as sent for that UTC day. Unpriced turns do not trigger threshold alerts because they do not increase priced spend.
 
 ### Creator bypass
 

@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import type { TurnGateTicket, CostResult, TrustLevel } from "../../types";
-import type { BudgetCaps, BudgetStoreConfig } from "./types";
+import type { BudgetCaps, BudgetCommitRecord, BudgetStoreConfig } from "./types";
 
 // ────────────────────────────────────────────────────────────
 // Schema
@@ -78,7 +78,7 @@ export interface BudgetStore {
    * Post-response cost commit. Updates daily_global and peer_daily_costs
    * atomically. Idempotent on the reservation's committed_at IS NULL guard.
    */
-  commit(turnId: string, peerId: string, cost: CostResult): Promise<void>;
+  commit(turnId: string, peerId: string, cost: CostResult): Promise<BudgetCommitRecord | undefined>;
 
   /**
    * Read-only accessor for context() preamble. Returns current usage so the
@@ -448,32 +448,38 @@ export function createBudgetStore(config: BudgetStoreConfig): BudgetStore {
 
   // ── commit ───────────────────────────────────────────────
 
-  async function commit(turnId: string, peerId: string, cost: CostResult): Promise<void> {
+  async function commit(
+    turnId: string,
+    peerId: string,
+    cost: CostResult,
+  ): Promise<BudgetCommitRecord | undefined> {
     const now = Date.now();
 
-    const tx = db.transaction(() => {
+    const tx = db.transaction((): BudgetCommitRecord | undefined => {
       // Look up the reservation's stored day so cost is booked to the SAME
       // day the admission decision was made against — not the day the engine
       // call happened to finish in. A turn admitted just before UTC midnight
       // and finished just after must not leak spend across day boundaries.
       const reservationRow = selectReservationDayStmt.get(turnId);
-      if (!reservationRow) return; // reservation doesn't exist (never reserved or already swept)
+      if (!reservationRow) return undefined; // reservation doesn't exist (never reserved or already swept)
       const dayKey = reservationRow.day;
 
       if (cost.priced) {
         const result = updateReservationPricedStmt.run(now, cost.costUsd, turnId);
-        if (result.changes === 0) return; // already committed — idempotent
+        if (result.changes === 0) return undefined; // already committed — idempotent
         upsertDailyGlobalPricedStmt.run(dayKey, cost.costUsd, now);
         upsertPeerDailyCostPricedStmt.run(peerId, dayKey, cost.costUsd, now);
+        return { turnId, peerId, day: dayKey, priced: true, costUsd: cost.costUsd };
       } else {
         const result = updateReservationUnpricedStmt.run(now, turnId);
-        if (result.changes === 0) return; // already committed — idempotent
+        if (result.changes === 0) return undefined; // already committed — idempotent
         upsertDailyGlobalUnpricedStmt.run(dayKey, now);
         upsertPeerDailyCostUnpricedStmt.run(peerId, dayKey, now);
+        return { turnId, peerId, day: dayKey, priced: false, costUsd: 0 };
       }
     });
 
-    tx();
+    return tx();
   }
 
   // ── getPeerUsage ─────────────────────────────────────────
