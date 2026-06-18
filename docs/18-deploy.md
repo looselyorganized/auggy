@@ -64,9 +64,9 @@ auggy deploy
 When `<agent-dir>/.auggy-cloud.json` exists, plain `auggy deploy` asks:
 
 ```text
-Saved Railway target: project <project-id>, service <service-id>. What do you want to do?
-  Redeploy saved Railway service
-  Recreate service in saved project
+Saved Railway service: <service> (<workspace> / <project>). What do you want to do?
+  Redeploy <service> to <workspace> / <project>
+  Recreate <service> in <workspace> / <project>
   Choose another Railway project/service
   Remove saved deploy metadata and start over
   Cancel

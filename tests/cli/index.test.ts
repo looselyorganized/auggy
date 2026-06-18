@@ -12,9 +12,8 @@ mock.module("@inquirer/prompts", () => ({
   select: async (config: { choices?: Array<{ value: unknown }> }) => config.choices?.[0]?.value,
 }));
 
-const { buildCli, formatDeployInfoLine, formatDeployResultMessage } = await import(
-  "../../src/cli/index"
-);
+const { buildCli, describeSavedRailwayTarget, formatDeployInfoLine, formatDeployResultMessage } =
+  await import("../../src/cli/index");
 
 describe("auggy CLI command table", () => {
   test("registers the public command suite", () => {
@@ -150,5 +149,58 @@ describe("auggy CLI command table", () => {
     expect(out).toContain("  Project:  proj_123");
     expect(out).toContain("  Service:  dx-agent");
     expect(out).not.toContain("Current health is passing");
+  });
+});
+
+describe("Railway deploy prompt copy", () => {
+  test("describes a saved deploy target with workspace and project names", async () => {
+    const target = await describeSavedRailwayTarget(
+      {
+        listProjects: async () => [
+          {
+            id: "proj_123",
+            name: "Pickleball Concierge",
+            workspaceId: "workspace_123",
+            workspaceName: "Michael Hofweller's Projects",
+          },
+        ],
+      },
+      {
+        provider: "railway",
+        projectId: "proj_123",
+        serviceId: "dx-lab-agent",
+        url: "https://dx-lab-agent.up.railway.app",
+        volumeId: "dx-lab-agent-data",
+        deployedAt: "2026-06-18T00:00:00.000Z",
+      },
+    );
+
+    expect(target).toEqual({
+      service: "dx-lab-agent",
+      scope: "Michael Hofweller's Projects / Pickleball Concierge",
+    });
+  });
+
+  test("falls back to ids when Railway project lookup fails", async () => {
+    const target = await describeSavedRailwayTarget(
+      {
+        listProjects: async () => {
+          throw new Error("railway unavailable");
+        },
+      },
+      {
+        provider: "railway",
+        projectId: "proj_123",
+        serviceId: "dx-lab-agent",
+        url: "https://dx-lab-agent.up.railway.app",
+        volumeId: "dx-lab-agent-data",
+        deployedAt: "2026-06-18T00:00:00.000Z",
+      },
+    );
+
+    expect(target).toEqual({
+      service: "dx-lab-agent",
+      scope: "project proj_123",
+    });
   });
 });

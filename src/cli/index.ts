@@ -51,6 +51,8 @@ import { runRemove } from "./commands/remove";
 import { runLs } from "./commands/ls";
 import { withBrailleSpinner } from "./spinner";
 import type { DeployResult } from "./commands/deploy";
+import type { RailwayCli } from "./deploy/railway-cli";
+import type { CloudRecord } from "./types";
 import { failureMark, successMark, warningLabel, type CliStyleOptions } from "./_shared/styles";
 
 export function buildCli(): Command {
@@ -357,16 +359,17 @@ export function buildCli(): Command {
                 validate: (v) => v.trim().length > 0 || "workspace required",
               });
             },
-            promptSavedDeploymentTarget: ({ cloud }) =>
-              select({
-                message: `Saved Railway target: project ${cloud.projectId}, service ${cloud.serviceId}. What do you want to do?`,
+            promptSavedDeploymentTarget: async ({ cloud }) => {
+              const target = await describeSavedRailwayTarget(cli, cloud);
+              return select({
+                message: `Saved Railway service: ${target.service} (${target.scope}). What do you want to do?`,
                 choices: [
                   {
-                    name: "Redeploy saved Railway service",
+                    name: `Redeploy ${target.service} to ${target.scope}`,
                     value: "saved" as const,
                   },
                   {
-                    name: "Recreate service in saved project",
+                    name: `Recreate ${target.service} in ${target.scope}`,
                     value: "recreate" as const,
                   },
                   {
@@ -382,7 +385,8 @@ export function buildCli(): Command {
                     value: "cancel" as const,
                   },
                 ],
-              }),
+              });
+            },
             promptServiceTarget: ({ defaultServiceName }) =>
               select({
                 message: `Railway service for ${defaultServiceName}:`,
@@ -445,6 +449,27 @@ if (import.meta.main) {
 
 function formatWarning(msg: string): string {
   return `\n${warningLabel({ color: process.stderr.isTTY })}: ${msg}\n`;
+}
+
+export async function describeSavedRailwayTarget(
+  cli: Pick<RailwayCli, "listProjects">,
+  cloud: NonNullable<CloudRecord>,
+): Promise<{ service: string; scope: string }> {
+  let scope = `project ${cloud.projectId}`;
+  try {
+    const projects = await cli.listProjects();
+    const project = projects.find((candidate) => candidate.id === cloud.projectId);
+    if (project?.workspaceName && project.name) {
+      scope = `${project.workspaceName} / ${project.name}`;
+    } else if (project?.name) {
+      scope = project.name;
+    } else if (project?.workspaceName) {
+      scope = `${project.workspaceName} / project ${project.id}`;
+    }
+  } catch {
+    // Display-only enrichment. Falling back to IDs must not block deploy.
+  }
+  return { service: cloud.serviceId, scope };
 }
 
 export function formatDeployInfoLine(msg: string, style: CliStyleOptions = {}): string | null {
