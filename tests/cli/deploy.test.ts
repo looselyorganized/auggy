@@ -745,6 +745,75 @@ describe("runDeploy", () => {
     expect(calls.up).toBe(1);
   });
 
+  test("aborts before Railway calls when budgets deploy posture is not acknowledged", async () => {
+    appendAugmentId(agentDir, "budgets");
+    writeAugmentMetadata(agentDir, "budgets", {
+      type: "budgets",
+      config: {
+        dbPath: "./data/budgets.db",
+        dailyBudgetUsd: 5,
+      },
+    });
+
+    const prompts: string[] = [];
+    const warnings: string[] = [];
+    const { cli, calls } = mockRailwayCli();
+
+    await expect(
+      runDeploy(
+        "zip",
+        baseDeployOptions(cli, auggyDir, {
+          yes: false,
+          promptConfirm: async (message) => {
+            prompts.push(message);
+            return false;
+          },
+          logger: { info: () => {}, warn: (msg) => warnings.push(msg), error: () => {} },
+        }),
+      ),
+    ).rejects.toThrow(/declined budgets deploy acknowledgement/);
+
+    expect(warnings.join("\n")).toContain("budgets.dailyBudgetUsd is set to $5.00");
+    expect(warnings.join("\n")).toContain("runtime soft cap, not billing control");
+    expect(warnings.join("\n")).toContain("provider-side hard spend caps");
+    expect(warnings.join("\n")).toContain("single-process/single-replica");
+    expect(prompts.join("\n")).toContain("Proceed with Railway deploy?");
+    expect(calls.checkPresence).toBe(0);
+    expect(calls.checkAuth).toBe(0);
+    expect(calls.up).toBe(0);
+    expect(getAgent("zip", { auggyDir })?.cloud).toBeNull();
+  });
+
+  test("--yes logs budgets deploy posture warning and proceeds", async () => {
+    appendAugmentId(agentDir, "budgets");
+    writeAugmentMetadata(agentDir, "budgets", {
+      type: "budgets",
+      config: {
+        dbPath: "./data/budgets.db",
+        dailyBudgetUsd: 5,
+      },
+    });
+
+    const warnings: string[] = [];
+    const { cli, calls } = mockRailwayCli();
+    const result = await runDeploy(
+      "zip",
+      baseDeployOptions(cli, auggyDir, {
+        yes: true,
+        promptConfirm: async () => {
+          throw new Error("promptConfirm should not be called with --yes");
+        },
+        logger: { info: () => {}, warn: (msg) => warnings.push(msg), error: () => {} },
+      }),
+    );
+
+    expect(warnings.join("\n")).toContain("budgets.dailyBudgetUsd is set to $5.00");
+    expect(warnings.join("\n")).toContain("provider-side hard spend caps");
+    expect(calls.checkPresence).toBe(1);
+    expect(calls.up).toBe(1);
+    expect(result.projectId).toBe("proj_abc");
+  });
+
   test("--yes flag skips the confirmation prompt", async () => {
     const { cli } = mockRailwayCli();
     let promptCalled = false;
