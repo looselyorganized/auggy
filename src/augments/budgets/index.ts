@@ -72,6 +72,7 @@ export function budgets(opts: BudgetsAugmentOptions): Augment {
   const store: BudgetStore = createBudgetStore({
     dbPath: opts.dbPath,
     cleanupWindowMs: opts.cleanupWindowMs,
+    retentionDays: opts.retentionDays,
   });
   const notificationThresholds = normalizeThresholds(opts.notifications);
   const sentThresholds = new Set<string>();
@@ -98,10 +99,23 @@ export function budgets(opts: BudgetsAugmentOptions): Augment {
   // stale turns are caught within at most cleanupWindowMs of becoming stale.
   const cleanupWindowMs = opts.cleanupWindowMs ?? 60 * 60_000; // default 1 hour
   const sweepIntervalMs = Math.max(60_000, Math.floor(cleanupWindowMs / 2));
-  const sweepTimer = setInterval(() => {
-    store.sweepIncompleteReservations({ olderThanMs: cleanupWindowMs }).catch((err) => {
+  async function runMaintenance(): Promise<void> {
+    try {
+      await store.sweepIncompleteReservations({ olderThanMs: cleanupWindowMs });
+    } catch (err) {
       console.error("[budgets] sweep failed:", err);
-    });
+    }
+    if (opts.retentionDays !== undefined) {
+      try {
+        await store.purgeOldRows({ retentionDays: opts.retentionDays });
+      } catch (err) {
+        console.error("[budgets] retention purge failed:", err);
+      }
+    }
+  }
+
+  const sweepTimer = setInterval(() => {
+    void runMaintenance();
   }, sweepIntervalMs);
   // Don't keep the process alive just for the sweeper.
   sweepTimer.unref();
@@ -246,6 +260,10 @@ export function budgets(opts: BudgetsAugmentOptions): Augment {
     return `degraded (${unpricedTurns} unpriced ${noun} today)`;
   }
 
+  function formatRetention(): string {
+    return opts.retentionDays === undefined ? "off" : `${opts.retentionDays} day(s)`;
+  }
+
   async function adminInfo(): Promise<AdminInfoBlock> {
     const spend = await store.getDaySpend();
     return {
@@ -265,7 +283,7 @@ export function budgets(opts: BudgetsAugmentOptions): Augment {
               value: "post-hoc soft cap; provider-side hard caps still required",
             },
             { label: "Storage", value: "SQLite; single-process and single-replica" },
-            { label: "Retention", value: "no built-in purge policy" },
+            { label: "Retention", value: formatRetention(), source: "yaml" },
             {
               label: "Daily budget cap",
               value: formatCap(currentDailyBudgetUsd),

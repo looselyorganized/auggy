@@ -86,6 +86,11 @@ export interface BudgetsConfig {
   /** Milliseconds before a pending reservation is swept to 'allow:incomplete'. Default: 3_600_000. */
   cleanupWindowMs?: number;
   /**
+   * Optional UTC-day retention window for persisted budget accounting rows.
+   * Omit to keep the v0 default of no automatic purge.
+   */
+  retentionDays?: number;
+  /**
    * G36 — agent project directory. When set,
    * `admin-overrides.json` is read at boot to apply runtime overrides
    * (currently: dailyBudgetUsd). Admin actions persist back via this path.
@@ -126,6 +131,16 @@ export interface BudgetStoreConfig {
   dbPath: string;
   /** Milliseconds before a pending reservation is swept. Default: 3_600_000. */
   cleanupWindowMs?: number;
+  /** Optional UTC-day retention window. Omit to disable automatic purge. */
+  retentionDays?: number;
+}
+
+export interface BudgetRetentionPurgeResult {
+  turnReservations: number;
+  dailyGlobal: number;
+  peerDailyCosts: number;
+  anonymousRequests: number;
+  total: number;
 }
 
 export interface BudgetCommitRecord {

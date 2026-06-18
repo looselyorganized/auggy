@@ -692,6 +692,7 @@ describe("budgets augment options validation", () => {
                 destination: "ops",
                 thresholds: [0.5, 0.8, 1],
               },
+              retentionDays: 30,
               cleanupWindowMs: 86400000,
             },
           },
@@ -706,6 +707,7 @@ describe("budgets augment options validation", () => {
       destination: "ops",
       thresholds: [0.5, 0.8, 1],
     });
+    expect(config.augments[0]!.options!.retentionDays).toBe(30);
   });
 
   test("accepts a minimal budgets block (only dbPath)", () => {
@@ -831,6 +833,22 @@ describe("budgets augment options validation", () => {
       }),
     );
     expect(() => parseConfig(path)).toThrow("notifications.thresholds[1]");
+  });
+
+  test("rejects negative retentionDays", () => {
+    const path = writeYaml(
+      "agent.yaml",
+      minimalConfig({
+        augments: [
+          {
+            name: "budgets",
+            type: "budgets",
+            options: { dbPath: "./budgets.db", retentionDays: -1 },
+          },
+        ],
+      }),
+    );
+    expect(() => parseConfig(path)).toThrow("retentionDays");
   });
 
   test("rejects caps.public.anonymous.maxTurnsPerThread = -5", () => {
