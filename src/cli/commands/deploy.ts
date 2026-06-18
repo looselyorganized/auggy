@@ -627,12 +627,21 @@ async function acknowledgeBudgetsDeployPosture(
   config: ReturnType<typeof parseConfig>,
   opts: DeployOptions,
 ): Promise<void> {
-  const budgetsAugment = config.augments.find((augment) => augment.type === "budgets");
-  const dailyBudgetUsd = budgetsAugment?.options?.dailyBudgetUsd;
-  if (typeof dailyBudgetUsd !== "number") return;
+  const dailyBudgetCaps = config.augments.flatMap((augment) => {
+    if (augment.type !== "budgets") return [];
+    const dailyBudgetUsd = augment.options?.dailyBudgetUsd;
+    return typeof dailyBudgetUsd === "number" ? [{ name: augment.name, dailyBudgetUsd }] : [];
+  });
+  if (dailyBudgetCaps.length === 0) return;
+  const capSummary =
+    dailyBudgetCaps.length === 1
+      ? `budgets.dailyBudgetUsd is set to $${dailyBudgetCaps[0]!.dailyBudgetUsd.toFixed(2)}.`
+      : `budgets.dailyBudgetUsd is set on ${dailyBudgetCaps.length} budgets augments: ${dailyBudgetCaps
+          .map((cap) => `${cap.name}=$${cap.dailyBudgetUsd.toFixed(2)}`)
+          .join(", ")}.`;
 
   const warning = [
-    `budgets.dailyBudgetUsd is set to $${dailyBudgetUsd.toFixed(2)}.`,
+    capSummary,
     "This is a runtime soft cap, not billing control.",
     "Configure provider-side hard spend caps before unattended deploys.",
     "SQLite budgets are single-process/single-replica; do not scale this Railway service horizontally.",
