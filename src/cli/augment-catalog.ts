@@ -180,7 +180,7 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
     label: "Bash",
     tagline: "scoped shell execution (allowlist + risk levels)",
     description:
-      "Lets the agent run shell commands. Restricted by default to a small allowlist (echo, ls, cat, pwd, date). Configure risk level + allowlist in augments/bash/augment.yaml.",
+      "Preview host process execution, not a sandbox. Creator-only by default with a small allowlist (echo, ls, cat, pwd, date). Configure risk level + allowlist in augments/bash/augment.yaml.",
     type: "bash",
     defaultName: "bash",
     defaultOptions: {

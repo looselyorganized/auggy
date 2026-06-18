@@ -321,8 +321,8 @@ describe("runAdd no-op cases", () => {
     });
   });
 
-  test("preview augment add declines without --yes when operator does not confirm", async () => {
-    const dir = setupAgent("preview-decline");
+  test("link preview add declines without --yes when operator does not confirm", async () => {
+    const dir = setupAgent("link-preview-decline");
     const before = readFileSync(join(dir, "agent.yaml"), "utf-8");
     const originalLog = console.log;
     const logs: string[] = [];
@@ -331,7 +331,7 @@ describe("runAdd no-op cases", () => {
     };
 
     try {
-      await runAdd("preview-decline", {
+      await runAdd("link-preview-decline", {
         config: join(dir, "agent.yaml"),
         auggyDir,
         augment: "link",
@@ -347,6 +347,34 @@ describe("runAdd no-op cases", () => {
     const output = logs.join("\n");
     expect(output).toContain("Preview augment selected:");
     expect(output).toContain("peer bearers grant agent trust");
+  });
+
+  test("bash preview add declines without --yes when operator does not confirm", async () => {
+    const dir = setupAgent("bash-preview-decline");
+    const before = readFileSync(join(dir, "agent.yaml"), "utf-8");
+    const originalLog = console.log;
+    const logs: string[] = [];
+    console.log = (...args: unknown[]) => {
+      logs.push(args.map(String).join(" "));
+    };
+
+    try {
+      await runAdd("bash-preview-decline", {
+        config: join(dir, "agent.yaml"),
+        auggyDir,
+        augment: "bash",
+        bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
+      });
+    } finally {
+      console.log = originalLog;
+    }
+
+    expect(readFileSync(join(dir, "agent.yaml"), "utf-8")).toBe(before);
+    expect(existsSync(join(dir, "skills", "bash", "SKILL.md"))).toBe(false);
+    expect(bunInstallCalls).toHaveLength(0);
+    const output = logs.join("\n");
+    expect(output).toContain("Preview augment selected:");
+    expect(output).toContain("host process execution is not sandboxing");
   });
 
   test("stable augment add does not require preview confirmation", async () => {
@@ -538,18 +566,31 @@ describe("runAdd no-op cases", () => {
   test("adding augments with no packageDeps does NOT run bun install", async () => {
     const dir = setupAgent("with-bash");
     answers = { augmentTypes: ["bash"] }; // bash has no packageDeps
+    const originalLog = console.log;
+    const logs: string[] = [];
+    console.log = (...args: unknown[]) => {
+      logs.push(args.map(String).join(" "));
+    };
 
-    await runAdd("with-bash", {
-      config: join(dir, "agent.yaml"),
-      auggyDir,
-      yes: true,
-      bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
-    });
+    try {
+      await runAdd("with-bash", {
+        config: join(dir, "agent.yaml"),
+        auggyDir,
+        yes: true,
+        bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
+      });
+    } finally {
+      console.log = originalLog;
+    }
 
     expect(bunInstallCalls).toHaveLength(0);
 
     // agent.yaml still mutated.
     expect(readAgentAugments(dir)).toContain("bash");
+    const output = logs.join("\n");
+    expect(output).toContain("Use bash (preview):");
+    expect(output).toContain("Bash runs host processes; it is not a sandbox");
+    expect(output).toContain("Bash tools are creator-only by default");
   });
 });
 

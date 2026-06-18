@@ -62,6 +62,15 @@ describe("augment catalog", () => {
     expect(entry?.hasSkill).toBe(true);
   });
 
+  it("catalog keeps bash preview with an explicit host-process warning", () => {
+    const entry = AUGMENT_CATALOG.find((e) => e.type === "bash");
+    expect(entry).toBeDefined();
+    expect(entry?.stability).toBe("preview");
+    expect(entry?.description).toContain("host process execution");
+    expect(entry?.description).toContain("not a sandbox");
+    expect(entry?.hasSkill).toBe(true);
+  });
+
   it("catalog includes layeredMemory as stable production memory", () => {
     const entry = AUGMENT_CATALOG.find((e) => e.type === "layeredMemory");
     expect(entry).toBeDefined();

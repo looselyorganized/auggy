@@ -178,6 +178,7 @@ export async function runAdd(target: string | undefined, opts: AddOpts): Promise
   let telegramTransportAdded = false;
   let visitorAuthAdded = false;
   let linkAdded = false;
+  let bashAdded = false;
   for (const entry of selected) {
     const skillCopied = copyBundledSkill(entry.type, agentDir);
     writeBuiltinAugmentMetadata(agentDir, entry, optionsForAddedAugment(entry, name));
@@ -206,6 +207,9 @@ export async function runAdd(target: string | undefined, opts: AddOpts): Promise
     }
     if (entry.type === "link") {
       linkAdded = true;
+    }
+    if (entry.type === "bash") {
+      bashAdded = true;
     }
     console.log(`  ✓ ${entry.defaultName} (${entry.type})`);
     if (skillCopied) {
@@ -298,6 +302,16 @@ export async function runAdd(target: string | undefined, opts: AddOpts): Promise
     console.log("  - Review augments/link/augment.yaml before exposing the port");
   }
 
+  if (bashAdded) {
+    console.log();
+    console.log("Use bash (preview):");
+    console.log("  - Bash runs host processes; it is not a sandbox");
+    console.log("  - Default install is restricted to echo, ls, cat, pwd, and date");
+    console.log("  - Bash tools are creator-only by default");
+    console.log("  - Do not expose bash to public or agent peers without explicit trust policy");
+    console.log("  - Review augments/bash/augment.yaml before relying on it in production");
+  }
+
   // === Run bun install (last; failure leaves intentional partial state) ===
   // Yaml + package.json mutations represent the operator's request and
   // stay on disk regardless of install outcome. A transient install failure
@@ -368,7 +382,7 @@ function previewCaveat(entry: CatalogEntry): string {
     case "budgets":
       return "spend-limit behavior needs more production soak";
     case "bash":
-      return "shell access requires careful command allowlists";
+      return "host process execution is not sandboxing; keep command allowlists tight";
     case "link":
       return "peer bearers grant agent trust; reduced-privilege peer auth is not ready";
     case "mcp":

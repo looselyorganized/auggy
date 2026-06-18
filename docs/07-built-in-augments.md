@@ -998,6 +998,12 @@ const shell = bash({
 
 A shell execution augment exposing two tools — `shell_exec` (run a command string) and `run_script` (write a script to a temp file and execute it). Both tools are gated by an operator-configured command allowlist: the first token of the command (or the script interpreter) must be in `allowedCommands` or the tool returns an error before forking.
 
+`bash` remains preview for v1.0. It executes host processes as the Auggy
+process user; it is not a sandbox, container boundary, filesystem jail, or
+privilege separator. Treat `risk`, `allowedCommands`, `blockedCommands`,
+`workingDir`, environment inheritance, and `perTrustLevel` as operator policy
+controls that reduce exposure, not as isolation guarantees.
+
 ### Per-trust-level defaults
 
 By default, `shell_exec` and `run_script` are **blocked for both `public` and `agent` peers**. Only `creator` peers get the full bash surface.
@@ -1034,6 +1040,7 @@ Passing `perTrustLevel: {}` would expose bash to everyone. Operators are respons
 - **`cwd` is the only working directory** — set it to a directory the agent should be allowed to operate in.
 - **`timeoutMs`** — default 30 seconds. Commands that exceed the timeout are killed.
 - **No privilege escalation** — runs as the process user. No `sudo`; no setuid.
+- **No sandbox boundary** — a permitted command can touch anything reachable by the process user.
 
 ### Lifecycle
 
