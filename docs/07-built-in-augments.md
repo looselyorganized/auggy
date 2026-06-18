@@ -704,7 +704,12 @@ import { notify } from "auggy";
 
 const notifyAugment = notify({
   destinations: [
-    { name: "creator", transport: "webhook", url: process.env.ORG_NOTIFY_URL! },
+    {
+      name: "creator",
+      transport: "webhook",
+      url: process.env.ORG_NOTIFY_URL!,
+      allowedTrustLevels: ["creator", "agent"],
+    },
   ],
 });
 ```
@@ -713,7 +718,7 @@ const notifyAugment = notify({
 
 The `notify` augment gives the agent a `notify` tool for pushing messages to operator-defined destinations outside the current conversation. Unlike transport replies — where the agent responds to the peer who triggered the current turn — `notify` pushes to destinations that are **not** the active peer. Use it to alert an operator, escalate a situation, share a status ping, or hand off to a human mid-conversation.
 
-Destinations are declared in config, not in the agent prompt. The agent always refers to a destination by its operator-assigned name (`"creator"`, `"ops"`, `"alerts"`, etc.). This keeps Telegram chat IDs and webhook URLs out of the model's context entirely. Destinations can also declare allowed trust levels and a public escalation-only policy.
+Destinations are declared in config, not in the agent prompt. The agent always refers to a destination by its operator-assigned name (`"creator"`, `"ops"`, `"alerts"`, etc.). This keeps Telegram chat IDs and webhook URLs out of the model's context entirely. Destinations default to creator/agent trust and can explicitly opt public peers into an escalation-only policy.
 
 ### Tool surface
 

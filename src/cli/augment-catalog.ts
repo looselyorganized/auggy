@@ -226,7 +226,14 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
       // to the agent dir at boot CWD). Operators wanting real delivery
       // replace this destination with a webhook / telegram / agentmail
       // entry. See `docs/13-notify.md` for the per-transport schema.
-      destinations: [{ name: "creator", transport: "log-to-file", path: "./notifications.jsonl" }],
+      destinations: [
+        {
+          name: "creator",
+          transport: "log-to-file",
+          path: "./notifications.jsonl",
+          allowedTrustLevels: ["creator", "agent"],
+        },
+      ],
       rateLimit: {
         cooldownMs: 120_000,
         globalMaxPerHour: 5,
