@@ -153,18 +153,16 @@ const VALID_ROUTING_SORTS = new Set(["price", "throughput", "latency"]);
  * Each field must be a positive number when present.
  */
 function validateBudgetCaps(caps: Record<string, unknown>, path: string, errors: string[]): void {
-  const numericFields = [
-    "maxTurnsPerThread",
-    "maxTurnsPerDay",
-    "maxUsdPerDay",
-    "maxUsdPerThread",
-  ] as const;
+  const numericFields = ["maxTurnsPerThread", "maxTurnsPerDay", "maxUsdPerDay"] as const;
   for (const field of numericFields) {
     if (caps[field] !== undefined) {
       if (typeof caps[field] !== "number" || (caps[field] as number) <= 0) {
         errors.push(`${path}.${field}: must be a positive number`);
       }
     }
+  }
+  if (caps.maxUsdPerThread !== undefined) {
+    errors.push(`${path}.maxUsdPerThread: unsupported budget cap field`);
   }
 }
 

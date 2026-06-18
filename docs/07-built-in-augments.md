@@ -1076,6 +1076,11 @@ const budget = budgets({
 
 The budgets augment is a turn-gate (see [03-types.md § Section 7b](./03-types.md#section-7b--turn-gate-admission-2pc)) that enforces per-trust-level turn budgets using a SQLite store. It runs a full 2PC cycle on every turn: reserve on prepare, commit on confirm, debit on cost-commit.
 
+`budgets` remains preview for v1.0. It is runtime spend guardrails, not billing
+control. USD caps are post-hoc soft caps, so a turn can overshoot the configured
+threshold before the next turn is denied. Provider-side hard spend caps are
+still required for unattended agents.
+
 `creator` peers and null peers (internal/scheduled triggers) bypass all budget checks — no store writes occur.
 
 ### Configuration reference
@@ -1115,6 +1120,10 @@ The runtime soft cap is **not the hard limit on agent spend**. The hard limit is
 Pre-call cost estimation (a third architectural layer that gates the engine
 call before any spend) is explicitly deferred — provider caps are exact where
 pre-call estimation would only approximate.
+
+SQLite-backed budgets are single-process and single-replica. The store has no
+built-in retention or purge policy yet; reservation and anonymous-request rows
+accumulate until the operator removes or archives them.
 
 ### 2PC semantics
 

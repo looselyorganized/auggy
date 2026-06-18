@@ -195,7 +195,7 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
     label: "Budgets",
     tagline: "spend caps per trust level (turns + $/day)",
     description:
-      "Cost guard. Caps turns-per-thread, turns-per-day, and USD-per-day per trust level. Hard daily budget ceiling. SQLite-backed.",
+      "Preview runtime spend guardrails, not billing control. Caps turns and settled USD per trust level with a post-hoc daily soft cap. SQLite-backed and single-process.",
     type: "budgets",
     defaultName: "budgets",
     defaultOptions: {

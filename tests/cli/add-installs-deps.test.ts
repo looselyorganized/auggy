@@ -321,6 +321,37 @@ describe("runAdd no-op cases", () => {
     });
   });
 
+  test("adding budgets explains preview soft-cap posture", async () => {
+    const dir = setupAgent("with-budgets");
+    const originalLog = console.log;
+    const logs: string[] = [];
+    console.log = (...args: unknown[]) => {
+      logs.push(args.map(String).join(" "));
+    };
+
+    try {
+      await runAdd("with-budgets", {
+        config: join(dir, "agent.yaml"),
+        auggyDir,
+        augment: "budgets",
+        yes: true,
+        bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
+      });
+    } finally {
+      console.log = originalLog;
+    }
+
+    expect(readAgentAugments(dir)).toContain("budgets");
+    expect(bunInstallCalls).toHaveLength(0);
+    const output = logs.join("\n");
+    expect(output).toContain("Use budgets (preview):");
+    expect(output).toContain("runtime spend guardrails, not billing control");
+    expect(output).toContain("post-hoc soft caps");
+    expect(output).toContain("provider-side hard spend caps");
+    expect(output).toContain("single-process and single-replica");
+    expect(output).toContain("No built-in retention/purge policy yet");
+  });
+
   test("link preview add declines without --yes when operator does not confirm", async () => {
     const dir = setupAgent("link-preview-decline");
     const before = readFileSync(join(dir, "agent.yaml"), "utf-8");
