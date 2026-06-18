@@ -357,6 +357,52 @@ export function buildCli(): Command {
                 validate: (v) => v.trim().length > 0 || "workspace required",
               });
             },
+            promptSavedDeploymentTarget: ({ cloud }) =>
+              select({
+                message: `Saved Railway target: project ${cloud.projectId}, service ${cloud.serviceId}. What do you want to do?`,
+                choices: [
+                  {
+                    name: "Redeploy saved Railway service",
+                    value: "saved" as const,
+                  },
+                  {
+                    name: "Recreate service in saved project",
+                    value: "recreate" as const,
+                  },
+                  {
+                    name: "Choose another Railway project/service",
+                    value: "choose" as const,
+                  },
+                  {
+                    name: "Remove saved deploy metadata and start over",
+                    value: "reset" as const,
+                  },
+                  {
+                    name: "Cancel",
+                    value: "cancel" as const,
+                  },
+                ],
+              }),
+            promptServiceTarget: ({ defaultServiceName }) =>
+              select({
+                message: `Railway service for ${defaultServiceName}:`,
+                choices: [
+                  {
+                    name: `Create new service ${defaultServiceName}`,
+                    value: "new" as const,
+                  },
+                  {
+                    name: "Use an existing Railway service",
+                    value: "existing" as const,
+                  },
+                ],
+              }),
+            promptServiceName: (defaultName) =>
+              input({
+                message: "Existing Railway service name or ID:",
+                default: defaultName,
+                validate: (v) => v.trim().length > 0 || "service name required",
+              }),
             promptConfirm: (message) => confirm({ message, default: false }),
             logger: {
               info: (msg) => {

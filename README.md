@@ -327,6 +327,11 @@ for Railway deployment status when available, then verifies `/health`.
 On first deploy, Auggy asks which Railway workspace to use, then lets you
 create a new project there or pick an existing project.
 
+After a deploy, Auggy saves `.auggy-cloud.json`. Plain `auggy deploy` shows the
+saved target and asks whether to redeploy it, recreate the service, choose
+another target, reset metadata, or cancel. Use `auggy deploy --yes` for a
+scripted redeploy to the saved target.
+
 For scripted first deploys:
 
 ```bash

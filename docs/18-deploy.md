@@ -46,7 +46,7 @@ The CLI walks you through:
 11. **Push env vars** — your `.env` entries + `AUGGY_PUBLIC_URL` (the just-generated URL) are pushed via `railway variables --set`.
 12. **`railway up --detach`** — uploads the bundle, kicks off the build and deploy.
 13. **Health verification** — polls `${url}/health` for a bounded window. Timeout is non-destructive; Railway may still finish booting.
-14. **Metadata write** — the cloud record lands in `<agent-dir>/.auggy-cloud.json` so subsequent `auggy deploy` runs are idempotent redeploys.
+14. **Metadata write** — the cloud record lands in `<agent-dir>/.auggy-cloud.json`. Later plain `auggy deploy` runs show the saved target and ask whether to redeploy it, recreate the service, choose another target, or reset metadata.
 
 Successful deploy output includes the public URL, `/health`, `/console`, and `/console/chat`. Follow later builds in the [Railway dashboard](https://railway.com) or with `auggy logs`.
 
@@ -54,13 +54,31 @@ Successful deploy output includes the public URL, `/health`, `/console`, and `/c
 
 ## Redeploy
 
-A re-run of the same command IS the redeploy. There's no separate `redeploy` verb.
+A re-run of the same command opens the saved-target prompt. There's no separate
+`redeploy` verb.
 
 ```bash
 auggy deploy
 ```
 
-For scripted deploys into an existing project:
+When `<agent-dir>/.auggy-cloud.json` exists, plain `auggy deploy` asks:
+
+```text
+Saved Railway target: project <project-id>, service <service-id>. What do you want to do?
+  Redeploy saved Railway service
+  Recreate service in saved project
+  Choose another Railway project/service
+  Remove saved deploy metadata and start over
+  Cancel
+```
+
+For scripted deploys that intentionally skip prompts and reuse the saved target:
+
+```bash
+auggy deploy --yes
+```
+
+For scripted deploys into a specific existing project:
 
 ```bash
 auggy deploy --project <project-id>

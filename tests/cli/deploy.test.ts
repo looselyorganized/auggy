@@ -130,6 +130,9 @@ function baseDeployOptions(
     promptProjectName: async (defaultName) => defaultName,
     promptProjectId: async () => "proj_abc",
     promptWorkspace: async () => "workspace_abc",
+    promptSavedDeploymentTarget: async () => "saved",
+    promptServiceTarget: async () => "new",
+    promptServiceName: async (defaultName) => defaultName,
     promptConfirm: async () => true,
     logger: { info: () => {}, warn: () => {}, error: () => {} },
     healthCheck: {
@@ -1021,6 +1024,151 @@ describe("runDeploy", () => {
     // deployedAt was refreshed.
     const entry = getAgent("zip", { auggyDir });
     expect(entry?.cloud?.deployedAt).not.toBe("2026-05-10T00:00:00.000Z");
+  });
+
+  test("plain redeploy asks what to do with the saved Railway target", async () => {
+    setCloud(
+      "zip",
+      {
+        provider: "railway",
+        projectId: "proj_existing",
+        serviceId: "svc_existing",
+        url: "https://zip-old.up.railway.app",
+        volumeId: "zip-data",
+        deployedAt: "2026-05-10T00:00:00.000Z",
+      },
+      { auggyDir },
+    );
+    const { cli, calls } = mockRailwayCli();
+    const prompts: string[] = [];
+
+    await runDeploy(
+      "zip",
+      baseDeployOptions(cli, auggyDir, {
+        yes: false,
+        promptSavedDeploymentTarget: async ({ cloud, metadataPath }) => {
+          prompts.push(
+            `${cloud.projectId}:${cloud.serviceId}:${metadataPath.endsWith(".auggy-cloud.json")}`,
+          );
+          return "saved";
+        },
+      }),
+    );
+
+    expect(prompts).toEqual(["proj_existing:svc_existing:true"]);
+    expect(calls.link[0]?.projectId).toBe("proj_existing");
+    expect(calls.link[0]?.serviceName).toBe("svc_existing");
+    expect(calls.addVolume).toEqual([]);
+  });
+
+  test("plain redeploy can recreate the service in the saved project", async () => {
+    setCloud(
+      "zip",
+      {
+        provider: "railway",
+        projectId: "proj_existing",
+        serviceId: "svc_old",
+        url: "https://zip-old.up.railway.app",
+        volumeId: "zip-data",
+        deployedAt: "2026-05-10T00:00:00.000Z",
+      },
+      { auggyDir },
+    );
+    const { cli, calls } = mockRailwayCli();
+
+    await runDeploy(
+      "zip",
+      baseDeployOptions(cli, auggyDir, {
+        yes: false,
+        promptSavedDeploymentTarget: async () => "recreate",
+      }),
+    );
+
+    expect(calls.linkProject).toEqual([expect.objectContaining({ projectId: "proj_existing" })]);
+    expect(calls.createService).toEqual([expect.objectContaining({ serviceName: "zip" })]);
+    expect(calls.link).toEqual([]);
+    expect(calls.addVolume).toEqual([{ name: "zip-data", mountPath: "/app/data" }]);
+  });
+
+  test("plain redeploy can choose another Railway project and service", async () => {
+    setCloud(
+      "zip",
+      {
+        provider: "railway",
+        projectId: "proj_old",
+        serviceId: "svc_old",
+        url: "https://zip-old.up.railway.app",
+        volumeId: "zip-data",
+        deployedAt: "2026-05-10T00:00:00.000Z",
+      },
+      { auggyDir },
+    );
+    const { cli, calls } = mockRailwayCli();
+    cli.listWorkspaces = async () => {
+      calls.listWorkspaces++;
+      return [{ id: "workspace_a", name: "Team A" }];
+    };
+    cli.listProjects = async () => [
+      {
+        id: "proj_new",
+        name: "New Project",
+        workspaceId: "workspace_a",
+        workspaceName: "Team A",
+      },
+    ];
+
+    await runDeploy(
+      "zip",
+      baseDeployOptions(cli, auggyDir, {
+        yes: false,
+        promptSavedDeploymentTarget: async () => "choose",
+        promptWorkspace: async () => "workspace_a",
+        promptProjectTarget: async () => "existing",
+        promptProjectId: async () => "proj_new",
+        promptServiceTarget: async () => "existing",
+        promptServiceName: async () => "svc_new",
+      }),
+    );
+
+    expect(calls.linkProject).toEqual([expect.objectContaining({ projectId: "proj_new" })]);
+    expect(calls.linkService).toEqual([expect.objectContaining({ serviceName: "svc_new" })]);
+    expect(calls.link).toEqual([]);
+    expect(getAgent("zip", { auggyDir })?.cloud).toMatchObject({
+      projectId: "proj_new",
+      serviceId: "svc_def",
+    });
+  });
+
+  test("plain redeploy can clear saved metadata and restart first-deploy flow", async () => {
+    setCloud(
+      "zip",
+      {
+        provider: "railway",
+        projectId: "proj_old",
+        serviceId: "svc_old",
+        url: "https://zip-old.up.railway.app",
+        volumeId: "zip-data",
+        deployedAt: "2026-05-10T00:00:00.000Z",
+      },
+      { auggyDir },
+    );
+    const { cli, calls } = mockRailwayCli();
+
+    await runDeploy(
+      "zip",
+      baseDeployOptions(cli, auggyDir, {
+        yes: false,
+        promptSavedDeploymentTarget: async () => "reset",
+        promptProjectTarget: async () => "existing",
+        promptProjectId: async () => "proj_new",
+      }),
+    );
+
+    expect(calls.linkProject).toEqual([expect.objectContaining({ projectId: "proj_new" })]);
+    expect(calls.createService).toEqual([expect.objectContaining({ serviceName: "zip" })]);
+    expect(getAgent("zip", { auggyDir })?.cloud).toMatchObject({
+      projectId: "proj_new",
+    });
   });
 
   test("redeploy with --service overrides the stored service id", async () => {

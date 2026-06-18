@@ -40,6 +40,7 @@ import {
 } from "../deploy/railway-cli";
 import { loadSecretsPlan } from "../deploy/secrets";
 import { getAuggyVersion } from "../scaffold-package-json";
+import type { CloudRecord } from "../types";
 
 export interface DeployLogger {
   info(msg: string): void;
@@ -69,6 +70,15 @@ export interface DeployOptions {
   promptProjectId: (projects?: RailwayProject[]) => Promise<string>;
   /** Prompt the operator for a Railway workspace ID or name. */
   promptWorkspace: (workspaces: RailwayWorkspace[]) => Promise<string>;
+  /** Prompt when this agent already has saved Railway deployment metadata. */
+  promptSavedDeploymentTarget: (args: {
+    cloud: NonNullable<CloudRecord>;
+    metadataPath: string;
+  }) => Promise<"saved" | "recreate" | "choose" | "reset" | "cancel">;
+  /** Prompt whether to create a new service or bind an existing one. */
+  promptServiceTarget: (args: { defaultServiceName: string }) => Promise<"new" | "existing">;
+  /** Prompt for an existing Railway service name/id. */
+  promptServiceName: (defaultName: string) => Promise<string>;
   /** Prompt the operator for yes/no confirmation. Receives a human-readable message. */
   promptConfirm: (message: string) => Promise<boolean>;
   logger: DeployLogger;
@@ -256,6 +266,38 @@ export async function runDeploy(
   // 3) Determine first-deploy vs redeploy from existing CloudRecord.
   let existingCloud = entry.cloud;
   let isRedeploy = existingCloud !== null;
+  let savedProjectIdForRecreate: string | null = null;
+  let shouldPromptServiceTarget = false;
+  let serviceName = opts.service;
+
+  if (isRedeploy && existingCloud && (opts.project || opts.projectName)) {
+    existingCloud = null;
+    isRedeploy = false;
+  }
+
+  if (isRedeploy && existingCloud && !opts.yes && !opts.service) {
+    const choice = await opts.promptSavedDeploymentTarget({
+      cloud: existingCloud,
+      metadataPath: join(agentDir, ".auggy-cloud.json"),
+    });
+    if (choice === "cancel") {
+      throw new Error("Deploy aborted by operator.");
+    }
+    if (choice === "recreate") {
+      savedProjectIdForRecreate = existingCloud.projectId;
+      existingCloud = null;
+      isRedeploy = false;
+    } else if (choice === "choose") {
+      existingCloud = null;
+      isRedeploy = false;
+      shouldPromptServiceTarget = true;
+    } else if (choice === "reset") {
+      clearCloudMetadataForDir(agentDir);
+      opts.logger.info(`Removed saved Railway deploy metadata.`);
+      existingCloud = null;
+      isRedeploy = false;
+    }
+  }
 
   // 4) Stage the bundle (excludes secrets + volume-bound state). New Railway
   //    project creation links the current directory, so staging must exist
@@ -283,6 +325,9 @@ export async function runDeploy(
   if (isRedeploy && existingCloud) {
     projectId = existingCloud.projectId;
     opts.logger.info(`Redeploying ${name} to Railway project ${projectId}.`);
+  } else if (savedProjectIdForRecreate) {
+    projectId = savedProjectIdForRecreate;
+    opts.logger.info(`Recreating ${name} service in Railway project ${projectId}.`);
   } else if (opts.project) {
     projectId = opts.project;
     opts.logger.info(`First deploy of ${name} to existing Railway project ${projectId}.`);
@@ -347,11 +392,18 @@ export async function runDeploy(
       );
       opts.logger.info(`Linked staging dir to project ${projectId}.`);
     }
-    if (opts.service) {
-      await withProgress(opts, `Linking Railway service ${opts.service}`, () =>
-        opts.cli.linkService({ serviceName: opts.service!, cwd: stagingDir }),
+    if (shouldPromptServiceTarget && !serviceName) {
+      const serviceTarget = await opts.promptServiceTarget({ defaultServiceName: name });
+      if (serviceTarget === "existing") {
+        serviceName = await opts.promptServiceName(name);
+      }
+    }
+    if (serviceName) {
+      const selectedServiceName = serviceName;
+      await withProgress(opts, `Linking Railway service ${selectedServiceName}`, () =>
+        opts.cli.linkService({ serviceName: selectedServiceName, cwd: stagingDir }),
       );
-      opts.logger.info(`Using existing Railway service ${opts.service}.`);
+      opts.logger.info(`Using existing Railway service ${selectedServiceName}.`);
     } else {
       await withProgress(opts, `Creating Railway service ${name}`, () =>
         opts.cli.createService({ serviceName: name, cwd: stagingDir }),
@@ -359,11 +411,12 @@ export async function runDeploy(
       opts.logger.info(`Created Railway service ${name}.`);
     }
   } else if (existingCloud) {
-    const serviceName = opts.service ?? existingCloud.serviceId;
+    serviceName = opts.service ?? existingCloud.serviceId;
+    const selectedServiceName = serviceName;
     let recoveredStaleService = false;
     try {
-      await withProgress(opts, `Linking Railway service ${serviceName}`, () =>
-        opts.cli.link({ projectId, serviceName, cwd: stagingDir }),
+      await withProgress(opts, `Linking Railway service ${selectedServiceName}`, () =>
+        opts.cli.link({ projectId, serviceName: selectedServiceName, cwd: stagingDir }),
       );
     } catch (err) {
       if (isRailwayServiceNotFoundError(err)) {
@@ -373,7 +426,11 @@ export async function runDeploy(
           existingCloud = null;
           isRedeploy = false;
           opts.logger.warn(
-            formatStaleCloudMetadataWarning({ serviceName, projectId, metadataPath }),
+            formatStaleCloudMetadataWarning({
+              serviceName: selectedServiceName,
+              projectId,
+              metadataPath,
+            }),
           );
           await withProgress(opts, `Creating Railway service ${name}`, () =>
             opts.cli.createService({ serviceName: name, cwd: stagingDir }),
@@ -395,7 +452,9 @@ export async function runDeploy(
       }
     }
     if (!recoveredStaleService) {
-      opts.logger.info(`Linked staging dir to project ${projectId}, service ${serviceName}.`);
+      opts.logger.info(
+        `Linked staging dir to project ${projectId}, service ${selectedServiceName}.`,
+      );
     }
   }
 
