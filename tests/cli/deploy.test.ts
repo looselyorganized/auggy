@@ -784,6 +784,48 @@ describe("runDeploy", () => {
     expect(getAgent("zip", { auggyDir })?.cloud).toBeNull();
   });
 
+  test("aborts when any budgets augment sets dailyBudgetUsd", async () => {
+    appendAugmentId(agentDir, "budgets-observe");
+    appendAugmentId(agentDir, "budgets-capped");
+    writeAugmentMetadata(agentDir, "budgets-observe", {
+      type: "budgets",
+      config: {
+        dbPath: "./data/budgets-observe.db",
+      },
+    });
+    writeAugmentMetadata(agentDir, "budgets-capped", {
+      type: "budgets",
+      config: {
+        dbPath: "./data/budgets-capped.db",
+        dailyBudgetUsd: 7,
+      },
+    });
+
+    const prompts: string[] = [];
+    const warnings: string[] = [];
+    const { cli, calls } = mockRailwayCli();
+
+    await expect(
+      runDeploy(
+        "zip",
+        baseDeployOptions(cli, auggyDir, {
+          yes: false,
+          promptConfirm: async (message) => {
+            prompts.push(message);
+            return false;
+          },
+          logger: { info: () => {}, warn: (msg) => warnings.push(msg), error: () => {} },
+        }),
+      ),
+    ).rejects.toThrow(/declined budgets deploy acknowledgement/);
+
+    expect(warnings.join("\n")).toContain("budgets.dailyBudgetUsd is set to $7.00");
+    expect(prompts.join("\n")).toContain("Proceed with Railway deploy?");
+    expect(calls.checkPresence).toBe(0);
+    expect(calls.checkAuth).toBe(0);
+    expect(calls.up).toBe(0);
+  });
+
   test("--yes logs budgets deploy posture warning and proceeds", async () => {
     appendAugmentId(agentDir, "budgets");
     writeAugmentMetadata(agentDir, "budgets", {
