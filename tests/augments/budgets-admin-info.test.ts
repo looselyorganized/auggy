@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { budgets } from "@/augments/budgets";
-import type { Augment } from "@/types";
+import type { Augment, PeerIdentity, TurnTrigger } from "@/types";
 
 let tempDir: string;
 beforeEach(() => {
@@ -28,6 +28,27 @@ function makeBudgetsAugment(): Augment {
   });
 }
 
+function makePeer(overrides: Partial<PeerIdentity> = {}): PeerIdentity {
+  return {
+    id: "peer-1",
+    kind: "human",
+    trustLevel: "public",
+    publicSubstate: "anonymous",
+    sourceAugment: "web-transport",
+    ...overrides,
+  };
+}
+
+function makeTrigger(peer: PeerIdentity): TurnTrigger {
+  return {
+    type: "message",
+    turnId: crypto.randomUUID(),
+    threadId: "thread-1",
+    timestamp: Date.now(),
+    payload: { parts: [], sourceAugment: "web-transport", peer, timestamp: Date.now() },
+  };
+}
+
 describe("budgets adminInfo — shape", () => {
   it("returns a Budgets block with KV section showing daily cap + today's spend", async () => {
     const aug = makeBudgetsAugment();
@@ -46,12 +67,51 @@ describe("budgets adminInfo — shape", () => {
         expect(labels).toContain("Retention");
         expect(labels).toContain("Daily budget cap");
         expect(labels).toContain("Today's spend");
+        expect(labels).toContain("Pricing confidence");
         expect(JSON.stringify(kv.rows)).toContain("preview");
         expect(JSON.stringify(kv.rows)).toContain("runtime spend guardrails");
         expect(JSON.stringify(kv.rows)).toContain("provider-side hard caps still required");
         expect(JSON.stringify(kv.rows)).toContain("single-process");
         expect(JSON.stringify(kv.rows)).toContain("no built-in purge policy");
+        expect(kv.rows.find((r) => r.label === "Pricing confidence")?.value).toBe("priced");
       }
+    } finally {
+      await aug.onShutdown?.();
+    }
+  });
+
+  it("surfaces degraded pricing confidence and per-peer unpriced turns to operators", async () => {
+    const aug = makeBudgetsAugment();
+    try {
+      const peer = makePeer({ id: "peer-unpriced" });
+      const turnGate = aug.turnGate;
+      if (!turnGate) throw new Error("expected budgets turnGate");
+      const ticket = await turnGate.prepare({
+        turnId: "turn-unpriced",
+        peer,
+        threadId: "thread-1",
+        trigger: makeTrigger(peer),
+      });
+      expect(ticket.decision.allow).toBe(true);
+      await ticket.confirm();
+      if (!turnGate.commit) throw new Error("expected budgets commit hook");
+      await turnGate.commit({
+        turnId: "turn-unpriced",
+        peer,
+        threadId: "thread-1",
+        cost: { priced: false, reason: "unknown model" },
+      });
+
+      const info = await aug.adminInfo?.();
+      const kv = info?.sections.find((s) => s.kind === "keyValue");
+      if (kv?.kind !== "keyValue") throw new Error("expected keyValue section");
+      expect(kv.rows.find((r) => r.label === "Pricing confidence")?.value).toBe(
+        "degraded (1 unpriced turn today)",
+      );
+
+      const table = info?.sections.find((s) => s.kind === "table");
+      if (table?.kind !== "table") throw new Error("expected table section");
+      expect(table.rows).toContainEqual(["peer-unpriced", "$0.00", "1"]);
     } finally {
       await aug.onShutdown?.();
     }

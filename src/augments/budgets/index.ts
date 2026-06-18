@@ -161,6 +161,12 @@ export function budgets(opts: BudgetsAugmentOptions): Augment {
     return v === undefined ? "(unlimited)" : `$${v.toFixed(2)}`;
   }
 
+  function formatPricingConfidence(unpricedTurns: number): string {
+    if (unpricedTurns === 0) return "priced";
+    const noun = unpricedTurns === 1 ? "turn" : "turns";
+    return `degraded (${unpricedTurns} unpriced ${noun} today)`;
+  }
+
   async function adminInfo(): Promise<AdminInfoBlock> {
     const spend = await store.getDaySpend();
     return {
@@ -188,6 +194,7 @@ export function budgets(opts: BudgetsAugmentOptions): Augment {
               resetAction: { id: "budget-cap-reset", label: "Reset to yaml" },
             },
             { label: "Today's spend", value: `$${spend.totalUsd.toFixed(2)}` },
+            { label: "Pricing confidence", value: formatPricingConfidence(spend.unpricedTurns) },
             {
               label: "Active peers today",
               value: String(spend.byPeer.length),
@@ -199,7 +206,7 @@ export function budgets(opts: BudgetsAugmentOptions): Augment {
           columns: ["Peer", "Today's cost", "Unpriced turns"],
           rows: spend.byPeer
             .slice(0, 50)
-            .map((p) => [p.peerId, `$${p.costUsd.toFixed(2)}`, String(p.turnCount)]),
+            .map((p) => [p.peerId, `$${p.costUsd.toFixed(2)}`, String(p.unpricedTurns)]),
           caption:
             spend.byPeer.length > 50
               ? `Showing 50 of ${spend.byPeer.length} peers`
