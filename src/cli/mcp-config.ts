@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import type { TrustLevel } from "../types";
 import { parseEnvFile } from "./env-parse";
 
 export const MCP_CONFIG_FILENAME = ".mcp.json";
@@ -21,6 +22,8 @@ export interface McpServerAuggyPolicy {
   cloud?: "enabled" | "disabled" | "localOnly" | "local-only";
   allowedTools?: string[];
   blockedTools?: string[];
+  allowedTrustLevels?: TrustLevel[];
+  toolPolicies?: Record<string, McpToolAuggyPolicy>;
   timeoutMs?: number;
   maxResultBytes?: number;
   maxSchemaBytes?: number;
@@ -28,6 +31,10 @@ export interface McpServerAuggyPolicy {
   maxTools?: number;
   maxToolPages?: number;
   includeToolDescriptions?: boolean;
+}
+
+export interface McpToolAuggyPolicy {
+  allowedTrustLevels?: TrustLevel[];
 }
 
 export interface McpConfig {
@@ -300,6 +307,20 @@ function validatePolicyShape(value: unknown, path: string): McpServerAuggyPolicy
   if (out.blockedTools !== undefined && !isStringArray(out.blockedTools)) {
     throw new Error(`${path}.blockedTools: must be a string array`);
   }
+  if (out.allowedTrustLevels !== undefined) {
+    validateTrustLevels(out.allowedTrustLevels, `${path}.allowedTrustLevels`);
+  }
+  if (out.toolPolicies !== undefined) {
+    if (!isRecord(out.toolPolicies)) {
+      throw new Error(`${path}.toolPolicies: must be an object`);
+    }
+    const policies: Record<string, McpToolAuggyPolicy> = {};
+    for (const [toolName, policy] of Object.entries(out.toolPolicies)) {
+      if (!toolName.trim()) throw new Error(`${path}.toolPolicies: tool name must be non-empty`);
+      policies[toolName] = validateToolPolicyShape(policy, `${path}.toolPolicies.${toolName}`);
+    }
+    out.toolPolicies = policies;
+  }
   for (const key of [
     "timeoutMs",
     "maxResultBytes",
@@ -319,6 +340,27 @@ function validatePolicyShape(value: unknown, path: string): McpServerAuggyPolicy
     throw new Error(`${path}.includeToolDescriptions: must be a boolean`);
   }
   return out;
+}
+
+function validateToolPolicyShape(value: unknown, path: string): McpToolAuggyPolicy {
+  if (!isRecord(value)) throw new Error(`${path}: must be an object`);
+  const out = { ...value } as McpToolAuggyPolicy;
+  if (out.allowedTrustLevels !== undefined) {
+    validateTrustLevels(out.allowedTrustLevels, `${path}.allowedTrustLevels`);
+  }
+  return out;
+}
+
+function validateTrustLevels(value: unknown, path: string): asserts value is TrustLevel[] {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new Error(`${path}: must be a non-empty trust-level array`);
+  }
+  const allowed = new Set(["creator", "agent", "public"]);
+  for (const item of value) {
+    if (typeof item !== "string" || !allowed.has(item)) {
+      throw new Error(`${path}: must contain only creator, agent, or public`);
+    }
+  }
 }
 
 function validateMcpServerName(name: string): void {

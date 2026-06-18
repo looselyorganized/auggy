@@ -20,6 +20,7 @@ import type {
   NotifyAugmentOptions,
   NotifyDeliveryResult,
   NotifyDestination,
+  TrustLevel,
   ToolExecuteContext,
 } from "../../types";
 import { defineTool } from "../../helpers";
@@ -34,6 +35,7 @@ import { createRingBuffer } from "../../lib/ring-buffer";
  * config-parser destination validator + register the factory below.
  */
 export const NOTIFY_TRANSPORTS = ["webhook", "telegram", "agentmail", "log-to-file"] as const;
+const DEFAULT_ALLOWED_TRUST_LEVELS: readonly TrustLevel[] = ["creator", "agent", "public"];
 
 import { createWebhookAdapter } from "./adapters/webhook";
 import { createTelegramAdapter } from "./adapters/telegram";
@@ -199,6 +201,29 @@ export function notify(opts: NotifyAugmentInternalOptions): Augment {
     return matches / smaller.size;
   }
 
+  function allowedTrustLevels(destination: NotifyDestination): readonly TrustLevel[] {
+    return destination.allowedTrustLevels ?? DEFAULT_ALLOWED_TRUST_LEVELS;
+  }
+
+  function checkDestinationAuthority(
+    destination: NotifyDestination,
+    trustLevel: TrustLevel,
+    reason: string | undefined,
+  ): string | null {
+    const allowed = allowedTrustLevels(destination);
+    if (!allowed.includes(trustLevel)) {
+      return `Notification destination '${destination.name}' is not available to ${trustLevel} peers. Allowed trust levels: ${allowed.join(", ")}.`;
+    }
+    if (
+      trustLevel === "public" &&
+      destination.publicPolicy === "escalation-only" &&
+      !reason?.trim()
+    ) {
+      return `Notification destination '${destination.name}' only accepts public-originated escalation notifications. Include a reason explaining the escalation.`;
+    }
+    return null;
+  }
+
   function recordNotification(
     peerId: string,
     summary: string,
@@ -253,6 +278,11 @@ export function notify(opts: NotifyAugmentInternalOptions): Augment {
 
       // Null peer = internal trigger (scheduled, system) — treated as creator, bypasses rate limits.
       const trustLevel = context.peer?.trustLevel ?? "creator";
+      const authorityMsg = checkDestinationAuthority(destination, trustLevel, reason);
+      if (authorityMsg) {
+        return JSON.stringify({ status: "failed", message: authorityMsg });
+      }
+
       const destHasExplicitLimit = !!(
         destination.rateLimit?.maxPerHour !== undefined ||
         destination.rateLimit?.cooldownMs !== undefined
@@ -384,6 +414,20 @@ export function notify(opts: NotifyAugmentInternalOptions): Augment {
 
   async function adminInfo(): Promise<AdminInfoBlock> {
     const recentEvents = dispatches.snapshot().slice(-50);
+    const destinationRows = opts.destinations.map((d) => [
+      d.name,
+      d.transport,
+      allowedTrustLevels(d).join(", "),
+      d.publicPolicy ?? "allowed",
+      d.rateLimit
+        ? [
+            d.rateLimit.maxPerHour === undefined ? null : `max ${d.rateLimit.maxPerHour}/hr`,
+            d.rateLimit.cooldownMs === undefined ? null : `${d.rateLimit.cooldownMs}ms cooldown`,
+          ]
+            .filter(Boolean)
+            .join("; ") || "configured"
+        : "global",
+    ]);
     return {
       augmentName: "notify",
       title: "Notify",
@@ -400,6 +444,12 @@ export function notify(opts: NotifyAugmentInternalOptions): Augment {
             { label: "Cooldown (ms)", value: String(cooldownMs), source: "yaml" },
             { label: "Destinations", value: String(opts.destinations.length) },
           ],
+        },
+        {
+          kind: "table",
+          columns: ["Destination", "Transport", "Allowed trust", "Public policy", "Limit"],
+          rows: destinationRows,
+          caption: "Destination authority and rate-limit policy.",
         },
         {
           kind: "table",

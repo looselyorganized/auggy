@@ -1,6 +1,9 @@
 # 13 — Notify Augment Reference
 
-> Operator reference for the `notify` augment — outbound messaging to operator-defined destinations via webhook or Telegram adapters, with rate limiting, dedup, and trust-level bypass. Source: `src/augments/notify.ts`, `src/augments/notify/adapters/`, `src/types.ts`.
+> Operator reference for the `notify` augment — outbound messaging to
+> operator-defined destinations via log-to-file, webhook, Telegram, and
+> AgentMail adapters, with destination authority, rate limiting, and dedup.
+> Source: `src/augments/notify/`, `src/types.ts`.
 
 ## 1. Overview
 
@@ -13,7 +16,10 @@ What it does:
 - **Named destinations** — operator declares webhook and/or Telegram targets in
   `augments/notify/augment.yaml`; the agent calls
   `notify({ to: "<name>", ... })`.
-- **Three adapters** — `webhook` (HTTP POST), `telegram` (sendMessage via `src/telegram-client.ts`), and `agentmail` (HTTP POST via `src/agentmail-client.ts`).
+- **Four adapters** — `log-to-file`, `webhook`, `telegram`, and `agentmail`.
+- **Destination authority** — each destination can restrict which v1 trust
+  levels may use it, and can require public peers to provide an escalation
+  reason.
 - **Rate limiting** — cooldown, dedup, global hourly cap, per-peer cooldown. Creator-class senders bypass all limits.
 
 What it does **not** do:
@@ -36,8 +42,8 @@ type: notify
 config:
   destinations:
     - name: creator
-      transport: webhook
-      url: ${ORG_NOTIFY_URL}
+      transport: log-to-file
+      path: ./notifications.jsonl
 ```
 
 ### Full example — webhook + telegram destinations with rate limiting
@@ -52,11 +58,13 @@ config:
       url: ${ORG_NOTIFY_URL}
       headers:
         X-Api-Key: ${NOTIFY_API_KEY}
+      allowedTrustLevels: [creator, agent]
     - name: alerts
       transport: telegram
       botToken: ${TELEGRAM_BOT_TOKEN}
       chatId: ${TELEGRAM_CHAT_ID}
       parseMode: Markdown
+      publicPolicy: escalation-only
   rateLimit:
     enabled: true
     cooldownMs: 120000
@@ -84,6 +92,7 @@ const notifyAugment = notify({
       name: "creator",
       transport: "webhook",
       url: process.env.ORG_NOTIFY_URL!,
+      allowedTrustLevels: ["creator", "agent"],
     },
     {
       name: "alerts",
@@ -91,6 +100,7 @@ const notifyAugment = notify({
       botToken: process.env.TELEGRAM_BOT_TOKEN!,
       chatId: Number(process.env.TELEGRAM_CHAT_ID),
       parseMode: "Markdown",
+      publicPolicy: "escalation-only",
     },
   ],
   rateLimit: {
@@ -107,6 +117,18 @@ const notifyAugment = notify({
 |---|---|---|---|---|
 | `destinations` | `NotifyDestination[]` | yes | — | One or more named delivery targets. |
 | `rateLimit` | `NotifyRateLimitOptions` | no | See §5 | Rate limit configuration. |
+
+### Common destination authority fields
+
+All destination types accept these optional authority fields:
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `allowedTrustLevels` | `("creator" \| "agent" \| "public")[]` | all three v1 levels | Trust levels allowed to use this destination. Omit for backward-compatible behavior. |
+| `publicPolicy` | `"allowed" \| "escalation-only"` | `"allowed"` | When set to `"escalation-only"`, public peers must include a non-empty `reason` in the `notify` call. Creator and agent peers are unaffected. |
+
+Authority is enforced before rate limits and delivery. A denied destination
+returns `status: "failed"` and does not consume rate-limit quota.
 
 ### `NotifyDestination` — webhook
 
@@ -164,9 +186,19 @@ The model sees the `status` field and an optional `message` or `detail` field. O
 
 ### Category
 
-The tool is registered with `category: "communication"` and is visible to all trust levels by default. Creator-class senders bypass rate limits; no other behavioral difference by trust level.
+The tool is registered with `category: "communication"` and is visible to all
+trust levels by default. Destination-level authority decides whether the active
+peer may use the selected destination. Creator-class senders bypass rate
+limits, but they still must use a configured destination.
 
 ## 4. Adapters
+
+### Log-to-file adapter
+
+The log-to-file adapter appends one JSON object per notification to a local
+JSONL file. This is the zero-secret default installed by
+`auggy augment add notify`, so local agents can exercise the tool before the
+operator configures real delivery.
 
 ### Webhook adapter
 
@@ -264,6 +296,10 @@ Rate limiting is stateful and in-memory. State resets on agent restart. All chec
 
 ### Rate limit checks (in order)
 
+Before rate limits run, destination authority checks allowed trust levels and
+public escalation policy. Denied sends return `failed`, not `rate_limited`, and
+no rate-limit state is read or written.
+
 1. **Per-peer cooldown** — checked against a `Map<peerId, lastNotifyTimestamp>`. If the peer that triggered the current turn sent a notification within `perPeerCooldownMs`, the tool returns `rate_limited`. The error message includes how many seconds remain.
 
 2. **Global hourly cap** — a rolling window counter. If `globalCountThisHour >= globalMaxPerHour`, returns `rate_limited`. The window resets 60 minutes after it opened (not at the top of the clock hour).
@@ -326,6 +362,8 @@ the `notify` skill scaffolded by `auggy augment add notify`.
 | Destination `name` typo in agent prompt or skill | Tool returns `{ status: "failed", message: "Unknown destination 'ops'. Configured destinations: creator." }` | Use the exact name string from config; check spelling |
 | Missing `summary` field | Zod validation fails before the tool executes; tool call returns an error | `summary` is required — ensure the skill teaches this |
 | Putting `chatId` or raw Telegram user IDs in the agent identity file | Agent may try to pass raw IDs as `to:` argument | Named destinations only; IDs stay in `augments/notify/augment.yaml` |
+| Letting public visitors notify an operator-only destination | Tool returns `failed` with an allowed-trust message | Add `public` to `allowedTrustLevels` only for destinations intended for public escalation |
+| Setting `publicPolicy: escalation-only` and omitting `reason` | Tool returns `failed` and no delivery is attempted | Include a concise escalation reason, or answer in-thread if no escalation is warranted |
 | Setting `globalMaxPerHour: 0` expecting unlimited | `0` means the cap is always exceeded — all notifications are blocked | Omit `rateLimit` entirely or set `enabled: false` for uncapped |
 | Sharing a `cooldownMs` value that is much larger than `perPeerCooldownMs` | Per-peer cooldown is defaulted to `cooldownMs` when not set; if you set a large global cooldown and leave `perPeerCooldownMs` unset, all peers share the large cooldown | Set `perPeerCooldownMs` explicitly when the two should differ |
 | Using the same bot token for both `notify` (telegram destination) and `telegramTransport` inbound | Fine — they are independent; sending and receiving are concurrent-safe | No fix needed; this is intentional design |

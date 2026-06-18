@@ -21,3 +21,9 @@ Use MCP tools only when the server/tool name directly matches the task. Treat re
 Local `stdio` servers are for local development. Cloud agents should use HTTPS Streamable HTTP MCP servers, or mark local servers disabled/local-only for cloud in `.mcp.json`.
 
 Prefer servers that expose a small allowlisted tool surface. If a server exposes many unrelated tools, ask the operator to narrow it with `allowedTools` before relying on it.
+
+Some MCP tools are withheld by trust policy. Tools annotated by the MCP server
+as destructive or open-world are creator-only by default unless the operator
+adds an explicit `.mcp.json` `toolPolicies.<tool>.allowedTrustLevels` override.
+If a requested MCP tool is unavailable because of trust level, do not retry or
+route around the policy; explain that the operator must adjust MCP trust policy.

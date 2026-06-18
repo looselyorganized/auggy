@@ -17,7 +17,8 @@ Fourteen augments ship in `src/augments/` (plus `webTransport` under `src/transp
 - **`bash`** — scoped shell execution
 - **`budgets`** — per-trust-level turn budgets + dollar ceiling
 - **`notify`** — outbound messaging to operator-configured destinations
-- **`mcp`** — external MCP server tools bridged into Auggy tools
+- **`mcp`** — external MCP server tools bridged into Auggy tools with
+  allow/block lists and per-server/per-tool trust policy
 - **`agentMail`** — outbound email via AgentMail with per-peer trust gate, allowlist, rate limits, audit ring (Phase A; inbound in Phase B)
 - **`turnControl`** — `request_input` for hand-off prompts
 - **`visitorAuth`** — email magic-link verification; promotes anonymous → recognized
@@ -105,9 +106,11 @@ Two main use cases:
 **1. Identity / soul.** The agent's foundational character — who it is, how it talks, what it knows about itself. Pinned (`mutable: false`), operator-origin, system-placement, never-evict. The model sees it on every turn as part of the system prompt. This is what makes Zip "Zip" instead of a generic assistant.
 
 **2. Self-notes / learned behavior.** A scratchpad the agent can update across
-turns. Mutable file-backed memory is useful for low-risk learned behavior and
-open commitments. Do not use it for operator identity, authorization facts, or
-durable per-visitor profile data; peer-scoped memory belongs in
+turns. Mutable file-backed memory is agent-origin, preamble-placement, and
+drop-on-eviction by default. The model can read and write it via the generic
+`memory_write` and `memory_read` tools. Use it for low-risk learned behavior
+and open commitments. Do not use it for operator identity, authorization facts,
+or durable per-visitor profile data; peer-scoped memory belongs in
 `layeredMemory`.
 
 ### Why it's built in
@@ -710,7 +713,7 @@ const notifyAugment = notify({
 
 The `notify` augment gives the agent a `notify` tool for pushing messages to operator-defined destinations outside the current conversation. Unlike transport replies — where the agent responds to the peer who triggered the current turn — `notify` pushes to destinations that are **not** the active peer. Use it to alert an operator, escalate a situation, share a status ping, or hand off to a human mid-conversation.
 
-Destinations are declared in config, not in the agent prompt. The agent always refers to a destination by its operator-assigned name (`"creator"`, `"ops"`, `"alerts"`, etc.). This keeps Telegram chat IDs and webhook URLs out of the model's context entirely.
+Destinations are declared in config, not in the agent prompt. The agent always refers to a destination by its operator-assigned name (`"creator"`, `"ops"`, `"alerts"`, etc.). This keeps Telegram chat IDs and webhook URLs out of the model's context entirely. Destinations can also declare allowed trust levels and a public escalation-only policy.
 
 ### Tool surface
 
@@ -727,10 +730,12 @@ Returns `{ status: "sent" }`, `{ status: "rate_limited", message: "..." }`, or `
 
 ### Adapters
 
-Two adapters ship under `src/augments/notify/adapters/`, each ~50 LOC:
+Four adapters ship under `src/augments/notify/adapters/`:
 
 - **`webhook`** — HTTP POST of `{ summary, reason?, visitor?, channel: "notify" }` to a configured URL. Uses the shared `src/http.ts` client for redirect security. Any 2xx is success; other statuses are `failed` with the status code and up to 200 chars of the response body.
 - **`telegram`** — `sendMessage` via the shared `src/telegram-client.ts`. Formats the payload as Markdown. Multiple telegram destinations sharing the same bot token share one client instance.
+- **`agentmail`** — outbound email via AgentMail using a configured inbox and recipient list.
+- **`log-to-file`** — appends JSONL records to a local file; this is the zero-secret default installed by `auggy augment add notify`.
 
 ### Rate limiting
 

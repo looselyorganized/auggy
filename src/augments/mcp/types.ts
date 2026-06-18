@@ -1,10 +1,13 @@
 import type { McpServerConfig } from "../../cli/mcp-config";
+import type { TrustLevel } from "../../types";
 
 export type McpTransportKind = "stdio" | "streamable-http" | "sse";
 
 export interface McpRuntimePolicy {
   allowedTools?: string[];
   blockedTools?: string[];
+  allowedTrustLevels?: TrustLevel[];
+  toolPolicies?: Record<string, McpRuntimeToolPolicy>;
   timeoutMs?: number;
   maxResultBytes?: number;
   maxSchemaBytes?: number;
@@ -12,6 +15,10 @@ export interface McpRuntimePolicy {
   maxTools?: number;
   maxToolPages?: number;
   includeToolDescriptions?: boolean;
+}
+
+export interface McpRuntimeToolPolicy {
+  allowedTrustLevels?: TrustLevel[];
 }
 
 export interface McpRuntimeServer {
@@ -60,5 +67,6 @@ export interface McpServerStatus {
   transport: string;
   state: "configured" | "connected" | "disabled" | "failed";
   tools: number;
+  restrictedTools?: number;
   error?: string;
 }

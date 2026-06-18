@@ -1103,7 +1103,22 @@ export interface AgentHandle {
 
 export type NotifyAdapterKind = "webhook" | "telegram" | "agentmail" | "log-to-file";
 
-export interface LogToFileNotifyDestination {
+export type NotifyPublicPolicy = "allowed" | "escalation-only";
+
+export interface NotifyDestinationAuthority {
+  /**
+   * Trust levels allowed to use this destination. Defaults to all current v1
+   * trust levels for backward compatibility.
+   */
+  allowedTrustLevels?: TrustLevel[];
+  /**
+   * Optional stricter policy for public-originated sends. `escalation-only`
+   * requires the tool call to include a non-empty `reason`.
+   */
+  publicPolicy?: NotifyPublicPolicy;
+}
+
+export interface LogToFileNotifyDestination extends NotifyDestinationAuthority {
   name: string;
   transport: "log-to-file";
   /** Path to the JSONL log file. Relative paths resolve against the agent
@@ -1118,7 +1133,7 @@ export interface LogToFileNotifyDestination {
   };
 }
 
-export interface WebhookNotifyDestination {
+export interface WebhookNotifyDestination extends NotifyDestinationAuthority {
   name: string;
   transport: "webhook";
   url: string;
@@ -1130,7 +1145,7 @@ export interface WebhookNotifyDestination {
   };
 }
 
-export interface TelegramNotifyDestination {
+export interface TelegramNotifyDestination extends NotifyDestinationAuthority {
   name: string;
   transport: "telegram";
   botToken: string;
@@ -1143,7 +1158,7 @@ export interface TelegramNotifyDestination {
   };
 }
 
-export interface AgentMailNotifyDestination {
+export interface AgentMailNotifyDestination extends NotifyDestinationAuthority {
   name: string;
   transport: "agentmail";
   /** AgentMail API key (Bearer token, prefix `am_`). Resolve via env interpolation in agent.yaml. */

@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { notify } from "@/augments/notify";
-import type { Augment, NotifyAdapter } from "@/types";
+import type { AdminSection, Augment, NotifyAdapter } from "@/types";
 
 let tempDir: string;
 beforeEach(() => {
@@ -19,6 +19,12 @@ const fakeAdapter: NotifyAdapter = {
   },
 };
 
+type AdminTableSection = Extract<AdminSection, { kind: "table" }>;
+
+function isAdminTableSection(section: AdminSection): section is AdminTableSection {
+  return section.kind === "table";
+}
+
 function makeNotifyAugment(): Augment {
   return notify({
     destinations: [
@@ -26,6 +32,8 @@ function makeNotifyAugment(): Augment {
         name: "test-webhook",
         transport: "webhook",
         url: "http://127.0.0.1:1/test",
+        allowedTrustLevels: ["creator", "agent"],
+        publicPolicy: "escalation-only",
       },
     ],
     rateLimit: { globalMaxPerHour: 5 },
@@ -44,6 +52,14 @@ describe("notify adminInfo — shape", () => {
       expect(actionIds).toContain("notify-test");
       expect(actionIds).toContain("notify-cap-adjust");
       expect(aug.adminActions?.["notify-cap-reset"]).toBeDefined();
+      const destinationTable = info?.sections.find(
+        (section): section is AdminTableSection =>
+          isAdminTableSection(section) &&
+          section.columns.includes("Allowed trust") &&
+          section.columns.includes("Public policy"),
+      );
+      expect(destinationTable?.rows[0]).toContain("creator, agent");
+      expect(destinationTable?.rows[0]).toContain("escalation-only");
     } finally {
       await aug.onShutdown?.();
     }

@@ -392,6 +392,13 @@ export function filesystem(opts: FilesystemOptions): Augment {
         return null;
       });
 
+      // Prevent deleting the mount root itself before the empty-directory
+      // branch can remove it.
+      const mountRoot = await resolveMountRoot(mount);
+      if (physicalPath === mountRoot) {
+        return `Error: Cannot delete mount root "${mount.name}"`;
+      }
+
       const stats = await stat(physicalPath);
       if (stats.isDirectory()) {
         // Only remove empty directories
@@ -401,12 +408,6 @@ export function filesystem(opts: FilesystemOptions): Augment {
         }
         await rm(physicalPath, { recursive: false });
         return `Removed empty directory "${logicalPath}"`;
-      }
-
-      // Prevent deleting the mount root itself
-      const mountRoot = await resolveMountRoot(mount);
-      if (physicalPath === mountRoot) {
-        return `Error: Cannot delete mount root "${mount.name}"`;
       }
 
       await rm(physicalPath);

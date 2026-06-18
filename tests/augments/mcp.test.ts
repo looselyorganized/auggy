@@ -4,7 +4,11 @@ import { join } from "node:path";
 import { defineAgent } from "../../src/agent";
 import { mcp, type McpClientAdapter, type McpConnection } from "../../src/augments/mcp";
 import { createMcpManager } from "../../src/augments/mcp/manager";
-import type { McpRuntimeServer, McpToolCallResult } from "../../src/augments/mcp/types";
+import type {
+  McpRemoteTool,
+  McpRuntimeServer,
+  McpToolCallResult,
+} from "../../src/augments/mcp/types";
 import type { TurnTrigger } from "../../src/types";
 import { createMockModel } from "../fixtures/mock-model";
 
@@ -24,7 +28,7 @@ class FakeMcpConnection implements McpConnection {
   calls: { name: string; args: Record<string, unknown>; timeoutMs: number }[] = [];
 
   constructor(
-    private tools: { name: string; description?: string; inputSchema?: Record<string, unknown> }[],
+    private tools: McpRemoteTool[],
     private result: McpToolCallResult = { content: [{ type: "text", text: "ok" }] },
     private nextCursor?: string,
   ) {}
@@ -48,7 +52,7 @@ class FakeMcpAdapter implements McpClientAdapter {
   connections: FakeMcpConnection[] = [];
 
   constructor(
-    private tools: { name: string; description?: string; inputSchema?: Record<string, unknown> }[],
+    private tools: McpRemoteTool[],
     private result?: McpToolCallResult,
   ) {}
 
@@ -127,6 +131,97 @@ describe("mcp augment runtime", () => {
     const manager = createMcpManager({ agentDir: TMP, client: adapter });
     await manager.boot();
     expect(manager.tools.map((tool) => tool.name)).toEqual(["mcp_ops_read_status"]);
+  });
+
+  test("builds trust constraints from server policy and risky annotations", async () => {
+    writeMcpConfig({
+      mcpServers: {
+        ops: { type: "streamable-http", url: "https://mcp.example.com" },
+      },
+      auggy: {
+        servers: {
+          ops: {
+            allowedTrustLevels: ["creator", "agent", "public"],
+          },
+        },
+      },
+    });
+    const adapter = new FakeMcpAdapter([
+      { name: "read_status", inputSchema: { type: "object" } },
+      {
+        name: "delete_all",
+        inputSchema: { type: "object" },
+        annotations: { destructiveHint: true },
+      },
+      {
+        name: "search_web",
+        inputSchema: { type: "object" },
+        annotations: { openWorldHint: true },
+      },
+    ]);
+    const manager = createMcpManager({ agentDir: TMP, client: adapter });
+    await manager.boot();
+
+    expect(manager.constraints.perTrustLevel?.agent?.neverExpose).toEqual([
+      "mcp_ops_delete_all",
+      "mcp_ops_search_web",
+    ]);
+    expect(manager.constraints.perTrustLevel?.public?.neverExpose).toEqual([
+      "mcp_ops_delete_all",
+      "mcp_ops_search_web",
+    ]);
+    expect(manager.constraints.perTrustLevel?.creator).toBeUndefined();
+    expect(manager.statuses()[0]?.restrictedTools).toBe(2);
+  });
+
+  test("applies server trust policy to ordinary tools", async () => {
+    writeMcpConfig({
+      mcpServers: {
+        ops: { type: "streamable-http", url: "https://mcp.example.com" },
+      },
+      auggy: {
+        servers: {
+          ops: {
+            allowedTrustLevels: ["creator", "agent"],
+          },
+        },
+      },
+    });
+    const adapter = new FakeMcpAdapter([{ name: "read_status", inputSchema: { type: "object" } }]);
+    const manager = createMcpManager({ agentDir: TMP, client: adapter });
+    await manager.boot();
+
+    expect(manager.constraints.perTrustLevel?.public?.neverExpose).toEqual(["mcp_ops_read_status"]);
+    expect(manager.constraints.perTrustLevel?.agent).toBeUndefined();
+  });
+
+  test("allows explicit per-tool trust override for risky tools", async () => {
+    writeMcpConfig({
+      mcpServers: {
+        ops: { type: "streamable-http", url: "https://mcp.example.com" },
+      },
+      auggy: {
+        servers: {
+          ops: {
+            toolPolicies: {
+              delete_all: { allowedTrustLevels: ["creator", "agent"] },
+            },
+          },
+        },
+      },
+    });
+    const adapter = new FakeMcpAdapter([
+      {
+        name: "delete_all",
+        inputSchema: { type: "object" },
+        annotations: { destructiveHint: true },
+      },
+    ]);
+    const manager = createMcpManager({ agentDir: TMP, client: adapter });
+    await manager.boot();
+
+    expect(manager.constraints.perTrustLevel?.public?.neverExpose).toEqual(["mcp_ops_delete_all"]);
+    expect(manager.constraints.perTrustLevel?.agent).toBeUndefined();
   });
 
   test("failed external servers do not crash boot or expose tools", async () => {
@@ -388,6 +483,68 @@ describe("mcp augment runtime", () => {
       expect(result.success).toBe(true);
       expect(result.toolCalls[0]?.name).toBe("mcp_github_search");
       expect(adapter.connections[0]!.calls[0]?.name).toBe("search");
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  test("turn loop denies public fabricated calls to risky MCP tools", async () => {
+    writeMcpConfig({
+      mcpServers: {
+        ops: { type: "stdio", command: "node" },
+      },
+    });
+    const adapter = new FakeMcpAdapter([
+      {
+        name: "delete_all",
+        inputSchema: { type: "object" },
+        annotations: { destructiveHint: true },
+      },
+    ]);
+    const augment = mcp({ agentDir: TMP, client: adapter });
+    const model = createMockModel();
+    model.pushResponse({
+      content: "",
+      finishReason: "tool_use",
+      toolCalls: [{ name: "mcp_ops_delete_all", arguments: {} }],
+    });
+    model.pushResponse({ content: "denied", finishReason: "end_turn" });
+
+    const agent = defineAgent({ name: "mcp-test", model: "mock", augments: [augment] }, model);
+    await agent.start();
+    try {
+      const trigger: TurnTrigger = {
+        type: "message",
+        turnId: "turn-2",
+        threadId: "thread-2",
+        timestamp: Date.now(),
+        source: "test",
+        peer: {
+          id: "visitor",
+          kind: "human",
+          trustLevel: "public",
+          sourceAugment: "test",
+        },
+        payload: {
+          parts: [{ kind: "text", text: "delete" }],
+          sourceAugment: "test",
+          peer: {
+            id: "visitor",
+            kind: "human",
+            trustLevel: "public",
+            sourceAugment: "test",
+          },
+          timestamp: Date.now(),
+        },
+      };
+      const result = await agent.inject(trigger);
+      expect(result.success).toBe(true);
+      expect(result.toolCalls).toHaveLength(0);
+      expect(result.trace.capabilityChecks).toContainEqual({
+        tool: "mcp_ops_delete_all",
+        result: "denied",
+      });
+      expect(adapter.connections[0]!.calls).toHaveLength(0);
     } finally {
       await agent.stop();
     }

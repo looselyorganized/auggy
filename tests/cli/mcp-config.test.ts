@@ -192,4 +192,55 @@ describe("mcp config helpers", () => {
       cleanup();
     }
   });
+
+  test("validates Auggy MCP trust policy", () => {
+    const { dir, cleanup } = tempAgent();
+    try {
+      writeFileSync(
+        join(dir, ".mcp.json"),
+        JSON.stringify(
+          {
+            mcpServers: {
+              remote: { type: "http", url: "https://example.com/mcp" },
+            },
+            auggy: {
+              servers: {
+                remote: {
+                  allowedTrustLevels: ["creator", "agent"],
+                  toolPolicies: {
+                    delete_all: { allowedTrustLevels: ["creator"] },
+                  },
+                },
+              },
+            },
+          },
+          null,
+          2,
+        ),
+      );
+      expect(readMcpConfig(dir).config.auggy?.servers?.remote?.toolPolicies?.delete_all).toEqual({
+        allowedTrustLevels: ["creator"],
+      });
+
+      writeFileSync(
+        join(dir, ".mcp.json"),
+        JSON.stringify({
+          mcpServers: { remote: { type: "http", url: "https://example.com/mcp" } },
+          auggy: { servers: { remote: { allowedTrustLevels: ["creator", "staff"] } } },
+        }),
+      );
+      expect(() => readMcpConfig(dir)).toThrow("allowedTrustLevels");
+
+      writeFileSync(
+        join(dir, ".mcp.json"),
+        JSON.stringify({
+          mcpServers: { remote: { type: "http", url: "https://example.com/mcp" } },
+          auggy: { servers: { remote: { toolPolicies: { delete_all: "creator" } } } },
+        }),
+      );
+      expect(() => readMcpConfig(dir)).toThrow("toolPolicies.delete_all");
+    } finally {
+      cleanup();
+    }
+  });
 });
