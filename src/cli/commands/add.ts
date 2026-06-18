@@ -179,6 +179,7 @@ export async function runAdd(target: string | undefined, opts: AddOpts): Promise
   let visitorAuthAdded = false;
   let linkAdded = false;
   let bashAdded = false;
+  let budgetsAdded = false;
   for (const entry of selected) {
     const skillCopied = copyBundledSkill(entry.type, agentDir);
     writeBuiltinAugmentMetadata(agentDir, entry, optionsForAddedAugment(entry, name));
@@ -210,6 +211,9 @@ export async function runAdd(target: string | undefined, opts: AddOpts): Promise
     }
     if (entry.type === "bash") {
       bashAdded = true;
+    }
+    if (entry.type === "budgets") {
+      budgetsAdded = true;
     }
     console.log(`  ✓ ${entry.defaultName} (${entry.type})`);
     if (skillCopied) {
@@ -267,6 +271,16 @@ export async function runAdd(target: string | undefined, opts: AddOpts): Promise
     console.log("  - Recent memory is added to context automatically on future turns");
     console.log("  - Ask the agent to remember stable preferences or commitments");
     console.log("  - Auto-extraction is off by default; explicit memory_write is active now");
+  }
+
+  if (budgetsAdded) {
+    console.log();
+    console.log("Use budgets (preview):");
+    console.log("  - Budgets are runtime spend guardrails, not billing control");
+    console.log("  - USD caps are post-hoc soft caps and can overshoot by one turn");
+    console.log("  - Configure provider-side hard spend caps for unattended agents");
+    console.log("  - SQLite budgets are single-process and single-replica");
+    console.log("  - No built-in retention/purge policy yet");
   }
 
   if (mcpAdded) {
@@ -380,7 +394,7 @@ async function confirmPreviewAugments(selected: CatalogEntry[], yes: boolean | u
 function previewCaveat(entry: CatalogEntry): string {
   switch (entry.type) {
     case "budgets":
-      return "spend-limit behavior needs more production soak";
+      return "runtime soft caps are post-hoc; provider hard caps are still required";
     case "bash":
       return "host process execution is not sandboxing; keep command allowlists tight";
     case "link":

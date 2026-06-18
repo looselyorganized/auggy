@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach, spyOn } from "bun:test";
-import { writeFileSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { resolveAugments } from "../../src/cli/augment-resolver";
 import type { AugmentConfig } from "../../src/cli/types";
@@ -613,6 +613,30 @@ describe("resolveAugments — budgets", () => {
     expect(augments).toHaveLength(1);
     expect(augments[0]!.name).toBe("budgets");
     expect(augments[0]!.turnGate).toBeDefined();
+  });
+
+  test("passes agentDir so budgets admin overrides can persist", async () => {
+    const configs: AugmentConfig[] = [
+      {
+        name: "budgets",
+        type: "budgets",
+        options: { dbPath: "./budgets-admin.db", dailyBudgetUsd: 5 },
+      },
+    ];
+
+    const augments = await resolveAugments(configs, TMP);
+    const budgetAugment = augments[0]!;
+
+    try {
+      const result = await budgetAugment.adminActions?.["budget-cap-adjust"]?.({ value: "9" });
+      expect(result?.ok).toBe(true);
+      const overrideFile = join(TMP, "admin-overrides.json");
+      expect(existsSync(overrideFile)).toBe(true);
+      const parsed = JSON.parse(readFileSync(overrideFile, "utf-8"));
+      expect(parsed.overrides.budgets.dailyBudgetUsd).toBe(9);
+    } finally {
+      await budgetAugment.onShutdown?.();
+    }
   });
 
   test("closes the store on shutdown without error", async () => {

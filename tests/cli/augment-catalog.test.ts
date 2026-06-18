@@ -71,6 +71,16 @@ describe("augment catalog", () => {
     expect(entry?.hasSkill).toBe(true);
   });
 
+  it("catalog keeps budgets preview with runtime guardrail wording", () => {
+    const entry = AUGMENT_CATALOG.find((e) => e.type === "budgets");
+    expect(entry).toBeDefined();
+    expect(entry?.stability).toBe("preview");
+    expect(entry?.description).toContain("runtime spend guardrails");
+    expect(entry?.description).toContain("not billing control");
+    expect(entry?.description).toContain("single-process");
+    expect(entry?.hasSkill).toBe(false);
+  });
+
   it("catalog includes layeredMemory as stable production memory", () => {
     const entry = AUGMENT_CATALOG.find((e) => e.type === "layeredMemory");
     expect(entry).toBeDefined();

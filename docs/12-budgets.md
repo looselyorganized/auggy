@@ -6,6 +6,10 @@
 
 The `budgets` augment enforces admission caps on inbound turns before the engine runs. It is the sole built-in implementation of the `TurnGateProvider` 2PC contract (see [03-types.md § Section 7b](./03-types.md#section-7b--turn-gate-admission-2pc)).
 
+`budgets` remains preview for v1.0. Treat it as **runtime spend guardrails**,
+not billing control. It can reject future turns after settled usage crosses a
+configured limit, but it does not replace provider-side hard spend caps.
+
 What it does:
 
 - **Turn caps** — limits turns per thread and per day, differentiated by trust level and `publicSubstate`.
@@ -15,8 +19,10 @@ What it does:
 
 What it does **not** do:
 
+- No hard billing control — configure provider-side spend caps for unattended agents.
 - No pre-call cost estimation (future work — see §10).
 - No multi-instance coordination (single SQLite file; single agent process).
+- No built-in retention/purge policy for accumulated SQLite rows.
 - No burst allowances, carry-over, or paid upgrades — those are application-level concerns.
 
 ## 2. Quick start
@@ -264,7 +270,7 @@ The SQLite store uses `BEGIN IMMEDIATE` transactions and is not safe for concurr
 
 ### Post-hoc dollar caps
 
-`maxUsdPerDay` is enforced based on completed turns, not the in-flight turn. The prepare phase reads yesterday's + today's settled costs, so the current turn's cost is unknown at admission time. This means a single turn can push a peer slightly over their daily dollar limit.
+`maxUsdPerDay` is enforced based on completed turns, not the in-flight turn. The prepare phase reads settled costs, so the current turn's cost is unknown at admission time. This means a single turn can push a peer slightly over their daily dollar limit.
 
 The one-turn overshoot is acceptable: the next request will be denied by the now-exceeded cap. Pre-call cost projection is deferred — see §10.
 

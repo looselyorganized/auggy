@@ -831,6 +831,29 @@ describe("budgets augment options validation", () => {
     expect(() => parseConfig(path)).toThrow("maxUsdPerDay");
   });
 
+  test("rejects unimplemented caps.public.recognized.maxUsdPerThread", () => {
+    const path = writeYaml(
+      "agent.yaml",
+      minimalConfig({
+        augments: [
+          {
+            name: "budgets",
+            type: "budgets",
+            options: {
+              dbPath: "./budgets.db",
+              caps: {
+                public: {
+                  recognized: { maxUsdPerThread: 1 },
+                },
+              },
+            },
+          },
+        ],
+      }),
+    );
+    expect(() => parseConfig(path)).toThrow("maxUsdPerThread");
+  });
+
   test("rejects caps.agent.maxTurnsPerDay as non-number", () => {
     const path = writeYaml(
       "agent.yaml",

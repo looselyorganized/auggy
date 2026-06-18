@@ -505,6 +505,7 @@ export async function resolveAugments(
         const dbPath = (opts.dbPath as string | undefined) ?? "./budgets.db";
         augment = budgets({
           dbPath: resolvePath(dbPath, agentDir),
+          agentDir,
           caps: opts.caps as BudgetsAugmentOptions["caps"],
           anonymousGlobalLimit: opts.anonymousGlobalLimit as number | undefined,
           dailyBudgetUsd: opts.dailyBudgetUsd as number | undefined,

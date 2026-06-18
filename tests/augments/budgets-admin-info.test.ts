@@ -39,8 +39,18 @@ describe("budgets adminInfo — shape", () => {
       expect(kv).toBeDefined();
       if (kv?.kind === "keyValue") {
         const labels = kv.rows.map((r) => r.label);
+        expect(labels).toContain("Status");
+        expect(labels).toContain("Guardrail model");
+        expect(labels).toContain("USD enforcement");
+        expect(labels).toContain("Storage");
+        expect(labels).toContain("Retention");
         expect(labels).toContain("Daily budget cap");
         expect(labels).toContain("Today's spend");
+        expect(JSON.stringify(kv.rows)).toContain("preview");
+        expect(JSON.stringify(kv.rows)).toContain("runtime spend guardrails");
+        expect(JSON.stringify(kv.rows)).toContain("provider-side hard caps still required");
+        expect(JSON.stringify(kv.rows)).toContain("single-process");
+        expect(JSON.stringify(kv.rows)).toContain("no built-in purge policy");
       }
     } finally {
       await aug.onShutdown?.();

@@ -170,6 +170,17 @@ export function budgets(opts: BudgetsAugmentOptions): Augment {
         {
           kind: "keyValue",
           rows: [
+            { label: "Status", value: "preview" },
+            {
+              label: "Guardrail model",
+              value: "runtime spend guardrails; not billing control",
+            },
+            {
+              label: "USD enforcement",
+              value: "post-hoc soft cap; provider-side hard caps still required",
+            },
+            { label: "Storage", value: "SQLite; single-process and single-replica" },
+            { label: "Retention", value: "no built-in purge policy" },
             {
               label: "Daily budget cap",
               value: formatCap(currentDailyBudgetUsd),
