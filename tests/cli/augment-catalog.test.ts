@@ -54,6 +54,14 @@ describe("augment catalog", () => {
     expect(entry?.hasSkill).toBe(true);
   });
 
+  it("catalog keeps link preview with an explicit trust warning", () => {
+    const entry = AUGMENT_CATALOG.find((e) => e.type === "link");
+    expect(entry).toBeDefined();
+    expect(entry?.stability).toBe("preview");
+    expect(entry?.description).toContain("agent trust");
+    expect(entry?.hasSkill).toBe(true);
+  });
+
   it("catalog includes layeredMemory as stable production memory", () => {
     const entry = AUGMENT_CATALOG.find((e) => e.type === "layeredMemory");
     expect(entry).toBeDefined();

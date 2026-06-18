@@ -1275,6 +1275,11 @@ agent at an HTTP endpoint speaking A2A v0.2 (JSON-RPC), and to send outbound
 traffic to configured peers. Peer-to-peer with mutual bearer auth — no central
 service. Binds its own port, separate from `webTransport`.
 
+`link` remains preview for v1.0. Every configured inbound peer that presents a
+valid bearer is admitted as `trustLevel: "agent"`; there is no
+authenticated-but-reduced peer tier yet. Do not use it for public, customer, or
+semi-trusted collaborator traffic until the granular trust model lands.
+
 ### When to use it
 
 You're running two or more Auggy agents that need to talk to each other. The other agent can be on the same machine, a different Railway project, a different cloud — anywhere reachable over HTTPS. Configured peers are addressed by short name (`researcher`, `analyst`, etc.) in the LLM-facing tool surface.
@@ -1395,6 +1400,11 @@ trust override. If you need to admit a peer at *reduced* privilege, the only
 downgrade today is `public` (the visitor tier), which has the wrong semantic
 for "authenticated-but-restricted peer." This is a known authorization gap and
 is one reason the roadmap calls for a more granular trust model.
+
+Operationally, treat each inbound peer bearer like an agent-privilege
+credential. Rotate inbound and outbound bearers independently, keep them out of
+registries and public agent cards, and expose the link port only to peers that
+should receive the current `agent` capability surface.
 
 ### Forward-compat with the coordinator
 

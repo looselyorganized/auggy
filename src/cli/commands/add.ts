@@ -177,6 +177,7 @@ export async function runAdd(target: string | undefined, opts: AddOpts): Promise
   let layeredMemoryAdded = false;
   let telegramTransportAdded = false;
   let visitorAuthAdded = false;
+  let linkAdded = false;
   for (const entry of selected) {
     const skillCopied = copyBundledSkill(entry.type, agentDir);
     writeBuiltinAugmentMetadata(agentDir, entry, optionsForAddedAugment(entry, name));
@@ -202,6 +203,9 @@ export async function runAdd(target: string | undefined, opts: AddOpts): Promise
     }
     if (entry.type === "visitorAuth") {
       visitorAuthAdded = true;
+    }
+    if (entry.type === "link") {
+      linkAdded = true;
     }
     console.log(`  ✓ ${entry.defaultName} (${entry.type})`);
     if (skillCopied) {
@@ -282,6 +286,18 @@ export async function runAdd(target: string | undefined, opts: AddOpts): Promise
     console.log("  - For production webhooks, edit augments/telegramTransport/augment.yaml");
   }
 
+  if (linkAdded) {
+    console.log();
+    console.log("Use link (preview):");
+    console.log("  - Link opens a peer-to-peer A2A listener on its own port");
+    console.log("  - Configured inbound peers are admitted as agent trust");
+    console.log("  - Bearer possession is the authority boundary; rotate peer bearers separately");
+    console.log(
+      "  - Do not use link for public or reduced-privilege peers until granular trust lands",
+    );
+    console.log("  - Review augments/link/augment.yaml before exposing the port");
+  }
+
   // === Run bun install (last; failure leaves intentional partial state) ===
   // Yaml + package.json mutations represent the operator's request and
   // stay on disk regardless of install outcome. A transient install failure
@@ -354,7 +370,7 @@ function previewCaveat(entry: CatalogEntry): string {
     case "bash":
       return "shell access requires careful command allowlists";
     case "link":
-      return "agent-to-agent networking has more edge cases to test";
+      return "peer bearers grant agent trust; reduced-privilege peer auth is not ready";
     case "mcp":
       return "external tool servers require deliberate trust, auth, and cloud transport setup";
     default:
