@@ -35,10 +35,22 @@ function mockAdapter(
   };
 }
 
+const ALL_TRUST_LEVELS: PeerIdentity["trustLevel"][] = ["creator", "agent", "public"];
+
 const baseOpts: NotifyAugmentOptions = {
   destinations: [
-    { name: "creator", transport: "webhook", url: "https://example.com/notify" },
-    { name: "ops", transport: "webhook", url: "https://example.com/ops" },
+    {
+      name: "creator",
+      transport: "webhook",
+      url: "https://example.com/notify",
+      allowedTrustLevels: ALL_TRUST_LEVELS,
+    },
+    {
+      name: "ops",
+      transport: "webhook",
+      url: "https://example.com/ops",
+      allowedTrustLevels: ALL_TRUST_LEVELS,
+    },
   ],
   rateLimit: { cooldownMs: 60_000, dedupThreshold: 0, globalMaxPerHour: 100 },
 };
@@ -74,6 +86,33 @@ describe("notify augment", () => {
     const result = JSON.parse(await tool.execute({ to: "nope", summary: "x" }, ctx));
     expect(result.status).toBe("failed");
     expect(result.message).toContain("nope");
+  });
+
+  it("defaults destinations to creator and agent trust only", async () => {
+    const deliveries: Array<{ destination: string; result: "sent" | "failed" }> = [];
+    const aug = notify({
+      destinations: [{ name: "creator", transport: "webhook", url: "https://example.com/notify" }],
+      adapters: { webhook: mockAdapter(deliveries), telegram: mockAdapter() },
+    });
+    const tool = getNotifyTool(aug);
+
+    const denied = JSON.parse(
+      await tool.execute(
+        { to: "creator", summary: "public should not send by default" },
+        makeContext(makePeer("v1")),
+      ),
+    );
+    const allowed = JSON.parse(
+      await tool.execute(
+        { to: "creator", summary: "agent can send by default" },
+        makeContext(makePeer("agent-1", "agent")),
+      ),
+    );
+
+    expect(denied.status).toBe("failed");
+    expect(denied.message).toContain("not available to public peers");
+    expect(allowed.status).toBe("sent");
+    expect(deliveries).toEqual([{ destination: "creator", result: "sent" }]);
   });
 
   it("blocks peers whose trust level is not allowed for the destination", async () => {
@@ -137,6 +176,7 @@ describe("notify augment", () => {
           name: "escalations",
           transport: "webhook",
           url: "https://example.com/escalations",
+          allowedTrustLevels: ALL_TRUST_LEVELS,
           publicPolicy: "escalation-only",
         },
       ],
@@ -306,11 +346,17 @@ describe("notify augment", () => {
   test("per-destination cap allows verify-out 50/hr while creator stays at global default", async () => {
     const aug = notify({
       destinations: [
-        { name: "creator", transport: "webhook", url: "https://example.com/c" },
+        {
+          name: "creator",
+          transport: "webhook",
+          url: "https://example.com/c",
+          allowedTrustLevels: ALL_TRUST_LEVELS,
+        },
         {
           name: "verify-out",
           transport: "webhook",
           url: "https://example.com/v",
+          allowedTrustLevels: ALL_TRUST_LEVELS,
           rateLimit: { maxPerHour: 50, cooldownMs: 0 },
         },
       ],
@@ -340,6 +386,7 @@ describe("notify augment", () => {
           name: "verify-out",
           transport: "webhook",
           url: "https://x",
+          allowedTrustLevels: ALL_TRUST_LEVELS,
           rateLimit: { maxPerHour: 1, cooldownMs: 0 },
         },
       ],
@@ -356,7 +403,14 @@ describe("notify augment", () => {
 
   test("destination without explicit rateLimit falls back to global cap", async () => {
     const aug = notify({
-      destinations: [{ name: "creator", transport: "webhook", url: "https://x" }],
+      destinations: [
+        {
+          name: "creator",
+          transport: "webhook",
+          url: "https://x",
+          allowedTrustLevels: ALL_TRUST_LEVELS,
+        },
+      ],
       rateLimit: { globalMaxPerHour: 2, dedupThreshold: 0, cooldownMs: 0 },
       adapters: { webhook: mockAdapter(), telegram: mockAdapter() },
     });

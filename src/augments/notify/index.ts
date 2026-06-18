@@ -35,7 +35,7 @@ import { createRingBuffer } from "../../lib/ring-buffer";
  * config-parser destination validator + register the factory below.
  */
 export const NOTIFY_TRANSPORTS = ["webhook", "telegram", "agentmail", "log-to-file"] as const;
-const DEFAULT_ALLOWED_TRUST_LEVELS: readonly TrustLevel[] = ["creator", "agent", "public"];
+const DEFAULT_ALLOWED_TRUST_LEVELS: readonly TrustLevel[] = ["creator", "agent"];
 
 import { createWebhookAdapter } from "./adapters/webhook";
 import { createTelegramAdapter } from "./adapters/telegram";

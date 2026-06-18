@@ -1107,8 +1107,8 @@ export type NotifyPublicPolicy = "allowed" | "escalation-only";
 
 export interface NotifyDestinationAuthority {
   /**
-   * Trust levels allowed to use this destination. Defaults to all current v1
-   * trust levels for backward compatibility.
+   * Trust levels allowed to use this destination. Defaults to creator and agent;
+   * public destinations must opt in explicitly.
    */
   allowedTrustLevels?: TrustLevel[];
   /**

@@ -11,6 +11,8 @@ The `notify` augment gives an agent a `notify` tool for pushing messages to oper
 
 Destinations are declared in config, not in the agent prompt. The agent always refers to a destination by its operator-assigned name (`"creator"`, `"ops"`, `"alerts"`, etc.). This keeps Telegram chat IDs and webhook URLs out of the model's context entirely.
 
+By default, a destination is available only to `creator` and `agent` trust. Add `public` to `allowedTrustLevels` only for destinations intended to receive public-originated escalation notifications.
+
 What it does:
 
 - **Named destinations** — operator declares webhook and/or Telegram targets in
@@ -64,6 +66,7 @@ config:
       botToken: ${TELEGRAM_BOT_TOKEN}
       chatId: ${TELEGRAM_CHAT_ID}
       parseMode: Markdown
+      allowedTrustLevels: [creator, agent, public]
       publicPolicy: escalation-only
   rateLimit:
     enabled: true
@@ -100,6 +103,7 @@ const notifyAugment = notify({
       botToken: process.env.TELEGRAM_BOT_TOKEN!,
       chatId: Number(process.env.TELEGRAM_CHAT_ID),
       parseMode: "Markdown",
+      allowedTrustLevels: ["creator", "agent", "public"],
       publicPolicy: "escalation-only",
     },
   ],
@@ -124,7 +128,7 @@ All destination types accept these optional authority fields:
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `allowedTrustLevels` | `("creator" \| "agent" \| "public")[]` | all three v1 levels | Trust levels allowed to use this destination. Omit for backward-compatible behavior. |
+| `allowedTrustLevels` | `("creator" \| "agent" \| "public")[]` | `["creator", "agent"]` | Trust levels allowed to use this destination. Add `public` explicitly for public escalation destinations. |
 | `publicPolicy` | `"allowed" \| "escalation-only"` | `"allowed"` | When set to `"escalation-only"`, public peers must include a non-empty `reason` in the `notify` call. Creator and agent peers are unaffected. |
 
 Authority is enforced before rate limits and delivery. A denied destination

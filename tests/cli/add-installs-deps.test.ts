@@ -343,7 +343,12 @@ describe("runAdd no-op cases", () => {
     }
 
     expect(readAgentAugments(dir)).toContain("notify");
-    expect(readAugmentMetadata(dir, "notify").type).toBe("notify");
+    const metadata = readAugmentMetadata(dir, "notify") as {
+      type: string;
+      config: { destinations: Array<{ allowedTrustLevels?: string[] }> };
+    };
+    expect(metadata.type).toBe("notify");
+    expect(metadata.config.destinations[0]?.allowedTrustLevels).toEqual(["creator", "agent"]);
     expect(existsSync(join(dir, "skills", "notify", "SKILL.md"))).toBe(true);
     const output = logs.join("\n");
     expect(output).toContain("Use notify:");
