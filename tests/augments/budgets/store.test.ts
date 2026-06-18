@@ -400,6 +400,40 @@ describe("BudgetStore", () => {
     expect(usage.unpricedTurns).toBe(0);
   });
 
+  // ── getDaySpend ─────────────────────────────────────────
+
+  it("getDaySpend returns total and per-peer unpriced turn counts", async () => {
+    const priced = await store.prepare(baseInput({ turnId: "day-priced", peerId: "peer-a" }));
+    await priced.confirm();
+    await store.commit("day-priced", "peer-a", { priced: true, costUsd: 0.25 });
+
+    const unpricedA = await store.prepare(
+      baseInput({ turnId: "day-unpriced-a", peerId: "peer-a" }),
+    );
+    await unpricedA.confirm();
+    await store.commit("day-unpriced-a", "peer-a", { priced: false, reason: "unknown model" });
+
+    const unpricedB = await store.prepare(
+      baseInput({ turnId: "day-unpriced-b", peerId: "peer-b" }),
+    );
+    await unpricedB.confirm();
+    await store.commit("day-unpriced-b", "peer-b", { priced: false, reason: "unknown model" });
+
+    const spend = await store.getDaySpend();
+    expect(spend.totalUsd).toBeCloseTo(0.25, 5);
+    expect(spend.unpricedTurns).toBe(2);
+    expect(spend.byPeer).toContainEqual({
+      peerId: "peer-a",
+      costUsd: 0.25,
+      unpricedTurns: 1,
+    });
+    expect(spend.byPeer).toContainEqual({
+      peerId: "peer-b",
+      costUsd: 0,
+      unpricedTurns: 1,
+    });
+  });
+
   // ── sweepIncompleteReservations ──────────────────────────
 
   it("sweepIncompleteReservations marks stale pending rows as allow:incomplete", async () => {

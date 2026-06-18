@@ -82,9 +82,9 @@ export interface BudgetStore {
 
   /**
    * Read-only accessor for context() preamble. Returns current usage so the
-   * BATS preamble can compute a budgetRatio AND surface unpriced turns —
-   * the schema's unpriced_turns counter (already collected per peer/day)
-   * is exposed here so operators see when budget enforcement is degraded.
+   * BATS preamble can compute a budgetRatio. The unpriced counter is returned
+   * to callers, but the model-facing preamble intentionally suppresses it;
+   * operator views use getDaySpend() for pricing-confidence reporting.
    */
   getPeerUsage(
     peerId: string,
@@ -109,7 +109,8 @@ export interface BudgetStore {
    */
   getDaySpend(day?: string): Promise<{
     totalUsd: number;
-    byPeer: Array<{ peerId: string; costUsd: number; turnCount: number }>;
+    unpricedTurns: number;
+    byPeer: Array<{ peerId: string; costUsd: number; unpricedTurns: number }>;
   }>;
 
   close(): Promise<void>;
@@ -499,9 +500,10 @@ export function createBudgetStore(config: BudgetStoreConfig): BudgetStore {
 
   // ── getDaySpend (G36) ────────────────────────────────────
 
-  const selectDailyGlobalStmt = db.prepare<{ total_cost_usd: number }, [string]>(
-    `SELECT total_cost_usd FROM daily_global WHERE day = ?`,
-  );
+  const selectDailyGlobalStmt = db.prepare<
+    { total_cost_usd: number; unpriced_turns: number },
+    [string]
+  >(`SELECT total_cost_usd, unpriced_turns FROM daily_global WHERE day = ?`);
   const selectPeerDailyCostsStmt = db.prepare<
     { peer_id: string; cost_usd: number; unpriced_turns: number },
     [string]
@@ -509,17 +511,19 @@ export function createBudgetStore(config: BudgetStoreConfig): BudgetStore {
 
   async function getDaySpend(day?: string): Promise<{
     totalUsd: number;
-    byPeer: Array<{ peerId: string; costUsd: number; turnCount: number }>;
+    unpricedTurns: number;
+    byPeer: Array<{ peerId: string; costUsd: number; unpricedTurns: number }>;
   }> {
     const dayKey = day ?? ymdUtc(Date.now());
     const totalRow = selectDailyGlobalStmt.get(dayKey);
     const rows = selectPeerDailyCostsStmt.all(dayKey);
     return {
       totalUsd: totalRow?.total_cost_usd ?? 0,
+      unpricedTurns: totalRow?.unpriced_turns ?? 0,
       byPeer: rows.map((r) => ({
         peerId: r.peer_id,
         costUsd: r.cost_usd,
-        turnCount: r.unpriced_turns,
+        unpricedTurns: r.unpriced_turns,
       })),
     };
   }

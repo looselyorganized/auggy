@@ -274,6 +274,14 @@ The SQLite store uses `BEGIN IMMEDIATE` transactions and is not safe for concurr
 
 The one-turn overshoot is acceptable: the next request will be denied by the now-exceeded cap. Pre-call cost projection is deferred — see §10.
 
+### Pricing confidence
+
+Unknown or unsupported model pricing commits as unpriced. Turn-count caps still apply, but dollar caps only include priced turns, so spend enforcement is degraded until pricing coverage is restored.
+
+The admin surface reports `Pricing confidence` as `priced` when today's turns all have priced costs. If any turn commits unpriced, it reports `degraded` with the day's unpriced turn count and keeps the per-peer table's unpriced counts visible to operators.
+
+This signal is intentionally operator-only. The BATS preamble does not render unpriced counts into model-visible context because that would reveal when dollar-cap enforcement is least reliable.
+
 ### No rebuild path
 
 If the database file is deleted, historical usage is lost. There is no mechanism to reconstruct the store from external state or audit logs. Back up the database if usage history matters.
