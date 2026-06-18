@@ -70,14 +70,14 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
     label: "File Memory",
     tagline: "learned-behaviors store",
     description:
-      "Mutable file the agent writes learned behaviors to (./learned.md). Mounted into the preamble.",
+      "Mutable file the agent writes learned behaviors to (./learned.md). Mounted into the preamble as agent-origin memory.",
     type: "fileMemory",
     defaultName: "fileMemory",
     defaultOptions: {
       label: "learned",
       source: "./learned.md",
       mutable: true,
-      origin: "system",
+      origin: "agent",
       priority: "high",
       placement: "preamble",
       eviction: "drop",

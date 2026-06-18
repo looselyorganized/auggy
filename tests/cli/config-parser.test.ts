@@ -1255,4 +1255,62 @@ describe("notify augment agentmail transport validation", () => {
     );
     expect(() => parseConfig(path)).toThrow("apiKey: required string for agentmail transport");
   });
+
+  test("accepts destination authority fields", () => {
+    const path = writeYaml(
+      "agent.yaml",
+      minimalConfig({
+        augments: [
+          {
+            name: "notify",
+            type: "notify",
+            options: {
+              destinations: [
+                {
+                  name: "ops",
+                  transport: "webhook",
+                  url: "https://example.com/notify",
+                  allowedTrustLevels: ["creator", "agent"],
+                  publicPolicy: "escalation-only",
+                },
+              ],
+            },
+          },
+        ],
+      }),
+    );
+    const config = parseConfig(path);
+    const notifyAugment = config.augments.find((a) => a.type === "notify");
+    const destination = (notifyAugment?.options as { destinations: Array<Record<string, unknown>> })
+      .destinations[0];
+    expect(destination?.allowedTrustLevels).toEqual(["creator", "agent"]);
+    expect(destination?.publicPolicy).toBe("escalation-only");
+  });
+
+  test("rejects invalid destination authority fields", () => {
+    const path = writeYaml(
+      "agent.yaml",
+      minimalConfig({
+        augments: [
+          {
+            name: "notify",
+            type: "notify",
+            options: {
+              destinations: [
+                {
+                  name: "ops",
+                  transport: "webhook",
+                  url: "https://example.com/notify",
+                  allowedTrustLevels: ["creator", "staff"],
+                  publicPolicy: "everyone",
+                },
+              ],
+            },
+          },
+        ],
+      }),
+    );
+    expect(() => parseConfig(path)).toThrow(/allowedTrustLevels\[1\].*creator.*agent.*public/);
+    expect(() => parseConfig(path)).toThrow(/publicPolicy: must be "allowed" or "escalation-only"/);
+  });
 });

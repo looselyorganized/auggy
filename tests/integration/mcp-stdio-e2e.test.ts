@@ -42,6 +42,7 @@ describe("MCP stdio e2e", () => {
           transport: "stdio",
           state: "connected",
           tools: 1,
+          restrictedTools: 0,
         },
       ]);
       expect(manager.tools.map((tool) => tool.name)).toEqual(["mcp_smoke_pickleball_score"]);

@@ -9,7 +9,7 @@ import {
   type McpServerConfig,
 } from "../../cli/mcp-config";
 import { parseEnvFile } from "../../cli/env-parse";
-import type { Tool } from "../../types";
+import type { AugmentConstraints, Tool, TrustLevel } from "../../types";
 import { formatMcpToolResult } from "./result";
 import { SdkMcpClientAdapter } from "./sdk-adapter";
 import type {
@@ -38,6 +38,7 @@ export interface McpManagerOptions {
 
 export interface McpManager {
   tools: Tool[];
+  constraints: AugmentConstraints;
   boot(): Promise<void>;
   shutdown(): Promise<void>;
   statuses(): McpServerStatus[];
@@ -50,6 +51,11 @@ interface ServerRuntime {
   activeCalls: number;
 }
 
+interface ToolTrustRestriction {
+  toolName: string;
+  blockedTrustLevels: TrustLevel[];
+}
+
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_RESULT_BYTES = 128 * 1024;
 const DEFAULT_MAX_SCHEMA_BYTES = 16 * 1024;
@@ -58,6 +64,8 @@ const DEFAULT_MAX_TOOLS = 64;
 const DEFAULT_MAX_TOOL_PAGES = 20;
 const MAX_TOOL_DESCRIPTION_CHARS = 700;
 const MAX_SCHEMA_TEXT_CHARS = 300;
+const ALL_TRUST_LEVELS: TrustLevel[] = ["creator", "agent", "public"];
+const RISKY_ANNOTATION_DEFAULT_TRUST_LEVELS: TrustLevel[] = ["creator"];
 
 const toolInputSchema = z.record(z.string(), z.unknown());
 
@@ -65,13 +73,17 @@ export function createMcpManager(opts: McpManagerOptions = {}): McpManager {
   const agentDir = opts.agentDir ?? process.cwd();
   const client = opts.client ?? new SdkMcpClientAdapter();
   const tools: Tool[] = [];
+  const constraints: AugmentConstraints = {};
   const runtimes: ServerRuntime[] = [];
 
   return {
     tools,
+    constraints,
     async boot() {
       tools.splice(0, tools.length);
       runtimes.splice(0, runtimes.length);
+      constraints.perTrustLevel = undefined;
+      const trustBlocks = emptyTrustBlocks();
       const { path, config } = loadConfig(agentDir, opts.config);
       const env = loadAgentEnv(dirname(path));
 
@@ -123,10 +135,20 @@ export function createMcpManager(opts: McpManagerOptions = {}): McpManager {
           runtime.connection = await connectWithTimeout(client, server);
           const remoteTools = await listAllTools(runtime.connection, server);
           const exposed = remoteTools.filter((tool) => shouldExposeTool(tool.name, server.policy));
-          const serverTools = buildAuggyTools(server, exposed, runtime, tools);
+          const { tools: serverTools, restrictions } = buildAuggyTools(
+            server,
+            exposed,
+            runtime,
+            tools,
+          );
           tools.push(...serverTools);
+          applyTrustRestrictions(trustBlocks, restrictions);
           runtime.status.state = "connected";
           runtime.status.tools = exposed.length;
+          runtime.status.restrictedTools = restrictions.filter(
+            (restriction) => restriction.blockedTrustLevels.length > 0,
+          ).length;
+          constraints.perTrustLevel = trustBlocksToConstraints(trustBlocks);
         } catch (err) {
           runtime.status.state = "failed";
           runtime.status.error = cleanError(err);
@@ -273,27 +295,31 @@ function buildAuggyTools(
   remoteTools: McpRemoteTool[],
   runtime: ServerRuntime,
   existingTools: Tool[],
-): Tool[] {
+): { tools: Tool[]; restrictions: ToolTrustRestriction[] } {
   const names = new Set(existingTools.map((tool) => tool.name));
   const out: Tool[] = [];
+  const restrictions: ToolTrustRestriction[] = [];
   for (const remoteTool of remoteTools) {
-    const tool = toAuggyTool(server, remoteTool, runtime);
+    const toolName = mcpToolName(server.name, remoteTool.name);
+    const trust = trustRestrictionForTool(server, remoteTool, toolName);
+    const tool = toAuggyTool(server, remoteTool, runtime, toolName);
     if (names.has(tool.name)) {
       throw new Error(`duplicate exposed MCP tool name "${tool.name}"`);
     }
     names.add(tool.name);
     out.push(tool);
+    restrictions.push(trust);
   }
-  return out;
+  return { tools: out, restrictions };
 }
 
 function toAuggyTool(
   server: McpRuntimeServer,
   remoteTool: McpRemoteTool,
   runtime: ServerRuntime,
+  toolName: string,
 ): Tool {
   const schema = sanitizeInputSchema(remoteTool.inputSchema, server.policy.maxSchemaBytes!);
-  const toolName = `mcp_${safeName(server.name)}_${safeName(remoteTool.name)}`;
   return {
     name: toolName,
     description: buildToolDescription(server.name, remoteTool, server.policy),
@@ -326,6 +352,79 @@ function toAuggyTool(
       }
     },
   };
+}
+
+function mcpToolName(serverName: string, remoteToolName: string): string {
+  return `mcp_${safeName(serverName)}_${safeName(remoteToolName)}`;
+}
+
+function trustRestrictionForTool(
+  server: McpRuntimeServer,
+  remoteTool: McpRemoteTool,
+  toolName: string,
+): ToolTrustRestriction {
+  const explicitToolTrust = server.policy.toolPolicies?.[remoteTool.name]?.allowedTrustLevels;
+  let allowed = uniqueTrustLevels(explicitToolTrust ?? server.policy.allowedTrustLevels);
+  if (allowed.length === 0) allowed = [...ALL_TRUST_LEVELS];
+
+  if (!explicitToolTrust && hasRiskyAnnotation(remoteTool)) {
+    allowed = intersectTrustLevels(allowed, RISKY_ANNOTATION_DEFAULT_TRUST_LEVELS);
+  }
+
+  const allowedSet = new Set(allowed);
+  return {
+    toolName,
+    blockedTrustLevels: ALL_TRUST_LEVELS.filter((level) => !allowedSet.has(level)),
+  };
+}
+
+function hasRiskyAnnotation(tool: McpRemoteTool): boolean {
+  return Boolean(tool.annotations?.destructiveHint || tool.annotations?.openWorldHint);
+}
+
+function uniqueTrustLevels(levels: TrustLevel[] | undefined): TrustLevel[] {
+  if (!levels) return [];
+  const out: TrustLevel[] = [];
+  for (const level of levels) {
+    if (!ALL_TRUST_LEVELS.includes(level)) continue;
+    if (!out.includes(level)) out.push(level);
+  }
+  return out;
+}
+
+function intersectTrustLevels(left: TrustLevel[], right: TrustLevel[]): TrustLevel[] {
+  const rightSet = new Set(right);
+  return left.filter((level) => rightSet.has(level));
+}
+
+function emptyTrustBlocks(): Record<TrustLevel, Set<string>> {
+  return {
+    creator: new Set<string>(),
+    agent: new Set<string>(),
+    public: new Set<string>(),
+  };
+}
+
+function applyTrustRestrictions(
+  blocks: Record<TrustLevel, Set<string>>,
+  restrictions: ToolTrustRestriction[],
+): void {
+  for (const restriction of restrictions) {
+    for (const level of restriction.blockedTrustLevels) {
+      blocks[level].add(restriction.toolName);
+    }
+  }
+}
+
+function trustBlocksToConstraints(
+  blocks: Record<TrustLevel, Set<string>>,
+): AugmentConstraints["perTrustLevel"] | undefined {
+  const out: NonNullable<AugmentConstraints["perTrustLevel"]> = {};
+  for (const level of ALL_TRUST_LEVELS) {
+    const neverExpose = [...blocks[level]];
+    if (neverExpose.length > 0) out[level] = { neverExpose };
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 function sanitizeInputSchema(

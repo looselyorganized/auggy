@@ -27,7 +27,7 @@ export interface FileMemoryOptions {
  * writes both in-memory and to disk.
  *
  * Used for identity (mutable: false, origin: "operator") and for
- * agent self-notes (mutable: true, origin: "system").
+ * agent self-notes (mutable: true, origin: "agent").
  */
 export function fileMemory(opts: FileMemoryOptions): Augment {
   let cache: string | null = null;

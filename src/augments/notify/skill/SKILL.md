@@ -21,6 +21,12 @@ Inputs:
 
 The tool returns JSON describing what happened: `{"status": "sent"}`, `{"status": "rate_limited", "message": "..."}`, or `{"status": "failed", "message": "..."}`.
 
+Destinations can have authority rules. If a destination rejects the call with a
+message about trust level or escalation-only policy, do not retry the same call.
+Use a different configured destination only if it genuinely fits the situation.
+For public-originated escalation-only destinations, include `reason` with the
+specific reason the operator is needed.
+
 ## When to escalate
 
 Notifications interrupt a human. Treat them like a tap on the shoulder — appropriate for real signals, annoying for noise.

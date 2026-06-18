@@ -76,6 +76,90 @@ describe("notify augment", () => {
     expect(result.message).toContain("nope");
   });
 
+  it("blocks peers whose trust level is not allowed for the destination", async () => {
+    const deliveries: Array<{ destination: string; result: "sent" | "failed" }> = [];
+    const aug = notify({
+      destinations: [
+        {
+          name: "staff-only",
+          transport: "webhook",
+          url: "https://example.com/staff",
+          allowedTrustLevels: ["creator", "agent"],
+        },
+      ],
+      adapters: { webhook: mockAdapter(deliveries), telegram: mockAdapter() },
+    });
+    const tool = getNotifyTool(aug);
+
+    const result = JSON.parse(
+      await tool.execute(
+        { to: "staff-only", summary: "public should not send" },
+        makeContext(makePeer("v1")),
+      ),
+    );
+
+    expect(result.status).toBe("failed");
+    expect(result.message).toContain("not available to public peers");
+    expect(deliveries).toEqual([]);
+  });
+
+  it("allows agent peers for destinations that include agent trust", async () => {
+    const deliveries: Array<{ destination: string; result: "sent" | "failed" }> = [];
+    const aug = notify({
+      destinations: [
+        {
+          name: "staff-only",
+          transport: "webhook",
+          url: "https://example.com/staff",
+          allowedTrustLevels: ["creator", "agent"],
+        },
+      ],
+      adapters: { webhook: mockAdapter(deliveries), telegram: mockAdapter() },
+    });
+    const tool = getNotifyTool(aug);
+
+    const result = JSON.parse(
+      await tool.execute(
+        { to: "staff-only", summary: "agent can send" },
+        makeContext(makePeer("agent-1", "agent")),
+      ),
+    );
+
+    expect(result.status).toBe("sent");
+    expect(deliveries).toEqual([{ destination: "staff-only", result: "sent" }]);
+  });
+
+  it("requires a reason for public peers when destination is escalation-only", async () => {
+    const deliveries: Array<{ destination: string; result: "sent" | "failed" }> = [];
+    const aug = notify({
+      destinations: [
+        {
+          name: "escalations",
+          transport: "webhook",
+          url: "https://example.com/escalations",
+          publicPolicy: "escalation-only",
+        },
+      ],
+      rateLimit: { cooldownMs: 0, dedupThreshold: 0 },
+      adapters: { webhook: mockAdapter(deliveries), telegram: mockAdapter() },
+    });
+    const tool = getNotifyTool(aug);
+    const ctx = makeContext(makePeer("v1"));
+
+    const denied = JSON.parse(await tool.execute({ to: "escalations", summary: "help" }, ctx));
+    const allowed = JSON.parse(
+      await tool.execute(
+        { to: "escalations", summary: "help", reason: "Visitor needs operator approval." },
+        ctx,
+      ),
+    );
+
+    expect(denied.status).toBe("failed");
+    expect(denied.message).toContain("escalation");
+    expect(allowed.status).toBe("sent");
+    expect(deliveries).toEqual([{ destination: "escalations", result: "sent" }]);
+  });
+
   it("blocks second call from same peer within per-peer cooldown", async () => {
     const aug = notify({
       ...baseOpts,

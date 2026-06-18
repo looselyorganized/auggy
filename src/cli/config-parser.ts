@@ -482,6 +482,29 @@ function validateNotifyOptions(
     }
     seenNames.add(dest.name);
 
+    if (dest.allowedTrustLevels !== undefined) {
+      const allowed = dest.allowedTrustLevels;
+      if (!Array.isArray(allowed) || allowed.length === 0) {
+        errors.push(`${dPrefix}.allowedTrustLevels: must be a non-empty array`);
+      } else {
+        const validTrustLevels = new Set(["creator", "agent", "public"]);
+        for (let j = 0; j < allowed.length; j++) {
+          if (typeof allowed[j] !== "string" || !validTrustLevels.has(allowed[j])) {
+            errors.push(
+              `${dPrefix}.allowedTrustLevels[${j}]: must be "creator", "agent", or "public"`,
+            );
+          }
+        }
+      }
+    }
+    if (
+      dest.publicPolicy !== undefined &&
+      dest.publicPolicy !== "allowed" &&
+      dest.publicPolicy !== "escalation-only"
+    ) {
+      errors.push(`${dPrefix}.publicPolicy: must be "allowed" or "escalation-only"`);
+    }
+
     if (dest.transport === "webhook") {
       if (typeof dest.url !== "string" || !dest.url) {
         errors.push(`${dPrefix}.url: required string for webhook transport`);

@@ -561,10 +561,31 @@ describe("runCreate scaffolding integration", () => {
       creator: { displayName: string };
       operators?: unknown;
     };
+    const learnedMemory = parseYaml(
+      readFileSync(join(dir, "augments", "fileMemory", "augment.yaml"), "utf-8"),
+    ) as {
+      type: string;
+      config: {
+        label: string;
+        source: string;
+        mutable: boolean;
+        origin: string;
+        placement: string;
+      };
+    };
     const identity = readFileSync(join(dir, "identity.md"), "utf-8");
     expect(config.displayName).toBe("Jim");
     expect(config.creator.displayName).toBe("the creator");
     expect("operators" in config).toBe(false);
+    expect(learnedMemory.type).toBe("fileMemory");
+    expect(learnedMemory.config).toMatchObject({
+      label: "learned",
+      source: "./learned.md",
+      mutable: true,
+      origin: "agent",
+      placement: "preamble",
+    });
+    expect(learnedMemory.config.origin).not.toBe("system");
     expect(identity).toContain("# Jim");
     expect(identity).toContain("You are Jim,");
   });

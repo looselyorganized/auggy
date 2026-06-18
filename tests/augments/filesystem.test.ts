@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { writeFile, mkdir, symlink, readFile } from "node:fs/promises";
+import { access, writeFile, mkdir, symlink, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { filesystem, isWithinMount } from "@/augments/filesystem";
 import type { TurnState } from "@/types";
@@ -442,6 +442,19 @@ describe("filesystem augment", () => {
         path: "del/nonempty",
       });
       expect(result).toContain("not empty");
+    });
+
+    it("rejects removal of an empty mount root", async () => {
+      const emptyRoot = join(tmp.path, "empty-deletable");
+      await mkdir(emptyRoot, { recursive: true });
+      const aug = filesystem({
+        mounts: [{ name: "empty", path: emptyRoot, writable: true, deletable: true }],
+      });
+
+      const result = await execTool(aug, "fs_remove", { path: "empty" });
+
+      expect(result).toContain('Cannot delete mount root "empty"');
+      await expect(access(emptyRoot)).resolves.toBeNull();
     });
   });
 

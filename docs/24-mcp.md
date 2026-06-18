@@ -156,7 +156,7 @@ local development but be ignored by cloud deploy preflight and cloud runtime.
 
 ## Tool Policy
 
-Use allowlists and blocklists to limit what Auggy exposes:
+Use allowlists and blocklists to limit what Auggy exposes from a server:
 
 ```json
 {
@@ -179,6 +179,42 @@ Use allowlists and blocklists to limit what Auggy exposes:
 
 If `allowedTools` is present, only listed tools are exposed. `blockedTools`
 removes tools after discovery.
+
+Use trust policy to limit which peers can see and call the discovered tools:
+
+```json
+{
+  "mcpServers": {
+    "ops": {
+      "type": "streamable-http",
+      "url": "https://mcp.example.com"
+    }
+  },
+  "auggy": {
+    "servers": {
+      "ops": {
+        "allowedTrustLevels": ["creator", "agent"],
+        "toolPolicies": {
+          "delete_all": {
+            "allowedTrustLevels": ["creator"]
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+`allowedTrustLevels` is the server default for tools on that server.
+`toolPolicies.<tool>.allowedTrustLevels` overrides the default for one MCP
+tool name. Trust policy compiles into Auggy's structural
+`perTrustLevel.neverExpose` constraints, so withheld MCP tools are hidden before
+the model sees the tool list and are denied if a model fabricates the tool name.
+
+MCP annotations are enforced, not just described. If a discovered tool has
+`destructiveHint: true` or `openWorldHint: true`, Auggy treats it as
+creator-only by default. To expose a risky annotated tool to `agent` or
+`public`, the operator must name that exact tool under `toolPolicies`.
 
 You can also tune runtime caps per server:
 
@@ -216,9 +252,12 @@ Defaults are conservative: 30s timeout, four concurrent calls per server,
   cloud runtimes.
 - Remote tool descriptions and input-schema text are normalized/truncated
   before becoming model-facing metadata.
+- Tools annotated as destructive or open-world default to creator-only exposure
+  unless explicitly overridden with a per-tool trust policy.
 - Duplicate exposed tool names fail the server closed instead of leaking
   partial tools.
 - MCP connection failures do not crash the agent; failed servers show in console
-  admin info and expose no tools.
+  admin info and expose no tools. Console admin also reports how many connected
+  tools have trust restrictions.
 - Stdio server stderr is not inherited into Auggy logs by default.
   This avoids accidental secret leakage from noisy local tools.

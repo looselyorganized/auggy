@@ -11,6 +11,7 @@ export type { McpClientAdapter, McpConnection, McpRemoteTool, McpServerStatus } 
 export function mcp(opts: McpAugmentOptions = {}): Augment {
   const manager = createMcpManager(opts);
   const configPath = opts.config ?? ".mcp.json";
+  manager.constraints.maxToolCallsPerTurn = 10;
 
   const adminInfo = async (): Promise<AdminInfoBlock> => ({
     augmentName: "mcp",
@@ -25,7 +26,7 @@ export function mcp(opts: McpAugmentOptions = {}): Augment {
       },
       {
         kind: "table",
-        columns: ["Server", "Transport", "State", "Tools", "Error"],
+        columns: ["Server", "Transport", "State", "Tools", "Restricted", "Error"],
         rows: manager
           .statuses()
           .map((status) => [
@@ -33,6 +34,7 @@ export function mcp(opts: McpAugmentOptions = {}): Augment {
             status.transport,
             status.state,
             String(status.tools),
+            String(status.restrictedTools ?? 0),
             status.error ?? "",
           ]),
       },
@@ -43,9 +45,7 @@ export function mcp(opts: McpAugmentOptions = {}): Augment {
     name: "mcp",
     capabilities: ["tools", "lifecycle"],
     tools: manager.tools,
-    constraints: {
-      maxToolCallsPerTurn: 10,
-    },
+    constraints: manager.constraints,
     adminInfo,
     onBoot: () => manager.boot(),
     onShutdown: () => manager.shutdown(),
