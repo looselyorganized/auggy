@@ -254,7 +254,8 @@ export async function runDeploy(
   if (hasDoctorFailures(preflight)) {
     throw new Error(`Deploy preflight failed:\n${formatDoctorChecks(preflight)}`);
   }
-  assertRailwayDeploySafeConfig(configPath);
+  const config = assertRailwayDeploySafeConfig(configPath);
+  await acknowledgeBudgetsDeployPosture(config, opts);
   opts.logger.info(`Deploy preflight passed.`);
 
   // 2) Presence + auth checks (fail fast before any subprocess work).
@@ -575,7 +576,7 @@ export async function runDeploy(
   return result;
 }
 
-function assertRailwayDeploySafeConfig(configPath: string): void {
+function assertRailwayDeploySafeConfig(configPath: string): ReturnType<typeof parseConfig> {
   const config = parseConfig(configPath);
   const webTransport = config.augments.find((augment) => augment.type === "webTransport");
   const webPort = webTransport?.options?.port;
@@ -596,12 +597,12 @@ function assertRailwayDeploySafeConfig(configPath: string): void {
   }
 
   const visitorAuth = config.augments.find((augment) => augment.type === "visitorAuth");
-  if (!visitorAuth) return;
+  if (!visitorAuth) return config;
 
   const options = visitorAuth.options ?? {};
   const agentMail = asRecord(options.agentMail);
-  if (agentMail?.transport !== "console") return;
-  if (options.allowConsoleInProduction === true) return;
+  if (agentMail?.transport !== "console") return config;
+  if (options.allowConsoleInProduction === true) return config;
 
   throw new Error(
     [
@@ -620,6 +621,30 @@ function assertRailwayDeploySafeConfig(configPath: string): void {
       "    This acknowledges that magic links will appear in Railway logs.",
     ].join("\n"),
   );
+}
+
+async function acknowledgeBudgetsDeployPosture(
+  config: ReturnType<typeof parseConfig>,
+  opts: DeployOptions,
+): Promise<void> {
+  const budgetsAugment = config.augments.find((augment) => augment.type === "budgets");
+  const dailyBudgetUsd = budgetsAugment?.options?.dailyBudgetUsd;
+  if (typeof dailyBudgetUsd !== "number") return;
+
+  const warning = [
+    `budgets.dailyBudgetUsd is set to $${dailyBudgetUsd.toFixed(2)}.`,
+    "This is a runtime soft cap, not billing control.",
+    "Configure provider-side hard spend caps before unattended deploys.",
+    "SQLite budgets are single-process/single-replica; do not scale this Railway service horizontally.",
+  ].join("\n");
+  opts.logger.warn(warning);
+
+  if (opts.yes) return;
+
+  const confirmed = await opts.promptConfirm(`${warning}\n\nProceed with Railway deploy?`);
+  if (!confirmed) {
+    throw new Error("Deploy aborted by operator (declined budgets deploy acknowledgement).");
+  }
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
