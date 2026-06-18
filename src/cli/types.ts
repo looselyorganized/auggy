@@ -3,7 +3,7 @@
  *
  * These types drive the config parser, augment/engine resolvers, PID
  * registry, and CLI commands. They are internal to the CLI — not part
- * of the augment-1 public API surface.
+ * of the Auggy public API surface.
  */
 
 // ---------------------------------------------------------------------------

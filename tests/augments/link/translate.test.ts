@@ -133,8 +133,8 @@ describe("part translation", () => {
     expect(back).toEqual({ kind: "text", text: "hi" });
   });
 
-  it("drops link metadata on inbound (augment-1 text Part has no metadata)", () => {
-    // metadata is part of link's wire shape but augment-1 doesn't carry it.
+  it("drops link metadata on inbound (Auggy text Part has no metadata)", () => {
+    // metadata is part of link's wire shape but Auggy doesn't carry it.
     const linkPart = {
       kind: "text" as const,
       text: "hi",

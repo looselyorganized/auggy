@@ -152,5 +152,5 @@ This doesn't solve any of the trust/scoping/consolidation problems but it does s
 ## Related
 
 - `lo/docs/research-memory-architecture.md` — 21-paper survey
-- `augment-1/docs/05-memory-subsystem.md` — current memory provider contract
-- `augment-1/src/memory/` — registry, bus, context-synthesis, tools
+- `auggy/docs/05-memory-subsystem.md` — current memory provider contract
+- `auggy/src/memory/` — registry, bus, context-synthesis, tools

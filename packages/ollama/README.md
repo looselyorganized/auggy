@@ -1,6 +1,6 @@
 # @auggy/ollama
 
-Ollama engine adapter for [auggy](https://github.com/looselyorganized/augment-1) — drive your agent against a local LLM with no API key required.
+Ollama engine adapter for [auggy](https://github.com/looselyorganized/auggy) — drive your agent against a local LLM with no API key required.
 
 ## Setup
 

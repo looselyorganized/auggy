@@ -7,7 +7,7 @@ First-party security testing for any Auggy agent. Seeded from a 2026-04-16 red-t
 ## Run it
 
 ```bash
-cd augment-1
+cd auggy
 auggy eval                                  # against the bundled fixture (default)
 auggy eval my-agent                         # against a registered agent (looked up via `auggy ls`)
 auggy eval --config path/to/agent.yaml      # against a one-off path

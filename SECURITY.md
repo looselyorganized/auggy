@@ -6,8 +6,8 @@ Only the latest minor release receives security patches.
 
 | Version | Supported          |
 | ------- | ------------------ |
-| 0.2.x   | :white_check_mark: |
-| < 0.2   | :x:                |
+| 0.4.x   | :white_check_mark: |
+| < 0.4   | :x:                |
 
 Auggy is pre-1.0. Breaking changes between minor versions are possible. Pin to an exact version in production until 1.0.
 
@@ -17,7 +17,7 @@ Auggy is pre-1.0. Breaking changes between minor versions are possible. Pin to a
 
 Use one of these private channels instead:
 
-1. **GitHub Private Vulnerability Reporting** (preferred) — open a report from the [Security tab](https://github.com/looselyorganized/augment-1/security/advisories/new) of this repo.
+1. **GitHub Private Vulnerability Reporting** (preferred) — open a report from the [Security tab](https://github.com/looselyorganized/auggy/security/advisories/new) of this repo.
 2. **Email** — `hello@looselyorganized.xyz`.
 
 Please include:

@@ -336,7 +336,7 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
       agentCard: {
         id: "${AUGGY_AGENT_ID}",
         name: "${AUGGY_AGENT_NAME}",
-        description: "augment-1 link endpoint",
+        description: "Auggy link endpoint",
         endpointUrl: "${AUGGY_LINK_PUBLIC_URL}",
       },
       peers: {},

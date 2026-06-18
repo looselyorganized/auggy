@@ -244,7 +244,7 @@ Initial tagged release. The kernel and built-in augments described in `docs/02-a
 - **CLI** — `aug1 create / add / dev / start / stop / restart / status` with launchd installation on macOS and PID-manifest tracking under `~/.auggy/`.
 - **Reference documentation** — `docs/01-philosophy.md` through `docs/11-skills.md`.
 
-[Unreleased]: https://github.com/looselyorganized/augment-1/compare/v0.2.0...HEAD
-[0.2.0]: https://github.com/looselyorganized/augment-1/compare/v0.1.1...v0.2.0
-[0.1.1]: https://github.com/looselyorganized/augment-1/compare/v0.1.0...v0.1.1
-[0.1.0]: https://github.com/looselyorganized/augment-1/releases/tag/v0.1.0
+[Unreleased]: https://github.com/looselyorganized/auggy/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/looselyorganized/auggy/compare/v0.1.1...v0.2.0
+[0.1.1]: https://github.com/looselyorganized/auggy/compare/v0.1.0...v0.1.1
+[0.1.0]: https://github.com/looselyorganized/auggy/releases/tag/v0.1.0

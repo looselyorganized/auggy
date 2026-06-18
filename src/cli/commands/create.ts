@@ -929,18 +929,18 @@ function printWelcome(): void {
   console.log();
   for (const line of banner) console.log(cream(line));
   console.log();
-  console.log(` ${bold("augment-1")}  ${dim("·  by the Loosely Organized Research Facility")}`);
+  console.log(` ${bold("auggy")}  ${dim("·  by the Loosely Organized Research Facility")}`);
   console.log();
-  console.log(" Auggy is a modular agent runtime. Agents are composed from");
-  console.log(" swappable augments — the kernel manages context, tools,");
-  console.log(" permissions, and lifecycle.");
+  console.log(" Auggy is a framework for agent-native app backends.");
+  console.log(" Ship routes, model-mediated workflows, memory, tools,");
+  console.log(" and operator controls from one self-hosted project.");
   console.log();
   console.log(dim(" ─────────────────────────────────────────────"));
   console.log();
   console.log(" Let's configure your agent. Start by picking an engine.");
   console.log();
   console.log(dim(" The engine is the LLM provider the kernel calls each turn —"));
-  console.log(dim(" one per agent (Anthropic, OpenAI, OpenRouter). Augments plug in"));
+  console.log(dim(" one per agent (Anthropic, OpenAI, OpenRouter, Ollama). Augments plug in"));
   console.log(dim(" around it. Both are swappable later in agent.yaml."));
   console.log();
 }

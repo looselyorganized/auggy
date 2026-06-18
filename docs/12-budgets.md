@@ -45,7 +45,7 @@ config:
 Programmatic setup:
 
 ```ts
-import { budgets } from "augment-1";
+import { budgets } from "auggy";
 
 const budget = budgets({
   dbPath: "./data/budgets.db",

@@ -1,7 +1,7 @@
 /**
  * link augment — peer-to-peer A2A v0.2 transport.
  *
- * Wires the @auggy/link library into augment-1 so two Auggy agents (or any
+ * Wires the @auggy/link library into Auggy so two Auggy agents (or any
  * A2A v0.2-speaking peer: LangChain agent, Python A2A agent, future Mesh
  * coordinator) can exchange messages over HTTP with mutual bearer auth and
  * no central service. Imported as an npm dependency at @auggy/link v0.1.1.
@@ -26,7 +26,7 @@
  *   4. This module translates ctx → TurnTrigger and calls kernel.handleInbound.
  *   5. The TurnResult is translated back → HandlerOutcome.
  *   6. v0.1 returns ONLY MessageOutcome (sync) or ErrorOutcome.
- *      TaskCreateOutcome is deferred until augment-1 grows long-running task
+ *      TaskCreateOutcome is deferred until Auggy grows long-running task
  *      semantics — see ADR-022 for sequencing.
  *
  * Why this is NOT webTransport:
@@ -40,7 +40,7 @@
  *     `trust: "agent"` at v0.1. Public/anonymous traffic NEVER reaches the
  *     onMessage callback — it's rejected with 401 before we see it.
  *   - The translation layer preserves trust_level verbatim; if v0.2 admits
- *     `creator` or `public` peers, augment-1 sees them as such automatically.
+ *     `creator` or `public` peers, Auggy sees them as such automatically.
  */
 
 import { z } from "zod";
@@ -169,7 +169,7 @@ export interface RegistryPeer {
 
 /**
  * Agent-card fields the link augment serves at /.well-known/agent.json.
- * Note this is the LINK card, not augment-1's general agent card — they
+ * Note this is the LINK card, not Auggy's general agent card — they
  * exist for different consumers (A2A peers vs AG-UI browsers).
  */
 export interface LinkAugmentAgentCard {
@@ -502,7 +502,7 @@ export async function link(opts: LinkAugmentInternalOptions): Promise<Augment> {
   let server: ReturnType<typeof Bun.serve> | null = null;
 
   // ---------------------------------------------------------------------------
-  // Inbound MessageHandler — the bridge from link → augment-1 kernel
+  // Inbound MessageHandler — the bridge from link → Auggy kernel
   // ---------------------------------------------------------------------------
 
   const onMessage: LinkMessageHandler = async function onMessage(ctx: LinkHandlerContext) {
@@ -542,7 +542,7 @@ export async function link(opts: LinkAugmentInternalOptions): Promise<Augment> {
   // ---------------------------------------------------------------------------
   //
   // link auth happens inside @auggy/link's BearerAuthProvider before
-  // `onMessage` fires — by the time the augment-1 kernel sees a trigger,
+  // `onMessage` fires — by the time the Auggy kernel sees a trigger,
   // the peer identity has already been resolved via
   // participantToPeerIdentity. There's no transport-level identify path
   // for link; the TransportSpec stub returns null.
@@ -664,7 +664,7 @@ export async function link(opts: LinkAugmentInternalOptions): Promise<Augment> {
       const { outcome } = result.value;
       if (isTaskResult(outcome)) {
         // Async task path — peer chose to create a Task. v0.1 doesn't yet
-        // wire task polling into augment-1's tool surface; return the id so
+        // wire task polling into Auggy's tool surface; return the id so
         // the LLM (or operator) can follow up via future tools.
         return JSON.stringify({
           ok: true,

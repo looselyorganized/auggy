@@ -159,7 +159,7 @@ The `publish.yml` workflow fires on tag push. It runs:
 2. If new version: typecheck + tests + version-matches-tag + `npm publish`
 3. If already on npm: skip the rest, succeed (this is the retroactive-tag path)
 
-Find the run at `https://github.com/looselyorganized/augment-1/actions/workflows/publish.yml`.
+Find the run at `https://github.com/looselyorganized/auggy/actions/workflows/publish.yml`.
 
 ### 4. Verify
 
@@ -193,7 +193,7 @@ The publish workflow's idempotency gate means a repeat push to the same version 
 
 **Provenance is currently OFF.** `npm publish --provenance` requires the source repo be **public** (sigstore can only attest from public repos).
 
-To turn provenance back on (when augment-1 goes OSS-public):
+To turn provenance back on (when the Auggy repo goes OSS-public):
 
 1. Set repo visibility to Public in GitHub Settings
 2. In `.github/workflows/publish.yml`, change the publish command to:

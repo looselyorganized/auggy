@@ -1,4 +1,4 @@
-# Contributing to augment-1
+# Contributing to Auggy
 
 Thanks for taking a look. This document covers what you need to know to land a change.
 
@@ -17,8 +17,8 @@ Auggy runs on Bun. There is no Node.js fallback.
 
 ```bash
 # 1. Clone and install
-git clone https://github.com/looselyorganized/augment-1
-cd augment-1
+git clone https://github.com/looselyorganized/auggy
+cd auggy
 bun install
 
 # 2. Local CLI

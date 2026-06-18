@@ -81,7 +81,7 @@ Identity.md is identity. The `## Available skills` section that used to live the
 ## `fileMemory` — File-backed static memory provider
 
 ```ts
-import { fileMemory } from "augment-1";
+import { fileMemory } from "auggy";
 
 const identity = fileMemory({
   label: "self",
@@ -222,7 +222,7 @@ the model does not see internal augment names.
 
 ```ts
 import { createClient } from "@supabase/supabase-js";
-import { supabaseMemory } from "augment-1";
+import { supabaseMemory } from "auggy";
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 const episodic = supabaseMemory({
@@ -599,7 +599,7 @@ This is what a deployable Auggy agent looks like. ~30 lines of user code; everyt
 ## `filesystem` — Multi-mount scoped file access
 
 ```ts
-import { filesystem } from "augment-1";
+import { filesystem } from "auggy";
 
 const fs = filesystem({
   mounts: [
@@ -697,7 +697,7 @@ Copied into `<agent-dir>/skills/filesystem/` at `auggy create`/`auggy add` time;
 ## `notify` — Outbound messaging to operator-configured destinations
 
 ```ts
-import { notify } from "augment-1";
+import { notify } from "auggy";
 
 const notifyAugment = notify({
   destinations: [
@@ -939,7 +939,7 @@ For the full operator reference (both modes, full config schema, webhook deploym
 ## `webFetch` — URL fetch with HTML→text rendering
 
 ```ts
-import { webFetch } from "augment-1";
+import { webFetch } from "auggy";
 
 const fetcher = webFetch({
   timeoutMs: 15000,
@@ -975,7 +975,7 @@ This augment ships `src/augments/webFetch/skill/SKILL.md` with model teaching on
 ## `bash` — Scoped shell execution
 
 ```ts
-import { bash } from "augment-1";
+import { bash } from "auggy";
 
 const shell = bash({
   cwd: "/workspace",
@@ -1039,7 +1039,7 @@ This augment ships `src/augments/bash/skill/SKILL.md` with model teaching on `sh
 ## `budgets` — Per-trust-level turn budgets
 
 ```ts
-import { budgets } from "augment-1";
+import { budgets } from "auggy";
 
 const budget = budgets({
   dbPath: "./data/budgets.db",

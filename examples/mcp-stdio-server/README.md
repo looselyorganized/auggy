@@ -23,7 +23,7 @@ Then add this server to `.mcp.json`:
     "smoke": {
       "type": "stdio",
       "command": "bun",
-      "args": ["../augment-1/examples/mcp-stdio-server/server.ts"]
+      "args": ["../auggy/examples/mcp-stdio-server/server.ts"]
     }
   }
 }
@@ -51,7 +51,7 @@ block this server for Railway unless you mark it local-only:
     "smoke": {
       "type": "stdio",
       "command": "bun",
-      "args": ["../augment-1/examples/mcp-stdio-server/server.ts"]
+      "args": ["../auggy/examples/mcp-stdio-server/server.ts"]
     }
   },
   "auggy": {

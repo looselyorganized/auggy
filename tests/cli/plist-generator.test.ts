@@ -37,7 +37,7 @@ describe("generatePlist", () => {
     agentDir: "/Users/test/agents/zip",
     configPath: "/Users/test/agents/zip/agent.yaml",
     bunPath: "/Users/test/.bun/bin/bun",
-    cliEntryPoint: "/Users/test/augment-1/src/cli/index.ts",
+    cliEntryPoint: "/Users/test/auggy/src/cli/index.ts",
   });
 
   test("is valid XML with plist doctype", () => {

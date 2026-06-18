@@ -2,7 +2,7 @@
 
 ## What this is
 
-Auggy (`augment-1`) is a modular agent runtime in TypeScript/Bun. Agents are composed from swappable augments; the kernel manages context, tools, permissions, and lifecycle. Framework-agnostic by design — **not LORF-locked**.
+Auggy is a Bun/TypeScript framework for agent-native app backends. Agents are composed from swappable augments; the kernel manages context, tools, permissions, and lifecycle. Framework-agnostic by design — **not LORF-locked**.
 
 **Status: v0.2.0 base + PR α + PR β shipped.** Plans 1 (kernel) + 2 (built-in augments) + 3 (CLI & manifest) complete. **PR α (DX foundation):** augment-as-folder pattern, bundled skills, secure scaffold, `identity:` shorthand, `auggy add-skill`, boot-time skill validator ([ADR-025](../docs/solutions/architecture/adr-025-augment-folder-and-skill-bundling.md)). **PR β (auto-save / ADR-018 Phase 2 / ADR-027):** `layeredMemory` gains post-turn fact extraction (`autoSave` capability) — background process runs after each turn per trust-level cadence, writes `[AGENT-DERIVED]`-marked facts to peer-scoped storage via an internal turn admitted through normal cost machinery; kernel gains `Augment.scheduleAfterTurn` + `Augment.handleInternalTurn` hooks ([ADR-027](../docs/solutions/architecture/adr-027-internal-turn-admission.md)); SQLite + Supabase schema migrated (+7 columns); auto-save eval suite (6 fixtures); security-eval extended (+3 cases). Sequencing: single-agent excellence (PR α/β/γ) ships before the multi-agent network layer per [ADR-026](../docs/solutions/architecture/adr-026-v1-single-agent-excellence-reorder.md). **13 built-in augments (with `agentMail` Phase A — outbound only), 3 engines, 2200+ tests.** The operator chat surface lives in the per-agent `/console` SPA (`admin/`); `auggy chat` opens `http://<agent>/console/chat` directly. The standalone `chat/` package was removed once `/console` subsumed it. See `lo/docs/auggy-plans-detail.md` (outside this repo) for the plan-by-plan roadmap.
 
@@ -209,4 +209,4 @@ scripts/
 
 - `lo.yml` at the repo root declares `id: proj_718dcc89-9421-4199-917f-4a65911f3689` and `version: 0.2.0`
 - Registered in the LORF Supabase projects table under slug `augment-1`
-- Hosted at `github.com/looselyorganized/augment-1` (private)
+- Hosted at `github.com/looselyorganized/auggy` (private until OSS launch)

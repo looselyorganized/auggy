@@ -5,7 +5,7 @@
 <h1 align="center">Auggy</h1>
 
 <p align="center">
-  <a href="https://github.com/looselyorganized/augment-1/actions/workflows/ci.yml"><img src="https://github.com/looselyorganized/augment-1/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
+  <a href="https://github.com/looselyorganized/auggy/actions/workflows/ci.yml"><img src="https://github.com/looselyorganized/auggy/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
   <a href="https://www.npmjs.com/package/auggy"><img src="https://img.shields.io/npm/v/auggy?label=npm" alt="npm" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-green" alt="License" /></a>
   <img src="https://img.shields.io/badge/runtime-Bun-black?logo=bun" alt="Bun" />
@@ -13,9 +13,14 @@
   <a href="https://looselyorganized.xyz"><img src="https://img.shields.io/badge/by-LORF-red" alt="LORF" /></a>
 </p>
 
-Auggy is a modular agent runtime for building self-hosted, long-running AI
-agents. Agents are composed from **augments**: swappable primitives for memory,
-tools, transports, knowledge, notifications, and deployment.
+Auggy is a Bun/TypeScript framework for agent-native app backends. One project
+can serve deterministic HTTP routes, model-mediated workflows, and a creator
+console, with memory, tools, knowledge, auth, notifications, and deployment
+composed as augments.
+
+Agents are ordinary Bun/TypeScript projects composed from **augments**:
+swappable primitives for routes, memory, tools, transports, knowledge,
+notifications, identity, and deployment.
 
 Auggy supports multiple engine families out of the box: **Anthropic**,
 **OpenAI**, **OpenRouter**, and **Ollama**. Pick one during `auggy create`;
@@ -262,7 +267,7 @@ Local stdio MCP:
     "smoke": {
       "type": "stdio",
       "command": "bun",
-      "args": ["../augment-1/examples/mcp-stdio-server/server.ts"]
+      "args": ["../auggy/examples/mcp-stdio-server/server.ts"]
     }
   }
 }
@@ -383,8 +388,8 @@ curl -fsSL https://bun.sh/install | bash
 ## Development
 
 ```bash
-git clone https://github.com/looselyorganized/augment-1.git
-cd augment-1
+git clone https://github.com/looselyorganized/auggy.git
+cd auggy
 bun install
 bun test
 bunx tsc --noEmit

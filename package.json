@@ -22,13 +22,13 @@
   ],
   "license": "Apache-2.0",
   "author": "LORF (Loosely Organized Research Facility)",
-  "homepage": "https://github.com/looselyorganized/augment-1#readme",
+  "homepage": "https://github.com/looselyorganized/auggy#readme",
   "repository": {
     "type": "git",
-    "url": "https://github.com/looselyorganized/augment-1.git"
+    "url": "https://github.com/looselyorganized/auggy.git"
   },
   "bugs": {
-    "url": "https://github.com/looselyorganized/augment-1/issues"
+    "url": "https://github.com/looselyorganized/auggy/issues"
   },
   "type": "module",
   "module": "src/index.ts",

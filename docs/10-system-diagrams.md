@@ -489,7 +489,7 @@ How the same agent plugs into different organizations.
 Where each component lives in `src/`.
 
 ```
-augment-1/
+auggy/
 ├── src/
 │   ├── types.ts ·················· ALL shared types (one file, intentional)
 │   ├── parts.ts ·················· Part[] helpers (extractText, textPart, dataPart)

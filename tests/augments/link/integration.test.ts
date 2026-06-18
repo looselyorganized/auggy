@@ -120,7 +120,7 @@ function makeOpts(): Parameters<typeof link>[0] {
     agentCard: {
       id: SELF_PARTICIPANT_ID,
       name: "test-agent",
-      description: "augment-1 link test agent",
+      description: "Auggy link test agent",
       endpointUrl: "https://test-agent.example.org",
     },
     peers: {

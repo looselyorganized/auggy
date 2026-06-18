@@ -21,7 +21,7 @@ const CONTENT_TYPES: Record<string, string> = {
 
 /**
  * Resolve the admin SPA's `dist/` directory. v1 honors the working-copy
- * (`augment-1/admin/dist/`); a future revision will also look in the
+ * (`auggy/admin/dist/`); a future revision will also look in the
  * download cache at `~/.auggy/admin/<version>/dist/`. The whole admin
  * transport degrades to a build-required notice if no dist is found.
  */
@@ -73,9 +73,9 @@ const BUILD_REQUIRED_HTML = `<!doctype html>
 </head>
 <body>
   <h1>Console SPA not built</h1>
-  <p>The <code>/console</code> surface needs a built SPA in <code>augment-1/admin/dist/</code>.</p>
+  <p>The <code>/console</code> surface needs a built SPA in <code>auggy/admin/dist/</code>.</p>
   <p>Build it from a working copy:</p>
-  <pre>cd augment-1/admin
+  <pre>cd auggy/admin
 bun install
 bun run build</pre>
   <p class="hint">Once built, refresh this page. POST <code>/console/action/*</code> still works in the meantime.</p>

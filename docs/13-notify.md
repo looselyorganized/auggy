@@ -76,7 +76,7 @@ augments:
 ### Programmatic setup
 
 ```ts
-import { notify } from "augment-1";
+import { notify } from "auggy";
 
 const notifyAugment = notify({
   destinations: [

@@ -51,7 +51,7 @@ Example:
     "smoke": {
       "type": "stdio",
       "command": "bun",
-      "args": ["../augment-1/examples/mcp-stdio-server/server.ts"]
+      "args": ["../auggy/examples/mcp-stdio-server/server.ts"]
     }
   }
 }

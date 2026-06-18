@@ -1,5 +1,5 @@
 /**
- * Translation layer between @auggy/link's wire types and augment-1's runtime
+ * Translation layer between @auggy/link's wire types and Auggy's runtime
  * types. Kept here (separate from index.ts) so the field mapping is exercised
  * in isolation by the unit tests.
  *
@@ -13,7 +13,7 @@
  *
  *   link.HandlerContext.parts             → InboundMessage.parts (text-only at v0.1;
  *                                            link's metadata is dropped because
- *                                            augment-1's Part is bare)
+ *                                            Auggy's Part is bare)
  *   link.HandlerContext.task_id           → TurnTrigger.taskId / InboundMessage.taskId
  *   link.HandlerContext.idempotency_key   → InboundMessage.metadata.idempotency_key
  *   link.HandlerContext.request_id        → InboundMessage.metadata.request_id
@@ -22,7 +22,7 @@
  *
  * v0.1 augment intentionally returns ONLY MessageOutcome (sync answer) or
  * ErrorOutcome. TaskCreateOutcome / TaskContinueOutcome are deferred until
- * augment-1's turn loop grows long-running task semantics — see ADR-022
+ * Auggy's turn loop grows long-running task semantics — see ADR-022
  * sequencing.
  */
 
@@ -47,15 +47,15 @@ import type {
 
 /**
  * Translate a verified link Participant (returned by BearerAuthProvider) to an
- * augment-1 PeerIdentity. The trust alphabet is shared, so `trust` passes
+ * Auggy PeerIdentity. The trust alphabet is shared, so `trust` passes
  * through unchanged.
  *
- * `sourceAugment` is the augment-1 runtime name of the link augment instance
+ * `sourceAugment` is the Auggy runtime name of the link augment instance
  * (defaults to "link", but operators can rename it in agent.yaml; the caller
  * passes the configured value).
  */
 export function participantToPeerIdentity(p: LinkParticipant, sourceAugment: string): PeerIdentity {
-  // Participant.type is "agent" | "human"; augment-1's PeerKind admits the
+  // Participant.type is "agent" | "human"; Auggy's PeerKind admits the
   // same two values plus "system"|"anonymous" (not produced by link).
   const kind: PeerIdentity["kind"] = p.type;
 
@@ -78,8 +78,8 @@ export function participantToPeerIdentity(p: LinkParticipant, sourceAugment: str
 // ---------------------------------------------------------------------------
 
 /**
- * Convert an inbound link Part to an augment-1 Part. v0.1 is text-only on
- * both sides; link's optional `metadata` is dropped because augment-1's
+ * Convert an inbound link Part to an Auggy Part. v0.1 is text-only on
+ * both sides; link's optional `metadata` is dropped because Auggy's
  * text Part doesn't carry metadata.
  *
  * The narrow union on link's side (`Part = TextPart` at v0.1) guarantees
@@ -98,7 +98,7 @@ export function linkPartToAugment1Part(p: LinkPart): Augment1Part {
 }
 
 /**
- * Convert an outbound augment-1 Part to a link Part. v0.1 is text-only;
+ * Convert an outbound Auggy Part to a link Part. v0.1 is text-only;
  * file/data parts are silently dropped (caller filters before calling).
  * Returns `null` for non-text parts so the caller can prune them.
  */
@@ -142,7 +142,7 @@ function parseReceivedAtMs(receivedAt: string): number {
 }
 
 /**
- * Build an augment-1 TurnTrigger from a verified link HandlerContext.
+ * Build an Auggy TurnTrigger from a verified link HandlerContext.
  *
  * Two pieces of state come from the augment (not the wire):
  *   - sourceAugment: the configured instance name in agent.yaml (e.g. "link"
@@ -152,7 +152,7 @@ function parseReceivedAtMs(receivedAt: string): number {
  *     across requests. For task resumptions, the caller passes the existing
  *     threadId so history doesn't fragment.
  *
- * `turnId` is freshly minted on every call; augment-1's kernel owns turn
+ * `turnId` is freshly minted on every call; Auggy's kernel owns turn
  * ids, not link's request id.
  */
 export function handlerContextToTrigger(
@@ -200,7 +200,7 @@ export function handlerContextToTrigger(
 const INTERNAL_ERROR_CODE = -32603;
 
 /**
- * Translate an augment-1 TurnResult to a link HandlerOutcome.
+ * Translate an Auggy TurnResult to a link HandlerOutcome.
  *
  * v0.1 augment policy:
  *   - On rejected/failed → ErrorOutcome with INTERNAL_ERROR. `errorResponse`

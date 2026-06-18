@@ -33,7 +33,7 @@ There are three phases — **construction**, **startup**, and **runtime** — pl
 ## Phase 1 — Construction (`defineAgent`)
 
 ```ts
-import { defineAgent } from "augment-1";
+import { defineAgent } from "auggy";
 
 const agent = defineAgent({
   name: "zip",

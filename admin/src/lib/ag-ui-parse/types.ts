@@ -1,7 +1,7 @@
 /**
  * AG-UI events — what Auggy's webTransport streams over SSE on /agent/run.
  *
- * Mirrors `augment-1/src/transports/ag-ui-events.ts` but typed for
+ * Mirrors `auggy/src/transports/ag-ui-events.ts` but typed for
  * consumer-side parsing. Local-chat-internal — not exported to other packages.
  */
 
@@ -23,7 +23,7 @@ export interface RunStarted extends Base { type: "RUN_STARTED"; threadId?: strin
 
 /**
  * Status discriminator on RUN_FINISHED.result. Mirrors a subset of TaskState
- * in `augment-1/src/types.ts:35`. Cross-package; keep in sync if new states
+ * in `auggy/src/types.ts:35`. Cross-package; keep in sync if new states
  * are added on the runtime side. The chat widget only branches on
  * "input-required"; unknown states fall through to the default "completed" UX.
  */

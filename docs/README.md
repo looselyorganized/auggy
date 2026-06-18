@@ -1,8 +1,10 @@
 # Auggy Documentation
 
-Auggy is a modular agent runtime for building self-hosted, long-running agents
-and agent-native apps. This directory contains reference docs, operator guides,
-strategy notes, historical plans, and research artifacts.
+Auggy is a Bun/TypeScript framework for agent-native app backends: self-hosted
+projects where deterministic routes, model-mediated workflows, memory,
+identity, tools, and operator controls are composed from augments. This
+directory contains reference docs, operator guides, strategy notes, historical
+plans, and research artifacts.
 
 For install and first-run instructions, start with the root
 [`README.md`](../README.md).

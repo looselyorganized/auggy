@@ -229,7 +229,7 @@ describe("tryGitCommit", () => {
   });
 
   it("returns a string when cwd is inside a git repo (or undefined if git unavailable)", () => {
-    // Default cwd is the augment-1 repo root. This is a soft assertion:
+    // Default cwd is the Auggy repo root. This is a soft assertion:
     // if git is installed, we get a short hash string; if not, undefined.
     const out = tryGitCommit();
     if (out !== undefined) {

@@ -1,5 +1,5 @@
 {
-  "_comment_": "Reference peer-registry JSON for the link augment's peerSource. Host this on any static URL (S3, Vercel, GitHub Pages, Railway static, or a route on your context API) and point each agent's peerSource.url at it. See augment-1/docs/07-built-in-augments.md for details. Public identity only — bearers live in env vars on each Auggy, never here.",
+  "_comment_": "Reference peer-registry JSON for the link augment's peerSource. Host this on any static URL (S3, Vercel, GitHub Pages, Railway static, or a route on your context API) and point each agent's peerSource.url at it. See auggy/docs/07-built-in-augments.md for details. Public identity only — bearers live in env vars on each Auggy, never here.",
   "peers": [
     {
       "name": "zip",
