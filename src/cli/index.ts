@@ -362,14 +362,18 @@ export function buildCli(): Command {
             promptSavedDeploymentTarget: async ({ cloud }) => {
               const target = await describeSavedRailwayTarget(cli, cloud);
               return select({
-                message: `Saved Railway service: ${target.service} (${target.scope}). What do you want to do?`,
+                message:
+                  `Saved Railway service:\n` +
+                  `  ${target.service}\n` +
+                  `  ${target.scope}\n\n` +
+                  `What do you want to do?`,
                 choices: [
                   {
-                    name: `Redeploy ${target.service} to ${target.scope}`,
+                    name: `Redeploy ${target.service}`,
                     value: "saved" as const,
                   },
                   {
-                    name: `Recreate ${target.service} in ${target.scope}`,
+                    name: `Recreate ${target.service} in this project`,
                     value: "recreate" as const,
                   },
                   {
