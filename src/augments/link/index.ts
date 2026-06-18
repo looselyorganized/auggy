@@ -738,6 +738,9 @@ export async function link(opts: LinkAugmentInternalOptions): Promise<Augment> {
         {
           kind: "keyValue",
           rows: [
+            { label: "Status", value: "preview" },
+            { label: "Inbound trust", value: "configured peers are admitted as agent trust" },
+            { label: "Auth boundary", value: "bearer possession grants peer admission" },
             { label: "Listen port", value: String(opts.port ?? 8081) },
             { label: "Agent id", value: opts.agentCard?.id ?? "(unset)" },
             { label: "Agent name", value: opts.agentCard?.name ?? "(unset)" },

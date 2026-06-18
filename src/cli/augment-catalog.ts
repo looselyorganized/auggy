@@ -334,7 +334,7 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
     label: "Link",
     tagline: "peer-to-peer A2A (auggy ↔ auggy / A2A peers)",
     description:
-      "Lets two agents talk to each other directly over the A2A v0.2 protocol. No central service. Opens a port for inbound + dials configured peers outbound.",
+      "Preview peer-to-peer A2A transport. Opens a separate inbound port and dials configured peers outbound. Configured peer bearers currently admit peers as agent trust.",
     type: "link",
     defaultName: "link",
     defaultOptions: {

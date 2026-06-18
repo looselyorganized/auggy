@@ -82,13 +82,22 @@ describe("runAdd mutates per-agent package.json", () => {
   test("adding `link` merges @auggy/link into dependencies", async () => {
     const dir = setupAgent("with-link");
     answers = { augmentTypes: ["link"] };
+    const originalLog = console.log;
+    const logs: string[] = [];
+    console.log = (...args: unknown[]) => {
+      logs.push(args.map(String).join(" "));
+    };
 
-    await runAdd("with-link", {
-      config: join(dir, "agent.yaml"),
-      auggyDir,
-      yes: true,
-      bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
-    });
+    try {
+      await runAdd("with-link", {
+        config: join(dir, "agent.yaml"),
+        auggyDir,
+        yes: true,
+        bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
+      });
+    } finally {
+      console.log = originalLog;
+    }
 
     const pkg = JSON.parse(readFileSync(join(dir, "package.json"), "utf-8"));
     expect(pkg.dependencies["@auggy/link"]).toBe("^0.1.2");
@@ -99,6 +108,10 @@ describe("runAdd mutates per-agent package.json", () => {
     expect(metadata.type).toBe("link");
     expect(JSON.stringify(metadata.config)).toContain("./data/link.db");
     expect(metadata.kind).toBeUndefined();
+    const output = logs.join("\n");
+    expect(output).toContain("Use link (preview):");
+    expect(output).toContain("admitted as agent trust");
+    expect(output).toContain("Bearer possession is the authority boundary");
   });
 
   test("invokes bun install in agent dir when packageDeps are added", async () => {
@@ -147,6 +160,7 @@ describe("runAdd no-op cases", () => {
     expect(visitorAuthIndex).toBeLessThan(bashIndex);
     expect(labels.find((label) => label.includes("visitorAuth"))).not.toContain("[preview]");
     expect(labels.find((label) => label.includes("bash"))).toContain("[preview]");
+    expect(labels.find((label) => label.trimStart().startsWith("link"))).toContain("[preview]");
     expect(labels.join("\n")).not.toContain("Lets the agent use tools exposed by MCP servers");
   });
 
@@ -310,17 +324,29 @@ describe("runAdd no-op cases", () => {
   test("preview augment add declines without --yes when operator does not confirm", async () => {
     const dir = setupAgent("preview-decline");
     const before = readFileSync(join(dir, "agent.yaml"), "utf-8");
+    const originalLog = console.log;
+    const logs: string[] = [];
+    console.log = (...args: unknown[]) => {
+      logs.push(args.map(String).join(" "));
+    };
 
-    await runAdd("preview-decline", {
-      config: join(dir, "agent.yaml"),
-      auggyDir,
-      augment: "bash",
-      bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
-    });
+    try {
+      await runAdd("preview-decline", {
+        config: join(dir, "agent.yaml"),
+        auggyDir,
+        augment: "link",
+        bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
+      });
+    } finally {
+      console.log = originalLog;
+    }
 
     expect(readFileSync(join(dir, "agent.yaml"), "utf-8")).toBe(before);
-    expect(existsSync(join(dir, "skills", "bash", "SKILL.md"))).toBe(false);
+    expect(existsSync(join(dir, "skills", "link", "SKILL.md"))).toBe(false);
     expect(bunInstallCalls).toHaveLength(0);
+    const output = logs.join("\n");
+    expect(output).toContain("Preview augment selected:");
+    expect(output).toContain("peer bearers grant agent trust");
   });
 
   test("stable augment add does not require preview confirmation", async () => {

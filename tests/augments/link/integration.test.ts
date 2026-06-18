@@ -163,6 +163,17 @@ describe("link augment — construction", () => {
     // Calling shutdown without prior register doesn't throw.
     await aug.onShutdown!();
   });
+
+  it("admin info surfaces preview trust posture", async () => {
+    const aug = await link({ ...makeOpts(), _skipServer: true });
+    const info = await aug.adminInfo?.();
+    const serialized = JSON.stringify(info);
+    expect(serialized).toContain("Status");
+    expect(serialized).toContain("preview");
+    expect(serialized).toContain("configured peers are admitted as agent trust");
+    expect(serialized).toContain("bearer possession grants peer admission");
+    await aug.onShutdown!();
+  });
 });
 
 // ---------------------------------------------------------------------------
