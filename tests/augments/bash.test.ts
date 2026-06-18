@@ -89,6 +89,16 @@ describe("bash augment structure", () => {
     expect(names).toContain("shell_exec");
     expect(names).toContain("run_script");
   });
+
+  it("admin info surfaces preview execution boundary", async () => {
+    const aug = bash({ risk: "restricted", allowedCommands: ["echo"] });
+    const info = await aug.adminInfo?.();
+    const serialized = JSON.stringify(info);
+    expect(serialized).toContain("Status");
+    expect(serialized).toContain("preview");
+    expect(serialized).toContain("host process execution; not a sandbox");
+    expect(serialized).toContain("creator-only unless perTrustLevel is overridden");
+  });
 });
 
 // ---------------------------------------------------------------------------

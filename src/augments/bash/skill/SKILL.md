@@ -7,6 +7,11 @@ description: Run shell commands and operator-defined scripts. Use when you need 
 
 You can execute shell commands on the operator's host. This is a high-leverage tool with real consequences — read this before your first call.
 
+Bash is a preview host-process surface, not a sandbox. A command runs with the
+permissions of the Auggy process and can read or mutate anything that process
+user can reach. Treat allowlists, risk presets, and missing tools as hard
+operator policy, not as puzzles to route around.
+
 ## Tools
 
 You may have one or both of these tools depending on how the operator configured your shell access.

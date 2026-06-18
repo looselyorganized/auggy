@@ -452,6 +452,9 @@ export function bash(opts: BashAugmentOptions = {}): Augment {
       {
         kind: "keyValue",
         rows: [
+          { label: "Status", value: "preview" },
+          { label: "Execution boundary", value: "host process execution; not a sandbox" },
+          { label: "Default trust", value: "creator-only unless perTrustLevel is overridden" },
           { label: "Risk preset", value: opts.risk ?? "restricted" },
           { label: "Mode", value: config.mode },
           { label: "Shell exec enabled", value: config.shellExecEnabled ? "true" : "false" },
