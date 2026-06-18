@@ -1221,7 +1221,8 @@ describe("runDeploy", () => {
       }),
     );
 
-    expect(warnings.join("\n")).toMatch(/WARN: Stale Railway deploy metadata detected/);
+    expect(warnings.join("\n")).toMatch(/Stale Railway deploy metadata detected/);
+    expect(warnings.join("\n")).not.toMatch(/WARNING:/);
     expect(warnings.join("\n")).toMatch(/Cleared .*\.auggy-cloud\.json/);
     expect(calls.createService).toEqual([expect.objectContaining({ serviceName: "zip" })]);
     expect(calls.addVolume).toEqual([{ name: "zip-data", mountPath: "/app/data" }]);
