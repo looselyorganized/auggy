@@ -110,7 +110,8 @@ Auggy helps select an existing workspace. It does not create Railway workspaces;
 
 What changes vs. first deploy:
 
-- Project ID is read from the existing `cloud` record — no prompt.
+- Plain `auggy deploy` shows the saved workspace/project/service and asks whether to redeploy, recreate the service, choose another target, reset metadata, or cancel.
+- `auggy deploy --yes` reads the saved target and redeploys without prompts.
 - Volume is not re-added; the existing one is preserved.
 - Secrets are re-pushed (so updating `.env` and redeploying is the workflow).
 - `/health` is checked again after the build is queued.

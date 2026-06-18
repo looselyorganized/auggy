@@ -24,7 +24,6 @@ the production-readiness story.
 - **[console]** Chat-first `/console` surface. `/console` redirects to `/console/chat`; the first screen is chat plus a compact Details dialog for agent identity, URLs, engine, transport summary, and copy diagnostics. Config/admin tabs are deferred until adopter signal proves they belong in the browser. Per `docs/21-console.md`.
 - **[chat]** Minimal info endpoint at `GET /` when no `publicFrontendUrl` is set. Replaces the current 404 with a small HTML response (agent name, public-safe purpose, creator console link, "this is an Auggy agent backend" tagline). (G2 revised)
 - **[examples]** `examples/concierge/` — vertical web-channel example (boutique store website chat + stubbed inventory + visitor-auth + notify-to-operator). Demonstrates the augment composition pattern with a concrete domain that maps to the v1.0 thesis. (G7)
-- **[deploy]** Verify `auggy deploy <name>` works end-to-end on a fresh adopter machine. Doc the limits, the manual steps that remain, the recovery path on failure.
 - **[release-process]** Publish `auggy` v1.0 on npm with notes. Tag the release. Confirm the chat-dist artifact pipeline / admin-dist packaging works in CI for the first GA.
 
 **Note on security-eval expansion:** Deferred to v1.0 ship + post-OSS-launch. The current 10-case eval (from 2026-04-16 red-team) runs nightly as drift monitoring. New eval cases wait for adopter feedback to drive the corpus — writing them against a moving baseline produces constant rewrite cycles.
@@ -32,6 +31,7 @@ the production-readiness story.
 Recently completed v1 decisions:
 
 - **[identity]** Canonical creator identity for v1 shipped in PR #105. One verified creator maps to `peer.id = "creator"` across web console and Telegram private chat; `creator.displayName` is cosmetic model-facing metadata, not an auth credential. Decision: `docs/plans/v1-canonical-creator-identity.md`.
+- **[deploy]** Railway deploy DX is v1-ready: first deploy selects a Railway workspace before project/service, saved targets are shown by workspace/project/service name, plain `auggy deploy` asks before redeploying or retargeting, `--yes` remains the scripted redeploy path, Railway port `8080` is enforced at preflight, and the full fresh deploy path has been smoke-tested against Railway.
 
 ---
 
