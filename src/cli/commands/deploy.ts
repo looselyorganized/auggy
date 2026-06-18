@@ -156,7 +156,7 @@ function formatStaleCloudMetadataWarning(args: {
 }): string {
   return [
     "",
-    "WARNING: Stale Railway deploy metadata detected",
+    "WARN: Stale Railway deploy metadata detected",
     "",
     `Saved service "${args.serviceName}" was not found in project ${args.projectId}.`,
     `Cleared ${args.metadataPath} and continuing as a first deploy.`,
