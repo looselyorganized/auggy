@@ -235,6 +235,47 @@ function validateBudgetsOptions(
       }
     }
   }
+
+  if (opts.notifications !== undefined) {
+    if (
+      typeof opts.notifications !== "object" ||
+      opts.notifications === null ||
+      Array.isArray(opts.notifications)
+    ) {
+      errors.push(`${optionsPrefix}.notifications: must be an object`);
+      return;
+    }
+
+    const notifications = opts.notifications as Record<string, unknown>;
+    if (notifications.enabled !== undefined && typeof notifications.enabled !== "boolean") {
+      errors.push(`${optionsPrefix}.notifications.enabled: must be a boolean`);
+    }
+    const notificationsEnabled = notifications.enabled !== false;
+    if (
+      notificationsEnabled &&
+      (typeof notifications.destination !== "string" || notifications.destination.length === 0)
+    ) {
+      errors.push(`${optionsPrefix}.notifications.destination: required non-empty string`);
+    }
+    if (notifications.thresholds !== undefined) {
+      if (!Array.isArray(notifications.thresholds) || notifications.thresholds.length === 0) {
+        errors.push(`${optionsPrefix}.notifications.thresholds: must be a non-empty array`);
+      } else {
+        notifications.thresholds.forEach((threshold, index) => {
+          if (
+            typeof threshold !== "number" ||
+            !Number.isFinite(threshold) ||
+            threshold <= 0 ||
+            threshold > 1
+          ) {
+            errors.push(
+              `${optionsPrefix}.notifications.thresholds[${index}]: must be a number > 0 and <= 1`,
+            );
+          }
+        });
+      }
+    }
+  }
 }
 
 /**

@@ -281,7 +281,14 @@ describe("BudgetStore", () => {
   it("commit with priced result debits both daily_global and peer_daily_costs", async () => {
     const ticket = await store.prepare(baseInput());
     await ticket.confirm();
-    await store.commit("turn-1", "peer-1", { priced: true, costUsd: 0.42 });
+    const commit = await store.commit("turn-1", "peer-1", { priced: true, costUsd: 0.42 });
+    expect(commit).toMatchObject({
+      turnId: "turn-1",
+      peerId: "peer-1",
+      day: TODAY,
+      priced: true,
+      costUsd: 0.42,
+    });
 
     // Verify via getPeerUsage.
     const usage = await store.getPeerUsage("peer-1", "thread-1");

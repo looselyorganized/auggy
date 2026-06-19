@@ -370,6 +370,54 @@ export async function resolveAugments(
   resolverOpts: { creator?: CreatorConfig } = {},
 ): Promise<Augment[]> {
   const augments: Augment[] = [];
+  type NotifyToolExecute = NonNullable<Augment["tools"]>[number]["execute"];
+  const notifyDestinationNames = new Set<string>();
+  const notifyExecutorsByDestination = new Map<string, NotifyToolExecute>();
+
+  for (const config of configs) {
+    if (config.type !== "notify") continue;
+    const destinations =
+      (config.options?.destinations as Array<Record<string, unknown>> | undefined) ?? [];
+    for (const destination of destinations) {
+      if (typeof destination.name === "string") notifyDestinationNames.add(destination.name);
+    }
+  }
+
+  const dispatchBudgetNotification: BudgetsAugmentOptions["notificationDispatcher"] = async (
+    payload,
+  ) => {
+    const execute = notifyExecutorsByDestination.get(payload.destination);
+    if (!execute) {
+      throw new Error(
+        `notify destination "${payload.destination}" is not mounted or has no notify tool`,
+      );
+    }
+
+    const result = await execute(
+      {
+        to: payload.destination,
+        summary: payload.summary,
+        reason: payload.reason,
+      },
+      {
+        turnId: payload.turnId,
+        threadId: payload.threadId,
+        peer: null,
+      },
+    );
+    const content = typeof result === "string" ? result : result.content;
+    let parsed: { status?: string; message?: string; detail?: string };
+    try {
+      parsed = JSON.parse(content) as { status?: string; message?: string; detail?: string };
+    } catch {
+      throw new Error(`notify returned non-JSON result: ${content.slice(0, 120)}`);
+    }
+    if (parsed.status !== "sent") {
+      throw new Error(
+        `notify returned ${parsed.status ?? "unknown"}: ${parsed.detail ?? parsed.message ?? "no detail"}`,
+      );
+    }
+  };
 
   // Deferred-closure for C1: webTransport gets a stable callback reference
   // before visitorAuth is resolved; the callback reads lateBindings.revocationCheck
@@ -503,6 +551,14 @@ export async function resolveAugments(
       case "budgets": {
         const { budgets } = await import("../augments/budgets");
         const dbPath = (opts.dbPath as string | undefined) ?? "./budgets.db";
+        const notifications = opts.notifications as BudgetsAugmentOptions["notifications"];
+        if (notifications && notifications.enabled !== false) {
+          if (!notifyDestinationNames.has(notifications.destination)) {
+            throw new Error(
+              `[augment-resolver] budgets.notifications.destination "${notifications.destination}" does not match any notify destination. Mount notify and add a destination with that name, or disable budgets.notifications.`,
+            );
+          }
+        }
         augment = budgets({
           dbPath: resolvePath(dbPath, agentDir),
           agentDir,
@@ -510,6 +566,11 @@ export async function resolveAugments(
           anonymousGlobalLimit: opts.anonymousGlobalLimit as number | undefined,
           dailyBudgetUsd: opts.dailyBudgetUsd as number | undefined,
           cleanupWindowMs: opts.cleanupWindowMs as number | undefined,
+          notifications,
+          notificationDispatcher:
+            notifications && notifications.enabled !== false
+              ? dispatchBudgetNotification
+              : undefined,
         });
         break;
       }
@@ -566,6 +627,18 @@ export async function resolveAugments(
 
     // Override the auto-generated augment name with the operator's choice.
     augment = { ...augment, name: config.name };
+    if (config.type === "notify") {
+      const notifyTool = augment.tools?.find((tool) => tool.name === "notify");
+      if (notifyTool) {
+        const destinations =
+          (config.options?.destinations as Array<Record<string, unknown>> | undefined) ?? [];
+        for (const destination of destinations) {
+          if (typeof destination.name === "string") {
+            notifyExecutorsByDestination.set(destination.name, notifyTool.execute);
+          }
+        }
+      }
+    }
     augments.push(augment);
   }
 

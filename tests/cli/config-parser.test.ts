@@ -688,6 +688,10 @@ describe("budgets augment options validation", () => {
               },
               anonymousGlobalLimit: 30,
               dailyBudgetUsd: 5,
+              notifications: {
+                destination: "ops",
+                thresholds: [0.5, 0.8, 1],
+              },
               cleanupWindowMs: 86400000,
             },
           },
@@ -698,6 +702,10 @@ describe("budgets augment options validation", () => {
     expect(config.augments[0]!.type).toBe("budgets");
     expect(config.augments[0]!.options!.dbPath).toBe("./budgets.db");
     expect(config.augments[0]!.options!.dailyBudgetUsd).toBe(5);
+    expect(config.augments[0]!.options!.notifications).toEqual({
+      destination: "ops",
+      thresholds: [0.5, 0.8, 1],
+    });
   });
 
   test("accepts a minimal budgets block (only dbPath)", () => {
@@ -783,6 +791,46 @@ describe("budgets augment options validation", () => {
       }),
     );
     expect(() => parseConfig(path)).toThrow("cleanupWindowMs");
+  });
+
+  test("rejects enabled budget notifications without a destination", () => {
+    const path = writeYaml(
+      "agent.yaml",
+      minimalConfig({
+        augments: [
+          {
+            name: "budgets",
+            type: "budgets",
+            options: {
+              dbPath: "./budgets.db",
+              dailyBudgetUsd: 10,
+              notifications: { thresholds: [0.5] },
+            },
+          },
+        ],
+      }),
+    );
+    expect(() => parseConfig(path)).toThrow("notifications.destination");
+  });
+
+  test("rejects budget notification thresholds outside 0 < n <= 1", () => {
+    const path = writeYaml(
+      "agent.yaml",
+      minimalConfig({
+        augments: [
+          {
+            name: "budgets",
+            type: "budgets",
+            options: {
+              dbPath: "./budgets.db",
+              dailyBudgetUsd: 10,
+              notifications: { destination: "ops", thresholds: [0.5, 1.2] },
+            },
+          },
+        ],
+      }),
+    );
+    expect(() => parseConfig(path)).toThrow("notifications.thresholds[1]");
   });
 
   test("rejects caps.public.anonymous.maxTurnsPerThread = -5", () => {

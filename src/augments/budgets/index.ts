@@ -10,12 +10,19 @@ import type {
 } from "../../types";
 import { readOverrides, writeOverrides } from "../../lib/admin-overrides";
 import { createBudgetStore, type BudgetStore } from "./budget-store";
-import type { BudgetsConfig, BudgetCaps } from "./types";
+import type {
+  BudgetsConfig,
+  BudgetCaps,
+  BudgetThresholdNotificationDispatcher,
+  BudgetThresholdNotifications,
+} from "./types";
 import { buildBudgetPreamble } from "./preamble";
 
 export interface BudgetsAugmentOptions extends BudgetsConfig {
   /** Storage backend. Only "sqlite" is supported in v0. */
   backend?: "sqlite";
+  /** Resolver/test hook for sending configured threshold notifications. */
+  notificationDispatcher?: BudgetThresholdNotificationDispatcher;
 }
 
 /**
@@ -45,11 +52,29 @@ function resolveCaps(peer: PeerIdentity | null, config: BudgetsConfig): BudgetCa
   }
 }
 
+const DEFAULT_NOTIFICATION_THRESHOLDS = [0.5, 0.8, 1] as const;
+
+function normalizeThresholds(config: BudgetThresholdNotifications | undefined): number[] {
+  if (!config || config.enabled === false) return [];
+  const raw = config.thresholds ?? [...DEFAULT_NOTIFICATION_THRESHOLDS];
+  const unique = new Set<number>();
+  for (const value of raw) {
+    if (Number.isFinite(value) && value > 0 && value <= 1) unique.add(value);
+  }
+  return [...unique].sort((a, b) => a - b);
+}
+
+function formatPercent(threshold: number): string {
+  return `${Math.round(threshold * 100)}%`;
+}
+
 export function budgets(opts: BudgetsAugmentOptions): Augment {
   const store: BudgetStore = createBudgetStore({
     dbPath: opts.dbPath,
     cleanupWindowMs: opts.cleanupWindowMs,
   });
+  const notificationThresholds = normalizeThresholds(opts.notifications);
+  const sentThresholds = new Set<string>();
 
   // G36 — dailyBudgetUsd is mutable at runtime via /admin. The yaml value
   // (opts.dailyBudgetUsd) is the boot-time default; an override in
@@ -117,11 +142,65 @@ export function budgets(opts: BudgetsAugmentOptions): Augment {
      * (their prepare returned a no-op ticket; nothing in the store to commit
      * against).
      */
-    async commit({ turnId, peer, cost }): Promise<void> {
+    async commit({ turnId, peer, threadId, cost }): Promise<void> {
       if (!peer || peer.trustLevel === "creator") return;
-      await store.commit(turnId, peer.id, cost);
+      const record = await store.commit(turnId, peer.id, cost);
+      if (!record?.priced) return;
+      await maybeDispatchThresholdNotification({
+        turnId,
+        peerId: peer.id,
+        threadId,
+        day: record.day,
+      });
     },
   };
+
+  async function maybeDispatchThresholdNotification(input: {
+    turnId: string;
+    peerId: string;
+    threadId: string;
+    day: string;
+  }): Promise<void> {
+    if (!opts.notifications || opts.notifications.enabled === false) return;
+    if (!opts.notificationDispatcher) return;
+    if (notificationThresholds.length === 0) return;
+    if (currentDailyBudgetUsd === undefined) return;
+
+    const spend = await store.getDaySpend(input.day);
+    const ratio = spend.totalUsd / currentDailyBudgetUsd;
+    const crossed = notificationThresholds.filter(
+      (threshold) => ratio >= threshold && !sentThresholds.has(`${input.day}:${threshold}`),
+    );
+    if (crossed.length === 0) return;
+
+    for (const threshold of crossed) {
+      sentThresholds.add(`${input.day}:${threshold}`);
+    }
+    const threshold = crossed[crossed.length - 1]!;
+    const percent = formatPercent(threshold);
+    const summary = `Budget threshold reached: ${percent} of daily budget used`;
+    const reason = [
+      `Daily budget spend is $${spend.totalUsd.toFixed(2)} of $${currentDailyBudgetUsd.toFixed(2)} for ${input.day}.`,
+      `Triggered by peer ${input.peerId}.`,
+    ].join(" ");
+
+    try {
+      await opts.notificationDispatcher({
+        destination: opts.notifications.destination,
+        threshold,
+        day: input.day,
+        totalUsd: spend.totalUsd,
+        dailyBudgetUsd: currentDailyBudgetUsd,
+        peerId: input.peerId,
+        turnId: input.turnId,
+        threadId: input.threadId,
+        summary,
+        reason,
+      });
+    } catch (err) {
+      console.error("[budgets] threshold notification failed:", err);
+    }
+  }
 
   async function persistDailyBudgetOverride(value: number): Promise<void> {
     if (!opts.agentDir) {
@@ -195,6 +274,13 @@ export function budgets(opts: BudgetsAugmentOptions): Augment {
             },
             { label: "Today's spend", value: `$${spend.totalUsd.toFixed(2)}` },
             { label: "Pricing confidence", value: formatPricingConfidence(spend.unpricedTurns) },
+            {
+              label: "Threshold notifications",
+              value:
+                opts.notifications && opts.notifications.enabled !== false
+                  ? `to ${opts.notifications.destination} at ${notificationThresholds.map(formatPercent).join(", ")}`
+                  : "off",
+            },
             {
               label: "Active peers today",
               value: String(spend.byPeer.length),
