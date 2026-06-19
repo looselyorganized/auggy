@@ -578,6 +578,82 @@ describe("budgets augment", () => {
     expect(notifications[1]!.summary).toContain("100%");
   });
 
+  it("dailyBudgetUsd threshold notifications retry after dispatcher failure", async () => {
+    const notifications: BudgetThresholdNotificationPayload[] = [];
+    let attempts = 0;
+    const originalError = console.error;
+    const errors: string[] = [];
+    console.error = (...args: unknown[]) => {
+      errors.push(args.map(String).join(" "));
+    };
+
+    try {
+      augment = budgets({
+        dbPath,
+        dailyBudgetUsd: 1.0,
+        caps: { public: { recognized: { maxTurnsPerThread: 100 } } },
+        notifications: { destination: "ops", thresholds: [0.5, 0.8, 1] },
+        notificationDispatcher: async (payload) => {
+          attempts++;
+          if (attempts === 1) {
+            throw new Error("temporary notify outage");
+          }
+          notifications.push(payload);
+        },
+      });
+
+      const peer = makePeer({
+        id: uniqueId("vis"),
+        trustLevel: "public",
+        publicSubstate: "recognized",
+      });
+      const threadId = "thread-threshold-retry";
+
+      async function commitPriced(costUsd: number): Promise<void> {
+        const turnId = uniqueTurnId();
+        const ticket = await augment.turnGate!.prepare({
+          turnId,
+          peer,
+          threadId,
+          trigger: makeTurnState(peer, threadId).trigger,
+        });
+        expect(ticket.decision.allow).toBe(true);
+        await ticket.confirm();
+        await augment.turnGate!.commit!({
+          turnId,
+          peer,
+          threadId,
+          cost: { priced: true, costUsd },
+        });
+      }
+
+      await commitPriced(0.85);
+      expect(attempts).toBe(1);
+      expect(notifications).toHaveLength(0);
+      expect(errors.join("\n")).toContain("threshold notification failed");
+
+      await commitPriced(0.01);
+      expect(attempts).toBe(2);
+      expect(notifications).toHaveLength(1);
+      expect(notifications[0]).toMatchObject({
+        destination: "ops",
+        threshold: 0.8,
+        totalUsd: 0.86,
+        dailyBudgetUsd: 1,
+      });
+
+      await commitPriced(0.2);
+      expect(notifications).toHaveLength(2);
+      expect(notifications[1]).toMatchObject({
+        threshold: 1,
+        totalUsd: 1.06,
+        dailyBudgetUsd: 1,
+      });
+    } finally {
+      console.error = originalError;
+    }
+  });
+
   // ── 9. Unpriced commit semantics ─────────────────────────────────────────
 
   it("unpriced commits: thread count increments, costUsd stays zero", async () => {

@@ -173,9 +173,6 @@ export function budgets(opts: BudgetsAugmentOptions): Augment {
     );
     if (crossed.length === 0) return;
 
-    for (const threshold of crossed) {
-      sentThresholds.add(`${input.day}:${threshold}`);
-    }
     const threshold = crossed[crossed.length - 1]!;
     const percent = formatPercent(threshold);
     const summary = `Budget threshold reached: ${percent} of daily budget used`;
@@ -197,6 +194,9 @@ export function budgets(opts: BudgetsAugmentOptions): Augment {
         summary,
         reason,
       });
+      for (const crossedThreshold of crossed) {
+        sentThresholds.add(`${input.day}:${crossedThreshold}`);
+      }
     } catch (err) {
       console.error("[budgets] threshold notification failed:", err);
     }
