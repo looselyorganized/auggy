@@ -490,6 +490,113 @@ describe("BudgetStore", () => {
     expect(swept).toBe(0);
   });
 
+  // ── purgeOldRows / retention ────────────────────────────
+
+  it("purgeOldRows is default-off but deletes old rows when retentionDays is supplied", async () => {
+    const oldMs = Date.now() - 60 * 86_400_000;
+    const oldDay = ymdUtc(oldMs);
+    const retainedMs = Date.now() - 5 * 86_400_000;
+    const retainedDay = ymdUtc(retainedMs);
+
+    const { Database } = await import("bun:sqlite");
+    const db2 = new Database(dbPath, { readwrite: true });
+    db2.run(
+      `INSERT INTO turn_reservations
+       (turn_id, peer_id, thread_id, day, trust_level, public_substate,
+        reserved_at, committed_at, cost_usd, priced, decision, reason)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        "old-turn",
+        "old-peer",
+        "old-thread",
+        oldDay,
+        "public",
+        null,
+        oldMs,
+        oldMs,
+        0.1,
+        1,
+        "allow",
+        null,
+      ],
+    );
+    db2.run(
+      `INSERT INTO turn_reservations
+         (turn_id, peer_id, thread_id, day, trust_level, public_substate,
+          reserved_at, committed_at, cost_usd, priced, decision, reason)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        "retained-turn",
+        "retained-peer",
+        "retained-thread",
+        retainedDay,
+        "public",
+        null,
+        retainedMs,
+        retainedMs,
+        0.2,
+        1,
+        "allow",
+        null,
+      ],
+    );
+    db2.run(
+      `INSERT INTO daily_global (day, total_cost_usd, unpriced_turns, updated_at)
+       VALUES (?, ?, 0, ?)`,
+      [oldDay, 0.1, oldMs],
+    );
+    db2.run(
+      `INSERT INTO daily_global (day, total_cost_usd, unpriced_turns, updated_at)
+       VALUES (?, ?, 0, ?)`,
+      [retainedDay, 0.2, retainedMs],
+    );
+    db2.run(
+      `INSERT INTO peer_daily_costs (peer_id, day, cost_usd, unpriced_turns, updated_at)
+       VALUES (?, ?, ?, 0, ?)`,
+      ["old-peer", oldDay, 0.1, oldMs],
+    );
+    db2.run(
+      `INSERT INTO peer_daily_costs (peer_id, day, cost_usd, unpriced_turns, updated_at)
+       VALUES (?, ?, ?, 0, ?)`,
+      ["retained-peer", retainedDay, 0.2, retainedMs],
+    );
+    db2.run("INSERT INTO anonymous_requests (timestamp, source_hint) VALUES (?, ?)", [
+      oldMs,
+      "old",
+    ]);
+    db2.run("INSERT INTO anonymous_requests (timestamp, source_hint) VALUES (?, ?)", [
+      retainedMs,
+      "retained",
+    ]);
+    db2.close();
+
+    expect(await store.purgeOldRows()).toEqual({
+      turnReservations: 0,
+      dailyGlobal: 0,
+      peerDailyCosts: 0,
+      anonymousRequests: 0,
+      total: 0,
+    });
+
+    const purged = await store.purgeOldRows({ retentionDays: 30 });
+    expect(purged).toEqual({
+      turnReservations: 1,
+      dailyGlobal: 1,
+      peerDailyCosts: 1,
+      anonymousRequests: 1,
+      total: 4,
+    });
+
+    const db3 = new Database(dbPath, { readwrite: true });
+    const count = (table: string) =>
+      db3.prepare<{ n: number }, []>(`SELECT COUNT(*) AS n FROM ${table}`).get()?.n ?? 0;
+    expect(count("turn_reservations")).toBe(1);
+    expect(count("daily_global")).toBe(1);
+    expect(count("peer_daily_costs")).toBe(1);
+    expect(count("anonymous_requests")).toBe(1);
+    db3.close();
+  });
+
   // ── daily turn cap ───────────────────────────────────────
 
   it("daily turn cap reached → deny", async () => {

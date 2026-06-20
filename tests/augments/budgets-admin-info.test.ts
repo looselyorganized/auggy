@@ -13,7 +13,7 @@ afterEach(() => {
   rmSync(tempDir, { recursive: true, force: true });
 });
 
-function makeBudgetsAugment(): Augment {
+function makeBudgetsAugment(overrides: Partial<Parameters<typeof budgets>[0]> = {}): Augment {
   return budgets({
     dbPath: join(tempDir, "budgets.db"),
     agentDir: tempDir,
@@ -25,6 +25,7 @@ function makeBudgetsAugment(): Augment {
       },
     },
     dailyBudgetUsd: 100,
+    ...overrides,
   });
 }
 
@@ -72,7 +73,7 @@ describe("budgets adminInfo — shape", () => {
         expect(JSON.stringify(kv.rows)).toContain("runtime spend guardrails");
         expect(JSON.stringify(kv.rows)).toContain("provider-side hard caps still required");
         expect(JSON.stringify(kv.rows)).toContain("single-process");
-        expect(JSON.stringify(kv.rows)).toContain("no built-in purge policy");
+        expect(kv.rows.find((r) => r.label === "Retention")?.value).toBe("off");
         expect(kv.rows.find((r) => r.label === "Pricing confidence")?.value).toBe("priced");
       }
     } finally {
@@ -112,6 +113,18 @@ describe("budgets adminInfo — shape", () => {
       const table = info?.sections.find((s) => s.kind === "table");
       if (table?.kind !== "table") throw new Error("expected table section");
       expect(table.rows).toContainEqual(["peer-unpriced", "$0.00", "1"]);
+    } finally {
+      await aug.onShutdown?.();
+    }
+  });
+
+  it("shows configured retention policy", async () => {
+    const aug = makeBudgetsAugment({ retentionDays: 30 });
+    try {
+      const info = await aug.adminInfo?.();
+      const kv = info?.sections.find((s) => s.kind === "keyValue");
+      if (kv?.kind !== "keyValue") throw new Error("expected keyValue section");
+      expect(kv.rows.find((r) => r.label === "Retention")?.value).toBe("30 day(s)");
     } finally {
       await aug.onShutdown?.();
     }

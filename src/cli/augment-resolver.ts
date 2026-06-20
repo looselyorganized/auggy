@@ -566,6 +566,7 @@ export async function resolveAugments(
           anonymousGlobalLimit: opts.anonymousGlobalLimit as number | undefined,
           dailyBudgetUsd: opts.dailyBudgetUsd as number | undefined,
           cleanupWindowMs: opts.cleanupWindowMs as number | undefined,
+          retentionDays: opts.retentionDays as number | undefined,
           notifications,
           notificationDispatcher:
             notifications && notifications.enabled !== false

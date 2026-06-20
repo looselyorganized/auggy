@@ -182,6 +182,7 @@ function validateBudgetsOptions(
     "anonymousGlobalLimit",
     "dailyBudgetUsd",
     "cleanupWindowMs",
+    "retentionDays",
   ];
   for (const field of numericPositive) {
     if (opts[field] !== undefined) {

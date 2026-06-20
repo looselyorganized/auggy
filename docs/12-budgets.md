@@ -85,6 +85,7 @@ needed — the kernel detects `turnGate` automatically.
 | `dailyBudgetUsd` | `number` | no | none | Facility-wide daily USD ceiling (sum of all priced turns). |
 | `notifications` | `object` | no | none | Optional notify-backed alerts when priced spend crosses `dailyBudgetUsd` thresholds. |
 | `cleanupWindowMs` | `number` | no | 3,600,000 | Milliseconds before a stuck pending reservation is swept to `allow:incomplete`. |
+| `retentionDays` | `number` | no | none | Optional UTC-day retention window for persisted budget accounting rows. |
 
 ### `BudgetCaps` fields
 
@@ -248,9 +249,24 @@ Indexed on `timestamp` for fast window queries.
 
 ### Retention
 
-The store does not automatically purge old rows. `turn_reservations` and `peer_daily_costs` / `daily_global` accumulate indefinitely. `anonymous_requests` is queried with a 60-second window filter — old rows do not affect correctness but do accumulate.
+By default, the store does not automatically purge old rows. `turn_reservations` and `peer_daily_costs` / `daily_global` accumulate indefinitely. `anonymous_requests` is queried with a 60-second window filter — old rows do not affect correctness but do accumulate.
 
-A future cleanup augment or cron job can truncate old rows. There is no built-in retention policy in v0.
+Set `retentionDays` to enable built-in cleanup during the budgets maintenance pass:
+
+```yaml
+config:
+  dbPath: ./data/budgets.db
+  retentionDays: 30
+```
+
+When enabled, budgets deletes:
+
+- `turn_reservations` rows with `day` before the UTC cutoff day.
+- `daily_global` rows with `day` before the UTC cutoff day.
+- `peer_daily_costs` rows with `day` before the UTC cutoff day.
+- `anonymous_requests` rows with `timestamp` older than the exact cutoff timestamp.
+
+Retention is day-granular for budget rollups: the cutoff UTC day itself is retained. Set `retentionDays` only when old usage history can be discarded.
 
 ## 8. BATS preamble
 
@@ -315,7 +331,7 @@ Calendar days roll at midnight UTC. Peers whose activity spans a UTC midnight ge
 ## 10. Roadmap
 
 - **Pre-call cost estimation** — estimate the turn's cost before calling the engine, enabling dollar caps to be enforced pre-turn rather than post-turn. Listed as a "Next" item in the ROADMAP; requires per-model token-budget prediction.
-- **Retention / purge policy** — automatic cleanup of old `turn_reservations` and `anonymous_requests` rows.
+- **Retention export / archive hook** — optional export before purging old accounting rows.
 - **Burst allowances** — carry unused budget across days or allow temporary bursts above the daily cap.
 
 See [ROADMAP.md](../../docs/ROADMAP.md) for the authoritative list.

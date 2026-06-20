@@ -1,6 +1,11 @@
 import { Database } from "bun:sqlite";
 import type { TurnGateTicket, CostResult, TrustLevel } from "../../types";
-import type { BudgetCaps, BudgetCommitRecord, BudgetStoreConfig } from "./types";
+import type {
+  BudgetCaps,
+  BudgetCommitRecord,
+  BudgetRetentionPurgeResult,
+  BudgetStoreConfig,
+} from "./types";
 
 // ────────────────────────────────────────────────────────────
 // Schema
@@ -104,6 +109,13 @@ export interface BudgetStore {
   sweepIncompleteReservations(opts?: { olderThanMs?: number }): Promise<number>;
 
   /**
+   * Optional retention purge. When retentionDays is configured, deletes rows
+   * older than the UTC-day cutoff from all budgets tables. Returns zero counts
+   * when no retention window is configured.
+   */
+  purgeOldRows(opts?: { retentionDays?: number }): Promise<BudgetRetentionPurgeResult>;
+
+  /**
    * G36 — read-only view for /admin: total spend + per-peer breakdown for
    * a given day (default: today UTC).
    */
@@ -131,6 +143,7 @@ function ymdUtc(ts: number): string {
 
 export function createBudgetStore(config: BudgetStoreConfig): BudgetStore {
   const cleanupWindowMs = config.cleanupWindowMs ?? 60 * 60_000; // 1 hour
+  const configuredRetentionDays = validateRetentionDays(config.retentionDays);
 
   const db = new Database(config.dbPath, { create: true });
   db.run("PRAGMA journal_mode = WAL");
@@ -242,6 +255,15 @@ export function createBudgetStore(config: BudgetStoreConfig): BudgetStore {
      SET decision = 'allow:incomplete'
      WHERE committed_at IS NULL AND reserved_at < ?
        AND decision = 'allow'`,
+  );
+
+  const deleteReservationsBeforeDayStmt = db.prepare(`DELETE FROM turn_reservations WHERE day < ?`);
+  const deleteDailyGlobalBeforeDayStmt = db.prepare(`DELETE FROM daily_global WHERE day < ?`);
+  const deletePeerDailyCostsBeforeDayStmt = db.prepare(
+    `DELETE FROM peer_daily_costs WHERE day < ?`,
+  );
+  const deleteAnonymousRequestsBeforeTimestampStmt = db.prepare(
+    `DELETE FROM anonymous_requests WHERE timestamp < ?`,
   );
 
   // ── Cap evaluation ───────────────────────────────────────
@@ -543,6 +565,27 @@ export function createBudgetStore(config: BudgetStoreConfig): BudgetStore {
     return result.changes;
   }
 
+  // ── purgeOldRows ────────────────────────────────────────
+
+  async function purgeOldRows(opts?: {
+    retentionDays?: number;
+  }): Promise<BudgetRetentionPurgeResult> {
+    const retentionDays = validateRetentionDays(opts?.retentionDays ?? configuredRetentionDays);
+    if (retentionDays === undefined) return emptyPurgeResult();
+
+    const cutoffMs = Date.now() - retentionDays * 86_400_000;
+    const cutoffDay = ymdUtc(cutoffMs);
+    const tx = db.transaction((): BudgetRetentionPurgeResult => {
+      const turnReservations = deleteReservationsBeforeDayStmt.run(cutoffDay).changes;
+      const dailyGlobal = deleteDailyGlobalBeforeDayStmt.run(cutoffDay).changes;
+      const peerDailyCosts = deletePeerDailyCostsBeforeDayStmt.run(cutoffDay).changes;
+      const anonymousRequests = deleteAnonymousRequestsBeforeTimestampStmt.run(cutoffMs).changes;
+      const total = turnReservations + dailyGlobal + peerDailyCosts + anonymousRequests;
+      return { turnReservations, dailyGlobal, peerDailyCosts, anonymousRequests, total };
+    });
+    return tx();
+  }
+
   // ── close ────────────────────────────────────────────────
 
   async function close(): Promise<void> {
@@ -554,7 +597,26 @@ export function createBudgetStore(config: BudgetStoreConfig): BudgetStore {
     commit,
     getPeerUsage,
     sweepIncompleteReservations,
+    purgeOldRows,
     getDaySpend,
     close,
+  };
+}
+
+function validateRetentionDays(value: number | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new Error("budgets.retentionDays must be a positive number");
+  }
+  return value;
+}
+
+function emptyPurgeResult(): BudgetRetentionPurgeResult {
+  return {
+    turnReservations: 0,
+    dailyGlobal: 0,
+    peerDailyCosts: 0,
+    anonymousRequests: 0,
+    total: 0,
   };
 }

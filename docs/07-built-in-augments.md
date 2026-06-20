@@ -1069,6 +1069,7 @@ const budget = budgets({
   },
   anonymousGlobalLimit: 60,    // max anonymous requests per rolling minute
   dailyBudgetUsd: 50.00,       // facility-wide daily USD ceiling
+  retentionDays: 30,           // optional persisted accounting retention
 });
 ```
 
@@ -1094,6 +1095,7 @@ still required for unattended agents.
 | `anonymousGlobalLimit` | `number` | none | Max anonymous requests per rolling minute (facility-wide). |
 | `dailyBudgetUsd` | `number` | none | Facility-wide daily USD ceiling (sum across all priced turns). |
 | `cleanupWindowMs` | `number` | 3,600,000 | Milliseconds before a stuck reservation is swept to `allow:incomplete`. |
+| `retentionDays` | `number` | none | Optional UTC-day retention window for persisted accounting rows. |
 
 **`BudgetCaps` fields:**
 
