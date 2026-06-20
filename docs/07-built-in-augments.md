@@ -1095,7 +1095,7 @@ still required for unattended agents.
 | `anonymousGlobalLimit` | `number` | none | Max anonymous requests per rolling minute (facility-wide). |
 | `dailyBudgetUsd` | `number` | none | Facility-wide daily USD ceiling (sum across all priced turns). |
 | `cleanupWindowMs` | `number` | 3,600,000 | Milliseconds before a stuck reservation is swept to `allow:incomplete`. |
-| `retentionDays` | `number` | none | Optional UTC-day retention window for persisted accounting rows. |
+| `retentionDays` | positive integer | none | Optional UTC-day retention window, in whole days, for persisted accounting rows. |
 
 **`BudgetCaps` fields:**
 

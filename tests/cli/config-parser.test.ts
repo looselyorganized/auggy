@@ -851,6 +851,22 @@ describe("budgets augment options validation", () => {
     expect(() => parseConfig(path)).toThrow("retentionDays");
   });
 
+  test("rejects fractional retentionDays", () => {
+    const path = writeYaml(
+      "agent.yaml",
+      minimalConfig({
+        augments: [
+          {
+            name: "budgets",
+            type: "budgets",
+            options: { dbPath: "./budgets.db", retentionDays: 1.5 },
+          },
+        ],
+      }),
+    );
+    expect(() => parseConfig(path)).toThrow("retentionDays: must be a positive integer");
+  });
+
   test("rejects caps.public.anonymous.maxTurnsPerThread = -5", () => {
     const path = writeYaml(
       "agent.yaml",

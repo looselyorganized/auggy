@@ -85,7 +85,7 @@ needed — the kernel detects `turnGate` automatically.
 | `dailyBudgetUsd` | `number` | no | none | Facility-wide daily USD ceiling (sum of all priced turns). |
 | `notifications` | `object` | no | none | Optional notify-backed alerts when priced spend crosses `dailyBudgetUsd` thresholds. |
 | `cleanupWindowMs` | `number` | no | 3,600,000 | Milliseconds before a stuck pending reservation is swept to `allow:incomplete`. |
-| `retentionDays` | `number` | no | none | Optional UTC-day retention window for persisted budget accounting rows. |
+| `retentionDays` | positive integer | no | none | Optional UTC-day retention window, in whole days, for persisted budget accounting rows. |
 
 ### `BudgetCaps` fields
 
@@ -251,7 +251,7 @@ Indexed on `timestamp` for fast window queries.
 
 By default, the store does not automatically purge old rows. `turn_reservations` and `peer_daily_costs` / `daily_global` accumulate indefinitely. `anonymous_requests` is queried with a 60-second window filter — old rows do not affect correctness but do accumulate.
 
-Set `retentionDays` to enable built-in cleanup during the budgets maintenance pass:
+Set `retentionDays` to a positive integer to enable built-in cleanup during the budgets maintenance pass:
 
 ```yaml
 config:
