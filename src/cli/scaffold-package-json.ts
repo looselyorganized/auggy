@@ -19,6 +19,8 @@
  *     scaffolded against, not whatever happens to be globally installed.
  */
 
+import { existsSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import pkg from "../../package.json" with { type: "json" };
 import type { CatalogEntry } from "./augment-catalog";
 import type { Provider } from "./model-picker";
@@ -144,6 +146,43 @@ export function getAuggyVersion(): string {
 export function getAuggyPackageSpecifierOverride(env = process.env): string | undefined {
   const spec = env.AUGGY_SCAFFOLD_AUGGY_SPEC?.trim();
   return spec || undefined;
+}
+
+export interface ResolveAuggyPackageSpecifierOptions {
+  env?: NodeJS.ProcessEnv;
+  cwd?: string;
+  version?: string;
+}
+
+/**
+ * Resolve an optional Auggy core package specifier for newly scaffolded agents.
+ *
+ * Published users should get semver (`^x.y.z`). Local release/DX smoke tests
+ * should get the packed tarball being tested, otherwise `bun install` may pull
+ * the already-published package with the same semver but an older runtime shape.
+ */
+export function resolveAuggyPackageSpecifierForCreate(
+  opts: ResolveAuggyPackageSpecifierOptions = {},
+): string | undefined {
+  const explicit = getAuggyPackageSpecifierOverride(opts.env ?? process.env);
+  if (explicit) return explicit;
+
+  const version = opts.version ?? getAuggyVersion();
+  const tarball = findNearestPackedAuggyTarball(opts.cwd ?? process.cwd(), version);
+  return tarball ? `file:${tarball}` : undefined;
+}
+
+function findNearestPackedAuggyTarball(startDir: string, version: string): string | undefined {
+  let dir = resolve(startDir);
+  for (let depth = 0; depth < 8; depth += 1) {
+    const candidate = join(dir, `auggy-${version}.tgz`);
+    if (existsSync(candidate)) return candidate;
+
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return undefined;
 }
 
 /**

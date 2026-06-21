@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { parse as parseYaml } from "yaml";
@@ -26,7 +26,9 @@ mockInquirerPrompts(() => answers);
 const { buildModelChoicesForCreate, runCreate, runInit } = await import(
   "../../src/cli/commands/create"
 );
-const { PROVIDER_TO_PACKAGE } = await import("../../src/cli/scaffold-package-json");
+const { PROVIDER_TO_PACKAGE, getAuggyVersion } = await import(
+  "../../src/cli/scaffold-package-json"
+);
 
 let auggyDir: string;
 let projectParent: string;
@@ -96,6 +98,26 @@ describe("runCreate writes per-agent package.json", () => {
     );
     expect(pkg.dependencies["@auggy/link"]).toBeUndefined();
     expect(pkg.dependencies["@auggy/anthropic"]).toBeDefined();
+  });
+
+  test("uses a nearby packed local auggy tarball when scaffolding from a release smoke dir", async () => {
+    answers = { provider: "anthropic", model: "claude-sonnet-4-6" };
+    const version = getAuggyVersion();
+    const tarballPath = join(projectParent, `auggy-${version}.tgz`);
+    writeFileSync(tarballPath, "placeholder");
+    const smokeDir = join(projectParent, ".auggy-dx-lab");
+    mkdirSync(smokeDir, { recursive: true });
+
+    await runCreate("demo-local-runtime", {
+      cwd: smokeDir,
+      bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
+    });
+
+    const pkg = JSON.parse(
+      readFileSync(join(smokeDir, "demo-local-runtime", "package.json"), "utf-8"),
+    );
+    expect(pkg.dependencies.auggy).toBe(`file:${tarballPath}`);
+    expect(pkg.dependencies["@auggy/anthropic"]).toBe(`^${version}`);
   });
 });
 

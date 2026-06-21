@@ -35,8 +35,8 @@ export const checkAgentRuntimeInstall: RuntimeInstallCheck = (agentDir) => {
       ok: false,
       message: `Agent installed ${installedLabel}, but it does not match this CLI's runtime shape (${expectedLabel}).`,
       fix:
-        "If you are testing a local tarball, recreate the agent with " +
-        "`AUGGY_SCAFFOLD_AUGGY_SPEC=file:/absolute/path/to/auggy-x.y.z.tgz`. " +
+        "If you are testing a local tarball, keep `auggy-x.y.z.tgz` in this directory or a parent directory before running `auggy create`, " +
+        "or set `AUGGY_SCAFFOLD_AUGGY_SPEC=file:/absolute/path/to/auggy-x.y.z.tgz`. " +
         "Otherwise publish/install a new Auggy version before creating agents.",
     };
   }

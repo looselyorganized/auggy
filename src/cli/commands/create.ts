@@ -43,8 +43,8 @@ import {
 } from "../ollama-discover";
 import {
   buildAgentPackageJson,
-  getAuggyPackageSpecifierOverride,
   getAuggyVersion,
+  resolveAuggyPackageSpecifierForCreate,
 } from "../scaffold-package-json";
 import { runBunInstall, type BunInstallSpawnFactory } from "../bun-install";
 import { checkAgentRuntimeInstall, type RuntimeInstallCheck } from "../runtime-install-check";
@@ -621,7 +621,7 @@ async function runCreateIntoDir(
       buildAgentPackageJson({
         agentName: name,
         auggyVersion,
-        auggyPackageSpecifier: getAuggyPackageSpecifierOverride(),
+        auggyPackageSpecifier: resolveAuggyPackageSpecifierForCreate({ cwd: finalDir }),
         provider,
         augments,
       }),

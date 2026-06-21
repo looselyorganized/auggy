@@ -1,10 +1,14 @@
-import { describe, test, expect } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import {
   PROVIDER_TO_PACKAGE,
   buildAgentPackageJson,
   getAuggyPackageSpecifierOverride,
-  mergePackageDeps,
   getAuggyVersion,
+  mergePackageDeps,
+  resolveAuggyPackageSpecifierForCreate,
 } from "../../src/cli/scaffold-package-json";
 import type { CatalogEntry } from "../../src/cli/augment-catalog";
 
@@ -28,6 +32,20 @@ function makeEntry(partial: Partial<CatalogEntry>): CatalogEntry {
     packageDeps: partial.packageDeps,
   };
 }
+
+const tempDirs: string[] = [];
+
+function tempDir(): string {
+  const dir = mkdtempSync(join(tmpdir(), "auggy-scaffold-package-"));
+  tempDirs.push(dir);
+  return dir;
+}
+
+afterEach(() => {
+  for (const dir of tempDirs.splice(0)) {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 describe("PROVIDER_TO_PACKAGE", () => {
   test("maps every provider to a @auggy/* adapter package", () => {
@@ -260,6 +278,59 @@ describe("getAuggyPackageSpecifierOverride", () => {
       getAuggyPackageSpecifierOverride({
         AUGGY_SCAFFOLD_AUGGY_SPEC: "   ",
       } as NodeJS.ProcessEnv),
+    ).toBeUndefined();
+  });
+});
+
+describe("resolveAuggyPackageSpecifierForCreate", () => {
+  test("env override wins over local tarball discovery", () => {
+    const root = tempDir();
+    writeFileSync(join(root, "auggy-9.9.9.tgz"), "placeholder");
+
+    expect(
+      resolveAuggyPackageSpecifierForCreate({
+        cwd: root,
+        version: "9.9.9",
+        env: { AUGGY_SCAFFOLD_AUGGY_SPEC: " file:/explicit/auggy.tgz " } as NodeJS.ProcessEnv,
+      }),
+    ).toBe("file:/explicit/auggy.tgz");
+  });
+
+  test("finds a packed auggy tarball in the current directory", () => {
+    const root = tempDir();
+    writeFileSync(join(root, "auggy-9.9.9.tgz"), "placeholder");
+
+    expect(
+      resolveAuggyPackageSpecifierForCreate({
+        cwd: root,
+        version: "9.9.9",
+        env: {},
+      }),
+    ).toBe(`file:${join(root, "auggy-9.9.9.tgz")}`);
+  });
+
+  test("finds a packed auggy tarball in a parent directory", () => {
+    const root = tempDir();
+    const agentParent = join(root, ".auggy-dx-lab", "nested");
+    mkdirSync(agentParent, { recursive: true });
+    writeFileSync(join(root, "auggy-9.9.9.tgz"), "placeholder");
+
+    expect(
+      resolveAuggyPackageSpecifierForCreate({
+        cwd: agentParent,
+        version: "9.9.9",
+        env: {},
+      }),
+    ).toBe(`file:${join(root, "auggy-9.9.9.tgz")}`);
+  });
+
+  test("returns undefined when no explicit override or nearby tarball exists", () => {
+    expect(
+      resolveAuggyPackageSpecifierForCreate({
+        cwd: tempDir(),
+        version: "9.9.9",
+        env: {},
+      }),
     ).toBeUndefined();
   });
 });
