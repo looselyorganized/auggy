@@ -36,6 +36,15 @@ describe("anthropic lookup", () => {
     expect(r!.cacheWriteUsdPerMtok).toBe(6.25);
     expect(r!.cacheReadUsdPerMtok).toBe(0.5);
   });
+
+  it("returns correct fable 5 rates", () => {
+    const r = lookup("claude-fable-5");
+    expect(r).toBeTruthy();
+    expect(r!.inputUsdPerMtok).toBe(10.0);
+    expect(r!.outputUsdPerMtok).toBe(50.0);
+    expect(r!.cacheWriteUsdPerMtok).toBe(12.5);
+    expect(r!.cacheReadUsdPerMtok).toBe(1.0);
+  });
 });
 
 describe("anthropic getFreshness", () => {

@@ -7,8 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`auggy augment setup` now handles AgentMail-backed setup recipes.** `auggy augment setup agentMail` provisions/configures the `agentMail` augment itself, while `auggy augment setup visitorAuth` remains the production magic-link email path. Interactive `auggy augment add agentMail` / `visitorAuth` offers setup after local install; scripted and `--yes` flows stay local-only. Setup can reuse existing `.env` AgentMail credentials with `--mode env`, or create a stable inbox using an idempotent AgentMail `clientId`.
+
 ### Fixed
 
+- **`auggy create` model refresh now treats saved model cache as fallback, not a stop sign.** If the operator provides a provider API key during create, Auggy attempts a live model refresh even when a saved cache already exists, writes the refreshed cache on success, and falls back to saved models on provider failure. Added `claude-fable-5` pricing so it no longer appears as `pricing unknown`.
 - **Railway deploy DX hardened for v1.0.** First deploy now selects a Railway workspace before project/service, saved deploy targets are displayed by workspace/project/service name, plain `auggy deploy` asks before redeploying or retargeting, `auggy deploy --yes` remains the scripted redeploy path, and Railway preflight rejects non-`8080` web ports before a broken 502 deploy reaches Railway.
 
 ### Removed

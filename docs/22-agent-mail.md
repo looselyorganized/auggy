@@ -2,6 +2,11 @@
 
 **Status:** Phase A (outbound) — shipping. Phase B (WebSocket / polling inbound) and Phase C (Svix-verified webhook inbound) tracked separately.
 
+Post-v1 inbound requirement: when inbound is enabled, `agentMail` must not rely
+only on a live connection. It needs an arrival path (WebSocket/polling/webhook)
+and a restart catch-up/checkpoint pass so an agent that was offline can discover
+mail it missed and inject it into the turn loop deliberately.
+
 Sends email through AgentMail with per-peer trust gating, recipient allowlist, rate limits, dedup, sensitive-content auditing, and console API status blocks. Exposes three model-facing tools whose names align with AgentMail's MCP standard: `send_message`, `reply_to_message`, `forward_message`.
 
 ## When to use
@@ -12,7 +17,13 @@ Add `agentMail` when you want your agent to be able to:
 - Reply to inbound mail (Phase B — when a WebSocket / webhook delivers an inbound message into the turn loop)
 - Forward inbound mail to teammates or escalate to the operator
 
-If you only need email for `visitorAuth` magic links, you don't need this augment — `visitorAuth` continues to use the shared `agentmail-client.ts` directly. Run `auggy agentmail setup visitorAuth` to provision or configure the AgentMail inbox used for magic links. If you only need outbound notifications to a fixed destination (e.g. "ping the operator"), `notify` with the `agentmail` adapter is simpler.
+If you only need email for `visitorAuth` magic links, you don't need this augment — `visitorAuth` continues to use the shared `agentmail-client.ts` directly. Run `auggy augment setup visitorAuth` to provision or configure the AgentMail inbox used for magic links. If you only need outbound notifications to a fixed destination (e.g. "ping the operator"), `notify` with the `agentmail` adapter is simpler.
+
+After installing the `agentMail` augment, configure its inbox with:
+
+```bash
+auggy augment setup agentMail
+```
 
 ## Why an augment and not the MCP server
 

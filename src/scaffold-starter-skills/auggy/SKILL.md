@@ -151,11 +151,12 @@ auggy augment add notify
 The default destination writes to `notifications.jsonl`. For real delivery,
 edit `augments/notify/augment.yaml` and add required secrets to `.env`.
 
-Distinguish this from AgentMail:
+Distinguish this from visitor verification email and AgentMail:
 
 - `notify` is for alerts/status/escalation to configured destinations.
-- `agentMail` is for the agent sending email as a capability.
-- `auggy agentmail setup visitorAuth` is only for visitorAuth magic-link email.
+- `auggy augment setup visitorAuth` for visitorAuth magic-link email only.
+- `auggy augment add agentMail` when the agent itself should send email as a
+  model-callable capability with recipient policy and rate limits.
 
 ### "I want external tools"
 

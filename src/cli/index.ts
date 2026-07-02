@@ -14,7 +14,7 @@
  *   auggy models list [provider]     List known/provider engine models
  *   auggy routes [name]              Show custom HTTP routes registered by an agent
  *   auggy augment create <slug>      Scaffold a local custom augment
- *   auggy agentmail setup visitorAuth Configure AgentMail magic-link delivery
+ *   auggy augment setup <augment>    Configure secrets and external services
  *   auggy dev [name] [--open]        Run agent in foreground; --open pops /console in browser
  *   auggy start [name] [--config]    Install as launchd service (always-on)
  *   auggy stop <name>                Stop a running agent

@@ -1,21 +1,23 @@
 import { confirm, input, password, select } from "@inquirer/prompts";
 import { Command } from "commander";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import {
+  AGENTMAIL_RUNTIME_KEY_PERMISSIONS,
   createAgentMailProvisioningClient,
-  VISITOR_AUTH_AGENTMAIL_PERMISSIONS,
   type AgentMailProvisioningClient,
 } from "../agentmail-provisioning";
 import { successMark } from "../_shared/styles";
 import { displayPath } from "../display-path";
+import { parseEnvFile } from "../env-parse";
 import { upsertEnvValues } from "../env-writer";
 import { readAgentName, resolveConfigPath } from "../resolve-config";
 import { VALID_NAME_RE } from "../config-parser";
+import { writeFileSafely } from "../safe-write";
 
-type AgentMailSetupTarget = "visitorAuth";
-type AgentMailSetupMode = "signup" | "existing" | "manual";
+export type AgentMailSetupTarget = "visitorAuth" | "agentMail";
+export type AgentMailSetupMode = "signup" | "existing" | "manual" | "env";
 
 type PromptSelect = typeof select;
 type PromptInput = typeof input;
@@ -30,6 +32,7 @@ export interface AgentMailCommandDeps {
   promptConfirm?: PromptConfirm;
   exit?: (code: number) => void;
   cwd?: string;
+  auggyDir?: string;
 }
 
 export interface AgentMailSetupOptions {
@@ -47,6 +50,7 @@ export interface AgentMailSetupOptions {
 
 export interface AgentMailSetupResult {
   agentName: string;
+  target: AgentMailSetupTarget;
   mode: AgentMailSetupMode;
   inboxId: string;
   inboxEmail?: string;
@@ -64,7 +68,7 @@ export function agentMailCommand(deps: AgentMailCommandDeps = {}): Command {
     .description("Provision or configure AgentMail for an augment")
     .option("--agent <name>", "agent project name when running from a parent directory")
     .option("--config <path>", "path to agent.yaml")
-    .option("--mode <mode>", "signup, existing, or manual")
+    .option("--mode <mode>", "signup, existing, manual, or env")
     .option("--human-email <email>", "human owner email for AgentMail signup")
     .option("--username <username>", "AgentMail inbox username")
     .option("--display-name <name>", "AgentMail inbox display name")
@@ -90,16 +94,20 @@ export async function runAgentMailSetup(
   opts: AgentMailSetupOptions = {},
   deps: AgentMailCommandDeps = {},
 ): Promise<AgentMailSetupResult> {
-  parseTarget(targetArg);
+  const target = parseTarget(targetArg);
 
-  const configPath = resolveConfigPath(opts.agent, opts.config, { cwd: deps.cwd });
+  const configPath = resolveConfigPath(opts.agent, opts.config, {
+    auggyDir: deps.auggyDir,
+    cwd: deps.cwd,
+  });
   const agentDir = dirname(configPath);
   const agentName = readAgentName(configPath);
-  const augmentPath = join(agentDir, "augments", "visitorAuth", "augment.yaml");
+  const agentId = readAgentId(configPath) ?? agentName;
+  const augmentPath = join(agentDir, "augments", target, "augment.yaml");
   if (!existsSync(augmentPath)) {
     throw new Error(
-      `visitorAuth is not installed for ${agentName}.\n\n` +
-        "  Run `auggy augment add visitorAuth` first.",
+      `${target} is not installed for ${agentName}.\n\n` +
+        `  Run \`auggy augment add ${target}\` first.`,
     );
   }
 
@@ -112,23 +120,38 @@ export async function runAgentMailSetup(
     confirm: deps.promptConfirm ?? confirm,
   };
 
-  const mode = await resolveMode(opts.mode, prompts.select);
-  const credentials =
-    mode === "signup"
-      ? await runSignupFlow(agentName, opts, provisioner, prompts)
-      : mode === "existing"
-        ? await runExistingAccountFlow(agentName, opts, provisioner, prompts)
-        : await runManualFlow(opts, prompts);
-
   const envPath = join(agentDir, ".env");
+  const envCredentials = readExistingEnvCredentials(envPath);
+  const useEnvCredentials =
+    envCredentials &&
+    (!opts.mode
+      ? await prompts.confirm({
+          message: "Use existing AgentMail credentials from .env?",
+          default: true,
+        })
+      : parseMode(opts.mode) === "env");
+
+  const mode: AgentMailSetupMode = useEnvCredentials
+    ? "env"
+    : await resolveMode(opts.mode, prompts.select);
+  const credentials =
+    mode === "env"
+      ? (envCredentials ?? missingEnvCredentials())
+      : mode === "signup"
+        ? await runSignupFlow(target, agentName, opts, provisioner, prompts)
+        : mode === "existing"
+          ? await runExistingAccountFlow(target, agentName, agentId, opts, provisioner, prompts)
+          : await runManualFlow(opts, prompts);
+
   const envKeys = upsertEnvValues(envPath, {
     AGENTMAIL_API_KEY: credentials.apiKey,
     AGENTMAIL_INBOX_ID: credentials.inboxId,
   });
-  patchVisitorAuthAgentMailConfig(augmentPath);
+  patchAgentMailConfig(target, augmentPath);
 
   return {
     agentName,
+    target,
     mode,
     inboxId: credentials.inboxId,
     inboxEmail: credentials.email,
@@ -139,6 +162,7 @@ export async function runAgentMailSetup(
 }
 
 async function runSignupFlow(
+  target: AgentMailSetupTarget,
   agentName: string,
   opts: AgentMailSetupOptions,
   provisioner: AgentMailProvisioningClient,
@@ -165,7 +189,7 @@ async function runSignupFlow(
     humanEmail: humanEmail.trim(),
     username,
     source: "auggy-cli",
-    referrer: "auggy visitorAuth setup",
+    referrer: `auggy ${target} setup`,
   });
   const otpCode =
     opts.otp ??
@@ -179,14 +203,16 @@ async function runSignupFlow(
   const runtimeKey = await provisioner.createInboxApiKey({
     apiKey: signup.apiKey,
     inboxId: signup.inboxId,
-    name: `${agentName} visitorAuth`,
-    permissions: VISITOR_AUTH_AGENTMAIL_PERMISSIONS,
+    name: runtimeKeyName(agentName, target),
+    permissions: AGENTMAIL_RUNTIME_KEY_PERMISSIONS,
   });
   return { inboxId: signup.inboxId, apiKey: runtimeKey.apiKey };
 }
 
 async function runExistingAccountFlow(
+  target: AgentMailSetupTarget,
   agentName: string,
+  agentId: string,
   opts: AgentMailSetupOptions,
   provisioner: AgentMailProvisioningClient,
   prompts: {
@@ -213,13 +239,14 @@ async function runExistingAccountFlow(
     apiKey: parentApiKey.trim(),
     username,
     displayName: displayName.trim() || agentName,
-    metadata: { source: "auggy-cli", agent: agentName, augment: "visitorAuth" },
+    clientId: agentMailClientId(agentId, target),
+    metadata: { source: "auggy-cli", agent: agentName, augment: target },
   });
   const runtimeKey = await provisioner.createInboxApiKey({
     apiKey: parentApiKey.trim(),
     inboxId: inbox.inboxId,
-    name: `${agentName} visitorAuth`,
-    permissions: VISITOR_AUTH_AGENTMAIL_PERMISSIONS,
+    name: runtimeKeyName(agentName, target),
+    permissions: AGENTMAIL_RUNTIME_KEY_PERMISSIONS,
   });
   return { inboxId: inbox.inboxId, apiKey: runtimeKey.apiKey, email: inbox.email };
 }
@@ -247,33 +274,40 @@ async function runManualFlow(
   return { inboxId: inboxId.trim(), apiKey: apiKey.trim() };
 }
 
-function patchVisitorAuthAgentMailConfig(augmentPath: string): void {
+function patchAgentMailConfig(target: AgentMailSetupTarget, augmentPath: string): void {
   const raw = parseYaml(readFileSync(augmentPath, "utf-8"));
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
     throw new Error(`${displayPath(augmentPath)} is not a valid augment.yaml object.`);
   }
   const doc = raw as Record<string, unknown>;
-  if (doc.type !== "visitorAuth") {
-    throw new Error(`${displayPath(augmentPath)} is not a visitorAuth augment.`);
+  if (doc.type !== target) {
+    throw new Error(`${displayPath(augmentPath)} is not a ${target} augment.`);
   }
 
   const config =
     doc.config && typeof doc.config === "object" && !Array.isArray(doc.config)
       ? (doc.config as Record<string, unknown>)
       : {};
-  const currentAgentMail =
-    config.agentMail && typeof config.agentMail === "object" && !Array.isArray(config.agentMail)
-      ? (config.agentMail as Record<string, unknown>)
-      : {};
 
-  config.agentMail = {
-    ...currentAgentMail,
-    transport: "agentmail",
-    apiKey: "${AGENTMAIL_API_KEY}",
-    inboxId: "${AGENTMAIL_INBOX_ID}",
-  };
+  if (target === "visitorAuth") {
+    const currentAgentMail =
+      config.agentMail && typeof config.agentMail === "object" && !Array.isArray(config.agentMail)
+        ? (config.agentMail as Record<string, unknown>)
+        : {};
+
+    config.agentMail = {
+      ...currentAgentMail,
+      transport: "agentmail",
+      apiKey: "${AGENTMAIL_API_KEY}",
+      inboxId: "${AGENTMAIL_INBOX_ID}",
+    };
+  } else {
+    config.apiKey = "${AGENTMAIL_API_KEY}";
+    config.inboxId = "${AGENTMAIL_INBOX_ID}";
+  }
+
   doc.config = config;
-  writeFileSync(augmentPath, stringifyYaml(doc));
+  writeFileSafely(augmentPath, stringifyYaml(doc));
 }
 
 async function resolveMode(
@@ -303,12 +337,15 @@ async function resolveMode(
 
 function parseTarget(value: string): AgentMailSetupTarget {
   if (value === "visitorAuth") return "visitorAuth";
-  throw new Error('AgentMail setup currently supports only "visitorAuth".');
+  if (value === "agentMail") return "agentMail";
+  throw new Error('AgentMail setup supports "agentMail" or "visitorAuth".');
 }
 
 function parseMode(value: string): AgentMailSetupMode {
-  if (value === "signup" || value === "existing" || value === "manual") return value;
-  throw new Error(`Invalid AgentMail setup mode "${value}". Use signup, existing, or manual.`);
+  if (value === "signup" || value === "existing" || value === "manual" || value === "env") {
+    return value;
+  }
+  throw new Error(`Invalid AgentMail setup mode "${value}". Use signup, existing, manual, or env.`);
 }
 
 async function resolveUsername(
@@ -345,15 +382,60 @@ function validAgentMailUsername(value: string): boolean {
 
 export function formatAgentMailSetupResult(result: AgentMailSetupResult): string {
   const inbox = result.inboxEmail ? `${result.inboxEmail} (${result.inboxId})` : result.inboxId;
+  const readyText =
+    result.target === "visitorAuth"
+      ? "visitorAuth will now send magic links with AgentMail."
+      : "agentMail will now send outbound email with AgentMail.";
   return [
     `${successMark()} AgentMail inbox ready: ${inbox}`,
     `${successMark()} Wrote .env: ${result.envKeys.join(", ")}`,
     `${successMark()} Updated ${displayPath(result.augmentPath)}`,
     "",
-    "visitorAuth will now send magic links with AgentMail.",
+    readyText,
     "",
     "Run:",
     "  auggy doctor",
     "  auggy run",
   ].join("\n");
+}
+
+function runtimeKeyName(agentName: string, target: AgentMailSetupTarget): string {
+  return `${agentName} ${target}`;
+}
+
+function agentMailClientId(agentId: string, target: AgentMailSetupTarget): string {
+  return `auggy:${agentId}:${target}`;
+}
+
+function readAgentId(configPath: string): string | null {
+  const raw = parseYaml(readFileSync(configPath, "utf-8")) as { id?: unknown } | null;
+  if (typeof raw?.id === "string" && raw.id.trim().length > 0) return raw.id.trim();
+  return null;
+}
+
+function readExistingEnvCredentials(
+  envPath: string,
+): { inboxId: string; apiKey: string; email?: string } | null {
+  if (!existsSync(envPath)) return null;
+  const values: Record<string, string> = {};
+  for (const line of parseEnvFile(readFileSync(envPath, "utf-8"))) {
+    if (line.kind === "kv") values[line.key] = line.value;
+  }
+  const apiKey = usableEnvValue(values.AGENTMAIL_API_KEY);
+  const inboxId = usableEnvValue(values.AGENTMAIL_INBOX_ID);
+  if (!apiKey || !inboxId) return null;
+  return { apiKey, inboxId };
+}
+
+function usableEnvValue(value: string | undefined): string | null {
+  const trimmed = value?.trim();
+  if (!trimmed || trimmed.startsWith("${")) return null;
+  return trimmed;
+}
+
+function missingEnvCredentials(): never {
+  throw new Error(
+    "AGENTMAIL_API_KEY and AGENTMAIL_INBOX_ID are not set in .env. " +
+      "Use --mode signup, --mode existing, or --mode manual.",
+  );
 }

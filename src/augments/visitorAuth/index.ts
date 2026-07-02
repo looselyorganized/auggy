@@ -944,12 +944,12 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
       if (opts.agentMail.transport !== "console") {
         if (looksLikePlaceholder(opts.agentMail.apiKey)) {
           throw new Error(
-            `visitorAuth: AGENTMAIL_API_KEY is unresolved (got "${opts.agentMail.apiKey}"). Set it in .env and restart.`,
+            `visitorAuth: agentMail.apiKey is unresolved (got "${opts.agentMail.apiKey}"). Set the referenced env var in .env and restart.`,
           );
         }
         if (looksLikePlaceholder(opts.agentMail.inboxId)) {
           throw new Error(
-            `visitorAuth: AGENTMAIL_INBOX_ID is unresolved. Set it in .env and restart.`,
+            `visitorAuth: agentMail.inboxId is unresolved (got "${opts.agentMail.inboxId}"). Set the referenced env var in .env and restart.`,
           );
         }
       }
@@ -989,7 +989,7 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
               : "";
           throw new Error(
             `visitorAuth: AgentMail inbox "${mailInboxId}" healthcheck failed with HTTP ${httpStatus}: ${health.detail}. ` +
-              `Check AGENTMAIL_API_KEY and AGENTMAIL_INBOX_ID in .env and restart.${permissionHint}`,
+              `Check the AgentMail env vars referenced by augments/visitorAuth/augment.yaml and restart.${permissionHint}`,
           );
         }
         console.warn(

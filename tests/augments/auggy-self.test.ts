@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
@@ -11,8 +11,7 @@ import type { Augment, PeerIdentity, ToolExecuteContext, TurnState } from "@/typ
 let tempDir: string;
 
 beforeEach(() => {
-  tempDir = join(tmpdir(), `auggy-self-${crypto.randomUUID()}`);
-  mkdirSync(tempDir, { recursive: true });
+  tempDir = mkdtempSync(join(tmpdir(), "auggy-self-"));
 });
 
 afterEach(() => {

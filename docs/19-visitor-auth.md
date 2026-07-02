@@ -23,7 +23,7 @@ For a production visitor-auth experience:
 ```bash
 auggy augment add layeredMemory
 auggy augment add visitorAuth
-auggy agentmail setup visitorAuth
+auggy augment setup visitorAuth
 auggy doctor --cloud
 ```
 
@@ -168,14 +168,15 @@ For production email delivery, prefer the setup command over hand-editing secret
 
 ```bash
 auggy augment add visitorAuth
-auggy agentmail setup visitorAuth
+auggy augment setup visitorAuth
 ```
 
-The setup command has three modes:
+The setup command has four modes:
 
 - `signup` — first AgentMail inbox, with a human email OTP.
 - `existing` — create a new inbox in an existing AgentMail account.
 - `manual` — use an existing inbox ID and runtime key.
+- `env` — reuse `AGENTMAIL_API_KEY` and `AGENTMAIL_INBOX_ID` already in `.env`.
 
 The command writes `AGENTMAIL_API_KEY` and `AGENTMAIL_INBOX_ID` to `.env`, switches
 `augments/visitorAuth/augment.yaml` to `agentMail.transport: agentmail`, and creates

@@ -216,7 +216,7 @@ function recommend(goal: string, installed: Set<string>) {
       [
         "Run `auggy augment add layeredMemory`.",
         "Run `auggy augment add visitorAuth` if browser visitors should be recognized across sessions.",
-        "Use `auggy agentmail setup visitorAuth` for production magic-link email.",
+        "Use `auggy augment setup visitorAuth` for production magic-link email.",
         "Run `auggy doctor` and restart the agent.",
       ],
       { alreadyInstalledType: "layeredMemory" },
@@ -244,7 +244,7 @@ function recommend(goal: string, installed: Set<string>) {
       "Choose AgentMail or visitorAuth mail setup",
       "Magic-link email and model-callable outbound email are separate paths.",
       [
-        "Use `auggy agentmail setup visitorAuth` only for visitor verification emails.",
+        "Use `auggy augment setup visitorAuth` only for visitor verification emails.",
         "Run `auggy augment add agentMail` when the agent itself should send or reply to email.",
         "Configure recipient policy before production use.",
       ],

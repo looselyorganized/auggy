@@ -516,7 +516,8 @@ describe("runAdd no-op cases", () => {
 
     const output = logs.join("\n");
     expect(output).toContain("Use AgentMail:");
-    expect(output).toContain("Set AGENTMAIL_API_KEY and AGENTMAIL_INBOX_ID in .env");
+    expect(output).toContain("Run setup: auggy augment setup agentMail");
+    expect(output).toContain("Or set AGENTMAIL_API_KEY and AGENTMAIL_INBOX_ID in .env");
     expect(output).toContain("Configure mail policy in augments/agentMail/augment.yaml");
     expect(output).toContain("Default mode: outbound email only, creator trust required");
     expect(output).toContain("notify + Agent Mail is usually simpler");

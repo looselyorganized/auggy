@@ -614,7 +614,7 @@ function assertRailwayDeploySafeConfig(configPath: string): ReturnType<typeof pa
       "or log shipping.",
       "",
       "Fix one of these before deploying:",
-      "  - Recommended: run `auggy agentmail setup visitorAuth`.",
+      "  - Recommended: run `auggy augment setup visitorAuth`.",
       "    This provisions/configures AgentMail and writes the needed .env values.",
       "  - Smoke test only: add this under config in augments/visitorAuth/augment.yaml:",
       "      allowConsoleInProduction: true",

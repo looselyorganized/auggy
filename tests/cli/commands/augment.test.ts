@@ -20,10 +20,59 @@ describe("auggy augment command", () => {
     expect(cmd.name()).toBe("augment");
     expect(cmd.commands.map((c) => c.name())).toContain("create");
     expect(cmd.commands.map((c) => c.name())).toContain("add");
+    expect(cmd.commands.map((c) => c.name())).toContain("setup");
     expect(cmd.commands.map((c) => c.name())).toContain("list");
     expect(cmd.commands.map((c) => c.name())).toContain("remove");
     expect(cmd.commands.map((c) => c.name())).toContain("install");
     expect(cmd.commands.map((c) => c.name())).toContain("test");
+  });
+
+  test("setup dispatches to setup helper", async () => {
+    const setupAugment = mock(async () => "configured");
+    const logs: string[] = [];
+    const origLog = console.log;
+    console.log = (msg: unknown) => {
+      logs.push(String(msg));
+    };
+
+    try {
+      const cmd = augmentCommand({ setupAugment, auggyDir: "/tmp/auggy" });
+      await cmd.parseAsync(
+        [
+          "setup",
+          "agentMail",
+          "--agent",
+          "zip",
+          "--mode",
+          "manual",
+          "--api-key",
+          "am_x",
+          "--inbox-id",
+          "inb_x",
+        ],
+        { from: "user" },
+      );
+    } finally {
+      console.log = origLog;
+    }
+
+    expect(setupAugment).toHaveBeenCalledWith(
+      "agentMail",
+      {
+        agent: "zip",
+        config: undefined,
+        mode: "manual",
+        humanEmail: undefined,
+        username: undefined,
+        displayName: undefined,
+        apiKey: "am_x",
+        inboxId: "inb_x",
+        otp: undefined,
+        baseUrl: undefined,
+      },
+      { auggyDir: "/tmp/auggy" },
+    );
+    expect(logs.join("\n")).toContain("configured");
   });
 
   test("add dispatches to runAdd for project-local augment add", async () => {

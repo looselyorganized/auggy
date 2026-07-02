@@ -819,7 +819,9 @@ export async function buildModelChoicesForCreate(
       cacheDir: opts.cacheDir,
     });
     source = inferModelChoiceSource(result.models);
-    if (opts.autoRefresh && source !== "cached") {
+    if (opts.autoRefresh) {
+      const fallback = result;
+      const fallbackSource = source;
       try {
         result = await listRegistry({
           provider,
@@ -831,11 +833,14 @@ export async function buildModelChoicesForCreate(
         });
         source = inferModelChoiceSource(result.models);
       } catch (err) {
+        const fallbackModels =
+          fallback.models.length > 0 ? fallback.models : listStaticModels(provider);
+        const fallbackLabel = fallback.models.length > 0 ? "saved model cache" : "bundled fallback";
         result = {
-          models: listStaticModels(provider),
-          warnings: [`${provider}: ${(err as Error).message}; using bundled fallback`],
+          models: fallbackModels,
+          warnings: [`${provider}: ${(err as Error).message}; using ${fallbackLabel}`],
         };
-        source = "static";
+        source = fallback.models.length > 0 ? fallbackSource : "static";
       }
     }
   }

@@ -1,5 +1,5 @@
 import { Command } from "commander";
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { AUGMENT_CATALOG, resolveCatalogEntry, type CatalogEntry } from "../augment-catalog";
@@ -10,12 +10,19 @@ import { validateCustomAugment } from "../augment-validator";
 import { augmentFolderForType } from "../scaffold-skills";
 import { displayPath } from "../display-path";
 import { VALID_NAME_RE } from "../config-parser";
+import { writeFileExclusively, writeFileSafely } from "../safe-write";
+import {
+  formatAgentMailSetupResult,
+  runAgentMailSetup,
+  type AgentMailSetupOptions,
+} from "./agentmail";
 
 export interface AugmentCommandDeps {
   scaffoldCustomAugment?: typeof scaffoldCustomAugment;
   installCustomAugment?: typeof installCustomAugment;
   validateCustomAugment?: typeof validateCustomAugment;
   runAdd?: typeof runAdd;
+  setupAugment?: typeof runAugmentSetup;
   removeAugment?: typeof removeAugment;
   exit?: (code: number) => void;
   auggyDir?: string;
@@ -51,6 +58,11 @@ export interface RemoveAugmentResult {
   skillRemoved: string | null;
 }
 
+export interface AugmentSetupOptions extends AgentMailSetupOptions {
+  agent?: string;
+  config?: string;
+}
+
 export interface ListAugmentsOptions {
   agentName?: string;
   config?: string;
@@ -77,6 +89,7 @@ export function augmentCommand(deps: AugmentCommandDeps = {}): Command {
   const install = deps.installCustomAugment ?? installCustomAugment;
   const validate = deps.validateCustomAugment ?? validateCustomAugment;
   const add = deps.runAdd ?? runAdd;
+  const setup = deps.setupAugment ?? runAugmentSetup;
   const remove = deps.removeAugment ?? removeAugment;
   const exit = deps.exit ?? ((code: number) => process.exit(code));
 
@@ -109,6 +122,29 @@ export function augmentCommand(deps: AugmentCommandDeps = {}): Command {
         }
       },
     );
+
+  command
+    .command("setup <augment>")
+    .description("Configure secrets and external services for an installed augment")
+    .option("--agent <name>", "agent project name when running from a parent directory")
+    .option("--config <path>", "path to agent.yaml")
+    .option("--mode <mode>", "setup mode where supported")
+    .option("--human-email <email>", "human owner email for AgentMail signup")
+    .option("--username <username>", "external-service username or inbox name")
+    .option("--display-name <name>", "external-service display name")
+    .option("--api-key <key>", "external-service API key")
+    .option("--inbox-id <id>", "existing AgentMail inbox ID for manual mode")
+    .option("--otp <code>", "AgentMail signup OTP code")
+    .option("--base-url <url>", "external-service API base URL")
+    .action(async (augment: string, opts: AugmentSetupOptions) => {
+      try {
+        const result = await setup(augment, opts, { auggyDir: deps.auggyDir });
+        console.log(result);
+      } catch (err) {
+        console.error(`Error: ${(err as Error).message}`);
+        exit(1);
+      }
+    });
 
   command
     .command("list")
@@ -214,6 +250,35 @@ export function augmentCommand(deps: AugmentCommandDeps = {}): Command {
     });
 
   return command;
+}
+
+export async function runAugmentSetup(
+  augment: string,
+  opts: AugmentSetupOptions = {},
+  deps: { auggyDir?: string } = {},
+): Promise<string> {
+  const type = resolveSetupType(augment);
+  switch (type) {
+    case "agentMail":
+    case "visitorAuth": {
+      const result = await runAgentMailSetup(type, opts, {
+        auggyDir: deps.auggyDir,
+        cwd: opts.agent || opts.config ? undefined : process.cwd(),
+      });
+      return formatAgentMailSetupResult(result);
+    }
+    default:
+      throw new Error(
+        `Augment setup is not available for "${augment}" yet.\n\n` +
+          "Supported today: agentMail, visitorAuth.",
+      );
+  }
+}
+
+function resolveSetupType(specifier: string): string {
+  const entry = resolveCatalogEntry(specifier);
+  if (entry) return entry.type;
+  return specifier.trim();
 }
 
 export function listAugments(opts: ListAugmentsOptions = {}): ListedAugment[] {
@@ -350,7 +415,7 @@ export function removeAugment(opts: RemoveAugmentOptions): RemoveAugmentResult {
   const rawAugments = Array.isArray(doc.augments) ? [...doc.augments] : [];
   rawAugments.splice(removed.index, 1);
   doc.augments = rawAugments;
-  writeFileSync(configPath, `# Agent configuration\n\n${stringifyYaml(doc)}`);
+  writeFileSafely(configPath, `# Agent configuration\n\n${stringifyYaml(doc)}`);
 
   const skillRemoved = removeSkillForAugment(agentDir, removedName, removedType);
   removeAugmentFolder(agentDir, removedName, removedType);
@@ -505,21 +570,21 @@ export function installCustomAugment(
   const agentSource = normalizeRelativePath(relative(agentDir, sourceFile));
   const metadataPath = join(augmentDir, "augment.yaml");
   try {
-    writeFileSync(
+    writeFileExclusively(
       metadataPath,
       stringifyYaml({
         type: "custom",
         source: metadataSource,
         config: {},
       }),
-      { flag: "wx", mode: 0o600 },
+      { mode: 0o600 },
     );
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
   }
 
   (doc.augments as unknown[]).push(augmentName);
-  writeFileSync(configPath, `# Agent configuration\n\n${stringifyYaml(doc)}`);
+  writeFileSafely(configPath, `# Agent configuration\n\n${stringifyYaml(doc)}`);
 
   const skillCopied = copyCustomSkillIfPresent(sourceFile, agentDir, augmentName);
   return { configPath, agentDir, source: agentSource, name: augmentName, skillCopied };
