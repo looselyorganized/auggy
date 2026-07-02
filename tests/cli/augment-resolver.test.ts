@@ -446,6 +446,35 @@ describe("resolveAugments — skills", () => {
 });
 
 // ---------------------------------------------------------------------------
+// synthetic self-inspection
+// ---------------------------------------------------------------------------
+
+describe("resolveAugments — self inspection", () => {
+  test("appends synthetic creator-only self-inspection only when runtime metadata is provided", async () => {
+    let augments = await resolveAugments([], TMP);
+    expect(augments.some((augment) => augment.name === "auggySelf")).toBe(false);
+
+    augments = await resolveAugments([], TMP, {
+      selfInspection: {
+        name: "demo",
+        displayName: "Demo",
+        engine: { provider: "anthropic", model: "claude-sonnet-4-6" },
+        creator: { displayName: "Creator" },
+      },
+    });
+
+    const self = augments.find((augment) => augment.name === "auggySelf");
+    expect(self).toBeDefined();
+    expect(self?.synthetic).toBe(true);
+    expect(self?.tools?.map((tool) => tool.name)).toEqual([
+      "auggy_self_info",
+      "auggy_self_catalog",
+      "auggy_self_recommend",
+    ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // custom
 // ---------------------------------------------------------------------------
 
