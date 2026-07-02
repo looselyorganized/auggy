@@ -59,7 +59,7 @@ export interface AgentMailProvisioningClient {
   createInboxApiKey(input: AgentMailCreateInboxApiKeyInput): Promise<AgentMailApiKeyResult>;
 }
 
-export const VISITOR_AUTH_AGENTMAIL_PERMISSIONS: AgentMailApiKeyPermissions = {
+export const AGENTMAIL_RUNTIME_KEY_PERMISSIONS: AgentMailApiKeyPermissions = {
   inbox_read: true,
   message_send: true,
 };

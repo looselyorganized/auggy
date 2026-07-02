@@ -95,7 +95,7 @@ For local testing, visitorAuth prints console magic links. For production email
 delivery, suggest:
 
 ```bash
-auggy agentmail setup visitorAuth
+auggy augment setup visitorAuth
 ```
 
 This configures AgentMail credentials for magic-link delivery. Do not suggest
@@ -104,7 +104,7 @@ that verification links will be visible in service logs.
 
 If the creator asks "how do you send email?", distinguish the two paths:
 
-- `auggy agentmail setup visitorAuth` for visitorAuth magic-link email only.
+- `auggy augment setup visitorAuth` for visitorAuth magic-link email only.
 - `auggy augment add agentMail` when the agent itself should send email as a
   model-callable capability with recipient policy and rate limits.
 

@@ -2,6 +2,11 @@
 
 **Status:** Phase A (outbound) — shipping. Phase B (WebSocket / polling inbound) and Phase C (Svix-verified webhook inbound) tracked separately.
 
+Post-v1 inbound requirement: when inbound is enabled, `agentMail` must not rely
+only on a live connection. It needs an arrival path (WebSocket/polling/webhook)
+and a restart catch-up/checkpoint pass so an agent that was offline can discover
+mail it missed and inject it into the turn loop deliberately.
+
 Sends email through AgentMail with per-peer trust gating, recipient allowlist, rate limits, dedup, sensitive-content auditing, and console API status blocks. Exposes three model-facing tools whose names align with AgentMail's MCP standard: `send_message`, `reply_to_message`, `forward_message`.
 
 ## When to use
