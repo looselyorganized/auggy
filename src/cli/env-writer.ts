@@ -1,5 +1,6 @@
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { parseEnvFile, serializeEnv, type EnvLine } from "./env-parse";
+import { writeFileSafely } from "./safe-write";
 
 export function upsertEnvValues(
   envPath: string,
@@ -26,7 +27,7 @@ export function upsertEnvValues(
     written.push(key);
   }
 
-  writeFileSync(envPath, serializeEnv(lines));
+  writeFileSafely(envPath, serializeEnv(lines), { mode: 0o600 });
   return written;
 }
 

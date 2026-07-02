@@ -1,6 +1,6 @@
 import { confirm, input, password, select } from "@inquirer/prompts";
 import { Command } from "commander";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import {
@@ -14,6 +14,7 @@ import { parseEnvFile } from "../env-parse";
 import { upsertEnvValues } from "../env-writer";
 import { readAgentName, resolveConfigPath } from "../resolve-config";
 import { VALID_NAME_RE } from "../config-parser";
+import { writeFileSafely } from "../safe-write";
 
 export type AgentMailSetupTarget = "visitorAuth" | "agentMail";
 export type AgentMailSetupMode = "signup" | "existing" | "manual" | "env";
@@ -306,7 +307,7 @@ function patchAgentMailConfig(target: AgentMailSetupTarget, augmentPath: string)
   }
 
   doc.config = config;
-  writeFileSync(augmentPath, stringifyYaml(doc));
+  writeFileSafely(augmentPath, stringifyYaml(doc));
 }
 
 async function resolveMode(

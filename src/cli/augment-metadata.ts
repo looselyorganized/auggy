@@ -1,8 +1,9 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { stringify } from "yaml";
 import type { CatalogEntry } from "./augment-catalog";
 import { augmentFolderForType } from "./scaffold-skills";
+import { writeFileSafely } from "./safe-write";
 
 export function augmentIdForCatalogEntry(entry: CatalogEntry): string {
   return augmentFolderForType(entry.type) ?? entry.defaultName;
@@ -20,13 +21,13 @@ export function writeBuiltinAugmentMetadata(
   };
   if (config && Object.keys(config).length > 0) metadata.config = config;
   mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, "augment.yaml"), stringify(metadata));
+  writeFileSafely(join(dir, "augment.yaml"), stringify(metadata));
 }
 
 export function writeCustomAugmentsReadme(agentDir: string): void {
   const dir = join(agentDir, "augments");
   mkdirSync(dir, { recursive: true });
-  writeFileSync(
+  writeFileSafely(
     join(dir, "README.md"),
     [
       "# Augments",

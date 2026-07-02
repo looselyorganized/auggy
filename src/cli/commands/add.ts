@@ -10,7 +10,7 @@
  * augment rescans its mounted dir at every context() call.
  */
 
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { basename, dirname, join } from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
@@ -34,6 +34,7 @@ import {
 import { writeKnowledgeScaffold } from "../scaffold-knowledge";
 import { displayPath } from "../display-path";
 import { ensureMcpConfig } from "../mcp-config";
+import { writeFileSafely } from "../safe-write";
 import { formatAgentMailSetupResult, runAgentMailSetup } from "./agentmail";
 
 export interface AddOpts {
@@ -150,10 +151,10 @@ export async function runAdd(target: string | undefined, opts: AddOpts): Promise
   // agent project dirs.
   // Past this point, all three artifacts are intentional mutations matching
   // the operator's request; install-failure below leaves them in place.
-  writeFileSync(configPath, newYaml);
+  writeFileSafely(configPath, newYaml);
 
   if (pkgUpdate) {
-    writeFileSync(pkgPath, pkgUpdate.text);
+    writeFileSafely(pkgPath, pkgUpdate.text);
     console.log();
     console.log(
       `  ${pkgUpdate.added.length} package dep${pkgUpdate.added.length === 1 ? "" : "s"} added to package.json:`,
@@ -646,7 +647,7 @@ function updateEnvForAddedAugments(
     }
   }
 
-  writeFileSync(envPath, serializeEnv(lines));
+  writeFileSafely(envPath, serializeEnv(lines), { mode: 0o600 });
   return { generated, placeholders };
 }
 

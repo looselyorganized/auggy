@@ -1,5 +1,5 @@
 import { Command } from "commander";
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { AUGMENT_CATALOG, resolveCatalogEntry, type CatalogEntry } from "../augment-catalog";
@@ -10,6 +10,7 @@ import { validateCustomAugment } from "../augment-validator";
 import { augmentFolderForType } from "../scaffold-skills";
 import { displayPath } from "../display-path";
 import { VALID_NAME_RE } from "../config-parser";
+import { writeFileExclusively, writeFileSafely } from "../safe-write";
 import {
   formatAgentMailSetupResult,
   runAgentMailSetup,
@@ -414,7 +415,7 @@ export function removeAugment(opts: RemoveAugmentOptions): RemoveAugmentResult {
   const rawAugments = Array.isArray(doc.augments) ? [...doc.augments] : [];
   rawAugments.splice(removed.index, 1);
   doc.augments = rawAugments;
-  writeFileSync(configPath, `# Agent configuration\n\n${stringifyYaml(doc)}`);
+  writeFileSafely(configPath, `# Agent configuration\n\n${stringifyYaml(doc)}`);
 
   const skillRemoved = removeSkillForAugment(agentDir, removedName, removedType);
   removeAugmentFolder(agentDir, removedName, removedType);
@@ -569,21 +570,21 @@ export function installCustomAugment(
   const agentSource = normalizeRelativePath(relative(agentDir, sourceFile));
   const metadataPath = join(augmentDir, "augment.yaml");
   try {
-    writeFileSync(
+    writeFileExclusively(
       metadataPath,
       stringifyYaml({
         type: "custom",
         source: metadataSource,
         config: {},
       }),
-      { flag: "wx", mode: 0o600 },
+      { mode: 0o600 },
     );
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
   }
 
   (doc.augments as unknown[]).push(augmentName);
-  writeFileSync(configPath, `# Agent configuration\n\n${stringifyYaml(doc)}`);
+  writeFileSafely(configPath, `# Agent configuration\n\n${stringifyYaml(doc)}`);
 
   const skillCopied = copyCustomSkillIfPresent(sourceFile, agentDir, augmentName);
   return { configPath, agentDir, source: agentSource, name: augmentName, skillCopied };
