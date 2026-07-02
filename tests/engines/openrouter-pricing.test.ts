@@ -5,6 +5,8 @@
  * costOverride path, and unpriced fallback for out-of-scope slugs.
  */
 import { describe, it, expect } from "bun:test";
+import * as anthropicPricing from "@/engines/anthropic/pricing";
+import * as openaiPricing from "@/engines/openai/pricing";
 import { resolveSlug, priceOpenRouterResponse } from "@/engines/openrouter/pricing";
 
 describe("resolveSlug", () => {
@@ -39,14 +41,13 @@ describe("resolveSlug", () => {
     expect(r).toBeTruthy();
     // verifiedAt should come from the anthropic pricing module, which has a real date
     expect(r!.freshness.verifiedAt).toMatch(/^\d{4}-\d{2}-\d{2}$/);
-    // The verifiedAt date should be a known date (not empty/default)
-    expect(r!.freshness.verifiedAt).toBe("2026-06-01");
+    expect(r!.freshness.verifiedAt).toBe(anthropicPricing.getFreshness().verifiedAt);
   });
 
   it("openai/* freshness binds to openai table's verifiedAt", () => {
     const r = resolveSlug("openai/gpt-5");
     expect(r).toBeTruthy();
-    expect(r!.freshness.verifiedAt).toBe("2026-06-01");
+    expect(r!.freshness.verifiedAt).toBe(openaiPricing.getFreshness().verifiedAt);
   });
 });
 
