@@ -4,8 +4,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import {
+  AGENTMAIL_RUNTIME_KEY_PERMISSIONS,
   createAgentMailProvisioningClient,
-  VISITOR_AUTH_AGENTMAIL_PERMISSIONS,
   type AgentMailProvisioningClient,
 } from "../agentmail-provisioning";
 import { successMark } from "../_shared/styles";
@@ -204,7 +204,7 @@ async function runSignupFlow(
     apiKey: signup.apiKey,
     inboxId: signup.inboxId,
     name: runtimeKeyName(agentName, target),
-    permissions: VISITOR_AUTH_AGENTMAIL_PERMISSIONS,
+    permissions: AGENTMAIL_RUNTIME_KEY_PERMISSIONS,
   });
   return { inboxId: signup.inboxId, apiKey: runtimeKey.apiKey };
 }
@@ -246,7 +246,7 @@ async function runExistingAccountFlow(
     apiKey: parentApiKey.trim(),
     inboxId: inbox.inboxId,
     name: runtimeKeyName(agentName, target),
-    permissions: VISITOR_AUTH_AGENTMAIL_PERMISSIONS,
+    permissions: AGENTMAIL_RUNTIME_KEY_PERMISSIONS,
   });
   return { inboxId: inbox.inboxId, apiKey: runtimeKey.apiKey, email: inbox.email };
 }

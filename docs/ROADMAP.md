@@ -58,6 +58,11 @@ based on which friction got loudest in the first 50 adopters.
 
 ### Augments + engine
 
+- **[agentMail]** Inbound email hardening. `agentMail` should be able to
+  receive email as a real inbound channel, know when new mail arrives, and run a
+  catch-up check on restart so messages missed during downtime are not silently
+  dropped. Candidate transports: AgentMail WebSocket/polling first, Svix-verified
+  webhook after the dispatch/audit model is stable.
 - **[engines]** Ollama adapter `tool_call.id` preservation for parallel/multi-tool turns. Single-tool-per-turn works today; multi-tool may mis-attribute results. (G35-followup)
 - **[observability]** Augment telemetry export pipeline. Generalize `src/kernel/trace-emitter.ts` into a typed event bus. Initial sinks: in-memory ring buffer (consumed by admin SPA event-stream tabs), OTel exporter, Supabase outbox. Event-taxonomy waits for adopter feedback. (~2-3 weeks)
 - **[link]** Mesh-vs-tunnel design resolution (npm-bundled mesh vs explicit per-peer config). (G4)

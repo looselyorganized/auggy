@@ -28,7 +28,7 @@ export interface AgentMailAgentMailConfig {
    * AgentMail HTTP API (existing behavior — back-compatible).
    */
   transport?: "agentmail";
-  /** Bearer token (`am_*` prefix). Resolve via `${AGENTMAIL_API_KEY}` in agent.yaml. */
+  /** Bearer token (`am_*` prefix). Resolve via `${AGENTMAIL_API_KEY}` in augment.yaml. */
   apiKey: string;
   /** AgentMail inbox the verify email is sent FROM. */
   inboxId: string;
