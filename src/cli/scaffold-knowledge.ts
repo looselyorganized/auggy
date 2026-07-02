@@ -1,5 +1,6 @@
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { writeFileSafely } from "./safe-write";
 
 export interface KnowledgeScaffoldValues {
   orgName: string;
@@ -67,7 +68,7 @@ export function writeKnowledgeScaffold(
 
 function writeText(path: string, text: string, opts: KnowledgeScaffoldOptions): void {
   if (!opts.overwrite && existsSync(path)) return;
-  writeFileSync(path, text);
+  writeFileSafely(path, text);
 }
 
 function knowledgeReadme(): string {

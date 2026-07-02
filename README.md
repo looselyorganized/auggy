@@ -205,7 +205,7 @@ back" continuity across sessions.
 Local testing uses console magic links. For production email delivery:
 
 ```bash
-auggy agentmail setup visitorAuth
+auggy augment setup visitorAuth
 ```
 
 Deploy preflight blocks console magic links on Railway unless you explicitly
@@ -229,8 +229,14 @@ auggy augment add agentMail
 
 Use this when the agent itself should send email through AgentMail with a
 trust gate, recipient allowlist, rate limits, and audit history. If you only
-need magic-link email for `visitorAuth`, use `auggy agentmail setup visitorAuth`
+need magic-link email for `visitorAuth`, use `auggy augment setup visitorAuth`
 instead of adding the full `agentMail` augment.
+
+To configure the `agentMail` augment itself:
+
+```bash
+auggy augment setup agentMail
+```
 
 ## Telegram
 

@@ -231,7 +231,7 @@ The interpolation resolves at boot. First deploys work because the deploy comman
 For production magic-link email, run:
 
 ```bash
-auggy agentmail setup visitorAuth
+auggy augment setup visitorAuth
 ```
 
 This provisions or configures the AgentMail inbox used by `visitorAuth`, writes
@@ -300,7 +300,7 @@ The Railway volume is **NOT** automatically deleted (Railway retains it as a saf
 | Deploy preflight fails because webTransport is not on 8080 | Set `port: 8080` under `config` in `augments/webTransport/augment.yaml`. |
 | Health check does not pass after deploy | Run `auggy logs` and inspect the boot error. The cloud record is still written, so redeploy with `auggy deploy --yes` after fixing. |
 | visitorAuth refuses to boot — "publicUrl required" | Check that `augments/visitorAuth/augment.yaml` has `publicUrl: ${AUGGY_PUBLIC_URL}` and the deploy actually generated a domain. Re-run `auggy deploy` to refresh. |
-| Deploy preflight fails because visitorAuth uses console mail | Run `auggy agentmail setup visitorAuth`, or set `allowConsoleInProduction: true` only for smoke tests where log-visible magic links are acceptable. |
+| Deploy preflight fails because visitorAuth uses console mail | Run `auggy augment setup visitorAuth`, or set `allowConsoleInProduction: true` only for smoke tests where log-visible magic links are acceptable. |
 | Deploy preflight fails because MCP has an enabled `stdio` server | Use a remote HTTPS MCP server for cloud, or mark the local server `cloud: "disabled"` in `.mcp.json`. |
 | Memory disappears after redeploy | Check the volume is mounted (Railway dashboard → service → Volumes). If empty, the symlink list in the Dockerfile may be missing your dbPath — check `src/cli/deploy/dockerfile.ts`'s `SQLITE_DB_NAMES`. |
 | Daily budget cap hit unexpectedly | If you enabled autoSave with an extraction engine, extraction calls count against the cap. Run `evals/layered-memory/run.ts --smoke` to measure your per-extraction cost; lower the cadence in `augments/layeredMemory/augment.yaml` if needed. |

@@ -255,6 +255,94 @@ describe("create model choices", () => {
       value: "claude-fable-5",
     });
   });
+
+  test("auto-refreshes live provider models even when saved cache exists", async () => {
+    const calls: Array<{ refresh?: boolean; useCache?: boolean; writeCache?: boolean }> = [];
+    const result = await buildModelChoicesForCreate("anthropic", {
+      autoRefresh: true,
+      useCache: true,
+      env: { ANTHROPIC_API_KEY: "sk-ant-test" },
+      listRegistry: async (opts) => {
+        calls.push({
+          refresh: opts?.refresh,
+          useCache: opts?.useCache,
+          writeCache: opts?.writeCache,
+        });
+        if (opts?.refresh) {
+          return {
+            warnings: [],
+            models: [
+              {
+                provider: "anthropic",
+                id: "claude-fable-5",
+                displayName: "Claude Fable 5",
+                pricing: { inputUsdPerMtok: 10, outputUsdPerMtok: 50 },
+                source: "provider",
+                status: "live",
+                tools: true,
+              },
+            ],
+          };
+        }
+        return {
+          warnings: [],
+          models: [
+            {
+              provider: "anthropic",
+              id: "claude-fable-5",
+              displayName: "Claude Fable 5",
+              source: "provider",
+              status: "cached",
+              tools: true,
+            },
+          ],
+        };
+      },
+    });
+
+    expect(calls).toEqual([
+      { refresh: undefined, useCache: true, writeCache: undefined },
+      { refresh: true, useCache: true, writeCache: true },
+    ]);
+    expect(result.source).toBe("live");
+    expect(result.choices[0]).toMatchObject({
+      name: "claude-fable-5 — $10/$50 per Mtok, live",
+      value: "claude-fable-5",
+      priced: true,
+    });
+  });
+
+  test("auto-refresh failure falls back to saved provider cache", async () => {
+    const result = await buildModelChoicesForCreate("anthropic", {
+      autoRefresh: true,
+      useCache: true,
+      env: { ANTHROPIC_API_KEY: "sk-ant-test" },
+      listRegistry: async (opts) => {
+        if (opts?.refresh) throw new Error("HTTP 503");
+        return {
+          warnings: [],
+          models: [
+            {
+              provider: "anthropic",
+              id: "claude-fable-5",
+              displayName: "Claude Fable 5",
+              source: "provider",
+              status: "cached",
+              tools: true,
+            },
+          ],
+        };
+      },
+    });
+
+    expect(result.source).toBe("cached");
+    expect(result.warnings).toEqual(["anthropic: HTTP 503; using saved model cache"]);
+    expect(result.choices[0]).toMatchObject({
+      name: "claude-fable-5 — pricing unknown, saved",
+      value: "claude-fable-5",
+      priced: false,
+    });
+  });
 });
 
 describe("runCreate invokes bun install in agent dir", () => {

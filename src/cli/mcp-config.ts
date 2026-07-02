@@ -1,7 +1,8 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { TrustLevel } from "../types";
 import { parseEnvFile } from "./env-parse";
+import { writeFileSafely } from "./safe-write";
 
 export const MCP_CONFIG_FILENAME = ".mcp.json";
 
@@ -82,7 +83,7 @@ export function readMcpConfig(agentDir: string): { path: string; config: McpConf
 }
 
 export function writeMcpConfig(path: string, config: McpConfig): void {
-  writeFileSync(path, `${JSON.stringify(config, null, 2)}\n`);
+  writeFileSafely(path, `${JSON.stringify(config, null, 2)}\n`);
 }
 
 export function setMcpServer(agentDir: string, name: string, server: McpServerConfig): McpConfig {

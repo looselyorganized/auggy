@@ -10,7 +10,7 @@
  * augment rescans its mounted dir at every context() call.
  */
 
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { basename, dirname, join } from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
@@ -34,6 +34,8 @@ import {
 import { writeKnowledgeScaffold } from "../scaffold-knowledge";
 import { displayPath } from "../display-path";
 import { ensureMcpConfig } from "../mcp-config";
+import { writeFileSafely } from "../safe-write";
+import { formatAgentMailSetupResult, runAgentMailSetup } from "./agentmail";
 
 export interface AddOpts {
   /** Path override for agent.yaml. */
@@ -149,10 +151,10 @@ export async function runAdd(target: string | undefined, opts: AddOpts): Promise
   // agent project dirs.
   // Past this point, all three artifacts are intentional mutations matching
   // the operator's request; install-failure below leaves them in place.
-  writeFileSync(configPath, newYaml);
+  writeFileSafely(configPath, newYaml);
 
   if (pkgUpdate) {
-    writeFileSync(pkgPath, pkgUpdate.text);
+    writeFileSafely(pkgPath, pkgUpdate.text);
     console.log();
     console.log(
       `  ${pkgUpdate.added.length} package dep${pkgUpdate.added.length === 1 ? "" : "s"} added to package.json:`,
@@ -250,7 +252,8 @@ export async function runAdd(target: string | undefined, opts: AddOpts): Promise
   if (agentMailAdded) {
     console.log();
     console.log("Use AgentMail:");
-    console.log("  - Set AGENTMAIL_API_KEY and AGENTMAIL_INBOX_ID in .env");
+    console.log("  - Run setup: auggy augment setup agentMail");
+    console.log("  - Or set AGENTMAIL_API_KEY and AGENTMAIL_INBOX_ID in .env");
     console.log("  - Configure mail policy in augments/agentMail/augment.yaml");
     console.log("  - Default mode: outbound email only, creator trust required");
     console.log("  - For simple operator alerts, notify + Agent Mail is usually simpler");
@@ -260,7 +263,7 @@ export async function runAdd(target: string | undefined, opts: AddOpts): Promise
     console.log();
     console.log("Use visitorAuth:");
     console.log("  - Local testing uses console magic links");
-    console.log("  - Production email: auggy agentmail setup visitorAuth");
+    console.log("  - Production email: auggy augment setup visitorAuth");
     console.log("  - This provisions AgentMail and updates augments/visitorAuth/augment.yaml");
   }
 
@@ -373,6 +376,10 @@ export async function runAdd(target: string | undefined, opts: AddOpts): Promise
   } else if (installOk) {
     console.log(formatApplyInstructions(name, agentDir, opts.cwd));
   }
+
+  if (installOk) {
+    await offerSetupForAddedAugments(selected, configPath, opts);
+  }
 }
 
 async function confirmPreviewAugments(selected: CatalogEntry[], yes: boolean | undefined) {
@@ -403,6 +410,42 @@ function previewCaveat(entry: CatalogEntry): string {
       return "external tool servers require deliberate trust, auth, and cloud transport setup";
     default:
       return "production DX is still being hardened";
+  }
+}
+
+async function offerSetupForAddedAugments(
+  selected: CatalogEntry[],
+  configPath: string,
+  opts: AddOpts,
+): Promise<void> {
+  if (opts.yes || !process.stdin.isTTY) return;
+
+  const targets = selected
+    .map((entry) => entry.type)
+    .filter(
+      (type): type is "agentMail" | "visitorAuth" => type === "agentMail" || type === "visitorAuth",
+    );
+  for (const target of targets) {
+    const message =
+      target === "agentMail"
+        ? "Set up AgentMail inbox credentials now?"
+        : "Set up AgentMail delivery for visitorAuth magic links now?";
+    const proceed = await confirm({
+      message,
+      default: target === "agentMail",
+    });
+    if (!proceed) continue;
+
+    try {
+      const result = await runAgentMailSetup(target, { config: configPath }, { cwd: opts.cwd });
+      console.log();
+      console.log(formatAgentMailSetupResult(result));
+    } catch (err) {
+      console.error();
+      console.error(`AgentMail setup did not complete: ${(err as Error).message}`);
+      console.error(`Local ${target} install is still applied.`);
+      console.error(`Retry when ready: auggy augment setup ${target}`);
+    }
   }
 }
 
@@ -604,7 +647,7 @@ function updateEnvForAddedAugments(
     }
   }
 
-  writeFileSync(envPath, serializeEnv(lines));
+  writeFileSafely(envPath, serializeEnv(lines), { mode: 0o600 });
   return { generated, placeholders };
 }
 
