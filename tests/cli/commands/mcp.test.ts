@@ -1,13 +1,14 @@
 import { describe, expect, mock, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mcpCommand, formatMcpServerList } from "../../../src/cli/commands/mcp";
 
-function setupAgent(): { dir: string; cleanup: () => void } {
+function setupAgent(opts: { withMcp?: boolean } = {}): { dir: string; cleanup: () => void } {
   const root = mkdtempSync(join(tmpdir(), "mcp-command-test-"));
   const dir = join(root, "agent");
   mkdirSync(dir, { recursive: true });
+  const augments = opts.withMcp === false ? [] : ["  - name: mcp", "    type: mcp"];
   writeFileSync(
     join(dir, "agent.yaml"),
     [
@@ -17,8 +18,7 @@ function setupAgent(): { dir: string; cleanup: () => void } {
       "  provider: anthropic",
       "  model: claude-sonnet-4-6",
       "augments:",
-      "  - name: mcp",
-      "    type: mcp",
+      ...augments,
       "",
     ].join("\n"),
   );
@@ -26,6 +26,34 @@ function setupAgent(): { dir: string; cleanup: () => void } {
 }
 
 describe("auggy mcp command", () => {
+  test("commands fail clearly when MCP augment is not installed", async () => {
+    const { dir, cleanup } = setupAgent({ withMcp: false });
+    const errors: string[] = [];
+    const originalError = console.error;
+    console.error = (message: unknown) => {
+      errors.push(String(message));
+    };
+
+    try {
+      const exit = mock((_code: number) => {});
+      const cmd = mcpCommand({ cwd: dir, exit });
+      await cmd.parseAsync(
+        ["add-json", "example", '{"type":"http","url":"https://example.com/mcp"}'],
+        {
+          from: "user",
+        },
+      );
+
+      expect(exit).toHaveBeenCalledWith(1);
+      expect(errors.join("\n")).toContain("MCP is not installed for this agent.");
+      expect(errors.join("\n")).toContain("auggy augment add mcp");
+      expect(existsSync(join(dir, ".mcp.json"))).toBe(false);
+    } finally {
+      console.error = originalError;
+      cleanup();
+    }
+  });
+
   test("init creates .mcp.json for project-local agent", async () => {
     const { dir, cleanup } = setupAgent();
     try {

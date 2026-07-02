@@ -96,26 +96,28 @@ export function augmentCommand(deps: AugmentCommandDeps = {}): Command {
   const command = new Command("augment").description("Add, remove, list, and create augments");
 
   command
-    .command("add <augment>")
-    .description("Add an augment to an agent")
+    .command("add")
+    .description("Add one or more augments to an agent")
+    .argument("[augments...]", "augment names to add; omit to open the selector")
     .option("--agent <name>", "agent project name when running from a parent directory")
     .option("--config <path>", "path to agent.yaml")
     .option("--skip-install", "mutate package.json but don't run bun install")
     .option("--yes", "skip preview augment confirmation prompts")
     .action(
       async (
-        augment: string,
+        augments: string[],
         opts: { agent?: string; config?: string; skipInstall?: boolean; yes?: boolean },
       ) => {
         try {
+          const requestedAugments = augments.length > 0 ? augments : undefined;
           const addOpts: AddOpts = {
-            augment: opts.agent || opts.config ? augment : undefined,
+            augment: requestedAugments,
             config: opts.config,
             skipInstall: opts.skipInstall,
             yes: opts.yes,
             auggyDir: deps.auggyDir,
           };
-          await add(opts.agent ?? (opts.config ? undefined : augment), addOpts);
+          await add(opts.agent, addOpts);
         } catch (err) {
           console.error(`Error: ${(err as Error).message}`);
           exit(1);
@@ -352,7 +354,7 @@ export function formatAugmentCatalog(list: AugmentCatalogList): string {
     list.preview.length > 0
       ? formatCatalogSection("Preview", list.preview, formatCatalogEntry)
       : "",
-    "Add one:\n  auggy augment add <name>",
+    "Add augments:\n  auggy augment add\n  auggy augment add <name...>",
   ]
     .filter(Boolean)
     .join("\n\n");

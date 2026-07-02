@@ -66,15 +66,13 @@ List optional augments:
 auggy augment list
 ```
 
-Add a stable built-in augment:
+Add stable built-in augments:
 
 ```bash
+auggy augment add
 auggy augment add knowledge
-auggy augment add layeredMemory
-auggy augment add visitorAuth
-auggy augment add notify
-auggy augment add mcp
-auggy augment add telegramTransport
+auggy augment add layeredMemory visitorAuth notify
+auggy augment add mcp telegramTransport
 ```
 
 Create your own augment:
@@ -365,7 +363,7 @@ auggy deploy --yes
 | `auggy run [name]` | Run locally and open chat |
 | `auggy doctor [name]` | Check config, env, dependencies, port, and skills |
 | `auggy augment list` | Show installed, stable, and preview augments |
-| `auggy augment add <name>` | Add a built-in augment |
+| `auggy augment add [name...]` | Select or add built-in augments |
 | `auggy augment create <name>` | Scaffold a custom local augment |
 | `auggy augment install <path>` | Install a custom local augment |
 | `auggy skill create <name>` | Create a skill folder |

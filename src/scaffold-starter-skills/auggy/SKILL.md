@@ -71,6 +71,10 @@ persona/policy.
 
 ## Build-Out Decision Matrix
 
+Use `auggy augment add` with no arguments to open the augment selector. Use
+`auggy augment add <name...>` to add one or more known augments in a single
+command.
+
 | Creator goal | Best extension point | Why |
 | --- | --- | --- |
 | Change who the agent is, how it speaks, or what it must refuse | `identity.md` | Durable behavior that should apply every turn |
