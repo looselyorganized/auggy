@@ -4,7 +4,6 @@
  *
  * Commands:
  *   auggy create <name>              Scaffold a new agent (interactive)
- *   auggy add [name] [augment]       Shortcut for auggy augment add
  *   auggy augment add <augment>      Add an augment to an agent
  *   auggy augment remove <augment>   Remove an augment from an agent
  *   auggy augment list               List augments in an agent
@@ -31,7 +30,6 @@
 import { Command } from "commander";
 import pkg from "../../package.json" with { type: "json" };
 import { runCreate } from "./commands/create";
-import { runAdd } from "./commands/add";
 import { skillCommand } from "./commands/add-skill";
 import { runCommand } from "./commands/run";
 import { doctorCommand } from "./commands/doctor";
@@ -74,27 +72,6 @@ export function buildCli(): Command {
         process.exit(1);
       }
     });
-
-  program
-    .command("add [target] [augment]")
-    .description("Add augments to an existing agent")
-    .option("--config <path>", "path to agent.yaml")
-    .option("--skip-install", "mutate package.json but don't run bun install")
-    .option("--yes", "skip preview augment confirmation prompts")
-    .action(
-      async (
-        target: string | undefined,
-        augment: string | undefined,
-        opts: { config?: string; skipInstall?: boolean; yes?: boolean },
-      ) => {
-        try {
-          await runAdd(target, { ...opts, augment });
-        } catch (err) {
-          console.error(`Error: ${(err as Error).message}`);
-          process.exit(1);
-        }
-      },
-    );
 
   program
     .command("init [name]")

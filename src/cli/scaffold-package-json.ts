@@ -1,6 +1,6 @@
 /**
  * Builders for the per-agent `package.json` written by `auggy create` and
- * mutated by `auggy add`. Pure functions; no filesystem access (the caller
+ * mutated by `auggy augment add`. Pure functions; no filesystem access (the caller
  * does the I/O so tests stay hermetic).
  *
  * Per the v0.3.2 package split, every scaffolded agent dir is a real Node
@@ -28,7 +28,7 @@ import type { Provider } from "./model-picker";
 /**
  * Engine provider → npm package mapping. Single source of truth for which
  * adapter package an agent installs. Sibling to `PROVIDER_DEFAULTS` in
- * `commands/create.ts`; lives here because `auggy add` may also need it
+ * `commands/create.ts`; lives here because `auggy augment add` may also need it
  * later (e.g. if we ever support an `--engine` migration verb).
  */
 export const PROVIDER_TO_PACKAGE: Record<Provider, string> = {
@@ -88,7 +88,7 @@ export function buildAgentPackageJson(input: BuildAgentPackageJsonInput): string
 
 /**
  * Merge new package deps into an existing agent `package.json` text. Used
- * by `auggy add` when the operator picks an augment that brings external
+ * by `auggy augment add` when the operator picks an augment that brings external
  * packages. Returns the new JSON text + the diff (added/upgraded keys) so
  * the caller can decide whether to skip `bun install` if nothing changed.
  *

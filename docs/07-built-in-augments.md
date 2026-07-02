@@ -57,7 +57,7 @@ of the normal install path.
 Every built-in augment lives at `src/augments/<name>/index.ts` using the
 folder shape. Augments that contribute model-callable tools ship a bundled
 `<name>/skill/SKILL.md` colocated in the same folder; `auggy create` and
-`auggy add` copy it to `<agent-dir>/skills/<name>/SKILL.md`, and `auggy skill
+`auggy augment add` copy it to `<agent-dir>/skills/<name>/SKILL.md`, and `auggy skill
 add <name>` installs it retroactively. A boot-time validator warns at agent
 startup if a tool-providing augment is mounted without a skill — applies to
 both factory-declared `tools[]` and namespace memory providers
@@ -525,7 +525,7 @@ Auto-save extraction runs as an admitted internal turn — it flows through the 
 
 #### Bundled skill
 
-The bundled `src/augments/layeredMemory/skill/SKILL.md` teaches the model when and how to use `memory_write`, `memory_search`, `memory_list`, and `memory_forget`, plus a section on interpreting `[AGENT-DERIVED]` entries and the privacy boundaries that apply to both manual and auto-saved writes. Copied into `<agent-dir>/skills/layeredMemory/SKILL.md` at `auggy create`/`auggy add` time; install retroactively with `auggy skill add layeredMemory`.
+The bundled `src/augments/layeredMemory/skill/SKILL.md` teaches the model when and how to use `memory_write`, `memory_search`, `memory_list`, and `memory_forget`, plus a section on interpreting `[AGENT-DERIVED]` entries and the privacy boundaries that apply to both manual and auto-saved writes. Copied into `<agent-dir>/skills/layeredMemory/SKILL.md` at `auggy create`/`auggy augment add` time; install retroactively with `auggy skill add layeredMemory`.
 
 ### Console/API info
 
@@ -695,7 +695,7 @@ src/augments/filesystem/skill/
     └── mount-permissions.md        # full permission matrix + security details
 ```
 
-Copied into `<agent-dir>/skills/filesystem/` at `auggy create`/`auggy add` time; install retroactively with `auggy skill add filesystem`. The model loads it on demand via `fs_read`.
+Copied into `<agent-dir>/skills/filesystem/` at `auggy create`/`auggy augment add` time; install retroactively with `auggy skill add filesystem`. The model loads it on demand via `fs_read`.
 
 ## `notify` — Outbound messaging to operator-configured destinations
 
@@ -980,7 +980,7 @@ The SSRF filter lives in `src/http.ts` as the exported helper `rejectUnsafeUrl(u
 
 ### Bundled skill
 
-This augment ships `src/augments/webFetch/skill/SKILL.md` with model teaching on the `web_fetch` tool — when to fetch vs ask, prompt-aware summarization, blocked-URL handling. Copied into `<agent-dir>/skills/webFetch/SKILL.md` at `auggy create`/`auggy add` time; install retroactively with `auggy skill add webFetch`.
+This augment ships `src/augments/webFetch/skill/SKILL.md` with model teaching on the `web_fetch` tool — when to fetch vs ask, prompt-aware summarization, blocked-URL handling. Copied into `<agent-dir>/skills/webFetch/SKILL.md` at `auggy create`/`auggy augment add` time; install retroactively with `auggy skill add webFetch`.
 
 ## `bash` — Scoped shell execution
 
@@ -1051,7 +1051,7 @@ Passing `perTrustLevel: {}` would expose bash to everyone. Operators are respons
 
 ### Bundled skill
 
-This augment ships `src/augments/bash/skill/SKILL.md` with model teaching on `shell_exec` and `run_script` — allowlist semantics, risk-tier framing, and per-trust-level defaults. Copied into `<agent-dir>/skills/bash/SKILL.md` at `auggy create`/`auggy add` time; install retroactively with `auggy skill add bash`.
+This augment ships `src/augments/bash/skill/SKILL.md` with model teaching on `shell_exec` and `run_script` — allowlist semantics, risk-tier framing, and per-trust-level defaults. Copied into `<agent-dir>/skills/bash/SKILL.md` at `auggy create`/`auggy augment add` time; install retroactively with `auggy skill add bash`.
 
 ## `budgets` — Per-trust-level turn budgets
 
@@ -1434,7 +1434,7 @@ flips. Today's augment-config-described peers are forward-compatible.
 
 ### Bundled skill
 
-`link` ships `src/augments/link/skill/SKILL.md` with model teaching on the `link_send` and `link_list` tools: when to delegate (genuinely-different expertise/access) vs answer directly, choosing the right peer from `link_list`, the **probe-on-pushback** pattern (re-ping the peer with the user's clarification instead of refusing on "no visibility into their tools"), synthesis-vs-echo when relaying a peer's reply, failure-mode handling (`unknown peer` / unreachable / refused), and the inbound side (when YOU are the peer being called). Copied into `<agent-dir>/skills/link/SKILL.md` at `auggy create`/`auggy add` time; install retroactively with `auggy skill add link`.
+`link` ships `src/augments/link/skill/SKILL.md` with model teaching on the `link_send` and `link_list` tools: when to delegate (genuinely-different expertise/access) vs answer directly, choosing the right peer from `link_list`, the **probe-on-pushback** pattern (re-ping the peer with the user's clarification instead of refusing on "no visibility into their tools"), synthesis-vs-echo when relaying a peer's reply, failure-mode handling (`unknown peer` / unreachable / refused), and the inbound side (when YOU are the peer being called). Copied into `<agent-dir>/skills/link/SKILL.md` at `auggy create`/`auggy augment add` time; install retroactively with `auggy skill add link`.
 
 ## Why these aren't exhaustive
 

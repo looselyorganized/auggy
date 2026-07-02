@@ -1,5 +1,5 @@
 /**
- * auggy add — shortcut for auggy augment add.
+ * Implementation for `auggy augment add`.
  *
  * Lists currently installed vs available augments. User selects from
  * available. Updates agent.yaml, writes augments/<id>/augment.yaml, and copies
@@ -121,7 +121,7 @@ export async function runAdd(target: string | undefined, opts: AddOpts): Promise
       `Error: ${displayPath(pkgPath, opts.cwd)} does not exist. This is not a complete Auggy agent project.`,
     );
     console.error("Run `auggy init` in this directory, or create a fresh project with");
-    console.error(`\`auggy create ${name}\`, then re-run \`auggy add\`.`);
+    console.error(`\`auggy create ${name}\`, then re-run \`auggy augment add\`.`);
     console.error();
     console.error("(No changes made to agent.yaml — atomic bail.)");
     process.exitCode = 1;

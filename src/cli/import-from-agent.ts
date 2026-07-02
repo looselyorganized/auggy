@@ -30,7 +30,7 @@
  * Error path:
  *   When the specifier is not installed, this throws a single clear error
  *   pointing the operator at `bun install` in the agent dir. The error text
- *   intentionally avoids prescribing the exact `auggy add` command because
+ *   intentionally avoids prescribing the exact `auggy augment add` command because
  *   the specifier-to-augment mapping isn't 1:1 (e.g. `@supabase/supabase-js`
  *   is pulled in by the `supabaseMemory` augment).
  */

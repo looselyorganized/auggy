@@ -65,7 +65,7 @@ export interface SkillsInfo {
   /**
    * Bundled skills whose augment is currently mounted but whose SKILL.md is
    * NOT on disk under `<agentDir>/skills/<folder>/`. These represent gaps —
-   * normally `auggy create` / `auggy add` copies the bundled skill alongside
+   * normally `auggy create` / `auggy augment add` copies the bundled skill alongside
    * the augment. A non-empty list means the operator deleted the file, the
    * agent was scaffolded before the augment shipped its skill, or the agent
    * was assembled outside the scaffold flow (rare).

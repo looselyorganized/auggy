@@ -9,7 +9,7 @@
  * complete verification.
  *
  * Why this exists (G34, v1.0 concierge-readiness): OSS adopters who run
- * `auggy create && auggy dev && auggy add visitorAuth` can now complete
+ * `auggy create && auggy dev && auggy augment add visitorAuth` can now complete
  * the visitor-recognition flow end-to-end without paying for an AgentMail
  * account. AgentMail remains the production-grade default; this adapter
  * is the local-testing alternative.

@@ -21,7 +21,7 @@ describe("auggy CLI command table", () => {
     const names = cli.commands.map((cmd) => cmd.name());
 
     expect(names).toContain("create");
-    expect(names).toContain("add");
+    expect(names).not.toContain("add");
     expect(names).toContain("init");
     expect(names).toContain("skill");
     expect(names).not.toContain("add-skill");

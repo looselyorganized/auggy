@@ -37,7 +37,7 @@ my-agent/
   data/
 ```
 
-The global `auggy` install is tooling: `create`, `init`, `add`, `skill`,
+The global `auggy` install is tooling: `create`, `init`, `augment`, `skill`,
 `doctor`, `run`, `deploy`, and `logs`.
 
 Each agent gets its own `package.json`:
@@ -182,7 +182,7 @@ bunx auggy dev --config /app/agent.yaml --internal-mode railway
    - Both produce the same project layout and use the same scaffold path.
 
 3. Populate installed augment metadata:
-   - `auggy create` and `auggy add` create `augments/<name>/augment.yaml`.
+   - `auggy create` and `auggy augment add` create `augments/<name>/augment.yaml`.
    - Built-ins create metadata + README only.
    - Custom augment creation creates metadata + implementation source.
 

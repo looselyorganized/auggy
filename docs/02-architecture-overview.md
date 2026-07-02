@@ -161,7 +161,7 @@ Turns Auggy from "write a `main.ts`" into "configure a YAML file and run `auggy 
 | `index.ts` | Commander.js entrypoint. |
 | `types.ts` | `ParsedConfig`, `PidManifest`, `AugmentConfig`, etc. |
 | `config-parser.ts` | YAML → env interpolation → validation → `ParsedConfig`. |
-| `augment-catalog.ts` | Registry of built-in augments available to `auggy create / add`. |
+| `augment-catalog.ts` | Registry of built-in augments available to `auggy create` and `auggy augment add`. |
 | `augment-resolver.ts` | `AugmentConfig[]` → `Augment[]` (built-in + custom). |
 | `engine-resolver.ts` | `EngineConfig` → `ModelClient`. |
 | `resolve-config.ts` | Shared config path resolution. |
@@ -172,7 +172,7 @@ Turns Auggy from "write a `main.ts`" into "configure a YAML file and run `auggy 
 | `skill-frontmatter.ts` | YAML frontmatter parser for SKILL.md files (agentskills.io standard). |
 | `skill-validator.ts` | Boot-time validator: warns when a tool-providing augment lacks a mounted skill. |
 | `commands/create.ts` | `auggy create <name>` — interactive scaffold. |
-| `commands/add.ts` | `auggy add` shortcut for `auggy augment add`. |
+| `commands/add.ts` | Implementation for `auggy augment add`. |
 | `commands/dev.ts` | `auggy dev <name>` — foreground runner (core lifecycle). |
 | `commands/start.ts` | `auggy start <name>` — install as launchd service. |
 | `commands/stop.ts` | `auggy stop <name>` — SIGTERM or `launchctl unload`. |

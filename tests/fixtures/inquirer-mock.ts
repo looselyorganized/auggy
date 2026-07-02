@@ -3,7 +3,7 @@ import { mock } from "bun:test";
 /**
  * Drive `@inquirer/prompts` non-interactively from a test.
  *
- * Several CLI commands (`auggy create`, `auggy add`, `auggy remove`)
+ * Several CLI commands (`auggy create`, `auggy augment add`, `auggy remove`)
  * prompt the operator via `@inquirer/prompts`. To exercise these flows
  * from tests, we register a `mock.module("@inquirer/prompts", ...)`
  * stub that reads pre-supplied answers off the `answers` reference
@@ -79,7 +79,7 @@ export function mockInquirerPrompts(getAnswers: () => Answers): void {
     }) => {
       // Required entries are pre-checked + disabled in the create flow; treat
       // the test's augmentTypes list as additional optional selections on top.
-      // `auggy add` doesn't set `checked` on any choice (available list is
+      // `auggy augment add` doesn't set `checked` on any choice (available list is
       // already post-filter), so the OR collapses to `wanted.has(...)` there.
       const wanted = new Set(getAnswers().augmentTypes ?? []);
       return config.choices

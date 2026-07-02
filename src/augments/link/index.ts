@@ -384,7 +384,7 @@ export async function link(opts: LinkAugmentInternalOptions): Promise<Augment> {
   // package split, the SDK no longer ships with `auggy` core — it's declared
   // in the agent's per-agent package.json (via the catalog's packageDeps for
   // the link augment) and installed by `bun install` during `auggy create` or
-  // `auggy add`. Library types come from the `import type { ... }` block at
+  // `auggy augment add`. Library types come from the `import type { ... }` block at
   // module top; the value names bound below are runtime-only.
   const {
     BearerAuthProvider,

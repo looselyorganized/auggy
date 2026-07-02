@@ -1,7 +1,7 @@
 /**
  * Augment catalog — metadata for all built-in augments.
  *
- * Used by `auggy create` (interactive selection) and `auggy add`
+ * Used by `auggy create` and `auggy augment add`
  * (add to existing agent). Each entry describes what the augment
  * does, its default config, and whether it ships with a bundled skill
  * folder under `src/augments/<type>/skill/`.
@@ -48,7 +48,7 @@ export interface CatalogEntry {
   hasSkill: boolean;
   /**
    * External npm packages this augment requires in the agent's `package.json`.
-   * Written by `auggy create` / `auggy add` and installed via `bun install`.
+   * Written by `auggy create` / `auggy augment add` and installed via `bun install`.
    * Built-in augments with no SDK dependency (those satisfied entirely by
    * auggy core) leave this undefined.
    *

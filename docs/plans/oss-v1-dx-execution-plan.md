@@ -204,7 +204,7 @@ Acceptance:
 
 ## Phase 3: Augment Install UX
 
-### 6. Support `auggy add <agent> <augment>` *(implemented 2026-05-28)*
+### 6. Support `auggy augment add <augment>` *(implemented 2026-05-28, root-level add removed later)*
 
 Behavior:
 
@@ -215,7 +215,7 @@ Behavior:
 
 Likely files:
 
-- `src/cli/index.ts`
+- `src/cli/commands/augment.ts`
 - `src/cli/commands/add.ts`
 - `src/cli/augment-catalog.ts`
 - `tests/cli/add-installs-deps.test.ts`
@@ -223,7 +223,7 @@ Likely files:
 
 Tests:
 
-- `auggy add zip webFetch` mutates `agent.yaml`.
+- `auggy augment add webFetch --agent zip` mutates `agent.yaml`.
 - Bundled skill is copied.
 - Package deps are merged when needed.
 - `bun install` runs only when deps changed.
@@ -514,7 +514,7 @@ Acceptance:
 1. `auggy run`
 2. Missing env diagnostics
 3. `auggy doctor`
-4. Non-interactive `auggy add <agent> <augment>`
+4. Non-interactive `auggy augment add <augment> --agent <agent>`
 5. Augment aliases
 6. Create default profile cleanup
 7. Custom augment create/install/test
