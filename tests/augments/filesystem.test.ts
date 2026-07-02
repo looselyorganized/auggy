@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { access, writeFile, mkdir, symlink, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { filesystem, isWithinMount } from "@/augments/filesystem";
-import type { TurnState } from "@/types";
+import type { PeerIdentity, ToolExecuteContext, TurnState } from "@/types";
 import { createTempDir } from "@tests/fixtures/temp-dir";
 import { asStringTool } from "@tests/fixtures/tool-helpers";
 
@@ -39,6 +39,33 @@ describe("filesystem augment", () => {
     await writeFile(join(tmp.path, "deletable", "nonempty", "keep.txt"), "keep", "utf-8");
   });
 
+  const creatorPeer: PeerIdentity = {
+    id: "creator",
+    kind: "human",
+    trustLevel: "creator",
+    sourceAugment: "webTransport",
+  };
+
+  const publicPeer: PeerIdentity = {
+    id: "visitor-1",
+    kind: "human",
+    trustLevel: "public",
+    publicSubstate: "anonymous",
+    sourceAugment: "webTransport",
+  };
+
+  const creatorCtx: ToolExecuteContext = {
+    turnId: "turn-1",
+    threadId: "thread-1",
+    peer: creatorPeer,
+  };
+
+  const publicCtx: ToolExecuteContext = {
+    turnId: "turn-1",
+    threadId: "thread-1",
+    peer: publicPeer,
+  };
+
   afterEach(async () => {
     await tmp.cleanup();
   });
@@ -65,11 +92,18 @@ describe("filesystem augment", () => {
     aug: ReturnType<typeof filesystem>,
     toolName: string,
     input: Record<string, unknown>,
+    context?: ToolExecuteContext,
   ): Promise<string> {
     await aug.onBoot!();
     const tool = aug.tools!.find((t) => t.name === toolName);
     if (!tool) throw new Error(`Tool ${toolName} not found`);
-    return asStringTool(tool).execute(input);
+    return asStringTool(tool).execute(input, context);
+  }
+
+  async function writeSkill(folder: string, content: string): Promise<void> {
+    const dir = join(tmp.path, "skills", folder);
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, "SKILL.md"), content, "utf-8");
   }
 
   // === Structure ===
@@ -501,6 +535,65 @@ describe("filesystem augment", () => {
       };
       expect(parsed.results.length).toBe(3);
       expect(parsed.truncated).toBe(true);
+    });
+  });
+
+  // === Creator-only skill visibility ===
+
+  describe("creator-only skill visibility", () => {
+    it("allows creators to read creator-only skills and denies public reads", async () => {
+      await writeSkill(
+        "auggy",
+        [
+          "---",
+          "name: auggy",
+          "description: Build out this agent.",
+          "allowedTrustLevels:",
+          "  - creator",
+          "---",
+          "# Auggy",
+        ].join("\n"),
+      );
+
+      const aug = filesystem({ mounts: [{ name: "skills", path: join(tmp.path, "skills") }] });
+
+      await expect(
+        execTool(aug, "fs_read", { path: "skills/auggy/SKILL.md" }, creatorCtx),
+      ).resolves.toContain("# Auggy");
+
+      const denied = await execTool(aug, "fs_read", { path: "skills/auggy/SKILL.md" }, publicCtx);
+      expect(denied).toContain('Skill "auggy"');
+      expect(denied).toContain("Current peer trust: public");
+    });
+
+    it("hides creator-only skill folders from public list and search results", async () => {
+      await writeSkill(
+        "auggy",
+        [
+          "---",
+          "name: auggy",
+          "description: Build out this agent.",
+          "allowedTrustLevels: creator",
+          "---",
+          "# Auggy",
+        ].join("\n"),
+      );
+      await writeSkill("public", "---\nname: public\ndescription: Public guide.\n---\n# Public");
+
+      const aug = filesystem({ mounts: [{ name: "skills", path: join(tmp.path, "skills") }] });
+
+      const listed = JSON.parse(await execTool(aug, "fs_list", { path: "skills" }, publicCtx)) as {
+        entries: Array<{ name: string }>;
+      };
+      expect(listed.entries.map((entry) => entry.name)).toEqual(["public"]);
+
+      const directList = await execTool(aug, "fs_list", { path: "skills/auggy" }, publicCtx);
+      expect(directList).toContain('Skill "auggy"');
+
+      const searched = JSON.parse(
+        await execTool(aug, "fs_search", { path: "skills", pattern: "**/SKILL.md" }, publicCtx),
+      ) as { results: string[] };
+      expect(searched.results).toEqual(["skills/public/SKILL.md"]);
     });
   });
 

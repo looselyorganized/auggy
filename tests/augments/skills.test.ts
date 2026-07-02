@@ -12,7 +12,7 @@ import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { skills } from "@/augments/skills";
-import type { TurnState } from "@/types";
+import type { PeerIdentity, TurnState } from "@/types";
 
 const stubTurn: TurnState = {
   turnId: "t1",
@@ -27,6 +27,14 @@ const stubTurn: TurnState = {
   toolCallsSoFar: 0,
   turnStartedAt: Date.now(),
   metadata: {},
+};
+
+const publicPeer: PeerIdentity = {
+  id: "visitor-1",
+  kind: "human",
+  trustLevel: "public",
+  publicSubstate: "anonymous",
+  sourceAugment: "webTransport",
 };
 
 function makeSkillDir(): string {
@@ -90,6 +98,36 @@ describe("skills augment", () => {
       const out = await aug.context!(stubTurn, undefined);
       const blocks = typeof out === "string" ? [] : out;
       expect(blocks[0]!.content).not.toContain("broken");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("filters creator-only skills from public peer context", async () => {
+    const dir = makeSkillDir();
+    mkdirSync(join(dir, "auggy"));
+    writeFileSync(
+      join(dir, "auggy", "SKILL.md"),
+      [
+        "---",
+        "name: auggy",
+        "description: Build out this agent.",
+        "allowedTrustLevels:",
+        "  - creator",
+        "---",
+        "# body",
+      ].join("\n"),
+    );
+    try {
+      const aug = skills({ dir });
+      const creatorOut = await aug.context!(stubTurn, undefined);
+      const publicOut = await aug.context!({ ...stubTurn, peer: publicPeer }, undefined);
+      const creatorBlocks = typeof creatorOut === "string" ? [] : creatorOut;
+      const publicBlocks = typeof publicOut === "string" ? [] : publicOut;
+
+      expect(creatorBlocks[0]!.content).toContain("- auggy — Build out this agent.");
+      expect(publicBlocks[0]!.content).not.toContain("- auggy");
+      expect(publicBlocks[0]!.content).toContain("- filesystem — Files and dirs.");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

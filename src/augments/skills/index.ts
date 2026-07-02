@@ -21,8 +21,12 @@
 
 import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
-import type { AdminInfoBlock, Augment, ContextBlock } from "../../types";
-import { readSkillFrontmatter, type SkillFrontmatter } from "../../cli/skill-frontmatter";
+import type { AdminInfoBlock, Augment, ContextBlock, TrustLevel, TurnState } from "../../types";
+import {
+  isSkillAllowedForTrust,
+  readSkillFrontmatter,
+  type SkillFrontmatter,
+} from "../../cli/skill-frontmatter";
 
 export interface SkillsOptions {
   /**
@@ -40,7 +44,11 @@ interface DiscoveredSkill extends SkillFrontmatter {
   folder: string;
 }
 
-function discoverSkills(dir: string): DiscoveredSkill[] {
+function effectiveTrustLevel(turn: TurnState | undefined): TrustLevel {
+  return turn?.peer?.trustLevel ?? "creator";
+}
+
+function discoverSkills(dir: string, trustLevel?: TrustLevel): DiscoveredSkill[] {
   let entries: string[];
   try {
     entries = readdirSync(dir);
@@ -60,6 +68,7 @@ function discoverSkills(dir: string): DiscoveredSkill[] {
     if (!isDir) continue;
     const fm = readSkillFrontmatter(join(sub, "SKILL.md"));
     if (fm === null) continue;
+    if (trustLevel && !isSkillAllowedForTrust(fm, trustLevel)) continue;
     out.push({ folder, name: fm.name, description: fm.description });
   }
 
@@ -117,8 +126,8 @@ export function skills(opts: SkillsOptions): Augment {
     type: "skills",
     category: "capabilities",
     capabilities: ["context"],
-    context: async () => {
-      const discovered = discoverSkills(opts.dir);
+    context: async (turn) => {
+      const discovered = discoverSkills(opts.dir, effectiveTrustLevel(turn));
       if (discovered.length === 0) return [];
       const block: ContextBlock = {
         source: "skills",

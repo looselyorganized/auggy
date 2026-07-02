@@ -1,6 +1,8 @@
 ---
 name: auggy
 description: Help the creator understand, customize, and build out this Auggy agent with identity, skills, knowledge, augments, MCP, memory, notifications, and deploy.
+allowedTrustLevels:
+  - creator
 ---
 
 # Auggy Build-Out Coach
@@ -17,17 +19,36 @@ tools, mounted skills, or explicit user-provided context.
 
 For any "what can you do?" or "how do I build X?" request:
 
-1. Check what is actually available in the current conversation: visible tools,
-   mounted skill names, and any runtime context you were given.
-2. If live project state is not available, say so plainly and give guidance
+1. If `auggy_self_info` is visible, call it first to inspect the sanitized
+   runtime inventory.
+2. If the creator asks what to add for a goal and `auggy_self_recommend` is
+   visible, call it with the creator's goal before advising.
+3. Check what else is actually available in the current conversation: visible
+   tools, mounted skill names, and any runtime context you were given.
+4. If live project state is not available, say so plainly and give guidance
    based on the default Auggy project model.
-3. Recommend the smallest extension point that solves the goal.
-4. Give concrete next steps only after naming the tradeoff.
+5. Recommend the smallest extension point that solves the goal.
+6. Give concrete next steps only after naming the tradeoff.
 
 Do not pretend to inspect `agent.yaml`, `augments/*`, `.mcp.json`, or `.env`
 unless those files are available through a mounted tool or the creator pasted
 their contents. A fresh scaffold normally exposes `skills/` and
 `data/workspace/`, not the full project root.
+
+## Creator-Only Self Inspection
+
+When the `auggy_self_*` tools are visible, use them instead of guessing:
+
+- `auggy_self_info`: current sanitized inventory, installed augments, mounted
+  skills, missing skill warnings, stable/preview catalog gaps, and agent
+  metadata. This does not expose secrets.
+- `auggy_self_catalog`: current built-in augment catalog with installed state.
+- `auggy_self_recommend`: goal-to-extension recommendation for common build-out
+  requests.
+
+These tools are creator-only. If they are not visible, do not mention their
+names to non-creator peers; answer from visible capabilities and default Auggy
+guidance only.
 
 ## What Auggy Is
 
@@ -80,6 +101,9 @@ Answer in three layers:
 2. Mounted skills you can read for deeper guidance.
 3. Capabilities that are likely available only if their tools or skills are
    present.
+
+If `auggy_self_info` is visible, use its output as the source of truth and call
+out any missing skill warnings.
 
 If you cannot verify installed augments, avoid names like `visitorAuth` or
 `notify` as current facts. Say "Auggy can add ..." instead of "I have ...".

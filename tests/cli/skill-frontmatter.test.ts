@@ -11,6 +11,30 @@ describe("parseSkillFrontmatter", () => {
     expect(out).toEqual({ name: "filesystem", description: "Read and write files" });
   });
 
+  it("reads optional allowedTrustLevels", () => {
+    const md = `---\nname: auggy\ndescription: Build out this agent.\nallowedTrustLevels:\n  - creator\n---\n\n# body`;
+    const out = parseSkillFrontmatter(md);
+    expect(out).toEqual({
+      name: "auggy",
+      description: "Build out this agent.",
+      allowedTrustLevels: ["creator"],
+    });
+  });
+
+  it("accepts scalar allowedTrustLevels for one-level restrictions", () => {
+    const md = `---\nname: auggy\ndescription: Build out this agent.\nallowedTrustLevels: creator\n---\n\n# body`;
+    const out = parseSkillFrontmatter(md);
+    expect(out?.allowedTrustLevels).toEqual(["creator"]);
+  });
+
+  it("returns null when allowedTrustLevels is invalid", () => {
+    expect(
+      parseSkillFrontmatter(
+        `---\nname: auggy\ndescription: Build out this agent.\nallowedTrustLevels:\n  - stranger\n---\nbody`,
+      ),
+    ).toBeNull();
+  });
+
   it("returns null when frontmatter is absent", () => {
     expect(parseSkillFrontmatter("# just a heading\n\nbody")).toBeNull();
   });

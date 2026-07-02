@@ -12,13 +12,32 @@
 
 import { readFileSync } from "node:fs";
 import { parse as parseYaml } from "yaml";
+import type { TrustLevel } from "../types";
 
 export interface SkillFrontmatter {
   name: string;
   description: string;
+  allowedTrustLevels?: TrustLevel[];
 }
 
 const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n/;
+const VALID_TRUST_LEVELS = new Set<TrustLevel>(["creator", "agent", "public"]);
+
+function parseAllowedTrustLevels(value: unknown): TrustLevel[] | null {
+  if (value === undefined) return [];
+  const raw = Array.isArray(value) ? value : [value];
+  if (raw.length === 0) return null;
+
+  const out: TrustLevel[] = [];
+  for (const item of raw) {
+    if (typeof item !== "string" || !VALID_TRUST_LEVELS.has(item as TrustLevel)) {
+      return null;
+    }
+    const trustLevel = item as TrustLevel;
+    if (!out.includes(trustLevel)) out.push(trustLevel);
+  }
+  return out;
+}
 
 export function parseSkillFrontmatter(content: string): SkillFrontmatter | null {
   const match = content.match(FRONTMATTER_RE);
@@ -36,8 +55,12 @@ export function parseSkillFrontmatter(content: string): SkillFrontmatter | null 
   const obj = parsed as Record<string, unknown>;
   if (typeof obj.name !== "string" || obj.name.length === 0) return null;
   if (typeof obj.description !== "string" || obj.description.length === 0) return null;
+  const allowedTrustLevels = parseAllowedTrustLevels(obj.allowedTrustLevels);
+  if (allowedTrustLevels === null) return null;
 
-  return { name: obj.name, description: obj.description };
+  const out: SkillFrontmatter = { name: obj.name, description: obj.description };
+  if (allowedTrustLevels.length > 0) out.allowedTrustLevels = allowedTrustLevels;
+  return out;
 }
 
 export function readSkillFrontmatter(path: string): SkillFrontmatter | null {
@@ -48,4 +71,8 @@ export function readSkillFrontmatter(path: string): SkillFrontmatter | null {
     return null;
   }
   return parseSkillFrontmatter(content);
+}
+
+export function isSkillAllowedForTrust(fm: SkillFrontmatter, trustLevel: TrustLevel): boolean {
+  return fm.allowedTrustLevels === undefined || fm.allowedTrustLevels.includes(trustLevel);
 }

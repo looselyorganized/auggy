@@ -2,8 +2,15 @@ import { z } from "zod";
 import { readFile, writeFile, readdir, mkdir, rm, realpath, stat, lstat } from "node:fs/promises";
 import { resolve, join, relative, extname, isAbsolute, sep, dirname } from "node:path";
 import { Glob } from "bun";
-import type { AdminInfoBlock, Augment, ContextBlock } from "../../types";
+import type {
+  AdminInfoBlock,
+  Augment,
+  ContextBlock,
+  ToolExecuteContext,
+  TrustLevel,
+} from "../../types";
 import { defineTool } from "../../helpers";
+import { isSkillAllowedForTrust, readSkillFrontmatter } from "../../cli/skill-frontmatter";
 
 /**
  * Filesystem augment — scoped, multi-mount file access for Auggy agents.
@@ -190,6 +197,41 @@ export function filesystem(opts: FilesystemOptions): Augment {
     };
   }
 
+  function effectiveTrustLevel(context: ToolExecuteContext | undefined): TrustLevel {
+    return context?.peer?.trustLevel ?? "creator";
+  }
+
+  function skillFolderFromSubPath(subPath: string): string | null {
+    const normalized = subPath.replace(/\\/g, "/");
+    if (normalized === "." || normalized === "") return null;
+    const first = normalized.split("/")[0];
+    return first && first !== "." ? first : null;
+  }
+
+  async function restrictedSkillError(
+    mount: FsMount,
+    folder: string | null,
+    context: ToolExecuteContext | undefined,
+  ): Promise<string | null> {
+    if (mount.name !== "skills" || !folder) return null;
+    const skillPath = join(await resolveMountRoot(mount), folder, "SKILL.md");
+    const fm = readSkillFrontmatter(skillPath);
+    if (!fm) return null;
+
+    const trustLevel = effectiveTrustLevel(context);
+    if (isSkillAllowedForTrust(fm, trustLevel)) return null;
+    return `Error: Skill "${folder}" is available only to ${fm.allowedTrustLevels!.join(", ")} peers. Current peer trust: ${trustLevel}.`;
+  }
+
+  async function restrictedSkillPathError(
+    logicalPath: string,
+    mount: FsMount,
+    context: ToolExecuteContext | undefined,
+  ): Promise<string | null> {
+    const { subPath } = parseLogicalPath(logicalPath);
+    return restrictedSkillError(mount, skillFolderFromSubPath(subPath), context);
+  }
+
   async function resolveAndValidate(
     logicalPath: string,
     requireMount?: (m: FsMount) => string | null,
@@ -238,8 +280,10 @@ export function filesystem(opts: FilesystemOptions): Augment {
     input: z.object({
       path: z.string().describe("Logical path: mount-name/path/to/file"),
     }),
-    execute: async ({ path: logicalPath }) => {
+    execute: async ({ path: logicalPath }, context) => {
       const { physicalPath, mount } = await resolveAndValidate(logicalPath);
+      const restricted = await restrictedSkillPathError(logicalPath, mount, context);
+      if (restricted) return restricted;
 
       // Check if it's a symlink pointing outside (extra safety)
       const lstats = await lstat(physicalPath).catch(() => null);
@@ -310,8 +354,10 @@ export function filesystem(opts: FilesystemOptions): Augment {
     input: z.object({
       path: z.string().describe("Logical path: mount-name or mount-name/path/to/dir"),
     }),
-    execute: async ({ path: logicalPath }) => {
-      const { physicalPath } = await resolveAndValidate(logicalPath);
+    execute: async ({ path: logicalPath }, context) => {
+      const { physicalPath, mount } = await resolveAndValidate(logicalPath);
+      const restricted = await restrictedSkillPathError(logicalPath, mount, context);
+      if (restricted) return restricted;
 
       const stats = await stat(physicalPath);
       if (!stats.isDirectory()) {
@@ -325,11 +371,17 @@ export function filesystem(opts: FilesystemOptions): Augment {
         });
       }
 
+      const { subPath } = parseLogicalPath(logicalPath);
+      const listingRootFolder = skillFolderFromSubPath(subPath);
       const entries = await readdir(physicalPath, { withFileTypes: true });
       const results = await Promise.all(
         entries
           .filter((e) => !e.name.startsWith(".") || e.name === ".gitignore")
           .map(async (entry) => {
+            if (mount.name === "skills" && listingRootFolder === null && entry.isDirectory()) {
+              const restrictedEntry = await restrictedSkillError(mount, entry.name, context);
+              if (restrictedEntry) return null;
+            }
             const entryPath = join(physicalPath, entry.name);
             try {
               const s = await stat(entryPath);
@@ -348,15 +400,16 @@ export function filesystem(opts: FilesystemOptions): Augment {
             }
           }),
       );
+      const visibleResults = results.filter((entry) => entry !== null);
 
       // Sort: directories first, then files, alphabetical within each
-      results.sort((a, b) => {
+      visibleResults.sort((a, b) => {
         if (a.type === "dir" && b.type !== "dir") return -1;
         if (a.type !== "dir" && b.type === "dir") return 1;
         return a.name.localeCompare(b.name);
       });
 
-      return JSON.stringify({ path: logicalPath, entries: results });
+      return JSON.stringify({ path: logicalPath, entries: visibleResults });
     },
   });
 
@@ -425,8 +478,10 @@ export function filesystem(opts: FilesystemOptions): Augment {
       pattern: z.string().describe('Glob pattern (e.g. "*.md", "**/*.ts", "config.*")'),
       maxResults: z.number().optional().describe("Max results to return (default 100)"),
     }),
-    execute: async ({ path: logicalPath, pattern, maxResults }) => {
+    execute: async ({ path: logicalPath, pattern, maxResults }, context) => {
       const { physicalPath, mount } = await resolveAndValidate(logicalPath);
+      const restricted = await restrictedSkillPathError(logicalPath, mount, context);
+      if (restricted) return restricted;
       const cap = Math.min(maxResults ?? 100, 1000);
 
       const excludes = mount.searchExcludes ?? DEFAULT_SEARCH_EXCLUDES;
@@ -439,6 +494,13 @@ export function filesystem(opts: FilesystemOptions): Augment {
         absolute: false,
         dot: false,
       })) {
+        if (mount.name === "skills") {
+          const { subPath } = parseLogicalPath(logicalPath);
+          const rootFolder = skillFolderFromSubPath(subPath);
+          const candidateFolder = rootFolder ?? skillFolderFromSubPath(entry);
+          const restrictedEntry = await restrictedSkillError(mount, candidateFolder, context);
+          if (restrictedEntry) continue;
+        }
         // Check excludes
         const shouldExclude = excludes.some(
           (ex) => entry.includes(`/${ex}/`) || entry.startsWith(`${ex}/`) || entry === ex,

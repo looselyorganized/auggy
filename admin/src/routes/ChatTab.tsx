@@ -17,6 +17,20 @@ const CHAT_PREVIEW_MODE_LABELS: Record<ChatPreviewMode, string> = {
   visitor: "Verified visitor",
 };
 
+const CREATOR_EMPTY_PROMPTS = [
+  "What can you do right now?",
+  "Help me decide what to add next.",
+  "I want you to answer from my docs.",
+  "I want you to remember repeat visitors.",
+];
+
+const PEER_EMPTY_PROMPTS = [
+  "What can you help with?",
+  "What information do you need from me?",
+  "How should I get started?",
+  "Summarize this conversation so far.",
+];
+
 // ---------------------------------------------------------------------------
 // Local message model — session-scoped, no localStorage persistence, no
 // per-source keying. If operators ask for chat history across reloads we'll
@@ -251,6 +265,7 @@ export function ChatTab() {
   }, [data]);
   const responseLabel = agentName;
   const identityLabel = `Previewing as ${CHAT_PREVIEW_MODE_LABELS[previewMode].toLowerCase()}`;
+  const emptyPrompts = previewMode === "creator" ? CREATOR_EMPTY_PROMPTS : PEER_EMPTY_PROMPTS;
 
   if (loading && !data) {
     return (
@@ -292,6 +307,7 @@ export function ChatTab() {
         agentName={agentName}
         responseLabel={responseLabel}
         identityLabel={identityLabel}
+        emptyPrompts={emptyPrompts}
         onPrompt={(prompt) => void sendMessage(prompt)}
       />
 
@@ -396,6 +412,7 @@ function MessageList({
   agentName,
   responseLabel,
   identityLabel,
+  emptyPrompts,
   onPrompt,
 }: {
   messages: Message[];
@@ -403,6 +420,7 @@ function MessageList({
   agentName: string;
   responseLabel: string;
   identityLabel: string;
+  emptyPrompts: string[];
   onPrompt: (prompt: string) => void;
 }) {
   const endRef = useRef<HTMLDivElement>(null);
@@ -440,12 +458,7 @@ function MessageList({
             publishing a frontend.
           </p>
           <div className="mt-6 grid gap-2 sm:grid-cols-2">
-            {[
-              "What can you help with?",
-              "Summarize your current capabilities.",
-              "What context do you have about this agent?",
-              "Run a small tool-use smoke test.",
-            ].map((prompt) => (
+            {emptyPrompts.map((prompt) => (
               <Button
                 key={prompt}
                 type="button"
