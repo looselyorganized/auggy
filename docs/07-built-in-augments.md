@@ -1230,7 +1230,7 @@ Local testing uses `agentMail.transport: console`, which prints magic links to
 stdout. Production email should be configured with:
 
 ```bash
-auggy agentmail setup visitorAuth
+auggy augment setup visitorAuth
 ```
 
 Deploy preflight rejects console magic links on public Railway deploys unless
