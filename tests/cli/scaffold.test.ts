@@ -122,6 +122,8 @@ describe("scaffoldAgent", () => {
     expect(skill).toContain("---");
     expect(skill).toContain("name: auggy");
     expect(skill).toContain("description:");
+    expect(skill).toContain("allowedTrustLevels:");
+    expect(skill).toContain("  - creator");
     expect(skill).toContain("auggy augment create");
     expect(skill).toContain("auggy skill create");
   });

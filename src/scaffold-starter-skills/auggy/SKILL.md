@@ -1,429 +1,240 @@
 ---
 name: auggy
-description: Help the creator customize this Auggy agent: identity, config, augments, skills, knowledge, MCP, custom tools, and deploy.
+description: Help the creator understand, customize, and build out this Auggy agent with identity, skills, knowledge, augments, MCP, memory, notifications, and deploy.
+allowedTrustLevels:
+  - creator
 ---
 
-# Auggy Project Guide
+# Auggy Build-Out Coach
 
-Use this skill when the creator asks how to customize this agent, add knowledge,
-create skills, create augments, inspect project files, or deploy the agent.
+Use this skill when the creator asks what this agent is, what it can do, what
+to add next, or how to build a workflow with Auggy.
 
-This skill is for creator assistance. Do not expose secrets, do not edit files
-unless the creator asks, and do not claim runtime capabilities that are not
-enabled in `agent.yaml`.
+This is creator-facing guidance. Do not expose secrets, do not edit files,
+install packages, or change deployment config unless the creator asks, and do
+not claim a capability is installed unless you can observe it from the current
+tools, mounted skills, or explicit user-provided context.
 
-## Project Map
+## First Move
 
-- `agent.yaml`: runtime entry point. It declares the engine, model, settings,
-  and enabled augment order.
-- `augments/<id>/augment.yaml`: config for one enabled augment. Built-ins use
-  `type: <augmentName>`. Custom augments use `type: custom` plus `source`.
-- `identity.md`: the agent's voice, purpose, boundaries, and security rules.
-  This is the best first edit for behavior/personality changes.
-- `package.json`: agent-local runtime and provider dependencies.
-- `.env`: local secrets and generated runtime values. Never read or print secret
-  values unless the creator explicitly asks for a diagnostic.
-- `.env.example`: names of required secrets without values.
-- `skills/`: instruction packs the agent can read on demand. Skills teach the
-  model how to use tools or follow domain workflows; they do not add runtime
-  code by themselves.
-- `augments/`: config for built-in augments plus source for custom local
-  augments. Each enabled augment has `augments/<id>/augment.yaml`. Augments add
-  runtime capabilities such as tools, transports, memory, and knowledge sources.
-- `knowledge/`: local and remote knowledge source config, created by
-  `auggy augment add knowledge`.
-- `.mcp.json`: MCP server definitions, created by `auggy augment add mcp`.
-- `data/`: mutable runtime data and workspace files. Treat it as local state.
+For any "what can you do?" or "how do I build X?" request:
 
-## Fast Answers
+1. If `auggy_self_info` is visible, call it first to inspect the sanitized
+   runtime inventory.
+2. If the creator asks what to add for a goal and `auggy_self_recommend` is
+   visible, call it with the creator's goal before advising.
+3. Check what else is actually available in the current conversation: visible
+   tools, mounted skill names, and any runtime context you were given.
+4. If live project state is not available, say so plainly and give guidance
+   based on the default Auggy project model.
+5. Recommend the smallest extension point that solves the goal.
+6. Give concrete next steps only after naming the tradeoff.
 
-If the creator asks "how do I change who you are?", point them to
-`identity.md`.
+Do not pretend to inspect `agent.yaml`, `augments/*`, `.mcp.json`, or `.env`
+unless those files are available through a mounted tool or the creator pasted
+their contents. A fresh scaffold normally exposes `skills/` and
+`data/workspace/`, not the full project root.
 
-If the creator asks "how do I add facts, docs, or product information?", suggest
-the `knowledge` augment:
+## Creator-Only Self Inspection
+
+When the `auggy_self_*` tools are visible, use them instead of guessing:
+
+- `auggy_self_info`: current sanitized inventory, installed augments, mounted
+  skills, missing skill warnings, stable/preview catalog gaps, and agent
+  metadata. This does not expose secrets.
+- `auggy_self_catalog`: current built-in augment catalog with installed state.
+- `auggy_self_recommend`: goal-to-extension recommendation for common build-out
+  requests.
+
+These tools are creator-only. If they are not visible, do not mention their
+names to non-creator peers; answer from visible capabilities and default Auggy
+guidance only.
+
+## What Auggy Is
+
+An Auggy agent is a Bun/TypeScript project composed from:
+
+- **Identity**: `identity.md`, loaded as durable operator-authored behavior and
+  safety rules.
+- **Augments**: runtime capabilities mounted at boot. They can add tools,
+  transports, memory, context, routes, admission gates, and lifecycle hooks.
+- **Tools**: callable functions exposed by augments to the model.
+- **Skills**: markdown guides in `skills/<name>/SKILL.md`. Skills teach when
+  and how to use capabilities; they do not add runtime code by themselves.
+- **Knowledge**: local or remote reference material fetched on demand.
+- **Data**: mutable runtime state under `data/`, including workspace files and
+  SQLite databases.
+
+Keep this boundary crisp: augments are infrastructure, tools are mechanism,
+skills are teaching, knowledge is reference material, and identity is durable
+persona/policy.
+
+## Build-Out Decision Matrix
+
+| Creator goal | Best extension point | Why |
+| --- | --- | --- |
+| Change who the agent is, how it speaks, or what it must refuse | `identity.md` | Durable behavior that should apply every turn |
+| Teach a repeatable workflow or style | `auggy skill create <name>` | Instructions and examples, no new runtime code |
+| Add docs, FAQs, pricing, policies, or product facts | `auggy augment add knowledge` | Reference material fetched only when relevant |
+| Remember repeat visitors | `auggy augment add layeredMemory` | Peer-scoped memory backed by SQLite |
+| Recognize visitors across sessions | `auggy augment add visitorAuth` | Email magic-link identity continuity |
+| Notify the creator or an ops endpoint | `auggy augment add notify` | Outbound alerts with destination policy and rate limits |
+| Send email as the agent | `auggy augment add agentMail` | Model-callable outbound mail with recipient policy |
+| Add external tool servers | `auggy augment add mcp` | Bridge MCP tools into Auggy with trust policy |
+| Chat over Telegram | `auggy augment add telegramTransport` | Bidirectional Telegram transport |
+| Call an app-specific API or add routes | `auggy augment create <name>` | Custom runtime code owned by this agent |
+| Execute shell commands | `auggy augment add bash` | Preview host process execution; use only with explicit creator intent |
+| Track runtime spend guardrails | `auggy augment add budgets` | Preview soft guardrails; provider hard caps still matter |
+| Connect agents to each other | `auggy augment add link` | Preview mesh/A2A surface; not a default recommendation |
+
+When unsure, choose the least powerful option: skill or knowledge before custom
+code, custom code before broad shell access, and explicit creator approval
+before preview augments.
+
+## Common Recipes
+
+### "What can you do right now?"
+
+Answer in three layers:
+
+1. The agent's visible purpose and current tools.
+2. Mounted skills you can read for deeper guidance.
+3. Capabilities that are likely available only if their tools or skills are
+   present.
+
+If `auggy_self_info` is visible, use its output as the source of truth and call
+out any missing skill warnings.
+
+If you cannot verify installed augments, avoid names like `visitorAuth` or
+`notify` as current facts. Say "Auggy can add ..." instead of "I have ...".
+
+### "I want you to answer from my docs"
+
+Recommend knowledge first:
 
 ```bash
 auggy augment add knowledge
 ```
 
-If the creator asks "how do I configure an augment?", point them to:
+Then add markdown under `knowledge/local/` and list each endpoint in
+`knowledge/local/manifest`. Use clear endpoint descriptions; they are how the
+model decides what to fetch.
 
-```text
-augments/<augment-id>/augment.yaml
-```
+Do not recommend pasting large docs into `identity.md`.
 
-After config changes, recommend:
+### "I want you to remember people"
 
-```bash
-auggy doctor
-auggy run
-```
-
-If the creator asks "how do I see available augments?", use:
-
-```bash
-auggy augment list
-```
-
-If the creator asks "how do I send notifications?", suggest:
-
-```bash
-auggy augment add notify
-```
-
-Then edit `augments/notify/augment.yaml` for real delivery destinations.
-
-If the creator asks "how do you remember repeat visitors?", suggest:
+Use:
 
 ```bash
 auggy augment add layeredMemory
 ```
 
-Explain that `layeredMemory` stores peer-scoped memory in `data/memory.db`.
-The agent should save stable preferences, names, commitments, and recurring
-topics with `memory_write({ topic, content })`; the runtime derives the current
-peer label.
-
-If the creator asks "how do visitors sign in?", suggest:
+For cross-session visitor continuity, pair it with:
 
 ```bash
 auggy augment add visitorAuth
 ```
 
-For local testing, visitorAuth prints console magic links. For production email
-delivery, suggest:
+`layeredMemory` stores peer-scoped memory in `data/memory.db`. Save stable
+preferences, names, commitments, and recurring topics. Do not hand-build peer
+labels; the runtime derives them.
+
+### "I want you to alert me"
+
+Use:
 
 ```bash
-auggy augment setup visitorAuth
+auggy augment add notify
 ```
 
-This configures AgentMail credentials for magic-link delivery. Do not suggest
-deploying console magic links to Railway unless the creator explicitly accepts
-that verification links will be visible in service logs.
+The default destination writes to `notifications.jsonl`. For real delivery,
+edit `augments/notify/augment.yaml` and add required secrets to `.env`.
 
-If the creator asks "how do you send email?", distinguish the two paths:
+Distinguish this from visitor verification email and AgentMail:
 
+- `notify` is for alerts/status/escalation to configured destinations.
 - `auggy augment setup visitorAuth` for visitorAuth magic-link email only.
 - `auggy augment add agentMail` when the agent itself should send email as a
   model-callable capability with recipient policy and rate limits.
 
-If the creator asks "how do I add MCP tools?", suggest:
+### "I want external tools"
+
+Use MCP when a server exists:
 
 ```bash
 auggy augment add mcp
 auggy mcp doctor
 ```
 
-Then edit `.mcp.json`. For cloud deploys, prefer remote HTTPS MCP servers over
-local stdio servers. Local stdio servers may stay in `.mcp.json` if they are
-marked `cloud: "disabled"` or `cloud: "localOnly"` under `auggy.servers`.
+Edit `.mcp.json`. Prefer remote HTTPS MCP servers for cloud deploys. Local
+stdio MCP servers should be disabled for cloud or marked local-only.
 
-If the creator asks "how do I teach you a repeatable workflow?", suggest a
-skill:
+If no MCP server exists and the integration is specific to this agent, create a
+custom augment instead.
 
-```bash
-auggy skill create support-playbook
-```
+### "I need a new API call or app route"
 
-If the creator asks "how do I give you a new tool or API call?", suggest a
-custom augment:
+Use a custom augment:
 
 ```bash
 auggy augment create weather
 ```
 
-If the creator asks "how do I run you?", use:
-
-```bash
-auggy run
-```
-
-If the creator asks "how do I deploy you?", use:
-
-```bash
-auggy deploy
-```
-
-## Editing Config
-
-Use `agent.yaml` for project-level choices: agent identity, engine/provider,
-model, global settings, and the ordered list of enabled augments.
-
-Use `augments/<id>/augment.yaml` for per-augment config:
-
-```yaml
-type: webFetch
-config:
-  timeoutMs: 15000
-```
-
-For custom augments:
-
-```yaml
-type: custom
-source: ./index.ts
-config: {}
-```
-
-Put secrets in `.env` and reference them from config as `${NAME}`. After editing
-config or `.env`, run `auggy doctor` before restarting.
-
-## Editing Identity
-
-Use `identity.md` for durable behavior:
-
-- who the agent is
-- how it should speak
-- what it should prioritize
-- what it must refuse or escalate
-- product/domain-specific operating rules
-
-Good guidance is concrete:
-
-```md
-## Operating style
-
-- Ask one clarifying question when the request is ambiguous.
-- Prefer short answers with a concrete next step.
-- When discussing pricing, use the knowledge source before answering.
-```
-
-Avoid putting secrets, private keys, bearer tokens, or passwords in
-`identity.md`.
-
-## Adding Knowledge
-
-Knowledge is for durable reference material that should be fetched on demand.
-It is better than pasting large docs into `identity.md`.
-
-Create the knowledge scaffold:
-
-```bash
-auggy augment add knowledge
-```
-
-The local source looks like this:
-
-```text
-knowledge/
-  sources.json
-  local/
-    manifest
-    mission.md
-    context.md
-```
-
-Add a new local topic by creating a markdown file:
-
-```text
-knowledge/local/pricing.md
-```
-
-Then add an endpoint entry to `knowledge/local/manifest`:
-
-```json
-{
-  "path": "/pricing",
-  "description": "Pricing, plans, billing policy, and refund rules"
-}
-```
-
-When the visitor asks about pricing, fetch it:
-
-```ts
-knowledge_fetch({ source: "local", endpoint: "/pricing" })
-```
-
-Endpoint descriptions matter. They are how the model decides which endpoint to
-fetch.
-
-Remote knowledge sources live in `knowledge/sources.json`:
-
-```json
-{
-  "sources": [
-    {
-      "name": "docs",
-      "description": "Published product documentation",
-      "baseUrl": "https://docs.example.com/knowledge"
-    }
-  ]
-}
-```
-
-A remote source should expose:
-
-```text
-GET /manifest
-GET /<endpoint listed in manifest>
-```
-
-## Creating Skills
-
-Use a skill when the agent needs better instructions but no new runtime code.
-
-```bash
-auggy skill create support-playbook
-```
-
-Then edit:
-
-```text
-skills/support-playbook/SKILL.md
-```
-
-A useful skill has:
-
-- YAML frontmatter with `name` and `description`
-- when to use it
-- tools or files to read
-- examples of good behavior
-- boundaries and failure modes
-
-Example:
-
-```md
----
-name: support-playbook
-description: Handle support triage, account questions, and escalation decisions.
----
-
-# Support Playbook
-
-Use this skill for customer support requests.
-
-Before answering account-specific questions, ask for the relevant account ID.
-Escalate billing disputes instead of inventing policy.
-```
-
-List skills:
-
-```bash
-auggy skill list
-```
-
-Remove a user-authored skill:
-
-```bash
-auggy skill remove support-playbook
-```
-
-## Creating Custom Augments
-
-Use a custom augment when the agent needs a new runtime capability: an API call,
-tool, transport, memory backend, or integration.
-
-Create the augment:
-
-```bash
-auggy augment create weather
-```
-
-That creates:
-
-```text
-augments/weather/
-  augment.yaml
-  index.ts
-  SKILL.md
-  README.md
-  weather.test.ts
-```
-
-The scaffolded `SKILL.md` lives beside the custom augment source while you build
-it. When the augment is installed into an agent, Auggy copies that skill to
-`skills/weather/SKILL.md`, matching the root skills layout used by built-in
-augments.
-
-The custom augment metadata looks like:
-
-```yaml
-type: custom
-source: ./index.ts
-config: {}
-```
-
-The default augment exports a tool. A simplified example:
-
-```ts
-import { defineAugment, defineTool } from "auggy";
-import { z } from "zod";
-
-export default function weather() {
-  return defineAugment({
-    name: "weather",
-    capabilities: ["tools"],
-    tools: [
-      defineTool({
-        name: "weather_current",
-        description: "Get current weather for a city.",
-        category: "utility",
-        input: z.object({
-          city: z.string().describe("City and region, such as Boston, MA."),
-        }),
-        execute: async ({ city }) => {
-          return `Weather lookup for ${city} is not implemented yet.`;
-        },
-      }),
-    ],
-  });
-}
-```
-
-Test the augment:
+Custom augments can expose tools and HTTP routes. Keep tools narrow, typed, and
+well described. Test before installing:
 
 ```bash
 auggy augment test ./augments/weather
 ```
 
-Install it into this agent from the parent directory:
+### "I want to deploy"
+
+Run local checks first:
 
 ```bash
-auggy augment install <agent-dir-name> ./<agent-dir-name>/augments/weather
+auggy doctor
 ```
 
-If the custom augment should expose deterministic HTTP endpoints for an app
-frontend, add routes in `index.ts`, keep shared domain logic beside the augment,
-and inspect the result with:
+Then deploy:
 
 ```bash
-auggy routes
-auggy routes --json
+auggy deploy
 ```
 
-After changing augments or skills, restart the agent:
+For cloud agents, use `auggy doctor --cloud` where relevant. Do not deploy
+console magic-link visitor auth unless the creator accepts that links appear in
+service logs.
+
+## Project Map
+
+- `agent.yaml`: runtime entry point; identity, engine, model, settings, and
+  enabled augment order.
+- `augments/<id>/augment.yaml`: config for one enabled augment. Built-ins use
+  `type: <augmentName>`. Custom augments use `type: custom` plus `source`.
+- `identity.md`: voice, purpose, boundaries, and durable behavior.
+- `learned.md`: mutable agent-origin self-notes; not authorization or creator
+  identity.
+- `skills/`: instruction packs the agent can read on demand.
+- `knowledge/`: local and remote knowledge source config.
+- `.mcp.json`: MCP server definitions.
+- `.env`: local secrets. Never print secret values.
+- `data/`: mutable runtime data and workspace files.
+
+## Operating Rules
+
+- Say when you are giving default Auggy guidance instead of live project state.
+- Do not reveal `.env` values or ask the creator to paste secrets into chat.
+- Do not write files, install packages, or change config unless asked.
+- After changing config, skills, knowledge, or augments, recommend:
 
 ```bash
+auggy doctor
 auggy run
 ```
 
-or, if it is running in the background:
-
-```bash
-auggy restart <agent-dir-name>
-```
-
-## Choosing The Right Extension Point
-
-Use `identity.md` when the change is personality, policy, purpose, or behavior.
-
-Use `skills/` when the change is workflow guidance, examples, instructions, or
-tool usage teaching.
-
-Use `knowledge/` when the change is reference material the agent should fetch
-only when relevant.
-
-Use `augments/` when the change requires runtime code, external APIs, tools,
-transports, or storage.
-
-## Safety Rules
-
-- Do not reveal `.env` values.
-- Do not write files, install packages, or change deployment config unless the
-  creator asks.
-- Prefer small, inspectable changes.
-- Keep custom augment tools narrow and well described.
-- Put secrets in `.env`, not source files, skills, identity, or knowledge docs.
-- When unsure whether a change belongs in identity, skill, knowledge, or an
-  augment, explain the tradeoff and recommend the smallest option.
+- Preview augments (`bash`, `budgets`, `link`) need explicit creator intent and
+  clear warnings.
+- If the creator asks whether something belongs in identity, skill, knowledge,
+  or an augment, explain the tradeoff and recommend the smallest sufficient
+  change.

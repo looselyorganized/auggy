@@ -53,6 +53,7 @@ import type {
 import type { AugmentConfig } from "./types";
 import type { BudgetsAugmentOptions } from "../augments/budgets";
 import { validateBundledSkills } from "./skill-validator";
+import { auggySelf, type AuggySelfAgentMetadata } from "./auggy-self-augment";
 
 // ---------------------------------------------------------------------------
 // Path resolution helper
@@ -367,7 +368,7 @@ function resolveVisitorAuth(opts: Record<string, unknown>, agentDir: string): Au
 export async function resolveAugments(
   configs: AugmentConfig[],
   agentDir: string,
-  resolverOpts: { creator?: CreatorConfig } = {},
+  resolverOpts: { creator?: CreatorConfig; selfInspection?: AuggySelfAgentMetadata } = {},
 ): Promise<Augment[]> {
   const augments: Augment[] = [];
   type NotifyToolExecute = NonNullable<Augment["tools"]>[number]["execute"];
@@ -721,6 +722,17 @@ export async function resolveAugments(
   const hasSkills = augments.some((a) => a.name === "skills");
   if (!hasSkills && existsSync(skillsDir)) {
     augments.push(skills({ dir: skillsDir }));
+  }
+
+  if (resolverOpts.selfInspection) {
+    augments.push(
+      auggySelf({
+        agentDir,
+        agent: resolverOpts.selfInspection,
+        configs,
+        augments,
+      }),
+    );
   }
 
   return augments;

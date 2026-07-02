@@ -195,7 +195,19 @@ export async function runDev(name: string | undefined, opts: DevOpts): Promise<v
   let agentConfig: AgentConfig;
   try {
     model = await resolveEngine(config.engine, agentDir);
-    augments = await resolveAugments(config.augments, agentDir, { creator: config.creator });
+    augments = await resolveAugments(config.augments, agentDir, {
+      creator: config.creator,
+      selfInspection: {
+        name: agentName,
+        displayName: config.displayName,
+        purpose: config.purpose,
+        engine: {
+          provider: config.engine.provider,
+          model: config.engine.model,
+        },
+        creator: config.creator,
+      },
+    });
     agentConfig = {
       name: agentName,
       displayName: config.displayName,
