@@ -332,6 +332,10 @@ function practicalBrowserUsageFixture(): string {
 
     const api = createAuggyClient({
       baseUrl: "https://agent.example",
+      visitorToken: () => {
+        const token = sessionStorage.getItem("auggy-visitor-token");
+        return token ?? undefined;
+      },
       authAssertion: async () => {
         const token = sessionStorage.getItem("auggy-auth-assertion");
         return token ?? undefined;
