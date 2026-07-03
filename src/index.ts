@@ -76,6 +76,23 @@ export { defineAgent } from "./agent";
 // === Agent Card ===
 export { generateAgentCard } from "./agent-card";
 
+// === Auth primitives ===
+export {
+  createExternalAuthAssertion,
+  externalAuthClaimsToRouteContext,
+  externalAuthClaimsToRoutePrincipal,
+  externalSubjectVisitorId,
+  verifyExternalAuthAssertion,
+} from "./auth/external-auth";
+export type {
+  CreateExternalAuthAssertionOptions,
+  ExternalAuthAssertionFailureReason,
+  ExternalAuthAssertionVerification,
+  ExternalAuthClaims,
+  ExternalAuthPrincipalOptions,
+  VerifyExternalAuthAssertionOptions,
+} from "./auth/external-auth";
+
 // === Helpers ===
 export { defineAugment, defineRoute, defineTool, json } from "./helpers";
 export type {
