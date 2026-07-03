@@ -1,6 +1,7 @@
 import { dirname } from "node:path";
 import { Command } from "commander";
 import { parseConfig } from "../config-parser";
+import { createTypeScriptClient } from "../routes-client";
 import { createOpenApiDocument } from "../routes-openapi";
 import { resolveConfigPath } from "../resolve-config";
 import { inspectAugmentRoutes } from "../route-inspector";
@@ -108,14 +109,19 @@ export function routesCommand(deps: RoutesCommandDeps = {}): Command {
     .option("--config <path>", "path to agent.yaml")
     .option("--json", "print the route manifest as JSON")
     .option("--openapi", "print an OpenAPI 3.1 document as JSON")
+    .option("--client <format>", "print a generated route client (currently: ts)")
     .action(
       async (
         name: string | undefined,
-        opts: { config?: string; json?: boolean; openapi?: boolean },
+        opts: { config?: string; json?: boolean; openapi?: boolean; client?: string },
       ) => {
         try {
-          if (opts.json && opts.openapi) {
-            throw new Error("Choose either --json or --openapi.");
+          const outputModes = [opts.json, opts.openapi, opts.client !== undefined].filter(Boolean);
+          if (outputModes.length > 1) {
+            throw new Error("Choose only one of --json, --openapi, or --client.");
+          }
+          if (opts.client !== undefined && opts.client !== "ts") {
+            throw new Error(`Unsupported client format "${opts.client}". Supported formats: ts.`);
           }
           const report = await run(name, {
             config: opts.config,
@@ -123,11 +129,13 @@ export function routesCommand(deps: RoutesCommandDeps = {}): Command {
             cwd: deps.cwd,
           });
           console.log(
-            opts.openapi
-              ? JSON.stringify(createOpenApiDocument(report), null, 2)
-              : opts.json
-                ? JSON.stringify(report, null, 2)
-                : formatRoutesReport(report),
+            opts.client === "ts"
+              ? createTypeScriptClient(report)
+              : opts.openapi
+                ? JSON.stringify(createOpenApiDocument(report), null, 2)
+                : opts.json
+                  ? JSON.stringify(report, null, 2)
+                  : formatRoutesReport(report),
           );
           exit(0);
         } catch (err) {
