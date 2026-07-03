@@ -12,6 +12,7 @@
  */
 
 import type { Augment, AugmentHttpRoute } from "../types";
+import { validateAuthorizationRequirements } from "../authz/delegated-authorization";
 import { parseRoutePattern, routePatternsOverlap } from "./route-pattern";
 
 /**
@@ -117,6 +118,12 @@ export function collectAugmentRoutes(augments: readonly Augment[]): CollectAugme
         continue;
       }
 
+      const authorizationError = validateRouteAuthorizationRequirements(aug.name, r);
+      if (authorizationError) {
+        errors.push(authorizationError);
+        continue;
+      }
+
       // Cross-augment collision (same method + same path)
       const key = `${r.method} ${r.path}`;
       const firstAug = seen.get(key);
@@ -149,6 +156,15 @@ export function collectAugmentRoutes(augments: readonly Augment[]): CollectAugme
     routes: Object.freeze(routes) as readonly CollectedRoute[],
     errors: Object.freeze(errors) as readonly string[],
   };
+}
+
+function validateRouteAuthorizationRequirements(
+  augmentName: string,
+  route: AugmentHttpRoute,
+): string | undefined {
+  const error = validateAuthorizationRequirements(route.requires);
+  if (!error) return undefined;
+  return `Augment "${augmentName}" registered HTTP route ${route.method} "${route.path}" with invalid authorization requirements — ${error}.`;
 }
 
 function validateRoutePolicy(augmentName: string, route: AugmentHttpRoute): string | undefined {

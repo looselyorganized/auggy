@@ -877,6 +877,12 @@ export interface AugmentHttpRoute {
    */
   responseJsonSchema?: AugmentHttpRouteResponseJsonSchema;
   /**
+   * Delegated app authorization requirements. These are satisfied only by
+   * verified external auth claims (`scopes` / `grants`) on recognized visitor
+   * context; Auggy does not infer app permissions from roles.
+   */
+  requires?: AuthorizationRequirement | readonly AuthorizationRequirement[];
+  /**
    * The handler. Receives the raw Request and an options bag carrying an
    * AbortSignal that fires on timeout. Handlers SHOULD listen for the
    * signal and short-circuit side-effecting work to avoid duplicate effects

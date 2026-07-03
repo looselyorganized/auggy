@@ -2884,6 +2884,161 @@ describe("webTransport augment-registered routes", () => {
     }
   });
 
+  it("auth: visitor.required enforces delegated scope requirements before handlers", async () => {
+    const model = createMockModel();
+    const port = 19460;
+    const now = Date.now();
+    let handlerCalls = 0;
+    const scopedAssertion = createExternalAuthAssertion({
+      secret: "app-auth-secret",
+      audience: "storefront-agent",
+      provider: "supabase",
+      subject: "user_123",
+      now,
+      ttlSeconds: 60,
+      scopes: ["orders.read"],
+    });
+    const unscopedAssertion = createExternalAuthAssertion({
+      secret: "app-auth-secret",
+      audience: "storefront-agent",
+      provider: "supabase",
+      subject: "user_123",
+      now,
+      ttlSeconds: 60,
+    });
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: "test-token" },
+      externalAuth: {
+        secret: "app-auth-secret",
+        audience: "storefront-agent",
+        allowedProviders: ["supabase"],
+        maxTtlSeconds: 60,
+      },
+    });
+    const fixture: Augment = {
+      name: "authorized-routes",
+      httpRoutes: [
+        {
+          method: "GET",
+          path: "/orders",
+          auth: "visitor.required",
+          requires: { scope: "orders.read" },
+          handler: async () => {
+            handlerCalls += 1;
+            return json({ ok: true });
+          },
+        },
+      ],
+    };
+    const agent = defineAgent({ name: "test", model: "mock", augments: [fixture, aug] }, model);
+    await agent.start();
+    try {
+      const denied = await fetch(`http://localhost:${port}/orders`, {
+        headers: { "x-auggy-auth-assertion": unscopedAssertion },
+      });
+      expect(denied.status).toBe(403);
+      expect(await denied.json()).toEqual({
+        error: "forbidden",
+        reason: "authorization-scope-missing",
+      });
+      expect(handlerCalls).toBe(0);
+
+      const allowed = await fetch(`http://localhost:${port}/orders`, {
+        headers: { "x-auggy-auth-assertion": scopedAssertion },
+      });
+      expect(allowed.status).toBe(200);
+      expect(await allowed.json()).toEqual({ ok: true });
+      expect(handlerCalls).toBe(1);
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("auth: visitor.required enforces delegated resource grants before handlers", async () => {
+    const model = createMockModel();
+    const port = 19461;
+    const now = Date.now();
+    let handlerCalls = 0;
+    const allowedAssertion = createExternalAuthAssertion({
+      secret: "app-auth-secret",
+      audience: "storefront-agent",
+      provider: "supabase",
+      subject: "user_123",
+      now,
+      ttlSeconds: 60,
+      grants: [
+        {
+          action: "refund.issue",
+          resource: "order_123",
+          constraints: { maxAmountCents: 5000, currency: "USD" },
+        },
+      ],
+    });
+    const wrongResourceAssertion = createExternalAuthAssertion({
+      secret: "app-auth-secret",
+      audience: "storefront-agent",
+      provider: "supabase",
+      subject: "user_123",
+      now,
+      ttlSeconds: 60,
+      grants: [{ action: "refund.issue", resource: "order_999" }],
+    });
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: "test-token" },
+      externalAuth: {
+        secret: "app-auth-secret",
+        audience: "storefront-agent",
+        allowedProviders: ["supabase"],
+        maxTtlSeconds: 60,
+      },
+    });
+    const fixture: Augment = {
+      name: "authorized-routes",
+      httpRoutes: [
+        {
+          method: "POST",
+          path: "/orders/:id/refund",
+          auth: "visitor.required",
+          requires: {
+            action: "refund.issue",
+            resource: { param: "id" },
+            constraints: { maxAmountCents: 5000 },
+          },
+          handler: async () => {
+            handlerCalls += 1;
+            return json({ ok: true });
+          },
+        },
+      ],
+    };
+    const agent = defineAgent({ name: "test", model: "mock", augments: [fixture, aug] }, model);
+    await agent.start();
+    try {
+      const denied = await fetch(`http://localhost:${port}/orders/order_123/refund`, {
+        method: "POST",
+        headers: { "x-auggy-auth-assertion": wrongResourceAssertion },
+      });
+      expect(denied.status).toBe(403);
+      expect(await denied.json()).toEqual({
+        error: "forbidden",
+        reason: "authorization-grant-missing",
+      });
+      expect(handlerCalls).toBe(0);
+
+      const allowed = await fetch(`http://localhost:${port}/orders/order_123/refund`, {
+        method: "POST",
+        headers: { "x-auggy-auth-assertion": allowedAssertion },
+      });
+      expect(allowed.status).toBe(200);
+      expect(await allowed.json()).toEqual({ ok: true });
+      expect(handlerCalls).toBe(1);
+    } finally {
+      await agent.stop();
+    }
+  });
+
   it("auth: visitor.required can fall back from an invalid visitor token to external auth", async () => {
     const model = createMockModel();
     const port = 19309;

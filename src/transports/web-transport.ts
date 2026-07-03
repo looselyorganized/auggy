@@ -33,6 +33,7 @@ import {
   verifyExternalAuthAssertion,
   type ExternalAuthPrincipalOptions,
 } from "../auth/external-auth";
+import { evaluateDelegatedAuthorization } from "../authz/delegated-authorization";
 import { validateRouteWebhookPolicyConfig, verifyRouteWebhookPolicy } from "./webhook-policy";
 import { withTimeout, TimeoutError } from "../kernel/timeout";
 import { matchRoutePath, parseRoutePattern } from "../kernel/route-pattern";
@@ -1838,6 +1839,14 @@ export function webTransport(opts: WebTransportOptions): Augment {
             const { route: augmentRoute, params } = augmentRouteMatch;
             const routeAuth = await authorizeAugmentRoute(req, augmentRoute.auth);
             if (!routeAuth.ok) return routeAuth.response;
+
+            const authorization = evaluateDelegatedAuthorization(augmentRoute.requires, {
+              auth: routeAuth.context,
+              params,
+            });
+            if (!authorization.ok) {
+              return json({ error: "forbidden", reason: authorization.reason }, 403);
+            }
 
             // Per-route rate limit runs before body buffering so rejected public
             // POSTs do not force reads up to maxBodyBytes before receiving 429.

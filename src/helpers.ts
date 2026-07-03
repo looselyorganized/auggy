@@ -8,6 +8,7 @@ import type {
   AugmentHttpRouteResponseJsonSchema,
   AugmentHttpRouteWebhookProvider,
   AugmentHttpRouteWebhookSignaturePolicy,
+  AuthorizationRequirement,
   HttpMethod,
   RouteAuthContext,
   RouteWebhookContext,
@@ -77,6 +78,7 @@ interface RouteOptionsBase {
   maxBodyBytes?: number;
   rateLimit?: RouteRateLimit;
   policy?: AugmentHttpRoutePolicy;
+  requires?: AuthorizationRequirement | readonly AuthorizationRequirement[];
 }
 
 export interface DefineGetRouteOptions<
@@ -148,6 +150,7 @@ function routeBase(
     ...(opts.maxBodyBytes !== undefined ? { maxBodyBytes: opts.maxBodyBytes } : {}),
     ...(opts.rateLimit ? { rateLimit: opts.rateLimit } : {}),
     ...(opts.policy ? { policy: opts.policy } : {}),
+    ...(opts.requires !== undefined ? { requires: opts.requires } : {}),
     ...(requestJsonSchema ? { requestJsonSchema } : {}),
     ...(responseJsonSchema ? { responseJsonSchema } : {}),
   };

@@ -171,6 +171,46 @@ describe("collectAugmentRoutes", () => {
     });
   });
 
+  test("allows delegated authorization route requirements", () => {
+    const result = collectAugmentRoutes([
+      aug("orders", [
+        {
+          ...route("POST", "/orders/:id/refund", "visitor.required"),
+          requires: [
+            { scope: "orders.write" },
+            { action: "refund.issue", resource: { param: "id" } },
+          ],
+        },
+      ]),
+    ]);
+
+    expect(result.errors).toEqual([]);
+    expect(result.routes[0]?.requires).toEqual([
+      { scope: "orders.write" },
+      { action: "refund.issue", resource: { param: "id" } },
+    ]);
+  });
+
+  test("rejects routes with invalid delegated authorization requirements", () => {
+    const r = (path: string, requires: unknown): AugmentHttpRoute => ({
+      ...route("POST", path, "visitor.required"),
+      requires: requires as AugmentHttpRoute["requires"],
+    });
+    const result = collectAugmentRoutes([
+      aug("a", [r("/a", [])]),
+      aug("b", [r("/b", { scope: "" })]),
+      aug("c", [r("/c", { action: "" })]),
+      aug("d", [r("/d", { scope: "orders.read", action: "orders.write" })]),
+      aug("e", [r("/e", { action: "refund.issue", resource: { param: "" } })]),
+      aug("f", [r("/f", { action: "refund.issue", constraints: "broad" })]),
+    ]);
+
+    expect(result.errors).toHaveLength(6);
+    for (const e of result.errors) {
+      expect(e).toContain("invalid authorization requirements");
+    }
+  });
+
   test("rejects routes with invalid policy values", () => {
     const r = (path: string, policy: unknown): AugmentHttpRoute => ({
       ...route("POST", path, "none"),

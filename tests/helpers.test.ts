@@ -322,6 +322,19 @@ describe("defineRoute", () => {
     });
   });
 
+  it("attaches delegated authorization requirements to helper routes", () => {
+    const route = defineRoute.post("/orders/:id/refund", {
+      auth: "visitor.required",
+      requires: { action: "refund.issue", resource: { param: "id" } },
+      handler: () => json({ ok: true }),
+    });
+
+    expect(route.requires).toEqual({
+      action: "refund.issue",
+      resource: { param: "id" },
+    });
+  });
+
   it("creates a POST route that validates query params and JSON body", async () => {
     const route = defineRoute.post("/leads/create/:source", {
       auth: "none",
