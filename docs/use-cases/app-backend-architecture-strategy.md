@@ -196,6 +196,14 @@ Start with structured route policies:
 
 Augment-local middleware can come later if real use cases require it. The initial product should make common policy visible and inspectable.
 
+Webhook signature verification should be the first policy after auth modes, but
+it should not become another peer identity. A Stripe or GitHub webhook is a
+verified provider event, not a creator, visitor, or admitted agent. The route
+layer needs raw-body access, provider-specific signature helpers, manifest
+metadata, and a verified event object for the handler. It should not expose
+provider secrets to the model or normalize provider events into normal user
+claims unless an augment explicitly links the event to a local domain record.
+
 ### Shared domain functions between routes and tools
 
 This is the most important DX pattern.
