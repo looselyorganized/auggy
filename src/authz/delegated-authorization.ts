@@ -2,17 +2,16 @@ import type {
   AuthorizationConstraintValue,
   AuthorizationConstraints,
   AuthorizationGrant,
+  DelegatedAuthorizationDeniedAuditEvent,
+  DelegatedAuthorizationDeniedAuditTarget,
+  DelegatedAuthorizationFailureReason,
   AuthorizationRequirement,
   AuthorizationResourceBinding,
   RouteAuthContext,
   RouteExternalAuthClaims,
 } from "../types";
 
-export type DelegatedAuthorizationFailureReason =
-  | "authorization-claims-required"
-  | "authorization-scope-missing"
-  | "authorization-grant-missing"
-  | "authorization-resource-unresolved";
+export type { DelegatedAuthorizationFailureReason } from "../types";
 
 export type DelegatedAuthorizationDecision =
   | { ok: true }
@@ -37,6 +36,12 @@ export interface DelegatedAuthorizationContext {
   auth?: RouteAuthContext | null;
   params?: Record<string, string>;
   input?: unknown;
+}
+
+export interface DelegatedAuthorizationDeniedAuditEventOptions {
+  target: DelegatedAuthorizationDeniedAuditTarget;
+  decision: Extract<DelegatedAuthorizationDecision, { ok: false }>;
+  auth?: RouteAuthContext | null;
 }
 
 export interface ValidateAuthorizationRequirementsOptions {
@@ -101,6 +106,26 @@ export function delegatedAuthorizationForbiddenErrorBody(
   reason: DelegatedAuthorizationFailureReason,
 ): DelegatedAuthorizationForbiddenErrorBody {
   return { error: "forbidden", reason };
+}
+
+export function delegatedAuthorizationDeniedAuditEvent(
+  opts: DelegatedAuthorizationDeniedAuditEventOptions,
+): DelegatedAuthorizationDeniedAuditEvent {
+  const claims = externalAuthClaims(opts.auth);
+  return {
+    kind: "delegated_authorization_denied",
+    reason: opts.decision.reason,
+    requirement: opts.decision.requirement,
+    target: opts.target,
+    ...(claims
+      ? {
+          ...(claims.keyId !== undefined ? { keyId: claims.keyId } : {}),
+          provider: claims.provider,
+          subject: claims.subject,
+          ...(claims.orgId !== undefined ? { orgId: claims.orgId } : {}),
+        }
+      : {}),
+  };
 }
 
 export function validateAuthorizationRequirements(

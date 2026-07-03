@@ -238,6 +238,9 @@ export function translateKernelEvent(event: KernelEvent): AGUIEvent[] {
       // produces the terminal RUN_FINISHED. Emitting one here would cause
       // clients to see two terminal events for a single failing turn.
       return [runError({ message: event.message, code: event.source })];
+
+    case "delegated_authorization_denied":
+      return [];
   }
 }
 
