@@ -126,12 +126,27 @@ function clientFixtureReport(): ClientRoutesReport {
   return {
     agent: { name: "fixtures", configPath: "/tmp/fixtures/agent.yaml" },
     summary: {
-      totalRoutes: 5,
-      publicRoutes: 3,
+      totalRoutes: 7,
+      publicRoutes: 5,
       privateRoutes: 2,
-      publicRoutePaths: ["GET /services", "GET /services/:serviceId", "POST /profile"],
+      publicRoutePaths: [
+        "GET /health",
+        "GET /services",
+        "GET /search",
+        "GET /services/:serviceId",
+        "POST /profile",
+      ],
     },
     routes: [
+      {
+        method: "GET",
+        path: "/health",
+        augmentName: "health",
+        auth: "none",
+        params: [],
+        public: true,
+        security: "public",
+      },
       {
         method: "GET",
         path: "/services",
@@ -146,6 +161,24 @@ function clientFixtureReport(): ClientRoutesReport {
             properties: {
               category: { type: "string" },
             },
+          },
+        },
+      },
+      {
+        method: "GET",
+        path: "/search",
+        augmentName: "catalog",
+        auth: "none",
+        params: [],
+        public: true,
+        security: "public",
+        requestJsonSchema: {
+          query: {
+            type: "object",
+            properties: {
+              q: { type: "string" },
+            },
+            required: ["q"],
           },
         },
       },
@@ -307,6 +340,7 @@ describe("createTypeScriptClient", () => {
     expect(source).toContain(
       "| { ok: false; status: number; data: unknown; response: Response; visitorToken?: string };",
     );
+    expect(source).toContain(": {} extends TInput");
     expect(source).toContain("export interface AuggyGetInputs");
     expect(source).toContain(
       '"/services/:serviceId": { params: { serviceId: string; }; query: { need: string; tags?: Array<string>; urgent?: boolean; }; };',
@@ -485,7 +519,12 @@ describe("createTypeScriptClient", () => {
 
         api.get("/me");
         api.get("/services", {});
+        api.get("/health");
+        api.get("/health", { headers: { "x-health": "1" } });
+        api.get("/services");
         api.get("/services", { query: { category: "hair" } });
+        api.get("/services", { headers: { "x-mode": "options-only" } });
+        api.get("/search", { query: { q: "hair" } });
         api.get("/services/:serviceId", {
           params: { serviceId: "svc_123" },
           query: { need: "trim", tags: ["dry"] },
@@ -515,10 +554,22 @@ describe("createTypeScriptClient", () => {
 
         api.post("/profile", { body: { displayName: "Alice" } });
 
+        // @ts-expect-error no-input routes do not accept route input.
+        api.get("/health", { query: { category: "hair" } });
+        // @ts-expect-error required query input cannot be omitted.
+        api.get("/search");
+        // @ts-expect-error required query routes cannot treat options as input.
+        api.get("/search", { headers: { "x-test": "1" } });
+        // @ts-expect-error body input cannot be omitted.
+        api.post("/profile");
+        // @ts-expect-error body routes cannot treat options as input.
+        api.post("/profile", { headers: { "x-test": "1" } });
         // @ts-expect-error browser target omits bearer routes.
         api.post("/admin/reindex", { body: { reason: "manual" } });
         // @ts-expect-error required query input cannot be omitted.
         api.get("/services/:serviceId", { params: { serviceId: "svc_123" } });
+        // @ts-expect-error params routes cannot treat options as input.
+        api.get("/services/:serviceId", { headers: { "x-test": "1" } });
         // @ts-expect-error optional query field still has typed values.
         api.get("/services", { query: { category: 123 } });
       `,
@@ -536,7 +587,12 @@ describe("createTypeScriptClient", () => {
           bearerToken: "creator-secret",
         });
 
+        api.get("/health");
+        api.get("/health", { headers: { "x-health": "1" } });
+        api.get("/services");
         api.get("/services", {});
+        api.get("/services", { headers: { "x-mode": "options-only" } });
+        api.get("/search", { query: { q: "hair" } });
         api.get("/services/:serviceId", {
           params: { serviceId: "svc_123" },
           query: { need: "trim" },
@@ -558,6 +614,10 @@ describe("createTypeScriptClient", () => {
 
         api.post("/admin/reindex", { body: { reason: "manual" } });
 
+        // @ts-expect-error required query input cannot be omitted.
+        api.get("/search");
+        // @ts-expect-error body input cannot be omitted.
+        api.post("/admin/reindex");
         // @ts-expect-error server target omits visitor routes.
         api.get("/me");
         // @ts-expect-error server target omits visitor-token POST routes.

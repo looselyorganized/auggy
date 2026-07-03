@@ -44,6 +44,8 @@ export function createTypeScriptClient(
     "}",
     "type AuggyRequestArgs<TInput> = keyof TInput extends never",
     "  ? [options?: AuggyRequestOptions]",
+    "  : {} extends TInput",
+    "    ? [input?: TInput, options?: AuggyRequestOptions] | [options: AuggyRequestOptions]",
     "  : [input: TInput, options?: AuggyRequestOptions];",
     "",
     "export type AuggyClientResult<TData = unknown> =",
