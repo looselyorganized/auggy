@@ -77,7 +77,7 @@ export function createTypeScriptClient(
     'type RouteMethod = "GET" | "POST";',
     `type RouteAuth = ${routeAuthUnion(target)};`,
     "type AuthorizationConstraintValue = string | number | boolean | null | readonly AuthorizationConstraintValue[] | { readonly [key: string]: AuthorizationConstraintValue };",
-    "type AuthorizationResourceBinding = string | { param: string };",
+    "type AuthorizationResourceBinding = string | { param: string } | { input: string };",
     "type RouteAuthorizationRequirement =",
     "  | { scope: string }",
     "  | { action: string; resource?: AuthorizationResourceBinding; constraints?: Readonly<Record<string, AuthorizationConstraintValue>> };",

@@ -864,7 +864,9 @@ export function createTurnLoop(opts: {
 
           consecutiveFailures.delete(call.name);
 
-          const authorizationConfigError = validateAuthorizationRequirements(reg.tool.requires);
+          const authorizationConfigError = validateAuthorizationRequirements(reg.tool.requires, {
+            binding: "tool",
+          });
           if (authorizationConfigError) {
             entries.push({
               type: "error",
@@ -876,6 +878,7 @@ export function createTurnLoop(opts: {
 
           const authorization = evaluateDelegatedAuthorization(reg.tool.requires, {
             auth: trigger.auth,
+            input: validation.data,
           });
           if (!authorization.ok) {
             entries.push({

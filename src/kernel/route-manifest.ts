@@ -100,6 +100,7 @@ function freezeResource(
   resource: Exclude<Extract<AuthorizationRequirement, { action: string }>["resource"], undefined>,
 ): Exclude<Extract<AuthorizationRequirement, { action: string }>["resource"], undefined> {
   if (typeof resource === "string") return resource;
+  if ("input" in resource) return Object.freeze({ input: resource.input });
   return Object.freeze({ param: resource.param });
 }
 

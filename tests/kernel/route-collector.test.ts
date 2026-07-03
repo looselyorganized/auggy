@@ -203,12 +203,14 @@ describe("collectAugmentRoutes", () => {
       aug("d", [r("/d", { scope: "orders.read", action: "orders.write" })]),
       aug("e", [r("/e", { action: "refund.issue", resource: { param: "" } })]),
       aug("f", [r("/f", { action: "refund.issue", constraints: "broad" })]),
+      aug("g", [r("/g", { action: "refund.issue", resource: { input: "orderId" } })]),
     ]);
 
-    expect(result.errors).toHaveLength(6);
+    expect(result.errors).toHaveLength(7);
     for (const e of result.errors) {
       expect(e).toContain("invalid authorization requirements");
     }
+    expect(result.errors.join("\n")).toContain("non-empty string or { param }");
   });
 
   test("rejects routes with invalid policy values", () => {

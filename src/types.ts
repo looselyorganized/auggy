@@ -719,6 +719,10 @@ export type AuthorizationResourceBinding =
   | {
       /** Bind the required resource to a path parameter such as `/orders/:id`. */
       param: string;
+    }
+  | {
+      /** Bind the required resource to a validated tool input field. */
+      input: string;
     };
 
 export type AuthorizationRequirement =

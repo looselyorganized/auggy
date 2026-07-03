@@ -25,6 +25,11 @@ export type DelegatedAuthorizationDecision =
 export interface DelegatedAuthorizationContext {
   auth?: RouteAuthContext | null;
   params?: Record<string, string>;
+  input?: unknown;
+}
+
+export interface ValidateAuthorizationRequirementsOptions {
+  binding?: "route" | "tool" | "any";
 }
 
 export function normalizeAuthorizationRequirements(
@@ -58,7 +63,10 @@ export function evaluateDelegatedAuthorization(
       continue;
     }
 
-    const resource = resolveAuthorizationResource(requirement.resource, context.params);
+    const resource = resolveAuthorizationResource(requirement.resource, {
+      input: context.input,
+      params: context.params,
+    });
     if (!resource.ok) {
       return { ok: false, reason: "authorization-resource-unresolved", requirement };
     }
@@ -74,13 +82,16 @@ export function evaluateDelegatedAuthorization(
   return { ok: true };
 }
 
-export function validateAuthorizationRequirements(value: unknown): string | undefined {
+export function validateAuthorizationRequirements(
+  value: unknown,
+  opts: ValidateAuthorizationRequirementsOptions = {},
+): string | undefined {
   if (value === undefined) return undefined;
   const requirements = Array.isArray(value) ? value : [value];
   if (requirements.length === 0) return "requires must not be an empty array";
 
   for (const requirement of requirements) {
-    const error = validateAuthorizationRequirement(requirement);
+    const error = validateAuthorizationRequirement(requirement, opts);
     if (error) return error;
   }
   return undefined;
@@ -106,13 +117,22 @@ function grantSatisfiesRequirement(
 
 function resolveAuthorizationResource(
   binding: AuthorizationResourceBinding | undefined,
-  params: Record<string, string> | undefined,
+  context: Pick<DelegatedAuthorizationContext, "input" | "params">,
 ): { ok: true; value?: string } | { ok: false } {
   if (binding === undefined) return { ok: true };
   if (typeof binding === "string") return { ok: true, value: binding };
-  const value = params?.[binding.param];
-  if (!value) return { ok: false };
+  const value =
+    "param" in binding
+      ? context.params?.[binding.param]
+      : inputResource(context.input, binding.input);
+  if (value === undefined || value.length === 0) return { ok: false };
   return { ok: true, value };
+}
+
+function inputResource(input: unknown, key: string): string | undefined {
+  if (!isRecord(input)) return undefined;
+  const value = input[key];
+  return typeof value === "string" ? value : undefined;
 }
 
 function constraintsSatisfy(
@@ -147,7 +167,10 @@ function authorizationConstraintValueEqual(
   return left === right;
 }
 
-function validateAuthorizationRequirement(value: unknown): string | undefined {
+function validateAuthorizationRequirement(
+  value: unknown,
+  opts: ValidateAuthorizationRequirementsOptions,
+): string | undefined {
   if (!isRecord(value)) return "each authorization requirement must be an object";
   const hasScope = Object.hasOwn(value, "scope");
   const hasAction = Object.hasOwn(value, "action");
@@ -164,8 +187,17 @@ function validateAuthorizationRequirement(value: unknown): string | undefined {
   if (typeof value.action !== "string" || value.action.length === 0) {
     return "authorization grant requirement must use a non-empty action string";
   }
-  if (value.resource !== undefined && !isAuthorizationResourceBinding(value.resource)) {
-    return "authorization grant requirement resource must be a non-empty string or { param }";
+  if (
+    value.resource !== undefined &&
+    !isAuthorizationResourceBinding(value.resource, opts.binding ?? "any")
+  ) {
+    const allowed =
+      opts.binding === "route"
+        ? "a non-empty string or { param }"
+        : opts.binding === "tool"
+          ? "a non-empty string or { input }"
+          : "a non-empty string, { param }, or { input }";
+    return `authorization grant requirement resource must be ${allowed}`;
   }
   if (value.constraints !== undefined && !isAuthorizationConstraints(value.constraints)) {
     return "authorization grant requirement constraints must be a JSON object";
@@ -173,10 +205,21 @@ function validateAuthorizationRequirement(value: unknown): string | undefined {
   return undefined;
 }
 
-function isAuthorizationResourceBinding(value: unknown): value is AuthorizationResourceBinding {
+function isAuthorizationResourceBinding(
+  value: unknown,
+  binding: ValidateAuthorizationRequirementsOptions["binding"],
+): value is AuthorizationResourceBinding {
   if (typeof value === "string") return value.length > 0;
   if (!isRecord(value)) return false;
-  return typeof value.param === "string" && value.param.length > 0;
+  const hasParam = Object.hasOwn(value, "param");
+  const hasInput = Object.hasOwn(value, "input");
+  if (hasParam === hasInput) return false;
+  if (hasParam) {
+    if (binding === "tool") return false;
+    return typeof value.param === "string" && value.param.length > 0;
+  }
+  if (binding === "route") return false;
+  return typeof value.input === "string" && value.input.length > 0;
 }
 
 function isAuthorizationConstraints(value: unknown): value is AuthorizationConstraints {

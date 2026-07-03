@@ -4,7 +4,14 @@ import { createTurnLoop } from "@/kernel/turn-loop";
 import { createMockModel } from "@tests/fixtures/mock-model";
 import { createTokenizer } from "@/tokenizer";
 import { extractText } from "@/parts";
-import type { Augment, TurnTrigger, PeerIdentity, InboundMessage, RouteAuthContext } from "@/types";
+import type {
+  Augment,
+  AuthorizationGrant,
+  TurnTrigger,
+  PeerIdentity,
+  InboundMessage,
+  RouteAuthContext,
+} from "@/types";
 
 function makeTrigger(text: string, auth?: RouteAuthContext): TurnTrigger {
   const peer: PeerIdentity = {
@@ -230,6 +237,149 @@ describe("TurnLoop", () => {
     expect(result.toolCalls).toHaveLength(0);
     expect(model.calls[1]!.messages.map((m) => m.content).join("\n")).toContain(
       'Tool "read_orders" has invalid authorization requirements',
+    );
+  });
+
+  it("resolves protected tool grant resources from validated input", async () => {
+    const model = createMockModel();
+    model.pushResponse({
+      content: "",
+      toolCalls: [{ name: "refund_order", arguments: { orderId: "ord_123" } }],
+      finishReason: "tool_use",
+    });
+    model.pushResponse({ content: "refunded", finishReason: "end_turn" });
+
+    const ordersAugment: Augment = {
+      name: "orders",
+      tools: [
+        {
+          name: "refund_order",
+          description: "Refund order",
+          category: "meta",
+          input: z.object({ orderId: z.string() }),
+          requires: { action: "orders.refund", resource: { input: "orderId" } },
+          execute: async ({ orderId }) => `refunded-${orderId}`,
+        },
+      ],
+    };
+    const loop = createTurnLoop({
+      augments: [ordersAugment],
+      model,
+      tokenizer: createTokenizer(),
+      config: { name: "test", model: "mock", augments: [] },
+    });
+
+    const result = await loop.executeTurn(
+      makeTrigger(
+        "Refund my order",
+        recognizedVisitorAuth({
+          grants: [{ action: "orders.refund", resource: "ord_123" }],
+        }),
+      ),
+      "thread-authz-input-1",
+    );
+
+    expect(result.toolCalls).toHaveLength(1);
+    expect(result.toolCalls[0]!.output).toBe("refunded-ord_123");
+  });
+
+  it("denies protected tools when input resource fields are not top-level strings", async () => {
+    const model = createMockModel();
+    model.pushResponse({
+      content: "",
+      toolCalls: [{ name: "refund_order", arguments: { order: { id: "ord_123" } } }],
+      finishReason: "tool_use",
+    });
+    model.pushResponse({ content: "not authorized", finishReason: "end_turn" });
+
+    let executeCalls = 0;
+    const ordersAugment: Augment = {
+      name: "orders",
+      tools: [
+        {
+          name: "refund_order",
+          description: "Refund order",
+          category: "meta",
+          input: z.object({ order: z.object({ id: z.string() }) }),
+          requires: { action: "orders.refund", resource: { input: "order.id" } },
+          execute: async () => {
+            executeCalls += 1;
+            return "refunded";
+          },
+        },
+      ],
+    };
+    const loop = createTurnLoop({
+      augments: [ordersAugment],
+      model,
+      tokenizer: createTokenizer(),
+      config: { name: "test", model: "mock", augments: [] },
+    });
+
+    const result = await loop.executeTurn(
+      makeTrigger(
+        "Refund my order",
+        recognizedVisitorAuth({
+          grants: [{ action: "orders.refund", resource: "ord_123" }],
+        }),
+      ),
+      "thread-authz-input-2",
+    );
+
+    expect(executeCalls).toBe(0);
+    expect(result.toolCalls).toHaveLength(0);
+    expect(model.calls[1]!.messages.map((m) => m.content).join("\n")).toContain(
+      'Tool "refund_order" authorization denied: authorization-resource-unresolved',
+    );
+  });
+
+  it("rejects path parameter bindings on tool requirements", async () => {
+    const model = createMockModel();
+    model.pushResponse({
+      content: "",
+      toolCalls: [{ name: "refund_order", arguments: { orderId: "ord_123" } }],
+      finishReason: "tool_use",
+    });
+    model.pushResponse({ content: "not authorized", finishReason: "end_turn" });
+
+    let executeCalls = 0;
+    const ordersAugment: Augment = {
+      name: "orders",
+      tools: [
+        {
+          name: "refund_order",
+          description: "Refund order",
+          category: "meta",
+          input: z.object({ orderId: z.string() }),
+          requires: { action: "orders.refund", resource: { param: "id" } } as never,
+          execute: async () => {
+            executeCalls += 1;
+            return "refunded";
+          },
+        },
+      ],
+    };
+    const loop = createTurnLoop({
+      augments: [ordersAugment],
+      model,
+      tokenizer: createTokenizer(),
+      config: { name: "test", model: "mock", augments: [] },
+    });
+
+    const result = await loop.executeTurn(
+      makeTrigger(
+        "Refund my order",
+        recognizedVisitorAuth({
+          grants: [{ action: "orders.refund", resource: "ord_123" }],
+        }),
+      ),
+      "thread-authz-input-3",
+    );
+
+    expect(executeCalls).toBe(0);
+    expect(result.toolCalls).toHaveLength(0);
+    expect(model.calls[1]!.messages.map((m) => m.content).join("\n")).toContain(
+      'Tool "refund_order" has invalid authorization requirements',
     );
   });
 
@@ -511,7 +661,9 @@ describe("TurnLoop", () => {
   });
 });
 
-function recognizedVisitorAuth(opts: { scopes?: readonly string[] } = {}): RouteAuthContext {
+function recognizedVisitorAuth(
+  opts: { scopes?: readonly string[]; grants?: readonly AuthorizationGrant[] } = {},
+): RouteAuthContext {
   return {
     mode: "visitor",
     state: "recognized",
@@ -523,6 +675,7 @@ function recognizedVisitorAuth(opts: { scopes?: readonly string[] } = {}): Route
       provider: "supabase",
       subject: "user_123",
       ...(opts.scopes !== undefined ? { scopes: opts.scopes } : {}),
+      ...(opts.grants !== undefined ? { grants: opts.grants } : {}),
     },
     principal: {
       kind: "visitor",
@@ -534,6 +687,7 @@ function recognizedVisitorAuth(opts: { scopes?: readonly string[] } = {}): Route
         provider: "supabase",
         subject: "user_123",
         ...(opts.scopes !== undefined ? { scopes: opts.scopes } : {}),
+        ...(opts.grants !== undefined ? { grants: opts.grants } : {}),
       },
     },
   };

@@ -162,7 +162,7 @@ function validateRouteAuthorizationRequirements(
   augmentName: string,
   route: AugmentHttpRoute,
 ): string | undefined {
-  const error = validateAuthorizationRequirements(route.requires);
+  const error = validateAuthorizationRequirements(route.requires, { binding: "route" });
   if (!error) return undefined;
   return `Augment "${augmentName}" registered HTTP route ${route.method} "${route.path}" with invalid authorization requirements — ${error}.`;
 }

@@ -546,6 +546,9 @@ describe("createTypeScriptClient", () => {
     expect(source).toContain(": {} extends TInput");
     expect(source).toContain("export interface AuggyGetInputs");
     expect(source).toContain(
+      "type AuthorizationResourceBinding = string | { param: string } | { input: string };",
+    );
+    expect(source).toContain(
       '"/services/:serviceId": { params: { serviceId: string; }; query: { need: string; tags?: Array<string>; urgent?: boolean; }; };',
     );
     expect(source).toContain("export interface AuggyGetOutputs");
