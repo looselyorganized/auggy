@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { stringify } from "yaml";
@@ -432,6 +432,51 @@ describe("routesCommand", () => {
     expect(source).toContain('"/services/:serviceId": { params: { serviceId: string; }; };');
   });
 
+  test("writes TypeScript client output to a file", async () => {
+    const root = tempRoot();
+    const out = join(root, "generated", "client.ts");
+    const exit = mock((_code: number) => {});
+    const logs: string[] = [];
+    const origLog = console.log;
+    console.log = (msg: unknown) => {
+      logs.push(String(msg));
+    };
+
+    try {
+      const cmd = routesCommand({
+        exit,
+        runRoutes: async () => ({
+          agent: { name: "zip", configPath: "/tmp/zip/agent.yaml" },
+          summary: {
+            totalRoutes: 1,
+            publicRoutes: 1,
+            privateRoutes: 0,
+            publicRoutePaths: ["GET /services/:serviceId"],
+          },
+          routes: [
+            {
+              method: "GET",
+              path: "/services/:serviceId",
+              augmentName: "concierge-services",
+              auth: "none",
+              params: ["serviceId"],
+              public: true,
+              security: "public",
+            },
+          ],
+        }),
+      });
+
+      await cmd.parseAsync(["zip", "--client", "ts", "--out", out], { from: "user" });
+    } finally {
+      console.log = origLog;
+    }
+
+    expect(exit).toHaveBeenCalledWith(0);
+    expect(logs.join("\n")).toContain(`Wrote TypeScript client to ${out}`);
+    expect(readFileSync(out, "utf8")).toContain("export function createAuggyClient");
+  });
+
   test("rejects conflicting machine-readable output flags", async () => {
     const exit = mock((_code: number) => {});
     const run = mock(async (): Promise<RoutesReport> => {
@@ -453,6 +498,29 @@ describe("routesCommand", () => {
     expect(exit).toHaveBeenCalledWith(1);
     expect(run).not.toHaveBeenCalled();
     expect(errors.join("\n")).toContain("Choose only one of --json, --openapi, or --client.");
+  });
+
+  test("rejects --out without client generation before inspecting routes", async () => {
+    const exit = mock((_code: number) => {});
+    const run = mock(async (): Promise<RoutesReport> => {
+      throw new Error("should not run");
+    });
+    const errors: string[] = [];
+    const origError = console.error;
+    console.error = (msg: unknown) => {
+      errors.push(String(msg));
+    };
+
+    try {
+      const cmd = routesCommand({ exit, runRoutes: run });
+      await cmd.parseAsync(["zip", "--out", "client.ts"], { from: "user" });
+    } finally {
+      console.error = origError;
+    }
+
+    expect(exit).toHaveBeenCalledWith(1);
+    expect(run).not.toHaveBeenCalled();
+    expect(errors.join("\n")).toContain("--out currently requires --client ts.");
   });
 
   test("rejects unsupported client formats before inspecting routes", async () => {

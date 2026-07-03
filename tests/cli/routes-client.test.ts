@@ -1,5 +1,32 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { createTypeScriptClient, type ClientRoutesReport } from "../../src/cli/routes-client";
+
+const roots: string[] = [];
+
+afterEach(() => {
+  for (const root of roots.splice(0)) {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+interface LoadedClient {
+  createAuggyClient(config: Record<string, unknown>): {
+    get(
+      path: string,
+      input: Record<string, unknown>,
+      options?: Record<string, unknown>,
+    ): Promise<{ ok: boolean; status: number; data: unknown; visitorToken?: string }>;
+    post(
+      path: string,
+      input: Record<string, unknown>,
+      options?: Record<string, unknown>,
+    ): Promise<{ ok: boolean; status: number; data: unknown; visitorToken?: string }>;
+  };
+}
 
 function report(): ClientRoutesReport {
   return {
@@ -74,6 +101,15 @@ function report(): ClientRoutesReport {
   };
 }
 
+async function loadGeneratedClient(source: string): Promise<LoadedClient> {
+  const root = mkdtempSync(join(tmpdir(), "routes-client-runtime-test-"));
+  roots.push(root);
+  const file = join(root, "client.mjs");
+  const js = new Bun.Transpiler({ loader: "ts" }).transformSync(source);
+  writeFileSync(file, js);
+  return (await import(pathToFileURL(file).href)) as LoadedClient;
+}
+
 describe("createTypeScriptClient", () => {
   test("generates a self-contained TypeScript client from a route manifest", () => {
     const source = createTypeScriptClient(report());
@@ -110,5 +146,108 @@ describe("createTypeScriptClient", () => {
     expect(source).toContain("export interface AuggyGetInputs {}");
     expect(source).toContain("export interface AuggyPostInputs {}");
     expect(source).toContain("const ROUTES = {\n} as const;");
+  });
+
+  test("generated runtime sends params, query, body, and auth headers", async () => {
+    const mod = await loadGeneratedClient(createTypeScriptClient(report()));
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    const seenVisitorTokens: string[] = [];
+    const fetchImpl = async (url: unknown, init?: RequestInit): Promise<Response> => {
+      calls.push({ url: String(url), init: init ?? {} });
+      return new Response(JSON.stringify({ requestUrl: String(url) }), {
+        status: 201,
+        headers: {
+          "content-type": "application/json",
+          "x-visitor-token": "vis-next",
+        },
+      });
+    };
+
+    const api = mod.createAuggyClient({
+      baseUrl: "https://agent.example",
+      fetch: fetchImpl,
+      bearerToken: () => "creator-secret",
+      visitorToken: "visitor-token",
+      onVisitorToken: (token: string) => seenVisitorTokens.push(token),
+    });
+
+    const getResult = await api.get("/services/:serviceId", {
+      params: { serviceId: "hair cut" },
+      query: { need: "trim", tags: ["wash", "dry"], urgent: false },
+    });
+    const postResult = await api.post("/leads/:leadId/notes", {
+      params: { leadId: "lead 1" },
+      body: { note: "Call back" },
+    });
+    await api.get("/me", {});
+
+    expect(getResult).toMatchObject({ ok: true, status: 201, visitorToken: "vis-next" });
+    expect(postResult.data).toEqual({
+      requestUrl: "https://agent.example/leads/lead%201/notes",
+    });
+    expect(calls[0]?.url).toBe(
+      "https://agent.example/services/hair%20cut?need=trim&tags=wash&tags=dry&urgent=false",
+    );
+    expect(new Headers(calls[0]?.init.headers).get("authorization")).toBeNull();
+    expect(calls[1]?.url).toBe("https://agent.example/leads/lead%201/notes");
+    expect(new Headers(calls[1]?.init.headers).get("authorization")).toBe("Bearer creator-secret");
+    expect(new Headers(calls[1]?.init.headers).get("content-type")).toBe("application/json");
+    expect(calls[1]?.init.body).toBe(JSON.stringify({ note: "Call back" }));
+    expect(new Headers(calls[2]?.init.headers).get("x-visitor-token")).toBe("visitor-token");
+    expect(seenVisitorTokens).toEqual(["vis-next", "vis-next", "vis-next"]);
+  });
+
+  test("generated runtime returns non-2xx results without throwing", async () => {
+    const mod = await loadGeneratedClient(createTypeScriptClient(report()));
+    const api = mod.createAuggyClient({
+      baseUrl: "https://agent.example",
+      fetch: async () =>
+        new Response(JSON.stringify({ error: "invalid_request" }), {
+          status: 422,
+          headers: { "content-type": "application/json" },
+        }),
+    });
+
+    const result = await api.get("/services/:serviceId", {
+      params: { serviceId: "svc" },
+      query: { need: "trim" },
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      status: 422,
+      data: { error: "invalid_request" },
+    });
+  });
+
+  test("generated runtime throws for missing local inputs and malformed JSON", async () => {
+    const mod = await loadGeneratedClient(createTypeScriptClient(report()));
+    const malformedApi = mod.createAuggyClient({
+      baseUrl: "https://agent.example",
+      fetch: async () => new Response("{", { headers: { "content-type": "application/json" } }),
+    });
+    const noBearerApi = mod.createAuggyClient({
+      baseUrl: "https://agent.example",
+      fetch: async () => new Response("{}"),
+    });
+
+    await expect(
+      malformedApi.get("/services/:serviceId", {
+        params: {},
+        query: { need: "trim" },
+      }),
+    ).rejects.toThrow("Missing route param: serviceId");
+    await expect(
+      noBearerApi.post("/leads/:leadId/notes", {
+        params: { leadId: "lead-1" },
+        body: { note: "Call back" },
+      }),
+    ).rejects.toThrow("This Auggy route requires a bearerToken.");
+    await expect(
+      malformedApi.get("/services/:serviceId", {
+        params: { serviceId: "svc" },
+        query: { need: "trim" },
+      }),
+    ).rejects.toThrow();
   });
 });
