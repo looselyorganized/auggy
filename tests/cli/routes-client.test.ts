@@ -153,6 +153,7 @@ function clientFixtureReport(): ClientRoutesReport {
       publicRoutes: 6,
       privateRoutes: 3,
       publicRoutePaths: [
+        "GET /catalog/summary",
         "GET /health",
         "GET /services",
         "GET /search",
@@ -162,6 +163,59 @@ function clientFixtureReport(): ClientRoutesReport {
       ],
     },
     routes: [
+      {
+        method: "GET",
+        path: "/catalog/summary",
+        augmentName: "catalog",
+        auth: "none",
+        params: [],
+        public: true,
+        security: "public",
+        responseJsonSchema: {
+          allOf: [
+            {
+              type: "object",
+              properties: {
+                status: { enum: ["fresh", "stale"] },
+                tags: { type: "array", items: { type: "string" } },
+              },
+              required: ["status", "tags"],
+            },
+            {
+              type: "object",
+              properties: {
+                totals: {
+                  type: "object",
+                  additionalProperties: { type: "integer" },
+                },
+                nextCursor: { type: ["string", "null"] },
+                items: {
+                  type: "array",
+                  items: {
+                    type: "object",
+                    properties: {
+                      id: { type: "string" },
+                      details: {
+                        type: "object",
+                        properties: {
+                          rating: { type: "number" },
+                          labels: {
+                            type: "array",
+                            items: { enum: ["new", "popular"] },
+                          },
+                        },
+                        required: ["rating"],
+                      },
+                    },
+                    required: ["id"],
+                  },
+                },
+              },
+              required: ["totals", "items"],
+            },
+          ],
+        },
+      },
       {
         method: "GET",
         path: "/health",
@@ -803,6 +857,55 @@ describe("createTypeScriptClient", () => {
       clientFixtureReport(),
       "server",
       practicalServerUsageFixture(),
+    );
+  });
+
+  test("typechecks composed response schemas", async () => {
+    await expectGeneratedClientTypechecks(
+      "composed-response-schema-browser",
+      clientFixtureReport(),
+      "browser",
+      `
+        import { createAuggyClient, type AuggyGetResult } from "./client";
+
+        const api = createAuggyClient({ baseUrl: "https://agent.example" });
+
+        async function main() {
+          const summary: AuggyGetResult<"/catalog/summary"> = await api.get("/catalog/summary");
+          // @ts-expect-error typed response data requires ok narrowing.
+          summary.data.status;
+          if (summary.ok) {
+            const status: "fresh" | "stale" = summary.data.status;
+            summary.data.tags[0]?.toUpperCase();
+            const total = summary.data.totals.services;
+            total?.toFixed();
+            summary.data.items[0]?.id.toUpperCase();
+            summary.data.items[0]?.details?.rating.toFixed();
+            const label: "new" | "popular" | undefined =
+              summary.data.items[0]?.details?.labels?.[0];
+            const cursor: string | null | undefined = summary.data.nextCursor;
+            console.log(status, label, cursor);
+
+            // @ts-expect-error response enum values are preserved.
+            const badStatus: "archived" = summary.data.status;
+            // @ts-expect-error dictionary response values are numbers.
+            const badTotal: string = summary.data.totals.services;
+            console.log(badStatus, badTotal);
+          } else {
+            const failedData: unknown = summary.data;
+            console.log(failedData);
+            // @ts-expect-error failed result data is unknown.
+            summary.data.status;
+          }
+        }
+
+        main();
+      `,
+    );
+
+    const source = createTypeScriptClient(clientFixtureReport(), { target: "browser" });
+    expect(source).toContain(
+      '"/catalog/summary": { status: "fresh" | "stale"; tags: Array<string>; } & { totals: Record<string, number>; nextCursor?: string | null; items: Array<{ id: string; details?: { rating: number; labels?: Array<"new" | "popular">; }; }>; };',
     );
   });
 

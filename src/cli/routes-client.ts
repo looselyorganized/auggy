@@ -486,6 +486,11 @@ function schemaToType(schema: unknown): string {
     return union.map((item) => schemaToType(item)).join(" | ");
   }
 
+  const intersection = intersectionSchemas(schema);
+  if (intersection) {
+    return intersection.map((item) => parenthesizeIntersectionType(schemaToType(item))).join(" & ");
+  }
+
   const enumValues = schema.enum;
   if (Array.isArray(enumValues) && enumValues.length > 0) {
     return enumValues.map((value) => literalType(value)).join(" | ");
@@ -543,6 +548,38 @@ function unionSchemas(schema: JsonObject): unknown[] | undefined {
   const oneOf = schema.oneOf;
   if (Array.isArray(oneOf) && oneOf.length > 0) return oneOf;
   return undefined;
+}
+
+function intersectionSchemas(schema: JsonObject): unknown[] | undefined {
+  const allOf = schema.allOf;
+  return Array.isArray(allOf) && allOf.length > 0 ? allOf : undefined;
+}
+
+function parenthesizeIntersectionType(type: string): string {
+  return hasTopLevelUnion(type) ? `(${type})` : type;
+}
+
+function hasTopLevelUnion(type: string): boolean {
+  let depth = 0;
+  let inString = false;
+  for (let i = 0; i < type.length; i++) {
+    const char = type[i];
+    if (char === '"' && type[i - 1] !== "\\") {
+      inString = !inString;
+      continue;
+    }
+    if (inString) continue;
+    if (char === "{" || char === "(" || char === "[" || char === "<") {
+      depth += 1;
+      continue;
+    }
+    if (char === "}" || char === ")" || char === "]" || char === ">") {
+      depth = Math.max(0, depth - 1);
+      continue;
+    }
+    if (depth === 0 && type.slice(i, i + 3) === " | ") return true;
+  }
+  return false;
 }
 
 function literalType(value: unknown): string {
