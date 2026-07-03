@@ -108,6 +108,16 @@ export type {
   ExternalAuthPrincipalOptions,
   VerifyExternalAuthAssertionOptions,
 } from "./auth/external-auth";
+export {
+  delegatedAuthorizationForbiddenErrorBody,
+  visitorAuthRequiredErrorBody,
+} from "./authz/delegated-authorization";
+export type {
+  DelegatedAuthorizationFailureReason,
+  DelegatedAuthorizationForbiddenErrorBody,
+  DelegatedAuthorizationHttpErrorBody,
+  VisitorAuthRequiredErrorBody,
+} from "./authz/delegated-authorization";
 
 // === Helpers ===
 export { defineAugment, defineRoute, defineTool, json, webhook } from "./helpers";

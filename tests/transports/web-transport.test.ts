@@ -3102,6 +3102,172 @@ describe("webTransport augment-registered routes", () => {
     }
   });
 
+  it("auth: visitor.required pins delegated authorization HTTP error bodies", async () => {
+    const model = createMockModel();
+    const port = 19462;
+    const now = Date.now();
+    const signingKey = "visitor-route-secret";
+    const agentBinding = "storefront-agent";
+    const key = await deriveSigningKey(signingKey);
+    const visitorToken = await createVisitorToken(key, agentBinding, 3600, "vis_known");
+    const invalidAssertion = createExternalAuthAssertion({
+      secret: "wrong-app-auth-secret",
+      audience: agentBinding,
+      provider: "supabase",
+      subject: "user_123",
+      now,
+      ttlSeconds: 60,
+    });
+    const unscopedAssertion = createExternalAuthAssertion({
+      secret: "app-auth-secret",
+      audience: agentBinding,
+      provider: "supabase",
+      subject: "user_123",
+      now,
+      ttlSeconds: 60,
+    });
+    const wrongGrantAssertion = createExternalAuthAssertion({
+      secret: "app-auth-secret",
+      audience: agentBinding,
+      provider: "supabase",
+      subject: "user_123",
+      now,
+      ttlSeconds: 60,
+      grants: [{ action: "refund.issue", resource: "order_999" }],
+    });
+    const grantAssertion = createExternalAuthAssertion({
+      secret: "app-auth-secret",
+      audience: agentBinding,
+      provider: "supabase",
+      subject: "user_123",
+      now,
+      ttlSeconds: 60,
+      grants: [{ action: "refund.issue", resource: "order_123" }],
+    });
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: "test-token" },
+      visitorTokens: {
+        enabled: true,
+        signingKey,
+        agentBinding,
+      },
+      externalAuth: {
+        secret: "app-auth-secret",
+        audience: agentBinding,
+        allowedProviders: ["supabase"],
+        maxTtlSeconds: 60,
+      },
+    });
+    let handlerCalls = 0;
+    const fixture: Augment = {
+      name: "authz-contract-routes",
+      httpRoutes: [
+        {
+          method: "GET",
+          path: "/profile",
+          auth: "visitor.required",
+          handler: async () => {
+            handlerCalls += 1;
+            return json({ ok: true });
+          },
+        },
+        {
+          method: "GET",
+          path: "/needs-claims",
+          auth: "visitor.required",
+          requires: { scope: "orders.read" },
+          handler: async () => {
+            handlerCalls += 1;
+            return json({ ok: true });
+          },
+        },
+        {
+          method: "GET",
+          path: "/needs-scope",
+          auth: "visitor.required",
+          requires: { scope: "orders.read" },
+          handler: async () => {
+            handlerCalls += 1;
+            return json({ ok: true });
+          },
+        },
+        {
+          method: "GET",
+          path: "/orders/:id/refund",
+          auth: "visitor.required",
+          requires: { action: "refund.issue", resource: { param: "id" } },
+          handler: async () => {
+            handlerCalls += 1;
+            return json({ ok: true });
+          },
+        },
+        {
+          method: "GET",
+          path: "/broken/:id",
+          auth: "visitor.required",
+          requires: { action: "refund.issue", resource: { param: "missing" } },
+          handler: async () => {
+            handlerCalls += 1;
+            return json({ ok: true });
+          },
+        },
+      ],
+    };
+    const agent = defineAgent({ name: "test", model: "mock", augments: [fixture, aug] }, model);
+    await agent.start();
+    try {
+      const missingCredentials = await fetch(`http://localhost:${port}/profile`);
+      expect(missingCredentials.status).toBe(401);
+      expect(await missingCredentials.json()).toEqual({ error: "visitor-auth-required" });
+
+      const invalidExternalAssertion = await fetch(`http://localhost:${port}/profile`, {
+        headers: { "x-auggy-auth-assertion": invalidAssertion },
+      });
+      expect(invalidExternalAssertion.status).toBe(401);
+      expect(await invalidExternalAssertion.json()).toEqual({ error: "visitor-auth-required" });
+
+      const missingClaims = await fetch(`http://localhost:${port}/needs-claims`, {
+        headers: { "x-visitor-token": visitorToken.token },
+      });
+      expect(missingClaims.status).toBe(403);
+      expect(await missingClaims.json()).toEqual({
+        error: "forbidden",
+        reason: "authorization-claims-required",
+      });
+
+      const missingScope = await fetch(`http://localhost:${port}/needs-scope`, {
+        headers: { "x-auggy-auth-assertion": unscopedAssertion },
+      });
+      expect(missingScope.status).toBe(403);
+      expect(await missingScope.json()).toEqual({
+        error: "forbidden",
+        reason: "authorization-scope-missing",
+      });
+
+      const missingGrant = await fetch(`http://localhost:${port}/orders/order_123/refund`, {
+        headers: { "x-auggy-auth-assertion": wrongGrantAssertion },
+      });
+      expect(missingGrant.status).toBe(403);
+      expect(await missingGrant.json()).toEqual({
+        error: "forbidden",
+        reason: "authorization-grant-missing",
+      });
+
+      const unresolvedResource = await fetch(`http://localhost:${port}/broken/order_123`, {
+        headers: { "x-auggy-auth-assertion": grantAssertion },
+      });
+      expect(unresolvedResource.status).toBe(403);
+      expect(await unresolvedResource.json()).toEqual({
+        error: "forbidden",
+        reason: "authorization-resource-unresolved",
+      });
+      expect(handlerCalls).toBe(0);
+    } finally {
+      await agent.stop();
+    }
+  });
+
   it("auth: visitor.required enforces delegated resource grants before handlers", async () => {
     const model = createMockModel();
     const port = 19461;
