@@ -21,12 +21,12 @@ interface LoadedClient {
   createAuggyClient(config: Record<string, unknown>): {
     get(
       path: string,
-      input: Record<string, unknown>,
+      input?: Record<string, unknown>,
       options?: Record<string, unknown>,
     ): Promise<{ ok: boolean; status: number; data: unknown; visitorToken?: string }>;
     post(
       path: string,
-      input: Record<string, unknown>,
+      input?: Record<string, unknown>,
       options?: Record<string, unknown>,
     ): Promise<{ ok: boolean; status: number; data: unknown; visitorToken?: string }>;
   };
@@ -118,6 +118,7 @@ async function expectGeneratedClientTypechecks(
   name: string,
   clientReport: ClientRoutesReport,
   target?: TypeScriptClientTarget,
+  usageSource?: string,
 ): Promise<void> {
   const root = mkdtempSync(join(tmpdir(), `routes-client-tsc-test-${name}-`));
   roots.push(root);
@@ -125,6 +126,9 @@ async function expectGeneratedClientTypechecks(
   const tsconfigPath = join(root, "tsconfig.json");
 
   writeFileSync(clientPath, createTypeScriptClient(clientReport, { target }));
+  if (usageSource) {
+    writeFileSync(join(root, "usage.ts"), usageSource);
+  }
   writeFileSync(
     tsconfigPath,
     JSON.stringify(
@@ -138,7 +142,7 @@ async function expectGeneratedClientTypechecks(
           noUncheckedIndexedAccess: true,
           skipLibCheck: true,
         },
-        include: ["client.ts"],
+        include: usageSource ? ["client.ts", "usage.ts"] : ["client.ts"],
       },
       null,
       2,
@@ -211,7 +215,7 @@ describe("createTypeScriptClient", () => {
     expect(source).toContain("const ROUTES: Record<string, RouteMeta> = {\n};");
   });
 
-  test("emits clients that typecheck for empty and auth-subset manifests", async () => {
+  test("emits clients that typecheck for empty, auth-subset, and no-input usage", async () => {
     const emptyReport: ClientRoutesReport = {
       agent: { name: "empty", configPath: "/tmp/empty/agent.yaml" },
       summary: {
@@ -269,7 +273,26 @@ describe("createTypeScriptClient", () => {
     await expectGeneratedClientTypechecks("empty-browser", emptyReport, "browser");
     await expectGeneratedClientTypechecks("empty-server", emptyReport, "server");
     await expectGeneratedClientTypechecks("bearer-server", bearerOnlyReport, "server");
-    await expectGeneratedClientTypechecks("visitor-browser", report(), "browser");
+    await expectGeneratedClientTypechecks(
+      "visitor-browser",
+      report(),
+      "browser",
+      `
+        import { createAuggyClient } from "./client";
+
+        const api = createAuggyClient({ baseUrl: "https://agent.example" });
+
+        api.get("/me");
+        api.get("/me", { headers: { "x-test": "1" } });
+        api.get("/services/:serviceId", {
+          params: { serviceId: "svc_123" },
+          query: { need: "trim" },
+        });
+
+        // @ts-expect-error input is required for routes with params/query.
+        api.get("/services/:serviceId");
+      `,
+    );
   });
 
   test("browser generated runtime sends params, query, and visitor auth headers", async () => {
@@ -298,7 +321,8 @@ describe("createTypeScriptClient", () => {
       params: { serviceId: "hair cut" },
       query: { need: "trim", tags: ["wash", "dry"], urgent: false },
     });
-    await api.get("/me", {});
+    await api.get("/me");
+    await api.get("/me", { headers: { "x-test": "1" } });
     await expect(
       api.post("/leads/:leadId/notes", {
         params: { leadId: "lead 1" },
@@ -313,7 +337,9 @@ describe("createTypeScriptClient", () => {
     expect(new Headers(calls[0]?.init.headers).get("authorization")).toBeNull();
     expect(calls[1]?.url).toBe("https://agent.example/me");
     expect(new Headers(calls[1]?.init.headers).get("x-visitor-token")).toBe("visitor-token");
-    expect(seenVisitorTokens).toEqual(["vis-next", "vis-next"]);
+    expect(calls[2]?.url).toBe("https://agent.example/me");
+    expect(new Headers(calls[2]?.init.headers).get("x-test")).toBe("1");
+    expect(seenVisitorTokens).toEqual(["vis-next", "vis-next", "vis-next"]);
   });
 
   test("server generated runtime sends JSON bodies and bearer auth headers", async () => {

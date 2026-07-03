@@ -42,6 +42,9 @@ export function createTypeScriptClient(
     "  signal?: AbortSignal;",
     "  headers?: HeadersInit;",
     "}",
+    "type AuggyRequestArgs<TInput> = keyof TInput extends never",
+    "  ? [options?: AuggyRequestOptions]",
+    "  : [input: TInput, options?: AuggyRequestOptions];",
     "",
     "export interface AuggyClientResult<TData = unknown> {",
     "  ok: boolean;",
@@ -199,16 +202,16 @@ function runtimeSource(target: TypeScriptClientTarget): string {
   return {
     get<Path extends AuggyGetPath>(
       path: Path,
-      input: AuggyGetInputs[Path],
-      options: AuggyRequestOptions = {},
+      ...args: AuggyRequestArgs<AuggyGetInputs[Path]>
     ): Promise<AuggyClientResult> {
+      const { input, options } = normalizeRequestArgs(args);
       return request(fetchImpl, config, "GET", path as string, input as RouteInput, options);
     },
     post<Path extends AuggyPostPath>(
       path: Path,
-      input: AuggyPostInputs[Path],
-      options: AuggyRequestOptions = {},
+      ...args: AuggyRequestArgs<AuggyPostInputs[Path]>
     ): Promise<AuggyClientResult> {
+      const { input, options } = normalizeRequestArgs(args);
       return request(fetchImpl, config, "POST", path as string, input as RouteInput, options);
     },
   };
@@ -311,6 +314,29 @@ async function tokenForRoute(
   return undefined;
 }
 
+function normalizeRequestArgs(args: readonly unknown[]): {
+  input: RouteInput;
+  options: AuggyRequestOptions;
+} {
+  const first = args[0];
+  const second = args[1];
+  if (second !== undefined) {
+    return { input: (first ?? {}) as RouteInput, options: second as AuggyRequestOptions };
+  }
+  if (isRequestOptions(first) && !isRouteInput(first)) {
+    return { input: {}, options: first };
+  }
+  return { input: (first ?? {}) as RouteInput, options: {} };
+}
+
+function isRouteInput(value: unknown): value is RouteInput {
+  return isRecord(value) && ("params" in value || "query" in value || "body" in value);
+}
+
+function isRequestOptions(value: unknown): value is AuggyRequestOptions {
+  return isRecord(value) && ("signal" in value || "headers" in value);
+}
+
 async function resolveToken(provider: TokenProvider | undefined): Promise<string | undefined> {
   if (typeof provider === "function") return provider();
   return provider;
@@ -324,6 +350,10 @@ async function resolveHeaders(provider: HeadersProvider | undefined): Promise<He
 function mergeHeaders(headers: Headers, extra: HeadersInit | undefined): void {
   if (!extra) return;
   new Headers(extra).forEach((value, key) => headers.set(key, value));
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }
 
 async function parseResponseData(response: Response): Promise<unknown> {
