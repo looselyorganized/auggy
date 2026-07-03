@@ -78,6 +78,16 @@ export function createTypeScriptClient(
       routes.filter((route) => route.method === "POST"),
     ),
     "",
+    routeOutputMap(
+      "AuggyGetOutputs",
+      routes.filter((route) => route.method === "GET"),
+    ),
+    "",
+    routeOutputMap(
+      "AuggyPostOutputs",
+      routes.filter((route) => route.method === "POST"),
+    ),
+    "",
     "export type AuggyGetPath = keyof AuggyGetInputs;",
     "export type AuggyPostPath = keyof AuggyPostInputs;",
     "",
@@ -169,6 +179,21 @@ function inputTypeForRoute(route: RouteManifestEntry): string {
   return fields.length > 0 ? `{ ${fields.join(" ")} }` : "{}";
 }
 
+function routeOutputMap(name: string, routes: readonly RouteManifestEntry[]): string {
+  if (routes.length === 0) {
+    return `export interface ${name} {}`;
+  }
+
+  return [
+    `export interface ${name} {`,
+    ...routes.map(
+      (route) =>
+        `  ${JSON.stringify(route.path)}: ${route.responseJsonSchema ? schemaToType(route.responseJsonSchema) : "unknown"};`,
+    ),
+    "}",
+  ].join("\n");
+}
+
 function paramsTypeForRoute(route: RouteManifestEntry): string {
   const paramsSchema = route.requestJsonSchema?.params;
   const properties = schemaProperties(paramsSchema);
@@ -203,16 +228,16 @@ function runtimeSource(target: TypeScriptClientTarget): string {
     get<Path extends AuggyGetPath>(
       path: Path,
       ...args: AuggyRequestArgs<AuggyGetInputs[Path]>
-    ): Promise<AuggyClientResult> {
+    ): Promise<AuggyClientResult<AuggyGetOutputs[Path]>> {
       const { input, options } = normalizeRequestArgs(args);
-      return request(fetchImpl, config, "GET", path as string, input as RouteInput, options);
+      return request(fetchImpl, config, "GET", path as string, input as RouteInput, options) as Promise<AuggyClientResult<AuggyGetOutputs[Path]>>;
     },
     post<Path extends AuggyPostPath>(
       path: Path,
       ...args: AuggyRequestArgs<AuggyPostInputs[Path]>
-    ): Promise<AuggyClientResult> {
+    ): Promise<AuggyClientResult<AuggyPostOutputs[Path]>> {
       const { input, options } = normalizeRequestArgs(args);
-      return request(fetchImpl, config, "POST", path as string, input as RouteInput, options);
+      return request(fetchImpl, config, "POST", path as string, input as RouteInput, options) as Promise<AuggyClientResult<AuggyPostOutputs[Path]>>;
     },
   };
 }

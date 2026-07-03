@@ -81,6 +81,12 @@ describe("defineRoute", () => {
         need: z.string().min(1),
         tag: z.union([z.string(), z.array(z.string())]).optional(),
       }),
+      response: z.object({
+        method: z.literal("GET"),
+        need: z.string(),
+        tag: z.union([z.string(), z.array(z.string())]).optional(),
+        bodyIsUndefined: z.boolean(),
+      }),
       handler: ({ query, body, route }) =>
         json({
           method: route.method,
@@ -99,6 +105,15 @@ describe("defineRoute", () => {
         need: { type: "string", minLength: 1 },
       },
       required: ["need"],
+    });
+    expect(route.responseJsonSchema).toMatchObject({
+      type: "object",
+      properties: {
+        method: { const: "GET" },
+        need: { type: "string" },
+        bodyIsUndefined: { type: "boolean" },
+      },
+      required: ["method", "need", "bodyIsUndefined"],
     });
 
     const res = await route.handler(
@@ -201,6 +216,10 @@ describe("defineRoute", () => {
         email: z.string().email(),
         serviceId: z.string().min(1),
       }),
+      response: z.object({
+        saved: z.boolean(),
+        email: z.string().email(),
+      }),
       handler: ({ body }) => json({ saved: true, email: body.email }, 201),
     });
 
@@ -213,6 +232,14 @@ describe("defineRoute", () => {
         serviceId: { type: "string", minLength: 1 },
       },
       required: ["email", "serviceId"],
+    });
+    expect(route.responseJsonSchema).toMatchObject({
+      type: "object",
+      properties: {
+        saved: { type: "boolean" },
+        email: { type: "string", format: "email" },
+      },
+      required: ["saved", "email"],
     });
 
     const res = await route.handler(

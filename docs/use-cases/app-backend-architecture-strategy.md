@@ -376,7 +376,7 @@ const result = await api.get("/services/:serviceId", {
 });
 
 if (result.ok) {
-  const data = result.data; // unknown until response schemas exist
+  const data = result.data; // typed when the route declares a success response schema
 }
 ```
 
@@ -407,7 +407,10 @@ Result model:
 - Do not throw for non-2xx responses.
 - Throw only for network failures or malformed response parsing.
 - Parse JSON when the response content type is JSON; otherwise return text.
-- Keep `data` typed as `unknown` until routes can declare response schemas.
+- Type success `data` when a route declares a response schema.
+- Keep `data` as `unknown` for routes without response schemas.
+- Keep non-2xx error payloads generic until Auggy has a stable route error
+  protocol.
 
 Input typing:
 

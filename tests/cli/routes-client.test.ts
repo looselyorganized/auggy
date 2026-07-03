@@ -66,6 +66,15 @@ function report(): ClientRoutesReport {
             required: ["need"],
           },
         },
+        responseJsonSchema: {
+          type: "object",
+          properties: {
+            serviceId: { type: "string" },
+            name: { type: "string" },
+            tags: { type: "array", items: { type: "string" } },
+          },
+          required: ["serviceId", "name"],
+        },
       },
       {
         method: "POST",
@@ -90,6 +99,14 @@ function report(): ClientRoutesReport {
             },
             required: ["note"],
           },
+        },
+        responseJsonSchema: {
+          type: "object",
+          properties: {
+            noteId: { type: "string" },
+            saved: { type: "boolean" },
+          },
+          required: ["noteId", "saved"],
         },
       },
       {
@@ -182,6 +199,14 @@ function clientFixtureReport(): ClientRoutesReport {
             required: ["displayName"],
           },
         },
+        responseJsonSchema: {
+          type: "object",
+          properties: {
+            visitorId: { type: "string" },
+            displayName: { type: "string" },
+          },
+          required: ["visitorId", "displayName"],
+        },
       },
       {
         method: "POST",
@@ -199,6 +224,14 @@ function clientFixtureReport(): ClientRoutesReport {
             },
             required: ["reason"],
           },
+        },
+        responseJsonSchema: {
+          type: "object",
+          properties: {
+            queued: { type: "boolean" },
+            jobId: { type: "string" },
+          },
+          required: ["queued", "jobId"],
         },
       },
     ],
@@ -271,6 +304,11 @@ describe("createTypeScriptClient", () => {
     expect(source).toContain(
       '"/services/:serviceId": { params: { serviceId: string; }; query: { need: string; tags?: Array<string>; urgent?: boolean; }; };',
     );
+    expect(source).toContain("export interface AuggyGetOutputs");
+    expect(source).toContain(
+      '"/services/:serviceId": { serviceId: string; name: string; tags?: Array<string>; };',
+    );
+    expect(source).toContain('"/me": unknown;');
     expect(source).toContain('"/me": {};');
     expect(source).not.toContain('"/leads/:leadId/notes":');
     expect(source).not.toContain("bearerToken?: TokenProvider;");
@@ -291,6 +329,7 @@ describe("createTypeScriptClient", () => {
     expect(source).toContain(
       '"/leads/:leadId/notes": { params: { leadId: string; }; body: { note: string; priority?: "low" | "high"; score?: number | null; }; };',
     );
+    expect(source).toContain('"/leads/:leadId/notes": { noteId: string; saved: boolean; };');
     expect(source).toContain("bearerToken?: TokenProvider;");
     expect(source).not.toContain("visitorToken?: TokenProvider;");
     expect(source).not.toContain('"/me": {};');
@@ -312,6 +351,8 @@ describe("createTypeScriptClient", () => {
 
     expect(source).toContain("export interface AuggyGetInputs {}");
     expect(source).toContain("export interface AuggyPostInputs {}");
+    expect(source).toContain("export interface AuggyGetOutputs {}");
+    expect(source).toContain("export interface AuggyPostOutputs {}");
     expect(source).toContain("const ROUTES: Record<string, RouteMeta> = {\n};");
   });
 
@@ -384,6 +425,21 @@ describe("createTypeScriptClient", () => {
 
         api.get("/me");
         api.get("/me", { headers: { "x-test": "1" } });
+        async function main() {
+          const service = await api.get("/services/:serviceId", {
+            params: { serviceId: "svc_123" },
+            query: { need: "trim" },
+          });
+          service.data.name.toUpperCase();
+          service.data.tags?.[0]?.toUpperCase();
+
+          const me = await api.get("/me");
+          const unknownMeData: unknown = me.data;
+          console.log(unknownMeData);
+          // @ts-expect-error routes without response schemas keep unknown data.
+          me.data.email;
+        }
+
         api.get("/services/:serviceId", {
           params: { serviceId: "svc_123" },
           query: { need: "trim" },
@@ -416,6 +472,18 @@ describe("createTypeScriptClient", () => {
           params: { serviceId: "svc_123" },
           query: { need: "trim", tags: ["dry"] },
         });
+        async function main() {
+          const profile = await api.post("/profile", { body: { displayName: "Alice" } });
+          profile.data.visitorId.toUpperCase();
+          profile.data.displayName.toUpperCase();
+
+          const services = await api.get("/services", {});
+          const unknownServicesData: unknown = services.data;
+          console.log(unknownServicesData);
+          // @ts-expect-error routes without response schemas keep unknown data.
+          services.data.items;
+        }
+
         api.post("/profile", { body: { displayName: "Alice" } });
 
         // @ts-expect-error browser target omits bearer routes.
@@ -444,6 +512,12 @@ describe("createTypeScriptClient", () => {
           params: { serviceId: "svc_123" },
           query: { need: "trim" },
         });
+        async function main() {
+          const reindex = await api.post("/admin/reindex", { body: { reason: "manual" } });
+          reindex.data.jobId.toUpperCase();
+          reindex.data.queued.valueOf();
+        }
+
         api.post("/admin/reindex", { body: { reason: "manual" } });
 
         // @ts-expect-error server target omits visitor routes.

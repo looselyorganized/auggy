@@ -4,6 +4,7 @@ import type {
   AugmentHttpRoute,
   AugmentHttpRouteAuth,
   AugmentHttpRouteRequestJsonSchema,
+  AugmentHttpRouteResponseJsonSchema,
   HttpMethod,
   RouteAuthContext,
   Tool,
@@ -75,9 +76,11 @@ interface RouteOptionsBase {
 export interface DefineGetRouteOptions<
   TQuery extends AnySchema | undefined = undefined,
   TParams extends AnySchema | undefined = undefined,
+  TResponse extends AnySchema | undefined = undefined,
 > extends RouteOptionsBase {
   query?: TQuery;
   params?: TParams;
+  response?: TResponse;
   handler: (
     ctx: RouteContext<
       InferSchema<TParams, Record<string, string>>,
@@ -91,10 +94,12 @@ export interface DefinePostRouteOptions<
   TBody extends AnySchema | undefined = undefined,
   TParams extends AnySchema | undefined = undefined,
   TQuery extends AnySchema | undefined = undefined,
+  TResponse extends AnySchema | undefined = undefined,
 > extends RouteOptionsBase {
   body?: TBody;
   params?: TParams;
   query?: TQuery;
+  response?: TResponse;
   handler: (
     ctx: RouteContext<
       InferSchema<TParams, Record<string, string>>,
@@ -126,6 +131,7 @@ function routeBase(
   opts: RouteOptionsBase,
   handler: AugmentHttpRoute["handler"],
   requestJsonSchema?: AugmentHttpRouteRequestJsonSchema,
+  responseJsonSchema?: AugmentHttpRouteResponseJsonSchema,
 ): AugmentHttpRoute {
   return {
     method,
@@ -136,6 +142,7 @@ function routeBase(
     ...(opts.maxBodyBytes !== undefined ? { maxBodyBytes: opts.maxBodyBytes } : {}),
     ...(opts.rateLimit ? { rateLimit: opts.rateLimit } : {}),
     ...(requestJsonSchema ? { requestJsonSchema } : {}),
+    ...(responseJsonSchema ? { responseJsonSchema } : {}),
   };
 }
 
@@ -173,7 +180,8 @@ export const defineRoute = {
   get<
     TQuery extends AnySchema | undefined = undefined,
     TParams extends AnySchema | undefined = undefined,
-  >(path: string, opts: DefineGetRouteOptions<TQuery, TParams>): AugmentHttpRoute {
+    TResponse extends AnySchema | undefined = undefined,
+  >(path: string, opts: DefineGetRouteOptions<TQuery, TParams, TResponse>): AugmentHttpRoute {
     return routeBase(
       "GET",
       path,
@@ -212,6 +220,7 @@ export const defineRoute = {
         ...(opts.params ? { params: toJsonSchema(opts.params) } : {}),
         ...(opts.query ? { query: toJsonSchema(opts.query) } : {}),
       }),
+      toJsonSchema(opts.response),
     );
   },
 
@@ -219,7 +228,11 @@ export const defineRoute = {
     TBody extends AnySchema | undefined = undefined,
     TParams extends AnySchema | undefined = undefined,
     TQuery extends AnySchema | undefined = undefined,
-  >(path: string, opts: DefinePostRouteOptions<TBody, TParams, TQuery>): AugmentHttpRoute {
+    TResponse extends AnySchema | undefined = undefined,
+  >(
+    path: string,
+    opts: DefinePostRouteOptions<TBody, TParams, TQuery, TResponse>,
+  ): AugmentHttpRoute {
     return routeBase(
       "POST",
       path,
@@ -273,6 +286,7 @@ export const defineRoute = {
         ...(opts.query ? { query: toJsonSchema(opts.query) } : {}),
         ...(opts.body ? { body: toJsonSchema(opts.body) } : {}),
       }),
+      toJsonSchema(opts.response),
     );
   },
 

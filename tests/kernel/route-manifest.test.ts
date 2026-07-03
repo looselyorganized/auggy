@@ -29,6 +29,11 @@ describe("route manifest", () => {
               required: ["id"],
             },
           },
+          responseJsonSchema: {
+            type: "object",
+            properties: { id: { type: "string" }, name: { type: "string" } },
+            required: ["id", "name"],
+          },
         }),
       ]),
       aug("orders", [
@@ -59,6 +64,11 @@ describe("route manifest", () => {
             properties: { id: { type: "string" } },
             required: ["id"],
           },
+        },
+        responseJsonSchema: {
+          type: "object",
+          properties: { id: { type: "string" }, name: { type: "string" } },
+          required: ["id", "name"],
         },
       },
       {

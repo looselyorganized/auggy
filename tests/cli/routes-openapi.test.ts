@@ -41,6 +41,15 @@ function report(): OpenApiRoutesReport {
             required: ["need"],
           },
         },
+        responseJsonSchema: {
+          type: "object",
+          properties: {
+            serviceId: { type: "string" },
+            name: { type: "string" },
+            tags: { type: "array", items: { type: "string" } },
+          },
+          required: ["serviceId", "name"],
+        },
       },
       {
         method: "POST",
@@ -60,6 +69,14 @@ function report(): OpenApiRoutesReport {
             },
             required: ["email", "serviceId"],
           },
+        },
+        responseJsonSchema: {
+          type: "object",
+          properties: {
+            leadId: { type: "string" },
+            saved: { type: "boolean" },
+          },
+          required: ["leadId", "saved"],
         },
       },
     ],
@@ -117,7 +134,22 @@ describe("createOpenApiDocument", () => {
       },
     ]);
     expect(get?.responses).toEqual({
-      "200": { description: "OK" },
+      "200": {
+        description: "OK",
+        content: {
+          "application/json": {
+            schema: {
+              type: "object",
+              properties: {
+                serviceId: { type: "string" },
+                name: { type: "string" },
+                tags: { type: "array", items: { type: "string" } },
+              },
+              required: ["serviceId", "name"],
+            },
+          },
+        },
+      },
       "400": { description: "Bad request" },
       "429": { description: "Rate limited" },
       "500": { description: "Internal server error" },
@@ -147,7 +179,21 @@ describe("createOpenApiDocument", () => {
       },
     });
     expect(post?.responses).toEqual({
-      "200": { description: "OK" },
+      "200": {
+        description: "OK",
+        content: {
+          "application/json": {
+            schema: {
+              type: "object",
+              properties: {
+                leadId: { type: "string" },
+                saved: { type: "boolean" },
+              },
+              required: ["leadId", "saved"],
+            },
+          },
+        },
+      },
       "400": { description: "Bad request" },
       "401": { description: "Unauthorized" },
       "500": { description: "Internal server error" },

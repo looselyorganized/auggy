@@ -32,7 +32,7 @@ Recently completed v1 decisions:
 
 - **[identity]** Canonical creator identity for v1 shipped in PR #105. One verified creator maps to `peer.id = "creator"` across web console and Telegram private chat; `creator.displayName` is cosmetic model-facing metadata, not an auth credential. Decision: `docs/plans/v1-canonical-creator-identity.md`.
 - **[deploy]** Railway deploy DX is v1-ready: first deploy selects a Railway workspace before project/service, saved targets are shown by workspace/project/service name, plain `auggy deploy` asks before redeploying or retargeting, `--yes` remains the scripted redeploy path, Railway port `8080` is enforced at preflight, and the full fresh deploy path has been smoke-tested against Railway.
-- **[routes]** Generated TypeScript route client first cut shipped: `auggy routes [name] --client ts [--target browser|server] [--out file]`, self-contained generated file, typed request inputs, browser/server route filtering, `unknown` response payloads until response schemas exist, fetch-like non-2xx handling, visitor-token support, and explicit server-only bearer route handling.
+- **[routes]** Generated TypeScript route client first cut shipped: `auggy routes [name] --client ts [--target browser|server] [--out file]`, self-contained generated file, typed request inputs, browser/server route filtering, success `data` typing from declared route response schemas with `unknown` fallback, fetch-like non-2xx handling, visitor-token support, and explicit server-only bearer route handling.
 
 ---
 

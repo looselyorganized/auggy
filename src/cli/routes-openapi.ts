@@ -116,13 +116,28 @@ function requestBody(route: RouteManifestEntry): JsonObject {
 
 function responsesForRoute(route: RouteManifestEntry): JsonObject {
   return {
-    "200": { description: "OK" },
+    "200": successResponse(route),
     "400": { description: "Bad request" },
     ...(route.auth === "bearer" || route.auth === "visitor.required"
       ? { "401": { description: "Unauthorized" } }
       : {}),
     ...(route.rateLimit ? { "429": { description: "Rate limited" } } : {}),
     "500": { description: "Internal server error" },
+  };
+}
+
+function successResponse(route: RouteManifestEntry): JsonObject {
+  return {
+    description: "OK",
+    ...(route.responseJsonSchema
+      ? {
+          content: {
+            "application/json": {
+              schema: route.responseJsonSchema,
+            },
+          },
+        }
+      : {}),
   };
 }
 

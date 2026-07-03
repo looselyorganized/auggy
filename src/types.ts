@@ -656,6 +656,8 @@ export interface AugmentHttpRouteRequestJsonSchema {
   body?: Record<string, unknown>;
 }
 
+export type AugmentHttpRouteResponseJsonSchema = Record<string, unknown>;
+
 /**
  * One HTTP route registered by an augment. Routes are collected at
  * `agent.start()` AFTER `lifecycle.boot()` succeeds (so `onBoot`-populated
@@ -703,6 +705,12 @@ export interface AugmentHttpRoute {
    * is descriptive and must not be treated as an authorization boundary.
    */
   requestJsonSchema?: AugmentHttpRouteRequestJsonSchema;
+  /**
+   * Optional JSON Schema for the route's successful JSON response.
+   * v1.x models only the default success payload; non-2xx error contracts remain
+   * intentionally generic until Auggy has a stable route error protocol.
+   */
+  responseJsonSchema?: AugmentHttpRouteResponseJsonSchema;
   /**
    * The handler. Receives the raw Request and an options bag carrying an
    * AbortSignal that fires on timeout. Handlers SHOULD listen for the
