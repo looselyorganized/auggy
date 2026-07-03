@@ -46,13 +46,9 @@ export function createTypeScriptClient(
     "  ? [options?: AuggyRequestOptions]",
     "  : [input: TInput, options?: AuggyRequestOptions];",
     "",
-    "export interface AuggyClientResult<TData = unknown> {",
-    "  ok: boolean;",
-    "  status: number;",
-    "  data: TData;",
-    "  response: Response;",
-    "  visitorToken?: string;",
-    "}",
+    "export type AuggyClientResult<TData = unknown> =",
+    "  | { ok: true; status: number; data: TData; response: Response; visitorToken?: string }",
+    "  | { ok: false; status: number; data: unknown; response: Response; visitorToken?: string };",
     "",
     "type RouteInput = {",
     "  params?: Record<string, unknown>;",
@@ -277,13 +273,17 @@ async function request(
       : "const visitorToken = undefined;"
   }
 
-  return {
-    ok: response.ok,
+  const data = await parseResponseData(response);
+  const base = {
     status: response.status,
-    data: await parseResponseData(response),
+    data,
     response,
     ...(visitorToken ? { visitorToken } : {}),
   };
+  if (response.ok) {
+    return { ok: true, ...base };
+  }
+  return { ok: false, ...base };
 }
 
 function buildUrl(
