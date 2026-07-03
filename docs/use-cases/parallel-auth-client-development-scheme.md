@@ -107,7 +107,8 @@ As of this document:
 
 - `integration/routes-auth-client` contains the client target/version work plus
   external auth assertions, creator route alias, exposed external claims, and
-  safe matching-visitor claim merge.
+  safe matching-visitor claim merge. The active serialized contract slice is
+  `agent.required` route auth.
 - `routes-client-targets` does not contain the latest auth commits unless it
   merges or restarts from integration.
 
@@ -115,7 +116,7 @@ The client window should not continue contract-sensitive work from
 `routes-client-targets` until it ingests `integration/routes-auth-client` or
 creates a fresh continuation branch from integration.
 
-## Next split: `agent.required`
+## Serialized split: `agent.required`
 
 `agent.required` is a serialization point.
 
@@ -125,7 +126,7 @@ without client handling, browser clients can accidentally include an agent-only
 route or generated unions can drift. If client prepares support without the
 runtime type, fixtures become artificial.
 
-Do this as one integration slice:
+This must land as one integration slice:
 
 1. Add `agent.required` to route auth types and route collection validation.
 2. Resolve agent route credentials with the existing `x-agent-id` and
@@ -139,8 +140,9 @@ Do this as one integration slice:
    `x-agent-id` and `x-agent-secret`.
 8. Add focused runtime, manifest, client, and OpenAPI tests.
 
-After that lands on integration, the client track can safely continue with
-client ergonomics or response-schema work from the updated contract.
+After this lands on integration, the client track can safely continue with
+client ergonomics or response-schema work from the updated contract, after
+merging or restarting from integration.
 
 ## Handoff wording
 

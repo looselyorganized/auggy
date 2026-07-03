@@ -18,6 +18,7 @@ export function createOpenApiDocument(report: OpenApiRoutesReport): JsonObject {
     (route) => route.auth === "bearer" || route.auth === "creator",
   );
   const hasVisitorRoutes = report.routes.some((route) => route.auth.startsWith("visitor."));
+  const hasAgentRoutes = report.routes.some((route) => route.auth === "agent.required");
 
   for (const route of report.routes) {
     const openApiPath = toOpenApiPath(route.path);
@@ -33,7 +34,7 @@ export function createOpenApiDocument(report: OpenApiRoutesReport): JsonObject {
       version: "0.1.0",
     },
     paths,
-    ...(hasBearerRoutes || hasVisitorRoutes
+    ...(hasBearerRoutes || hasVisitorRoutes || hasAgentRoutes
       ? {
           components: {
             securitySchemes: {
@@ -42,6 +43,20 @@ export function createOpenApiDocument(report: OpenApiRoutesReport): JsonObject {
                     bearerAuth: {
                       type: "http",
                       scheme: "bearer",
+                    },
+                  }
+                : {}),
+              ...(hasAgentRoutes
+                ? {
+                    agentIdAuth: {
+                      type: "apiKey",
+                      in: "header",
+                      name: "x-agent-id",
+                    },
+                    agentSecretAuth: {
+                      type: "apiKey",
+                      in: "header",
+                      name: "x-agent-secret",
                     },
                   }
                 : {}),
@@ -120,7 +135,10 @@ function responsesForRoute(route: RouteManifestEntry): JsonObject {
   return {
     "200": successResponse(route),
     "400": { description: "Bad request" },
-    ...(route.auth === "bearer" || route.auth === "creator" || route.auth === "visitor.required"
+    ...(route.auth === "bearer" ||
+    route.auth === "creator" ||
+    route.auth === "visitor.required" ||
+    route.auth === "agent.required"
       ? { "401": { description: "Unauthorized" } }
       : {}),
     ...(route.rateLimit ? { "429": { description: "Rate limited" } } : {}),
@@ -145,6 +163,7 @@ function successResponse(route: RouteManifestEntry): JsonObject {
 
 function securityForRoute(route: RouteManifestEntry): JsonObject[] {
   if (route.auth === "bearer" || route.auth === "creator") return [{ bearerAuth: [] }];
+  if (route.auth === "agent.required") return [{ agentIdAuth: [], agentSecretAuth: [] }];
   if (route.auth === "visitor.required") return [{ visitorTokenAuth: [] }];
   if (route.auth === "visitor.optional") return [{}, { visitorTokenAuth: [] }];
   return [];

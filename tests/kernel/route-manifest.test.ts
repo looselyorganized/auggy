@@ -95,14 +95,19 @@ describe("route manifest", () => {
       aug("visitor-private", [route("GET", "/orders/:id", "visitor.required")]),
       aug("private", [route("POST", "/orders/create", "bearer")]),
       aug("creator", [route("POST", "/admin/reindex", "creator")]),
+      aug("agent", [route("GET", "/agent-api/search", "agent.required")]),
     ]);
     const manifest = createRouteManifest(collected.routes);
 
     expect(summarizeRouteManifest(manifest)).toEqual({
-      totalRoutes: 5,
+      totalRoutes: 6,
       publicRoutes: 2,
-      privateRoutes: 3,
+      privateRoutes: 4,
       publicRoutePaths: ["GET /services", "GET /recommendations"],
+    });
+    expect(manifest.find((route) => route.auth === "agent.required")).toMatchObject({
+      public: false,
+      security: "private",
     });
   });
 });

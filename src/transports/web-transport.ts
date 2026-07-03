@@ -5,6 +5,7 @@ import type {
   CreatorConfig,
   PeerIdentity,
   RouteAuthContext,
+  RouteAgentAuthContext,
   RouteVisitorAuthContext,
   RouteVisitorIdentity,
   TransportSpec,
@@ -1105,6 +1106,35 @@ export function webTransport(opts: WebTransportOptions): Augment {
     };
   }
 
+  function resolveAgentRouteAuth(req: Request): RouteAgentAuthContext | null {
+    const agentId = req.headers.get("x-agent-id");
+    const agentSecret = req.headers.get("x-agent-secret");
+    if (!agentId || !agentSecret) return null;
+
+    const entry = (opts.access?.agents ?? []).find((agent) => agent.id === agentId);
+    if (!entry || !timingSafeEqual(agentSecret, entry.sharedSecret)) return null;
+
+    const displayName = req.headers.get("x-peer-name") ?? undefined;
+    const orgId = req.headers.get("x-org-id") ?? undefined;
+    const principal: Extract<RouteAuthContext["principal"], { kind: "agent" }> = {
+      kind: "agent",
+      trustLevel: "agent",
+      agentId,
+      peerId: `agent:${agentId}`,
+      ...(displayName !== undefined ? { displayName } : {}),
+      ...(orgId !== undefined ? { orgId } : {}),
+    };
+
+    return {
+      mode: "agent",
+      agentId,
+      peerId: principal.peerId,
+      ...(principal.displayName !== undefined ? { displayName: principal.displayName } : {}),
+      ...(principal.orgId !== undefined ? { orgId: principal.orgId } : {}),
+      principal,
+    };
+  }
+
   function resolveExternalAuthAudience(): string {
     return (
       opts.externalAuth?.audience ??
@@ -1254,6 +1284,14 @@ export function webTransport(opts: WebTransportOptions): Augment {
         return { ok: false, response: json({ error: "visitor-auth-required" }, 401) };
       }
       return { ok: true, context: visitorAuth };
+    }
+
+    if (auth === "agent.required") {
+      const agentAuth = resolveAgentRouteAuth(req);
+      if (!agentAuth) {
+        return { ok: false, response: json({ error: "agent-auth-required" }, 401) };
+      }
+      return { ok: true, context: agentAuth };
     }
 
     return { ok: false, response: json({ error: "route-auth-misconfigured" }, 500) };

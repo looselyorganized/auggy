@@ -248,6 +248,12 @@ Add only after route context can resolve credentials consistently:
 
 These must align with `webTransport` identity resolution and `visitorAuth`, not create a second identity model.
 
+Implementation note: `auth: "agent.required"` now admits routes through the
+same `x-agent-id` / `x-agent-secret` allowlist used by `webTransport`
+identity resolution. Handlers receive `auth.mode === "agent"` and an agent
+principal. Browser generated clients omit these routes; server generated
+clients can call them with explicit agent credentials.
+
 ### Step 5: webhook policies
 
 Add as route policies, not peer identity:

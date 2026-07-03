@@ -102,10 +102,11 @@ export function collectAugmentRoutes(augments: readonly Augment[]): CollectAugme
         r.auth !== "creator" &&
         r.auth !== "none" &&
         r.auth !== "visitor.optional" &&
-        r.auth !== "visitor.required"
+        r.auth !== "visitor.required" &&
+        r.auth !== "agent.required"
       ) {
         errors.push(
-          `Augment "${aug.name}" registered HTTP route ${r.method} "${r.path}" with invalid auth "${r.auth}" — must be "bearer", "creator", "none", "visitor.optional", or "visitor.required".`,
+          `Augment "${aug.name}" registered HTTP route ${r.method} "${r.path}" with invalid auth "${r.auth}" — must be "bearer", "creator", "none", "visitor.optional", "visitor.required", or "agent.required".`,
         );
         continue;
       }

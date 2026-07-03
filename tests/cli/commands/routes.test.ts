@@ -432,7 +432,7 @@ describe("routesCommand", () => {
     expect(source).toContain('"/services/:serviceId": { params: { serviceId: string; }; };');
   });
 
-  test("prints browser-target TypeScript client output and omits creator routes", async () => {
+  test("prints browser-target TypeScript client output and omits creator and agent routes", async () => {
     const exit = mock((_code: number) => {});
     const logs: string[] = [];
     const origLog = console.log;
@@ -446,9 +446,9 @@ describe("routesCommand", () => {
         runRoutes: async () => ({
           agent: { name: "zip", configPath: "/tmp/zip/agent.yaml" },
           summary: {
-            totalRoutes: 2,
+            totalRoutes: 3,
             publicRoutes: 1,
-            privateRoutes: 1,
+            privateRoutes: 2,
             publicRoutePaths: ["GET /services"],
           },
           routes: [
@@ -470,6 +470,15 @@ describe("routesCommand", () => {
               public: false,
               security: "private",
             },
+            {
+              method: "GET",
+              path: "/agent-api/search",
+              augmentName: "agent-api",
+              auth: "agent.required",
+              params: [],
+              public: false,
+              security: "private",
+            },
           ],
         }),
       });
@@ -484,10 +493,12 @@ describe("routesCommand", () => {
     expect(source).toContain("Target: browser.");
     expect(source).toContain('"/services": {};');
     expect(source).not.toContain('"/admin/reindex":');
+    expect(source).not.toContain('"/agent-api/search":');
     expect(source).toContain("* - POST /admin/reindex auth=creator");
+    expect(source).toContain("* - GET /agent-api/search auth=agent.required");
   });
 
-  test("prints server-target TypeScript client output and includes creator routes", async () => {
+  test("prints server-target TypeScript client output and includes creator and agent routes", async () => {
     const exit = mock((_code: number) => {});
     const logs: string[] = [];
     const origLog = console.log;
@@ -501,10 +512,10 @@ describe("routesCommand", () => {
         runRoutes: async () => ({
           agent: { name: "zip", configPath: "/tmp/zip/agent.yaml" },
           summary: {
-            totalRoutes: 2,
-            publicRoutes: 1,
-            privateRoutes: 1,
-            publicRoutePaths: ["GET /services"],
+            totalRoutes: 3,
+            publicRoutes: 0,
+            privateRoutes: 3,
+            publicRoutePaths: [],
           },
           routes: [
             {
@@ -525,6 +536,15 @@ describe("routesCommand", () => {
               public: false,
               security: "private",
             },
+            {
+              method: "GET",
+              path: "/agent-api/search",
+              augmentName: "agent-api",
+              auth: "agent.required",
+              params: [],
+              public: false,
+              security: "private",
+            },
           ],
         }),
       });
@@ -538,7 +558,9 @@ describe("routesCommand", () => {
     const source = logs.join("\n");
     expect(source).toContain("Target: server.");
     expect(source).toContain('"/admin/reindex": {};');
+    expect(source).toContain('"/agent-api/search": {};');
     expect(source).toContain("bearerToken?: TokenProvider;");
+    expect(source).toContain("agentCredentials?: AgentCredentialsProvider;");
     expect(source).not.toContain("visitorToken?: TokenProvider;");
     expect(source).not.toContain('"/me": {};');
     expect(source).toContain("* - GET /me auth=visitor.required");

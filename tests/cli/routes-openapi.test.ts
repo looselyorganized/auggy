@@ -301,4 +301,56 @@ describe("createOpenApiDocument", () => {
       },
     });
   });
+
+  test("exports agent route auth as required agent credential headers", () => {
+    const doc = createOpenApiDocument({
+      agent: { name: "zip", configPath: "/tmp/zip/agent.yaml" },
+      summary: {
+        totalRoutes: 1,
+        publicRoutes: 0,
+        privateRoutes: 1,
+        publicRoutePaths: [],
+      },
+      routes: [
+        {
+          method: "GET",
+          path: "/agent-api/search",
+          augmentName: "agent-api",
+          auth: "agent.required",
+          params: [],
+          public: false,
+          security: "private",
+        },
+      ],
+    }) as {
+      paths: Record<string, Record<string, Record<string, unknown>>>;
+      components?: Record<string, unknown>;
+    };
+
+    expect(doc.paths["/agent-api/search"]?.get?.security).toEqual([
+      { agentIdAuth: [], agentSecretAuth: [] },
+    ]);
+    expect(doc.paths["/agent-api/search"]?.get?.responses).toMatchObject({
+      "401": { description: "Unauthorized" },
+    });
+    expect(doc.paths["/agent-api/search"]?.get?.["x-auggy"]).toMatchObject({
+      auth: "agent.required",
+      security: "private",
+      public: false,
+    });
+    expect(doc.components).toEqual({
+      securitySchemes: {
+        agentIdAuth: {
+          type: "apiKey",
+          in: "header",
+          name: "x-agent-id",
+        },
+        agentSecretAuth: {
+          type: "apiKey",
+          in: "header",
+          name: "x-agent-secret",
+        },
+      },
+    });
+  });
 });

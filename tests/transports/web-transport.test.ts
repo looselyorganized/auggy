@@ -2429,6 +2429,115 @@ describe("webTransport augment-registered routes", () => {
     }
   });
 
+  it("auth: agent.required accepts admitted agent credentials and passes agent context", async () => {
+    const model = createMockModel();
+    const port = 19440;
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: "test-token" },
+      access: {
+        agents: [{ id: "worker-agent", sharedSecret: "agent-secret" }],
+      },
+    });
+    const fixture: Augment = {
+      name: "agent-routes",
+      httpRoutes: [
+        {
+          method: "GET",
+          path: "/agent-api/search",
+          auth: "agent.required",
+          handler: async (_req, opts) => json(opts.auth),
+        },
+      ],
+    };
+    const agent = defineAgent({ name: "test", model: "mock", augments: [fixture, aug] }, model);
+    await agent.start();
+    try {
+      const resp = await fetch(`http://localhost:${port}/agent-api/search`, {
+        headers: {
+          "x-agent-id": "worker-agent",
+          "x-agent-secret": "agent-secret",
+          "x-peer-name": "Worker",
+          "x-org-id": "org_123",
+        },
+      });
+      expect(resp.status).toBe(200);
+      expect(await resp.json()).toEqual({
+        mode: "agent",
+        agentId: "worker-agent",
+        peerId: "agent:worker-agent",
+        displayName: "Worker",
+        orgId: "org_123",
+        principal: {
+          kind: "agent",
+          trustLevel: "agent",
+          agentId: "worker-agent",
+          peerId: "agent:worker-agent",
+          displayName: "Worker",
+          orgId: "org_123",
+        },
+      });
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("auth: agent.required rejects missing, wrong, and bearer-only credentials", async () => {
+    const model = createMockModel();
+    const port = 19441;
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: "test-token" },
+      access: {
+        agents: [{ id: "worker-agent", sharedSecret: "agent-secret" }],
+      },
+    });
+    const fixture: Augment = {
+      name: "agent-routes",
+      httpRoutes: [
+        {
+          method: "GET",
+          path: "/agent-api/search",
+          auth: "agent.required",
+          handler: async (_req, opts) => json(opts.auth),
+        },
+      ],
+    };
+    const agent = defineAgent({ name: "test", model: "mock", augments: [fixture, aug] }, model);
+    await agent.start();
+    try {
+      const missing = await fetch(`http://localhost:${port}/agent-api/search`);
+      expect(missing.status).toBe(401);
+      expect(await missing.json()).toEqual({ error: "agent-auth-required" });
+
+      const wrongSecret = await fetch(`http://localhost:${port}/agent-api/search`, {
+        headers: {
+          "x-agent-id": "worker-agent",
+          "x-agent-secret": "wrong-secret",
+        },
+      });
+      expect(wrongSecret.status).toBe(401);
+      expect(await wrongSecret.json()).toEqual({ error: "agent-auth-required" });
+
+      const unknownAgent = await fetch(`http://localhost:${port}/agent-api/search`, {
+        headers: {
+          "x-agent-id": "unknown-agent",
+          "x-agent-secret": "agent-secret",
+        },
+      });
+      expect(unknownAgent.status).toBe(401);
+      expect(await unknownAgent.json()).toEqual({ error: "agent-auth-required" });
+
+      const bearerOnly = await fetch(`http://localhost:${port}/agent-api/search`, {
+        headers: { authorization: "Bearer test-token" },
+      });
+      expect(bearerOnly.status).toBe(401);
+      expect(await bearerOnly.json()).toEqual({ error: "agent-auth-required" });
+    } finally {
+      await agent.stop();
+    }
+  });
+
   it("auth: visitor.required accepts a valid visitor token and passes visitor metadata", async () => {
     const model = createMockModel();
     const port = 19305;

@@ -169,6 +169,19 @@ function fallbackRouteAuth(auth: AugmentHttpRouteAuth): RouteAuthContext {
     publicSubstate: "anonymous" as const,
   };
   if (auth === "none") return { mode: "none", principal: anonymous };
+  if (auth === "agent.required") {
+    return {
+      mode: "agent",
+      agentId: "agent",
+      peerId: "agent:agent",
+      principal: {
+        kind: "agent",
+        trustLevel: "agent",
+        agentId: "agent",
+        peerId: "agent:agent",
+      },
+    };
+  }
   return { mode: "visitor", state: "anonymous", principal: anonymous };
 }
 

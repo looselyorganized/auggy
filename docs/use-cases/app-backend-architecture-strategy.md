@@ -388,9 +388,11 @@ literal paths preserve autocomplete without creating naming churn around
 Target split:
 
 - Browser target includes `none`, `visitor.optional`, and `visitor.required`
-  routes. It omits bearer routes and does not generate `bearerToken` config.
-- Server target includes `none` and `bearer` routes. It omits visitor-token
-  routes and generates `bearerToken` config for server-side/SSR callers.
+  routes. It omits bearer, creator, and `agent.required` routes and does not
+  generate privileged credential config.
+- Server target includes `none`, bearer/creator, and `agent.required` routes.
+  It omits visitor-token routes and generates `bearerToken` and
+  `agentCredentials` config for server-side/SSR callers.
 
 Client config:
 
@@ -399,6 +401,7 @@ Client config:
 - browser target: optional `visitorToken`
 - browser target: optional `onVisitorToken`
 - server target: optional `bearerToken`
+- server target: optional `agentCredentials`
 - optional static/dynamic headers
 
 Result model:
@@ -428,9 +431,9 @@ Security posture:
 
 - Browser examples should use `auth: "none"`, `visitor.optional`, or
   `visitor.required`.
-- Bearer-auth routes are generated only for the server target. Generated
-  comments and docs must state clearly: do not ship creator bearer tokens to
-  browser code.
+- Bearer/creator and agent-auth routes are generated only for the server
+  target. Generated comments and docs must state clearly: do not ship creator
+  bearer tokens or agent credentials to browser code.
 
 CLI behavior:
 

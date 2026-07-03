@@ -496,7 +496,7 @@ async function checkAugmentRoutes(
       status: route.public ? "warn" : "pass",
       message: formatRouteManifestEntry(route),
       fix: route.public
-        ? 'Set auth: "creator", auth: "bearer", or auth: "visitor.required" unless this route is intentionally public.'
+        ? 'Set auth: "creator", auth: "bearer", auth: "visitor.required", or auth: "agent.required" unless this route is intentionally public.'
         : undefined,
     });
   }

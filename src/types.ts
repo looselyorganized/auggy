@@ -627,18 +627,23 @@ export type HttpMethod = "GET" | "POST";
  *   `auth: "none"` route so operators can't miss them.
  * - `"visitor.optional"` — the route accepts anonymous callers but receives
  *   recognized visitor context when `x-visitor-token` is valid. Public posture.
- * - `"visitor.required"` — the route requires a valid `x-visitor-token` and
- *   receives recognized visitor context. Missing, invalid, expired, wrong-agent,
- *   or revoked tokens fail before the handler runs. `email` metadata is present
- *   only when the transport is wired with visitorAuth / identityLookup; the token
- *   itself carries only visitor id + agent binding + timestamps.
+ * - `"visitor.required"` — the route requires a valid `x-visitor-token` or
+ *   configured external auth assertion and receives recognized visitor context.
+ *   Missing, invalid, expired, wrong-agent, or revoked visitor tokens fail before
+ *   the handler runs unless a valid external assertion is present. `email`
+ *   metadata is present only when the transport is wired with visitorAuth /
+ *   identityLookup or verified external auth claims.
+ * - `"agent.required"` — the route requires admitted machine/agent credentials.
+ *   `webTransport` currently verifies `x-agent-id` and `x-agent-secret` against
+ *   `access.agents` and exposes agent route context.
  */
 export type AugmentHttpRouteAuth =
   | "bearer"
   | "creator"
   | "none"
   | "visitor.optional"
-  | "visitor.required";
+  | "visitor.required"
+  | "agent.required";
 
 export interface RouteVisitorIdentity {
   visitorId: string;
@@ -679,6 +684,14 @@ export type RouteAuthPrincipal =
       kind: "creator";
       trustLevel: "creator";
       peerId: "creator";
+    }
+  | {
+      kind: "agent";
+      trustLevel: "agent";
+      agentId: string;
+      peerId: `agent:${string}`;
+      displayName?: string;
+      orgId?: string;
     };
 
 export type RouteAuthContext =
@@ -703,9 +716,18 @@ export type RouteAuthContext =
       mode: "visitor";
       state: "recognized";
       principal: Extract<RouteAuthPrincipal, { kind: "visitor" }>;
-    } & RouteVisitorIdentity);
+    } & RouteVisitorIdentity)
+  | {
+      mode: "agent";
+      principal: Extract<RouteAuthPrincipal, { kind: "agent" }>;
+      agentId: string;
+      peerId: `agent:${string}`;
+      displayName?: string;
+      orgId?: string;
+    };
 
 export type RouteVisitorAuthContext = Extract<RouteAuthContext, { mode: "visitor" }>;
+export type RouteAgentAuthContext = Extract<RouteAuthContext, { mode: "agent" }>;
 
 export interface AugmentHttpRouteRequestJsonSchema {
   /** JSON Schema for `:param` path params, usually generated from `defineRoute`'s Zod schema. */

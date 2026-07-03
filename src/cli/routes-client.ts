@@ -36,6 +36,15 @@ export function createTypeScriptClient(
     "",
     "type TokenProvider = string | (() => string | undefined | Promise<string | undefined>);",
     "type HeadersProvider = HeadersInit | (() => HeadersInit | Promise<HeadersInit>);",
+    ...(target === "server"
+      ? [
+          "export interface AuggyAgentCredentials {",
+          "  agentId: string;",
+          "  agentSecret: string;",
+          "}",
+          "type AgentCredentialsProvider = AuggyAgentCredentials | (() => AuggyAgentCredentials | undefined | Promise<AuggyAgentCredentials | undefined>);",
+        ]
+      : []),
     "",
     clientConfig(target),
     "",
@@ -60,6 +69,8 @@ export function createTypeScriptClient(
     "};",
     "type RouteCredentials = {",
     "  bearerToken?: string;",
+    "  agentId?: string;",
+    "  agentSecret?: string;",
     "  visitorToken?: string;",
     "  authAssertion?: string;",
     "};",
@@ -116,12 +127,12 @@ function clientHeader(
     " *",
     ...(target === "browser"
       ? [
-          " * Browser clients omit creator/bearer routes. Do not ship creator bearer tokens to browser code.",
+          " * Browser clients omit creator/bearer/agent routes. Do not ship privileged credentials to browser code.",
           " * Use visitor-token routes or public routes from browser clients.",
         ]
       : [
-          " * Server clients include creator/bearer routes for server-side and SSR callers.",
-          " * Do not bundle this generated file into browser code with a bearer token.",
+          " * Server clients include creator/bearer and agent routes for server-side and SSR callers.",
+          " * Do not bundle this generated file into browser code with bearer or agent credentials.",
         ]),
   ];
 
@@ -145,7 +156,7 @@ function clientConfig(target: TypeScriptClientTarget): string {
     "  baseUrl: string | URL;",
     "  fetch?: typeof fetch;",
     ...(target === "server"
-      ? ["  bearerToken?: TokenProvider;"]
+      ? ["  bearerToken?: TokenProvider;", "  agentCredentials?: AgentCredentialsProvider;"]
       : [
           "  visitorToken?: TokenProvider;",
           "  authAssertion?: TokenProvider;",
@@ -271,6 +282,12 @@ async function request(
   if (credentials.bearerToken) {
     headers.set("authorization", "Bearer " + credentials.bearerToken);
   }
+  if (credentials.agentId) {
+    headers.set("x-agent-id", credentials.agentId);
+  }
+  if (credentials.agentSecret) {
+    headers.set("x-agent-secret", credentials.agentSecret);
+  }
   ${
     target === "browser"
       ? `if (credentials.visitorToken) {
@@ -350,6 +367,13 @@ async function credentialsForRoute(
     const token = await resolveToken(config.bearerToken);
     if (!token) throw new Error("This Auggy route requires a bearerToken.");
     return { bearerToken: token };
+  }
+  if (auth === "agent.required") {
+    const credentials = await resolveAgentCredentials(config.agentCredentials);
+    if (!credentials?.agentId || !credentials.agentSecret) {
+      throw new Error("This Auggy route requires agentCredentials.");
+    }
+    return { agentId: credentials.agentId, agentSecret: credentials.agentSecret };
   }`
       : `if (auth === "visitor.required" || auth === "visitor.optional") {
     const authAssertion = await resolveToken(config.authAssertion);
@@ -392,6 +416,15 @@ async function resolveToken(provider: TokenProvider | undefined): Promise<string
   if (typeof provider === "function") return provider();
   return provider;
 }
+${
+  target === "server"
+    ? `
+async function resolveAgentCredentials(provider: AgentCredentialsProvider | undefined): Promise<AuggyAgentCredentials | undefined> {
+  if (typeof provider === "function") return provider();
+  return provider;
+}`
+    : ""
+}
 
 async function resolveHeaders(provider: HeadersProvider | undefined): Promise<HeadersInit | undefined> {
   if (typeof provider === "function") return provider();
@@ -424,13 +457,15 @@ function clientTypeExports(): string {
 }
 
 function routeAuthUnion(target: TypeScriptClientTarget): string {
-  if (target === "server") return '"bearer" | "creator" | "none"';
+  if (target === "server") return '"bearer" | "creator" | "agent.required" | "none"';
   return '"none" | "visitor.optional" | "visitor.required"';
 }
 
 function routeSupportsTarget(route: RouteManifestEntry, target: TypeScriptClientTarget): boolean {
   if (route.auth === "none") return true;
-  if (route.auth === "bearer" || route.auth === "creator") return target === "server";
+  if (route.auth === "bearer" || route.auth === "creator" || route.auth === "agent.required") {
+    return target === "server";
+  }
   return target === "browser";
 }
 

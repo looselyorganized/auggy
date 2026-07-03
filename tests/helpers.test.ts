@@ -173,6 +173,28 @@ describe("defineRoute", () => {
     });
   });
 
+  it("supplies agent auth context for agent routes invoked directly", async () => {
+    const route = defineRoute.get("/agent-api/search", {
+      auth: "agent.required",
+      handler: ({ auth }) => json({ auth: auth.mode, principal: auth.principal }),
+    });
+
+    const res = await route.handler(new Request("http://localhost/agent-api/search"), {
+      signal: AbortSignal.timeout(1000),
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      auth: "agent",
+      principal: {
+        kind: "agent",
+        trustLevel: "agent",
+        agentId: "agent",
+        peerId: "agent:agent",
+      },
+    });
+  });
+
   it("creates a GET route that validates path params", async () => {
     const route = defineRoute.get("/services/:id", {
       auth: "none",
