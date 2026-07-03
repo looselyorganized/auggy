@@ -258,6 +258,40 @@ Useful CLI affordances:
 - `auggy augment create catalog --with-route --with-tool --with-admin`
 - `auggy doctor` listing public augment routes, bearer routes, and reserved routes
 
+## Extension thesis: humans, agents, and budgets
+
+The same app-backend shape gets more distinctive when combined with `link`,
+`budgets`, and `visitorAuth`.
+
+- `link` can turn Auggy sites into agent-addressable backends for admitted
+  agent peers. Today this is preview A2A-style peer traffic between configured
+  agents, not open web discovery or universal Claude integration. The long-term
+  opportunity is agent-to-agent commerce, support, procurement, and specialist
+  delegation over explicit peer auth and route-backed actions.
+- `budgets` can cap how much work public visitors, recognized visitors, and
+  agent peers are allowed to trigger. It is not semantic content control or hard
+  billing control; it is kernel-level work admission plus budget-aware model
+  context. Commerce and negotiation limits still belong in deterministic domain
+  policy.
+- `visitorAuth` proves human identity and enables recognized visitor routes,
+  memory continuity, and future visitor-authorized delegation. It should not be
+  renamed into agent auth; future agent auth should be a sibling primitive.
+
+The powerful future flow is a consented handoff:
+
+1. A human proves identity with `visitorAuth`.
+2. A human authorizes an outside agent or another Auggy with a scoped,
+   revocable, short-lived delegation.
+3. The outside agent speaks to an Auggy app backend through public routes,
+   Link/A2A, or both.
+4. Budgets cap the work allowed for that visitor, peer, or task.
+5. Deterministic routes/components complete checkout, booking, account lookup,
+   or quote acceptance.
+
+This is the safe version of "my agent talks to your agent." The model can
+research, negotiate within policy, and prepare actions, but the runtime verifies
+identity and the routes commit state.
+
 ## Current constraint
 
 The current route surface is intentionally narrow:

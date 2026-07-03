@@ -24,7 +24,7 @@ import {
   formatModelSnapshotRef,
   readModelSnapshot,
 } from "../model-snapshot";
-import { formatRouteManifestEntry, inspectCustomAugmentRoutes } from "../route-inspector";
+import { formatRouteManifestEntry, inspectAugmentRoutes } from "../route-inspector";
 import type { AugmentConfig, ParsedConfig } from "../types";
 
 export type DoctorStatus = "pass" | "warn" | "fail";
@@ -462,23 +462,21 @@ async function checkAugmentRoutes(
   agentDir: string,
   configs: AugmentConfig[],
 ): Promise<DoctorCheck[]> {
-  const customConfigs = configs.filter((aug) => aug.type === "custom");
-  if (customConfigs.length === 0) return [];
-
-  const inspected = await inspectCustomAugmentRoutes(agentDir, customConfigs);
+  const inspected = await inspectAugmentRoutes(agentDir, configs);
   if (inspected.issues.length > 0) {
     return inspected.issues.map((issue) => ({
       name: "augment routes",
       status: "fail",
       message: issue.message,
       fix:
-        issue.kind === "load"
-          ? "Run `bun install`, then check the custom augment source path and default export."
+        issue.kind === "load" || issue.kind === "boot"
+          ? "Run `bun install`, then check the augment config, source paths, env vars, and boot diagnostics."
           : "Fix the route path, auth mode, or duplicate registration in the custom augment.",
     }));
   }
 
   const { manifest, summary } = inspected;
+  if (manifest.length === 0) return [];
 
   const checks: DoctorCheck[] = [
     {

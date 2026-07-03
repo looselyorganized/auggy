@@ -2195,6 +2195,51 @@ describe("webTransport augment-registered routes", () => {
     }
   });
 
+  it("adds configured CORS headers to augment route responses and method mismatches", async () => {
+    const model = createMockModel();
+    const port = 19970;
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: "test-token" },
+      cors: { origins: ["https://example.com"] },
+    });
+    const fixture: Augment = {
+      name: "cors-routes",
+      httpRoutes: [
+        {
+          method: "GET",
+          path: "/cors/echo",
+          auth: "none",
+          handler: async () =>
+            new Response(JSON.stringify({ ok: true }), {
+              status: 200,
+              headers: { "content-type": "application/json" },
+            }),
+        },
+      ],
+    };
+    const agent = defineAgent({ name: "test", model: "mock", augments: [fixture, aug] }, model);
+    await agent.start();
+    try {
+      const ok = await fetch(`http://localhost:${port}/cors/echo`, {
+        headers: { origin: "https://example.com" },
+      });
+      expect(ok.status).toBe(200);
+      expect(ok.headers.get("access-control-allow-origin")).toBe("https://example.com");
+      expect(ok.headers.get("access-control-expose-headers")).toContain("x-visitor-token");
+
+      const mismatch = await fetch(`http://localhost:${port}/cors/echo`, {
+        method: "POST",
+        headers: { origin: "https://example.com" },
+      });
+      expect(mismatch.status).toBe(405);
+      expect(mismatch.headers.get("allow")).toBe("GET");
+      expect(mismatch.headers.get("access-control-allow-origin")).toBe("https://example.com");
+    } finally {
+      await agent.stop();
+    }
+  });
+
   it("auth: bearer route rejects request without bearer token", async () => {
     const model = createMockModel();
     const port = 18971;
@@ -2594,6 +2639,35 @@ describe("webTransport augment-registered routes", () => {
       const res3 = await fetch(`http://localhost:${port}/test/echo?msg=3`);
       expect(res3.status).toBe(429);
       expect(res3.headers.get("retry-after")).toMatch(/^\d+$/);
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("checks per-route rate limits before buffering oversized request bodies", async () => {
+    const model = createMockModel();
+    const port = 19971;
+    const aug = webTransport({ port, auth: { type: "bearer", token: "test-token" } });
+    let handlerCalled = false;
+    const fixture = routeFixtureAugment({
+      method: "POST",
+      auth: "none",
+      maxBodyBytes: 1,
+      rateLimit: { maxPerMinute: 0 },
+      handler: async () => {
+        handlerCalled = true;
+        return new Response("ok");
+      },
+    });
+    const agent = defineAgent({ name: "test", model: "mock", augments: [fixture, aug] }, model);
+    await agent.start();
+    try {
+      const resp = await fetch(`http://localhost:${port}/test/echo`, {
+        method: "POST",
+        body: "too large for the route cap",
+      });
+      expect(resp.status).toBe(429);
+      expect(handlerCalled).toBe(false);
     } finally {
       await agent.stop();
     }

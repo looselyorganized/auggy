@@ -1455,6 +1455,22 @@ export function webTransport(opts: WebTransportOptions): Augment {
     return new Response(JSON.stringify(body), { status, headers });
   }
 
+  function withCorsHeaders(response: Response): Response {
+    if (!opts.cors) return response;
+    const headers = new Headers(response.headers);
+    if (!headers.has("access-control-allow-origin")) {
+      headers.set("access-control-allow-origin", opts.cors.origins.join(","));
+    }
+    if (!headers.has("access-control-expose-headers")) {
+      headers.set("access-control-expose-headers", "x-visitor-token, idempotency-key");
+    }
+    return new Response(response.body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers,
+    });
+  }
+
   return {
     name: "web",
     type: "webTransport",
@@ -1608,6 +1624,19 @@ export function webTransport(opts: WebTransportOptions): Augment {
             const routeAuth = await authorizeAugmentRoute(req, augmentRoute.auth);
             if (!routeAuth.ok) return routeAuth.response;
 
+            // Per-route rate limit runs before body buffering so rejected public
+            // POSTs do not force reads up to maxBodyBytes before receiving 429.
+            if (augmentRoute.rateLimit) {
+              const routeKey = `${augmentRoute.method} ${augmentRoute.path}`;
+              const ip = getCallerIp(req, server, trustedProxies, xffOnUntrusted);
+              const rl = checkRouteRateLimit(routeKey, ip, augmentRoute.rateLimit.maxPerMinute);
+              if (!rl.allowed) {
+                return json({ error: "rate-limited" }, 429, {
+                  "retry-after": String(rl.retryAfterSec),
+                });
+              }
+            }
+
             // Finding 2 — body-size cap. Buffer the request body up to maxBodyBytes
             // bytes, enforcing actual byte-count (not just content-length header).
             // Adversarial clients can omit content-length or use chunked encoding
@@ -1633,19 +1662,6 @@ export function webTransport(opts: WebTransportOptions): Augment {
               }
             }
 
-            // Finding 3 — per-route rate limit keyed by route + caller IP.
-            // Prevents one client from exhausting the bucket for everyone.
-            if (augmentRoute.rateLimit) {
-              const routeKey = `${augmentRoute.method} ${augmentRoute.path}`;
-              const ip = getCallerIp(req, server, trustedProxies, xffOnUntrusted);
-              const rl = checkRouteRateLimit(routeKey, ip, augmentRoute.rateLimit.maxPerMinute);
-              if (!rl.allowed) {
-                return json({ error: "rate-limited" }, 429, {
-                  "retry-after": String(rl.retryAfterSec),
-                });
-              }
-            }
-
             try {
               // Finding 1 — AbortController for cooperative cancellation on timeout.
               // The controller fires on timeout so handlers that listen to the signal
@@ -1654,7 +1670,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
               const controller = new AbortController();
               const timer = setTimeout(() => controller.abort(), timeoutMs);
               try {
-                return await withTimeout(
+                const response = await withTimeout(
                   () =>
                     augmentRoute.handler(dispatchReq, {
                       signal: controller.signal,
@@ -1664,6 +1680,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
                     }),
                   timeoutMs,
                 );
+                return withCorsHeaders(response);
               } finally {
                 clearTimeout(timer);
               }
@@ -1693,10 +1710,12 @@ export function webTransport(opts: WebTransportOptions): Augment {
             ),
           ];
           if (allowedMethods.length > 0) {
-            return new Response("Method Not Allowed", {
-              status: 405,
-              headers: { allow: allowedMethods.join(", ") },
-            });
+            return withCorsHeaders(
+              new Response("Method Not Allowed", {
+                status: 405,
+                headers: { allow: allowedMethods.join(", ") },
+              }),
+            );
           }
 
           return new Response("Not Found", { status: 404 });

@@ -99,7 +99,13 @@ function writeAgent(
   if (opts.includeVisitorAuth) {
     writeAugmentMetadata(dir, "visitorAuth", {
       type: "visitorAuth",
-      config: { signingKey: "${VISITOR_SIGNING_KEY}" },
+      config: {
+        publicUrl: "http://localhost:8080",
+        dbPath: "./visitor-auth.db",
+        agentMail: { transport: "console" },
+        signingKey: "${VISITOR_SIGNING_KEY}",
+        layeredMemoryDbPath: null,
+      },
     });
   }
   if (opts.includeMcp) {

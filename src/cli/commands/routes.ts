@@ -3,7 +3,7 @@ import { Command } from "commander";
 import { parseConfig } from "../config-parser";
 import { createOpenApiDocument } from "../routes-openapi";
 import { resolveConfigPath } from "../resolve-config";
-import { inspectCustomAugmentRoutes } from "../route-inspector";
+import { inspectAugmentRoutes } from "../route-inspector";
 import type { RouteManifestEntry, RouteManifestSummary } from "../../kernel/route-manifest";
 
 export interface RoutesOptions {
@@ -37,7 +37,7 @@ export async function runRoutes(
     cwd: opts.cwd,
   });
   const config = parseConfig(configPath);
-  const inspected = await inspectCustomAugmentRoutes(dirname(configPath), config.augments);
+  const inspected = await inspectAugmentRoutes(dirname(configPath), config.augments);
 
   if (inspected.issues.length > 0) {
     throw new Error(
@@ -62,7 +62,7 @@ export function formatRoutesReport(report: RoutesReport): string {
   const lines = [`Routes for ${report.agent.name}`, ""];
 
   if (report.routes.length === 0) {
-    lines.push("No custom augment routes found.");
+    lines.push("No augment routes found.");
     return lines.join("\n");
   }
 
@@ -103,7 +103,7 @@ export function routesCommand(deps: RoutesCommandDeps = {}): Command {
   const exit = deps.exit ?? ((code: number) => process.exit(code));
 
   return new Command("routes")
-    .description("Show custom HTTP routes registered by an agent")
+    .description("Show HTTP routes registered by an agent")
     .argument("[name]", "agent name")
     .option("--config <path>", "path to agent.yaml")
     .option("--json", "print the route manifest as JSON")

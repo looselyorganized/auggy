@@ -629,7 +629,7 @@ These are deferred to future plans or future improvements:
 
 ## Augment-registered HTTP routes (PR γ.1)
 
-Augments can register HTTP routes that `webTransport` serves alongside its built-in paths. Routes are collected at `agent.start()` after every augment's `onBoot` runs and before any port binds — collisions throw early, never silently override.
+Augments can register HTTP routes that `webTransport` serves alongside its built-in paths. Routes are collected at `agent.start()` after every augment's `onBoot` runs, so boot-populated route lists are visible to the dispatcher and route manifest. Collisions throw during startup and never silently override another route.
 
 ### Declaring a route
 
@@ -688,8 +688,10 @@ Convention: scope routes under `/<augment-name>/...` to make collisions across t
 | Field | Default | Behavior |
 |---|---|---|
 | `timeoutMs` | 30,000 | Handler exceeding this returns 504. The handler's promise is not cancelled (continues running; result discarded). |
-| `maxBodyBytes` | 1,048,576 (1 MB) | Request with `content-length` over the cap returns 413 before the handler runs. |
-| `rateLimit.maxPerMinute` | (no limit) | Per-route sliding-window counter, keyed on caller IP (see "Caller IP & `trustedProxies`" below). Returns 429 with `Retry-After`. |
+| `maxBodyBytes` | 1,048,576 (1 MB) | Non-GET/HEAD request bodies are buffered up to the cap using actual bytes read. Over-cap bodies return 413 before the handler runs. |
+| `rateLimit.maxPerMinute` | (no limit) | Per-route sliding-window counter, keyed on caller IP (see "Caller IP & `trustedProxies`" below). Returns 429 with `Retry-After` before body buffering. |
+
+When `webTransport.cors` is configured, augment route `Response` objects inherit `Access-Control-Allow-Origin` and `Access-Control-Expose-Headers` unless the handler already set those headers. This applies to successful handler responses and parameter-aware 405 method mismatches.
 
 ### Caller IP & `trustedProxies`
 
@@ -707,7 +709,7 @@ webTransport({
 
 Behavior:
 
-- Connection IP is on `trustedProxies` → first `X-Forwarded-For` value (else `X-Real-IP`) is honored.
+- Connection IP is on `trustedProxies` → `X-Forwarded-For` is parsed right-to-left, trusted proxy hops are dropped, and the first untrusted client IP is honored. `X-Real-IP` is used only when `X-Forwarded-For` is absent.
 - Connection IP is NOT on `trustedProxies` (or list is empty) → headers ignored, connection IP used directly.
 - The first time an XFF arrives without `trustedProxies` configured, a single `console.warn` per startup nudges operators with a config hint. Latched per-instance — no warning spam.
 
@@ -721,7 +723,7 @@ CIDR ranges are not yet supported (v1 keeps it simple); list the exact IPs.
 | 401 | `auth: "bearer"` route with missing/wrong bearer token, or `auth: "visitor.required"` route with missing/invalid visitor token. |
 | 404 | No augment route matches the requested (method, path). |
 | 405 | Augment registered the path for a different method. `Allow:` header lists the registered method. |
-| 413 | Request `content-length` exceeded `maxBodyBytes`. |
+| 413 | Request body exceeded `maxBodyBytes`. |
 | 429 | Per-route rate limit triggered. `Retry-After:` header set. |
 | 500 | Handler threw. Body is opaque `{"error":"internal"}`; the actual error is logged to stderr with the route path. |
 | 504 | Handler exceeded `timeoutMs`. |

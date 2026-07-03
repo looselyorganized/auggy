@@ -18,11 +18,14 @@ export default function conciergeServices(opts: ConciergeServicesOptions = {}) {
       defineRoute.get("/services", {
         auth: "none",
         query: ServiceSearchQuerySchema,
+        rateLimit: { maxPerMinute: 60 },
         handler: ({ query }) => json({ services: searchServices(query) }),
       }),
       defineRoute.post("/leads/create", {
         auth: "none",
         body: CreateLeadSchema,
+        maxBodyBytes: 8_192,
+        rateLimit: { maxPerMinute: 10 },
         handler: ({ body }) => json({ lead: saveLead(body, { leadsPath }) }, 201),
       }),
     ],

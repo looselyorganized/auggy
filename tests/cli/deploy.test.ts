@@ -166,6 +166,22 @@ function appendAugmentId(agentDir: string, id: string): void {
   );
 }
 
+function writeWebTransportWithVisitorBinding(agentDir: string): void {
+  writeAugmentMetadata(agentDir, "webTransport", {
+    type: "webTransport",
+    config: {
+      port: 8080,
+      auth: {
+        type: "bearer",
+        token: "${AUGGY_WEB_TOKEN}",
+      },
+      visitorTokens: {
+        agentBinding: "${AUGGY_AGENT_ID}",
+      },
+    },
+  });
+}
+
 describe("runDeploy", () => {
   let auggyDir: string;
   let agentDir: string;
@@ -680,6 +696,7 @@ describe("runDeploy", () => {
 
   test("aborts before Railway calls when visitorAuth uses console mail for deploy", async () => {
     appendAugmentId(agentDir, "visitorAuth");
+    writeWebTransportWithVisitorBinding(agentDir);
     writeAugmentMetadata(agentDir, "visitorAuth", {
       type: "visitorAuth",
       config: {
@@ -715,6 +732,7 @@ describe("runDeploy", () => {
 
   test("allows visitorAuth console mail deploy when explicitly acknowledged", async () => {
     appendAugmentId(agentDir, "visitorAuth");
+    writeWebTransportWithVisitorBinding(agentDir);
     writeAugmentMetadata(agentDir, "visitorAuth", {
       type: "visitorAuth",
       config: {

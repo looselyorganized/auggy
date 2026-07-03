@@ -52,6 +52,59 @@ function writeAgent(root: string, name: string, opts: { routes?: "valid" | "rese
   return dir;
 }
 
+function writeVisitorAuthAgent(root: string, name: string) {
+  const dir = join(root, name);
+  mkdirSync(dir, { recursive: true });
+
+  writeFileSync(
+    join(dir, "agent.yaml"),
+    stringify({
+      id: "aug1_a3f7c2e1-8b4d-4f9e-a6c1-2d8e9f0b3a5c",
+      name,
+      engine: {
+        provider: "anthropic",
+        model: "claude-sonnet-4-6",
+      },
+      augments: ["webTransport", "visitorAuth"],
+    }),
+  );
+
+  mkdirSync(join(dir, "augments", "webTransport"), { recursive: true });
+  writeFileSync(
+    join(dir, "augments", "webTransport", "augment.yaml"),
+    stringify({
+      type: "webTransport",
+      config: {
+        port: 0,
+        auth: { type: "bearer", token: "test-token" },
+      },
+    }),
+  );
+
+  mkdirSync(join(dir, "augments", "visitorAuth"), { recursive: true });
+  writeFileSync(
+    join(dir, "augments", "visitorAuth", "augment.yaml"),
+    stringify({
+      type: "visitorAuth",
+      config: {
+        publicUrl: "http://localhost:8080",
+        dbPath: "./visitor-auth.db",
+        agentMail: { transport: "console" },
+        signingKey: "visitor-route-secret",
+        layeredMemoryDbPath: null,
+      },
+    }),
+  );
+
+  mkdirSync(join(dir, "skills", "visitorAuth"), { recursive: true });
+  writeFileSync(
+    join(dir, "skills", "visitorAuth", "SKILL.md"),
+    "---\nname: visitorAuth\ndescription: Test visitor auth skill.\n---\n",
+  );
+
+  return dir;
+}
+
 function customRouteModule(kind: "valid" | "reserved"): string {
   if (kind === "reserved") {
     return `
@@ -172,6 +225,26 @@ describe("runRoutes", () => {
       'GET "/console" — that path is reserved by webTransport',
     );
   });
+
+  test("includes built-in routes after augment resolution and boot", async () => {
+    const root = tempRoot();
+    writeVisitorAuthAgent(root, "zip");
+
+    const report = await runRoutes("zip", { cwd: root });
+
+    expect(report.routes.map((route) => `${route.method} ${route.path}`)).toContain(
+      "POST /visitor-auth/request",
+    );
+    expect(report.routes.map((route) => `${route.method} ${route.path}`)).toContain(
+      "GET /visitor-auth/verify",
+    );
+    expect(report.routes.find((route) => route.path === "/visitor-auth/request")).toMatchObject({
+      augmentName: "visitorAuth",
+      auth: "visitor.optional",
+      public: true,
+      security: "public",
+    });
+  });
 });
 
 describe("formatRoutesReport", () => {
@@ -192,7 +265,7 @@ describe("formatRoutesReport", () => {
     );
   });
 
-  test("prints an empty state when no custom routes are registered", () => {
+  test("prints an empty state when no routes are registered", () => {
     const report: RoutesReport = {
       agent: { name: "zip", configPath: "/tmp/zip/agent.yaml" },
       summary: {
@@ -204,7 +277,7 @@ describe("formatRoutesReport", () => {
       routes: [],
     };
 
-    expect(formatRoutesReport(report)).toBe("Routes for zip\n\nNo custom augment routes found.");
+    expect(formatRoutesReport(report)).toBe("Routes for zip\n\nNo augment routes found.");
   });
 });
 

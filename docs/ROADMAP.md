@@ -44,6 +44,7 @@ based on which friction got loudest in the first 50 adopters.
 ### Operator surfaces (CLI + console)
 
 - **[console]** Additional `/console` developer surfaces, driven by adopter signal. Candidates: Memory browser, trace/event inspector, manifest viewer, skills editor, credentials editor.
+- **[routes]** Generated TypeScript route client. First cut: `auggy routes [name] --client ts [--out file]`, self-contained generated file, typed request inputs, `unknown` response payloads until response schemas exist, fetch-like non-2xx handling, visitor-token support, and explicit warning that bearer routes are server-side/SSR only. See `docs/use-cases/app-backend-architecture-strategy.md`.
 - **[budgets]** `auggy spend` command — current spend by trust tier from CLI. Today operators query SQLite directly. (G9)
 - **[budgets]** Budget-threshold notify integration — fire `notify` at 80% / 100% of `dailyBudgetUsd`. (G10)
 - **[memory]** `auggy memory <agent> [--peer X]` — inspect/audit memory entries from CLI. Visually distinguishes agent-derived from creator-confirmed facts. Required for right-to-erasure verification. (G14)
