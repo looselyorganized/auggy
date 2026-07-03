@@ -130,6 +130,8 @@ describe("external auth assertions", () => {
       email: "alice@example.com",
       emailVerified: true,
       verifiedAt: now - 1000,
+      orgId: "org_123",
+      roles: ["customer", "admin"],
     };
 
     expect(externalAuthClaimsToRoutePrincipal(claims)).toEqual({
@@ -140,6 +142,12 @@ describe("external auth assertions", () => {
       agentId: "agent_zip",
       email: "alice@example.com",
       verifiedAt: now - 1000,
+      externalAuth: {
+        provider: "fake-provider",
+        subject: "user_123",
+        orgId: "org_123",
+        roles: ["customer", "admin"],
+      },
     });
     expect(externalAuthClaimsToRouteContext(claims)).toEqual({
       mode: "visitor",
@@ -150,6 +158,12 @@ describe("external auth assertions", () => {
       expiresAt: now + 300_000,
       email: "alice@example.com",
       verifiedAt: now - 1000,
+      externalAuth: {
+        provider: "fake-provider",
+        subject: "user_123",
+        orgId: "org_123",
+        roles: ["customer", "admin"],
+      },
       principal: {
         kind: "visitor",
         trustLevel: "public",
@@ -158,6 +172,12 @@ describe("external auth assertions", () => {
         agentId: "agent_zip",
         email: "alice@example.com",
         verifiedAt: now - 1000,
+        externalAuth: {
+          provider: "fake-provider",
+          subject: "user_123",
+          orgId: "org_123",
+          roles: ["customer", "admin"],
+        },
       },
     });
   });

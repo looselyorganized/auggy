@@ -159,6 +159,9 @@ interface ResolvedAuthState {
   claims?: {
     email?: string;
     provider?: string;
+    subject?: string;
+    orgId?: string;
+    roles?: string[];
     verifiedAt?: string;
     agentId?: string;
     operatorId?: string;
@@ -218,6 +221,16 @@ Avoid naming a mode `creator` if it is only a blind bearer check with no route-c
 Implementation note: `auth: "creator"` is now a semantic alias for creator-only
 routes. It uses the same web bearer credential as `auth: "bearer"`, but route
 handlers receive `auth.mode === "creator"` and a creator principal.
+
+External app auth assertions now preserve a compact verified claim subset on
+recognized visitor route context:
+
+```ts
+auth.externalAuth // { provider, subject, orgId?, roles? }
+```
+
+This gives Clerk/Supabase/custom app sessions enough structure for app-owned
+authorization checks without making Auggy a general RBAC product.
 
 ### Step 4: visitor and agent route auth
 

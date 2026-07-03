@@ -55,6 +55,7 @@ export type {
   Storage,
   // Transport
   RouteAuthContext,
+  RouteExternalAuthClaims,
   RouteAuthPrincipal,
   RouteVisitorAuthContext,
   TransportSpec,

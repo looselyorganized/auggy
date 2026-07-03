@@ -1,5 +1,9 @@
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
-import type { RouteAuthPrincipal, RouteVisitorAuthContext } from "../types";
+import type {
+  RouteAuthPrincipal,
+  RouteExternalAuthClaims,
+  RouteVisitorAuthContext,
+} from "../types";
 
 const ASSERTION_TYPE = "auggy.external-auth.v1";
 const DEFAULT_TTL_SECONDS = 5 * 60;
@@ -157,6 +161,7 @@ export function externalAuthClaimsToRoutePrincipal(
     agentId: claims.audience,
     ...(includeEmail ? { email: claims.email } : {}),
     ...(claims.verifiedAt !== undefined ? { verifiedAt: claims.verifiedAt } : {}),
+    externalAuth: routeExternalAuthClaims(claims),
   };
 }
 
@@ -174,6 +179,7 @@ export function externalAuthClaimsToRouteContext(
     expiresAt: claims.expiresAt,
     ...(principal.email !== undefined ? { email: principal.email } : {}),
     ...(principal.verifiedAt !== undefined ? { verifiedAt: principal.verifiedAt } : {}),
+    externalAuth: principal.externalAuth,
     principal,
   };
 }
@@ -197,6 +203,15 @@ function resolveVisitorId(
   if (typeof visitorId === "function") return visitorId(claims);
   if (typeof visitorId === "string") return visitorId;
   return externalSubjectVisitorId(claims);
+}
+
+function routeExternalAuthClaims(claims: ExternalAuthClaims): RouteExternalAuthClaims {
+  return {
+    provider: claims.provider,
+    subject: claims.subject,
+    ...(claims.orgId !== undefined ? { orgId: claims.orgId } : {}),
+    ...(claims.roles !== undefined ? { roles: [...claims.roles] } : {}),
+  };
 }
 
 function encodeJson(value: unknown): string {

@@ -648,6 +648,14 @@ export interface RouteVisitorIdentity {
   email?: string;
   verifiedAt?: number;
   reverifyDueAt?: number;
+  externalAuth?: RouteExternalAuthClaims;
+}
+
+export interface RouteExternalAuthClaims {
+  provider: string;
+  subject: string;
+  orgId?: string;
+  roles?: readonly string[];
 }
 
 export type RouteAuthPrincipal =
@@ -665,6 +673,7 @@ export type RouteAuthPrincipal =
       email?: string;
       verifiedAt?: number;
       reverifyDueAt?: number;
+      externalAuth?: RouteExternalAuthClaims;
     }
   | {
       kind: "creator";

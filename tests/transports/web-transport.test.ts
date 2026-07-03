@@ -2512,6 +2512,8 @@ describe("webTransport augment-registered routes", () => {
       email: "alice@example.com",
       emailVerified: true,
       verifiedAt: now - 1000,
+      orgId: "org_store_123",
+      roles: ["customer", "vip"],
     });
     const aug = webTransport({
       port,
@@ -2551,6 +2553,12 @@ describe("webTransport augment-registered routes", () => {
         expiresAt: now + 60_000,
         email: "alice@example.com",
         verifiedAt: now - 1000,
+        externalAuth: {
+          provider: "clerk",
+          subject: "user_123",
+          orgId: "org_store_123",
+          roles: ["customer", "vip"],
+        },
         principal: {
           kind: "visitor",
           trustLevel: "public",
@@ -2559,6 +2567,12 @@ describe("webTransport augment-registered routes", () => {
           agentId: "storefront-agent",
           email: "alice@example.com",
           verifiedAt: now - 1000,
+          externalAuth: {
+            provider: "clerk",
+            subject: "user_123",
+            orgId: "org_store_123",
+            roles: ["customer", "vip"],
+          },
         },
       });
     } finally {
