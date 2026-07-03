@@ -2373,6 +2373,16 @@ describe("webTransport augment-registered routes", () => {
               principal: opts.auth?.principal,
             }),
         },
+        {
+          method: "GET",
+          path: "/ctx/creator",
+          auth: "creator",
+          handler: async (_req, opts) =>
+            json({
+              auth: opts.auth?.mode ?? null,
+              principal: opts.auth?.principal,
+            }),
+        },
       ],
     };
     const agent = defineAgent({ name: "test", model: "mock", augments: [fixture, aug] }, model);
@@ -2395,6 +2405,19 @@ describe("webTransport augment-registered routes", () => {
       expect(privateResp.status).toBe(200);
       expect(await privateResp.json()).toEqual({
         auth: "bearer",
+        principal: {
+          kind: "creator",
+          trustLevel: "creator",
+          peerId: "creator",
+        },
+      });
+
+      const creatorResp = await fetch(`http://localhost:${port}/ctx/creator`, {
+        headers: { authorization: "Bearer test-token" },
+      });
+      expect(creatorResp.status).toBe(200);
+      expect(await creatorResp.json()).toEqual({
+        auth: "creator",
         principal: {
           kind: "creator",
           trustLevel: "creator",

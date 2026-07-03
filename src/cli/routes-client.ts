@@ -116,11 +116,11 @@ function clientHeader(
     " *",
     ...(target === "browser"
       ? [
-          " * Browser clients omit bearer routes. Do not ship creator bearer tokens to browser code.",
+          " * Browser clients omit creator/bearer routes. Do not ship creator bearer tokens to browser code.",
           " * Use visitor-token routes or public routes from browser clients.",
         ]
       : [
-          " * Server clients include bearer routes for server-side and SSR callers.",
+          " * Server clients include creator/bearer routes for server-side and SSR callers.",
           " * Do not bundle this generated file into browser code with a bearer token.",
         ]),
   ];
@@ -346,7 +346,7 @@ async function credentialsForRoute(
 ): Promise<RouteCredentials> {
   ${
     target === "server"
-      ? `if (auth === "bearer") {
+      ? `if (auth === "bearer" || auth === "creator") {
     const token = await resolveToken(config.bearerToken);
     if (!token) throw new Error("This Auggy route requires a bearerToken.");
     return { bearerToken: token };
@@ -424,13 +424,13 @@ function clientTypeExports(): string {
 }
 
 function routeAuthUnion(target: TypeScriptClientTarget): string {
-  if (target === "server") return '"bearer" | "none"';
+  if (target === "server") return '"bearer" | "creator" | "none"';
   return '"none" | "visitor.optional" | "visitor.required"';
 }
 
 function routeSupportsTarget(route: RouteManifestEntry, target: TypeScriptClientTarget): boolean {
   if (route.auth === "none") return true;
-  if (route.auth === "bearer") return target === "server";
+  if (route.auth === "bearer" || route.auth === "creator") return target === "server";
   return target === "browser";
 }
 

@@ -257,4 +257,48 @@ describe("createOpenApiDocument", () => {
       },
     });
   });
+
+  test("exports creator route auth as bearer security with semantic metadata", () => {
+    const doc = createOpenApiDocument({
+      agent: { name: "zip", configPath: "/tmp/zip/agent.yaml" },
+      summary: {
+        totalRoutes: 1,
+        publicRoutes: 0,
+        privateRoutes: 1,
+        publicRoutePaths: [],
+      },
+      routes: [
+        {
+          method: "POST",
+          path: "/admin/reindex",
+          augmentName: "catalog",
+          auth: "creator",
+          params: [],
+          public: false,
+          security: "private",
+        },
+      ],
+    }) as {
+      paths: Record<string, Record<string, Record<string, unknown>>>;
+      components?: Record<string, unknown>;
+    };
+
+    expect(doc.paths["/admin/reindex"]?.post?.security).toEqual([{ bearerAuth: [] }]);
+    expect(doc.paths["/admin/reindex"]?.post?.responses).toMatchObject({
+      "401": { description: "Unauthorized" },
+    });
+    expect(doc.paths["/admin/reindex"]?.post?.["x-auggy"]).toMatchObject({
+      auth: "creator",
+      security: "private",
+      public: false,
+    });
+    expect(doc.components).toEqual({
+      securitySchemes: {
+        bearerAuth: {
+          type: "http",
+          scheme: "bearer",
+        },
+      },
+    });
+  });
 });

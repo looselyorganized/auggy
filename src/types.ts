@@ -617,6 +617,10 @@ export type HttpMethod = "GET" | "POST";
  * - `"bearer"` — the route inherits webTransport's bearer-token check (same
  *   token that gates `/agent/run`). Recommended default for any route that
  *   represents creator-driven action.
+ * - `"creator"` — semantic alias for creator-only routes. Uses the same web
+ *   bearer check as `"bearer"`, but exposes `auth.mode === "creator"` to route
+ *   handlers so app code can distinguish intentional creator authority from
+ *   legacy bearer naming.
  * - `"none"` — the route accepts any caller. Opt-in only; required for
  *   public callbacks like email magic-link clicks (PR γ.2 visitorAuth) where
  *   the visitor can't supply a bearer token. Boot logs a warning per
@@ -629,7 +633,12 @@ export type HttpMethod = "GET" | "POST";
  *   only when the transport is wired with visitorAuth / identityLookup; the token
  *   itself carries only visitor id + agent binding + timestamps.
  */
-export type AugmentHttpRouteAuth = "bearer" | "none" | "visitor.optional" | "visitor.required";
+export type AugmentHttpRouteAuth =
+  | "bearer"
+  | "creator"
+  | "none"
+  | "visitor.optional"
+  | "visitor.required";
 
 export interface RouteVisitorIdentity {
   visitorId: string;
@@ -670,6 +679,10 @@ export type RouteAuthContext =
     }
   | {
       mode: "bearer";
+      principal: Extract<RouteAuthPrincipal, { kind: "creator" }>;
+    }
+  | {
+      mode: "creator";
       principal: Extract<RouteAuthPrincipal, { kind: "creator" }>;
     }
   | {

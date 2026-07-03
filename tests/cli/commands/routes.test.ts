@@ -432,7 +432,7 @@ describe("routesCommand", () => {
     expect(source).toContain('"/services/:serviceId": { params: { serviceId: string; }; };');
   });
 
-  test("prints browser-target TypeScript client output and omits bearer routes", async () => {
+  test("prints browser-target TypeScript client output and omits creator routes", async () => {
     const exit = mock((_code: number) => {});
     const logs: string[] = [];
     const origLog = console.log;
@@ -465,7 +465,7 @@ describe("routesCommand", () => {
               method: "POST",
               path: "/admin/reindex",
               augmentName: "concierge-services",
-              auth: "bearer",
+              auth: "creator",
               params: [],
               public: false,
               security: "private",
@@ -484,10 +484,10 @@ describe("routesCommand", () => {
     expect(source).toContain("Target: browser.");
     expect(source).toContain('"/services": {};');
     expect(source).not.toContain('"/admin/reindex":');
-    expect(source).toContain("* - POST /admin/reindex auth=bearer");
+    expect(source).toContain("* - POST /admin/reindex auth=creator");
   });
 
-  test("prints server-target TypeScript client output and includes bearer routes", async () => {
+  test("prints server-target TypeScript client output and includes creator routes", async () => {
     const exit = mock((_code: number) => {});
     const logs: string[] = [];
     const origLog = console.log;
@@ -520,7 +520,7 @@ describe("routesCommand", () => {
               method: "POST",
               path: "/admin/reindex",
               augmentName: "concierge-services",
-              auth: "bearer",
+              auth: "creator",
               params: [],
               public: false,
               security: "private",

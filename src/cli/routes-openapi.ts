@@ -14,7 +14,9 @@ export interface OpenApiRoutesReport {
 export function createOpenApiDocument(report: OpenApiRoutesReport): JsonObject {
   const paths: JsonObject = {};
   const operationIds = new Set<string>();
-  const hasBearerRoutes = report.routes.some((route) => route.auth === "bearer");
+  const hasBearerRoutes = report.routes.some(
+    (route) => route.auth === "bearer" || route.auth === "creator",
+  );
   const hasVisitorRoutes = report.routes.some((route) => route.auth.startsWith("visitor."));
 
   for (const route of report.routes) {
@@ -118,7 +120,7 @@ function responsesForRoute(route: RouteManifestEntry): JsonObject {
   return {
     "200": successResponse(route),
     "400": { description: "Bad request" },
-    ...(route.auth === "bearer" || route.auth === "visitor.required"
+    ...(route.auth === "bearer" || route.auth === "creator" || route.auth === "visitor.required"
       ? { "401": { description: "Unauthorized" } }
       : {}),
     ...(route.rateLimit ? { "429": { description: "Rate limited" } } : {}),
@@ -142,7 +144,7 @@ function successResponse(route: RouteManifestEntry): JsonObject {
 }
 
 function securityForRoute(route: RouteManifestEntry): JsonObject[] {
-  if (route.auth === "bearer") return [{ bearerAuth: [] }];
+  if (route.auth === "bearer" || route.auth === "creator") return [{ bearerAuth: [] }];
   if (route.auth === "visitor.required") return [{ visitorTokenAuth: [] }];
   if (route.auth === "visitor.optional") return [{}, { visitorTokenAuth: [] }];
   return [];

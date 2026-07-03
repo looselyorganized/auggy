@@ -152,6 +152,27 @@ describe("defineRoute", () => {
     });
   });
 
+  it("supplies creator auth context for semantic creator routes invoked directly", async () => {
+    const route = defineRoute.get("/creator", {
+      auth: "creator",
+      handler: ({ auth }) => json({ auth: auth.mode, principal: auth.principal }),
+    });
+
+    const res = await route.handler(new Request("http://localhost/creator"), {
+      signal: AbortSignal.timeout(1000),
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      auth: "creator",
+      principal: {
+        kind: "creator",
+        trustLevel: "creator",
+        peerId: "creator",
+      },
+    });
+  });
+
   it("creates a GET route that validates path params", async () => {
     const route = defineRoute.get("/services/:id", {
       auth: "none",

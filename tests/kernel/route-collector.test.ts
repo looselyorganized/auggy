@@ -131,15 +131,20 @@ describe("collectAugmentRoutes", () => {
     expect(result.errors).toEqual([]);
   });
 
-  test("allows visitor route auth modes", () => {
+  test("allows creator and visitor route auth modes", () => {
     const result = collectAugmentRoutes([
+      aug("creator", [route("POST", "/admin/reindex", "creator")]),
       aug("visitors", [
         route("GET", "/profile", "visitor.required"),
         route("GET", "/recommendations", "visitor.optional"),
       ]),
     ]);
     expect(result.errors).toEqual([]);
-    expect(result.routes.map((r) => r.auth)).toEqual(["visitor.required", "visitor.optional"]);
+    expect(result.routes.map((r) => r.auth)).toEqual([
+      "creator",
+      "visitor.required",
+      "visitor.optional",
+    ]);
   });
 
   test("rejects path that does not start with '/'", () => {

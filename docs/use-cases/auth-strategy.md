@@ -215,6 +215,10 @@ Add `creator` only when bearer-auth routes can expose resolved creator/auth stat
 
 Avoid naming a mode `creator` if it is only a blind bearer check with no route-context identity. Users will infer stronger semantics.
 
+Implementation note: `auth: "creator"` is now a semantic alias for creator-only
+routes. It uses the same web bearer credential as `auth: "bearer"`, but route
+handlers receive `auth.mode === "creator"` and a creator principal.
+
 ### Step 4: visitor and agent route auth
 
 Add only after route context can resolve credentials consistently:

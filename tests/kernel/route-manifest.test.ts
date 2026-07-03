@@ -94,13 +94,14 @@ describe("route manifest", () => {
       aug("visitor-aware", [route("GET", "/recommendations", "visitor.optional")]),
       aug("visitor-private", [route("GET", "/orders/:id", "visitor.required")]),
       aug("private", [route("POST", "/orders/create", "bearer")]),
+      aug("creator", [route("POST", "/admin/reindex", "creator")]),
     ]);
     const manifest = createRouteManifest(collected.routes);
 
     expect(summarizeRouteManifest(manifest)).toEqual({
-      totalRoutes: 4,
+      totalRoutes: 5,
       publicRoutes: 2,
-      privateRoutes: 2,
+      privateRoutes: 3,
       publicRoutePaths: ["GET /services", "GET /recommendations"],
     });
   });

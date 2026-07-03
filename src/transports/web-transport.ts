@@ -1207,12 +1207,12 @@ export function webTransport(opts: WebTransportOptions): Augment {
       return { ok: true, context: { mode: "none", principal: anonymousRoutePrincipal() } };
     }
 
-    if (auth === "bearer") {
+    if (auth === "bearer" || auth === "creator") {
       const authHeader = req.headers.get("authorization") ?? "";
       if (!isValidAuth(authHeader)) {
         return { ok: false, response: json({ error: "unauthorized" }, 401) };
       }
-      return { ok: true, context: { mode: "bearer", principal: creatorRoutePrincipal() } };
+      return { ok: true, context: { mode: auth, principal: creatorRoutePrincipal() } };
     }
 
     if (auth === "visitor.optional" || auth === "visitor.required") {

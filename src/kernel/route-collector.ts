@@ -99,12 +99,13 @@ export function collectAugmentRoutes(augments: readonly Augment[]): CollectAugme
       // fail-open dispatch on typos / dynamic-config bugs.
       if (
         r.auth !== "bearer" &&
+        r.auth !== "creator" &&
         r.auth !== "none" &&
         r.auth !== "visitor.optional" &&
         r.auth !== "visitor.required"
       ) {
         errors.push(
-          `Augment "${aug.name}" registered HTTP route ${r.method} "${r.path}" with invalid auth "${r.auth}" — must be "bearer", "none", "visitor.optional", or "visitor.required".`,
+          `Augment "${aug.name}" registered HTTP route ${r.method} "${r.path}" with invalid auth "${r.auth}" — must be "bearer", "creator", "none", "visitor.optional", or "visitor.required".`,
         );
         continue;
       }

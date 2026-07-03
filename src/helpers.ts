@@ -157,9 +157,9 @@ function requestJsonSchema(
 }
 
 function fallbackRouteAuth(auth: AugmentHttpRouteAuth): RouteAuthContext {
-  if (auth === "bearer") {
+  if (auth === "bearer" || auth === "creator") {
     return {
-      mode: "bearer",
+      mode: auth,
       principal: { kind: "creator", trustLevel: "creator", peerId: "creator" },
     };
   }

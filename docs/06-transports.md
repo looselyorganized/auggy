@@ -660,7 +660,8 @@ export function myAugment(): Augment {
 
 `auth` is **required** — no implicit default.
 
-- `"bearer"` — the route inherits webTransport's bearer-token check. Use for any route that represents a creator-authenticated action.
+- `"bearer"` — the route inherits webTransport's bearer-token check. Legacy name for creator-authorized routes.
+- `"creator"` — semantic alias for creator-only routes. Uses the same bearer-token check as `"bearer"`, but route handlers receive `auth.mode === "creator"` so app code can express creator authority directly.
 - `"none"` — the route accepts any caller. Use ONLY for genuinely public callbacks (email click-backs, OAuth redirects). The boot log emits a `console.warn` per `auth: "none"` route so operators see the unauthenticated surfaces.
 - `"visitor.optional"` — the route accepts anonymous callers but resolves a recognized visitor when a valid `x-visitor-token` is present. The boot log warns because the route is still anonymous-callable.
 - `"visitor.required"` — the route requires a valid `x-visitor-token`. Missing, invalid, expired, wrong-agent, or revoked tokens return `401 {"error":"visitor-auth-required"}`. Handler auth context always includes `visitorId`; when `visitorAuth` or another `identityLookup` is mounted, it can also include `email`, `verifiedAt`, and `reverifyDueAt`.
@@ -720,7 +721,7 @@ CIDR ranges are not yet supported (v1 keeps it simple); list the exact IPs.
 | Status | Trigger |
 |---|---|
 | 200 | Handler returned a 2xx Response. |
-| 401 | `auth: "bearer"` route with missing/wrong bearer token, or `auth: "visitor.required"` route with missing/invalid visitor token. |
+| 401 | `auth: "bearer"` / `auth: "creator"` route with missing/wrong bearer token, or `auth: "visitor.required"` route with missing/invalid visitor token. |
 | 404 | No augment route matches the requested (method, path). |
 | 405 | Augment registered the path for a different method. `Allow:` header lists the registered method. |
 | 413 | Request body exceeded `maxBodyBytes`. |
@@ -735,7 +736,7 @@ CIDR ranges are not yet supported (v1 keeps it simple); list the exact IPs.
 - Exact paths and full-segment path params are supported (`/items/:id`). Prefix routes are not supported.
 - No streaming response support — handlers return discrete `Response` objects. AG-UI's SSE stays exclusive to `/agent/run`.
 - Routes are frozen at `agent.start()` — no dynamic add/remove during runtime.
-- Per-route auth schemes are `bearer`, `none`, `visitor.optional`, and `visitor.required`. For OAuth/HMAC/custom schemes, augments wrap their handler with the additional check.
+- Per-route auth schemes are `bearer`, `creator`, `none`, `visitor.optional`, and `visitor.required`. For OAuth/HMAC/custom schemes, augments wrap their handler with the additional check.
 
 ## The `/console` route
 
