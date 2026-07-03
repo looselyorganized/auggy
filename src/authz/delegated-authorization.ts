@@ -23,7 +23,7 @@ export type DelegatedAuthorizationDecision =
     };
 
 export interface DelegatedAuthorizationContext {
-  auth: RouteAuthContext;
+  auth?: RouteAuthContext | null;
   params?: Record<string, string>;
 }
 
@@ -86,7 +86,10 @@ export function validateAuthorizationRequirements(value: unknown): string | unde
   return undefined;
 }
 
-function externalAuthClaims(auth: RouteAuthContext): RouteExternalAuthClaims | null {
+function externalAuthClaims(
+  auth: RouteAuthContext | null | undefined,
+): RouteExternalAuthClaims | null {
+  if (!auth) return null;
   if (auth.mode !== "visitor" || auth.state !== "recognized") return null;
   return auth.externalAuth ?? null;
 }

@@ -1270,6 +1270,16 @@ export function webTransport(opts: WebTransportOptions): Augment {
     };
   }
 
+  function resolveAgentRunTurnAuth(
+    visitorPayload: VisitorTokenPayload | null,
+    externalAuth: RouteVisitorAuthContext | null,
+  ): RouteVisitorAuthContext | undefined {
+    if (visitorPayload === null || externalAuth?.state !== "recognized") return undefined;
+    if (externalAuth.visitorId !== visitorPayload.visitorId) return undefined;
+    if (externalAuth.agentId !== visitorPayload.agentId) return undefined;
+    return externalAuth;
+  }
+
   async function authorizeAugmentRoute(
     req: Request,
     auth: AugmentHttpRouteAuth,
@@ -1361,15 +1371,21 @@ export function webTransport(opts: WebTransportOptions): Augment {
     // --- Visitor token handling ---
     let visitorPayload: VisitorTokenPayload | null = null;
     let newToken: string | null = null;
+    let externalVisitorAuth: RouteVisitorAuthContext | null | undefined;
+    function readExternalVisitorAuth(): RouteVisitorAuthContext | null {
+      if (externalVisitorAuth !== undefined) return externalVisitorAuth;
+      externalVisitorAuth = resolveExternalVisitorAuth(req);
+      return externalVisitorAuth;
+    }
     function applyExternalVisitorAuth(): void {
       if (visitorPayload) return;
-      const externalVisitorAuth = resolveExternalVisitorAuth(req);
-      if (externalVisitorAuth?.state === "recognized") {
+      const externalAuth = readExternalVisitorAuth();
+      if (externalAuth?.state === "recognized") {
         visitorPayload = {
-          visitorId: externalVisitorAuth.visitorId,
-          agentId: externalVisitorAuth.agentId,
-          issuedAt: externalVisitorAuth.issuedAt,
-          expiresAt: externalVisitorAuth.expiresAt,
+          visitorId: externalAuth.visitorId,
+          agentId: externalAuth.agentId,
+          issuedAt: externalAuth.issuedAt,
+          expiresAt: externalAuth.expiresAt,
         };
       }
     }
@@ -1495,6 +1511,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
       return json({ error: "missing peer identity" }, 400);
     }
 
+    const turnAuth = resolveAgentRunTurnAuth(visitorPayload, readExternalVisitorAuth());
     const parts: Part[] = [{ kind: "text", text }];
     const inbound: InboundMessage = {
       parts,
@@ -1513,6 +1530,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
       timestamp: Date.now(),
       source: "web",
       peer,
+      ...(turnAuth !== undefined ? { auth: turnAuth } : {}),
       payload: inbound,
     };
 

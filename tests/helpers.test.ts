@@ -33,6 +33,19 @@ describe("defineTool", () => {
     const result = await tool.execute({ name: "Alice" });
     expect(result).toBe("Hello, Alice!");
   });
+
+  it("preserves delegated authorization requirements", () => {
+    const tool = defineTool({
+      name: "read_orders",
+      description: "Read orders",
+      category: "search",
+      input: z.object({}),
+      requires: { scope: "orders.read" },
+      execute: async () => "ok",
+    });
+
+    expect(tool.requires).toEqual({ scope: "orders.read" });
+  });
 });
 
 describe("defineAugment", () => {

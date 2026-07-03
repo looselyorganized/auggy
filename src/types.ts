@@ -128,6 +128,7 @@ export interface ToolExecuteContext {
   turnId: string;
   peer: PeerIdentity | null;
   threadId: string;
+  auth?: RouteAuthContext;
 }
 
 // biome-ignore lint/suspicious/noExplicitAny: Tool is covariant over arbitrary model-facing schemas.
@@ -138,6 +139,7 @@ export interface Tool<TInput = any> {
   // biome-ignore lint/suspicious/noExplicitAny: ZodType internals vary by schema and should not constrain Tool callers.
   input: z.ZodType<TInput, any, any>;
   inputJsonSchema?: Record<string, unknown>;
+  requires?: AuthorizationRequirement | readonly AuthorizationRequirement[];
   execute: (input: TInput, context?: ToolExecuteContext) => Promise<string | ToolResult>;
 }
 
@@ -230,6 +232,7 @@ export interface TurnTrigger {
   timestamp: number;
   source?: string;
   peer?: PeerIdentity | null;
+  auth?: RouteAuthContext;
   payload: InboundMessage | Record<string, unknown>;
 }
 

@@ -33,7 +33,9 @@ export type {
   // Tools
   Tool,
   ToolCategory,
+  ToolExecuteContext,
   ToolDefinition,
+  ToolResult,
   // Peers
   PeerIdentity,
   PeerKind,

@@ -956,6 +956,89 @@ describe("webTransport HTTP server", () => {
     }
   });
 
+  it("POST /agent/run passes external auth claims to protected tools", async () => {
+    const model = createMockModel();
+    model.pushResponse({
+      content: "",
+      toolCalls: [{ name: "read_orders", arguments: {} }],
+      finishReason: "tool_use",
+    });
+    model.pushResponse({ content: "done", finishReason: "end_turn" });
+
+    const port = 18924;
+    const assertion = createExternalAuthAssertion({
+      secret: "app-auth-secret",
+      audience: "test",
+      provider: "supabase",
+      subject: "user_123",
+      ttlSeconds: 60,
+      scopes: ["orders.read"],
+    });
+    let observedScopes: readonly string[] | undefined;
+    const protectedTools: Augment = {
+      name: "protected-tools",
+      tools: [
+        {
+          name: "read_orders",
+          description: "Read orders",
+          category: "search",
+          input: z.object({}),
+          requires: { scope: "orders.read" },
+          execute: async (_input, context) => {
+            if (context?.auth?.mode === "visitor" && context.auth.state === "recognized") {
+              observedScopes = context.auth.externalAuth?.scopes;
+            }
+            return "orders";
+          },
+        },
+      ],
+    };
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: "test-token" },
+      visitorTokens: {
+        enabled: true,
+        signingKey: "visitor-route-secret",
+        agentBinding: "test",
+      },
+      externalAuth: {
+        secret: "app-auth-secret",
+        audience: "test",
+        allowedProviders: ["supabase"],
+        visitorId: (claims) => `vis_app_${claims.subject}`,
+      },
+    });
+    const agent = defineAgent(
+      {
+        name: "test",
+        model: "mock",
+        augments: [createIdentityAugment("test"), protectedTools, aug],
+      },
+      model,
+    );
+    await agent.start();
+
+    try {
+      const resp = await fetch(`http://localhost:${port}/agent/run`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-auggy-auth-assertion": assertion,
+        },
+        body: JSON.stringify({
+          messages: [{ role: "user", content: "read my orders" }],
+        }),
+      });
+      expect(resp.status).toBe(200);
+      await resp.text();
+
+      expect(observedScopes).toEqual(["orders.read"]);
+      expect(model.calls).toHaveLength(2);
+    } finally {
+      await agent.stop();
+    }
+  });
+
   it("CORS preflight allows visitor and external auth assertion headers", async () => {
     const model = createMockModel();
     const port = 18922;

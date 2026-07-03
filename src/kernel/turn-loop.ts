@@ -89,6 +89,10 @@ import { createTraceEmitter } from "./trace-emitter";
 import { buildPreamble } from "./preamble";
 import { validateOutput } from "./output-validator";
 import { createHistoryManager, type HistoryManager } from "./history-manager";
+import {
+  evaluateDelegatedAuthorization,
+  validateAuthorizationRequirements,
+} from "../authz/delegated-authorization";
 
 export interface TurnLoopOptions {
   signal?: AbortSignal;
@@ -859,6 +863,29 @@ export function createTurnLoop(opts: {
           }
 
           consecutiveFailures.delete(call.name);
+
+          const authorizationConfigError = validateAuthorizationRequirements(reg.tool.requires);
+          if (authorizationConfigError) {
+            entries.push({
+              type: "error",
+              call,
+              error: `Error: Tool "${call.name}" has invalid authorization requirements: ${authorizationConfigError}`,
+            });
+            continue;
+          }
+
+          const authorization = evaluateDelegatedAuthorization(reg.tool.requires, {
+            auth: trigger.auth,
+          });
+          if (!authorization.ok) {
+            entries.push({
+              type: "error",
+              call,
+              error: `Error: Tool "${call.name}" authorization denied: ${authorization.reason}`,
+            });
+            continue;
+          }
+
           entries.push({ type: "execute", call, reg, validatedInput: validation.data });
         }
 
@@ -902,6 +929,7 @@ export function createTurnLoop(opts: {
                 turnId: trigger.turnId,
                 peer: peer ?? null,
                 threadId,
+                ...(trigger.auth !== undefined ? { auth: trigger.auth } : {}),
               };
               const raw: string | ToolResult = await withTimeout(
                 () => entry.reg.tool.execute(entry.validatedInput, toolContext),

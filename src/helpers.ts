@@ -25,6 +25,7 @@ export function defineTool<T extends z.ZodType<any, any, any>>(opts: {
   description: string;
   category: ToolCategory;
   input: T;
+  requires?: AuthorizationRequirement | readonly AuthorizationRequirement[];
   execute: (input: z.infer<T>, context?: ToolExecuteContext) => Promise<string | ToolResult>;
 }): Tool<z.infer<T>> {
   return {
@@ -33,6 +34,7 @@ export function defineTool<T extends z.ZodType<any, any, any>>(opts: {
     category: opts.category,
     input: opts.input,
     inputJsonSchema: z.toJSONSchema(opts.input) as Record<string, unknown>,
+    ...(opts.requires !== undefined ? { requires: opts.requires } : {}),
     execute: opts.execute,
   };
 }
