@@ -108,76 +108,137 @@ Keep assertions short-lived. The app can mint a fresh assertion when the
 browser needs to call Auggy. Do not put `AUGGY_EXTERNAL_AUTH_SECRET` in browser
 code.
 
-## Supabase Sketch
+## App Builder Recipes
+
+The recipes below all have the same boundary:
+
+- The browser keeps using the app's normal Supabase or Clerk login.
+- The app backend verifies that session and computes minimal `scopes` /
+  `grants`.
+- The app backend signs the Auggy assertion with `createExternalAuthAssertion`.
+- The browser sends the assertion to Auggy, but never sees
+  `AUGGY_EXTERNAL_AUTH_SECRET`.
+
+Roles can still be copied into the assertion for audit or lookup context, but
+Auggy receives narrow scopes/grants for enforcement. It does not interpret raw
+app roles as route or tool permissions.
+
+### Supabase
 
 ```ts
-import { createExternalAuthAssertion } from "auggy";
+// app/api/auggy-auth-assertion/route.ts
+import { createClient } from "@supabase/supabase-js";
+import { createExternalAuthAssertion, type AuthorizationGrant } from "auggy";
+
+const supabase = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_ANON_KEY!);
 
 export async function GET(req: Request) {
-  const accessToken = req.headers.get("authorization")?.replace(/^Bearer\s+/i, "");
+  // This variant verifies the user's Supabase access token. Cookie-backed
+  // Supabase apps can instead read the server session and call getUser().
+  const accessToken = req.headers
+    .get("authorization")
+    ?.replace(/^Bearer\s+/i, "");
   if (!accessToken) return Response.json({ error: "unauthorized" }, { status: 401 });
 
-  const { data, error } = await supabase.auth.getUser(accessToken);
-  if (error || !data.user) {
+  const {
+    data: { user },
+    error,
+  } = await supabase.auth.getUser(accessToken);
+  if (error || !user) {
     return Response.json({ error: "unauthorized" }, { status: 401 });
   }
 
-  const scopes = await scopesForSupabaseUser(data.user.id);
-  const grants = await grantsForSupabaseUser(data.user.id);
+  const orgId =
+    typeof user.app_metadata.org_id === "string" ? user.app_metadata.org_id : undefined;
+  const canReadOrders = await appPolicy.canReadOrders({ userId: user.id, orgId });
+  const grants = await refundGrantsForUser(user.id, orgId);
 
   const assertion = createExternalAuthAssertion({
     secret: process.env.AUGGY_EXTERNAL_AUTH_SECRET!,
     audience: "storefront-agent",
     provider: "supabase",
-    subject: data.user.id,
+    subject: user.id,
     ttlSeconds: 60,
-    email: data.user.email,
-    emailVerified: data.user.email_confirmed_at !== null,
-    orgId: data.user.app_metadata?.org_id,
-    roles: data.user.app_metadata?.roles ?? [],
-    scopes,
+    email: user.email,
+    emailVerified: user.email_confirmed_at !== null,
+    orgId,
+    roles: stringArray(user.app_metadata.roles),
+    scopes: canReadOrders ? ["orders.read"] : [],
     grants,
+    authzVersion: "orders-v1",
   });
 
   return Response.json({ assertion });
 }
+
+async function refundGrantsForUser(
+  userId: string,
+  orgId: string | undefined,
+): Promise<AuthorizationGrant[]> {
+  const orderIds = await appPolicy.refundableOrderIds({ userId, orgId });
+  return orderIds.map((orderId) => ({ action: "refund.issue", resource: orderId }));
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string")
+    : [];
+}
 ```
 
-The important part is not the exact Supabase SDK call. The invariant is that
-the app verifies the Supabase session server-side, then signs only the compact
-claims Auggy needs.
+The important part is the server-side verification and translation step:
+Supabase session and app roles go into `appPolicy`; only the derived
+`orders.read` scope and per-order refund grants go to Auggy.
 
-## Clerk Sketch
+### Clerk
 
 ```ts
-import { createExternalAuthAssertion } from "auggy";
+// app/api/auggy-auth-assertion/route.ts
+import { auth, currentUser } from "@clerk/nextjs/server";
+import { createExternalAuthAssertion, type AuthorizationGrant } from "auggy";
 
-export async function GET(req: Request) {
-  const session = await verifyClerkSession(req);
-  if (!session) return Response.json({ error: "unauthorized" }, { status: 401 });
+export async function GET() {
+  const { isAuthenticated, userId, orgId, orgRole } = await auth();
+  if (!isAuthenticated || !userId) {
+    return Response.json({ error: "unauthorized" }, { status: 401 });
+  }
+
+  const user = await currentUser();
+  const canReadOrders = await appPolicy.canReadOrders({ userId, orgId });
+  const grants = await refundGrantsForClerkUser({ userId, orgId, orgRole });
 
   const assertion = createExternalAuthAssertion({
     secret: process.env.AUGGY_EXTERNAL_AUTH_SECRET!,
     audience: "storefront-agent",
     provider: "clerk",
-    subject: session.userId,
+    subject: userId,
     ttlSeconds: 60,
-    email: session.email,
-    emailVerified: session.emailVerified,
-    orgId: session.orgId,
-    roles: session.roles,
-    scopes: await scopesForClerkUser(session),
-    grants: await grantsForClerkUser(session),
+    email: user?.primaryEmailAddress?.emailAddress,
+    emailVerified: user?.primaryEmailAddress?.verification?.status === "verified",
+    orgId: orgId ?? undefined,
+    roles: orgRole ? [orgRole] : [],
+    scopes: canReadOrders ? ["orders.read"] : [],
+    grants,
+    authzVersion: "orders-v1",
   });
 
   return Response.json({ assertion });
 }
+
+async function refundGrantsForClerkUser(session: {
+  userId: string;
+  orgId: string | null | undefined;
+  orgRole: string | null | undefined;
+}): Promise<AuthorizationGrant[]> {
+  const orderIds = await appPolicy.refundableOrderIds(session);
+  return orderIds.map((orderId) => ({ action: "refund.issue", resource: orderId }));
+}
 ```
 
-Use whatever Clerk server API your app already trusts. Auggy should receive the
-resulting assertion, not raw Clerk cookies or app secrets.
+Use the Clerk server API your app already trusts. Clerk organization context is
+input to `appPolicy`; the assertion carries the narrow result.
 
-## Browser Client
+### Generated Browser Client
 
 Generated browser clients can provide assertions through `authAssertion`:
 
@@ -187,8 +248,13 @@ import { createAuggyClient } from "./auggy-client";
 const api = createAuggyClient({
   baseUrl: "https://store.example.com",
   authAssertion: async () => {
+    const headers = new Headers();
+    const appAccessToken = await currentAppAccessToken();
+    if (appAccessToken) headers.set("authorization", `Bearer ${appAccessToken}`);
+
     const res = await fetch("/api/auggy-auth-assertion", {
       credentials: "include",
+      headers,
     });
     if (!res.ok) return undefined;
     return (await res.json()).assertion;
@@ -196,10 +262,19 @@ const api = createAuggyClient({
 });
 
 const result = await api.get("/orders");
+
+if (result.ok) {
+  renderOrders(result.data.orders);
+} else if (result.status === 403) {
+  renderForbidden();
+}
 ```
 
 The generated client sends the assertion as `x-auggy-auth-assertion`. It does
-not verify or refresh the underlying app session.
+not create the assertion, verify the app session, or know the assertion secret.
+`currentAppAccessToken` is only needed for token-backed sessions such as the
+Supabase bearer example above; cookie-backed Clerk/Supabase apps can return
+`undefined`.
 
 For chat or `/agent/run` flows, carry the same assertion with the inbound
 request. Tool authorization uses the turn's resolved auth context; the model
@@ -214,72 +289,31 @@ Scope requirement:
 
 ```ts
 import { defineRoute, json } from "auggy";
+import { z } from "zod";
 
 export const httpRoutes = [
   defineRoute.get("/orders", {
     auth: "visitor.required",
     requires: { scope: "orders.read" },
+    response: z.object({
+      orders: z.array(z.object({ id: z.string(), status: z.string() })),
+    }),
     handler: async ({ auth }) => {
       if (auth.mode !== "visitor" || auth.state !== "recognized") {
         return json({ error: "visitor-auth-required" }, 401);
       }
       return json({
-        visitorId: auth.visitorId,
-        orders: [],
+        orders: await ordersForUser(auth.externalAuth?.subject),
       });
     },
   }),
 ];
 ```
 
-Grant requirement with a path-param resource:
-
-```ts
-import { z } from "zod";
-import { defineRoute, json } from "auggy";
-
-export const httpRoutes = [
-  defineRoute.post("/orders/:id/refund", {
-    auth: "visitor.required",
-    params: z.object({ id: z.string() }),
-    requires: {
-      action: "refund.issue",
-      resource: { param: "id" },
-      constraints: {
-        maxAmountCents: 5000,
-        currency: "USD",
-      },
-    },
-    handler: async ({ params, auth }) => {
-      if (auth.mode !== "visitor" || auth.state !== "recognized") {
-        return json({ error: "visitor-auth-required" }, 401);
-      }
-      return json({
-        refunded: true,
-        orderId: params.id,
-        authorizedBy: auth.externalAuth?.subject,
-      });
-    },
-  }),
-];
-```
-
-The matching assertion must include a grant like:
-
-```ts
-{
-  action: "refund.issue",
-  resource: "order_123",
-  constraints: {
-    maxAmountCents: 5000,
-    currency: "USD",
-  },
-}
-```
-
-Constraints are exact JSON-value matches. If a route requires
-`{ maxAmountCents: 5000 }`, a grant with `{ maxAmountCents: 10000 }` does not
-satisfy it. Keep constraints compact and deterministic.
+Allowed behavior: an assertion with `scopes: ["orders.read"]` reaches the
+handler. Denied behavior: a valid assertion without that scope returns
+`403 {"error":"forbidden","reason":"authorization-scope-missing"}` before the
+handler runs.
 
 Multiple requirements are ANDed:
 
@@ -293,6 +327,10 @@ requires: [
 Routes can bind grant resources from path params with `{ param: "id" }`.
 Route requirements cannot bind resources from request bodies or arbitrary model
 input.
+
+Constraints are exact JSON-value matches. If a route requires
+`{ maxAmountCents: 5000 }`, a grant with `{ maxAmountCents: 10000 }` does not
+satisfy it. Keep constraints compact and deterministic.
 
 ## Tool Requirements
 
@@ -314,7 +352,7 @@ export const refundOrder = defineTool({
     reason: z.string(),
   }),
   requires: {
-    action: "orders.refund",
+    action: "refund.issue",
     resource: { input: "orderId" },
   },
   execute: async ({ orderId, reason }, context) => {
@@ -328,10 +366,16 @@ The matching assertion must include a grant for the resolved resource:
 
 ```ts
 {
-  action: "orders.refund",
+  action: "refund.issue",
   resource: "order_123",
 }
 ```
+
+Allowed behavior: if the model calls `refund_order` with
+`{ "orderId": "order_123" }` and the assertion has the grant above, the tool
+executes. Denied behavior: a grant for `order_999`, or no grant, prevents tool
+execution and returns a deterministic denial such as
+`authorization-grant-missing` to the turn.
 
 Tool resource binding rules are intentionally narrow:
 
@@ -355,7 +399,7 @@ grants when minting the assertion:
 ```ts
 async function refundGrantForSupabaseUser(userId: string, orderId: string) {
   const canRefund = await appPolicy.canRefundOrder(userId, orderId);
-  return canRefund ? [{ action: "orders.refund", resource: orderId }] : [];
+  return canRefund ? [{ action: "refund.issue", resource: orderId }] : [];
 }
 ```
 
@@ -369,18 +413,18 @@ If a tool declares a broad action requirement with no resource, use an unscoped
 grant:
 
 ```ts
-grants: [{ action: "orders.refund" }]
+grants: [{ action: "refund.issue" }]
 ```
 
 For resource-specific permissions, use a grant:
 
 ```ts
-grants: [{ action: "orders.refund", resource: "order_123" }]
+grants: [{ action: "refund.issue", resource: "order_123" }]
 ```
 
 Resource grants are not wildcards. A grant for `order_123` satisfies a
 requirement for `order_123`; it does not satisfy a broad
-`{ action: "orders.refund" }` requirement. If the app cannot know the resource
+`{ action: "refund.issue" }` requirement. If the app cannot know the resource
 at assertion mint time, it should either mint grants for the bounded resources
 visible in the current workflow, use a deliberately broad scope or unscoped
 grant only when the app policy says that is safe, or keep an additional
