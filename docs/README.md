@@ -31,7 +31,7 @@ Supporting strategy notes:
 Use this order when docs appear to disagree:
 
 1. **Code in `src/`** defines current runtime behavior.
-2. **Numbered reference docs** (`01-24`) explain the current architecture and
+2. **Numbered reference docs** (`01-25`) explain the current architecture and
    should be updated when code changes.
 3. **`ROADMAP.md` and `docs/use-cases/`** describe product direction and
    planned architecture. They may name concepts that do not exist yet.
@@ -94,6 +94,7 @@ is the source of truth and the docs should be fixed.
 | [21 Console](./21-console.md) | Creator console surface |
 | [22 Agent Mail](./22-agent-mail.md) | AgentMail augment |
 | [24 MCP](./24-mcp.md) | MCP augment, local/remote servers, deploy posture |
+| [25 Generated Route Clients](./25-generated-route-clients.md) | TypeScript route client generation, targets, auth config, result handling |
 
 ## Use cases and product strategy
 
