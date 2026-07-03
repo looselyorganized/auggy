@@ -27,6 +27,11 @@ import {
   verifyVisitorToken,
   type VisitorTokenPayload,
 } from "./visitor-token";
+import {
+  externalAuthClaimsToRouteContext,
+  verifyExternalAuthAssertion,
+  type ExternalAuthPrincipalOptions,
+} from "../auth/external-auth";
 import { withTimeout, TimeoutError } from "../kernel/timeout";
 import { matchRoutePath, parseRoutePattern } from "../kernel/route-pattern";
 import { resolveConfigBool } from "../config";
@@ -41,6 +46,7 @@ import {
 import { renderAgentIntegrationPage, renderInfoPage } from "./info-page";
 
 const PUBLIC_PAGE_CACHE_CONTROL = "public, max-age=0, must-revalidate";
+const DEFAULT_EXTERNAL_AUTH_ASSERTION_HEADER = "x-auggy-auth-assertion";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -49,6 +55,22 @@ const PUBLIC_PAGE_CACHE_CONTROL = "public, max-age=0, must-revalidate";
 export interface AgentAccessEntry {
   id: string;
   sharedSecret: string;
+}
+
+export interface WebTransportExternalAuthOptions extends ExternalAuthPrincipalOptions {
+  secret: string;
+  /**
+   * Expected assertion audience. Defaults to visitorTokens.agentBinding when
+   * configured, otherwise the agent-card provider name at runtime.
+   */
+  audience?: string;
+  /**
+   * Header carrying the app-server minted assertion. Default:
+   * `x-auggy-auth-assertion`.
+   */
+  header?: string;
+  allowedProviders?: readonly string[];
+  maxTtlSeconds?: number;
 }
 
 export interface WebTransportOptions {
@@ -96,6 +118,14 @@ export interface WebTransportOptions {
      */
     agentBinding?: string;
   };
+  /**
+   * Provider-agnostic app/session auth bridge. An application backend verifies
+   * Clerk, Supabase Auth, Auth0, or custom session state, mints a short-lived
+   * Auggy external auth assertion, and the browser sends it on app-backed
+   * Auggy requests. Valid assertions normalize to public/recognized visitor
+   * identity; they never grant creator or agent trust.
+   */
+  externalAuth?: WebTransportExternalAuthOptions;
   /**
    * Optional URL to redirect GET / to. When set, `GET /` returns 302 to this URL.
    * When unset, `GET /` returns 404. All other routes are unaffected.
@@ -1075,44 +1105,76 @@ export function webTransport(opts: WebTransportOptions): Augment {
     };
   }
 
+  function resolveExternalAuthAudience(): string {
+    return (
+      opts.externalAuth?.audience ??
+      opts.visitorTokens?.agentBinding ??
+      kernel?.getAgentCard()?.provider?.name ??
+      "auggy"
+    );
+  }
+
+  function resolveExternalVisitorAuth(req: Request): RouteVisitorAuthContext | null {
+    const config = opts.externalAuth;
+    if (!config) return null;
+
+    const headerName = config.header ?? DEFAULT_EXTERNAL_AUTH_ASSERTION_HEADER;
+    const assertion = req.headers.get(headerName);
+    if (!assertion) return null;
+
+    const verified = verifyExternalAuthAssertion(assertion, {
+      secret: config.secret,
+      audience: resolveExternalAuthAudience(),
+      allowedProviders: config.allowedProviders,
+      maxTtlSeconds: config.maxTtlSeconds,
+    });
+    if (!verified.ok) return null;
+
+    return externalAuthClaimsToRouteContext(verified.claims, {
+      visitorId: config.visitorId,
+      includeUnverifiedEmail: config.includeUnverifiedEmail,
+    });
+  }
+
   async function resolveVisitorRouteAuth(req: Request): Promise<RouteVisitorAuthContext> {
     const anonymous: RouteVisitorAuthContext = {
       mode: "visitor",
       state: "anonymous",
       principal: anonymousRoutePrincipal(),
     };
-    if (!visitorTokensEnabled || !signingKey) return anonymous;
+    const externalOrAnonymous = () => resolveExternalVisitorAuth(req) ?? anonymous;
+    if (!visitorTokensEnabled || !signingKey) return externalOrAnonymous();
 
     const tokenHeader = req.headers.get("x-visitor-token");
-    if (!tokenHeader) return anonymous;
+    if (!tokenHeader) return externalOrAnonymous();
 
     const payload = await verifyVisitorToken(signingKey, tokenHeader);
-    if (!payload) return anonymous;
+    if (!payload) return externalOrAnonymous();
 
     try {
       if (opts.visitorTokens?.revocationCheck?.(payload.visitorId)) {
-        return anonymous;
+        return externalOrAnonymous();
       }
     } catch {
-      return anonymous;
+      return externalOrAnonymous();
     }
 
     const expectedBinding = opts.visitorTokens?.agentBinding;
     if (expectedBinding !== undefined && payload.agentId !== expectedBinding) {
-      return anonymous;
+      return externalOrAnonymous();
     }
 
     let identity: Omit<RouteVisitorIdentity, "agentId" | "issuedAt" | "expiresAt"> | null = null;
     try {
       identity = opts.visitorTokens?.identityLookup?.(payload.visitorId) ?? null;
     } catch {
-      return anonymous;
+      return externalOrAnonymous();
     }
     if (opts.visitorTokens?.identityLookup && !identity) {
-      return anonymous;
+      return externalOrAnonymous();
     }
     if (identity && identity.visitorId !== payload.visitorId) {
-      return anonymous;
+      return externalOrAnonymous();
     }
 
     const visitorAuth: RouteVisitorAuthContext = {
@@ -1220,6 +1282,18 @@ export function webTransport(opts: WebTransportOptions): Augment {
     // --- Visitor token handling ---
     let visitorPayload: VisitorTokenPayload | null = null;
     let newToken: string | null = null;
+    function applyExternalVisitorAuth(): void {
+      if (visitorPayload) return;
+      const externalVisitorAuth = resolveExternalVisitorAuth(req);
+      if (externalVisitorAuth?.state === "recognized") {
+        visitorPayload = {
+          visitorId: externalVisitorAuth.visitorId,
+          agentId: externalVisitorAuth.agentId,
+          issuedAt: externalVisitorAuth.issuedAt,
+          expiresAt: externalVisitorAuth.expiresAt,
+        };
+      }
+    }
 
     if (visitorTokensEnabled && signingKey) {
       const tokenHeader = req.headers.get("x-visitor-token");
@@ -1243,6 +1317,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
           }
         }
       }
+      applyExternalVisitorAuth();
       if (!visitorPayload) {
         // Check if this looks like an agent auth attempt — don't issue visitor
         // tokens to agent-credential requests (they'll be resolved as agent/creator).
@@ -1279,6 +1354,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
         // hasAgentHeaders or hasBearerAttempt case: no visitor token issued.
       }
     }
+    applyExternalVisitorAuth();
 
     // --- Build headers map ---
     const headers: Record<string, string> = {};
@@ -1447,10 +1523,26 @@ export function webTransport(opts: WebTransportOptions): Augment {
   }
 
   function handleCorsPreFlight(): Response {
+    const allowedHeaders = [
+      "content-type",
+      "authorization",
+      "x-peer-id",
+      "x-peer-kind",
+      "x-peer-name",
+      "x-org-id",
+      "x-visitor-token",
+      DEFAULT_EXTERNAL_AUTH_ASSERTION_HEADER,
+      "x-agent-id",
+      "x-agent-secret",
+      "idempotency-key",
+    ];
+    const externalAuthHeader = opts.externalAuth?.header?.toLowerCase();
+    if (externalAuthHeader && !allowedHeaders.includes(externalAuthHeader)) {
+      allowedHeaders.push(externalAuthHeader);
+    }
     const headers: Record<string, string> = {
       "access-control-allow-methods": "GET, POST, OPTIONS",
-      "access-control-allow-headers":
-        "content-type, authorization, x-peer-id, x-peer-kind, x-peer-name, x-org-id, x-visitor-token, x-agent-id, x-agent-secret, idempotency-key",
+      "access-control-allow-headers": allowedHeaders.join(", "),
       "access-control-expose-headers": "x-visitor-token, idempotency-key",
       "access-control-max-age": "86400",
     };
@@ -1510,6 +1602,21 @@ export function webTransport(opts: WebTransportOptions): Augment {
     adminInfo,
     adminActions,
     async onBoot() {
+      if (opts.externalAuth) {
+        if (!opts.externalAuth.secret) {
+          throw new Error(
+            "[web-transport] externalAuth.secret is required when externalAuth is configured.",
+          );
+        }
+        if (opts.externalAuth.header !== undefined && opts.externalAuth.header.trim() === "") {
+          throw new Error("[web-transport] externalAuth.header must be non-empty when configured.");
+        }
+        if (opts.externalAuth.maxTtlSeconds !== undefined && opts.externalAuth.maxTtlSeconds <= 0) {
+          throw new Error(
+            "[web-transport] externalAuth.maxTtlSeconds must be positive when configured.",
+          );
+        }
+      }
       if (visitorTokensEnabled) {
         const keySource = opts.visitorTokens?.signingKey;
         if (!keySource) {
