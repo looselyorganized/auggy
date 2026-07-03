@@ -84,6 +84,14 @@ export function routeArtifactReport(): RouteArtifactReport {
         params: [],
         public: false,
         security: "private",
+        requires: [
+          { scope: "profile.read" },
+          {
+            action: "profile.view",
+            resource: "visitor:self",
+            constraints: { verified: true, channels: ["email"] },
+          },
+        ],
       },
       {
         method: "POST",

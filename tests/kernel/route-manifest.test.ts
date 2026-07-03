@@ -136,4 +136,45 @@ describe("route manifest", () => {
     expect(manifest[0]?.policy).not.toBe(policy);
     expect(Object.isFrozen(manifest[0]?.policy)).toBe(true);
   });
+
+  test("copies delegated authorization requirements into manifest entries", () => {
+    const requires = [
+      { scope: "orders.write" },
+      {
+        action: "refund.issue",
+        resource: { param: "id" },
+        constraints: { tenant: "lo", flags: ["customer-requested"] },
+      },
+    ] as const;
+    const collected = collectAugmentRoutes([
+      aug("orders", [
+        route("POST", "/orders/:id/refund", "visitor.required", {
+          requires,
+        }),
+      ]),
+    ]);
+
+    expect(collected.errors).toEqual([]);
+
+    const manifest = createRouteManifest(collected.routes);
+
+    expect(manifest[0]).toMatchObject({
+      method: "POST",
+      path: "/orders/:id/refund",
+      auth: "visitor.required",
+      requires,
+    });
+    expect(manifest[0]?.requires).not.toBe(requires);
+    expect(Object.isFrozen(manifest[0]?.requires)).toBe(true);
+    expect(Object.isFrozen((manifest[0]?.requires as readonly unknown[])[1])).toBe(true);
+    expect(
+      Object.isFrozen(
+        (
+          (manifest[0]?.requires as readonly { constraints?: unknown }[])[1]?.constraints as {
+            flags?: unknown;
+          }
+        ).flags,
+      ),
+    ).toBe(true);
+  });
 });

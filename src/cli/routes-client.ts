@@ -76,11 +76,17 @@ export function createTypeScriptClient(
     "};",
     'type RouteMethod = "GET" | "POST";',
     `type RouteAuth = ${routeAuthUnion(target)};`,
+    "type AuthorizationConstraintValue = string | number | boolean | null | readonly AuthorizationConstraintValue[] | { readonly [key: string]: AuthorizationConstraintValue };",
+    "type AuthorizationResourceBinding = string | { param: string };",
+    "type RouteAuthorizationRequirement =",
+    "  | { scope: string }",
+    "  | { action: string; resource?: AuthorizationResourceBinding; constraints?: Readonly<Record<string, AuthorizationConstraintValue>> };",
     "type RouteMeta = {",
     "  method: RouteMethod;",
     "  path: string;",
     "  auth: RouteAuth;",
     "  params: readonly string[];",
+    "  requires?: RouteAuthorizationRequirement | readonly RouteAuthorizationRequirement[];",
     "};",
     "",
     routeInputMap(
@@ -232,10 +238,14 @@ function routeTable(routes: readonly RouteManifestEntry[]): string {
         route.method,
       )}, path: ${JSON.stringify(route.path)}, auth: ${JSON.stringify(
         route.auth,
-      )}, params: ${JSON.stringify(route.params)} },`,
+      )}, params: ${JSON.stringify(route.params)}${routeRequiresSource(route)} },`,
   );
 
   return ["const ROUTES: Record<string, RouteMeta> = {", ...entries, "};"].join("\n");
+}
+
+function routeRequiresSource(route: RouteManifestEntry): string {
+  return route.requires ? `, requires: ${JSON.stringify(route.requires)}` : "";
 }
 
 function runtimeSource(target: TypeScriptClientTarget): string {

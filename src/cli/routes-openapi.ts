@@ -179,6 +179,7 @@ function augmentRouteMetadata(route: RouteManifestEntry): JsonObject {
     ...(route.maxBodyBytes !== undefined ? { maxBodyBytes: route.maxBodyBytes } : {}),
     ...(route.rateLimit ? { rateLimit: route.rateLimit } : {}),
     ...(route.policy ? { policy: route.policy } : {}),
+    ...(route.requires ? { requires: route.requires } : {}),
   };
 }
 

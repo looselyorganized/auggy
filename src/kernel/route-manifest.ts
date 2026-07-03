@@ -3,6 +3,7 @@ import type {
   AugmentHttpRoutePolicy,
   AugmentHttpRouteRequestJsonSchema,
   AugmentHttpRouteResponseJsonSchema,
+  AuthorizationRequirement,
   HttpMethod,
 } from "../types";
 import type { CollectedRoute } from "./route-collector";
@@ -24,6 +25,7 @@ export interface RouteManifestEntry {
     maxPerMinute: number;
   };
   policy?: AugmentHttpRoutePolicy;
+  requires?: AuthorizationRequirement | readonly AuthorizationRequirement[];
   requestJsonSchema?: AugmentHttpRouteRequestJsonSchema;
   responseJsonSchema?: AugmentHttpRouteResponseJsonSchema;
 }
@@ -58,11 +60,69 @@ export function createRouteManifest(
         ...(route.maxBodyBytes !== undefined ? { maxBodyBytes: route.maxBodyBytes } : {}),
         ...(route.rateLimit ? { rateLimit: { maxPerMinute: route.rateLimit.maxPerMinute } } : {}),
         ...(policy ? { policy } : {}),
+        ...(route.requires ? { requires: freezeRequires(route.requires) } : {}),
         ...(route.requestJsonSchema ? { requestJsonSchema: route.requestJsonSchema } : {}),
         ...(route.responseJsonSchema ? { responseJsonSchema: route.responseJsonSchema } : {}),
       });
     }),
   );
+}
+
+function freezeRequires(
+  requires: AuthorizationRequirement | readonly AuthorizationRequirement[],
+): AuthorizationRequirement | readonly AuthorizationRequirement[] {
+  if (isAuthorizationRequirementArray(requires)) {
+    return Object.freeze(requires.map((requirement) => freezeRequirement(requirement)));
+  }
+  return freezeRequirement(requires);
+}
+
+function isAuthorizationRequirementArray(
+  requires: AuthorizationRequirement | readonly AuthorizationRequirement[],
+): requires is readonly AuthorizationRequirement[] {
+  return Array.isArray(requires);
+}
+
+function freezeRequirement(requirement: AuthorizationRequirement): AuthorizationRequirement {
+  if ("scope" in requirement) return Object.freeze({ scope: requirement.scope });
+  return Object.freeze({
+    action: requirement.action,
+    ...(requirement.resource !== undefined
+      ? { resource: freezeResource(requirement.resource) }
+      : {}),
+    ...(requirement.constraints !== undefined
+      ? { constraints: deepFreezeJson(cloneJson(requirement.constraints)) }
+      : {}),
+  }) as AuthorizationRequirement;
+}
+
+function freezeResource(
+  resource: Exclude<Extract<AuthorizationRequirement, { action: string }>["resource"], undefined>,
+): Exclude<Extract<AuthorizationRequirement, { action: string }>["resource"], undefined> {
+  if (typeof resource === "string") return resource;
+  return Object.freeze({ param: resource.param });
+}
+
+function cloneJson<T>(value: T): T {
+  if (Array.isArray(value)) return value.map((item) => cloneJson(item)) as T;
+  if (typeof value === "object" && value !== null) {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [key, cloneJson(item)]),
+    ) as T;
+  }
+  return value;
+}
+
+function deepFreezeJson<T>(value: T): T {
+  if (Array.isArray(value)) {
+    for (const item of value) deepFreezeJson(item);
+    return Object.freeze(value) as T;
+  }
+  if (typeof value === "object" && value !== null) {
+    for (const item of Object.values(value)) deepFreezeJson(item);
+    return Object.freeze(value);
+  }
+  return value;
 }
 
 export function summarizeRouteManifest(

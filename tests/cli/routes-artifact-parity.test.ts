@@ -32,6 +32,7 @@ describe("route artifact parity", () => {
         security: route.security,
         public: route.public,
         ...(route.policy ? { policy: route.policy } : {}),
+        ...(route.requires ? { requires: route.requires } : {}),
       };
       expect(operation).toBeDefined();
       expect(operation?.["x-auggy"]).toMatchObject(expectedMetadata);
@@ -191,7 +192,11 @@ function generatedRouteEntry(route: RouteManifestEntry): string {
     route.method,
   )}, path: ${JSON.stringify(route.path)}, auth: ${JSON.stringify(
     route.auth,
-  )}, params: ${JSON.stringify(route.params)} },`;
+  )}, params: ${JSON.stringify(route.params)}${generatedRequiresSource(route)} },`;
+}
+
+function generatedRequiresSource(route: RouteManifestEntry): string {
+  return route.requires ? `, requires: ${JSON.stringify(route.requires)}` : "";
 }
 
 function generatedRouteKey(route: RouteManifestEntry): string {
