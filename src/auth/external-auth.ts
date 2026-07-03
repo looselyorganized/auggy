@@ -1,5 +1,9 @@
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import type {
+  AuthorizationConstraints,
+  AuthorizationConstraintValue,
+  AuthorizationGrant,
+  AuthorizationScope,
   RouteAuthPrincipal,
   RouteExternalAuthClaims,
   RouteVisitorAuthContext,
@@ -19,6 +23,10 @@ export interface ExternalAuthClaims {
   verifiedAt?: number;
   orgId?: string;
   roles?: readonly string[];
+  scopes?: readonly AuthorizationScope[];
+  grants?: readonly AuthorizationGrant[];
+  authzVersion?: string;
+  jti?: string;
 }
 
 export interface CreateExternalAuthAssertionOptions {
@@ -33,6 +41,10 @@ export interface CreateExternalAuthAssertionOptions {
   verifiedAt?: number;
   orgId?: string;
   roles?: readonly string[];
+  scopes?: readonly AuthorizationScope[];
+  grants?: readonly AuthorizationGrant[];
+  authzVersion?: string;
+  jti?: string;
 }
 
 export interface VerifyExternalAuthAssertionOptions {
@@ -74,6 +86,10 @@ interface ExternalAuthAssertionPayload {
   verifiedAt?: number;
   orgId?: string;
   roles?: readonly string[];
+  scopes?: readonly AuthorizationScope[];
+  grants?: readonly AuthorizationGrant[];
+  authzVersion?: string;
+  jti?: string;
 }
 
 export function createExternalAuthAssertion(opts: CreateExternalAuthAssertionOptions): string {
@@ -94,6 +110,10 @@ export function createExternalAuthAssertion(opts: CreateExternalAuthAssertionOpt
     ...(opts.verifiedAt !== undefined ? { verifiedAt: opts.verifiedAt } : {}),
     ...(opts.orgId !== undefined ? { orgId: opts.orgId } : {}),
     ...(opts.roles !== undefined ? { roles: [...opts.roles] } : {}),
+    ...(opts.scopes !== undefined ? { scopes: [...opts.scopes] } : {}),
+    ...(opts.grants !== undefined ? { grants: cloneAuthorizationGrants(opts.grants) } : {}),
+    ...(opts.authzVersion !== undefined ? { authzVersion: opts.authzVersion } : {}),
+    ...(opts.jti !== undefined ? { jti: opts.jti } : {}),
   };
   const encodedPayload = encodeJson(payload);
   return `${encodedPayload}.${signPayload(encodedPayload, opts.secret)}`;
@@ -141,6 +161,10 @@ export function verifyExternalAuthAssertion(
       ...(payload.verifiedAt !== undefined ? { verifiedAt: payload.verifiedAt } : {}),
       ...(payload.orgId !== undefined ? { orgId: payload.orgId } : {}),
       ...(payload.roles !== undefined ? { roles: [...payload.roles] } : {}),
+      ...(payload.scopes !== undefined ? { scopes: [...payload.scopes] } : {}),
+      ...(payload.grants !== undefined ? { grants: cloneAuthorizationGrants(payload.grants) } : {}),
+      ...(payload.authzVersion !== undefined ? { authzVersion: payload.authzVersion } : {}),
+      ...(payload.jti !== undefined ? { jti: payload.jti } : {}),
     },
   };
 }
@@ -211,7 +235,31 @@ function routeExternalAuthClaims(claims: ExternalAuthClaims): RouteExternalAuthC
     subject: claims.subject,
     ...(claims.orgId !== undefined ? { orgId: claims.orgId } : {}),
     ...(claims.roles !== undefined ? { roles: [...claims.roles] } : {}),
+    ...(claims.scopes !== undefined ? { scopes: [...claims.scopes] } : {}),
+    ...(claims.grants !== undefined ? { grants: cloneAuthorizationGrants(claims.grants) } : {}),
+    ...(claims.authzVersion !== undefined ? { authzVersion: claims.authzVersion } : {}),
+    ...(claims.jti !== undefined ? { jti: claims.jti } : {}),
   };
+}
+
+function cloneAuthorizationGrants(grants: readonly AuthorizationGrant[]): AuthorizationGrant[] {
+  return grants.map((grant) => ({
+    action: grant.action,
+    ...(grant.resource !== undefined ? { resource: grant.resource } : {}),
+    ...(grant.constraints !== undefined
+      ? { constraints: cloneConstraintValue(grant.constraints) as AuthorizationConstraints }
+      : {}),
+  }));
+}
+
+function cloneConstraintValue(value: AuthorizationConstraintValue): AuthorizationConstraintValue {
+  if (Array.isArray(value)) return value.map(cloneConstraintValue);
+  if (isRecord(value)) {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [key, cloneConstraintValue(item)]),
+    );
+  }
+  return value;
 }
 
 function encodeJson(value: unknown): string {
@@ -255,6 +303,28 @@ function decodePayload(encodedPayload: string): ExternalAuthAssertionPayload | n
   ) {
     return null;
   }
+  if (
+    raw.scopes !== undefined &&
+    (!Array.isArray(raw.scopes) ||
+      raw.scopes.some((scope) => typeof scope !== "string" || scope.length === 0))
+  ) {
+    return null;
+  }
+  if (
+    raw.grants !== undefined &&
+    (!Array.isArray(raw.grants) || raw.grants.some((grant) => !isAuthorizationGrantPayload(grant)))
+  ) {
+    return null;
+  }
+  if (
+    raw.authzVersion !== undefined &&
+    (typeof raw.authzVersion !== "string" || raw.authzVersion.length === 0)
+  ) {
+    return null;
+  }
+  if (raw.jti !== undefined && (typeof raw.jti !== "string" || raw.jti.length === 0)) {
+    return null;
+  }
   return {
     typ: ASSERTION_TYPE,
     aud: raw.aud,
@@ -267,7 +337,48 @@ function decodePayload(encodedPayload: string): ExternalAuthAssertionPayload | n
     ...(raw.verifiedAt !== undefined ? { verifiedAt: raw.verifiedAt } : {}),
     ...(raw.orgId !== undefined ? { orgId: raw.orgId } : {}),
     ...(raw.roles !== undefined ? { roles: raw.roles } : {}),
+    ...(raw.scopes !== undefined ? { scopes: raw.scopes } : {}),
+    ...(raw.grants !== undefined ? { grants: cloneAuthorizationGrants(raw.grants) } : {}),
+    ...(raw.authzVersion !== undefined ? { authzVersion: raw.authzVersion } : {}),
+    ...(raw.jti !== undefined ? { jti: raw.jti } : {}),
   };
+}
+
+function isAuthorizationGrantPayload(value: unknown): value is AuthorizationGrant {
+  if (!isRecord(value)) return false;
+  if (typeof value.action !== "string" || value.action.length === 0) return false;
+  if (
+    value.resource !== undefined &&
+    (typeof value.resource !== "string" || value.resource.length === 0)
+  ) {
+    return false;
+  }
+  if (value.constraints !== undefined && !isAuthorizationConstraints(value.constraints)) {
+    return false;
+  }
+  return true;
+}
+
+function isAuthorizationConstraints(value: unknown): value is AuthorizationConstraints {
+  if (!isRecord(value)) return false;
+  return Object.values(value).every(isAuthorizationConstraintValue);
+}
+
+function isAuthorizationConstraintValue(value: unknown): value is AuthorizationConstraintValue {
+  if (value === null) return true;
+  switch (typeof value) {
+    case "string":
+    case "boolean":
+      return true;
+    case "number":
+      return Number.isFinite(value);
+    case "object":
+      if (Array.isArray(value)) return value.every(isAuthorizationConstraintValue);
+      if (!isRecord(value)) return false;
+      return Object.values(value).every(isAuthorizationConstraintValue);
+    default:
+      return false;
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

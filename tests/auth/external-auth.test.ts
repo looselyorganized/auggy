@@ -1,3 +1,4 @@
+import { createHmac } from "node:crypto";
 import { describe, expect, test } from "bun:test";
 import {
   createExternalAuthAssertion,
@@ -24,6 +25,16 @@ describe("external auth assertions", () => {
       verifiedAt: now - 1000,
       orgId: "org_123",
       roles: ["customer", "member"],
+      scopes: ["orders.read", "appointments.book"],
+      grants: [
+        {
+          action: "refund.issue",
+          resource: "order_123",
+          constraints: { maxAmountCents: 5000, currencies: ["USD", "CAD"] },
+        },
+      ],
+      authzVersion: "42",
+      jti: "assertion_123",
     });
 
     const result = verifyExternalAuthAssertion(assertion, {
@@ -47,6 +58,16 @@ describe("external auth assertions", () => {
         verifiedAt: now - 1000,
         orgId: "org_123",
         roles: ["customer", "member"],
+        scopes: ["orders.read", "appointments.book"],
+        grants: [
+          {
+            action: "refund.issue",
+            resource: "order_123",
+            constraints: { maxAmountCents: 5000, currencies: ["USD", "CAD"] },
+          },
+        ],
+        authzVersion: "42",
+        jti: "assertion_123",
       },
     });
   });
@@ -120,6 +141,40 @@ describe("external auth assertions", () => {
     ).toEqual({ ok: false, reason: "ttl-too-long" });
   });
 
+  test("rejects signed assertions with malformed delegated authorization claims", () => {
+    const invalidClaims: readonly Record<string, unknown>[] = [
+      { scopes: ["orders.read", 42] },
+      { scopes: [""] },
+      { grants: [null] },
+      { grants: [{ action: "", resource: "order_123" }] },
+      { grants: [{ action: "refund.issue", resource: "" }] },
+      { grants: [{ action: "refund.issue", resource: 123 }] },
+      { grants: [{ action: "refund.issue", constraints: "broad" }] },
+      { authzVersion: "" },
+      { jti: "" },
+    ];
+
+    for (const claims of invalidClaims) {
+      const assertion = signedAssertion({
+        typ: "auggy.external-auth.v1",
+        aud: "agent_zip",
+        provider: "fake-provider",
+        sub: "user_123",
+        iat: now,
+        exp: now + 60_000,
+        ...claims,
+      });
+
+      expect(
+        verifyExternalAuthAssertion(assertion, {
+          secret: "app-server-secret",
+          audience: "agent_zip",
+          now,
+        }),
+      ).toEqual({ ok: false, reason: "invalid-payload" });
+    }
+  });
+
   test("maps verified external claims to a recognized public route principal", () => {
     const claims: ExternalAuthClaims = {
       provider: "fake-provider",
@@ -132,6 +187,16 @@ describe("external auth assertions", () => {
       verifiedAt: now - 1000,
       orgId: "org_123",
       roles: ["customer", "admin"],
+      scopes: ["orders.read"],
+      grants: [
+        {
+          action: "orders.refund",
+          resource: "order_123",
+          constraints: { maxAmountCents: 5000 },
+        },
+      ],
+      authzVersion: "42",
+      jti: "assertion_123",
     };
 
     expect(externalAuthClaimsToRoutePrincipal(claims)).toEqual({
@@ -147,6 +212,16 @@ describe("external auth assertions", () => {
         subject: "user_123",
         orgId: "org_123",
         roles: ["customer", "admin"],
+        scopes: ["orders.read"],
+        grants: [
+          {
+            action: "orders.refund",
+            resource: "order_123",
+            constraints: { maxAmountCents: 5000 },
+          },
+        ],
+        authzVersion: "42",
+        jti: "assertion_123",
       },
     });
     expect(externalAuthClaimsToRouteContext(claims)).toEqual({
@@ -163,6 +238,16 @@ describe("external auth assertions", () => {
         subject: "user_123",
         orgId: "org_123",
         roles: ["customer", "admin"],
+        scopes: ["orders.read"],
+        grants: [
+          {
+            action: "orders.refund",
+            resource: "order_123",
+            constraints: { maxAmountCents: 5000 },
+          },
+        ],
+        authzVersion: "42",
+        jti: "assertion_123",
       },
       principal: {
         kind: "visitor",
@@ -177,6 +262,16 @@ describe("external auth assertions", () => {
           subject: "user_123",
           orgId: "org_123",
           roles: ["customer", "admin"],
+          scopes: ["orders.read"],
+          grants: [
+            {
+              action: "orders.refund",
+              resource: "order_123",
+              constraints: { maxAmountCents: 5000 },
+            },
+          ],
+          authzVersion: "42",
+          jti: "assertion_123",
         },
       },
     });
@@ -218,3 +313,11 @@ describe("external auth assertions", () => {
     ).toEqual(expect.objectContaining({ visitorId: "vis_fake-provider_user_123" }));
   });
 });
+
+function signedAssertion(payload: Record<string, unknown>, secret = "app-server-secret"): string {
+  const encodedPayload = Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
+  const signature = createHmac("sha256", `auggy-external-auth:${secret}`)
+    .update(encodedPayload)
+    .digest("base64url");
+  return `${encodedPayload}.${signature}`;
+}
