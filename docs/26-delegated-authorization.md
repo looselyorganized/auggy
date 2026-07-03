@@ -473,3 +473,13 @@ The end-to-end pattern is covered by
 - the turn carries verified external auth claims
 - a protected tool declares `requires` with `{ input: "orderId" }`
 - allowed and denied grant paths are both tested
+
+The generated-client app bridge is covered by
+`tests/integration/app-auth-bridge-generated-client.test.ts`:
+
+- app backend code verifies a Supabase/Clerk-style session
+- the app backend mints `x-auggy-auth-assertion`
+- a generated browser client uses `authAssertion` for a `visitor.required`
+  route
+- Auggy enforces route `requires` and tool `requires`
+- allowed and denied route/tool paths are both tested
