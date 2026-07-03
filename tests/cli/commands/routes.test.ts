@@ -279,6 +279,36 @@ describe("formatRoutesReport", () => {
 
     expect(formatRoutesReport(report)).toBe("Routes for zip\n\nNo augment routes found.");
   });
+
+  test("prints route policy metadata when present", () => {
+    const report: RoutesReport = {
+      agent: { name: "zip", configPath: "/tmp/zip/agent.yaml" },
+      summary: {
+        totalRoutes: 1,
+        publicRoutes: 1,
+        privateRoutes: 0,
+        publicRoutePaths: ["POST /webhooks/stripe"],
+      },
+      routes: [
+        {
+          method: "POST",
+          path: "/webhooks/stripe",
+          augmentName: "payments",
+          auth: "none",
+          params: [],
+          public: true,
+          security: "public",
+          policy: {
+            kind: "webhook.signature",
+            provider: "stripe",
+            secretEnv: "STRIPE_WEBHOOK_SECRET",
+          },
+        },
+      ],
+    };
+
+    expect(formatRoutesReport(report)).toContain("policy=webhook.signature:stripe");
+  });
 });
 
 describe("routesCommand", () => {

@@ -149,6 +149,47 @@ describe("collectAugmentRoutes", () => {
     ]);
   });
 
+  test("allows webhook signature route policies", () => {
+    const result = collectAugmentRoutes([
+      aug("stripe", [
+        {
+          ...route("POST", "/webhooks/stripe", "none"),
+          policy: {
+            kind: "webhook.signature",
+            provider: "stripe",
+            secretEnv: "STRIPE_WEBHOOK_SECRET",
+          },
+        },
+      ]),
+    ]);
+
+    expect(result.errors).toEqual([]);
+    expect(result.routes[0]?.policy).toEqual({
+      kind: "webhook.signature",
+      provider: "stripe",
+      secretEnv: "STRIPE_WEBHOOK_SECRET",
+    });
+  });
+
+  test("rejects routes with invalid policy values", () => {
+    const r = (path: string, policy: unknown): AugmentHttpRoute => ({
+      ...route("POST", path, "none"),
+      policy: policy as AugmentHttpRoute["policy"],
+    });
+    const result = collectAugmentRoutes([
+      aug("a", [r("/a", "webhook.signature")]),
+      aug("b", [r("/b", { kind: "oauth" })]),
+      aug("c", [r("/c", { kind: "webhook.signature", provider: "" })]),
+      aug("d", [r("/d", { kind: "webhook.signature", provider: "stripe", secretEnv: "" })]),
+    ]);
+
+    expect(result.errors).toHaveLength(4);
+    for (const e of result.errors) {
+      expect(e).toContain("invalid");
+      expect(e).toContain("policy");
+    }
+  });
+
   test("rejects path that does not start with '/'", () => {
     const result = collectAugmentRoutes([aug("a", [route("GET", "no-slash")])]);
     expect(result.errors).toHaveLength(1);

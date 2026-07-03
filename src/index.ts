@@ -61,6 +61,9 @@ export type {
   RouteVisitorAuthContext,
   TransportSpec,
   TransportKernel,
+  AugmentHttpRoutePolicy,
+  AugmentHttpRouteWebhookProvider,
+  AugmentHttpRouteWebhookSignaturePolicy,
   // Agent Card
   AgentCard,
   AgentCardProvider,
@@ -96,7 +99,7 @@ export type {
 } from "./auth/external-auth";
 
 // === Helpers ===
-export { defineAugment, defineRoute, defineTool, json } from "./helpers";
+export { defineAugment, defineRoute, defineTool, json, webhook } from "./helpers";
 export type {
   DefineGetRouteOptions,
   DefinePostRouteOptions,

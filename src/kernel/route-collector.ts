@@ -111,6 +111,12 @@ export function collectAugmentRoutes(augments: readonly Augment[]): CollectAugme
         continue;
       }
 
+      const policyError = validateRoutePolicy(aug.name, r);
+      if (policyError) {
+        errors.push(policyError);
+        continue;
+      }
+
       // Cross-augment collision (same method + same path)
       const key = `${r.method} ${r.path}`;
       const firstAug = seen.get(key);
@@ -143,4 +149,29 @@ export function collectAugmentRoutes(augments: readonly Augment[]): CollectAugme
     routes: Object.freeze(routes) as readonly CollectedRoute[],
     errors: Object.freeze(errors) as readonly string[],
   };
+}
+
+function validateRoutePolicy(augmentName: string, route: AugmentHttpRoute): string | undefined {
+  const policy = route.policy as unknown;
+  if (policy === undefined) return undefined;
+  if (!isRecord(policy)) {
+    return `Augment "${augmentName}" registered HTTP route ${route.method} "${route.path}" with invalid policy — must be an object.`;
+  }
+  if (policy.kind !== "webhook.signature") {
+    return `Augment "${augmentName}" registered HTTP route ${route.method} "${route.path}" with invalid policy kind "${String(policy.kind)}" — must be "webhook.signature".`;
+  }
+  if (typeof policy.provider !== "string" || policy.provider.trim().length === 0) {
+    return `Augment "${augmentName}" registered HTTP route ${route.method} "${route.path}" with invalid webhook.signature policy — provider must be a non-empty string.`;
+  }
+  if (
+    policy.secretEnv !== undefined &&
+    (typeof policy.secretEnv !== "string" || policy.secretEnv.trim().length === 0)
+  ) {
+    return `Augment "${augmentName}" registered HTTP route ${route.method} "${route.path}" with invalid webhook.signature policy — secretEnv must be a non-empty string when provided.`;
+  }
+  return undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

@@ -645,6 +645,20 @@ export type AugmentHttpRouteAuth =
   | "visitor.required"
   | "agent.required";
 
+export type AugmentHttpRouteWebhookProvider = "stripe" | "github" | "svix" | (string & {});
+
+export interface AugmentHttpRouteWebhookSignaturePolicy {
+  kind: "webhook.signature";
+  provider: AugmentHttpRouteWebhookProvider;
+  /**
+   * Environment variable that stores the provider signing secret. The route
+   * manifest exposes the variable name only, never the secret value.
+   */
+  secretEnv?: string;
+}
+
+export type AugmentHttpRoutePolicy = AugmentHttpRouteWebhookSignaturePolicy;
+
 export interface RouteVisitorIdentity {
   visitorId: string;
   agentId: string;
@@ -781,6 +795,13 @@ export interface AugmentHttpRoute {
   rateLimit?: {
     maxPerMinute: number;
   };
+  /**
+   * Optional route policy metadata for tooling, manifests, and generated
+   * clients. v1.x treats policies as descriptive metadata unless a transport
+   * explicitly implements the verifier; do not rely on this field alone as an
+   * authorization boundary.
+   */
+  policy?: AugmentHttpRoutePolicy;
   /**
    * Optional request schemas for operator tooling and OpenAPI-ish export.
    * The dispatcher still validates via the route handler/helper; this metadata

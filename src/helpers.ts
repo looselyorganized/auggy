@@ -3,8 +3,11 @@ import type {
   Augment,
   AugmentHttpRoute,
   AugmentHttpRouteAuth,
+  AugmentHttpRoutePolicy,
   AugmentHttpRouteRequestJsonSchema,
   AugmentHttpRouteResponseJsonSchema,
+  AugmentHttpRouteWebhookProvider,
+  AugmentHttpRouteWebhookSignaturePolicy,
   HttpMethod,
   RouteAuthContext,
   Tool,
@@ -71,6 +74,7 @@ interface RouteOptionsBase {
   timeoutMs?: number;
   maxBodyBytes?: number;
   rateLimit?: RouteRateLimit;
+  policy?: AugmentHttpRoutePolicy;
 }
 
 export interface DefineGetRouteOptions<
@@ -141,10 +145,24 @@ function routeBase(
     ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
     ...(opts.maxBodyBytes !== undefined ? { maxBodyBytes: opts.maxBodyBytes } : {}),
     ...(opts.rateLimit ? { rateLimit: opts.rateLimit } : {}),
+    ...(opts.policy ? { policy: opts.policy } : {}),
     ...(requestJsonSchema ? { requestJsonSchema } : {}),
     ...(responseJsonSchema ? { responseJsonSchema } : {}),
   };
 }
+
+export const webhook = {
+  signature(
+    provider: AugmentHttpRouteWebhookProvider,
+    opts: { secretEnv?: string } = {},
+  ): AugmentHttpRouteWebhookSignaturePolicy {
+    return {
+      kind: "webhook.signature",
+      provider,
+      ...(opts.secretEnv !== undefined ? { secretEnv: opts.secretEnv } : {}),
+    };
+  },
+};
 
 function toJsonSchema(schema: AnySchema | undefined): Record<string, unknown> | undefined {
   return schema ? (z.toJSONSchema(schema) as Record<string, unknown>) : undefined;

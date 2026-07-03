@@ -298,10 +298,14 @@ The current route surface is intentionally narrow:
 
 - Exact routes and full-segment path params
 - `GET` and `POST`
-- `auth: "bearer"`, `"none"`, `"visitor.optional"`, or `"visitor.required"`
+- `auth: "bearer"`, `"creator"`, `"none"`, `"visitor.optional"`,
+  `"visitor.required"`, or `"agent.required"`
 - Per-route body cap
 - Per-route timeout
 - Per-route rate limit
+- Descriptive webhook signature policy metadata in manifests and generated
+  client target filtering; runtime signature verification is still a later
+  transport slice
 
 That is enough for many app primitives, callbacks, and admin APIs. It is not yet a full Express/Fastify replacement. The pitch should stay disciplined:
 

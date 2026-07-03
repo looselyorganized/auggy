@@ -82,6 +82,10 @@ export function formatRoutesReport(report: RoutesReport): string {
     access: route.public ? "PUBLIC" : "PRIVATE",
     auth: `auth=${route.auth}`,
     params: `params=${route.params.length > 0 ? route.params.join(",") : "-"}`,
+    policy:
+      route.policy?.kind === "webhook.signature"
+        ? ` policy=${route.policy.kind}:${route.policy.provider}`
+        : "",
   }));
   const methodWidth = Math.max(...rows.map((row) => row.method.length));
   const pathWidth = Math.max(...rows.map((row) => row.path.length));
@@ -93,7 +97,7 @@ export function formatRoutesReport(report: RoutesReport): string {
       (row) =>
         `${row.method.padEnd(methodWidth)}  ${row.path.padEnd(pathWidth)}  ${row.augment.padEnd(
           augmentWidth,
-        )}  ${row.access.padEnd(accessWidth)}  ${row.auth}  ${row.params}`,
+        )}  ${row.access.padEnd(accessWidth)}  ${row.auth}  ${row.params}${row.policy}`,
     ),
   );
 

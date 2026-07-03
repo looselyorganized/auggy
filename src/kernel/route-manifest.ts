@@ -1,5 +1,6 @@
 import type {
   AugmentHttpRouteAuth,
+  AugmentHttpRoutePolicy,
   AugmentHttpRouteRequestJsonSchema,
   AugmentHttpRouteResponseJsonSchema,
   HttpMethod,
@@ -22,6 +23,7 @@ export interface RouteManifestEntry {
   rateLimit?: {
     maxPerMinute: number;
   };
+  policy?: AugmentHttpRoutePolicy;
   requestJsonSchema?: AugmentHttpRouteRequestJsonSchema;
   responseJsonSchema?: AugmentHttpRouteResponseJsonSchema;
 }
@@ -41,6 +43,9 @@ export function createRouteManifest(
       const parsed = parseRoutePattern(route.path);
       const params = parsed.ok ? parsed.pattern.params : [];
       const isPublic = route.auth === "none" || route.auth === "visitor.optional";
+      const policy = route.policy
+        ? (Object.freeze({ ...route.policy }) as AugmentHttpRoutePolicy)
+        : undefined;
       return Object.freeze({
         method: route.method,
         path: route.path,
@@ -52,6 +57,7 @@ export function createRouteManifest(
         ...(route.timeoutMs !== undefined ? { timeoutMs: route.timeoutMs } : {}),
         ...(route.maxBodyBytes !== undefined ? { maxBodyBytes: route.maxBodyBytes } : {}),
         ...(route.rateLimit ? { rateLimit: { maxPerMinute: route.rateLimit.maxPerMinute } } : {}),
+        ...(policy ? { policy } : {}),
         ...(route.requestJsonSchema ? { requestJsonSchema: route.requestJsonSchema } : {}),
         ...(route.responseJsonSchema ? { responseJsonSchema: route.responseJsonSchema } : {}),
       });

@@ -127,11 +127,11 @@ function clientHeader(
     " *",
     ...(target === "browser"
       ? [
-          " * Browser clients omit creator/bearer/agent routes. Do not ship privileged credentials to browser code.",
+          " * Browser clients omit creator/bearer/agent and webhook-policy routes. Do not ship privileged credentials to browser code.",
           " * Use visitor-token routes or public routes from browser clients.",
         ]
       : [
-          " * Server clients include creator/bearer and agent routes for server-side and SSR callers.",
+          " * Server clients include creator/bearer, agent, and webhook-policy routes for server-side and SSR callers.",
           " * Do not bundle this generated file into browser code with bearer or agent credentials.",
         ]),
   ];
@@ -139,7 +139,7 @@ function clientHeader(
   if (skippedRoutes.length > 0) {
     lines.push(" *", " * Routes omitted for this target:");
     for (const route of skippedRoutes.slice(0, 20)) {
-      lines.push(` * - ${route.method} ${route.path} auth=${route.auth}`);
+      lines.push(` * - ${skippedRouteLabel(route)}`);
     }
     if (skippedRoutes.length > 20) {
       lines.push(` * - ...and ${skippedRoutes.length - 20} more`);
@@ -462,11 +462,20 @@ function routeAuthUnion(target: TypeScriptClientTarget): string {
 }
 
 function routeSupportsTarget(route: RouteManifestEntry, target: TypeScriptClientTarget): boolean {
+  if (target === "browser" && route.policy?.kind === "webhook.signature") return false;
   if (route.auth === "none") return true;
   if (route.auth === "bearer" || route.auth === "creator" || route.auth === "agent.required") {
     return target === "server";
   }
   return target === "browser";
+}
+
+function skippedRouteLabel(route: RouteManifestEntry): string {
+  const policy =
+    route.policy?.kind === "webhook.signature"
+      ? ` policy=${route.policy.kind}:${route.policy.provider}`
+      : "";
+  return `${route.method} ${route.path} auth=${route.auth}${policy}`;
 }
 
 function schemaToType(schema: unknown): string {

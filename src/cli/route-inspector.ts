@@ -95,7 +95,11 @@ export const inspectCustomAugmentRoutes = inspectAugmentRoutes;
 export function formatRouteManifestEntry(route: RouteManifestEntry): string {
   const params = route.params.length > 0 ? route.params.join(",") : "-";
   const rateLimit = route.rateLimit ? ` rate=${route.rateLimit.maxPerMinute}/min` : "";
-  return `${route.augmentName} ${route.security.toUpperCase()} auth=${route.auth} params=${params}${rateLimit}`;
+  const policy =
+    route.policy?.kind === "webhook.signature"
+      ? ` policy=${route.policy.kind}:${route.policy.provider}`
+      : "";
+  return `${route.augmentName} ${route.security.toUpperCase()} auth=${route.auth} params=${params}${rateLimit}${policy}`;
 }
 
 function emptyInspection(issues: readonly RouteInspectionIssue[]): RouteInspectionResult {

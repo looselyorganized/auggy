@@ -270,11 +270,16 @@ defineRoute.post("/webhooks/stripe", {
   policy: webhook.signature("stripe", {
     secretEnv: "STRIPE_WEBHOOK_SECRET",
   }),
-  handler: async ({ webhook }) => {
-    // webhook.event is verified provider payload
+  handler: async ({ request }) => {
+    // Verifier-backed webhook context is the next slice. Until then, the
+    // handler or augment must still verify the provider signature itself.
   },
 });
 ```
+
+Ship this in layers: first policy metadata for manifests, route reports,
+OpenAPI `x-auggy`, and generated-client target filtering; then provider
+verifiers with raw-body access and structured webhook handler context.
 
 Keep webhook auth separate from route identity:
 

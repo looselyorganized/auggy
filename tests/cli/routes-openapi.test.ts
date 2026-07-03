@@ -258,6 +258,56 @@ describe("createOpenApiDocument", () => {
     });
   });
 
+  test("exports route policy metadata in x-auggy without adding security schemes", () => {
+    const doc = createOpenApiDocument({
+      agent: { name: "zip", configPath: "/tmp/zip/agent.yaml" },
+      summary: {
+        totalRoutes: 1,
+        publicRoutes: 1,
+        privateRoutes: 0,
+        publicRoutePaths: ["POST /webhooks/stripe"],
+      },
+      routes: [
+        {
+          method: "POST",
+          path: "/webhooks/stripe",
+          augmentName: "payments",
+          auth: "none",
+          params: [],
+          public: true,
+          security: "public",
+          policy: {
+            kind: "webhook.signature",
+            provider: "stripe",
+            secretEnv: "STRIPE_WEBHOOK_SECRET",
+          },
+        },
+      ],
+    }) as {
+      paths: Record<string, Record<string, Record<string, unknown>>>;
+      components?: Record<string, unknown>;
+    };
+
+    const post = doc.paths["/webhooks/stripe"]?.post;
+
+    expect(post?.security).toEqual([]);
+    expect(post?.responses).toEqual({
+      "200": { description: "OK" },
+      "400": { description: "Bad request" },
+      "500": { description: "Internal server error" },
+    });
+    expect(post?.["x-auggy"]).toMatchObject({
+      auth: "none",
+      public: true,
+      policy: {
+        kind: "webhook.signature",
+        provider: "stripe",
+        secretEnv: "STRIPE_WEBHOOK_SECRET",
+      },
+    });
+    expect(doc.components).toBeUndefined();
+  });
+
   test("exports creator route auth as bearer security with semantic metadata", () => {
     const doc = createOpenApiDocument({
       agent: { name: "zip", configPath: "/tmp/zip/agent.yaml" },

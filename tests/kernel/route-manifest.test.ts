@@ -110,4 +110,30 @@ describe("route manifest", () => {
       security: "private",
     });
   });
+
+  test("copies route policy metadata into manifest entries", () => {
+    const policy = {
+      kind: "webhook.signature" as const,
+      provider: "stripe",
+      secretEnv: "STRIPE_WEBHOOK_SECRET",
+    };
+    const collected = collectAugmentRoutes([
+      aug("payments", [route("POST", "/webhooks/stripe", "none", { policy })]),
+    ]);
+
+    expect(collected.errors).toEqual([]);
+
+    const manifest = createRouteManifest(collected.routes);
+
+    expect(manifest[0]).toMatchObject({
+      method: "POST",
+      path: "/webhooks/stripe",
+      auth: "none",
+      public: true,
+      security: "public",
+      policy,
+    });
+    expect(manifest[0]?.policy).not.toBe(policy);
+    expect(Object.isFrozen(manifest[0]?.policy)).toBe(true);
+  });
 });

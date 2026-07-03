@@ -164,7 +164,6 @@ For app backends, `auth: "bearer" | "none"` is too coarse. Evolve route auth int
 - `visitor.required`
 - `agent.required`
 - `trust: ["creator", "agent"]`
-- `webhook.signature`
 - `custom`
 
 Examples:
@@ -175,6 +174,8 @@ Examples:
 - `/agent-api/search` requires admitted agent credentials.
 
 This keeps security posture explicit at the route declaration site.
+Webhook signatures belong in route policy metadata
+(`policy: webhook.signature(...)`), not in the peer-auth mode union.
 
 ### Declarative policy before arbitrary middleware
 
@@ -396,11 +397,13 @@ literal paths preserve autocomplete without creating naming churn around
 Target split:
 
 - Browser target includes `none`, `visitor.optional`, and `visitor.required`
-  routes. It omits bearer, creator, and `agent.required` routes and does not
-  generate privileged credential config.
+  routes. It omits bearer, creator, `agent.required`, and webhook-policy routes
+  and does not generate privileged credential config.
 - Server target includes `none`, bearer/creator, and `agent.required` routes.
   It omits visitor-token routes and generates `bearerToken` and
-  `agentCredentials` config for server-side/SSR callers.
+  `agentCredentials` config for server-side/SSR callers. Webhook-policy routes
+  may appear in the server target when their auth mode is otherwise
+  server-callable; examples should not encourage browser or manual replay.
 
 Client config:
 

@@ -1,6 +1,6 @@
 import { describe, it, expect } from "bun:test";
 import { z } from "zod";
-import { defineAugment, defineRoute, defineTool, json } from "@/helpers";
+import { defineAugment, defineRoute, defineTool, json, webhook } from "@/helpers";
 import type { ContextBlock, TurnState } from "@/types";
 
 const stubTurn: TurnState = {
@@ -302,6 +302,22 @@ describe("defineRoute", () => {
 
     expect(res.status).toBe(201);
     expect(await res.json()).toEqual({ saved: true, email: "ada@example.com" });
+  });
+
+  it("attaches webhook policy metadata to helper routes", () => {
+    const route = defineRoute.post("/webhooks/stripe", {
+      auth: "none",
+      policy: webhook.signature("stripe", {
+        secretEnv: "STRIPE_WEBHOOK_SECRET",
+      }),
+      handler: () => json({ ok: true }),
+    });
+
+    expect(route.policy).toEqual({
+      kind: "webhook.signature",
+      provider: "stripe",
+      secretEnv: "STRIPE_WEBHOOK_SECRET",
+    });
   });
 
   it("creates a POST route that validates query params and JSON body", async () => {

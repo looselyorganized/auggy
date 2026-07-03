@@ -178,6 +178,7 @@ function augmentRouteMetadata(route: RouteManifestEntry): JsonObject {
     ...(route.timeoutMs !== undefined ? { timeoutMs: route.timeoutMs } : {}),
     ...(route.maxBodyBytes !== undefined ? { maxBodyBytes: route.maxBodyBytes } : {}),
     ...(route.rateLimit ? { rateLimit: route.rateLimit } : {}),
+    ...(route.policy ? { policy: route.policy } : {}),
   };
 }
 

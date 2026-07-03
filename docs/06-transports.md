@@ -695,6 +695,19 @@ Convention: scope routes under `/<augment-name>/...` to make collisions across t
 
 When `webTransport.cors` is configured, augment route `Response` objects inherit `Access-Control-Allow-Origin` and `Access-Control-Expose-Headers` unless the handler already set those headers. This applies to successful handler responses and parameter-aware 405 method mismatches.
 
+### Route policy metadata
+
+Routes can optionally declare descriptive policy metadata. The first supported
+shape is `policy: webhook.signature(provider, { secretEnv })`, which appears in
+route manifests, OpenAPI `x-auggy` metadata, route reports, and generated client
+target filtering. Browser generated clients omit webhook-policy routes; server
+generated clients may include them when the route auth mode is otherwise
+server-callable.
+
+This metadata does not verify webhook signatures yet. Until provider verifiers
+land in the transport, augment handlers must still perform any required
+signature/HMAC checks before trusting the request body.
+
 ### Caller IP & `trustedProxies`
 
 The per-route rate limiter keys on the caller's IP. By default, `webTransport` ignores `X-Forwarded-For` / `X-Real-IP` headers and uses the connection's remote address. This is the default-secure behavior: an untrusted client could otherwise spoof those headers and skip rate limiting.
@@ -737,7 +750,7 @@ CIDR ranges are not yet supported (v1 keeps it simple); list the exact IPs.
 - Exact paths and full-segment path params are supported (`/items/:id`). Prefix routes are not supported.
 - No streaming response support — handlers return discrete `Response` objects. AG-UI's SSE stays exclusive to `/agent/run`.
 - Routes are frozen at `agent.start()` — no dynamic add/remove during runtime.
-- Per-route auth schemes are `bearer`, `creator`, `none`, `visitor.optional`, `visitor.required`, and `agent.required`. For OAuth/HMAC/custom schemes, augments wrap their handler with the additional check.
+- Per-route auth schemes are `bearer`, `creator`, `none`, `visitor.optional`, `visitor.required`, and `agent.required`. For OAuth/custom schemes, augments wrap their handler with the additional check. `policy: webhook.signature(...)` is currently manifest/client metadata, not a runtime verifier.
 
 ## The `/console` route
 
