@@ -1194,9 +1194,42 @@ export function webTransport(opts: WebTransportOptions): Augment {
         ...(identity?.email !== undefined ? { email: identity.email } : {}),
         ...(identity?.verifiedAt !== undefined ? { verifiedAt: identity.verifiedAt } : {}),
         ...(identity?.reverifyDueAt !== undefined ? { reverifyDueAt: identity.reverifyDueAt } : {}),
+        ...(identity?.externalAuth !== undefined ? { externalAuth: identity.externalAuth } : {}),
       },
     };
-    return visitorAuth;
+    return mergeMatchingExternalVisitorAuth(visitorAuth, resolveExternalVisitorAuth(req));
+  }
+
+  function mergeMatchingExternalVisitorAuth(
+    visitorAuth: Extract<RouteVisitorAuthContext, { state: "recognized" }>,
+    externalAuth: RouteVisitorAuthContext | null,
+  ): RouteVisitorAuthContext {
+    if (externalAuth?.state !== "recognized" || externalAuth.visitorId !== visitorAuth.visitorId) {
+      return visitorAuth;
+    }
+
+    const email = visitorAuth.email ?? externalAuth.email;
+    const verifiedAt = visitorAuth.verifiedAt ?? externalAuth.verifiedAt;
+    const reverifyDueAt = visitorAuth.reverifyDueAt ?? externalAuth.reverifyDueAt;
+
+    return {
+      ...visitorAuth,
+      ...(email !== undefined ? { email } : {}),
+      ...(verifiedAt !== undefined ? { verifiedAt } : {}),
+      ...(reverifyDueAt !== undefined ? { reverifyDueAt } : {}),
+      ...(externalAuth.externalAuth !== undefined
+        ? { externalAuth: externalAuth.externalAuth }
+        : {}),
+      principal: {
+        ...visitorAuth.principal,
+        ...(email !== undefined ? { email } : {}),
+        ...(verifiedAt !== undefined ? { verifiedAt } : {}),
+        ...(reverifyDueAt !== undefined ? { reverifyDueAt } : {}),
+        ...(externalAuth.externalAuth !== undefined
+          ? { externalAuth: externalAuth.externalAuth }
+          : {}),
+      },
+    };
   }
 
   async function authorizeAugmentRoute(

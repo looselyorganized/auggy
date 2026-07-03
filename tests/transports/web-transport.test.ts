@@ -2645,6 +2645,157 @@ describe("webTransport augment-registered routes", () => {
     }
   });
 
+  it("auth: visitor.required merges matching external auth claims onto a valid visitor token", async () => {
+    const model = createMockModel();
+    const port = 19430;
+    const now = Date.now();
+    const signingKey = "visitor-route-secret";
+    const agentBinding = "storefront-agent";
+    const visitorId = "vis_app_user_123";
+    const key = await deriveSigningKey(signingKey);
+    const issued = await createVisitorToken(key, agentBinding, 3600, visitorId);
+    const assertion = createExternalAuthAssertion({
+      secret: "app-auth-secret",
+      audience: agentBinding,
+      provider: "clerk",
+      subject: "user_123",
+      now,
+      ttlSeconds: 60,
+      orgId: "org_store_123",
+      roles: ["customer", "vip"],
+    });
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: "test-token" },
+      visitorTokens: {
+        enabled: true,
+        signingKey,
+        agentBinding,
+      },
+      externalAuth: {
+        secret: "app-auth-secret",
+        audience: agentBinding,
+        allowedProviders: ["clerk"],
+        visitorId: (claims) => `vis_app_${claims.subject}`,
+      },
+    });
+    const fixture: Augment = {
+      name: "external-auth-routes",
+      httpRoutes: [
+        {
+          method: "GET",
+          path: "/account",
+          auth: "visitor.required",
+          handler: async (_req, opts) => json(opts.auth),
+        },
+      ],
+    };
+    const agent = defineAgent({ name: "test", model: "mock", augments: [fixture, aug] }, model);
+    await agent.start();
+    try {
+      const resp = await fetch(`http://localhost:${port}/account`, {
+        headers: {
+          "x-visitor-token": issued.token,
+          "x-auggy-auth-assertion": assertion,
+        },
+      });
+      expect(resp.status).toBe(200);
+      expect(await resp.json()).toMatchObject({
+        mode: "visitor",
+        state: "recognized",
+        visitorId,
+        agentId: agentBinding,
+        issuedAt: issued.payload.issuedAt,
+        expiresAt: issued.payload.expiresAt,
+        externalAuth: {
+          provider: "clerk",
+          subject: "user_123",
+          orgId: "org_store_123",
+          roles: ["customer", "vip"],
+        },
+        principal: {
+          kind: "visitor",
+          visitorId,
+          agentId: agentBinding,
+          externalAuth: {
+            provider: "clerk",
+            subject: "user_123",
+            orgId: "org_store_123",
+            roles: ["customer", "vip"],
+          },
+        },
+      });
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("auth: visitor.required does not merge external auth claims for a different visitor token", async () => {
+    const model = createMockModel();
+    const port = 19431;
+    const now = Date.now();
+    const signingKey = "visitor-route-secret";
+    const agentBinding = "storefront-agent";
+    const key = await deriveSigningKey(signingKey);
+    const issued = await createVisitorToken(key, agentBinding, 3600, "vis_token_user");
+    const assertion = createExternalAuthAssertion({
+      secret: "app-auth-secret",
+      audience: agentBinding,
+      provider: "clerk",
+      subject: "different_user",
+      now,
+      ttlSeconds: 60,
+      roles: ["admin"],
+    });
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: "test-token" },
+      visitorTokens: {
+        enabled: true,
+        signingKey,
+        agentBinding,
+      },
+      externalAuth: {
+        secret: "app-auth-secret",
+        audience: agentBinding,
+        allowedProviders: ["clerk"],
+        visitorId: (claims) => `vis_app_${claims.subject}`,
+      },
+    });
+    const fixture: Augment = {
+      name: "external-auth-routes",
+      httpRoutes: [
+        {
+          method: "GET",
+          path: "/account",
+          auth: "visitor.required",
+          handler: async (_req, opts) => json(opts.auth),
+        },
+      ],
+    };
+    const agent = defineAgent({ name: "test", model: "mock", augments: [fixture, aug] }, model);
+    await agent.start();
+    try {
+      const resp = await fetch(`http://localhost:${port}/account`, {
+        headers: {
+          "x-visitor-token": issued.token,
+          "x-auggy-auth-assertion": assertion,
+        },
+      });
+      expect(resp.status).toBe(200);
+      const body = (await resp.json()) as {
+        visitorId: string;
+        externalAuth?: unknown;
+        principal: { externalAuth?: unknown };
+      };
+      expect(body.visitorId).toBe("vis_token_user");
+      expect(body.externalAuth).toBeUndefined();
+      expect(body.principal.externalAuth).toBeUndefined();
+    } finally {
+      await agent.stop();
+    }
+  });
+
   it("auth: visitor.required rejects missing, invalid, and revoked visitor tokens", async () => {
     const model = createMockModel();
     const port = 19306;

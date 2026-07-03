@@ -232,6 +232,11 @@ auth.externalAuth // { provider, subject, orgId?, roles? }
 This gives Clerk/Supabase/custom app sessions enough structure for app-owned
 authorization checks without making Auggy a general RBAC product.
 
+When a request carries both a valid Auggy visitor token and a valid external app
+auth assertion, Auggy keeps the visitor-token identity and attaches
+`externalAuth` only if the external assertion maps to the same `visitorId`.
+Mismatched app claims are not merged onto the visitor context.
+
 ### Step 4: visitor and agent route auth
 
 Add only after route context can resolve credentials consistently:
