@@ -262,6 +262,36 @@ Add as route policies, not peer identity:
 - `webhook.signature("github")`
 - or augment-specific policy helpers
 
+Recommended first shape:
+
+```ts
+defineRoute.post("/webhooks/stripe", {
+  auth: "none",
+  policy: webhook.signature("stripe", {
+    secretEnv: "STRIPE_WEBHOOK_SECRET",
+  }),
+  handler: async ({ webhook }) => {
+    // webhook.event is verified provider payload
+  },
+});
+```
+
+Keep webhook auth separate from route identity:
+
+- The caller is a provider event, not a visitor, creator, or agent peer.
+- Verification should run before JSON body parsing mutates the raw payload.
+- The verified event can be passed to the handler as structured route context.
+- The model should not see webhook secrets, signatures, or raw provider
+  headers.
+- Generated browser clients should omit webhook-policy routes by default.
+- Server clients may include them only as ordinary server-side routes if the
+  signature is caller-supplied; examples should discourage manually replaying
+  provider webhooks.
+
+Start with provider-specific helpers for Stripe and GitHub/Svix-style HMAC
+instead of a generic middleware system. This keeps manifests inspectable and
+avoids turning Auggy into an Express clone.
+
 ## Design cautions
 
 - Do not rename `visitorAuth` to `agentAuth`; create `agentAuth` as a sibling.
