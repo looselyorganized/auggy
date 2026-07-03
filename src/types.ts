@@ -655,9 +655,25 @@ export interface AugmentHttpRouteWebhookSignaturePolicy {
    * manifest exposes the variable name only, never the secret value.
    */
   secretEnv?: string;
+  /**
+   * Max accepted age for provider timestamps. Stripe verification defaults to
+   * 300 seconds when omitted.
+   */
+  timestampToleranceSeconds?: number;
 }
 
 export type AugmentHttpRoutePolicy = AugmentHttpRouteWebhookSignaturePolicy;
+
+export interface RouteWebhookContext {
+  kind: "webhook.signature";
+  provider: AugmentHttpRouteWebhookProvider;
+  /** Parsed provider event payload after signature verification. */
+  event: unknown;
+  /** Unix timestamp in seconds from the provider signature envelope. */
+  timestamp?: number;
+  /** Local wall-clock time when the transport accepted the webhook. */
+  receivedAt: number;
+}
 
 export interface RouteVisitorIdentity {
   visitorId: string;
@@ -834,6 +850,8 @@ export interface AugmentHttpRoute {
       auth?: RouteAuthContext;
       /** Path parameters resolved by the HTTP dispatcher for `:param` routes. */
       params?: Record<string, string>;
+      /** Verified webhook policy context when a transport verifier accepted the route. */
+      webhook?: RouteWebhookContext;
       /**
        * Effective path after helper transforms such as `defineRoute.group()`.
        * Raw handlers can ignore this; helper-generated handlers use it for

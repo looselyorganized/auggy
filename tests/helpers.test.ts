@@ -309,6 +309,7 @@ describe("defineRoute", () => {
       auth: "none",
       policy: webhook.signature("stripe", {
         secretEnv: "STRIPE_WEBHOOK_SECRET",
+        timestampToleranceSeconds: 120,
       }),
       handler: () => json({ ok: true }),
     });
@@ -317,6 +318,7 @@ describe("defineRoute", () => {
       kind: "webhook.signature",
       provider: "stripe",
       secretEnv: "STRIPE_WEBHOOK_SECRET",
+      timestampToleranceSeconds: 120,
     });
   });
 

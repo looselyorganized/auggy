@@ -1,7 +1,7 @@
 import { describe, it, expect } from "bun:test";
 import { z } from "zod";
 import { isLoopback, normalizeIp, webTransport } from "@/transports/web-transport";
-import { defineRoute, json } from "@/helpers";
+import { defineRoute, json, webhook } from "@/helpers";
 import { defineAgent } from "@/agent";
 import { createMockModel } from "@tests/fixtures/mock-model";
 import { createIdentityAugment } from "@tests/fixtures/mock-augment";
@@ -1384,6 +1384,31 @@ async function withEnv<T>(
   }
 }
 
+const stripeTestEncoder = new TextEncoder();
+
+async function stripeSignatureHeader(
+  secret: string,
+  payload: string,
+  timestamp = Math.floor(Date.now() / 1000),
+): Promise<string> {
+  const key = await crypto.subtle.importKey(
+    "raw",
+    stripeTestEncoder.encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const signature = await crypto.subtle.sign(
+    "HMAC",
+    key,
+    stripeTestEncoder.encode(`${timestamp}.${payload}`),
+  );
+  const hex = Array.from(new Uint8Array(signature), (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  ).join("");
+  return `t=${timestamp},v1=${hex}`;
+}
+
 describe("webTransport allowAnonymous (G3)", () => {
   it("admits no-bearer requests when allowAnonymous=true (explicit yaml)", async () => {
     const model = createMockModel({ response: "ok" });
@@ -2344,6 +2369,176 @@ describe("webTransport augment-registered routes", () => {
     } finally {
       await agent.stop();
     }
+  });
+
+  it("verifies Stripe webhook signatures before dispatching policy routes", async () => {
+    await withEnv({ STRIPE_WEBHOOK_SECRET_TEST: "whsec_test_secret" }, async () => {
+      const model = createMockModel();
+      const port = 19980;
+      const aug = webTransport({ port, auth: { type: "bearer", token: "test-token" } });
+      const fixture: Augment = {
+        name: "payments",
+        httpRoutes: [
+          defineRoute.post("/webhooks/stripe", {
+            auth: "none",
+            policy: webhook.signature("stripe", {
+              secretEnv: "STRIPE_WEBHOOK_SECRET_TEST",
+            }),
+            body: z.object({
+              id: z.string(),
+              type: z.string(),
+            }),
+            handler: ({ body, webhook: webhookContext }) =>
+              json({
+                body,
+                webhook: {
+                  kind: webhookContext?.kind,
+                  provider: webhookContext?.provider,
+                  timestamp: webhookContext?.timestamp,
+                  event: webhookContext?.event,
+                },
+              }),
+          }),
+        ],
+      };
+      const agent = defineAgent({ name: "test", model: "mock", augments: [fixture, aug] }, model);
+      const payload = JSON.stringify({
+        id: "evt_test",
+        type: "checkout.session.completed",
+      });
+      const timestamp = Math.floor(Date.now() / 1000);
+      const signature = await stripeSignatureHeader("whsec_test_secret", payload, timestamp);
+
+      await agent.start();
+      try {
+        const resp = await fetch(`http://localhost:${port}/webhooks/stripe`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "stripe-signature": signature,
+          },
+          body: payload,
+        });
+
+        expect(resp.status).toBe(200);
+        expect(await resp.json()).toEqual({
+          body: {
+            id: "evt_test",
+            type: "checkout.session.completed",
+          },
+          webhook: {
+            kind: "webhook.signature",
+            provider: "stripe",
+            timestamp,
+            event: {
+              id: "evt_test",
+              type: "checkout.session.completed",
+            },
+          },
+        });
+      } finally {
+        await agent.stop();
+      }
+    });
+  });
+
+  it("rejects Stripe webhook policy routes with missing or invalid signatures", async () => {
+    await withEnv({ STRIPE_WEBHOOK_SECRET_TEST: "whsec_test_secret" }, async () => {
+      const model = createMockModel();
+      const port = 19981;
+      const aug = webTransport({ port, auth: { type: "bearer", token: "test-token" } });
+      let calls = 0;
+      const fixture: Augment = {
+        name: "payments",
+        httpRoutes: [
+          defineRoute.post("/webhooks/stripe", {
+            auth: "none",
+            policy: webhook.signature("stripe", {
+              secretEnv: "STRIPE_WEBHOOK_SECRET_TEST",
+            }),
+            handler: () => {
+              calls += 1;
+              return json({ ok: true });
+            },
+          }),
+        ],
+      };
+      const agent = defineAgent({ name: "test", model: "mock", augments: [fixture, aug] }, model);
+      const payload = JSON.stringify({ id: "evt_test" });
+      const staleTimestamp = Math.floor(Date.now() / 1000) - 10_000;
+      const staleSignature = await stripeSignatureHeader(
+        "whsec_test_secret",
+        payload,
+        staleTimestamp,
+      );
+
+      await agent.start();
+      try {
+        const missing = await fetch(`http://localhost:${port}/webhooks/stripe`, {
+          method: "POST",
+          body: payload,
+        });
+        expect(missing.status).toBe(401);
+        expect(await missing.json()).toEqual({ error: "webhook-signature-required" });
+
+        const wrongSecret = await fetch(`http://localhost:${port}/webhooks/stripe`, {
+          method: "POST",
+          headers: {
+            "stripe-signature": await stripeSignatureHeader("wrong", payload),
+          },
+          body: payload,
+        });
+        expect(wrongSecret.status).toBe(401);
+        expect(await wrongSecret.json()).toEqual({ error: "webhook-signature-invalid" });
+
+        const malformedPayload = "not-json";
+        const malformed = await fetch(`http://localhost:${port}/webhooks/stripe`, {
+          method: "POST",
+          headers: {
+            "stripe-signature": await stripeSignatureHeader("whsec_test_secret", malformedPayload),
+          },
+          body: malformedPayload,
+        });
+        expect(malformed.status).toBe(400);
+        expect(await malformed.json()).toEqual({ error: "webhook-payload-invalid" });
+
+        const stale = await fetch(`http://localhost:${port}/webhooks/stripe`, {
+          method: "POST",
+          headers: { "stripe-signature": staleSignature },
+          body: payload,
+        });
+        expect(stale.status).toBe(401);
+        expect(await stale.json()).toEqual({ error: "webhook-signature-invalid" });
+        expect(calls).toBe(0);
+      } finally {
+        await agent.stop();
+      }
+    });
+  });
+
+  it("fails boot when a Stripe webhook policy secret env is missing", async () => {
+    await withEnv({ STRIPE_WEBHOOK_SECRET_TEST: undefined }, async () => {
+      const model = createMockModel();
+      const port = 19982;
+      const aug = webTransport({ port, auth: { type: "bearer", token: "test-token" } });
+      const fixture: Augment = {
+        name: "payments",
+        httpRoutes: [
+          defineRoute.post("/webhooks/stripe", {
+            auth: "none",
+            policy: webhook.signature("stripe", {
+              secretEnv: "STRIPE_WEBHOOK_SECRET_TEST",
+            }),
+            handler: () => json({ ok: true }),
+          }),
+        ],
+      };
+      const agent = defineAgent({ name: "test", model: "mock", augments: [fixture, aug] }, model);
+
+      await expect(agent.start()).rejects.toThrow(
+        "Stripe webhook secret env STRIPE_WEBHOOK_SECRET_TEST is not set",
+      );
+    });
   });
 
   it("passes route auth context to raw augment route handlers", async () => {

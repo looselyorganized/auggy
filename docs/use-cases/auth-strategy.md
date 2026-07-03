@@ -270,16 +270,17 @@ defineRoute.post("/webhooks/stripe", {
   policy: webhook.signature("stripe", {
     secretEnv: "STRIPE_WEBHOOK_SECRET",
   }),
-  handler: async ({ request }) => {
-    // Verifier-backed webhook context is the next slice. Until then, the
-    // handler or augment must still verify the provider signature itself.
+  handler: async ({ webhook }) => {
+    // Stripe signature was verified before dispatch.
+    const event = webhook?.event;
   },
 });
 ```
 
-Ship this in layers: first policy metadata for manifests, route reports,
-OpenAPI `x-auggy`, and generated-client target filtering; then provider
-verifiers with raw-body access and structured webhook handler context.
+Ship this in layers: policy metadata for manifests, route reports, OpenAPI
+`x-auggy`, and generated-client target filtering; then provider verifiers.
+Stripe is the first verified provider because it forces raw-body HMAC handling.
+GitHub/Svix-style verifiers can follow without becoming peer identity.
 
 Keep webhook auth separate from route identity:
 

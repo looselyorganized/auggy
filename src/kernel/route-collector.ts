@@ -169,6 +169,17 @@ function validateRoutePolicy(augmentName: string, route: AugmentHttpRoute): stri
   ) {
     return `Augment "${augmentName}" registered HTTP route ${route.method} "${route.path}" with invalid webhook.signature policy — secretEnv must be a non-empty string when provided.`;
   }
+  if (policy.provider === "stripe" && typeof policy.secretEnv !== "string") {
+    return `Augment "${augmentName}" registered HTTP route ${route.method} "${route.path}" with invalid webhook.signature policy — Stripe policies require secretEnv.`;
+  }
+  if (
+    policy.timestampToleranceSeconds !== undefined &&
+    (typeof policy.timestampToleranceSeconds !== "number" ||
+      !Number.isFinite(policy.timestampToleranceSeconds) ||
+      policy.timestampToleranceSeconds <= 0)
+  ) {
+    return `Augment "${augmentName}" registered HTTP route ${route.method} "${route.path}" with invalid webhook.signature policy — timestampToleranceSeconds must be a positive number when provided.`;
+  }
   return undefined;
 }
 

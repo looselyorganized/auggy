@@ -704,9 +704,26 @@ target filtering. Browser generated clients omit webhook-policy routes; server
 generated clients may include them when the route auth mode is otherwise
 server-callable.
 
-This metadata does not verify webhook signatures yet. Until provider verifiers
-land in the transport, augment handlers must still perform any required
-signature/HMAC checks before trusting the request body.
+`webTransport` currently verifies Stripe policies:
+
+```ts
+defineRoute.post("/webhooks/stripe", {
+  auth: "none",
+  policy: webhook.signature("stripe", {
+    secretEnv: "STRIPE_WEBHOOK_SECRET",
+  }),
+  handler: ({ webhook }) => json({ event: webhook?.event }),
+});
+```
+
+The transport checks the `Stripe-Signature` header against the raw buffered
+request body before the handler runs, applies a 300-second timestamp tolerance
+by default, and passes parsed event payload as `ctx.webhook.event`. The manifest
+exposes the env var name only, never the secret value.
+
+Other providers are still metadata-only until their verifiers land. For those
+providers, augment handlers must still perform any required signature/HMAC
+checks before trusting the request body.
 
 ### Caller IP & `trustedProxies`
 
@@ -735,7 +752,7 @@ CIDR ranges are not yet supported (v1 keeps it simple); list the exact IPs.
 | Status | Trigger |
 |---|---|
 | 200 | Handler returned a 2xx Response. |
-| 401 | `auth: "bearer"` / `auth: "creator"` route with missing/wrong bearer token, `auth: "visitor.required"` route with missing/invalid visitor token, or `auth: "agent.required"` route with missing/wrong agent credentials. |
+| 401 | `auth: "bearer"` / `auth: "creator"` route with missing/wrong bearer token, `auth: "visitor.required"` route with missing/invalid visitor token, `auth: "agent.required"` route with missing/wrong agent credentials, or Stripe webhook route with missing/invalid/stale signature. |
 | 404 | No augment route matches the requested (method, path). |
 | 405 | Augment registered the path for a different method. `Allow:` header lists the registered method. |
 | 413 | Request body exceeded `maxBodyBytes`. |
@@ -750,7 +767,7 @@ CIDR ranges are not yet supported (v1 keeps it simple); list the exact IPs.
 - Exact paths and full-segment path params are supported (`/items/:id`). Prefix routes are not supported.
 - No streaming response support — handlers return discrete `Response` objects. AG-UI's SSE stays exclusive to `/agent/run`.
 - Routes are frozen at `agent.start()` — no dynamic add/remove during runtime.
-- Per-route auth schemes are `bearer`, `creator`, `none`, `visitor.optional`, `visitor.required`, and `agent.required`. For OAuth/custom schemes, augments wrap their handler with the additional check. `policy: webhook.signature(...)` is currently manifest/client metadata, not a runtime verifier.
+- Per-route auth schemes are `bearer`, `creator`, `none`, `visitor.optional`, `visitor.required`, and `agent.required`. For OAuth/custom schemes, augments wrap their handler with the additional check. `policy: webhook.signature("stripe", ...)` is runtime verified by `webTransport`; other providers remain manifest/client metadata until their verifiers land.
 
 ## The `/console` route
 

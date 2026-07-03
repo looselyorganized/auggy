@@ -181,9 +181,18 @@ describe("collectAugmentRoutes", () => {
       aug("b", [r("/b", { kind: "oauth" })]),
       aug("c", [r("/c", { kind: "webhook.signature", provider: "" })]),
       aug("d", [r("/d", { kind: "webhook.signature", provider: "stripe", secretEnv: "" })]),
+      aug("e", [r("/e", { kind: "webhook.signature", provider: "stripe" })]),
+      aug("f", [
+        r("/f", {
+          kind: "webhook.signature",
+          provider: "stripe",
+          secretEnv: "STRIPE_WEBHOOK_SECRET",
+          timestampToleranceSeconds: 0,
+        }),
+      ]),
     ]);
 
-    expect(result.errors).toHaveLength(4);
+    expect(result.errors).toHaveLength(6);
     for (const e of result.errors) {
       expect(e).toContain("invalid");
       expect(e).toContain("policy");

@@ -59,6 +59,7 @@ export type {
   RouteExternalAuthClaims,
   RouteAuthPrincipal,
   RouteVisitorAuthContext,
+  RouteWebhookContext,
   TransportSpec,
   TransportKernel,
   AugmentHttpRoutePolicy,

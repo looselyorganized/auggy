@@ -33,6 +33,7 @@ import {
   verifyExternalAuthAssertion,
   type ExternalAuthPrincipalOptions,
 } from "../auth/external-auth";
+import { validateRouteWebhookPolicyConfig, verifyRouteWebhookPolicy } from "./webhook-policy";
 import { withTimeout, TimeoutError } from "../kernel/timeout";
 import { matchRoutePath, parseRoutePattern } from "../kernel/route-pattern";
 import { resolveConfigBool } from "../config";
@@ -1044,6 +1045,12 @@ export function webTransport(opts: WebTransportOptions): Augment {
         // grepping the boot log can spot anonymous-callable surfaces.
         // Runtime values are CollectedRoute (extends AugmentHttpRoute with augmentName).
         const augmentName = (r as { augmentName?: string }).augmentName ?? "(unknown)";
+        const policyConfigError = validateRouteWebhookPolicyConfig(r);
+        if (policyConfigError) {
+          throw new Error(
+            `[web-transport] augment "${augmentName}" route ${r.method} ${r.path}: ${policyConfigError}`,
+          );
+        }
         if (augmentName === "visitor-auth") visitorAuthMounted = true;
         if (r.auth === "none") {
           console.warn(
@@ -1851,12 +1858,14 @@ export function webTransport(opts: WebTransportOptions): Augment {
             // to bypass a header-only check.
             const maxBodyBytes = augmentRoute.maxBodyBytes ?? 1_048_576;
             let dispatchReq: Request = req;
+            let rawBody: Uint8Array<ArrayBufferLike> = new Uint8Array();
             if (req.method !== "GET" && req.method !== "HEAD" && req.body) {
               try {
                 const buffered = await readBodyWithCap(req.body, maxBodyBytes);
                 if (buffered === null) {
                   return json({ error: "payload-too-large" }, 413);
                 }
+                rawBody = buffered;
                 // Reconstruct the Request with the buffered body so the handler
                 // sees the same bytes (and can call req.text(), req.json(), etc).
                 dispatchReq = new Request(req.url, {
@@ -1868,6 +1877,15 @@ export function webTransport(opts: WebTransportOptions): Augment {
                 // Body read errors are 400 — caller's problem, not ours.
                 return json({ error: "bad-body" }, 400);
               }
+            }
+
+            const webhookPolicy = await verifyRouteWebhookPolicy(
+              augmentRoute,
+              dispatchReq,
+              rawBody,
+            );
+            if (!webhookPolicy.ok) {
+              return json({ error: webhookPolicy.error }, webhookPolicy.status);
             }
 
             try {
@@ -1884,6 +1902,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
                       signal: controller.signal,
                       auth: routeAuth.context,
                       params,
+                      ...(webhookPolicy.context ? { webhook: webhookPolicy.context } : {}),
                       routePath: augmentRoute.path,
                     }),
                   timeoutMs,

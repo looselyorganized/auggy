@@ -10,6 +10,7 @@ import type {
   AugmentHttpRouteWebhookSignaturePolicy,
   HttpMethod,
   RouteAuthContext,
+  RouteWebhookContext,
   Tool,
   ToolCategory,
   ToolExecuteContext,
@@ -43,6 +44,7 @@ export interface RouteContextBase<TParams = Record<string, string>> {
   request: Request;
   signal: AbortSignal;
   auth: RouteAuthContext;
+  webhook?: RouteWebhookContext;
   params: TParams;
   route: {
     method: HttpMethod;
@@ -154,12 +156,15 @@ function routeBase(
 export const webhook = {
   signature(
     provider: AugmentHttpRouteWebhookProvider,
-    opts: { secretEnv?: string } = {},
+    opts: { secretEnv?: string; timestampToleranceSeconds?: number } = {},
   ): AugmentHttpRouteWebhookSignaturePolicy {
     return {
       kind: "webhook.signature",
       provider,
       ...(opts.secretEnv !== undefined ? { secretEnv: opts.secretEnv } : {}),
+      ...(opts.timestampToleranceSeconds !== undefined
+        ? { timestampToleranceSeconds: opts.timestampToleranceSeconds }
+        : {}),
     };
   },
 };
@@ -228,7 +233,7 @@ export const defineRoute = {
       "GET",
       path,
       opts,
-      async (request, { signal, auth, params, routePath }) => {
+      async (request, { signal, auth, params, routePath, webhook }) => {
         const parsedQuery = opts.query
           ? opts.query.safeParse(queryObject(new URL(request.url).searchParams))
           : { success: true as const, data: undefined };
@@ -244,6 +249,7 @@ export const defineRoute = {
           request,
           signal,
           auth: auth ?? fallbackRouteAuth(opts.auth),
+          ...(webhook ? { webhook } : {}),
           params: parsedParams.data as TParams extends AnySchema
             ? z.infer<TParams>
             : Record<string, string>,
@@ -279,7 +285,7 @@ export const defineRoute = {
       "POST",
       path,
       opts,
-      async (request, { signal, auth, params, routePath }) => {
+      async (request, { signal, auth, params, routePath, webhook }) => {
         let rawBody: unknown;
         if (opts.body) {
           try {
@@ -309,6 +315,7 @@ export const defineRoute = {
           request,
           signal,
           auth: auth ?? fallbackRouteAuth(opts.auth),
+          ...(webhook ? { webhook } : {}),
           params: parsedParams.data as TParams extends AnySchema
             ? z.infer<TParams>
             : Record<string, string>,
