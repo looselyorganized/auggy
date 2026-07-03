@@ -14,6 +14,7 @@ type OpenApiOperation = {
 
 type OpenApiDocument = {
   paths: Record<string, Record<string, OpenApiOperation>>;
+  components?: { securitySchemes?: Record<string, unknown> };
 };
 
 describe("route artifact parity", () => {
@@ -25,13 +26,15 @@ describe("route artifact parity", () => {
 
     for (const route of report.routes) {
       const operation = operationForRoute(doc, route);
-      expect(operation).toBeDefined();
-      expect(operation?.["x-auggy"]).toMatchObject({
+      const expectedMetadata = {
         augmentName: route.augmentName,
         auth: route.auth,
         security: route.security,
         public: route.public,
-      });
+        ...(route.policy ? { policy: route.policy } : {}),
+      };
+      expect(operation).toBeDefined();
+      expect(operation?.["x-auggy"]).toMatchObject(expectedMetadata);
       expect(operation?.security).toEqual(openApiSecurityForAuth(route.auth));
       expect(operation?.parameters ?? []).toEqual(openApiParametersForRoute(route));
 
@@ -51,6 +54,13 @@ describe("route artifact parity", () => {
         expect(operation?.responses?.["200"]?.content).toBeUndefined();
       }
     }
+
+    expect(openApiSecuritySchemeNames(doc)).toEqual([
+      "agentIdAuth",
+      "agentSecretAuth",
+      "bearerAuth",
+      "visitorTokenAuth",
+    ]);
   });
 
   test("generated clients preserve target filtering and route auth metadata", () => {
@@ -114,6 +124,7 @@ function routesForTarget(
 }
 
 function supportsTarget(route: RouteManifestEntry, target: TypeScriptClientTarget): boolean {
+  if (target === "browser" && route.policy?.kind === "webhook.signature") return false;
   if (route.auth === "none") return true;
   if (route.auth === "bearer" || route.auth === "creator" || route.auth === "agent.required") {
     return target === "server";
@@ -127,6 +138,10 @@ function openApiRouteKeys(doc: OpenApiDocument): string[] {
       Object.keys(pathItem).map((method) => `${method.toUpperCase()} ${path}`),
     )
     .sort();
+}
+
+function openApiSecuritySchemeNames(doc: OpenApiDocument): string[] {
+  return Object.keys(doc.components?.securitySchemes ?? {}).sort();
 }
 
 function operationForRoute(
