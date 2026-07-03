@@ -58,6 +58,14 @@ export function createTypeScriptClient(report: ClientRoutesReport): string {
     "  query?: Record<string, unknown>;",
     "  body?: unknown;",
     "};",
+    'type RouteMethod = "GET" | "POST";',
+    'type RouteAuth = "bearer" | "none" | "visitor.optional" | "visitor.required";',
+    "type RouteMeta = {",
+    "  method: RouteMethod;",
+    "  path: string;",
+    "  auth: RouteAuth;",
+    "  params: readonly string[];",
+    "};",
     "",
     routeInputMap(
       "AuggyGetInputs",
@@ -132,7 +140,7 @@ function routeTable(routes: readonly RouteManifestEntry[]): string {
       )}, params: ${JSON.stringify(route.params)} },`,
   );
 
-  return ["const ROUTES = {", ...entries, "} as const;"].join("\n");
+  return ["const ROUTES: Record<string, RouteMeta> = {", ...entries, "};"].join("\n");
 }
 
 function runtimeSource(): string {
@@ -168,7 +176,7 @@ async function request(
   input: RouteInput,
   options: AuggyRequestOptions,
 ): Promise<AuggyClientResult> {
-  const route = ROUTES[(method + " " + path) as keyof typeof ROUTES];
+  const route = ROUTES[method + " " + path];
   if (!route) {
     throw new Error("Unknown Auggy route: " + method + " " + path);
   }
@@ -234,7 +242,7 @@ function buildUrl(
 
 async function tokenForRoute(
   config: AuggyClientConfig,
-  auth: (typeof ROUTES)[keyof typeof ROUTES]["auth"],
+  auth: RouteAuth,
 ): Promise<string | undefined> {
   if (auth === "bearer") {
     const token = await resolveToken(config.bearerToken);

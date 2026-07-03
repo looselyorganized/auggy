@@ -110,6 +110,47 @@ async function loadGeneratedClient(source: string): Promise<LoadedClient> {
   return (await import(pathToFileURL(file).href)) as LoadedClient;
 }
 
+async function expectGeneratedClientTypechecks(
+  name: string,
+  clientReport: ClientRoutesReport,
+): Promise<void> {
+  const root = mkdtempSync(join(tmpdir(), `routes-client-tsc-test-${name}-`));
+  roots.push(root);
+  const clientPath = join(root, "client.ts");
+  const tsconfigPath = join(root, "tsconfig.json");
+
+  writeFileSync(clientPath, createTypeScriptClient(clientReport));
+  writeFileSync(
+    tsconfigPath,
+    JSON.stringify(
+      {
+        compilerOptions: {
+          lib: ["ES2022", "DOM"],
+          target: "ES2022",
+          module: "ESNext",
+          strict: true,
+          noEmit: true,
+          noUncheckedIndexedAccess: true,
+          skipLibCheck: true,
+        },
+        include: ["client.ts"],
+      },
+      null,
+      2,
+    ),
+  );
+
+  const proc = Bun.spawn(["bunx", "tsc", "-p", tsconfigPath], {
+    cwd: process.cwd(),
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const exitCode = await proc.exited;
+  const stdout = await new Response(proc.stdout).text();
+  const stderr = await new Response(proc.stderr).text();
+  expect({ exitCode, stdout, stderr }).toEqual({ exitCode: 0, stdout: "", stderr: "" });
+}
+
 describe("createTypeScriptClient", () => {
   test("generates a self-contained TypeScript client from a route manifest", () => {
     const source = createTypeScriptClient(report());
@@ -145,7 +186,67 @@ describe("createTypeScriptClient", () => {
 
     expect(source).toContain("export interface AuggyGetInputs {}");
     expect(source).toContain("export interface AuggyPostInputs {}");
-    expect(source).toContain("const ROUTES = {\n} as const;");
+    expect(source).toContain("const ROUTES: Record<string, RouteMeta> = {\n};");
+  });
+
+  test("emits clients that typecheck for empty and auth-subset manifests", async () => {
+    const emptyReport: ClientRoutesReport = {
+      agent: { name: "empty", configPath: "/tmp/empty/agent.yaml" },
+      summary: {
+        totalRoutes: 0,
+        publicRoutes: 0,
+        privateRoutes: 0,
+        publicRoutePaths: [],
+      },
+      routes: [],
+    };
+    const bearerOnlyReport: ClientRoutesReport = {
+      agent: { name: "private", configPath: "/tmp/private/agent.yaml" },
+      summary: {
+        totalRoutes: 2,
+        publicRoutes: 1,
+        privateRoutes: 1,
+        publicRoutePaths: ["GET /services/:serviceId"],
+      },
+      routes: [
+        {
+          method: "GET",
+          path: "/services/:serviceId",
+          augmentName: "concierge-services",
+          auth: "none",
+          params: ["serviceId"],
+          public: true,
+          security: "public",
+          requestJsonSchema: {
+            params: {
+              type: "object",
+              properties: { serviceId: { type: "string" } },
+              required: ["serviceId"],
+            },
+          },
+        },
+        {
+          method: "POST",
+          path: "/leads",
+          augmentName: "concierge-services",
+          auth: "bearer",
+          params: [],
+          public: false,
+          security: "private",
+          requestJsonSchema: {
+            body: {
+              type: "object",
+              properties: { email: { type: "string" } },
+              required: ["email"],
+            },
+          },
+        },
+      ],
+    };
+
+    await expectGeneratedClientTypechecks("empty", emptyReport);
+    await expectGeneratedClientTypechecks("bearer", bearerOnlyReport);
+    await expectGeneratedClientTypechecks("visitor", report());
   });
 
   test("generated runtime sends params, query, body, and auth headers", async () => {
