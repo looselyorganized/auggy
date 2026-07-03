@@ -57,6 +57,11 @@ export function createTypeScriptClient(
     "  query?: Record<string, unknown>;",
     "  body?: unknown;",
     "};",
+    "type RouteCredentials = {",
+    "  bearerToken?: string;",
+    "  visitorToken?: string;",
+    "  authAssertion?: string;",
+    "};",
     'type RouteMethod = "GET" | "POST";',
     `type RouteAuth = ${routeAuthUnion(target)};`,
     "type RouteMeta = {",
@@ -140,7 +145,11 @@ function clientConfig(target: TypeScriptClientTarget): string {
     "  fetch?: typeof fetch;",
     ...(target === "server"
       ? ["  bearerToken?: TokenProvider;"]
-      : ["  visitorToken?: TokenProvider;", "  onVisitorToken?: (token: string) => void;"]),
+      : [
+          "  visitorToken?: TokenProvider;",
+          "  authAssertion?: TokenProvider;",
+          "  onVisitorToken?: (token: string) => void;",
+        ]),
     "  headers?: HeadersProvider;",
     "}",
   ].join("\n");
@@ -257,9 +266,19 @@ async function request(
 
   const headers = new Headers(await resolveHeaders(config.headers));
   mergeHeaders(headers, options.headers);
-  const token = await tokenForRoute(config, route.auth);
-  if (token) {
-    ${target === "server" ? 'headers.set("authorization", "Bearer " + token);' : 'headers.set("x-visitor-token", token);'}
+  const credentials = await credentialsForRoute(config, route.auth);
+  if (credentials.bearerToken) {
+    headers.set("authorization", "Bearer " + credentials.bearerToken);
+  }
+  ${
+    target === "browser"
+      ? `if (credentials.visitorToken) {
+    headers.set("x-visitor-token", credentials.visitorToken);
+  }
+  if (credentials.authAssertion) {
+    headers.set("x-auggy-auth-assertion", credentials.authAssertion);
+  }`
+      : ""
   }
 
   const url = buildUrl(config.baseUrl, route.path, route.params, input);
@@ -320,27 +339,29 @@ function buildUrl(
   return url;
 }
 
-async function tokenForRoute(
+async function credentialsForRoute(
   config: AuggyClientConfig,
   auth: RouteAuth,
-): Promise<string | undefined> {
+): Promise<RouteCredentials> {
   ${
     target === "server"
       ? `if (auth === "bearer") {
     const token = await resolveToken(config.bearerToken);
     if (!token) throw new Error("This Auggy route requires a bearerToken.");
-    return token;
+    return { bearerToken: token };
   }`
-      : `if (auth === "visitor.required") {
+      : `if (auth === "visitor.required" || auth === "visitor.optional") {
+    const authAssertion = await resolveToken(config.authAssertion);
+    const credentials: RouteCredentials = authAssertion ? { authAssertion } : {};
     const token = await resolveToken(config.visitorToken);
-    if (!token) throw new Error("This Auggy route requires a visitorToken.");
-    return token;
-  }
-  if (auth === "visitor.optional") {
-    return resolveToken(config.visitorToken);
+    if (token) credentials.visitorToken = token;
+    if (auth === "visitor.required" && !credentials.visitorToken && !credentials.authAssertion) {
+      throw new Error("This Auggy route requires a visitorToken or authAssertion.");
+    }
+    return credentials;
   }`
   }
-  return undefined;
+  return {};
 }
 
 function normalizeRequestArgs(args: readonly unknown[]): {

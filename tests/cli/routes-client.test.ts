@@ -354,6 +354,9 @@ describe("createTypeScriptClient", () => {
     expect(source).not.toContain('"/leads/:leadId/notes":');
     expect(source).not.toContain("bearerToken?: TokenProvider;");
     expect(source).toContain("visitorToken?: TokenProvider;");
+    expect(source).toContain("authAssertion?: TokenProvider;");
+    expect(source).toContain('headers.set("x-auggy-auth-assertion", credentials.authAssertion);');
+    expect(source).toContain("requires a visitorToken or authAssertion");
     expect(source).toContain('"GET /services/:serviceId":');
     expect(source).toContain('auth: "visitor.required"');
     expect(source).toContain("export function createAuggyClient");
@@ -380,6 +383,8 @@ describe("createTypeScriptClient", () => {
     expect(source).toContain('"/leads/:leadId/notes": { noteId: string; saved: boolean; };');
     expect(source).toContain("bearerToken?: TokenProvider;");
     expect(source).not.toContain("visitorToken?: TokenProvider;");
+    expect(source).not.toContain("authAssertion?: TokenProvider;");
+    expect(source).not.toContain("x-auggy-auth-assertion");
     expect(source).not.toContain('"/me": {};');
     expect(source).toContain("Routes omitted for this target:");
     expect(source).toContain("* - GET /me auth=visitor.required");
@@ -470,9 +475,14 @@ describe("createTypeScriptClient", () => {
         import { createAuggyClient } from "./client";
 
         const api = createAuggyClient({ baseUrl: "https://agent.example" });
+        const assertionApi = createAuggyClient({
+          baseUrl: "https://agent.example",
+          authAssertion: async () => "app-assertion",
+        });
 
         api.get("/me");
         api.get("/me", { headers: { "x-test": "1" } });
+        assertionApi.get("/me");
         async function main() {
           const service = await api.get("/services/:serviceId", {
             params: { serviceId: "svc_123" },
@@ -609,6 +619,7 @@ describe("createTypeScriptClient", () => {
         const api = createAuggyClient({
           baseUrl: "https://agent.example",
           visitorToken: () => "visitor-token",
+          authAssertion: () => "app-assertion",
           onVisitorToken: (token) => console.log(token),
         });
 
@@ -740,7 +751,13 @@ describe("createTypeScriptClient", () => {
       baseUrl: "https://agent.example",
       fetch: fetchImpl,
       visitorToken: "visitor-token",
+      authAssertion: () => "app-assertion",
       onVisitorToken: (token: string) => seenVisitorTokens.push(token),
+    });
+    const assertionOnlyApi = mod.createAuggyClient({
+      baseUrl: "https://agent.example",
+      fetch: fetchImpl,
+      authAssertion: async () => "assertion-only",
     });
 
     const getResult = await api.get("/services/:serviceId", {
@@ -749,6 +766,7 @@ describe("createTypeScriptClient", () => {
     });
     await api.get("/me");
     await api.get("/me", { headers: { "x-test": "1" } });
+    await assertionOnlyApi.get("/me");
     await expect(
       api.post("/leads/:leadId/notes", {
         params: { leadId: "lead 1" },
@@ -761,10 +779,17 @@ describe("createTypeScriptClient", () => {
       "https://agent.example/services/hair%20cut?need=trim&tags=wash&tags=dry&urgent=false",
     );
     expect(new Headers(calls[0]?.init.headers).get("authorization")).toBeNull();
+    expect(new Headers(calls[0]?.init.headers).get("x-visitor-token")).toBeNull();
+    expect(new Headers(calls[0]?.init.headers).get("x-auggy-auth-assertion")).toBeNull();
     expect(calls[1]?.url).toBe("https://agent.example/me");
     expect(new Headers(calls[1]?.init.headers).get("x-visitor-token")).toBe("visitor-token");
+    expect(new Headers(calls[1]?.init.headers).get("x-auggy-auth-assertion")).toBe("app-assertion");
     expect(calls[2]?.url).toBe("https://agent.example/me");
     expect(new Headers(calls[2]?.init.headers).get("x-test")).toBe("1");
+    expect(new Headers(calls[3]?.init.headers).get("x-visitor-token")).toBeNull();
+    expect(new Headers(calls[3]?.init.headers).get("x-auggy-auth-assertion")).toBe(
+      "assertion-only",
+    );
     expect(seenVisitorTokens).toEqual(["vis-next", "vis-next", "vis-next"]);
   });
 
@@ -849,6 +874,9 @@ describe("createTypeScriptClient", () => {
         body: { note: "Call back" },
       }),
     ).rejects.toThrow("This Auggy route requires a bearerToken.");
+    await expect(malformedApi.get("/me")).rejects.toThrow(
+      "This Auggy route requires a visitorToken or authAssertion.",
+    );
     await expect(
       malformedApi.get("/services/:serviceId", {
         params: { serviceId: "svc" },
