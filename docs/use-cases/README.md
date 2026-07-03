@@ -16,3 +16,4 @@ explore strategy, but roadmap commitments belong there.
 - [Concierge Example Requirements](./concierge-example-requirements.md): Acceptance criteria for `examples/concierge/` as the first app-backend proof.
 - [v1.0 App Backend Slice Implementation Plan](./v1-app-backend-slice-implementation-plan.md): Handoff for the launch-cut route/tool/domain proof.
 - [Auth Strategy](./auth-strategy.md): Visitor, creator, agent, staff, webhook, and route-auth strategy for agent-native apps.
+- [Parallel Auth and Client Development Scheme](./parallel-auth-client-development-scheme.md): Coordination protocol for route-auth and generated-client work across parallel branches.
