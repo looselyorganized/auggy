@@ -667,6 +667,9 @@ export function myAugment(): Augment {
 - `"visitor.required"` — the route requires a valid `x-visitor-token` or configured external auth assertion. Missing, invalid, expired, wrong-agent, or revoked visitor tokens return `401 {"error":"visitor-auth-required"}` unless a valid external assertion is present. Handler auth context always includes `visitorId`; when `visitorAuth` or another `identityLookup` is mounted, it can also include `email`, `verifiedAt`, and `reverifyDueAt`. When an external app assertion resolves the visitor, context also includes `externalAuth: { provider, subject, orgId?, roles? }`. If a request supplies both credentials, external claims are attached only when the assertion maps to the same `visitorId` as the visitor token.
 - `"agent.required"` — the route requires admitted agent credentials using `x-agent-id` and `x-agent-secret` against `webTransport.access.agents`. Missing, unknown, or wrong credentials return `401 {"error":"agent-auth-required"}`. Handler auth context includes `auth.mode === "agent"`, `agentId`, `peerId`, and optional `displayName` / `orgId` headers.
 
+For app-session bridges and route-local delegated authorization with
+`requires`, see [`26-delegated-authorization.md`](./26-delegated-authorization.md).
+
 ### Reserved paths
 
 Augments cannot register these paths (collision throws at `agent.start()`):

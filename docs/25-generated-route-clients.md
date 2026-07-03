@@ -68,7 +68,9 @@ if (services.ok) {
 Use `authAssertion` for app-signed visitor assertions, such as a normal app
 session bridged into Auggy visitor auth. The generated client only forwards the
 assertion with `x-auggy-auth-assertion`; it does not create or verify the
-assertion. Do not put assertion-signing secrets in browser code.
+assertion. Do not put assertion-signing secrets in browser code. See
+[`26-delegated-authorization.md`](./26-delegated-authorization.md) for the
+server-side assertion bridge and route `requires` model.
 
 Visitor-token routes can issue a fresh `x-visitor-token` response header. When
 that happens, the browser client calls `onVisitorToken` and also returns the

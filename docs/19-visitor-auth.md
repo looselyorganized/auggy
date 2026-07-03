@@ -119,6 +119,11 @@ defineRoute.get("/orders/:id", {
 This is the app-backend path: deterministic frontend routes can require a valid
 visitor token without routing every request through the model.
 
+Existing apps can also bridge Clerk, Supabase, or custom app sessions into
+`visitor.required` routes with short-lived external auth assertions. See
+[`26-delegated-authorization.md`](./26-delegated-authorization.md) for the
+developer guide, including route `requires` examples.
+
 ## Configuration
 
 Enable both augments in `agent.yaml`, then configure them in their augment

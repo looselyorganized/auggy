@@ -237,6 +237,10 @@ auth assertion, Auggy keeps the visitor-token identity and attaches
 `externalAuth` only if the external assertion maps to the same `visitorId`.
 Mismatched app claims are not merged onto the visitor context.
 
+Developer reference: [`../26-delegated-authorization.md`](../26-delegated-authorization.md)
+describes the Clerk/Supabase/custom app bridge, short-lived assertions,
+delegated `scopes` / `grants`, and route `requires` examples.
+
 ### Step 4: visitor and agent route auth
 
 Add only after route context can resolve credentials consistently:
