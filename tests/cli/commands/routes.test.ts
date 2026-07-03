@@ -432,6 +432,118 @@ describe("routesCommand", () => {
     expect(source).toContain('"/services/:serviceId": { params: { serviceId: string; }; };');
   });
 
+  test("prints browser-target TypeScript client output and omits bearer routes", async () => {
+    const exit = mock((_code: number) => {});
+    const logs: string[] = [];
+    const origLog = console.log;
+    console.log = (msg: unknown) => {
+      logs.push(String(msg));
+    };
+
+    try {
+      const cmd = routesCommand({
+        exit,
+        runRoutes: async () => ({
+          agent: { name: "zip", configPath: "/tmp/zip/agent.yaml" },
+          summary: {
+            totalRoutes: 2,
+            publicRoutes: 1,
+            privateRoutes: 1,
+            publicRoutePaths: ["GET /services"],
+          },
+          routes: [
+            {
+              method: "GET",
+              path: "/services",
+              augmentName: "concierge-services",
+              auth: "none",
+              params: [],
+              public: true,
+              security: "public",
+            },
+            {
+              method: "POST",
+              path: "/admin/reindex",
+              augmentName: "concierge-services",
+              auth: "bearer",
+              params: [],
+              public: false,
+              security: "private",
+            },
+          ],
+        }),
+      });
+
+      await cmd.parseAsync(["zip", "--client", "ts", "--target", "browser"], { from: "user" });
+    } finally {
+      console.log = origLog;
+    }
+
+    expect(exit).toHaveBeenCalledWith(0);
+    const source = logs.join("\n");
+    expect(source).toContain("Target: browser.");
+    expect(source).toContain('"/services": {};');
+    expect(source).not.toContain('"/admin/reindex":');
+    expect(source).toContain("* - POST /admin/reindex auth=bearer");
+  });
+
+  test("prints server-target TypeScript client output and includes bearer routes", async () => {
+    const exit = mock((_code: number) => {});
+    const logs: string[] = [];
+    const origLog = console.log;
+    console.log = (msg: unknown) => {
+      logs.push(String(msg));
+    };
+
+    try {
+      const cmd = routesCommand({
+        exit,
+        runRoutes: async () => ({
+          agent: { name: "zip", configPath: "/tmp/zip/agent.yaml" },
+          summary: {
+            totalRoutes: 2,
+            publicRoutes: 1,
+            privateRoutes: 1,
+            publicRoutePaths: ["GET /services"],
+          },
+          routes: [
+            {
+              method: "GET",
+              path: "/me",
+              augmentName: "visitor-profile",
+              auth: "visitor.required",
+              params: [],
+              public: false,
+              security: "private",
+            },
+            {
+              method: "POST",
+              path: "/admin/reindex",
+              augmentName: "concierge-services",
+              auth: "bearer",
+              params: [],
+              public: false,
+              security: "private",
+            },
+          ],
+        }),
+      });
+
+      await cmd.parseAsync(["zip", "--client", "ts", "--target", "server"], { from: "user" });
+    } finally {
+      console.log = origLog;
+    }
+
+    expect(exit).toHaveBeenCalledWith(0);
+    const source = logs.join("\n");
+    expect(source).toContain("Target: server.");
+    expect(source).toContain('"/admin/reindex": {};');
+    expect(source).toContain("bearerToken?: TokenProvider;");
+    expect(source).not.toContain("visitorToken?: TokenProvider;");
+    expect(source).not.toContain('"/me": {};');
+    expect(source).toContain("* - GET /me auth=visitor.required");
+  });
+
   test("writes TypeScript client output to a file", async () => {
     const root = tempRoot();
     const out = join(root, "generated", "client.ts");
@@ -523,6 +635,29 @@ describe("routesCommand", () => {
     expect(errors.join("\n")).toContain("--out currently requires --client ts.");
   });
 
+  test("rejects --target without client generation before inspecting routes", async () => {
+    const exit = mock((_code: number) => {});
+    const run = mock(async (): Promise<RoutesReport> => {
+      throw new Error("should not run");
+    });
+    const errors: string[] = [];
+    const origError = console.error;
+    console.error = (msg: unknown) => {
+      errors.push(String(msg));
+    };
+
+    try {
+      const cmd = routesCommand({ exit, runRoutes: run });
+      await cmd.parseAsync(["zip", "--target", "browser"], { from: "user" });
+    } finally {
+      console.error = origError;
+    }
+
+    expect(exit).toHaveBeenCalledWith(1);
+    expect(run).not.toHaveBeenCalled();
+    expect(errors.join("\n")).toContain("--target currently requires --client ts.");
+  });
+
   test("rejects unsupported client formats before inspecting routes", async () => {
     const exit = mock((_code: number) => {});
     const run = mock(async (): Promise<RoutesReport> => {
@@ -544,6 +679,31 @@ describe("routesCommand", () => {
     expect(exit).toHaveBeenCalledWith(1);
     expect(run).not.toHaveBeenCalled();
     expect(errors.join("\n")).toContain('Unsupported client format "go". Supported formats: ts.');
+  });
+
+  test("rejects unsupported client targets before inspecting routes", async () => {
+    const exit = mock((_code: number) => {});
+    const run = mock(async (): Promise<RoutesReport> => {
+      throw new Error("should not run");
+    });
+    const errors: string[] = [];
+    const origError = console.error;
+    console.error = (msg: unknown) => {
+      errors.push(String(msg));
+    };
+
+    try {
+      const cmd = routesCommand({ exit, runRoutes: run });
+      await cmd.parseAsync(["zip", "--client", "ts", "--target", "native"], { from: "user" });
+    } finally {
+      console.error = origError;
+    }
+
+    expect(exit).toHaveBeenCalledWith(1);
+    expect(run).not.toHaveBeenCalled();
+    expect(errors.join("\n")).toContain(
+      'Unsupported client target "native". Supported targets: browser, server.',
+    );
   });
 
   test("exits 1 when routes cannot be inspected", async () => {

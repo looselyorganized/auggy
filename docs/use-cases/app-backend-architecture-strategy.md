@@ -349,13 +349,14 @@ system has a full response contract yet.
 Implemented command:
 
 ```bash
-auggy routes [name] --client ts
-auggy routes [name] --client ts --out src/auggy-client.ts
+auggy routes [name] --client ts --target browser
+auggy routes [name] --client ts --target server --out src/auggy-client.server.ts
 ```
 
 Public stance:
 
 - Generate a self-contained TypeScript file first.
+- Default to the browser target when `--target` is omitted.
 - Do not add a reusable `createAuggyClient` export to the `auggy` package until
   generated clients have survived real examples.
 - Treat this as a typed request client, not a full SDK.
@@ -379,18 +380,25 @@ if (result.ok) {
 }
 ```
 
-Use typed route-path literals (`api.GET("/services/:id", ...)`) instead of
+Use typed route-path literals (`api.get("/services/:id", ...)`) instead of
 generated operation method names. The route path is already the public API, and
 literal paths preserve autocomplete without creating naming churn around
 `operationId`.
+
+Target split:
+
+- Browser target includes `none`, `visitor.optional`, and `visitor.required`
+  routes. It omits bearer routes and does not generate `bearerToken` config.
+- Server target includes `none` and `bearer` routes. It omits visitor-token
+  routes and generates `bearerToken` config for server-side/SSR callers.
 
 Client config:
 
 - `baseUrl`
 - optional custom `fetch`
-- optional `bearerToken`
-- optional `visitorToken`
-- optional `onVisitorToken`
+- browser target: optional `visitorToken`
+- browser target: optional `onVisitorToken`
+- server target: optional `bearerToken`
 - optional static/dynamic headers
 
 Result model:
@@ -417,13 +425,15 @@ Security posture:
 
 - Browser examples should use `auth: "none"`, `visitor.optional`, or
   `visitor.required`.
-- Bearer-auth routes may be generated for server-side/SSR use, but generated
+- Bearer-auth routes are generated only for the server target. Generated
   comments and docs must state clearly: do not ship creator bearer tokens to
   browser code.
 
 CLI behavior:
 
 - `--json`, `--openapi`, and `--client` are mutually exclusive.
+- `--target browser|server` applies only to `--client ts`.
+- Browser is the default target if `--target` is omitted.
 - Without `--out`, print generated TypeScript to stdout.
 - With `--out`, write the file and create parent directories.
 - Support only `--client ts` initially; reject other formats clearly.
@@ -434,6 +444,7 @@ Current tests cover:
 - POST JSON body input typing in generated output.
 - Visitor-token request/response header handling.
 - Bearer route generated warning/comment.
+- Browser/server target filtering from route auth.
 - Query arrays encoded as repeated keys.
 - Fetch-like result behavior for non-2xx responses.
 - CLI mutual exclusion and `--out` writing.

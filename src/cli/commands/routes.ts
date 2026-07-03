@@ -2,7 +2,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { Command } from "commander";
 import { parseConfig } from "../config-parser";
-import { createTypeScriptClient } from "../routes-client";
+import { createTypeScriptClient, type TypeScriptClientTarget } from "../routes-client";
 import { createOpenApiDocument } from "../routes-openapi";
 import { resolveConfigPath } from "../resolve-config";
 import { inspectAugmentRoutes } from "../route-inspector";
@@ -111,6 +111,7 @@ export function routesCommand(deps: RoutesCommandDeps = {}): Command {
     .option("--json", "print the route manifest as JSON")
     .option("--openapi", "print an OpenAPI 3.1 document as JSON")
     .option("--client <format>", "print a generated route client (currently: ts)")
+    .option("--target <target>", "generated client target: browser or server (default: browser)")
     .option("--out <path>", "write generated client output to a file")
     .action(
       async (
@@ -120,6 +121,7 @@ export function routesCommand(deps: RoutesCommandDeps = {}): Command {
           json?: boolean;
           openapi?: boolean;
           client?: string;
+          target?: string;
           out?: string;
         },
       ) => {
@@ -131,9 +133,13 @@ export function routesCommand(deps: RoutesCommandDeps = {}): Command {
           if (opts.client !== undefined && opts.client !== "ts") {
             throw new Error(`Unsupported client format "${opts.client}". Supported formats: ts.`);
           }
+          if (opts.target !== undefined && opts.client === undefined) {
+            throw new Error("--target currently requires --client ts.");
+          }
           if (opts.out !== undefined && opts.client === undefined) {
             throw new Error("--out currently requires --client ts.");
           }
+          const clientTarget = resolveClientTarget(opts.target);
           const report = await run(name, {
             config: opts.config,
             auggyDir: deps.auggyDir,
@@ -141,7 +147,7 @@ export function routesCommand(deps: RoutesCommandDeps = {}): Command {
           });
           const output =
             opts.client === "ts"
-              ? createTypeScriptClient(report)
+              ? createTypeScriptClient(report, { target: clientTarget })
               : opts.openapi
                 ? JSON.stringify(createOpenApiDocument(report), null, 2)
                 : opts.json
@@ -162,4 +168,10 @@ export function routesCommand(deps: RoutesCommandDeps = {}): Command {
         }
       },
     );
+}
+
+function resolveClientTarget(target: string | undefined): TypeScriptClientTarget {
+  if (target === undefined) return "browser";
+  if (target === "browser" || target === "server") return target;
+  throw new Error(`Unsupported client target "${target}". Supported targets: browser, server.`);
 }
