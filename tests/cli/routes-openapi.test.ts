@@ -242,8 +242,15 @@ describe("createOpenApiDocument", () => {
       components?: Record<string, unknown>;
     };
 
-    expect(doc.paths["/catalog"]?.get?.security).toEqual([{}, { visitorTokenAuth: [] }]);
-    expect(doc.paths["/orders/{id}"]?.get?.security).toEqual([{ visitorTokenAuth: [] }]);
+    expect(doc.paths["/catalog"]?.get?.security).toEqual([
+      {},
+      { visitorTokenAuth: [] },
+      { externalAuthAssertion: [] },
+    ]);
+    expect(doc.paths["/orders/{id}"]?.get?.security).toEqual([
+      { visitorTokenAuth: [] },
+      { externalAuthAssertion: [] },
+    ]);
     expect(doc.paths["/orders/{id}"]?.get?.responses).toMatchObject({
       "401": { description: "Unauthorized" },
     });
@@ -253,6 +260,11 @@ describe("createOpenApiDocument", () => {
           type: "apiKey",
           in: "header",
           name: "x-visitor-token",
+        },
+        externalAuthAssertion: {
+          type: "apiKey",
+          in: "header",
+          name: "x-auggy-auth-assertion",
         },
       },
     });

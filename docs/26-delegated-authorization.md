@@ -67,6 +67,10 @@ The `audience` should be stable for the agent. If omitted, Auggy falls back to
 `visitorTokens.agentBinding`, then the agent-card provider name, then `"auggy"`.
 Use an explicit audience when assertions are minted outside the Auggy process.
 
+For `/agent/run`, a valid external auth assertion admits the request as a
+recognized visitor even when `allowAnonymous` is `false`. That keeps normal
+app-login chat separate from public anonymous chat.
+
 ## Mint Assertions
 
 The app backend owns session verification and authorization calculation. After
@@ -361,16 +365,25 @@ For broad permissions, use a scope:
 scopes: ["orders.read"]
 ```
 
+If a tool declares a broad action requirement with no resource, use an unscoped
+grant:
+
+```ts
+grants: [{ action: "orders.refund" }]
+```
+
 For resource-specific permissions, use a grant:
 
 ```ts
 grants: [{ action: "orders.refund", resource: "order_123" }]
 ```
 
-Resource-bound tool requirements do not have wildcard grants. If the app cannot
-know the resource at assertion mint time, it should either mint grants for the
-bounded resources visible in the current workflow, use a deliberately broad
-scope only when the app policy says that is safe, or keep an additional
+Resource grants are not wildcards. A grant for `order_123` satisfies a
+requirement for `order_123`; it does not satisfy a broad
+`{ action: "orders.refund" }` requirement. If the app cannot know the resource
+at assertion mint time, it should either mint grants for the bounded resources
+visible in the current workflow, use a deliberately broad scope or unscoped
+grant only when the app policy says that is safe, or keep an additional
 domain-layer authorization check inside the tool before side effects.
 
 Do not pass raw roles and ask Auggy to interpret them. A Supabase role,

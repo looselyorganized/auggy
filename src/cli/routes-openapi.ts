@@ -67,6 +67,11 @@ export function createOpenApiDocument(report: OpenApiRoutesReport): JsonObject {
                       in: "header",
                       name: "x-visitor-token",
                     },
+                    externalAuthAssertion: {
+                      type: "apiKey",
+                      in: "header",
+                      name: "x-auggy-auth-assertion",
+                    },
                   }
                 : {}),
             },
@@ -164,8 +169,12 @@ function successResponse(route: RouteManifestEntry): JsonObject {
 function securityForRoute(route: RouteManifestEntry): JsonObject[] {
   if (route.auth === "bearer" || route.auth === "creator") return [{ bearerAuth: [] }];
   if (route.auth === "agent.required") return [{ agentIdAuth: [], agentSecretAuth: [] }];
-  if (route.auth === "visitor.required") return [{ visitorTokenAuth: [] }];
-  if (route.auth === "visitor.optional") return [{}, { visitorTokenAuth: [] }];
+  if (route.auth === "visitor.required") {
+    return [{ visitorTokenAuth: [] }, { externalAuthAssertion: [] }];
+  }
+  if (route.auth === "visitor.optional") {
+    return [{}, { visitorTokenAuth: [] }, { externalAuthAssertion: [] }];
+  }
   return [];
 }
 

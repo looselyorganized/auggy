@@ -60,6 +60,7 @@ describe("route artifact parity", () => {
       "agentIdAuth",
       "agentSecretAuth",
       "bearerAuth",
+      "externalAuthAssertion",
       "visitorTokenAuth",
     ]);
   });
@@ -176,8 +177,12 @@ function openApiParametersForRoute(
 function openApiSecurityForAuth(auth: RouteManifestEntry["auth"]): unknown {
   if (auth === "bearer" || auth === "creator") return [{ bearerAuth: [] }];
   if (auth === "agent.required") return [{ agentIdAuth: [], agentSecretAuth: [] }];
-  if (auth === "visitor.required") return [{ visitorTokenAuth: [] }];
-  if (auth === "visitor.optional") return [{}, { visitorTokenAuth: [] }];
+  if (auth === "visitor.required") {
+    return [{ visitorTokenAuth: [] }, { externalAuthAssertion: [] }];
+  }
+  if (auth === "visitor.optional") {
+    return [{}, { visitorTokenAuth: [] }, { externalAuthAssertion: [] }];
+  }
   return [];
 }
 

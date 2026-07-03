@@ -1333,20 +1333,29 @@ export function webTransport(opts: WebTransportOptions): Augment {
 
   async function handleAgentRun(req: Request): Promise<Response> {
     const authHeader = req.headers.get("authorization") ?? "";
+    let externalVisitorAuth: RouteVisitorAuthContext | null | undefined;
+    function readExternalVisitorAuth(): RouteVisitorAuthContext | null {
+      if (externalVisitorAuth !== undefined) return externalVisitorAuth;
+      externalVisitorAuth = resolveExternalVisitorAuth(req);
+      return externalVisitorAuth;
+    }
+
     // Bearer policy:
     //   - bearer present + valid   → proceed (Path 1 creator, or
     //                                Path 2/3 via the agent/visitor headers
     //                                resolved later in identify())
     //   - bearer present + invalid → 401 (timing-safe; no silent downgrade)
-    //   - bearer absent + allowAnonymous=true  → fall through to identify(),
-    //                                            Path 4 mints public:anonymous
-    //   - bearer absent + allowAnonymous=false → 401
+    //   - bearer absent + valid external auth assertion → proceed as
+    //                                                    recognized visitor
+    //   - bearer absent + allowAnonymous=true           → fall through to
+    //                                                    anonymous identity
+    //   - bearer absent + neither                       → 401
     const hasBearerAttempt = authHeader.length > 0;
     if (hasBearerAttempt) {
       if (!isValidAuth(authHeader)) {
         return json({ error: "unauthorized" }, 401);
       }
-    } else if (!allowAnonymous) {
+    } else if (!allowAnonymous && readExternalVisitorAuth()?.state !== "recognized") {
       return json({ error: "unauthorized" }, 401);
     }
 
@@ -1371,12 +1380,6 @@ export function webTransport(opts: WebTransportOptions): Augment {
     // --- Visitor token handling ---
     let visitorPayload: VisitorTokenPayload | null = null;
     let newToken: string | null = null;
-    let externalVisitorAuth: RouteVisitorAuthContext | null | undefined;
-    function readExternalVisitorAuth(): RouteVisitorAuthContext | null {
-      if (externalVisitorAuth !== undefined) return externalVisitorAuth;
-      externalVisitorAuth = resolveExternalVisitorAuth(req);
-      return externalVisitorAuth;
-    }
     function applyExternalVisitorAuth(): void {
       if (visitorPayload) return;
       const externalAuth = readExternalVisitorAuth();

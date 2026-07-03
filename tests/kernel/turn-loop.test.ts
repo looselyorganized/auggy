@@ -283,6 +283,99 @@ describe("TurnLoop", () => {
     expect(result.toolCalls[0]!.output).toBe("refunded-ord_123");
   });
 
+  it("executes protected tools when broad action grants satisfy broad requirements", async () => {
+    const model = createMockModel();
+    model.pushResponse({
+      content: "",
+      toolCalls: [{ name: "refund_any_order", arguments: { orderId: "ord_123" } }],
+      finishReason: "tool_use",
+    });
+    model.pushResponse({ content: "refunded", finishReason: "end_turn" });
+
+    const ordersAugment: Augment = {
+      name: "orders",
+      tools: [
+        {
+          name: "refund_any_order",
+          description: "Refund any order",
+          category: "meta",
+          input: z.object({ orderId: z.string() }),
+          requires: { action: "orders.refund" },
+          execute: async ({ orderId }) => `refunded-${orderId}`,
+        },
+      ],
+    };
+    const loop = createTurnLoop({
+      augments: [ordersAugment],
+      model,
+      tokenizer: createTokenizer(),
+      config: { name: "test", model: "mock", augments: [] },
+    });
+
+    const result = await loop.executeTurn(
+      makeTrigger(
+        "Refund an order",
+        recognizedVisitorAuth({
+          grants: [{ action: "orders.refund" }],
+        }),
+      ),
+      "thread-authz-input-broad-0",
+    );
+
+    expect(result.toolCalls).toHaveLength(1);
+    expect(result.toolCalls[0]!.output).toBe("refunded-ord_123");
+  });
+
+  it("does not use resource-scoped grants for broad action requirements", async () => {
+    const model = createMockModel();
+    model.pushResponse({
+      content: "",
+      toolCalls: [{ name: "refund_any_order", arguments: { orderId: "ord_123" } }],
+      finishReason: "tool_use",
+    });
+    model.pushResponse({ content: "not authorized", finishReason: "end_turn" });
+
+    let executeCalls = 0;
+    const ordersAugment: Augment = {
+      name: "orders",
+      tools: [
+        {
+          name: "refund_any_order",
+          description: "Refund any order",
+          category: "meta",
+          input: z.object({ orderId: z.string() }),
+          requires: { action: "orders.refund" },
+          execute: async () => {
+            executeCalls += 1;
+            return "refunded";
+          },
+        },
+      ],
+    };
+    const loop = createTurnLoop({
+      augments: [ordersAugment],
+      model,
+      tokenizer: createTokenizer(),
+      config: { name: "test", model: "mock", augments: [] },
+    });
+
+    const result = await loop.executeTurn(
+      makeTrigger(
+        "Refund an order",
+        recognizedVisitorAuth({
+          grants: [{ action: "orders.refund", resource: "ord_123" }],
+        }),
+      ),
+      "thread-authz-input-broad-1",
+    );
+
+    expect(executeCalls).toBe(0);
+    expect(result.toolCalls).toHaveLength(0);
+    expect(model.calls[1]!.messages.map((m) => m.content).join("\n")).toContain(
+      'Tool "refund_any_order" authorization denied: authorization-grant-missing',
+    );
+  });
+
   it("denies protected tools when input resource fields are not top-level strings", async () => {
     const model = createMockModel();
     model.pushResponse({

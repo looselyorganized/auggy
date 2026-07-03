@@ -956,6 +956,70 @@ describe("webTransport HTTP server", () => {
     }
   });
 
+  it("POST /agent/run accepts external auth assertions when anonymous access is disabled", async () => {
+    const model = createMockModel({ response: "hi app user" });
+    const port = 19610;
+    const assertion = createExternalAuthAssertion({
+      secret: "app-auth-secret",
+      audience: "test",
+      provider: "clerk",
+      subject: "user_123",
+      ttlSeconds: 60,
+    });
+    const aug = webTransport({
+      port,
+      allowAnonymous: false,
+      auth: { type: "bearer", token: "test-token" },
+      visitorTokens: {
+        enabled: true,
+        signingKey: "visitor-route-secret",
+        agentBinding: "test",
+      },
+      externalAuth: {
+        secret: "app-auth-secret",
+        audience: "test",
+        allowedProviders: ["clerk"],
+        visitorId: (claims) => `vis_app_${claims.subject}`,
+      },
+    });
+    const agent = defineAgent(
+      { name: "test", model: "mock", augments: [createIdentityAugment("test"), aug] },
+      model,
+    );
+    await agent.start();
+
+    try {
+      const anonymousResp = await fetch(`http://localhost:${port}/agent/run`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          messages: [{ role: "user", content: "hello without app auth" }],
+        }),
+      });
+      expect(anonymousResp.status).toBe(401);
+
+      const appUserResp = await fetch(`http://localhost:${port}/agent/run`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-auggy-auth-assertion": assertion,
+        },
+        body: JSON.stringify({
+          messages: [{ role: "user", content: "hello from app" }],
+        }),
+      });
+      expect(appUserResp.status).toBe(200);
+      expect(appUserResp.headers.get("x-visitor-token")).toBeNull();
+      await appUserResp.text();
+
+      const system = model.calls[0]?.systemBlocks.join("\n") ?? "";
+      expect(system).toContain("trust: public");
+      expect(system).toContain("Runtime identity: vis_app_user_123");
+    } finally {
+      await agent.stop();
+    }
+  });
+
   it("POST /agent/run passes external auth claims to protected tools", async () => {
     const model = createMockModel();
     model.pushResponse({

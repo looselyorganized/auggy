@@ -111,6 +111,7 @@ function grantSatisfiesRequirement(
   resource: string | undefined,
 ): boolean {
   if (grant.action !== requirement.action) return false;
+  if (resource === undefined && grant.resource !== undefined) return false;
   if (resource !== undefined && grant.resource !== resource) return false;
   return constraintsSatisfy(requirement.constraints, grant.constraints);
 }
