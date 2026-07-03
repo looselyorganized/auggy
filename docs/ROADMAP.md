@@ -32,6 +32,7 @@ Recently completed v1 decisions:
 
 - **[identity]** Canonical creator identity for v1 shipped in PR #105. One verified creator maps to `peer.id = "creator"` across web console and Telegram private chat; `creator.displayName` is cosmetic model-facing metadata, not an auth credential. Decision: `docs/plans/v1-canonical-creator-identity.md`.
 - **[deploy]** Railway deploy DX is v1-ready: first deploy selects a Railway workspace before project/service, saved targets are shown by workspace/project/service name, plain `auggy deploy` asks before redeploying or retargeting, `--yes` remains the scripted redeploy path, Railway port `8080` is enforced at preflight, and the full fresh deploy path has been smoke-tested against Railway.
+- **[routes]** Generated TypeScript route client first cut shipped: `auggy routes [name] --client ts [--out file]`, self-contained generated file, typed request inputs, `unknown` response payloads until response schemas exist, fetch-like non-2xx handling, visitor-token support, and explicit browser warning for bearer routes.
 
 ---
 
@@ -44,7 +45,6 @@ based on which friction got loudest in the first 50 adopters.
 ### Operator surfaces (CLI + console)
 
 - **[console]** Additional `/console` developer surfaces, driven by adopter signal. Candidates: Memory browser, trace/event inspector, manifest viewer, skills editor, credentials editor.
-- **[routes]** Generated TypeScript route client. First cut: `auggy routes [name] --client ts [--out file]`, self-contained generated file, typed request inputs, `unknown` response payloads until response schemas exist, fetch-like non-2xx handling, visitor-token support, and explicit warning that bearer routes are server-side/SSR only. See `docs/use-cases/app-backend-architecture-strategy.md`.
 - **[budgets]** `auggy spend` command — current spend by trust tier from CLI. Today operators query SQLite directly. (G9)
 - **[budgets]** Budget-threshold notify integration — fire `notify` at 80% / 100% of `dailyBudgetUsd`. (G10)
 - **[memory]** `auggy memory <agent> [--peer X]` — inspect/audit memory entries from CLI. Visually distinguishes agent-derived from creator-confirmed facts. Required for right-to-erasure verification. (G14)

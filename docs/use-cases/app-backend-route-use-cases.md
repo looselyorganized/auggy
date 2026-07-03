@@ -35,6 +35,8 @@ The current route surface is intentionally small:
 - Per-route rate limits
 - Request schema metadata for params, query, and JSON body
 - Route manifest and OpenAPI-style inspection through `auggy routes`
+- Self-contained generated TypeScript route clients through
+  `auggy routes [name] --client ts [--out file]`
 
 That is enough for many useful app primitives. It is not a full replacement for
 Express, Fastify, Rails, Next.js, Supabase, Shopify, Stripe, or a general web

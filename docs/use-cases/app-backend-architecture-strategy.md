@@ -340,10 +340,13 @@ This should feed:
 
 #### TypeScript client generation first cut
 
-The first generated client should prove frontend consumption without pretending
-the route system has a full response contract yet.
+Status: first cut shipped. It is a generated-client artifact, not a package
+runtime export.
 
-Recommended command:
+The generated client proves frontend consumption without pretending the route
+system has a full response contract yet.
+
+Implemented command:
 
 ```bash
 auggy routes [name] --client ts
@@ -366,7 +369,7 @@ const api = createAuggyClient({
   onVisitorToken: (token) => localStorage.setItem("visitorToken", token),
 });
 
-const result = await api.GET("/services/:serviceId", {
+const result = await api.get("/services/:serviceId", {
   params: { serviceId: "gift-boxes" },
   query: { need: "birthday" },
 });
@@ -404,8 +407,9 @@ Input typing:
   schemas.
 - Keep JSON Schema support intentionally small: object properties, `required`,
   primitive scalars, arrays, nullable, and enums when easy.
-- Degrade unsupported JSON Schema constructs to `unknown` with generated
-  comments instead of building a full JSON Schema compiler.
+- Degrade unsupported JSON Schema constructs to `unknown` instead of building a
+  full JSON Schema compiler. Per-field unsupported-schema comments can come
+  later if examples show they are needed.
 - Append query arrays as repeated keys, matching the route helper's repeated
   query parsing behavior. Do not comma-join arrays.
 
@@ -424,7 +428,7 @@ CLI behavior:
 - With `--out`, write the file and create parent directories.
 - Support only `--client ts` initially; reject other formats clearly.
 
-Tests should cover:
+Current tests cover:
 
 - GET path params and required query input typing in generated output.
 - POST JSON body input typing in generated output.
