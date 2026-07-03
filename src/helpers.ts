@@ -157,8 +157,19 @@ function requestJsonSchema(
 }
 
 function fallbackRouteAuth(auth: AugmentHttpRouteAuth): RouteAuthContext {
-  if (auth === "none" || auth === "bearer") return { mode: auth };
-  return { mode: "visitor", state: "anonymous" };
+  if (auth === "bearer") {
+    return {
+      mode: "bearer",
+      principal: { kind: "creator", trustLevel: "creator", peerId: "creator" },
+    };
+  }
+  const anonymous = {
+    kind: "anonymous" as const,
+    trustLevel: "public" as const,
+    publicSubstate: "anonymous" as const,
+  };
+  if (auth === "none") return { mode: "none", principal: anonymous };
+  return { mode: "visitor", state: "anonymous", principal: anonymous };
 }
 
 function queryObject(searchParams: URLSearchParams): Record<string, string | string[]> {

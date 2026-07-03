@@ -134,7 +134,7 @@ describe("defineRoute", () => {
   it("supplies auth context when a helper route is invoked directly", async () => {
     const route = defineRoute.get("/private", {
       auth: "bearer",
-      handler: ({ auth }) => json({ auth: auth.mode }),
+      handler: ({ auth }) => json({ auth: auth.mode, principal: auth.principal }),
     });
 
     const res = await route.handler(new Request("http://localhost/private"), {
@@ -142,7 +142,14 @@ describe("defineRoute", () => {
     });
 
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ auth: "bearer" });
+    expect(await res.json()).toEqual({
+      auth: "bearer",
+      principal: {
+        kind: "creator",
+        trustLevel: "creator",
+        peerId: "creator",
+      },
+    });
   });
 
   it("creates a GET route that validates path params", async () => {

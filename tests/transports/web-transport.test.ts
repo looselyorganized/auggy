@@ -2300,13 +2300,21 @@ describe("webTransport augment-registered routes", () => {
           method: "GET",
           path: "/ctx/public",
           auth: "none",
-          handler: async (_req, opts) => json({ auth: opts.auth?.mode ?? null }),
+          handler: async (_req, opts) =>
+            json({
+              auth: opts.auth?.mode ?? null,
+              principal: opts.auth?.principal,
+            }),
         },
         {
           method: "GET",
           path: "/ctx/private",
           auth: "bearer",
-          handler: async (_req, opts) => json({ auth: opts.auth?.mode ?? null }),
+          handler: async (_req, opts) =>
+            json({
+              auth: opts.auth?.mode ?? null,
+              principal: opts.auth?.principal,
+            }),
         },
       ],
     };
@@ -2315,13 +2323,27 @@ describe("webTransport augment-registered routes", () => {
     try {
       const publicResp = await fetch(`http://localhost:${port}/ctx/public`);
       expect(publicResp.status).toBe(200);
-      expect(await publicResp.json()).toEqual({ auth: "none" });
+      expect(await publicResp.json()).toEqual({
+        auth: "none",
+        principal: {
+          kind: "anonymous",
+          trustLevel: "public",
+          publicSubstate: "anonymous",
+        },
+      });
 
       const privateResp = await fetch(`http://localhost:${port}/ctx/private`, {
         headers: { authorization: "Bearer test-token" },
       });
       expect(privateResp.status).toBe(200);
-      expect(await privateResp.json()).toEqual({ auth: "bearer" });
+      expect(await privateResp.json()).toEqual({
+        auth: "bearer",
+        principal: {
+          kind: "creator",
+          trustLevel: "creator",
+          peerId: "creator",
+        },
+      });
     } finally {
       await agent.stop();
     }
@@ -2380,6 +2402,16 @@ describe("webTransport augment-registered routes", () => {
         email: "alice@example.com",
         verifiedAt: 1000,
         reverifyDueAt: 2000,
+        principal: {
+          kind: "visitor",
+          trustLevel: "public",
+          publicSubstate: "recognized",
+          visitorId: "vis_known",
+          agentId: agentBinding,
+          email: "alice@example.com",
+          verifiedAt: 1000,
+          reverifyDueAt: 2000,
+        },
       });
     } finally {
       await agent.stop();
@@ -2494,7 +2526,15 @@ describe("webTransport augment-registered routes", () => {
     try {
       const anon = await fetch(`http://localhost:${port}/recommendations`);
       expect(anon.status).toBe(200);
-      expect(await anon.json()).toEqual({ mode: "visitor", state: "anonymous" });
+      expect(await anon.json()).toEqual({
+        mode: "visitor",
+        state: "anonymous",
+        principal: {
+          kind: "anonymous",
+          trustLevel: "public",
+          publicSubstate: "anonymous",
+        },
+      });
 
       const recognized = await fetch(`http://localhost:${port}/recommendations`, {
         headers: { "x-visitor-token": issued.token },
@@ -2505,6 +2545,13 @@ describe("webTransport augment-registered routes", () => {
         state: "recognized",
         visitorId: "vis_optional",
         email: "optional@example.com",
+        principal: {
+          kind: "visitor",
+          trustLevel: "public",
+          publicSubstate: "recognized",
+          visitorId: "vis_optional",
+          email: "optional@example.com",
+        },
       });
     } finally {
       await agent.stop();

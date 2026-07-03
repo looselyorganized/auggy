@@ -641,11 +641,49 @@ export interface RouteVisitorIdentity {
   reverifyDueAt?: number;
 }
 
+export type RouteAuthPrincipal =
+  | {
+      kind: "anonymous";
+      trustLevel: "public";
+      publicSubstate: "anonymous";
+    }
+  | {
+      kind: "visitor";
+      trustLevel: "public";
+      publicSubstate: "recognized";
+      visitorId: string;
+      agentId: string;
+      email?: string;
+      verifiedAt?: number;
+      reverifyDueAt?: number;
+    }
+  | {
+      kind: "creator";
+      trustLevel: "creator";
+      peerId: "creator";
+    };
+
 export type RouteAuthContext =
-  | { mode: "none" }
-  | { mode: "bearer" }
-  | { mode: "visitor"; state: "anonymous" }
-  | ({ mode: "visitor"; state: "recognized" } & RouteVisitorIdentity);
+  | {
+      mode: "none";
+      principal: Extract<RouteAuthPrincipal, { kind: "anonymous" }>;
+    }
+  | {
+      mode: "bearer";
+      principal: Extract<RouteAuthPrincipal, { kind: "creator" }>;
+    }
+  | {
+      mode: "visitor";
+      state: "anonymous";
+      principal: Extract<RouteAuthPrincipal, { kind: "anonymous" }>;
+    }
+  | ({
+      mode: "visitor";
+      state: "recognized";
+      principal: Extract<RouteAuthPrincipal, { kind: "visitor" }>;
+    } & RouteVisitorIdentity);
+
+export type RouteVisitorAuthContext = Extract<RouteAuthContext, { mode: "visitor" }>;
 
 export interface AugmentHttpRouteRequestJsonSchema {
   /** JSON Schema for `:param` path params, usually generated from `defineRoute`'s Zod schema. */

@@ -55,6 +55,8 @@ export type {
   Storage,
   // Transport
   RouteAuthContext,
+  RouteAuthPrincipal,
+  RouteVisitorAuthContext,
   TransportSpec,
   TransportKernel,
   // Agent Card

@@ -5,6 +5,7 @@ import type {
   CreatorConfig,
   PeerIdentity,
   RouteAuthContext,
+  RouteVisitorAuthContext,
   RouteVisitorIdentity,
   TransportSpec,
   TransportKernel,
@@ -1055,12 +1056,30 @@ export function webTransport(opts: WebTransportOptions): Augment {
     return timingSafeEqual(header, expected);
   }
 
-  async function resolveVisitorRouteAuth(
-    req: Request,
-  ): Promise<Extract<RouteAuthContext, { mode: "visitor" }>> {
-    const anonymous: Extract<RouteAuthContext, { mode: "visitor" }> = {
+  function anonymousRoutePrincipal(): Extract<
+    RouteAuthContext["principal"],
+    { kind: "anonymous" }
+  > {
+    return {
+      kind: "anonymous",
+      trustLevel: "public",
+      publicSubstate: "anonymous",
+    };
+  }
+
+  function creatorRoutePrincipal(): Extract<RouteAuthContext["principal"], { kind: "creator" }> {
+    return {
+      kind: "creator",
+      trustLevel: "creator",
+      peerId: "creator",
+    };
+  }
+
+  async function resolveVisitorRouteAuth(req: Request): Promise<RouteVisitorAuthContext> {
+    const anonymous: RouteVisitorAuthContext = {
       mode: "visitor",
       state: "anonymous",
+      principal: anonymousRoutePrincipal(),
     };
     if (!visitorTokensEnabled || !signingKey) return anonymous;
 
@@ -1096,7 +1115,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
       return anonymous;
     }
 
-    return {
+    const visitorAuth: RouteVisitorAuthContext = {
       mode: "visitor",
       state: "recognized",
       visitorId: payload.visitorId,
@@ -1104,7 +1123,18 @@ export function webTransport(opts: WebTransportOptions): Augment {
       issuedAt: payload.issuedAt,
       expiresAt: payload.expiresAt,
       ...(identity ?? {}),
+      principal: {
+        kind: "visitor",
+        trustLevel: "public",
+        publicSubstate: "recognized",
+        visitorId: payload.visitorId,
+        agentId: payload.agentId,
+        ...(identity?.email !== undefined ? { email: identity.email } : {}),
+        ...(identity?.verifiedAt !== undefined ? { verifiedAt: identity.verifiedAt } : {}),
+        ...(identity?.reverifyDueAt !== undefined ? { reverifyDueAt: identity.reverifyDueAt } : {}),
+      },
     };
+    return visitorAuth;
   }
 
   async function authorizeAugmentRoute(
@@ -1112,7 +1142,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
     auth: AugmentHttpRouteAuth,
   ): Promise<{ ok: true; context: RouteAuthContext } | { ok: false; response: Response }> {
     if (auth === "none") {
-      return { ok: true, context: { mode: "none" } };
+      return { ok: true, context: { mode: "none", principal: anonymousRoutePrincipal() } };
     }
 
     if (auth === "bearer") {
@@ -1120,7 +1150,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
       if (!isValidAuth(authHeader)) {
         return { ok: false, response: json({ error: "unauthorized" }, 401) };
       }
-      return { ok: true, context: { mode: "bearer" } };
+      return { ok: true, context: { mode: "bearer", principal: creatorRoutePrincipal() } };
     }
 
     if (auth === "visitor.optional" || auth === "visitor.required") {
