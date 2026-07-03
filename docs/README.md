@@ -95,7 +95,7 @@ is the source of truth and the docs should be fixed.
 | [22 Agent Mail](./22-agent-mail.md) | AgentMail augment |
 | [24 MCP](./24-mcp.md) | MCP augment, local/remote servers, deploy posture |
 | [25 Generated Route Clients](./25-generated-route-clients.md) | TypeScript route client generation, targets, auth config, result handling |
-| [26 Delegated Authorization](./26-delegated-authorization.md) | App-session auth bridge, external assertions, route `requires` |
+| [26 Delegated Authorization](./26-delegated-authorization.md) | App-session auth bridge, external assertions, route/tool `requires` |
 
 ## Use cases and product strategy
 

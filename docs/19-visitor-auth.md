@@ -122,7 +122,7 @@ visitor token without routing every request through the model.
 Existing apps can also bridge Clerk, Supabase, or custom app sessions into
 `visitor.required` routes with short-lived external auth assertions. See
 [`26-delegated-authorization.md`](./26-delegated-authorization.md) for the
-developer guide, including route `requires` examples.
+developer guide, including route and tool `requires` examples.
 
 ## Configuration
 

@@ -1,22 +1,22 @@
 # Delegated Authorization Bridge
 
 Auggy can accept short-lived, app-signed auth assertions from an existing app
-session and use them to authorize `visitor.required` routes. This lets a
-frontend backed by Supabase Auth, Clerk, Auth0, or custom session middleware
-call Auggy app-backend routes without making Auggy a general-purpose identity
-provider.
+session and use them to authorize `visitor.required` routes and protected model
+tools. This lets a frontend backed by Supabase Auth, Clerk, Auth0, or custom
+session middleware call Auggy app-backend surfaces without making Auggy a
+general-purpose identity provider.
 
 The split is deliberate:
 
 - The app verifies the user session and decides what the user may do.
 - The app mints a compact, short-lived Auggy assertion.
 - Auggy verifies the assertion signature, audience, provider, and TTL.
-- Auggy enforces route-local `requires` rules against assertion
-  `scopes` / `grants` before the handler runs.
+- Auggy enforces route-local and tool-local `requires` rules against assertion
+  `scopes` / `grants` before the route handler or tool runs.
 
 Auggy does not run the app's RBAC system. It does not infer permissions from
 roles. Roles can be preserved as context, but `requires` is satisfied only by
-explicit delegated scopes or grants.
+explicit delegated scopes or grants minted by the app backend.
 
 ## Flow
 
@@ -26,14 +26,14 @@ explicit delegated scopes or grants.
 4. App backend derives a minimal set of scopes/grants for the current user.
 5. App backend signs a short-lived Auggy assertion.
 6. Browser calls Auggy with `x-auggy-auth-assertion`.
-7. Auggy resolves recognized visitor context and enforces route `requires`.
+7. Auggy resolves recognized visitor context and enforces route/tool `requires`.
 
 ```text
 browser -> app backend: "give me an Auggy assertion"
 app backend -> app auth provider: verify session
 app backend -> browser: signed short-lived assertion
-browser -> Auggy route: x-auggy-auth-assertion
-Auggy runtime: verify assertion, enforce route requires, call handler
+browser -> Auggy route or run endpoint: x-auggy-auth-assertion
+Auggy runtime: verify assertion, enforce route/tool requires, call handler/tool
 ```
 
 ## Configure Web Transport
@@ -197,6 +197,10 @@ const result = await api.get("/orders");
 The generated client sends the assertion as `x-auggy-auth-assertion`. It does
 not verify or refresh the underlying app session.
 
+For chat or `/agent/run` flows, carry the same assertion with the inbound
+request. Tool authorization uses the turn's resolved auth context; the model
+does not get to assert identity or permissions in tool arguments.
+
 ## Route Requirements
 
 `requires` is route-local delegated authorization. It only works with
@@ -282,6 +286,98 @@ requires: [
 ]
 ```
 
+Routes can bind grant resources from path params with `{ param: "id" }`.
+Route requirements cannot bind resources from request bodies or arbitrary model
+input.
+
+## Tool Requirements
+
+Tools can also declare delegated authorization requirements. This is the
+important app-builder case: the model may decide to call a tool, but the
+runtime decides whether that specific user may perform that specific action on
+that specific resource.
+
+```ts
+import { defineTool } from "auggy";
+import { z } from "zod";
+
+export const refundOrder = defineTool({
+  name: "refund_order",
+  description: "Refund a customer's order.",
+  category: "commerce",
+  input: z.object({
+    orderId: z.string(),
+    reason: z.string(),
+  }),
+  requires: {
+    action: "orders.refund",
+    resource: { input: "orderId" },
+  },
+  execute: async ({ orderId, reason }, context) => {
+    await refunds.issue({ orderId, reason, actor: context?.auth?.principal.id });
+    return `Refunded ${orderId}.`;
+  },
+});
+```
+
+The matching assertion must include a grant for the resolved resource:
+
+```ts
+{
+  action: "orders.refund",
+  resource: "order_123",
+}
+```
+
+Tool resource binding rules are intentionally narrow:
+
+- `{ input: "orderId" }` reads a top-level string field from the validated tool
+  input.
+- Nested paths such as `{ input: "order.id" }` are not traversed and fail
+  closed with `authorization-resource-unresolved`.
+- Non-string, missing, or empty values fail closed.
+- Tool requirements cannot use `{ param }`; route requirements use `{ param }`,
+  tool requirements use `{ input }`.
+
+The runtime validates the tool's Zod input before resolving `{ input }`. That
+means authorization is checked against typed, schema-validated data, not raw
+model JSON.
+
+### How App Permissions Become Tool Grants
+
+The app backend should translate its own permissions into minimal scopes and
+grants when minting the assertion:
+
+```ts
+async function refundGrantForSupabaseUser(userId: string, orderId: string) {
+  const canRefund = await appPolicy.canRefundOrder(userId, orderId);
+  return canRefund ? [{ action: "orders.refund", resource: orderId }] : [];
+}
+```
+
+For broad permissions, use a scope:
+
+```ts
+scopes: ["orders.read"]
+```
+
+For resource-specific permissions, use a grant:
+
+```ts
+grants: [{ action: "orders.refund", resource: "order_123" }]
+```
+
+Resource-bound tool requirements do not have wildcard grants. If the app cannot
+know the resource at assertion mint time, it should either mint grants for the
+bounded resources visible in the current workflow, use a deliberately broad
+scope only when the app policy says that is safe, or keep an additional
+domain-layer authorization check inside the tool before side effects.
+
+Do not pass raw roles and ask Auggy to interpret them. A Supabase role,
+Clerk organization membership, Stripe customer id, or custom entitlement can
+all be useful inputs to the app's policy engine, but the assertion should carry
+the narrow result Auggy needs to enforce: scopes and grants.
+
 ## Runtime Outcomes
 
 For `auth: "visitor.required"` routes:
@@ -298,21 +394,27 @@ For `auth: "visitor.required"` routes:
 - A path-param resource binding that cannot resolve returns
   `403 {"error":"forbidden","reason":"authorization-resource-unresolved"}`.
 
-Authorization is enforced before the handler runs.
+Route authorization is enforced before the handler runs.
+
+For protected tools, the tool does not execute when authorization is missing,
+invalid, or denied. The turn continues with a deterministic tool-denial result
+visible to the model, such as `authorization-scope-missing`,
+`authorization-grant-missing`, or `authorization-resource-unresolved`.
 
 ## What Claims Mean
 
-Verified external auth claims are available on route context:
+Verified external auth claims are available on route context and protected tool
+execution context:
 
 ```ts
 auth.externalAuth // provider, subject, orgId?, roles?, scopes?, grants?, authzVersion?, jti?
 auth.principal.externalAuth
 ```
 
-Use this for audit, app-specific lookup, and handler-local context. Do not treat
-`roles` as route permissions. Route permissions should be expressed as
+Use this for audit, app-specific lookup, and route-handler or tool context. Do
+not treat `roles` as route or tool permissions. Permissions should be expressed as
 `requires` scopes or grants so Auggy can enforce them consistently before
-handler code runs.
+handler or tool code runs.
 
 If a request supplies both an Auggy visitor token and an external auth
 assertion, Auggy keeps the visitor-token identity and merges external claims
@@ -329,6 +431,8 @@ not attached to the visitor context.
   Auggy route handlers.
 - Do not let the model decide whether a user is authorized.
 - Prefer narrow scopes and resource grants over broad roles.
+- Bind tool grants to top-level validated input fields only; avoid nested paths
+  or authorization decisions based on model-written prose.
 - Use `authzVersion` or `jti` when the app needs audit correlation,
   revocation, or policy-version tracking.
 
@@ -341,7 +445,7 @@ This bridge complements `visitorAuth`; it does not replace it.
 - External auth assertions let an existing app session become recognized Auggy
   visitor context for a short-lived request.
 - Delegated authorization lets app-owned permissions travel with that request
-  as explicit scopes/grants.
+  as explicit scopes/grants for routes and tools.
 
 The common invariant remains: the runtime verifies identity and authorization;
 the model never does.

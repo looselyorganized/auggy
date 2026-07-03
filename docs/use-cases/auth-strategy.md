@@ -223,10 +223,10 @@ routes. It uses the same web bearer credential as `auth: "bearer"`, but route
 handlers receive `auth.mode === "creator"` and a creator principal.
 
 External app auth assertions now preserve a compact verified claim subset on
-recognized visitor route context:
+recognized visitor route context and protected tool execution context:
 
 ```ts
-auth.externalAuth // { provider, subject, orgId?, roles? }
+auth.externalAuth // { provider, subject, orgId?, roles?, scopes?, grants? }
 ```
 
 This gives Clerk/Supabase/custom app sessions enough structure for app-owned
@@ -239,7 +239,16 @@ Mismatched app claims are not merged onto the visitor context.
 
 Developer reference: [`../26-delegated-authorization.md`](../26-delegated-authorization.md)
 describes the Clerk/Supabase/custom app bridge, short-lived assertions,
-delegated `scopes` / `grants`, and route `requires` examples.
+delegated `scopes` / `grants`, and route/tool `requires` examples.
+
+Implementation note: delegated authorization now has two enforcement sites.
+Routes bind resource grants from path params with `{ param: "id" }`; tools bind
+resource grants from validated tool input with `{ input: "orderId" }`. This is
+the right boundary for app builders with Supabase, Clerk, or custom auth: their
+app decides the user's permissions, signs a narrow assertion, and Auggy
+deterministically enforces the resulting scopes/grants before route handlers or
+model-requested tools run. Roles can travel as context, but Auggy should not
+interpret broad app roles as permissions.
 
 ### Step 4: visitor and agent route auth
 
