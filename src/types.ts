@@ -686,11 +686,57 @@ export interface RouteVisitorIdentity {
   externalAuth?: RouteExternalAuthClaims;
 }
 
+export type AuthorizationScope = string & {};
+export type AuthorizationAction = string & {};
+export type AuthorizationResource = string & {};
+
+export type AuthorizationConstraintValue =
+  | string
+  | number
+  | boolean
+  | null
+  | readonly AuthorizationConstraintValue[]
+  | { readonly [key: string]: AuthorizationConstraintValue };
+
+export type AuthorizationConstraints = Readonly<Record<string, AuthorizationConstraintValue>>;
+
+/**
+ * App-signed delegated permission. The application remains the source of
+ * authorization truth; Auggy only verifies and enforces the compact grants it
+ * receives for the current request.
+ */
+export interface AuthorizationGrant {
+  action: AuthorizationAction;
+  resource?: AuthorizationResource;
+  constraints?: AuthorizationConstraints;
+}
+
+export type AuthorizationResourceBinding =
+  | AuthorizationResource
+  | {
+      /** Bind the required resource to a path parameter such as `/orders/:id`. */
+      param: string;
+    };
+
+export type AuthorizationRequirement =
+  | {
+      scope: AuthorizationScope;
+    }
+  | {
+      action: AuthorizationAction;
+      resource?: AuthorizationResourceBinding;
+      constraints?: AuthorizationConstraints;
+    };
+
 export interface RouteExternalAuthClaims {
   provider: string;
   subject: string;
   orgId?: string;
   roles?: readonly string[];
+  scopes?: readonly AuthorizationScope[];
+  grants?: readonly AuthorizationGrant[];
+  authzVersion?: string;
+  jti?: string;
 }
 
 export type RouteAuthPrincipal =
