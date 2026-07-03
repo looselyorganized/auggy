@@ -449,3 +449,14 @@ This bridge complements `visitorAuth`; it does not replace it.
 
 The common invariant remains: the runtime verifies identity and authorization;
 the model never does.
+
+## Executable Pattern
+
+The end-to-end pattern is covered by
+`tests/integration/delegated-authz-agent-run.test.ts`:
+
+- app code mints an external auth assertion
+- `/agent/run` receives `x-auggy-auth-assertion`
+- the turn carries verified external auth claims
+- a protected tool declares `requires` with `{ input: "orderId" }`
+- allowed and denied grant paths are both tested
