@@ -81,7 +81,22 @@ describe("auggy augment command", () => {
     const cmd = augmentCommand({ runAdd });
     await cmd.parseAsync(["add", "visitorAuth", "--skip-install"], { from: "user" });
 
-    expect(runAdd).toHaveBeenCalledWith("visitorAuth", {
+    expect(runAdd).toHaveBeenCalledWith(undefined, {
+      augment: ["visitorAuth"],
+      config: undefined,
+      skipInstall: true,
+      yes: undefined,
+      auggyDir: undefined,
+    });
+  });
+
+  test("add with no augment dispatches to runAdd selector path", async () => {
+    const runAdd = mock(async () => {});
+
+    const cmd = augmentCommand({ runAdd });
+    await cmd.parseAsync(["add", "--skip-install"], { from: "user" });
+
+    expect(runAdd).toHaveBeenCalledWith(undefined, {
       augment: undefined,
       config: undefined,
       skipInstall: true,
@@ -97,7 +112,24 @@ describe("auggy augment command", () => {
     await cmd.parseAsync(["add", "visitorAuth", "--agent", "zip"], { from: "user" });
 
     expect(runAdd).toHaveBeenCalledWith("zip", {
-      augment: "visitorAuth",
+      augment: ["visitorAuth"],
+      config: undefined,
+      skipInstall: undefined,
+      yes: undefined,
+      auggyDir: "/tmp/auggy",
+    });
+  });
+
+  test("add dispatches multiple augment args to runAdd", async () => {
+    const runAdd = mock(async () => {});
+
+    const cmd = augmentCommand({ runAdd, auggyDir: "/tmp/auggy" });
+    await cmd.parseAsync(["add", "knowledge", "visitorAuth", "--agent", "zip"], {
+      from: "user",
+    });
+
+    expect(runAdd).toHaveBeenCalledWith("zip", {
+      augment: ["knowledge", "visitorAuth"],
       config: undefined,
       skipInstall: undefined,
       yes: undefined,
@@ -314,7 +346,8 @@ describe("listAugments and removeAugment", () => {
       expect(text).not.toContain("Knowledge - local docs");
       expect(text).toContain("Preview:");
       expect(text).toContain("bash");
-      expect(text).toContain("auggy augment add <name>");
+      expect(text).toContain("auggy augment add");
+      expect(text).toContain("auggy augment add <name...>");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

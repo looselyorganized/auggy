@@ -29,6 +29,11 @@ describe("route manifest", () => {
               required: ["id"],
             },
           },
+          responseJsonSchema: {
+            type: "object",
+            properties: { id: { type: "string" }, name: { type: "string" } },
+            required: ["id", "name"],
+          },
         }),
       ]),
       aug("orders", [
@@ -60,6 +65,11 @@ describe("route manifest", () => {
             required: ["id"],
           },
         },
+        responseJsonSchema: {
+          type: "object",
+          properties: { id: { type: "string" }, name: { type: "string" } },
+          required: ["id", "name"],
+        },
       },
       {
         method: "POST",
@@ -84,14 +94,87 @@ describe("route manifest", () => {
       aug("visitor-aware", [route("GET", "/recommendations", "visitor.optional")]),
       aug("visitor-private", [route("GET", "/orders/:id", "visitor.required")]),
       aug("private", [route("POST", "/orders/create", "bearer")]),
+      aug("creator", [route("POST", "/admin/reindex", "creator")]),
+      aug("agent", [route("GET", "/agent-api/search", "agent.required")]),
     ]);
     const manifest = createRouteManifest(collected.routes);
 
     expect(summarizeRouteManifest(manifest)).toEqual({
-      totalRoutes: 4,
+      totalRoutes: 6,
       publicRoutes: 2,
-      privateRoutes: 2,
+      privateRoutes: 4,
       publicRoutePaths: ["GET /services", "GET /recommendations"],
     });
+    expect(manifest.find((route) => route.auth === "agent.required")).toMatchObject({
+      public: false,
+      security: "private",
+    });
+  });
+
+  test("copies route policy metadata into manifest entries", () => {
+    const policy = {
+      kind: "webhook.signature" as const,
+      provider: "stripe",
+      secretEnv: "STRIPE_WEBHOOK_SECRET",
+    };
+    const collected = collectAugmentRoutes([
+      aug("payments", [route("POST", "/webhooks/stripe", "none", { policy })]),
+    ]);
+
+    expect(collected.errors).toEqual([]);
+
+    const manifest = createRouteManifest(collected.routes);
+
+    expect(manifest[0]).toMatchObject({
+      method: "POST",
+      path: "/webhooks/stripe",
+      auth: "none",
+      public: true,
+      security: "public",
+      policy,
+    });
+    expect(manifest[0]?.policy).not.toBe(policy);
+    expect(Object.isFrozen(manifest[0]?.policy)).toBe(true);
+  });
+
+  test("copies delegated authorization requirements into manifest entries", () => {
+    const requires = [
+      { scope: "orders.write" },
+      {
+        action: "refund.issue",
+        resource: { param: "id" },
+        constraints: { tenant: "lo", flags: ["customer-requested"] },
+      },
+    ] as const;
+    const collected = collectAugmentRoutes([
+      aug("orders", [
+        route("POST", "/orders/:id/refund", "visitor.required", {
+          requires,
+        }),
+      ]),
+    ]);
+
+    expect(collected.errors).toEqual([]);
+
+    const manifest = createRouteManifest(collected.routes);
+
+    expect(manifest[0]).toMatchObject({
+      method: "POST",
+      path: "/orders/:id/refund",
+      auth: "visitor.required",
+      requires,
+    });
+    expect(manifest[0]?.requires).not.toBe(requires);
+    expect(Object.isFrozen(manifest[0]?.requires)).toBe(true);
+    expect(Object.isFrozen((manifest[0]?.requires as readonly unknown[])[1])).toBe(true);
+    expect(
+      Object.isFrozen(
+        (
+          (manifest[0]?.requires as readonly { constraints?: unknown }[])[1]?.constraints as {
+            flags?: unknown;
+          }
+        ).flags,
+      ),
+    ).toBe(true);
   });
 });

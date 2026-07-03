@@ -40,8 +40,8 @@ import { formatAgentMailSetupResult, runAgentMailSetup } from "./agentmail";
 export interface AddOpts {
   /** Path override for agent.yaml. */
   config?: string;
-  /** Optional non-interactive augment specifier (type, default name, or alias). */
-  augment?: string;
+  /** Optional non-interactive augment specifier(s) (type, default name, or alias). */
+  augment?: string | string[];
   /**
    * Skip the post-mutation `bun install` step. The agent's `package.json` is
    * still updated; the operator can run `bun install` later.
@@ -59,13 +59,15 @@ export interface AddOpts {
 
 export async function runAdd(target: string | undefined, opts: AddOpts): Promise<void> {
   const localConfig = join(opts.cwd ?? process.cwd(), "agent.yaml");
-  const useProjectLocalArg = !opts.config && !opts.augment && !!target && existsSync(localConfig);
+  const requestedAugments = requestedAugmentList(opts.augment);
+  const useProjectLocalArg =
+    !opts.config && requestedAugments.length === 0 && !!target && existsSync(localConfig);
   const configPath = resolveConfigPath(useProjectLocalArg ? undefined : target, opts.config, {
     auggyDir: opts.auggyDir,
     cwd: opts.cwd,
   });
   const name = target && !useProjectLocalArg ? target : readAgentName(configPath);
-  const selectedAugment = useProjectLocalArg ? target : opts.augment;
+  const selectedAugments = useProjectLocalArg ? [target] : requestedAugments;
   const agentDir = dirname(configPath);
 
   // Parse current config.
@@ -83,13 +85,14 @@ export async function runAdd(target: string | undefined, opts: AddOpts): Promise
     return;
   }
 
-  const selected = selectedAugment
-    ? resolveNonInteractiveSelection(selectedAugment, available)
-    : await checkbox<CatalogEntry>({
-        message: "Select augments to add",
-        pageSize: 12,
-        choices: buildAddChoices(available),
-      });
+  const selected =
+    selectedAugments.length > 0
+      ? resolveNonInteractiveSelection(selectedAugments, available)
+      : await checkbox<CatalogEntry>({
+          message: "Select augments to add",
+          pageSize: 12,
+          choices: buildAddChoices(available),
+        });
 
   if (selected.length === 0) {
     console.log("No augments selected.");
@@ -720,26 +723,45 @@ function unique(values: string[]): string[] {
   return [...new Set(values)];
 }
 
+function requestedAugmentList(value: string | string[] | undefined): string[] {
+  if (!value) return [];
+  const values = Array.isArray(value) ? value : [value];
+  return values.map((item) => item.trim()).filter(Boolean);
+}
+
 function resolveNonInteractiveSelection(
-  specifier: string,
+  specifiers: string[],
   available: CatalogEntry[],
 ): CatalogEntry[] {
-  const entry = resolveCatalogEntry(specifier);
-  if (!entry) {
-    throw new Error(
-      `Unknown augment "${specifier}". Valid augment names: ${validAugmentSpecifiers().join(", ")}`,
+  const selected: CatalogEntry[] = [];
+  const seen = new Set<string>();
+
+  for (const specifier of specifiers) {
+    const entry = resolveCatalogEntry(specifier);
+    if (!entry) {
+      throw new Error(
+        `Unknown augment "${specifier}". Valid augment names: ${validAugmentSpecifiers().join(", ")}`,
+      );
+    }
+
+    if (seen.has(entry.type)) {
+      console.log(`Augment "${entry.defaultName}" (${entry.type}) was requested more than once.`);
+      continue;
+    }
+    seen.add(entry.type);
+
+    const isAvailable = available.some(
+      (candidate) => candidate.type === entry.type && candidate.defaultName === entry.defaultName,
     );
+    if (!isAvailable) {
+      console.log(`Augment "${entry.defaultName}" (${entry.type}) is already installed.`);
+      continue;
+    }
+
+    selected.push(entry);
   }
 
-  const isAvailable = available.some(
-    (candidate) => candidate.type === entry.type && candidate.defaultName === entry.defaultName,
-  );
-  if (!isAvailable) {
-    console.log(`Augment "${entry.defaultName}" (${entry.type}) is already installed.`);
-    return [];
-  }
-
-  return [entry];
+  return selected;
 }
 
 /**

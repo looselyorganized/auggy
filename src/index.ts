@@ -7,6 +7,14 @@ export type {
   AgentConfig,
   AgentHandle,
   AgentHealth,
+  AuthorizationAction,
+  AuthorizationConstraintValue,
+  AuthorizationConstraints,
+  AuthorizationGrant,
+  AuthorizationRequirement,
+  AuthorizationResource,
+  AuthorizationResourceBinding,
+  AuthorizationScope,
   ContextBlock,
   ContextPlacement,
   ContextProvenance,
@@ -25,7 +33,9 @@ export type {
   // Tools
   Tool,
   ToolCategory,
+  ToolExecuteContext,
   ToolDefinition,
+  ToolResult,
   // Peers
   PeerIdentity,
   PeerKind,
@@ -54,9 +64,17 @@ export type {
   // Storage
   Storage,
   // Transport
+  RouteAgentAuthContext,
   RouteAuthContext,
+  RouteExternalAuthClaims,
+  RouteAuthPrincipal,
+  RouteVisitorAuthContext,
+  RouteWebhookContext,
   TransportSpec,
   TransportKernel,
+  AugmentHttpRoutePolicy,
+  AugmentHttpRouteWebhookProvider,
+  AugmentHttpRouteWebhookSignaturePolicy,
   // Agent Card
   AgentCard,
   AgentCardProvider,
@@ -74,8 +92,25 @@ export { defineAgent } from "./agent";
 // === Agent Card ===
 export { generateAgentCard } from "./agent-card";
 
+// === Auth primitives ===
+export {
+  createExternalAuthAssertion,
+  externalAuthClaimsToRouteContext,
+  externalAuthClaimsToRoutePrincipal,
+  externalSubjectVisitorId,
+  verifyExternalAuthAssertion,
+} from "./auth/external-auth";
+export type {
+  CreateExternalAuthAssertionOptions,
+  ExternalAuthAssertionFailureReason,
+  ExternalAuthAssertionVerification,
+  ExternalAuthClaims,
+  ExternalAuthPrincipalOptions,
+  VerifyExternalAuthAssertionOptions,
+} from "./auth/external-auth";
+
 // === Helpers ===
-export { defineAugment, defineRoute, defineTool, json } from "./helpers";
+export { defineAugment, defineRoute, defineTool, json, webhook } from "./helpers";
 export type {
   DefineGetRouteOptions,
   DefinePostRouteOptions,

@@ -164,7 +164,6 @@ For app backends, `auth: "bearer" | "none"` is too coarse. Evolve route auth int
 - `visitor.required`
 - `agent.required`
 - `trust: ["creator", "agent"]`
-- `webhook.signature`
 - `custom`
 
 Examples:
@@ -175,6 +174,8 @@ Examples:
 - `/agent-api/search` requires admitted agent credentials.
 
 This keeps security posture explicit at the route declaration site.
+Webhook signatures belong in route policy metadata
+(`policy: webhook.signature(...)`), not in the peer-auth mode union.
 
 ### Declarative policy before arbitrary middleware
 
@@ -195,6 +196,14 @@ Start with structured route policies:
 - Approval requirements
 
 Augment-local middleware can come later if real use cases require it. The initial product should make common policy visible and inspectable.
+
+Webhook signature verification should be the first policy after auth modes, but
+it should not become another peer identity. A Stripe or GitHub webhook is a
+verified provider event, not a creator, visitor, or admitted agent. The route
+layer needs raw-body access, provider-specific signature helpers, manifest
+metadata, and a verified event object for the handler. It should not expose
+provider secrets to the model or normalize provider events into normal user
+claims unless an augment explicitly links the event to a local domain record.
 
 ### Shared domain functions between routes and tools
 
@@ -338,6 +347,126 @@ This should feed:
 - deployment output
 - frontend scaffolds
 
+#### TypeScript client generation first cut
+
+Status: first cut shipped. It is a generated-client artifact, not a package
+runtime export.
+
+The generated client proves frontend consumption without pretending the route
+system has a full response contract yet.
+
+Implemented command:
+
+```bash
+auggy routes [name] --client ts --target browser
+auggy routes [name] --client ts --target server --out src/auggy-client.server.ts
+```
+
+Public stance:
+
+- Generate a self-contained TypeScript file first.
+- Default to the browser target when `--target` is omitted.
+- Do not add a reusable `createAuggyClient` export to the `auggy` package until
+  generated clients have survived real examples.
+- Treat this as a typed request client, not a full SDK.
+
+Generated API shape:
+
+```ts
+const api = createAuggyClient({
+  baseUrl: "https://zip.example.com",
+  visitorToken: () => localStorage.getItem("visitorToken") ?? undefined,
+  onVisitorToken: (token) => localStorage.setItem("visitorToken", token),
+});
+
+const result = await api.get("/services/:serviceId", {
+  params: { serviceId: "gift-boxes" },
+  query: { need: "birthday" },
+});
+
+if (result.ok) {
+  const data = result.data; // typed when the route declares a success response schema
+}
+```
+
+Use typed route-path literals (`api.get("/services/:id", ...)`) instead of
+generated operation method names. The route path is already the public API, and
+literal paths preserve autocomplete without creating naming churn around
+`operationId`.
+
+Target split:
+
+- Browser target includes `none`, `visitor.optional`, and `visitor.required`
+  routes. It omits bearer, creator, `agent.required`, and webhook-policy routes
+  and does not generate privileged credential config.
+- Server target includes `none`, bearer/creator, and `agent.required` routes.
+  It omits visitor-token routes and generates `bearerToken` and
+  `agentCredentials` config for server-side/SSR callers. Webhook-policy routes
+  may appear in the server target when their auth mode is otherwise
+  server-callable; examples should not encourage browser or manual replay.
+
+Client config:
+
+- `baseUrl`
+- optional custom `fetch`
+- browser target: optional `visitorToken`
+- browser target: optional `onVisitorToken`
+- server target: optional `bearerToken`
+- server target: optional `agentCredentials`
+- optional static/dynamic headers
+
+Result model:
+
+- Return `{ ok, status, data, response, visitorToken? }` for every HTTP status.
+- Do not throw for non-2xx responses.
+- Throw only for network failures or malformed response parsing.
+- Parse JSON when the response content type is JSON; otherwise return text.
+- Type success `data` when a route declares a response schema.
+- Keep `data` as `unknown` for routes without response schemas.
+- Keep non-2xx error payloads generic until Auggy has a stable route error
+  protocol.
+
+Input typing:
+
+- Type path params, query, and JSON body from the route manifest's request JSON
+  schemas.
+- Keep JSON Schema support intentionally small: object properties, `required`,
+  primitive scalars, arrays, nullable, and enums when easy.
+- Degrade unsupported JSON Schema constructs to `unknown` instead of building a
+  full JSON Schema compiler. Per-field unsupported-schema comments can come
+  later if examples show they are needed.
+- Append query arrays as repeated keys, matching the route helper's repeated
+  query parsing behavior. Do not comma-join arrays.
+
+Security posture:
+
+- Browser examples should use `auth: "none"`, `visitor.optional`, or
+  `visitor.required`.
+- Bearer/creator and agent-auth routes are generated only for the server
+  target. Generated comments and docs must state clearly: do not ship creator
+  bearer tokens or agent credentials to browser code.
+
+CLI behavior:
+
+- `--json`, `--openapi`, and `--client` are mutually exclusive.
+- `--target browser|server` applies only to `--client ts`.
+- Browser is the default target if `--target` is omitted.
+- Without `--out`, print generated TypeScript to stdout.
+- With `--out`, write the file and create parent directories.
+- Support only `--client ts` initially; reject other formats clearly.
+
+Current tests cover:
+
+- GET path params and required query input typing in generated output.
+- POST JSON body input typing in generated output.
+- Visitor-token request/response header handling.
+- Bearer route generated warning/comment.
+- Browser/server target filtering from route auth.
+- Query arrays encoded as repeated keys.
+- Fetch-like result behavior for non-2xx responses.
+- CLI mutual exclusion and `--out` writing.
+- Existing `--json` and `--openapi` behavior unchanged.
+
 ### App scaffolds
 
 The "aha" should happen in the scaffold.
@@ -362,6 +491,214 @@ The generated augment should show the right pattern from day one:
 - Optional admin info
 - Tests
 - Example-local UI intents when the template is chat-first or commerce-oriented
+
+## Capability extensions: Link, budgets, and visitorAuth
+
+These extensions are the stronger version of the app-backend thesis. They are
+not all launch promises. They show how Auggy's existing primitives can grow into
+agent-native applications where humans, agents, and deterministic routes share
+one runtime boundary.
+
+### Link: agent-to-agent app backends
+
+Current truth:
+
+- `link` is a preview peer-to-peer A2A-style transport, separate from
+  `webTransport`.
+- It binds its own HTTP service, admits configured peers with bearer auth, and
+  maps admitted peers to `trustLevel: "agent"`.
+- Today its model-facing surface is small: `link_list` and text-only
+  `link_send`.
+- It is not yet open web discovery, a universal Claude integration, or a
+  multi-merchant checkout network.
+
+That current shape is still strategically important. It means an Auggy site can
+eventually have two public surfaces:
+
+- Browser/app surface: pages, routes, AG-UI chat, visitor auth.
+- Agent peer surface: link/A2A endpoint, agent card, admitted peer identity,
+  per-peer policy, and agent-trust budgets.
+
+#### Scenario: "Tell Claude to buy shoes"
+
+The corrected version is not "any Claude can magically call any Auggy site."
+Claude, or any outside assistant, needs an entrypoint and an authorization
+story.
+
+Possible entrypoint layers:
+
+1. **Public discovery/read path**: the merchant Auggy exposes public catalog
+   routes, route manifest/OpenAPI, and an agent card. An outside assistant can
+   read product and policy data without being trusted.
+2. **Admitted agent-peer path**: the outside assistant speaks Link/A2A and
+   presents configured credentials. The merchant Auggy sees it as an `agent`
+   peer and applies agent-trust policy and budgets.
+3. **Delegated visitor path**: a future `visitorAuth`-backed consent flow lets
+   the human grant a third-party assistant a short-lived, scoped pass to act on
+   the visitor's behalf. This should be route-scoped, revocable, budgeted, and
+   unable to access creator credentials.
+
+The safe flow:
+
+1. User asks their assistant to find shoes.
+2. The assistant discovers the merchant Auggy's public agent/app surface.
+3. The merchant Auggy answers public product, sizing, shipping, and return
+   questions from deterministic routes/tools.
+4. If account-specific state is needed, the user grants a scoped delegated
+   visitor pass or completes visitor auth directly with the merchant.
+5. The assistant can create a draft cart or checkout handoff through
+   deterministic routes.
+6. Payment and final purchase happen through a route-backed checkout component
+   or payment provider flow, not by the model saying "purchased" in text.
+
+This is the key product boundary: agents can research, compare, fill carts,
+negotiate within policy, and prepare handoffs. Consequential actions still land
+on deterministic routes with explicit auth, audit, and user confirmation.
+
+#### Scenario: one Auggy site shops across other Auggy sites
+
+A visitor is on a pickleball Auggy site looking at paddles. The site agent says:
+
+> I can also check partner stores for court shoes that match this setup.
+
+With Link, the local Auggy could become an orchestrator:
+
+1. Visitor gives consent for cross-site search.
+2. Local Auggy calls configured partner Auggys via `link_send`.
+3. Partner Auggys return structured recommendations, availability, prices, or
+   checkout handoff URLs.
+4. Local Auggy renders comparison UI intents in the same chat/session.
+5. Visitor completes each checkout through the selling merchant's deterministic
+   route/component, or through a future federated checkout augment.
+
+What is true now: Link can connect configured Auggy peers and exchange
+messages. What is future work: open partner discovery, product schemas,
+cross-site consent, multi-merchant checkout, refunds/returns, attribution,
+affiliate tracking, and liability/audit handling.
+
+#### Other Link-backed app patterns
+
+- **Internal specialist mesh**: support concierge delegates billing, bug, or
+  security questions to specialized internal Auggys.
+- **Operational marketplace**: a field-service Auggy asks supplier Auggys for
+  part availability, subcontractor windows, or emergency coverage.
+- **Procurement/RFP**: a buyer Auggy asks admitted vendor Auggys for quotes,
+  with response deadlines and per-vendor spend caps.
+- **Travel/event planning**: one concierge Auggy coordinates hotel, transport,
+  venue, and ticketing agents, then returns route-backed booking handoffs.
+- **Agent-facing support endpoint**: customer-side agents query a SaaS support
+  Auggy for docs, status, invoice data, or ticket updates under scoped policy.
+
+### Budgets: runtime work limits for app agents
+
+Current truth:
+
+- `budgets` is a preview kernel-level turn gate.
+- It can cap turns and spend by trust level, including `public.anonymous`,
+  `public.recognized`, and `agent`.
+- It can reject a turn before the model runs.
+- It injects a budget-aware preamble so the model can shorten or wrap up as a
+  budget depletes.
+- It is runtime spend guardrails, not provider-side billing control.
+
+Correction: budgets do not directly control "what the agent can say" in a
+semantic policy sense. They control how much work the agent can do and give the
+model budget-aware instructions. Content restrictions still belong in identity,
+skills, guardrail/policy augments, capability gates, and deterministic domain
+logic.
+
+Useful app-backend budget patterns:
+
+- **Public concierge caps**: anonymous visitors get a small number of turns;
+  recognized visitors get more; creators bypass.
+- **Agent-peer caps**: incoming Link/A2A requests from other agents use
+  `caps.agent` so partner agents cannot drain the runtime.
+- **Per-partner quotas**: future budgets should split `agent` caps by admitted
+  peer id, not only by trust tier.
+- **Negotiation work caps**: limit how many turns or how much spend an agent
+  can spend negotiating. Price/discount ceilings themselves must be enforced by
+  the commerce/domain augment, not by model instruction alone.
+- **Quote/estimate budgets**: a supplier Auggy can refuse requests that exceed
+  a max analysis budget, or return "needs human review" when the request is too
+  complex.
+- **Task-level budget envelopes**: a requesting agent can attach a proposed
+  budget, TTL, and max-depth. The receiving Auggy can accept, reject, or
+  counter before doing work.
+- **Cross-agent abuse control**: unknown or newly admitted agents get tiny caps;
+  trusted partners get larger caps; revoked peers get no access.
+- **Background/retry caps**: scheduled follow-ups, webhook recovery, and
+  multi-agent retries should have their own budgets so background work cannot
+  quietly consume all user-facing capacity.
+
+Longer term, budgets can become part of the agent-to-agent protocol:
+
+- "This request may spend up to $0.05 or 3 turns."
+- "I can answer at summary depth within budget, or escalate for a deeper quote."
+- "Partner X has exhausted today's quota; ask for operator approval."
+
+That makes Auggy app backends safer to expose to other agents.
+
+### visitorAuth: human identity, consent, and delegation
+
+Current truth:
+
+- `visitorAuth` is human visitor auth, not agent auth.
+- It verifies email ownership with magic links.
+- It promotes public-anonymous visitors to recognized visitor identities.
+- It gives routes `visitor.optional` and `visitor.required` posture when wired
+  through `webTransport`.
+- It supports memory continuity when paired with `layeredMemory`.
+
+In app backends, visitorAuth is the bridge between chat, routes, and customer
+state:
+
+- A chat-first flow can ask the visitor to verify before order lookup.
+- An app-first flow can call `POST /visitor-auth/request` from a login form.
+- Customer-specific routes can require `visitor.required`.
+- The model sees compact verified-state context, not credentials.
+- Tools and routes receive structured auth state, not a natural-language claim.
+
+The deeper extension is **visitor-authorized delegation**.
+
+For "Claude shops for me" or "my personal agent talks to this merchant Auggy,"
+the human should not hand over a creator bearer token, raw browser cookie, or
+long-lived visitor token. Instead, Auggy could mint a scoped delegation artifact:
+
+- short-lived
+- revocable
+- bound to a visitor id
+- scoped to route groups or actions
+- capped by budgets
+- optionally bound to a target agent identity
+- unable to read private memory unless explicitly allowed
+- visible in audit logs and console
+
+This creates a clean separation:
+
+- `visitorAuth` proves the human.
+- `agentAuth` or Link proves the calling agent.
+- Delegation policy says what that agent may do for that human.
+- Routes and tools enforce the final action boundary.
+
+That is the hardening needed before letting outside agents do anything more
+than public catalog discovery.
+
+### Design rules for these extensions
+
+- Do not expose creator bearer tokens to browsers, visitors, or external
+  agents.
+- Do not let the model verify identity from chat claims.
+- Do not let Link imply open access; admitted peer identity and public discovery
+  are different surfaces.
+- Do not let visitor identity automatically flow to partner agents. Share only
+  scoped, consented, minimum necessary state.
+- Do not treat budgets as billing guarantees; keep provider-side hard caps.
+- Do not use budgets as the only safety layer for commerce or negotiation.
+  Domain routes must enforce price, inventory, discount, refund, and approval
+  policy.
+- Do not let agent-to-agent text be the source of truth for purchases,
+  bookings, auth, or money movement. Route-backed components and provider flows
+  complete those actions.
 
 ## What not to build
 

@@ -128,6 +128,7 @@ export interface ToolExecuteContext {
   turnId: string;
   peer: PeerIdentity | null;
   threadId: string;
+  auth?: RouteAuthContext;
 }
 
 // biome-ignore lint/suspicious/noExplicitAny: Tool is covariant over arbitrary model-facing schemas.
@@ -138,6 +139,7 @@ export interface Tool<TInput = any> {
   // biome-ignore lint/suspicious/noExplicitAny: ZodType internals vary by schema and should not constrain Tool callers.
   input: z.ZodType<TInput, any, any>;
   inputJsonSchema?: Record<string, unknown>;
+  requires?: AuthorizationRequirement | readonly AuthorizationRequirement[];
   execute: (input: TInput, context?: ToolExecuteContext) => Promise<string | ToolResult>;
 }
 
@@ -230,6 +232,7 @@ export interface TurnTrigger {
   timestamp: number;
   source?: string;
   peer?: PeerIdentity | null;
+  auth?: RouteAuthContext;
   payload: InboundMessage | Record<string, unknown>;
 }
 
@@ -617,19 +620,63 @@ export type HttpMethod = "GET" | "POST";
  * - `"bearer"` — the route inherits webTransport's bearer-token check (same
  *   token that gates `/agent/run`). Recommended default for any route that
  *   represents creator-driven action.
+ * - `"creator"` — semantic alias for creator-only routes. Uses the same web
+ *   bearer check as `"bearer"`, but exposes `auth.mode === "creator"` to route
+ *   handlers so app code can distinguish intentional creator authority from
+ *   legacy bearer naming.
  * - `"none"` — the route accepts any caller. Opt-in only; required for
  *   public callbacks like email magic-link clicks (PR γ.2 visitorAuth) where
  *   the visitor can't supply a bearer token. Boot logs a warning per
  *   `auth: "none"` route so operators can't miss them.
  * - `"visitor.optional"` — the route accepts anonymous callers but receives
  *   recognized visitor context when `x-visitor-token` is valid. Public posture.
- * - `"visitor.required"` — the route requires a valid `x-visitor-token` and
- *   receives recognized visitor context. Missing, invalid, expired, wrong-agent,
- *   or revoked tokens fail before the handler runs. `email` metadata is present
- *   only when the transport is wired with visitorAuth / identityLookup; the token
- *   itself carries only visitor id + agent binding + timestamps.
+ * - `"visitor.required"` — the route requires a valid `x-visitor-token` or
+ *   configured external auth assertion and receives recognized visitor context.
+ *   Missing, invalid, expired, wrong-agent, or revoked visitor tokens fail before
+ *   the handler runs unless a valid external assertion is present. `email`
+ *   metadata is present only when the transport is wired with visitorAuth /
+ *   identityLookup or verified external auth claims.
+ * - `"agent.required"` — the route requires admitted machine/agent credentials.
+ *   `webTransport` currently verifies `x-agent-id` and `x-agent-secret` against
+ *   `access.agents` and exposes agent route context.
  */
-export type AugmentHttpRouteAuth = "bearer" | "none" | "visitor.optional" | "visitor.required";
+export type AugmentHttpRouteAuth =
+  | "bearer"
+  | "creator"
+  | "none"
+  | "visitor.optional"
+  | "visitor.required"
+  | "agent.required";
+
+export type AugmentHttpRouteWebhookProvider = "stripe" | "github" | "svix" | (string & {});
+
+export interface AugmentHttpRouteWebhookSignaturePolicy {
+  kind: "webhook.signature";
+  provider: AugmentHttpRouteWebhookProvider;
+  /**
+   * Environment variable that stores the provider signing secret. The route
+   * manifest exposes the variable name only, never the secret value.
+   */
+  secretEnv?: string;
+  /**
+   * Max accepted age for provider timestamps. Stripe verification defaults to
+   * 300 seconds when omitted.
+   */
+  timestampToleranceSeconds?: number;
+}
+
+export type AugmentHttpRoutePolicy = AugmentHttpRouteWebhookSignaturePolicy;
+
+export interface RouteWebhookContext {
+  kind: "webhook.signature";
+  provider: AugmentHttpRouteWebhookProvider;
+  /** Parsed provider event payload after signature verification. */
+  event: unknown;
+  /** Unix timestamp in seconds from the provider signature envelope. */
+  timestamp?: number;
+  /** Local wall-clock time when the transport accepted the webhook. */
+  receivedAt: number;
+}
 
 export interface RouteVisitorIdentity {
   visitorId: string;
@@ -639,13 +686,131 @@ export interface RouteVisitorIdentity {
   email?: string;
   verifiedAt?: number;
   reverifyDueAt?: number;
+  externalAuth?: RouteExternalAuthClaims;
 }
 
+export type AuthorizationScope = string & {};
+export type AuthorizationAction = string & {};
+export type AuthorizationResource = string & {};
+
+export type AuthorizationConstraintValue =
+  | string
+  | number
+  | boolean
+  | null
+  | readonly AuthorizationConstraintValue[]
+  | { readonly [key: string]: AuthorizationConstraintValue };
+
+export type AuthorizationConstraints = Readonly<Record<string, AuthorizationConstraintValue>>;
+
+/**
+ * App-signed delegated permission. The application remains the source of
+ * authorization truth; Auggy only verifies and enforces the compact grants it
+ * receives for the current request.
+ */
+export interface AuthorizationGrant {
+  action: AuthorizationAction;
+  resource?: AuthorizationResource;
+  constraints?: AuthorizationConstraints;
+}
+
+export type AuthorizationResourceBinding =
+  | AuthorizationResource
+  | {
+      /** Bind the required resource to a path parameter such as `/orders/:id`. */
+      param: string;
+    }
+  | {
+      /** Bind the required resource to a validated tool input field. */
+      input: string;
+    };
+
+export type AuthorizationRequirement =
+  | {
+      scope: AuthorizationScope;
+    }
+  | {
+      action: AuthorizationAction;
+      resource?: AuthorizationResourceBinding;
+      constraints?: AuthorizationConstraints;
+    };
+
+export interface RouteExternalAuthClaims {
+  provider: string;
+  subject: string;
+  orgId?: string;
+  roles?: readonly string[];
+  scopes?: readonly AuthorizationScope[];
+  grants?: readonly AuthorizationGrant[];
+  authzVersion?: string;
+  jti?: string;
+}
+
+export type RouteAuthPrincipal =
+  | {
+      kind: "anonymous";
+      trustLevel: "public";
+      publicSubstate: "anonymous";
+    }
+  | {
+      kind: "visitor";
+      trustLevel: "public";
+      publicSubstate: "recognized";
+      visitorId: string;
+      agentId: string;
+      email?: string;
+      verifiedAt?: number;
+      reverifyDueAt?: number;
+      externalAuth?: RouteExternalAuthClaims;
+    }
+  | {
+      kind: "creator";
+      trustLevel: "creator";
+      peerId: "creator";
+    }
+  | {
+      kind: "agent";
+      trustLevel: "agent";
+      agentId: string;
+      peerId: `agent:${string}`;
+      displayName?: string;
+      orgId?: string;
+    };
+
 export type RouteAuthContext =
-  | { mode: "none" }
-  | { mode: "bearer" }
-  | { mode: "visitor"; state: "anonymous" }
-  | ({ mode: "visitor"; state: "recognized" } & RouteVisitorIdentity);
+  | {
+      mode: "none";
+      principal: Extract<RouteAuthPrincipal, { kind: "anonymous" }>;
+    }
+  | {
+      mode: "bearer";
+      principal: Extract<RouteAuthPrincipal, { kind: "creator" }>;
+    }
+  | {
+      mode: "creator";
+      principal: Extract<RouteAuthPrincipal, { kind: "creator" }>;
+    }
+  | {
+      mode: "visitor";
+      state: "anonymous";
+      principal: Extract<RouteAuthPrincipal, { kind: "anonymous" }>;
+    }
+  | ({
+      mode: "visitor";
+      state: "recognized";
+      principal: Extract<RouteAuthPrincipal, { kind: "visitor" }>;
+    } & RouteVisitorIdentity)
+  | {
+      mode: "agent";
+      principal: Extract<RouteAuthPrincipal, { kind: "agent" }>;
+      agentId: string;
+      peerId: `agent:${string}`;
+      displayName?: string;
+      orgId?: string;
+    };
+
+export type RouteVisitorAuthContext = Extract<RouteAuthContext, { mode: "visitor" }>;
+export type RouteAgentAuthContext = Extract<RouteAuthContext, { mode: "agent" }>;
 
 export interface AugmentHttpRouteRequestJsonSchema {
   /** JSON Schema for `:param` path params, usually generated from `defineRoute`'s Zod schema. */
@@ -655,6 +820,8 @@ export interface AugmentHttpRouteRequestJsonSchema {
   /** JSON Schema for parsed JSON request body, usually generated from `defineRoute`'s Zod schema. */
   body?: Record<string, unknown>;
 }
+
+export type AugmentHttpRouteResponseJsonSchema = Record<string, unknown>;
 
 /**
  * One HTTP route registered by an augment. Routes are collected at
@@ -698,11 +865,30 @@ export interface AugmentHttpRoute {
     maxPerMinute: number;
   };
   /**
+   * Optional route policy metadata for tooling, manifests, and generated
+   * clients. v1.x treats policies as descriptive metadata unless a transport
+   * explicitly implements the verifier; do not rely on this field alone as an
+   * authorization boundary.
+   */
+  policy?: AugmentHttpRoutePolicy;
+  /**
    * Optional request schemas for operator tooling and OpenAPI-ish export.
    * The dispatcher still validates via the route handler/helper; this metadata
    * is descriptive and must not be treated as an authorization boundary.
    */
   requestJsonSchema?: AugmentHttpRouteRequestJsonSchema;
+  /**
+   * Optional JSON Schema for the route's successful JSON response.
+   * v1.x models only the default success payload; non-2xx error contracts remain
+   * intentionally generic until Auggy has a stable route error protocol.
+   */
+  responseJsonSchema?: AugmentHttpRouteResponseJsonSchema;
+  /**
+   * Delegated app authorization requirements. These are satisfied only by
+   * verified external auth claims (`scopes` / `grants`) on recognized visitor
+   * context; Auggy does not infer app permissions from roles.
+   */
+  requires?: AuthorizationRequirement | readonly AuthorizationRequirement[];
   /**
    * The handler. Receives the raw Request and an options bag carrying an
    * AbortSignal that fires on timeout. Handlers SHOULD listen for the
@@ -723,6 +909,8 @@ export interface AugmentHttpRoute {
       auth?: RouteAuthContext;
       /** Path parameters resolved by the HTTP dispatcher for `:param` routes. */
       params?: Record<string, string>;
+      /** Verified webhook policy context when a transport verifier accepted the route. */
+      webhook?: RouteWebhookContext;
       /**
        * Effective path after helper transforms such as `defineRoute.group()`.
        * Raw handlers can ignore this; helper-generated handlers use it for

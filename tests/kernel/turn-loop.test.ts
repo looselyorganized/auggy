@@ -4,9 +4,16 @@ import { createTurnLoop } from "@/kernel/turn-loop";
 import { createMockModel } from "@tests/fixtures/mock-model";
 import { createTokenizer } from "@/tokenizer";
 import { extractText } from "@/parts";
-import type { Augment, TurnTrigger, PeerIdentity, InboundMessage } from "@/types";
+import type {
+  Augment,
+  AuthorizationGrant,
+  TurnTrigger,
+  PeerIdentity,
+  InboundMessage,
+  RouteAuthContext,
+} from "@/types";
 
-function makeTrigger(text: string): TurnTrigger {
+function makeTrigger(text: string, auth?: RouteAuthContext): TurnTrigger {
   const peer: PeerIdentity = {
     id: "p1",
     kind: "human",
@@ -19,6 +26,7 @@ function makeTrigger(text: string): TurnTrigger {
     timestamp: Date.now(),
     source: "test",
     peer,
+    ...(auth !== undefined ? { auth } : {}),
     payload: {
       parts: [{ kind: "text", text }],
       sourceAugment: "test",
@@ -98,6 +106,374 @@ describe("TurnLoop", () => {
     expect(result.toolCalls[0]!.name).toBe("echo");
     expect(result.toolCalls[0]!.output).toBe("echoed-test");
     expect(model.calls).toHaveLength(2);
+  });
+
+  it("executes protected tools when delegated authorization claims satisfy requirements", async () => {
+    const model = createMockModel();
+    model.pushResponse({
+      content: "",
+      toolCalls: [{ name: "read_orders", arguments: {} }],
+      finishReason: "tool_use",
+    });
+    model.pushResponse({ content: "authorized", finishReason: "end_turn" });
+
+    let observedAuth: RouteAuthContext | undefined;
+    const ordersAugment: Augment = {
+      name: "orders",
+      tools: [
+        {
+          name: "read_orders",
+          description: "Read orders",
+          category: "search",
+          input: z.object({}),
+          requires: { scope: "orders.read" },
+          execute: async (_input, context) => {
+            observedAuth = context?.auth;
+            return "orders";
+          },
+        },
+      ],
+    };
+    const auth = recognizedVisitorAuth({ scopes: ["orders.read"] });
+    const loop = createTurnLoop({
+      augments: [ordersAugment],
+      model,
+      tokenizer: createTokenizer(),
+      config: { name: "test", model: "mock", augments: [] },
+    });
+
+    const result = await loop.executeTurn(makeTrigger("Read my orders", auth), "thread-authz-1");
+
+    expect(result.toolCalls).toHaveLength(1);
+    expect(result.toolCalls[0]!.output).toBe("orders");
+    expect(observedAuth).toEqual(auth);
+  });
+
+  it("denies protected tools when delegated authorization claims are missing", async () => {
+    const model = createMockModel();
+    model.pushResponse({
+      content: "",
+      toolCalls: [{ name: "read_orders", arguments: {} }],
+      finishReason: "tool_use",
+    });
+    model.pushResponse({ content: "not authorized", finishReason: "end_turn" });
+
+    let executeCalls = 0;
+    const ordersAugment: Augment = {
+      name: "orders",
+      tools: [
+        {
+          name: "read_orders",
+          description: "Read orders",
+          category: "search",
+          input: z.object({}),
+          requires: { scope: "orders.read" },
+          execute: async () => {
+            executeCalls += 1;
+            return "orders";
+          },
+        },
+      ],
+    };
+    const loop = createTurnLoop({
+      augments: [ordersAugment],
+      model,
+      tokenizer: createTokenizer(),
+      config: { name: "test", model: "mock", augments: [] },
+    });
+
+    const result = await loop.executeTurn(
+      makeTrigger("Read my orders", recognizedVisitorAuth({ scopes: ["profile.read"] })),
+      "thread-authz-2",
+    );
+
+    expect(executeCalls).toBe(0);
+    expect(result.toolCalls).toHaveLength(0);
+    expect(model.calls).toHaveLength(2);
+    expect(model.calls[1]!.messages.map((m) => m.content).join("\n")).toContain(
+      'Tool "read_orders" authorization denied: authorization-scope-missing',
+    );
+  });
+
+  it("denies tools with malformed delegated authorization requirements", async () => {
+    const model = createMockModel();
+    model.pushResponse({
+      content: "",
+      toolCalls: [{ name: "read_orders", arguments: {} }],
+      finishReason: "tool_use",
+    });
+    model.pushResponse({ content: "not authorized", finishReason: "end_turn" });
+
+    let executeCalls = 0;
+    const ordersAugment: Augment = {
+      name: "orders",
+      tools: [
+        {
+          name: "read_orders",
+          description: "Read orders",
+          category: "search",
+          input: z.object({}),
+          requires: { action: "" } as never,
+          execute: async () => {
+            executeCalls += 1;
+            return "orders";
+          },
+        },
+      ],
+    };
+    const loop = createTurnLoop({
+      augments: [ordersAugment],
+      model,
+      tokenizer: createTokenizer(),
+      config: { name: "test", model: "mock", augments: [] },
+    });
+
+    const result = await loop.executeTurn(
+      makeTrigger("Read my orders", recognizedVisitorAuth({ scopes: ["orders.read"] })),
+      "thread-authz-3",
+    );
+
+    expect(executeCalls).toBe(0);
+    expect(result.toolCalls).toHaveLength(0);
+    expect(model.calls[1]!.messages.map((m) => m.content).join("\n")).toContain(
+      'Tool "read_orders" has invalid authorization requirements',
+    );
+  });
+
+  it("resolves protected tool grant resources from validated input", async () => {
+    const model = createMockModel();
+    model.pushResponse({
+      content: "",
+      toolCalls: [{ name: "refund_order", arguments: { orderId: "ord_123" } }],
+      finishReason: "tool_use",
+    });
+    model.pushResponse({ content: "refunded", finishReason: "end_turn" });
+
+    const ordersAugment: Augment = {
+      name: "orders",
+      tools: [
+        {
+          name: "refund_order",
+          description: "Refund order",
+          category: "meta",
+          input: z.object({ orderId: z.string() }),
+          requires: { action: "orders.refund", resource: { input: "orderId" } },
+          execute: async ({ orderId }) => `refunded-${orderId}`,
+        },
+      ],
+    };
+    const loop = createTurnLoop({
+      augments: [ordersAugment],
+      model,
+      tokenizer: createTokenizer(),
+      config: { name: "test", model: "mock", augments: [] },
+    });
+
+    const result = await loop.executeTurn(
+      makeTrigger(
+        "Refund my order",
+        recognizedVisitorAuth({
+          grants: [{ action: "orders.refund", resource: "ord_123" }],
+        }),
+      ),
+      "thread-authz-input-1",
+    );
+
+    expect(result.toolCalls).toHaveLength(1);
+    expect(result.toolCalls[0]!.output).toBe("refunded-ord_123");
+  });
+
+  it("executes protected tools when broad action grants satisfy broad requirements", async () => {
+    const model = createMockModel();
+    model.pushResponse({
+      content: "",
+      toolCalls: [{ name: "refund_any_order", arguments: { orderId: "ord_123" } }],
+      finishReason: "tool_use",
+    });
+    model.pushResponse({ content: "refunded", finishReason: "end_turn" });
+
+    const ordersAugment: Augment = {
+      name: "orders",
+      tools: [
+        {
+          name: "refund_any_order",
+          description: "Refund any order",
+          category: "meta",
+          input: z.object({ orderId: z.string() }),
+          requires: { action: "orders.refund" },
+          execute: async ({ orderId }) => `refunded-${orderId}`,
+        },
+      ],
+    };
+    const loop = createTurnLoop({
+      augments: [ordersAugment],
+      model,
+      tokenizer: createTokenizer(),
+      config: { name: "test", model: "mock", augments: [] },
+    });
+
+    const result = await loop.executeTurn(
+      makeTrigger(
+        "Refund an order",
+        recognizedVisitorAuth({
+          grants: [{ action: "orders.refund" }],
+        }),
+      ),
+      "thread-authz-input-broad-0",
+    );
+
+    expect(result.toolCalls).toHaveLength(1);
+    expect(result.toolCalls[0]!.output).toBe("refunded-ord_123");
+  });
+
+  it("does not use resource-scoped grants for broad action requirements", async () => {
+    const model = createMockModel();
+    model.pushResponse({
+      content: "",
+      toolCalls: [{ name: "refund_any_order", arguments: { orderId: "ord_123" } }],
+      finishReason: "tool_use",
+    });
+    model.pushResponse({ content: "not authorized", finishReason: "end_turn" });
+
+    let executeCalls = 0;
+    const ordersAugment: Augment = {
+      name: "orders",
+      tools: [
+        {
+          name: "refund_any_order",
+          description: "Refund any order",
+          category: "meta",
+          input: z.object({ orderId: z.string() }),
+          requires: { action: "orders.refund" },
+          execute: async () => {
+            executeCalls += 1;
+            return "refunded";
+          },
+        },
+      ],
+    };
+    const loop = createTurnLoop({
+      augments: [ordersAugment],
+      model,
+      tokenizer: createTokenizer(),
+      config: { name: "test", model: "mock", augments: [] },
+    });
+
+    const result = await loop.executeTurn(
+      makeTrigger(
+        "Refund an order",
+        recognizedVisitorAuth({
+          grants: [{ action: "orders.refund", resource: "ord_123" }],
+        }),
+      ),
+      "thread-authz-input-broad-1",
+    );
+
+    expect(executeCalls).toBe(0);
+    expect(result.toolCalls).toHaveLength(0);
+    expect(model.calls[1]!.messages.map((m) => m.content).join("\n")).toContain(
+      'Tool "refund_any_order" authorization denied: authorization-grant-missing',
+    );
+  });
+
+  it("denies protected tools when input resource fields are not top-level strings", async () => {
+    const model = createMockModel();
+    model.pushResponse({
+      content: "",
+      toolCalls: [{ name: "refund_order", arguments: { order: { id: "ord_123" } } }],
+      finishReason: "tool_use",
+    });
+    model.pushResponse({ content: "not authorized", finishReason: "end_turn" });
+
+    let executeCalls = 0;
+    const ordersAugment: Augment = {
+      name: "orders",
+      tools: [
+        {
+          name: "refund_order",
+          description: "Refund order",
+          category: "meta",
+          input: z.object({ order: z.object({ id: z.string() }) }),
+          requires: { action: "orders.refund", resource: { input: "order.id" } },
+          execute: async () => {
+            executeCalls += 1;
+            return "refunded";
+          },
+        },
+      ],
+    };
+    const loop = createTurnLoop({
+      augments: [ordersAugment],
+      model,
+      tokenizer: createTokenizer(),
+      config: { name: "test", model: "mock", augments: [] },
+    });
+
+    const result = await loop.executeTurn(
+      makeTrigger(
+        "Refund my order",
+        recognizedVisitorAuth({
+          grants: [{ action: "orders.refund", resource: "ord_123" }],
+        }),
+      ),
+      "thread-authz-input-2",
+    );
+
+    expect(executeCalls).toBe(0);
+    expect(result.toolCalls).toHaveLength(0);
+    expect(model.calls[1]!.messages.map((m) => m.content).join("\n")).toContain(
+      'Tool "refund_order" authorization denied: authorization-resource-unresolved',
+    );
+  });
+
+  it("rejects path parameter bindings on tool requirements", async () => {
+    const model = createMockModel();
+    model.pushResponse({
+      content: "",
+      toolCalls: [{ name: "refund_order", arguments: { orderId: "ord_123" } }],
+      finishReason: "tool_use",
+    });
+    model.pushResponse({ content: "not authorized", finishReason: "end_turn" });
+
+    let executeCalls = 0;
+    const ordersAugment: Augment = {
+      name: "orders",
+      tools: [
+        {
+          name: "refund_order",
+          description: "Refund order",
+          category: "meta",
+          input: z.object({ orderId: z.string() }),
+          requires: { action: "orders.refund", resource: { param: "id" } } as never,
+          execute: async () => {
+            executeCalls += 1;
+            return "refunded";
+          },
+        },
+      ],
+    };
+    const loop = createTurnLoop({
+      augments: [ordersAugment],
+      model,
+      tokenizer: createTokenizer(),
+      config: { name: "test", model: "mock", augments: [] },
+    });
+
+    const result = await loop.executeTurn(
+      makeTrigger(
+        "Refund my order",
+        recognizedVisitorAuth({
+          grants: [{ action: "orders.refund", resource: "ord_123" }],
+        }),
+      ),
+      "thread-authz-input-3",
+    );
+
+    expect(executeCalls).toBe(0);
+    expect(result.toolCalls).toHaveLength(0);
+    expect(model.calls[1]!.messages.map((m) => m.content).join("\n")).toContain(
+      'Tool "refund_order" has invalid authorization requirements',
+    );
   });
 
   it("skips non-required augment context on error", async () => {
@@ -377,3 +753,35 @@ describe("TurnLoop", () => {
     expect(result.toolCalls).toHaveLength(1);
   });
 });
+
+function recognizedVisitorAuth(
+  opts: { scopes?: readonly string[]; grants?: readonly AuthorizationGrant[] } = {},
+): RouteAuthContext {
+  return {
+    mode: "visitor",
+    state: "recognized",
+    visitorId: "vis_app_user_123",
+    agentId: "test",
+    issuedAt: 1_000,
+    expiresAt: 2_000,
+    externalAuth: {
+      provider: "supabase",
+      subject: "user_123",
+      ...(opts.scopes !== undefined ? { scopes: opts.scopes } : {}),
+      ...(opts.grants !== undefined ? { grants: opts.grants } : {}),
+    },
+    principal: {
+      kind: "visitor",
+      trustLevel: "public",
+      publicSubstate: "recognized",
+      visitorId: "vis_app_user_123",
+      agentId: "test",
+      externalAuth: {
+        provider: "supabase",
+        subject: "user_123",
+        ...(opts.scopes !== undefined ? { scopes: opts.scopes } : {}),
+        ...(opts.grants !== undefined ? { grants: opts.grants } : {}),
+      },
+    },
+  };
+}

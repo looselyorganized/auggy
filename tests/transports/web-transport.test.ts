@@ -1,12 +1,13 @@
 import { describe, it, expect } from "bun:test";
 import { z } from "zod";
 import { isLoopback, normalizeIp, webTransport } from "@/transports/web-transport";
-import { defineRoute, json } from "@/helpers";
+import { defineRoute, json, webhook } from "@/helpers";
 import { defineAgent } from "@/agent";
 import { createMockModel } from "@tests/fixtures/mock-model";
 import { createIdentityAugment } from "@tests/fixtures/mock-augment";
 import { routeFixtureAugment } from "@tests/fixtures/route-fixture-augment";
 import { createVisitorToken, deriveSigningKey } from "@/transports/visitor-token";
+import { createExternalAuthAssertion } from "@/auth/external-auth";
 import type { Augment } from "@/types";
 
 // ---------------------------------------------------------------------------
@@ -900,7 +901,209 @@ describe("webTransport HTTP server", () => {
     }
   });
 
-  it("CORS preflight allows x-visitor-token header", async () => {
+  it("POST /agent/run resolves a valid external auth assertion as a recognized public peer", async () => {
+    const model = createMockModel({ response: "hi app user" });
+    const port = 18923;
+    const assertion = createExternalAuthAssertion({
+      secret: "app-auth-secret",
+      audience: "test",
+      provider: "clerk",
+      subject: "user_123",
+      ttlSeconds: 60,
+    });
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: "test-token" },
+      visitorTokens: {
+        enabled: true,
+        signingKey: "visitor-route-secret",
+        agentBinding: "test",
+      },
+      externalAuth: {
+        secret: "app-auth-secret",
+        audience: "test",
+        allowedProviders: ["clerk"],
+        visitorId: (claims) => `vis_app_${claims.subject}`,
+      },
+    });
+    const agent = defineAgent(
+      { name: "test", model: "mock", augments: [createIdentityAugment("test"), aug] },
+      model,
+    );
+    await agent.start();
+
+    try {
+      const resp = await fetch(`http://localhost:${port}/agent/run`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-visitor-token": "stale-token",
+          "x-auggy-auth-assertion": assertion,
+        },
+        body: JSON.stringify({
+          messages: [{ role: "user", content: "hello from app" }],
+        }),
+      });
+      expect(resp.status).toBe(200);
+      expect(resp.headers.get("x-visitor-token")).toBeNull();
+      await resp.text();
+
+      const system = model.calls[0]?.systemBlocks.join("\n") ?? "";
+      expect(system).toContain("trust: public");
+      expect(system).toContain("Runtime identity: vis_app_user_123");
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("POST /agent/run accepts external auth assertions when anonymous access is disabled", async () => {
+    const model = createMockModel({ response: "hi app user" });
+    const port = 19610;
+    const assertion = createExternalAuthAssertion({
+      secret: "app-auth-secret",
+      audience: "test",
+      provider: "clerk",
+      subject: "user_123",
+      ttlSeconds: 60,
+    });
+    const aug = webTransport({
+      port,
+      allowAnonymous: false,
+      auth: { type: "bearer", token: "test-token" },
+      visitorTokens: {
+        enabled: true,
+        signingKey: "visitor-route-secret",
+        agentBinding: "test",
+      },
+      externalAuth: {
+        secret: "app-auth-secret",
+        audience: "test",
+        allowedProviders: ["clerk"],
+        visitorId: (claims) => `vis_app_${claims.subject}`,
+      },
+    });
+    const agent = defineAgent(
+      { name: "test", model: "mock", augments: [createIdentityAugment("test"), aug] },
+      model,
+    );
+    await agent.start();
+
+    try {
+      const anonymousResp = await fetch(`http://localhost:${port}/agent/run`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          messages: [{ role: "user", content: "hello without app auth" }],
+        }),
+      });
+      expect(anonymousResp.status).toBe(401);
+
+      const appUserResp = await fetch(`http://localhost:${port}/agent/run`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-auggy-auth-assertion": assertion,
+        },
+        body: JSON.stringify({
+          messages: [{ role: "user", content: "hello from app" }],
+        }),
+      });
+      expect(appUserResp.status).toBe(200);
+      expect(appUserResp.headers.get("x-visitor-token")).toBeNull();
+      await appUserResp.text();
+
+      const system = model.calls[0]?.systemBlocks.join("\n") ?? "";
+      expect(system).toContain("trust: public");
+      expect(system).toContain("Runtime identity: vis_app_user_123");
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("POST /agent/run passes external auth claims to protected tools", async () => {
+    const model = createMockModel();
+    model.pushResponse({
+      content: "",
+      toolCalls: [{ name: "read_orders", arguments: {} }],
+      finishReason: "tool_use",
+    });
+    model.pushResponse({ content: "done", finishReason: "end_turn" });
+
+    const port = 18924;
+    const assertion = createExternalAuthAssertion({
+      secret: "app-auth-secret",
+      audience: "test",
+      provider: "supabase",
+      subject: "user_123",
+      ttlSeconds: 60,
+      scopes: ["orders.read"],
+    });
+    let observedScopes: readonly string[] | undefined;
+    const protectedTools: Augment = {
+      name: "protected-tools",
+      tools: [
+        {
+          name: "read_orders",
+          description: "Read orders",
+          category: "search",
+          input: z.object({}),
+          requires: { scope: "orders.read" },
+          execute: async (_input, context) => {
+            if (context?.auth?.mode === "visitor" && context.auth.state === "recognized") {
+              observedScopes = context.auth.externalAuth?.scopes;
+            }
+            return "orders";
+          },
+        },
+      ],
+    };
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: "test-token" },
+      visitorTokens: {
+        enabled: true,
+        signingKey: "visitor-route-secret",
+        agentBinding: "test",
+      },
+      externalAuth: {
+        secret: "app-auth-secret",
+        audience: "test",
+        allowedProviders: ["supabase"],
+        visitorId: (claims) => `vis_app_${claims.subject}`,
+      },
+    });
+    const agent = defineAgent(
+      {
+        name: "test",
+        model: "mock",
+        augments: [createIdentityAugment("test"), protectedTools, aug],
+      },
+      model,
+    );
+    await agent.start();
+
+    try {
+      const resp = await fetch(`http://localhost:${port}/agent/run`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-auggy-auth-assertion": assertion,
+        },
+        body: JSON.stringify({
+          messages: [{ role: "user", content: "read my orders" }],
+        }),
+      });
+      expect(resp.status).toBe(200);
+      await resp.text();
+
+      expect(observedScopes).toEqual(["orders.read"]);
+      expect(model.calls).toHaveLength(2);
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("CORS preflight allows visitor and external auth assertion headers", async () => {
     const model = createMockModel();
     const port = 18922;
     const aug = webTransport({
@@ -916,6 +1119,7 @@ describe("webTransport HTTP server", () => {
         method: "OPTIONS",
       });
       expect(resp.headers.get("access-control-allow-headers")).toContain("x-visitor-token");
+      expect(resp.headers.get("access-control-allow-headers")).toContain("x-auggy-auth-assertion");
     } finally {
       await agent.stop();
     }
@@ -1325,6 +1529,31 @@ async function withEnv<T>(
       else process.env[key] = value;
     }
   }
+}
+
+const stripeTestEncoder = new TextEncoder();
+
+async function stripeSignatureHeader(
+  secret: string,
+  payload: string,
+  timestamp = Math.floor(Date.now() / 1000),
+): Promise<string> {
+  const key = await crypto.subtle.importKey(
+    "raw",
+    stripeTestEncoder.encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const signature = await crypto.subtle.sign(
+    "HMAC",
+    key,
+    stripeTestEncoder.encode(`${timestamp}.${payload}`),
+  );
+  const hex = Array.from(new Uint8Array(signature), (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  ).join("");
+  return `t=${timestamp},v1=${hex}`;
 }
 
 describe("webTransport allowAnonymous (G3)", () => {
@@ -2195,6 +2424,51 @@ describe("webTransport augment-registered routes", () => {
     }
   });
 
+  it("adds configured CORS headers to augment route responses and method mismatches", async () => {
+    const model = createMockModel();
+    const port = 19970;
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: "test-token" },
+      cors: { origins: ["https://example.com"] },
+    });
+    const fixture: Augment = {
+      name: "cors-routes",
+      httpRoutes: [
+        {
+          method: "GET",
+          path: "/cors/echo",
+          auth: "none",
+          handler: async () =>
+            new Response(JSON.stringify({ ok: true }), {
+              status: 200,
+              headers: { "content-type": "application/json" },
+            }),
+        },
+      ],
+    };
+    const agent = defineAgent({ name: "test", model: "mock", augments: [fixture, aug] }, model);
+    await agent.start();
+    try {
+      const ok = await fetch(`http://localhost:${port}/cors/echo`, {
+        headers: { origin: "https://example.com" },
+      });
+      expect(ok.status).toBe(200);
+      expect(ok.headers.get("access-control-allow-origin")).toBe("https://example.com");
+      expect(ok.headers.get("access-control-expose-headers")).toContain("x-visitor-token");
+
+      const mismatch = await fetch(`http://localhost:${port}/cors/echo`, {
+        method: "POST",
+        headers: { origin: "https://example.com" },
+      });
+      expect(mismatch.status).toBe(405);
+      expect(mismatch.headers.get("allow")).toBe("GET");
+      expect(mismatch.headers.get("access-control-allow-origin")).toBe("https://example.com");
+    } finally {
+      await agent.stop();
+    }
+  });
+
   it("auth: bearer route rejects request without bearer token", async () => {
     const model = createMockModel();
     const port = 18971;
@@ -2244,6 +2518,176 @@ describe("webTransport augment-registered routes", () => {
     }
   });
 
+  it("verifies Stripe webhook signatures before dispatching policy routes", async () => {
+    await withEnv({ STRIPE_WEBHOOK_SECRET_TEST: "whsec_test_secret" }, async () => {
+      const model = createMockModel();
+      const port = 19980;
+      const aug = webTransport({ port, auth: { type: "bearer", token: "test-token" } });
+      const fixture: Augment = {
+        name: "payments",
+        httpRoutes: [
+          defineRoute.post("/webhooks/stripe", {
+            auth: "none",
+            policy: webhook.signature("stripe", {
+              secretEnv: "STRIPE_WEBHOOK_SECRET_TEST",
+            }),
+            body: z.object({
+              id: z.string(),
+              type: z.string(),
+            }),
+            handler: ({ body, webhook: webhookContext }) =>
+              json({
+                body,
+                webhook: {
+                  kind: webhookContext?.kind,
+                  provider: webhookContext?.provider,
+                  timestamp: webhookContext?.timestamp,
+                  event: webhookContext?.event,
+                },
+              }),
+          }),
+        ],
+      };
+      const agent = defineAgent({ name: "test", model: "mock", augments: [fixture, aug] }, model);
+      const payload = JSON.stringify({
+        id: "evt_test",
+        type: "checkout.session.completed",
+      });
+      const timestamp = Math.floor(Date.now() / 1000);
+      const signature = await stripeSignatureHeader("whsec_test_secret", payload, timestamp);
+
+      await agent.start();
+      try {
+        const resp = await fetch(`http://localhost:${port}/webhooks/stripe`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "stripe-signature": signature,
+          },
+          body: payload,
+        });
+
+        expect(resp.status).toBe(200);
+        expect(await resp.json()).toEqual({
+          body: {
+            id: "evt_test",
+            type: "checkout.session.completed",
+          },
+          webhook: {
+            kind: "webhook.signature",
+            provider: "stripe",
+            timestamp,
+            event: {
+              id: "evt_test",
+              type: "checkout.session.completed",
+            },
+          },
+        });
+      } finally {
+        await agent.stop();
+      }
+    });
+  });
+
+  it("rejects Stripe webhook policy routes with missing or invalid signatures", async () => {
+    await withEnv({ STRIPE_WEBHOOK_SECRET_TEST: "whsec_test_secret" }, async () => {
+      const model = createMockModel();
+      const port = 19981;
+      const aug = webTransport({ port, auth: { type: "bearer", token: "test-token" } });
+      let calls = 0;
+      const fixture: Augment = {
+        name: "payments",
+        httpRoutes: [
+          defineRoute.post("/webhooks/stripe", {
+            auth: "none",
+            policy: webhook.signature("stripe", {
+              secretEnv: "STRIPE_WEBHOOK_SECRET_TEST",
+            }),
+            handler: () => {
+              calls += 1;
+              return json({ ok: true });
+            },
+          }),
+        ],
+      };
+      const agent = defineAgent({ name: "test", model: "mock", augments: [fixture, aug] }, model);
+      const payload = JSON.stringify({ id: "evt_test" });
+      const staleTimestamp = Math.floor(Date.now() / 1000) - 10_000;
+      const staleSignature = await stripeSignatureHeader(
+        "whsec_test_secret",
+        payload,
+        staleTimestamp,
+      );
+
+      await agent.start();
+      try {
+        const missing = await fetch(`http://localhost:${port}/webhooks/stripe`, {
+          method: "POST",
+          body: payload,
+        });
+        expect(missing.status).toBe(401);
+        expect(await missing.json()).toEqual({ error: "webhook-signature-required" });
+
+        const wrongSecret = await fetch(`http://localhost:${port}/webhooks/stripe`, {
+          method: "POST",
+          headers: {
+            "stripe-signature": await stripeSignatureHeader("wrong", payload),
+          },
+          body: payload,
+        });
+        expect(wrongSecret.status).toBe(401);
+        expect(await wrongSecret.json()).toEqual({ error: "webhook-signature-invalid" });
+
+        const malformedPayload = "not-json";
+        const malformed = await fetch(`http://localhost:${port}/webhooks/stripe`, {
+          method: "POST",
+          headers: {
+            "stripe-signature": await stripeSignatureHeader("whsec_test_secret", malformedPayload),
+          },
+          body: malformedPayload,
+        });
+        expect(malformed.status).toBe(400);
+        expect(await malformed.json()).toEqual({ error: "webhook-payload-invalid" });
+
+        const stale = await fetch(`http://localhost:${port}/webhooks/stripe`, {
+          method: "POST",
+          headers: { "stripe-signature": staleSignature },
+          body: payload,
+        });
+        expect(stale.status).toBe(401);
+        expect(await stale.json()).toEqual({ error: "webhook-signature-invalid" });
+        expect(calls).toBe(0);
+      } finally {
+        await agent.stop();
+      }
+    });
+  });
+
+  it("fails boot when a Stripe webhook policy secret env is missing", async () => {
+    await withEnv({ STRIPE_WEBHOOK_SECRET_TEST: undefined }, async () => {
+      const model = createMockModel();
+      const port = 19982;
+      const aug = webTransport({ port, auth: { type: "bearer", token: "test-token" } });
+      const fixture: Augment = {
+        name: "payments",
+        httpRoutes: [
+          defineRoute.post("/webhooks/stripe", {
+            auth: "none",
+            policy: webhook.signature("stripe", {
+              secretEnv: "STRIPE_WEBHOOK_SECRET_TEST",
+            }),
+            handler: () => json({ ok: true }),
+          }),
+        ],
+      };
+      const agent = defineAgent({ name: "test", model: "mock", augments: [fixture, aug] }, model);
+
+      await expect(agent.start()).rejects.toThrow(
+        "Stripe webhook secret env STRIPE_WEBHOOK_SECRET_TEST is not set",
+      );
+    });
+  });
+
   it("passes route auth context to raw augment route handlers", async () => {
     const model = createMockModel();
     const port = 19304;
@@ -2255,13 +2699,31 @@ describe("webTransport augment-registered routes", () => {
           method: "GET",
           path: "/ctx/public",
           auth: "none",
-          handler: async (_req, opts) => json({ auth: opts.auth?.mode ?? null }),
+          handler: async (_req, opts) =>
+            json({
+              auth: opts.auth?.mode ?? null,
+              principal: opts.auth?.principal,
+            }),
         },
         {
           method: "GET",
           path: "/ctx/private",
           auth: "bearer",
-          handler: async (_req, opts) => json({ auth: opts.auth?.mode ?? null }),
+          handler: async (_req, opts) =>
+            json({
+              auth: opts.auth?.mode ?? null,
+              principal: opts.auth?.principal,
+            }),
+        },
+        {
+          method: "GET",
+          path: "/ctx/creator",
+          auth: "creator",
+          handler: async (_req, opts) =>
+            json({
+              auth: opts.auth?.mode ?? null,
+              principal: opts.auth?.principal,
+            }),
         },
       ],
     };
@@ -2270,13 +2732,149 @@ describe("webTransport augment-registered routes", () => {
     try {
       const publicResp = await fetch(`http://localhost:${port}/ctx/public`);
       expect(publicResp.status).toBe(200);
-      expect(await publicResp.json()).toEqual({ auth: "none" });
+      expect(await publicResp.json()).toEqual({
+        auth: "none",
+        principal: {
+          kind: "anonymous",
+          trustLevel: "public",
+          publicSubstate: "anonymous",
+        },
+      });
 
       const privateResp = await fetch(`http://localhost:${port}/ctx/private`, {
         headers: { authorization: "Bearer test-token" },
       });
       expect(privateResp.status).toBe(200);
-      expect(await privateResp.json()).toEqual({ auth: "bearer" });
+      expect(await privateResp.json()).toEqual({
+        auth: "bearer",
+        principal: {
+          kind: "creator",
+          trustLevel: "creator",
+          peerId: "creator",
+        },
+      });
+
+      const creatorResp = await fetch(`http://localhost:${port}/ctx/creator`, {
+        headers: { authorization: "Bearer test-token" },
+      });
+      expect(creatorResp.status).toBe(200);
+      expect(await creatorResp.json()).toEqual({
+        auth: "creator",
+        principal: {
+          kind: "creator",
+          trustLevel: "creator",
+          peerId: "creator",
+        },
+      });
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("auth: agent.required accepts admitted agent credentials and passes agent context", async () => {
+    const model = createMockModel();
+    const port = 19440;
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: "test-token" },
+      access: {
+        agents: [{ id: "worker-agent", sharedSecret: "agent-secret" }],
+      },
+    });
+    const fixture: Augment = {
+      name: "agent-routes",
+      httpRoutes: [
+        {
+          method: "GET",
+          path: "/agent-api/search",
+          auth: "agent.required",
+          handler: async (_req, opts) => json(opts.auth),
+        },
+      ],
+    };
+    const agent = defineAgent({ name: "test", model: "mock", augments: [fixture, aug] }, model);
+    await agent.start();
+    try {
+      const resp = await fetch(`http://localhost:${port}/agent-api/search`, {
+        headers: {
+          "x-agent-id": "worker-agent",
+          "x-agent-secret": "agent-secret",
+          "x-peer-name": "Worker",
+          "x-org-id": "org_123",
+        },
+      });
+      expect(resp.status).toBe(200);
+      expect(await resp.json()).toEqual({
+        mode: "agent",
+        agentId: "worker-agent",
+        peerId: "agent:worker-agent",
+        displayName: "Worker",
+        orgId: "org_123",
+        principal: {
+          kind: "agent",
+          trustLevel: "agent",
+          agentId: "worker-agent",
+          peerId: "agent:worker-agent",
+          displayName: "Worker",
+          orgId: "org_123",
+        },
+      });
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("auth: agent.required rejects missing, wrong, and bearer-only credentials", async () => {
+    const model = createMockModel();
+    const port = 19441;
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: "test-token" },
+      access: {
+        agents: [{ id: "worker-agent", sharedSecret: "agent-secret" }],
+      },
+    });
+    const fixture: Augment = {
+      name: "agent-routes",
+      httpRoutes: [
+        {
+          method: "GET",
+          path: "/agent-api/search",
+          auth: "agent.required",
+          handler: async (_req, opts) => json(opts.auth),
+        },
+      ],
+    };
+    const agent = defineAgent({ name: "test", model: "mock", augments: [fixture, aug] }, model);
+    await agent.start();
+    try {
+      const missing = await fetch(`http://localhost:${port}/agent-api/search`);
+      expect(missing.status).toBe(401);
+      expect(await missing.json()).toEqual({ error: "agent-auth-required" });
+
+      const wrongSecret = await fetch(`http://localhost:${port}/agent-api/search`, {
+        headers: {
+          "x-agent-id": "worker-agent",
+          "x-agent-secret": "wrong-secret",
+        },
+      });
+      expect(wrongSecret.status).toBe(401);
+      expect(await wrongSecret.json()).toEqual({ error: "agent-auth-required" });
+
+      const unknownAgent = await fetch(`http://localhost:${port}/agent-api/search`, {
+        headers: {
+          "x-agent-id": "unknown-agent",
+          "x-agent-secret": "agent-secret",
+        },
+      });
+      expect(unknownAgent.status).toBe(401);
+      expect(await unknownAgent.json()).toEqual({ error: "agent-auth-required" });
+
+      const bearerOnly = await fetch(`http://localhost:${port}/agent-api/search`, {
+        headers: { authorization: "Bearer test-token" },
+      });
+      expect(bearerOnly.status).toBe(401);
+      expect(await bearerOnly.json()).toEqual({ error: "agent-auth-required" });
     } finally {
       await agent.stop();
     }
@@ -2335,7 +2933,470 @@ describe("webTransport augment-registered routes", () => {
         email: "alice@example.com",
         verifiedAt: 1000,
         reverifyDueAt: 2000,
+        principal: {
+          kind: "visitor",
+          trustLevel: "public",
+          publicSubstate: "recognized",
+          visitorId: "vis_known",
+          agentId: agentBinding,
+          email: "alice@example.com",
+          verifiedAt: 1000,
+          reverifyDueAt: 2000,
+        },
       });
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("auth: visitor.required accepts a valid external auth assertion", async () => {
+    const model = createMockModel();
+    const port = 19308;
+    const now = Date.now();
+    const assertion = createExternalAuthAssertion({
+      secret: "app-auth-secret",
+      audience: "storefront-agent",
+      provider: "clerk",
+      subject: "user_123",
+      now,
+      ttlSeconds: 60,
+      email: "alice@example.com",
+      emailVerified: true,
+      verifiedAt: now - 1000,
+      orgId: "org_store_123",
+      roles: ["customer", "vip"],
+    });
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: "test-token" },
+      externalAuth: {
+        secret: "app-auth-secret",
+        audience: "storefront-agent",
+        allowedProviders: ["clerk"],
+        maxTtlSeconds: 60,
+        visitorId: (claims) => `vis_app_${claims.subject}`,
+      },
+    });
+    const fixture: Augment = {
+      name: "external-auth-routes",
+      httpRoutes: [
+        {
+          method: "GET",
+          path: "/account",
+          auth: "visitor.required",
+          handler: async (_req, opts) => json(opts.auth),
+        },
+      ],
+    };
+    const agent = defineAgent({ name: "test", model: "mock", augments: [fixture, aug] }, model);
+    await agent.start();
+    try {
+      const resp = await fetch(`http://localhost:${port}/account`, {
+        headers: { "x-auggy-auth-assertion": assertion },
+      });
+      expect(resp.status).toBe(200);
+      expect(await resp.json()).toEqual({
+        mode: "visitor",
+        state: "recognized",
+        visitorId: "vis_app_user_123",
+        agentId: "storefront-agent",
+        issuedAt: now,
+        expiresAt: now + 60_000,
+        email: "alice@example.com",
+        verifiedAt: now - 1000,
+        externalAuth: {
+          provider: "clerk",
+          subject: "user_123",
+          orgId: "org_store_123",
+          roles: ["customer", "vip"],
+        },
+        principal: {
+          kind: "visitor",
+          trustLevel: "public",
+          publicSubstate: "recognized",
+          visitorId: "vis_app_user_123",
+          agentId: "storefront-agent",
+          email: "alice@example.com",
+          verifiedAt: now - 1000,
+          externalAuth: {
+            provider: "clerk",
+            subject: "user_123",
+            orgId: "org_store_123",
+            roles: ["customer", "vip"],
+          },
+        },
+      });
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("auth: visitor.required enforces delegated scope requirements before handlers", async () => {
+    const model = createMockModel();
+    const port = 19460;
+    const now = Date.now();
+    let handlerCalls = 0;
+    const scopedAssertion = createExternalAuthAssertion({
+      secret: "app-auth-secret",
+      audience: "storefront-agent",
+      provider: "supabase",
+      subject: "user_123",
+      now,
+      ttlSeconds: 60,
+      scopes: ["orders.read"],
+    });
+    const unscopedAssertion = createExternalAuthAssertion({
+      secret: "app-auth-secret",
+      audience: "storefront-agent",
+      provider: "supabase",
+      subject: "user_123",
+      now,
+      ttlSeconds: 60,
+    });
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: "test-token" },
+      externalAuth: {
+        secret: "app-auth-secret",
+        audience: "storefront-agent",
+        allowedProviders: ["supabase"],
+        maxTtlSeconds: 60,
+      },
+    });
+    const fixture: Augment = {
+      name: "authorized-routes",
+      httpRoutes: [
+        {
+          method: "GET",
+          path: "/orders",
+          auth: "visitor.required",
+          requires: { scope: "orders.read" },
+          handler: async () => {
+            handlerCalls += 1;
+            return json({ ok: true });
+          },
+        },
+      ],
+    };
+    const agent = defineAgent({ name: "test", model: "mock", augments: [fixture, aug] }, model);
+    await agent.start();
+    try {
+      const denied = await fetch(`http://localhost:${port}/orders`, {
+        headers: { "x-auggy-auth-assertion": unscopedAssertion },
+      });
+      expect(denied.status).toBe(403);
+      expect(await denied.json()).toEqual({
+        error: "forbidden",
+        reason: "authorization-scope-missing",
+      });
+      expect(handlerCalls).toBe(0);
+
+      const allowed = await fetch(`http://localhost:${port}/orders`, {
+        headers: { "x-auggy-auth-assertion": scopedAssertion },
+      });
+      expect(allowed.status).toBe(200);
+      expect(await allowed.json()).toEqual({ ok: true });
+      expect(handlerCalls).toBe(1);
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("auth: visitor.required enforces delegated resource grants before handlers", async () => {
+    const model = createMockModel();
+    const port = 19461;
+    const now = Date.now();
+    let handlerCalls = 0;
+    const allowedAssertion = createExternalAuthAssertion({
+      secret: "app-auth-secret",
+      audience: "storefront-agent",
+      provider: "supabase",
+      subject: "user_123",
+      now,
+      ttlSeconds: 60,
+      grants: [
+        {
+          action: "refund.issue",
+          resource: "order_123",
+          constraints: { maxAmountCents: 5000, currency: "USD" },
+        },
+      ],
+    });
+    const wrongResourceAssertion = createExternalAuthAssertion({
+      secret: "app-auth-secret",
+      audience: "storefront-agent",
+      provider: "supabase",
+      subject: "user_123",
+      now,
+      ttlSeconds: 60,
+      grants: [{ action: "refund.issue", resource: "order_999" }],
+    });
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: "test-token" },
+      externalAuth: {
+        secret: "app-auth-secret",
+        audience: "storefront-agent",
+        allowedProviders: ["supabase"],
+        maxTtlSeconds: 60,
+      },
+    });
+    const fixture: Augment = {
+      name: "authorized-routes",
+      httpRoutes: [
+        {
+          method: "POST",
+          path: "/orders/:id/refund",
+          auth: "visitor.required",
+          requires: {
+            action: "refund.issue",
+            resource: { param: "id" },
+            constraints: { maxAmountCents: 5000 },
+          },
+          handler: async () => {
+            handlerCalls += 1;
+            return json({ ok: true });
+          },
+        },
+      ],
+    };
+    const agent = defineAgent({ name: "test", model: "mock", augments: [fixture, aug] }, model);
+    await agent.start();
+    try {
+      const denied = await fetch(`http://localhost:${port}/orders/order_123/refund`, {
+        method: "POST",
+        headers: { "x-auggy-auth-assertion": wrongResourceAssertion },
+      });
+      expect(denied.status).toBe(403);
+      expect(await denied.json()).toEqual({
+        error: "forbidden",
+        reason: "authorization-grant-missing",
+      });
+      expect(handlerCalls).toBe(0);
+
+      const allowed = await fetch(`http://localhost:${port}/orders/order_123/refund`, {
+        method: "POST",
+        headers: { "x-auggy-auth-assertion": allowedAssertion },
+      });
+      expect(allowed.status).toBe(200);
+      expect(await allowed.json()).toEqual({ ok: true });
+      expect(handlerCalls).toBe(1);
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("auth: visitor.required can fall back from an invalid visitor token to external auth", async () => {
+    const model = createMockModel();
+    const port = 19309;
+    const now = Date.now();
+    const assertion = createExternalAuthAssertion({
+      secret: "app-auth-secret",
+      audience: "storefront-agent",
+      provider: "supabase",
+      subject: "user_456",
+      now,
+      ttlSeconds: 60,
+    });
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: "test-token" },
+      visitorTokens: {
+        enabled: true,
+        signingKey: "visitor-route-secret",
+        agentBinding: "storefront-agent",
+      },
+      externalAuth: {
+        secret: "app-auth-secret",
+        audience: "storefront-agent",
+        allowedProviders: ["supabase"],
+        visitorId: "vis_linked_user_456",
+      },
+    });
+    const fixture: Augment = {
+      name: "external-auth-routes",
+      httpRoutes: [
+        {
+          method: "GET",
+          path: "/account",
+          auth: "visitor.required",
+          handler: async (_req, opts) => json(opts.auth),
+        },
+      ],
+    };
+    const agent = defineAgent({ name: "test", model: "mock", augments: [fixture, aug] }, model);
+    await agent.start();
+    try {
+      const resp = await fetch(`http://localhost:${port}/account`, {
+        headers: {
+          "x-visitor-token": "stale-token",
+          "x-auggy-auth-assertion": assertion,
+        },
+      });
+      expect(resp.status).toBe(200);
+      expect(await resp.json()).toMatchObject({
+        mode: "visitor",
+        state: "recognized",
+        visitorId: "vis_linked_user_456",
+        agentId: "storefront-agent",
+        principal: {
+          kind: "visitor",
+          trustLevel: "public",
+          publicSubstate: "recognized",
+          visitorId: "vis_linked_user_456",
+        },
+      });
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("auth: visitor.required merges matching external auth claims onto a valid visitor token", async () => {
+    const model = createMockModel();
+    const port = 19430;
+    const now = Date.now();
+    const signingKey = "visitor-route-secret";
+    const agentBinding = "storefront-agent";
+    const visitorId = "vis_app_user_123";
+    const key = await deriveSigningKey(signingKey);
+    const issued = await createVisitorToken(key, agentBinding, 3600, visitorId);
+    const assertion = createExternalAuthAssertion({
+      secret: "app-auth-secret",
+      audience: agentBinding,
+      provider: "clerk",
+      subject: "user_123",
+      now,
+      ttlSeconds: 60,
+      orgId: "org_store_123",
+      roles: ["customer", "vip"],
+    });
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: "test-token" },
+      visitorTokens: {
+        enabled: true,
+        signingKey,
+        agentBinding,
+      },
+      externalAuth: {
+        secret: "app-auth-secret",
+        audience: agentBinding,
+        allowedProviders: ["clerk"],
+        visitorId: (claims) => `vis_app_${claims.subject}`,
+      },
+    });
+    const fixture: Augment = {
+      name: "external-auth-routes",
+      httpRoutes: [
+        {
+          method: "GET",
+          path: "/account",
+          auth: "visitor.required",
+          handler: async (_req, opts) => json(opts.auth),
+        },
+      ],
+    };
+    const agent = defineAgent({ name: "test", model: "mock", augments: [fixture, aug] }, model);
+    await agent.start();
+    try {
+      const resp = await fetch(`http://localhost:${port}/account`, {
+        headers: {
+          "x-visitor-token": issued.token,
+          "x-auggy-auth-assertion": assertion,
+        },
+      });
+      expect(resp.status).toBe(200);
+      expect(await resp.json()).toMatchObject({
+        mode: "visitor",
+        state: "recognized",
+        visitorId,
+        agentId: agentBinding,
+        issuedAt: issued.payload.issuedAt,
+        expiresAt: issued.payload.expiresAt,
+        externalAuth: {
+          provider: "clerk",
+          subject: "user_123",
+          orgId: "org_store_123",
+          roles: ["customer", "vip"],
+        },
+        principal: {
+          kind: "visitor",
+          visitorId,
+          agentId: agentBinding,
+          externalAuth: {
+            provider: "clerk",
+            subject: "user_123",
+            orgId: "org_store_123",
+            roles: ["customer", "vip"],
+          },
+        },
+      });
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("auth: visitor.required does not merge external auth claims for a different visitor token", async () => {
+    const model = createMockModel();
+    const port = 19431;
+    const now = Date.now();
+    const signingKey = "visitor-route-secret";
+    const agentBinding = "storefront-agent";
+    const key = await deriveSigningKey(signingKey);
+    const issued = await createVisitorToken(key, agentBinding, 3600, "vis_token_user");
+    const assertion = createExternalAuthAssertion({
+      secret: "app-auth-secret",
+      audience: agentBinding,
+      provider: "clerk",
+      subject: "different_user",
+      now,
+      ttlSeconds: 60,
+      roles: ["admin"],
+    });
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: "test-token" },
+      visitorTokens: {
+        enabled: true,
+        signingKey,
+        agentBinding,
+      },
+      externalAuth: {
+        secret: "app-auth-secret",
+        audience: agentBinding,
+        allowedProviders: ["clerk"],
+        visitorId: (claims) => `vis_app_${claims.subject}`,
+      },
+    });
+    const fixture: Augment = {
+      name: "external-auth-routes",
+      httpRoutes: [
+        {
+          method: "GET",
+          path: "/account",
+          auth: "visitor.required",
+          handler: async (_req, opts) => json(opts.auth),
+        },
+      ],
+    };
+    const agent = defineAgent({ name: "test", model: "mock", augments: [fixture, aug] }, model);
+    await agent.start();
+    try {
+      const resp = await fetch(`http://localhost:${port}/account`, {
+        headers: {
+          "x-visitor-token": issued.token,
+          "x-auggy-auth-assertion": assertion,
+        },
+      });
+      expect(resp.status).toBe(200);
+      const body = (await resp.json()) as {
+        visitorId: string;
+        externalAuth?: unknown;
+        principal: { externalAuth?: unknown };
+      };
+      expect(body.visitorId).toBe("vis_token_user");
+      expect(body.externalAuth).toBeUndefined();
+      expect(body.principal.externalAuth).toBeUndefined();
     } finally {
       await agent.stop();
     }
@@ -2408,6 +3469,49 @@ describe("webTransport augment-registered routes", () => {
     }
   });
 
+  it("auth: visitor.required rejects invalid external auth assertions", async () => {
+    const model = createMockModel();
+    const port = 19310;
+    const assertion = createExternalAuthAssertion({
+      secret: "app-auth-secret",
+      audience: "storefront-agent",
+      provider: "supabase",
+      subject: "user_123",
+      ttlSeconds: 60,
+    });
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: "test-token" },
+      externalAuth: {
+        secret: "app-auth-secret",
+        audience: "storefront-agent",
+        allowedProviders: ["clerk"],
+      },
+    });
+    const fixture: Augment = {
+      name: "external-auth-routes",
+      httpRoutes: [
+        {
+          method: "GET",
+          path: "/account",
+          auth: "visitor.required",
+          handler: async (_req, opts) => json(opts.auth),
+        },
+      ],
+    };
+    const agent = defineAgent({ name: "test", model: "mock", augments: [fixture, aug] }, model);
+    await agent.start();
+    try {
+      const resp = await fetch(`http://localhost:${port}/account`, {
+        headers: { "x-auggy-auth-assertion": assertion },
+      });
+      expect(resp.status).toBe(401);
+      expect(await resp.json()).toEqual({ error: "visitor-auth-required" });
+    } finally {
+      await agent.stop();
+    }
+  });
+
   it("auth: visitor.optional passes anonymous or recognized route context", async () => {
     const model = createMockModel();
     const port = 19307;
@@ -2449,7 +3553,15 @@ describe("webTransport augment-registered routes", () => {
     try {
       const anon = await fetch(`http://localhost:${port}/recommendations`);
       expect(anon.status).toBe(200);
-      expect(await anon.json()).toEqual({ mode: "visitor", state: "anonymous" });
+      expect(await anon.json()).toEqual({
+        mode: "visitor",
+        state: "anonymous",
+        principal: {
+          kind: "anonymous",
+          trustLevel: "public",
+          publicSubstate: "anonymous",
+        },
+      });
 
       const recognized = await fetch(`http://localhost:${port}/recommendations`, {
         headers: { "x-visitor-token": issued.token },
@@ -2460,6 +3572,64 @@ describe("webTransport augment-registered routes", () => {
         state: "recognized",
         visitorId: "vis_optional",
         email: "optional@example.com",
+        principal: {
+          kind: "visitor",
+          trustLevel: "public",
+          publicSubstate: "recognized",
+          visitorId: "vis_optional",
+          email: "optional@example.com",
+        },
+      });
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("auth: visitor.optional treats invalid external auth as anonymous", async () => {
+    const model = createMockModel();
+    const port = 19311;
+    const assertion = createExternalAuthAssertion({
+      secret: "other-secret",
+      audience: "storefront-agent",
+      provider: "clerk",
+      subject: "user_123",
+      ttlSeconds: 60,
+    });
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: "test-token" },
+      externalAuth: {
+        secret: "app-auth-secret",
+        audience: "storefront-agent",
+        allowedProviders: ["clerk"],
+      },
+    });
+    const fixture: Augment = {
+      name: "external-auth-routes",
+      httpRoutes: [
+        {
+          method: "GET",
+          path: "/recommendations",
+          auth: "visitor.optional",
+          handler: async (_req, opts) => json(opts.auth),
+        },
+      ],
+    };
+    const agent = defineAgent({ name: "test", model: "mock", augments: [fixture, aug] }, model);
+    await agent.start();
+    try {
+      const resp = await fetch(`http://localhost:${port}/recommendations`, {
+        headers: { "x-auggy-auth-assertion": assertion },
+      });
+      expect(resp.status).toBe(200);
+      expect(await resp.json()).toEqual({
+        mode: "visitor",
+        state: "anonymous",
+        principal: {
+          kind: "anonymous",
+          trustLevel: "public",
+          publicSubstate: "anonymous",
+        },
       });
     } finally {
       await agent.stop();
@@ -2594,6 +3764,35 @@ describe("webTransport augment-registered routes", () => {
       const res3 = await fetch(`http://localhost:${port}/test/echo?msg=3`);
       expect(res3.status).toBe(429);
       expect(res3.headers.get("retry-after")).toMatch(/^\d+$/);
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("checks per-route rate limits before buffering oversized request bodies", async () => {
+    const model = createMockModel();
+    const port = 19971;
+    const aug = webTransport({ port, auth: { type: "bearer", token: "test-token" } });
+    let handlerCalled = false;
+    const fixture = routeFixtureAugment({
+      method: "POST",
+      auth: "none",
+      maxBodyBytes: 1,
+      rateLimit: { maxPerMinute: 0 },
+      handler: async () => {
+        handlerCalled = true;
+        return new Response("ok");
+      },
+    });
+    const agent = defineAgent({ name: "test", model: "mock", augments: [fixture, aug] }, model);
+    await agent.start();
+    try {
+      const resp = await fetch(`http://localhost:${port}/test/echo`, {
+        method: "POST",
+        body: "too large for the route cap",
+      });
+      expect(resp.status).toBe(429);
+      expect(handlerCalled).toBe(false);
     } finally {
       await agent.stop();
     }

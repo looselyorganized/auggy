@@ -629,7 +629,7 @@ These are deferred to future plans or future improvements:
 
 ## Augment-registered HTTP routes (PR γ.1)
 
-Augments can register HTTP routes that `webTransport` serves alongside its built-in paths. Routes are collected at `agent.start()` after every augment's `onBoot` runs and before any port binds — collisions throw early, never silently override.
+Augments can register HTTP routes that `webTransport` serves alongside its built-in paths. Routes are collected at `agent.start()` after every augment's `onBoot` runs, so boot-populated route lists are visible to the dispatcher and route manifest. Collisions throw during startup and never silently override another route.
 
 ### Declaring a route
 
@@ -660,10 +660,15 @@ export function myAugment(): Augment {
 
 `auth` is **required** — no implicit default.
 
-- `"bearer"` — the route inherits webTransport's bearer-token check. Use for any route that represents a creator-authenticated action.
+- `"bearer"` — the route inherits webTransport's bearer-token check. Legacy name for creator-authorized routes.
+- `"creator"` — semantic alias for creator-only routes. Uses the same bearer-token check as `"bearer"`, but route handlers receive `auth.mode === "creator"` so app code can express creator authority directly.
 - `"none"` — the route accepts any caller. Use ONLY for genuinely public callbacks (email click-backs, OAuth redirects). The boot log emits a `console.warn` per `auth: "none"` route so operators see the unauthenticated surfaces.
 - `"visitor.optional"` — the route accepts anonymous callers but resolves a recognized visitor when a valid `x-visitor-token` is present. The boot log warns because the route is still anonymous-callable.
-- `"visitor.required"` — the route requires a valid `x-visitor-token`. Missing, invalid, expired, wrong-agent, or revoked tokens return `401 {"error":"visitor-auth-required"}`. Handler auth context always includes `visitorId`; when `visitorAuth` or another `identityLookup` is mounted, it can also include `email`, `verifiedAt`, and `reverifyDueAt`.
+- `"visitor.required"` — the route requires a valid `x-visitor-token` or configured external auth assertion. Missing, invalid, expired, wrong-agent, or revoked visitor tokens return `401 {"error":"visitor-auth-required"}` unless a valid external assertion is present. Handler auth context always includes `visitorId`; when `visitorAuth` or another `identityLookup` is mounted, it can also include `email`, `verifiedAt`, and `reverifyDueAt`. When an external app assertion resolves the visitor, context also includes `externalAuth: { provider, subject, orgId?, roles? }`. If a request supplies both credentials, external claims are attached only when the assertion maps to the same `visitorId` as the visitor token.
+- `"agent.required"` — the route requires admitted agent credentials using `x-agent-id` and `x-agent-secret` against `webTransport.access.agents`. Missing, unknown, or wrong credentials return `401 {"error":"agent-auth-required"}`. Handler auth context includes `auth.mode === "agent"`, `agentId`, `peerId`, and optional `displayName` / `orgId` headers.
+
+For app-session bridges and delegated route/tool authorization with `requires`,
+see [`26-delegated-authorization.md`](./26-delegated-authorization.md).
 
 ### Reserved paths
 
@@ -688,8 +693,40 @@ Convention: scope routes under `/<augment-name>/...` to make collisions across t
 | Field | Default | Behavior |
 |---|---|---|
 | `timeoutMs` | 30,000 | Handler exceeding this returns 504. The handler's promise is not cancelled (continues running; result discarded). |
-| `maxBodyBytes` | 1,048,576 (1 MB) | Request with `content-length` over the cap returns 413 before the handler runs. |
-| `rateLimit.maxPerMinute` | (no limit) | Per-route sliding-window counter, keyed on caller IP (see "Caller IP & `trustedProxies`" below). Returns 429 with `Retry-After`. |
+| `maxBodyBytes` | 1,048,576 (1 MB) | Non-GET/HEAD request bodies are buffered up to the cap using actual bytes read. Over-cap bodies return 413 before the handler runs. |
+| `rateLimit.maxPerMinute` | (no limit) | Per-route sliding-window counter, keyed on caller IP (see "Caller IP & `trustedProxies`" below). Returns 429 with `Retry-After` before body buffering. |
+
+When `webTransport.cors` is configured, augment route `Response` objects inherit `Access-Control-Allow-Origin` and `Access-Control-Expose-Headers` unless the handler already set those headers. This applies to successful handler responses and parameter-aware 405 method mismatches.
+
+### Route policy metadata
+
+Routes can optionally declare descriptive policy metadata. The first supported
+shape is `policy: webhook.signature(provider, { secretEnv })`, which appears in
+route manifests, OpenAPI `x-auggy` metadata, route reports, and generated client
+target filtering. Browser generated clients omit webhook-policy routes; server
+generated clients may include them when the route auth mode is otherwise
+server-callable.
+
+`webTransport` currently verifies Stripe policies:
+
+```ts
+defineRoute.post("/webhooks/stripe", {
+  auth: "none",
+  policy: webhook.signature("stripe", {
+    secretEnv: "STRIPE_WEBHOOK_SECRET",
+  }),
+  handler: ({ webhook }) => json({ event: webhook?.event }),
+});
+```
+
+The transport checks the `Stripe-Signature` header against the raw buffered
+request body before the handler runs, applies a 300-second timestamp tolerance
+by default, and passes parsed event payload as `ctx.webhook.event`. The manifest
+exposes the env var name only, never the secret value.
+
+Other providers are still metadata-only until their verifiers land. For those
+providers, augment handlers must still perform any required signature/HMAC
+checks before trusting the request body.
 
 ### Caller IP & `trustedProxies`
 
@@ -707,7 +744,7 @@ webTransport({
 
 Behavior:
 
-- Connection IP is on `trustedProxies` → first `X-Forwarded-For` value (else `X-Real-IP`) is honored.
+- Connection IP is on `trustedProxies` → `X-Forwarded-For` is parsed right-to-left, trusted proxy hops are dropped, and the first untrusted client IP is honored. `X-Real-IP` is used only when `X-Forwarded-For` is absent.
 - Connection IP is NOT on `trustedProxies` (or list is empty) → headers ignored, connection IP used directly.
 - The first time an XFF arrives without `trustedProxies` configured, a single `console.warn` per startup nudges operators with a config hint. Latched per-instance — no warning spam.
 
@@ -718,10 +755,10 @@ CIDR ranges are not yet supported (v1 keeps it simple); list the exact IPs.
 | Status | Trigger |
 |---|---|
 | 200 | Handler returned a 2xx Response. |
-| 401 | `auth: "bearer"` route with missing/wrong bearer token, or `auth: "visitor.required"` route with missing/invalid visitor token. |
+| 401 | `auth: "bearer"` / `auth: "creator"` route with missing/wrong bearer token, `auth: "visitor.required"` route with missing/invalid visitor token, `auth: "agent.required"` route with missing/wrong agent credentials, or Stripe webhook route with missing/invalid/stale signature. |
 | 404 | No augment route matches the requested (method, path). |
 | 405 | Augment registered the path for a different method. `Allow:` header lists the registered method. |
-| 413 | Request `content-length` exceeded `maxBodyBytes`. |
+| 413 | Request body exceeded `maxBodyBytes`. |
 | 429 | Per-route rate limit triggered. `Retry-After:` header set. |
 | 500 | Handler threw. Body is opaque `{"error":"internal"}`; the actual error is logged to stderr with the route path. |
 | 504 | Handler exceeded `timeoutMs`. |
@@ -733,7 +770,7 @@ CIDR ranges are not yet supported (v1 keeps it simple); list the exact IPs.
 - Exact paths and full-segment path params are supported (`/items/:id`). Prefix routes are not supported.
 - No streaming response support — handlers return discrete `Response` objects. AG-UI's SSE stays exclusive to `/agent/run`.
 - Routes are frozen at `agent.start()` — no dynamic add/remove during runtime.
-- Per-route auth schemes are `bearer`, `none`, `visitor.optional`, and `visitor.required`. For OAuth/HMAC/custom schemes, augments wrap their handler with the additional check.
+- Per-route auth schemes are `bearer`, `creator`, `none`, `visitor.optional`, `visitor.required`, and `agent.required`. For OAuth/custom schemes, augments wrap their handler with the additional check. `policy: webhook.signature("stripe", ...)` is runtime verified by `webTransport`; other providers remain manifest/client metadata until their verifiers land.
 
 ## The `/console` route
 

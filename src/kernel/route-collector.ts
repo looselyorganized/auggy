@@ -12,6 +12,7 @@
  */
 
 import type { Augment, AugmentHttpRoute } from "../types";
+import { validateAuthorizationRequirements } from "../authz/delegated-authorization";
 import { parseRoutePattern, routePatternsOverlap } from "./route-pattern";
 
 /**
@@ -99,13 +100,27 @@ export function collectAugmentRoutes(augments: readonly Augment[]): CollectAugme
       // fail-open dispatch on typos / dynamic-config bugs.
       if (
         r.auth !== "bearer" &&
+        r.auth !== "creator" &&
         r.auth !== "none" &&
         r.auth !== "visitor.optional" &&
-        r.auth !== "visitor.required"
+        r.auth !== "visitor.required" &&
+        r.auth !== "agent.required"
       ) {
         errors.push(
-          `Augment "${aug.name}" registered HTTP route ${r.method} "${r.path}" with invalid auth "${r.auth}" — must be "bearer", "none", "visitor.optional", or "visitor.required".`,
+          `Augment "${aug.name}" registered HTTP route ${r.method} "${r.path}" with invalid auth "${r.auth}" — must be "bearer", "creator", "none", "visitor.optional", "visitor.required", or "agent.required".`,
         );
+        continue;
+      }
+
+      const policyError = validateRoutePolicy(aug.name, r);
+      if (policyError) {
+        errors.push(policyError);
+        continue;
+      }
+
+      const authorizationError = validateRouteAuthorizationRequirements(aug.name, r);
+      if (authorizationError) {
+        errors.push(authorizationError);
         continue;
       }
 
@@ -141,4 +156,49 @@ export function collectAugmentRoutes(augments: readonly Augment[]): CollectAugme
     routes: Object.freeze(routes) as readonly CollectedRoute[],
     errors: Object.freeze(errors) as readonly string[],
   };
+}
+
+function validateRouteAuthorizationRequirements(
+  augmentName: string,
+  route: AugmentHttpRoute,
+): string | undefined {
+  const error = validateAuthorizationRequirements(route.requires, { binding: "route" });
+  if (!error) return undefined;
+  return `Augment "${augmentName}" registered HTTP route ${route.method} "${route.path}" with invalid authorization requirements — ${error}.`;
+}
+
+function validateRoutePolicy(augmentName: string, route: AugmentHttpRoute): string | undefined {
+  const policy = route.policy as unknown;
+  if (policy === undefined) return undefined;
+  if (!isRecord(policy)) {
+    return `Augment "${augmentName}" registered HTTP route ${route.method} "${route.path}" with invalid policy — must be an object.`;
+  }
+  if (policy.kind !== "webhook.signature") {
+    return `Augment "${augmentName}" registered HTTP route ${route.method} "${route.path}" with invalid policy kind "${String(policy.kind)}" — must be "webhook.signature".`;
+  }
+  if (typeof policy.provider !== "string" || policy.provider.trim().length === 0) {
+    return `Augment "${augmentName}" registered HTTP route ${route.method} "${route.path}" with invalid webhook.signature policy — provider must be a non-empty string.`;
+  }
+  if (
+    policy.secretEnv !== undefined &&
+    (typeof policy.secretEnv !== "string" || policy.secretEnv.trim().length === 0)
+  ) {
+    return `Augment "${augmentName}" registered HTTP route ${route.method} "${route.path}" with invalid webhook.signature policy — secretEnv must be a non-empty string when provided.`;
+  }
+  if (policy.provider === "stripe" && typeof policy.secretEnv !== "string") {
+    return `Augment "${augmentName}" registered HTTP route ${route.method} "${route.path}" with invalid webhook.signature policy — Stripe policies require secretEnv.`;
+  }
+  if (
+    policy.timestampToleranceSeconds !== undefined &&
+    (typeof policy.timestampToleranceSeconds !== "number" ||
+      !Number.isFinite(policy.timestampToleranceSeconds) ||
+      policy.timestampToleranceSeconds <= 0)
+  ) {
+    return `Augment "${augmentName}" registered HTTP route ${route.method} "${route.path}" with invalid webhook.signature policy — timestampToleranceSeconds must be a positive number when provided.`;
+  }
+  return undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

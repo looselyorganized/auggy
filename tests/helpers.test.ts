@@ -1,6 +1,6 @@
 import { describe, it, expect } from "bun:test";
 import { z } from "zod";
-import { defineAugment, defineRoute, defineTool, json } from "@/helpers";
+import { defineAugment, defineRoute, defineTool, json, webhook } from "@/helpers";
 import type { ContextBlock, TurnState } from "@/types";
 
 const stubTurn: TurnState = {
@@ -32,6 +32,19 @@ describe("defineTool", () => {
     expect(tool.category).toBe("meta");
     const result = await tool.execute({ name: "Alice" });
     expect(result).toBe("Hello, Alice!");
+  });
+
+  it("preserves delegated authorization requirements", () => {
+    const tool = defineTool({
+      name: "read_orders",
+      description: "Read orders",
+      category: "search",
+      input: z.object({}),
+      requires: { scope: "orders.read" },
+      execute: async () => "ok",
+    });
+
+    expect(tool.requires).toEqual({ scope: "orders.read" });
   });
 });
 
@@ -81,6 +94,12 @@ describe("defineRoute", () => {
         need: z.string().min(1),
         tag: z.union([z.string(), z.array(z.string())]).optional(),
       }),
+      response: z.object({
+        method: z.literal("GET"),
+        need: z.string(),
+        tag: z.union([z.string(), z.array(z.string())]).optional(),
+        bodyIsUndefined: z.boolean(),
+      }),
       handler: ({ query, body, route }) =>
         json({
           method: route.method,
@@ -99,6 +118,15 @@ describe("defineRoute", () => {
         need: { type: "string", minLength: 1 },
       },
       required: ["need"],
+    });
+    expect(route.responseJsonSchema).toMatchObject({
+      type: "object",
+      properties: {
+        method: { const: "GET" },
+        need: { type: "string" },
+        bodyIsUndefined: { type: "boolean" },
+      },
+      required: ["method", "need", "bodyIsUndefined"],
     });
 
     const res = await route.handler(
@@ -119,7 +147,7 @@ describe("defineRoute", () => {
   it("supplies auth context when a helper route is invoked directly", async () => {
     const route = defineRoute.get("/private", {
       auth: "bearer",
-      handler: ({ auth }) => json({ auth: auth.mode }),
+      handler: ({ auth }) => json({ auth: auth.mode, principal: auth.principal }),
     });
 
     const res = await route.handler(new Request("http://localhost/private"), {
@@ -127,7 +155,57 @@ describe("defineRoute", () => {
     });
 
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ auth: "bearer" });
+    expect(await res.json()).toEqual({
+      auth: "bearer",
+      principal: {
+        kind: "creator",
+        trustLevel: "creator",
+        peerId: "creator",
+      },
+    });
+  });
+
+  it("supplies creator auth context for semantic creator routes invoked directly", async () => {
+    const route = defineRoute.get("/creator", {
+      auth: "creator",
+      handler: ({ auth }) => json({ auth: auth.mode, principal: auth.principal }),
+    });
+
+    const res = await route.handler(new Request("http://localhost/creator"), {
+      signal: AbortSignal.timeout(1000),
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      auth: "creator",
+      principal: {
+        kind: "creator",
+        trustLevel: "creator",
+        peerId: "creator",
+      },
+    });
+  });
+
+  it("supplies agent auth context for agent routes invoked directly", async () => {
+    const route = defineRoute.get("/agent-api/search", {
+      auth: "agent.required",
+      handler: ({ auth }) => json({ auth: auth.mode, principal: auth.principal }),
+    });
+
+    const res = await route.handler(new Request("http://localhost/agent-api/search"), {
+      signal: AbortSignal.timeout(1000),
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      auth: "agent",
+      principal: {
+        kind: "agent",
+        trustLevel: "agent",
+        agentId: "agent",
+        peerId: "agent:agent",
+      },
+    });
   });
 
   it("creates a GET route that validates path params", async () => {
@@ -201,6 +279,10 @@ describe("defineRoute", () => {
         email: z.string().email(),
         serviceId: z.string().min(1),
       }),
+      response: z.object({
+        saved: z.boolean(),
+        email: z.string().email(),
+      }),
       handler: ({ body }) => json({ saved: true, email: body.email }, 201),
     });
 
@@ -214,6 +296,14 @@ describe("defineRoute", () => {
       },
       required: ["email", "serviceId"],
     });
+    expect(route.responseJsonSchema).toMatchObject({
+      type: "object",
+      properties: {
+        saved: { type: "boolean" },
+        email: { type: "string", format: "email" },
+      },
+      required: ["saved", "email"],
+    });
 
     const res = await route.handler(
       new Request("http://localhost/leads/create", {
@@ -225,6 +315,37 @@ describe("defineRoute", () => {
 
     expect(res.status).toBe(201);
     expect(await res.json()).toEqual({ saved: true, email: "ada@example.com" });
+  });
+
+  it("attaches webhook policy metadata to helper routes", () => {
+    const route = defineRoute.post("/webhooks/stripe", {
+      auth: "none",
+      policy: webhook.signature("stripe", {
+        secretEnv: "STRIPE_WEBHOOK_SECRET",
+        timestampToleranceSeconds: 120,
+      }),
+      handler: () => json({ ok: true }),
+    });
+
+    expect(route.policy).toEqual({
+      kind: "webhook.signature",
+      provider: "stripe",
+      secretEnv: "STRIPE_WEBHOOK_SECRET",
+      timestampToleranceSeconds: 120,
+    });
+  });
+
+  it("attaches delegated authorization requirements to helper routes", () => {
+    const route = defineRoute.post("/orders/:id/refund", {
+      auth: "visitor.required",
+      requires: { action: "refund.issue", resource: { param: "id" } },
+      handler: () => json({ ok: true }),
+    });
+
+    expect(route.requires).toEqual({
+      action: "refund.issue",
+      resource: { param: "id" },
+    });
   });
 
   it("creates a POST route that validates query params and JSON body", async () => {

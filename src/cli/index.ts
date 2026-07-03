@@ -11,7 +11,7 @@
  *   auggy run [name] [--no-open]     Run agent in foreground; opens /console/chat by default
  *   auggy doctor [name]              Check whether an agent is ready to run
  *   auggy models list [provider]     List known/provider engine models
- *   auggy routes [name]              Show custom HTTP routes registered by an agent
+ *   auggy routes [name]              Show route manifest/OpenAPI/client output for an agent
  *   auggy augment create <slug>      Scaffold a local custom augment
  *   auggy augment setup <augment>    Configure secrets and external services
  *   auggy dev [name] [--open]        Run agent in foreground; --open pops /console in browser

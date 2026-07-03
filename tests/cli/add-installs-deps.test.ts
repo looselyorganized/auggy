@@ -179,6 +179,99 @@ describe("runAdd no-op cases", () => {
     expect(existsSync(join(dir, "skills", "webFetch", "SKILL.md"))).toBe(true);
   });
 
+  test("non-interactive augment list installs multiple augments in one run", async () => {
+    const dir = setupAgent("with-batch");
+
+    await runAdd("with-batch", {
+      config: join(dir, "agent.yaml"),
+      auggyDir,
+      augment: ["knowledge", "visitorAuth", "mcp"],
+      yes: true,
+      bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
+    });
+
+    expect(readAgentAugments(dir)).toContain("knowledge");
+    expect(readAgentAugments(dir)).toContain("visitorAuth");
+    expect(readAgentAugments(dir)).toContain("mcp");
+    expect(readAugmentMetadata(dir, "knowledge").type).toBe("knowledge");
+    expect(readAugmentMetadata(dir, "visitorAuth").type).toBe("visitorAuth");
+    expect(readAugmentMetadata(dir, "mcp").type).toBe("mcp");
+    expect(existsSync(join(dir, "knowledge", "local", "manifest"))).toBe(true);
+    expect(existsSync(join(dir, ".mcp.json"))).toBe(true);
+    expect(existsSync(join(dir, "skills", "knowledge", "SKILL.md"))).toBe(true);
+    expect(existsSync(join(dir, "skills", "visitorAuth", "SKILL.md"))).toBe(true);
+    expect(existsSync(join(dir, "skills", "mcp", "SKILL.md"))).toBe(true);
+    const env = readFileSync(join(dir, ".env"), "utf-8");
+    expect(env).toMatch(/^VISITOR_SIGNING_KEY=[a-f0-9]{64}$/m);
+  });
+
+  test("non-interactive duplicate augment args are skipped cleanly", async () => {
+    const dir = setupAgent("duplicate-batch");
+    const originalLog = console.log;
+    const logs: string[] = [];
+    console.log = (...args: unknown[]) => {
+      logs.push(args.map(String).join(" "));
+    };
+
+    try {
+      await runAdd("duplicate-batch", {
+        config: join(dir, "agent.yaml"),
+        auggyDir,
+        augment: ["knowledge", "knowledge"],
+        bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
+      });
+    } finally {
+      console.log = originalLog;
+    }
+
+    expect(readAgentAugments(dir).filter((entry) => entry === "knowledge")).toHaveLength(1);
+    expect(logs.join("\n")).toContain(
+      'Augment "knowledge" (knowledge) was requested more than once.',
+    );
+  });
+
+  test("non-interactive batch skips already-installed augments and adds the rest", async () => {
+    const dir = setupAgent("skip-installed", [{ name: "webFetch", type: "webFetch" }]);
+    const originalLog = console.log;
+    const logs: string[] = [];
+    console.log = (...args: unknown[]) => {
+      logs.push(args.map(String).join(" "));
+    };
+
+    try {
+      await runAdd("skip-installed", {
+        config: join(dir, "agent.yaml"),
+        auggyDir,
+        augment: ["webFetch", "knowledge"],
+        bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
+      });
+    } finally {
+      console.log = originalLog;
+    }
+
+    expect(readAgentAugments(dir)).toContain("knowledge");
+    expect(readAgentAugments(dir).filter((entry) => entry === "knowledge")).toHaveLength(1);
+    expect(logs.join("\n")).toContain('Augment "webFetch" (webFetch) is already installed.');
+  });
+
+  test("non-interactive unknown augment in a batch throws before mutation", async () => {
+    const dir = setupAgent("bad-batch");
+    const before = readFileSync(join(dir, "agent.yaml"), "utf-8");
+
+    await expect(
+      runAdd("bad-batch", {
+        config: join(dir, "agent.yaml"),
+        auggyDir,
+        augment: ["knowledge", "not-real"],
+        bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
+      }),
+    ).rejects.toThrow(/Unknown augment "not-real".*webFetch/s);
+
+    expect(readFileSync(join(dir, "agent.yaml"), "utf-8")).toBe(before);
+    expect(existsSync(join(dir, "knowledge"))).toBe(false);
+    expect(bunInstallCalls).toHaveLength(0);
+  });
+
   test("project-local single arg is treated as augment when cwd has agent.yaml", async () => {
     const dir = setupAgent("local-add");
 

@@ -131,15 +131,114 @@ describe("collectAugmentRoutes", () => {
     expect(result.errors).toEqual([]);
   });
 
-  test("allows visitor route auth modes", () => {
+  test("allows creator, visitor, and agent route auth modes", () => {
     const result = collectAugmentRoutes([
+      aug("creator", [route("POST", "/admin/reindex", "creator")]),
       aug("visitors", [
         route("GET", "/profile", "visitor.required"),
         route("GET", "/recommendations", "visitor.optional"),
       ]),
+      aug("agents", [route("GET", "/agent-api/search", "agent.required")]),
     ]);
     expect(result.errors).toEqual([]);
-    expect(result.routes.map((r) => r.auth)).toEqual(["visitor.required", "visitor.optional"]);
+    expect(result.routes.map((r) => r.auth)).toEqual([
+      "creator",
+      "visitor.required",
+      "visitor.optional",
+      "agent.required",
+    ]);
+  });
+
+  test("allows webhook signature route policies", () => {
+    const result = collectAugmentRoutes([
+      aug("stripe", [
+        {
+          ...route("POST", "/webhooks/stripe", "none"),
+          policy: {
+            kind: "webhook.signature",
+            provider: "stripe",
+            secretEnv: "STRIPE_WEBHOOK_SECRET",
+          },
+        },
+      ]),
+    ]);
+
+    expect(result.errors).toEqual([]);
+    expect(result.routes[0]?.policy).toEqual({
+      kind: "webhook.signature",
+      provider: "stripe",
+      secretEnv: "STRIPE_WEBHOOK_SECRET",
+    });
+  });
+
+  test("allows delegated authorization route requirements", () => {
+    const result = collectAugmentRoutes([
+      aug("orders", [
+        {
+          ...route("POST", "/orders/:id/refund", "visitor.required"),
+          requires: [
+            { scope: "orders.write" },
+            { action: "refund.issue", resource: { param: "id" } },
+          ],
+        },
+      ]),
+    ]);
+
+    expect(result.errors).toEqual([]);
+    expect(result.routes[0]?.requires).toEqual([
+      { scope: "orders.write" },
+      { action: "refund.issue", resource: { param: "id" } },
+    ]);
+  });
+
+  test("rejects routes with invalid delegated authorization requirements", () => {
+    const r = (path: string, requires: unknown): AugmentHttpRoute => ({
+      ...route("POST", path, "visitor.required"),
+      requires: requires as AugmentHttpRoute["requires"],
+    });
+    const result = collectAugmentRoutes([
+      aug("a", [r("/a", [])]),
+      aug("b", [r("/b", { scope: "" })]),
+      aug("c", [r("/c", { action: "" })]),
+      aug("d", [r("/d", { scope: "orders.read", action: "orders.write" })]),
+      aug("e", [r("/e", { action: "refund.issue", resource: { param: "" } })]),
+      aug("f", [r("/f", { action: "refund.issue", constraints: "broad" })]),
+      aug("g", [r("/g", { action: "refund.issue", resource: { input: "orderId" } })]),
+    ]);
+
+    expect(result.errors).toHaveLength(7);
+    for (const e of result.errors) {
+      expect(e).toContain("invalid authorization requirements");
+    }
+    expect(result.errors.join("\n")).toContain("non-empty string or { param }");
+  });
+
+  test("rejects routes with invalid policy values", () => {
+    const r = (path: string, policy: unknown): AugmentHttpRoute => ({
+      ...route("POST", path, "none"),
+      policy: policy as AugmentHttpRoute["policy"],
+    });
+    const result = collectAugmentRoutes([
+      aug("a", [r("/a", "webhook.signature")]),
+      aug("b", [r("/b", { kind: "oauth" })]),
+      aug("c", [r("/c", { kind: "webhook.signature", provider: "" })]),
+      aug("d", [r("/d", { kind: "webhook.signature", provider: "stripe", secretEnv: "" })]),
+      aug("e", [r("/e", { kind: "webhook.signature", provider: "stripe" })]),
+      aug("f", [
+        r("/f", {
+          kind: "webhook.signature",
+          provider: "stripe",
+          secretEnv: "STRIPE_WEBHOOK_SECRET",
+          timestampToleranceSeconds: 0,
+        }),
+      ]),
+    ]);
+
+    expect(result.errors).toHaveLength(6);
+    for (const e of result.errors) {
+      expect(e).toContain("invalid");
+      expect(e).toContain("policy");
+    }
   });
 
   test("rejects path that does not start with '/'", () => {

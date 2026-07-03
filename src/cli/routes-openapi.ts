@@ -14,8 +14,11 @@ export interface OpenApiRoutesReport {
 export function createOpenApiDocument(report: OpenApiRoutesReport): JsonObject {
   const paths: JsonObject = {};
   const operationIds = new Set<string>();
-  const hasBearerRoutes = report.routes.some((route) => route.auth === "bearer");
+  const hasBearerRoutes = report.routes.some(
+    (route) => route.auth === "bearer" || route.auth === "creator",
+  );
   const hasVisitorRoutes = report.routes.some((route) => route.auth.startsWith("visitor."));
+  const hasAgentRoutes = report.routes.some((route) => route.auth === "agent.required");
 
   for (const route of report.routes) {
     const openApiPath = toOpenApiPath(route.path);
@@ -31,7 +34,7 @@ export function createOpenApiDocument(report: OpenApiRoutesReport): JsonObject {
       version: "0.1.0",
     },
     paths,
-    ...(hasBearerRoutes || hasVisitorRoutes
+    ...(hasBearerRoutes || hasVisitorRoutes || hasAgentRoutes
       ? {
           components: {
             securitySchemes: {
@@ -43,12 +46,31 @@ export function createOpenApiDocument(report: OpenApiRoutesReport): JsonObject {
                     },
                   }
                 : {}),
+              ...(hasAgentRoutes
+                ? {
+                    agentIdAuth: {
+                      type: "apiKey",
+                      in: "header",
+                      name: "x-agent-id",
+                    },
+                    agentSecretAuth: {
+                      type: "apiKey",
+                      in: "header",
+                      name: "x-agent-secret",
+                    },
+                  }
+                : {}),
               ...(hasVisitorRoutes
                 ? {
                     visitorTokenAuth: {
                       type: "apiKey",
                       in: "header",
                       name: "x-visitor-token",
+                    },
+                    externalAuthAssertion: {
+                      type: "apiKey",
+                      in: "header",
+                      name: "x-auggy-auth-assertion",
                     },
                   }
                 : {}),
@@ -116,9 +138,12 @@ function requestBody(route: RouteManifestEntry): JsonObject {
 
 function responsesForRoute(route: RouteManifestEntry): JsonObject {
   return {
-    "200": { description: "OK" },
+    "200": successResponse(route),
     "400": { description: "Bad request" },
-    ...(route.auth === "bearer" || route.auth === "visitor.required"
+    ...(route.auth === "bearer" ||
+    route.auth === "creator" ||
+    route.auth === "visitor.required" ||
+    route.auth === "agent.required"
       ? { "401": { description: "Unauthorized" } }
       : {}),
     ...(route.rateLimit ? { "429": { description: "Rate limited" } } : {}),
@@ -126,10 +151,30 @@ function responsesForRoute(route: RouteManifestEntry): JsonObject {
   };
 }
 
+function successResponse(route: RouteManifestEntry): JsonObject {
+  return {
+    description: "OK",
+    ...(route.responseJsonSchema
+      ? {
+          content: {
+            "application/json": {
+              schema: route.responseJsonSchema,
+            },
+          },
+        }
+      : {}),
+  };
+}
+
 function securityForRoute(route: RouteManifestEntry): JsonObject[] {
-  if (route.auth === "bearer") return [{ bearerAuth: [] }];
-  if (route.auth === "visitor.required") return [{ visitorTokenAuth: [] }];
-  if (route.auth === "visitor.optional") return [{}, { visitorTokenAuth: [] }];
+  if (route.auth === "bearer" || route.auth === "creator") return [{ bearerAuth: [] }];
+  if (route.auth === "agent.required") return [{ agentIdAuth: [], agentSecretAuth: [] }];
+  if (route.auth === "visitor.required") {
+    return [{ visitorTokenAuth: [] }, { externalAuthAssertion: [] }];
+  }
+  if (route.auth === "visitor.optional") {
+    return [{}, { visitorTokenAuth: [] }, { externalAuthAssertion: [] }];
+  }
   return [];
 }
 
@@ -142,6 +187,8 @@ function augmentRouteMetadata(route: RouteManifestEntry): JsonObject {
     ...(route.timeoutMs !== undefined ? { timeoutMs: route.timeoutMs } : {}),
     ...(route.maxBodyBytes !== undefined ? { maxBodyBytes: route.maxBodyBytes } : {}),
     ...(route.rateLimit ? { rateLimit: route.rateLimit } : {}),
+    ...(route.policy ? { policy: route.policy } : {}),
+    ...(route.requires ? { requires: route.requires } : {}),
   };
 }
 

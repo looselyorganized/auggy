@@ -41,6 +41,15 @@ function report(): OpenApiRoutesReport {
             required: ["need"],
           },
         },
+        responseJsonSchema: {
+          type: "object",
+          properties: {
+            serviceId: { type: "string" },
+            name: { type: "string" },
+            tags: { type: "array", items: { type: "string" } },
+          },
+          required: ["serviceId", "name"],
+        },
       },
       {
         method: "POST",
@@ -60,6 +69,14 @@ function report(): OpenApiRoutesReport {
             },
             required: ["email", "serviceId"],
           },
+        },
+        responseJsonSchema: {
+          type: "object",
+          properties: {
+            leadId: { type: "string" },
+            saved: { type: "boolean" },
+          },
+          required: ["leadId", "saved"],
         },
       },
     ],
@@ -117,7 +134,22 @@ describe("createOpenApiDocument", () => {
       },
     ]);
     expect(get?.responses).toEqual({
-      "200": { description: "OK" },
+      "200": {
+        description: "OK",
+        content: {
+          "application/json": {
+            schema: {
+              type: "object",
+              properties: {
+                serviceId: { type: "string" },
+                name: { type: "string" },
+                tags: { type: "array", items: { type: "string" } },
+              },
+              required: ["serviceId", "name"],
+            },
+          },
+        },
+      },
       "400": { description: "Bad request" },
       "429": { description: "Rate limited" },
       "500": { description: "Internal server error" },
@@ -147,7 +179,21 @@ describe("createOpenApiDocument", () => {
       },
     });
     expect(post?.responses).toEqual({
-      "200": { description: "OK" },
+      "200": {
+        description: "OK",
+        content: {
+          "application/json": {
+            schema: {
+              type: "object",
+              properties: {
+                leadId: { type: "string" },
+                saved: { type: "boolean" },
+              },
+              required: ["leadId", "saved"],
+            },
+          },
+        },
+      },
       "400": { description: "Bad request" },
       "401": { description: "Unauthorized" },
       "500": { description: "Internal server error" },
@@ -196,8 +242,15 @@ describe("createOpenApiDocument", () => {
       components?: Record<string, unknown>;
     };
 
-    expect(doc.paths["/catalog"]?.get?.security).toEqual([{}, { visitorTokenAuth: [] }]);
-    expect(doc.paths["/orders/{id}"]?.get?.security).toEqual([{ visitorTokenAuth: [] }]);
+    expect(doc.paths["/catalog"]?.get?.security).toEqual([
+      {},
+      { visitorTokenAuth: [] },
+      { externalAuthAssertion: [] },
+    ]);
+    expect(doc.paths["/orders/{id}"]?.get?.security).toEqual([
+      { visitorTokenAuth: [] },
+      { externalAuthAssertion: [] },
+    ]);
     expect(doc.paths["/orders/{id}"]?.get?.responses).toMatchObject({
       "401": { description: "Unauthorized" },
     });
@@ -207,6 +260,157 @@ describe("createOpenApiDocument", () => {
           type: "apiKey",
           in: "header",
           name: "x-visitor-token",
+        },
+        externalAuthAssertion: {
+          type: "apiKey",
+          in: "header",
+          name: "x-auggy-auth-assertion",
+        },
+      },
+    });
+  });
+
+  test("exports route policy metadata in x-auggy without adding security schemes", () => {
+    const doc = createOpenApiDocument({
+      agent: { name: "zip", configPath: "/tmp/zip/agent.yaml" },
+      summary: {
+        totalRoutes: 1,
+        publicRoutes: 1,
+        privateRoutes: 0,
+        publicRoutePaths: ["POST /webhooks/stripe"],
+      },
+      routes: [
+        {
+          method: "POST",
+          path: "/webhooks/stripe",
+          augmentName: "payments",
+          auth: "none",
+          params: [],
+          public: true,
+          security: "public",
+          policy: {
+            kind: "webhook.signature",
+            provider: "stripe",
+            secretEnv: "STRIPE_WEBHOOK_SECRET",
+          },
+        },
+      ],
+    }) as {
+      paths: Record<string, Record<string, Record<string, unknown>>>;
+      components?: Record<string, unknown>;
+    };
+
+    const post = doc.paths["/webhooks/stripe"]?.post;
+
+    expect(post?.security).toEqual([]);
+    expect(post?.responses).toEqual({
+      "200": { description: "OK" },
+      "400": { description: "Bad request" },
+      "500": { description: "Internal server error" },
+    });
+    expect(post?.["x-auggy"]).toMatchObject({
+      auth: "none",
+      public: true,
+      policy: {
+        kind: "webhook.signature",
+        provider: "stripe",
+        secretEnv: "STRIPE_WEBHOOK_SECRET",
+      },
+    });
+    expect(doc.components).toBeUndefined();
+  });
+
+  test("exports creator route auth as bearer security with semantic metadata", () => {
+    const doc = createOpenApiDocument({
+      agent: { name: "zip", configPath: "/tmp/zip/agent.yaml" },
+      summary: {
+        totalRoutes: 1,
+        publicRoutes: 0,
+        privateRoutes: 1,
+        publicRoutePaths: [],
+      },
+      routes: [
+        {
+          method: "POST",
+          path: "/admin/reindex",
+          augmentName: "catalog",
+          auth: "creator",
+          params: [],
+          public: false,
+          security: "private",
+        },
+      ],
+    }) as {
+      paths: Record<string, Record<string, Record<string, unknown>>>;
+      components?: Record<string, unknown>;
+    };
+
+    expect(doc.paths["/admin/reindex"]?.post?.security).toEqual([{ bearerAuth: [] }]);
+    expect(doc.paths["/admin/reindex"]?.post?.responses).toMatchObject({
+      "401": { description: "Unauthorized" },
+    });
+    expect(doc.paths["/admin/reindex"]?.post?.["x-auggy"]).toMatchObject({
+      auth: "creator",
+      security: "private",
+      public: false,
+    });
+    expect(doc.components).toEqual({
+      securitySchemes: {
+        bearerAuth: {
+          type: "http",
+          scheme: "bearer",
+        },
+      },
+    });
+  });
+
+  test("exports agent route auth as required agent credential headers", () => {
+    const doc = createOpenApiDocument({
+      agent: { name: "zip", configPath: "/tmp/zip/agent.yaml" },
+      summary: {
+        totalRoutes: 1,
+        publicRoutes: 0,
+        privateRoutes: 1,
+        publicRoutePaths: [],
+      },
+      routes: [
+        {
+          method: "GET",
+          path: "/agent-api/search",
+          augmentName: "agent-api",
+          auth: "agent.required",
+          params: [],
+          public: false,
+          security: "private",
+        },
+      ],
+    }) as {
+      paths: Record<string, Record<string, Record<string, unknown>>>;
+      components?: Record<string, unknown>;
+    };
+
+    expect(doc.paths["/agent-api/search"]?.get?.security).toEqual([
+      { agentIdAuth: [], agentSecretAuth: [] },
+    ]);
+    expect(doc.paths["/agent-api/search"]?.get?.responses).toMatchObject({
+      "401": { description: "Unauthorized" },
+    });
+    expect(doc.paths["/agent-api/search"]?.get?.["x-auggy"]).toMatchObject({
+      auth: "agent.required",
+      security: "private",
+      public: false,
+    });
+    expect(doc.components).toEqual({
+      securitySchemes: {
+        agentIdAuth: {
+          type: "apiKey",
+          in: "header",
+          name: "x-agent-id",
+        },
+        agentSecretAuth: {
+          type: "apiKey",
+          in: "header",
+          name: "x-agent-secret",
         },
       },
     });

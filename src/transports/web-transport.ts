@@ -5,6 +5,8 @@ import type {
   CreatorConfig,
   PeerIdentity,
   RouteAuthContext,
+  RouteAgentAuthContext,
+  RouteVisitorAuthContext,
   RouteVisitorIdentity,
   TransportSpec,
   TransportKernel,
@@ -26,6 +28,13 @@ import {
   verifyVisitorToken,
   type VisitorTokenPayload,
 } from "./visitor-token";
+import {
+  externalAuthClaimsToRouteContext,
+  verifyExternalAuthAssertion,
+  type ExternalAuthPrincipalOptions,
+} from "../auth/external-auth";
+import { evaluateDelegatedAuthorization } from "../authz/delegated-authorization";
+import { validateRouteWebhookPolicyConfig, verifyRouteWebhookPolicy } from "./webhook-policy";
 import { withTimeout, TimeoutError } from "../kernel/timeout";
 import { matchRoutePath, parseRoutePattern } from "../kernel/route-pattern";
 import { resolveConfigBool } from "../config";
@@ -40,6 +49,7 @@ import {
 import { renderAgentIntegrationPage, renderInfoPage } from "./info-page";
 
 const PUBLIC_PAGE_CACHE_CONTROL = "public, max-age=0, must-revalidate";
+const DEFAULT_EXTERNAL_AUTH_ASSERTION_HEADER = "x-auggy-auth-assertion";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -48,6 +58,22 @@ const PUBLIC_PAGE_CACHE_CONTROL = "public, max-age=0, must-revalidate";
 export interface AgentAccessEntry {
   id: string;
   sharedSecret: string;
+}
+
+export interface WebTransportExternalAuthOptions extends ExternalAuthPrincipalOptions {
+  secret: string;
+  /**
+   * Expected assertion audience. Defaults to visitorTokens.agentBinding when
+   * configured, otherwise the agent-card provider name at runtime.
+   */
+  audience?: string;
+  /**
+   * Header carrying the app-server minted assertion. Default:
+   * `x-auggy-auth-assertion`.
+   */
+  header?: string;
+  allowedProviders?: readonly string[];
+  maxTtlSeconds?: number;
 }
 
 export interface WebTransportOptions {
@@ -95,6 +121,14 @@ export interface WebTransportOptions {
      */
     agentBinding?: string;
   };
+  /**
+   * Provider-agnostic app/session auth bridge. An application backend verifies
+   * Clerk, Supabase Auth, Auth0, or custom session state, mints a short-lived
+   * Auggy external auth assertion, and the browser sends it on app-backed
+   * Auggy requests. Valid assertions normalize to public/recognized visitor
+   * identity; they never grant creator or agent trust.
+   */
+  externalAuth?: WebTransportExternalAuthOptions;
   /**
    * Optional URL to redirect GET / to. When set, `GET /` returns 302 to this URL.
    * When unset, `GET /` returns 404. All other routes are unaffected.
@@ -1012,6 +1046,12 @@ export function webTransport(opts: WebTransportOptions): Augment {
         // grepping the boot log can spot anonymous-callable surfaces.
         // Runtime values are CollectedRoute (extends AugmentHttpRoute with augmentName).
         const augmentName = (r as { augmentName?: string }).augmentName ?? "(unknown)";
+        const policyConfigError = validateRouteWebhookPolicyConfig(r);
+        if (policyConfigError) {
+          throw new Error(
+            `[web-transport] augment "${augmentName}" route ${r.method} ${r.path}: ${policyConfigError}`,
+          );
+        }
         if (augmentName === "visitor-auth") visitorAuthMounted = true;
         if (r.auth === "none") {
           console.warn(
@@ -1055,48 +1095,127 @@ export function webTransport(opts: WebTransportOptions): Augment {
     return timingSafeEqual(header, expected);
   }
 
-  async function resolveVisitorRouteAuth(
-    req: Request,
-  ): Promise<Extract<RouteAuthContext, { mode: "visitor" }>> {
-    const anonymous: Extract<RouteAuthContext, { mode: "visitor" }> = {
+  function anonymousRoutePrincipal(): Extract<
+    RouteAuthContext["principal"],
+    { kind: "anonymous" }
+  > {
+    return {
+      kind: "anonymous",
+      trustLevel: "public",
+      publicSubstate: "anonymous",
+    };
+  }
+
+  function creatorRoutePrincipal(): Extract<RouteAuthContext["principal"], { kind: "creator" }> {
+    return {
+      kind: "creator",
+      trustLevel: "creator",
+      peerId: "creator",
+    };
+  }
+
+  function resolveAgentRouteAuth(req: Request): RouteAgentAuthContext | null {
+    const agentId = req.headers.get("x-agent-id");
+    const agentSecret = req.headers.get("x-agent-secret");
+    if (!agentId || !agentSecret) return null;
+
+    const entry = (opts.access?.agents ?? []).find((agent) => agent.id === agentId);
+    if (!entry || !timingSafeEqual(agentSecret, entry.sharedSecret)) return null;
+
+    const displayName = req.headers.get("x-peer-name") ?? undefined;
+    const orgId = req.headers.get("x-org-id") ?? undefined;
+    const principal: Extract<RouteAuthContext["principal"], { kind: "agent" }> = {
+      kind: "agent",
+      trustLevel: "agent",
+      agentId,
+      peerId: `agent:${agentId}`,
+      ...(displayName !== undefined ? { displayName } : {}),
+      ...(orgId !== undefined ? { orgId } : {}),
+    };
+
+    return {
+      mode: "agent",
+      agentId,
+      peerId: principal.peerId,
+      ...(principal.displayName !== undefined ? { displayName: principal.displayName } : {}),
+      ...(principal.orgId !== undefined ? { orgId: principal.orgId } : {}),
+      principal,
+    };
+  }
+
+  function resolveExternalAuthAudience(): string {
+    return (
+      opts.externalAuth?.audience ??
+      opts.visitorTokens?.agentBinding ??
+      kernel?.getAgentCard()?.provider?.name ??
+      "auggy"
+    );
+  }
+
+  function resolveExternalVisitorAuth(req: Request): RouteVisitorAuthContext | null {
+    const config = opts.externalAuth;
+    if (!config) return null;
+
+    const headerName = config.header ?? DEFAULT_EXTERNAL_AUTH_ASSERTION_HEADER;
+    const assertion = req.headers.get(headerName);
+    if (!assertion) return null;
+
+    const verified = verifyExternalAuthAssertion(assertion, {
+      secret: config.secret,
+      audience: resolveExternalAuthAudience(),
+      allowedProviders: config.allowedProviders,
+      maxTtlSeconds: config.maxTtlSeconds,
+    });
+    if (!verified.ok) return null;
+
+    return externalAuthClaimsToRouteContext(verified.claims, {
+      visitorId: config.visitorId,
+      includeUnverifiedEmail: config.includeUnverifiedEmail,
+    });
+  }
+
+  async function resolveVisitorRouteAuth(req: Request): Promise<RouteVisitorAuthContext> {
+    const anonymous: RouteVisitorAuthContext = {
       mode: "visitor",
       state: "anonymous",
+      principal: anonymousRoutePrincipal(),
     };
-    if (!visitorTokensEnabled || !signingKey) return anonymous;
+    const externalOrAnonymous = () => resolveExternalVisitorAuth(req) ?? anonymous;
+    if (!visitorTokensEnabled || !signingKey) return externalOrAnonymous();
 
     const tokenHeader = req.headers.get("x-visitor-token");
-    if (!tokenHeader) return anonymous;
+    if (!tokenHeader) return externalOrAnonymous();
 
     const payload = await verifyVisitorToken(signingKey, tokenHeader);
-    if (!payload) return anonymous;
+    if (!payload) return externalOrAnonymous();
 
     try {
       if (opts.visitorTokens?.revocationCheck?.(payload.visitorId)) {
-        return anonymous;
+        return externalOrAnonymous();
       }
     } catch {
-      return anonymous;
+      return externalOrAnonymous();
     }
 
     const expectedBinding = opts.visitorTokens?.agentBinding;
     if (expectedBinding !== undefined && payload.agentId !== expectedBinding) {
-      return anonymous;
+      return externalOrAnonymous();
     }
 
     let identity: Omit<RouteVisitorIdentity, "agentId" | "issuedAt" | "expiresAt"> | null = null;
     try {
       identity = opts.visitorTokens?.identityLookup?.(payload.visitorId) ?? null;
     } catch {
-      return anonymous;
+      return externalOrAnonymous();
     }
     if (opts.visitorTokens?.identityLookup && !identity) {
-      return anonymous;
+      return externalOrAnonymous();
     }
     if (identity && identity.visitorId !== payload.visitorId) {
-      return anonymous;
+      return externalOrAnonymous();
     }
 
-    return {
+    const visitorAuth: RouteVisitorAuthContext = {
       mode: "visitor",
       state: "recognized",
       visitorId: payload.visitorId,
@@ -1104,7 +1223,61 @@ export function webTransport(opts: WebTransportOptions): Augment {
       issuedAt: payload.issuedAt,
       expiresAt: payload.expiresAt,
       ...(identity ?? {}),
+      principal: {
+        kind: "visitor",
+        trustLevel: "public",
+        publicSubstate: "recognized",
+        visitorId: payload.visitorId,
+        agentId: payload.agentId,
+        ...(identity?.email !== undefined ? { email: identity.email } : {}),
+        ...(identity?.verifiedAt !== undefined ? { verifiedAt: identity.verifiedAt } : {}),
+        ...(identity?.reverifyDueAt !== undefined ? { reverifyDueAt: identity.reverifyDueAt } : {}),
+        ...(identity?.externalAuth !== undefined ? { externalAuth: identity.externalAuth } : {}),
+      },
     };
+    return mergeMatchingExternalVisitorAuth(visitorAuth, resolveExternalVisitorAuth(req));
+  }
+
+  function mergeMatchingExternalVisitorAuth(
+    visitorAuth: Extract<RouteVisitorAuthContext, { state: "recognized" }>,
+    externalAuth: RouteVisitorAuthContext | null,
+  ): RouteVisitorAuthContext {
+    if (externalAuth?.state !== "recognized" || externalAuth.visitorId !== visitorAuth.visitorId) {
+      return visitorAuth;
+    }
+
+    const email = visitorAuth.email ?? externalAuth.email;
+    const verifiedAt = visitorAuth.verifiedAt ?? externalAuth.verifiedAt;
+    const reverifyDueAt = visitorAuth.reverifyDueAt ?? externalAuth.reverifyDueAt;
+
+    return {
+      ...visitorAuth,
+      ...(email !== undefined ? { email } : {}),
+      ...(verifiedAt !== undefined ? { verifiedAt } : {}),
+      ...(reverifyDueAt !== undefined ? { reverifyDueAt } : {}),
+      ...(externalAuth.externalAuth !== undefined
+        ? { externalAuth: externalAuth.externalAuth }
+        : {}),
+      principal: {
+        ...visitorAuth.principal,
+        ...(email !== undefined ? { email } : {}),
+        ...(verifiedAt !== undefined ? { verifiedAt } : {}),
+        ...(reverifyDueAt !== undefined ? { reverifyDueAt } : {}),
+        ...(externalAuth.externalAuth !== undefined
+          ? { externalAuth: externalAuth.externalAuth }
+          : {}),
+      },
+    };
+  }
+
+  function resolveAgentRunTurnAuth(
+    visitorPayload: VisitorTokenPayload | null,
+    externalAuth: RouteVisitorAuthContext | null,
+  ): RouteVisitorAuthContext | undefined {
+    if (visitorPayload === null || externalAuth?.state !== "recognized") return undefined;
+    if (externalAuth.visitorId !== visitorPayload.visitorId) return undefined;
+    if (externalAuth.agentId !== visitorPayload.agentId) return undefined;
+    return externalAuth;
   }
 
   async function authorizeAugmentRoute(
@@ -1112,15 +1285,15 @@ export function webTransport(opts: WebTransportOptions): Augment {
     auth: AugmentHttpRouteAuth,
   ): Promise<{ ok: true; context: RouteAuthContext } | { ok: false; response: Response }> {
     if (auth === "none") {
-      return { ok: true, context: { mode: "none" } };
+      return { ok: true, context: { mode: "none", principal: anonymousRoutePrincipal() } };
     }
 
-    if (auth === "bearer") {
+    if (auth === "bearer" || auth === "creator") {
       const authHeader = req.headers.get("authorization") ?? "";
       if (!isValidAuth(authHeader)) {
         return { ok: false, response: json({ error: "unauthorized" }, 401) };
       }
-      return { ok: true, context: { mode: "bearer" } };
+      return { ok: true, context: { mode: auth, principal: creatorRoutePrincipal() } };
     }
 
     if (auth === "visitor.optional" || auth === "visitor.required") {
@@ -1129,6 +1302,14 @@ export function webTransport(opts: WebTransportOptions): Augment {
         return { ok: false, response: json({ error: "visitor-auth-required" }, 401) };
       }
       return { ok: true, context: visitorAuth };
+    }
+
+    if (auth === "agent.required") {
+      const agentAuth = resolveAgentRouteAuth(req);
+      if (!agentAuth) {
+        return { ok: false, response: json({ error: "agent-auth-required" }, 401) };
+      }
+      return { ok: true, context: agentAuth };
     }
 
     return { ok: false, response: json({ error: "route-auth-misconfigured" }, 500) };
@@ -1152,20 +1333,29 @@ export function webTransport(opts: WebTransportOptions): Augment {
 
   async function handleAgentRun(req: Request): Promise<Response> {
     const authHeader = req.headers.get("authorization") ?? "";
+    let externalVisitorAuth: RouteVisitorAuthContext | null | undefined;
+    function readExternalVisitorAuth(): RouteVisitorAuthContext | null {
+      if (externalVisitorAuth !== undefined) return externalVisitorAuth;
+      externalVisitorAuth = resolveExternalVisitorAuth(req);
+      return externalVisitorAuth;
+    }
+
     // Bearer policy:
     //   - bearer present + valid   → proceed (Path 1 creator, or
     //                                Path 2/3 via the agent/visitor headers
     //                                resolved later in identify())
     //   - bearer present + invalid → 401 (timing-safe; no silent downgrade)
-    //   - bearer absent + allowAnonymous=true  → fall through to identify(),
-    //                                            Path 4 mints public:anonymous
-    //   - bearer absent + allowAnonymous=false → 401
+    //   - bearer absent + valid external auth assertion → proceed as
+    //                                                    recognized visitor
+    //   - bearer absent + allowAnonymous=true           → fall through to
+    //                                                    anonymous identity
+    //   - bearer absent + neither                       → 401
     const hasBearerAttempt = authHeader.length > 0;
     if (hasBearerAttempt) {
       if (!isValidAuth(authHeader)) {
         return json({ error: "unauthorized" }, 401);
       }
-    } else if (!allowAnonymous) {
+    } else if (!allowAnonymous && readExternalVisitorAuth()?.state !== "recognized") {
       return json({ error: "unauthorized" }, 401);
     }
 
@@ -1190,6 +1380,18 @@ export function webTransport(opts: WebTransportOptions): Augment {
     // --- Visitor token handling ---
     let visitorPayload: VisitorTokenPayload | null = null;
     let newToken: string | null = null;
+    function applyExternalVisitorAuth(): void {
+      if (visitorPayload) return;
+      const externalAuth = readExternalVisitorAuth();
+      if (externalAuth?.state === "recognized") {
+        visitorPayload = {
+          visitorId: externalAuth.visitorId,
+          agentId: externalAuth.agentId,
+          issuedAt: externalAuth.issuedAt,
+          expiresAt: externalAuth.expiresAt,
+        };
+      }
+    }
 
     if (visitorTokensEnabled && signingKey) {
       const tokenHeader = req.headers.get("x-visitor-token");
@@ -1213,6 +1415,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
           }
         }
       }
+      applyExternalVisitorAuth();
       if (!visitorPayload) {
         // Check if this looks like an agent auth attempt — don't issue visitor
         // tokens to agent-credential requests (they'll be resolved as agent/creator).
@@ -1249,6 +1452,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
         // hasAgentHeaders or hasBearerAttempt case: no visitor token issued.
       }
     }
+    applyExternalVisitorAuth();
 
     // --- Build headers map ---
     const headers: Record<string, string> = {};
@@ -1310,6 +1514,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
       return json({ error: "missing peer identity" }, 400);
     }
 
+    const turnAuth = resolveAgentRunTurnAuth(visitorPayload, readExternalVisitorAuth());
     const parts: Part[] = [{ kind: "text", text }];
     const inbound: InboundMessage = {
       parts,
@@ -1328,6 +1533,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
       timestamp: Date.now(),
       source: "web",
       peer,
+      ...(turnAuth !== undefined ? { auth: turnAuth } : {}),
       payload: inbound,
     };
 
@@ -1417,10 +1623,26 @@ export function webTransport(opts: WebTransportOptions): Augment {
   }
 
   function handleCorsPreFlight(): Response {
+    const allowedHeaders = [
+      "content-type",
+      "authorization",
+      "x-peer-id",
+      "x-peer-kind",
+      "x-peer-name",
+      "x-org-id",
+      "x-visitor-token",
+      DEFAULT_EXTERNAL_AUTH_ASSERTION_HEADER,
+      "x-agent-id",
+      "x-agent-secret",
+      "idempotency-key",
+    ];
+    const externalAuthHeader = opts.externalAuth?.header?.toLowerCase();
+    if (externalAuthHeader && !allowedHeaders.includes(externalAuthHeader)) {
+      allowedHeaders.push(externalAuthHeader);
+    }
     const headers: Record<string, string> = {
       "access-control-allow-methods": "GET, POST, OPTIONS",
-      "access-control-allow-headers":
-        "content-type, authorization, x-peer-id, x-peer-kind, x-peer-name, x-org-id, x-visitor-token, x-agent-id, x-agent-secret, idempotency-key",
+      "access-control-allow-headers": allowedHeaders.join(", "),
       "access-control-expose-headers": "x-visitor-token, idempotency-key",
       "access-control-max-age": "86400",
     };
@@ -1455,6 +1677,22 @@ export function webTransport(opts: WebTransportOptions): Augment {
     return new Response(JSON.stringify(body), { status, headers });
   }
 
+  function withCorsHeaders(response: Response): Response {
+    if (!opts.cors) return response;
+    const headers = new Headers(response.headers);
+    if (!headers.has("access-control-allow-origin")) {
+      headers.set("access-control-allow-origin", opts.cors.origins.join(","));
+    }
+    if (!headers.has("access-control-expose-headers")) {
+      headers.set("access-control-expose-headers", "x-visitor-token, idempotency-key");
+    }
+    return new Response(response.body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers,
+    });
+  }
+
   return {
     name: "web",
     type: "webTransport",
@@ -1464,6 +1702,21 @@ export function webTransport(opts: WebTransportOptions): Augment {
     adminInfo,
     adminActions,
     async onBoot() {
+      if (opts.externalAuth) {
+        if (!opts.externalAuth.secret) {
+          throw new Error(
+            "[web-transport] externalAuth.secret is required when externalAuth is configured.",
+          );
+        }
+        if (opts.externalAuth.header !== undefined && opts.externalAuth.header.trim() === "") {
+          throw new Error("[web-transport] externalAuth.header must be non-empty when configured.");
+        }
+        if (opts.externalAuth.maxTtlSeconds !== undefined && opts.externalAuth.maxTtlSeconds <= 0) {
+          throw new Error(
+            "[web-transport] externalAuth.maxTtlSeconds must be positive when configured.",
+          );
+        }
+      }
       if (visitorTokensEnabled) {
         const keySource = opts.visitorTokens?.signingKey;
         if (!keySource) {
@@ -1608,18 +1861,41 @@ export function webTransport(opts: WebTransportOptions): Augment {
             const routeAuth = await authorizeAugmentRoute(req, augmentRoute.auth);
             if (!routeAuth.ok) return routeAuth.response;
 
+            const authorization = evaluateDelegatedAuthorization(augmentRoute.requires, {
+              auth: routeAuth.context,
+              params,
+            });
+            if (!authorization.ok) {
+              return json({ error: "forbidden", reason: authorization.reason }, 403);
+            }
+
+            // Per-route rate limit runs before body buffering so rejected public
+            // POSTs do not force reads up to maxBodyBytes before receiving 429.
+            if (augmentRoute.rateLimit) {
+              const routeKey = `${augmentRoute.method} ${augmentRoute.path}`;
+              const ip = getCallerIp(req, server, trustedProxies, xffOnUntrusted);
+              const rl = checkRouteRateLimit(routeKey, ip, augmentRoute.rateLimit.maxPerMinute);
+              if (!rl.allowed) {
+                return json({ error: "rate-limited" }, 429, {
+                  "retry-after": String(rl.retryAfterSec),
+                });
+              }
+            }
+
             // Finding 2 — body-size cap. Buffer the request body up to maxBodyBytes
             // bytes, enforcing actual byte-count (not just content-length header).
             // Adversarial clients can omit content-length or use chunked encoding
             // to bypass a header-only check.
             const maxBodyBytes = augmentRoute.maxBodyBytes ?? 1_048_576;
             let dispatchReq: Request = req;
+            let rawBody: Uint8Array<ArrayBufferLike> = new Uint8Array();
             if (req.method !== "GET" && req.method !== "HEAD" && req.body) {
               try {
                 const buffered = await readBodyWithCap(req.body, maxBodyBytes);
                 if (buffered === null) {
                   return json({ error: "payload-too-large" }, 413);
                 }
+                rawBody = buffered;
                 // Reconstruct the Request with the buffered body so the handler
                 // sees the same bytes (and can call req.text(), req.json(), etc).
                 dispatchReq = new Request(req.url, {
@@ -1633,17 +1909,13 @@ export function webTransport(opts: WebTransportOptions): Augment {
               }
             }
 
-            // Finding 3 — per-route rate limit keyed by route + caller IP.
-            // Prevents one client from exhausting the bucket for everyone.
-            if (augmentRoute.rateLimit) {
-              const routeKey = `${augmentRoute.method} ${augmentRoute.path}`;
-              const ip = getCallerIp(req, server, trustedProxies, xffOnUntrusted);
-              const rl = checkRouteRateLimit(routeKey, ip, augmentRoute.rateLimit.maxPerMinute);
-              if (!rl.allowed) {
-                return json({ error: "rate-limited" }, 429, {
-                  "retry-after": String(rl.retryAfterSec),
-                });
-              }
+            const webhookPolicy = await verifyRouteWebhookPolicy(
+              augmentRoute,
+              dispatchReq,
+              rawBody,
+            );
+            if (!webhookPolicy.ok) {
+              return json({ error: webhookPolicy.error }, webhookPolicy.status);
             }
 
             try {
@@ -1654,16 +1926,18 @@ export function webTransport(opts: WebTransportOptions): Augment {
               const controller = new AbortController();
               const timer = setTimeout(() => controller.abort(), timeoutMs);
               try {
-                return await withTimeout(
+                const response = await withTimeout(
                   () =>
                     augmentRoute.handler(dispatchReq, {
                       signal: controller.signal,
                       auth: routeAuth.context,
                       params,
+                      ...(webhookPolicy.context ? { webhook: webhookPolicy.context } : {}),
                       routePath: augmentRoute.path,
                     }),
                   timeoutMs,
                 );
+                return withCorsHeaders(response);
               } finally {
                 clearTimeout(timer);
               }
@@ -1693,10 +1967,12 @@ export function webTransport(opts: WebTransportOptions): Augment {
             ),
           ];
           if (allowedMethods.length > 0) {
-            return new Response("Method Not Allowed", {
-              status: 405,
-              headers: { allow: allowedMethods.join(", ") },
-            });
+            return withCorsHeaders(
+              new Response("Method Not Allowed", {
+                status: 405,
+                headers: { allow: allowedMethods.join(", ") },
+              }),
+            );
           }
 
           return new Response("Not Found", { status: 404 });

@@ -3,9 +3,15 @@ import type {
   Augment,
   AugmentHttpRoute,
   AugmentHttpRouteAuth,
+  AugmentHttpRoutePolicy,
   AugmentHttpRouteRequestJsonSchema,
+  AugmentHttpRouteResponseJsonSchema,
+  AugmentHttpRouteWebhookProvider,
+  AugmentHttpRouteWebhookSignaturePolicy,
+  AuthorizationRequirement,
   HttpMethod,
   RouteAuthContext,
+  RouteWebhookContext,
   Tool,
   ToolCategory,
   ToolExecuteContext,
@@ -19,6 +25,7 @@ export function defineTool<T extends z.ZodType<any, any, any>>(opts: {
   description: string;
   category: ToolCategory;
   input: T;
+  requires?: AuthorizationRequirement | readonly AuthorizationRequirement[];
   execute: (input: z.infer<T>, context?: ToolExecuteContext) => Promise<string | ToolResult>;
 }): Tool<z.infer<T>> {
   return {
@@ -27,6 +34,7 @@ export function defineTool<T extends z.ZodType<any, any, any>>(opts: {
     category: opts.category,
     input: opts.input,
     inputJsonSchema: z.toJSONSchema(opts.input) as Record<string, unknown>,
+    ...(opts.requires !== undefined ? { requires: opts.requires } : {}),
     execute: opts.execute,
   };
 }
@@ -39,6 +47,7 @@ export interface RouteContextBase<TParams = Record<string, string>> {
   request: Request;
   signal: AbortSignal;
   auth: RouteAuthContext;
+  webhook?: RouteWebhookContext;
   params: TParams;
   route: {
     method: HttpMethod;
@@ -70,14 +79,18 @@ interface RouteOptionsBase {
   timeoutMs?: number;
   maxBodyBytes?: number;
   rateLimit?: RouteRateLimit;
+  policy?: AugmentHttpRoutePolicy;
+  requires?: AuthorizationRequirement | readonly AuthorizationRequirement[];
 }
 
 export interface DefineGetRouteOptions<
   TQuery extends AnySchema | undefined = undefined,
   TParams extends AnySchema | undefined = undefined,
+  TResponse extends AnySchema | undefined = undefined,
 > extends RouteOptionsBase {
   query?: TQuery;
   params?: TParams;
+  response?: TResponse;
   handler: (
     ctx: RouteContext<
       InferSchema<TParams, Record<string, string>>,
@@ -91,10 +104,12 @@ export interface DefinePostRouteOptions<
   TBody extends AnySchema | undefined = undefined,
   TParams extends AnySchema | undefined = undefined,
   TQuery extends AnySchema | undefined = undefined,
+  TResponse extends AnySchema | undefined = undefined,
 > extends RouteOptionsBase {
   body?: TBody;
   params?: TParams;
   query?: TQuery;
+  response?: TResponse;
   handler: (
     ctx: RouteContext<
       InferSchema<TParams, Record<string, string>>,
@@ -126,6 +141,7 @@ function routeBase(
   opts: RouteOptionsBase,
   handler: AugmentHttpRoute["handler"],
   requestJsonSchema?: AugmentHttpRouteRequestJsonSchema,
+  responseJsonSchema?: AugmentHttpRouteResponseJsonSchema,
 ): AugmentHttpRoute {
   return {
     method,
@@ -135,9 +151,28 @@ function routeBase(
     ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
     ...(opts.maxBodyBytes !== undefined ? { maxBodyBytes: opts.maxBodyBytes } : {}),
     ...(opts.rateLimit ? { rateLimit: opts.rateLimit } : {}),
+    ...(opts.policy ? { policy: opts.policy } : {}),
+    ...(opts.requires !== undefined ? { requires: opts.requires } : {}),
     ...(requestJsonSchema ? { requestJsonSchema } : {}),
+    ...(responseJsonSchema ? { responseJsonSchema } : {}),
   };
 }
+
+export const webhook = {
+  signature(
+    provider: AugmentHttpRouteWebhookProvider,
+    opts: { secretEnv?: string; timestampToleranceSeconds?: number } = {},
+  ): AugmentHttpRouteWebhookSignaturePolicy {
+    return {
+      kind: "webhook.signature",
+      provider,
+      ...(opts.secretEnv !== undefined ? { secretEnv: opts.secretEnv } : {}),
+      ...(opts.timestampToleranceSeconds !== undefined
+        ? { timestampToleranceSeconds: opts.timestampToleranceSeconds }
+        : {}),
+    };
+  },
+};
 
 function toJsonSchema(schema: AnySchema | undefined): Record<string, unknown> | undefined {
   return schema ? (z.toJSONSchema(schema) as Record<string, unknown>) : undefined;
@@ -150,8 +185,32 @@ function requestJsonSchema(
 }
 
 function fallbackRouteAuth(auth: AugmentHttpRouteAuth): RouteAuthContext {
-  if (auth === "none" || auth === "bearer") return { mode: auth };
-  return { mode: "visitor", state: "anonymous" };
+  if (auth === "bearer" || auth === "creator") {
+    return {
+      mode: auth,
+      principal: { kind: "creator", trustLevel: "creator", peerId: "creator" },
+    };
+  }
+  const anonymous = {
+    kind: "anonymous" as const,
+    trustLevel: "public" as const,
+    publicSubstate: "anonymous" as const,
+  };
+  if (auth === "none") return { mode: "none", principal: anonymous };
+  if (auth === "agent.required") {
+    return {
+      mode: "agent",
+      agentId: "agent",
+      peerId: "agent:agent",
+      principal: {
+        kind: "agent",
+        trustLevel: "agent",
+        agentId: "agent",
+        peerId: "agent:agent",
+      },
+    };
+  }
+  return { mode: "visitor", state: "anonymous", principal: anonymous };
 }
 
 function queryObject(searchParams: URLSearchParams): Record<string, string | string[]> {
@@ -173,12 +232,13 @@ export const defineRoute = {
   get<
     TQuery extends AnySchema | undefined = undefined,
     TParams extends AnySchema | undefined = undefined,
-  >(path: string, opts: DefineGetRouteOptions<TQuery, TParams>): AugmentHttpRoute {
+    TResponse extends AnySchema | undefined = undefined,
+  >(path: string, opts: DefineGetRouteOptions<TQuery, TParams, TResponse>): AugmentHttpRoute {
     return routeBase(
       "GET",
       path,
       opts,
-      async (request, { signal, auth, params, routePath }) => {
+      async (request, { signal, auth, params, routePath, webhook }) => {
         const parsedQuery = opts.query
           ? opts.query.safeParse(queryObject(new URL(request.url).searchParams))
           : { success: true as const, data: undefined };
@@ -194,6 +254,7 @@ export const defineRoute = {
           request,
           signal,
           auth: auth ?? fallbackRouteAuth(opts.auth),
+          ...(webhook ? { webhook } : {}),
           params: parsedParams.data as TParams extends AnySchema
             ? z.infer<TParams>
             : Record<string, string>,
@@ -212,6 +273,7 @@ export const defineRoute = {
         ...(opts.params ? { params: toJsonSchema(opts.params) } : {}),
         ...(opts.query ? { query: toJsonSchema(opts.query) } : {}),
       }),
+      toJsonSchema(opts.response),
     );
   },
 
@@ -219,12 +281,16 @@ export const defineRoute = {
     TBody extends AnySchema | undefined = undefined,
     TParams extends AnySchema | undefined = undefined,
     TQuery extends AnySchema | undefined = undefined,
-  >(path: string, opts: DefinePostRouteOptions<TBody, TParams, TQuery>): AugmentHttpRoute {
+    TResponse extends AnySchema | undefined = undefined,
+  >(
+    path: string,
+    opts: DefinePostRouteOptions<TBody, TParams, TQuery, TResponse>,
+  ): AugmentHttpRoute {
     return routeBase(
       "POST",
       path,
       opts,
-      async (request, { signal, auth, params, routePath }) => {
+      async (request, { signal, auth, params, routePath, webhook }) => {
         let rawBody: unknown;
         if (opts.body) {
           try {
@@ -254,6 +320,7 @@ export const defineRoute = {
           request,
           signal,
           auth: auth ?? fallbackRouteAuth(opts.auth),
+          ...(webhook ? { webhook } : {}),
           params: parsedParams.data as TParams extends AnySchema
             ? z.infer<TParams>
             : Record<string, string>,
@@ -273,6 +340,7 @@ export const defineRoute = {
         ...(opts.query ? { query: toJsonSchema(opts.query) } : {}),
         ...(opts.body ? { body: toJsonSchema(opts.body) } : {}),
       }),
+      toJsonSchema(opts.response),
     );
   },
 

@@ -159,6 +159,9 @@ interface ResolvedAuthState {
   claims?: {
     email?: string;
     provider?: string;
+    subject?: string;
+    orgId?: string;
+    roles?: string[];
     verifiedAt?: string;
     agentId?: string;
     operatorId?: string;
@@ -215,6 +218,38 @@ Add `creator` only when bearer-auth routes can expose resolved creator/auth stat
 
 Avoid naming a mode `creator` if it is only a blind bearer check with no route-context identity. Users will infer stronger semantics.
 
+Implementation note: `auth: "creator"` is now a semantic alias for creator-only
+routes. It uses the same web bearer credential as `auth: "bearer"`, but route
+handlers receive `auth.mode === "creator"` and a creator principal.
+
+External app auth assertions now preserve a compact verified claim subset on
+recognized visitor route context and protected tool execution context:
+
+```ts
+auth.externalAuth // { provider, subject, orgId?, roles?, scopes?, grants? }
+```
+
+This gives Clerk/Supabase/custom app sessions enough structure for app-owned
+authorization checks without making Auggy a general RBAC product.
+
+When a request carries both a valid Auggy visitor token and a valid external app
+auth assertion, Auggy keeps the visitor-token identity and attaches
+`externalAuth` only if the external assertion maps to the same `visitorId`.
+Mismatched app claims are not merged onto the visitor context.
+
+Developer reference: [`../26-delegated-authorization.md`](../26-delegated-authorization.md)
+describes the Clerk/Supabase/custom app bridge, short-lived assertions,
+delegated `scopes` / `grants`, and route/tool `requires` examples.
+
+Implementation note: delegated authorization now has two enforcement sites.
+Routes bind resource grants from path params with `{ param: "id" }`; tools bind
+resource grants from validated tool input with `{ input: "orderId" }`. This is
+the right boundary for app builders with Supabase, Clerk, or custom auth: their
+app decides the user's permissions, signs a narrow assertion, and Auggy
+deterministically enforces the resulting scopes/grants before route handlers or
+model-requested tools run. Roles can travel as context, but Auggy should not
+interpret broad app roles as permissions.
+
 ### Step 4: visitor and agent route auth
 
 Add only after route context can resolve credentials consistently:
@@ -226,6 +261,12 @@ Add only after route context can resolve credentials consistently:
 
 These must align with `webTransport` identity resolution and `visitorAuth`, not create a second identity model.
 
+Implementation note: `auth: "agent.required"` now admits routes through the
+same `x-agent-id` / `x-agent-secret` allowlist used by `webTransport`
+identity resolution. Handlers receive `auth.mode === "agent"` and an agent
+principal. Browser generated clients omit these routes; server generated
+clients can call them with explicit agent credentials.
+
 ### Step 5: webhook policies
 
 Add as route policies, not peer identity:
@@ -233,6 +274,42 @@ Add as route policies, not peer identity:
 - `webhook.signature("stripe")`
 - `webhook.signature("github")`
 - or augment-specific policy helpers
+
+Recommended first shape:
+
+```ts
+defineRoute.post("/webhooks/stripe", {
+  auth: "none",
+  policy: webhook.signature("stripe", {
+    secretEnv: "STRIPE_WEBHOOK_SECRET",
+  }),
+  handler: async ({ webhook }) => {
+    // Stripe signature was verified before dispatch.
+    const event = webhook?.event;
+  },
+});
+```
+
+Ship this in layers: policy metadata for manifests, route reports, OpenAPI
+`x-auggy`, and generated-client target filtering; then provider verifiers.
+Stripe is the first verified provider because it forces raw-body HMAC handling.
+GitHub/Svix-style verifiers can follow without becoming peer identity.
+
+Keep webhook auth separate from route identity:
+
+- The caller is a provider event, not a visitor, creator, or agent peer.
+- Verification should run before JSON body parsing mutates the raw payload.
+- The verified event can be passed to the handler as structured route context.
+- The model should not see webhook secrets, signatures, or raw provider
+  headers.
+- Generated browser clients should omit webhook-policy routes by default.
+- Server clients may include them only as ordinary server-side routes if the
+  signature is caller-supplied; examples should discourage manually replaying
+  provider webhooks.
+
+Start with provider-specific helpers for Stripe and GitHub/Svix-style HMAC
+instead of a generic middleware system. This keeps manifests inspectable and
+avoids turning Auggy into an Express clone.
 
 ## Design cautions
 
