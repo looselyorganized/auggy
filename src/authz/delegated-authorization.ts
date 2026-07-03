@@ -22,6 +22,17 @@ export type DelegatedAuthorizationDecision =
       requirement: AuthorizationRequirement;
     };
 
+export type VisitorAuthRequiredErrorBody = { error: "visitor-auth-required" };
+
+export type DelegatedAuthorizationForbiddenErrorBody = {
+  error: "forbidden";
+  reason: DelegatedAuthorizationFailureReason;
+};
+
+export type DelegatedAuthorizationHttpErrorBody =
+  | VisitorAuthRequiredErrorBody
+  | DelegatedAuthorizationForbiddenErrorBody;
+
 export interface DelegatedAuthorizationContext {
   auth?: RouteAuthContext | null;
   params?: Record<string, string>;
@@ -80,6 +91,16 @@ export function evaluateDelegatedAuthorization(
   }
 
   return { ok: true };
+}
+
+export function visitorAuthRequiredErrorBody(): VisitorAuthRequiredErrorBody {
+  return { error: "visitor-auth-required" };
+}
+
+export function delegatedAuthorizationForbiddenErrorBody(
+  reason: DelegatedAuthorizationFailureReason,
+): DelegatedAuthorizationForbiddenErrorBody {
+  return { error: "forbidden", reason };
 }
 
 export function validateAuthorizationRequirements(

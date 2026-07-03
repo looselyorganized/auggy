@@ -108,6 +108,13 @@ Keep assertions short-lived. The app can mint a fresh assertion when the
 browser needs to call Auggy. Do not put `AUGGY_EXTERNAL_AUTH_SECRET` in browser
 code.
 
+`createExternalAuthAssertion` is the supported server-side helper for this
+contract. The app chooses the assertion `audience` to match the Auggy agent,
+sets `provider` to the app identity source (`"supabase"`, `"clerk"`, or a
+custom provider name), and uses short TTLs. Auggy verifies the signature,
+audience, provider allowlist, expiry, and max TTL before any route handler or
+protected tool receives the claims.
+
 ## App Builder Recipes
 
 The recipes below all have the same boundary:
@@ -437,19 +444,16 @@ the narrow result Auggy needs to enforce: scopes and grants.
 
 ## Runtime Outcomes
 
-For `auth: "visitor.required"` routes:
+For `auth: "visitor.required"` routes, these HTTP response bodies are the
+public contract:
 
-- Missing/invalid visitor credentials or external assertion return
-  `401 {"error":"visitor-auth-required"}`.
-- A valid visitor token without required external auth claims returns
-  `403 {"error":"forbidden","reason":"authorization-claims-required"}` when
-  the route declares `requires`.
-- Missing scope returns
-  `403 {"error":"forbidden","reason":"authorization-scope-missing"}`.
-- Missing grant returns
-  `403 {"error":"forbidden","reason":"authorization-grant-missing"}`.
-- A path-param resource binding that cannot resolve returns
-  `403 {"error":"forbidden","reason":"authorization-resource-unresolved"}`.
+| Status | Body | Meaning |
+| --- | --- | --- |
+| `401` | `{"error":"visitor-auth-required"}` | The request did not resolve to a recognized visitor. Missing visitor credentials, invalid visitor tokens, and invalid external assertions all use this body. Assertion verification internals such as expiry, provider mismatch, or signature failure are not exposed to the browser. |
+| `403` | `{"error":"forbidden","reason":"authorization-claims-required"}` | The request has a recognized visitor, but the route declares `requires` and the visitor context has no verified external auth claims. |
+| `403` | `{"error":"forbidden","reason":"authorization-scope-missing"}` | The assertion did not include the required scope. |
+| `403` | `{"error":"forbidden","reason":"authorization-grant-missing"}` | The assertion did not include a grant matching the required action/resource/constraints. |
+| `403` | `{"error":"forbidden","reason":"authorization-resource-unresolved"}` | The route requirement could not resolve its declared path-param resource. |
 
 Route authorization is enforced before the handler runs.
 
@@ -457,6 +461,8 @@ For protected tools, the tool does not execute when authorization is missing,
 invalid, or denied. The turn continues with a deterministic tool-denial result
 visible to the model, such as `authorization-scope-missing`,
 `authorization-grant-missing`, or `authorization-resource-unresolved`.
+Those tool-denial strings intentionally match the route `reason` values, but
+they are model-loop results rather than HTTP response bodies.
 
 ## What Claims Mean
 

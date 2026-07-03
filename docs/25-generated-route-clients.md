@@ -232,6 +232,12 @@ The generated browser client sends it as `x-auggy-auth-assertion`. Auggy runtime
 verifies it and resolves visitor context. The model never verifies identity from
 chat claims.
 
+Generated clients keep failed response `data` typed as `unknown`, but Auggy's
+delegated auth HTTP error bodies are stable: visitor auth failures return
+`{"error":"visitor-auth-required"}`, and authorization failures return
+`{"error":"forbidden","reason":...}`. Narrow those bodies in app code when you
+need custom UI for denied access.
+
 Generated route clients only cover deterministic HTTP routes. Protected model
 tools use the same external assertion and delegated scopes/grants, but their
 resource grants bind through validated tool input rather than route params. See

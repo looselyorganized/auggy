@@ -33,7 +33,11 @@ import {
   verifyExternalAuthAssertion,
   type ExternalAuthPrincipalOptions,
 } from "../auth/external-auth";
-import { evaluateDelegatedAuthorization } from "../authz/delegated-authorization";
+import {
+  delegatedAuthorizationForbiddenErrorBody,
+  evaluateDelegatedAuthorization,
+  visitorAuthRequiredErrorBody,
+} from "../authz/delegated-authorization";
 import { validateRouteWebhookPolicyConfig, verifyRouteWebhookPolicy } from "./webhook-policy";
 import { withTimeout, TimeoutError } from "../kernel/timeout";
 import { matchRoutePath, parseRoutePattern } from "../kernel/route-pattern";
@@ -1299,7 +1303,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
     if (auth === "visitor.optional" || auth === "visitor.required") {
       const visitorAuth = await resolveVisitorRouteAuth(req);
       if (auth === "visitor.required" && visitorAuth.state !== "recognized") {
-        return { ok: false, response: json({ error: "visitor-auth-required" }, 401) };
+        return { ok: false, response: json(visitorAuthRequiredErrorBody(), 401) };
       }
       return { ok: true, context: visitorAuth };
     }
@@ -1866,7 +1870,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
               params,
             });
             if (!authorization.ok) {
-              return json({ error: "forbidden", reason: authorization.reason }, 403);
+              return json(delegatedAuthorizationForbiddenErrorBody(authorization.reason), 403);
             }
 
             // Per-route rate limit runs before body buffering so rejected public
