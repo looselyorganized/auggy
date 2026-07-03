@@ -226,7 +226,7 @@ External app auth assertions now preserve a compact verified claim subset on
 recognized visitor route context and protected tool execution context:
 
 ```ts
-auth.externalAuth // { provider, subject, orgId?, roles?, scopes?, grants? }
+auth.externalAuth // { keyId?, provider, subject, orgId?, roles?, scopes?, grants? }
 ```
 
 This gives Clerk/Supabase/custom app sessions enough structure for app-owned

@@ -31,6 +31,7 @@ import {
 import {
   externalAuthClaimsToRouteContext,
   verifyExternalAuthAssertion,
+  type ExternalAuthAssertionSecret,
   type ExternalAuthPrincipalOptions,
 } from "../auth/external-auth";
 import {
@@ -66,6 +67,8 @@ export interface AgentAccessEntry {
 
 export interface WebTransportExternalAuthOptions extends ExternalAuthPrincipalOptions {
   secret: string;
+  keyId?: string;
+  secrets?: readonly ExternalAuthAssertionSecret[];
   /**
    * Expected assertion audience. Defaults to visitorTokens.agentBinding when
    * configured, otherwise the agent-card provider name at runtime.
@@ -1166,6 +1169,8 @@ export function webTransport(opts: WebTransportOptions): Augment {
 
     const verified = verifyExternalAuthAssertion(assertion, {
       secret: config.secret,
+      keyId: config.keyId,
+      secrets: config.secrets,
       audience: resolveExternalAuthAudience(),
       allowedProviders: config.allowedProviders,
       maxTtlSeconds: config.maxTtlSeconds,
@@ -1711,6 +1716,21 @@ export function webTransport(opts: WebTransportOptions): Augment {
           throw new Error(
             "[web-transport] externalAuth.secret is required when externalAuth is configured.",
           );
+        }
+        if (opts.externalAuth.keyId !== undefined && opts.externalAuth.keyId.trim() === "") {
+          throw new Error("[web-transport] externalAuth.keyId must be non-empty when configured.");
+        }
+        for (const entry of opts.externalAuth.secrets ?? []) {
+          if (!entry.secret) {
+            throw new Error(
+              "[web-transport] externalAuth.secrets entries require a non-empty secret.",
+            );
+          }
+          if (entry.keyId !== undefined && entry.keyId.trim() === "") {
+            throw new Error(
+              "[web-transport] externalAuth.secrets keyId must be non-empty when configured.",
+            );
+          }
         }
         if (opts.externalAuth.header !== undefined && opts.externalAuth.header.trim() === "") {
           throw new Error("[web-transport] externalAuth.header must be non-empty when configured.");

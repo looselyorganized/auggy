@@ -53,6 +53,13 @@ const web = webTransport({
   },
   externalAuth: {
     secret: process.env.AUGGY_EXTERNAL_AUTH_SECRET!,
+    keyId: "2026-07",
+    secrets: [
+      {
+        keyId: "2026-06",
+        secret: process.env.AUGGY_EXTERNAL_AUTH_SECRET_PREVIOUS!,
+      },
+    ],
     audience: "storefront-agent",
     allowedProviders: ["supabase", "clerk", "custom"],
     maxTtlSeconds: 60,
@@ -66,6 +73,13 @@ The default assertion header is `x-auggy-auth-assertion`. Override
 The `audience` should be stable for the agent. If omitted, Auggy falls back to
 `visitorTokens.agentBinding`, then the agent-card provider name, then `"auggy"`.
 Use an explicit audience when assertions are minted outside the Auggy process.
+
+`externalAuth.secret` is the current signing secret. `externalAuth.keyId`
+labels that current secret when minted assertions include a `keyId`.
+`externalAuth.secrets` adds previous or alternate secrets for rotation.
+Entries can include `keyId`, so assertions with `kid` only try the matching
+key; assertions without `kid` remain compatible and are tried against the
+configured keyring.
 
 For `/agent/run`, a valid external auth assertion admits the request as a
 recognized visitor even when `allowAnonymous` is `false`. That keeps normal
@@ -89,6 +103,7 @@ export async function mintAuggyAssertionForUser(user: {
 
   return createExternalAuthAssertion({
     secret: process.env.AUGGY_EXTERNAL_AUTH_SECRET!,
+    keyId: "2026-07",
     audience: "storefront-agent",
     provider: "custom",
     subject: user.id,
@@ -111,9 +126,9 @@ code.
 `createExternalAuthAssertion` is the supported server-side helper for this
 contract. The app chooses the assertion `audience` to match the Auggy agent,
 sets `provider` to the app identity source (`"supabase"`, `"clerk"`, or a
-custom provider name), and uses short TTLs. Auggy verifies the signature,
-audience, provider allowlist, expiry, and max TTL before any route handler or
-protected tool receives the claims.
+custom provider name), sets `keyId` when using rotation, and uses short TTLs.
+Auggy verifies the signature, key id, audience, provider allowlist, expiry, and
+max TTL before any route handler or protected tool receives the claims.
 
 ## App Builder Recipes
 
@@ -162,6 +177,7 @@ export async function GET(req: Request) {
 
   const assertion = createExternalAuthAssertion({
     secret: process.env.AUGGY_EXTERNAL_AUTH_SECRET!,
+    keyId: "2026-07",
     audience: "storefront-agent",
     provider: "supabase",
     subject: user.id,
@@ -216,6 +232,7 @@ export async function GET() {
 
   const assertion = createExternalAuthAssertion({
     secret: process.env.AUGGY_EXTERNAL_AUTH_SECRET!,
+    keyId: "2026-07",
     audience: "storefront-agent",
     provider: "clerk",
     subject: userId,
@@ -470,7 +487,7 @@ Verified external auth claims are available on route context and protected tool
 execution context:
 
 ```ts
-auth.externalAuth // provider, subject, orgId?, roles?, scopes?, grants?, authzVersion?, jti?
+auth.externalAuth // keyId?, provider, subject, orgId?, roles?, scopes?, grants?, authzVersion?, jti?
 auth.principal.externalAuth
 ```
 
@@ -489,7 +506,9 @@ not attached to the visitor context.
 - Verify Clerk/Supabase/custom sessions on the app server, not in browser code.
 - Keep assertion TTLs short, usually 30-120 seconds.
 - Use `allowedProviders` and a stable `audience`.
-- Rotate `AUGGY_EXTERNAL_AUTH_SECRET` like any app signing secret.
+- Rotate `AUGGY_EXTERNAL_AUTH_SECRET` like any app signing secret: mint new
+  assertions with a new `keyId`, keep the previous key in
+  `externalAuth.secrets` until its assertions expire, then remove it.
 - Do not put app RBAC policy, broad role interpretation, or provider secrets in
   Auggy route handlers.
 - Do not let the model decide whether a user is authorized.

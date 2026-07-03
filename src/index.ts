@@ -102,6 +102,7 @@ export {
 } from "./auth/external-auth";
 export type {
   CreateExternalAuthAssertionOptions,
+  ExternalAuthAssertionSecret,
   ExternalAuthAssertionFailureReason,
   ExternalAuthAssertionVerification,
   ExternalAuthClaims,
