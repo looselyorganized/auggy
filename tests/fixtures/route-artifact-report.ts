@@ -7,10 +7,14 @@ export function routeArtifactReport(): RouteArtifactReport {
   return {
     agent: { name: "artifact-agent", configPath: "/tmp/artifact-agent/agent.yaml" },
     summary: {
-      totalRoutes: 6,
-      publicRoutes: 2,
+      totalRoutes: 7,
+      publicRoutes: 3,
       privateRoutes: 4,
-      publicRoutePaths: ["GET /catalog/:serviceId", "POST /visitor/profile"],
+      publicRoutePaths: [
+        "GET /catalog/:serviceId",
+        "POST /visitor/profile",
+        "POST /webhooks/stripe",
+      ],
     },
     routes: [
       {
@@ -174,6 +178,37 @@ export function routeArtifactReport(): RouteArtifactReport {
             accepted: { type: "boolean" },
           },
           required: ["accepted"],
+        },
+      },
+      {
+        method: "POST",
+        path: "/webhooks/stripe",
+        augmentName: "payments",
+        auth: "none",
+        params: [],
+        public: true,
+        security: "public",
+        policy: {
+          kind: "webhook.signature",
+          provider: "stripe",
+          secretEnv: "STRIPE_WEBHOOK_SECRET",
+        },
+        requestJsonSchema: {
+          body: {
+            type: "object",
+            properties: {
+              eventId: { type: "string" },
+              type: { enum: ["checkout.session.completed", "invoice.paid"] },
+            },
+            required: ["eventId", "type"],
+          },
+        },
+        responseJsonSchema: {
+          type: "object",
+          properties: {
+            received: { type: "boolean" },
+          },
+          required: ["received"],
         },
       },
     ],
