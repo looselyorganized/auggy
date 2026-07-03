@@ -105,6 +105,106 @@ function report(): ClientRoutesReport {
   };
 }
 
+function clientFixtureReport(): ClientRoutesReport {
+  return {
+    agent: { name: "fixtures", configPath: "/tmp/fixtures/agent.yaml" },
+    summary: {
+      totalRoutes: 5,
+      publicRoutes: 3,
+      privateRoutes: 2,
+      publicRoutePaths: ["GET /services", "GET /services/:serviceId", "POST /profile"],
+    },
+    routes: [
+      {
+        method: "GET",
+        path: "/services",
+        augmentName: "catalog",
+        auth: "none",
+        params: [],
+        public: true,
+        security: "public",
+        requestJsonSchema: {
+          query: {
+            type: "object",
+            properties: {
+              category: { type: "string" },
+            },
+          },
+        },
+      },
+      {
+        method: "GET",
+        path: "/services/:serviceId",
+        augmentName: "catalog",
+        auth: "none",
+        params: ["serviceId"],
+        public: true,
+        security: "public",
+        requestJsonSchema: {
+          params: {
+            type: "object",
+            properties: { serviceId: { type: "string" } },
+            required: ["serviceId"],
+          },
+          query: {
+            type: "object",
+            properties: {
+              need: { type: "string" },
+              tags: { type: "array", items: { type: "string" } },
+            },
+            required: ["need"],
+          },
+        },
+      },
+      {
+        method: "GET",
+        path: "/me",
+        augmentName: "visitor-profile",
+        auth: "visitor.required",
+        params: [],
+        public: false,
+        security: "private",
+      },
+      {
+        method: "POST",
+        path: "/profile",
+        augmentName: "visitor-profile",
+        auth: "visitor.optional",
+        params: [],
+        public: true,
+        security: "public",
+        requestJsonSchema: {
+          body: {
+            type: "object",
+            properties: {
+              displayName: { type: "string" },
+            },
+            required: ["displayName"],
+          },
+        },
+      },
+      {
+        method: "POST",
+        path: "/admin/reindex",
+        augmentName: "catalog",
+        auth: "bearer",
+        params: [],
+        public: false,
+        security: "private",
+        requestJsonSchema: {
+          body: {
+            type: "object",
+            properties: {
+              reason: { type: "string" },
+            },
+            required: ["reason"],
+          },
+        },
+      },
+    ],
+  };
+}
+
 async function loadGeneratedClient(source: string): Promise<LoadedClient> {
   const root = mkdtempSync(join(tmpdir(), "routes-client-runtime-test-"));
   roots.push(root);
@@ -291,6 +391,65 @@ describe("createTypeScriptClient", () => {
 
         // @ts-expect-error input is required for routes with params/query.
         api.get("/services/:serviceId");
+      `,
+    );
+  });
+
+  test("typechecks the generated-client fixture matrix", async () => {
+    await expectGeneratedClientTypechecks(
+      "fixture-browser",
+      clientFixtureReport(),
+      "browser",
+      `
+        import { createAuggyClient } from "./client";
+
+        const api = createAuggyClient({
+          baseUrl: "https://agent.example",
+          visitorToken: () => "visitor-token",
+          onVisitorToken: (token) => console.log(token),
+        });
+
+        api.get("/me");
+        api.get("/services", {});
+        api.get("/services", { query: { category: "hair" } });
+        api.get("/services/:serviceId", {
+          params: { serviceId: "svc_123" },
+          query: { need: "trim", tags: ["dry"] },
+        });
+        api.post("/profile", { body: { displayName: "Alice" } });
+
+        // @ts-expect-error browser target omits bearer routes.
+        api.post("/admin/reindex", { body: { reason: "manual" } });
+        // @ts-expect-error required query input cannot be omitted.
+        api.get("/services/:serviceId", { params: { serviceId: "svc_123" } });
+        // @ts-expect-error optional query field still has typed values.
+        api.get("/services", { query: { category: 123 } });
+      `,
+    );
+
+    await expectGeneratedClientTypechecks(
+      "fixture-server",
+      clientFixtureReport(),
+      "server",
+      `
+        import { createAuggyClient } from "./client";
+
+        const api = createAuggyClient({
+          baseUrl: "https://agent.example",
+          bearerToken: "creator-secret",
+        });
+
+        api.get("/services", {});
+        api.get("/services/:serviceId", {
+          params: { serviceId: "svc_123" },
+          query: { need: "trim" },
+        });
+        api.post("/admin/reindex", { body: { reason: "manual" } });
+
+        // @ts-expect-error server target omits visitor routes.
+        api.get("/me");
+        // @ts-expect-error server target omits visitor-token POST routes.
+        api.post("/profile", { body: { displayName: "Alice" } });
       `,
     );
   });
