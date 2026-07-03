@@ -357,6 +357,13 @@ describe("createTypeScriptClient", () => {
     expect(source).toContain('"GET /services/:serviceId":');
     expect(source).toContain('auth: "visitor.required"');
     expect(source).toContain("export function createAuggyClient");
+    expect(source).toContain("export type AuggyClient = ReturnType<typeof createAuggyClient>;");
+    expect(source).toContain(
+      "export type AuggyGetResult<Path extends AuggyGetPath> = AuggyClientResult<AuggyGetOutputs[Path]>;",
+    );
+    expect(source).toContain(
+      "export type AuggyPostResult<Path extends AuggyPostPath> = AuggyClientResult<AuggyPostOutputs[Path]>;",
+    );
 
     const js = new Bun.Transpiler({ loader: "ts" }).transformSync(source);
     expect(js).toContain("function createAuggyClient");
@@ -499,6 +506,94 @@ describe("createTypeScriptClient", () => {
 
         // @ts-expect-error input is required for routes with params/query.
         api.get("/services/:serviceId");
+      `,
+    );
+  });
+
+  test("typechecks generated public contract aliases", async () => {
+    await expectGeneratedClientTypechecks(
+      "contract-aliases-browser",
+      clientFixtureReport(),
+      "browser",
+      `
+        import {
+          createAuggyClient,
+          type AuggyClient,
+          type AuggyGetResult,
+          type AuggyPostResult,
+        } from "./client";
+
+        const api: AuggyClient = createAuggyClient({
+          baseUrl: "https://agent.example",
+          visitorToken: () => "visitor-token",
+        });
+
+        async function main() {
+          const health: AuggyGetResult<"/health"> = await api.get("/health");
+          if (health.ok) {
+            const healthData: unknown = health.data;
+            console.log(healthData);
+          }
+
+          const profile: AuggyPostResult<"/profile"> = await api.post("/profile", {
+            body: { displayName: "Alice" },
+          });
+          if (profile.ok) {
+            profile.data.visitorId.toUpperCase();
+            profile.data.displayName.toUpperCase();
+          } else {
+            const failedData: unknown = profile.data;
+            console.log(failedData);
+          }
+        }
+
+        // @ts-expect-error browser target omits bearer POST result paths.
+        type AdminResult = AuggyPostResult<"/admin/reindex">;
+        // @ts-expect-error unknown route paths are not part of result aliases.
+        type MissingResult = AuggyGetResult<"/missing">;
+      `,
+    );
+
+    await expectGeneratedClientTypechecks(
+      "contract-aliases-server",
+      clientFixtureReport(),
+      "server",
+      `
+        import {
+          createAuggyClient,
+          type AuggyClient,
+          type AuggyGetResult,
+          type AuggyPostResult,
+        } from "./client";
+
+        const api: AuggyClient = createAuggyClient({
+          baseUrl: "https://agent.example",
+          bearerToken: "creator-secret",
+        });
+
+        async function main() {
+          const services: AuggyGetResult<"/services"> = await api.get("/services");
+          if (services.ok) {
+            const servicesData: unknown = services.data;
+            console.log(servicesData);
+          }
+
+          const reindex: AuggyPostResult<"/admin/reindex"> = await api.post("/admin/reindex", {
+            body: { reason: "manual" },
+          });
+          if (reindex.ok) {
+            reindex.data.jobId.toUpperCase();
+            reindex.data.queued.valueOf();
+          } else {
+            const failedData: unknown = reindex.data;
+            console.log(failedData);
+          }
+        }
+
+        // @ts-expect-error server target omits visitor POST result paths.
+        type ProfileResult = AuggyPostResult<"/profile">;
+        // @ts-expect-error server target omits visitor GET result paths.
+        type MeResult = AuggyGetResult<"/me">;
       `,
     );
   });

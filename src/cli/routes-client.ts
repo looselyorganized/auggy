@@ -93,6 +93,8 @@ export function createTypeScriptClient(
     "",
     runtimeSource(target),
     "",
+    clientTypeExports(),
+    "",
   ].join("\n");
 }
 
@@ -389,6 +391,14 @@ async function parseResponseData(response: Response): Promise<unknown> {
   if (contentType.toLowerCase().includes("application/json")) return response.json();
   return response.text();
 }`;
+}
+
+function clientTypeExports(): string {
+  return [
+    "export type AuggyClient = ReturnType<typeof createAuggyClient>;",
+    "export type AuggyGetResult<Path extends AuggyGetPath> = AuggyClientResult<AuggyGetOutputs[Path]>;",
+    "export type AuggyPostResult<Path extends AuggyPostPath> = AuggyClientResult<AuggyPostOutputs[Path]>;",
+  ].join("\n");
 }
 
 function routeAuthUnion(target: TypeScriptClientTarget): string {
