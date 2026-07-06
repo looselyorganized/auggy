@@ -1,0 +1,12 @@
+{
+  "name": "auggy-app-auth-bridge-example",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "bun test app-auth-bridge.test.ts"
+  },
+  "dependencies": {
+    "auggy": "^0.4.4",
+    "zod": "^4.3.6"
+  }
+}

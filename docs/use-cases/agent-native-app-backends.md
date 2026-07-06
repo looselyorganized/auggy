@@ -249,7 +249,8 @@ Useful docs and scaffolds:
 - "Add Postgres to an augment"
 - "Expose the same capability as a route and a tool"
 - "When to use `/agent/run` vs your own route"
-- "How route auth differs from visitor identity"
+- "How route auth differs from visitor identity" with the
+  [delegated authorization bridge](../26-delegated-authorization.md)
 - "How to handle webhooks without model calls"
 
 Useful CLI affordances:

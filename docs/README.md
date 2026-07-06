@@ -108,6 +108,14 @@ primitives.
 - [Agent-Native Websites](./use-cases/agent-native-websites.md)
 - [Augments Over Tools: Use Cases](./23-augments-over-tools-use-cases.md)
 
+## Examples
+
+- [Concierge example](../examples/concierge/README.md) — public route/tool
+  domain example.
+- [App auth bridge example](../examples/app-auth-bridge/README.md) —
+  Supabase/Clerk-style app sessions, generated route clients, delegated
+  route/tool authorization, key rotation, and replay protection.
+
 ## Plans
 
 Plans are implementation-specific or historical. They are useful context, but

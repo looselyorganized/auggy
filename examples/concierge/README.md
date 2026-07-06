@@ -42,3 +42,7 @@ In production, prefer
 `auth: "visitor.required"` for customer-specific data, `auth: "bearer"` for
 creator/admin actions, and `auth: "none"` only for intentionally public routes
 or external callbacks.
+
+For an existing-app login bridge with Supabase/Clerk-style session verification,
+generated browser clients, and delegated route/tool authorization, see
+[`../app-auth-bridge`](../app-auth-bridge/README.md).

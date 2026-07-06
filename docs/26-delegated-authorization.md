@@ -184,6 +184,12 @@ Roles can still be copied into the assertion for audit or lookup context, but
 Auggy receives narrow scopes/grants for enforcement. It does not interpret raw
 app roles as route or tool permissions.
 
+For a runnable version of this pattern, see
+[`examples/app-auth-bridge`](../examples/app-auth-bridge/README.md). It includes
+structural Supabase/Clerk adapters, a shared assertion helper, generated browser
+client usage, protected routes, protected tools, key ids, `jti`, and replay
+protection.
+
 ### Supabase
 
 ```ts
@@ -577,6 +583,25 @@ not attached to the visitor context.
   or authorization decisions based on model-written prose.
 - Use `authzVersion` for policy-version tracking and `jti` for audit
   correlation, revocation, and replay protection.
+
+## Production Checklist
+
+- **Session verification:** Use the app server's trusted Clerk, Supabase, or
+  custom session API. Never mint Auggy assertions from browser code.
+- **Assertion shape:** Set stable `audience`, provider allowlist, short
+  `ttlSeconds`, `keyId`, `authzVersion`, and unique `jti`.
+- **Permissions:** Convert app roles, org membership, and entitlements into
+  explicit `scopes` and `grants`. Treat `roles` as context only.
+- **Key rotation:** Sign new assertions with the current `keyId`; keep the
+  previous key in `externalAuth.secrets` until old assertions expire.
+- **Replay protection:** Enable `externalAuth.replayProtection` for
+  tool-enabled sessions and high-risk routes. Mint a fresh assertion per Auggy
+  request when replay protection is enabled, and use a shared atomic store
+  outside single-process local deployments.
+- **Audit:** Register `onDelegatedAuthorizationDenied` when denied route/tool
+  attempts need to land in app logs or security telemetry.
+- **Client boundary:** Generate a browser client for public/visitor routes and
+  a server client for bearer, creator, agent, and webhook-policy routes.
 
 ## Relationship to Visitor Auth
 
