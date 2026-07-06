@@ -14,6 +14,23 @@ The core product claim:
 
 In that model, augments are not just tool bundles. They are app capability modules.
 
+## Current implementation status
+
+The core app-backend foundation is now on `main` as the `0.5.0` candidate:
+
+- Deterministic augment routes beside `/agent/run`.
+- Route groups, path params, query/body schemas, response schemas, route
+  manifests, OpenAPI export, and generated TypeScript clients.
+- Browser/server generated-client target filtering.
+- Route auth for public, visitor, creator, bearer, and admitted agent callers.
+- Delegated app authorization for routes and protected tools.
+- Stripe webhook signature verification.
+- Concierge and app-auth bridge examples.
+
+The remaining work is less about proving the architecture and more about making
+it easy to adopt: scaffolds, templates, app-builder guides, provider recipes,
+operator visibility, and future consent/agent-mesh flows.
+
 ## Two first-class entry modes
 
 Agent-native apps should support two equally valid entry modes.
@@ -82,11 +99,13 @@ In chat-first flows, there is often a third face:
 
 For example, a product picker component can call catalog and cart routes, return the user's selection to the thread, and let the agent continue from confirmed state.
 
-## What to add
+## Route-layer status
 
 ### Route groups
 
-The current `httpRoutes` contract is useful but intentionally narrow: exact `GET`/`POST` routes. To support real app development, add a route declaration layer that still compiles down to the existing safe dispatcher.
+The old `httpRoutes` contract was exact-route only. The current route helper
+layer now covers the app-backend foundation while still compiling down to the
+safe dispatcher.
 
 Possible shape:
 
@@ -100,7 +119,7 @@ defineAugment({
 });
 ```
 
-The route layer should support:
+The current route layer supports:
 
 - Path groups
 - Path params
@@ -110,17 +129,18 @@ The route layer should support:
 - Route-local config
 - Route manifest generation
 
-Keep it boring and explicit. Do not make it a full web framework.
+Keep future additions boring and explicit. Do not make it a full web framework.
+Broader HTTP methods, idempotency helpers, cache headers, and richer response
+contracts are candidates only when examples need them.
 
 ### Typed route schemas
 
-Routes should optionally declare schemas for:
+Routes can declare schemas for:
 
 - `params`
 - `query`
 - `body`
 - `response`
-- `errors`
 
 Use Zod, matching Auggy's existing tool schema direction. This creates one validation style across tools and routes, and unlocks better DX:
 
@@ -130,9 +150,16 @@ Use Zod, matching Auggy's existing tool schema direction. This creates one valid
 - Safer route/tool shared domain functions
 - Cleaner `auggy doctor` diagnostics
 
+Error response schemas are intentionally deferred until route error bodies are
+stable enough to make generated clients better instead of noisier.
+
 ### App request context
 
-Raw `Request` is too low-level for app augments. Add an `AppRequestContext` passed to route handlers.
+Raw `Request` is too low-level for app augments. Route handlers now receive
+structured request context with parsed params/query/body, route metadata,
+runtime auth state, abort signal, and helpers. The exact public shape is covered
+by the TypeScript types and route docs; the design rule remains the same:
+handlers should not re-implement transport identity parsing.
 
 Possible shape:
 
@@ -156,13 +183,18 @@ Important distinction: routes are not chat turns. Many routes will have no `Peer
 
 ### Auth modes beyond `bearer` and `none`
 
-For app backends, `auth: "bearer" | "none"` is too coarse. Evolve route auth into structured modes:
+For app backends, `auth: "bearer" | "none"` is too coarse. The current route
+auth modes are:
 
 - `none`
+- `bearer`
 - `creator`
 - `visitor.optional`
 - `visitor.required`
 - `agent.required`
+
+Future candidates:
+
 - `trust: ["creator", "agent"]`
 - `custom`
 
@@ -352,8 +384,9 @@ This should feed:
 Status: first cut shipped. It is a generated-client artifact, not a package
 runtime export.
 
-The generated client proves frontend consumption without pretending the route
-system has a full response contract yet.
+The generated client proves frontend consumption while staying conservative:
+successful response schemas type `data`, and non-2xx payloads remain `unknown`
+until route error contracts are stable.
 
 Implemented command:
 
@@ -469,6 +502,8 @@ Current tests cover:
 
 ### App scaffolds
 
+Status: planned for the app-builder DX release candidate after `0.5.0`.
+
 The "aha" should happen in the scaffold.
 
 Useful commands:
@@ -533,10 +568,11 @@ Possible entrypoint layers:
 2. **Admitted agent-peer path**: the outside assistant speaks Link/A2A and
    presents configured credentials. The merchant Auggy sees it as an `agent`
    peer and applies agent-trust policy and budgets.
-3. **Delegated visitor path**: a future `visitorAuth`-backed consent flow lets
-   the human grant a third-party assistant a short-lived, scoped pass to act on
-   the visitor's behalf. This should be route-scoped, revocable, budgeted, and
-   unable to access creator credentials.
+3. **Delegated visitor path**: app-signed external assertions now let an existing
+   app backend delegate explicit scopes/grants to Auggy. A future consent flow
+   lets the human grant a third-party assistant a short-lived, scoped pass to
+   act on the visitor's behalf. That consent layer should be route-scoped,
+   revocable, budgeted, and unable to access creator credentials.
 
 The safe flow:
 
@@ -760,7 +796,7 @@ This boundary is important for cost, latency, predictability, and operator trust
 
 ## Architecture boundary
 
-Build:
+Current foundation:
 
 - Route declaration
 - Typed validation
@@ -769,10 +805,13 @@ Build:
 - Visitor and agent identity resolution for routes
 - Rate limits, body limits, timeouts
 - Webhook support
-- Idempotency support
 - Route/tool shared capability pattern
-- Route/tool/component shared capability pattern
 - Admin and doctor visibility
+
+Next app-builder work:
+
+- Idempotency support where examples need it
+- Route/tool/component shared capability pattern
 - App-focused templates
 
 Leave out:

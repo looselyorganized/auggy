@@ -10,6 +10,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **`auggy augment setup` now handles AgentMail-backed setup recipes.** `auggy augment setup agentMail` provisions/configures the `agentMail` augment itself, while `auggy augment setup visitorAuth` remains the production magic-link email path. Interactive `auggy augment add agentMail` / `visitorAuth` offers setup after local install; scripted and `--yes` flows stay local-only. Setup can reuse existing `.env` AgentMail credentials with `--mode env`, or create a stable inbox using an idempotent AgentMail `clientId`.
+- **App-backend route foundation.** Augments can expose deterministic HTTP routes beside `/agent/run`, with route groups, path params, query/body parsing, response helpers, per-route body caps, timeouts, rate limits, schema metadata, route manifests, and OpenAPI export.
+- **Generated TypeScript route clients.** `auggy routes [name] --client ts [--target browser|server] [--out file]` emits self-contained clients with typed route-path calls, target-based auth filtering, typed params/query/body inputs, typed success `data` from response schemas, visitor-token handling, external auth assertion forwarding, and fetch-like non-2xx result behavior.
+- **Expanded route auth.** Route auth now covers `none`, `bearer`, `creator`, `visitor.optional`, `visitor.required`, and `agent.required`, with resolved route principals and browser/server generated-client filtering.
+- **Webhook route policies.** Route policy metadata is preserved in manifests/OpenAPI/generated-client filtering, and `webhook.signature("stripe", ...)` verifies Stripe signatures before route dispatch.
+- **Delegated authorization bridge.** Existing app sessions from Supabase, Clerk, Auth0-style, or custom middleware can mint short-lived Auggy external auth assertions. Auggy verifies audience/provider/TTL/signature, supports key rotation, can enforce replay protection with `jti`, and preserves compact external auth claims in route/tool context.
+- **Route and tool `requires`.** `visitor.required` routes and protected model tools can require explicit delegated scopes or resource grants. Route resources can bind to path params; tool resources can bind to schema-validated tool input. Roles are preserved as context but do not satisfy authorization by themselves.
+- **Delegated auth denial contract and audit hooks.** Route denials return pinned HTTP error bodies, protected-tool denials stay inside the model loop, and sanitized denial events can be observed without leaking them into AG-UI/SSE client output.
+- **App-auth bridge example.** `examples/app-auth-bridge` proves a normal app backend verifying Supabase/Clerk-style sessions, minting `x-auggy-auth-assertion`, using a generated browser client, and enforcing route/tool delegated authorization.
+- **Concierge route/tool example.** `examples/concierge` demonstrates the v1 app-backend pattern: deterministic routes and model-callable tools over shared domain logic.
+- **Feature status index.** `docs/FEATURES.md` now tracks published, on-main, planned, preview, and vision work separately from the release roadmap.
 
 ### Fixed
 

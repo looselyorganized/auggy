@@ -556,7 +556,7 @@ auggy/
 │   │
 │   └── http.ts ··················· shared HTTP client (redirect security)
 │
-├── tests/ ························ 537 TESTS across 42 files
+├── tests/ ························ test suites and fixtures
 │   ├── fixtures/ ················· mock-model, mock-augment, mock-supabase, temp-dir
 │   ├── kernel/ ··················· per-component unit tests
 │   ├── memory/ ··················· registry, synthesis, tools, bus tests

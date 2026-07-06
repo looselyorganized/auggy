@@ -385,7 +385,9 @@ Plus the augment-level tests (`tests/augments/file-memory.test.ts`, `tests/augme
 
 ## What's deliberately not in v1
 
-- **Memory consolidation** (episodic → semantic on idle). Listed as Plan 7+ aspirational. Will run in `onIdle` hooks.
+- **Memory consolidation** (episodic → semantic on idle). This belongs to the
+  memory-layer architecture vision in the roadmap and would run through
+  `onIdle` hooks.
 - **Vector / semantic search.** `supabaseMemory.search` uses ILIKE for substring matching — not embeddings. A future provider can implement `search` with pgvector and the rest of the bus stays the same (the `MemoryProviderSpec` contract is search-agnostic).
 - **Budget per provider.** v1 has one shared budget across all memory tools. A future enhancement could give each provider its own sub-budget (e.g. "this episodic store can only be queried 5 times per turn").
 - **Fine-grained memory permissions.** v1 has immutable/mutable provider

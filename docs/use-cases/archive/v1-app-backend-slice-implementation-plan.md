@@ -1,5 +1,11 @@
 # v1.0 App Backend Slice Implementation Plan
 
+> Archived 2026-07-06. This was an execution handoff for the initial
+> app-backend slice. Current route/client/authz behavior lives in
+> [`../../25-generated-route-clients.md`](../../25-generated-route-clients.md),
+> [`../../26-delegated-authorization.md`](../../26-delegated-authorization.md),
+> and the current roadmap.
+
 > Handoff doc for implementing the smallest launch-worthy proof of Auggy as an agent-native app backend.
 
 ## Goal

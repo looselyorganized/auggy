@@ -243,7 +243,16 @@ The key concept to teach:
 
 > Not every frontend request goes through the agent. Use routes for deterministic app behavior and tools for agent-mediated behavior. Put both in an augment when they belong to the same capability.
 
-Useful docs and scaffolds:
+Useful docs and scaffolds, split by status:
+
+Current references:
+
+- [Generated Route Clients](../25-generated-route-clients.md)
+- [Delegated Authorization Bridge](../26-delegated-authorization.md)
+- [Concierge example](../../examples/concierge/README.md)
+- [App auth bridge example](../../examples/app-auth-bridge/README.md)
+
+Planned app-builder guides:
 
 - "Build a custom API augment"
 - "Add Postgres to an augment"
@@ -253,7 +262,7 @@ Useful docs and scaffolds:
   [delegated authorization bridge](../26-delegated-authorization.md)
 - "How to handle webhooks without model calls"
 
-Useful CLI affordances:
+Planned CLI affordances:
 
 - `auggy augment create transactions --with-route --with-tool`
 - `auggy augment create catalog --with-route --with-tool --with-admin`
@@ -274,15 +283,18 @@ The same app-backend shape gets more distinctive when combined with `link`,
   billing control; it is kernel-level work admission plus budget-aware model
   context. Commerce and negotiation limits still belong in deterministic domain
   policy.
-- `visitorAuth` proves human identity and enables recognized visitor routes,
-  memory continuity, and future visitor-authorized delegation. It should not be
-  renamed into agent auth; future agent auth should be a sibling primitive.
+- `visitorAuth` proves human identity and enables recognized visitor routes and
+  memory continuity. Existing app sessions can also bridge into Auggy through
+  short-lived external auth assertions. Future visitor-authorized delegation
+  should be a consent layer on top, not a rename of `visitorAuth` into agent
+  auth.
 
 The powerful future flow is a consented handoff:
 
-1. A human proves identity with `visitorAuth`.
-2. A human authorizes an outside agent or another Auggy with a scoped,
-   revocable, short-lived delegation.
+1. A human proves identity with `visitorAuth` or a normal app login.
+2. The app backend mints explicit scopes/grants for Auggy, or a future consent
+   flow authorizes an outside agent or another Auggy with scoped, revocable,
+   short-lived delegation.
 3. The outside agent speaks to an Auggy app backend through public routes,
    Link/A2A, or both.
 4. Budgets cap the work allowed for that visitor, peer, or task.

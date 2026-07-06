@@ -15,8 +15,8 @@ Pre-1.0 (semver §4: *"Anything MAY change at any time"*), this lets us ship at 
 ```bash
 # On main, version-bumped and CHANGELOG-updated PR already merged:
 git checkout main && git pull
-git tag v0.3.2                   # tag MUST match package.json version
-git push origin v0.3.2
+git tag v0.5.0                   # tag MUST match package.json version
+git push origin v0.5.0
 # CI publishes to npm + creates GitHub Release; watch the workflow run.
 ```
 
@@ -58,7 +58,10 @@ In a dedicated branch off `main` (name suggestion: `release/X.Y.Z`):
 
 ### Cold-machine DX walkthrough
 
-This is the v1.0 release gate. Run it from a shell/profile that does not have an existing Auggy state directory. Do not skip the manual browser checks; this gate exists to catch first-run and packaging failures that unit tests miss.
+This is mandatory for `1.0.0` and strongly recommended for substantial pre-1.0
+minor releases such as `0.5.0`. Run it from a shell/profile that does not have an
+existing Auggy state directory. Do not skip the manual browser checks; this gate
+exists to catch first-run and packaging failures that unit tests miss.
 
 First run the automated release smoke:
 

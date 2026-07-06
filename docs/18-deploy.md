@@ -1,6 +1,6 @@
 # Deploying an Auggy agent to Railway
 
-This page covers `auggy deploy` — the CLI path for shipping a single agent to Railway, the v1.0 cloud deployment target.
+This page covers `auggy deploy` — the CLI path for shipping a single agent to Railway, the current default cloud deployment target.
 
 If you're deploying locally as a launchd service (macOS), see [`auggy start`](./07-built-in-augments.md) instead.
 
@@ -38,7 +38,7 @@ The CLI walks you through:
 3. **Workspace selection** — Auggy discovers Railway workspaces from your logged-in Railway CLI session and lets you choose where the deploy belongs.
 4. **Project selection** — create a new Railway project in that workspace, or use an existing project from that workspace. You can still pass `--project <project-id>` to skip prompts and deploy into a known existing project. For scripted first deploys, pass `--project-name <name>` plus `--workspace <workspace-name-or-id>`.
 5. **Bundle staging** — copies your agent directory minus `.env`, `*.db*`, `workspace/`, `node_modules/`, `.git/`, `.worktrees/`, `.claude/`, `.DS_Store`, `*.tmp` into a temp dir. The agent's `package.json` + `bun.lock` are included so the image can install your pinned deps.
-6. **Dockerfile + entrypoint generation** — written into the staging dir. Static; not operator-tunable at v1.0. The image copies `package.json` + `bun.lock` first, runs `bun install` to materialize `node_modules/` inside the image, then COPYs the rest of the agent dir; the entrypoint invokes `bunx auggy dev` so it uses the per-agent install rather than a global `auggy`.
+6. **Dockerfile + entrypoint generation** — written into the staging dir. Static and intentionally not operator-tunable. The image copies `package.json` + `bun.lock` first, runs `bun install` to materialize `node_modules/` inside the image, then COPYs the rest of the agent dir; the entrypoint invokes `bunx auggy dev` so it uses the per-agent install rather than a global `auggy`.
 7. **Secrets diff + confirm** — shows what's about to be pushed to Railway (with values redacted). Decline aborts the deploy. Pass `--yes` to skip.
 8. **Railway service selection** — by default Auggy creates a new service named `<name>` in the selected project. Pass `--service <name-or-id>` to deploy into an existing Railway service instead.
 9. **`railway volume add --mount-path /app/data`** — provisions a persistent volume mounted at `/app/data`. Holds SQLite-backed state across redeploys.
@@ -226,7 +226,7 @@ config:
   publicUrl: ${AUGGY_PUBLIC_URL}
 ```
 
-The interpolation resolves at boot. First deploys work because the deploy command provisions the domain → sets the env var → triggers `railway up` in that order ([D7 of the deploy plan](../../../docs/superpowers/plans/2026-05-06-aug1-deploy-railway.md)).
+The interpolation resolves at boot. First deploys work because the deploy command provisions the domain → sets the env var → triggers `railway up` in that order ([D7 of the archived deploy plan](./superpowers/plans/archive/2026-05-06-aug1-deploy-railway.md)).
 
 For production magic-link email, run:
 
@@ -278,7 +278,7 @@ The Railway volume is **NOT** automatically deleted (Railway retains it as a saf
 
 ---
 
-## What you should NOT expect at v1.0
+## What you should NOT expect from the current Railway deploy path
 
 - **Auto-rollback** on failed deploys. If `railway up` succeeds but the agent crashes at boot, Railway's auto-restart loop kicks in but doesn't roll back to the previous build. Use `railway logs` to diagnose.
 - **Multi-instance / horizontal scaling.** One Railway service runs one Auggy instance. The SQLite-on-volume design assumes a single writer.

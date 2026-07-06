@@ -1,6 +1,6 @@
 # 24 — MCP
 
-**Status:** stable v1.0 add-on. Local stdio MCP is supported for local
+**Status:** stable add-on. Local stdio MCP is supported for local
 development; cloud agents should use remote HTTPS MCP servers.
 
 Auggy can call tools from MCP servers. Add the MCP augment, then define servers

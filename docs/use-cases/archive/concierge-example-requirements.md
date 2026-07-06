@@ -1,5 +1,10 @@
 # Concierge Example Requirements
 
+> Archived 2026-07-06. This was the acceptance sketch before the current
+> `examples/concierge/` app-backend slice existed. Use
+> [`../../../examples/concierge/README.md`](../../../examples/concierge/README.md)
+> for the current example.
+
 > `examples/concierge/` is the v1.0 small-business concierge composition demo. The full agent-native app backend proof comes later.
 
 ## Why this split exists

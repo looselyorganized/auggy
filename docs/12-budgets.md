@@ -6,7 +6,7 @@
 
 The `budgets` augment enforces admission caps on inbound turns before the engine runs. It is the sole built-in implementation of the `TurnGateProvider` 2PC contract (see [03-types.md § Section 7b](./03-types.md#section-7b--turn-gate-admission-2pc)).
 
-`budgets` remains preview for v1.0. Treat it as **runtime spend guardrails**,
+`budgets` remains preview in the pre-1.0 line. Treat it as **runtime spend guardrails**,
 not billing control. It can reject future turns after settled usage crosses a
 configured limit, but it does not replace provider-side hard spend caps.
 
@@ -330,7 +330,7 @@ Calendar days roll at midnight UTC. Peers whose activity spans a UTC midnight ge
 
 ## 10. Roadmap
 
-- **Pre-call cost estimation** — estimate the turn's cost before calling the engine, enabling dollar caps to be enforced pre-turn rather than post-turn. Listed as a "Next" item in the ROADMAP; requires per-model token-budget prediction.
+- **Pre-call cost estimation** — estimate the turn's cost before calling the engine, enabling dollar caps to be enforced pre-turn rather than post-turn. Requires per-model token-budget prediction and should wait until budget enforcement needs a stronger pre-turn guarantee.
 - **Retention export / archive hook** — optional export before purging old accounting rows.
 - **Burst allowances** — carry unused budget across days or allow temporary bursts above the daily cap.
 
