@@ -2,6 +2,7 @@ import { createHmac } from "node:crypto";
 import { describe, expect, test } from "bun:test";
 import {
   createExternalAuthAssertion,
+  createInMemoryExternalAuthReplayStore,
   externalAuthClaimsToRouteContext,
   externalAuthClaimsToRoutePrincipal,
   externalSubjectVisitorId,
@@ -111,6 +112,15 @@ describe("external auth assertions", () => {
         now,
       }),
     ).toEqual({ ok: false, reason: "audience-mismatch" });
+  });
+
+  test("in-memory replay store accepts each jti once until assertion expiry", () => {
+    const store = createInMemoryExternalAuthReplayStore();
+
+    expect(store.consume("jti_123", now + 1000, now)).toBe(true);
+    expect(store.consume("jti_123", now + 1000, now + 500)).toBe(false);
+    expect(store.consume("jti_123", now + 1000, now + 1000)).toBe(false);
+    expect(store.consume("jti_123", now + 2000, now + 1001)).toBe(true);
   });
 
   test("rejects disallowed providers and overly long assertion TTLs", () => {

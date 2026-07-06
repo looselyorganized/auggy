@@ -63,6 +63,7 @@ const web = webTransport({
     audience: "storefront-agent",
     allowedProviders: ["supabase", "clerk", "custom"],
     maxTtlSeconds: 60,
+    replayProtection: { enabled: true },
   },
 });
 ```
@@ -80,6 +81,43 @@ labels that current secret when minted assertions include a `keyId`.
 Entries can include `keyId`, so assertions with `kid` only try the matching
 key; assertions without `kid` remain compatible and are tried against the
 configured keyring.
+
+`externalAuth.replayProtection.enabled` rejects reused assertions before they
+can establish external app auth for `visitor.required` routes and `/agent/run`.
+When enabled, every accepted assertion must carry a unique `jti`; assertions
+without `jti` and assertions whose `jti` has already been seen are treated like
+invalid external assertions. The public route response remains the generic
+`visitor-auth-required` body when the assertion is required, so replay internals
+are not exposed to browsers.
+
+If no replay store is supplied, `webTransport` uses a process-local in-memory
+cache. That is useful for single-process deployments and local development. For
+multi-process, multi-region, or restart-resilient deployments, pass a shared
+store:
+
+```ts
+const web = webTransport({
+  // ...
+  externalAuth: {
+    secret: process.env.AUGGY_EXTERNAL_AUTH_SECRET!,
+    audience: "storefront-agent",
+    replayProtection: {
+      enabled: true,
+      store: {
+        async consume(jti, expiresAt, now) {
+          const ttlMs = Math.max(0, expiresAt - now);
+          // Atomically SET jti if absent with ttlMs. Return false when present.
+          return redisSetOnce(`auggy:external-auth:jti:${jti}`, "1", ttlMs);
+        },
+      },
+    },
+  },
+});
+```
+
+Replay stores must be atomic and keyed by `jti`. They should retain each key no
+longer than the assertion expiry (`expiresAt - now`), and they should be shared
+by every Auggy process that accepts the same external auth audience and secrets.
 
 For `/agent/run`, a valid external auth assertion admits the request as a
 recognized visitor even when `allowAnonymous` is `false`. That keeps normal
@@ -115,6 +153,7 @@ export async function mintAuggyAssertionForUser(user: {
     scopes: ["orders.read"],
     grants,
     authzVersion: "2026-07-03",
+    jti: crypto.randomUUID(),
   });
 }
 ```
@@ -189,6 +228,7 @@ export async function GET(req: Request) {
     scopes: canReadOrders ? ["orders.read"] : [],
     grants,
     authzVersion: "orders-v1",
+    jti: crypto.randomUUID(),
   });
 
   return Response.json({ assertion });
@@ -244,6 +284,7 @@ export async function GET() {
     scopes: canReadOrders ? ["orders.read"] : [],
     grants,
     authzVersion: "orders-v1",
+    jti: crypto.randomUUID(),
   });
 
   return Response.json({ assertion });
@@ -525,14 +566,17 @@ not attached to the visitor context.
 - Rotate `AUGGY_EXTERNAL_AUTH_SECRET` like any app signing secret: mint new
   assertions with a new `keyId`, keep the previous key in
   `externalAuth.secrets` until its assertions expire, then remove it.
+- Enable replay protection for high-risk routes, tool-enabled app sessions, or
+  any deployment where a captured assertion should not be usable twice. Use a
+  shared atomic store when more than one Auggy process can receive assertions.
 - Do not put app RBAC policy, broad role interpretation, or provider secrets in
   Auggy route handlers.
 - Do not let the model decide whether a user is authorized.
 - Prefer narrow scopes and resource grants over broad roles.
 - Bind tool grants to top-level validated input fields only; avoid nested paths
   or authorization decisions based on model-written prose.
-- Use `authzVersion` or `jti` when the app needs audit correlation,
-  revocation, or policy-version tracking.
+- Use `authzVersion` for policy-version tracking and `jti` for audit
+  correlation, revocation, and replay protection.
 
 ## Relationship to Visitor Auth
 

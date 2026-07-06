@@ -30,10 +30,12 @@ import {
   type VisitorTokenPayload,
 } from "./visitor-token";
 import {
+  createInMemoryExternalAuthReplayStore,
   externalAuthClaimsToRouteContext,
   verifyExternalAuthAssertion,
   type ExternalAuthAssertionSecret,
   type ExternalAuthPrincipalOptions,
+  type ExternalAuthReplayStore,
 } from "../auth/external-auth";
 import {
   delegatedAuthorizationDeniedAuditEvent,
@@ -71,6 +73,10 @@ export interface WebTransportExternalAuthOptions extends ExternalAuthPrincipalOp
   secret: string;
   keyId?: string;
   secrets?: readonly ExternalAuthAssertionSecret[];
+  replayProtection?: {
+    enabled?: boolean;
+    store?: ExternalAuthReplayStore;
+  };
   /**
    * Expected assertion audience. Defaults to visitorTokens.agentBinding when
    * configured, otherwise the agent-card provider name at runtime.
@@ -665,6 +671,10 @@ export function webTransport(opts: WebTransportOptions): Augment {
   // enabled is set to true. Direct callers must pass both explicitly.
   const visitorTokensEnabled = opts.visitorTokens?.enabled === true;
   const visitorTokenTtl = opts.visitorTokens?.ttlSeconds ?? 30 * 24 * 3600;
+  const externalAuthReplayProtectionEnabled = opts.externalAuth?.replayProtection?.enabled === true;
+  const externalAuthReplayStore = externalAuthReplayProtectionEnabled
+    ? (opts.externalAuth?.replayProtection?.store ?? createInMemoryExternalAuthReplayStore())
+    : null;
   let signingKey: CryptoKey | null = null;
 
   // Anonymous-public posture (G3 — concierge-readiness gate). Resolved once
@@ -1176,7 +1186,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
     );
   }
 
-  function resolveExternalVisitorAuth(req: Request): RouteVisitorAuthContext | null {
+  async function resolveExternalVisitorAuth(req: Request): Promise<RouteVisitorAuthContext | null> {
     const config = opts.externalAuth;
     if (!config) return null;
 
@@ -1193,6 +1203,22 @@ export function webTransport(opts: WebTransportOptions): Augment {
       maxTtlSeconds: config.maxTtlSeconds,
     });
     if (!verified.ok) return null;
+    if (externalAuthReplayStore) {
+      if (!verified.claims.jti) return null;
+      const now = Date.now();
+      let accepted = false;
+      try {
+        accepted = await externalAuthReplayStore.consume(
+          verified.claims.jti,
+          verified.claims.expiresAt,
+          now,
+        );
+      } catch {
+        console.warn("[web-transport] external auth replay store failed.");
+        return null;
+      }
+      if (!accepted) return null;
+    }
 
     return externalAuthClaimsToRouteContext(verified.claims, {
       visitorId: config.visitorId,
@@ -1206,7 +1232,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
       state: "anonymous",
       principal: anonymousRoutePrincipal(),
     };
-    const externalOrAnonymous = () => resolveExternalVisitorAuth(req) ?? anonymous;
+    const externalOrAnonymous = async () => (await resolveExternalVisitorAuth(req)) ?? anonymous;
     if (!visitorTokensEnabled || !signingKey) return externalOrAnonymous();
 
     const tokenHeader = req.headers.get("x-visitor-token");
@@ -1261,7 +1287,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
         ...(identity?.externalAuth !== undefined ? { externalAuth: identity.externalAuth } : {}),
       },
     };
-    return mergeMatchingExternalVisitorAuth(visitorAuth, resolveExternalVisitorAuth(req));
+    return mergeMatchingExternalVisitorAuth(visitorAuth, await resolveExternalVisitorAuth(req));
   }
 
   function mergeMatchingExternalVisitorAuth(
@@ -1360,9 +1386,9 @@ export function webTransport(opts: WebTransportOptions): Augment {
   async function handleAgentRun(req: Request): Promise<Response> {
     const authHeader = req.headers.get("authorization") ?? "";
     let externalVisitorAuth: RouteVisitorAuthContext | null | undefined;
-    function readExternalVisitorAuth(): RouteVisitorAuthContext | null {
+    async function readExternalVisitorAuth(): Promise<RouteVisitorAuthContext | null> {
       if (externalVisitorAuth !== undefined) return externalVisitorAuth;
-      externalVisitorAuth = resolveExternalVisitorAuth(req);
+      externalVisitorAuth = await resolveExternalVisitorAuth(req);
       return externalVisitorAuth;
     }
 
@@ -1381,7 +1407,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
       if (!isValidAuth(authHeader)) {
         return json({ error: "unauthorized" }, 401);
       }
-    } else if (!allowAnonymous && readExternalVisitorAuth()?.state !== "recognized") {
+    } else if (!allowAnonymous && (await readExternalVisitorAuth())?.state !== "recognized") {
       return json({ error: "unauthorized" }, 401);
     }
 
@@ -1406,9 +1432,9 @@ export function webTransport(opts: WebTransportOptions): Augment {
     // --- Visitor token handling ---
     let visitorPayload: VisitorTokenPayload | null = null;
     let newToken: string | null = null;
-    function applyExternalVisitorAuth(): void {
+    async function applyExternalVisitorAuth(): Promise<void> {
       if (visitorPayload) return;
-      const externalAuth = readExternalVisitorAuth();
+      const externalAuth = await readExternalVisitorAuth();
       if (externalAuth?.state === "recognized") {
         visitorPayload = {
           visitorId: externalAuth.visitorId,
@@ -1441,7 +1467,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
           }
         }
       }
-      applyExternalVisitorAuth();
+      await applyExternalVisitorAuth();
       if (!visitorPayload) {
         // Check if this looks like an agent auth attempt — don't issue visitor
         // tokens to agent-credential requests (they'll be resolved as agent/creator).
@@ -1478,7 +1504,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
         // hasAgentHeaders or hasBearerAttempt case: no visitor token issued.
       }
     }
-    applyExternalVisitorAuth();
+    await applyExternalVisitorAuth();
 
     // --- Build headers map ---
     const headers: Record<string, string> = {};
@@ -1540,7 +1566,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
       return json({ error: "missing peer identity" }, 400);
     }
 
-    const turnAuth = resolveAgentRunTurnAuth(visitorPayload, readExternalVisitorAuth());
+    const turnAuth = resolveAgentRunTurnAuth(visitorPayload, await readExternalVisitorAuth());
     const parts: Part[] = [{ kind: "text", text }];
     const inbound: InboundMessage = {
       parts,
@@ -1758,6 +1784,15 @@ export function webTransport(opts: WebTransportOptions): Augment {
         if (opts.externalAuth.maxTtlSeconds !== undefined && opts.externalAuth.maxTtlSeconds <= 0) {
           throw new Error(
             "[web-transport] externalAuth.maxTtlSeconds must be positive when configured.",
+          );
+        }
+        if (
+          opts.externalAuth.replayProtection?.enabled === true &&
+          opts.externalAuth.replayProtection.store !== undefined &&
+          typeof opts.externalAuth.replayProtection.store.consume !== "function"
+        ) {
+          throw new Error(
+            "[web-transport] externalAuth.replayProtection.store must provide consume(jti, expiresAt, now).",
           );
         }
       }

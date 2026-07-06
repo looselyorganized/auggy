@@ -1020,6 +1020,67 @@ describe("webTransport HTTP server", () => {
     }
   });
 
+  it("POST /agent/run rejects replayed external auth assertions when replay protection is enabled", async () => {
+    const model = createMockModel({ response: "hi app user" });
+    const port = 19613;
+    const assertion = createExternalAuthAssertion({
+      secret: "app-auth-secret",
+      audience: "test",
+      provider: "clerk",
+      subject: "user_123",
+      ttlSeconds: 60,
+      jti: "run-jti-123",
+    });
+    const aug = webTransport({
+      port,
+      allowAnonymous: false,
+      auth: { type: "bearer", token: "test-token" },
+      externalAuth: {
+        secret: "app-auth-secret",
+        audience: "test",
+        allowedProviders: ["clerk"],
+        visitorId: (claims) => `vis_app_${claims.subject}`,
+        replayProtection: { enabled: true },
+      },
+    });
+    const agent = defineAgent(
+      { name: "test", model: "mock", augments: [createIdentityAugment("test"), aug] },
+      model,
+    );
+    await agent.start();
+
+    try {
+      const first = await fetch(`http://localhost:${port}/agent/run`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-auggy-auth-assertion": assertion,
+        },
+        body: JSON.stringify({
+          messages: [{ role: "user", content: "hello from app" }],
+        }),
+      });
+      expect(first.status).toBe(200);
+      await first.text();
+
+      const replay = await fetch(`http://localhost:${port}/agent/run`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-auggy-auth-assertion": assertion,
+        },
+        body: JSON.stringify({
+          messages: [{ role: "user", content: "hello again" }],
+        }),
+      });
+      expect(replay.status).toBe(401);
+      expect(await replay.json()).toEqual({ error: "unauthorized" });
+      expect(model.calls).toHaveLength(1);
+    } finally {
+      await agent.stop();
+    }
+  });
+
   it("POST /agent/run passes external auth claims to protected tools", async () => {
     const model = createMockModel();
     model.pushResponse({
@@ -3152,6 +3213,93 @@ describe("webTransport augment-registered routes", () => {
       });
       expect(old.status).toBe(401);
       expect(await old.json()).toEqual({ error: "visitor-auth-required" });
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("auth: visitor.required enforces external auth replay protection when enabled", async () => {
+    const model = createMockModel();
+    const port = 19612;
+    const now = Date.now();
+    const noJtiAssertion = createExternalAuthAssertion({
+      secret: "app-auth-secret",
+      audience: "storefront-agent",
+      provider: "clerk",
+      subject: "user_123",
+      now,
+      ttlSeconds: 60,
+    });
+    const assertion = createExternalAuthAssertion({
+      secret: "app-auth-secret",
+      audience: "storefront-agent",
+      provider: "clerk",
+      subject: "user_123",
+      now,
+      ttlSeconds: 60,
+      jti: "route-jti-123",
+    });
+    let handlerCalls = 0;
+    const replayStoreCalls: Array<{ jti: string; expiresAt: number; now: number }> = [];
+    const consumedJtis = new Set<string>();
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: "test-token" },
+      externalAuth: {
+        secret: "app-auth-secret",
+        audience: "storefront-agent",
+        allowedProviders: ["clerk"],
+        replayProtection: {
+          enabled: true,
+          store: {
+            consume(jti, expiresAt, observedNow) {
+              replayStoreCalls.push({ jti, expiresAt, now: observedNow });
+              if (consumedJtis.has(jti)) return false;
+              consumedJtis.add(jti);
+              return true;
+            },
+          },
+        },
+      },
+    });
+    const fixture: Augment = {
+      name: "external-auth-replay-routes",
+      httpRoutes: [
+        {
+          method: "GET",
+          path: "/account",
+          auth: "visitor.required",
+          handler: async () => {
+            handlerCalls += 1;
+            return json({ ok: true });
+          },
+        },
+      ],
+    };
+    const agent = defineAgent({ name: "test", model: "mock", augments: [fixture, aug] }, model);
+    await agent.start();
+    try {
+      const missingJti = await fetch(`http://localhost:${port}/account`, {
+        headers: { "x-auggy-auth-assertion": noJtiAssertion },
+      });
+      expect(missingJti.status).toBe(401);
+      expect(await missingJti.json()).toEqual({ error: "visitor-auth-required" });
+
+      const first = await fetch(`http://localhost:${port}/account`, {
+        headers: { "x-auggy-auth-assertion": assertion },
+      });
+      expect(first.status).toBe(200);
+      expect(await first.json()).toEqual({ ok: true });
+
+      const replay = await fetch(`http://localhost:${port}/account`, {
+        headers: { "x-auggy-auth-assertion": assertion },
+      });
+      expect(replay.status).toBe(401);
+      expect(await replay.json()).toEqual({ error: "visitor-auth-required" });
+      expect(handlerCalls).toBe(1);
+      expect(replayStoreCalls.map((call) => call.jti)).toEqual(["route-jti-123", "route-jti-123"]);
+      expect(replayStoreCalls.every((call) => call.expiresAt === now + 60_000)).toBe(true);
+      expect(replayStoreCalls.every((call) => call.now >= now)).toBe(true);
     } finally {
       await agent.stop();
     }
