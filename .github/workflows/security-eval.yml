@@ -9,9 +9,9 @@ name: Security eval
 # (e.g. evals/security/fixtures/test-agent-sonnet.yaml for a Sonnet comparison
 # run).
 #
-# Contributors who want PR-time validation in their own fork: configure
-# ANTHROPIC_API_KEY_SECURITY_EVAL in your fork's repo secrets, then add the
-# trigger you want in your fork's workflow file. Your fork, your CI, your spend.
+# Contributors who want PR-time validation in their own repository or private
+# fork: configure ANTHROPIC_API_KEY_SECURITY_EVAL in that repo's secrets, then
+# add the trigger you want in that copy of the workflow. Your CI, your spend.
 # See CONTRIBUTING.md.
 
 on:

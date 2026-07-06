@@ -20,6 +20,18 @@ git push origin v0.5.0
 # CI publishes to npm + creates GitHub Release; watch the workflow run.
 ```
 
+## 0.5 preview posture
+
+For `0.5.0`, the npm packages are public but the source repository may remain
+private. Keep this posture until the project intentionally moves to a public
+OSS repository:
+
+- package manifests should point `homepage` at `https://auggy.dev`
+- package manifests should use the support email in `bugs`
+- omit `repository` metadata while the repo is private
+- keep npm provenance off because provenance requires a public source repo
+- do not describe the repo as publicly open source until the repo is public
+
 ## The invariant
 
 **Every npm version maps to an inspectable git tag.** No exceptions going forward. The `0.3.0` release predates this rule and is documented as a name-claim publish with a synthetic backfill tag pointing at the closest matching source — see *§ Historical gaps* below.
@@ -109,7 +121,7 @@ Manual checks:
 
 Package artifact checks are covered by `bun run smoke:release`:
 
-- [ ] Tarball includes CLI source, `README.md`, `CHANGELOG.md`, `LICENSE`, and `admin/dist/index.html`
+- [ ] Tarball includes CLI source, `README.md`, `CHANGELOG.md`, `LICENSE`, `SECURITY.md`, and `admin/dist/index.html`
 - [ ] Tarball includes built console JS/CSS
 - [ ] Tarball excludes source maps and local-only state (`.env`, `.git/`, `.auggy/`, `node_modules/`, `docs/`, `tests/`)
 

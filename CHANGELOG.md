@@ -20,6 +20,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **App-auth bridge example.** `examples/app-auth-bridge` proves a normal app backend verifying Supabase/Clerk-style sessions, minting `x-auggy-auth-assertion`, using a generated browser client, and enforcing route/tool delegated authorization.
 - **Concierge route/tool example.** `examples/concierge` demonstrates the v1 app-backend pattern: deterministic routes and model-callable tools over shared domain logic.
 - **Feature status index.** `docs/FEATURES.md` now tracks published, on-main, planned, preview, and vision work separately from the release roadmap.
+- **0.5 public-preview launch checklist.** Package metadata, support paths, docs
+  posture, and release tasks now explicitly support public npm packages while
+  the source repository remains private during preview.
 
 ### Fixed
 

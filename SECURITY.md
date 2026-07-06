@@ -2,23 +2,20 @@
 
 ## Supported versions
 
-Only the latest minor release receives security patches.
-
-| Version | Supported          |
-| ------- | ------------------ |
-| 0.4.x   | :white_check_mark: |
-| < 0.4   | :x:                |
+Only the latest published minor release receives security patches.
 
 Auggy is pre-1.0. Breaking changes between minor versions are possible. Pin to an exact version in production until 1.0.
 
 ## Reporting a vulnerability
 
-**Do not open a public GitHub issue for a security vulnerability.**
+**Do not open a public issue for a security vulnerability.**
 
 Use one of these private channels instead:
 
-1. **GitHub Private Vulnerability Reporting** (preferred) — open a report from the [Security tab](https://github.com/looselyorganized/auggy/security/advisories/new) of this repo.
-2. **Email** — `hello@looselyorganized.xyz`.
+1. **Email** — `hello@looselyorganized.xyz`.
+2. **GitHub Private Vulnerability Reporting** — invited source collaborators
+   with repo access may also open a private report from the repo's Security
+   tab.
 
 Please include:
 

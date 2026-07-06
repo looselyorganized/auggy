@@ -15,9 +15,10 @@ Closes #<!-- issue number, if any -->
 
 ## Checklist
 
-- [ ] `bun test` passes locally (all 1704+).
-- [ ] `bunx tsc --noEmit` is clean.
-- [ ] Reference docs under `docs/01-12-*.md` updated if behavior they describe changed.
+- [ ] `bun test` passes locally.
+- [ ] `bun run typecheck` is clean.
+- [ ] `bun run lint` is clean.
+- [ ] Numbered reference docs under `docs/` updated if behavior they describe changed.
 - [ ] New public surface (augment, tool, engine adapter, CLI flag) has tests.
 - [ ] Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/).
 - [ ] If this change has security implications, the threat model is described in the description above.

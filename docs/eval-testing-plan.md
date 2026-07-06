@@ -303,7 +303,7 @@ First cut of the runner + deterministic graders — scoped specifically to secur
 - `benign.yaml` — 5 counterpart cases to prevent one-sided optimization (over-refusal)
 - `graders/` — 8 deterministic graders implementing the types in §2.3
 - `run.ts` — bun-runnable script: `bun run evals/security/run.ts`
-- `schema/{suite,result}.schema.json` — stable v1 contract for OSS consumers
+- `schema/{suite,result}.schema.json` — stable v1 contract for adopters
 - `README.md` — how to run, extend, maintain
 
 The suite uses the YAML format defined in §2.2 and the grader types in §2.3 — it's the reference implementation the `auggy eval run` CLI command (Phase 1 below) will generalize.

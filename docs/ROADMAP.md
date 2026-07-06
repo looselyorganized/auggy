@@ -55,6 +55,10 @@ Release tasks:
 
 - Review and finalize the `0.5.0` changelog section during the release PR.
 - Bump package versions during the release PR.
+- Publish public npm packages while keeping the source repository private during
+  preview.
+- Keep npm provenance off and private GitHub repository metadata out of package
+  manifests until the source repo is public.
 - Run release rehearsal and package boot checks.
 - Confirm docs still make shipped, preview, and planned work easy to distinguish.
 

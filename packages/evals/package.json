@@ -12,14 +12,9 @@
   ],
   "license": "Apache-2.0",
   "author": "LORF (Loosely Organized Research Facility)",
-  "homepage": "https://github.com/looselyorganized/auggy#readme",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/looselyorganized/auggy.git",
-    "directory": "packages/evals"
-  },
+  "homepage": "https://auggy.dev",
   "bugs": {
-    "url": "https://github.com/looselyorganized/auggy/issues"
+    "email": "hello@looselyorganized.xyz"
   },
   "type": "module",
   "exports": {

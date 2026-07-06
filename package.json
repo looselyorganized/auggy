@@ -1,7 +1,7 @@
 {
   "name": "auggy",
   "version": "0.4.4",
-  "description": "Modular agent runtime — composable augments, multi-engine, SQLite-first memory.",
+  "description": "TypeScript framework for agent-native app backends: routes, tools, auth, memory, and operator controls.",
   "keywords": [
     "agent",
     "agents",
@@ -13,6 +13,11 @@
     "llm",
     "runtime",
     "framework",
+    "backend",
+    "app-backend",
+    "routes",
+    "tools",
+    "authorization",
     "bun",
     "typescript",
     "memory",
@@ -22,13 +27,9 @@
   ],
   "license": "Apache-2.0",
   "author": "LORF (Loosely Organized Research Facility)",
-  "homepage": "https://github.com/looselyorganized/auggy#readme",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/looselyorganized/auggy.git"
-  },
+  "homepage": "https://auggy.dev",
   "bugs": {
-    "url": "https://github.com/looselyorganized/auggy/issues"
+    "email": "hello@looselyorganized.xyz"
   },
   "type": "module",
   "module": "src/index.ts",
@@ -62,7 +63,8 @@
     "admin/dist",
     "LICENSE",
     "README.md",
-    "CHANGELOG.md"
+    "CHANGELOG.md",
+    "SECURITY.md"
   ],
   "engines": {
     "node": ">=20",

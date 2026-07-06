@@ -126,13 +126,20 @@ Each run uses the default fixture (no operator-specific config), Haiku, 3 trials
 
 Secret: `ANTHROPIC_API_KEY_SECURITY_EVAL` — dedicated, scoped key. Distinct from any other Anthropic key in the same project, so a leak limits blast radius.
 
-**Why no `pull_request` trigger?** GitHub structurally withholds repo secrets from fork PR contexts (correct behavior — prevents secret exfiltration via malicious workflow changes). Combined with the cost-per-PR concern, the standard OSS pattern for paid-API integration tests is exactly this: maintainer-controlled triggers + post-merge gate + scheduled drift check, with contributor self-funded fork CI as the escape hatch for PR-time validation.
+**Why no `pull_request` trigger?** GitHub structurally withholds repo secrets
+from untrusted PR contexts (correct behavior — prevents secret exfiltration via
+malicious workflow changes). Combined with the cost-per-PR concern, the intended
+pattern is maintainer-controlled triggers plus a post-merge/scheduled drift
+gate. Private-preview collaborators or adopters running their own copy can wire
+their own paid key into their own CI.
 
 **Comparison runs against larger models.** A second fixture variant lives at `fixtures/test-agent-sonnet.yaml` (identical composition, Sonnet 4.6 instead of Haiku 4.5). Maintainers dispatch it via the workflow's `config` input from the Actions tab to compare model-size sensitivity. Cost: ~$0.35/run vs Haiku's ~$0.07. Use case: pre-release verification, or debugging an over-refusal flake to determine whether it's model-size-sensitive (Haiku-specific) vs a real Auggy regression (would fail on Sonnet too).
 
-**For contributors:** see [CONTRIBUTING.md "Security eval" section](../../CONTRIBUTING.md). Short version — run locally before submitting, or configure your own secret + `pull_request` trigger in your fork.
+**For contributors:** see [CONTRIBUTING.md "Security eval" section](../../CONTRIBUTING.md). Short version — run locally before submitting, or configure your own secret + trigger in your own repository.
 
-**For Auggy adopters who deploy their own agent:** the workflow file ships in your fork. Configure `ANTHROPIC_API_KEY_SECURITY_EVAL` in your repo's secrets to enable any of the triggers in your deployment. Your wallet, your CI cadence.
+**For Auggy adopters who deploy their own agent:** copy the workflow into your
+own repository and configure `ANTHROPIC_API_KEY_SECURITY_EVAL` in that repo's
+secrets. Your wallet, your CI cadence.
 
 For local nightly runs against your own agent: `auggy eval <agent-name>` (or `bun run evals/security/run.ts --config path/to/agent.yaml` if `auggy` isn't on PATH for the launchd context).
 
@@ -145,7 +152,8 @@ For local nightly runs against your own agent: `auggy eval <agent-name>` (or `bu
 
 ## Adding cases
 
-The OSS deployment story is clone-and-fork: edit `suite.yaml` and `benign.yaml` directly in your fork.
+For an adopter-owned suite, edit `suite.yaml` and `benign.yaml` in your own
+agent repository.
 
 1. Write a YAML block in `suite.yaml` with a unique `id`, `category`, `severity`, `source`, `threat` tags, `messages`, and ≥2 `graders`. Use `${var}` substitution where the case references operator name, agent name, or fixture paths — see the variable inventory above.
 2. Add a counterpart in `benign.yaml` with `counterpart_of: <your-id>` — something that looks similar but should succeed.

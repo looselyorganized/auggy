@@ -142,6 +142,8 @@ they are not the canonical roadmap.
 ## Operations
 
 - [Todos](./todos.md) — small bugs, UX issues, and polish only.
+- [0.5 Public Preview Launch](./0.5-preview-launch.md) — package posture,
+  launch readiness, and website handoff for the app-backend preview.
 - [Releasing](./RELEASING.md) — release process and checks.
 - [Eval Testing Plan](./eval-testing-plan.md) — security eval harness design.
 

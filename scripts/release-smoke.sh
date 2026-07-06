@@ -78,6 +78,7 @@ require_pack_entry "admin/dist/index.html"
 require_pack_entry "README.md"
 require_pack_entry "CHANGELOG.md"
 require_pack_entry "LICENSE"
+require_pack_entry "SECURITY.md"
 grep -Eq '^package/admin/dist/assets/.+\.js$' "$PACK_LIST" \
   || fail "tarball missing built console JavaScript"
 grep -Eq '^package/admin/dist/assets/.+\.css$' "$PACK_LIST" \

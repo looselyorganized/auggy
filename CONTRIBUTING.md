@@ -1,6 +1,8 @@
 # Contributing to Auggy
 
-Thanks for taking a look. This document covers what you need to know to land a change.
+Thanks for taking a look. Auggy is currently in public-preview development with
+private source collaboration. This document covers what invited collaborators
+need to know to land a change.
 
 ## Before you start
 
@@ -17,7 +19,7 @@ Auggy runs on Bun. There is no Node.js fallback.
 
 ```bash
 # 1. Clone and install
-git clone https://github.com/looselyorganized/auggy
+git clone <private-auggy-repo-url>
 cd auggy
 bun install
 
@@ -25,8 +27,8 @@ bun install
 bun link                 # makes `auggy` available globally
 
 # 3. Tests + typecheck
-bun test                 # 1704 tests across 131 files
-bunx tsc --noEmit        # must be clean
+bun test
+bun run typecheck
 
 # 4. Run the demo agent (requires ANTHROPIC_API_KEY)
 cp .env.example .env     # add your key
@@ -146,8 +148,9 @@ Scopes match top-level source areas: `kernel`, `memory`, `transport`, `engines`,
 
 Before requesting review:
 
-- [ ] `bun test` passes (all 1704+).
-- [ ] `bunx tsc --noEmit` is clean.
+- [ ] `bun test` passes.
+- [ ] `bun run typecheck` is clean.
+- [ ] `bun run lint` is clean.
 - [ ] If you changed behavior documented in `docs/`, the doc is updated in the same PR.
 - [ ] If the change crosses a public surface (new augment, new tool, new engine), a test exercises it.
 - [ ] Commit messages follow the convention above.
@@ -173,7 +176,10 @@ The portable security suite at `evals/security/` runs against a real Anthropic A
    ANTHROPIC_API_KEY=... auggy eval my-agent                   # against a registered agent
    ```
    The underlying script is still `bun run evals/security/run.ts`; `auggy eval` is a thin wrapper that resolves the agent.yaml path from the agent index (or the bundled fixture) and forwards the same flags.
-2. **Or:** configure `ANTHROPIC_API_KEY_SECURITY_EVAL` in your fork's GitHub repo secrets (Settings → Secrets and variables → Actions), and add a `pull_request:` entry to the trigger list in your fork's copy of `.github/workflows/security-eval.yml`. Your fork, your CI, your spend.
+2. **Or:** configure `ANTHROPIC_API_KEY_SECURITY_EVAL` in your own repository's
+   GitHub secrets (Settings -> Secrets and variables -> Actions), and add the
+   trigger you want to your copy of `.github/workflows/security-eval.yml`. Your
+   CI, your spend.
 3. Mention in your PR description that you've run the suite and it passes.
 
 Maintainers will dispatch the eval against your PR's branch via `workflow_dispatch` if review surfaces eval-relevant changes that weren't locally verified.
@@ -192,25 +198,14 @@ When the provider cap fires, the engine adapter surfaces a clear operator-action
 
 ## Filing issues
 
-Use the templates in `.github/ISSUE_TEMPLATE/`. Bugs need a reproduction. Feature requests need a use case.
+During private-preview source collaboration, use the shared issue tracker only
+if you have repo access. Bugs need a reproduction. Feature requests need a use
+case.
 
 For security issues, **do not open a public issue.** See [SECURITY.md](SECURITY.md).
 
 ## Releasing (maintainer notes)
 
-For the maintainer cutting a release:
-
-1. Update `CHANGELOG.md` — move `[Unreleased]` content under a new `[X.Y.Z] - YYYY-MM-DD` heading.
-2. Bump `version` in `package.json` and `lo.yml` to match.
-3. Commit: `chore(release): vX.Y.Z`.
-4. Tag: `git tag -a vX.Y.Z -m "vX.Y.Z — short release headline"`.
-5. Push: `git push && git push --tags`.
-6. Create the GitHub Release. A pushed tag is **not** the same as a Release — without this step the "Latest" badge and `/releases` page won't update. Auto-extract the changelog section:
-
-   ```bash
-   gh release create vX.Y.Z \
-     --title "vX.Y.Z — short release headline" \
-     --notes-file <(awk '/^## \[X\.Y\.Z\]/{f=1;next} /^## \[/{f=0} f' CHANGELOG.md)
-   ```
-
-   (Substitute the version in both the tag arg and the awk pattern.)
+Maintainers should follow [`docs/RELEASING.md`](docs/RELEASING.md). Feature PRs
+do not bump package versions; the release PR is the only place that moves
+`package.json` and the workspace package versions.
