@@ -70,7 +70,9 @@ session bridged into Auggy visitor auth. The generated client only forwards the
 assertion with `x-auggy-auth-assertion`; it does not create or verify the
 assertion. Do not put assertion-signing secrets in browser code. See
 [`26-delegated-authorization.md`](./26-delegated-authorization.md) for
-copyable Supabase/Clerk assertion recipes and the route `requires` model.
+copyable Supabase/Clerk assertion recipes and the route `requires` model. See
+[`examples/app-auth-bridge`](../examples/app-auth-bridge/README.md) for a
+runnable generated-client bridge.
 
 Visitor-token routes can issue a fresh `x-visitor-token` response header. When
 that happens, the browser client calls `onVisitorToken` and also returns the
@@ -242,7 +244,9 @@ Generated route clients only cover deterministic HTTP routes. Protected model
 tools use the same external assertion and delegated scopes/grants, but their
 resource grants bind through validated tool input rather than route params. See
 [`26-delegated-authorization.md`](./26-delegated-authorization.md) for the
-shared route/tool authorization contract.
+shared route/tool authorization contract and
+[`examples/app-auth-bridge`](../examples/app-auth-bridge/README.md) for a
+runnable route/tool example.
 
 ## Headers and Fetch
 

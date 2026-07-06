@@ -200,6 +200,11 @@ visitor IDs or internal memory labels.
 with an email magic link. Pair it with `layeredMemory` when you want "welcome
 back" continuity across sessions.
 
+Apps that already use Clerk, Supabase Auth, or custom sessions can keep that
+login system and bridge it into Auggy with short-lived app-signed assertions.
+See [Delegated Authorization](docs/26-delegated-authorization.md) and the
+[app auth bridge example](examples/app-auth-bridge/README.md).
+
 Local testing uses console magic links. For production email delivery:
 
 ```bash
@@ -419,6 +424,8 @@ latest `auggy` package already published on npm.
 - [Skills](docs/11-skills.md)
 - [Deploy to Railway](docs/18-deploy.md)
 - [Visitor Auth](docs/19-visitor-auth.md)
+- [Generated Route Clients](docs/25-generated-route-clients.md)
+- [Delegated Authorization](docs/26-delegated-authorization.md)
 - [Agent Mail](docs/22-agent-mail.md)
 - [MCP](docs/24-mcp.md)
 - [Console](docs/21-console.md)

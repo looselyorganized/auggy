@@ -240,6 +240,7 @@ Mismatched app claims are not merged onto the visitor context.
 Developer reference: [`../26-delegated-authorization.md`](../26-delegated-authorization.md)
 describes the Clerk/Supabase/custom app bridge, short-lived assertions,
 delegated `scopes` / `grants`, and route/tool `requires` examples.
+Runnable example: [`../../examples/app-auth-bridge`](../../examples/app-auth-bridge/README.md).
 
 Implementation note: delegated authorization now has two enforcement sites.
 Routes bind resource grants from path params with `{ param: "id" }`; tools bind
