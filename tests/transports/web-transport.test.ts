@@ -1913,6 +1913,39 @@ describe("webTransport visitorTokens.enabled guard (fix F2)", () => {
   });
 });
 
+describe("webTransport external auth config guard", () => {
+  it("throws if external auth rotation keys are blank", async () => {
+    const model = createMockModel({ response: "ok" });
+    const currentKeyAug = webTransport({
+      port: 19620,
+      auth: { type: "bearer", token: "test-token" },
+      externalAuth: {
+        secret: "current-secret",
+        keyId: " ",
+      },
+    });
+    const currentKeyAgent = defineAgent(
+      { name: "test-current-key", model: "mock", augments: [currentKeyAug] },
+      model,
+    );
+    await expect(currentKeyAgent.start()).rejects.toThrow(/externalAuth\.keyId/);
+
+    const previousKeyAug = webTransport({
+      port: 19621,
+      auth: { type: "bearer", token: "test-token" },
+      externalAuth: {
+        secret: "current-secret",
+        secrets: [{ keyId: "", secret: "previous-secret" }],
+      },
+    });
+    const previousKeyAgent = defineAgent(
+      { name: "test-previous-key", model: "mock", augments: [previousKeyAug] },
+      model,
+    );
+    await expect(previousKeyAgent.start()).rejects.toThrow(/externalAuth\.secrets keyId/);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // webTransport / (root) route — publicFrontendUrl option (Task A1: failing)
 // ---------------------------------------------------------------------------
@@ -3026,6 +3059,99 @@ describe("webTransport augment-registered routes", () => {
           },
         },
       });
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("auth: visitor.required accepts external auth assertions signed by current or previous keys", async () => {
+    const model = createMockModel();
+    const port = 19611;
+    const now = Date.now();
+    const previousAssertion = createExternalAuthAssertion({
+      secret: "previous-app-auth-secret",
+      keyId: "2026-06",
+      audience: "storefront-agent",
+      provider: "clerk",
+      subject: "user_previous",
+      now,
+      ttlSeconds: 60,
+    });
+    const currentAssertion = createExternalAuthAssertion({
+      secret: "current-app-auth-secret",
+      keyId: "2026-07",
+      audience: "storefront-agent",
+      provider: "clerk",
+      subject: "user_current",
+      now,
+      ttlSeconds: 60,
+    });
+    const oldAssertion = createExternalAuthAssertion({
+      secret: "old-app-auth-secret",
+      keyId: "2026-05",
+      audience: "storefront-agent",
+      provider: "clerk",
+      subject: "user_old",
+      now,
+      ttlSeconds: 60,
+    });
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: "test-token" },
+      externalAuth: {
+        secret: "current-app-auth-secret",
+        keyId: "2026-07",
+        secrets: [{ keyId: "2026-06", secret: "previous-app-auth-secret" }],
+        audience: "storefront-agent",
+        allowedProviders: ["clerk"],
+        maxTtlSeconds: 60,
+      },
+    });
+    const fixture: Augment = {
+      name: "external-auth-routes",
+      httpRoutes: [
+        {
+          method: "GET",
+          path: "/account",
+          auth: "visitor.required",
+          handler: async (_req, opts) => json(opts.auth),
+        },
+      ],
+    };
+    const agent = defineAgent({ name: "test", model: "mock", augments: [fixture, aug] }, model);
+    await agent.start();
+    try {
+      const previous = await fetch(`http://localhost:${port}/account`, {
+        headers: { "x-auggy-auth-assertion": previousAssertion },
+      });
+      expect(previous.status).toBe(200);
+      expect(await previous.json()).toMatchObject({
+        state: "recognized",
+        externalAuth: {
+          keyId: "2026-06",
+          provider: "clerk",
+          subject: "user_previous",
+        },
+      });
+
+      const current = await fetch(`http://localhost:${port}/account`, {
+        headers: { "x-auggy-auth-assertion": currentAssertion },
+      });
+      expect(current.status).toBe(200);
+      expect(await current.json()).toMatchObject({
+        state: "recognized",
+        externalAuth: {
+          keyId: "2026-07",
+          provider: "clerk",
+          subject: "user_current",
+        },
+      });
+
+      const old = await fetch(`http://localhost:${port}/account`, {
+        headers: { "x-auggy-auth-assertion": oldAssertion },
+      });
+      expect(old.status).toBe(401);
+      expect(await old.json()).toEqual({ error: "visitor-auth-required" });
     } finally {
       await agent.stop();
     }

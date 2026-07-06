@@ -13,6 +13,7 @@ const ASSERTION_TYPE = "auggy.external-auth.v1";
 const DEFAULT_TTL_SECONDS = 5 * 60;
 
 export interface ExternalAuthClaims {
+  keyId?: string;
   provider: string;
   subject: string;
   audience: string;
@@ -31,6 +32,7 @@ export interface ExternalAuthClaims {
 
 export interface CreateExternalAuthAssertionOptions {
   secret: string;
+  keyId?: string;
   audience: string;
   provider: string;
   subject: string;
@@ -48,17 +50,25 @@ export interface CreateExternalAuthAssertionOptions {
 }
 
 export interface VerifyExternalAuthAssertionOptions {
-  secret: string;
+  secret?: string;
+  keyId?: string;
+  secrets?: readonly ExternalAuthAssertionSecret[];
   audience: string;
   now?: number;
   allowedProviders?: readonly string[];
   maxTtlSeconds?: number;
 }
 
+export interface ExternalAuthAssertionSecret {
+  secret: string;
+  keyId?: string;
+}
+
 export type ExternalAuthAssertionFailureReason =
   | "malformed"
   | "invalid-payload"
   | "invalid-signature"
+  | "key-not-found"
   | "audience-mismatch"
   | "provider-not-allowed"
   | "expired"
@@ -76,6 +86,7 @@ export interface ExternalAuthPrincipalOptions {
 
 interface ExternalAuthAssertionPayload {
   typ: typeof ASSERTION_TYPE;
+  kid?: string;
   aud: string;
   provider: string;
   sub: string;
@@ -96,10 +107,14 @@ export function createExternalAuthAssertion(opts: CreateExternalAuthAssertionOpt
   const now = opts.now ?? Date.now();
   const ttlSeconds = opts.ttlSeconds ?? DEFAULT_TTL_SECONDS;
   if (!opts.secret) throw new Error("external auth assertion secret is required");
+  if (opts.keyId !== undefined && opts.keyId.trim() === "") {
+    throw new Error("external auth assertion keyId must be non-empty when provided");
+  }
   if (ttlSeconds <= 0) throw new Error("external auth assertion ttlSeconds must be positive");
 
   const payload: ExternalAuthAssertionPayload = {
     typ: ASSERTION_TYPE,
+    ...(opts.keyId !== undefined ? { kid: opts.keyId } : {}),
     aud: opts.audience,
     provider: opts.provider,
     sub: opts.subject,
@@ -123,18 +138,21 @@ export function verifyExternalAuthAssertion(
   assertion: string,
   opts: VerifyExternalAuthAssertionOptions,
 ): ExternalAuthAssertionVerification {
-  if (!opts.secret) return { ok: false, reason: "invalid-signature" };
+  const secrets = normalizeAssertionSecrets(opts);
+  if (secrets.length === 0) return { ok: false, reason: "invalid-signature" };
 
   const [encodedPayload, signature, extra] = assertion.split(".");
   if (!encodedPayload || !signature || extra !== undefined) {
     return { ok: false, reason: "malformed" };
   }
-  if (!verifySignature(encodedPayload, signature, opts.secret)) {
-    return { ok: false, reason: "invalid-signature" };
-  }
 
   const payload = decodePayload(encodedPayload);
   if (!payload) return { ok: false, reason: "invalid-payload" };
+  const candidateSecrets = secretsForPayload(secrets, payload);
+  if (candidateSecrets.length === 0) return { ok: false, reason: "key-not-found" };
+  if (!candidateSecrets.some((entry) => verifySignature(encodedPayload, signature, entry.secret))) {
+    return { ok: false, reason: "invalid-signature" };
+  }
 
   if (payload.aud !== opts.audience) return { ok: false, reason: "audience-mismatch" };
   if (opts.allowedProviders && !opts.allowedProviders.includes(payload.provider)) {
@@ -151,6 +169,7 @@ export function verifyExternalAuthAssertion(
   return {
     ok: true,
     claims: {
+      ...(payload.kid !== undefined ? { keyId: payload.kid } : {}),
       provider: payload.provider,
       subject: payload.sub,
       audience: payload.aud,
@@ -231,6 +250,7 @@ function resolveVisitorId(
 
 function routeExternalAuthClaims(claims: ExternalAuthClaims): RouteExternalAuthClaims {
   return {
+    ...(claims.keyId !== undefined ? { keyId: claims.keyId } : {}),
     provider: claims.provider,
     subject: claims.subject,
     ...(claims.orgId !== undefined ? { orgId: claims.orgId } : {}),
@@ -240,6 +260,35 @@ function routeExternalAuthClaims(claims: ExternalAuthClaims): RouteExternalAuthC
     ...(claims.authzVersion !== undefined ? { authzVersion: claims.authzVersion } : {}),
     ...(claims.jti !== undefined ? { jti: claims.jti } : {}),
   };
+}
+
+function normalizeAssertionSecrets(
+  opts: VerifyExternalAuthAssertionOptions,
+): readonly Required<ExternalAuthAssertionSecret>[] {
+  const entries = [
+    ...(opts.secret !== undefined ? [{ secret: opts.secret, keyId: opts.keyId }] : []),
+    ...(opts.secrets ?? []),
+  ];
+  const normalized: Required<ExternalAuthAssertionSecret>[] = [];
+  const seen = new Set<string>();
+  for (const entry of entries) {
+    if (!entry.secret) continue;
+    if (entry.keyId !== undefined && entry.keyId.trim() === "") continue;
+    const keyId = entry.keyId ?? "";
+    const dedupeKey = `${keyId}\0${entry.secret}`;
+    if (seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
+    normalized.push({ secret: entry.secret, keyId });
+  }
+  return normalized;
+}
+
+function secretsForPayload(
+  secrets: readonly Required<ExternalAuthAssertionSecret>[],
+  payload: ExternalAuthAssertionPayload,
+): readonly Required<ExternalAuthAssertionSecret>[] {
+  if (payload.kid === undefined) return secrets;
+  return secrets.filter((entry) => entry.keyId === payload.kid);
 }
 
 function cloneAuthorizationGrants(grants: readonly AuthorizationGrant[]): AuthorizationGrant[] {
@@ -288,6 +337,9 @@ function decodePayload(encodedPayload: string): ExternalAuthAssertionPayload | n
   }
   if (!isRecord(raw)) return null;
   if (raw.typ !== ASSERTION_TYPE) return null;
+  if (raw.kid !== undefined && (typeof raw.kid !== "string" || raw.kid.trim() === "")) {
+    return null;
+  }
   if (typeof raw.aud !== "string" || raw.aud.length === 0) return null;
   if (typeof raw.provider !== "string" || raw.provider.length === 0) return null;
   if (typeof raw.sub !== "string" || raw.sub.length === 0) return null;
@@ -327,6 +379,7 @@ function decodePayload(encodedPayload: string): ExternalAuthAssertionPayload | n
   }
   return {
     typ: ASSERTION_TYPE,
+    ...(raw.kid !== undefined ? { kid: raw.kid } : {}),
     aud: raw.aud,
     provider: raw.provider,
     sub: raw.sub,

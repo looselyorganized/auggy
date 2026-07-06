@@ -736,6 +736,7 @@ export type AuthorizationRequirement =
     };
 
 export interface RouteExternalAuthClaims {
+  keyId?: string;
   provider: string;
   subject: string;
   orgId?: string;
