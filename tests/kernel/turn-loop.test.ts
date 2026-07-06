@@ -7,6 +7,7 @@ import { extractText } from "@/parts";
 import type {
   Augment,
   AuthorizationGrant,
+  KernelEvent,
   TurnTrigger,
   PeerIdentity,
   InboundMessage,
@@ -181,11 +182,15 @@ describe("TurnLoop", () => {
       tokenizer: createTokenizer(),
       config: { name: "test", model: "mock", augments: [] },
     });
-
-    const result = await loop.executeTurn(
-      makeTrigger("Read my orders", recognizedVisitorAuth({ scopes: ["profile.read"] })),
-      "thread-authz-2",
+    const trigger = makeTrigger(
+      "Read my orders",
+      recognizedVisitorAuth({ keyId: "2026-07", scopes: ["profile.read"], orgId: "org_abc" }),
     );
+    const events: KernelEvent[] = [];
+
+    const result = await loop.executeTurn(trigger, "thread-authz-2", {
+      onEvent: (event) => events.push(event),
+    });
 
     expect(executeCalls).toBe(0);
     expect(result.toolCalls).toHaveLength(0);
@@ -193,6 +198,23 @@ describe("TurnLoop", () => {
     expect(model.calls[1]!.messages.map((m) => m.content).join("\n")).toContain(
       'Tool "read_orders" authorization denied: authorization-scope-missing',
     );
+    const auditEvent = events.find((event) => event.kind === "delegated_authorization_denied");
+    expect(auditEvent).toEqual({
+      kind: "delegated_authorization_denied",
+      reason: "authorization-scope-missing",
+      requirement: { scope: "orders.read" },
+      keyId: "2026-07",
+      provider: "supabase",
+      subject: "user_123",
+      orgId: "org_abc",
+      target: {
+        type: "tool",
+        toolName: "read_orders",
+        augmentName: "orders",
+        turnId: trigger.turnId,
+        threadId: "thread-authz-2",
+      },
+    });
   });
 
   it("denies tools with malformed delegated authorization requirements", async () => {
@@ -755,7 +777,12 @@ describe("TurnLoop", () => {
 });
 
 function recognizedVisitorAuth(
-  opts: { scopes?: readonly string[]; grants?: readonly AuthorizationGrant[] } = {},
+  opts: {
+    keyId?: string;
+    scopes?: readonly string[];
+    grants?: readonly AuthorizationGrant[];
+    orgId?: string;
+  } = {},
 ): RouteAuthContext {
   return {
     mode: "visitor",
@@ -765,8 +792,10 @@ function recognizedVisitorAuth(
     issuedAt: 1_000,
     expiresAt: 2_000,
     externalAuth: {
+      ...(opts.keyId !== undefined ? { keyId: opts.keyId } : {}),
       provider: "supabase",
       subject: "user_123",
+      ...(opts.orgId !== undefined ? { orgId: opts.orgId } : {}),
       ...(opts.scopes !== undefined ? { scopes: opts.scopes } : {}),
       ...(opts.grants !== undefined ? { grants: opts.grants } : {}),
     },
@@ -777,8 +806,10 @@ function recognizedVisitorAuth(
       visitorId: "vis_app_user_123",
       agentId: "test",
       externalAuth: {
+        ...(opts.keyId !== undefined ? { keyId: opts.keyId } : {}),
         provider: "supabase",
         subject: "user_123",
+        ...(opts.orgId !== undefined ? { orgId: opts.orgId } : {}),
         ...(opts.scopes !== undefined ? { scopes: opts.scopes } : {}),
         ...(opts.grants !== undefined ? { grants: opts.grants } : {}),
       },

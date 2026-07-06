@@ -3,6 +3,7 @@ import type {
   AugmentHttpRoute,
   AugmentHttpRouteAuth,
   CreatorConfig,
+  DelegatedAuthorizationDeniedAuditEvent,
   PeerIdentity,
   RouteAuthContext,
   RouteAgentAuthContext,
@@ -35,6 +36,7 @@ import {
   type ExternalAuthPrincipalOptions,
 } from "../auth/external-auth";
 import {
+  delegatedAuthorizationDeniedAuditEvent,
   delegatedAuthorizationForbiddenErrorBody,
   evaluateDelegatedAuthorization,
   visitorAuthRequiredErrorBody,
@@ -136,6 +138,13 @@ export interface WebTransportOptions {
    * identity; they never grant creator or agent trust.
    */
   externalAuth?: WebTransportExternalAuthOptions;
+  /**
+   * Best-effort structured audit hook for delegated authorization denials on
+   * augment routes and protected tools. Payloads include denial metadata and
+   * verified external-auth claim identifiers only; assertion tokens, secrets,
+   * and raw request headers are never passed.
+   */
+  onDelegatedAuthorizationDenied?: (event: DelegatedAuthorizationDeniedAuditEvent) => void;
   /**
    * Optional URL to redirect GET / to. When set, `GET /` returns 302 to this URL.
    * When unset, `GET /` returns 404. All other routes are unaffected.
@@ -1102,6 +1111,14 @@ export function webTransport(opts: WebTransportOptions): Augment {
     return timingSafeEqual(header, expected);
   }
 
+  function emitDelegatedAuthorizationDenied(event: DelegatedAuthorizationDeniedAuditEvent): void {
+    try {
+      opts.onDelegatedAuthorizationDenied?.(event);
+    } catch {
+      console.warn("[web-transport] delegated authorization audit hook failed.");
+    }
+  }
+
   function anonymousRoutePrincipal(): Extract<
     RouteAuthContext["principal"],
     { kind: "anonymous" }
@@ -1573,6 +1590,9 @@ export function webTransport(opts: WebTransportOptions): Augment {
         };
 
         const onEvent = (kernelEvent: KernelEvent) => {
+          if (kernelEvent.kind === "delegated_authorization_denied") {
+            emitDelegatedAuthorizationDenied(kernelEvent);
+          }
           for (const e of translateKernelEvent(kernelEvent)) {
             writeEvent(e);
           }
@@ -1890,6 +1910,19 @@ export function webTransport(opts: WebTransportOptions): Augment {
               params,
             });
             if (!authorization.ok) {
+              emitDelegatedAuthorizationDenied(
+                delegatedAuthorizationDeniedAuditEvent({
+                  decision: authorization,
+                  auth: routeAuth.context,
+                  target: {
+                    type: "route",
+                    route: `${augmentRoute.method} ${augmentRoute.path}`,
+                    method: augmentRoute.method,
+                    path: augmentRoute.path,
+                    auth: augmentRoute.auth,
+                  },
+                }),
+              );
               return json(delegatedAuthorizationForbiddenErrorBody(authorization.reason), 403);
             }
 

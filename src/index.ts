@@ -15,6 +15,8 @@ export type {
   AuthorizationResource,
   AuthorizationResourceBinding,
   AuthorizationScope,
+  DelegatedAuthorizationDeniedAuditEvent,
+  DelegatedAuthorizationDeniedAuditTarget,
   ContextBlock,
   ContextPlacement,
   ContextProvenance,

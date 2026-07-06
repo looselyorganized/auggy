@@ -90,6 +90,7 @@ import { buildPreamble } from "./preamble";
 import { validateOutput } from "./output-validator";
 import { createHistoryManager, type HistoryManager } from "./history-manager";
 import {
+  delegatedAuthorizationDeniedAuditEvent,
   evaluateDelegatedAuthorization,
   validateAuthorizationRequirements,
 } from "../authz/delegated-authorization";
@@ -881,6 +882,19 @@ export function createTurnLoop(opts: {
             input: validation.data,
           });
           if (!authorization.ok) {
+            emitEvent(
+              delegatedAuthorizationDeniedAuditEvent({
+                decision: authorization,
+                auth: trigger.auth,
+                target: {
+                  type: "tool",
+                  toolName: call.name,
+                  augmentName: reg.augment,
+                  turnId: trigger.turnId,
+                  threadId,
+                },
+              }),
+            );
             entries.push({
               type: "error",
               call,

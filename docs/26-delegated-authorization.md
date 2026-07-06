@@ -481,6 +481,22 @@ visible to the model, such as `authorization-scope-missing`,
 Those tool-denial strings intentionally match the route `reason` values, but
 they are model-loop results rather than HTTP response bodies.
 
+## Audit Semantics
+
+`webTransport` can receive delegated authorization denial audit events with
+`onDelegatedAuthorizationDenied`. The event fires when a route `requires` check
+returns `403` and when a protected tool is denied before execution. The payload
+includes the denial `reason`, the failed `requirement`, a route or tool target,
+and verified external-auth `keyId`, `provider`, `subject`, and `orgId` when
+those claims are available.
+
+Audit events are sanitized. They never include assertion tokens, signing
+secrets, raw request headers, visitor tokens, or bearer/agent credentials.
+Missing visitor credentials and invalid external assertions fail before
+delegated authorization evaluation and do not emit these events. Protected-tool
+audit events are kernel events, but the web transport does not translate them
+to AG-UI/SSE client events.
+
 ## What Claims Mean
 
 Verified external auth claims are available on route context and protected tool

@@ -466,7 +466,8 @@ export type KernelEvent =
       turnId: string;
       message: string;
       source: string;
-    };
+    }
+  | DelegatedAuthorizationDeniedAuditEvent;
 
 export type KernelEventHandler = (event: KernelEvent) => void;
 
@@ -735,6 +736,12 @@ export type AuthorizationRequirement =
       constraints?: AuthorizationConstraints;
     };
 
+export type DelegatedAuthorizationFailureReason =
+  | "authorization-claims-required"
+  | "authorization-scope-missing"
+  | "authorization-grant-missing"
+  | "authorization-resource-unresolved";
+
 export interface RouteExternalAuthClaims {
   keyId?: string;
   provider: string;
@@ -745,6 +752,33 @@ export interface RouteExternalAuthClaims {
   grants?: readonly AuthorizationGrant[];
   authzVersion?: string;
   jti?: string;
+}
+
+export type DelegatedAuthorizationDeniedAuditTarget =
+  | {
+      type: "route";
+      route: string;
+      method: HttpMethod;
+      path: string;
+      auth: AugmentHttpRouteAuth;
+    }
+  | {
+      type: "tool";
+      toolName: string;
+      augmentName: string;
+      turnId: string;
+      threadId: string;
+    };
+
+export interface DelegatedAuthorizationDeniedAuditEvent {
+  kind: "delegated_authorization_denied";
+  reason: DelegatedAuthorizationFailureReason;
+  requirement: AuthorizationRequirement;
+  target: DelegatedAuthorizationDeniedAuditTarget;
+  keyId?: string;
+  provider?: string;
+  subject?: string;
+  orgId?: string;
 }
 
 export type RouteAuthPrincipal =

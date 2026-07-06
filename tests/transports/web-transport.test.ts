@@ -8,7 +8,7 @@ import { createIdentityAugment } from "@tests/fixtures/mock-augment";
 import { routeFixtureAugment } from "@tests/fixtures/route-fixture-augment";
 import { createVisitorToken, deriveSigningKey } from "@/transports/visitor-token";
 import { createExternalAuthAssertion } from "@/auth/external-auth";
-import type { Augment } from "@/types";
+import type { Augment, DelegatedAuthorizationDeniedAuditEvent } from "@/types";
 
 // ---------------------------------------------------------------------------
 // Structure tests
@@ -3164,6 +3164,7 @@ describe("webTransport augment-registered routes", () => {
     let handlerCalls = 0;
     const scopedAssertion = createExternalAuthAssertion({
       secret: "app-auth-secret",
+      keyId: "2026-07",
       audience: "storefront-agent",
       provider: "supabase",
       subject: "user_123",
@@ -3173,21 +3174,26 @@ describe("webTransport augment-registered routes", () => {
     });
     const unscopedAssertion = createExternalAuthAssertion({
       secret: "app-auth-secret",
+      keyId: "2026-07",
       audience: "storefront-agent",
       provider: "supabase",
       subject: "user_123",
       now,
       ttlSeconds: 60,
+      orgId: "org_abc",
     });
+    const auditEvents: DelegatedAuthorizationDeniedAuditEvent[] = [];
     const aug = webTransport({
       port,
       auth: { type: "bearer", token: "test-token" },
       externalAuth: {
         secret: "app-auth-secret",
+        keyId: "2026-07",
         audience: "storefront-agent",
         allowedProviders: ["supabase"],
         maxTtlSeconds: 60,
       },
+      onDelegatedAuthorizationDenied: (event) => auditEvents.push(event),
     });
     const fixture: Augment = {
       name: "authorized-routes",
@@ -3216,6 +3222,24 @@ describe("webTransport augment-registered routes", () => {
         reason: "authorization-scope-missing",
       });
       expect(handlerCalls).toBe(0);
+      expect(auditEvents).toEqual([
+        {
+          kind: "delegated_authorization_denied",
+          reason: "authorization-scope-missing",
+          requirement: { scope: "orders.read" },
+          keyId: "2026-07",
+          provider: "supabase",
+          subject: "user_123",
+          orgId: "org_abc",
+          target: {
+            type: "route",
+            route: "GET /orders",
+            method: "GET",
+            path: "/orders",
+            auth: "visitor.required",
+          },
+        },
+      ]);
 
       const allowed = await fetch(`http://localhost:${port}/orders`, {
         headers: { "x-auggy-auth-assertion": scopedAssertion },
@@ -3223,6 +3247,7 @@ describe("webTransport augment-registered routes", () => {
       expect(allowed.status).toBe(200);
       expect(await allowed.json()).toEqual({ ok: true });
       expect(handlerCalls).toBe(1);
+      expect(auditEvents).toHaveLength(1);
     } finally {
       await agent.stop();
     }
