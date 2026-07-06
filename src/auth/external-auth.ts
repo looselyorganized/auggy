@@ -64,6 +64,14 @@ export interface ExternalAuthAssertionSecret {
   keyId?: string;
 }
 
+export interface ExternalAuthReplayStore {
+  /**
+   * Atomically record a verified assertion id until its expiry. Return false
+   * when the id has already been recorded and has not expired.
+   */
+  consume(jti: string, expiresAt: number, now: number): boolean | Promise<boolean>;
+}
+
 export type ExternalAuthAssertionFailureReason =
   | "malformed"
   | "invalid-payload"
@@ -237,6 +245,31 @@ export function externalSubjectVisitorId(
     .digest("base64url")
     .slice(0, 32);
   return `vis_ext_${hash}`;
+}
+
+export function createInMemoryExternalAuthReplayStore(): ExternalAuthReplayStore {
+  const seen = new Map<string, number>();
+  let touches = 0;
+
+  function prune(now: number): void {
+    for (const [jti, expiresAt] of seen) {
+      if (expiresAt <= now) seen.delete(jti);
+    }
+  }
+
+  return {
+    consume(jti, expiresAt, now) {
+      if (++touches >= 128) {
+        touches = 0;
+        prune(now);
+      }
+      const previousExpiresAt = seen.get(jti);
+      if (previousExpiresAt !== undefined && previousExpiresAt > now) return false;
+      if (expiresAt <= now) return false;
+      seen.set(jti, expiresAt);
+      return true;
+    },
+  };
 }
 
 function resolveVisitorId(

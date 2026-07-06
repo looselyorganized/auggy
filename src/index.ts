@@ -96,6 +96,7 @@ export { generateAgentCard } from "./agent-card";
 
 // === Auth primitives ===
 export {
+  createInMemoryExternalAuthReplayStore,
   createExternalAuthAssertion,
   externalAuthClaimsToRouteContext,
   externalAuthClaimsToRoutePrincipal,
@@ -109,6 +110,7 @@ export type {
   ExternalAuthAssertionVerification,
   ExternalAuthClaims,
   ExternalAuthPrincipalOptions,
+  ExternalAuthReplayStore,
   VerifyExternalAuthAssertionOptions,
 } from "./auth/external-auth";
 export {
