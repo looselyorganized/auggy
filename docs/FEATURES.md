@@ -41,7 +41,7 @@ Status values:
 ## Version Buckets
 
 - **`0.4.4` published:** latest npm baseline.
-- **`0.5.0` candidate on `main`:** app-backend route/client/authz foundation.
+- **`0.5.0` release candidate on `main`:** app-backend route/client/authz foundation; package metadata prepared, not yet published.
 - **`0.6.x` candidate:** app-builder scaffolds and guides.
 - **`0.7.x` candidate:** operator visibility and audit surfaces.
 - **`0.8.x` candidate:** inbound channels and provider hardening.

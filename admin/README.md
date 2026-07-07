@@ -1,6 +1,8 @@
-# `@auggy/admin` — Per-agent operator workbench
+# `@auggy/admin` — Per-agent creator console
 
-The `/console` SPA. Vite + React + Tailwind + shadcn. Served by `src/transports/admin/` from `admin/dist/` on each agent's own port at `GET /admin`.
+The `/console` SPA. Vite + React + Tailwind + shadcn. Served by
+`src/transports/admin/` from `admin/dist/` on each agent's own port at
+`GET /console`.
 
 > See [`docs/21-console.md`](../docs/21-console.md) for the full spec, server-side API, and v1 → v1.1 roadmap.
 
@@ -13,7 +15,9 @@ cd admin && bun run build            # produces dist/
 cd admin && bun test                 # tests
 ```
 
-The dev server runs standalone (no agent backend). Tabs hit `/console/api/*` which only exists in production; in dev they fall back to inline mocks until step 3 of the build wires the JSON endpoints into `src/transports/admin/`.
+The dev server proxies `/console/api/*` to a local agent when one is running.
+Without an agent backend, the shell loads but live Chat/Integrations calls fail
+normally.
 
 ## Layout
 
@@ -27,16 +31,16 @@ admin/
 ├── tsconfig.json
 ├── vite.config.ts              base: '/console/', port 5174
 └── src/
-    ├── main.tsx                React bootstrap, BrowserRouter basename="/admin"
-    ├── App.tsx                 Shell composition: Sidebar + Header + <Routes>
+    ├── main.tsx                React bootstrap, BrowserRouter basename="/console"
+    ├── App.tsx                 Shell composition: Header + Chat/Integrations routes
     ├── index.css               Tailwind directives + shadcn CSS vars (light + .dark)
     ├── components/
     │   ├── ui/                 shadcn primitives (Button, Card, …)
-    │   └── layout/             Sidebar, Header
+    │   └── layout/             Header
     ├── lib/
     │   ├── utils.ts            cn() — clsx + tailwind-merge
     │   └── theme.ts            light/dark/system theme manager
-    └── routes/                 One file per tab; currently placeholders
+    └── routes/                 Live Chat and Integrations surfaces
 ```
 
 ## Adding shadcn components

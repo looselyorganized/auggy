@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-07
+
 ### Added
 
 - **`auggy augment setup` now handles AgentMail-backed setup recipes.** `auggy augment setup agentMail` provisions/configures the `agentMail` augment itself, while `auggy augment setup visitorAuth` remains the production magic-link email path. Interactive `auggy augment add agentMail` / `visitorAuth` offers setup after local install; scripted and `--yes` flows stay local-only. Setup can reuse existing `.env` AgentMail credentials with `--mode env`, or create a stable inbox using an idempotent AgentMail `clientId`.
@@ -32,6 +34,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 
 - **`chat/` package deleted.** The standalone Local GUI (separate port 8090, agent picker, BEM CSS) is gone now that every agent serves its own operator surface at `/console`. `auggy chat` already opens `http://<agent>/console/chat` directly (#81). The only piece worth keeping — the AG-UI SSE parser — has been relocated to `admin/src/lib/ag-ui-parse/` (its sole consumer). The `@chat/*` path alias is removed from `admin/tsconfig.json` and `admin/vite.config.ts`. `docs/15-chat.md` is also deleted; the console doc at `docs/21-console.md` is now authoritative.
+- **Dead console workbench modules removed.** The preview `/console` bundle now keeps the live Chat, Integrations, diagnostics, theme, toast, and confirmation surfaces only. Older unreachable React tabs for identity, skills, credentials, budget, security, and augments were removed from the admin source tree; backend JSON/action endpoints remain where they are still tested and used by the live dashboard payload.
 
 ## [0.4.4] - 2026-05-26
 

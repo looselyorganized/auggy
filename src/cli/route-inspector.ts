@@ -90,8 +90,6 @@ export async function inspectAugmentRoutes(
   }
 }
 
-export const inspectCustomAugmentRoutes = inspectAugmentRoutes;
-
 export function formatRouteManifestEntry(route: RouteManifestEntry): string {
   const params = route.params.length > 0 ? route.params.join(",") : "-";
   const rateLimit = route.rateLimit ? ` rate=${route.rateLimit.maxPerMinute}/min` : "";

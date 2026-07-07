@@ -7,8 +7,9 @@ the compact feature/status matrix.
 ## Release Framing
 
 - **Latest published release:** `0.4.4`.
-- **Current `main`:** `0.5.0` candidate. The app-backend foundation has landed
-  on `main`, but has not yet been cut as a published package.
+- **Current `main`:** `0.5.0` release candidate. The app-backend foundation has
+  landed on `main` and package metadata is prepared, but it has not yet been
+  published to npm.
 - **Pre-1.0 cadence:** do not jump straight from `0.4.x` to `1.0.0`. Ship useful
   `0.x` releases as the app-backend surface hardens.
 - **`1.0.0`:** the OSS GA line. It should mean the docs, examples, release
@@ -26,7 +27,7 @@ Roadmap features live here. Implementation plans belong in `docs/plans/` or
 
 ## 0.5.0 — App-Backend Foundation
 
-Status: **on `main`, ready to package after release cleanup**.
+Status: **on `main`, package metadata prepared, not yet published**.
 
 What has landed:
 
@@ -53,8 +54,6 @@ What has landed:
 
 Release tasks:
 
-- Review and finalize the `0.5.0` changelog section during the release PR.
-- Bump package versions during the release PR.
 - Publish public npm packages while keeping the source repository private during
   preview.
 - Keep npm provenance off and private GitHub repository metadata out of package

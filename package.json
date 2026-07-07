@@ -1,6 +1,6 @@
 {
   "name": "auggy",
-  "version": "0.4.4",
+  "version": "0.5.0",
   "description": "TypeScript framework for agent-native app backends: routes, tools, auth, memory, and operator controls.",
   "keywords": [
     "agent",

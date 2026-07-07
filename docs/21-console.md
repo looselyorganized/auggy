@@ -68,10 +68,11 @@ The runtime serves static assets from `admin/dist/` via
 `src/transports/admin/admin-static.ts`. The current SPA exposes only Chat and
 Integrations as top-level tabs.
 
-Some older admin/workbench modules and JSON endpoints remain in source as
-deferred implementation pieces for future developer tools. They are not part of
-the `0.5` console product contract unless they are reachable from the live
-`admin/src/App.tsx` navigation.
+Older unreachable React tabs for identity, skills, credentials, budget,
+security, and augments have been removed from the preview bundle. The backend
+dashboard/action APIs remain where they are still tested and feed the live
+dashboard payload or future developer tools; they are not promoted to top-level
+`0.5` console product surfaces.
 
 ## Operator Entry Points
 

@@ -85,8 +85,12 @@ This packs the local CLI, verifies the tarball contents, installs it into an
 isolated prefix, scaffolds a fresh agent through a PTY, boots `/health`, and
 checks the MCP cloud-preflight failure path.
 
-If you manually test the local tarball before publishing, pin generated agents
-to that same tarball:
+`bun run smoke:release` is the authoritative pre-publish agent-install smoke. It
+packs local `auggy` and the default Anthropic adapter into temp tarballs so the
+test does not require the new version to already exist on npm.
+
+If you manually test only the local CLI tarball before publishing, pin generated
+agents to that same core tarball:
 
 ```bash
 npm pack
@@ -97,7 +101,9 @@ export AUGGY_SCAFFOLD_AUGGY_SPEC="file:$PWD/$PACK"
 
 Without `AUGGY_SCAFFOLD_AUGGY_SPEC`, `auggy create` writes the normal npm
 range (`^X.Y.Z`), so a pre-release smoke can accidentally install an older
-published package with the same version.
+published package with the same version. Before the matching engine adapters are
+published, a full agent dependency install also needs local adapter tarballs;
+use `bun run smoke:release` for that path.
 
 For the post-publish walkthrough, use the public package:
 
