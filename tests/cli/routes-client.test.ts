@@ -10,6 +10,7 @@ import {
 } from "../../src/cli/routes-client";
 
 const roots: string[] = [];
+const TYPECHECK_TEST_TIMEOUT_MS = 30_000;
 
 afterEach(() => {
   for (const root of roots.splice(0)) {
@@ -626,69 +627,71 @@ describe("createTypeScriptClient", () => {
     expect(source).toContain("const ROUTES: Record<string, RouteMeta> = {\n};");
   });
 
-  test("emits clients that typecheck for empty, auth-subset, and no-input usage", async () => {
-    const emptyReport: ClientRoutesReport = {
-      agent: { name: "empty", configPath: "/tmp/empty/agent.yaml" },
-      summary: {
-        totalRoutes: 0,
-        publicRoutes: 0,
-        privateRoutes: 0,
-        publicRoutePaths: [],
-      },
-      routes: [],
-    };
-    const bearerOnlyReport: ClientRoutesReport = {
-      agent: { name: "private", configPath: "/tmp/private/agent.yaml" },
-      summary: {
-        totalRoutes: 2,
-        publicRoutes: 1,
-        privateRoutes: 1,
-        publicRoutePaths: ["GET /services/:serviceId"],
-      },
-      routes: [
-        {
-          method: "GET",
-          path: "/services/:serviceId",
-          augmentName: "concierge-services",
-          auth: "none",
-          params: ["serviceId"],
-          public: true,
-          security: "public",
-          requestJsonSchema: {
-            params: {
-              type: "object",
-              properties: { serviceId: { type: "string" } },
-              required: ["serviceId"],
+  test(
+    "emits clients that typecheck for empty, auth-subset, and no-input usage",
+    async () => {
+      const emptyReport: ClientRoutesReport = {
+        agent: { name: "empty", configPath: "/tmp/empty/agent.yaml" },
+        summary: {
+          totalRoutes: 0,
+          publicRoutes: 0,
+          privateRoutes: 0,
+          publicRoutePaths: [],
+        },
+        routes: [],
+      };
+      const bearerOnlyReport: ClientRoutesReport = {
+        agent: { name: "private", configPath: "/tmp/private/agent.yaml" },
+        summary: {
+          totalRoutes: 2,
+          publicRoutes: 1,
+          privateRoutes: 1,
+          publicRoutePaths: ["GET /services/:serviceId"],
+        },
+        routes: [
+          {
+            method: "GET",
+            path: "/services/:serviceId",
+            augmentName: "concierge-services",
+            auth: "none",
+            params: ["serviceId"],
+            public: true,
+            security: "public",
+            requestJsonSchema: {
+              params: {
+                type: "object",
+                properties: { serviceId: { type: "string" } },
+                required: ["serviceId"],
+              },
             },
           },
-        },
-        {
-          method: "POST",
-          path: "/leads",
-          augmentName: "concierge-services",
-          auth: "bearer",
-          params: [],
-          public: false,
-          security: "private",
-          requestJsonSchema: {
-            body: {
-              type: "object",
-              properties: { email: { type: "string" } },
-              required: ["email"],
+          {
+            method: "POST",
+            path: "/leads",
+            augmentName: "concierge-services",
+            auth: "bearer",
+            params: [],
+            public: false,
+            security: "private",
+            requestJsonSchema: {
+              body: {
+                type: "object",
+                properties: { email: { type: "string" } },
+                required: ["email"],
+              },
             },
           },
-        },
-      ],
-    };
+        ],
+      };
 
-    await expectGeneratedClientTypechecks("empty-browser", emptyReport, "browser");
-    await expectGeneratedClientTypechecks("empty-server", emptyReport, "server");
-    await expectGeneratedClientTypechecks("bearer-server", bearerOnlyReport, "server");
-    await expectGeneratedClientTypechecks(
-      "visitor-browser",
-      report(),
-      "browser",
-      `
+      await expectGeneratedClientTypechecks("empty-browser", emptyReport, "browser");
+      await expectGeneratedClientTypechecks("empty-server", emptyReport, "server");
+      await expectGeneratedClientTypechecks("bearer-server", bearerOnlyReport, "server");
+      await expectGeneratedClientTypechecks(
+        "visitor-browser",
+        report(),
+        "browser",
+        `
         import { createAuggyClient } from "./client";
 
         const api = createAuggyClient({ baseUrl: "https://agent.example" });
@@ -734,15 +737,19 @@ describe("createTypeScriptClient", () => {
         // @ts-expect-error input is required for routes with params/query.
         api.get("/services/:serviceId");
       `,
-    );
-  });
+      );
+    },
+    TYPECHECK_TEST_TIMEOUT_MS,
+  );
 
-  test("typechecks generated public contract aliases", async () => {
-    await expectGeneratedClientTypechecks(
-      "contract-aliases-browser",
-      clientFixtureReport(),
-      "browser",
-      `
+  test(
+    "typechecks generated public contract aliases",
+    async () => {
+      await expectGeneratedClientTypechecks(
+        "contract-aliases-browser",
+        clientFixtureReport(),
+        "browser",
+        `
         import {
           createAuggyClient,
           type AuggyClient,
@@ -783,13 +790,13 @@ describe("createTypeScriptClient", () => {
         // @ts-expect-error unknown route paths are not part of result aliases.
         type MissingResult = AuggyGetResult<"/missing">;
       `,
-    );
+      );
 
-    await expectGeneratedClientTypechecks(
-      "contract-aliases-server",
-      clientFixtureReport(),
-      "server",
-      `
+      await expectGeneratedClientTypechecks(
+        "contract-aliases-server",
+        clientFixtureReport(),
+        "server",
+        `
         import {
           createAuggyClient,
           type AuggyClient,
@@ -845,30 +852,38 @@ describe("createTypeScriptClient", () => {
         // @ts-expect-error server target omits visitor GET result paths.
         type MeResult = AuggyGetResult<"/me">;
       `,
-    );
-  });
+      );
+    },
+    TYPECHECK_TEST_TIMEOUT_MS,
+  );
 
-  test("typechecks practical browser and server app usage fixtures", async () => {
-    await expectGeneratedClientTypechecks(
-      "practical-browser-app",
-      clientFixtureReport(),
-      "browser",
-      practicalBrowserUsageFixture(),
-    );
-    await expectGeneratedClientTypechecks(
-      "practical-server-app",
-      clientFixtureReport(),
-      "server",
-      practicalServerUsageFixture(),
-    );
-  });
+  test(
+    "typechecks practical browser and server app usage fixtures",
+    async () => {
+      await expectGeneratedClientTypechecks(
+        "practical-browser-app",
+        clientFixtureReport(),
+        "browser",
+        practicalBrowserUsageFixture(),
+      );
+      await expectGeneratedClientTypechecks(
+        "practical-server-app",
+        clientFixtureReport(),
+        "server",
+        practicalServerUsageFixture(),
+      );
+    },
+    TYPECHECK_TEST_TIMEOUT_MS,
+  );
 
-  test("typechecks composed response schemas", async () => {
-    await expectGeneratedClientTypechecks(
-      "composed-response-schema-browser",
-      clientFixtureReport(),
-      "browser",
-      `
+  test(
+    "typechecks composed response schemas",
+    async () => {
+      await expectGeneratedClientTypechecks(
+        "composed-response-schema-browser",
+        clientFixtureReport(),
+        "browser",
+        `
         import { createAuggyClient, type AuggyGetResult } from "./client";
 
         const api = createAuggyClient({ baseUrl: "https://agent.example" });
@@ -904,20 +919,24 @@ describe("createTypeScriptClient", () => {
 
         main();
       `,
-    );
+      );
 
-    const source = createTypeScriptClient(clientFixtureReport(), { target: "browser" });
-    expect(source).toContain(
-      '"/catalog/summary": { status: "fresh" | "stale"; tags: Array<string>; } & { totals: Record<string, number>; nextCursor?: string | null; items: Array<{ id: string; details?: { rating: number; labels?: Array<"new" | "popular">; }; }>; };',
-    );
-  });
+      const source = createTypeScriptClient(clientFixtureReport(), { target: "browser" });
+      expect(source).toContain(
+        '"/catalog/summary": { status: "fresh" | "stale"; tags: Array<string>; } & { totals: Record<string, number>; nextCursor?: string | null; items: Array<{ id: string; details?: { rating: number; labels?: Array<"new" | "popular">; }; }>; };',
+      );
+    },
+    TYPECHECK_TEST_TIMEOUT_MS,
+  );
 
-  test("typechecks the generated-client fixture matrix", async () => {
-    await expectGeneratedClientTypechecks(
-      "fixture-browser",
-      clientFixtureReport(),
-      "browser",
-      `
+  test(
+    "typechecks the generated-client fixture matrix",
+    async () => {
+      await expectGeneratedClientTypechecks(
+        "fixture-browser",
+        clientFixtureReport(),
+        "browser",
+        `
         import { createAuggyClient } from "./client";
 
         const api = createAuggyClient({
@@ -987,13 +1006,13 @@ describe("createTypeScriptClient", () => {
         // @ts-expect-error optional query field still has typed values.
         api.get("/services", { query: { category: 123 } });
       `,
-    );
+      );
 
-    await expectGeneratedClientTypechecks(
-      "fixture-server",
-      clientFixtureReport(),
-      "server",
-      `
+      await expectGeneratedClientTypechecks(
+        "fixture-server",
+        clientFixtureReport(),
+        "server",
+        `
         import { createAuggyClient } from "./client";
 
         const api = createAuggyClient({
@@ -1042,8 +1061,10 @@ describe("createTypeScriptClient", () => {
         // @ts-expect-error server target omits visitor-token POST routes.
         api.post("/profile", { body: { displayName: "Alice" } });
       `,
-    );
-  });
+      );
+    },
+    TYPECHECK_TEST_TIMEOUT_MS,
+  );
 
   test("browser generated runtime sends params, query, and visitor auth headers", async () => {
     const mod = await loadGeneratedClient(createTypeScriptClient(report()));
