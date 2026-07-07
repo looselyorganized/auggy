@@ -1,5 +1,9 @@
 # Parallel Auth and Client Development Scheme
 
+> Archived 2026-07-06. This documented a completed branch/worktree coordination
+> scheme for the route-auth and generated-client tracks. It is retained for
+> process history only, not as product guidance.
+
 > Coordination protocol for route-auth and generated-client work while both
 > surfaces are moving.
 

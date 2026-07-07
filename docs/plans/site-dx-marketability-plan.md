@@ -10,7 +10,8 @@ can power a real app backend.
 
 Scope: 0.5-1 day
 
-- Replace old `looselyorganized/augment-1` links with `looselyorganized/auggy`.
+- Replace old `looselyorganized/augment-1` links with public package, docs, or
+  access-request links.
 - Align public product naming around **Auggy**. Avoid **Augment-1** except for
   historical or internal context.
 - Update homepage/docs metadata to the safer positioning:
@@ -22,7 +23,9 @@ Acceptance:
 
 - `rg "augment-1|looselyorganized/augment-1"` only returns intentional
   historical references.
-- Every GitHub CTA points to `looselyorganized/auggy`.
+- No public CTA points visitors at a private GitHub repository. Contribution
+  CTAs should request access or point to the public npm/site surface until the
+  source repo is public.
 
 ## Phase 2: Homepage Conversion Pass
 

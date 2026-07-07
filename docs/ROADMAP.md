@@ -1,206 +1,214 @@
 # Auggy Roadmap
 
-The prioritized feature list. Three horizons:
+This is the canonical product roadmap. It separates current shipped behavior
+from release candidates and future bets. Use [`FEATURES.md`](./FEATURES.md) for
+the compact feature/status matrix.
 
-- **v1.0** — what blocks the OSS launch. Locked, focused, shipped first.
-- **v1.x** — launch polish + features added based on adopter signal after launch. Order will reorder; the items are stable.
-- **v2.0+** — directional vision. Not commitments. The shape of the product two horizons out.
+## Release Framing
 
-The `docs/todos.md` file is the *operational* backlog (bugs, small UX,
-polish). Roadmap features live here, not there. If something here grows
-to need a spec, the spec goes in `docs/superpowers/specs/` and the
-plan in `docs/superpowers/plans/`.
+- **Latest published release:** `0.4.4`.
+- **Current `main`:** `0.5.0` release candidate. The app-backend foundation has
+  landed on `main` and package metadata is prepared, but it has not yet been
+  published to npm.
+- **Pre-1.0 cadence:** do not jump straight from `0.4.x` to `1.0.0`. Ship useful
+  `0.x` releases as the app-backend surface hardens.
+- **`1.0.0`:** the OSS GA line. It should mean the docs, examples, release
+  process, and first-run/operator experience are defensible, not that every
+  strategic feature below exists.
 
----
+The old "v1.1/v1.2/v1.3" labels are now pre-1.0 candidates. SemVer `1.1+` is
+reserved for after `1.0.0`.
 
-## v1.0 — Ship gate
-
-What has to ship for the OSS launch to be defensible. Each item must
-be done before v1.0 cuts. Items are not just CLI niceties — they're
-the production-readiness story.
-
-- **[augment-hardening]** Finish the v1 augment-hardening sprint. Current focus: `fileMemory` learned-memory authority, `filesystem` mount-root protection, `notify` destination authority, MCP per-server/per-tool trust enforcement, and explicit preview stance for `link`, `bash`, and `budgets`.
-- **[walkthrough]** Run end-to-end DX walkthrough — `auggy create → run → chat → visitor-auth → memory → notify → deploy`. Includes error-path coverage, security-eval check, observability spot-check, all surfaces actually used by a fresh operator. *Currently active; the gate everything else defers to.* (G8)
-- **[console]** Chat-first `/console` surface. `/console` redirects to `/console/chat`; the first screen is chat plus a compact Details dialog for agent identity, URLs, engine, transport summary, and copy diagnostics. Config/admin tabs are deferred until adopter signal proves they belong in the browser. Per `docs/21-console.md`.
-- **[chat]** Minimal info endpoint at `GET /` when no `publicFrontendUrl` is set. Replaces the current 404 with a small HTML response (agent name, public-safe purpose, creator console link, "this is an Auggy agent backend" tagline). (G2 revised)
-- **[examples]** `examples/concierge/` — vertical web-channel example (boutique store website chat + stubbed inventory + visitor-auth + notify-to-operator). Demonstrates the augment composition pattern with a concrete domain that maps to the v1.0 thesis. (G7)
-- **[release-process]** Publish `auggy` v1.0 on npm with notes. Tag the release. Confirm the chat-dist artifact pipeline / admin-dist packaging works in CI for the first GA.
-
-**Note on security-eval expansion:** Deferred to v1.0 ship + post-OSS-launch. The current 10-case eval (from 2026-04-16 red-team) runs nightly as drift monitoring. New eval cases wait for adopter feedback to drive the corpus — writing them against a moving baseline produces constant rewrite cycles.
-
-Recently completed v1 decisions:
-
-- **[identity]** Canonical creator identity for v1 shipped in PR #105. One verified creator maps to `peer.id = "creator"` across web console and Telegram private chat; `creator.displayName` is cosmetic model-facing metadata, not an auth credential. Decision: `docs/plans/v1-canonical-creator-identity.md`.
-- **[deploy]** Railway deploy DX is v1-ready: first deploy selects a Railway workspace before project/service, saved targets are shown by workspace/project/service name, plain `auggy deploy` asks before redeploying or retargeting, `--yes` remains the scripted redeploy path, Railway port `8080` is enforced at preflight, and the full fresh deploy path has been smoke-tested against Railway.
-- **[routes]** Generated TypeScript route client first cut shipped: `auggy routes [name] --client ts [--target browser|server] [--out file]`, self-contained generated file, typed request inputs, browser/server route filtering, success `data` typing from declared route response schemas with `unknown` fallback, fetch-like non-2xx handling, visitor-token support, and explicit server-only bearer route handling. Developer docs: [`25-generated-route-clients.md`](./25-generated-route-clients.md).
-- **[authz]** Delegated authorization bridge first cut shipped: Clerk/Supabase/custom app sessions can mint short-lived external assertions with scopes/grants; Auggy enforces route `requires` and protected tool `requires`, including resource grants bound to validated tool input. Developer docs: [`26-delegated-authorization.md`](./26-delegated-authorization.md). Runnable pattern: [`examples/app-auth-bridge`](../examples/app-auth-bridge/README.md).
+The `docs/todos.md` file is the operational backlog for bugs and small polish.
+Roadmap features live here. Implementation plans belong in `docs/plans/` or
+`docs/superpowers/plans/`; completed plans should be archived.
 
 ---
 
-## v1.x — Launch polish + adopter-signal-driven
+## 0.5.0 — App-Backend Foundation
 
-Items that ship in the weeks after v1.0 launch. **Order is not
-committed** — adopter signal reorders the list. Pick the next item
-based on which friction got loudest in the first 50 adopters.
+Status: **on `main`, package metadata prepared, not yet published**.
 
-### Operator surfaces (CLI + console)
+What has landed:
 
-- **[console]** Additional `/console` developer surfaces, driven by adopter signal. Candidates: Memory browser, trace/event inspector, manifest viewer, skills editor, credentials editor.
-- **[budgets]** `auggy spend` command — current spend by trust tier from CLI. Today operators query SQLite directly. (G9)
-- **[budgets]** Budget-threshold notify integration — fire `notify` at 80% / 100% of `dailyBudgetUsd`. (G10)
-- **[memory]** `auggy memory <agent> [--peer X]` — inspect/audit memory entries from CLI. Visually distinguishes agent-derived from creator-confirmed facts. Required for right-to-erasure verification. (G14)
-- **[org-context]** `auggy fact <agent> "..."` for adding org-context entries without editing files. (G23)
-- **[deploy]** `auggy deploy logs <agent>` + post-deploy `/health = 200` verification. (G25/G26)
+- Deterministic augment HTTP routes beside `/agent/run`.
+- Route groups, exact paths, full-segment path params, query/body parsing,
+  response helpers, body caps, timeouts, and per-route rate limits.
+- Route schemas for params, query, body, and successful JSON responses.
+- Route manifests, OpenAPI export, and route inspection through `auggy routes`.
+- Generated TypeScript route clients with browser/server targets, target-based
+  auth filtering, typed inputs, typed success data from response schemas,
+  visitor-token handling, external auth assertion forwarding, and fetch-like
+  non-2xx result behavior.
+- Route auth modes: `none`, `bearer`, `creator`, `visitor.optional`,
+  `visitor.required`, and `agent.required`.
+- Webhook policy metadata and runtime Stripe signature verification.
+- Delegated authorization bridge for Supabase/Clerk/custom app sessions:
+  external assertions, explicit scopes/grants, route `requires`, protected-tool
+  `requires`, input/param-bound resource grants, key rotation, denial audit
+  hooks, and replay protection.
+- App-auth bridge example proving generated browser clients, existing app
+  sessions, route authorization, and protected tool authorization together.
+- Concierge example proving shared route/tool/domain logic.
+- `auggy doctor` route posture checks for custom augment routes.
 
-### Setup experience
+Release tasks:
 
-- **[create]** Notify destination prompt inline during `auggy create` (mirror the orgContext conditional-prompts pattern). (G17 revised)
-- **[notify]** `auggy notify test <destination>` validator — operator verifies a destination works without triggering the agent. (G19)
-- **[setup-experience]** Augment setup wizards — automate cross-system bootstrap. Tiers: (1) trivially automatable (random-hex secrets, agent-name defaults), (2) API-integrated (AgentMail create-inbox, Telegram getMe at setup time), (3) deployment-platform-aware (`RAILWAY_PUBLIC_DOMAIN` auto-derives `AUGGY_PUBLIC_URL`), (4) third-party signups (documented walkthrough only). Per-augment `setup()` hook in the catalog.
-
-### Augments + engine
-
-- **[agentMail]** Inbound email hardening. `agentMail` should be able to
-  receive email as a real inbound channel, know when new mail arrives, and run a
-  catch-up check on restart so messages missed during downtime are not silently
-  dropped. Candidate transports: AgentMail WebSocket/polling first, Svix-verified
-  webhook after the dispatch/audit model is stable.
-- **[engines]** Ollama adapter `tool_call.id` preservation for parallel/multi-tool turns. Single-tool-per-turn works today; multi-tool may mis-attribute results. (G35-followup)
-- **[observability]** Augment telemetry export pipeline. Generalize `src/kernel/trace-emitter.ts` into a typed event bus. Initial sinks: in-memory ring buffer (consumed by admin SPA event-stream tabs), OTel exporter, Supabase outbox. Event-taxonomy waits for adopter feedback. (~2-3 weeks)
-- **[link]** Mesh-vs-tunnel design resolution (npm-bundled mesh vs explicit per-peer config). (G4)
-- **[trust]** `staff` (intermediate) trust tier between creator and public. Needed for HVAC-dispatcher-style scenarios. (G13)
-- **[creator-identity]** Multi-operator distinguishing — today single shared bearer = single "creator." (G11)
-
-### Console route hardening (G36-followups)
-
-- **[console]** Audit-log rejected POSTs (CSRF failure / unknown action id / input-coercion failure). Currently silent; masks probing.
-- **[console]** Reset-action collision uniqueness — make all three registration paths throw on duplicate IDs.
-- **[console]** Pre-auth `/console` rate limit splits from post-auth bucket (today shared, vulnerable to NAT-DOS).
-- **[console]** Unknown-action POST returns JSON body instead of empty 404.
-- **[console]** Tighten `isLoopback` IPv4 regex (`^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$`).
-
-### OSS / community
-
-- **[docs]** API reference surface for `defineAgent` / `defineAugment` / `defineTool` / engines. Decide between (a) one `docs/00-api-reference.md`, (b) auto-generated TypeDoc, (c) a real docs site (Mintlify / Nextra / Starlight). v1.0 ships without; pick mid-v1.x.
-- **[examples]** Ship `examples/` clone-and-run agent templates if adopter friction warrants. Candidates: `slack-bot`, `cli-chat`, `research-agent`. Cost: each example is maintained reference that breaks when APIs move.
-- **[architecture]** Cross-augment dependency model. visitorAuth + webTransport + layered-memory have coordination gaps today (G36 ADRs cover specifics). Investigate: declared `requires` field on `Augment`? Topological resolver pass? Compatibility matrix? Spec needs to handle silent failures, version skew, circular coupling.
-
-### Embeddable widget
-
-- **[chat-widget]** Publish `@auggy/chat-widget-react` (+ optional `@auggy/next` route helper) and/or a Web Component embed. v1.0 ships primitives reference only (`docs/20-embedding.md`). Packaged widget shape benefits from real adopter feedback (LORF site first). (G1 packaged + G37 ui-kit)
-
-### Augment expansions
-
-- **[hooks]** hooksAugment — PreToolUse/PostToolUse with Claw's exit-code contract.
-- **[org-context]** Naming + mode-signal clarity (`baseUrl: file://` default vs catalog description saying "API"). (G21 + G22)
-- **[memory]** Row-count cap on layeredMemory entries (today `retentionDays: 90` is time-only). Verify with monitoring before adding. (G15)
-- **[deploy]** Other cloud targets beyond Railway (Fly, Render, custom Docker). (G24)
-- **[research-augment]** `researchAugment` — web search + arxiv + document analysis. Wraps Brave/Tavily/Firecrawl; tools: `research_search`, `research_fetch_paper`, `research_summarize`. Progressive disclosure pattern.
-- **[project-instructions]** `AUGGY.md` ancestor walk pattern (analogous to `CLAUDE.md`).
-- **[permission-mode-ladder]** Permission-mode ladder in agent.yaml (extending the trust-tier model with named operator-control modes).
+- Publish public npm packages while keeping the source repository private during
+  preview.
+- Keep npm provenance off and private GitHub repository metadata out of package
+  manifests until the source repo is public.
+- Run release rehearsal and package boot checks.
+- Confirm docs still make shipped, preview, and planned work easy to distinguish.
 
 ---
 
-## v2.0+ — Aspirational / vision
+## 0.6.0 Candidate — App-Builder DX
 
-Where the product goes after v1.0 ships and a few hundred adopters
-tell us what they actually use. Not commitments; directional.
+Goal: make the app-backend pattern obvious without requiring users to reverse
+engineer examples.
 
-The thesis: today's agent landscape has two unbuilt gaps that
-auggy's substrate uniquely addresses.
-
-### Inbound from humans across channels
-
-Most LLM-powered agents are pull-mode (visit a chat UI and type) or
-programmatic (devs hit APIs). Push-mode from humans via existing
-channels (email, Slack DM, Telegram, SMS, voice routing) is rare.
-AgentMail-as-startup exists exactly because this gap exists.
-
-Auggy's path: `agentMail` augment (in progress) + `telegramTransport`
-(shipped) + future SMS/voice transports = "your agent listens to
-your customers on the channels they already use."
-
-### Agent-to-agent mesh inside an org
-
-No major LLM agent stack today supports two Claudes / Codex's / agents
-talking to each other inside an org. The "fleet" or "swarm" of
-specialized agents that coordinate via handoff is unbuilt. Customer
-Support agent → Fraud agent → Finance agent isn't a thing yet because
-the auth model, budget bleed problem, discovery, and routing are all
-unsolved.
-
-Auggy's substrate uniquely addresses this:
-
-- Trust tiers (`agent` tier exists distinct from `creator`/`public`)
-- Per-trust-tier budgets (agent A can't drain B's wallet)
-- Visitor-auth substrate extends naturally to agent-identity tickets
-- `link` augment + peer-resolver = peer discovery + signed transport
-- A2A-shape types already in the kernel
-
-This is the **v2.0 wedge**. Wait for the agents-in-the-wild signal
-before building the mesh, but invest now in the primitives (link,
-peer-directory, agent-identity) that make it cheap when the time
-comes.
-
-### Self-extending agents (Progressive Autonomy)
-
-Agents that create their own augments and skills. Tools:
-`augment_create` (writes `.ts` file to `augments/`), `skill_create`
-(writes `SKILL.md`), `augment_install` (adds to agent.yaml, triggers
-restart). Blocks on:
-
-1. Hot-reload (today restart is required)
-2. Sandboxing to prevent escape (V8 isolates or similar)
-3. Operator approval flow for self-generated code (Layer 3 trust)
-4. Evals to measure whether self-generated augments actually improve
-   agent quality
-
-Significant feature. Connects to LORF's v2.0 "Progressive Autonomy"
-thesis. Gated behind operator trust + a clear approval UX.
-
-### Memory layer architecture
-
-L0–L3 hierarchy with promotion rules, per-layer trust gating,
-consolidation pipeline, peer-scoped retrieval. Supersedes today's
-compactHistory (compaction is a bridge, not the architecture). A
-multi-session project — design session first. Brief in
-`docs/memory-layer-architecture-brief.md` (local-only).
-
-### Native commerce + integration augments
-
-The auggy-as-platform thesis: each major integration is an augment.
-Stripe, Calendly, Linear, Slack, GitHub, Notion. Pick 3-5 to ship
-excellently; let community contribute the rest.
-
-This is the **commerce wedge**: "your agent + native commerce" —
-operators deploying agents that actually book, charge, dispatch.
-Highest monetization potential (commerce flows have margin).
-
-### A2A wire compatibility
-
-Auggy's internal types are already A2A-shaped (Part[], TaskState,
-AgentCard). When the A2A protocol stabilizes (Google + others), make
-the agent card discoverable + the run endpoint A2A-compatible.
-Forward-looking bet; adoption timeline unclear.
-
-### Multi-agent facility / hub
-
-LORF-thesis: Zip as the front door to a facility of specialized
-agents. Concierge agent at the front door routes to internal agents
-(scheduling, fulfillment, support). Cross-agent visibility, shared
-operator surface, audit trail across the swarm.
-
-This is downstream of the **agent mesh** primitives above. When mesh
-ships, the facility layer becomes a natural product.
+- `auggy augment create <name> --with-route --with-tool` scaffolds a custom
+  augment with a domain function, route wrapper, tool wrapper, schema, tests, and
+  env validation.
+- Optional scaffold flags for `--with-db`, `--with-admin`, and `--with-webhook`
+  once the base route/tool scaffold is boring.
+- "Build a custom API augment" guide.
+- "Expose the same capability as a route and a tool" guide.
+- "Add Postgres to an augment" guide that lets users bring Drizzle, Kysely,
+  Prisma, raw SQL, Supabase, or managed Postgres without making Auggy an ORM.
+- Storefront/service/intake app templates only if they can stay small and
+  maintained.
+- Generated-client stability policy after 2-3 real templates survive API churn.
 
 ---
 
-## Notes on this doc
+## 0.7.0 Candidate — Operator Visibility
 
-- Items added in v1.x or v2.0+ require justification (adopter
-  signal, strategic bet, dependency unlock). Items added to v1.0
-  require the corresponding spec doc (`docs/superpowers/specs/`).
-- When an item ships, remove it from this doc. The git history
-  remembers; the roadmap shouldn't become a graveyard.
-- Reorder within a horizon freely. Order between horizons is
-  load-bearing — don't promote items across without justification.
+Goal: operators can inspect, audit, and debug what an agent is doing without
+querying SQLite or reading logs by hand.
+
+- `auggy spend` for budget/spend inspection by trust tier.
+- `auggy memory <agent> [--peer X]` for memory audit and erasure verification.
+- Route/audit inspector surfaces for delegated authorization denials and route
+  posture.
+- `auggy notify test <destination>` CLI path, separate from the existing admin
+  action.
+- `auggy deploy logs <agent>` plus post-deploy health verification.
+- Additional `/console` developer surfaces only where CLI output is not enough.
+
+---
+
+## 0.8.0 Candidate — Channels and Provider Hardening
+
+Goal: extend the runtime beyond browser chat while keeping inbound events
+auditable and deterministic.
+
+- AgentMail inbound hardening: receive mail as a real inbound channel, catch up
+  after downtime, and choose polling/WebSocket/webhook transport based on the
+  audit model.
+- Additional webhook verifiers after Stripe, likely GitHub and Svix-style HMAC
+  providers.
+- Provider recipes for common app auth bridges beyond the current Supabase and
+  Clerk examples.
+- Slack/SMS/voice candidates only after AgentMail proves the inbound channel
+  shape.
+
+---
+
+## 0.9.0 Candidate — GA Hardening
+
+Goal: reach `1.0.0` without changing the core product thesis again.
+
+- End-to-end first-run walkthrough: create, run, chat, route, visitor auth,
+  memory, notify, generated client, deploy, and recovery paths.
+- API reference for the current public framework surface.
+- Security/adversarial review pass for browser auth, route exposure, generated
+  clients, delegated assertions, webhooks, and deploy posture.
+- Public examples verified from a fresh clone.
+- Release process, provenance, package boot, and CI checks proven against a
+  publish candidate.
+
+---
+
+## 1.0.0 — OSS GA
+
+`1.0.0` should ship when:
+
+- A new developer can understand the product from docs and examples.
+- The current public API surface is stable enough to support SemVer.
+- App-backend route/client/authz behavior is documented as current runtime, not
+  strategy.
+- The package release pipeline has already survived at least one pre-1.0
+  release after the app-backend foundation.
+
+`1.0.0` does not require the agent mesh, generic app templates, packaged chat
+widget, staff auth, or multi-operator identity.
+
+---
+
+## Post-1.0 Candidates
+
+These should be ordered by adopter signal after GA.
+
+- Packaged embeddable chat widget or Web Component.
+- API reference site or TypeDoc pipeline if the markdown reference docs stop
+  scaling.
+- Multi-operator creator identity and audit attribution.
+- Staff/person auth tier for internal apps.
+- More cloud deploy targets beyond Railway.
+- Cross-augment dependency model if real projects expose silent ordering/version
+  problems.
+- Hooks augment (`PreToolUse` / `PostToolUse`) with an explicit approval/audit
+  model.
+- Research augment and other higher-level integration augments.
+
+---
+
+## 2.0+ — Directional Vision
+
+These are not commitments. They are strategic bets that should remain cheap
+because the current primitives point in the right direction.
+
+### Agent-to-Agent Mesh
+
+Auggy already has an `agent` trust tier, agent-shaped route auth, `link` preview
+peer traffic, agent cards, budgets, and A2A-shaped internal types. The long-term
+mesh adds peer discovery, signed identity, scoped delegation, per-peer policy,
+and budgeted route-backed actions.
+
+### Delegated Human Consent
+
+The current delegated authorization bridge lets an app backend mint explicit
+scopes/grants for Auggy. A future consent product lets a human authorize an
+outside assistant or another Auggy to act on their behalf with short-lived,
+revocable, route-scoped permissions.
+
+### Multi-Agent Facility
+
+Facility/hub products become natural after mesh primitives exist: a front-door
+agent routes work to specialized agents, while the operator sees shared audit,
+budgets, memory boundaries, and cross-agent handoff state.
+
+### Memory Layer Architecture
+
+The current memory subsystem is useful but not the final long-term memory
+architecture. Future work can add layered memory promotion, consolidation,
+peer-scoped retrieval, and stronger operator promotion flows.
+
+### Self-Extending Agents
+
+Agents that create augments or skills need hot reload, sandboxing, operator
+approval, and evals before they are safe. Keep this as a research direction, not
+a near-term launch blocker.
+
+---
+
+## Notes on This Doc
+
+- Do not add shipped items as permanent graveyard entries. Move shipped behavior
+  to `FEATURES.md`, current reference docs, examples, and the changelog.
+- Promote items across release candidates only when there is adopter signal,
+  security need, or a dependency unlock.
+- If a roadmap item needs implementation detail, write a plan. Keep this file
+  readable enough to answer "where are we?" quickly.

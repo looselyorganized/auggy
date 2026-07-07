@@ -6,7 +6,7 @@
 
 Fourteen augments ship in `src/augments/` (plus `webTransport` under `src/transports/`):
 - **`fileMemory`** — file-backed static memory provider
-- **`supabaseMemory`** — Supabase-backed namespace memory provider (legacy runtime, not exposed in the v1.0 CLI catalog)
+- **`supabaseMemory`** — Supabase-backed namespace memory provider (legacy runtime, not exposed in the default CLI catalog)
 - **`layeredMemory`** — peer-scoped episodic memory with L0–L3 provenance tiers (SQLite-backed)
 - **`webTransport`** — AG-UI HTTP transport (covered in [06-transports.md](./06-transports.md), not repeated here)
 - **`telegramTransport`** — bidirectional Telegram bot transport
@@ -44,7 +44,7 @@ Stable add-ons (`knowledge`, `layeredMemory`, `notify`, `telegramTransport`,
 `auggy augment add <name>`. Preview augments (`budgets`, `link`, `bash`) remain
 available behind an explicit confirmation because their production DX or
 security edge cases are still being hardened. `supabaseMemory` remains in the
-runtime for legacy/manual configs, but is intentionally not shown in the v1.0
+runtime for legacy/manual configs, but is intentionally not shown in the default
 CLI catalog.
 
 `auggy augment list` is the discovery surface. `auggy augment add` installs the
@@ -64,7 +64,10 @@ both factory-declared `tools[]` and namespace memory providers
 (kernel-synthesized `memory_*` tools). Tool-less augments (transports, static
 memory providers, admission gates) skip the skill folder.
 
-Augments shipping a bundled skill at v1.0: `filesystem`, `layeredMemory`, `webFetch`, `knowledge`, `bash`, `notify`, `mcp`, `agentMail`, `turnControl`, `visitorAuth`, `link`. The `skills` augment is the model-facing surface that lists them — it carries no SKILL.md of its own.
+Augments shipping a bundled skill in the current line: `filesystem`,
+`layeredMemory`, `webFetch`, `knowledge`, `bash`, `notify`, `mcp`, `agentMail`,
+`turnControl`, `visitorAuth`, `link`. The `skills` augment is the model-facing
+surface that lists them — it carries no SKILL.md of its own.
 
 ### Model-facing surface
 
@@ -474,8 +477,8 @@ against the inbound text. This is what makes a returning verified visitor's
 "hey" turn useful even when the latest message has no searchable content.
 
 Auto-save is a capability of `layeredMemory` itself, not a separate augment. In
-CLI-created agents it is installed with `autoSave.enabled: false` for v1.0, so
-the model saves memory explicitly with `memory_write({ topic, content })`. The
+CLI-created agents it is installed with `autoSave.enabled: false`, so the model
+saves memory explicitly with `memory_write({ topic, content })`. The
 runtime derives the current peer label from turn context, so the model does not
 hand-build visitor IDs or internal labels. Programmatic users can enable
 auto-save by providing an extraction engine; when enabled, a background process
@@ -998,7 +1001,7 @@ const shell = bash({
 
 A shell execution augment exposing two tools — `shell_exec` (run a command string) and `run_script` (write a script to a temp file and execute it). Both tools are gated by an operator-configured command allowlist: the first token of the command (or the script interpreter) must be in `allowedCommands` or the tool returns an error before forking.
 
-`bash` remains preview for v1.0. It executes host processes as the Auggy
+`bash` remains preview in the pre-1.0 line. It executes host processes as the Auggy
 process user; it is not a sandbox, container boundary, filesystem jail, or
 privilege separator. Treat `risk`, `allowedCommands`, `blockedCommands`,
 `workingDir`, environment inheritance, and `perTrustLevel` as operator policy
@@ -1077,7 +1080,7 @@ const budget = budgets({
 
 The budgets augment is a turn-gate (see [03-types.md § Section 7b](./03-types.md#section-7b--turn-gate-admission-2pc)) that enforces per-trust-level turn budgets using a SQLite store. It runs a full 2PC cycle on every turn: reserve on prepare, commit on confirm, debit on cost-commit.
 
-`budgets` remains preview for v1.0. It is runtime spend guardrails, not billing
+`budgets` remains preview in the pre-1.0 line. It is runtime spend guardrails, not billing
 control. USD caps are post-hoc soft caps, so a turn can overshoot the configured
 threshold before the next turn is denied. Provider-side hard spend caps are
 still required for unattended agents.
@@ -1117,7 +1120,7 @@ The runtime soft cap is **not the hard limit on agent spend**. The hard limit is
 - OpenAI: <https://platform.openai.com/settings/organization/limits>
 - OpenRouter: <https://openrouter.ai/settings/credits>
 
-**For unattended cloud-deployed agents, configuring a provider-side spend cap is required, not optional.** The runtime soft cap is the friendly first line of defense; the provider hard cap is the backstop that fires regardless of any Auggy-level configuration error or runtime bug. The engine adapters surface a clear operator-actionable message when the provider cap is reached (see `src/engines/anthropic.ts` `rewrapCostCapError`).
+**For unattended cloud-deployed agents, configuring a provider-side spend cap is required, not optional.** The runtime soft cap is the friendly first line of defense; the provider hard cap is the backstop that fires regardless of any Auggy-level configuration error or runtime bug. The engine adapters surface a clear operator-actionable message when the provider cap is reached (see the provider adapter packages such as `packages/anthropic`).
 
 Pre-call cost estimation (a third architectural layer that gates the engine
 call before any spend) is explicitly deferred — provider caps are exact where
@@ -1171,7 +1174,8 @@ The preamble is emitted only when at least one cap dimension is configured. `cre
 
 `maxUsdPerDay` is enforced **after** the turn runs. The prepare phase evaluates the cap against yesterday's + today's completed turns, not the in-flight turn. This means a single turn can push a peer slightly over their daily dollar limit — one-turn overshoot is acceptable and unavoidable without pre-call cost estimation.
 
-Pre-call cost projection (estimating the turn's cost before running it) is deferred to a future roadmap item. See [ROADMAP.md](../../docs/ROADMAP.md) for "Pre-call cost estimation."
+Pre-call cost projection (estimating the turn's cost before running it) is
+deferred until budget enforcement needs a stronger pre-turn guarantee.
 
 ### v0 limitations
 
@@ -1293,7 +1297,7 @@ agent at an HTTP endpoint speaking A2A v0.2 (JSON-RPC), and to send outbound
 traffic to configured peers. Peer-to-peer with mutual bearer auth — no central
 service. Binds its own port, separate from `webTransport`.
 
-`link` remains preview for v1.0. Every configured inbound peer that presents a
+`link` remains preview in the pre-1.0 line. Every configured inbound peer that presents a
 valid bearer is admitted as `trustLevel: "agent"`; there is no
 authenticated-but-reduced peer tier yet. Do not use it for public, customer, or
 semi-trusted collaborator traffic until the granular trust model lands.

@@ -6,7 +6,9 @@ Eval suites for [auggy](https://www.npmjs.com/package/auggy) agents.
 |---|---|---|
 | `security` | Red-team prompts (jailbreak, prompt injection, identity leak, instruction override) | LLM-judged; ~$0.07/run on Haiku |
 | `auto-save` | Layered-memory fact extraction fixtures (peer isolation, retention class, false-extract) | Free in `--dry-run`; ~$0.005/run live |
-| `layered-memory` | Multi-session recall + cross-identity promotion + cost-overhead graders | Structural (no LLM) |
+
+Additional layered-memory harness modules ship for internal regression testing,
+but they are not exposed through `auggy eval` yet.
 
 ## Install
 

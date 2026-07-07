@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/looselyorganized/auggy/evals/security/schema/suite.schema.json",
+  "$id": "https://auggy.dev/schemas/evals/security/suite.schema.json",
   "title": "Auggy security eval suite",
   "description": "Stable v1 schema for the Auggy security eval suite YAML. Additive changes are allowed within v1; breaking changes require bumping the top-level `version` field.",
   "type": "object",

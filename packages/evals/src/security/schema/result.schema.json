@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/looselyorganized/auggy/evals/security/schema/result.schema.json",
+  "$id": "https://auggy.dev/schemas/evals/security/result.schema.json",
   "title": "Auggy security eval result (one line of JSONL)",
   "description": "Stable v1 schema for a single trial result written to results/*.jsonl. One JSON object per line.",
   "type": "object",

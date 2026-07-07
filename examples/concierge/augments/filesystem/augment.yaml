@@ -1,4 +1,10 @@
-name: filesystem
-kind: builtin
-runtime: auggy
-skill: ../../skills/filesystem/SKILL.md
+type: filesystem
+config:
+  mounts:
+    - name: skills
+      path: ./skills
+      writable: false
+    - name: workspace
+      path: ./data/workspace
+      writable: true
+      deletable: true

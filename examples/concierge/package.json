@@ -6,8 +6,8 @@
     "test": "bun test augments/concierge-services/concierge-services.test.ts"
   },
   "dependencies": {
-    "@auggy/anthropic": "^0.4.4",
-    "auggy": "^0.4.4",
+    "@auggy/anthropic": "file:../../packages/anthropic",
+    "auggy": "file:../..",
     "zod": "^4.4.3"
   }
 }

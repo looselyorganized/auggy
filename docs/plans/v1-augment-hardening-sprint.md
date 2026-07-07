@@ -1,6 +1,8 @@
 # V1 Augment Hardening Sprint
 
-Status: active v1.0 sprint plan.
+Status: historical. The hardening sprint has largely landed; remaining
+pre-1.0 work should be tracked in [`../ROADMAP.md`](../ROADMAP.md) instead of
+this execution plan.
 
 ## Baseline
 
@@ -29,7 +31,7 @@ walkthrough relies on them.
   `creator | agent | public` trust model.
 - Make side-effecting augment authority structural, not prompt-only.
 - Preserve preview status for augments whose trust or deployment model is not
-  ready for v1.0 defaults.
+  ready for safer defaults.
 - Keep every change PR-sized, testable, and local to the affected augment.
 
 ## Non-Goals

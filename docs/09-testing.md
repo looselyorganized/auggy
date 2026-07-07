@@ -4,7 +4,7 @@
 
 ## What we test
 
-537 tests across 42 files as of 2026-04-16 (v0.1.1). The tests are divided into five layers:
+The test suite is divided into six layers:
 
 1. **Unit tests** — one module, one file. Mocked collaborators where they exist. Most of `tests/kernel/`, `tests/memory/`, `tests/transports/`, plus `tests/parts.test.ts`, `tests/tokenizer.test.ts`, `tests/helpers.test.ts`, `tests/agent-card.test.ts`, `tests/http.test.ts`.
 
@@ -16,7 +16,7 @@
 
 5. **Integration tests** — `tests/integration/`. Stand up a real `defineAgent` with real built-in augments (file memory, Supabase memory via mock client, web transport) and exercise the full HTTP surface end to end. The only fake is the model client.
 
-6. **Eval harness** — `tests/evals/`. Security-focused grader pipeline (`tests/evals/security/`). Mocks the agent via `createMockModel` and asserts on refusals, forbidden substrings, and tool-call gating.
+6. **Eval harness** — `packages/evals/src/`. Security-focused grader pipeline (`packages/evals/src/security/`). Mocks the agent via `createMockModel` and asserts on refusals, forbidden substrings, and tool-call gating.
 
 The split is deliberate: each layer protects against a different class of bug.
 
@@ -253,22 +253,12 @@ expect(events).toContain({ type: "RUN_FINISHED" });
 
 This proves that queue rejections produce visible terminal events instead of an empty 200 response. Was added after the P1 review finding ("Propagate transport-queue rejections to the SSE response").
 
-## Test counts (as of 2026-04-16, v0.1.1)
+## Test counts
 
-| Directory | Files |
-|-----------|-------|
-| `tests/` (top-level) | 6 |
-| `tests/kernel/` | 11 |
-| `tests/memory/` | 4 |
-| `tests/augments/` | 5 |
-| `tests/transports/` | 2 |
-| `tests/engines/` | 3 |
-| `tests/cli/` | 7 |
-| `tests/integration/` | 1 |
-| `tests/evals/` | 3 |
-| **Total** | **42 files, 537 tests** |
+Do not hard-code test counts in docs. They drift quickly. Use `bun test` for the
+current count printed by the runner.
 
-`bun run tsc --noEmit` is also clean. The tests + typecheck are the two gates for "is the code in a shippable state."
+`bun run typecheck` is also part of the shippability gate.
 
 ## How to add new tests
 
@@ -321,7 +311,7 @@ Add a new `it()` block to `tests/integration/full-agent.test.ts`. Each scenario 
 
 ## Type-checking is part of testing
 
-`bun run tsc --noEmit` is the second gate. Clean typecheck means:
+`bun run typecheck` is the second gate. Clean typecheck means:
 - No type errors in `src/` or `tests/`
 - All type narrowings in tests work (the type-cleanup pass after Plan 2 fixed several test files where the structural assertions were too narrow for TypeScript to verify)
 

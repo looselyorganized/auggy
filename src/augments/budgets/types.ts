@@ -1,5 +1,3 @@
-import type { TrustLevel } from "../../types";
-
 /**
  * Per-trust-level spend and turn caps. All fields optional — omit a cap
  * to leave it unconstrained.
@@ -97,31 +95,6 @@ export interface BudgetsConfig {
    */
   agentDir?: string;
 }
-
-/**
- * A staged reservation row — created inside the prepare transaction,
- * committed when the kernel confirms the ticket.
- */
-export interface TurnReservation {
-  turnId: string;
-  peerId: string;
-  threadId: string;
-  day: string; // YYYY-MM-DD UTC
-  trustLevel: TrustLevel;
-  publicSubstate: "anonymous" | "recognized" | null;
-  reservedAt: number;
-  committedAt: number | null;
-  costUsd: number | null;
-  priced: boolean;
-  decision: "allow" | "allow:incomplete" | "allow:orphaned";
-  reason: string | null;
-}
-
-/**
- * Internal result produced by cap evaluation. null = allowed;
- * string = denial reason.
- */
-export type ReservationDecision = { allow: true } | { allow: false; reason: string };
 
 /**
  * BudgetStore construction config (identical to the augment-level

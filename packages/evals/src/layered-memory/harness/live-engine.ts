@@ -2,7 +2,7 @@
  * Live extraction engine — thin wrapper around @anthropic-ai/sdk conforming
  * to the layered-memory ExtractionEngine interface.
  *
- * Used by the Haiku smoke test (evals/layered-memory/smoke.ts) to validate
+ * Used by the Haiku smoke test (packages/evals/src/layered-memory/smoke.ts) to validate
  * that the wiring works end-to-end against a real model. NOT used by the
  * mock-mode runner.
  *

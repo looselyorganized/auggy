@@ -10,13 +10,10 @@ dashboard, config editor, augment workbench, process manager, or fleet view.
 
 The default route redirects to `/console/chat`.
 
-Primary surface:
+Primary surfaces:
 
-- Agent name
-- Connection status
-- Provider/model label when available from `agent.yaml`
-- Chat transcript
-- Message composer
+- Chat transcript and message composer
+- Integrations/status view for the agent's current runtime surfaces
 
 Secondary surface:
 
@@ -68,9 +65,14 @@ Single-page React app at `/console`. Stack: React 19 + Vite + Tailwind +
 Radix primitives. Source: `admin/`. Build output: `admin/dist/`.
 
 The runtime serves static assets from `admin/dist/` via
-`src/transports/admin/admin-static.ts`. The SPA consumes JSON endpoints under
-`/console/api/*`; these endpoints remain available for future developer tools,
-but they are not exposed as top-level v1 tabs.
+`src/transports/admin/admin-static.ts`. The current SPA exposes only Chat and
+Integrations as top-level tabs.
+
+Older unreachable React tabs for identity, skills, credentials, budget,
+security, and augments have been removed from the preview bundle. The backend
+dashboard/action APIs remain where they are still tested and feed the live
+dashboard payload or future developer tools; they are not promoted to top-level
+`0.5` console product surfaces.
 
 ## Operator Entry Points
 

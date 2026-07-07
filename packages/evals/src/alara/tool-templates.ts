@@ -453,5 +453,3 @@ export const TOOL_TEMPLATES: ToolTemplate[] = [
     ],
   },
 ];
-
-export const DOMAINS = [...new Set(TOOL_TEMPLATES.map((t) => t.domain))];

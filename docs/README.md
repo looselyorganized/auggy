@@ -11,7 +11,8 @@ For install and first-run instructions, start with the root
 
 ## Current strategy
 
-The canonical product roadmap is [`ROADMAP.md`](./ROADMAP.md).
+The canonical product roadmap is [`ROADMAP.md`](./ROADMAP.md). The compact
+status matrix is [`FEATURES.md`](./FEATURES.md).
 
 The current north star:
 
@@ -23,6 +24,8 @@ Supporting strategy notes:
 
 - [Agent-Native App Backends](./use-cases/agent-native-app-backends.md)
 - [App Backend Architecture Strategy](./use-cases/app-backend-architecture-strategy.md)
+- [App Backend Route Use Cases](./use-cases/app-backend-route-use-cases.md)
+- [Auth Strategy for Agent-Native Apps](./use-cases/auth-strategy.md)
 - [Agent-Native Websites](./use-cases/agent-native-websites.md)
 - [Augments Over Tools: Use Cases](./23-augments-over-tools-use-cases.md)
 
@@ -33,9 +36,12 @@ Use this order when docs appear to disagree:
 1. **Code in `src/`** defines current runtime behavior.
 2. **Numbered reference docs** (`01-26`) explain the current architecture and
    should be updated when code changes.
-3. **`ROADMAP.md` and `docs/use-cases/`** describe product direction and
-   planned architecture. They may name concepts that do not exist yet.
-4. **`docs/plans/`, `docs/superpowers/*/archive/`, research papers, and
+3. **`FEATURES.md` and `ROADMAP.md`** describe feature status and release
+   direction.
+4. **`docs/use-cases/`** describes product direction and planned architecture.
+   These notes may name concepts that do not exist yet.
+5. **`docs/plans/`, `docs/superpowers/*/archive/`, `docs/use-cases/archive/`,
+   research papers, and
    previews** are historical or exploratory unless another current reference
    doc explicitly promotes them.
 
@@ -72,6 +78,7 @@ is the source of truth and the docs should be fixed.
 
 | Doc | What it covers |
 | --- | --- |
+| [Feature Status](./FEATURES.md) | Compact status matrix for published, on-main, planned, preview, and vision work |
 | [01 Philosophy](./01-philosophy.md) | Why Auggy exists and what it does not try to be |
 | [02 Architecture Overview](./02-architecture-overview.md) | Module map and turn data flow |
 | [03 Types](./03-types.md) | Shared runtime contracts |
@@ -105,6 +112,8 @@ primitives.
 - [Use Cases Index](./use-cases/README.md)
 - [Agent-Native App Backends](./use-cases/agent-native-app-backends.md)
 - [App Backend Architecture Strategy](./use-cases/app-backend-architecture-strategy.md)
+- [App Backend Route Use Cases](./use-cases/app-backend-route-use-cases.md)
+- [Auth Strategy for Agent-Native Apps](./use-cases/auth-strategy.md)
 - [Agent-Native Websites](./use-cases/agent-native-websites.md)
 - [Augments Over Tools: Use Cases](./23-augments-over-tools-use-cases.md)
 
@@ -133,6 +142,8 @@ they are not the canonical roadmap.
 ## Operations
 
 - [Todos](./todos.md) — small bugs, UX issues, and polish only.
+- [0.5 Public Preview Launch](./0.5-preview-launch.md) — package posture,
+  launch readiness, and website handoff for the app-backend preview.
 - [Releasing](./RELEASING.md) — release process and checks.
 - [Eval Testing Plan](./eval-testing-plan.md) — security eval harness design.
 

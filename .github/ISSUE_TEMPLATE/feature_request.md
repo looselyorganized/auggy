@@ -28,7 +28,7 @@ What did you try first? Why didn't it work?
 ## Scope
 
 - [ ] New augment under `src/augments/`
-- [ ] New engine adapter under `src/engines/`
+- [ ] New engine adapter under `packages/<provider>/`
 - [ ] CLI feature
 - [ ] Kernel change (please justify — the kernel is finished, see [`docs/01-philosophy.md`](../../docs/01-philosophy.md))
 - [ ] Docs / examples

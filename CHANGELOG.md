@@ -7,9 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-07
+
 ### Added
 
 - **`auggy augment setup` now handles AgentMail-backed setup recipes.** `auggy augment setup agentMail` provisions/configures the `agentMail` augment itself, while `auggy augment setup visitorAuth` remains the production magic-link email path. Interactive `auggy augment add agentMail` / `visitorAuth` offers setup after local install; scripted and `--yes` flows stay local-only. Setup can reuse existing `.env` AgentMail credentials with `--mode env`, or create a stable inbox using an idempotent AgentMail `clientId`.
+- **App-backend route foundation.** Augments can expose deterministic HTTP routes beside `/agent/run`, with route groups, path params, query/body parsing, response helpers, per-route body caps, timeouts, rate limits, schema metadata, route manifests, and OpenAPI export.
+- **Generated TypeScript route clients.** `auggy routes [name] --client ts [--target browser|server] [--out file]` emits self-contained clients with typed route-path calls, target-based auth filtering, typed params/query/body inputs, typed success `data` from response schemas, visitor-token handling, external auth assertion forwarding, and fetch-like non-2xx result behavior.
+- **Expanded route auth.** Route auth now covers `none`, `bearer`, `creator`, `visitor.optional`, `visitor.required`, and `agent.required`, with resolved route principals and browser/server generated-client filtering.
+- **Webhook route policies.** Route policy metadata is preserved in manifests/OpenAPI/generated-client filtering, and `webhook.signature("stripe", ...)` verifies Stripe signatures before route dispatch.
+- **Delegated authorization bridge.** Existing app sessions from Supabase, Clerk, Auth0-style, or custom middleware can mint short-lived Auggy external auth assertions. Auggy verifies audience/provider/TTL/signature, supports key rotation, can enforce replay protection with `jti`, and preserves compact external auth claims in route/tool context.
+- **Route and tool `requires`.** `visitor.required` routes and protected model tools can require explicit delegated scopes or resource grants. Route resources can bind to path params; tool resources can bind to schema-validated tool input. Roles are preserved as context but do not satisfy authorization by themselves.
+- **Delegated auth denial contract and audit hooks.** Route denials return pinned HTTP error bodies, protected-tool denials stay inside the model loop, and sanitized denial events can be observed without leaking them into AG-UI/SSE client output.
+- **App-auth bridge example.** `examples/app-auth-bridge` proves a normal app backend verifying Supabase/Clerk-style sessions, minting `x-auggy-auth-assertion`, using a generated browser client, and enforcing route/tool delegated authorization.
+- **Concierge route/tool example.** `examples/concierge` demonstrates the v1 app-backend pattern: deterministic routes and model-callable tools over shared domain logic.
+- **Feature status index.** `docs/FEATURES.md` now tracks published, on-main, planned, preview, and vision work separately from the release roadmap.
+- **0.5 public-preview launch checklist.** Package metadata, support paths, docs
+  posture, and release tasks now explicitly support public npm packages while
+  the source repository remains private during preview.
 
 ### Fixed
 
@@ -19,6 +34,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 
 - **`chat/` package deleted.** The standalone Local GUI (separate port 8090, agent picker, BEM CSS) is gone now that every agent serves its own operator surface at `/console`. `auggy chat` already opens `http://<agent>/console/chat` directly (#81). The only piece worth keeping — the AG-UI SSE parser — has been relocated to `admin/src/lib/ag-ui-parse/` (its sole consumer). The `@chat/*` path alias is removed from `admin/tsconfig.json` and `admin/vite.config.ts`. `docs/15-chat.md` is also deleted; the console doc at `docs/21-console.md` is now authoritative.
+- **Dead console workbench modules removed.** The preview `/console` bundle now keeps the live Chat, Integrations, diagnostics, theme, toast, and confirmation surfaces only. Older unreachable React tabs for identity, skills, credentials, budget, security, and augments were removed from the admin source tree; backend JSON/action endpoints remain where they are still tested and used by the live dashboard payload.
 
 ## [0.4.4] - 2026-05-26
 

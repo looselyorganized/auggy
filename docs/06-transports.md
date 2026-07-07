@@ -779,9 +779,10 @@ for one running agent. `/console` redirects to `/console/chat`; the visible v1
 UI is chat plus a compact Details dialog for agent identity, URLs, engine, and
 diagnostics. See [`docs/21-console.md`](./21-console.md).
 
-The older `adminInfo()` composition API still backs JSON endpoints and
-augment-owned action dispatch. Those endpoints are intentionally not exposed as
-top-level v1 tabs.
+The `adminInfo()` composition API still backs the dashboard JSON payload,
+Integrations posture actions, and augment-owned action dispatch. Older React
+workbench tabs have been removed from the preview bundle; the remaining backend
+endpoints are intentionally not promoted as top-level `0.5` console tabs.
 
 ### Surface
 

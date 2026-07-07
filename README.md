@@ -5,7 +5,6 @@
 <h1 align="center">Auggy</h1>
 
 <p align="center">
-  <a href="https://github.com/looselyorganized/auggy/actions/workflows/ci.yml"><img src="https://github.com/looselyorganized/auggy/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
   <a href="https://www.npmjs.com/package/auggy"><img src="https://img.shields.io/npm/v/auggy?label=npm" alt="npm" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-green" alt="License" /></a>
   <img src="https://img.shields.io/badge/runtime-Bun-black?logo=bun" alt="Bun" />
@@ -13,21 +12,63 @@
   <a href="https://looselyorganized.xyz"><img src="https://img.shields.io/badge/by-LORF-red" alt="LORF" /></a>
 </p>
 
-Auggy is a Bun/TypeScript framework for agent-native app backends. One project
-can serve deterministic HTTP routes, model-mediated workflows, and a creator
-console, with memory, tools, knowledge, auth, notifications, and deployment
-composed as augments.
+Auggy is a Bun/TypeScript framework for agent-native app backends.
+
+Use routes when software should decide. Use tools when the agent should
+mediate. Keep both in one backend, with shared identity, permissions, memory,
+operator controls, deployment, and generated clients.
+
+Auggy is in public-preview development. The npm package is Apache-2.0 licensed;
+the source repository may remain private while the project stabilizes. Pin exact
+versions for production work until `1.0.0`.
+
+## Why Agent-Native Backends
+
+Most app teams eventually need more than a chat box:
+
+- deterministic HTTP routes for app state, webhooks, and frontend clients
+- model-mediated tools for ambiguous user intent, lookup, drafting, and
+  escalation
+- authorization that comes from the app, not from model judgment
+- audit and operator visibility when an agent is allowed to act
+
+Auggy's core pattern is to expose one domain capability two ways:
+
+```txt
+booking domain
+  route: POST /bookings/hold       deterministic state change
+  tool:  reschedule_booking        model-mediated workflow
+```
+
+That is the difference between adding an LLM call to an app and building an
+agent-native app backend.
+
+## Preview Use Cases
+
+**Authenticated SaaS agent.** Keep Clerk, Supabase Auth, Auth0-style middleware,
+or custom sessions in your app. Your app backend mints a short-lived Auggy auth
+assertion with explicit scopes/grants; Auggy enforces route and tool access.
+The model never decides whether a user is authorized.
+
+**Booking, concierge, or support backend.** Routes handle availability,
+lead capture, account lookup, holds, and webhooks. Tools let the agent clarify
+intent, search services, save leads, draft replies, notify operators, or
+escalate.
+
+**Developer/docs assistant that creates artifacts.** Knowledge powers answers,
+but routes generate `agent.yaml`, recommended augments, route/client examples,
+diagnostics, and deployment checklists. The best docs assistant leaves the
+developer with runnable files, not just prose.
+
+## What Ships
 
 Agents are ordinary Bun/TypeScript projects composed from **augments**:
 swappable primitives for routes, memory, tools, transports, knowledge,
-notifications, identity, and deployment.
+notifications, identity, policy, and deployment.
 
 Auggy supports multiple engine families out of the box: **Anthropic**,
 **OpenAI**, **OpenRouter**, and **Ollama**. Pick one during `auggy create`;
 change it later in `agent.yaml`.
-
-The happy path is simple: create an agent, fill one `.env` key, run it, and
-chat in the browser.
 
 ## Quick Start
 
@@ -202,8 +243,8 @@ back" continuity across sessions.
 
 Apps that already use Clerk, Supabase Auth, or custom sessions can keep that
 login system and bridge it into Auggy with short-lived app-signed assertions.
-See [Delegated Authorization](docs/26-delegated-authorization.md) and the
-[app auth bridge example](examples/app-auth-bridge/README.md).
+See Delegated Authorization at `https://auggy.dev/docs/delegated-authorization`
+and the app auth bridge example at `https://auggy.dev/examples/app-auth-bridge`.
 
 Local testing uses console magic links. For production email delivery:
 
@@ -370,9 +411,10 @@ auggy deploy --yes
 | `auggy augment list` | Show installed, stable, and preview augments |
 | `auggy augment add [name...]` | Select or add built-in augments |
 | `auggy augment create <name>` | Scaffold a custom local augment |
-| `auggy augment install <path>` | Install a custom local augment |
+| `auggy augment install <agent> <path>` | Install a custom local augment |
 | `auggy skill create <name>` | Create a skill folder |
 | `auggy skill add <name>` | Reinstall a bundled augment skill |
+| `auggy routes [name]` | Inspect route manifests, OpenAPI, and generated TypeScript clients |
 | `auggy mcp init/list/show/add-json/remove/doctor` | Manage `.mcp.json` MCP servers |
 | `auggy models list [provider] --refresh` | Fetch and save the latest provider model list |
 | `auggy deploy` | Deploy the current agent to Railway |
@@ -397,7 +439,7 @@ curl -fsSL https://bun.sh/install | bash
 ## Development
 
 ```bash
-git clone https://github.com/looselyorganized/auggy.git
+git clone <private-auggy-repo-url>
 cd auggy
 bun install
 bun test
@@ -419,17 +461,17 @@ latest `auggy` package already published on npm.
 
 ## Documentation
 
-- [Architecture overview](docs/02-architecture-overview.md)
-- [Built-in augments](docs/07-built-in-augments.md)
-- [Skills](docs/11-skills.md)
-- [Deploy to Railway](docs/18-deploy.md)
-- [Visitor Auth](docs/19-visitor-auth.md)
-- [Generated Route Clients](docs/25-generated-route-clients.md)
-- [Delegated Authorization](docs/26-delegated-authorization.md)
-- [Agent Mail](docs/22-agent-mail.md)
-- [MCP](docs/24-mcp.md)
-- [Console](docs/21-console.md)
-- [Reference docs](docs/README.md)
+For public preview users, the package README is the stable install surface while
+the source repository is private. Full hosted docs live at
+`https://auggy.dev/docs`; invited source collaborators can use the repository
+docs below.
+
+- [Docs](https://auggy.dev/docs)
+- [Quickstart](https://auggy.dev/docs/quickstart)
+- [Generated Route Clients](https://auggy.dev/docs/generated-route-clients)
+- [Delegated Authorization](https://auggy.dev/docs/delegated-authorization)
+- [MCP](https://auggy.dev/docs/mcp)
+- [Console](https://auggy.dev/docs/console)
 
 ## License
 

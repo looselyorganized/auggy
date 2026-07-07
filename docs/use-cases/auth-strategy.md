@@ -88,7 +88,8 @@ Examples:
 - Dispatcher
 - Store staff
 
-This should not be rushed into v1.0 route auth. It likely needs either a `staff` trust tier, external OAuth/SSO integration, or both.
+This should not be rushed into the `0.5.0` route-auth foundation. It likely
+needs either a `staff` trust tier, external OAuth/SSO integration, or both.
 
 ### Webhook auth
 
@@ -139,11 +140,14 @@ Best when Auggy backs a broader app or customer portal.
 
 1. User logs in through normal app UI.
 2. App/backend session exists.
-3. Chat and app routes include session cookie or visitor token.
-4. Auggy resolves the session to `PeerIdentity`.
-5. Agent sees verified visitor context.
+3. Browser asks the app backend for a short-lived Auggy assertion.
+4. App backend verifies the session and signs explicit scopes/grants.
+5. Chat and app routes send `x-auggy-auth-assertion`.
+6. Auggy resolves recognized visitor context and enforces route/tool
+   `requires`.
 
-This requires a route/session integration story, but should still normalize to the same Auggy identity state.
+This is the current delegated authorization bridge. The app keeps its login
+system; Auggy gets only the compact authorization signal it needs.
 
 ## Unified identity output
 
@@ -187,96 +191,85 @@ Do not expose:
 - webhook secrets
 - raw session cookies
 
-## Route auth plan
+## Current route and delegated auth contract
 
-Do not jump from `bearer | none` directly to every auth mode.
+The route-auth foundation has landed on `main` for the `0.5.0` candidate.
 
-Recommended sequence:
-
-### Step 1: current stable modes
-
-Keep:
+Current route auth modes:
 
 - `none`
 - `bearer`
+- `creator`
+- `visitor.optional`
+- `visitor.required`
+- `agent.required`
 
-### Step 2: route context auth state
+Route handlers receive structured auth context and a resolved principal. The
+model never decides whether a request is authorized.
 
-Before adding semantic auth names, route handlers should receive a structured auth state.
+### External app auth assertions
 
-Initial shape can be simple:
+For apps that already use Supabase Auth, Clerk, Auth0-style middleware, or custom
+sessions, the right pattern is a bridge:
 
-```ts
-{ mode: "none" } | { mode: "bearer" }
-```
+1. The app backend verifies the normal app session.
+2. The app backend derives explicit scopes/grants for the current user.
+3. The app backend signs a short-lived Auggy external auth assertion.
+4. The browser or app caller sends it as `x-auggy-auth-assertion`.
+5. Auggy verifies audience, provider, TTL, signature, optional key id, and replay
+   posture.
+6. Auggy enforces route/tool `requires` before handlers or tools run.
 
-This creates the slot for richer identity without breaking route helpers.
-
-### Step 3: creator alias
-
-Add `creator` only when bearer-auth routes can expose resolved creator/auth state clearly.
-
-Avoid naming a mode `creator` if it is only a blind bearer check with no route-context identity. Users will infer stronger semantics.
-
-Implementation note: `auth: "creator"` is now a semantic alias for creator-only
-routes. It uses the same web bearer credential as `auth: "bearer"`, but route
-handlers receive `auth.mode === "creator"` and a creator principal.
-
-External app auth assertions now preserve a compact verified claim subset on
+External app auth assertions preserve a compact verified claim subset on
 recognized visitor route context and protected tool execution context:
 
 ```ts
-auth.externalAuth // { keyId?, provider, subject, orgId?, roles?, scopes?, grants? }
+auth.externalAuth // keyId?, provider, subject, orgId?, roles?, scopes?, grants?, authzVersion?, jti?
 ```
 
-This gives Clerk/Supabase/custom app sessions enough structure for app-owned
-authorization checks without making Auggy a general RBAC product.
+Roles can travel as context, but roles do not satisfy authorization. `requires`
+is satisfied only by explicit app-minted scopes or grants. This keeps Auggy out
+of the app's RBAC system while still letting Auggy enforce access before route
+handlers or model-requested tools run.
+
+Developer reference: [`../26-delegated-authorization.md`](../26-delegated-authorization.md)
+describes the Clerk/Supabase/custom app bridge, key rotation, replay protection,
+delegated `scopes` / `grants`, and route/tool `requires` examples.
+Runnable example: [`../../examples/app-auth-bridge`](../../examples/app-auth-bridge/README.md).
+
+### Resource-bound authorization
+
+Delegated authorization has two enforcement sites:
+
+- Routes bind resource grants from path params with `{ param: "id" }`.
+- Tools bind resource grants from validated tool input with
+  `{ input: "orderId" }`.
+
+That boundary matters because tools are model-requested. The model can propose an
+input, but Auggy evaluates the validated input against app-minted grants before
+the tool executes.
+
+### Visitor tokens plus external auth
 
 When a request carries both a valid Auggy visitor token and a valid external app
 auth assertion, Auggy keeps the visitor-token identity and attaches
 `externalAuth` only if the external assertion maps to the same `visitorId`.
 Mismatched app claims are not merged onto the visitor context.
 
-Developer reference: [`../26-delegated-authorization.md`](../26-delegated-authorization.md)
-describes the Clerk/Supabase/custom app bridge, short-lived assertions,
-delegated `scopes` / `grants`, and route/tool `requires` examples.
-Runnable example: [`../../examples/app-auth-bridge`](../../examples/app-auth-bridge/README.md).
+### Agent route auth
 
-Implementation note: delegated authorization now has two enforcement sites.
-Routes bind resource grants from path params with `{ param: "id" }`; tools bind
-resource grants from validated tool input with `{ input: "orderId" }`. This is
-the right boundary for app builders with Supabase, Clerk, or custom auth: their
-app decides the user's permissions, signs a narrow assertion, and Auggy
-deterministically enforces the resulting scopes/grants before route handlers or
-model-requested tools run. Roles can travel as context, but Auggy should not
-interpret broad app roles as permissions.
+`auth: "agent.required"` admits routes through the same `x-agent-id` /
+`x-agent-secret` allowlist used by `webTransport` identity resolution. Handlers
+receive `auth.mode === "agent"` and an agent principal. Browser generated
+clients omit these routes; server generated clients can call them with explicit
+agent credentials.
 
-### Step 4: visitor and agent route auth
+This is useful now for configured machine/agent callers. It is not yet the full
+future `agentAuth`/Link/A2A mesh.
 
-Add only after route context can resolve credentials consistently:
+### Webhook policies
 
-- `visitor.optional`
-- `visitor.required`
-- `agent.required`
-- `trust: [...]`
-
-These must align with `webTransport` identity resolution and `visitorAuth`, not create a second identity model.
-
-Implementation note: `auth: "agent.required"` now admits routes through the
-same `x-agent-id` / `x-agent-secret` allowlist used by `webTransport`
-identity resolution. Handlers receive `auth.mode === "agent"` and an agent
-principal. Browser generated clients omit these routes; server generated
-clients can call them with explicit agent credentials.
-
-### Step 5: webhook policies
-
-Add as route policies, not peer identity:
-
-- `webhook.signature("stripe")`
-- `webhook.signature("github")`
-- or augment-specific policy helpers
-
-Recommended first shape:
+Webhook signatures are route policies, not peer identity:
 
 ```ts
 defineRoute.post("/webhooks/stripe", {
@@ -285,15 +278,12 @@ defineRoute.post("/webhooks/stripe", {
     secretEnv: "STRIPE_WEBHOOK_SECRET",
   }),
   handler: async ({ webhook }) => {
-    // Stripe signature was verified before dispatch.
     const event = webhook?.event;
   },
 });
 ```
 
-Ship this in layers: policy metadata for manifests, route reports, OpenAPI
-`x-auggy`, and generated-client target filtering; then provider verifiers.
-Stripe is the first verified provider because it forces raw-body HMAC handling.
+Stripe verification has shipped because it forces raw-body HMAC handling.
 GitHub/Svix-style verifiers can follow without becoming peer identity.
 
 Keep webhook auth separate from route identity:
@@ -301,16 +291,9 @@ Keep webhook auth separate from route identity:
 - The caller is a provider event, not a visitor, creator, or agent peer.
 - Verification should run before JSON body parsing mutates the raw payload.
 - The verified event can be passed to the handler as structured route context.
-- The model should not see webhook secrets, signatures, or raw provider
-  headers.
+- The model should not see webhook secrets, signatures, or raw provider headers.
 - Generated browser clients should omit webhook-policy routes by default.
-- Server clients may include them only as ordinary server-side routes if the
-  signature is caller-supplied; examples should discourage manually replaying
-  provider webhooks.
-
-Start with provider-specific helpers for Stripe and GitHub/Svix-style HMAC
-instead of a generic middleware system. This keeps manifests inspectable and
-avoids turning Auggy into an Express clone.
+- Server clients may include them only for trusted server-side callers.
 
 ## Design cautions
 
@@ -321,7 +304,8 @@ avoids turning Auggy into an Express clone.
 - Do not expose secrets to the model.
 - Do not duplicate identity resolution logic in many augments.
 - Do not let `auth: "none"` become the default for customer-specific data.
-- Do not add visitor/agent route auth before route context can carry structured auth state.
+- Do not add new auth modes until route context, generated clients, OpenAPI, and
+  doctor/reporting can represent them consistently.
 
 ## What Auggy should own
 
@@ -351,11 +335,17 @@ Auth should become part of the app-backend route layer, not a separate platform 
 
 Roadmap placement:
 
-1. Finish route groups/path params and route helper hardening.
-2. Add structured route auth state to app request context.
-3. Add `creator` as a semantic alias only when context semantics are ready.
-4. Add visitor/agent route auth in v1.x after identity resolution is unified.
-5. Add webhook signature policies with integration augments.
-6. Add `agentAuth` alongside `visitorAuth` when mesh/link/A2A needs it.
+1. `0.5.0`: route auth modes, structured route context, delegated app auth,
+   route/tool `requires`, Stripe webhook policy, key rotation, audit hooks, and
+   replay protection.
+2. `0.6.x`: app-builder recipes and scaffolds that teach the bridge without
+   normalizing browser bearer usage.
+3. `0.7.x`: operator visibility for denials, assertions, route posture, and
+   audit review.
+4. `0.8.x/0.9.x`: additional provider recipes, webhook verifiers, and any
+   staff/person-auth design that real internal apps force.
+5. `2.0+`: `agentAuth` alongside `visitorAuth` when mesh/link/A2A needs a real
+   peer identity product.
 
-This keeps v1.0 self-hosted agent use intact while enabling app-first and chat-first agent-native apps.
+This keeps Auggy focused: integrate with app auth, enforce explicit delegated
+permissions, and avoid becoming a generic auth provider.

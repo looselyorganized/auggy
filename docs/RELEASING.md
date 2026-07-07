@@ -15,10 +15,22 @@ Pre-1.0 (semver §4: *"Anything MAY change at any time"*), this lets us ship at 
 ```bash
 # On main, version-bumped and CHANGELOG-updated PR already merged:
 git checkout main && git pull
-git tag v0.3.2                   # tag MUST match package.json version
-git push origin v0.3.2
+git tag v0.5.0                   # tag MUST match package.json version
+git push origin v0.5.0
 # CI publishes to npm + creates GitHub Release; watch the workflow run.
 ```
+
+## 0.5 preview posture
+
+For `0.5.0`, the npm packages are public but the source repository may remain
+private. Keep this posture until the project intentionally moves to a public
+OSS repository:
+
+- package manifests should point `homepage` at `https://auggy.dev`
+- package manifests should use the support email in `bugs`
+- omit `repository` metadata while the repo is private
+- keep npm provenance off because provenance requires a public source repo
+- do not describe the repo as publicly open source until the repo is public
 
 ## The invariant
 
@@ -58,7 +70,10 @@ In a dedicated branch off `main` (name suggestion: `release/X.Y.Z`):
 
 ### Cold-machine DX walkthrough
 
-This is the v1.0 release gate. Run it from a shell/profile that does not have an existing Auggy state directory. Do not skip the manual browser checks; this gate exists to catch first-run and packaging failures that unit tests miss.
+This is mandatory for `1.0.0` and strongly recommended for substantial pre-1.0
+minor releases such as `0.5.0`. Run it from a shell/profile that does not have an
+existing Auggy state directory. Do not skip the manual browser checks; this gate
+exists to catch first-run and packaging failures that unit tests miss.
 
 First run the automated release smoke:
 
@@ -70,8 +85,12 @@ This packs the local CLI, verifies the tarball contents, installs it into an
 isolated prefix, scaffolds a fresh agent through a PTY, boots `/health`, and
 checks the MCP cloud-preflight failure path.
 
-If you manually test the local tarball before publishing, pin generated agents
-to that same tarball:
+`bun run smoke:release` is the authoritative pre-publish agent-install smoke. It
+packs local `auggy` and the default Anthropic adapter into temp tarballs so the
+test does not require the new version to already exist on npm.
+
+If you manually test only the local CLI tarball before publishing, pin generated
+agents to that same core tarball:
 
 ```bash
 npm pack
@@ -82,7 +101,9 @@ export AUGGY_SCAFFOLD_AUGGY_SPEC="file:$PWD/$PACK"
 
 Without `AUGGY_SCAFFOLD_AUGGY_SPEC`, `auggy create` writes the normal npm
 range (`^X.Y.Z`), so a pre-release smoke can accidentally install an older
-published package with the same version.
+published package with the same version. Before the matching engine adapters are
+published, a full agent dependency install also needs local adapter tarballs;
+use `bun run smoke:release` for that path.
 
 For the post-publish walkthrough, use the public package:
 
@@ -106,7 +127,7 @@ Manual checks:
 
 Package artifact checks are covered by `bun run smoke:release`:
 
-- [ ] Tarball includes CLI source, `README.md`, `CHANGELOG.md`, `LICENSE`, and `admin/dist/index.html`
+- [ ] Tarball includes CLI source, `README.md`, `CHANGELOG.md`, `LICENSE`, `SECURITY.md`, and `admin/dist/index.html`
 - [ ] Tarball includes built console JS/CSS
 - [ ] Tarball excludes source maps and local-only state (`.env`, `.git/`, `.auggy/`, `node_modules/`, `docs/`, `tests/`)
 

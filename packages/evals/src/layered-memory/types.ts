@@ -8,7 +8,7 @@
  * matches — about that evidence.
  *
  * Complements `evals/auto-save/` (which is the unit eval over the extraction
- * prompt in isolation) and `evals/security/` (which grades adversarial
+ * prompt in isolation) and `packages/evals/src/security/` (which grades adversarial
  * responses). The integration shape is needed because PR β shipped autoSave
  * default-on without measuring the actual cost/value tradeoff under the
  * real turn-loop machinery — see lo/docs/auggy-oss-launch-readiness.md task #8.

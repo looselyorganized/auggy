@@ -8,12 +8,13 @@ PACK_CACHE="$SMOKE_DIR/npm-pack-cache"
 INSTALL_CACHE="$SMOKE_DIR/npm-install-cache"
 GLOBAL_PREFIX="$SMOKE_DIR/npm-global"
 LOG_DIR="$SMOKE_DIR/logs"
+PACK_DIR="$SMOKE_DIR/packs"
 SMOKE_HOME="$SMOKE_DIR/home"
 SMOKE_PORT=""
 SERVER_PID=""
 FAILED=""
 
-mkdir -p "$LOG_DIR" "$SMOKE_HOME"
+mkdir -p "$LOG_DIR" "$PACK_DIR" "$SMOKE_HOME"
 
 cleanup() {
   if [[ -n "$SERVER_PID" ]] && kill -0 "$SERVER_PID" 2>/dev/null; then
@@ -53,9 +54,16 @@ info "typecheck"
 (cd "$ROOT" && bunx tsc --noEmit)
 
 info "pack auggy"
-PACK_NAME="$(cd "$ROOT" && npm_config_cache="$PACK_CACHE" npm pack --silent)"
-TARBALL="$ROOT/$PACK_NAME"
+PACK_NAME="$(cd "$ROOT" && npm_config_cache="$PACK_CACHE" npm pack --silent --pack-destination "$PACK_DIR")"
+TARBALL="$PACK_DIR/$PACK_NAME"
 [[ -f "$TARBALL" ]] || fail "npm pack did not create $TARBALL"
+
+info "pack default engine adapter"
+ANTHROPIC_PACK_NAME="$(
+  cd "$ROOT/packages/anthropic" && npm_config_cache="$PACK_CACHE" npm pack --silent --pack-destination "$PACK_DIR"
+)"
+ANTHROPIC_TARBALL="$PACK_DIR/$ANTHROPIC_PACK_NAME"
+[[ -f "$ANTHROPIC_TARBALL" ]] || fail "npm pack did not create $ANTHROPIC_TARBALL"
 
 info "verify package contents"
 PACK_LIST="$LOG_DIR/tarball-files.txt"
@@ -78,6 +86,7 @@ require_pack_entry "admin/dist/index.html"
 require_pack_entry "README.md"
 require_pack_entry "CHANGELOG.md"
 require_pack_entry "LICENSE"
+require_pack_entry "SECURITY.md"
 grep -Eq '^package/admin/dist/assets/.+\.js$' "$PACK_LIST" \
   || fail "tarball missing built console JavaScript"
 grep -Eq '^package/admin/dist/assets/.+\.css$' "$PACK_LIST" \
@@ -147,6 +156,15 @@ AGENT_DIR="$SMOKE_DIR/$AGENT_NAME"
 [[ -f "$AGENT_DIR/agent.yaml" ]] || fail "agent.yaml was not created"
 grep -q "\"auggy\": \"file:$TARBALL\"" "$AGENT_DIR/package.json" \
   || fail "agent package.json did not pin auggy to the packed tarball"
+grep -q "\"@auggy/anthropic\": \"^$(node -p "require('$ROOT/package.json').version")\"" "$AGENT_DIR/package.json" \
+  || fail "agent package.json did not caret-pin @auggy/anthropic to the package version"
+node - "$AGENT_DIR/package.json" "$ANTHROPIC_TARBALL" <<'NODE'
+const { readFileSync, writeFileSync } = require("node:fs");
+const [manifestPath, tarball] = process.argv.slice(2);
+const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+manifest.dependencies["@auggy/anthropic"] = `file:${tarball}`;
+writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+NODE
 assert_agent_uses_folder_backed_augments fileMemory filesystem webTransport webFetch turnControl
 
 SMOKE_PORT="$(

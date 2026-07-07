@@ -7,7 +7,7 @@ last_updated: "2026-05-12"
 # This is the INTEGRATION eval suite for the layered-memory augment with
 # autoSave enabled. Complements (does NOT replace):
 #   - evals/auto-save/   — UNIT eval of the extraction prompt in isolation
-#   - evals/security/    — adversarial + benign suites
+#   - packages/evals/src/security/    — adversarial + benign suites
 #
 # Every grader answers a STRUCTURAL question. No response_contains_any
 # brittleness. See README.md for the unit-vs-integration boundary.

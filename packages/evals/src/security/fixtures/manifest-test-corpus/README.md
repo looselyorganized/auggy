@@ -20,7 +20,7 @@ cases that probe the manifest attack surface).
 ## Maintenance
 
 If you regenerate or modify this corpus, update the matching benign-suite
-cases in `evals/security/benign.yaml` so the `response_contains_any`
+cases in `packages/evals/src/security/benign.yaml` so the `response_contains_any`
 needles still hit. The synthetic terms intentionally include distinctive
 phrases ("Acme Test Foundry", "Standard Widget", "Premium Gizmo",
 "Training Kit") so the graders have a reliable signal that the agent

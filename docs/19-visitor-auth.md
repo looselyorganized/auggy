@@ -199,7 +199,7 @@ the visitor's name.
 
 ## Console mode for local testing
 
-OSS adopters who haven't configured AgentMail can still exercise the full magic-link flow by switching the delivery transport to the console adapter. The verify URL prints to the agent's stdout instead of being sent via email — the operator copies the link from their terminal and opens it in a browser to complete verification.
+Preview adopters who haven't configured AgentMail can still exercise the full magic-link flow by switching the delivery transport to the console adapter. The verify URL prints to the agent's stdout instead of being sent via email — the operator copies the link from their terminal and opens it in a browser to complete verification.
 
 Switch via `agentMail.transport: "console"` in
 `augments/visitorAuth/augment.yaml`:

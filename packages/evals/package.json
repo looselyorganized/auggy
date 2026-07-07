@@ -1,7 +1,7 @@
 {
   "name": "@auggy/evals",
-  "version": "0.4.4",
-  "description": "Eval suites for auggy agents — security (red-team prompts), auto-save (fact extraction fixtures), layered-memory (multi-session recall), plus the harness primitives all three build on.",
+  "version": "0.5.0",
+  "description": "Eval suites for auggy agents — security red-team prompts, auto-save fact extraction fixtures, shared harness primitives, and internal layered-memory graders.",
   "keywords": [
     "auggy",
     "evals",
@@ -12,14 +12,9 @@
   ],
   "license": "Apache-2.0",
   "author": "LORF (Loosely Organized Research Facility)",
-  "homepage": "https://github.com/looselyorganized/auggy#readme",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/looselyorganized/auggy.git",
-    "directory": "packages/evals"
-  },
+  "homepage": "https://auggy.dev",
   "bugs": {
-    "url": "https://github.com/looselyorganized/auggy/issues"
+    "email": "hello@looselyorganized.xyz"
   },
   "type": "module",
   "exports": {

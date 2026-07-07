@@ -1,3 +1,9 @@
-name: webTransport
-kind: builtin
-runtime: auggy
+type: webTransport
+config:
+  port: 8080
+  publicIntegration: false
+  auth:
+    type: bearer
+    token: ${AUGGY_WEB_TOKEN}
+  visitorTokens:
+    agentBinding: ${AUGGY_AGENT_ID}

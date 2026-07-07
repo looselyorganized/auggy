@@ -25,15 +25,20 @@ account lookup, policy, tools, admin visibility, memory, and notifications.
 
 ## Current route surface
 
-The current route surface is intentionally small:
+The current route surface is intentionally small, but now complete enough for
+the first app-backend release candidate:
 
 - `GET` and `POST`
 - Exact paths and full-segment path params such as `/orders/:id`
-- `auth: "none"`, `"bearer"`, `"visitor.optional"`, or `"visitor.required"`
+- `auth: "none"`, `"bearer"`, `"creator"`, `"visitor.optional"`,
+  `"visitor.required"`, or `"agent.required"`
 - Per-route body caps
 - Per-route timeouts
 - Per-route rate limits
 - Request schema metadata for params, query, and JSON body
+- Successful response schemas for generated-client `data` typing
+- Delegated `requires` for app-minted scopes/grants on visitor routes
+- Webhook signature policy metadata, with Stripe verification shipped
 - Route manifest and OpenAPI-style inspection through `auggy routes`
 - Self-contained generated TypeScript route clients through
   `auggy routes [name] --client ts [--target browser|server] [--out file]`
@@ -57,7 +62,7 @@ The disciplined pitch is:
 | Final handoff | `POST /checkout/create`, `POST /quotes/:id/accept`, `POST /appointments/:id/confirm` | `visitor.required` | Payment, booking, and acceptance happen through deterministic route-backed flows, not model text. |
 | Account lookup | `GET /orders/:id`, `GET /account`, `GET /tickets/:id/status` | `visitor.required` | The agent can ask the visitor to verify first, then safely retrieve private state through the same domain logic. |
 | Webhooks and callbacks | `POST /webhooks/stripe`, `POST /webhooks/calendar`, `GET /visitor-auth/verify` | `webhook.signature("stripe", ...)` for Stripe; other providers remain handler-verified until their policy verifiers land | External systems update state without waking the model. Failures can notify the operator. |
-| Operator/admin actions | `POST /catalog/sync`, `POST /leads/:id/notes`, `POST /admin/reindex` | `bearer` | Creator-only maintenance and back-office actions. Bearer routes should not be shipped to browser code. |
+| Operator/admin actions | `POST /catalog/sync`, `POST /leads/:id/notes`, `POST /admin/reindex` | `bearer` or `creator` | Creator-only maintenance and back-office actions. Bearer/creator routes should not be shipped to browser code. |
 | Route-backed UI components | `GET /availability`, `POST /slot-holds`, `POST /checkout/create` | Mixed | Chat can render a picker, card, form, or handoff, but the buttons call routes. The frontend renders UI; the model emits intent. |
 | Agent-peer read/action API | `GET /.well-known/agent-card.json`, `GET /catalog/search`, `POST /carts/draft` | Public read; admitted agent or delegated visitor for action | Future Link/A2A commerce and delegation. Outside agents can discover, compare, and prepare drafts safely. |
 
@@ -343,9 +348,10 @@ Useful layers:
   route manifest surfaces.
 - Admitted agent-peer path: Link/A2A-style peer traffic with configured
   credentials and `trustLevel: "agent"`.
-- Delegated visitor path: future scoped, revocable, short-lived visitor
-  delegation that lets a human authorize an outside agent to act on their
-  behalf.
+- Delegated app-auth path: shipped app-signed assertions let an app backend pass
+  explicit scopes/grants from Supabase, Clerk, or custom auth into Auggy.
+- Delegated visitor consent path: future scoped, revocable, short-lived visitor
+  consent that lets a human authorize an outside agent to act on their behalf.
 
 Safe flow:
 
@@ -353,8 +359,8 @@ Safe flow:
 2. The assistant discovers the Auggy app surface.
 3. Public routes answer product, service, availability, sizing, policy, and
    return questions.
-4. If account-specific state is needed, the user verifies or grants scoped
-   delegation.
+4. If account-specific state is needed, the user verifies, the app backend mints
+   a scoped assertion, or a future consent flow grants scoped delegation.
 5. The assistant can create a draft cart, booking hold, quote request, or
    checkout handoff.
 6. Final purchase, booking, acceptance, or account change happens through a

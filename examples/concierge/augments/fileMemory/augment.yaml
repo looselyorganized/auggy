@@ -1,3 +1,9 @@
-name: fileMemory
-kind: builtin
-runtime: auggy
+type: fileMemory
+config:
+  label: learned
+  source: ./learned.md
+  mutable: true
+  origin: agent
+  priority: high
+  placement: preamble
+  eviction: drop

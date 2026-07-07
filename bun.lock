@@ -21,14 +21,14 @@
     },
     "packages/anthropic": {
       "name": "@auggy/anthropic",
-      "version": "0.4.4",
+      "version": "0.5.0",
       "dependencies": {
         "@anthropic-ai/sdk": "^0.94.0",
       },
     },
     "packages/evals": {
       "name": "@auggy/evals",
-      "version": "0.4.4",
+      "version": "0.5.0",
       "dependencies": {
         "yaml": "^2.8.3",
         "zod": "^4.3.6",
@@ -36,23 +36,23 @@
     },
     "packages/ollama": {
       "name": "@auggy/ollama",
-      "version": "0.4.4",
+      "version": "0.5.0",
       "dependencies": {
         "ollama": "^0.6.0",
       },
     },
     "packages/openai": {
       "name": "@auggy/openai",
-      "version": "0.4.4",
+      "version": "0.5.0",
       "dependencies": {
         "openai": "^6.34.0",
       },
     },
     "packages/openrouter": {
       "name": "@auggy/openrouter",
-      "version": "0.4.4",
+      "version": "0.5.0",
       "dependencies": {
-        "@auggy/openai": "^0.4.3",
+        "@auggy/openai": "^0.5.0",
         "openai": "^6.34.0",
       },
     },

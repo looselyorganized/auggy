@@ -6,7 +6,7 @@
     "test": "bun test app-auth-bridge.test.ts"
   },
   "dependencies": {
-    "auggy": "^0.4.4",
+    "auggy": "file:../..",
     "zod": "^4.3.6"
   }
 }

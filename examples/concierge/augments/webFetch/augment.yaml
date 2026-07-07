@@ -1,4 +1,3 @@
-name: webFetch
-kind: builtin
-runtime: auggy
-skill: ../../skills/webFetch/SKILL.md
+type: webFetch
+config:
+  timeoutMs: 15000
