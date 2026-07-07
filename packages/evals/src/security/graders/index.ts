@@ -9,7 +9,7 @@
  *   2. Add its GraderSpec union member in types.ts.
  *   3. Register it here.
  *   4. Extend suite.schema.json with a new oneOf entry.
- *   5. Document in evals/security/README.md.
+ *   5. Document in packages/evals/src/security/README.md.
  *
  * Removing a grader is a breaking change — bump suite version and write a
  * migration note.

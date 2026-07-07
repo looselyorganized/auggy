@@ -1120,7 +1120,7 @@ The runtime soft cap is **not the hard limit on agent spend**. The hard limit is
 - OpenAI: <https://platform.openai.com/settings/organization/limits>
 - OpenRouter: <https://openrouter.ai/settings/credits>
 
-**For unattended cloud-deployed agents, configuring a provider-side spend cap is required, not optional.** The runtime soft cap is the friendly first line of defense; the provider hard cap is the backstop that fires regardless of any Auggy-level configuration error or runtime bug. The engine adapters surface a clear operator-actionable message when the provider cap is reached (see `src/engines/anthropic.ts` `rewrapCostCapError`).
+**For unattended cloud-deployed agents, configuring a provider-side spend cap is required, not optional.** The runtime soft cap is the friendly first line of defense; the provider hard cap is the backstop that fires regardless of any Auggy-level configuration error or runtime bug. The engine adapters surface a clear operator-actionable message when the provider cap is reached (see the provider adapter packages such as `packages/anthropic`).
 
 Pre-call cost estimation (a third architectural layer that gates the engine
 call before any spend) is explicitly deferred — provider caps are exact where

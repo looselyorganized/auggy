@@ -74,6 +74,10 @@ export type {
   RouteWebhookContext,
   TransportSpec,
   TransportKernel,
+  NotifyAugmentOptions,
+  NotifyDestination,
+  NotifyDestinationAuthority,
+  NotifyRateLimitOptions,
   AugmentHttpRoutePolicy,
   AugmentHttpRouteWebhookProvider,
   AugmentHttpRouteWebhookSignaturePolicy,
@@ -173,6 +177,12 @@ export type {
   BashRiskLevel,
   BashScript,
 } from "./augments/bash";
+
+export { budgets } from "./augments/budgets";
+export type { BudgetsAugmentOptions } from "./augments/budgets";
+
+export { notify } from "./augments/notify";
+export type { NotifyAugmentInternalOptions } from "./augments/notify";
 
 // === HTTP client (for augment authors who need HTTP) ===
 export { createHttpClient } from "./http";

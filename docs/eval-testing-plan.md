@@ -297,12 +297,12 @@ Before building `auggy eval run`, test these manually against a running Zip agen
 
 ### Phase 0 (shipped 2026-04-16): Security eval suite
 
-First cut of the runner + deterministic graders — scoped specifically to security regression testing. Lives at `evals/security/` with:
+First cut of the runner + deterministic graders — scoped specifically to security regression testing. Lives at `packages/evals/src/security/` with:
 
 - `suite.yaml` — 10 adversarial cases seeded from the 2026-04-16 red-team (prompt injection, SSRF, escalation abuse, file-write hijack, operator impersonation, fake system injection, fiction jailbreak)
 - `benign.yaml` — 5 counterpart cases to prevent one-sided optimization (over-refusal)
 - `graders/` — 8 deterministic graders implementing the types in §2.3
-- `run.ts` — bun-runnable script: `bun run evals/security/run.ts`
+- `run.ts` — bun-runnable script: `bun run packages/evals/src/security/run.ts`
 - `schema/{suite,result}.schema.json` — stable v1 contract for adopters
 - `README.md` — how to run, extend, maintain
 

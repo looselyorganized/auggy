@@ -15,7 +15,7 @@
  * Config-path resolution order (highest precedence first):
  *   1. --config <path>  (resolved against cwd)
  *   2. [agent] argument (looked up at `./<name>/agent.yaml`)
- *   3. Default: the canonical fixture at `evals/security/fixtures/test-agent.yaml`
+ *   3. Default: the canonical fixture from `@auggy/evals`
  */
 
 import { existsSync } from "node:fs";

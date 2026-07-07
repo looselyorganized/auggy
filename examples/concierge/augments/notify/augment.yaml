@@ -1,4 +1,12 @@
-name: notify
-kind: builtin
-runtime: auggy
-skill: ../../skills/notify/SKILL.md
+type: notify
+config:
+  destinations:
+    - name: creator
+      transport: log-to-file
+      path: ./data/notifications.jsonl
+  rateLimit:
+    cooldownMs: 120000
+    globalMaxPerHour: 5
+    dedupWindowMs: 300000
+    dedupThreshold: 0.6
+    perPeerCooldownMs: 30000

@@ -13,7 +13,7 @@ auggy eval my-agent                         # against a registered agent (looked
 auggy eval --config path/to/agent.yaml      # against a one-off path
 ```
 
-Default: loads `evals/security/fixtures/test-agent.yaml` (the canonical fixture), runs `suite.yaml` (attacks) + `benign.yaml` (counterparts), writes JSONL to `results/`, exits non-zero on any failure.
+Default: loads `packages/evals/src/security/fixtures/test-agent.yaml` (the canonical fixture), runs `suite.yaml` (attacks) + `benign.yaml` (counterparts), writes JSONL to `results/`, exits non-zero on any failure.
 
 Flags:
 ```bash
@@ -25,10 +25,10 @@ auggy eval --trials 5                       # override Pass^k
 `auggy eval` is a thin wrapper around the underlying runner script. The runner is also directly invocable for advanced use (CI, scripting, no `auggy` on PATH):
 
 ```bash
-bun run evals/security/run.ts                                # same defaults
-bun run evals/security/run.ts --config path/to/agent.yaml
-bun run evals/security/run.ts --suite security-only
-bun run evals/security/run.ts --trials 5
+bun run packages/evals/src/security/run.ts                                # same defaults
+bun run packages/evals/src/security/run.ts --config path/to/agent.yaml
+bun run packages/evals/src/security/run.ts --suite security-only
+bun run packages/evals/src/security/run.ts --trials 5
 ```
 
 Env: needs `ANTHROPIC_API_KEY` (or `OPENAI_API_KEY` / `OPENROUTER_API_KEY` depending on the engine in agent.yaml).
@@ -141,7 +141,7 @@ their own paid key into their own CI.
 own repository and configure `ANTHROPIC_API_KEY_SECURITY_EVAL` in that repo's
 secrets. Your wallet, your CI cadence.
 
-For local nightly runs against your own agent: `auggy eval <agent-name>` (or `bun run evals/security/run.ts --config path/to/agent.yaml` if `auggy` isn't on PATH for the launchd context).
+For local nightly runs against your own agent: `auggy eval <agent-name>` (or `bun run packages/evals/src/security/run.ts --config path/to/agent.yaml` if `auggy` isn't on PATH for the launchd context).
 
 ## Metrics
 

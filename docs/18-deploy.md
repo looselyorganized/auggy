@@ -165,7 +165,8 @@ If you enable auto-save programmatically with an extraction engine,
 Each extraction call hits the configured extraction engine. Auggy does not
 silently reuse the user-facing model for extraction, because that would make
 spend harder to reason about. The autoSave eval suite (see
-`evals/layered-memory/`) measures per-call cost for real extraction engines.
+`packages/evals/src/layered-memory/`) measures per-call cost for real
+extraction engines.
 
 **Recommendation:** set a daily ceiling via the `budgets` augment:
 
@@ -303,4 +304,4 @@ The Railway volume is **NOT** automatically deleted (Railway retains it as a saf
 | Deploy preflight fails because visitorAuth uses console mail | Run `auggy augment setup visitorAuth`, or set `allowConsoleInProduction: true` only for smoke tests where log-visible magic links are acceptable. |
 | Deploy preflight fails because MCP has an enabled `stdio` server | Use a remote HTTPS MCP server for cloud, or mark the local server `cloud: "disabled"` in `.mcp.json`. |
 | Memory disappears after redeploy | Check the volume is mounted (Railway dashboard → service → Volumes). If empty, the symlink list in the Dockerfile may be missing your dbPath — check `src/cli/deploy/dockerfile.ts`'s `SQLITE_DB_NAMES`. |
-| Daily budget cap hit unexpectedly | If you enabled autoSave with an extraction engine, extraction calls count against the cap. Run `evals/layered-memory/run.ts --smoke` to measure your per-extraction cost; lower the cadence in `augments/layeredMemory/augment.yaml` if needed. |
+| Daily budget cap hit unexpectedly | If you enabled autoSave with an extraction engine, extraction calls count against the cap. Run `bun run packages/evals/src/layered-memory/smoke.ts` to measure your per-extraction cost; lower the cadence in `augments/layeredMemory/augment.yaml` if needed. |

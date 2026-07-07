@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Auggy /admin — per-agent operator workbench (Vite + React + shadcn)",
+  "description": "Auggy /console — per-agent operator surface (Vite + React + shadcn)",
   "scripts": {
     "dev": "vite",
     "build": "tsc -p tsconfig.json --noEmit && vite build",

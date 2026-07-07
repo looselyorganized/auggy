@@ -6,7 +6,7 @@ name: Security eval
 #
 # Maintainers click "Run workflow" against any branch to verify a PR before
 # merging. Optional `config` input lets you point at a different fixture
-# (e.g. evals/security/fixtures/test-agent-sonnet.yaml for a Sonnet comparison
+# (e.g. packages/evals/src/security/fixtures/test-agent-sonnet.yaml for a Sonnet comparison
 # run).
 #
 # Contributors who want PR-time validation in their own repository or private
@@ -18,9 +18,9 @@ on:
   workflow_dispatch:
     inputs:
       config:
-        description: "Agent config path (default: Haiku fixture). Use evals/security/fixtures/test-agent-sonnet.yaml for Sonnet, etc."
+        description: "Agent config path (default: Haiku fixture). Use packages/evals/src/security/fixtures/test-agent-sonnet.yaml for Sonnet, etc."
         required: false
-        default: "evals/security/fixtures/test-agent.yaml"
+        default: "packages/evals/src/security/fixtures/test-agent.yaml"
 
 concurrency:
   group: security-eval-${{ github.ref }}
@@ -53,12 +53,12 @@ jobs:
           # per GitHub Actions security guidance — input never reaches the shell
           # as code.
           CONFIG_PATH: ${{ inputs.config }}
-        run: bun run evals/security/run.ts --config "$CONFIG_PATH"
+        run: bun run packages/evals/src/security/run.ts --config "$CONFIG_PATH"
 
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: security-eval-results
-          path: evals/security/results/
+          path: packages/evals/src/security/results/
           retention-days: 30

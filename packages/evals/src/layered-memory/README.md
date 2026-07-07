@@ -7,25 +7,25 @@ End-to-end eval for the `layeredMemory` augment with `autoSave` enabled.
 | Suite | Layer | Asks |
 |---|---|---|
 | `evals/auto-save/` | **Unit** — extraction prompt in isolation | Given a fixture transcript fed directly to the extraction prompt, does the model emit the expected facts? |
-| `evals/layered-memory/` *(this suite)* | **Integration** — full agent loop with autoSave wired in | Given a fixture conversation injected through `agent.inject()`, does autoSave's whole pipeline (scheduleAfterTurn → ctx.inject → handleInternalTurn → store write) produce a memory state that satisfies structural invariants? |
-| `evals/security/` | Adversarial behavior | Does the agent refuse / behave correctly under hostile inputs? |
+| `packages/evals/src/layered-memory/` *(this suite)* | **Integration** — full agent loop with autoSave wired in | Given a fixture conversation injected through `agent.inject()`, does autoSave's whole pipeline (scheduleAfterTurn -> ctx.inject -> handleInternalTurn -> store write) produce a memory state that satisfies structural invariants? |
+| `packages/evals/src/security/` | Adversarial behavior | Does the agent refuse / behave correctly under hostile inputs? |
 
-The three are complementary. A regression that breaks auto-save's extraction prompt fails `evals/auto-save/`; a regression that breaks the kernel's internal-turn routing fails this suite; a regression that breaks injection defenses fails `evals/security/`.
+The three are complementary. A regression that breaks auto-save's extraction prompt fails `packages/evals/src/auto-save/`; a regression that breaks the kernel's internal-turn routing fails this suite; a regression that breaks injection defenses fails `packages/evals/src/security/`.
 
 ## Modes
 
 ```bash
 # Validate fixtures (no agent boot, no LLM calls)
-bun run evals/layered-memory/run.ts --dry-run
+bun run packages/evals/src/layered-memory/run.ts --dry-run
 
 # Full mock-mode execution. Deterministic; no API key required. <30s.
-bun run evals/layered-memory/run.ts --mock
+bun run packages/evals/src/layered-memory/run.ts --mock
 
 # Filter to a single case
-bun run evals/layered-memory/run.ts --mock --case cross-session-recall-multi-day
+bun run packages/evals/src/layered-memory/run.ts --mock --case cross-session-recall-multi-day
 
 # Live Haiku smoke test (~$0.50-1.50). Requires ANTHROPIC_API_KEY.
-bun run evals/layered-memory/smoke.ts
+bun run packages/evals/src/layered-memory/smoke.ts
 ```
 
 Mock mode is the load-bearing CI artifact. The smoke test is a manual due-diligence step before launch.
@@ -92,13 +92,13 @@ expected:                          # consumed by graders (only the relevant fiel
 
 A failed grader's `reason` field is the first line to read — it names what specifically didn't hold. For multi-grader cases (most), a single failure surfaces, but check the full JSONL output for ALL grader results since some pass-fail combinations are diagnostic. Example: cross-session-recall fails but factual-recall passes ⇒ entries persist across restart but the probe paraphrasing was off (rare, would indicate prompt drift).
 
-JSONL results land in `evals/layered-memory/results/<timestamp>-mock.jsonl`. Each line is either `{ kind: "summary", ... }` or `{ kind: "trial", ... }`. The summary line carries the run metadata; trial lines carry per-case grader results + evidence summaries.
+JSONL results land in `packages/evals/src/layered-memory/results/<timestamp>-mock.jsonl`. Each line is either `{ kind: "summary", ... }` or `{ kind: "trial", ... }`. The summary line carries the run metadata; trial lines carry per-case grader results + evidence summaries.
 
 ## Boundary with auggy-auto-save (sibling suite)
 
 Both suites share fixture *shape* (peer + transcript + expected facts) by design. The runtime contracts diverge:
 
 - `evals/auto-save/`: NO agent boot, NO turn-loop. The fixture transcript is fed directly to the extraction prompt template. Graders inspect the JSON the prompt emits.
-- `evals/layered-memory/` (this): Real `agent.inject()` per turn, real autoSave path, real store writes. Graders inspect post-run store state + extraction-prompt captures.
+- `packages/evals/src/layered-memory/` (this): Real `agent.inject()` per turn, real autoSave path, real store writes. Graders inspect post-run store state + extraction-prompt captures.
 
 If you're testing the extraction prompt itself, write a unit case in `evals/auto-save/`. If you're testing what happens when autoSave is wired into a running agent, write an integration case here.

@@ -185,7 +185,7 @@ function agentYamlTemplate(
     .join("\n");
 
   return `# Agent configuration — the source of truth for this Auggy agent.
-# See docs at github.com/looselyorganized/auggy/tree/main/docs for field reference.
+# See docs at https://auggy.dev/docs for field reference.
 
 id: ${yamlScalar(id)}
 name: ${yamlScalar(name)}

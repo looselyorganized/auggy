@@ -140,18 +140,25 @@ Built-in augments. This directory is intentionally small — only augments that 
 
 See [07-built-in-augments.md](./07-built-in-augments.md).
 
-### `src/engines/`
-Model client adapters. Each engine is a `createXxxModel(opts) → ModelClient` factory that normalizes a provider's API onto the kernel's `ModelClient` contract.
+### Engine adapter packages
 
-| File | Responsibility |
+Model client adapters live in workspace packages so `auggy` core does not ship
+provider SDKs. Each adapter implements the core `ModelClient` contract and is
+installed into scaffolded agents as a direct dependency.
+
+| Package | Responsibility |
 |------|---------------|
-| `anthropic.ts` | Anthropic Messages API adapter. |
-| `openai.ts` | OpenAI Chat Completions adapter (handles message coalescing). |
-| `openrouter.ts` | OpenRouter multi-provider adapter. |
-| `ollama.ts` | Ollama native `/api/chat` adapter (free local LLM runner; no API key, no pricing). See [`packages/ollama/README.md`](../packages/ollama/README.md). |
-| `_shared/schema-normalize.ts` | Zod → JSON Schema normalization used by all engines. |
+| `packages/anthropic` | Anthropic Messages API adapter. |
+| `packages/openai` | OpenAI Responses/Chat-compatible adapter surface used by Auggy. |
+| `packages/openrouter` | OpenRouter multi-provider adapter over OpenAI-compatible APIs. |
+| `packages/ollama` | Ollama native `/api/chat` adapter for local LLM runners. |
 
-Engines are a reasoning-engine concern, not a model-metadata concern — see [01-philosophy.md](./01-philosophy.md) for why the directory is named `engines/` and not `models/`.
+Shared core helpers for adapters remain under `src/engines/_shared/`, with
+pricing tables under `src/engines/<provider>/pricing.ts`.
+
+Engines are a reasoning-engine concern, not a model-metadata concern — see
+[01-philosophy.md](./01-philosophy.md) for why the vocabulary is `engines` and
+not `models`.
 
 ### `src/cli/` — the `auggy` CLI (Plan 3)
 Turns Auggy from "write a `main.ts`" into "configure a YAML file and run `auggy start`." Each file is one concern.

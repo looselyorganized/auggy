@@ -16,8 +16,8 @@
  *               point points operators at it but doesn't run it directly).
  *
  * Usage:
- *   bun run evals/layered-memory/run.ts [--dry-run | --mock]
- *   bun run evals/layered-memory/run.ts --case <case-id>
+ *   bun run packages/evals/src/layered-memory/run.ts [--dry-run | --mock]
+ *   bun run packages/evals/src/layered-memory/run.ts --case <case-id>
  */
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
@@ -222,8 +222,8 @@ function parseArgs(argv: string[]): Args {
       console.log(`layered-memory eval runner.
 
 Usage:
-  bun run evals/layered-memory/run.ts [--dry-run | --mock] [--case <case-id>]
-  bun run evals/layered-memory/smoke.ts            # live Haiku smoke test
+  bun run packages/evals/src/layered-memory/run.ts [--dry-run | --mock] [--case <case-id>]
+  bun run packages/evals/src/layered-memory/smoke.ts            # live Haiku smoke test
 
 Modes:
   --dry-run   Validate fixtures only, no agent boot.
@@ -239,8 +239,8 @@ Modes:
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   if (args.mode === "smoke-help") {
-    console.log("Live Haiku smoke test lives at evals/layered-memory/smoke.ts.");
-    console.log("Run: bun run evals/layered-memory/smoke.ts");
+    console.log("Live Haiku smoke test lives at packages/evals/src/layered-memory/smoke.ts.");
+    console.log("Run: bun run packages/evals/src/layered-memory/smoke.ts");
     console.log("Requires ANTHROPIC_API_KEY in the environment. Budget: <=$1.50.");
     process.exit(0);
   }

@@ -16,7 +16,7 @@ The test suite is divided into six layers:
 
 5. **Integration tests** — `tests/integration/`. Stand up a real `defineAgent` with real built-in augments (file memory, Supabase memory via mock client, web transport) and exercise the full HTTP surface end to end. The only fake is the model client.
 
-6. **Eval harness** — `tests/evals/`. Security-focused grader pipeline (`tests/evals/security/`). Mocks the agent via `createMockModel` and asserts on refusals, forbidden substrings, and tool-call gating.
+6. **Eval harness** — `packages/evals/src/`. Security-focused grader pipeline (`packages/evals/src/security/`). Mocks the agent via `createMockModel` and asserts on refusals, forbidden substrings, and tool-call gating.
 
 The split is deliberate: each layer protects against a different class of bug.
 

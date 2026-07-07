@@ -18,11 +18,13 @@ It demonstrates the v1.0 app-backend slice: one custom augment exposes determini
 
 ```sh
 bun install
+cp .env.example .env
 auggy doctor
 auggy run
 ```
 
-Set `ANTHROPIC_API_KEY` in `.env` before chatting.
+Set `ANTHROPIC_API_KEY` in `.env` before chatting. Set `AUGGY_WEB_TOKEN` to
+any long local secret if you want to open `/console`.
 
 ## Try the app routes
 

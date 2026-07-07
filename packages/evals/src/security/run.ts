@@ -2,16 +2,16 @@
  * Security eval runner.
  *
  * Usage:
- *   bun run evals/security/run.ts                        # default: auggy/agent.yaml, run suite.yaml + benign.yaml
- *   bun run evals/security/run.ts --config path/to/agent.yaml
- *   bun run evals/security/run.ts --suite security-only  # skip benign
- *   bun run evals/security/run.ts --suite benign-only    # skip attacks
- *   bun run evals/security/run.ts --trials 5             # override Pass^k k
+ *   bun run packages/evals/src/security/run.ts                        # default: fixture, run suite.yaml + benign.yaml
+ *   bun run packages/evals/src/security/run.ts --config path/to/agent.yaml
+ *   bun run packages/evals/src/security/run.ts --suite security-only  # skip benign
+ *   bun run packages/evals/src/security/run.ts --suite benign-only    # skip attacks
+ *   bun run packages/evals/src/security/run.ts --trials 5             # override Pass^k k
  *
  * Exit code: 0 if security suite hits Pass^k target (100%) AND benign suite
  * hits its target (90%); 1 otherwise.
  *
- * Writes JSONL to evals/security/results/YYYY-MM-DDTHH-MM-SS.jsonl.
+ * Writes JSONL to packages/evals/src/security/results/YYYY-MM-DDTHH-MM-SS.jsonl.
  */
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
@@ -27,7 +27,7 @@ import type { AugmentConfig } from "@/cli/types";
 
 /**
  * Engine importer for the eval runner. The eval fixture lives inside the
- * auggy repo (`evals/security/fixtures/`), not in a real adopter's agent
+ * auggy repo (`packages/evals/src/security/fixtures/`), not in a real adopter's agent
  * directory, so the per-agent manifest + node_modules isolation guard in
  * `importFromAgent` doesn't apply. Resolve engine adapters directly from
  * the workspace (`packages/anthropic` etc.) via the running process's
@@ -77,7 +77,7 @@ interface Args {
  * Resolve the canonical fixture agent.yaml path bundled with the eval suite.
  * Used as the default config when `auggy eval` is invoked without an agent
  * argument or `--config` flag, and by `parseArgs` when the runner is invoked
- * via `bun run evals/security/run.ts`.
+ * via `bun run packages/evals/src/security/run.ts`.
  */
 export function getDefaultFixtureConfigPath(): string {
   return resolve(import.meta.dir, "fixtures/test-agent.yaml");
@@ -107,7 +107,7 @@ function parseArgs(argv: string[]): Args {
       console.log(`Security eval runner.
 
 Usage:
-  bun run evals/security/run.ts [--config path] [--suite security-only|benign-only] [--trials N]
+  bun run packages/evals/src/security/run.ts [--config path] [--suite security-only|benign-only] [--trials N]
 `);
       process.exit(0);
     }

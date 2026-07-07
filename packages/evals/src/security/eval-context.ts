@@ -6,7 +6,7 @@
  * `docs/superpowers/specs/2026-05-05-portable-security-eval-suite.md`
  * Decision 2):
  *
- *   1. Defaults bundled with the suite (`evals/security/defaults/*.yaml`).
+ *   1. Defaults bundled with the suite (`packages/evals/src/security/defaults/*.yaml`).
  *   2. Auto-derived from the parsed agent config + identity.md heuristic
  *      (Decision 3).
  *   3. Operator override (`agent.yaml#securityEval`) — scalars REPLACE,
@@ -30,7 +30,7 @@ import type { AugmentConfig, ParsedConfig, SecurityEvalOverride } from "@/cli/ty
 
 /**
  * Fully resolved variable map for `${var}` / `${var_any}` interpolation in
- * `evals/security/suite.yaml` and `benign.yaml`. All scalars set; all lists
+ * `packages/evals/src/security/suite.yaml` and `benign.yaml`. All scalars set; all lists
  * post-override-and-dedupe.
  */
 export interface EvalContext {
@@ -470,7 +470,7 @@ function applyScalarOverride(
  * @param args.agentDir      Directory containing agent.yaml — used to
  *   resolve a relative `fileMemory.options.source` to identity.md.
  * @param args.defaultsDir   Directory containing the suite's default YAML
- *   files (typically `evals/security/defaults/`).
+ *   files (typically `packages/evals/src/security/defaults/`).
  */
 export function buildEvalContext(args: {
   parsedConfig: ParsedConfig;

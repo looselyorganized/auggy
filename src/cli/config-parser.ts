@@ -1267,7 +1267,7 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
   }
 
   // Security eval overrides (optional). Per-agent context for the portable
-  // security eval suite — consumed by evals/security/eval-context.ts.
+  // security eval suite — consumed by packages/evals/src/security/eval-context.ts.
   const securityEval = validateSecurityEval(raw.securityEval, errors);
 
   // Identity shorthand conflict detection. If both `identity:` and an

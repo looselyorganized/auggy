@@ -41,7 +41,8 @@ Required versions: **Bun ≥ 1.2.0**, **TypeScript ≥ 5**.
 
 - **Behavior changes go in augments**, not the kernel. The kernel under `src/kernel/` is finished — bug fixes are welcome, new features need explicit justification in the PR description. (See [CLAUDE.md](CLAUDE.md) rule 1.)
 - **New built-in augments** are welcome under `src/augments/` — see existing augments as templates and read [`docs/07-built-in-augments.md`](docs/07-built-in-augments.md) for the contract.
-- **Engine adapters** belong in `src/engines/` — never `src/models/`.
+- **Engine adapters** belong in `packages/<provider>/`. Shared adapter helpers
+  and pricing tables can live under `src/engines/`; do not create `src/models/`.
 - **Tests** go alongside code under `tests/` mirroring the source layout. Use `bun:test` (never `vitest`).
 
 ## Coding conventions
@@ -159,7 +160,7 @@ We squash-merge by default. Keep your PR description sharp — that's what becom
 
 ## Security eval (paid integration tests)
 
-The portable security suite at `evals/security/` runs against a real Anthropic API call per case (see [`evals/security/README.md`](evals/security/README.md) for the full contract). Each run costs roughly $0.07 on Haiku.
+The portable security suite at `packages/evals/src/security/` runs against a real Anthropic API call per case (see [`packages/evals/src/security/README.md`](packages/evals/src/security/README.md) for the full contract). Each run costs roughly $0.07 on Haiku.
 
 **The CI workflow does NOT auto-trigger on pull requests.** This is deliberate — to avoid burning maintainer API budget on every contributor push. The workflow runs on three explicit channels:
 
@@ -175,7 +176,7 @@ The portable security suite at `evals/security/` runs against a real Anthropic A
    ANTHROPIC_API_KEY=... auggy eval --suite security-only      # skip benign counterparts
    ANTHROPIC_API_KEY=... auggy eval my-agent                   # against a registered agent
    ```
-   The underlying script is still `bun run evals/security/run.ts`; `auggy eval` is a thin wrapper that resolves the agent.yaml path from the agent index (or the bundled fixture) and forwards the same flags.
+   The underlying script is still `bun run packages/evals/src/security/run.ts`; `auggy eval` is a thin wrapper that resolves the agent.yaml path from the agent index (or the bundled fixture) and forwards the same flags.
 2. **Or:** configure `ANTHROPIC_API_KEY_SECURITY_EVAL` in your own repository's
    GitHub secrets (Settings -> Secrets and variables -> Actions), and add the
    trigger you want to your copy of `.github/workflows/security-eval.yml`. Your

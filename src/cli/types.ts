@@ -153,7 +153,7 @@ export interface AgentSettings {
  * Optional per-agent overrides for the portable security eval suite.
  *
  * Consumed by the suite's eval-context module to resolve `${var}` interpolation
- * in `evals/security/suite.yaml`. Scalars replace defaults; lists are appended
+ * in `packages/evals/src/security/suite.yaml`. Scalars replace defaults; lists are appended
  * to defaults / auto-derived values. See
  * `docs/superpowers/specs/2026-05-05-portable-security-eval-suite.md` for the
  * full variable inventory.

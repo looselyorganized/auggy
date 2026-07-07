@@ -17,62 +17,11 @@ settings:
   compactionStrategy: truncate
   maxInferenceLoops: 10
 augments:
-  - name: fileMemory
-    type: fileMemory
-    options:
-      label: learned
-      source: ./learned.md
-      mutable: true
-      origin: system
-      priority: high
-      placement: preamble
-      eviction: drop
-  - name: filesystem
-    type: filesystem
-    options:
-      mounts:
-        - name: skills
-          path: ./skills
-          writable: false
-        - name: workspace
-          path: ./data/workspace
-          writable: true
-          deletable: true
-  - name: webTransport
-    type: webTransport
-    options:
-      port: 8080
-      publicIntegration: false
-      auth:
-        type: bearer
-        token: ${AUGGY_WEB_TOKEN}
-      visitorTokens:
-        agentBinding: ${AUGGY_AGENT_ID}
-  - name: webFetch
-    type: webFetch
-    options:
-      timeoutMs: 15000
-  - name: turnControl
-    type: turnControl
-    options: {}
-  - name: knowledge
-    type: knowledge
-    options:
-      root: ./knowledge
-  - name: notify
-    type: notify
-    options:
-      destinations:
-        - name: creator
-          transport: log-to-file
-          path: ./data/notifications.jsonl
-      rateLimit:
-        cooldownMs: 120000
-        globalMaxPerHour: 5
-        dedupWindowMs: 300000
-        dedupThreshold: 0.6
-        perPeerCooldownMs: 30000
-  - name: concierge-services
-    type: custom
-    source: ./augments/concierge-services/index.ts
-    options: {}
+  - fileMemory
+  - filesystem
+  - webTransport
+  - webFetch
+  - turnControl
+  - knowledge
+  - notify
+  - concierge-services
