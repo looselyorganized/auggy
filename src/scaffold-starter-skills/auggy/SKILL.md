@@ -10,6 +10,11 @@ allowedTrustLevels:
 Use this skill when the creator asks what this agent is, what it can do, what
 to add next, or how to build a workflow with Auggy.
 
+This bundled skill is the canonical Auggy companion skill for the agent itself.
+The portable Claude/Codex/Cursor builder skill should reuse this mental model
+and expand it with editor-specific scripts and templates rather than fork the
+architecture.
+
 This is creator-facing guidance. Do not expose secrets, do not edit files,
 install packages, or change deployment config unless the creator asks, and do
 not claim a capability is installed unless you can observe it from the current
@@ -25,10 +30,13 @@ For any "what can you do?" or "how do I build X?" request:
    visible, call it with the creator's goal before advising.
 3. Check what else is actually available in the current conversation: visible
    tools, mounted skill names, and any runtime context you were given.
-4. If live project state is not available, say so plainly and give guidance
+4. If a relevant mounted skill is listed, read it before saying you do not have
+   documentation. For Auggy build-out questions, this `auggy` skill is the
+   starting point.
+5. If live project state is not available, say so plainly and give guidance
    based on the default Auggy project model.
-5. Recommend the smallest extension point that solves the goal.
-6. Give concrete next steps only after naming the tradeoff.
+6. Recommend the smallest extension point that solves the goal.
+7. Give concrete next steps only after naming the tradeoff.
 
 Do not pretend to inspect `agent.yaml`, `augments/*`, `.mcp.json`, or `.env`
 unless those files are available through a mounted tool or the creator pasted
@@ -87,6 +95,7 @@ command.
 | Add external tool servers | `auggy augment add mcp` | Bridge MCP tools into Auggy with trust policy |
 | Chat over Telegram | `auggy augment add telegramTransport` | Bidirectional Telegram transport |
 | Call an app-specific API or add routes | `auggy augment create <name>` | Custom runtime code owned by this agent |
+| Let a frontend/server job call agent backend routes | `auggy routes --client ts` | Typed route client generated from actual route manifests |
 | Execute shell commands | `auggy augment add bash` | Preview host process execution; use only with explicit creator intent |
 | Track runtime spend guardrails | `auggy augment add budgets` | Preview soft guardrails; provider hard caps still matter |
 | Connect agents to each other | `auggy augment add link` | Preview mesh/A2A surface; not a default recommendation |
@@ -185,8 +194,130 @@ Use a custom augment:
 auggy augment create weather
 ```
 
-Custom augments can expose tools and HTTP routes. Keep tools narrow, typed, and
-well described. Test before installing:
+Custom augments can expose HTTP routes, model-callable tools, or both. Put
+shared business logic in normal TypeScript functions, then wrap it with:
+
+- a route when software, a form, a webhook, a generated client, or a server job
+  should call it deterministically
+- a tool when the agent should decide whether, when, or how to mediate it
+
+Use `httpRoutes` for routes and `tools` for model-callable tools:
+
+```ts
+import { defineAugment, defineRoute, defineTool, json, webhook } from "auggy";
+import { z } from "zod";
+
+const ServiceParams = z.object({ id: z.string() });
+const ServiceQuery = z.object({ q: z.string().optional() });
+const Service = z.object({ id: z.string(), name: z.string() });
+const LeadInput = z.object({
+  email: z.string().email(),
+  need: z.string().min(1),
+});
+const LeadResponse = z.object({ id: z.string(), saved: z.boolean() });
+
+async function searchServices(query: z.infer<typeof ServiceQuery>) {
+  return [{ id: "svc_haircut", name: query.q ?? "Haircut" }];
+}
+
+async function saveLead(input: z.infer<typeof LeadInput>) {
+  return { id: "lead_123", saved: true, ...input };
+}
+
+export default function services() {
+  return defineAugment({
+    name: "services",
+    type: "custom",
+    capabilities: ["tools"],
+    httpRoutes: [
+      defineRoute.get("/services", {
+        auth: "none",
+        query: ServiceQuery,
+        response: z.object({ services: z.array(Service) }),
+        rateLimit: { maxPerMinute: 60 },
+        handler: async ({ query }) => json({ services: await searchServices(query) }),
+      }),
+      defineRoute.get("/services/:id", {
+        auth: "visitor.optional",
+        params: ServiceParams,
+        response: Service,
+        handler: async ({ params }) => json({ id: params.id, name: "Haircut" }),
+      }),
+      defineRoute.post("/leads/create", {
+        auth: "visitor.optional",
+        body: LeadInput,
+        response: LeadResponse,
+        maxBodyBytes: 8192,
+        rateLimit: { maxPerMinute: 10 },
+        handler: async ({ body, auth }) => {
+          const lead = await saveLead(body);
+          return json({ id: lead.id, saved: true }, 201);
+        },
+      }),
+      defineRoute.post("/webhooks/stripe", {
+        auth: "none",
+        policy: webhook.signature("stripe", { secretEnv: "STRIPE_WEBHOOK_SECRET" }),
+        maxBodyBytes: 65536,
+        handler: async ({ webhook }) =>
+          json({ received: webhook?.provider === "stripe", event: webhook?.event }),
+      }),
+    ],
+    tools: [
+      defineTool({
+        name: "service_search",
+        description: "Search services by visitor need or keyword.",
+        category: "business",
+        input: ServiceQuery,
+        execute: async (input) => JSON.stringify({ services: await searchServices(input) }),
+      }),
+      defineTool({
+        name: "save_lead",
+        description: "Save a lead for creator follow-up after the agent has collected enough detail.",
+        category: "business",
+        input: LeadInput,
+        execute: async (input) => JSON.stringify({ lead: await saveLead(input) }),
+      }),
+    ],
+  });
+}
+```
+
+Route option quick reference:
+
+- `auth`: use `"none"` for public deterministic reads/forms,
+  `"visitor.optional"` for mixed anonymous/signed-in visitor state,
+  `"visitor.required"` for account data, `"creator"` or `"bearer"` for
+  operator/server actions, and `"agent.required"` for admitted agent callers.
+- `params`: Zod schema for `:path` params.
+- `query`: Zod schema for URL query values on GET or POST.
+- `body`: Zod schema for POST JSON body.
+- `response`: Zod schema for successful JSON output; this types generated
+  client `result.data`.
+- `requires`: delegated authorization scopes/grants enforced by Auggy.
+- `policy`: webhook-signature policy such as `webhook.signature("stripe")`.
+- `maxBodyBytes`, `timeoutMs`, `rateLimit`: deterministic route safeguards.
+
+After route changes, inspect the manifest:
+
+```bash
+auggy routes
+auggy routes --json
+auggy routes --openapi
+```
+
+If an app consumes the routes, generate separate clients:
+
+```bash
+auggy routes --client ts --target browser --out src/auggy-client.ts
+auggy routes --client ts --target server --out src/auggy-client.server.ts
+```
+
+Browser clients include public and visitor routes. Server clients include
+privileged bearer, creator, agent, and webhook-policy routes. `createAuggyClient`
+is emitted into each generated file; do not import it from the `auggy` package
+yet.
+
+Keep tools narrow, typed, and well described. Test before installing:
 
 ```bash
 auggy augment test ./augments/weather
@@ -216,6 +347,8 @@ service logs.
   enabled augment order.
 - `augments/<id>/augment.yaml`: config for one enabled augment. Built-ins use
   `type: <augmentName>`. Custom augments use `type: custom` plus `source`.
+- `augments/<id>/index.ts`: common entry point for custom augment code that
+  exports `defineAugment({ httpRoutes, tools, ... })`.
 - `identity.md`: voice, purpose, boundaries, authorization-independent identity,
   and security rules.
 - `learned-behaviors.md`: mutable agent-global operating guidance. Use it for
@@ -254,6 +387,9 @@ service logs.
 auggy doctor
 auggy run
 ```
+
+- After changing route-owning augments, also recommend `auggy routes` and
+  regenerating browser/server clients if an app imports them.
 
 - Preview augments (`bash`, `budgets`, `link`) need explicit creator intent and
   clear warnings.

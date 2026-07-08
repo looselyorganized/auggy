@@ -68,6 +68,8 @@ describe("skills augment", () => {
       expect(block.priority).toBe("required");
       expect(block.eviction).toBe("never");
       expect(block.content).toContain("# Skills");
+      expect(block.content).toContain("Read a relevant guide");
+      expect(block.content).toContain("do not say you lack documentation");
       expect(block.content).toContain("- filesystem — Files and dirs.");
       expect(block.content).toContain("- memory — Remember things.");
       expect(block.content).toContain("fs_read");
