@@ -1,10 +1,12 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { ChevronDown, ChevronRight, RotateCcw, Square } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, Copy, RotateCcw, Square } from "lucide-react";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { useDashboardContext } from "@/components/admin/DashboardContext";
 import { findCsrfToken } from "@/lib/api";
+import { formatChatTranscript } from "@/lib/chat-transcript";
+import { useToast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { parseSSEStream, type AGUIEvent } from "@/lib/ag-ui-parse";
 
@@ -59,6 +61,7 @@ interface Message {
 
 export function ChatTab() {
   const { data, loading, error } = useDashboardContext();
+  const { push } = useToast();
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
@@ -66,12 +69,21 @@ export function ChatTab() {
   const [threadId, setThreadId] = useState<string>(() => crypto.randomUUID());
   const [previewMode, setPreviewMode] = useState<ChatPreviewMode>("creator");
   const [hasVisitorToken, setHasVisitorToken] = useState(() => Boolean(readVisitorToken()));
+  const [copiedTranscript, setCopiedTranscript] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const copiedTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const wasStreamingRef = useRef(false);
 
   // Cleanup on unmount — kill any in-flight stream.
   useEffect(() => () => abortRef.current?.abort(), []);
+
+  useEffect(
+    () => () => {
+      if (copiedTimeoutRef.current) clearTimeout(copiedTimeoutRef.current);
+    },
+    [],
+  );
 
   useEffect(() => {
     const refreshVisitorTokenState = () => setHasVisitorToken(Boolean(readVisitorToken()));
@@ -276,6 +288,30 @@ export function ChatTab() {
   const identityLabel = `Previewing as ${CHAT_PREVIEW_MODE_LABELS[previewMode].toLowerCase()}`;
   const emptyPrompts = previewMode === "creator" ? CREATOR_EMPTY_PROMPTS : PEER_EMPTY_PROMPTS;
 
+  const handleCopyTranscript = useCallback(async () => {
+    if (messages.length === 0) return;
+
+    const transcript = formatChatTranscript(messages, {
+      agentName,
+      previewModeLabel: CHAT_PREVIEW_MODE_LABELS[previewMode],
+      threadId,
+      copiedAt: new Date(),
+    });
+
+    try {
+      if (!navigator.clipboard?.writeText) {
+        throw new Error("Clipboard API unavailable");
+      }
+      await navigator.clipboard.writeText(transcript);
+      setCopiedTranscript(true);
+      push("success", "copied transcript");
+      if (copiedTimeoutRef.current) clearTimeout(copiedTimeoutRef.current);
+      copiedTimeoutRef.current = setTimeout(() => setCopiedTranscript(false), 1800);
+    } catch (err) {
+      push("error", `copy failed: ${(err as Error).message}`);
+    }
+  }, [agentName, messages, previewMode, push, threadId]);
+
   if (loading && !data) {
     return (
       <Card>
@@ -396,16 +432,33 @@ export function ChatTab() {
                 <span className="hidden text-muted-foreground/40 sm:inline">|</span>
                 <span className="hidden sm:inline">Shift+Enter for a new line</span>
                 {messages.length > 0 && (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={handleClear}
-                    disabled={streaming}
-                    className="h-7 shrink-0 px-2 text-xs"
-                  >
-                    <RotateCcw className="mr-1.5 size-3.5" />
-                    New thread
-                  </Button>
+                  <>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => void handleCopyTranscript()}
+                      className="h-7 shrink-0 px-2 text-xs"
+                      aria-label="Copy chat transcript"
+                      title="Copy chat transcript"
+                    >
+                      {copiedTranscript ? (
+                        <Check className="mr-1.5 size-3.5" />
+                      ) : (
+                        <Copy className="mr-1.5 size-3.5" />
+                      )}
+                      Copy transcript
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={handleClear}
+                      disabled={streaming}
+                      className="h-7 shrink-0 px-2 text-xs"
+                    >
+                      <RotateCcw className="mr-1.5 size-3.5" />
+                      New thread
+                    </Button>
+                  </>
                 )}
               </div>
             </div>
