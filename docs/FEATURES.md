@@ -36,7 +36,7 @@ Status values:
 | App-builder route/tool scaffolds | Planned | [`ROADMAP`](./ROADMAP.md) | `auggy augment create --with-route --with-tool` and template work. |
 | Operator route/audit visibility | Planned | [`ROADMAP`](./ROADMAP.md) | CLI/console inspection beyond current doctor and route reports. |
 | Inbound AgentMail channel | Planned | [`22`](./22-agent-mail.md), [`ROADMAP`](./ROADMAP.md) | Outbound/setup exists; robust inbound channel is pre-1.0 candidate work. |
-| Staff/person auth | Planned | [`use-cases/auth-strategy`](./use-cases/auth-strategy.md) | Internal-app trust tier between public visitor and creator. |
+| Staff/person auth | Planned | [`use-cases/auth-strategy`](./use-cases/auth-strategy.md) | Future internal-app authority if delegated `public` + `recognized` callers with app-minted grants prove insufficient. |
 | Agent mesh / delegated consent | Vision | [`ROADMAP`](./ROADMAP.md), [`agent-native app backends`](./use-cases/agent-native-app-backends.md) | Builds on Link, agent route auth, delegated assertions, budgets, and route-backed actions. |
 
 ## Version Buckets

@@ -26,7 +26,8 @@ explicit delegated scopes or grants minted by the app backend.
 4. App backend derives a minimal set of scopes/grants for the current user.
 5. App backend signs a short-lived Auggy assertion.
 6. Browser calls Auggy with `x-auggy-auth-assertion`.
-7. Auggy resolves recognized visitor context and enforces route/tool `requires`.
+7. Auggy resolves the caller as `public` + `recognized` and enforces route/tool
+   `requires`.
 
 ```text
 browser -> app backend: "give me an Auggy assertion"
@@ -119,8 +120,8 @@ Replay stores must be atomic and keyed by `jti`. They should retain each key no
 longer than the assertion expiry (`expiresAt - now`), and they should be shared
 by every Auggy process that accepts the same external auth audience and secrets.
 
-For `/agent/run`, a valid external auth assertion admits the request as a
-recognized visitor even when `allowAnonymous` is `false`. That keeps normal
+For `/agent/run`, a valid external auth assertion admits the request as
+`public` + `recognized` even when `allowAnonymous` is `false`. That keeps normal
 app-login chat separate from public anonymous chat.
 
 ## Mint Assertions
@@ -354,7 +355,7 @@ does not get to assert identity or permissions in tool arguments.
 ## Route Requirements
 
 `requires` is route-local delegated authorization. It only works with
-recognized visitor context that has verified external auth claims.
+`public` + `recognized` context that has verified external auth claims.
 
 Scope requirement:
 
@@ -513,8 +514,8 @@ public contract:
 
 | Status | Body | Meaning |
 | --- | --- | --- |
-| `401` | `{"error":"visitor-auth-required"}` | The request did not resolve to a recognized visitor. Missing visitor credentials, invalid visitor tokens, and invalid external assertions all use this body. Assertion verification internals such as expiry, provider mismatch, or signature failure are not exposed to the browser. |
-| `403` | `{"error":"forbidden","reason":"authorization-claims-required"}` | The request has a recognized visitor, but the route declares `requires` and the visitor context has no verified external auth claims. |
+| `401` | `{"error":"visitor-auth-required"}` | The request did not resolve to `public` + `recognized`. Missing visitor credentials, invalid visitor tokens, and invalid external assertions all use this body. Assertion verification internals such as expiry, provider mismatch, or signature failure are not exposed to the browser. |
+| `403` | `{"error":"forbidden","reason":"authorization-claims-required"}` | The request is `public` + `recognized`, but the route declares `requires` and the context has no verified external auth claims. |
 | `403` | `{"error":"forbidden","reason":"authorization-scope-missing"}` | The assertion did not include the required scope. |
 | `403` | `{"error":"forbidden","reason":"authorization-grant-missing"}` | The assertion did not include a grant matching the required action/resource/constraints. |
 | `403` | `{"error":"forbidden","reason":"authorization-resource-unresolved"}` | The route requirement could not resolve its declared path-param resource. |
@@ -559,10 +560,31 @@ not treat `roles` as route or tool permissions. Permissions should be expressed 
 `requires` scopes or grants so Auggy can enforce them consistently before
 handler or tool code runs.
 
+In TypeScript, `auth.principal.kind` is the typed identity payload for the
+resolved caller (`anonymous`, `visitor`, `creator`, or `agent`). It is not a
+second permission system. For authorization, reason from `trustLevel`,
+`publicSubstate`, and explicit `requires` scopes/grants.
+
 If a request supplies both an Auggy visitor token and an external auth
 assertion, Auggy keeps the visitor-token identity and merges external claims
 only when the assertion maps to the same visitor id. Mismatched app claims are
 not attached to the visitor context.
+
+## Team and Internal Users
+
+Auggy does not ship a separate `team`, `internal`, or `trusted` trust level in
+`0.5.0`. The runtime trust levels remain `creator`, `agent`, and `public`.
+
+For product-facing teammates, employees, customers, or staff members, use the
+delegated authorization bridge: the app verifies the user through Clerk,
+Supabase, Auth0, SSO, or custom middleware, then mints explicit Auggy
+`scopes` / `grants`. Auggy receives that caller as `public` + `recognized` with
+app-owned authorization claims.
+
+For teammates who operate the Auggy instance itself, use creator access today:
+protect `/console` behind HTTPS plus the creator bearer, ideally behind company
+VPN/SSO/reverse proxy. Per-teammate operator identity, scoped console powers,
+and audit attribution are future multi-operator/team auth work.
 
 ## Security Rules
 

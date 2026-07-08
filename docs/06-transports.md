@@ -286,11 +286,16 @@ When the budgets augment is mounted, `turnId` is also the primary key of `turn_r
 
 Identity is resolved in a fixed priority order:
 
-**Path 1 — Creator:** bearer token valid AND no `x-agent-id`/`x-agent-secret` headers AND no `x-visitor-token` header. Mints `{ trustLevel: "creator", id: "creator" }`.
+The runtime categories are `public` + `anonymous`, `public` + `recognized`,
+`creator`, and `agent`. Route auth may also expose `auth.principal.kind`; that
+field is the typed identity payload for the resolved caller, not another trust
+layer.
+
+**Path 1 — Creator:** bearer token valid AND no `x-agent-id`/`x-agent-secret` headers AND no verified visitor token. Mints `{ trustLevel: "creator", id: "creator" }`.
 
 **Path 2 — Agent:** `x-agent-id` and `x-agent-secret` headers both present. Looks up the agent ID in `opts.access.agents`; performs a timing-safe secret comparison. If the secret matches, mints `{ trustLevel: "agent", id: "agent:<agentId>" }`. Wrong secret → HTTP 401 immediately — no silent downgrade to public trust.
 
-**Path 3 — Public recognized:** `x-visitor-token` header present and HMAC-verified. Mints `{ trustLevel: "public", publicSubstate: "recognized", id: "<visitorId from token>" }`. The visitor's ID is durable across sessions — memory writes attach to it.
+**Path 3 — Public recognized:** `x-visitor-token` header present and HMAC-verified. Mints `{ trustLevel: "public", publicSubstate: "recognized", id: "<visitorId from token>" }`. The caller's public ID is durable across sessions — memory writes attach to it.
 
 **Path 4 — Public anonymous:** default path. Mints `{ trustLevel: "public", publicSubstate: "anonymous", id: "anon-<threadId>" }`. For fresh anonymous visitors, the transport issues a new visitor token in the `x-visitor-token` response header so subsequent requests can become "recognized."
 
@@ -663,8 +668,8 @@ export function myAugment(): Augment {
 - `"bearer"` — the route inherits webTransport's bearer-token check. Legacy name for creator-authorized routes.
 - `"creator"` — semantic alias for creator-only routes. Uses the same bearer-token check as `"bearer"`, but route handlers receive `auth.mode === "creator"` so app code can express creator authority directly.
 - `"none"` — the route accepts any caller. Use ONLY for genuinely public callbacks (email click-backs, OAuth redirects). The boot log emits a `console.warn` per `auth: "none"` route so operators see the unauthenticated surfaces.
-- `"visitor.optional"` — the route accepts anonymous callers but resolves a recognized visitor when a valid `x-visitor-token` is present. The boot log warns because the route is still anonymous-callable.
-- `"visitor.required"` — the route requires a valid `x-visitor-token` or configured external auth assertion. Missing, invalid, expired, wrong-agent, or revoked visitor tokens return `401 {"error":"visitor-auth-required"}` unless a valid external assertion is present. Handler auth context always includes `visitorId`; when `visitorAuth` or another `identityLookup` is mounted, it can also include `email`, `verifiedAt`, and `reverifyDueAt`. When an external app assertion resolves the visitor, context also includes `externalAuth: { provider, subject, orgId?, roles? }`. If a request supplies both credentials, external claims are attached only when the assertion maps to the same `visitorId` as the visitor token.
+- `"visitor.optional"` — the route accepts anonymous callers but resolves `public` + `recognized` context when a valid `x-visitor-token` is present. The boot log warns because the route is still anonymous-callable.
+- `"visitor.required"` — the route requires a valid `x-visitor-token` or configured external auth assertion. Missing, invalid, expired, wrong-agent, or revoked visitor tokens return `401 {"error":"visitor-auth-required"}` unless a valid external assertion is present. Handler auth context always includes `visitorId`; when `visitorAuth` or another `identityLookup` is mounted, it can also include `email`, `verifiedAt`, and `reverifyDueAt`. When an external app assertion resolves the caller, context also includes `externalAuth: { provider, subject, orgId?, roles? }`. If a request supplies both credentials, external claims are attached only when the assertion maps to the same `visitorId` as the visitor token.
 - `"agent.required"` — the route requires admitted agent credentials using `x-agent-id` and `x-agent-secret` against `webTransport.access.agents`. Missing, unknown, or wrong credentials return `401 {"error":"agent-auth-required"}`. Handler auth context includes `auth.mode === "agent"`, `agentId`, `peerId`, and optional `displayName` / `orgId` headers.
 
 For app-session bridges and delegated route/tool authorization with `requires`,

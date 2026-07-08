@@ -46,7 +46,7 @@ Full event taxonomy (TEXT_MESSAGE_*, TOOL_CALL_*, RUN_ERROR, etc.) lives in `doc
 
 | Path | Trigger | trustLevel | peer.id |
 |---|---|---|---|
-| **1 Creator** | Valid bearer matching `webTransport.auth.token`, AND no valid `x-agent-id`+`x-agent-secret` pair (Path 2 wins for agent credentials), AND no VALID `x-visitor-token` (Path 3 wins for verified visitors). **Bearer wins over an invalid `x-visitor-token`** — a stale or malformed visitor-token alongside a valid bearer is ignored and the request resolves as creator. | `creator` | hardcoded `"creator"` |
+| **1 Creator** | Valid bearer matching `webTransport.auth.token`, AND no valid `x-agent-id`+`x-agent-secret` pair (Path 2 wins for agent credentials), AND no VALID `x-visitor-token` (Path 3 wins for `public` + `recognized` callers). **Bearer wins over an invalid `x-visitor-token`** — a stale or malformed visitor-token alongside a valid bearer is ignored and the request resolves as creator. | `creator` | hardcoded `"creator"` |
 | **2 Agent** | `x-agent-id` + matching `x-agent-secret` (timing-safe compare) | `agent` | `"agent:" + x-agent-id` |
 | **3 Public / recognized** | Valid HMAC-signed `x-visitor-token` (not revoked, `agentBinding` matches). Fires even when a valid bearer is also present — explicit operator-as-visitor opt-in. | `public` + `recognized` | `payload.visitorId` from the token (stable across requests) |
 | **4 Public / anonymous** | Default — fallback when no path above matched. Admitted by `allowAnonymous` with no bearer. | `public` + `anonymous` | `"anon-" + threadId` |

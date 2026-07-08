@@ -188,7 +188,7 @@ Stable add-ons:
 | --- | --- |
 | `knowledge` | Local markdown docs and API-backed knowledge sources |
 | `layeredMemory` | Repeat visitor memory backed by SQLite |
-| `visitorAuth` | Email magic-link sign-in for recognized visitors |
+| `visitorAuth` | Email magic-link sign-in for `public` + `recognized` callers |
 | `agentMail` | Model-callable outbound email through AgentMail |
 | `notify` | Outbound notifications to an operator or service |
 | `telegramTransport` | Bidirectional chat with the agent from Telegram |
@@ -237,9 +237,9 @@ memory_write({ topic: "preferences", content: "Sam prefers concise replies." })
 The runtime derives the current peer label, so the model does not hand-build
 visitor IDs or internal memory labels.
 
-`visitorAuth` promotes an anonymous browser visitor into a recognized visitor
-with an email magic link. Pair it with `layeredMemory` when you want "welcome
-back" continuity across sessions.
+`visitorAuth` promotes an anonymous browser visitor into `public` + `recognized`
+context with an email magic link. Pair it with `layeredMemory` when you want
+"welcome back" continuity across sessions.
 
 Apps that already use Clerk, Supabase Auth, or custom sessions can keep that
 login system and bridge it into Auggy with short-lived app-signed assertions.

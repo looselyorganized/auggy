@@ -137,7 +137,8 @@ The company's Auggy is the public intake site and dispatch layer.
 - `notify` escalates urgent jobs.
 - Future `calendar`, `dispatch`, `maps`, and `quickbooks` augments coordinate scheduling, assignment, route estimates, and invoices.
 
-The same runtime handles public visitors, verified customers, technicians, and owners with different trust levels and capabilities.
+The same runtime handles public anonymous visitors, public recognized customers,
+technicians, and owners with different runtime identity and capability policy.
 
 ## Example: software company
 

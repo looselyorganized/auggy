@@ -159,8 +159,11 @@ These should be ordered by adopter signal after GA.
 - Packaged embeddable chat widget or Web Component.
 - API reference site or TypeDoc pipeline if the markdown reference docs stop
   scaling.
-- Multi-operator creator identity and audit attribution.
-- Staff/person auth tier for internal apps.
+- Multi-operator/team auth: per-teammate operator identity, audit attribution,
+  scoped console authority, bearer rotation/migration, and clear separation
+  from product-facing delegated app users.
+- Staff/person auth tier for internal apps if delegated `public.recognized`
+  users plus app-minted scopes/grants prove insufficient.
 - More cloud deploy targets beyond Railway.
 - Cross-augment dependency model if real projects expose silent ordering/version
   problems.

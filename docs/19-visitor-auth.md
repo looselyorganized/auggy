@@ -1,6 +1,9 @@
 # `visitorAuth` — operator reference
 
-`visitorAuth` is the email magic-link verification augment. It lets a public-anonymous visitor verify ownership of an email address and become public-recognized — same `vis_<uuid>` identity returns across sessions, memory continuity, etc. First member of the auth-augment family.
+`visitorAuth` is the email magic-link verification augment. It lets a
+`public` + `anonymous` visitor verify ownership of an email address and become
+`public` + `recognized` — same `vis_<uuid>` identity returns across sessions,
+memory continuity, etc. First member of the auth-augment family.
 
 ## What it adds to the agent
 
@@ -190,7 +193,7 @@ an inbox-scoped runtime key with only `inbox_read` and `message_send`.
 After a visitor clicks the verification link, the success page stores the signed
 visitor token in browser localStorage. `/console/chat` and public frontends should
 send that token as `x-visitor-token` on the next `/agent/run` request so the turn
-arrives as a recognized visitor with verified-email context.
+arrives as `public` + `recognized` with verified-email context.
 
 If `layeredMemory` is installed, future turns also receive the visitor's recent
 peer-scoped memory automatically. A generic returning message like "hey" can

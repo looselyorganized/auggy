@@ -67,8 +67,9 @@ These are the baseline assumptions for current architecture work:
   not in prompt-visible files.
 - Runtime authentication and authorization are deterministic transport/runtime
   decisions. The model does not decide who is authorized.
-- Current runtime trust levels are `creator`, `agent`, and `public`; future
-  roadmap work may add richer principals, roles, and channel bindings.
+- Current runtime trust levels are `creator`, `agent`, and `public`.
+  Team/internal app users are modeled today as `public` + `recognized` with
+  app-minted delegated scopes/grants; multi-operator/team trust is future work.
 - Learned or peer-derived memory must not be injected as operator-authored
   system truth. Mutable memory should use derived origins and non-authoritative
   placement unless explicitly promoted by an operator-controlled flow.
@@ -145,6 +146,9 @@ they are not the canonical roadmap.
 - [Auggy Builder Skill Plan](./plans/auggy-builder-skill-plan.md) —
   companion-skill plan for Claude, Codex, Cursor, and other coding agents that
   should be able to explain, set up, extend, and validate Auggy projects.
+- [Learned Behaviors Compatibility Plan](./plans/learned-behaviors-compatibility-plan.md)
+  — migration plan for renaming/repositioning `learned.md` as
+  agent-global learned behavior without breaking existing agents.
 
 ## Operations
 

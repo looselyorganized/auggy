@@ -61,13 +61,16 @@ This avoids expensive empty polling loops. For email, for example, a scheduler-d
 
 ### Per-peer policy
 
-Auggy augments run with access to `PeerIdentity`: peer kind, trust level, public substate, thread, and organization metadata. That lets them enforce different behavior for creators, public visitors, verified visitors, staff, and agent peers.
+Auggy augments run with access to `PeerIdentity`: peer kind, trust level,
+public substate, thread, and organization metadata. That lets them enforce
+different behavior for creators, public anonymous callers, public recognized
+callers, staff, and agent peers.
 
 Examples:
 
 - `agentMail` can allow only `creator` peers to send email.
 - `budgets` can apply different spend ceilings by trust tier.
-- `visitorAuth` can promote a public anonymous visitor to recognized.
+- `visitorAuth` can promote a public anonymous visitor to `public` + `recognized`.
 - `filesystem` and `bash` can be scoped more tightly for public users than creators.
 
 An MCP server generally does not own Auggy's current peer identity. It can expose a tool, but it does not naturally know whether the caller is the operator, a random visitor, a verified customer, or another agent.
@@ -149,7 +152,7 @@ A small furniture or apparel retailer embeds an Auggy agent on its site and also
 - `notify` for escalation to staff
 - `agentMail` for outbound follow-up emails
 - `filesystem` for scoped access to product sheets or local order exports
-- `budgets` for public visitor spend limits
+- `budgets` for public caller spend limits
 
 ### Potential new augments
 
@@ -160,7 +163,11 @@ A small furniture or apparel retailer embeds an Auggy agent on its site and also
 
 ### Novel capability
 
-The same agent can treat anonymous visitors, verified customers, staff, and the owner differently. An anonymous shopper can ask product questions. A verified customer can get order-specific help. The owner on Telegram can approve a discount, trigger a follow-up email, or ask "who needs attention today?"
+The same agent can treat anonymous visitors, public recognized customers, staff,
+and the owner differently. An anonymous shopper can ask product questions. A
+public recognized customer can get order-specific help. The owner on Telegram
+can approve a discount, trigger a follow-up email, or ask "who needs attention
+today?"
 
 ### Why this is hard with tools or MCP alone
 
@@ -195,11 +202,21 @@ An HVAC, plumbing, electrical, or appliance repair company uses Auggy across cus
 
 ### Novel capability
 
-The agent operates as a triage and coordination layer. A public visitor describes a broken furnace. The agent asks for missing details, verifies email, remembers equipment history, checks service rules, estimates urgency, and notifies the dispatcher. A trusted technician can message the same agent from Telegram and get job context, but cannot access owner-only billing controls. The owner can approve schedule changes or customer credits.
+The agent operates as a triage and coordination layer. A public visitor
+describes a broken furnace. The agent asks for missing details, verifies email,
+remembers equipment history, checks service rules, estimates urgency, and
+notifies the dispatcher. An app-authenticated technician can message the same
+agent from Telegram and get job context, but cannot access owner-only billing
+controls. The owner can approve schedule changes or customer credits.
 
 ### Why this is hard with tools or MCP alone
 
-This is not mainly a tool-calling problem. It needs channel-specific identity, trust-tiered permissions, transport queues, persistent peer memory, operator escalation, and policy-aware capability exposure. An MCP calendar or CRM server helps, but it does not decide whether a public anonymous visitor, verified customer, technician, or owner should be allowed to perform the action.
+This is not mainly a tool-calling problem. It needs channel-specific identity,
+trust-tiered permissions, transport queues, persistent peer memory, operator
+escalation, and policy-aware capability exposure. An MCP calendar or CRM server
+helps, but it does not decide whether a public anonymous caller, public
+recognized customer, technician, or owner should be allowed to perform the
+action.
 
 Product thesis: Auggy is the runtime for operational agents that safely cross the boundary from conversation into real-world work.
 

@@ -81,7 +81,7 @@ Then compose built-in augments around it:
 ```txt
 webTransport     browser chat + HTTP routes
 knowledge        policies, service descriptions, pricing notes
-visitorAuth      recognized visitor identity
+visitorAuth      public recognized caller identity
 layeredMemory    repeat visitor preferences/history
 notify           staff/operator escalation
 agentMail        outbound follow-up email, where appropriate
@@ -250,7 +250,7 @@ backend:
 webTransport        browser chat, HTTP routes, health, console
 telegramTransport   owner/staff Telegram channel
 notify              outbound operator alerts
-visitorAuth         public visitor recognition
+visitorAuth         public caller recognition
 knowledge           policies/runbooks/service info
 custom dispatch     routes + tools for jobs/intake/assignment
 custom quotes       routes + tools for quotes/proposals
@@ -280,7 +280,7 @@ notify_dispatcher
 The value is coordinated identity and capability exposure.
 
 A public website visitor can create an intake request but cannot assign a
-technician. A recognized visitor can see their own job status. The owner on
+technician. A `public` + `recognized` caller can see their own job status. The owner on
 Telegram can approve a schedule change. A webhook can update calendar state
 without waking the model. The model sees only the tools available for the
 current trust posture, and execution is checked again at runtime.

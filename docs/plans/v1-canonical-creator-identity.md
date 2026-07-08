@@ -158,6 +158,6 @@ the future `identities.people.<creator>.displayName` value.
   creator trust by default.
 - The model can answer "who am I?" correctly when the runtime says the peer is
   creator, and refuses to accept typed identity claims when the peer is public.
-- Existing visitorAuth recognized visitors remain `public/recognized` with
+- Existing visitorAuth callers remain `public` + `recognized` with
   `vis_<uuid>` ids.
 - Layered memory sees the creator as one peer across web console and Telegram.

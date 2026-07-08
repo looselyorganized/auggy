@@ -174,7 +174,7 @@ The useful unit is the business capability:
 - Serves `POST /transactions/create`
 - Receives payment webhooks
 - Exposes `lookup_transaction` to the agent
-- Adds transaction status context for verified visitors
+- Adds transaction status context for public recognized customers
 - Shows recent transaction health in admin
 - Notifies the operator on failures
 - Applies public/recognized/creator/agent policy differently
@@ -278,12 +278,12 @@ The same app-backend shape gets more distinctive when combined with `link`,
   agents, not open web discovery or universal Claude integration. The long-term
   opportunity is agent-to-agent commerce, support, procurement, and specialist
   delegation over explicit peer auth and route-backed actions.
-- `budgets` can cap how much work public visitors, recognized visitors, and
+- `budgets` can cap how much work public anonymous callers, public recognized callers, and
   agent peers are allowed to trigger. It is not semantic content control or hard
   billing control; it is kernel-level work admission plus budget-aware model
   context. Commerce and negotiation limits still belong in deterministic domain
   policy.
-- `visitorAuth` proves human identity and enables recognized visitor routes and
+- `visitorAuth` proves human identity and enables `public` + `recognized` routes and
   memory continuity. Existing app sessions can also bridge into Auggy through
   short-lived external auth assertions. Future visitor-authorized delegation
   should be a consent layer on top, not a rename of `visitorAuth` into agent

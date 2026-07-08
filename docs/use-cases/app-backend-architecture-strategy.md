@@ -89,7 +89,7 @@ This is the key architectural shape:
 
 **One capability, multiple faces.**
 
-Example: a `transactions` augment can serve `POST /transactions/create` for the frontend, expose `lookup_transaction` to the model, validate Postgres config at boot, show recent failures in admin, notify the operator on webhook failures, and apply different policy for public visitors, verified customers, agent peers, and creators.
+Example: a `transactions` augment can serve `POST /transactions/create` for the frontend, expose `lookup_transaction` to the model, validate Postgres config at boot, show recent failures in admin, notify the operator on webhook failures, and apply different policy for public anonymous callers, public recognized customers, agent peers, and creators.
 
 The route path is deterministic software. The tool path is agent-mediated. Both should share the same domain logic.
 
@@ -646,7 +646,7 @@ logic.
 Useful app-backend budget patterns:
 
 - **Public concierge caps**: anonymous visitors get a small number of turns;
-  recognized visitors get more; creators bypass.
+  `public` + `recognized` callers get more; creators bypass.
 - **Agent-peer caps**: incoming Link/A2A requests from other agents use
   `caps.agent` so partner agents cannot drain the runtime.
 - **Per-partner quotas**: future budgets should split `agent` caps by admitted
@@ -680,7 +680,8 @@ Current truth:
 
 - `visitorAuth` is human visitor auth, not agent auth.
 - It verifies email ownership with magic links.
-- It promotes public-anonymous visitors to recognized visitor identities.
+- It promotes `public` + `anonymous` visitors to `public` + `recognized`
+  identities.
 - It gives routes `visitor.optional` and `visitor.required` posture when wired
   through `webTransport`.
 - It supports memory continuity when paired with `layeredMemory`.

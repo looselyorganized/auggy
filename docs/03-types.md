@@ -197,6 +197,13 @@ channel bindings, webhooks, and permission modes. That future model should
 compile down to deterministic runtime policy; it should not make the model
 responsible for deciding who a peer is or what they can do.
 
+The product model has four resolved caller categories:
+
+- `public` + `anonymous` — no durable caller identity yet.
+- `public` + `recognized` — a known public/app caller with a stable visitor id.
+- `creator` — the operator/developer of this Auggy instance.
+- `agent` — an admitted machine or agent peer.
+
 Trust levels are ordered from most to least:
 - **`creator`** — the deployer of this specific agent. Bypasses budgets and all per-trust-level constraints. Null peer (internal/scheduled trigger) is treated as `creator`.
 - **`agent`** — a machine the creator has admitted (via shared-secret in `access.agents`). High trust.
@@ -207,6 +214,12 @@ Trust levels are ordered from most to least:
 - `"recognized"` — a valid HMAC visitor token was verified; durable identity (peer.id is `vis_*` from the token). Memory writes attach to this durable ID across sessions.
 
 `publicSubstate` is present **only** when `trustLevel === "public"`. Other trust levels must omit it. The budgets augment uses `publicSubstate` to apply differentiated caps (tighter defaults for anonymous, looser for recognized).
+
+Route auth contexts also expose `auth.principal.kind`. That field is a
+TypeScript discriminator for the concrete identity payload (`anonymous`,
+`visitor`, `creator`, or `agent`). It is not a second permission system. Use
+`trustLevel`, `publicSubstate`, and route/tool `requires` rules to decide what a
+caller may do.
 
 The kernel never assigns trust levels — only transports do, in their `identify()` function. The kernel reads `trustLevel` to build the system preamble (which warns the model about public peers) and to mark `peer-derived` context blocks.
 

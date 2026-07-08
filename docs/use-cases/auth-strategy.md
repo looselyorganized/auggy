@@ -91,6 +91,18 @@ Examples:
 This should not be rushed into the `0.5.0` route-auth foundation. It likely
 needs either a `staff` trust tier, external OAuth/SSO integration, or both.
 
+For `0.5.0`, do not model team/internal product users as a new Auggy trust
+level. If a teammate or employee is using the product through the app, the app
+should verify them through its normal auth provider and mint a delegated Auggy
+assertion. Auggy then treats the request as `public` + `recognized` with
+app-minted `scopes` / `grants`.
+
+If a teammate is operating the Auggy instance itself, they are effectively a
+creator today: give them console access through the creator bearer, preferably
+behind company VPN/SSO/reverse proxy, and rotate the bearer when access changes.
+Per-teammate operator identity, audit attribution, and scoped console authority
+belong to future multi-operator/team auth work.
+
 ### Webhook auth
 
 External services do not fit visitor/creator/agent auth.
@@ -143,8 +155,8 @@ Best when Auggy backs a broader app or customer portal.
 3. Browser asks the app backend for a short-lived Auggy assertion.
 4. App backend verifies the session and signs explicit scopes/grants.
 5. Chat and app routes send `x-auggy-auth-assertion`.
-6. Auggy resolves recognized visitor context and enforces route/tool
-   `requires`.
+6. Auggy resolves the caller as `public` + `recognized` and enforces
+   route/tool `requires`.
 
 This is the current delegated authorization bridge. The app keeps its login
 system; Auggy gets only the compact authorization signal it needs.
@@ -152,6 +164,16 @@ system; Auggy gets only the compact authorization signal it needs.
 ## Unified identity output
 
 Different auth mechanisms should normalize to one route/tool/model identity shape.
+
+Every request should resolve to one of four caller categories:
+
+- `public` + `anonymous`
+- `public` + `recognized`
+- `creator`
+- `agent`
+
+In code, `auth.principal.kind` is the typed identity payload for that resolved
+caller. It is not another authority layer.
 
 Conceptual shape:
 
@@ -221,7 +243,7 @@ sessions, the right pattern is a bridge:
 6. Auggy enforces route/tool `requires` before handlers or tools run.
 
 External app auth assertions preserve a compact verified claim subset on
-recognized visitor route context and protected tool execution context:
+`public` + `recognized` route context and protected tool execution context:
 
 ```ts
 auth.externalAuth // keyId?, provider, subject, orgId?, roles?, scopes?, grants?, authzVersion?, jti?

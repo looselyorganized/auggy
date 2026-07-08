@@ -1220,7 +1220,10 @@ config:
 
 ### What it is
 
-The first member of the auth-augment family. `visitorAuth` lets a public-anonymous visitor verify ownership of an email address and become public-recognized — same `vis_<uuid>` identity returns across sessions, enabling memory continuity and trust elevation.
+The first member of the auth-augment family. `visitorAuth` lets a
+`public` + `anonymous` visitor verify ownership of an email address and become
+`public` + `recognized` — same `vis_<uuid>` identity returns across sessions,
+enabling memory continuity and caller recognition.
 
 It adds a model-callable `request_auth({method: "email", email})` tool; a
 deterministic `POST /visitor-auth/request` app route for frontend-owned sign-in
