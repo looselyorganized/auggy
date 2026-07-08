@@ -55,6 +55,7 @@ Read the matching reference before answering in depth:
 | Missing keys, `EADDRINUSE`, route collisions, bad custom augment modules, deploy failures | `skills/auggy/references/troubleshooting.md` |
 | What is safe in the 0.5 preview | `skills/auggy/references/release-0.5-surface.md` |
 | Copyable starter files | `skills/auggy/assets/templates/` |
+| Optional shell helpers for coding agents | `skills/auggy/scripts/` |
 
 If `fs_read` is unavailable, say that you cannot read the reference from this
 surface and then give concise default guidance from this skill.
@@ -202,6 +203,13 @@ auggy deploy
 For cloud agents, use `auggy doctor --cloud` where relevant. Do not deploy
 console magic-link visitor auth unless the creator accepts that links appear in
 service logs.
+
+### "Can you inspect or validate this project for me?"
+
+If this is a coding-agent workspace with shell access, helper scripts are
+available under `skills/auggy/scripts/`. Read
+`skills/auggy/references/cli-workflows.md` first so the underlying CLI commands
+are clear. Do not require these scripts when shell access is unavailable.
 
 ## Project Map
 

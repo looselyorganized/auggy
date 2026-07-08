@@ -2,6 +2,10 @@
 
 Use CLI commands before hand-editing generated or scaffolded state.
 
+Optional helper scripts for coding-agent workspaces live under
+`skills/auggy/scripts/`. They wrap the commands below; they are conveniences,
+not a separate Auggy interface.
+
 ## Install And Create
 
 For a new project, use the package manager the creator prefers. Common path:
@@ -107,3 +111,17 @@ auggy doctor --cloud
 
 Do not deploy until required secrets are configured in the deployment provider.
 Do not print secret values.
+
+## Helper Scripts
+
+Use these only when shell access is available:
+
+```bash
+bash skills/auggy/scripts/detect-auggy-env.sh
+bash skills/auggy/scripts/summarize-auggy-project.sh .
+bash skills/auggy/scripts/doctor-and-routes.sh
+bash skills/auggy/scripts/generate-route-clients.sh src/auggy-client.ts src/auggy-client.server.ts
+```
+
+The helpers should not replace explaining the direct `auggy` commands to the
+creator.
