@@ -1,7 +1,7 @@
 type: fileMemory
 config:
   label: learned
-  source: ./learned.md
+  source: ./learned-behaviors.md
   mutable: true
   origin: agent
   priority: high
