@@ -1,0 +1,153 @@
+# Authorization, Memory, And Trust
+
+Auggy has deterministic caller trust. The model should not decide who is
+authorized from chat text.
+
+## Caller Categories
+
+| Trust | Meaning |
+| --- | --- |
+| `creator` | Runtime-verified creator/operator for this agent |
+| `agent` | Admitted machine/agent caller |
+| `public` + `anonymous` | Unrecognized public caller |
+| `public` + `recognized` | Public caller recognized through visitor token or external auth assertion |
+
+The creator can ask build-out questions and request allowed runtime actions.
+Public visitors should not receive internal tools, config, file paths, or
+secrets.
+
+## Visitor Auth
+
+Use `visitorAuth` when the agent should recognize a person across sessions:
+
+```bash
+auggy augment add visitorAuth
+```
+
+Use `layeredMemory` when the agent should store peer-scoped memory:
+
+```bash
+auggy augment add layeredMemory
+```
+
+Use both when repeat visitors need cross-session memory continuity.
+
+## Learned Behavior Vs Peer Memory
+
+`learned-behaviors.md` is agent-global behavior guidance approved by the
+creator. It is not for visitor-specific facts.
+
+Use exact `memory_write({ label: "learned", content })` only for
+creator-approved global operating preferences, such as "when greeting visitors,
+use this phrase."
+
+Use topic writes for peer-specific memory:
+
+```ts
+memory_write({ topic: "preferences", content: "Sam prefers concise replies." })
+```
+
+Topic writes require a writable peer memory provider such as `layeredMemory`.
+If no writable current-peer provider exists, do not promise cross-session
+memory.
+
+## External App Auth
+
+Apps that already use Supabase Auth, Clerk, Auth0, SSO, or custom sessions
+should keep that system as the source of truth.
+
+For copyable app-backend bridge files, inspect
+`skills/auggy/assets/templates/app-auth-bridge/`.
+
+Flow:
+
+1. Browser has a normal app login.
+2. Browser asks the app backend for an Auggy auth assertion.
+3. App backend verifies the session.
+4. App backend computes narrow scopes/grants.
+5. App backend signs a short-lived Auggy assertion.
+6. Browser calls Auggy with `x-auggy-auth-assertion`.
+7. Auggy verifies the assertion and enforces route/tool `requires`.
+
+Do not put `AUGGY_EXTERNAL_AUTH_SECRET` in browser code.
+
+## Minting Assertions
+
+Server-side app code can use:
+
+```ts
+import { createExternalAuthAssertion } from "auggy";
+
+const assertion = createExternalAuthAssertion({
+  secret: process.env.AUGGY_EXTERNAL_AUTH_SECRET!,
+  keyId: "2026-07",
+  audience: "storefront-agent",
+  provider: "supabase",
+  subject: user.id,
+  ttlSeconds: 60,
+  email: user.email,
+  emailVerified: true,
+  orgId,
+  roles,
+  scopes: ["orders.read"],
+  grants,
+  authzVersion: "2026-07-03",
+  jti: crypto.randomUUID(),
+});
+```
+
+Roles can be copied into assertions for context/audit, but Auggy enforces only
+explicit `scopes` and `grants`.
+
+## Route And Tool Requires
+
+Routes and tools can declare authorization requirements:
+
+```ts
+defineRoute.get("/orders/:orderId", {
+  auth: "visitor.required",
+  params: z.object({ orderId: z.string() }),
+  requires: {
+    action: "orders.read",
+    resource: { param: "orderId" },
+  },
+  handler: ({ params }) => json({ orderId: params.orderId }),
+});
+
+defineTool({
+  name: "lookup_order",
+  description: "Look up an order the recognized visitor is allowed to read.",
+  category: "business",
+  input: z.object({ orderId: z.string() }),
+  requires: {
+    action: "orders.read",
+    resource: { input: "orderId" },
+  },
+  execute: async ({ orderId }) => JSON.stringify({ orderId }),
+});
+```
+
+Auggy checks the assertion before the route handler or protected tool runs.
+Denied paths should not execute business logic.
+
+## Replay Protection
+
+For high-risk sessions, enable external auth replay protection in
+`webTransport.externalAuth.replayProtection`.
+
+When enabled:
+
+- every accepted assertion needs a unique `jti`
+- reused `jti` values are rejected
+- the replay store should be shared across every Auggy process accepting the
+  same assertion audience and secrets
+- TTL should be bounded by assertion expiry
+
+## Supabase And Clerk
+
+Supabase and Clerk are app auth providers. Auggy should not interpret their raw
+roles directly. The app backend should verify the provider session and mint
+narrow Auggy scopes/grants.
+
+Use Supabase server APIs or Clerk server APIs only in trusted app backend code.
+Never verify sessions or sign Auggy assertions in browser code.
