@@ -19,11 +19,12 @@ The dev server proxies `/console/api/*` to a local agent when one is running.
 Without an agent backend, the shell loads but live Chat/Integrations/Capabilities
 calls fail normally.
 
-Chat exercises the same-process `/agent/run` proxy and can copy the visible
-conversation as a Markdown transcript for debugging. Integrations reads the
-dashboard payload for built-in endpoints, web posture, and the live augment route
-manifest. Capabilities reads the same payload as a runtime map of augments,
-routes, tools, memory, auth posture, and warnings.
+Chat exercises the same-process `/agent/run` proxy, renders GitHub-flavored
+Markdown without raw HTML or remote images, and can copy the visible conversation
+as a Markdown transcript for debugging. Integrations reads the dashboard payload
+for built-in endpoints, web posture, and the live augment route manifest.
+Capabilities reads the same payload as a runtime map of augments, routes, tools,
+memory, auth posture, and warnings.
 
 ## Layout
 
