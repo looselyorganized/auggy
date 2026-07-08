@@ -1,13 +1,13 @@
 /**
- * Server-side helpers for the `/admin` Identity tab.
+ * Server-side helpers for the console identity API.
  *
  * `identity.md` is the agent's preamble — loaded at boot and pinned in
  * context on every turn. The path comes from `agent.yaml`'s `identity:`
  * field (typically `./identity.md`) and is resolved against `agentDir`.
  *
- * The Identity tab needs to read and write this file. Writes don't take
- * effect until the agent restarts (preamble is boot-loaded), so the SPA
- * surfaces a "restart required" banner on success.
+ * Console identity endpoints can read and write this file for future editor
+ * surfaces. Writes don't take effect until the agent restarts because the
+ * preamble is boot-loaded.
  */
 
 import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";

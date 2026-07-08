@@ -4,19 +4,20 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="robots" content="noindex, nofollow" />
-    <title>Auggy — Admin</title>
+    <title>Auggy — Console</title>
     <script>
       // Apply theme before paint to avoid flash. Order: localStorage → system → light.
       try {
-        const t = localStorage.getItem("auggy-admin-theme");
+        const t =
+          localStorage.getItem("auggy-theme") ?? localStorage.getItem("auggy-admin-theme");
         const dark =
           t === "dark" ||
           (t == null && window.matchMedia("(prefers-color-scheme: dark)").matches);
         if (dark) document.documentElement.classList.add("dark");
       } catch {}
     </script>
-    <script type="module" crossorigin src="/console/assets/index-DyhHnOMX.js"></script>
-    <link rel="stylesheet" crossorigin href="/console/assets/index-D_nfiKbE.css">
+    <script type="module" crossorigin src="/console/assets/index-DoCV-NGN.js"></script>
+    <link rel="stylesheet" crossorigin href="/console/assets/index-Bls2fZrH.css">
   </head>
   <body class="h-full">
     <div id="root" class="h-full"></div>

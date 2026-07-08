@@ -210,10 +210,10 @@ export interface WebTransportOptions {
    */
   allowAnonymous?: boolean;
   /**
-   * G36 — opt-out flag for the built-in /admin route. Default: `true`.
-   * When `false`, GET/POST /admin and POST /console/action/* all return 404
-   * (no signal that admin exists when disabled). Useful for embedded /
-   * headless deploys, operators with a custom admin, or security-conscious
+   * G36 — opt-out flag for the built-in /console route. Default: `true`.
+   * When `false`, GET/POST /console and POST /console/action/* all return 404
+   * (no signal that console exists when disabled). Useful for embedded /
+   * headless deploys, operators with a custom console, or security-conscious
    * setups that don't want HTTP-Basic-over-Bearer exposed.
    */
   adminRoute?: boolean;
@@ -306,7 +306,7 @@ export function normalizeIp(ip: string | null | undefined): string | null {
  * Strips the IPv4-mapped IPv6 prefix (`::ffff:1.2.3.4` → `1.2.3.4`) before
  * the check, so `::ffff:127.0.0.1` is correctly classified as loopback.
  *
- * G36 uses this to gate HTTPS enforcement on /admin: loopback connections
+ * G36 uses this to gate HTTPS enforcement on /console: loopback connections
  * are exempt for dev (operator on the same machine); non-loopback connections
  * over plain HTTP get 426 Upgrade Required.
  */
@@ -572,8 +572,8 @@ export function webTransport(opts: WebTransportOptions): Augment {
   // Empty when adminRoute is disabled or no augment declares adminInfo.
   let actionRegistry: AdminActionRegistry = new Map();
 
-  // Admin SPA dist directory resolved at register() time. `undefined` when no
-  // build exists; the admin transport degrades to a "build required" notice.
+  // Console SPA dist directory resolved at register() time. `undefined` when no
+  // build exists; the console route degrades to a "build required" notice.
   let adminStaticDir: string | undefined;
 
   // G2 — info endpoint cache. Populated in register() when publicFrontendUrl
@@ -683,7 +683,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
   // tell the operator exactly why the agent is running in this posture.
   //
   // G36: also mutable at register-time when admin-overrides.json carries an
-  // override; Phase 3's /admin posture-flip action will mutate via setAllowAnonymous.
+  // override; the console posture action mutates via setAllowAnonymous.
   const allowAnonymousResolution = resolveConfigBool(
     opts.allowAnonymous,
     "AUGGY_ALLOW_ANONYMOUS",
@@ -808,6 +808,30 @@ export function webTransport(opts: WebTransportOptions): Augment {
               label: "Trusted proxies",
               value: (opts.trustedProxies ?? []).join(", ") || "(none)",
             },
+            {
+              label: "CORS origins",
+              value: opts.cors?.origins.join(", ") || "(none)",
+            },
+            {
+              label: "Visitor tokens",
+              value: String(visitorTokensEnabled),
+            },
+            {
+              label: "External auth",
+              value: String(opts.externalAuth !== undefined),
+            },
+            {
+              label: "External auth header",
+              value: opts.externalAuth?.header ?? DEFAULT_EXTERNAL_AUTH_ASSERTION_HEADER,
+            },
+            {
+              label: "External auth audience",
+              value: resolveExternalAuthAudience(),
+            },
+            {
+              label: "Agent access entries",
+              value: String(opts.access?.agents?.length ?? 0),
+            },
           ],
         },
       ],
@@ -829,7 +853,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
         {
           id: "posture-public-integration-set",
           label: "Set publicIntegration",
-          confirmRequired: true,
+          confirmRequired: false,
           inputs: [
             {
               name: "value",
@@ -1021,8 +1045,8 @@ export function webTransport(opts: WebTransportOptions): Augment {
       const overrides = readOverrides(opts.agentDir);
       if (overrides?.overrides.webTransport?.allowAnonymous !== undefined) {
         allowAnonymous = overrides.overrides.webTransport.allowAnonymous;
-        // Mark the resolution source so /admin can display "source: /admin override"
-        // (Phase 3's webTransport adminInfo reads this). The cast is needed because
+        // Mark the resolution source so /console can display "/console override".
+        // The cast is needed because
         // resolveConfigBool's union doesn't yet include "admin-override".
         (allowAnonymousResolution as unknown as { source: string }).source = "admin-override";
       }
@@ -1818,15 +1842,15 @@ export function webTransport(opts: WebTransportOptions): Augment {
             return handleCorsPreFlight();
           }
 
-          // G36 — /admin route. Opt-out via adminRoute: false makes the route
-          // look like a 404 (no signal that admin exists when disabled).
+          // G36 — /console route. Opt-out via adminRoute: false makes the route
+          // look like a 404 (no signal that console exists when disabled).
           // Exact-match on "/console" + scoped prefix on "/console/action/" — NOT
           // startsWith("/console") which would also match /administrative and
           // leak the opt-out setting (M3 fix).
           const adminEnabled = opts.adminRoute !== false;
-          // SPA expansion — accept the bare `/admin`, the action POST surface,
-          // and any client-side route under `/admin/<path>`. Using the literal
-          // `/admin/` prefix (note trailing slash) keeps siblings like
+          // SPA expansion — accept the bare `/console`, the action POST surface,
+          // and any client-side route under `/console/<path>`. Using the literal
+          // `/console/` prefix (note trailing slash) keeps siblings like
           // `/administrative` from being captured (M3 fix preserved).
           const isAdminPath = url.pathname === "/console" || url.pathname.startsWith("/console/");
           if (adminEnabled && isAdminPath) {
@@ -1844,8 +1868,9 @@ export function webTransport(opts: WebTransportOptions): Augment {
             }
 
             // M4 fix — rate-limit BEFORE handling. Per-IP combined budget
-            // across the entire /admin* surface: 60 req/min via synthetic
-            // route-key "admin". Defeats brute-force against HTTP Basic.
+            // across the entire /console* surface: 60 req/min via synthetic
+            // route-key "admin" for compatibility. Defeats brute-force against
+            // HTTP Basic.
             const adminIp = getCallerIp(req, server, trustedProxies, xffOnUntrusted);
             const adminRl = checkRouteRateLimit("admin", adminIp, 60);
             if (!adminRl.allowed) {

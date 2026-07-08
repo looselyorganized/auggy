@@ -334,7 +334,7 @@ ${renderActions([
             ["Conversation", "POST /agent/run"],
             ["App routes", "Custom augment routes"],
             ["Discovery", "/.well-known/agent-card.json"],
-            ["Auth", "Bearer token required"],
+            ["Auth", "Configured by creator"],
           ])}
         </aside>
       </section>
@@ -350,7 +350,7 @@ ${renderPanel({
 })}
 ${renderPanel({
   title: "Conversation request shape",
-  body: `          <p>This is the AG-UI chat path, not the required path for every app request. Replace the token with credentials from the agent creator.</p>
+  body: `          <p>This is the AG-UI chat path, not the required path for every app request. The bearer header below is the creator-authorized form; some agents also accept visitor tokens, external auth assertions, or anonymous access depending on configuration.</p>
           <pre>POST /agent/run
 Authorization: Bearer &lt;token&gt;
 Content-Type: application/json

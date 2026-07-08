@@ -1,7 +1,7 @@
 import type { AdminInfoBlock, AugmentCategory, TransportKernel } from "../../types";
 
 /**
- * Minimal augment shape rendered in the Augments tab's "every augment" list.
+ * Minimal augment shape rendered in the console's augment summary payload.
  * Independent of `AdminInfoBlock` — every mounted augment shows up here, even
  * ones that don't ship operator-facing settings. The SPA cross-references
  * `name` against `blocks[].augmentName` to decide whether to render an
@@ -17,7 +17,7 @@ export interface AugmentSummary {
   /**
    * Operator-facing category. Falls back to `"capabilities"` when the augment
    * has not declared one — keeps third-party / older augments visible in the
-   * Augments tab instead of dropping them into an "uncategorized" bin.
+   * console summary instead of dropping them into an "uncategorized" bin.
    */
   category: AugmentCategory;
   capabilities: string[];
@@ -64,10 +64,10 @@ export function collectAugmentSummaries(kernel: TransportKernel): AugmentSummary
 }
 
 /**
- * Iterate registered augments and collect their AdminInfoBlocks for /admin
- * rendering. Augments without adminInfo are skipped. Augments whose adminInfo
- * throws are replaced with a status-error block — one broken augment can't
- * take down the whole dashboard.
+ * Iterate registered augments and collect their AdminInfoBlocks for dashboard
+ * JSON and action registration. Augments without adminInfo are skipped.
+ * Augments whose adminInfo throws are replaced with a status-error block —
+ * one broken augment can't take down the whole dashboard.
  */
 export async function collectAdminInfoBlocks(kernel: TransportKernel): Promise<AdminInfoBlock[]> {
   const augments = kernel.getAugments();

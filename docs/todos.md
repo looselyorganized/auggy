@@ -19,8 +19,6 @@ release notes, not here)*
 
 - [ ] **[CLI]** `auggy create` from wrong directory (e.g. a sibling project's checkout) scaffolds `<wrong-dir>/<name>/` without warning. Should detect or ask "create here?".
 - [ ] **[CLI]** Env var error messages list missing vars but don't say "add these to your .env" or show the file path.
-- [ ] **[console]** Finish the remaining stale/admin-era console cleanup after the old React workbench tabs were removed: rename visible "Admin" leftovers, clean backend comments/types for identity/skills/credentials/augments APIs that are no longer top-level tabs, and make Integrations reflect the current app-backend surface (custom routes, route manifests/OpenAPI/generated clients, CORS, auth posture, visitor tokens, external auth) instead of mostly `/agent/run` plus `publicIntegration`. (context: 2026-07-08 audit of `admin/src`, `admin/dist`, `src/transports/admin`, `docs/06-transports.md`, and `docs/21-console.md`)
-
 ## Polish
 
 - [ ] **[manifest]** Retry-at-boot message says "running without a loaded manifest" — should also say "lazy retry on first manifest_fetch" so operator doesn't restart unnecessarily.

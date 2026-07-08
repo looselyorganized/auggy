@@ -30,6 +30,8 @@ const textInput: AdminActionInput = {
   type: "text",
   required: false,
 };
+type KernelRoutes = ReturnType<TransportKernel["getAugmentRoutes"]>;
+type TestCollectedRoute = KernelRoutes[number] & { augmentName: string };
 
 describe("admin-coerce", () => {
   it("coerces number string to typed string", () => {
@@ -70,9 +72,12 @@ describe("admin-coerce", () => {
 });
 
 async function makeCtx(
-  overrides: Partial<AdminRouteContext> & { augments?: Augment[] } = {},
+  overrides: Partial<AdminRouteContext> & {
+    augments?: Augment[];
+    routes?: readonly TestCollectedRoute[];
+  } = {},
 ): Promise<AdminRouteContext> {
-  const { augments = [], ...rest } = overrides;
+  const { augments = [], routes = [], ...rest } = overrides;
   const card: AgentCard = {
     provider: { name: "zip" },
     capabilities: {
@@ -89,7 +94,7 @@ async function makeCtx(
     handleInbound: async () => ({}) as unknown as TurnResult,
     onOutbound: () => {},
     getAgentCard: () => card,
-    getAugmentRoutes: () => [],
+    getAugmentRoutes: () => routes as KernelRoutes,
     getAugments: () => augments,
   };
   const actionRegistry: AdminActionRegistry = await buildAdminActionRegistry(augments);
@@ -248,6 +253,19 @@ describe("handleAdminRoute — auth", () => {
     const body = (await res.json()) as {
       card: { provider: { name: string } };
       auggyVersion?: string;
+      routes: {
+        summary: {
+          totalRoutes: number;
+          publicRoutes: number;
+          privateRoutes: number;
+          publicRoutePaths: string[];
+        };
+        entries: Array<{ method: string; path: string; auth: string; public: boolean }>;
+      };
+      web: {
+        allowAnonymous: { value: boolean | null };
+        publicIntegration: { value: boolean | null };
+      };
       blocks: unknown[];
       csrfTokens: unknown[];
     };
@@ -255,6 +273,88 @@ describe("handleAdminRoute — auth", () => {
     expect(body.auggyVersion).toBe("0.5.0");
     expect(Array.isArray(body.blocks)).toBe(true);
     expect(Array.isArray(body.csrfTokens)).toBe(true);
+    expect(body.routes.summary).toEqual({
+      totalRoutes: 0,
+      publicRoutes: 0,
+      privateRoutes: 0,
+      publicRoutePaths: [],
+    });
+    expect(body.routes.entries).toEqual([]);
+    expect(body.web.allowAnonymous.value).toBeNull();
+    expect(body.web.publicIntegration.value).toBeNull();
+  });
+
+  it("GET /console/api/dashboard includes live route manifest entries", async () => {
+    const req = new Request("http://127.0.0.1:8080/console/api/dashboard", {
+      headers: { authorization: basicHeader("test-bearer") },
+    });
+    const res = await handleAdminRoute(
+      req,
+      await makeCtx({
+        routes: [
+          {
+            method: "GET",
+            path: "/orders/:id",
+            auth: "visitor.optional",
+            augmentName: "orders",
+            rateLimit: { maxPerMinute: 30 },
+            handler: async () => new Response(null),
+          },
+          {
+            method: "POST",
+            path: "/admin-task",
+            auth: "bearer",
+            augmentName: "ops",
+            handler: async () => new Response(null),
+          },
+        ],
+      }),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      routes: {
+        summary: {
+          totalRoutes: number;
+          publicRoutes: number;
+          privateRoutes: number;
+          publicRoutePaths: string[];
+        };
+        entries: Array<{
+          method: string;
+          path: string;
+          augmentName: string;
+          auth: string;
+          params: string[];
+          public: boolean;
+          security: string;
+          rateLimit?: { maxPerMinute: number };
+        }>;
+      };
+    };
+    expect(body.routes.summary).toEqual({
+      totalRoutes: 2,
+      publicRoutes: 1,
+      privateRoutes: 1,
+      publicRoutePaths: ["GET /orders/:id"],
+    });
+    expect(body.routes.entries[0]).toMatchObject({
+      method: "GET",
+      path: "/orders/:id",
+      augmentName: "orders",
+      auth: "visitor.optional",
+      params: ["id"],
+      public: true,
+      security: "public",
+      rateLimit: { maxPerMinute: 30 },
+    });
+    expect(body.routes.entries[1]).toMatchObject({
+      method: "POST",
+      path: "/admin-task",
+      augmentName: "ops",
+      auth: "bearer",
+      public: false,
+      security: "private",
+    });
   });
 
   it("GET /console/api/dashboard includes agent.yaml identity and engine metadata", async () => {
@@ -296,8 +396,8 @@ describe("handleAdminRoute — auth", () => {
     });
   });
 
-  it("GET /admin from non-loopback over http → 426", async () => {
-    const req = new Request("http://my-agent.fly.dev/admin");
+  it("GET /console from non-loopback over http → 426", async () => {
+    const req = new Request("http://my-agent.fly.dev/console");
     const res = await handleAdminRoute(req, await makeCtx({ callerIp: "10.0.0.5" }));
     expect(res.status).toBe(426);
     expect(res.headers.get("upgrade")).toBe("TLS/1.2");

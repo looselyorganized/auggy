@@ -31,6 +31,20 @@ interface AdminBlock {
 }
 interface DashboardJson {
   card: { provider: { name: string } };
+  web: {
+    allowAnonymous: { value: boolean | null; source?: string };
+    publicIntegration: { value: boolean | null; source?: string };
+    publicFrontendUrl?: string;
+    corsOrigins: string[];
+    visitorTokensEnabled: boolean | null;
+    externalAuthEnabled: boolean | null;
+    externalAuthHeader?: string;
+    agentAccessEntries?: string;
+  };
+  routes: {
+    summary: { totalRoutes: number; publicRoutes: number; privateRoutes: number };
+    entries: unknown[];
+  };
   blocks: AdminBlock[];
   csrfTokens: { actionId: string; rowKey?: string; token: string }[];
 }
@@ -69,6 +83,15 @@ describe("webTransport adminInfo — posture row (G36 phase 3)", () => {
       expect(data.csrfTokens.some((t) => t.actionId === "posture-public-integration-set")).toBe(
         true,
       );
+      expect(data.web.allowAnonymous.value).toBe(false);
+      expect(data.web.publicIntegration.value).toBe(false);
+      expect(data.web.corsOrigins).toEqual([]);
+      expect(data.web.visitorTokensEnabled).toBe(false);
+      expect(data.web.externalAuthEnabled).toBe(false);
+      expect(data.web.externalAuthHeader).toBe("x-auggy-auth-assertion");
+      expect(data.web.agentAccessEntries).toBe("0");
+      expect(data.routes.summary.totalRoutes).toBe(0);
+      expect(data.routes.entries).toEqual([]);
     } finally {
       await agent.stop();
     }
@@ -120,6 +143,7 @@ describe("webTransport adminInfo — posture row (G36 phase 3)", () => {
         .flatMap((s) => (s as { rows: Array<{ label: string; value: string }> }).rows)
         .find((r) => r.label.toLowerCase().includes("allowanonymous"));
       expect(allowRow?.value).toBe("true");
+      expect(data.web.allowAnonymous.value).toBe(true);
     } finally {
       await agent.stop();
       rmSync(agentDir, { recursive: true, force: true });
@@ -244,6 +268,7 @@ describe("webTransport adminInfo — posture row (G36 phase 3)", () => {
         .flatMap((s) => (s as { rows: Array<{ label: string; value: string }> }).rows)
         .find((r) => r.label === "publicIntegration");
       expect(publicRow?.value).toBe("true");
+      expect(data.web.publicIntegration.value).toBe(true);
 
       const privateCsrf = await generateCsrfToken({
         bearer: "test-token",
@@ -277,6 +302,7 @@ describe("webTransport adminInfo — posture row (G36 phase 3)", () => {
         .flatMap((s) => (s as { rows: Array<{ label: string; value: string }> }).rows)
         .find((r) => r.label === "publicIntegration");
       expect(publicRow?.value).toBe("false");
+      expect(data.web.publicIntegration.value).toBe(false);
     } finally {
       await agent.stop();
       rmSync(agentDir, { recursive: true, force: true });

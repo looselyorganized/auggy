@@ -15,6 +15,8 @@ import { coerceInputs } from "./admin-coerce";
 import { collectAdminInfoBlocks, collectAugmentSummaries } from "./admin-collector";
 import { generateCsrfToken, validateCsrfToken } from "./admin-csrf";
 import { buildRequiredResponse, resolveDistDir, serveStaticFile } from "./admin-static";
+import { createRouteManifest, summarizeRouteManifest } from "../../kernel/route-manifest";
+import type { CollectedRoute } from "../../kernel/route-collector";
 import {
   collectSkillsInfo,
   createSkill,
@@ -115,6 +117,49 @@ function readPackageVersion(): string {
   }
 }
 
+function parseBooleanRow(value: string | undefined): boolean | null {
+  if (value === "true") return true;
+  if (value === "false") return false;
+  return null;
+}
+
+function parseListRow(value: string | undefined): string[] {
+  if (!value || value === "(none)" || value === "(unset)") return [];
+  return value
+    .split(",")
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
+}
+
+function readWebDashboardState(blocks: AdminInfoBlock[]) {
+  const rows =
+    blocks
+      .find((block) => block.augmentName === "web" && block.title === "Posture")
+      ?.sections.flatMap((section) => (section.kind === "keyValue" ? section.rows : [])) ?? [];
+  const row = (label: string) => rows.find((item) => item.label === label);
+  const publicFrontendUrl = row("publicFrontendUrl")?.value;
+  return {
+    allowAnonymous: {
+      value: parseBooleanRow(row("allowAnonymous")?.value),
+      source: row("allowAnonymous")?.source,
+    },
+    publicIntegration: {
+      value: parseBooleanRow(row("publicIntegration")?.value),
+      source: row("publicIntegration")?.source,
+    },
+    publicFrontendUrl:
+      publicFrontendUrl && publicFrontendUrl !== "(unset)" ? publicFrontendUrl : undefined,
+    port: row("Port")?.value,
+    trustedProxies: parseListRow(row("Trusted proxies")?.value),
+    corsOrigins: parseListRow(row("CORS origins")?.value),
+    visitorTokensEnabled: parseBooleanRow(row("Visitor tokens")?.value),
+    externalAuthEnabled: parseBooleanRow(row("External auth")?.value),
+    externalAuthHeader: row("External auth header")?.value,
+    externalAuthAudience: row("External auth audience")?.value,
+    agentAccessEntries: row("Agent access entries")?.value,
+  };
+}
+
 /**
  * Build a map of CSRF tokens, one per (actionId, rowKey?) tuple present
  * in the collected admin blocks. The SPA reads `/console/api/dashboard`
@@ -191,7 +236,7 @@ export interface AdminRouteContext {
   /**
    * Static dist directory for the admin SPA. Resolved at boot via
    * {@link resolveDistDir}; left `undefined` in tests that don't exercise
-   * the SPA path. When unset at request time, GET /admin returns the
+   * the SPA path. When unset at request time, GET /console returns the
    * "build required" notice instead.
    */
   staticDir?: string;
@@ -388,7 +433,7 @@ export async function handleAdminRoute(req: Request, ctx: AdminRouteContext): Pr
     );
   }
 
-  // GET /admin and the SPA's client-side routes (e.g. /admin/skills) — serve
+  // GET /console and the SPA's client-side routes — serve
   // the SPA shell. /console/assets/* serves bundled JS/CSS from dist/.
   if (
     req.method === "GET" &&
@@ -496,8 +541,16 @@ async function handleDashboardJson(ctx: AdminRouteContext, agentName: string): P
   });
   const augments = collectAugmentSummaries(ctx.kernel);
   const agentMeta = readAgentMeta(ctx.agentDir);
+  const routeManifest = createRouteManifest(
+    ctx.kernel.getAugmentRoutes() as readonly CollectedRoute[],
+  );
+  const routes = {
+    summary: summarizeRouteManifest(routeManifest),
+    entries: routeManifest,
+  };
+  const web = readWebDashboardState(blocks);
 
-  // Mint a CSRF token per (skill-action, folder) tuple so the Skills tab
+  // Mint a CSRF token per (skill-action, folder) tuple so console skill APIs
   // can validate writes against the same bearer-bound HMAC scheme as the
   // admin-action buttons. The set of folders is dynamic (depends on what's
   // installed + what's available); load skills once and emit tokens for both.
@@ -565,6 +618,8 @@ async function handleDashboardJson(ctx: AdminRouteContext, agentName: string): P
       auggyVersion: AUGGY_VERSION,
       agentMeta,
       augments,
+      routes,
+      web,
       blocks,
       csrfTokens,
       skills,
@@ -583,7 +638,7 @@ async function handleDashboardJson(ctx: AdminRouteContext, agentName: string): P
 function handleStaticOrSpa(ctx: AdminRouteContext, pathname: string): Response {
   if (!ctx.staticDir) return buildRequiredResponse();
 
-  // /console/assets/* → file from dist/assets/. Anything else under /admin
+  // /console/assets/* → file from dist/assets/. Anything else under /console
   // falls back to index.html so the React Router can handle the route.
   if (pathname.startsWith("/console/assets/")) {
     const rel = pathname.slice("/console/".length); // assets/index-...js
@@ -591,7 +646,7 @@ function handleStaticOrSpa(ctx: AdminRouteContext, pathname: string): Response {
     return file ?? new Response(null, { status: 404 });
   }
 
-  // Other static files Vite emits at the root (e.g. /admin/vite.svg, source
+  // Other static files Vite emits at the root (e.g. /console/vite.svg, source
   // maps). Try the literal path first; if missing, fall through to index.html
   // so client-side routes work.
   if (pathname !== "/console" && pathname !== "/console/") {

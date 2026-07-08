@@ -72,7 +72,7 @@ export interface AgentCardLite {
 }
 
 /**
- * Operator-facing grouping for the Augments tab. Mirrors `AugmentCategory`
+ * Operator-facing grouping for augment summaries. Mirrors `AugmentCategory`
  * in `src/types.ts`.
  */
 export type AugmentCategory = "transports" | "capabilities" | "memory" | "guardrails";
@@ -95,8 +95,8 @@ export interface AgentMeta {
 
 /**
  * Summary of one mounted augment. Mirrors `AugmentSummary` in
- * `src/transports/admin/admin-collector.ts`. Used by the Augments tab to
- * list every augment — settings-bearing or not.
+ * `src/transports/admin/admin-collector.ts`. Used by the dashboard payload to
+ * list every mounted augment — settings-bearing or not.
  */
 export interface AugmentSummary {
   /** Canonical type name from the create-flow catalog (primary row label). */
@@ -139,6 +139,61 @@ export interface SkillsInfo {
   skillsDir: string | null;
 }
 
+export type RouteAuthMode =
+  | "bearer"
+  | "creator"
+  | "none"
+  | "visitor.optional"
+  | "visitor.required"
+  | "agent.required";
+
+export interface RouteManifestEntry {
+  method: "GET" | "POST";
+  path: string;
+  augmentName: string;
+  auth: RouteAuthMode;
+  params: string[];
+  public: boolean;
+  security: "public" | "private";
+  timeoutMs?: number;
+  maxBodyBytes?: number;
+  rateLimit?: { maxPerMinute: number };
+  policy?: { kind: string; provider?: string; secretEnv?: string };
+  requires?: unknown;
+  requestJsonSchema?: {
+    params?: Record<string, unknown>;
+    query?: Record<string, unknown>;
+    body?: Record<string, unknown>;
+  };
+  responseJsonSchema?: Record<string, unknown>;
+}
+
+export interface RouteManifestSummary {
+  totalRoutes: number;
+  publicRoutes: number;
+  privateRoutes: number;
+  publicRoutePaths: string[];
+}
+
+export interface RoutesInfo {
+  summary: RouteManifestSummary;
+  entries: RouteManifestEntry[];
+}
+
+export interface WebDashboardState {
+  allowAnonymous: { value: boolean | null; source?: string };
+  publicIntegration: { value: boolean | null; source?: string };
+  publicFrontendUrl?: string;
+  port?: string;
+  trustedProxies: string[];
+  corsOrigins: string[];
+  visitorTokensEnabled: boolean | null;
+  externalAuthEnabled: boolean | null;
+  externalAuthHeader?: string;
+  externalAuthAudience?: string;
+  agentAccessEntries?: string;
+}
+
 export interface DashboardData {
   card: AgentCardLite;
   /** Auggy package/runtime version from package.json. */
@@ -146,6 +201,8 @@ export interface DashboardData {
   /** Top-level identity read from agent.yaml; null when unavailable. */
   agentMeta: AgentMeta | null;
   augments: AugmentSummary[];
+  routes: RoutesInfo;
+  web: WebDashboardState;
   blocks: AdminInfoBlock[];
   csrfTokens: CsrfToken[];
   /** Skills snapshot — installed + bundled-but-not-installed. */

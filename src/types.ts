@@ -583,7 +583,7 @@ export interface TransportKernel {
    */
   getAugmentRoutes(): readonly AugmentHttpRoute[];
   /**
-   * G36 — returns the live augment list for /admin's adminInfo collection
+   * G36 — returns the live augment list for /console's adminInfo collection
    * + boot-time action-handler validation. Returns a frozen snapshot so
    * downstream iteration is safe even if an augment's adminInfo() happened
    * to mutate the array.

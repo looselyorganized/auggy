@@ -7,7 +7,7 @@ import type { DashboardData, CsrfToken } from "./types";
  * that mode rejects URLs containing user:password in the address bar.
  *
  * Chrome ALSO refuses to construct a Request from a URL that carries userinfo
- * (e.g. `http://:token@localhost:8081/admin/...`). When the operator navigates
+ * (e.g. `http://:token@localhost:8081/console/...`). When the operator navigates
  * with inline credentials to bypass the native sign-in prompt, `window.location`
  * inherits that userinfo, which then poisons every relative-URL fetch. Resolve
  * the fetch URL against a credentials-stripped clone of `window.location` so
@@ -47,7 +47,7 @@ export interface ActionPostResult {
 }
 
 /**
- * Post an admin action. The SPA asks for JSON so browsers do not hide the
+ * Post a console action. The SPA asks for JSON so browsers do not hide the
  * server's 303 form redirect behind an opaque `status: 0` response.
  */
 export async function postAction(

@@ -4,11 +4,12 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="robots" content="noindex, nofollow" />
-    <title>Auggy — Admin</title>
+    <title>Auggy — Console</title>
     <script>
       // Apply theme before paint to avoid flash. Order: localStorage → system → light.
       try {
-        const t = localStorage.getItem("auggy-admin-theme");
+        const t =
+          localStorage.getItem("auggy-theme") ?? localStorage.getItem("auggy-admin-theme");
         const dark =
           t === "dark" ||
           (t == null && window.matchMedia("(prefers-color-scheme: dark)").matches);

@@ -19,6 +19,10 @@ The dev server proxies `/console/api/*` to a local agent when one is running.
 Without an agent backend, the shell loads but live Chat/Integrations calls fail
 normally.
 
+Chat exercises the same-process `/agent/run` proxy. Integrations reads the
+dashboard payload for built-in endpoints, web posture, and the live augment
+route manifest.
+
 ## Layout
 
 ```

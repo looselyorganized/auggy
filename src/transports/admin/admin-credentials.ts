@@ -1,5 +1,5 @@
 /**
- * Server-side helpers for the `/admin` Credentials tab.
+ * Server-side helpers for the console credentials API.
  *
  * Reads, parses, and writes `<agentDir>/.env` while preserving comments and
  * blank lines. Values are masked in list responses and only revealed via an

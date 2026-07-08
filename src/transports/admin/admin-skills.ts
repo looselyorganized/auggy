@@ -1,12 +1,12 @@
 /**
- * Server-side helpers for the `/admin` Skills tab.
+ * Server-side helpers for the console skills API.
  *
  * Skills live in two places:
  *   - `<agentDir>/skills/<folder>/SKILL.md` — installed (operator-editable)
  *   - `src/augments/<folder>/skill/SKILL.md` — bundled (read-only template
  *     shipped with the augment)
  *
- * The Skills tab needs to:
+ * Console skill endpoints need to:
  *   1. List every installed skill (with frontmatter + status).
  *   2. List every bundled skill that hasn't been installed yet ("available").
  *   3. Edit / remove / reset / install — all writing under `<agentDir>/skills/`.

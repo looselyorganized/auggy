@@ -90,6 +90,14 @@ export function ChatTab() {
     }
   }, [hasVisitorToken, previewMode]);
 
+  const anonymousAllowed = data?.web?.allowAnonymous.value !== false;
+
+  useEffect(() => {
+    if (!anonymousAllowed && previewMode === "anonymous") {
+      setPreviewMode("creator");
+    }
+  }, [anonymousAllowed, previewMode]);
+
   useEffect(() => {
     if (wasStreamingRef.current && !streaming) {
       requestAnimationFrame(() => inputRef.current?.focus({ preventScroll: true }));
@@ -245,6 +253,7 @@ export function ChatTab() {
 
   const handlePreviewModeChange = (mode: ChatPreviewMode) => {
     if (streaming || mode === previewMode) return;
+    if (mode === "anonymous" && !anonymousAllowed) return;
     if (mode === "visitor" && !hasVisitorToken) return;
     setPreviewMode(mode);
     setMessages([]);
@@ -344,7 +353,10 @@ export function ChatTab() {
                 </span>
                 <div className="flex shrink-0 items-center rounded-md border bg-background/80 p-0.5">
                   {(["creator", "anonymous", "visitor"] as const).map((mode) => {
-                    const disabled = streaming || (mode === "visitor" && !hasVisitorToken);
+                    const disabled =
+                      streaming ||
+                      (mode === "anonymous" && !anonymousAllowed) ||
+                      (mode === "visitor" && !hasVisitorToken);
                     return (
                       <Button
                         key={mode}
@@ -355,7 +367,9 @@ export function ChatTab() {
                         disabled={disabled}
                         className="h-6 rounded-sm px-2 text-[11px]"
                         title={
-                          mode === "visitor" && !hasVisitorToken
+                          mode === "anonymous" && !anonymousAllowed
+                            ? "Anonymous chat is disabled for this agent"
+                            : mode === "visitor" && !hasVisitorToken
                             ? "Verify a visitor first"
                             : `Preview as ${CHAT_PREVIEW_MODE_LABELS[mode]}`
                         }

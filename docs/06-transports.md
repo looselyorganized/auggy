@@ -776,8 +776,10 @@ CIDR ranges are not yet supported (v1 keeps it simple); list the exact IPs.
 
 The built-in `/console` route gives the creator a chat-first browser surface
 for one running agent. `/console` redirects to `/console/chat`; the visible v1
-UI is chat plus a compact Details dialog for agent identity, URLs, engine, and
-diagnostics. See [`docs/21-console.md`](./21-console.md).
+UI is Chat plus Integrations, with a compact Details dialog for agent identity,
+URLs, engine, and diagnostics. Integrations shows the built-in endpoints, web
+posture, and live augment route manifest. See
+[`docs/21-console.md`](./21-console.md).
 
 The `adminInfo()` composition API still backs the dashboard JSON payload,
 Integrations posture actions, and augment-owned action dispatch. Older React
@@ -790,7 +792,8 @@ endpoints are intentionally not promoted as top-level `0.5` console tabs.
 |---|---|---|
 | `GET` | `/console` | SPA shell; redirects client-side to `/console/chat`. |
 | `GET` | `/console/chat` | Chat surface. |
-| `GET` | `/console/api/dashboard` | Agent card, agent metadata, augment summaries, CSRF tokens, and admin blocks for future developer tools. |
+| `GET` | `/console/integrations` | Endpoint, posture, and route-manifest surface. |
+| `GET` | `/console/api/dashboard` | Agent card, agent metadata, augment summaries, web posture, live route manifest, CSRF tokens, skills snapshot, and admin blocks. |
 | `POST` | `/console/api/chat` | CSRF-protected chat proxy to `/agent/run`. |
 | `POST` | `/console/action/<id>` | Augment-level action dispatch. CSRF-protected. |
 | `POST` | `/console/action/<id>/row/<rowKey>` | Row-scoped action dispatch. CSRF-protected. |
@@ -883,6 +886,7 @@ Runtime-mutable knobs persist across restart via `<agentDir>/admin-overrides.jso
 | Knob | Owning augment | Override action | Reset action |
 |---|---|---|---|
 | `allowAnonymous` | `webTransport` | `posture-flip` | `posture-reset` |
+| `publicIntegration` | `webTransport` | `posture-public-integration-set` | n/a |
 | `dailyBudgetUsd` | `budgets` | `budget-cap-adjust` | `budget-cap-reset` |
 | `globalMaxPerHour` | `notify` | `notify-cap-adjust` | `notify-cap-reset` |
 
@@ -926,8 +930,8 @@ ssh -L 8080:127.0.0.1:8080 my-host
 
 ### What's not in v1
 
-- **Config/admin tabs** — deferred until adopter signal proves they belong in the browser.
-- **Pagination-heavy inspectors** — memory, visitors, traces, and manifest browsers are post-v1.
+- **Config/workbench tabs** — deferred until adopter signal proves they belong in the browser.
+- **Pagination-heavy inspectors** — memory, visitors, traces, and full manifest/schema browsers are post-v1.
 - **Multiple operators** — single bearer = single creator. Operator delegation is out of scope.
 - **Action audit file** — `console.log` only.
 
