@@ -164,17 +164,12 @@ describe("route manifest", () => {
       auth: "visitor.required",
       requires,
     });
-    expect(manifest[0]?.requires).not.toBe(requires);
-    expect(Object.isFrozen(manifest[0]?.requires)).toBe(true);
-    expect(Object.isFrozen((manifest[0]?.requires as readonly unknown[])[1])).toBe(true);
-    expect(
-      Object.isFrozen(
-        (
-          (manifest[0]?.requires as readonly { constraints?: unknown }[])[1]?.constraints as {
-            flags?: unknown;
-          }
-        ).flags,
-      ),
-    ).toBe(true);
+    const manifestRequires = manifest[0]!.requires as readonly {
+      constraints?: { flags?: unknown };
+    }[];
+    expect(manifestRequires).not.toBe(requires);
+    expect(Object.isFrozen(manifestRequires)).toBe(true);
+    expect(Object.isFrozen(manifestRequires[1])).toBe(true);
+    expect(Object.isFrozen(manifestRequires[1]!.constraints!.flags)).toBe(true);
   });
 });

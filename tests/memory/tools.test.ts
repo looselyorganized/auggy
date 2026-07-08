@@ -455,6 +455,51 @@ describe("createMemoryTools", () => {
       expect(result).toMatch(/requires turn context/i);
     });
 
+    it("explains peer memory setup when topic write has no writable namespace", async () => {
+      const registry = buildRegistry([]);
+      const { tools } = createMemoryTools(registry);
+      const writeTool = tools.find((t) => t.name === "memory_write")!;
+      const result = await writeTool.execute(
+        { topic: "preferences", content: "Sam likes blue." },
+        {
+          turnId: "t1",
+          peer: { id: "vis_1", kind: "human", trustLevel: "public", sourceAugment: "web" },
+          threadId: "th1",
+        },
+      );
+      expect(result).toContain("No writable current-peer memory provider");
+      expect(result).toContain("layeredMemory");
+      expect(result).toContain("Do not promise cross-session memory");
+      expect(result).toContain('exact "learned" label');
+    });
+
+    it("explains peer memory setup when selected provider is unavailable", async () => {
+      const registry = buildRegistry([]);
+      const { tools } = createMemoryTools(registry);
+      const writeTool = tools.find((t) => t.name === "memory_write")!;
+      const result = await writeTool.execute(
+        { provider: "crmMemory", topic: "preferences", content: "Sam likes blue." },
+        {
+          turnId: "t1",
+          peer: { id: "vis_1", kind: "human", trustLevel: "public", sourceAugment: "web" },
+          threadId: "th1",
+        },
+      );
+      expect(result).toContain('No writable memory provider named "crmMemory"');
+      expect(result).toContain("layeredMemory");
+      expect(result).toContain("not visitor facts");
+    });
+
+    it("describes current-peer memory setup in the tool description", () => {
+      const registry = buildRegistry([]);
+      const { tools } = createMemoryTools(registry);
+      const writeTool = tools.find((t) => t.name === "memory_write")!;
+      expect(writeTool.description).toContain("topic + content");
+      expect(writeTool.description).toContain("layeredMemory");
+      expect(writeTool.description).toContain('exact label "learned"');
+      expect(writeTool.description).toContain("not visitor facts");
+    });
+
     it("requires provider selection when topic write has multiple writable namespaces", async () => {
       const peerDerivedDefaults: MemoryDefaults = { ...defaults, origin: "peer-derived" };
       const providers: Augment[] = [

@@ -12,7 +12,7 @@ An Auggy agent is a normal project folder wherever the operator creates it:
 ├── .auggy/models.lock.json # model metadata snapshot from create/refresh
 ├── .auggy-cloud.json       # cloud-deploy record (only present when deployed)
 ├── identity.md             # who the agent is — operator-authored rules + voice
-├── learned.md              # mutable fileMemory store for learned behavior
+├── learned-behaviors.md    # mutable fileMemory store for learned behavior
 ├── .env                    # secrets (gitignored)
 ├── .env.example            # required secret names, no values
 ├── package.json            # agent-local runtime and augment dependencies
@@ -35,7 +35,7 @@ to stay in sync with the filesystem.
 
 - `agent.yaml` uses the top-level `identity: ./identity.md` shorthand; the runtime loads it through fileMemory with `placement: system`, `origin: operator`, and `mutable: false`. `augments:` lists enabled augment ids in boot order. Per-augment config lives in `augments/<id>/augment.yaml`.
 - `identity.md` is rendered from `src/scaffold-templates/identity.md` and ships with the agent's stable identity, voice, and baked-in security rules. It does **not** contain the skill manifest.
-- `learned.md` is the scaffolded mutable `fileMemory` store. It is for learned behavior and self-notes, not operator identity or authorization facts.
+- `learned-behaviors.md` is the scaffolded mutable `fileMemory` store. It is for creator-approved, agent-global operating guidance and self-notes, not operator identity, authorization facts, or visitor-specific memory. Legacy agents that still have `learned.md` continue to load it.
 - `skills/<augment>/` directories hold byte-for-byte copies of each augment's bundled `src/augments/<augment>/skill/` folder — copied automatically at `auggy create`/`auggy augment add` time. The runtime `skills` augment emits the model-facing skill manifest from these files. `auggy skill add <augment>` is a repair/update command for missing, deleted, or intentionally refreshed bundled skills. The boot-time validator warns at startup if a tool-providing augment has no skill folder mounted.
 - `data/` is the durable runtime data mount. Core create uses `data/workspace`; optional augments such as `layeredMemory` and `budgets` place their SQLite files under `data/` when added.
 - `knowledge/` is scaffolded by `auggy augment add knowledge`; the example `sources.json`, `local/manifest`, and endpoint files give a working local config without needing to stand up an HTTP server.

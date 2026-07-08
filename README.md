@@ -136,7 +136,7 @@ An Auggy agent is a normal project directory:
 my-agent/
   agent.yaml
   identity.md
-  learned.md
+  learned-behaviors.md
   package.json
   .env
   .env.example
@@ -176,7 +176,7 @@ Fresh agents include the core chat-ready set:
 
 | Augment | Purpose |
 | --- | --- |
-| `fileMemory` | Loads `identity.md` and `learned.md` into context |
+| `fileMemory` | Loads `identity.md` and `learned-behaviors.md` into context |
 | `filesystem` | Gives the agent scoped file access |
 | `webTransport` | Serves chat, console, health, and home pages |
 | `webFetch` | Lets the agent fetch URLs and HTTP APIs |

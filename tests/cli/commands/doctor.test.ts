@@ -49,6 +49,7 @@ function writeAgent(
     providerKey?: string;
     includeVisitorAuth?: boolean;
     includeMcp?: boolean;
+    includeFileMemory?: boolean;
     customRoutes?: "valid" | "reserved" | "duplicate";
   } = {},
 ): string {
@@ -77,6 +78,7 @@ function writeAgent(
       model: provider === "openai" ? "gpt-5" : "claude-sonnet-4-6",
     },
     augments: [
+      ...(opts.includeFileMemory ? ["fileMemory"] : []),
       "webTransport",
       "webFetch",
       ...(opts.includeVisitorAuth ? ["visitorAuth"] : []),
@@ -85,6 +87,21 @@ function writeAgent(
     ],
   };
   writeFileSync(join(dir, "agent.yaml"), stringify(config));
+  if (opts.includeFileMemory) {
+    writeAugmentMetadata(dir, "fileMemory", {
+      type: "fileMemory",
+      config: {
+        label: "learned",
+        source: "./learned-behaviors.md",
+        mutable: true,
+        origin: "agent",
+        priority: "high",
+        placement: "preamble",
+        eviction: "drop",
+      },
+    });
+    writeFileSync(join(dir, "learned-behaviors.md"), "");
+  }
   writeAugmentMetadata(dir, "webTransport", {
     type: "webTransport",
     config: {
@@ -388,6 +405,38 @@ describe("runDoctor", () => {
     expect(checks.find((c) => c.name === "env VISITOR_SIGNING_KEY")?.status).toBe("pass");
     expect(formatDoctorChecks(checks)).toContain("PASS env: VISITOR_SIGNING_KEY");
     expect(hasDoctorFailures(checks)).toBe(false);
+  });
+
+  test("passes learned behavior file check for the canonical default fileMemory store", async () => {
+    writeAgent("zip", { installDeps: true, installSkill: true, includeFileMemory: true });
+
+    const checks = await runDoctor("zip", {
+      auggyDir,
+      isPortAvailable: async () => true,
+    });
+
+    const learned = checks.find((c) => c.name === "learned behavior files");
+    expect(learned?.status).toBe("pass");
+    expect(learned?.message).toBe("learned-behaviors.md");
+  });
+
+  test("warns when canonical and legacy learned behavior files both exist", async () => {
+    const dir = writeAgent("zip", {
+      installDeps: true,
+      installSkill: true,
+      includeFileMemory: true,
+    });
+    writeFileSync(join(dir, "learned.md"), "legacy note");
+
+    const checks = await runDoctor("zip", {
+      auggyDir,
+      isPortAvailable: async () => true,
+    });
+
+    const learned = checks.find((c) => c.name === "learned behavior files");
+    expect(learned?.status).toBe("warn");
+    expect(learned?.message).toContain("runtime prefers learned-behaviors.md");
+    expect(learned?.fix).toContain("Consolidate behavior notes");
   });
 
   test("lists custom augment routes and warns for public routes", async () => {

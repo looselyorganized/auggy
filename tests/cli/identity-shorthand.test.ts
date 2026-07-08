@@ -267,6 +267,7 @@ describe("identity field validation", () => {
     const parsed = parseConfig(path);
     const identityAug = parsed.augments.find((a) => a.name === "identity");
     expect(identityAug).toBeDefined();
-    expect((identityAug?.options as { source?: string }).source).toBe("./identity.md");
+    const identityOptions = identityAug!.options as { source?: string };
+    expect(identityOptions.source).toBe("./identity.md");
   });
 });

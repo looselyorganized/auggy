@@ -1386,8 +1386,11 @@ describe("notify augment agentmail transport validation", () => {
     );
     const config = parseConfig(path);
     const notifyAugment = config.augments.find((a) => a.type === "notify");
-    const destination = (notifyAugment?.options as { destinations: Array<Record<string, unknown>> })
-      .destinations[0];
+    expect(notifyAugment).toBeDefined();
+    const notifyOptions = notifyAugment!.options as {
+      destinations: Array<Record<string, unknown>>;
+    };
+    const destination = notifyOptions.destinations[0];
     expect(destination?.allowedTrustLevels).toEqual(["creator", "agent"]);
     expect(destination?.publicPolicy).toBe("escalation-only");
   });

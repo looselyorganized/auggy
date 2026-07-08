@@ -216,14 +216,32 @@ service logs.
   enabled augment order.
 - `augments/<id>/augment.yaml`: config for one enabled augment. Built-ins use
   `type: <augmentName>`. Custom augments use `type: custom` plus `source`.
-- `identity.md`: voice, purpose, boundaries, and durable behavior.
-- `learned.md`: mutable agent-origin self-notes; not authorization or creator
-  identity.
+- `identity.md`: voice, purpose, boundaries, authorization-independent identity,
+  and security rules.
+- `learned-behaviors.md`: mutable agent-global operating guidance. Use it for
+  creator-approved preferences about how the agent should behave. Do not use it
+  for visitor-specific facts.
+- `layeredMemory`: optional peer-scoped memory for facts about a specific
+  visitor, creator, or repeat peer. Add it before promising cross-session
+  personal memory.
 - `skills/`: instruction packs the agent can read on demand.
 - `knowledge/`: local and remote knowledge source config.
 - `.mcp.json`: MCP server definitions.
 - `.env`: local secrets. Never print secret values.
 - `data/`: mutable runtime data and workspace files.
+
+## Memory Decisions
+
+- User-specific facts and preferences go to `memory_write({ topic, content })`
+  only when a writable peer memory provider such as `layeredMemory` is
+  installed.
+- Creator-approved global operating preferences go to the exact `learned`
+  memory label, which is backed by `learned-behaviors.md` in new projects.
+- Identity, authority, hard safety rules, and security boundaries belong in
+  `identity.md`, not learned behavior memory.
+- If `memory_write({ topic, content })` says no writable current-peer provider
+  exists, tell the peer the memory was not saved. Do not say you will remember
+  it across sessions.
 
 ## Operating Rules
 

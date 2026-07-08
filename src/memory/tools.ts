@@ -14,6 +14,8 @@ import type { MemoryRegistry } from "./types";
 const DEFAULT_MAX_MEMORY_OPS_PER_TURN = 20;
 const EMERGENCY_CLEANUP_THRESHOLD = 1000;
 const MAX_DERIVED_TOPIC_LENGTH = 80;
+const NO_PEER_MEMORY_GUIDANCE =
+  'No writable current-peer memory provider is available. Peer-specific facts require a writable namespace provider such as layeredMemory. Do not promise cross-session memory from this request. Agent-global learned behavior belongs in the exact "learned" label and is only appropriate for creator/agent-authorized operating guidance, not visitor facts.';
 
 /**
  * Phase 1b Task 7: explicit serializer for memory_search results.
@@ -160,7 +162,7 @@ export function createMemoryTools(
   const memoryWrite = defineTool({
     name: "memory_write",
     description:
-      "Write content to memory. Prefer topic + content for current-peer memory; exact label is still supported.",
+      'Write content to memory. Use topic + content for current-peer memory; this requires a writable namespace provider such as layeredMemory. Use exact label "learned" only for creator/agent-authorized, agent-global learned behavior, not visitor facts.',
     category: "memory",
     input: z.object({
       label: z.string().optional().describe("Optional exact memory label to write to"),
@@ -202,8 +204,8 @@ export function createMemoryTools(
 
         if (candidates.length === 0) {
           return providerName
-            ? `Error: No writable memory provider named "${providerName}" is available for this peer.`
-            : "Error: No writable current-peer memory provider is available.";
+            ? `Error: No writable memory provider named "${providerName}" is available for this peer. ${NO_PEER_MEMORY_GUIDANCE}`
+            : `Error: ${NO_PEER_MEMORY_GUIDANCE}`;
         }
         if (candidates.length > 1) {
           const names = candidates.map((candidate) => candidate.augment.name).join(", ");

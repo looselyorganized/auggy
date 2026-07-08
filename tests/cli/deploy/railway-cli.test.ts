@@ -126,9 +126,9 @@ describe("railway-cli", () => {
       ]);
       expect(calls).toHaveLength(0);
       expect(fetchCalls[0]?.url).toBe("https://backboard.railway.com/graphql/v2");
-      expect((fetchCalls[0]?.init?.headers as Record<string, string>).authorization).toBe(
-        "Bearer railway-token",
-      );
+      const firstFetch = fetchCalls[0]!;
+      const headers = firstFetch.init!.headers as Record<string, string>;
+      expect(headers.authorization).toBe("Bearer railway-token");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

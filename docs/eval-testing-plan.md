@@ -23,9 +23,9 @@ These are deterministic tests — no LLM involved. They verify that the runtime 
 
 | Test | What it verifies | Method |
 |------|-----------------|--------|
-| **learned.md size after N turns** | File doesn't grow unbounded | Run 50 turns with diverse inputs, measure file size, assert under threshold (e.g., 50KB) |
-| **Context budget pressure** | Large learned.md doesn't evict identity | Fill learned.md to 10KB, run a turn, verify identity context block is still in the assembled prompt (check trace) |
-| **Eviction behavior** | Allocator drops learned.md (eviction: drop) before identity (eviction: never) | Fill context to capacity, verify identity survives and learned is evicted via trace inspection |
+| **learned-behaviors.md size after N turns** | File doesn't grow unbounded | Run 50 turns with diverse inputs, measure file size, assert under threshold (e.g., 50KB) |
+| **Context budget pressure** | Large learned-behaviors.md doesn't evict identity | Fill learned-behaviors.md to 10KB, run a turn, verify identity context block is still in the assembled prompt (check trace) |
+| **Eviction behavior** | Allocator drops learned-behaviors.md (eviction: drop) before identity (eviction: never) | Fill context to capacity, verify identity survives and learned behavior context is evicted via trace inspection |
 
 ### 1.3 Tool Mounting
 
@@ -203,7 +203,7 @@ response: {agent_response}
 | **Cost per turn** | Input + output tokens × model price | `TurnTrace.inferenceSteps` |
 | **Latency (p50, p95)** | Time from request to final response | `TurnTrace.durationMs` |
 | **Tool invocation accuracy** | Correct tool called with correct args | Eval graders |
-| **Memory write quality** | Useful vs noise ratio in learned.md | LLM judge on memory_write content |
+| **Memory write quality** | Useful vs noise ratio in learned-behaviors.md and peer memory | LLM judge on memory_write content |
 | **Tokens per turn** | Total tokens consumed | Trace |
 
 ### 3.3 Anti-metrics (explicitly NOT tracked as quality signals)
@@ -261,9 +261,9 @@ This avoids:
 Before building `auggy eval run`, test these manually against a running Zip agent:
 
 ### Memory & Learning
-- [ ] Send "My name is Alice" → Does it write to learned.md?
+- [ ] Send "My name is Alice" → With `layeredMemory` installed, does it write peer memory instead of learned behaviors?
 - [ ] Stop agent, restart → Does it remember Alice?
-- [ ] Send 20 messages → How big is learned.md? Is the content useful or noise?
+- [ ] Send 20 messages → How big is learned-behaviors.md? Is the content useful or noise?
 - [ ] Send "Forget everything" → Does it comply? (It shouldn't — identity is immutable, learned is mutable but should resist)
 
 ### Tool Use
@@ -346,7 +346,7 @@ Every feature:
   → Manual transcript review of 5-10 cases
 
 Weekly:
-  → Review learned.md growth across all agents
+  → Review learned-behaviors.md growth across all agents
   → Sample 10 production conversations for quality
   → Check cost/latency trends
 

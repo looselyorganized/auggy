@@ -13,6 +13,7 @@ import type {
 export interface FileMemoryOptions {
   label: string;
   source: string;
+  fallbackSources?: string[];
   mutable: boolean;
   origin: ContextOrigin;
   priority: ContextPriority;
@@ -31,6 +32,7 @@ export interface FileMemoryOptions {
  */
 export function fileMemory(opts: FileMemoryOptions): Augment {
   let cache: string | null = null;
+  let activeSource = opts.source;
 
   const read = async (label: string): Promise<MemoryEntry | null> => {
     if (label !== opts.label) return null;
@@ -46,19 +48,19 @@ export function fileMemory(opts: FileMemoryOptions): Augment {
           );
         }
         cache = content;
-        await writeFile(opts.source, content, "utf-8");
+        await writeFile(activeSource, content, "utf-8");
       }
     : undefined;
 
   const augmentName = `file-memory-${opts.label}`;
 
   const adminInfo = async (): Promise<AdminInfoBlock> => {
-    const exists = existsSync(opts.source);
+    const exists = existsSync(activeSource);
     let bytes = 0;
     let mtimeIso: string | null = null;
     if (exists) {
       try {
-        const st = statSync(opts.source);
+        const st = statSync(activeSource);
         bytes = st.size;
         mtimeIso = st.mtime.toISOString();
       } catch {
@@ -74,6 +76,12 @@ export function fileMemory(opts: FileMemoryOptions): Augment {
           rows: [
             { label: "Label", value: opts.label },
             { label: "Source path", value: opts.source },
+            ...(opts.fallbackSources?.length
+              ? [{ label: "Fallback source paths", value: opts.fallbackSources.join(", ") }]
+              : []),
+            ...(activeSource !== opts.source
+              ? [{ label: "Active source path", value: activeSource }]
+              : []),
             { label: "Mutable", value: opts.mutable ? "true" : "false" },
             { label: "Origin", value: opts.origin },
             { label: "Priority", value: opts.priority },
@@ -93,7 +101,7 @@ export function fileMemory(opts: FileMemoryOptions): Augment {
               ? "Loaded from disk."
               : exists
                 ? "File found but not yet loaded (onBoot has not run)."
-                : `Source file does not exist at ${opts.source}.`,
+                : `Source file does not exist at ${activeSource}.`,
         },
       ],
     };
@@ -118,7 +126,17 @@ export function fileMemory(opts: FileMemoryOptions): Augment {
       write,
     },
     onBoot: async () => {
-      cache = await readFile(opts.source, "utf-8");
+      let lastError: unknown;
+      for (const source of [opts.source, ...(opts.fallbackSources ?? [])]) {
+        try {
+          cache = await readFile(source, "utf-8");
+          activeSource = source;
+          return;
+        } catch (err) {
+          lastError = err;
+        }
+      }
+      throw lastError;
     },
     adminInfo,
   };

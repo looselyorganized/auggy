@@ -6,7 +6,7 @@
  *     agent.yaml         Config (source of truth) — uses `identity:` shorthand
  *     .env               Secrets template (gitignored)
  *     identity.md        Who the agent is — security rules + voice
- *     learned.md         What the agent has learned (mutable)
+ *     learned-behaviors.md What the agent has learned about how to operate
  *     skills/            Skill folders (read-only fs mount), one per
  *                        tool-providing augment plus starter authoring skills
  *     data/workspace/    Agent's mutable workspace
@@ -111,8 +111,8 @@ export function scaffoldAgent(opts: ScaffoldOptions): string {
     }),
   );
 
-  // Write learned.md (empty, agent appends as it learns).
-  writeFileSync(join(dir, "learned.md"), "");
+  // Write learned-behaviors.md (empty, agent appends creator-approved behavior notes).
+  writeFileSync(join(dir, "learned-behaviors.md"), "");
 
   // Write agent.yaml using the identity: shorthand (per α-5).
   writeFileSync(

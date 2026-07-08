@@ -18,7 +18,8 @@ describe("scaffoldAgent", () => {
     expect(existsSync(join(dir, "agent.yaml"))).toBe(true);
     expect(existsSync(join(dir, ".env"))).toBe(true);
     expect(existsSync(join(dir, "identity.md"))).toBe(true);
-    expect(existsSync(join(dir, "learned.md"))).toBe(true);
+    expect(existsSync(join(dir, "learned-behaviors.md"))).toBe(true);
+    expect(existsSync(join(dir, "learned.md"))).toBe(false);
     expect(existsSync(join(dir, ".gitignore"))).toBe(true);
     expect(existsSync(join(dir, "skills"))).toBe(true);
     // Per ADR-025: scaffold copies bundled skills from src/augments/<name>/skill/.

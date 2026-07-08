@@ -12,9 +12,9 @@
 > **Current-state note:** This brief preserves the problem statement that led
 > to `layeredMemory`. Some "current" gaps below have since changed: the memory
 > bus now has structural trust gates and `memory_forget`; `layeredMemory`
-> provides peer-scoped episodic memory. The scaffolded `learned.md` fileMemory
-> path remains a transitional mutable store and should not be treated as
-> identity, authorization, or peer-profile authority.
+> provides peer-scoped episodic memory. The scaffolded `learned-behaviors.md`
+> fileMemory path remains a mutable agent-global behavior store and should not
+> be treated as identity, authorization, or peer-profile authority.
 
 ## The Problem
 
@@ -37,7 +37,7 @@ There's no principled hierarchy, no promotion/demotion rules, no per-layer trust
 
 4. **No peer-scoped retrieval.** `memory_search` returns entries from all peers. Visitor A's claims about visitor B can surface in visitor B's conversation. Cross-peer contamination is a known gap from the Layer 1 adversarial review.
 
-5. **learned.md placement was a security finding.** Codex adversarial review found that mutable `learned.md` loaded as privileged preamble/system-adjacent context was a privilege-escalation vector. The durable fix is not "prompt harder"; it is a hierarchy where promotion to high-privilege placement requires explicit consolidation or operator action.
+5. **Mutable learned behavior placement was a security finding.** Codex adversarial review found that mutable learned behavior files loaded as privileged preamble/system-adjacent context were a privilege-escalation vector. The durable fix is not "prompt harder"; it is a hierarchy where promotion to high-privilege placement requires explicit consolidation or operator action.
 
 ## Research Grounding
 
@@ -47,7 +47,7 @@ There's no principled hierarchy, no promotion/demotion rules, no per-layer trust
 | LORF research-memory-architecture.md | 21-paper survey covering memory consolidation, sycophancy, human-AI interaction. Papers 8-10 on sycophancy inform why memory writes must be structurally gated. |
 | ALARA for Agents (arXiv:2603.20380) | Structural enforcement beats prompt-based for tool gating. Extends to memory: structural write gating per layer > prompt-based "don't write untrusted content to identity." |
 | Layer 1 session (2026-04-16) | Established `perTrustLevel` on `AugmentConstraints` + `[AGENT-DERIVED]` markers. Memory-bus gating was explicitly deferred pending this hierarchy design. |
-| Codex adversarial review | Mutable memory loaded as system-preamble is a privilege-escalation vector. The fix isn't "demote learned.md" — it's "design a hierarchy where promotion to high-privilege placement requires explicit consolidation." |
+| Codex adversarial review | Mutable memory loaded as system-preamble is a privilege-escalation vector. The fix isn't only "demote learned behaviors" — it's "design a hierarchy where promotion to high-privilege placement requires explicit consolidation." |
 
 ## Design Directions
 

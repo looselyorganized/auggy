@@ -96,6 +96,7 @@ export async function runDoctor(
 
   checks.push(checkPackageManifest(agentDir));
   checks.push(...checkConfigEnvReferences(configPath, agentDir));
+  checks.push(...checkLearnedBehaviorFiles(agentDir, config));
   checks.push(...checkProviderEnv(agentDir, config));
   checks.push(...checkAgentDependencies(agentDir, config));
   checks.push(...checkRuntimeSource(agentDir));
@@ -166,6 +167,65 @@ function checkModelPricing(config: ParsedConfig): DoctorCheck {
       ? "Add engine.costOverride in agent.yaml so budgets can enforce USD caps for this model."
       : "Allowed. Add engine.costOverride before enabling USD budget caps.",
   };
+}
+
+function checkLearnedBehaviorFiles(agentDir: string, config: ParsedConfig): DoctorCheck[] {
+  const canonical = join(agentDir, "learned-behaviors.md");
+  const legacy = join(agentDir, "learned.md");
+  const hasCanonical = existsSync(canonical);
+  const hasLegacy = existsSync(legacy);
+  const usesLearnedBehaviorStore = config.augments.some(
+    (aug) =>
+      aug.type === "fileMemory" &&
+      aug.options?.label === "learned" &&
+      typeof aug.options.source === "string",
+  );
+
+  if (!usesLearnedBehaviorStore && !hasCanonical && !hasLegacy) {
+    return [];
+  }
+
+  if (hasCanonical && hasLegacy) {
+    return [
+      {
+        name: "learned behavior files",
+        status: "warn",
+        message:
+          "both learned-behaviors.md and legacy learned.md exist; runtime prefers learned-behaviors.md",
+        fix: "Consolidate behavior notes into learned-behaviors.md, then remove learned.md after confirming nothing relies on it.",
+      },
+    ];
+  }
+
+  if (hasCanonical) {
+    return [
+      {
+        name: "learned behavior files",
+        status: "pass",
+        message: "learned-behaviors.md",
+      },
+    ];
+  }
+
+  if (hasLegacy) {
+    return [
+      {
+        name: "learned behavior files",
+        status: "warn",
+        message: "using legacy learned.md; new agents use learned-behaviors.md",
+        fix: "Rename or copy learned.md to learned-behaviors.md when you are ready to migrate.",
+      },
+    ];
+  }
+
+  return [
+    {
+      name: "learned behavior files",
+      status: "warn",
+      message: "no learned behavior file found",
+      fix: "Create learned-behaviors.md if this agent uses the default fileMemory learned behavior store.",
+    },
+  ];
 }
 
 function checkMcp(agentDir: string, config: ParsedConfig, cloud: boolean): DoctorCheck[] {

@@ -637,7 +637,8 @@ describe("runCreate scaffolding integration", () => {
     const dir = agentDirFor("demo-full");
     expect(existsSync(join(dir, "agent.yaml"))).toBe(true);
     expect(existsSync(join(dir, "identity.md"))).toBe(true);
-    expect(existsSync(join(dir, "learned.md"))).toBe(true);
+    expect(existsSync(join(dir, "learned-behaviors.md"))).toBe(true);
+    expect(existsSync(join(dir, "learned.md"))).toBe(false);
     expect(existsSync(join(dir, "skills"))).toBe(true);
     expect(existsSync(join(dir, "skills", "auggy", "SKILL.md"))).toBe(true);
     expect(existsSync(join(dir, "data", "workspace"))).toBe(true);
@@ -690,7 +691,7 @@ describe("runCreate scaffolding integration", () => {
     expect(learnedMemory.type).toBe("fileMemory");
     expect(learnedMemory.config).toMatchObject({
       label: "learned",
-      source: "./learned.md",
+      source: "./learned-behaviors.md",
       mutable: true,
       origin: "agent",
       placement: "preamble",

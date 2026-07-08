@@ -69,9 +69,18 @@ function resolvePath(path: string, agentDir: string): string {
 // ---------------------------------------------------------------------------
 
 function resolveFileMemory(opts: Record<string, unknown>, agentDir: string): Augment {
+  const source = opts.source as string;
+  const resolvedSource = resolvePath(source, agentDir);
+  const isLearnedBehaviorStore =
+    opts.label === "learned" && /(^|\/)learned(?:-behaviors)?\.md$/.test(resolvedSource);
+  const learnedBehaviorBase = isLearnedBehaviorStore
+    ? resolvedSource.replace(/learned(?:-behaviors)?\.md$/, "")
+    : undefined;
+
   return fileMemory({
     label: opts.label as string,
-    source: resolvePath(opts.source as string, agentDir),
+    source: learnedBehaviorBase ? `${learnedBehaviorBase}learned-behaviors.md` : resolvedSource,
+    fallbackSources: learnedBehaviorBase ? [`${learnedBehaviorBase}learned.md`] : undefined,
     mutable: opts.mutable as boolean,
     origin: opts.origin as ContextOrigin,
     priority: opts.priority as "required" | "high" | "normal" | "low" | "evictable",

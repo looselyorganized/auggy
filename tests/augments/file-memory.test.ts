@@ -108,6 +108,54 @@ describe("fileMemory", () => {
     expect(onDisk).toBe("updated content");
   });
 
+  it("loads from fallback sources when the primary source is missing", async () => {
+    const primaryPath = join(tmp.path, "learned-behaviors.md");
+    const legacyPath = join(tmp.path, "learned.md");
+    await writeFile(legacyPath, "legacy behavior", "utf-8");
+
+    const aug = fileMemory({
+      label: "learned",
+      source: primaryPath,
+      fallbackSources: [legacyPath],
+      mutable: true,
+      origin: "agent",
+      priority: "high",
+      placement: "preamble",
+      eviction: "drop",
+    });
+
+    await aug.onBoot!();
+    expect((await aug.memory!.read!("learned"))?.content).toBe("legacy behavior");
+
+    await aug.memory!.write!("learned", "updated legacy behavior");
+    expect(await readFile(legacyPath, "utf-8")).toBe("updated legacy behavior");
+  });
+
+  it("prefers the primary source over fallback sources", async () => {
+    const primaryPath = join(tmp.path, "learned-behaviors.md");
+    const legacyPath = join(tmp.path, "learned.md");
+    await writeFile(primaryPath, "canonical behavior", "utf-8");
+    await writeFile(legacyPath, "legacy behavior", "utf-8");
+
+    const aug = fileMemory({
+      label: "learned",
+      source: primaryPath,
+      fallbackSources: [legacyPath],
+      mutable: true,
+      origin: "agent",
+      priority: "high",
+      placement: "preamble",
+      eviction: "drop",
+    });
+
+    await aug.onBoot!();
+    expect((await aug.memory!.read!("learned"))?.content).toBe("canonical behavior");
+
+    await aug.memory!.write!("learned", "updated canonical behavior");
+    expect(await readFile(primaryPath, "utf-8")).toBe("updated canonical behavior");
+    expect(await readFile(legacyPath, "utf-8")).toBe("legacy behavior");
+  });
+
   it("omits write method when mutable: false", () => {
     const aug = fileMemory({
       label: "self",
