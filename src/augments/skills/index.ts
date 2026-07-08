@@ -80,7 +80,7 @@ function buildBlockContent(discovered: DiscoveredSkill[]): string {
   const lines = [
     "# Skills",
     "",
-    "Each skill is a guide stored on disk. Read a guide with `fs_read skills/<folder>/SKILL.md` before using its tools when you need usage detail.",
+    "Each skill is a guide stored on disk. Read a relevant guide with `fs_read skills/<folder>/SKILL.md` before answering questions or using tools in that skill's domain. If a relevant skill is listed here, do not say you lack documentation until you have read it or attempted to read it.",
     "",
   ];
   for (const s of discovered) {

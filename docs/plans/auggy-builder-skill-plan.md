@@ -5,7 +5,9 @@
 Create an installable agent companion skill for Claude, Codex, Cursor, and
 similar coding agents so a user can ask their agent to understand, install,
 configure, extend, validate, and deploy Auggy without the agent rediscovering
-the framework from scratch.
+the framework from scratch. The runtime-bundled `skills/auggy/SKILL.md` is the
+canonical core of this companion skill; external editor skills should extend
+that source rather than fork Auggy's mental model.
 
 The skill should make an agent effective at two jobs:
 
@@ -69,8 +71,10 @@ auggy-builder/
       app-auth-bridge/
 ```
 
-`SKILL.md` should stay short. It should tell the agent which reference file to
-read based on the user's task instead of loading every Auggy concept at once.
+`SKILL.md` should stay short. It should be generated from or reviewed against
+the bundled `src/scaffold-starter-skills/auggy/SKILL.md`, then tell the coding
+agent which reference file to read based on the user's task instead of loading
+every Auggy concept at once.
 
 ## Core Skill Rules
 
@@ -111,8 +115,8 @@ The skill should guide an agent to:
 
 - create local augment code under `augments/<name>/`
 - keep domain logic separate from transport wrappers
-- expose deterministic HTTP routes with `defineRoute`
-- expose model-callable tools with `defineTool`
+- expose deterministic HTTP routes in `httpRoutes` with `defineRoute`
+- expose model-callable tools in `tools` with `defineTool`
 - add request/response schemas
 - run focused tests when present
 - inspect route posture with `auggy routes`
@@ -294,4 +298,3 @@ This belongs in the `0.6.0` App-Builder DX candidate. A minimal MVP skill may
 ship alongside the `0.5.0` public preview as launch support, but it should not
 block npm publication unless the DX walkthrough shows that agents routinely
 misbuild Auggy without it.
-
