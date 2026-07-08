@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { z } from "zod";
 import { coerceInputs } from "@/transports/admin/admin-coerce";
 import {
   type AdminActionRegistry,
@@ -266,6 +267,7 @@ describe("handleAdminRoute — auth", () => {
         allowAnonymous: { value: boolean | null };
         publicIntegration: { value: boolean | null };
       };
+      tools: { totalTools: number; entries: unknown[] };
       blocks: unknown[];
       csrfTokens: unknown[];
     };
@@ -282,6 +284,78 @@ describe("handleAdminRoute — auth", () => {
     expect(body.routes.entries).toEqual([]);
     expect(body.web.allowAnonymous.value).toBeNull();
     expect(body.web.publicIntegration.value).toBeNull();
+    expect(body.tools).toEqual({ totalTools: 0, entries: [] });
+  });
+
+  it("GET /console/api/dashboard includes safe tool inventory metadata", async () => {
+    const aug: Augment = {
+      name: "catalog",
+      type: "catalog",
+      category: "capabilities",
+      constraints: {
+        maxToolCallsPerTurn: 2,
+        requiresHumanApproval: ["catalog_reindex"],
+        perTrustLevel: {
+          public: { neverExpose: ["catalog_reindex"] },
+        },
+      },
+      tools: [
+        {
+          name: "catalog_reindex",
+          description: "Rebuild the catalog index",
+          category: "meta",
+          input: z.object({ force: z.boolean().optional() }),
+          inputJsonSchema: { type: "object" },
+          requires: { scope: "catalog:write" },
+          execute: async () => "ok",
+        },
+      ],
+    };
+    const req = new Request("http://127.0.0.1:8080/console/api/dashboard", {
+      headers: { authorization: basicHeader("test-bearer") },
+    });
+    const res = await handleAdminRoute(req, await makeCtx({ augments: [aug] }));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      tools: {
+        totalTools: number;
+        entries: Array<{
+          name: string;
+          description: string;
+          category: string;
+          augmentName: string;
+          augmentType: string;
+          hasInputSchema: boolean;
+          requires?: unknown;
+          execute?: unknown;
+          input?: unknown;
+          constraints: {
+            maxToolCallsPerTurn?: number;
+            neverExpose: boolean;
+            requiresHumanApproval: boolean;
+            hiddenFromTrustLevels: string[];
+          };
+        }>;
+      };
+    };
+    expect(body.tools.totalTools).toBe(1);
+    expect(body.tools.entries[0]).toMatchObject({
+      name: "catalog_reindex",
+      description: "Rebuild the catalog index",
+      category: "meta",
+      augmentName: "catalog",
+      augmentType: "catalog",
+      hasInputSchema: true,
+      requires: { scope: "catalog:write" },
+      constraints: {
+        maxToolCallsPerTurn: 2,
+        neverExpose: false,
+        requiresHumanApproval: true,
+        hiddenFromTrustLevels: ["public"],
+      },
+    });
+    expect(body.tools.entries[0]?.execute).toBeUndefined();
+    expect(body.tools.entries[0]?.input).toBeUndefined();
   });
 
   it("GET /console/api/dashboard includes live route manifest entries", async () => {

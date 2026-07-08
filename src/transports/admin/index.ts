@@ -12,7 +12,11 @@ import {
   createConsoleSessionSetCookie,
 } from "./admin-auth";
 import { coerceInputs } from "./admin-coerce";
-import { collectAdminInfoBlocks, collectAugmentSummaries } from "./admin-collector";
+import {
+  collectAdminInfoBlocks,
+  collectAugmentSummaries,
+  collectToolSummaries,
+} from "./admin-collector";
 import { generateCsrfToken, validateCsrfToken } from "./admin-csrf";
 import { buildRequiredResponse, resolveDistDir, serveStaticFile } from "./admin-static";
 import { createRouteManifest, summarizeRouteManifest } from "../../kernel/route-manifest";
@@ -540,6 +544,7 @@ async function handleDashboardJson(ctx: AdminRouteContext, agentName: string): P
     return { actionId, rowKey: rowKey || undefined, token };
   });
   const augments = collectAugmentSummaries(ctx.kernel);
+  const tools = collectToolSummaries(ctx.kernel);
   const agentMeta = readAgentMeta(ctx.agentDir);
   const routeManifest = createRouteManifest(
     ctx.kernel.getAugmentRoutes() as readonly CollectedRoute[],
@@ -618,6 +623,7 @@ async function handleDashboardJson(ctx: AdminRouteContext, agentName: string): P
       auggyVersion: AUGGY_VERSION,
       agentMeta,
       augments,
+      tools,
       routes,
       web,
       blocks,

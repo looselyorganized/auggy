@@ -1,6 +1,6 @@
 import { lazy, Suspense, type ReactNode } from "react";
 import { NavLink, Navigate, Route, Routes } from "react-router-dom";
-import { MessageSquare, Plug } from "lucide-react";
+import { MessageSquare, Network, Plug } from "lucide-react";
 import { Header } from "@/components/layout/Header";
 import { ToastProvider } from "@/lib/toast";
 import { ConfirmProvider } from "@/lib/confirm";
@@ -11,6 +11,9 @@ import { cn } from "@/lib/utils";
 const ChatTab = lazy(() => import("@/routes/ChatTab").then((m) => ({ default: m.ChatTab })));
 const IntegrationsTab = lazy(() =>
   import("@/routes/IntegrationsTab").then((m) => ({ default: m.IntegrationsTab })),
+);
+const CapabilitiesTab = lazy(() =>
+  import("@/routes/CapabilitiesTab").then((m) => ({ default: m.CapabilitiesTab })),
 );
 
 export function App() {
@@ -50,6 +53,9 @@ export function App() {
                   <ConsoleNavLink to="/integrations" icon={<Plug className="size-4" />}>
                     Integrations
                   </ConsoleNavLink>
+                  <ConsoleNavLink to="/capabilities" icon={<Network className="size-4" />}>
+                    Capabilities
+                  </ConsoleNavLink>
                 </nav>
                 <ConsoleAgentSummary
                   agentName={agentName}
@@ -67,6 +73,9 @@ export function App() {
                 <ConsoleNavLink to="/integrations" icon={<Plug className="size-4" />}>
                   Integrations
                 </ConsoleNavLink>
+                <ConsoleNavLink to="/capabilities" icon={<Network className="size-4" />}>
+                  Capabilities
+                </ConsoleNavLink>
               </nav>
               <main className="min-h-0 flex-1 overflow-hidden bg-muted/30 pb-12 sm:pb-0">
                 <Suspense fallback={<ConsoleRouteFallback />}>
@@ -74,6 +83,7 @@ export function App() {
                     <Route path="/" element={<Navigate to="/chat" replace />} />
                     <Route path="/chat" element={<ChatTab />} />
                     <Route path="/integrations" element={<IntegrationsTab />} />
+                    <Route path="/capabilities" element={<CapabilitiesTab />} />
                     <Route path="*" element={<Navigate to="/chat" replace />} />
                   </Routes>
                 </Suspense>

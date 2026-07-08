@@ -16,12 +16,13 @@ cd admin && bun test                 # tests
 ```
 
 The dev server proxies `/console/api/*` to a local agent when one is running.
-Without an agent backend, the shell loads but live Chat/Integrations calls fail
-normally.
+Without an agent backend, the shell loads but live Chat/Integrations/Capabilities
+calls fail normally.
 
 Chat exercises the same-process `/agent/run` proxy. Integrations reads the
 dashboard payload for built-in endpoints, web posture, and the live augment
-route manifest.
+route manifest. Capabilities reads the same payload as a runtime map of
+augments, routes, tools, memory, auth posture, and warnings.
 
 ## Layout
 
@@ -36,7 +37,7 @@ admin/
 ├── vite.config.ts              base: '/console/', port 5174
 └── src/
     ├── main.tsx                React bootstrap, BrowserRouter basename="/console"
-    ├── App.tsx                 Shell composition: Header + Chat/Integrations routes
+    ├── App.tsx                 Shell composition: Header + console routes
     ├── index.css               Tailwind directives + shadcn CSS vars (light + .dark)
     ├── components/
     │   ├── ui/                 shadcn primitives (Button, Card, …)
@@ -44,7 +45,7 @@ admin/
     ├── lib/
     │   ├── utils.ts            cn() — clsx + tailwind-merge
     │   └── theme.ts            light/dark/system theme manager
-    └── routes/                 Live Chat and Integrations surfaces
+    └── routes/                 Live Chat, Integrations, and Capabilities surfaces
 ```
 
 ## Adding shadcn components

@@ -20,6 +20,10 @@ Primary surfaces:
   - TypeScript request example first, cURL smoke-test example second
   - Live augment HTTP route manifest summary
   - CLI commands for route JSON, OpenAPI, and generated clients
+- Capabilities runtime map
+  - Mounted augments grouped by runtime role
+  - Routes, tools, memory providers, and auth posture by owner
+  - Warnings for public/auth/schema mismatches derived from live state
 
 Secondary surface:
 
@@ -33,8 +37,8 @@ Secondary surface:
 - Augment count
 - Copy diagnostics
 
-The operator question this UI answers is: "Am I talking to the right agent, and
-is it working?"
+The operator questions this UI answers are: "Am I talking to the right agent?",
+"is it working?", and "what can this running agent do right now?"
 
 ## Deliberately Excluded
 
@@ -72,13 +76,13 @@ Single-page React app at `/console`. Stack: React 19 + Vite + Tailwind +
 Radix primitives. Source: `admin/`. Build output: `admin/dist/`.
 
 The runtime serves static assets from `admin/dist/` via
-`src/transports/admin/admin-static.ts`. The current SPA exposes only Chat and
-Integrations as top-level tabs.
+`src/transports/admin/admin-static.ts`. The current SPA exposes Chat,
+Integrations, and Capabilities as top-level sections.
 
 `/console/api/dashboard` returns the agent card, agent metadata, augment
-summaries, web posture state, the live route manifest summary/entries, CSRF
-tokens, skill snapshots, and raw admin blocks used by current or future
-developer tools.
+summaries, tool inventory, web posture state, the live route manifest
+summary/entries, CSRF tokens, skill snapshots, and raw admin blocks used by
+current or future developer tools.
 
 Older unreachable React tabs for identity, skills, credentials, budget,
 security, and augments have been removed from the preview bundle. The backend

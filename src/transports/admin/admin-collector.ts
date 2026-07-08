@@ -1,4 +1,11 @@
-import type { AdminInfoBlock, AugmentCategory, TransportKernel } from "../../types";
+import type {
+  AdminInfoBlock,
+  AugmentCategory,
+  AuthorizationRequirement,
+  ToolCategory,
+  TransportKernel,
+  TrustLevel,
+} from "../../types";
 
 /**
  * Minimal augment shape rendered in the console's augment summary payload.
@@ -61,6 +68,86 @@ export function collectAugmentSummaries(kernel: TransportKernel): AugmentSummary
         hasAdminInfo: !!aug.adminInfo,
       }))
   );
+}
+
+export interface ToolSummary {
+  name: string;
+  description: string;
+  category: ToolCategory;
+  augmentName: string;
+  augmentType: string;
+  hasInputSchema: boolean;
+  requires?: AuthorizationRequirement | readonly AuthorizationRequirement[];
+  constraints: {
+    maxToolCallsPerTurn?: number;
+    toolTimeoutMs?: number;
+    neverExpose: boolean;
+    requiresHumanApproval: boolean;
+    hiddenFromTrustLevels: TrustLevel[];
+    approvalRequiredForTrustLevels: TrustLevel[];
+  };
+}
+
+export interface ToolInventory {
+  totalTools: number;
+  entries: ToolSummary[];
+}
+
+export function collectToolSummaries(kernel: TransportKernel): ToolInventory {
+  const entries = kernel
+    .getAugments()
+    .filter((aug) => !aug.synthetic)
+    .flatMap((aug) => {
+      const constraints = aug.constraints;
+      return (aug.tools ?? []).map((tool) => ({
+        name: tool.name,
+        description: tool.description,
+        category: tool.category,
+        augmentName: aug.name,
+        augmentType: aug.type ?? aug.name,
+        hasInputSchema: tool.inputJsonSchema !== undefined,
+        ...(tool.requires ? { requires: tool.requires } : {}),
+        constraints: {
+          ...(constraints?.maxToolCallsPerTurn !== undefined
+            ? { maxToolCallsPerTurn: constraints.maxToolCallsPerTurn }
+            : {}),
+          ...(constraints?.toolTimeoutMs !== undefined
+            ? { toolTimeoutMs: constraints.toolTimeoutMs }
+            : {}),
+          neverExpose: (constraints?.neverExpose ?? []).includes(tool.name),
+          requiresHumanApproval: (constraints?.requiresHumanApproval ?? []).includes(tool.name),
+          hiddenFromTrustLevels: trustLevelsForTool(
+            constraints?.perTrustLevel,
+            tool.name,
+            "neverExpose",
+          ),
+          approvalRequiredForTrustLevels: trustLevelsForTool(
+            constraints?.perTrustLevel,
+            tool.name,
+            "requiresHumanApproval",
+          ),
+        },
+      }));
+    });
+
+  return {
+    totalTools: entries.length,
+    entries,
+  };
+}
+
+function trustLevelsForTool(
+  perTrustLevel:
+    | Record<string, { neverExpose?: string[]; requiresHumanApproval?: string[] } | undefined>
+    | null
+    | undefined,
+  toolName: string,
+  key: "neverExpose" | "requiresHumanApproval",
+): TrustLevel[] {
+  if (!perTrustLevel) return [];
+  return Object.entries(perTrustLevel)
+    .filter(([, rules]) => rules?.[key]?.includes(toolName))
+    .map(([level]) => level as TrustLevel);
 }
 
 /**

@@ -180,6 +180,32 @@ export interface RoutesInfo {
   entries: RouteManifestEntry[];
 }
 
+export type ToolCategory = "memory" | "search" | "communication" | "meta" | (string & {});
+export type TrustLevel = "creator" | "agent" | "public";
+
+export interface ToolSummary {
+  name: string;
+  description: string;
+  category: ToolCategory;
+  augmentName: string;
+  augmentType: string;
+  hasInputSchema: boolean;
+  requires?: unknown;
+  constraints: {
+    maxToolCallsPerTurn?: number;
+    toolTimeoutMs?: number;
+    neverExpose: boolean;
+    requiresHumanApproval: boolean;
+    hiddenFromTrustLevels: TrustLevel[];
+    approvalRequiredForTrustLevels: TrustLevel[];
+  };
+}
+
+export interface ToolInventoryInfo {
+  totalTools: number;
+  entries: ToolSummary[];
+}
+
 export interface WebDashboardState {
   allowAnonymous: { value: boolean | null; source?: string };
   publicIntegration: { value: boolean | null; source?: string };
@@ -201,6 +227,7 @@ export interface DashboardData {
   /** Top-level identity read from agent.yaml; null when unavailable. */
   agentMeta: AgentMeta | null;
   augments: AugmentSummary[];
+  tools: ToolInventoryInfo;
   routes: RoutesInfo;
   web: WebDashboardState;
   blocks: AdminInfoBlock[];

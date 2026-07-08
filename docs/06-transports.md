@@ -781,9 +781,11 @@ CIDR ranges are not yet supported (v1 keeps it simple); list the exact IPs.
 
 The built-in `/console` route gives the creator a chat-first browser surface
 for one running agent. `/console` redirects to `/console/chat`; the visible v1
-UI is Chat plus Integrations, with a compact Details dialog for agent identity,
-URLs, engine, and diagnostics. Integrations shows the built-in endpoints, web
-posture, and live augment route manifest. See
+UI is Chat plus Integrations and Capabilities, with a compact Details dialog
+for agent identity, URLs, engine, and diagnostics. Integrations shows the
+built-in endpoints, web posture, and live augment route manifest. Capabilities
+maps mounted augments to routes, tools, memory providers, auth posture, and
+runtime warnings. See
 [`docs/21-console.md`](./21-console.md).
 
 The `adminInfo()` composition API still backs the dashboard JSON payload,
@@ -798,7 +800,8 @@ endpoints are intentionally not promoted as top-level `0.5` console tabs.
 | `GET` | `/console` | SPA shell; redirects client-side to `/console/chat`. |
 | `GET` | `/console/chat` | Chat surface. |
 | `GET` | `/console/integrations` | Endpoint, posture, and route-manifest surface. |
-| `GET` | `/console/api/dashboard` | Agent card, agent metadata, augment summaries, web posture, live route manifest, CSRF tokens, skills snapshot, and admin blocks. |
+| `GET` | `/console/capabilities` | Runtime map of augments, routes, tools, memory, auth posture, and warnings. |
+| `GET` | `/console/api/dashboard` | Agent card, agent metadata, augment summaries, tool inventory, web posture, live route manifest, CSRF tokens, skills snapshot, and admin blocks. |
 | `POST` | `/console/api/chat` | CSRF-protected chat proxy to `/agent/run`. |
 | `POST` | `/console/action/<id>` | Augment-level action dispatch. CSRF-protected. |
 | `POST` | `/console/action/<id>/row/<rowKey>` | Row-scoped action dispatch. CSRF-protected. |
