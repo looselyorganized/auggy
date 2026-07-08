@@ -127,11 +127,38 @@ describe("scaffoldAgent", () => {
     expect(skill).toContain("  - creator");
     expect(skill).toContain("auggy augment create");
     expect(skill).toContain("auggy skill create");
-    expect(skill).toContain("httpRoutes:");
-    expect(skill).toContain('defineRoute.get("/services"');
-    expect(skill).toContain('defineRoute.post("/leads/create"');
-    expect(skill).toContain("auggy routes --client ts --target browser");
-    expect(skill).toContain("createAuggyClient");
+    expect(skill).toContain("skills/auggy/references/routes-tools-augments.md");
+    expect(skill).toContain("skills/auggy/references/generated-clients.md");
+    expect(skill).toContain("skills/auggy/references/authz-memory-trust.md");
+    expect(skill).toContain("skills/auggy/references/nextjs-integration.md");
+  });
+
+  test("starter auggy skill references exist and are copied into fresh scaffolds", () => {
+    const dir = scaffoldAgent({ name: "zip", targetDir: join(TMP, "zip-auggy-refs") });
+    const skill = readFileSync(join(dir, "skills", "auggy", "SKILL.md"), "utf-8");
+    const referencePaths = [...skill.matchAll(/skills\/auggy\/references\/[a-z0-9.-]+\.md/g)].map(
+      (match) => match[0],
+    );
+
+    expect(referencePaths.length).toBeGreaterThanOrEqual(8);
+    for (const referencePath of new Set(referencePaths)) {
+      expect(existsSync(join(dir, referencePath))).toBe(true);
+    }
+
+    const routesReference = readFileSync(
+      join(dir, "skills", "auggy", "references", "routes-tools-augments.md"),
+      "utf-8",
+    );
+    expect(routesReference).toContain("httpRoutes");
+    expect(routesReference).toContain('defineRoute.get("/services"');
+    expect(routesReference).toContain('defineRoute.post("/leads/create"');
+
+    const clientsReference = readFileSync(
+      join(dir, "skills", "auggy", "references", "generated-clients.md"),
+      "utf-8",
+    );
+    expect(clientsReference).toContain("createAuggyClient");
+    expect(clientsReference).toContain("--target browser");
   });
 
   test(".gitignore excludes .env and workspace", () => {
