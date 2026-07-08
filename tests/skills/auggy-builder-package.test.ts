@@ -31,7 +31,7 @@ describe("auggy builder skill mirrors", () => {
     ) as { files?: unknown; private?: unknown };
 
     expect(manifest.private).toBe(true);
-    expect(manifest.files).toEqual(["auggy"]);
+    expect(manifest.files).toEqual(["auggy", "evals"]);
     expect(existsSync(join(ROOT, "packages", "auggy-builder-skill", "auggy", "SKILL.md"))).toBe(
       true,
     );

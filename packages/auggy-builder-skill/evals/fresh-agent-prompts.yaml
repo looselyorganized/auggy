@@ -1,0 +1,156 @@
+suite: auggy-builder-skill-fresh-agent
+version: 1
+skillPath: ../auggy
+owners:
+  - Auggy core
+lastUpdated: 2026-07-08
+purpose: >
+  Forward-test whether a fresh coding agent can use the Auggy skill to explain,
+  scaffold, extend, wire, and troubleshoot an Auggy app-backend without prior
+  conversation context.
+
+cases:
+  - id: explain-agent-native-backend
+    category: mental-model
+    prompt: >
+      Use $auggy at packages/auggy-builder-skill/auggy to explain why an
+      agent-native backend matters for a concierge app. Be concrete about when
+      routes beat tools and when tools beat routes.
+    requiredReferences:
+      - references/mental-model.md
+      - references/routes-tools-augments.md
+    successCriteria:
+      - says routes are for deterministic software decisions
+      - says tools are for agent-mediated decisions
+      - gives a practical app backend example instead of generic agent prose
+      - does not call Auggy only a chat SDK
+
+  - id: first-run-install-and-doctor
+    category: cli
+    prompt: >
+      Use $auggy at packages/auggy-builder-skill/auggy. I want to install Auggy
+      from npm, create a new agent named concierge-demo, configure a model key,
+      run it locally, and verify it before I open console chat. Give me the
+      command sequence and what to check.
+    requiredReferences:
+      - references/cli-workflows.md
+      - references/troubleshooting.md
+    requiredScripts:
+      - scripts/detect-auggy-env.sh
+      - scripts/doctor-and-routes.sh
+    successCriteria:
+      - uses auggy create or bunx auggy create without extra tarball ceremony
+      - runs auggy doctor before auggy run
+      - says provider keys belong in .env or secret stores
+      - does not ask the user to paste secret values into chat
+
+  - id: custom-augment-route-tool
+    category: augment-development
+    prompt: >
+      Use $auggy at packages/auggy-builder-skill/auggy. Add a custom services
+      augment for a small site. It needs GET /services for the frontend, POST
+      /leads/create for intake, and matching tools the agent can use in chat.
+      Show the file shape and the route/tool pattern.
+    requiredReferences:
+      - references/routes-tools-augments.md
+    requiredAssets:
+      - assets/templates/custom-augment/index.ts.txt
+      - assets/templates/custom-augment/domain.ts.txt
+      - assets/templates/custom-augment/schemas.ts.txt
+    successCriteria:
+      - creates code under augments/<name>
+      - keeps domain logic separate from route and tool wrappers
+      - uses defineRoute and defineTool with Zod schemas
+      - recommends auggy augment test and auggy routes after changes
+
+  - id: generated-client-target-split
+    category: generated-clients
+    prompt: >
+      Use $auggy at packages/auggy-builder-skill/auggy. I have a Next.js app
+      consuming Auggy routes. Tell me exactly how to generate browser and server
+      route clients, where to import them, and why createAuggyClient is not a
+      package export yet.
+    requiredReferences:
+      - references/generated-clients.md
+      - references/nextjs-integration.md
+    requiredAssets:
+      - assets/templates/nextjs-browser-client/service-search.tsx.txt
+      - assets/templates/nextjs-server-client/admin-reindex-route.ts.txt
+    requiredScripts:
+      - scripts/generate-route-clients.sh
+    successCriteria:
+      - generates browser and server clients separately
+      - keeps browser code away from bearer tokens and agent credentials
+      - imports createAuggyClient from generated files
+      - explains the no-input route call shape
+
+  - id: app-auth-bridge-supabase
+    category: authz
+    prompt: >
+      Use $auggy at packages/auggy-builder-skill/auggy. My app already uses
+      Supabase Auth. I want logged-in users to call visitor.required Auggy
+      routes and let the agent look up only orders they are allowed to see.
+      Explain the architecture and provide starter code.
+    requiredReferences:
+      - references/authz-memory-trust.md
+      - references/nextjs-integration.md
+    requiredAssets:
+      - assets/templates/app-auth-bridge/app-policy.ts.txt
+      - assets/templates/app-auth-bridge/next-route.ts.txt
+      - assets/templates/app-auth-bridge/protected-orders-augment.ts.txt
+    successCriteria:
+      - keeps Supabase session verification on the app backend
+      - mints a short-lived Auggy auth assertion server-side
+      - passes x-auggy-auth-assertion from browser code
+      - uses explicit scopes or grants with route/tool requires
+      - keeps AUGGY_EXTERNAL_AUTH_SECRET out of browser code
+
+  - id: creator-learned-behavior-vs-peer-memory
+    category: memory-trust
+    prompt: >
+      Use $auggy at packages/auggy-builder-skill/auggy. I am the creator and I
+      want the agent to remember a global behavior: greet visitors with "HEY
+      YO" when appropriate. Explain where that should go, how it differs from
+      a visitor saying their favorite color is blue, and what to do if peer
+      memory is unavailable.
+    requiredReferences:
+      - references/authz-memory-trust.md
+      - references/mental-model.md
+    successCriteria:
+      - distinguishes creator-approved learned behavior from peer-specific memory
+      - says learned-behaviors.md is agent-global
+      - says favorite color belongs in peer memory when available
+      - does not promise persistence when no writable peer memory provider exists
+
+  - id: troubleshoot-first-run-errors
+    category: troubleshooting
+    prompt: >
+      Use $auggy at packages/auggy-builder-skill/auggy. Diagnose these first-run
+      failures: missing ANTHROPIC_API_KEY, EADDRINUSE on 8080, and a browser
+      generated client missing a protected server route.
+    requiredReferences:
+      - references/troubleshooting.md
+      - references/generated-clients.md
+      - references/cli-workflows.md
+    successCriteria:
+      - identifies missing provider key without asking for the key value
+      - investigates the process using the occupied port before killing it
+      - explains browser target route omissions as intentional posture
+      - recommends the server target for privileged routes
+
+  - id: preview-surface-boundaries
+    category: release-readiness
+    prompt: >
+      Use $auggy at packages/auggy-builder-skill/auggy. I want to build a demo
+      using bash, budgets, link, visitor auth, and generated clients for the
+      0.5 preview. Which parts are safe to lead with and which require explicit
+      preview warnings?
+    requiredReferences:
+      - references/release-0.5-surface.md
+      - references/authz-memory-trust.md
+      - references/generated-clients.md
+    successCriteria:
+      - treats generated clients and visitor/app auth as leadable 0.5 surfaces
+      - marks bash, budgets, and link as preview surfaces
+      - warns about host command execution and provider hard spend caps
+      - does not overstate 1.0 stability

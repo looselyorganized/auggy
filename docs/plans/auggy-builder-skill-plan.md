@@ -80,6 +80,8 @@ Current repo skeleton:
 
 - `src/scaffold-starter-skills/auggy/` is canonical.
 - `packages/auggy-builder-skill/auggy/` is the portable package copy.
+- `packages/auggy-builder-skill/evals/fresh-agent-prompts.yaml` holds
+  forward-test prompts and success criteria for fresh coding agents.
 - `examples/concierge/skills/auggy/` is the dogfooding example copy.
 - `tests/skills/auggy-builder-package.test.ts` is the drift guard; update the
   canonical folder first, then resync the mirrors.
