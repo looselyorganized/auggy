@@ -17,7 +17,6 @@ release notes, not here)*
 
 ## UX
 
-- [ ] **[auth/console]** Respect the verified creator principal across Auggy surfaces, not as a special "mode." When a request carries valid creator credentials, route context and model-facing trust guidance should make clear the caller is the creator/operator. Creator-authenticated requests should be able to request lower-authority learned-behavior updates, while identity/security rules remain higher-authority and require an explicit operator-edit flow.
 - [ ] **[console]** Normalize `/console/chat` `/agent/run` SSE `RUN_ERROR` events for retryable provider/model failures. The DX walkthrough surfaced raw Anthropic overload JSON (`overloaded_error`) after a tool path; the console should show a clear retryable provider status instead.
 
 ## Polish

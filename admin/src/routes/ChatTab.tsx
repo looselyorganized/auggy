@@ -12,7 +12,7 @@ const VISITOR_TOKEN_STORAGE_KEY = "auggy-visitor-token";
 type ChatPreviewMode = "creator" | "anonymous" | "visitor";
 
 const CHAT_PREVIEW_MODE_LABELS: Record<ChatPreviewMode, string> = {
-  creator: "Creator",
+  creator: "Verified creator",
   anonymous: "Anonymous",
   visitor: "Verified visitor",
 };

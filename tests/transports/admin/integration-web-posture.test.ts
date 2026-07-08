@@ -356,6 +356,7 @@ describe("webTransport adminInfo — posture row (G36 phase 3)", () => {
       port,
       auth: { type: "bearer", token: "test-token" },
       allowAnonymous: true,
+      creator: { displayName: "Mike" },
     });
     const agent = defineAgent({ name: "zip", model: "mock", augments: [aug] }, model);
     await agent.start();
@@ -383,7 +384,9 @@ describe("webTransport adminInfo — posture row (G36 phase 3)", () => {
       await resp.text();
       expect(model.calls).toHaveLength(1);
       expect(model.calls[0]!.systemBlocks[0]).toContain("(trust: creator)");
-      expect(model.calls[0]!.systemBlocks[0]).toContain("Peer: creator (human)");
+      expect(model.calls[0]!.systemBlocks[0]).toContain("Peer: Mike (human)");
+      expect(model.calls[0]!.systemBlocks[0]).toContain("Runtime role: verified creator/operator");
+      expect(model.calls[0]!.systemBlocks[0]).toContain("learned-behavior updates");
       expect(model.calls[0]!.systemBlocks[0]).not.toContain("anon-thread-creator");
     } finally {
       await agent.stop();

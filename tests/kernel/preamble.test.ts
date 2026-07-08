@@ -17,6 +17,38 @@ describe("buildPreamble", () => {
     expect(preamble).toContain("web");
   });
 
+  it("marks creator peers as verified creator/operator and permits learned behavior updates", () => {
+    const peer: PeerIdentity = {
+      id: "creator",
+      kind: "human",
+      trustLevel: "creator",
+      sourceAugment: "web",
+      displayName: "Mike",
+    };
+    const preamble = buildPreamble({ sourceAugment: "web", peer });
+    expect(preamble).toContain("Runtime identity: creator");
+    expect(preamble).toContain("Peer: Mike (human)");
+    expect(preamble).toContain("verified creator/operator");
+    expect(preamble).toContain("learned-behavior updates");
+    expect(preamble).toContain("identity, authorization, or security rules");
+    expect(preamble).toContain("explicit file/config edit flow");
+  });
+
+  it("keeps recognized visitors within public trust", () => {
+    const peer: PeerIdentity = {
+      id: "vis_123",
+      kind: "human",
+      trustLevel: "public",
+      publicSubstate: "recognized",
+      sourceAugment: "web",
+      displayName: "Sam",
+    };
+    const preamble = buildPreamble({ sourceAugment: "web", peer });
+    expect(preamble).toContain("(trust: public)");
+    expect(preamble).toContain("Public substate: recognized");
+    expect(preamble).not.toContain("verified creator/operator");
+  });
+
   it("handles null peer (scheduled trigger)", () => {
     const preamble = buildPreamble({ sourceAugment: undefined, peer: null });
     expect(preamble).toContain("No external peer");
