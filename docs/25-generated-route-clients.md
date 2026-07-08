@@ -9,6 +9,9 @@ The generated client is not a package export. `createAuggyClient` is emitted
 inside each generated file and should stay generated until the app-backend
 client shape has survived real templates and examples.
 
+Do not import `createAuggyClient` from `auggy` yet. Import it from the generated
+file in your app, such as `./auggy-client` or `./auggy-client.server`.
+
 ## Generate a Client
 
 ```bash
