@@ -23,6 +23,8 @@ The current north star:
 Supporting strategy notes:
 
 - [Agent-Native App Backends](./use-cases/agent-native-app-backends.md)
+- [Agent-Native Backend Before And After](./use-cases/agent-native-backend-before-after.md)
+- [Agent-Native Backend Market Scan](./use-cases/agent-native-backend-market-scan.md)
 - [App Backend Architecture Strategy](./use-cases/app-backend-architecture-strategy.md)
 - [App Backend Route Use Cases](./use-cases/app-backend-route-use-cases.md)
 - [Auth Strategy for Agent-Native Apps](./use-cases/auth-strategy.md)
@@ -111,6 +113,8 @@ primitives.
 
 - [Use Cases Index](./use-cases/README.md)
 - [Agent-Native App Backends](./use-cases/agent-native-app-backends.md)
+- [Agent-Native Backend Before And After](./use-cases/agent-native-backend-before-after.md)
+- [Agent-Native Backend Market Scan](./use-cases/agent-native-backend-market-scan.md)
 - [App Backend Architecture Strategy](./use-cases/app-backend-architecture-strategy.md)
 - [App Backend Route Use Cases](./use-cases/app-backend-route-use-cases.md)
 - [Auth Strategy for Agent-Native Apps](./use-cases/auth-strategy.md)
@@ -138,6 +142,9 @@ they are not the canonical roadmap.
 - [Agent Project + Package Split Plan](./plans/agent-project-package-split.md)
   — historical/package-layout plan; remaining future work should be tracked in
   [`ROADMAP.md`](./ROADMAP.md).
+- [Auggy Builder Skill Plan](./plans/auggy-builder-skill-plan.md) —
+  companion-skill plan for Claude, Codex, Cursor, and other coding agents that
+  should be able to explain, set up, extend, and validate Auggy projects.
 
 ## Operations
 

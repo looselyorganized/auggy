@@ -68,6 +68,11 @@ Release tasks:
 Goal: make the app-backend pattern obvious without requiring users to reverse
 engineer examples.
 
+- Auggy Builder Skill for Claude, Codex, Cursor, and similar coding agents:
+  an installable companion skill that teaches agents to explain Auggy, scaffold
+  projects, create augments, generate route clients, wire app auth safely, and
+  run validation. See the
+  [Auggy Builder Skill Plan](./plans/auggy-builder-skill-plan.md).
 - `auggy augment create <name> --with-route --with-tool` scaffolds a custom
   augment with a domain function, route wrapper, tool wrapper, schema, tests, and
   env validation.

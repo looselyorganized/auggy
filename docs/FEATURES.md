@@ -32,6 +32,7 @@ Status values:
 | Webhook route policies | On main | [`25`](./25-generated-route-clients.md), [`26`](./26-delegated-authorization.md) | Policy metadata plus runtime Stripe signature verification. More providers planned. |
 | Delegated authorization bridge | On main | [`26`](./26-delegated-authorization.md), [`examples/app-auth-bridge`](../examples/app-auth-bridge/README.md) | App-owned auth/RBAC signs explicit scopes/grants; Auggy enforces route/tool `requires`. |
 | Route/tool/domain app-backend pattern | On main | [`examples/concierge`](../examples/concierge/README.md), [`agent-native app backends`](./use-cases/agent-native-app-backends.md) | One domain capability can expose deterministic routes and model-callable tools. |
+| Auggy Builder Skill | Planned | [`ROADMAP`](./ROADMAP.md), [`plan`](./plans/auggy-builder-skill-plan.md) | Companion skill for Claude, Codex, Cursor, and similar agents to explain, set up, extend, and validate Auggy projects. |
 | App-builder route/tool scaffolds | Planned | [`ROADMAP`](./ROADMAP.md) | `auggy augment create --with-route --with-tool` and template work. |
 | Operator route/audit visibility | Planned | [`ROADMAP`](./ROADMAP.md) | CLI/console inspection beyond current doctor and route reports. |
 | Inbound AgentMail channel | Planned | [`22`](./22-agent-mail.md), [`ROADMAP`](./ROADMAP.md) | Outbound/setup exists; robust inbound channel is pre-1.0 candidate work. |
@@ -42,7 +43,7 @@ Status values:
 
 - **`0.4.4` published:** latest npm baseline.
 - **`0.5.0` release candidate on `main`:** app-backend route/client/authz foundation; package metadata prepared, not yet published.
-- **`0.6.x` candidate:** app-builder scaffolds and guides.
+- **`0.6.x` candidate:** app-builder scaffolds, guides, and companion-agent skill.
 - **`0.7.x` candidate:** operator visibility and audit surfaces.
 - **`0.8.x` candidate:** inbound channels and provider hardening.
 - **`0.9.x` candidate:** GA hardening.
