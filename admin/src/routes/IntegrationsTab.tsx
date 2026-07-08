@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { Check, Copy, ExternalLink } from "lucide-react";
+import { useEffect, useState, type ReactNode } from "react";
+import { Check, Code2, Copy, ExternalLink, Terminal } from "lucide-react";
 import { useActionDispatcher } from "@/components/admin/useActionDispatcher";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -9,11 +9,14 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import type { DashboardData } from "@/lib/types";
 
 const PUBLIC_INTEGRATION_SIGNAL_KEY = "auggy-public-integration";
+type RequestExampleMode = "typescript" | "curl";
 
 export function IntegrationsTab() {
   const { data, loading, error, updateData } = useDashboardContext();
   const { dispatch, busy } = useActionDispatcher();
   const [copied, setCopied] = useState<string | null>(null);
+  const [requestExampleMode, setRequestExampleMode] =
+    useState<RequestExampleMode>("typescript");
   const origin = typeof window === "undefined" ? "" : window.location.origin;
   const agentName =
     data?.agentMeta?.displayName ??
@@ -89,6 +92,27 @@ export function IntegrationsTab() {
     );
   }
 
+  const typescript = `const response = await fetch("${runUrl}", {
+  method: "POST",
+  headers: {
+    authorization: "Bearer <token>",
+    "content-type": "application/json",
+  },
+  body: JSON.stringify({
+    threadId: crypto.randomUUID(),
+    messages: [
+      { role: "user", content: "What can you help with?" },
+    ],
+  }),
+});
+
+if (!response.ok || !response.body) {
+  throw new Error(\`Agent request failed: \${response.status}\`);
+}
+
+for await (const chunk of response.body.pipeThrough(new TextDecoderStream())) {
+  console.log(chunk);
+}`;
   const curl = `curl ${runUrl} \\
   -H 'Authorization: Bearer <token>' \\
   -H 'Content-Type: application/json' \\
@@ -240,11 +264,34 @@ auggy routes ${data?.agentMeta?.name ?? "<agent>"} --client ts --target browser 
           <CardHeader>
             <CardTitle>Request example</CardTitle>
             <CardDescription>
-              Creator-authorized AG-UI conversation over the built-in run endpoint.
+              TypeScript for app wiring, cURL for terminal smoke tests.
             </CardDescription>
           </CardHeader>
-          <CardContent>
-            <CodeBlock label="curl" value={curl} copied={copied} onCopy={copy} />
+          <CardContent className="grid gap-3">
+            <div
+              className="inline-flex w-fit items-center rounded-md border bg-muted/30 p-0.5"
+              role="tablist"
+              aria-label="Request example language"
+            >
+              <ExampleModeButton
+                active={requestExampleMode === "typescript"}
+                icon={<Code2 className="size-3.5" />}
+                label="TypeScript"
+                onClick={() => setRequestExampleMode("typescript")}
+              />
+              <ExampleModeButton
+                active={requestExampleMode === "curl"}
+                icon={<Terminal className="size-3.5" />}
+                label="cURL"
+                onClick={() => setRequestExampleMode("curl")}
+              />
+            </div>
+            <CodeBlock
+              label={requestExampleMode === "typescript" ? "typescript" : "curl"}
+              value={requestExampleMode === "typescript" ? typescript : curl}
+              copied={copied}
+              onCopy={copy}
+            />
           </CardContent>
         </Card>
 
@@ -472,6 +519,33 @@ function PostureRow({ label, value }: { label: string; value: string }) {
         {value}
       </span>
     </div>
+  );
+}
+
+function ExampleModeButton({
+  active,
+  icon,
+  label,
+  onClick,
+}: {
+  active: boolean;
+  icon: ReactNode;
+  label: string;
+  onClick: () => void;
+}) {
+  return (
+    <Button
+      type="button"
+      variant={active ? "secondary" : "ghost"}
+      size="sm"
+      className="h-7 gap-1.5 rounded-sm px-2.5 text-xs"
+      aria-selected={active}
+      role="tab"
+      onClick={onClick}
+    >
+      {icon}
+      {label}
+    </Button>
   );
 }
 

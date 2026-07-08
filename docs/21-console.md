@@ -17,6 +17,7 @@ Primary surfaces:
   - Built-in web endpoints and which ones are safe to open directly
   - Public discovery posture (`publicIntegration`, `/agent`, agent card)
   - Read-only web auth posture (`allowAnonymous`, CORS, visitor tokens, external auth)
+  - TypeScript request example first, cURL smoke-test example second
   - Live augment HTTP route manifest summary
   - CLI commands for route JSON, OpenAPI, and generated clients
 
