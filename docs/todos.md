@@ -17,8 +17,6 @@ release notes, not here)*
 
 ## UX
 
-- [ ] **[console]** Normalize `/console/chat` `/agent/run` SSE `RUN_ERROR` events for retryable provider/model failures. The DX walkthrough surfaced raw Anthropic overload JSON (`overloaded_error`) after a tool path; the console should show a clear retryable provider status instead.
-
 ## Polish
 
 - [ ] **[manifest]** Retry-at-boot message says "running without a loaded manifest" — should also say "lazy retry on first manifest_fetch" so operator doesn't restart unnecessarily.

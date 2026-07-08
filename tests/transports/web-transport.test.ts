@@ -8,7 +8,7 @@ import { createIdentityAugment } from "@tests/fixtures/mock-augment";
 import { routeFixtureAugment } from "@tests/fixtures/route-fixture-augment";
 import { createVisitorToken, deriveSigningKey } from "@/transports/visitor-token";
 import { createExternalAuthAssertion } from "@/auth/external-auth";
-import type { Augment, DelegatedAuthorizationDeniedAuditEvent } from "@/types";
+import type { Augment, DelegatedAuthorizationDeniedAuditEvent, ModelClient } from "@/types";
 
 // ---------------------------------------------------------------------------
 // Structure tests
@@ -728,6 +728,62 @@ describe("webTransport HTTP server", () => {
 
       expect(seenRunStartedBeforeRelease).toBe(true);
       expect(buffered).toContain("RUN_FINISHED");
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("normalizes raw provider overload failures in AG-UI RUN_ERROR", async () => {
+    const rawOverload =
+      '{"type":"error","error":{"details":null,"type":"overloaded_error","message":"Overloaded"},"request_id":"req_011Ccq89SgGiznewkZxfZDk3"}';
+    const model: ModelClient = {
+      maxContextTokens: 100_000,
+      async complete() {
+        throw new Error(rawOverload);
+      },
+      countTokens(text: string) {
+        return Math.ceil(text.length / 4);
+      },
+    };
+    const port = 18918;
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: "test-token" },
+      allowAnonymous: true,
+    });
+    const agent = defineAgent({ name: "test", model: "mock", augments: [aug] }, model);
+    await agent.start();
+
+    try {
+      const resp = await fetch(`http://localhost:${port}/agent/run`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: "Bearer test-token",
+        },
+        body: JSON.stringify({
+          messages: [{ role: "user", content: "hi" }],
+        }),
+      });
+      expect(resp.status).toBe(200);
+      const body = await resp.text();
+      const events = body
+        .split("\n")
+        .filter((l) => l.startsWith("data: "))
+        .map((l) => JSON.parse(l.slice("data: ".length))) as Array<{
+        type: string;
+        message?: string;
+        code?: string;
+      }>;
+
+      const errEvent = events.find((e) => e.type === "RUN_ERROR");
+      expect(errEvent?.message).toBe(
+        "Model provider is overloaded. This is retryable; wait a moment and try again.",
+      );
+      expect(errEvent?.code).toBe("PROVIDER_OVERLOADED");
+      expect(JSON.stringify(errEvent)).not.toContain("request_id");
+      expect(JSON.stringify(errEvent)).not.toContain("overloaded_error");
+      expect(events.find((e) => e.type === "RUN_FINISHED")).toBeDefined();
     } finally {
       await agent.stop();
     }

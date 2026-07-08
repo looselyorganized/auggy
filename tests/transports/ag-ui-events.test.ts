@@ -80,6 +80,37 @@ describe("AG-UI event constructors", () => {
     expect(e.message).toBe("boom");
     expect(e.code).toBe("INTERNAL");
   });
+
+  it("normalizes raw provider overload JSON into a retryable RUN_ERROR", () => {
+    const raw =
+      'Error: {"type":"error","error":{"details":null,"type":"overloaded_error","message":"Overloaded"},"request_id":"req_123"}';
+    const e = runError({ message: raw, code: "INTERNAL" });
+    expect(e.message).toBe(
+      "Model provider is overloaded. This is retryable; wait a moment and try again.",
+    );
+    expect(e.code).toBe("PROVIDER_OVERLOADED");
+    expect(e.message).not.toContain("request_id");
+    expect(e.message).not.toContain("overloaded_error");
+  });
+
+  it("normalizes retryable provider availability failures", () => {
+    const e = runError({
+      message: "OpenRouter engine (x) failed: upstream provider 503 service unavailable",
+      code: "INTERNAL",
+    });
+    expect(e.message).toBe(
+      "Model provider is temporarily unavailable. This is retryable; wait a moment and try again.",
+    );
+    expect(e.code).toBe("PROVIDER_UNAVAILABLE");
+  });
+
+  it("does not hide provider spend cap failures behind retryable wording", () => {
+    const raw =
+      "Anthropic provider spend cap reached (HTTP 429). Increase the cap or wait for reset.";
+    const e = runError({ message: raw, code: "INTERNAL" });
+    expect(e.message).toBe(raw);
+    expect(e.code).toBe("INTERNAL");
+  });
 });
 
 describe("translateKernelEvent", () => {

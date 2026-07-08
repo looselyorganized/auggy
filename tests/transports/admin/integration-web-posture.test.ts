@@ -6,6 +6,7 @@ import { defineAgent } from "@/agent";
 import { generateCsrfToken } from "@/transports/admin/admin-csrf";
 import { webTransport } from "@/transports/web-transport";
 import { createMockModel } from "@tests/fixtures/mock-model";
+import type { ModelClient } from "@/types";
 
 function tempAgentDir(): string {
   return mkdtempSync(join(tmpdir(), "auggy-g36-p3-1-"));
@@ -388,6 +389,69 @@ describe("webTransport adminInfo — posture row (G36 phase 3)", () => {
       expect(model.calls[0]!.systemBlocks[0]).toContain("Runtime role: verified creator/operator");
       expect(model.calls[0]!.systemBlocks[0]).toContain("learned-behavior updates");
       expect(model.calls[0]!.systemBlocks[0]).not.toContain("anon-thread-creator");
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("POST /console/api/chat shows retryable provider overload without raw provider JSON", async () => {
+    const rawOverload =
+      '{"type":"error","error":{"details":null,"type":"overloaded_error","message":"Overloaded"},"request_id":"req_011Ccq89SgGiznewkZxfZDk3"}';
+    const model: ModelClient = {
+      maxContextTokens: 100_000,
+      async complete() {
+        throw new Error(rawOverload);
+      },
+      countTokens(text: string) {
+        return Math.ceil(text.length / 4);
+      },
+    };
+    const port = 19316;
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: "test-token" },
+      allowAnonymous: true,
+    });
+    const agent = defineAgent({ name: "zip", model: "mock", augments: [aug] }, model);
+    await agent.start();
+
+    try {
+      const csrf = await generateCsrfToken({
+        bearer: "test-token",
+        agentName: "zip",
+        actionId: "console-chat",
+      });
+      const resp = await fetch(`http://127.0.0.1:${port}/console/api/chat`, {
+        method: "POST",
+        headers: {
+          authorization: basicHeader("test-token"),
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          csrf,
+          message: "try provider",
+          threadId: "thread-overload",
+          chatMode: "creator",
+        }),
+      });
+      expect(resp.status).toBe(200);
+      const body = await resp.text();
+      const events = body
+        .split("\n")
+        .filter((l) => l.startsWith("data: "))
+        .map((l) => JSON.parse(l.slice("data: ".length))) as Array<{
+        type: string;
+        message?: string;
+        code?: string;
+      }>;
+
+      const errEvent = events.find((e) => e.type === "RUN_ERROR");
+      expect(errEvent?.message).toBe(
+        "Model provider is overloaded. This is retryable; wait a moment and try again.",
+      );
+      expect(errEvent?.code).toBe("PROVIDER_OVERLOADED");
+      expect(JSON.stringify(errEvent)).not.toContain("request_id");
+      expect(JSON.stringify(errEvent)).not.toContain("overloaded_error");
     } finally {
       await agent.stop();
     }

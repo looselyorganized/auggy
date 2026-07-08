@@ -117,7 +117,98 @@ export function runFinished(opts: {
 }
 
 export function runError(opts: { message: string; code?: string }): AGUIRunError {
-  return { type: "RUN_ERROR", ...opts };
+  return { type: "RUN_ERROR", ...normalizeRunError(opts) };
+}
+
+function normalizeRunError(opts: { message: string; code?: string }): {
+  message: string;
+  code?: string;
+} {
+  const retryable = classifyRetryableProviderError(opts.message);
+  if (retryable) return retryable;
+  return opts;
+}
+
+function classifyRetryableProviderError(message: string): { message: string; code: string } | null {
+  const lower = message.toLowerCase();
+
+  if (isProviderSpendCap(lower)) return null;
+
+  const parsed = parseEmbeddedJson(message);
+  const providerType = findStringField(parsed, "type")?.toLowerCase();
+  const providerMessage = findStringField(parsed, "message")?.toLowerCase();
+  const haystack = [lower, providerType, providerMessage].filter(Boolean).join(" ");
+
+  if (haystack.includes("overloaded_error") || /\boverloaded\b/.test(haystack)) {
+    return {
+      message: "Model provider is overloaded. This is retryable; wait a moment and try again.",
+      code: "PROVIDER_OVERLOADED",
+    };
+  }
+
+  if (
+    haystack.includes("rate_limit_error") ||
+    haystack.includes("too many requests") ||
+    /\b429\b/.test(haystack)
+  ) {
+    return {
+      message:
+        "Model provider rate limit reached. This is retryable after the provider window resets; wait a moment and try again.",
+      code: "PROVIDER_RATE_LIMITED",
+    };
+  }
+
+  if (
+    /\b(502|503|504|529)\b/.test(haystack) ||
+    haystack.includes("bad gateway") ||
+    haystack.includes("service unavailable") ||
+    haystack.includes("gateway timeout")
+  ) {
+    return {
+      message:
+        "Model provider is temporarily unavailable. This is retryable; wait a moment and try again.",
+      code: "PROVIDER_UNAVAILABLE",
+    };
+  }
+
+  return null;
+}
+
+function isProviderSpendCap(lowercaseMessage: string): boolean {
+  return (
+    lowercaseMessage.includes("provider spend cap") ||
+    /credit|spend|billing|quota|cap|plan/.test(lowercaseMessage)
+  );
+}
+
+function parseEmbeddedJson(message: string): unknown {
+  const start = message.indexOf("{");
+  if (start === -1) return null;
+  try {
+    return JSON.parse(message.slice(start));
+  } catch {
+    return null;
+  }
+}
+
+function findStringField(value: unknown, field: string): string | null {
+  if (!value || typeof value !== "object") return null;
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = findStringField(item, field);
+      if (found) return found;
+    }
+    return null;
+  }
+
+  const record = value as Record<string, unknown>;
+  if (typeof record[field] === "string") return record[field];
+
+  for (const child of Object.values(record)) {
+    const found = findStringField(child, field);
+    if (found) return found;
+  }
+  return null;
 }
 
 export function textMessageStart(opts: {
