@@ -32,6 +32,10 @@ import { createAuggyClient } from "auggy";
 Do not edit generated files manually. Regenerate after route paths, methods,
 auth modes, request schemas, response schemas, or route policies change.
 
+For copyable Next.js usage files, inspect
+`skills/auggy/assets/templates/nextjs-browser-client/` and
+`skills/auggy/assets/templates/nextjs-server-client/`.
+
 ## Target Split
 
 | Target | Includes | Omits | Credentials |

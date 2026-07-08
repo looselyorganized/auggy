@@ -54,6 +54,7 @@ Read the matching reference before answering in depth:
 | Next.js app integration | `skills/auggy/references/nextjs-integration.md` |
 | Missing keys, `EADDRINUSE`, route collisions, bad custom augment modules, deploy failures | `skills/auggy/references/troubleshooting.md` |
 | What is safe in the 0.5 preview | `skills/auggy/references/release-0.5-surface.md` |
+| Copyable starter files | `skills/auggy/assets/templates/` |
 
 If `fs_read` is unavailable, say that you cannot read the reference from this
 surface and then give concise default guidance from this skill.
@@ -155,6 +156,7 @@ auggy augment create <name>
 ```
 
 Read `skills/auggy/references/routes-tools-augments.md` before giving code.
+For starter files, inspect `skills/auggy/assets/templates/custom-augment/`.
 After route changes, recommend:
 
 ```bash
@@ -172,6 +174,8 @@ Read `skills/auggy/references/nextjs-integration.md`. Keep browser generated
 clients in browser-safe code and server generated clients in server-only code.
 Never ship creator bearer tokens, agent credentials, provider API keys, or
 external auth signing secrets to the browser.
+For starter files, inspect `skills/auggy/assets/templates/nextjs-browser-client/`
+and `skills/auggy/assets/templates/nextjs-server-client/`.
 
 ### "I already use Supabase, Clerk, Auth0, or custom auth"
 
@@ -179,6 +183,7 @@ Keep the app's auth system as the source of truth. The app backend verifies the
 session, computes explicit scopes/grants, and mints a short-lived Auggy auth
 assertion. Browser code forwards that assertion; it never sees the signing
 secret. Read `skills/auggy/references/authz-memory-trust.md`.
+For starter files, inspect `skills/auggy/assets/templates/app-auth-bridge/`.
 
 ### "I want to deploy"
 

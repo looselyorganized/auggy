@@ -22,6 +22,12 @@ agent/
 
 Keep the browser and server generated clients separate.
 
+For copyable starter files, inspect:
+
+- `skills/auggy/assets/templates/nextjs-browser-client/`
+- `skills/auggy/assets/templates/nextjs-server-client/`
+- `skills/auggy/assets/templates/app-auth-bridge/`
+
 ## Browser Components
 
 Browser components may import only the browser target:

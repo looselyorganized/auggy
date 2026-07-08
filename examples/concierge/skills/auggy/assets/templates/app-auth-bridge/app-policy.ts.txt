@@ -1,0 +1,31 @@
+import type { AuthorizationGrant, AuthorizationScope } from "auggy";
+
+export interface VerifiedAppSession {
+  provider: "supabase" | "clerk" | "custom";
+  userId: string;
+  email?: string;
+  emailVerified?: boolean;
+  orgId?: string;
+  roles: string[];
+  orderIds: string[];
+}
+
+export function deriveAuggyAuthorization(session: VerifiedAppSession): {
+  scopes: AuthorizationScope[];
+  grants: AuthorizationGrant[];
+} {
+  const scopes: AuthorizationScope[] = ["orders.read"];
+  const grants: AuthorizationGrant[] = session.orderIds.map((orderId) => ({
+    action: "orders.read",
+    resource: orderId,
+  }));
+
+  if (session.roles.includes("support")) {
+    scopes.push("refund.issue");
+    for (const orderId of session.orderIds) {
+      grants.push({ action: "refund.issue", resource: orderId });
+    }
+  }
+
+  return { scopes, grants };
+}

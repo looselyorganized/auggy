@@ -131,6 +131,7 @@ describe("scaffoldAgent", () => {
     expect(skill).toContain("skills/auggy/references/generated-clients.md");
     expect(skill).toContain("skills/auggy/references/authz-memory-trust.md");
     expect(skill).toContain("skills/auggy/references/nextjs-integration.md");
+    expect(skill).toContain("skills/auggy/assets/templates/custom-augment");
   });
 
   test("starter auggy skill references exist and are copied into fresh scaffolds", () => {
@@ -159,6 +160,34 @@ describe("scaffoldAgent", () => {
     );
     expect(clientsReference).toContain("createAuggyClient");
     expect(clientsReference).toContain("--target browser");
+  });
+
+  test("starter auggy skill templates exist and are copied into fresh scaffolds", () => {
+    const dir = scaffoldAgent({ name: "zip", targetDir: join(TMP, "zip-auggy-templates") });
+    const templatesRoot = join(dir, "skills", "auggy", "assets", "templates");
+
+    const customIndex = readFileSync(
+      join(templatesRoot, "custom-augment", "index.ts.txt"),
+      "utf-8",
+    );
+    expect(customIndex).toContain("defineAugment");
+    expect(customIndex).toContain("httpRoutes");
+    expect(customIndex).toContain('defineRoute.post("/leads/create"');
+
+    const browserClient = readFileSync(
+      join(templatesRoot, "nextjs-browser-client", "service-search.tsx.txt"),
+      "utf-8",
+    );
+    expect(browserClient).toContain("createAuggyClient");
+    expect(browserClient).toContain("authAssertion");
+    expect(browserClient).toContain("NEXT_PUBLIC_AUGGY_BASE_URL");
+
+    const authBridge = readFileSync(
+      join(templatesRoot, "app-auth-bridge", "next-route.ts.txt"),
+      "utf-8",
+    );
+    expect(authBridge).toContain("createExternalAuthAssertion");
+    expect(authBridge).toContain("AUGGY_EXTERNAL_AUTH_SECRET");
   });
 
   test(".gitignore excludes .env and workspace", () => {

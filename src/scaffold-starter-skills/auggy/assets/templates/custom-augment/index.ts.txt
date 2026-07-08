@@ -1,0 +1,59 @@
+import { defineAugment, defineRoute, defineTool, json } from "auggy";
+import { z } from "zod";
+import { saveLead, searchServices } from "./domain";
+import {
+  LeadInputSchema,
+  LeadResponseSchema,
+  ServiceQuerySchema,
+  ServiceSchema,
+} from "./schemas";
+
+export interface ServicesOptions {
+  recordsPath?: string;
+}
+
+export default function services(opts: ServicesOptions = {}) {
+  const recordsPath = opts.recordsPath ?? "./data/service-records.jsonl";
+
+  return defineAugment({
+    name: "services",
+    type: "custom",
+    capabilities: ["tools"],
+    httpRoutes: [
+      defineRoute.get("/services", {
+        auth: "none",
+        query: ServiceQuerySchema,
+        response: z.object({ services: z.array(ServiceSchema) }),
+        rateLimit: { maxPerMinute: 60 },
+        handler: ({ query }) => json({ services: searchServices(query) }),
+      }),
+      defineRoute.post("/leads/create", {
+        auth: "visitor.optional",
+        body: LeadInputSchema,
+        response: LeadResponseSchema,
+        maxBodyBytes: 8192,
+        rateLimit: { maxPerMinute: 10 },
+        handler: ({ body }) => {
+          const lead = saveLead(body, { recordsPath });
+          return json({ id: lead.id, saved: true }, 201);
+        },
+      }),
+    ],
+    tools: [
+      defineTool({
+        name: "service_search",
+        description: "Search services by visitor need or category.",
+        category: "business",
+        input: ServiceQuerySchema,
+        execute: async (input) => JSON.stringify({ services: searchServices(input) }),
+      }),
+      defineTool({
+        name: "save_lead",
+        description: "Save a lead for creator follow-up after enough detail is collected.",
+        category: "business",
+        input: LeadInputSchema,
+        execute: async (input) => JSON.stringify({ lead: saveLead(input, { recordsPath }) }),
+      }),
+    ],
+  });
+}

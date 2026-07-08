@@ -1,0 +1,29 @@
+import { defineAugment, defineRoute, defineTool, json } from "auggy";
+import { z } from "zod";
+
+export default function orders() {
+  return defineAugment({
+    name: "orders",
+    type: "custom",
+    capabilities: ["tools"],
+    httpRoutes: [
+      defineRoute.get("/orders/:orderId", {
+        auth: "visitor.required",
+        params: z.object({ orderId: z.string() }),
+        requires: { action: "orders.read", resource: { param: "orderId" } },
+        response: z.object({ orderId: z.string(), status: z.string() }),
+        handler: ({ params }) => json({ orderId: params.orderId, status: "ready" }),
+      }),
+    ],
+    tools: [
+      defineTool({
+        name: "lookup_order",
+        description: "Look up an order the recognized visitor is allowed to read.",
+        category: "commerce",
+        input: z.object({ orderId: z.string() }),
+        requires: { action: "orders.read", resource: { input: "orderId" } },
+        execute: async ({ orderId }) => JSON.stringify({ orderId, status: "ready" }),
+      }),
+    ],
+  });
+}

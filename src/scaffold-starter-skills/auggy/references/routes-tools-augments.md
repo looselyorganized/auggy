@@ -27,6 +27,9 @@ augments/<name>/
 Keep business logic in `domain.ts` or ordinary functions. Routes and tools
 should wrap that logic, not duplicate it.
 
+For copyable starter files, inspect
+`skills/auggy/assets/templates/custom-augment/`.
+
 ## Route/Tool/Domain Pattern
 
 ```ts

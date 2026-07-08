@@ -56,6 +56,9 @@ memory.
 Apps that already use Supabase Auth, Clerk, Auth0, SSO, or custom sessions
 should keep that system as the source of truth.
 
+For copyable app-backend bridge files, inspect
+`skills/auggy/assets/templates/app-auth-bridge/`.
+
 Flow:
 
 1. Browser has a normal app login.

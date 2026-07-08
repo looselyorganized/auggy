@@ -1,0 +1,47 @@
+"use client";
+
+import { useMemo, useState } from "react";
+import { createAuggyClient } from "@/src/auggy-client";
+
+export function ServiceSearch() {
+  const [need, setNeed] = useState("");
+  const [names, setNames] = useState<string[]>([]);
+
+  const api = useMemo(
+    () =>
+      createAuggyClient({
+        baseUrl: process.env.NEXT_PUBLIC_AUGGY_BASE_URL!,
+        authAssertion: async () => {
+          const res = await fetch("/api/auggy-auth-assertion", { credentials: "include" });
+          if (!res.ok) return undefined;
+          const body = (await res.json()) as { assertion?: unknown };
+          return typeof body.assertion === "string" ? body.assertion : undefined;
+        },
+      }),
+    [],
+  );
+
+  async function search() {
+    const result = need
+      ? await api.get("/services", { query: { need } })
+      : await api.get("/services");
+    if (result.ok) setNames(result.data.services.map((service) => service.name));
+  }
+
+  return (
+    <form
+      onSubmit={(event) => {
+        event.preventDefault();
+        void search();
+      }}
+    >
+      <input value={need} onChange={(event) => setNeed(event.currentTarget.value)} />
+      <button type="submit">Search</button>
+      <ul>
+        {names.map((name) => (
+          <li key={name}>{name}</li>
+        ))}
+      </ul>
+    </form>
+  );
+}
