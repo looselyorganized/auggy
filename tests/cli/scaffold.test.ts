@@ -130,6 +130,7 @@ describe("scaffoldAgent", () => {
     expect(skill).toContain("skills/auggy/references/routes-tools-augments.md");
     expect(skill).toContain("skills/auggy/references/generated-clients.md");
     expect(skill).toContain("skills/auggy/references/authz-memory-trust.md");
+    expect(skill).toContain("skills/auggy/references/app-auth-bridge-e2e.md");
     expect(skill).toContain("skills/auggy/references/nextjs-integration.md");
     expect(skill).toContain("skills/auggy/assets/templates/custom-augment");
   });
@@ -160,6 +161,14 @@ describe("scaffoldAgent", () => {
     );
     expect(clientsReference).toContain("createAuggyClient");
     expect(clientsReference).toContain("--target browser");
+
+    const appAuthReference = readFileSync(
+      join(dir, "skills", "auggy", "references", "app-auth-bridge-e2e.md"),
+      "utf-8",
+    );
+    expect(appAuthReference).toContain("authAssertion");
+    expect(appAuthReference).toContain("authorization-grant-missing");
+    expect(appAuthReference).toContain('requires: { action: "refund.issue"');
   });
 
   test("starter auggy skill templates exist and are copied into fresh scaffolds", () => {

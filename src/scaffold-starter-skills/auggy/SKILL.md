@@ -51,6 +51,7 @@ Read the matching reference before answering in depth:
 | Custom augments, `httpRoutes`, `defineRoute`, `defineTool` | `skills/auggy/references/routes-tools-augments.md` |
 | Generated browser/server route clients | `skills/auggy/references/generated-clients.md` |
 | Creator/public/agent trust, visitor auth, Supabase/Clerk/custom app auth, memory placement | `skills/auggy/references/authz-memory-trust.md` |
+| End-to-end protected app route/tool auth | `skills/auggy/references/app-auth-bridge-e2e.md` |
 | Next.js app integration | `skills/auggy/references/nextjs-integration.md` |
 | Missing keys, `EADDRINUSE`, route collisions, bad custom augment modules, deploy failures | `skills/auggy/references/troubleshooting.md` |
 | What is safe in the 0.5 preview | `skills/auggy/references/release-0.5-surface.md` |
@@ -184,6 +185,8 @@ Keep the app's auth system as the source of truth. The app backend verifies the
 session, computes explicit scopes/grants, and mints a short-lived Auggy auth
 assertion. Browser code forwards that assertion; it never sees the signing
 secret. Read `skills/auggy/references/authz-memory-trust.md`.
+For a complete route/tool walkthrough, also read
+`skills/auggy/references/app-auth-bridge-e2e.md`.
 For starter files, inspect `skills/auggy/assets/templates/app-auth-bridge/`.
 
 ### "I want to deploy"

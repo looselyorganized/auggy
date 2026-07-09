@@ -94,6 +94,7 @@ cases:
     requiredReferences:
       - references/authz-memory-trust.md
       - references/nextjs-integration.md
+      - references/app-auth-bridge-e2e.md
     requiredAssets:
       - assets/templates/app-auth-bridge/app-policy.ts.txt
       - assets/templates/app-auth-bridge/next-route.ts.txt

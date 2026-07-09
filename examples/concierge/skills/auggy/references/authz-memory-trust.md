@@ -58,6 +58,8 @@ should keep that system as the source of truth.
 
 For copyable app-backend bridge files, inspect
 `skills/auggy/assets/templates/app-auth-bridge/`.
+For a complete protected route/tool walkthrough, read
+`skills/auggy/references/app-auth-bridge-e2e.md`.
 
 Flow:
 
