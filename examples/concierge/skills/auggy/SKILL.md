@@ -1,6 +1,6 @@
 ---
 name: auggy
-description: Help the creator understand, customize, and build out this Auggy agent with identity, skills, knowledge, augments, MCP, memory, notifications, and deploy.
+description: Help the creator understand, customize, and build out this Auggy agent with identity, skills, knowledge, augments, routes, clients, auth, memory, notifications, and deploy.
 allowedTrustLevels:
   - creator
 ---
@@ -11,100 +11,102 @@ Use this skill when the creator asks what this agent is, what it can do, what
 to add next, or how to build a workflow with Auggy.
 
 This bundled skill is the canonical Auggy companion skill for the agent itself.
-The portable Claude/Codex/Cursor builder skill should reuse this mental model
-and expand it with editor-specific scripts and templates rather than fork the
-architecture.
+External Claude, Codex, Cursor, and similar coding-agent skills should reuse
+this folder instead of forking Auggy's mental model.
 
 This is creator-facing guidance. Do not expose secrets, do not edit files,
 install packages, or change deployment config unless the creator asks, and do
-not claim a capability is installed unless you can observe it from the current
-tools, mounted skills, or explicit user-provided context.
+not claim a capability is installed unless you can observe it from current
+tools, mounted skills, self-inspection, or explicit user-provided context.
 
 ## First Move
 
 For any "what can you do?" or "how do I build X?" request:
 
-1. If `auggy_self_info` is visible, call it first to inspect the sanitized
-   runtime inventory.
+1. If `auggy_self_info` is visible, call it first to inspect sanitized runtime
+   inventory.
 2. If the creator asks what to add for a goal and `auggy_self_recommend` is
-   visible, call it with the creator's goal before advising.
-3. Check what else is actually available in the current conversation: visible
-   tools, mounted skill names, and any runtime context you were given.
-4. If a relevant mounted skill is listed, read it before saying you do not have
-   documentation. For Auggy build-out questions, this `auggy` skill is the
-   starting point.
-5. If live project state is not available, say so plainly and give guidance
-   based on the default Auggy project model.
+   visible, call it before advising.
+3. Check visible tools, mounted skill names, and current runtime context.
+4. If a reference below matches the request, read it with `fs_read` before
+   giving detailed guidance.
+5. If live project state is not available, say so plainly and answer from the
+   default Auggy project model.
 6. Recommend the smallest extension point that solves the goal.
-7. Give concrete next steps only after naming the tradeoff.
+7. Give concrete commands or file paths only after naming the tradeoff.
 
-Do not pretend to inspect `agent.yaml`, `augments/*`, `.mcp.json`, or `.env`
-unless those files are available through a mounted tool or the creator pasted
-their contents. A fresh scaffold normally exposes `skills/` and
-`data/workspace/`, not the full project root.
+Do not pretend to inspect `agent.yaml`, `augments/*`, `.mcp.json`, `.env`, or
+generated clients unless those files are available through a mounted tool or
+the creator pasted their contents. A fresh scaffold normally exposes `skills/`
+and `data/workspace/`, not the full project root.
 
-## Creator-Only Self Inspection
+## Reference Map
 
-When the `auggy_self_*` tools are visible, use them instead of guessing:
+Read the matching reference before answering in depth:
 
-- `auggy_self_info`: current sanitized inventory, installed augments, mounted
-  skills, missing skill warnings, stable/preview catalog gaps, and agent
-  metadata. This does not expose secrets.
-- `auggy_self_catalog`: current built-in augment catalog with installed state.
-- `auggy_self_recommend`: goal-to-extension recommendation for common build-out
-  requests.
+| Creator asks about | Read |
+| --- | --- |
+| What Auggy is, why it matters, routes vs tools | `skills/auggy/references/mental-model.md` |
+| Install, create/init, provider keys, run, doctor, deploy | `skills/auggy/references/cli-workflows.md` |
+| Custom augments, `httpRoutes`, `defineRoute`, `defineTool` | `skills/auggy/references/routes-tools-augments.md` |
+| Generated browser/server route clients | `skills/auggy/references/generated-clients.md` |
+| Creator/public/agent trust, visitor auth, Supabase/Clerk/custom app auth, memory placement | `skills/auggy/references/authz-memory-trust.md` |
+| End-to-end protected app route/tool auth | `skills/auggy/references/app-auth-bridge-e2e.md` |
+| Next.js app integration | `skills/auggy/references/nextjs-integration.md` |
+| Missing keys, `EADDRINUSE`, route collisions, bad custom augment modules, deploy failures | `skills/auggy/references/troubleshooting.md` |
+| What is safe in the 0.5 preview | `skills/auggy/references/release-0.5-surface.md` |
+| Copyable starter files | `skills/auggy/assets/templates/` |
+| Optional shell helpers for coding agents | `skills/auggy/scripts/` |
 
-These tools are creator-only. If they are not visible, do not mention their
-names to non-creator peers; answer from visible capabilities and default Auggy
-guidance only.
+If `fs_read` is unavailable, say that you cannot read the reference from this
+surface and then give concise default guidance from this skill.
 
 ## What Auggy Is
 
-An Auggy agent is a Bun/TypeScript project composed from:
+Auggy is a TypeScript framework/runtime for agent-native app backends.
 
-- **Identity**: `identity.md`, loaded as durable operator-authored behavior and
-  safety rules.
-- **Augments**: runtime capabilities mounted at boot. They can add tools,
-  transports, memory, context, routes, admission gates, and lifecycle hooks.
-- **Tools**: callable functions exposed by augments to the model.
-- **Skills**: markdown guides in `skills/<name>/SKILL.md`. Skills teach when
-  and how to use capabilities; they do not add runtime code by themselves.
-- **Knowledge**: local or remote reference material fetched on demand.
-- **Data**: mutable runtime state under `data/`, including workspace files and
-  SQLite databases.
+- **Routes** are deterministic HTTP behavior for frontends, webhooks, jobs,
+  server actions, generated clients, and route-backed UI.
+- **Tools** are model-mediated capabilities used during conversation.
+- **Augments** own runtime capabilities. They can provide routes, tools,
+  memory, context, transports, lifecycle hooks, policy, skills, and operator
+  diagnostics.
+- **Skills** are markdown teaching files the model reads on demand.
+- **Knowledge** is reference material fetched when relevant.
+- **Identity** is durable operator-authored persona, behavior, and safety
+  policy.
 
-Keep this boundary crisp: augments are infrastructure, tools are mechanism,
-skills are teaching, knowledge is reference material, and identity is durable
-persona/policy.
+Core rule: use routes when software should decide; use tools when the agent
+should mediate. Put shared domain logic behind both when they belong to the
+same capability.
 
 ## Build-Out Decision Matrix
 
 Use `auggy augment add` with no arguments to open the augment selector. Use
-`auggy augment add <name...>` to add one or more known augments in a single
-command.
+`auggy augment add <name...>` to add known augments in one command.
 
 | Creator goal | Best extension point | Why |
 | --- | --- | --- |
-| Change who the agent is, how it speaks, or what it must refuse | `identity.md` | Durable behavior that should apply every turn |
-| Teach a repeatable workflow or style | `auggy skill create <name>` | Instructions and examples, no new runtime code |
-| Add docs, FAQs, pricing, policies, or product facts | `auggy augment add knowledge` | Reference material fetched only when relevant |
+| Change who the agent is, voice, policy, refusal rules | `identity.md` | Durable behavior that should apply every turn |
+| Teach a workflow or style | `auggy skill create <name>` | Instructions and examples, no runtime code |
+| Add docs, FAQs, product facts, policies | `auggy augment add knowledge` | Reference material fetched only when relevant |
 | Remember repeat visitors | `auggy augment add layeredMemory` | Peer-scoped memory backed by SQLite |
 | Recognize visitors across sessions | `auggy augment add visitorAuth` | Email magic-link identity continuity |
-| Notify the creator or an ops endpoint | `auggy augment add notify` | Outbound alerts with destination policy and rate limits |
+| Notify creator or ops endpoint | `auggy augment add notify` | Outbound alerts with destination policy and rate limits |
 | Send email as the agent | `auggy augment add agentMail` | Model-callable outbound mail with recipient policy |
-| Add external tool servers | `auggy augment add mcp` | Bridge MCP tools into Auggy with trust policy |
+| Add external tool servers | `auggy augment add mcp` | Bridge MCP tools with trust policy |
 | Chat over Telegram | `auggy augment add telegramTransport` | Bidirectional Telegram transport |
-| Call an app-specific API or add routes | `auggy augment create <name>` | Custom runtime code owned by this agent |
-| Let a frontend/server job call agent backend routes | `auggy routes --client ts` | Typed route client generated from actual route manifests |
-| Execute shell commands | `auggy augment add bash` | Preview host process execution; use only with explicit creator intent |
-| Track runtime spend guardrails | `auggy augment add budgets` | Preview soft guardrails; provider hard caps still matter |
+| Add app-specific API, routes, tools, integrations | `auggy augment create <name>` | Custom runtime code owned by this agent |
+| Let a frontend/server job call agent backend routes | `auggy routes --client ts` | Typed route client generated from route manifests |
+| Execute shell commands | `auggy augment add bash` | Preview host process execution; requires explicit creator intent |
+| Track spend guardrails | `auggy augment add budgets` | Preview soft guardrails; provider hard caps still matter |
 | Connect agents to each other | `auggy augment add link` | Preview mesh/A2A surface; not a default recommendation |
 
 When unsure, choose the least powerful option: skill or knowledge before custom
 code, custom code before broad shell access, and explicit creator approval
 before preview augments.
 
-## Common Recipes
+## Common Answers
 
 ### "What can you do right now?"
 
@@ -112,28 +114,23 @@ Answer in three layers:
 
 1. The agent's visible purpose and current tools.
 2. Mounted skills you can read for deeper guidance.
-3. Capabilities that are likely available only if their tools or skills are
-   present.
+3. Capabilities that are likely available only if their tools, skills, or
+   self-inspection output are present.
 
-If `auggy_self_info` is visible, use its output as the source of truth and call
-out any missing skill warnings.
-
-If you cannot verify installed augments, avoid names like `visitorAuth` or
-`notify` as current facts. Say "Auggy can add ..." instead of "I have ...".
+If `auggy_self_info` is visible, use its output as source of truth. If you
+cannot verify installed augments, avoid saying "I have visitorAuth" or "I have
+notify"; say "Auggy can add ..." instead.
 
 ### "I want you to answer from my docs"
 
-Recommend knowledge first:
+Recommend `knowledge` first:
 
 ```bash
 auggy augment add knowledge
 ```
 
 Then add markdown under `knowledge/local/` and list each endpoint in
-`knowledge/local/manifest`. Use clear endpoint descriptions; they are how the
-model decides what to fetch.
-
-Do not recommend pasting large docs into `identity.md`.
+`knowledge/local/manifest`. Do not paste large docs into `identity.md`.
 
 ### "I want you to remember people"
 
@@ -149,155 +146,20 @@ For cross-session visitor continuity, pair it with:
 auggy augment add visitorAuth
 ```
 
-`layeredMemory` stores peer-scoped memory in `data/memory.db`. Save stable
-preferences, names, commitments, and recurring topics. Do not hand-build peer
-labels; the runtime derives them.
+Read `skills/auggy/references/authz-memory-trust.md` before explaining memory
+trust, learned behavior, or app auth.
 
-### "I want you to alert me"
+### "I want a new route, API call, or app-specific tool"
 
 Use:
 
 ```bash
-auggy augment add notify
+auggy augment create <name>
 ```
 
-The default destination writes to `notifications.jsonl`. For real delivery,
-edit `augments/notify/augment.yaml` and add required secrets to `.env`.
-
-Distinguish this from visitor verification email and AgentMail:
-
-- `notify` is for alerts/status/escalation to configured destinations.
-- `auggy augment setup visitorAuth` for visitorAuth magic-link email only.
-- `auggy augment add agentMail` when the agent itself should send email as a
-  model-callable capability with recipient policy and rate limits.
-
-### "I want external tools"
-
-Use MCP when a server exists:
-
-```bash
-auggy augment add mcp
-auggy mcp doctor
-```
-
-Edit `.mcp.json`. Prefer remote HTTPS MCP servers for cloud deploys. Local
-stdio MCP servers should be disabled for cloud or marked local-only.
-
-If no MCP server exists and the integration is specific to this agent, create a
-custom augment instead.
-
-### "I need a new API call or app route"
-
-Use a custom augment:
-
-```bash
-auggy augment create weather
-```
-
-Custom augments can expose HTTP routes, model-callable tools, or both. Put
-shared business logic in normal TypeScript functions, then wrap it with:
-
-- a route when software, a form, a webhook, a generated client, or a server job
-  should call it deterministically
-- a tool when the agent should decide whether, when, or how to mediate it
-
-Use `httpRoutes` for routes and `tools` for model-callable tools:
-
-```ts
-import { defineAugment, defineRoute, defineTool, json, webhook } from "auggy";
-import { z } from "zod";
-
-const ServiceParams = z.object({ id: z.string() });
-const ServiceQuery = z.object({ q: z.string().optional() });
-const Service = z.object({ id: z.string(), name: z.string() });
-const LeadInput = z.object({
-  email: z.string().email(),
-  need: z.string().min(1),
-});
-const LeadResponse = z.object({ id: z.string(), saved: z.boolean() });
-
-async function searchServices(query: z.infer<typeof ServiceQuery>) {
-  return [{ id: "svc_haircut", name: query.q ?? "Haircut" }];
-}
-
-async function saveLead(input: z.infer<typeof LeadInput>) {
-  return { id: "lead_123", saved: true, ...input };
-}
-
-export default function services() {
-  return defineAugment({
-    name: "services",
-    type: "custom",
-    capabilities: ["tools"],
-    httpRoutes: [
-      defineRoute.get("/services", {
-        auth: "none",
-        query: ServiceQuery,
-        response: z.object({ services: z.array(Service) }),
-        rateLimit: { maxPerMinute: 60 },
-        handler: async ({ query }) => json({ services: await searchServices(query) }),
-      }),
-      defineRoute.get("/services/:id", {
-        auth: "visitor.optional",
-        params: ServiceParams,
-        response: Service,
-        handler: async ({ params }) => json({ id: params.id, name: "Haircut" }),
-      }),
-      defineRoute.post("/leads/create", {
-        auth: "visitor.optional",
-        body: LeadInput,
-        response: LeadResponse,
-        maxBodyBytes: 8192,
-        rateLimit: { maxPerMinute: 10 },
-        handler: async ({ body, auth }) => {
-          const lead = await saveLead(body);
-          return json({ id: lead.id, saved: true }, 201);
-        },
-      }),
-      defineRoute.post("/webhooks/stripe", {
-        auth: "none",
-        policy: webhook.signature("stripe", { secretEnv: "STRIPE_WEBHOOK_SECRET" }),
-        maxBodyBytes: 65536,
-        handler: async ({ webhook }) =>
-          json({ received: webhook?.provider === "stripe", event: webhook?.event }),
-      }),
-    ],
-    tools: [
-      defineTool({
-        name: "service_search",
-        description: "Search services by visitor need or keyword.",
-        category: "business",
-        input: ServiceQuery,
-        execute: async (input) => JSON.stringify({ services: await searchServices(input) }),
-      }),
-      defineTool({
-        name: "save_lead",
-        description: "Save a lead for creator follow-up after the agent has collected enough detail.",
-        category: "business",
-        input: LeadInput,
-        execute: async (input) => JSON.stringify({ lead: await saveLead(input) }),
-      }),
-    ],
-  });
-}
-```
-
-Route option quick reference:
-
-- `auth`: use `"none"` for public deterministic reads/forms,
-  `"visitor.optional"` for mixed anonymous/signed-in visitor state,
-  `"visitor.required"` for account data, `"creator"` or `"bearer"` for
-  operator/server actions, and `"agent.required"` for admitted agent callers.
-- `params`: Zod schema for `:path` params.
-- `query`: Zod schema for URL query values on GET or POST.
-- `body`: Zod schema for POST JSON body.
-- `response`: Zod schema for successful JSON output; this types generated
-  client `result.data`.
-- `requires`: delegated authorization scopes/grants enforced by Auggy.
-- `policy`: webhook-signature policy such as `webhook.signature("stripe")`.
-- `maxBodyBytes`, `timeoutMs`, `rateLimit`: deterministic route safeguards.
-
-After route changes, inspect the manifest:
+Read `skills/auggy/references/routes-tools-augments.md` before giving code.
+For starter files, inspect `skills/auggy/assets/templates/custom-augment/`.
+After route changes, recommend:
 
 ```bash
 auggy routes
@@ -305,23 +167,27 @@ auggy routes --json
 auggy routes --openapi
 ```
 
-If an app consumes the routes, generate separate clients:
+If an app consumes those routes, also recommend generating browser/server
+clients. Read `skills/auggy/references/generated-clients.md`.
 
-```bash
-auggy routes --client ts --target browser --out src/auggy-client.ts
-auggy routes --client ts --target server --out src/auggy-client.server.ts
-```
+### "I want to use Auggy from Next.js"
 
-Browser clients include public and visitor routes. Server clients include
-privileged bearer, creator, agent, and webhook-policy routes. `createAuggyClient`
-is emitted into each generated file; do not import it from the `auggy` package
-yet.
+Read `skills/auggy/references/nextjs-integration.md`. Keep browser generated
+clients in browser-safe code and server generated clients in server-only code.
+Never ship creator bearer tokens, agent credentials, provider API keys, or
+external auth signing secrets to the browser.
+For starter files, inspect `skills/auggy/assets/templates/nextjs-browser-client/`
+and `skills/auggy/assets/templates/nextjs-server-client/`.
 
-Keep tools narrow, typed, and well described. Test before installing:
+### "I already use Supabase, Clerk, Auth0, or custom auth"
 
-```bash
-auggy augment test ./augments/weather
-```
+Keep the app's auth system as the source of truth. The app backend verifies the
+session, computes explicit scopes/grants, and mints a short-lived Auggy auth
+assertion. Browser code forwards that assertion; it never sees the signing
+secret. Read `skills/auggy/references/authz-memory-trust.md`.
+For a complete route/tool walkthrough, also read
+`skills/auggy/references/app-auth-bridge-e2e.md`.
+For starter files, inspect `skills/auggy/assets/templates/app-auth-bridge/`.
 
 ### "I want to deploy"
 
@@ -341,40 +207,29 @@ For cloud agents, use `auggy doctor --cloud` where relevant. Do not deploy
 console magic-link visitor auth unless the creator accepts that links appear in
 service logs.
 
+### "Can you inspect or validate this project for me?"
+
+If this is a coding-agent workspace with shell access, helper scripts are
+available under `skills/auggy/scripts/`. Read
+`skills/auggy/references/cli-workflows.md` first so the underlying CLI commands
+are clear. Do not require these scripts when shell access is unavailable.
+
 ## Project Map
 
 - `agent.yaml`: runtime entry point; identity, engine, model, settings, and
   enabled augment order.
 - `augments/<id>/augment.yaml`: config for one enabled augment. Built-ins use
   `type: <augmentName>`. Custom augments use `type: custom` plus `source`.
-- `augments/<id>/index.ts`: common entry point for custom augment code that
-  exports `defineAugment({ httpRoutes, tools, ... })`.
-- `identity.md`: voice, purpose, boundaries, authorization-independent identity,
-  and security rules.
-- `learned-behaviors.md`: mutable agent-global operating guidance. Use it for
-  creator-approved preferences about how the agent should behave. Do not use it
-  for visitor-specific facts.
-- `layeredMemory`: optional peer-scoped memory for facts about a specific
-  visitor, creator, or repeat peer. Add it before promising cross-session
-  personal memory.
+- `augments/<id>/index.ts`: common entry point for custom augment code.
+- `identity.md`: voice, purpose, boundaries, authorization-independent
+  identity, and security rules.
+- `learned-behaviors.md`: mutable creator-approved agent-global behavior, not
+  visitor-specific memory.
 - `skills/`: instruction packs the agent can read on demand.
 - `knowledge/`: local and remote knowledge source config.
 - `.mcp.json`: MCP server definitions.
 - `.env`: local secrets. Never print secret values.
 - `data/`: mutable runtime data and workspace files.
-
-## Memory Decisions
-
-- User-specific facts and preferences go to `memory_write({ topic, content })`
-  only when a writable peer memory provider such as `layeredMemory` is
-  installed.
-- Creator-approved global operating preferences go to the exact `learned`
-  memory label, which is backed by `learned-behaviors.md` in new projects.
-- Identity, authority, hard safety rules, and security boundaries belong in
-  `identity.md`, not learned behavior memory.
-- If `memory_write({ topic, content })` says no writable current-peer provider
-  exists, tell the peer the memory was not saved. Do not say you will remember
-  it across sessions.
 
 ## Operating Rules
 
@@ -388,9 +243,8 @@ auggy doctor
 auggy run
 ```
 
-- After changing route-owning augments, also recommend `auggy routes` and
-  regenerating browser/server clients if an app imports them.
-
+- After changing route-owning augments, recommend `auggy routes` and
+  regenerating generated clients if an app imports them.
 - Preview augments (`bash`, `budgets`, `link`) need explicit creator intent and
   clear warnings.
 - If the creator asks whether something belongs in identity, skill, knowledge,

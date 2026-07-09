@@ -1,0 +1,29 @@
+import { appendFileSync, mkdirSync } from "node:fs";
+import { dirname } from "node:path";
+import type { LeadInput, ServiceQuery } from "./schemas";
+
+const services = [
+  { id: "svc_consult", name: "Consultation", category: "planning" },
+  { id: "svc_setup", name: "Setup", category: "implementation" },
+  { id: "svc_support", name: "Support", category: "operations" },
+];
+
+export function searchServices(query: ServiceQuery = {}) {
+  const terms = [query.need, query.category].filter(Boolean).join(" ").toLowerCase();
+  if (!terms) return services;
+  return services.filter((service) =>
+    [service.name, service.category].join(" ").toLowerCase().includes(terms),
+  );
+}
+
+export function saveLead(input: LeadInput, opts: { recordsPath: string }) {
+  const record = {
+    ...input,
+    id: `lead_${crypto.randomUUID()}`,
+    createdAt: new Date().toISOString(),
+  };
+
+  mkdirSync(dirname(opts.recordsPath), { recursive: true });
+  appendFileSync(opts.recordsPath, `${JSON.stringify(record)}\n`, { mode: 0o600 });
+  return record;
+}

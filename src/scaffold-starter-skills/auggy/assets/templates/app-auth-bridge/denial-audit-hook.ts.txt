@@ -1,0 +1,49 @@
+import {
+  webTransport,
+  type DelegatedAuthorizationDeniedAuditEvent,
+} from "auggy";
+
+export function logDelegatedAuthorizationDenied(event: DelegatedAuthorizationDeniedAuditEvent) {
+  const common = {
+    kind: event.kind,
+    reason: event.reason,
+    requirement: event.requirement,
+    provider: event.provider,
+    subject: event.subject,
+    orgId: event.orgId,
+    keyId: event.keyId,
+  };
+
+  if (event.target.type === "route") {
+    console.warn("[auggy-authz-denied]", {
+      ...common,
+      targetType: "route",
+      route: event.target.route,
+      method: event.target.method,
+      path: event.target.path,
+      auth: event.target.auth,
+    });
+    return;
+  }
+
+  console.warn("[auggy-authz-denied]", {
+    ...common,
+    targetType: "tool",
+    toolName: event.target.toolName,
+    augmentName: event.target.augmentName,
+    turnId: event.target.turnId,
+    threadId: event.target.threadId,
+  });
+}
+
+export const web = webTransport({
+  port: 8080,
+  auth: { type: "bearer", token: process.env.AUGGY_WEB_TOKEN! },
+  externalAuth: {
+    secret: process.env.AUGGY_EXTERNAL_AUTH_SECRET!,
+    audience: process.env.AUGGY_EXTERNAL_AUTH_AUDIENCE!,
+    allowedProviders: ["supabase", "clerk", "custom"],
+    maxTtlSeconds: 60,
+  },
+  onDelegatedAuthorizationDenied: logDelegatedAuthorizationDenied,
+});
