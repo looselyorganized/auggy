@@ -219,6 +219,14 @@ describe("scaffoldAgent", () => {
     expect(replayStore).toContain("ExternalAuthReplayStore");
     expect(replayStore).toContain("expiresAt - now");
     expect(replayStore).toContain("replayProtection: { enabled: true, store: replayStore }");
+
+    const auditHook = readFileSync(
+      join(templatesRoot, "app-auth-bridge", "denial-audit-hook.ts.txt"),
+      "utf-8",
+    );
+    expect(auditHook).toContain("DelegatedAuthorizationDeniedAuditEvent");
+    expect(auditHook).toContain("onDelegatedAuthorizationDenied");
+    expect(auditHook).not.toContain("x-auggy-auth-assertion");
   });
 
   test(".gitignore excludes .env and workspace", () => {

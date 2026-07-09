@@ -162,6 +162,27 @@ defineTool({
 Auggy checks the assertion before the route handler or protected tool runs.
 Denied paths should not execute business logic.
 
+## Denied Behavior And Audit
+
+When `requires` fails:
+
+- Route handlers do not run. Auggy returns `403` with
+  `{ "error": "forbidden", "reason": "authorization-..." }`.
+- Protected tools do not run. The model receives a tool error such as
+  `authorization-grant-missing` and should explain that the app did not
+  delegate that action.
+- Denial reasons are one of `authorization-claims-required`,
+  `authorization-scope-missing`, `authorization-grant-missing`, or
+  `authorization-resource-unresolved`.
+- `onDelegatedAuthorizationDenied` receives sanitized metadata: target,
+  requirement, reason, and verified external-auth identifiers such as provider,
+  subject, orgId, and keyId. It does not receive assertion tokens, signing
+  secrets, raw request headers, or broad user profile objects.
+
+Copyable audit hook template:
+
+- `skills/auggy/assets/templates/app-auth-bridge/denial-audit-hook.ts.txt`
+
 ## Replay Protection
 
 For high-risk sessions, enable external auth replay protection in
