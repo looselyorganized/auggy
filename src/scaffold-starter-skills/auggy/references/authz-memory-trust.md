@@ -71,6 +71,38 @@ Flow:
 
 Do not put `AUGGY_EXTERNAL_AUTH_SECRET` in browser code.
 
+## Configure Auggy To Verify Assertions
+
+The app backend mints assertions; Auggy must also be configured to verify them.
+For a normal agent project, edit `augments/webTransport/augment.yaml`:
+
+```yaml
+type: webTransport
+config:
+  port: 8080
+  auth:
+    type: bearer
+    token: ${AUGGY_WEB_TOKEN}
+  visitorTokens:
+    agentBinding: ${AUGGY_AGENT_ID}
+  externalAuth:
+    secret: ${AUGGY_EXTERNAL_AUTH_SECRET}
+    keyId: "2026-07"
+    audience: ${AUGGY_EXTERNAL_AUTH_AUDIENCE}
+    allowedProviders: ["supabase", "clerk", "custom"]
+    maxTtlSeconds: 60
+```
+
+Use the same `audience`, `keyId`, and secret family that the app backend uses
+when calling `createExternalAuthAssertion`. The default assertion header is
+`x-auggy-auth-assertion`; override `externalAuth.header` only when a gateway
+requires a different header.
+
+Copyable config templates:
+
+- `skills/auggy/assets/templates/app-auth-bridge/webtransport-external-auth.yaml.txt`
+- `skills/auggy/assets/templates/app-auth-bridge/webtransport-external-auth.ts.txt`
+
 ## Minting Assertions
 
 Server-side app code can use:

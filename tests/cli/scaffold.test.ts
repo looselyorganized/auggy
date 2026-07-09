@@ -203,6 +203,14 @@ describe("scaffoldAgent", () => {
     expect(clerkBridge).toContain("await auth()");
     expect(clerkBridge).toContain("await currentUser()");
     expect(clerkBridge).toContain('provider: "clerk"');
+
+    const webTransportConfig = readFileSync(
+      join(templatesRoot, "app-auth-bridge", "webtransport-external-auth.yaml.txt"),
+      "utf-8",
+    );
+    expect(webTransportConfig).toContain("externalAuth:");
+    expect(webTransportConfig).toContain("AUGGY_EXTERNAL_AUTH_SECRET");
+    expect(webTransportConfig).toContain('allowedProviders: ["supabase", "clerk", "custom"]');
   });
 
   test(".gitignore excludes .env and workspace", () => {
