@@ -98,6 +98,7 @@ cases:
       - assets/templates/app-auth-bridge/app-policy.ts.txt
       - assets/templates/app-auth-bridge/next-route.ts.txt
       - assets/templates/app-auth-bridge/supabase-next-route.ts.txt
+      - assets/templates/app-auth-bridge/replay-protection-store.ts.txt
       - assets/templates/app-auth-bridge/protected-orders-augment.ts.txt
     successCriteria:
       - keeps Supabase session verification on the app backend

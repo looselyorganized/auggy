@@ -167,6 +167,14 @@ Denied paths should not execute business logic.
 For high-risk sessions, enable external auth replay protection in
 `webTransport.externalAuth.replayProtection`.
 
+```yaml
+externalAuth:
+  secret: ${AUGGY_EXTERNAL_AUTH_SECRET}
+  audience: ${AUGGY_EXTERNAL_AUTH_AUDIENCE}
+  replayProtection:
+    enabled: true
+```
+
 When enabled:
 
 - every accepted assertion needs a unique `jti`
@@ -174,6 +182,15 @@ When enabled:
 - the replay store should be shared across every Auggy process accepting the
   same assertion audience and secrets
 - TTL should be bounded by assertion expiry
+
+In 0.5, Auggy includes an in-memory replay store for local or single-process
+deployments. Multi-process, multi-region, or restart-resilient deployments
+should provide a shared atomic store. The store operation must mean "record this
+`jti` until expiry only if absent."
+
+Copyable store template:
+
+- `skills/auggy/assets/templates/app-auth-bridge/replay-protection-store.ts.txt`
 
 ## Supabase And Clerk
 

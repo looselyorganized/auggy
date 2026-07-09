@@ -1,0 +1,30 @@
+import type { ExternalAuthReplayStore } from "auggy";
+
+type SetOnceWithTtlMs = (key: string, value: string, ttlMs: number) => Promise<boolean>;
+
+export function createSharedExternalAuthReplayStore(
+  setOnceWithTtlMs: SetOnceWithTtlMs,
+): ExternalAuthReplayStore {
+  return {
+    async consume(jti, expiresAt, now) {
+      const ttlMs = Math.max(0, expiresAt - now);
+      if (ttlMs <= 0) return false;
+      return setOnceWithTtlMs(`auggy:external-auth:jti:${jti}`, "1", ttlMs);
+    },
+  };
+}
+
+// Example wiring:
+//
+// const replayStore = createSharedExternalAuthReplayStore(async (key, value, ttlMs) => {
+//   const result = await redis.set(key, value, { NX: true, PX: ttlMs });
+//   return result === "OK";
+// });
+//
+// webTransport({
+//   externalAuth: {
+//     secret: process.env.AUGGY_EXTERNAL_AUTH_SECRET!,
+//     audience: process.env.AUGGY_EXTERNAL_AUTH_AUDIENCE!,
+//     replayProtection: { enabled: true, store: replayStore },
+//   },
+// });

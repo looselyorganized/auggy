@@ -211,6 +211,14 @@ describe("scaffoldAgent", () => {
     expect(webTransportConfig).toContain("externalAuth:");
     expect(webTransportConfig).toContain("AUGGY_EXTERNAL_AUTH_SECRET");
     expect(webTransportConfig).toContain('allowedProviders: ["supabase", "clerk", "custom"]');
+
+    const replayStore = readFileSync(
+      join(templatesRoot, "app-auth-bridge", "replay-protection-store.ts.txt"),
+      "utf-8",
+    );
+    expect(replayStore).toContain("ExternalAuthReplayStore");
+    expect(replayStore).toContain("expiresAt - now");
+    expect(replayStore).toContain("replayProtection: { enabled: true, store: replayStore }");
   });
 
   test(".gitignore excludes .env and workspace", () => {
