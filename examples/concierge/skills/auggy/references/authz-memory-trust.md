@@ -149,5 +149,21 @@ Supabase and Clerk are app auth providers. Auggy should not interpret their raw
 roles directly. The app backend should verify the provider session and mint
 narrow Auggy scopes/grants.
 
-Use Supabase server APIs or Clerk server APIs only in trusted app backend code.
+Use Supabase server APIs or Clerk server APIs only in trusted app backend code:
+
+- Supabase: verify the current user with `supabase.auth.getUser(jwt)` or the
+  app's server-side Supabase session helper. Do not authorize from unverified
+  client claims.
+- Clerk: use server-side `auth()` for identity/session state and `currentUser()`
+  only when server code needs user profile fields. Do not pass Clerk's full
+  user object to the browser.
+- Custom auth: verify the app session with the app's normal backend mechanism,
+  then map that user to explicit Auggy scopes/grants.
+
+Copyable provider route-handler recipes:
+
+- `skills/auggy/assets/templates/app-auth-bridge/supabase-next-route.ts.txt`
+- `skills/auggy/assets/templates/app-auth-bridge/clerk-next-route.ts.txt`
+- `skills/auggy/assets/templates/app-auth-bridge/custom-session-next-route.ts.txt`
+
 Never verify sessions or sign Auggy assertions in browser code.

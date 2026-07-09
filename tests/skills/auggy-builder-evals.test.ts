@@ -74,4 +74,12 @@ describe("auggy builder skill fresh-agent eval prompts", () => {
     expect(categories).toContain("memory-trust");
     expect(categories).toContain("troubleshooting");
   });
+
+  test("authz eval points at provider-specific app auth recipes", () => {
+    const appAuth = suite.cases.find((testCase) => testCase.id === "app-auth-bridge-supabase");
+    expect(appAuth).toBeDefined();
+    expect(appAuth!.requiredAssets).toContain(
+      "assets/templates/app-auth-bridge/supabase-next-route.ts.txt",
+    );
+  });
 });

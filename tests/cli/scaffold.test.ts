@@ -188,6 +188,21 @@ describe("scaffoldAgent", () => {
     );
     expect(authBridge).toContain("createExternalAuthAssertion");
     expect(authBridge).toContain("AUGGY_EXTERNAL_AUTH_SECRET");
+
+    const supabaseBridge = readFileSync(
+      join(templatesRoot, "app-auth-bridge", "supabase-next-route.ts.txt"),
+      "utf-8",
+    );
+    expect(supabaseBridge).toContain("supabase.auth.getUser");
+    expect(supabaseBridge).toContain('provider: "supabase"');
+
+    const clerkBridge = readFileSync(
+      join(templatesRoot, "app-auth-bridge", "clerk-next-route.ts.txt"),
+      "utf-8",
+    );
+    expect(clerkBridge).toContain("await auth()");
+    expect(clerkBridge).toContain("await currentUser()");
+    expect(clerkBridge).toContain('provider: "clerk"');
   });
 
   test(".gitignore excludes .env and workspace", () => {
