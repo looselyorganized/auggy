@@ -35,11 +35,14 @@ Use both when repeat visitors need cross-session memory continuity.
 ## Learned Behavior Vs Peer Memory
 
 `learned-behaviors.md` is agent-global behavior guidance approved by the
-creator. It is not for visitor-specific facts.
+creator. The default store is mounted with operator origin and accepts writes
+only from runtime-verified `creator` turns. A caller saying "I am the creator"
+in chat does not grant that authority. It is not for visitor-specific facts.
 
 Use exact `memory_write({ label: "learned", content })` only for
 creator-approved global operating preferences, such as "when greeting visitors,
-use this phrase."
+use this phrase." Do not claim the behavior was saved until the tool returns a
+`PERSISTED` result.
 
 Use topic writes for peer-specific memory:
 
@@ -48,8 +51,23 @@ memory_write({ topic: "preferences", content: "Sam prefers concise replies." })
 ```
 
 Topic writes require a writable peer memory provider such as `layeredMemory`.
+The runtime derives the peer-bound storage label; do not supply a peer label
+directly. Cross-session recall also requires a stable runtime identity for that
+peer, normally a recognized visitor token or verified external auth assertion.
+An anonymous public turn does not establish durable identity continuity.
+
 If no writable current-peer provider exists, do not promise cross-session
-memory.
+memory and do not redirect visitor facts into `learned-behaviors.md`.
+
+Interpret `memory_write` results literally:
+
+- `PERSISTED`: the requested destination confirmed the write. Only now may the
+  agent say it will remember.
+- `NOT_PERSISTED`: the write was rejected or could not be attempted. Tell the
+  caller it was not saved.
+- `PERSISTENCE_UNKNOWN`: the provider failed after persistence may have
+  occurred. Say the result cannot be confirmed and do not retry blindly, since
+  that can duplicate or overwrite data.
 
 ## External App Auth
 

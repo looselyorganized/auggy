@@ -1,6 +1,7 @@
 # Creator, Memory, And Skill DX Hardening
 
-Status: implementation plan.
+Status: implementation in progress. Slices 1 through 3 are complete; Slice 4
+is next.
 
 ## Outcome
 
@@ -89,8 +90,9 @@ Implementation:
   then throw.
 - Mark expected write failures as kernel tool errors while preserving the
   existing string-returning tool API.
-- Catch provider write failures and report them as `NOT_PERSISTED` tool
-  results rather than allowing an ambiguous exception path.
+- Catch provider write failures and report them as `PERSISTENCE_UNKNOWN` tool
+  results because a provider can throw after committing. Do not retry these
+  outcomes blindly.
 - Update `fileMemory` cache only after the disk write succeeds.
 - Treat the default learned-behavior store as operator-origin guidance with a
   creator-only write allowlist. Admitted agents may not mutate it by default.

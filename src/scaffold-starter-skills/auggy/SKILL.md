@@ -1,6 +1,6 @@
 ---
 name: auggy
-description: Help the creator understand, customize, and build out this Auggy agent with identity, skills, knowledge, augments, routes, clients, auth, memory, notifications, and deploy.
+description: Build and troubleshoot Auggy agent-native backends with custom augments, defineRoute route shapes, tools, generated clients, Next.js, Supabase/Clerk or custom app auth, memory, deploy, and CLI workflows.
 allowedTrustLevels:
   - creator
 ---

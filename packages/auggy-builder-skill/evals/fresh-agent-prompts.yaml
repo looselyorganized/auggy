@@ -1,5 +1,5 @@
 suite: auggy-builder-skill-fresh-agent
-version: 1
+version: 2
 skillPath: ../auggy
 owners:
   - Auggy core
@@ -12,6 +12,7 @@ purpose: >
 cases:
   - id: explain-agent-native-backend
     category: mental-model
+    activation: explicit
     prompt: >
       Use $auggy at packages/auggy-builder-skill/auggy to explain why an
       agent-native backend matters for a concierge app. Be concrete about when
@@ -27,6 +28,7 @@ cases:
 
   - id: first-run-install-and-doctor
     category: cli
+    activation: explicit
     prompt: >
       Use $auggy at packages/auggy-builder-skill/auggy. I want to install Auggy
       from npm, create a new agent named concierge-demo, configure a model key,
@@ -46,6 +48,7 @@ cases:
 
   - id: custom-augment-route-tool
     category: augment-development
+    activation: explicit
     prompt: >
       Use $auggy at packages/auggy-builder-skill/auggy. Add a custom services
       augment for a small site. It needs GET /services for the frontend, POST
@@ -65,6 +68,7 @@ cases:
 
   - id: generated-client-target-split
     category: generated-clients
+    activation: explicit
     prompt: >
       Use $auggy at packages/auggy-builder-skill/auggy. I have a Next.js app
       consuming Auggy routes. Tell me exactly how to generate browser and server
@@ -86,6 +90,7 @@ cases:
 
   - id: app-auth-bridge-supabase
     category: authz
+    activation: explicit
     prompt: >
       Use $auggy at packages/auggy-builder-skill/auggy. My app already uses
       Supabase Auth. I want logged-in users to call visitor.required Auggy
@@ -111,6 +116,7 @@ cases:
 
   - id: creator-learned-behavior-vs-peer-memory
     category: memory-trust
+    activation: explicit
     prompt: >
       Use $auggy at packages/auggy-builder-skill/auggy. I am the creator and I
       want the agent to remember a global behavior: greet visitors with "HEY
@@ -128,6 +134,7 @@ cases:
 
   - id: troubleshoot-first-run-errors
     category: troubleshooting
+    activation: explicit
     prompt: >
       Use $auggy at packages/auggy-builder-skill/auggy. Diagnose these first-run
       failures: missing ANTHROPIC_API_KEY, EADDRINUSE on 8080, and a browser
@@ -144,6 +151,7 @@ cases:
 
   - id: preview-surface-boundaries
     category: release-readiness
+    activation: explicit
     prompt: >
       Use $auggy at packages/auggy-builder-skill/auggy. I want to build a demo
       using bash, budgets, link, visitor auth, and generated clients for the
@@ -158,3 +166,22 @@ cases:
       - marks bash, budgets, and link as preview surfaces
       - warns about host command execution and provider hard spend caps
       - does not overstate 1.0 stability
+
+  - id: implicit-custom-augment-discovery
+    category: augment-development
+    activation: implicit
+    prompt: >
+      I am building an Auggy backend and need a custom augment that exposes a
+      typed defineRoute POST endpoint plus a matching model tool over shared
+      domain logic. Show me the project files and the checks to run afterward.
+    requiredReferences:
+      - references/routes-tools-augments.md
+    requiredAssets:
+      - assets/templates/custom-augment/index.ts.txt
+      - assets/templates/custom-augment/domain.ts.txt
+      - assets/templates/custom-augment/schemas.ts.txt
+    successCriteria:
+      - discovers the Auggy skill from the request without explicit invocation
+      - reads the custom augment route and tool reference before answering
+      - keeps shared domain logic separate from route and tool wrappers
+      - recommends auggy augment test and auggy routes after changes

@@ -86,10 +86,14 @@ export function createContextAllocator(config: ContextAllocatorConfig) {
         }
       }
 
-      // Sort by priority
-      const sorted = [...augmentBlocks].sort(
-        (a, b) => PRIORITY_ORDER.indexOf(a.priority) - PRIORITY_ORDER.indexOf(b.priority),
-      );
+      // Pinned blocks are a prompt contract, not a priority hint. Allocate
+      // them before any evictable content so an optional high-priority block
+      // cannot displace identity, trust guidance, or the skill catalog.
+      const sorted = [...augmentBlocks].sort((a, b) => {
+        const evictionOrder = Number(b.eviction === "never") - Number(a.eviction === "never");
+        if (evictionOrder !== 0) return evictionOrder;
+        return PRIORITY_ORDER.indexOf(a.priority) - PRIORITY_ORDER.indexOf(b.priority);
+      });
 
       // Allocate context blocks by priority
       let contextUsed = 0;
@@ -101,6 +105,10 @@ export function createContextAllocator(config: ContextAllocatorConfig) {
         if (contextUsed + tokens <= contextBudget) {
           included.push(block);
           contextUsed += tokens;
+        } else if (block.eviction === "never") {
+          throw new Error(
+            `Pinned context block "${block.source}" exceeds the context budget (${contextUsed + tokens} > ${contextBudget})`,
+          );
         } else {
           evictions.push({
             source: block.source,

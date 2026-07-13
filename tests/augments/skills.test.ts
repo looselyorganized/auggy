@@ -68,11 +68,20 @@ describe("skills augment", () => {
       expect(block.priority).toBe("required");
       expect(block.eviction).toBe("never");
       expect(block.content).toContain("# Skills");
-      expect(block.content).toContain("Read a relevant guide");
-      expect(block.content).toContain("do not say you lack documentation");
-      expect(block.content).toContain("- filesystem — Files and dirs.");
-      expect(block.content).toContain("- memory — Remember things.");
-      expect(block.content).toContain("fs_read");
+      expect(block.content).toContain("Activation contract");
+      expect(block.content).toContain(
+        "when the current request matches a listed skill description",
+      );
+      expect(block.content).toContain("before answering or using tools");
+      expect(block.content).toContain(
+        "Attempt the read before claiming its documentation is unavailable",
+      );
+      expect(block.content).toContain(
+        "- filesystem — Files and dirs. (read: `skills/filesystem/SKILL.md`)",
+      );
+      expect(block.content).toContain(
+        "- memory — Remember things. (read: `skills/memory/SKILL.md`)",
+      );
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

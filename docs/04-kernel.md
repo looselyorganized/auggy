@@ -271,10 +271,12 @@ const contextBudget = max(0, maxTokens - historyBudget - effectiveToolTokens - p
 This is the key insight: **tool schemas eat into the context budget when they're larger than their declared budget.** If you have 30 tools with verbose descriptions, they take more than the 10% allotted to them, and the context block budget shrinks accordingly. This stops augments from over-contributing context when there isn't room for it.
 
 After computing `contextBudget`, the allocator:
-1. Sorts blocks by priority order (`required`, `high`, `normal`, `low`, `evictable`).
-2. Walks the sorted list, including blocks until adding the next would exceed the budget. Excluded blocks go into `evictions`.
-3. Distributes included blocks into `systemBlocks` / `contextBlocks` / `assistantPreambleStrings` based on `placement`.
-4. Suppresses augment-name wrappers before the model sees the prompt. The
+
+1. Allocates blocks with `eviction: "never"` first, ordered by priority. If the pinned set cannot fit, the turn fails with a clear configuration error instead of silently losing identity, trust guidance, or other required context.
+2. Sorts the remaining blocks by priority order (`required`, `high`, `normal`, `low`, `evictable`).
+3. Walks the sorted list, including blocks until adding the next would exceed the budget. Excluded blocks go into `evictions`.
+4. Distributes included blocks into `systemBlocks` / `contextBlocks` / `assistantPreambleStrings` based on `placement`.
+5. Suppresses augment-name wrappers before the model sees the prompt. The
    block's `source` remains in traces and evictions, but only derived-origin
    markers such as `[PEER-DERIVED]` and `[AGENT-DERIVED]` are rendered into
    prompt text.

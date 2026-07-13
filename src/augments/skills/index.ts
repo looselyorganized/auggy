@@ -80,11 +80,11 @@ function buildBlockContent(discovered: DiscoveredSkill[]): string {
   const lines = [
     "# Skills",
     "",
-    "Each skill is a guide stored on disk. Read a relevant guide with `fs_read skills/<folder>/SKILL.md` before answering questions or using tools in that skill's domain. If a relevant skill is listed here, do not say you lack documentation until you have read it or attempted to read it.",
+    "Activation contract: when the current request matches a listed skill description, read that entry's exact `SKILL.md` path with `fs_read` before answering or using tools in that skill's domain. Attempt the read before claiming its documentation is unavailable.",
     "",
   ];
   for (const s of discovered) {
-    lines.push(`- ${s.folder} — ${s.description}`);
+    lines.push(`- ${s.folder} — ${s.description} (read: \`skills/${s.folder}/SKILL.md\`)`);
   }
   return lines.join("\n");
 }

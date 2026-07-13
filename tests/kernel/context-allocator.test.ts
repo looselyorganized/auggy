@@ -69,6 +69,39 @@ describe("ContextAllocator", () => {
     expect(prompt.evictions.some((e) => e.source === "memory")).toBe(true);
   });
 
+  it("allocates never-evict blocks before higher-priority droppable blocks", () => {
+    const allocator = createContextAllocator({
+      maxTokens: 200,
+      historyPercent: 40,
+      toolSchemaPercent: 10,
+      tokenizer,
+      preamble: "P",
+    });
+
+    const pinned = block("skills", "S".repeat(200), "normal", "never");
+    const optional = block("retrieval", "R".repeat(200), "required", "drop");
+    const prompt = allocator.assemble([optional, pinned], [], []);
+
+    expect(prompt.contextBlocks.some((content) => content.includes("S".repeat(200)))).toBe(true);
+    expect(prompt.evictions.some((eviction) => eviction.source === "retrieval")).toBe(true);
+  });
+
+  it("fails instead of silently evicting a never-evict block", () => {
+    const allocator = createContextAllocator({
+      maxTokens: 100,
+      historyPercent: 40,
+      toolSchemaPercent: 10,
+      tokenizer,
+      preamble: "P",
+    });
+
+    const pinned = block("identity", "I".repeat(1000), "required", "never");
+
+    expect(() => allocator.assemble([pinned], [], [])).toThrow(
+      'Pinned context block "identity" exceeds the context budget',
+    );
+  });
+
   it("filters pipeline-only blocks from model prompt", () => {
     const allocator = createContextAllocator({
       maxTokens: 10000,

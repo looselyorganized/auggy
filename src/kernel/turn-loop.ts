@@ -624,12 +624,38 @@ export function createTurnLoop(opts: {
       });
 
       const toolChoiceOpt = config.toolChoice ? { toolChoice: config.toolChoice } : undefined;
-      let currentPrompt = allocator.assemble(
-        contextBlocks,
-        historyMessages,
-        toolSelection.definitions,
-        toolChoiceOpt,
-      );
+      let currentPrompt: AssembledPrompt;
+      try {
+        currentPrompt = allocator.assemble(
+          contextBlocks,
+          historyMessages,
+          toolSelection.definitions,
+          toolChoiceOpt,
+        );
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        emitEvent({
+          kind: "run_error",
+          turnId: trigger.turnId,
+          message,
+          source: "context-allocator",
+        });
+        emitEvent({
+          kind: "run_finished",
+          turnId: trigger.turnId,
+          status: "failed",
+        });
+        await finalizeReturn();
+        return {
+          turnId: trigger.turnId,
+          success: false,
+          status: "failed",
+          errorResponse: "The agent's required context exceeds its configured model budget.",
+          toolCalls: [],
+          trace,
+          error: { message, source: "context-allocator" },
+        };
+      }
 
       const preambleTokens = currentPrompt.systemBlocks.reduce((s, b) => s + tokenizer.count(b), 0);
       const toolSchemaTokens = currentPrompt.tools.reduce(
