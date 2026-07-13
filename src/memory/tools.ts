@@ -61,8 +61,9 @@ function serializeEntryWithOrigin(entry: MemoryEntry): MemoryEntry & { origin?: 
  *   - trust ∈ {creator, agent} → ALLOW
  *   - otherwise              → DENY (public, or any future level below agent)
  *
- * Null peer (internal/scheduled triggers) is treated as creator trust,
- * via the shared effectiveTrustLevel helper in capability-table.ts.
+ * Null peer (internal/scheduled triggers) is treated as creator trust for the
+ * origin policy. Explicit write allowlists require an actual peer so a
+ * scheduled model turn cannot impersonate a verified creator.
  */
 function assertMemoryAccess(
   operation: "read" | "write" | "search" | "list",
@@ -74,7 +75,10 @@ function assertMemoryAccess(
     return `Error: memory_${operation} requires turn context.`;
   }
   if (operation === "write" && writeTrustLevels) {
-    const trustLevel = effectiveTrustLevel(context.peer ?? null);
+    if (!context.peer) {
+      return "Error: memory_write on this destination requires an authenticated peer; internal turns do not satisfy an explicit write trust allowlist.";
+    }
+    const trustLevel = effectiveTrustLevel(context.peer);
     if (!writeTrustLevels.includes(trustLevel)) {
       return `Error: memory_write on this destination requires ${writeTrustLevels.join(" or ")} trust. Current peer trust: ${trustLevel}.`;
     }

@@ -270,13 +270,18 @@ describe("wireMemoryBus", () => {
     const wiring = wireMemoryBus(providers);
     const publicBlocks = await wiring.syntheticToolsAugment!.context!(turn(publicPeer));
     const creatorBlocks = await wiring.syntheticToolsAugment!.context!(turn(creatorPeer));
+    const internalBlocks = await wiring.syntheticToolsAugment!.context!(turn(null));
 
     expect(Array.isArray(publicBlocks)).toBe(true);
     expect(Array.isArray(creatorBlocks)).toBe(true);
+    expect(Array.isArray(internalBlocks)).toBe(true);
     if (!Array.isArray(publicBlocks)) throw new Error("Expected public context blocks");
     if (!Array.isArray(creatorBlocks)) throw new Error("Expected creator context blocks");
+    if (!Array.isArray(internalBlocks)) throw new Error("Expected internal context blocks");
     expect(publicBlocks[0]!.content).toContain("Exact writable labels: none.");
     expect(publicBlocks[0]!.content).toContain("Current-peer topic memory: unavailable");
+    expect(internalBlocks[0]!.content).toContain("Exact writable labels: none.");
+    expect(internalBlocks[0]!.content).toContain("Current-peer topic memory: unavailable");
     expect(creatorBlocks[0]!.content).toContain('Exact writable labels: "restricted".');
     expect(creatorBlocks[0]!.content).toContain(
       'Current-peer topic memory: writable via "restricted-topic".',

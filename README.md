@@ -221,6 +221,12 @@ API-backed sources live in `knowledge/sources.json`.
 
 ## Memory And Visitors
 
+Fresh agents include `learned-behaviors.md` for creator-approved,
+agent-global operating guidance. A runtime-verified creator can update it
+through `memory_write({ label: "learned", content })`; public visitors cannot.
+The agent should only claim the update was saved after the tool reports
+`PERSISTED`. Visitor facts do not belong in this file.
+
 ```bash
 auggy augment add layeredMemory
 auggy augment add visitorAuth

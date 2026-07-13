@@ -79,8 +79,13 @@ export function createContextAllocator(config: ContextAllocatorConfig) {
         config.maxTokens - historyBudget - effectiveToolTokens - preambleTokens,
       );
 
-      // Compute token counts for blocks that don't have them
-      for (const block of augmentBlocks) {
+      // Pipeline-only blocks have already served their purpose in the
+      // sequential prior-context pipeline. They never reach the model, so
+      // they must not consume model context budget or produce evictions.
+      const modelBlocks = augmentBlocks.filter((block) => block.visibility !== "pipeline-only");
+
+      // Compute token counts only for model-bound blocks that don't have them.
+      for (const block of modelBlocks) {
         if (block.tokenCount === undefined) {
           block.tokenCount = config.tokenizer.count(block.content);
         }
@@ -89,7 +94,7 @@ export function createContextAllocator(config: ContextAllocatorConfig) {
       // Pinned blocks are a prompt contract, not a priority hint. Allocate
       // them before any evictable content so an optional high-priority block
       // cannot displace identity, trust guidance, or the skill catalog.
-      const sorted = [...augmentBlocks].sort((a, b) => {
+      const sorted = [...modelBlocks].sort((a, b) => {
         const evictionOrder = Number(b.eviction === "never") - Number(a.eviction === "never");
         if (evictionOrder !== 0) return evictionOrder;
         return PRIORITY_ORDER.indexOf(a.priority) - PRIORITY_ORDER.indexOf(b.priority);
@@ -124,8 +129,6 @@ export function createContextAllocator(config: ContextAllocatorConfig) {
       const assistantPreambleStrings: string[] = [];
 
       for (const block of included) {
-        if (block.visibility === "pipeline-only") continue;
-
         // ADR-030: the augment that produced this block is invisible to the
         // model. The previous `[AUGMENT CONTEXT: <source>]` wrapper leaked
         // operator-internal terminology and contradicted the kernel preamble's

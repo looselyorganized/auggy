@@ -191,14 +191,17 @@ Read, write, search, and list enforce the same trust rule before executing:
 - otherwise              → DENY (public, or any future level below agent)
 ```
 
-For writes, a provider may additionally declare `writeTrustLevels`. This is an
-allowlist layered on top of the origin rule. The scaffolded `learned` provider
+For writes, a provider may additionally declare `writeTrustLevels`. This is a
+peer trust allowlist layered on top of the origin rule; peerless
+internal/scheduled turns do not satisfy it. The scaffolded `learned` provider
 uses `writeTrustLevels: ["creator"]`, so admitted agents and public peers cannot
 change agent-global behavior even though creator and agent trust can normally
 access non-peer memory. `memory_forget` has its own stricter destructive-action
 gate.
 
-Null peer (internal/scheduled triggers) is treated as creator trust per the convention from `effectiveTrustLevel` in capability-table.ts.
+Null peer (internal/scheduled triggers) is treated as creator trust for the
+general origin rule, per `effectiveTrustLevel` in capability-table.ts. It does
+not satisfy an explicit `writeTrustLevels` allowlist.
 
 ### `memory_read({ label })`
 

@@ -7,6 +7,7 @@ function canWrite(
   writeTrustLevels: readonly TrustLevel[] | undefined,
   turn: TurnState,
 ): boolean {
+  if (writeTrustLevels && !turn.peer) return false;
   const trustLevel = effectiveTrustLevel(turn.peer);
   if (writeTrustLevels && !writeTrustLevels.includes(trustLevel)) return false;
   if (origin === "peer-derived") return true;

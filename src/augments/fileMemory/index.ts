@@ -17,7 +17,7 @@ export interface FileMemoryOptions {
   source: string;
   fallbackSources?: string[];
   mutable: boolean;
-  /** Optional additional write allowlist. Omit to use the origin-based policy. */
+  /** Optional peer trust write allowlist. Omit to use the origin-based policy. */
   writeTrustLevels?: readonly TrustLevel[];
   origin: ContextOrigin;
   priority: ContextPriority;

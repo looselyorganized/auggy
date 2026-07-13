@@ -93,7 +93,7 @@ export interface MemoryWriteOpts {
 export interface StaticMemoryProvider {
   owns: { kind: "static"; labels: string[] };
   defaults: MemoryDefaults;
-  /** Optional additional trust allowlist for writes. Omit to use the origin-based policy. */
+  /** Optional peer trust allowlist for writes. Omit to use the origin-based policy. */
   writeTrustLevels?: readonly TrustLevel[];
   read: (label: string) => Promise<MemoryEntry | null>;
   write?: (label: string, content: string) => Promise<void>;
@@ -102,7 +102,7 @@ export interface StaticMemoryProvider {
 export interface NamespaceMemoryProvider {
   owns: { kind: "namespace"; prefix: string };
   defaults: MemoryDefaults;
-  /** Optional additional trust allowlist for writes. Omit to use the origin-based policy. */
+  /** Optional peer trust allowlist for writes. Omit to use the origin-based policy. */
   writeTrustLevels?: readonly TrustLevel[];
   search: (query: string, opts?: MemoryQueryOpts) => Promise<MemoryEntry[]>;
   write?: (label: string, content: string, opts?: MemoryWriteOpts) => Promise<void>;

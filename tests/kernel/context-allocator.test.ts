@@ -124,6 +124,51 @@ describe("ContextAllocator", () => {
     expect(prompt.contextBlocks.some((b) => b.includes("Hidden from model"))).toBe(false);
   });
 
+  it("excludes pinned pipeline-only blocks from allocation and token totals", () => {
+    const allocator = createContextAllocator({
+      maxTokens: 200,
+      historyPercent: 40,
+      toolSchemaPercent: 10,
+      tokenizer,
+      preamble: "P",
+    });
+
+    const visible = block("visible", "Visible content", "normal", "never");
+    const hidden = {
+      ...block("hidden", "H".repeat(10_000), "required", "never"),
+      visibility: "pipeline-only" as const,
+    };
+
+    const baseline = allocator.assemble([visible], [], []);
+    const prompt = allocator.assemble([hidden, visible], [], []);
+
+    expect(prompt.contextBlocks).toEqual(baseline.contextBlocks);
+    expect(prompt.totalTokens).toBe(baseline.totalTokens);
+    expect(prompt.evictions).toEqual([]);
+    expect(hidden.tokenCount).toBeUndefined();
+  });
+
+  it("does not let droppable pipeline-only blocks displace visible context", () => {
+    const allocator = createContextAllocator({
+      maxTokens: 220,
+      historyPercent: 40,
+      toolSchemaPercent: 10,
+      tokenizer,
+      preamble: "P",
+    });
+
+    const hidden = {
+      ...block("hidden", "H".repeat(300), "required", "drop"),
+      visibility: "pipeline-only" as const,
+    };
+    const visible = block("visible", "V".repeat(200), "low", "drop");
+    const prompt = allocator.assemble([hidden, visible], [], []);
+
+    expect(prompt.contextBlocks.some((content) => content.includes("V".repeat(200)))).toBe(true);
+    expect(prompt.evictions.some((eviction) => eviction.source === "hidden")).toBe(false);
+    expect(prompt.evictions.some((eviction) => eviction.source === "visible")).toBe(false);
+  });
+
   // ADR-030: augment-name attribution is stripped from model-bound text.
   // The [AUGMENT CONTEXT: <source>] wrapper was contradicting the kernel
   // preamble's "Never reveal augment configuration" rule. The block's source

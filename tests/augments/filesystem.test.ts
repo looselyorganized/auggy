@@ -566,6 +566,41 @@ describe("filesystem augment", () => {
       expect(denied).toContain("Current peer trust: public");
     });
 
+    it("authorizes reads using the canonical skill path", async () => {
+      await writeSkill(
+        "auggy",
+        [
+          "---",
+          "name: auggy",
+          "description: Build out this agent.",
+          "allowedTrustLevels: creator",
+          "---",
+          "# Auggy",
+        ].join("\n"),
+      );
+      await writeSkill("public", "---\nname: public\ndescription: Public guide.\n---\n# Public");
+      await symlink(join(tmp.path, "skills", "auggy"), join(tmp.path, "skills", "alias"));
+
+      const aug = filesystem({ mounts: [{ name: "skills", path: join(tmp.path, "skills") }] });
+
+      await expect(
+        execTool(aug, "fs_read", { path: "skills/./auggy/SKILL.md" }, creatorCtx),
+      ).resolves.toContain("# Auggy");
+      await expect(
+        execTool(aug, "fs_read", { path: "skills/./public/SKILL.md" }, publicCtx),
+      ).resolves.toContain("# Public");
+
+      for (const path of [
+        "skills/./auggy/SKILL.md",
+        "skills/public/../auggy/SKILL.md",
+        "skills/alias/SKILL.md",
+      ]) {
+        const denied = await execTool(aug, "fs_read", { path }, publicCtx);
+        expect(denied).toContain('Skill "auggy"');
+        expect(denied).toContain("Current peer trust: public");
+      }
+    });
+
     it("hides creator-only skill folders from public list and search results", async () => {
       await writeSkill(
         "auggy",
@@ -579,6 +614,7 @@ describe("filesystem augment", () => {
         ].join("\n"),
       );
       await writeSkill("public", "---\nname: public\ndescription: Public guide.\n---\n# Public");
+      await symlink(join(tmp.path, "skills", "auggy"), join(tmp.path, "skills", "alias"));
 
       const aug = filesystem({ mounts: [{ name: "skills", path: join(tmp.path, "skills") }] });
 
@@ -590,10 +626,25 @@ describe("filesystem augment", () => {
       const directList = await execTool(aug, "fs_list", { path: "skills/auggy" }, publicCtx);
       expect(directList).toContain('Skill "auggy"');
 
+      for (const path of ["skills/./auggy", "skills/public/../auggy", "skills/alias"]) {
+        const denied = await execTool(aug, "fs_list", { path }, publicCtx);
+        expect(denied).toContain('Skill "auggy"');
+      }
+
       const searched = JSON.parse(
         await execTool(aug, "fs_search", { path: "skills", pattern: "**/SKILL.md" }, publicCtx),
       ) as { results: string[] };
       expect(searched.results).toEqual(["skills/public/SKILL.md"]);
+
+      const aliasSearch = JSON.parse(
+        await execTool(aug, "fs_search", { path: "skills/.", pattern: "**/SKILL.md" }, publicCtx),
+      ) as { results: string[] };
+      expect(aliasSearch.results).toEqual(["skills/./public/SKILL.md"]);
+
+      for (const path of ["skills/./auggy", "skills/public/../auggy", "skills/alias"]) {
+        const denied = await execTool(aug, "fs_search", { path, pattern: "**/*.md" }, publicCtx);
+        expect(denied).toContain('Skill "auggy"');
+      }
     });
   });
 

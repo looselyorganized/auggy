@@ -340,6 +340,10 @@ describe("createMemoryTools", () => {
           threadId: "thread-1",
         },
       );
+      const internalResult = await writeTool.execute(
+        { label: "learned", content: "internal update" },
+        { turnId: "internal-turn", peer: null, threadId: "thread-1" },
+      );
       const creatorResult = await writeTool.execute(
         { label: "learned", content: "creator update" },
         {
@@ -351,6 +355,9 @@ describe("createMemoryTools", () => {
 
       expect(expectWriteError(agentResult, "NOT_PERSISTED")).toMatch(/requires creator trust/i);
       expect(expectWriteError(publicResult, "NOT_PERSISTED")).toMatch(/requires creator trust/i);
+      expect(expectWriteError(internalResult, "NOT_PERSISTED")).toMatch(
+        /internal turns do not satisfy an explicit write trust allowlist/i,
+      );
       expect(creatorResult).toMatch(/^PERSISTED:/);
       expect(writes).toEqual(["creator update"]);
     });

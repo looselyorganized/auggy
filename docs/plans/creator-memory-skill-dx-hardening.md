@@ -1,7 +1,8 @@
 # Creator, Memory, And Skill DX Hardening
 
-Status: implementation in progress. Slices 1 through 3 are complete; Slice 4
-is next.
+Status: implementation complete. All four slices and the adversarial follow-up
+are covered by automated tests. A real-model creator-console walkthrough
+remains the release gate.
 
 ## Outcome
 
@@ -107,8 +108,9 @@ Acceptance:
   writable and peer persistence is unavailable before it calls a tool.
 - With layered memory installed, the model sees peer persistence as available.
 - Public peers do not see learned behavior as writable.
-- Failed disk/provider writes leave cached content unchanged and return
-  `NOT_PERSISTED`.
+- Validation and authorization failures return `NOT_PERSISTED`. Provider
+  exceptions return `PERSISTENCE_UNKNOWN`; `fileMemory` keeps its cache and
+  destination unchanged when its atomic replacement fails before commit.
 - Successful writes return `PERSISTED` and are readable on the next turn.
 - No-provider guidance identifies valid alternatives without claiming a save.
 
