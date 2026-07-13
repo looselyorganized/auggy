@@ -1,5 +1,6 @@
 import { existsSync, statSync } from "node:fs";
-import { readFile, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import type {
   AdminInfoBlock,
   Augment,
@@ -8,6 +9,7 @@ import type {
   ContextPriority,
   ContextPlacement,
   EvictionPolicy,
+  TrustLevel,
 } from "../../types";
 
 export interface FileMemoryOptions {
@@ -15,6 +17,8 @@ export interface FileMemoryOptions {
   source: string;
   fallbackSources?: string[];
   mutable: boolean;
+  /** Optional additional write allowlist. Omit to use the origin-based policy. */
+  writeTrustLevels?: readonly TrustLevel[];
   origin: ContextOrigin;
   priority: ContextPriority;
   placement: ContextPlacement;
@@ -27,12 +31,14 @@ export interface FileMemoryOptions {
  * serves read requests from the cache, and (if mutable) persists
  * writes both in-memory and to disk.
  *
- * Used for identity (mutable: false, origin: "operator") and for
- * agent self-notes (mutable: true, origin: "agent").
+ * Used for identity (immutable operator guidance) and for creator-approved
+ * learned behavior (mutable operator guidance with a write trust allowlist).
  */
 export function fileMemory(opts: FileMemoryOptions): Augment {
   let cache: string | null = null;
   let activeSource = opts.source;
+  let activeWriteTarget = opts.source;
+  let writeQueue: Promise<void> = Promise.resolve();
 
   const read = async (label: string): Promise<MemoryEntry | null> => {
     if (label !== opts.label) return null;
@@ -47,8 +53,23 @@ export function fileMemory(opts: FileMemoryOptions): Augment {
             `fileMemory: label "${label}" does not match declared label "${opts.label}"`,
           );
         }
-        cache = content;
-        await writeFile(activeSource, content, "utf-8");
+
+        const queuedWrite = writeQueue.then(async () => {
+          const targetStat = await stat(activeWriteTarget);
+          const tempSource = `${activeWriteTarget}.auggy-${process.pid}-${randomUUID()}.tmp`;
+          try {
+            await writeFile(tempSource, content, {
+              encoding: "utf-8",
+              mode: targetStat.mode,
+            });
+            await rename(tempSource, activeWriteTarget);
+            cache = content;
+          } finally {
+            await rm(tempSource, { force: true });
+          }
+        });
+        writeQueue = queuedWrite.catch(() => undefined);
+        await queuedWrite;
       }
     : undefined;
 
@@ -122,6 +143,7 @@ export function fileMemory(opts: FileMemoryOptions): Augment {
         eviction: opts.eviction,
         ttl: opts.ttl ?? "persistent",
       },
+      writeTrustLevels: opts.writeTrustLevels,
       read,
       write,
     },
@@ -131,6 +153,7 @@ export function fileMemory(opts: FileMemoryOptions): Augment {
         try {
           cache = await readFile(source, "utf-8");
           activeSource = source;
+          activeWriteTarget = await realpath(source);
           return;
         } catch (err) {
           lastError = err;

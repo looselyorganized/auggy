@@ -12,6 +12,7 @@ import type {
   PeerIdentity,
   InboundMessage,
   RouteAuthContext,
+  ToolResult,
 } from "@/types";
 
 function makeTrigger(text: string, auth?: RouteAuthContext): TurnTrigger {
@@ -107,6 +108,100 @@ describe("TurnLoop", () => {
     expect(result.toolCalls[0]!.name).toBe("echo");
     expect(result.toolCalls[0]!.output).toBe("echoed-test");
     expect(model.calls).toHaveLength(2);
+  });
+
+  it("does not classify Error-prefixed plain string tool results as errors", async () => {
+    const model = createMockModel();
+    model.pushResponse({
+      content: "",
+      toolCalls: [{ name: "fail_string", arguments: {} }],
+      finishReason: "tool_use",
+    });
+    model.pushResponse({ content: "Handled", finishReason: "end_turn" });
+
+    const augment: Augment = {
+      name: "error-tools",
+      tools: [
+        {
+          name: "fail_string",
+          description: "Return an expected string failure",
+          category: "meta",
+          input: z.object({}),
+          execute: async () => "Error: NOT_PERSISTED: write failed",
+        },
+      ],
+    };
+    const loop = createTurnLoop({
+      augments: [augment],
+      model,
+      tokenizer: createTokenizer(),
+      config: { name: "test", model: "mock", augments: [] },
+    });
+    const events: KernelEvent[] = [];
+
+    const result = await loop.executeTurn(makeTrigger("Try it"), "thread-error-string", {
+      onEvent: (event) => events.push(event),
+    });
+
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        kind: "tool_call_result",
+        output: "Error: NOT_PERSISTED: write failed",
+        isError: false,
+      }),
+    );
+    expect(result.toolCalls).toEqual([
+      expect.objectContaining({
+        name: "fail_string",
+        output: "Error: NOT_PERSISTED: write failed",
+      }),
+    ]);
+  });
+
+  it("marks structured ToolResult failures as errors", async () => {
+    const model = createMockModel();
+    model.pushResponse({
+      content: "",
+      toolCalls: [{ name: "fail_structured", arguments: {} }],
+      finishReason: "tool_use",
+    });
+    model.pushResponse({ content: "Handled", finishReason: "end_turn" });
+
+    const augment: Augment = {
+      name: "error-tools",
+      tools: [
+        {
+          name: "fail_structured",
+          description: "Return an expected structured failure",
+          category: "meta",
+          input: z.object({}),
+          execute: async (): Promise<ToolResult> => ({
+            content: "The requested operation failed",
+            isError: true,
+          }),
+        },
+      ],
+    };
+    const loop = createTurnLoop({
+      augments: [augment],
+      model,
+      tokenizer: createTokenizer(),
+      config: { name: "test", model: "mock", augments: [] },
+    });
+    const events: KernelEvent[] = [];
+
+    const result = await loop.executeTurn(makeTrigger("Try it"), "thread-error-structured", {
+      onEvent: (event) => events.push(event),
+    });
+
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        kind: "tool_call_result",
+        output: "The requested operation failed",
+        isError: true,
+      }),
+    );
+    expect(result.toolCalls).toHaveLength(0);
   });
 
   it("executes protected tools when delegated authorization claims satisfy requirements", async () => {

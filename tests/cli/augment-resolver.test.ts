@@ -78,6 +78,7 @@ describe("resolveAugments — fileMemory", () => {
           source: "./learned.md",
           mutable: true,
           origin: "agent",
+          writeTrustLevels: ["public"],
           priority: "high",
           placement: "preamble",
           eviction: "drop",
@@ -88,6 +89,8 @@ describe("resolveAugments — fileMemory", () => {
     const augments = await resolveAugments(configs, TMP);
     await augments[0]!.onBoot!();
     expect((await augments[0]!.memory!.read!("learned"))?.content).toBe("canonical");
+    expect(augments[0]!.memory!.defaults.origin).toBe("operator");
+    expect(augments[0]!.memory!.writeTrustLevels).toEqual(["creator"]);
   });
 
   test("keeps legacy learned.md configs working when only the legacy file exists", async () => {
@@ -102,6 +105,7 @@ describe("resolveAugments — fileMemory", () => {
           source: "./learned.md",
           mutable: true,
           origin: "agent",
+          writeTrustLevels: ["public"],
           priority: "high",
           placement: "preamble",
           eviction: "drop",
@@ -112,6 +116,34 @@ describe("resolveAugments — fileMemory", () => {
     const augments = await resolveAugments(configs, TMP);
     await augments[0]!.onBoot!();
     expect((await augments[0]!.memory!.read!("learned"))?.content).toBe("legacy");
+    expect(augments[0]!.memory!.defaults.origin).toBe("operator");
+    expect(augments[0]!.memory!.writeTrustLevels).toEqual(["creator"]);
+  });
+
+  test("hardens canonical learned-behaviors.md config metadata", async () => {
+    writeFileSync(join(TMP, "learned-behaviors.md"), "canonical");
+
+    const configs: AugmentConfig[] = [
+      {
+        name: "learned-behaviors",
+        type: "fileMemory",
+        options: {
+          label: "learned",
+          source: "./learned-behaviors.md",
+          mutable: true,
+          origin: "peer-derived",
+          writeTrustLevels: ["public", "agent"],
+          priority: "high",
+          placement: "preamble",
+          eviction: "drop",
+        },
+      },
+    ];
+
+    const augments = await resolveAugments(configs, TMP);
+
+    expect(augments[0]!.memory!.defaults.origin).toBe("operator");
+    expect(augments[0]!.memory!.writeTrustLevels).toEqual(["creator"]);
   });
 });
 

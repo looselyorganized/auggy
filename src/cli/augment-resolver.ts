@@ -82,7 +82,10 @@ function resolveFileMemory(opts: Record<string, unknown>, agentDir: string): Aug
     source: learnedBehaviorBase ? `${learnedBehaviorBase}learned-behaviors.md` : resolvedSource,
     fallbackSources: learnedBehaviorBase ? [`${learnedBehaviorBase}learned.md`] : undefined,
     mutable: opts.mutable as boolean,
-    origin: opts.origin as ContextOrigin,
+    origin: isLearnedBehaviorStore ? "operator" : (opts.origin as ContextOrigin),
+    writeTrustLevels: isLearnedBehaviorStore
+      ? ["creator"]
+      : (opts.writeTrustLevels as ("creator" | "agent" | "public")[] | undefined),
     priority: opts.priority as "required" | "high" | "normal" | "low" | "evictable",
     placement: opts.placement as "system" | "preamble" | "assistant-preamble",
     eviction: opts.eviction as "never" | "summarize" | "drop",

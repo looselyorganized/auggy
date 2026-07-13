@@ -693,7 +693,8 @@ describe("runCreate scaffolding integration", () => {
       label: "learned",
       source: "./learned-behaviors.md",
       mutable: true,
-      origin: "agent",
+      origin: "operator",
+      writeTrustLevels: ["creator"],
       placement: "preamble",
     });
     expect(learnedMemory.config.origin).not.toBe("system");

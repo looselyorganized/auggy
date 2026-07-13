@@ -5,6 +5,8 @@ import type {
   NamespaceMemoryProvider,
   Tool,
   ToolExecuteContext,
+  ToolResult,
+  TrustLevel,
 } from "../types";
 import { defineTool } from "../helpers";
 import { effectiveTrustLevel } from "../kernel/capability-table";
@@ -15,7 +17,15 @@ const DEFAULT_MAX_MEMORY_OPS_PER_TURN = 20;
 const EMERGENCY_CLEANUP_THRESHOLD = 1000;
 const MAX_DERIVED_TOPIC_LENGTH = 80;
 const NO_PEER_MEMORY_GUIDANCE =
-  'No writable current-peer memory provider is available. Peer-specific facts require a writable namespace provider such as layeredMemory. Do not promise cross-session memory from this request. Agent-global learned behavior belongs in the exact "learned" label and is only appropriate for creator/agent-authorized operating guidance, not visitor facts.';
+  "No writable current-peer memory provider is available. Nothing was persisted. Peer-specific facts require a writable namespace provider such as layeredMemory and a stable peer identity for cross-session recall. Do not retry a peer fact under an agent-global label.";
+
+function notPersisted(message: string): ToolResult {
+  return { content: `NOT_PERSISTED: ${message}`, isError: true };
+}
+
+function persistenceUnknown(message: string): ToolResult {
+  return { content: `PERSISTENCE_UNKNOWN: ${message}`, isError: true };
+}
 
 /**
  * Phase 1b Task 7: explicit serializer for memory_search results.
@@ -58,9 +68,16 @@ function assertMemoryAccess(
   operation: "read" | "write" | "search" | "list",
   origin: ContextOrigin,
   context: ToolExecuteContext | undefined,
+  writeTrustLevels?: readonly TrustLevel[],
 ): string | null {
   if (!context) {
     return `Error: memory_${operation} requires turn context.`;
+  }
+  if (operation === "write" && writeTrustLevels) {
+    const trustLevel = effectiveTrustLevel(context.peer ?? null);
+    if (!writeTrustLevels.includes(trustLevel)) {
+      return `Error: memory_write on this destination requires ${writeTrustLevels.join(" or ")} trust. Current peer trust: ${trustLevel}.`;
+    }
   }
   if (origin === "peer-derived") {
     return null;
@@ -162,7 +179,7 @@ export function createMemoryTools(
   const memoryWrite = defineTool({
     name: "memory_write",
     description:
-      'Write content to memory. Use topic + content for current-peer memory; this requires a writable namespace provider such as layeredMemory. Use exact label "learned" only for creator/agent-authorized, agent-global learned behavior, not visitor facts.',
+      'Persist one of two distinct memory types. For a peer-specific fact, use topic + content; this requires a writable namespace provider such as layeredMemory. For creator-approved, agent-global operating behavior, use exact label "learned" + content. Never put visitor facts in "learned". Do not provide both label and topic. A write is persisted only when the result starts with PERSISTED.',
     category: "memory",
     input: z.object({
       label: z.string().optional().describe("Optional exact memory label to write to"),
@@ -178,17 +195,29 @@ export function createMemoryTools(
     }),
     execute: async ({ label, topic, provider: providerName, content }, context?) => {
       const budgetErr = checkBudget(context?.turnId ?? "unknown");
-      if (budgetErr) return budgetErr;
+      if (budgetErr) return notPersisted(budgetErr.replace(/^Error:\s*/, ""));
+
+      if (label && topic) {
+        return notPersisted(
+          "memory_write accepts either an exact label or a peer topic, not both. Nothing was persisted.",
+        );
+      }
 
       if (!label) {
         if (!topic) {
-          return "Error: memory_write requires either an exact label or a topic.";
+          return notPersisted(
+            "memory_write requires either an exact label or a topic. Nothing was persisted.",
+          );
         }
         if (!context) {
-          return "Error: memory_write by topic requires turn context.";
+          return notPersisted(
+            "memory_write by topic requires turn context. Nothing was persisted.",
+          );
         }
         if (!context.peer?.id) {
-          return "Error: memory_write by topic requires a current peer.";
+          return notPersisted(
+            "memory_write by topic requires a current peer. Nothing was persisted.",
+          );
         }
 
         const candidates = registry.namespaces
@@ -198,54 +227,90 @@ export function createMemoryTools(
             return (
               spec.owns.kind === "namespace" &&
               Boolean(spec.write) &&
-              assertMemoryAccess("write", spec.defaults.origin, context) === null
+              assertMemoryAccess("write", spec.defaults.origin, context, spec.writeTrustLevels) ===
+                null
             );
           });
 
         if (candidates.length === 0) {
           return providerName
-            ? `Error: No writable memory provider named "${providerName}" is available for this peer. ${NO_PEER_MEMORY_GUIDANCE}`
-            : `Error: ${NO_PEER_MEMORY_GUIDANCE}`;
+            ? notPersisted(
+                `No writable memory provider named "${providerName}" is available for this peer. ${NO_PEER_MEMORY_GUIDANCE}`,
+              )
+            : notPersisted(NO_PEER_MEMORY_GUIDANCE);
         }
         if (candidates.length > 1) {
           const names = candidates.map((candidate) => candidate.augment.name).join(", ");
-          return `Error: Multiple writable memory providers are available (${names}). Retry with provider.`;
+          return notPersisted(
+            `Multiple writable memory providers are available (${names}). Retry with provider. Nothing was persisted.`,
+          );
         }
 
         const candidate = candidates[0]!;
         const spec = candidate.augment.memory! as NamespaceMemoryProvider;
         const derivedLabel = labelForPeerTopic(spec.owns.prefix, context.peer.id, topic);
         if (!derivedLabel) {
-          return "Error: memory_write topic must contain at least one letter or number.";
+          return notPersisted(
+            "memory_write topic must contain at least one letter or number. Nothing was persisted.",
+          );
         }
 
-        await spec.write!(derivedLabel, content, {
-          peerId: context.peer.id,
-          trustLevel: context.peer.trustLevel,
-        });
-        return `Successfully wrote to "${derivedLabel}"`;
+        try {
+          await spec.write!(derivedLabel, content, {
+            peerId: context.peer.id,
+            trustLevel: context.peer.trustLevel,
+          });
+        } catch (err) {
+          console.error(
+            `[memory-bus] Provider "${candidate.augment.name}" failed to persist peer memory:`,
+            err,
+          );
+          return persistenceUnknown(
+            `The "${candidate.augment.name}" provider failed while writing this peer memory. The final persistence state is unknown; check the provider logs before retrying.`,
+          );
+        }
+        return `PERSISTED: Successfully wrote peer memory to "${derivedLabel}".`;
       }
 
       const provider = lookupProvider(registry, label);
-      if (!provider) return `Error: No provider owns label "${label}"`;
+      if (!provider) {
+        return notPersisted(`No provider owns label "${label}". Nothing was persisted.`);
+      }
 
       const spec = provider.memory!;
       if (!spec.write) {
-        return `Error: Memory label "${label}" is immutable (owned by "${provider.name}")`;
+        return notPersisted(
+          `Memory label "${label}" is immutable (owned by "${provider.name}"). Nothing was persisted.`,
+        );
       }
-
-      const accessErr = assertMemoryAccess("write", spec.defaults.origin, context);
-      if (accessErr) return accessErr;
-
       if (spec.owns.kind === "namespace") {
-        await spec.write(label, content, {
-          peerId: context?.peer?.id,
-          trustLevel: context?.peer?.trustLevel,
-        });
-      } else {
-        await spec.write(label, content);
+        return notPersisted(
+          `Exact-label writes are not allowed for namespace memory. Use topic so Auggy binds the write to the current peer. Nothing was persisted.`,
+        );
       }
-      return `Successfully wrote to "${label}"`;
+
+      const accessErr = assertMemoryAccess(
+        "write",
+        spec.defaults.origin,
+        context,
+        spec.writeTrustLevels,
+      );
+      if (accessErr) {
+        return notPersisted(`${accessErr.replace(/^Error:\s*/, "")} Nothing was persisted.`);
+      }
+
+      try {
+        await spec.write(label, content);
+      } catch (err) {
+        console.error(
+          `[memory-bus] Provider "${provider.name}" failed to persist "${label}":`,
+          err,
+        );
+        return persistenceUnknown(
+          `The "${provider.name}" provider failed while writing label "${label}". The final persistence state is unknown; check the provider logs before retrying.`,
+        );
+      }
+      return `PERSISTED: Successfully wrote memory to "${label}".`;
     },
   });
 

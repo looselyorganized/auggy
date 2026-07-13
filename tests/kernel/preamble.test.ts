@@ -79,8 +79,9 @@ describe("buildPreamble", () => {
       expect(preamble).toContain(
         "Never say that information was saved, remembered, or persisted until a tool result explicitly confirms a successful write",
       );
+      expect(preamble).toContain("If a result says NOT_PERSISTED, say that it was not saved");
       expect(preamble).toContain(
-        "If a write fails or no writable destination is available, say that it was not saved",
+        "If it says PERSISTENCE_UNKNOWN, say that persistence could not be confirmed",
       );
     });
   }

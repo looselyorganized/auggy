@@ -387,7 +387,7 @@ describe("webTransport adminInfo — posture row (G36 phase 3)", () => {
       expect(model.calls[0]!.systemBlocks[0]).toContain("(trust: creator)");
       expect(model.calls[0]!.systemBlocks[0]).toContain("Peer: Mike (human)");
       expect(model.calls[0]!.systemBlocks[0]).toContain("Runtime role: verified creator/operator");
-      expect(model.calls[0]!.systemBlocks[0]).toContain("learned-behavior updates");
+      expect(model.calls[0]!.systemBlocks[0]).toContain("agent-global learned behavior updates");
       expect(model.calls[0]!.systemBlocks[0]).not.toContain("anon-thread-creator");
     } finally {
       await agent.stop();

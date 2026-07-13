@@ -956,6 +956,7 @@ export function createTurnLoop(opts: {
                 output = raw;
               } else {
                 output = raw.content;
+                isError = raw.isError === true;
                 terminate = raw.terminate;
               }
             } catch (err) {

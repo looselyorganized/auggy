@@ -191,7 +191,12 @@ Read, write, search, and list enforce the same trust rule before executing:
 - otherwise              → DENY (public, or any future level below agent)
 ```
 
-This is structural defense alongside the prompt-based defenses (red-team 2026-04-16). The rule is encoded in `assertMemoryAccess(operation, origin, context)` and applied identically across read, write, search, and list. `memory_forget` has its own stricter destructive-action gate.
+For writes, a provider may additionally declare `writeTrustLevels`. This is an
+allowlist layered on top of the origin rule. The scaffolded `learned` provider
+uses `writeTrustLevels: ["creator"]`, so admitted agents and public peers cannot
+change agent-global behavior even though creator and agent trust can normally
+access non-peer memory. `memory_forget` has its own stricter destructive-action
+gate.
 
 Null peer (internal/scheduled triggers) is treated as creator trust per the convention from `effectiveTrustLevel` in capability-table.ts.
 
@@ -211,14 +216,17 @@ memory_write({
 })
 ```
 
-When `topic` is used, the runtime requires turn context and a current peer. It
+`label` and `topic` are mutually exclusive. Namespace memory only accepts the
+topic form so callers cannot forge another peer's internal label. When `topic`
+is used, the runtime requires turn context and a current peer. It
 finds the single writable namespace provider available to that peer and derives
 a label from the provider namespace, the current peer id, and the normalized
 topic. The model does not invent visitor IDs or internal labels. If multiple
 writable namespace providers are visible, the tool returns an error naming the
 candidates; retry with `provider`.
 
-Exact label writes are still supported:
+Exact label writes are still supported. The default `learned` label is for
+creator-approved agent-global operating behavior, never visitor facts:
 
 ```ts
 memory_write({ label: "learned", content: "..." })
@@ -227,8 +235,18 @@ memory_write({ label: "learned", content: "..." })
 For exact labels, routing is the same as `memory_read`: `lookupProvider` finds
 the owning provider. If the provider doesn't implement `write` (immutable), the
 tool returns `Error: Memory label "label" is immutable (owned by "name")`.
-Then it checks the trust gate, calls the provider's `write`, and returns
-`Successfully wrote to "label"`.
+Then it checks the trust gate and the provider write allowlist before calling
+`write`. Successful results begin with `PERSISTED`. Validation and authorization
+failures return a structured tool error beginning with `NOT_PERSISTED`. A
+provider exception returns `PERSISTENCE_UNKNOWN`, because a provider may have
+committed before throwing. The kernel marks both as tool errors. Provider
+exception details remain in server logs rather than being returned to the
+model.
+
+The synthetic memory-bus also emits a required, turn-scoped system block that
+lists exact writable labels and whether current-peer topic memory is actually
+available. This lets the model choose the right destination before attempting
+a write.
 
 ### `memory_search({ query, providers? })`
 

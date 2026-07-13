@@ -84,11 +84,20 @@ Implementation:
   writable destinations actually installed for the current turn.
 - Describe learned behavior and peer memory as distinct decisions in the
   `memory_write` schema.
-- Return explicit `PERSISTED` or `NOT_PERSISTED` outcomes from writes.
+- Return explicit `PERSISTED`, `NOT_PERSISTED`, or `PERSISTENCE_UNKNOWN`
+  outcomes. Provider exceptions are unknown because a provider may commit and
+  then throw.
+- Mark expected write failures as kernel tool errors while preserving the
+  existing string-returning tool API.
 - Catch provider write failures and report them as `NOT_PERSISTED` tool
   results rather than allowing an ambiguous exception path.
 - Update `fileMemory` cache only after the disk write succeeds.
-- Keep exact-label and topic inputs backward compatible.
+- Treat the default learned-behavior store as operator-origin guidance with a
+  creator-only write allowlist. Admitted agents may not mutate it by default.
+- Keep exact-label writes backward compatible for static providers and topic
+  writes for namespace providers.
+- Require topic-based namespace writes; accepting caller-authored namespace
+  labels would permit cross-peer label forgery in generic providers.
 
 Acceptance:
 

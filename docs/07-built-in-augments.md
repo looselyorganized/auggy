@@ -108,13 +108,13 @@ Two main use cases:
 
 **1. Identity / soul.** The agent's foundational character — who it is, how it talks, what it knows about itself. Pinned (`mutable: false`), operator-origin, system-placement, never-evict. The model sees it on every turn as part of the system prompt. This is what makes Zip "Zip" instead of a generic assistant.
 
-**2. Self-notes / learned behavior.** A scratchpad the agent can update across
-turns. Mutable file-backed memory is agent-origin, preamble-placement, and
-drop-on-eviction by default. The model can read and write it via the generic
-`memory_write` and `memory_read` tools. Use it for low-risk learned behavior
-and open commitments. Do not use it for operator identity, authorization facts,
-or durable per-visitor profile data; peer-scoped memory belongs in
-`layeredMemory`.
+**2. Creator-approved learned behavior.** Agent-global operating guidance the
+runtime-verified creator can update across turns. The default store is
+operator-origin, preamble-placement, drop-on-eviction, and creator-only for
+writes. The model reads and writes it through the generic `memory_read` and
+`memory_write({ label: "learned", ... })` tools. Do not use it for operator
+identity, authorization facts, autonomous policy changes, or durable
+per-visitor profile data; peer-scoped memory belongs in `layeredMemory`.
 
 ### Why it's built in
 
@@ -129,6 +129,7 @@ export interface FileMemoryOptions {
   label: string;                    // the static label this provider owns
   source: string;                   // absolute file path
   mutable: boolean;                 // whether write() is exposed
+  writeTrustLevels?: TrustLevel[];  // optional additional write allowlist
   origin: ContextOrigin;            // "operator" | "system" | "agent" | "agent-derived" | "peer-derived"
   priority: ContextPriority;        // "required" | "high" | "normal" | "low" | "evictable"
   placement: ContextPlacement;      // "system" | "preamble" | "assistant-preamble"
@@ -137,13 +138,18 @@ export interface FileMemoryOptions {
 }
 ```
 
-The `MemoryDefaults` for the synthesized context block come from these options directly. Setting `placement: "system"` is what makes the file's content show up in the model's system prompt rather than in the user-side context wrapper.
+The `MemoryDefaults` for the synthesized context block come from these options
+directly. Mutable writes are serialized and update the in-memory cache only
+after the disk write succeeds. Setting `placement: "system"` is what makes the
+file's content show up in the model's system prompt rather than in the
+user-side context wrapper.
 
 ### Implementation notes
 
 ```ts
 export function fileMemory(opts: FileMemoryOptions): Augment {
   let cache: string | null = null;
+  let writeQueue: Promise<void> = Promise.resolve();
 
   const read = async (label: string): Promise<MemoryEntry | null> => {
     if (label !== opts.label) return null;
@@ -156,8 +162,12 @@ export function fileMemory(opts: FileMemoryOptions): Augment {
         if (label !== opts.label) {
           throw new Error(`fileMemory: label "${label}" does not match declared label "${opts.label}"`);
         }
-        cache = content;
-        await writeFile(opts.source, content, "utf-8");
+        const queuedWrite = writeQueue.then(async () => {
+          await writeFile(opts.source, content, "utf-8");
+          cache = content;
+        });
+        writeQueue = queuedWrite.catch(() => undefined);
+        await queuedWrite;
       }
     : undefined;
 
@@ -185,7 +195,11 @@ A few things to note:
 
 - **`write()` validates the label.** Even though `lookupProvider` should never route a non-matching label here, the check prevents bugs where a caller passes the wrong label directly. Defense in depth.
 
-- **`write()` writes to cache then disk.** If the disk write fails, the cache is already updated — there's a brief window where in-memory and disk diverge. v1 doesn't try to atomically swap them; if you need that, write a different provider. The trade-off: simpler code, the failure mode (write failure) is rare and the consequences (in-memory ahead of disk) are non-fatal until restart.
+- **`write()` serializes writes and atomically replaces the resolved target.**
+  Content is first written to a same-directory temporary file and then renamed
+  over the target. A failed temporary write leaves the destination and prior
+  cache intact, later queued writes can still proceed, and symlink-backed
+  source paths keep pointing at the updated target.
 
 - **The provider is *static* with one label.** A future enhancement could be a "directory of files" provider that loads multiple labels from a directory. v1 is intentionally minimal — the contract supports it via `labels: string[]`.
 
