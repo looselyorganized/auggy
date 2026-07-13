@@ -1,6 +1,6 @@
 # `@auggy/admin` — Per-agent creator console
 
-The `/console` SPA. Vite + React + Tailwind + shadcn. Served by
+The `/console` SPA. Vite + React + Tailwind 4 + local shadcn registry output. Served by
 `src/transports/admin/` from `admin/dist/` on each agent's own port at
 `GET /console`.
 
@@ -32,17 +32,14 @@ memory, auth posture, and warnings.
 admin/
 ├── index.html                  Vite entry HTML with pre-paint theme apply
 ├── package.json
-├── tailwind.config.ts          shadcn token theme
-├── postcss.config.js
-├── components.json             shadcn CLI config (for future `bunx shadcn add ...`)
 ├── tsconfig.json
 ├── vite.config.ts              base: '/console/', port 5174
 └── src/
     ├── main.tsx                React bootstrap, BrowserRouter basename="/console"
     ├── App.tsx                 Shell composition: Header + console routes
-    ├── index.css               Tailwind directives + shadcn CSS vars (light + .dark)
+    ├── index.css               Imports local Auggy Tailwind 4 tokens
     ├── components/
-    │   ├── ui/                 shadcn primitives (Button, Card, …)
+    │   ├── ui/                 Generated Auggy registry primitives
     │   └── layout/             Header
     ├── lib/
     │   ├── utils.ts            cn() — clsx + tailwind-merge
@@ -50,11 +47,16 @@ admin/
     └── routes/                 Live Chat, Integrations, and Capabilities surfaces
 ```
 
-## Adding shadcn components
+## Shared UI Registry
+
+Shared primitives and Tailwind 4 tokens live in the standalone sibling registry
+`../../auggy-ui`. This app owns generated source under `src/components/ui`.
 
 ```bash
-cd admin
-bunx shadcn@latest add dialog tooltip toast separator
-```
+cd ../../auggy-ui
+bunx shadcn@latest add dialog tooltip separator
+bun run build
 
-Generated files land in `src/components/ui/`.
+cd ../augment-1/admin
+bunx shadcn@latest add @auggy/dialog @auggy/tooltip @auggy/separator
+```

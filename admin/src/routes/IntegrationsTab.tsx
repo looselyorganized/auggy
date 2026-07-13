@@ -445,10 +445,14 @@ function Endpoint({
         {copied === label ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
       </Button>
       {openable ? (
-        <Button variant="ghost" size="icon" className="size-7" asChild>
-          <a href={value} target="_blank" rel="noreferrer" aria-label={`Open ${label}`}>
-            <ExternalLink className="size-3.5" />
-          </a>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="size-7"
+          nativeButton={false}
+          render={<a href={value} target="_blank" rel="noreferrer" aria-label={`Open ${label}`} />}
+        >
+          <ExternalLink className="size-3.5" />
         </Button>
       ) : (
         <span className="size-7" aria-hidden="true" />

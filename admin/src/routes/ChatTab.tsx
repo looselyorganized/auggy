@@ -335,18 +335,7 @@ export function ChatTab() {
   }
 
   return (
-    <div className="relative h-full overflow-hidden bg-background">
-      <div
-        className="pointer-events-none absolute inset-0 opacity-45"
-        aria-hidden="true"
-        style={{
-          backgroundImage:
-            "linear-gradient(hsl(var(--border) / 0.45) 1px, transparent 1px), linear-gradient(90deg, hsl(var(--border) / 0.45) 1px, transparent 1px)",
-          backgroundSize: "32px 32px",
-        }}
-      />
-      <div className="pointer-events-none absolute inset-x-0 top-0 h-24 bg-gradient-to-b from-background to-transparent" />
-
+    <div className="auggy-grid-surface h-full bg-background">
       <MessageList
         messages={messages}
         streaming={streaming}

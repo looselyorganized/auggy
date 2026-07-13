@@ -40,12 +40,19 @@ export function Header({ port, online, dashboard }: HeaderProps) {
   return (
     <header className="flex h-16 items-center justify-between gap-3 border-b bg-background/90 px-4">
       <div className="flex min-w-0 items-center gap-3 overflow-hidden">
-        <span className="grid size-8 shrink-0 place-items-center rounded-md border border-foreground bg-foreground text-[13px] font-extrabold text-background">
-          A1
-        </span>
-        <div className="hidden shrink-0 sm:block">
-          <p className="text-sm font-semibold leading-4">Auggy</p>
-          <p className="text-xs text-muted-foreground">Creator console</p>
+        <div
+          className="grid size-8 shrink-0 place-items-center rounded-md border border-zinc-700 bg-zinc-950"
+          aria-hidden="true"
+        >
+          <img src="/console/brand/a1-logo.svg" alt="" className="h-7 w-auto" />
+        </div>
+        <div className="hidden min-w-0 shrink-0 sm:block" aria-label="Auggy creator console">
+          <img
+            src="/console/brand/auggy-white.png"
+            alt="Auggy"
+            className="h-5 w-auto max-w-24 invert dark:invert-0"
+          />
+          <span className="sr-only">Creator console</span>
         </div>
         {port !== undefined && (
           <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
@@ -115,10 +122,10 @@ function AgentDetailsButton({
 
   return (
     <Dialog>
-      <DialogTrigger asChild>
-        <Button variant="ghost" size="icon" aria-label="Agent details" title="Agent details">
+      <DialogTrigger
+        render={<Button variant="ghost" size="icon" aria-label="Agent details" title="Agent details" />}
+      >
           <Info className="size-4" />
-        </Button>
       </DialogTrigger>
       <DialogContent className="max-w-xl">
         <DialogHeader>
