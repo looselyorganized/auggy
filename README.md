@@ -455,15 +455,14 @@ bunx tsc --noEmit
 For a local CLI install from this checkout:
 
 ```bash
-npm pack
-PACK="$(ls -t auggy-*.tgz | head -1)"
-npm i -g "$PWD/$PACK"
-export AUGGY_SCAFFOLD_AUGGY_SPEC="file:$PWD/$PACK"
+bun link
+auggy --version
 ```
 
-That last export matters only for local tarball testing. It makes agents
-created by this CLI install the exact packed runtime under test instead of the
-latest `auggy` package already published on npm.
+The linked CLI runs directly from source. Agents created inside this checkout
+also resolve `auggy` and the selected `@auggy/<provider>` adapter from local
+source, so unpublished coordinated versions install without tarballs. Normal
+npm installations continue to use semver.
 
 ## Documentation
 

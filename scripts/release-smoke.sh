@@ -149,6 +149,7 @@ info "create agent through PTY"
   ) | script -q /dev/null env \
     HOME="$SMOKE_HOME" \
     AUGGY_SCAFFOLD_AUGGY_SPEC="file:$TARBALL" \
+    AUGGY_SCAFFOLD_ENGINE_SPEC="file:$ANTHROPIC_TARBALL" \
     "$CLI" create "$AGENT_NAME" --skip-install
 ) >"$LOG_DIR/create.log" 2>&1
 
@@ -156,15 +157,8 @@ AGENT_DIR="$SMOKE_DIR/$AGENT_NAME"
 [[ -f "$AGENT_DIR/agent.yaml" ]] || fail "agent.yaml was not created"
 grep -q "\"auggy\": \"file:$TARBALL\"" "$AGENT_DIR/package.json" \
   || fail "agent package.json did not pin auggy to the packed tarball"
-grep -q "\"@auggy/anthropic\": \"^$(node -p "require('$ROOT/package.json').version")\"" "$AGENT_DIR/package.json" \
-  || fail "agent package.json did not caret-pin @auggy/anthropic to the package version"
-node - "$AGENT_DIR/package.json" "$ANTHROPIC_TARBALL" <<'NODE'
-const { readFileSync, writeFileSync } = require("node:fs");
-const [manifestPath, tarball] = process.argv.slice(2);
-const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
-manifest.dependencies["@auggy/anthropic"] = `file:${tarball}`;
-writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
-NODE
+grep -q "\"@auggy/anthropic\": \"file:$ANTHROPIC_TARBALL\"" "$AGENT_DIR/package.json" \
+  || fail "agent package.json did not pin @auggy/anthropic to the packed adapter"
 assert_agent_uses_folder_backed_augments fileMemory filesystem webTransport webFetch turnControl
 
 SMOKE_PORT="$(

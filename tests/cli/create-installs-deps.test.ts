@@ -100,11 +100,16 @@ describe("runCreate writes per-agent package.json", () => {
     expect(pkg.dependencies["@auggy/anthropic"]).toBeDefined();
   });
 
-  test("uses a nearby packed local auggy tarball when scaffolding from a release smoke dir", async () => {
+  test("uses local core and adapter source inside an Auggy checkout", async () => {
     answers = { provider: "anthropic", model: "claude-sonnet-4-6" };
     const version = getAuggyVersion();
-    const tarballPath = join(projectParent, `auggy-${version}.tgz`);
-    writeFileSync(tarballPath, "placeholder");
+    writeFileSync(join(projectParent, "package.json"), JSON.stringify({ name: "auggy", version }));
+    const adapterDir = join(projectParent, "packages", "anthropic");
+    mkdirSync(adapterDir, { recursive: true });
+    writeFileSync(
+      join(adapterDir, "package.json"),
+      JSON.stringify({ name: "@auggy/anthropic", version }),
+    );
     const smokeDir = join(projectParent, ".auggy-dx-lab");
     mkdirSync(smokeDir, { recursive: true });
 
@@ -116,8 +121,8 @@ describe("runCreate writes per-agent package.json", () => {
     const pkg = JSON.parse(
       readFileSync(join(smokeDir, "demo-local-runtime", "package.json"), "utf-8"),
     );
-    expect(pkg.dependencies.auggy).toBe(`file:${tarballPath}`);
-    expect(pkg.dependencies["@auggy/anthropic"]).toBe(`^${version}`);
+    expect(pkg.dependencies.auggy).toBe(`file:${projectParent}`);
+    expect(pkg.dependencies["@auggy/anthropic"]).toBe(`file:${adapterDir}`);
   });
 });
 

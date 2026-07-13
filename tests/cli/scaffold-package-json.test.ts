@@ -9,6 +9,7 @@ import {
   getAuggyVersion,
   mergePackageDeps,
   resolveAuggyPackageSpecifierForCreate,
+  resolveScaffoldPackageSpecifiersForCreate,
 } from "../../src/cli/scaffold-package-json";
 import type { CatalogEntry } from "../../src/cli/augment-catalog";
 
@@ -87,6 +88,24 @@ describe("buildAgentPackageJson", () => {
     expect(parsed.dependencies).toEqual({
       auggy: "file:/tmp/auggy-0.3.1.tgz",
       "@auggy/anthropic": "^0.3.1",
+    });
+  });
+
+  test("can override core and provider package specs as one local package set", () => {
+    const text = buildAgentPackageJson({
+      agentName: "demo",
+      auggyVersion: "0.5.0",
+      provider: "anthropic",
+      augments: [],
+      packageSpecifiers: {
+        auggy: "file:/tmp/auggy-0.5.0.tgz",
+        "@auggy/anthropic": "file:/src/packages/anthropic",
+      },
+    });
+
+    expect(JSON.parse(text).dependencies).toEqual({
+      auggy: "file:/tmp/auggy-0.5.0.tgz",
+      "@auggy/anthropic": "file:/src/packages/anthropic",
     });
   });
 
@@ -332,6 +351,129 @@ describe("resolveAuggyPackageSpecifierForCreate", () => {
         env: {},
       }),
     ).toBeUndefined();
+  });
+});
+
+describe("resolveScaffoldPackageSpecifiersForCreate", () => {
+  function writePackage(dir: string, name: string, version: string): void {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "package.json"), JSON.stringify({ name, version }));
+  }
+
+  test("coordinates core and provider directly from an Auggy source checkout", () => {
+    const root = tempDir();
+    const version = "9.9.9";
+    writePackage(root, "auggy", version);
+    writePackage(join(root, "packages", "anthropic"), "@auggy/anthropic", version);
+
+    expect(
+      resolveScaffoldPackageSpecifiersForCreate({
+        cwd: join(root, "test-agent"),
+        provider: "anthropic",
+        version,
+        env: {},
+      }),
+    ).toEqual({
+      auggy: `file:${root}`,
+      "@auggy/anthropic": `file:${join(root, "packages", "anthropic")}`,
+    });
+  });
+
+  test("uses the linked source root when create runs outside the checkout", () => {
+    const root = tempDir();
+    const externalCwd = tempDir();
+    const version = "9.9.9";
+    writePackage(root, "auggy", version);
+    writePackage(join(root, "packages", "anthropic"), "@auggy/anthropic", version);
+
+    expect(
+      resolveScaffoldPackageSpecifiersForCreate({
+        cwd: externalCwd,
+        sourceRoot: root,
+        provider: "anthropic",
+        version,
+        env: {},
+      }),
+    ).toEqual({
+      auggy: `file:${root}`,
+      "@auggy/anthropic": `file:${join(root, "packages", "anthropic")}`,
+    });
+  });
+
+  test("includes OpenAI when a local OpenRouter adapter depends on it", () => {
+    const root = tempDir();
+    const version = "9.9.9";
+    writePackage(root, "auggy", version);
+    writePackage(join(root, "packages", "openai"), "@auggy/openai", version);
+    writePackage(join(root, "packages", "openrouter"), "@auggy/openrouter", version);
+
+    expect(
+      resolveScaffoldPackageSpecifiersForCreate({
+        cwd: root,
+        provider: "openrouter",
+        version,
+        env: {},
+      }),
+    ).toEqual({
+      auggy: `file:${root}`,
+      "@auggy/openai": `file:${join(root, "packages", "openai")}`,
+      "@auggy/openrouter": `file:${join(root, "packages", "openrouter")}`,
+    });
+  });
+
+  test("an explicit core tarball overrides source checkout discovery", () => {
+    const root = tempDir();
+    const version = "9.9.9";
+    writePackage(root, "auggy", version);
+    writePackage(join(root, "packages", "anthropic"), "@auggy/anthropic", version);
+
+    expect(
+      resolveScaffoldPackageSpecifiersForCreate({
+        cwd: root,
+        sourceRoot: false,
+        provider: "anthropic",
+        version,
+        env: {
+          AUGGY_SCAFFOLD_AUGGY_SPEC: "file:/packs/auggy.tgz",
+        } as NodeJS.ProcessEnv,
+      }),
+    ).toEqual({
+      auggy: "file:/packs/auggy.tgz",
+      "@auggy/anthropic": `file:${join(root, "packages", "anthropic")}`,
+    });
+  });
+
+  test("supports an explicit packed engine adapter outside a checkout", () => {
+    const root = tempDir();
+    const coreTarball = join(root, "auggy.tgz");
+
+    expect(
+      resolveScaffoldPackageSpecifiersForCreate({
+        cwd: root,
+        sourceRoot: false,
+        provider: "anthropic",
+        version: "9.9.9",
+        env: {
+          AUGGY_SCAFFOLD_AUGGY_SPEC: `file:${coreTarball}`,
+          AUGGY_SCAFFOLD_ENGINE_SPEC: " file:/packs/auggy-anthropic.tgz ",
+        } as NodeJS.ProcessEnv,
+      }),
+    ).toEqual({
+      auggy: `file:${coreTarball}`,
+      "@auggy/anthropic": "file:/packs/auggy-anthropic.tgz",
+    });
+  });
+
+  test("leaves provider resolution on semver for normal registry installs", () => {
+    expect(
+      resolveScaffoldPackageSpecifiersForCreate({
+        cwd: tempDir(),
+        sourceRoot: false,
+        provider: "anthropic",
+        version: "9.9.9",
+        env: {},
+      }),
+    ).toEqual({});
   });
 });
 

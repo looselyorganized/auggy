@@ -99,11 +99,17 @@ npm i -g "$PWD/$PACK"
 export AUGGY_SCAFFOLD_AUGGY_SPEC="file:$PWD/$PACK"
 ```
 
-Without `AUGGY_SCAFFOLD_AUGGY_SPEC`, `auggy create` writes the normal npm
-range (`^X.Y.Z`), so a pre-release smoke can accidentally install an older
-published package with the same version. Before the matching engine adapters are
-published, a full agent dependency install also needs local adapter tarballs;
-use `bun run smoke:release` for that path.
+From the repository checkout, `auggy create` automatically pairs that local
+core tarball with the matching local provider adapter under `packages/`. For a
+smoke test outside the checkout, also pack the selected adapter and set
+`AUGGY_SCAFFOLD_ENGINE_SPEC=file:/absolute/path/to/adapter.tgz`.
+
+Outside an Auggy source checkout, omitting `AUGGY_SCAFFOLD_AUGGY_SPEC` makes
+`auggy create` write the normal npm range (`^X.Y.Z`), so a pre-release smoke can
+accidentally install an older published package with the same version. Before
+the matching engine adapters are published, a full isolated agent dependency
+install also needs local adapter tarballs; use `bun run smoke:release` for that
+path.
 
 For the post-publish walkthrough, use the public package:
 
