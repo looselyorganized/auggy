@@ -202,7 +202,11 @@ export function resolveScaffoldPackageSpecifiersForCreate(
     (linkedSourceRoot && isMatchingAuggyWorkspace(linkedSourceRoot, version, opts.provider)
       ? linkedSourceRoot
       : undefined);
-  const explicitAuggySpecifier = getAuggyPackageSpecifierOverride(env);
+  const explicitAuggySpecifier = usableOverrideOrFallback(
+    getAuggyPackageSpecifierOverride(env),
+    cwd,
+    Boolean(workspaceRoot),
+  );
   const auggySpecifier =
     explicitAuggySpecifier ??
     (workspaceRoot
@@ -212,7 +216,11 @@ export function resolveScaffoldPackageSpecifiersForCreate(
 
   if (auggySpecifier) specifiers.auggy = auggySpecifier;
 
-  const explicitEngineSpecifier = env.AUGGY_SCAFFOLD_ENGINE_SPEC?.trim();
+  const explicitEngineSpecifier = usableOverrideOrFallback(
+    env.AUGGY_SCAFFOLD_ENGINE_SPEC?.trim(),
+    cwd,
+    Boolean(workspaceRoot),
+  );
   if (explicitEngineSpecifier) {
     specifiers[PROVIDER_TO_PACKAGE[opts.provider]] = explicitEngineSpecifier;
   }
@@ -301,6 +309,18 @@ function isMatchingLocalPackage(dir: string, packageName: string, version: strin
   } catch {
     return false;
   }
+}
+
+function usableOverrideOrFallback(
+  specifier: string | undefined,
+  cwd: string,
+  fallbackAvailable: boolean,
+): string | undefined {
+  if (!specifier?.startsWith("file:") || !fallbackAvailable) return specifier;
+
+  const rawPath = specifier.slice("file:".length);
+  const targetPath = resolve(cwd, rawPath);
+  return existsSync(targetPath) ? specifier : undefined;
 }
 
 /**

@@ -424,8 +424,10 @@ describe("resolveScaffoldPackageSpecifiersForCreate", () => {
   test("an explicit core tarball overrides source checkout discovery", () => {
     const root = tempDir();
     const version = "9.9.9";
+    const coreTarball = join(root, "auggy.tgz");
     writePackage(root, "auggy", version);
     writePackage(join(root, "packages", "anthropic"), "@auggy/anthropic", version);
+    writeFileSync(coreTarball, "placeholder");
 
     expect(
       resolveScaffoldPackageSpecifiersForCreate({
@@ -434,11 +436,34 @@ describe("resolveScaffoldPackageSpecifiersForCreate", () => {
         provider: "anthropic",
         version,
         env: {
-          AUGGY_SCAFFOLD_AUGGY_SPEC: "file:/packs/auggy.tgz",
+          AUGGY_SCAFFOLD_AUGGY_SPEC: `file:${coreTarball}`,
         } as NodeJS.ProcessEnv,
       }),
     ).toEqual({
-      auggy: "file:/packs/auggy.tgz",
+      auggy: `file:${coreTarball}`,
+      "@auggy/anthropic": `file:${join(root, "packages", "anthropic")}`,
+    });
+  });
+
+  test("ignores stale missing file overrides when linked source is available", () => {
+    const root = tempDir();
+    const version = "9.9.9";
+    writePackage(root, "auggy", version);
+    writePackage(join(root, "packages", "anthropic"), "@auggy/anthropic", version);
+
+    expect(
+      resolveScaffoldPackageSpecifiersForCreate({
+        cwd: tempDir(),
+        sourceRoot: root,
+        provider: "anthropic",
+        version,
+        env: {
+          AUGGY_SCAFFOLD_AUGGY_SPEC: "file:/deleted/auggy.tgz",
+          AUGGY_SCAFFOLD_ENGINE_SPEC: "file:/deleted/auggy-anthropic.tgz",
+        } as NodeJS.ProcessEnv,
+      }),
+    ).toEqual({
+      auggy: `file:${root}`,
       "@auggy/anthropic": `file:${join(root, "packages", "anthropic")}`,
     });
   });
