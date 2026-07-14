@@ -627,6 +627,7 @@ const fs = filesystem({
     { name: "workspace", path: "./workspace",  writable: true, deletable: true },
     { name: "repo",      path: "/repos/platform", writable: false },
   ],
+  workspaceAwareness: { enabled: true, maxEntries: 24, maxDepth: 4 },
 });
 ```
 
@@ -645,7 +646,12 @@ guidance. The filesystem augment IS the skill loader. Bundled skill folders
 for each tool-providing augment are copied into
 `<agent-dir>/skills/<augment-name>/` at scaffold time.
 
-**2. Agent workspace.** The agent needs to create, read, and manage files as part of its work — drafts, notes, reports, intermediate outputs.
+**2. Agent workspace.** The agent needs to create, read, and manage files as
+part of its work — drafts, notes, reports, and intermediate outputs. A mount
+named `workspace` automatically contributes a bounded, metadata-only catalog
+to creator and agent turns. The catalog ranks filenames against the current
+request, giving the model cheap awareness before it chooses `fs_search`,
+`fs_list`, or `fs_read`. File contents are never injected automatically.
 
 Additional use cases: reading external code repositories (read-only mount), writing to shared output directories, accessing configuration files.
 
@@ -676,6 +682,15 @@ interface FsMount {
   maxWriteSize?: number;  // cap on fs_write content. Default 1MB.
   searchExcludes?: string[]; // glob excludes. Default [".git", "node_modules", ".next", "__pycache__"]
 }
+
+interface WorkspaceAwarenessOptions {
+  enabled?: boolean;      // auto-enabled when a "workspace" mount exists
+  mount?: string;         // default "workspace"
+  maxEntries?: number;    // context paths, default 24, max 100
+  scanLimit?: number;     // inspected entries, default 500, max 5000
+  maxDepth?: number;      // default 4, max 12
+  trustLevels?: TrustLevel[]; // default ["creator", "agent"]
+}
 ```
 
 Three permission tiers: **read-only** (default) → **writable** → **writable + deletable**.
@@ -689,12 +704,18 @@ Three permission tiers: **read-only** (default) → **writable** → **writable 
 - **Per-mount permissions** — enforced on every operation before any file I/O
 - **Mount isolation** — each mount is an independent security boundary; no cross-mount path references
 - **Per-trust-level structural defaults** — the augment ships with `perTrustLevel: { public: { neverExpose: ["fs_write", "fs_mkdir", "fs_remove"] }, agent: { neverExpose: ["fs_remove"] } }`. Public peers structurally cannot see the three mutation tools; agent peers cannot see `fs_remove`. This runs at the capability table *before* the model sees the tool list (Layer 1 enforcement). Mount-level `writable` / `deletable` flags remain as a complementary defense — they run inside the tool after it has already been called, so they catch operator-authorized tools being called against the wrong mount.
+- **Metadata-only workspace awareness** — the catalog skips hidden paths,
+  configured search excludes, and symlinks; bounds traversal by count and
+  depth; and injects filenames as `[AGENT-DERIVED]` observations rather than
+  trusted instructions. Public turns do not receive it unless explicitly
+  configured.
 
 ### Lifecycle
 
 | Hook | What it does |
 |------|-------------|
 | `onBoot` | Resolves and caches all mount root paths. Optionally loads a SKILL.md if `skillFile` is configured. |
+| `context` | Produces bounded workspace policy/catalog blocks for allowed peers; scans metadata only. |
 | `onShutdown` | None. |
 
 ### Important constraint

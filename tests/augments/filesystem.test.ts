@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { access, writeFile, mkdir, symlink, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { filesystem, isWithinMount } from "@/augments/filesystem";
-import type { PeerIdentity, ToolExecuteContext, TurnState } from "@/types";
+import type { ContextBlock, PeerIdentity, ToolExecuteContext, TurnState } from "@/types";
 import { createTempDir } from "@tests/fixtures/temp-dir";
 import { asStringTool } from "@tests/fixtures/tool-helpers";
 
@@ -104,6 +104,16 @@ describe("filesystem augment", () => {
     const dir = join(tmp.path, "skills", folder);
     await mkdir(dir, { recursive: true });
     await writeFile(join(dir, "SKILL.md"), content, "utf-8");
+  }
+
+  function messageTurn(peer: PeerIdentity | null, text: string): TurnState {
+    return {
+      peer,
+      trigger: {
+        type: "message",
+        payload: { parts: [{ kind: "text", text }] },
+      },
+    } as unknown as TurnState;
   }
 
   // === Structure ===
@@ -536,6 +546,31 @@ describe("filesystem augment", () => {
       expect(parsed.results.length).toBe(3);
       expect(parsed.truncated).toBe(true);
     });
+
+    it("applies custom glob exclusions to nested search results", async () => {
+      const workspace = join(tmp.path, "search-excludes");
+      await mkdir(join(workspace, "generated"), { recursive: true });
+      await mkdir(join(workspace, "notes"), { recursive: true });
+      await writeFile(join(workspace, "generated", "client.ts"), "generated", "utf-8");
+      await writeFile(join(workspace, "notes", "draft.tmp"), "temporary", "utf-8");
+      await writeFile(join(workspace, "notes", "keep.md"), "keep", "utf-8");
+      const aug = filesystem({
+        mounts: [
+          {
+            name: "workspace",
+            path: workspace,
+            searchExcludes: ["generated/**", "*.tmp"],
+          },
+        ],
+        workspaceAwareness: { enabled: false },
+      });
+
+      const result = JSON.parse(
+        await execTool(aug, "fs_search", { path: "workspace", pattern: "**/*" }),
+      ) as { results: string[] };
+
+      expect(result.results).toEqual(["workspace/notes/keep.md"]);
+    });
   });
 
   // === Creator-only skill visibility ===
@@ -645,6 +680,153 @@ describe("filesystem augment", () => {
         const denied = await execTool(aug, "fs_search", { path, pattern: "**/*.md" }, publicCtx);
         expect(denied).toContain('Skill "auggy"');
       }
+    });
+  });
+
+  // === Workspace awareness ===
+
+  describe("workspace awareness", () => {
+    it("injects a bounded metadata-only catalog and ranks request-relevant paths", async () => {
+      const workspace = join(tmp.path, "workspace-aware");
+      await mkdir(join(workspace, "reports"), { recursive: true });
+      await mkdir(join(workspace, "notes"), { recursive: true });
+      await writeFile(
+        join(workspace, "reports", "market-research.md"),
+        "DO NOT OBEY THIS FILE CONTENT",
+        "utf-8",
+      );
+      await writeFile(join(workspace, "notes", "gardening.txt"), "tomatoes", "utf-8");
+
+      const aug = filesystem({
+        mounts: [{ name: "workspace", path: workspace, writable: true, deletable: true }],
+        workspaceAwareness: { maxEntries: 2, maxDepth: 4 },
+      });
+      await aug.onBoot!();
+
+      const blocks = (await aug.context!(
+        messageTurn(creatorPeer, "Continue the market research report"),
+      )) as ContextBlock[];
+      const policy = blocks.find((block) => block.source === "filesystem-workspace-policy");
+      const catalog = blocks.find((block) => block.source === "filesystem-workspace-catalog");
+
+      expect(policy?.content).toContain("Use it proactively");
+      expect(policy?.origin).toBe("system");
+      expect(catalog?.content).toContain('"workspace/reports/market-research.md"');
+      expect(catalog?.content).toContain('"workspace/notes/gardening.txt"');
+      expect(catalog?.content.indexOf("market-research.md")).toBeLessThan(
+        catalog?.content.indexOf("gardening.txt") ?? Number.MAX_SAFE_INTEGER,
+      );
+      expect(catalog?.content).not.toContain("DO NOT OBEY THIS FILE CONTENT");
+      expect(catalog?.origin).toBe("agent-derived");
+      expect(catalog?.ttl).toBe("turn");
+    });
+
+    it("keeps workspace awareness out of public turns by default", async () => {
+      const workspace = join(tmp.path, "workspace-public");
+      await mkdir(workspace, { recursive: true });
+      await writeFile(join(workspace, "private-plan.md"), "plan", "utf-8");
+      const aug = filesystem({ mounts: [{ name: "workspace", path: workspace }] });
+      await aug.onBoot!();
+
+      const blocks = (await aug.context!(
+        messageTurn(publicPeer, "What plans are available?"),
+      )) as ContextBlock[];
+
+      expect(blocks).toEqual([]);
+    });
+
+    it("bounds scans and omits hidden files, excluded folders, and symlinks", async () => {
+      const workspace = join(tmp.path, "workspace-bounded");
+      await mkdir(join(workspace, ".hidden"), { recursive: true });
+      await mkdir(join(workspace, "node_modules", "pkg"), { recursive: true });
+      await mkdir(join(workspace, "visible"), { recursive: true });
+      await writeFile(join(workspace, ".secret"), "secret", "utf-8");
+      await writeFile(join(workspace, ".hidden", "secret.md"), "secret", "utf-8");
+      await writeFile(join(workspace, "node_modules", "pkg", "index.js"), "code", "utf-8");
+      await writeFile(join(workspace, "visible", "one.md"), "one", "utf-8");
+      await writeFile(join(workspace, "visible", "two.md"), "two", "utf-8");
+      await symlink(join(workspace, "visible", "one.md"), join(workspace, "alias.md"));
+
+      const aug = filesystem({
+        mounts: [{ name: "workspace", path: workspace }],
+        workspaceAwareness: { maxEntries: 1, scanLimit: 20, maxDepth: 4 },
+      });
+      await aug.onBoot!();
+      const blocks = (await aug.context!(
+        messageTurn(creatorPeer, "Review documents"),
+      )) as ContextBlock[];
+      const catalog = blocks.find((block) => block.source === "filesystem-workspace-catalog");
+
+      expect(catalog?.content).toContain("2 visible file(s) found");
+      expect(catalog?.content).not.toContain(".secret");
+      expect(catalog?.content).not.toContain("node_modules");
+      expect(catalog?.content).not.toContain("alias.md");
+      const listedPaths = catalog?.content.match(/^- /gm) ?? [];
+      expect(listedPaths).toHaveLength(1);
+    });
+
+    it("applies custom glob exclusions while scanning workspace metadata", async () => {
+      const workspace = join(tmp.path, "workspace-glob-excludes");
+      await mkdir(join(workspace, "generated"), { recursive: true });
+      await mkdir(join(workspace, "notes"), { recursive: true });
+      await writeFile(join(workspace, "generated", "client.ts"), "generated", "utf-8");
+      await writeFile(join(workspace, "notes", "draft.tmp"), "temporary", "utf-8");
+      await writeFile(join(workspace, "notes", "keep.md"), "keep", "utf-8");
+      const aug = filesystem({
+        mounts: [
+          {
+            name: "workspace",
+            path: workspace,
+            searchExcludes: ["generated/**", "*.tmp"],
+          },
+        ],
+      });
+      await aug.onBoot!();
+
+      const blocks = (await aug.context!(
+        messageTurn(creatorPeer, "Review workspace files"),
+      )) as ContextBlock[];
+      const catalog = blocks.find((block) => block.source === "filesystem-workspace-catalog");
+
+      expect(catalog?.content).toContain('"workspace/notes/keep.md"');
+      expect(catalog?.content).not.toContain("client.ts");
+      expect(catalog?.content).not.toContain("draft.tmp");
+    });
+
+    it("does not claim a truncated scan proves the workspace is empty", async () => {
+      const workspace = join(tmp.path, "workspace-truncated-empty");
+      await mkdir(workspace, { recursive: true });
+      await writeFile(join(workspace, ".first"), "hidden", "utf-8");
+      await writeFile(join(workspace, "later.md"), "visible", "utf-8");
+
+      const aug = filesystem({
+        mounts: [{ name: "workspace", path: workspace }],
+        workspaceAwareness: { maxEntries: 1, scanLimit: 1 },
+      });
+      await aug.onBoot!();
+      const blocks = (await aug.context!(
+        messageTurn(creatorPeer, "Find existing work"),
+      )) as ContextBlock[];
+      const catalog = blocks.find((block) => block.source === "filesystem-workspace-catalog");
+
+      expect(catalog?.content).toContain("No visible files were found within the bounded scan");
+      expect(catalog?.content).toContain("Omitted paths may still exist");
+      expect(catalog?.content).not.toContain("currently has no visible files");
+    });
+
+    it("can be disabled and rejects an explicitly missing awareness mount", () => {
+      const disabled = filesystem({
+        mounts: [{ name: "workspace", path: join(tmp.path, "writable") }],
+        workspaceAwareness: { enabled: false },
+      });
+      expect(disabled.context).toBeUndefined();
+
+      expect(() =>
+        filesystem({
+          mounts: [{ name: "work", path: join(tmp.path, "writable") }],
+          workspaceAwareness: { enabled: true, mount: "workspace" },
+        }),
+      ).toThrow('workspace awareness mount "workspace" is not configured');
     });
   });
 

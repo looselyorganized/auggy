@@ -185,6 +185,9 @@ function resolveFilesystem(opts: Record<string, unknown>, agentDir: string): Aug
   return filesystem({
     mounts,
     skillFile: opts.skillFile ? resolvePath(opts.skillFile as string, agentDir) : undefined,
+    workspaceAwareness: opts.workspaceAwareness as
+      | Parameters<typeof filesystem>[0]["workspaceAwareness"]
+      | undefined,
   });
 }
 
