@@ -387,12 +387,23 @@ describe("scaffoldAgent", () => {
       const dir = scaffoldAgent({ name: "zip", targetDir: join(TMP, "zip-fs") });
       const meta = parseYaml(
         readFileSync(join(dir, "augments", "filesystem", "augment.yaml"), "utf-8"),
-      ) as { type: string; config: { mounts: Array<{ name: string; path: string }> } };
+      ) as {
+        type: string;
+        config: {
+          mounts: Array<{ name: string; path: string }>;
+          workspaceAwareness: { enabled: boolean; maxEntries: number; maxDepth: number };
+        };
+      };
 
       expect(meta.type).toBe("filesystem");
       expect(meta.config.mounts.find((mount) => mount.name === "workspace")?.path).toBe(
         "./data/workspace",
       );
+      expect(meta.config.workspaceAwareness).toEqual({
+        enabled: true,
+        maxEntries: 24,
+        maxDepth: 4,
+      });
     });
 
     test(".gitignore excludes layeredMemory database paths", () => {

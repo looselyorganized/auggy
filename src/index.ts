@@ -146,7 +146,11 @@ export type { FileMemoryOptions } from "./augments/fileMemory";
 export { supabaseMemory } from "./augments/supabaseMemory";
 export type { SupabaseMemoryOptions } from "./augments/supabaseMemory";
 export { filesystem } from "./augments/filesystem";
-export type { FilesystemOptions, FsMount } from "./augments/filesystem";
+export type {
+  FilesystemOptions,
+  FsMount,
+  WorkspaceAwarenessOptions,
+} from "./augments/filesystem";
 
 // === Built-in augments (knowledge) ===
 export { knowledge, knowledgeRoot } from "./augments/knowledge";

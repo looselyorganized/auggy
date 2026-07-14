@@ -165,6 +165,7 @@ describe("resolveAugments — filesystem", () => {
             { name: "skills", path: "./skills", writable: false },
             { name: "workspace", path: "./workspace", writable: true },
           ],
+          workspaceAwareness: { enabled: false },
         },
       },
     ];
@@ -177,6 +178,7 @@ describe("resolveAugments — filesystem", () => {
     expect(files).toBeDefined();
     expect(files!.tools).toBeDefined();
     expect(files!.tools!.length).toBe(6);
+    expect(files!.context).toBeUndefined();
   });
 });
 

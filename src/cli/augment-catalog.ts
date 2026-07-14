@@ -109,7 +109,7 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
     label: "Filesystem",
     tagline: "scoped read/write + skills directory",
     description:
-      "Scoped file access with two mounts: ./skills (read-only, used to teach the agent via SKILL.md files) and ./workspace (read/write/delete scratchpad).",
+      "Scoped file access with two mounts: ./skills (read-only) and ./workspace (read/write/delete), plus a bounded per-turn workspace catalog so the agent can notice and reuse durable artifacts.",
     type: "filesystem",
     defaultName: "filesystem",
     defaultOptions: {
@@ -117,6 +117,7 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
         { name: "skills", path: "./skills", writable: false },
         { name: "workspace", path: "./workspace", writable: true, deletable: true },
       ],
+      workspaceAwareness: { enabled: true, maxEntries: 24, maxDepth: 4 },
     },
     required: true,
     stability: "core",
