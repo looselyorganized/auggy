@@ -57,7 +57,6 @@ export default function services() {
   return defineAugment({
     name: "services",
     type: "custom",
-    capabilities: ["tools"],
     httpRoutes: [
       defineRoute.get("/services", {
         auth: "none",

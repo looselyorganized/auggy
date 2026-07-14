@@ -32,6 +32,7 @@ describe("scaffoldCustomAugment", () => {
     expect(source).toContain('name: "weather"');
     expect(source).toContain('name: "weather_echo"');
     expect(source).toContain("export default function weather");
+    expect(source).not.toContain("capabilities:");
 
     const metadata = readFileSync(join(target, "augment.yaml"), "utf-8");
     expect(metadata).toContain("type: custom");

@@ -37,6 +37,18 @@ describe("auggy builder skill mirrors", () => {
     );
   });
 
+  test("authoring examples do not teach redundant augment capabilities", () => {
+    for (const file of [
+      "assets/templates/custom-augment/index.ts.txt",
+      "assets/templates/app-auth-bridge/protected-orders-augment.ts.txt",
+      "references/routes-tools-augments.md",
+    ]) {
+      expect(readFileSync(join(CANONICAL_SKILL, file), "utf-8"), file).not.toContain(
+        "capabilities:",
+      );
+    }
+  });
+
   test("skill frontmatter advertises implicit builder triggers", () => {
     const skill = readFileSync(join(CANONICAL_SKILL, "SKILL.md"), "utf-8");
     const frontmatter = skill.split("---")[1] ?? "";
