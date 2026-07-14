@@ -2,6 +2,7 @@ import { existsSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
 import { defineAugment, defineTool } from "../helpers";
+import { inspectAugment, type AugmentRuntimeShape } from "../augment-inspector";
 import type { Augment, AugmentCategory, CreatorConfig, ToolExecuteContext } from "../types";
 import { AUGMENT_CATALOG, type CatalogEntry } from "./augment-catalog";
 import { augmentFolderForType } from "./scaffold-skills";
@@ -33,13 +34,11 @@ interface SkillSummary {
   frontmatterValid: boolean;
 }
 
-interface AugmentSummary {
+interface AugmentSummary extends AugmentRuntimeShape {
   name: string;
   type: string;
   category: AugmentCategory | "unknown";
   required: boolean;
-  capabilities: string[];
-  toolCount: number;
   hasSkill: boolean;
   skillMissing: boolean;
 }
@@ -102,17 +101,16 @@ function summarizeAugments(opts: AuggySelfOptions): AugmentSummary[] {
     .filter((augment) => augment.name !== "auggySelf" && !augment.synthetic)
     .map((augment) => {
       const type = augment.type ?? augment.name;
-      const toolCount = augment.tools?.length ?? 0;
+      const runtime = inspectAugment(augment);
       const category: AugmentSummary["category"] = augment.category ?? "unknown";
       return {
         name: augment.name,
         type,
         category,
         required: augment.required ?? false,
-        capabilities: augment.capabilities ?? [],
-        toolCount,
+        ...runtime,
         hasSkill: hasSkill(opts.agentDir, type),
-        skillMissing: toolCount > 0 && !hasSkill(opts.agentDir, type),
+        skillMissing: runtime.toolCount > 0 && !hasSkill(opts.agentDir, type),
       };
     })
     .sort((a, b) => a.type.localeCompare(b.type));
