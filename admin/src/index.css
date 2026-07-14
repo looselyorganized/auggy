@@ -1,3 +1,35 @@
 @import "./auggy.css";
 
 @source "./**/*.{ts,tsx}";
+
+@layer components {
+  .console-code pre {
+    margin: 0;
+    min-width: max-content;
+    background: transparent !important;
+    padding: 0.75rem;
+    tab-size: 2;
+  }
+
+  .console-code code {
+    display: block;
+    font-family: var(--auggy-font-mono), ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+      "Liberation Mono", "Courier New", monospace;
+    letter-spacing: 0;
+    white-space: pre;
+  }
+
+  .console-code-wrap pre {
+    min-width: 0;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+
+  .console-code-wrap code {
+    white-space: inherit;
+  }
+
+  .console-code-compact pre {
+    padding: 0.5rem;
+  }
+}

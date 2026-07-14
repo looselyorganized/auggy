@@ -23,6 +23,7 @@ export interface HeaderProps {
 
 export function Header({ port, online, dashboard }: HeaderProps) {
   const [theme, setThemeState] = useState<Theme>(() => getTheme());
+  const auggyVersion = dashboard?.auggyVersion;
 
   useEffect(() => {
     apply(theme);
@@ -41,18 +42,19 @@ export function Header({ port, online, dashboard }: HeaderProps) {
     <header className="flex h-16 items-center justify-between gap-3 border-b bg-background/90 px-4">
       <div className="flex min-w-0 items-center gap-3 overflow-hidden">
         <div
-          className="grid size-8 shrink-0 place-items-center rounded-md border border-zinc-700 bg-zinc-950"
-          aria-hidden="true"
+          className="min-w-0 shrink-0"
+          aria-label={auggyVersion ? `Auggy v${auggyVersion}` : "Auggy creator console"}
         >
-          <img src="/console/brand/a1-logo.svg" alt="" className="h-7 w-auto" />
-        </div>
-        <div className="hidden min-w-0 shrink-0 sm:block" aria-label="Auggy creator console">
           <img
             src="/console/brand/auggy-white.png"
             alt="Auggy"
             className="h-5 w-auto max-w-24 invert dark:invert-0"
           />
-          <span className="sr-only">Creator console</span>
+          {auggyVersion && (
+            <span className="mt-0.5 block text-[10px] leading-none text-muted-foreground">
+              v{auggyVersion}
+            </span>
+          )}
         </div>
         {port !== undefined && (
           <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">

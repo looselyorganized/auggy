@@ -3,6 +3,7 @@ import { Check, Code2, Copy, ExternalLink, Terminal } from "lucide-react";
 import { useActionDispatcher } from "@/components/admin/useActionDispatcher";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { HighlightedCode } from "@/components/ui/highlighted-code";
 import { Switch } from "@/components/ui/switch";
 import { useDashboardContext } from "@/components/admin/DashboardContext";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -289,6 +290,7 @@ auggy routes ${data?.agentMeta?.name ?? "<agent>"} --client ts --target browser 
             <CodeBlock
               label={requestExampleMode === "typescript" ? "typescript" : "curl"}
               value={requestExampleMode === "typescript" ? typescript : curl}
+              language={requestExampleMode === "typescript" ? "typescript" : "bash"}
               copied={copied}
               onCopy={copy}
             />
@@ -325,7 +327,13 @@ auggy routes ${data?.agentMeta?.name ?? "<agent>"} --client ts --target browser 
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <CodeBlock label="routes" value={routeCommands} copied={copied} onCopy={copy} />
+            <CodeBlock
+              label="routes"
+              value={routeCommands}
+              language="bash"
+              copied={copied}
+              onCopy={copy}
+            />
           </CardContent>
         </Card>
 
@@ -342,6 +350,7 @@ auggy routes ${data?.agentMeta?.name ?? "<agent>"} --client ts --target browser 
               <CodeBlock
                 label="publicIntegration config"
                 value={publicConfig}
+                language="yaml"
                 copied={copied}
                 onCopy={copy}
               />
@@ -359,6 +368,7 @@ auggy routes ${data?.agentMeta?.name ?? "<agent>"} --client ts --target browser 
               <CodeBlock
                 label="frontend config"
                 value={frontendConfig}
+                language="yaml"
                 copied={copied}
                 onCopy={copy}
               />
@@ -556,11 +566,13 @@ function ExampleModeButton({
 function CodeBlock({
   label,
   value,
+  language,
   copied,
   onCopy,
 }: {
   label: string;
   value: string;
+  language: string;
   copied: string | null;
   onCopy: (label: string, value: string) => void | Promise<void>;
 }) {
@@ -582,9 +594,7 @@ function CodeBlock({
           Copy
         </Button>
       </div>
-      <pre className="overflow-auto bg-slate-950 p-3 text-xs leading-6 text-slate-50">
-        <code>{value}</code>
-      </pre>
+      <HighlightedCode code={value} language={language} />
     </div>
   );
 }
