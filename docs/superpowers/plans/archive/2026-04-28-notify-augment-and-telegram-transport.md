@@ -1129,7 +1129,6 @@ export function notify(opts: NotifyAugmentInternalOptions): Augment {
 
   return {
     name: "notify",
-    capabilities: ["tools"],
     tools: [notifyTool],
   };
 }
@@ -1396,7 +1395,6 @@ export function orgContext(opts: OrgContextOptions): Augment {
 
   return {
     name: "org-context",
-    capabilities: ["context", "tools"],
     tools: [orgFetchTool],
 
     context: async () => {
@@ -2153,7 +2151,6 @@ export function resolveTelegramIdentity(
 export function telegramTransport(opts: TelegramTransportOptions): Augment {
   return {
     name: "telegram-transport",
-    capabilities: ["transport"],
     // Lifecycle implementation (onBoot, onShutdown), polling/webhook receive
     // wiring, and reply path land in subsequent tasks (T11–T15).
   };
@@ -2806,7 +2803,6 @@ export function telegramTransport(opts: TelegramTransportOptions): Augment {
 
   return {
     name: "telegram-transport",
-    capabilities: ["transport"],
     onBoot: async (ctx: any) => {
       // Production dispatch comes from kernel ctx; tests pass _dispatchTurn directly.
       const dispatch = internal._dispatchTurn ?? ((input, peer, reply) => ctx.dispatchTurn?.(input, peer, reply));

@@ -17,6 +17,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   filesystem tools. Operators can tune or disable it with
   `workspaceAwareness`.
 
+### Removed
+
+- **Redundant augment capability declarations.** Custom augments now describe
+  their runtime shape only through concrete fields such as `tools`, `context`,
+  `transport`, `memory`, routes, and lifecycle hooks. Remove
+  `capabilities: [...]` from augment objects; runtime and console surfaces are
+  inferred structurally. Agent Card capabilities, including Link's
+  `agentCard.capabilities`, remain separate discovery metadata.
+
 ## [0.5.0] - 2026-07-07
 
 ### Added

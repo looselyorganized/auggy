@@ -277,7 +277,7 @@ This section walks through the 12 influences listed in §15 of the design spec, 
 **Terminology correction:** The spec §15 calls the key result a "compositionality theorem." The paper actually proves a **Drift Bounds Theorem** and derives composition conditions as corollaries. The spec inverts the emphasis but captures the right intuition.
 
 **What Auggy took:**
-- **The entire "augments compose" thesis.** The philosophy doc's statement that "agents are composed, not coded, and the interface between kernel and augments is the product" is a practical application of behavioral contracts: each augment declares a contract (via its `capabilities`, `constraints`, `context()`, `tools`), and the composition itself is a contract the operator can reason about.
+- **The entire "augments compose" thesis.** The philosophy doc's statement that "agents are composed, not coded, and the interface between kernel and augments is the product" is a practical application of behavioral contracts: each augment declares a contract through its concrete fields (`constraints`, `context()`, `tools`, memory, transport, and lifecycle hooks), and the composition itself is a contract the operator can reason about.
 - **`AugmentConstraints` as declarative behavioral limits.** `maxToolCallsPerTurn`, `requiresHumanApproval`, `neverExpose` — these are literally contract clauses. An augment declares them; the kernel enforces them structurally.
 - **Composition-check at boot time.** The memory bus's conflict detection (`buildRegistry` throws on label conflicts) is a compositionality check: it verifies that combining two memory providers doesn't produce a contradictory contract.
 

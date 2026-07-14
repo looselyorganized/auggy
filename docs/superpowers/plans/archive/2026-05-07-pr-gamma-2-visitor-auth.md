@@ -1612,7 +1612,7 @@ function fakeAgentMail(overrides: Partial<AgentMailClient> = {}): AgentMailClien
 }
 
 describe("visitorAuth (skeleton)", () => {
-  test("factory returns an Augment with name + capabilities + httpRoutes", () => {
+  test("factory returns an Augment with name, tools, context, and httpRoutes", () => {
     const aug = visitorAuth({
       publicUrl: "https://example.com",
       dbPath,
@@ -1621,8 +1621,8 @@ describe("visitorAuth (skeleton)", () => {
       _agentMailClient: fakeAgentMail(),
     });
     expect(aug.name).toBe("visitor-auth");
-    expect(aug.capabilities).toContain("tools");
-    expect(aug.capabilities).toContain("context");
+    expect(aug.tools?.map((tool) => tool.name)).toContain("request_auth");
+    expect(aug.context).toBeDefined();
     expect(aug.httpRoutes).toHaveLength(1);
     expect(aug.httpRoutes?.[0]?.path).toBe("/visitor-auth/verify");
     expect(aug.httpRoutes?.[0]?.auth).toBe("none");
@@ -1889,7 +1889,6 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment {
 
   return {
     name: "visitor-auth",
-    capabilities: ["tools", "context"],
     tools: [requestAuthTool],
     httpRoutes: [
       {
