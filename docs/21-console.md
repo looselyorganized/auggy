@@ -13,6 +13,11 @@ The default route redirects to `/console/chat`.
 Primary surfaces:
 
 - Chat transcript and message composer
+  - GitHub-flavored Markdown rendering for assistant/user messages, including
+    tables, task lists, fenced code, headings, blockquotes, links, and inline
+    emphasis
+  - Copyable Markdown transcript for debugging the visible conversation,
+    including rendered messages, visible tool calls, and assistant errors
 - Integrations/status view for the agent's current runtime surfaces
   - Built-in web endpoints and which ones are safe to open directly
   - Public discovery posture (`publicIntegration`, `/agent`, agent card)
@@ -66,6 +71,10 @@ anonymous, visitor-token, or external-auth traffic depending on configuration.
 State-mutating endpoints additionally require a CSRF token bound to the
 specific action. Chat uses a dedicated `console-chat` CSRF token because the
 server attaches the bearer when proxying to `/agent/run`.
+
+Chat Markdown rendering does not enable raw HTML, does not render remote images,
+and blocks unsafe link protocols such as `javascript:`, `data:`, `vbscript:`,
+and `file:`.
 
 HTTPS is enforced on non-loopback hostnames. Loopback requests skip the bearer
 check because shell access to the host already grants `.env` access.

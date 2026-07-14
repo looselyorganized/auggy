@@ -1,10 +1,13 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { ChevronDown, ChevronRight, RotateCcw, Square } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Check, ChevronDown, ChevronRight, Copy, RotateCcw, Square } from "lucide-react";
+import { MarkdownContent } from "@/components/admin/MarkdownContent";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { useDashboardContext } from "@/components/admin/DashboardContext";
 import { findCsrfToken } from "@/lib/api";
+import { formatChatTranscript } from "@/lib/chat-transcript";
+import { useToast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { parseSSEStream, type AGUIEvent } from "@/lib/ag-ui-parse";
 
@@ -59,6 +62,7 @@ interface Message {
 
 export function ChatTab() {
   const { data, loading, error } = useDashboardContext();
+  const { push } = useToast();
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
@@ -66,12 +70,21 @@ export function ChatTab() {
   const [threadId, setThreadId] = useState<string>(() => crypto.randomUUID());
   const [previewMode, setPreviewMode] = useState<ChatPreviewMode>("creator");
   const [hasVisitorToken, setHasVisitorToken] = useState(() => Boolean(readVisitorToken()));
+  const [copiedTranscript, setCopiedTranscript] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const copiedTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const wasStreamingRef = useRef(false);
 
   // Cleanup on unmount — kill any in-flight stream.
   useEffect(() => () => abortRef.current?.abort(), []);
+
+  useEffect(
+    () => () => {
+      if (copiedTimeoutRef.current) clearTimeout(copiedTimeoutRef.current);
+    },
+    [],
+  );
 
   useEffect(() => {
     const refreshVisitorTokenState = () => setHasVisitorToken(Boolean(readVisitorToken()));
@@ -276,6 +289,30 @@ export function ChatTab() {
   const identityLabel = `Previewing as ${CHAT_PREVIEW_MODE_LABELS[previewMode].toLowerCase()}`;
   const emptyPrompts = previewMode === "creator" ? CREATOR_EMPTY_PROMPTS : PEER_EMPTY_PROMPTS;
 
+  const handleCopyTranscript = useCallback(async () => {
+    if (messages.length === 0) return;
+
+    const transcript = formatChatTranscript(messages, {
+      agentName,
+      previewModeLabel: CHAT_PREVIEW_MODE_LABELS[previewMode],
+      threadId,
+      copiedAt: new Date(),
+    });
+
+    try {
+      if (!navigator.clipboard?.writeText) {
+        throw new Error("Clipboard API unavailable");
+      }
+      await navigator.clipboard.writeText(transcript);
+      setCopiedTranscript(true);
+      push("success", "copied transcript");
+      if (copiedTimeoutRef.current) clearTimeout(copiedTimeoutRef.current);
+      copiedTimeoutRef.current = setTimeout(() => setCopiedTranscript(false), 1800);
+    } catch (err) {
+      push("error", `copy failed: ${(err as Error).message}`);
+    }
+  }, [agentName, messages, previewMode, push, threadId]);
+
   if (loading && !data) {
     return (
       <Card>
@@ -396,16 +433,33 @@ export function ChatTab() {
                 <span className="hidden text-muted-foreground/40 sm:inline">|</span>
                 <span className="hidden sm:inline">Shift+Enter for a new line</span>
                 {messages.length > 0 && (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={handleClear}
-                    disabled={streaming}
-                    className="h-7 shrink-0 px-2 text-xs"
-                  >
-                    <RotateCcw className="mr-1.5 size-3.5" />
-                    New thread
-                  </Button>
+                  <>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => void handleCopyTranscript()}
+                      className="h-7 shrink-0 px-2 text-xs"
+                      aria-label="Copy chat transcript"
+                      title="Copy chat transcript"
+                    >
+                      {copiedTranscript ? (
+                        <Check className="mr-1.5 size-3.5" />
+                      ) : (
+                        <Copy className="mr-1.5 size-3.5" />
+                      )}
+                      Copy transcript
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={handleClear}
+                      disabled={streaming}
+                      className="h-7 shrink-0 px-2 text-xs"
+                    >
+                      <RotateCcw className="mr-1.5 size-3.5" />
+                      New thread
+                    </Button>
+                  </>
                 )}
               </div>
             </div>
@@ -544,19 +598,6 @@ function MessageView({ message, responseLabel }: { message: Message; responseLab
   );
 }
 
-function MarkdownContent({ content, isUser }: { content: string; isUser: boolean }) {
-  return (
-    <div
-      className={cn(
-        "space-y-3 break-words leading-6",
-        isUser ? "text-foreground" : "text-foreground/95",
-      )}
-    >
-      {renderMarkdownBlocks(content)}
-    </div>
-  );
-}
-
 function readVisitorToken(): string | undefined {
   try {
     const value = localStorage.getItem(VISITOR_TOKEN_STORAGE_KEY);
@@ -572,184 +613,6 @@ function clearVisitorToken() {
   } catch {
     // Storage can be unavailable in private browsing or sandboxed contexts.
   }
-}
-
-function renderMarkdownBlocks(markdown: string): ReactNode[] {
-  const lines = markdown.replace(/\r\n/g, "\n").split("\n");
-  const blocks: ReactNode[] = [];
-  let i = 0;
-
-  while (i < lines.length) {
-    const line = lines[i] ?? "";
-    if (line.trim() === "") {
-      i += 1;
-      continue;
-    }
-
-    if (line.trimStart().startsWith("```")) {
-      const language = line.trim().slice(3).trim();
-      const code: string[] = [];
-      i += 1;
-      while (i < lines.length && !(lines[i] ?? "").trimStart().startsWith("```")) {
-        code.push(lines[i] ?? "");
-        i += 1;
-      }
-      if (i < lines.length) i += 1;
-      blocks.push(
-        <pre key={blocks.length} className="overflow-x-auto rounded-md bg-muted/60 p-3 text-xs">
-          <code className="font-mono" data-language={language || undefined}>
-            {code.join("\n")}
-          </code>
-        </pre>,
-      );
-      continue;
-    }
-
-    if (isTableStart(lines, i)) {
-      const tableLines = [lines[i] ?? "", lines[i + 1] ?? ""];
-      i += 2;
-      while (i < lines.length && isPipeRow(lines[i] ?? "")) {
-        tableLines.push(lines[i] ?? "");
-        i += 1;
-      }
-      blocks.push(<MarkdownTable key={blocks.length} lines={tableLines} />);
-      continue;
-    }
-
-    if (isListItem(line)) {
-      const items: string[] = [];
-      const ordered = /^\s*\d+\.\s+/.test(line);
-      while (i < lines.length && isListItem(lines[i] ?? "")) {
-        items.push((lines[i] ?? "").replace(/^\s*(?:[-*]|\d+\.)\s+/, ""));
-        i += 1;
-      }
-      const Tag = ordered ? "ol" : "ul";
-      blocks.push(
-        <Tag
-          key={blocks.length}
-          className={cn("space-y-1 pl-5", ordered ? "list-decimal" : "list-disc")}
-        >
-          {items.map((item, index) => (
-            <li key={index}>{renderInlineMarkdown(item)}</li>
-          ))}
-        </Tag>,
-      );
-      continue;
-    }
-
-    const paragraph: string[] = [];
-    while (
-      i < lines.length &&
-      lines[i]?.trim() !== "" &&
-      !isTableStart(lines, i) &&
-      !isListItem(lines[i] ?? "") &&
-      !(lines[i] ?? "").trimStart().startsWith("```")
-    ) {
-      paragraph.push(lines[i] ?? "");
-      i += 1;
-    }
-    blocks.push(
-      <p key={blocks.length} className="whitespace-pre-wrap">
-        {renderInlineMarkdown(paragraph.join("\n"))}
-      </p>,
-    );
-  }
-
-  return blocks;
-}
-
-function MarkdownTable({ lines }: { lines: string[] }) {
-  const headers = splitTableRow(lines[0] ?? "");
-  const rows = lines.slice(2).map(splitTableRow);
-
-  return (
-    <div className="overflow-x-auto rounded-md border">
-      <table className="min-w-full border-collapse text-left text-xs">
-        <thead className="bg-muted/60 text-muted-foreground">
-          <tr>
-            {headers.map((cell, index) => (
-              <th key={index} className="border-b px-3 py-2 font-semibold">
-                {renderInlineMarkdown(cell)}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((row, rowIndex) => (
-            <tr key={rowIndex} className="border-b last:border-b-0">
-              {headers.map((_, cellIndex) => (
-                <td key={cellIndex} className="px-3 py-2 align-top">
-                  {renderInlineMarkdown(row[cellIndex] ?? "")}
-                </td>
-              ))}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-function renderInlineMarkdown(text: string): ReactNode[] {
-  const nodes: ReactNode[] = [];
-  const pattern = /(`[^`]+`|\*\*[^*]+\*\*|__[^_]+__|\*[^*]+\*|_[^_]+_)/g;
-  let lastIndex = 0;
-  let match: RegExpExecArray | null;
-
-  while ((match = pattern.exec(text)) !== null) {
-    if (match.index > lastIndex) nodes.push(text.slice(lastIndex, match.index));
-    const token = match[0];
-    const key = nodes.length;
-    if (token.startsWith("`")) {
-      nodes.push(
-        <code key={key} className="rounded bg-muted px-1 py-0.5 font-mono text-[0.92em]">
-          {token.slice(1, -1)}
-        </code>,
-      );
-    } else if (token.startsWith("**") || token.startsWith("__")) {
-      nodes.push(
-        <strong key={key} className="font-semibold">
-          {token.slice(2, -2)}
-        </strong>,
-      );
-    } else {
-      nodes.push(
-        <em key={key} className="italic">
-          {token.slice(1, -1)}
-        </em>,
-      );
-    }
-    lastIndex = pattern.lastIndex;
-  }
-
-  if (lastIndex < text.length) nodes.push(text.slice(lastIndex));
-  return nodes.map((node, index) => <Fragment key={index}>{node}</Fragment>);
-}
-
-function isListItem(line: string): boolean {
-  return /^\s*(?:[-*]|\d+\.)\s+/.test(line);
-}
-
-function isTableStart(lines: string[], index: number): boolean {
-  return isPipeRow(lines[index] ?? "") && isTableSeparator(lines[index + 1] ?? "");
-}
-
-function isPipeRow(line: string): boolean {
-  return line.includes("|") && splitTableRow(line).length > 1;
-}
-
-function isTableSeparator(line: string): boolean {
-  const cells = splitTableRow(line);
-  return cells.length > 1 && cells.every((cell) => /^:?-{3,}:?$/.test(cell.trim()));
-}
-
-function splitTableRow(line: string): string[] {
-  return line
-    .trim()
-    .replace(/^\|/, "")
-    .replace(/\|$/, "")
-    .split("|")
-    .map((cell) => cell.trim());
 }
 
 // ---------------------------------------------------------------------------
