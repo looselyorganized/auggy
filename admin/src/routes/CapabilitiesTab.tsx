@@ -383,14 +383,21 @@ function MemorySurface({
           key={augment.name}
           title={augment.type}
           detail={augment.name}
-          badges={[
-            "provider",
-            augment.capabilities.length ? augment.capabilities.join(", ") : undefined,
-          ]}
+          badges={["provider", formatMemorySurfaceCapabilities(augment)]}
         />
       ))}
     </SurfaceGroup>
   );
+}
+
+export function formatMemorySurfaceCapabilities(
+  augment: Pick<AugmentSummary, "hasContext" | "usesSharedMemoryTools">,
+): string | undefined {
+  const capabilities = [
+    augment.hasContext ? "context" : undefined,
+    augment.usesSharedMemoryTools ? "tools" : undefined,
+  ].filter((capability): capability is string => capability !== undefined);
+  return capabilities.length > 0 ? capabilities.join(", ") : undefined;
 }
 
 function AuthSurface({ data }: { data: DashboardData }) {

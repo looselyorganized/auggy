@@ -77,6 +77,15 @@ export interface AgentCardLite {
  */
 export type AugmentCategory = "transports" | "capabilities" | "memory" | "guardrails";
 
+/** Runtime lifecycle hooks reported by the augment inspector. */
+export type AugmentLifecycleHook =
+  | "onBoot"
+  | "onShutdown"
+  | "onTurnStart"
+  | "onTurnEnd"
+  | "onIdle"
+  | "scheduleAfterTurn";
+
 /** Top-level identity fields read from `agent.yaml`. */
 export interface AgentMeta {
   id?: string;
@@ -106,13 +115,16 @@ export interface AugmentSummary {
   version?: string;
   required: boolean;
   category: AugmentCategory;
-  capabilities: string[];
-  hasTools: boolean;
+  hasContext: boolean;
+  usesSharedMemoryTools: boolean;
   toolCount: number;
   isTransport: boolean;
   isMemoryProvider: boolean;
   httpRouteCount: number;
   hasAdminInfo: boolean;
+  lifecycleHooks: AugmentLifecycleHook[];
+  handlesInternalTurns: boolean;
+  hasTurnGate: boolean;
 }
 
 /** Skill installed under `<agentDir>/skills/<folder>/SKILL.md`. */

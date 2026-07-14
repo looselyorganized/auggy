@@ -546,8 +546,6 @@ export interface TransportSpec {
 ## Section 14 — Augment
 
 ```ts
-export type AugmentCapability = "transport" | "context" | "tools" | "lifecycle";
-
 export interface AugmentConstraints {
   maxToolCallsPerTurn?: number;
   requiresHumanApproval?: string[];
@@ -570,7 +568,6 @@ export interface Augment {
   name: string;
   version?: string;
   required?: boolean;
-  capabilities?: AugmentCapability[];
   context?: (turn: TurnState, priorContext?: ContextBlock[]) =>
     Promise<ContextBlock[] | string>;
   receivesPriorContext?: boolean;
@@ -594,7 +591,10 @@ model-facing context blocks.
 
 **`required: true`** means: if this augment's `context()` or `onTurnStart()` throws, abort the entire turn and return a `failed` result. Without `required`, augment failures are logged and skipped.
 
-**`capabilities`** is informational — declares what the augment does. The kernel doesn't enforce that an augment with `capabilities: ["transport"]` actually has a `transport` field, but the agent card uses these declarations.
+An augment's runtime surfaces are defined by the concrete fields it provides.
+Tools, context, transports, memory, and lifecycle hooks need no duplicate
+capability declaration. Agent Card discovery is likewise derived from the
+mounted augment structure.
 
 **`context()`** is the augment's contribution to the prompt. Returns either an array of `ContextBlock`s or a single string (which gets wrapped as a default-priority block).
 

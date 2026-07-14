@@ -2,7 +2,6 @@
 export type {
   // Context
   Augment,
-  AugmentCapability,
   AugmentConstraints,
   AgentConfig,
   AgentHandle,

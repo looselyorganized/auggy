@@ -10,7 +10,6 @@ export function ordersAugment() {
   return defineAugment({
     name: "orders",
     type: "custom",
-    capabilities: ["tools"],
     httpRoutes: [
       defineRoute.get("/orders", {
         auth: "visitor.required",

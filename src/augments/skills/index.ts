@@ -125,7 +125,6 @@ export function skills(opts: SkillsOptions): Augment {
     name: "skills",
     type: "skills",
     category: "capabilities",
-    capabilities: ["context"],
     context: async (turn) => {
       const discovered = discoverSkills(opts.dir, effectiveTrustLevel(turn));
       if (discovered.length === 0) return [];

@@ -387,7 +387,6 @@ export function telegramTransport(opts: TelegramTransportOptions): Augment {
     name: "telegram-transport",
     type: "telegramTransport",
     category: "transports",
-    capabilities: ["transport"],
     transport,
     adminInfo,
 

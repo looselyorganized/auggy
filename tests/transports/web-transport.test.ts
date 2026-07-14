@@ -21,7 +21,6 @@ describe("webTransport structure", () => {
       auth: { type: "bearer", token: "test-token" },
     });
     expect(aug.name).toBe("web");
-    expect(aug.capabilities).toContain("transport");
     expect(aug.transport).toBeDefined();
   });
 });

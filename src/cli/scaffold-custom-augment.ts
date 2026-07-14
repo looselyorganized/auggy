@@ -58,7 +58,6 @@ export interface ${typeName} {
 export default function ${slug.replace(/-/g, "_")}(opts: ${typeName} = {}) {
   return defineAugment({
     name: "${slug}",
-    capabilities: ["tools"],
     tools: [
       defineTool({
         name: "${toolName}",

@@ -893,7 +893,6 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
     _markSeenForTest?: (messageId: string, meta: { from: string; replyAllTo?: string[] }) => void;
   } = {
     name: "agent-mail",
-    capabilities: ["tools"],
     tools: [sendMessageTool, replyToMessageTool, forwardMessageTool],
     onBoot,
     onShutdown,
