@@ -202,7 +202,7 @@ budgets, memory boundaries, and cross-agent handoff state.
 
 The current memory subsystem is useful but not the final long-term memory
 architecture. Future work can add layered memory promotion, consolidation,
-peer-scoped retrieval, and stronger operator promotion flows.
+semantic retrieval, and stronger operator curation and promotion flows.
 
 ### Self-Extending Agents
 

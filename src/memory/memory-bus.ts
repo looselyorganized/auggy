@@ -3,6 +3,7 @@ import { buildRegistry, getMemoryProviders } from "./registry";
 import type { MemoryRegistry } from "./types";
 import { synthesizeContextFor } from "./context-synthesis";
 import { createMemoryTools } from "./tools";
+import { buildMemoryCapabilityContext } from "./capability-context";
 
 export interface MemoryBusWiring {
   augmentsWithSynthesizedContext: Augment[];
@@ -45,8 +46,9 @@ export function wireMemoryBus(
     type: "memoryBus",
     category: "memory",
     synthetic: true,
-    capabilities: ["tools"],
+    capabilities: ["context", "tools"],
     constraints: { maxToolCallsPerTurn: maxPerTurn },
+    context: async (turn) => [buildMemoryCapabilityContext(registry, turn)],
     tools,
     onTurnStart: async () => {
       onTurnStart();

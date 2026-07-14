@@ -19,7 +19,7 @@
  *     scaffolded against, not whatever happens to be globally installed.
  */
 
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import pkg from "../../package.json" with { type: "json" };
 import type { CatalogEntry } from "./augment-catalog";
@@ -45,6 +45,8 @@ export interface BuildAgentPackageJsonInput {
   auggyVersion: string;
   /** Optional explicit core package specifier for local pack/install smoke tests. */
   auggyPackageSpecifier?: string;
+  /** Optional exact package specifiers for coordinated local package testing. */
+  packageSpecifiers?: Record<string, string>;
   /** Selected engine provider — chooses the adapter package. */
   provider: Provider;
   /** Selected augments — drives the per-augment `packageDeps` merge. */
@@ -58,7 +60,8 @@ export interface BuildAgentPackageJsonInput {
  */
 export function buildAgentPackageJson(input: BuildAgentPackageJsonInput): string {
   const versionRange = `^${input.auggyVersion}`;
-  const auggySpecifier = input.auggyPackageSpecifier?.trim() || versionRange;
+  const auggySpecifier =
+    input.packageSpecifiers?.auggy?.trim() || input.auggyPackageSpecifier?.trim() || versionRange;
 
   const dependencies: Record<string, string> = {
     auggy: auggySpecifier,
@@ -74,6 +77,13 @@ export function buildAgentPackageJson(input: BuildAgentPackageJsonInput): string
     for (const [pkg, range] of Object.entries(entry.packageDeps)) {
       dependencies[pkg] = range;
     }
+  }
+
+  // Exact local package specs must win over semver defaults and augment deps.
+  // This keeps a pre-publish checkout internally coherent when core and its
+  // provider adapters share a version that does not exist on npm yet.
+  for (const [packageName, specifier] of Object.entries(input.packageSpecifiers ?? {})) {
+    if (specifier.trim()) dependencies[packageName] = specifier.trim();
   }
 
   const manifest = {
@@ -154,6 +164,82 @@ export interface ResolveAuggyPackageSpecifierOptions {
   version?: string;
 }
 
+export interface ResolveScaffoldPackageSpecifiersOptions
+  extends ResolveAuggyPackageSpecifierOptions {
+  provider: Provider;
+  /** Test seam, or an explicit linked source root. False disables source fallback. */
+  sourceRoot?: string | false;
+}
+
+const LOCAL_PROVIDER_PACKAGES: Record<Provider, string[]> = {
+  anthropic: ["@auggy/anthropic"],
+  openai: ["@auggy/openai"],
+  openrouter: ["@auggy/openai", "@auggy/openrouter"],
+  ollama: ["@auggy/ollama"],
+};
+
+/**
+ * Resolve the coordinated package set used by `auggy create`.
+ *
+ * Registry installs use semver defaults. Inside an Auggy source checkout, core
+ * and matching provider packages resolve from that checkout. Explicit tarball
+ * overrides remain available for isolated release smoke tests.
+ */
+export function resolveScaffoldPackageSpecifiersForCreate(
+  opts: ResolveScaffoldPackageSpecifiersOptions,
+): Record<string, string> {
+  const env = opts.env ?? process.env;
+  const version = opts.version ?? getAuggyVersion();
+  const cwd = opts.cwd ?? process.cwd();
+  const linkedSourceRoot =
+    opts.sourceRoot === false
+      ? undefined
+      : opts.sourceRoot
+        ? resolve(opts.sourceRoot)
+        : resolve(import.meta.dir, "../..");
+  const workspaceRoot =
+    findNearestAuggyWorkspace(cwd, version, opts.provider) ??
+    (linkedSourceRoot && isMatchingAuggyWorkspace(linkedSourceRoot, version, opts.provider)
+      ? linkedSourceRoot
+      : undefined);
+  const explicitAuggySpecifier = usableOverrideOrFallback(
+    getAuggyPackageSpecifierOverride(env),
+    cwd,
+    Boolean(workspaceRoot),
+  );
+  const auggySpecifier =
+    explicitAuggySpecifier ??
+    (workspaceRoot
+      ? `file:${workspaceRoot}`
+      : resolveAuggyPackageSpecifierForCreate({ env: {}, cwd, version }));
+  const specifiers: Record<string, string> = {};
+
+  if (auggySpecifier) specifiers.auggy = auggySpecifier;
+
+  const explicitEngineSpecifier = usableOverrideOrFallback(
+    env.AUGGY_SCAFFOLD_ENGINE_SPEC?.trim(),
+    cwd,
+    Boolean(workspaceRoot),
+  );
+  if (explicitEngineSpecifier) {
+    specifiers[PROVIDER_TO_PACKAGE[opts.provider]] = explicitEngineSpecifier;
+  }
+
+  if (!auggySpecifier?.startsWith("file:")) return specifiers;
+
+  if (!workspaceRoot) return specifiers;
+
+  for (const packageName of LOCAL_PROVIDER_PACKAGES[opts.provider]) {
+    if (specifiers[packageName]) continue;
+    const packageDir = join(workspaceRoot, "packages", packageName.slice("@auggy/".length));
+    if (isMatchingLocalPackage(packageDir, packageName, version)) {
+      specifiers[packageName] = `file:${packageDir}`;
+    }
+  }
+
+  return specifiers;
+}
+
 /**
  * Resolve an optional Auggy core package specifier for newly scaffolded agents.
  *
@@ -183,6 +269,58 @@ function findNearestPackedAuggyTarball(startDir: string, version: string): strin
     dir = parent;
   }
   return undefined;
+}
+
+function findNearestAuggyWorkspace(
+  startDir: string,
+  version: string,
+  provider: Provider,
+): string | undefined {
+  let dir = resolve(startDir);
+  for (let depth = 0; depth < 8; depth += 1) {
+    if (isMatchingAuggyWorkspace(dir, version, provider)) return dir;
+
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return undefined;
+}
+
+function isMatchingAuggyWorkspace(dir: string, version: string, provider: Provider): boolean {
+  if (!isMatchingLocalPackage(dir, "auggy", version)) return false;
+
+  return LOCAL_PROVIDER_PACKAGES[provider].every((packageName) => {
+    const packageDir = join(dir, "packages", packageName.slice("@auggy/".length));
+    return isMatchingLocalPackage(packageDir, packageName, version);
+  });
+}
+
+function isMatchingLocalPackage(dir: string, packageName: string, version: string): boolean {
+  const manifestPath = join(dir, "package.json");
+  if (!existsSync(manifestPath)) return false;
+
+  try {
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as {
+      name?: unknown;
+      version?: unknown;
+    };
+    return manifest.name === packageName && manifest.version === version;
+  } catch {
+    return false;
+  }
+}
+
+function usableOverrideOrFallback(
+  specifier: string | undefined,
+  cwd: string,
+  fallbackAvailable: boolean,
+): string | undefined {
+  if (!specifier?.startsWith("file:") || !fallbackAvailable) return specifier;
+
+  const rawPath = specifier.slice("file:".length);
+  const targetPath = resolve(cwd, rawPath);
+  return existsSync(targetPath) ? specifier : undefined;
 }
 
 /**

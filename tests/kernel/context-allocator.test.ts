@@ -69,6 +69,39 @@ describe("ContextAllocator", () => {
     expect(prompt.evictions.some((e) => e.source === "memory")).toBe(true);
   });
 
+  it("allocates never-evict blocks before higher-priority droppable blocks", () => {
+    const allocator = createContextAllocator({
+      maxTokens: 200,
+      historyPercent: 40,
+      toolSchemaPercent: 10,
+      tokenizer,
+      preamble: "P",
+    });
+
+    const pinned = block("skills", "S".repeat(200), "normal", "never");
+    const optional = block("retrieval", "R".repeat(200), "required", "drop");
+    const prompt = allocator.assemble([optional, pinned], [], []);
+
+    expect(prompt.contextBlocks.some((content) => content.includes("S".repeat(200)))).toBe(true);
+    expect(prompt.evictions.some((eviction) => eviction.source === "retrieval")).toBe(true);
+  });
+
+  it("fails instead of silently evicting a never-evict block", () => {
+    const allocator = createContextAllocator({
+      maxTokens: 100,
+      historyPercent: 40,
+      toolSchemaPercent: 10,
+      tokenizer,
+      preamble: "P",
+    });
+
+    const pinned = block("identity", "I".repeat(1000), "required", "never");
+
+    expect(() => allocator.assemble([pinned], [], [])).toThrow(
+      'Pinned context block "identity" exceeds the context budget',
+    );
+  });
+
   it("filters pipeline-only blocks from model prompt", () => {
     const allocator = createContextAllocator({
       maxTokens: 10000,
@@ -89,6 +122,51 @@ describe("ContextAllocator", () => {
     const prompt = allocator.assemble(blocks, [], []);
     expect(prompt.contextBlocks.some((b) => b.includes("Public content"))).toBe(true);
     expect(prompt.contextBlocks.some((b) => b.includes("Hidden from model"))).toBe(false);
+  });
+
+  it("excludes pinned pipeline-only blocks from allocation and token totals", () => {
+    const allocator = createContextAllocator({
+      maxTokens: 200,
+      historyPercent: 40,
+      toolSchemaPercent: 10,
+      tokenizer,
+      preamble: "P",
+    });
+
+    const visible = block("visible", "Visible content", "normal", "never");
+    const hidden = {
+      ...block("hidden", "H".repeat(10_000), "required", "never"),
+      visibility: "pipeline-only" as const,
+    };
+
+    const baseline = allocator.assemble([visible], [], []);
+    const prompt = allocator.assemble([hidden, visible], [], []);
+
+    expect(prompt.contextBlocks).toEqual(baseline.contextBlocks);
+    expect(prompt.totalTokens).toBe(baseline.totalTokens);
+    expect(prompt.evictions).toEqual([]);
+    expect(hidden.tokenCount).toBeUndefined();
+  });
+
+  it("does not let droppable pipeline-only blocks displace visible context", () => {
+    const allocator = createContextAllocator({
+      maxTokens: 220,
+      historyPercent: 40,
+      toolSchemaPercent: 10,
+      tokenizer,
+      preamble: "P",
+    });
+
+    const hidden = {
+      ...block("hidden", "H".repeat(300), "required", "drop"),
+      visibility: "pipeline-only" as const,
+    };
+    const visible = block("visible", "V".repeat(200), "low", "drop");
+    const prompt = allocator.assemble([hidden, visible], [], []);
+
+    expect(prompt.contextBlocks.some((content) => content.includes("V".repeat(200)))).toBe(true);
+    expect(prompt.evictions.some((eviction) => eviction.source === "hidden")).toBe(false);
+    expect(prompt.evictions.some((eviction) => eviction.source === "visible")).toBe(false);
   });
 
   // ADR-030: augment-name attribution is stripped from model-bound text.

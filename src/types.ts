@@ -93,6 +93,8 @@ export interface MemoryWriteOpts {
 export interface StaticMemoryProvider {
   owns: { kind: "static"; labels: string[] };
   defaults: MemoryDefaults;
+  /** Optional peer trust allowlist for writes. Omit to use the origin-based policy. */
+  writeTrustLevels?: readonly TrustLevel[];
   read: (label: string) => Promise<MemoryEntry | null>;
   write?: (label: string, content: string) => Promise<void>;
 }
@@ -100,6 +102,8 @@ export interface StaticMemoryProvider {
 export interface NamespaceMemoryProvider {
   owns: { kind: "namespace"; prefix: string };
   defaults: MemoryDefaults;
+  /** Optional peer trust allowlist for writes. Omit to use the origin-based policy. */
+  writeTrustLevels?: readonly TrustLevel[];
   search: (query: string, opts?: MemoryQueryOpts) => Promise<MemoryEntry[]>;
   write?: (label: string, content: string, opts?: MemoryWriteOpts) => Promise<void>;
   read?: (label: string) => Promise<MemoryEntry | null>;
@@ -155,6 +159,8 @@ export interface Tool<TInput = any> {
 export interface ToolResult {
   /** What the model sees as the tool's output. Replaces the plain-string return. */
   content: string;
+  /** Marks an expected tool-level failure without requiring the tool to throw. */
+  isError?: boolean;
   /** Optional turn-termination directive. */
   terminate?: {
     status: Extract<TaskState, "input-required" | "completed">;

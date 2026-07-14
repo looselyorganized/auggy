@@ -36,6 +36,40 @@ describe("auggy builder skill mirrors", () => {
       true,
     );
   });
+
+  test("skill frontmatter advertises implicit builder triggers", () => {
+    const skill = readFileSync(join(CANONICAL_SKILL, "SKILL.md"), "utf-8");
+    const frontmatter = skill.split("---")[1] ?? "";
+
+    for (const trigger of [
+      "custom augments",
+      "defineRoute route shapes",
+      "tools",
+      "generated clients",
+      "Next.js",
+      "Supabase/Clerk",
+      "custom app auth",
+      "memory",
+      "deploy",
+      "troubleshoot",
+    ]) {
+      expect(frontmatter, trigger).toContain(trigger);
+    }
+  });
+
+  test("auth and memory reference pins persistence outcome semantics", () => {
+    const reference = readFileSync(
+      join(CANONICAL_SKILL, "references", "authz-memory-trust.md"),
+      "utf-8",
+    );
+
+    expect(reference).toContain("operator origin");
+    expect(reference).toContain("runtime-verified `creator` turns");
+    expect(reference).toContain("stable runtime identity");
+    expect(reference).toContain("`PERSISTED`");
+    expect(reference).toContain("`NOT_PERSISTED`");
+    expect(reference).toContain("`PERSISTENCE_UNKNOWN`");
+  });
 });
 
 function listFiles(root: string): string[] {

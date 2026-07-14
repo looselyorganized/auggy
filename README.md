@@ -221,6 +221,12 @@ API-backed sources live in `knowledge/sources.json`.
 
 ## Memory And Visitors
 
+Fresh agents include `learned-behaviors.md` for creator-approved,
+agent-global operating guidance. A runtime-verified creator can update it
+through `memory_write({ label: "learned", content })`; public visitors cannot.
+The agent should only claim the update was saved after the tool reports
+`PERSISTED`. Visitor facts do not belong in this file.
+
 ```bash
 auggy augment add layeredMemory
 auggy augment add visitorAuth
@@ -413,7 +419,7 @@ auggy deploy --yes
 | `auggy augment create <name>` | Scaffold a custom local augment |
 | `auggy augment install <agent> <path>` | Install a custom local augment |
 | `auggy skill create <name>` | Create a skill folder |
-| `auggy skill add <name>` | Reinstall a bundled augment skill |
+| `auggy skill add <name>` | Refresh a bundled starter or augment skill (`auggy`, `layeredMemory`, and others) |
 | `auggy routes [name]` | Inspect route manifests, OpenAPI, and generated TypeScript clients |
 | `auggy mcp init/list/show/add-json/remove/doctor` | Manage `.mcp.json` MCP servers |
 | `auggy models list [provider] --refresh` | Fetch and save the latest provider model list |
@@ -449,15 +455,14 @@ bunx tsc --noEmit
 For a local CLI install from this checkout:
 
 ```bash
-npm pack
-PACK="$(ls -t auggy-*.tgz | head -1)"
-npm i -g "$PWD/$PACK"
-export AUGGY_SCAFFOLD_AUGGY_SPEC="file:$PWD/$PACK"
+bun link
+auggy --version
 ```
 
-That last export matters only for local tarball testing. It makes agents
-created by this CLI install the exact packed runtime under test instead of the
-latest `auggy` package already published on npm.
+The linked CLI runs directly from source. Agents created inside this checkout
+also resolve `auggy` and the selected `@auggy/<provider>` adapter from local
+source, so unpublished coordinated versions install without tarballs. Normal
+npm installations continue to use semver.
 
 ## Documentation
 

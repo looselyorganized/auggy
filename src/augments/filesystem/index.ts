@@ -201,10 +201,15 @@ export function filesystem(opts: FilesystemOptions): Augment {
     return context?.peer?.trustLevel ?? "creator";
   }
 
-  function skillFolderFromSubPath(subPath: string): string | null {
-    const normalized = subPath.replace(/\\/g, "/");
-    if (normalized === "." || normalized === "") return null;
-    const first = normalized.split("/")[0];
+  async function skillFolderFromPhysicalPath(
+    mount: FsMount,
+    physicalPath: string,
+  ): Promise<string | null> {
+    const mountRoot = await resolveMountRoot(mount);
+    const relativePath = relative(mountRoot, physicalPath);
+    if (relativePath === "" || relativePath === ".") return null;
+
+    const first = relativePath.split(sep)[0];
     return first && first !== "." ? first : null;
   }
 
@@ -224,12 +229,21 @@ export function filesystem(opts: FilesystemOptions): Augment {
   }
 
   async function restrictedSkillPathError(
-    logicalPath: string,
+    physicalPath: string,
     mount: FsMount,
     context: ToolExecuteContext | undefined,
   ): Promise<string | null> {
-    const { subPath } = parseLogicalPath(logicalPath);
-    return restrictedSkillError(mount, skillFolderFromSubPath(subPath), context);
+    const folder = await skillFolderFromPhysicalPath(mount, physicalPath);
+    return restrictedSkillError(mount, folder, context);
+  }
+
+  async function canonicalCandidatePath(mount: FsMount, physicalPath: string): Promise<string> {
+    const candidate = await realpath(physicalPath).catch(() => resolve(physicalPath));
+    const mountRoot = await resolveMountRoot(mount);
+    if (!isWithinMount(candidate, mountRoot)) {
+      throw new Error(`Path resolves outside mount "${mount.name}" boundary`);
+    }
+    return candidate;
   }
 
   async function resolveAndValidate(
@@ -282,7 +296,7 @@ export function filesystem(opts: FilesystemOptions): Augment {
     }),
     execute: async ({ path: logicalPath }, context) => {
       const { physicalPath, mount } = await resolveAndValidate(logicalPath);
-      const restricted = await restrictedSkillPathError(logicalPath, mount, context);
+      const restricted = await restrictedSkillPathError(physicalPath, mount, context);
       if (restricted) return restricted;
 
       // Check if it's a symlink pointing outside (extra safety)
@@ -356,7 +370,7 @@ export function filesystem(opts: FilesystemOptions): Augment {
     }),
     execute: async ({ path: logicalPath }, context) => {
       const { physicalPath, mount } = await resolveAndValidate(logicalPath);
-      const restricted = await restrictedSkillPathError(logicalPath, mount, context);
+      const restricted = await restrictedSkillPathError(physicalPath, mount, context);
       if (restricted) return restricted;
 
       const stats = await stat(physicalPath);
@@ -371,15 +385,15 @@ export function filesystem(opts: FilesystemOptions): Augment {
         });
       }
 
-      const { subPath } = parseLogicalPath(logicalPath);
-      const listingRootFolder = skillFolderFromSubPath(subPath);
+      const listingRootFolder = await skillFolderFromPhysicalPath(mount, physicalPath);
       const entries = await readdir(physicalPath, { withFileTypes: true });
       const results = await Promise.all(
         entries
           .filter((e) => !e.name.startsWith(".") || e.name === ".gitignore")
           .map(async (entry) => {
-            if (mount.name === "skills" && listingRootFolder === null && entry.isDirectory()) {
-              const restrictedEntry = await restrictedSkillError(mount, entry.name, context);
+            if (mount.name === "skills" && listingRootFolder === null) {
+              const entryPath = await canonicalCandidatePath(mount, join(physicalPath, entry.name));
+              const restrictedEntry = await restrictedSkillPathError(entryPath, mount, context);
               if (restrictedEntry) return null;
             }
             const entryPath = join(physicalPath, entry.name);
@@ -480,7 +494,7 @@ export function filesystem(opts: FilesystemOptions): Augment {
     }),
     execute: async ({ path: logicalPath, pattern, maxResults }, context) => {
       const { physicalPath, mount } = await resolveAndValidate(logicalPath);
-      const restricted = await restrictedSkillPathError(logicalPath, mount, context);
+      const restricted = await restrictedSkillPathError(physicalPath, mount, context);
       if (restricted) return restricted;
       const cap = Math.min(maxResults ?? 100, 1000);
 
@@ -495,10 +509,8 @@ export function filesystem(opts: FilesystemOptions): Augment {
         dot: false,
       })) {
         if (mount.name === "skills") {
-          const { subPath } = parseLogicalPath(logicalPath);
-          const rootFolder = skillFolderFromSubPath(subPath);
-          const candidateFolder = rootFolder ?? skillFolderFromSubPath(entry);
-          const restrictedEntry = await restrictedSkillError(mount, candidateFolder, context);
+          const candidatePath = await canonicalCandidatePath(mount, join(physicalPath, entry));
+          const restrictedEntry = await restrictedSkillPathError(candidatePath, mount, context);
           if (restrictedEntry) continue;
         }
         // Check excludes

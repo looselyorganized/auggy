@@ -1,7 +1,7 @@
-import { describe, it, expect } from "bun:test";
+import { describe, it, expect, spyOn } from "bun:test";
 import { createMemoryTools } from "@/memory/tools";
 import { buildRegistry } from "@/memory/registry";
-import type { Augment, MemoryDefaults, ToolExecuteContext } from "@/types";
+import type { Augment, MemoryDefaults, ToolExecuteContext, ToolResult } from "@/types";
 import { asStringTool } from "@tests/fixtures/tool-helpers";
 
 const defaults: MemoryDefaults = {
@@ -17,6 +17,16 @@ const DEFAULT_CTX: ToolExecuteContext = {
   peer: { id: "test-peer", kind: "human", trustLevel: "creator", sourceAugment: "test" },
   threadId: "test-thread",
 };
+
+function expectWriteError(
+  result: string | ToolResult,
+  code: "NOT_PERSISTED" | "PERSISTENCE_UNKNOWN",
+): string {
+  expect(result).toMatchObject({ isError: true });
+  if (typeof result === "string") throw new Error("Expected a structured ToolResult");
+  expect(result.content).toStartWith(`${code}:`);
+  return result.content;
+}
 
 describe("createMemoryTools", () => {
   it("creates five tools with correct names", () => {
@@ -202,7 +212,7 @@ describe("createMemoryTools", () => {
   });
 
   describe("memory_write", () => {
-    it("writes to a mutable provider", async () => {
+    it("returns PERSISTED after writing to a mutable provider", async () => {
       const writes: Array<{ label: string; content: string }> = [];
       const providers: Augment[] = [
         {
@@ -222,7 +232,134 @@ describe("createMemoryTools", () => {
       const writeTool = tools.find((t) => t.name === "memory_write")!;
       const result = await writeTool.execute({ label: "notes", content: "new note" }, DEFAULT_CTX);
       expect(writes).toEqual([{ label: "notes", content: "new note" }]);
-      expect(result).toMatch(/success/i);
+      expect(result).toMatch(/^PERSISTED:/);
+    });
+
+    it("rejects a write that supplies both label and topic", async () => {
+      let writeCalls = 0;
+      const providers: Augment[] = [
+        {
+          name: "notes",
+          memory: {
+            owns: { kind: "static", labels: ["notes"] },
+            defaults,
+            read: async () => null,
+            write: async () => {
+              writeCalls += 1;
+            },
+          },
+        },
+      ];
+      const registry = buildRegistry(providers);
+      const { tools } = createMemoryTools(registry);
+      const writeTool = tools.find((t) => t.name === "memory_write")!;
+
+      const result = await writeTool.execute(
+        { label: "notes", topic: "preferences", content: "ambiguous" },
+        DEFAULT_CTX,
+      );
+
+      const content = expectWriteError(result, "NOT_PERSISTED");
+      expect(content).toMatch(/either an exact label or a peer topic, not both/i);
+      expect(writeCalls).toBe(0);
+    });
+
+    it("returns PERSISTENCE_UNKNOWN when a provider throws after a side effect", async () => {
+      const writes: string[] = [];
+      const providers: Augment[] = [
+        {
+          name: "notes",
+          memory: {
+            owns: { kind: "static", labels: ["notes"] },
+            defaults,
+            read: async () => null,
+            write: async (_label: string, content: string) => {
+              writes.push(content);
+              throw new Error("backend postgres://admin:secret@memory.internal failed");
+            },
+          },
+        },
+      ];
+      const registry = buildRegistry(providers);
+      const { tools } = createMemoryTools(registry);
+      const writeTool = tools.find((t) => t.name === "memory_write")!;
+      const errorSpy = spyOn(console, "error").mockImplementation(() => undefined);
+
+      try {
+        const result = await writeTool.execute(
+          { label: "notes", content: "new note" },
+          DEFAULT_CTX,
+        );
+
+        const content = expectWriteError(result, "PERSISTENCE_UNKNOWN");
+        expect(writes).toEqual(["new note"]);
+        expect(content).toContain('The "notes" provider failed while writing label "notes"');
+        expect(content).toMatch(/final persistence state is unknown/i);
+        expect(content).not.toContain("postgres");
+        expect(content).not.toContain("secret");
+        expect(content).not.toContain("memory.internal");
+        expect(errorSpy).toHaveBeenCalledTimes(1);
+      } finally {
+        errorSpy.mockRestore();
+      }
+    });
+
+    it("enforces creator-only provider writeTrustLevels", async () => {
+      const writes: string[] = [];
+      const providers: Augment[] = [
+        {
+          name: "learned",
+          memory: {
+            owns: { kind: "static", labels: ["learned"] },
+            defaults,
+            writeTrustLevels: ["creator"],
+            read: async () => null,
+            write: async (_label: string, content: string) => {
+              writes.push(content);
+            },
+          },
+        },
+      ];
+      const registry = buildRegistry(providers);
+      const { tools } = createMemoryTools(registry);
+      const writeTool = tools.find((t) => t.name === "memory_write")!;
+
+      const agentResult = await writeTool.execute(
+        { label: "learned", content: "agent update" },
+        {
+          turnId: "agent-turn",
+          peer: { id: "agent-1", kind: "agent", trustLevel: "agent", sourceAugment: "test" },
+          threadId: "thread-1",
+        },
+      );
+      const publicResult = await writeTool.execute(
+        { label: "learned", content: "public update" },
+        {
+          turnId: "public-turn",
+          peer: { id: "visitor-1", kind: "human", trustLevel: "public", sourceAugment: "test" },
+          threadId: "thread-1",
+        },
+      );
+      const internalResult = await writeTool.execute(
+        { label: "learned", content: "internal update" },
+        { turnId: "internal-turn", peer: null, threadId: "thread-1" },
+      );
+      const creatorResult = await writeTool.execute(
+        { label: "learned", content: "creator update" },
+        {
+          turnId: "creator-turn",
+          peer: { id: "creator-1", kind: "human", trustLevel: "creator", sourceAugment: "test" },
+          threadId: "thread-1",
+        },
+      );
+
+      expect(expectWriteError(agentResult, "NOT_PERSISTED")).toMatch(/requires creator trust/i);
+      expect(expectWriteError(publicResult, "NOT_PERSISTED")).toMatch(/requires creator trust/i);
+      expect(expectWriteError(internalResult, "NOT_PERSISTED")).toMatch(
+        /internal turns do not satisfy an explicit write trust allowlist/i,
+      );
+      expect(creatorResult).toMatch(/^PERSISTED:/);
+      expect(writes).toEqual(["creator update"]);
     });
 
     it("rejects writes to immutable providers", async () => {
@@ -240,7 +377,7 @@ describe("createMemoryTools", () => {
       const { tools } = createMemoryTools(registry);
       const writeTool = tools.find((t) => t.name === "memory_write")!;
       const result = await writeTool.execute({ label: "self", content: "tampered" }, DEFAULT_CTX);
-      expect(result).toMatch(/immutable/i);
+      expect(expectWriteError(result, "NOT_PERSISTED")).toMatch(/immutable/i);
     });
 
     it("blocks public peer from writing to origin:system label", async () => {
@@ -266,7 +403,7 @@ describe("createMemoryTools", () => {
           threadId: "th1",
         },
       );
-      expect(result).toMatch(/requires agent or creator/i);
+      expect(expectWriteError(result, "NOT_PERSISTED")).toMatch(/requires agent or creator/i);
     });
 
     it("blocks public peer from writing to origin:system label", async () => {
@@ -292,7 +429,7 @@ describe("createMemoryTools", () => {
           threadId: "th1",
         },
       );
-      expect(result).toMatch(/requires agent or creator/i);
+      expect(expectWriteError(result, "NOT_PERSISTED")).toMatch(/requires agent or creator/i);
     });
 
     it("allows creator to write to origin:system label", async () => {
@@ -355,7 +492,7 @@ describe("createMemoryTools", () => {
       expect(writes).toEqual(["facility update"]);
     });
 
-    it("allows public peer to write to origin:peer-derived label", async () => {
+    it("denies cross-peer exact-label writes to namespace memory and requires topic", async () => {
       const writes: string[] = [];
       const peerDerivedDefaults: MemoryDefaults = { ...defaults, origin: "peer-derived" };
       const providers: Augment[] = [
@@ -375,15 +512,29 @@ describe("createMemoryTools", () => {
       const { tools } = createMemoryTools(registry);
       const writeTool = tools.find((t) => t.name === "memory_write")!;
       const result = await writeTool.execute(
-        { label: "ep:note", content: "visitor memory" },
+        { label: "ep:other-peer:note", content: "visitor memory" },
         {
           turnId: "t1",
           peer: { id: "vis_1", kind: "human", trustLevel: "public", sourceAugment: "web" },
           threadId: "th1",
         },
       );
-      expect(result).toMatch(/success/i);
-      expect(writes).toEqual(["visitor memory"]);
+      const content = expectWriteError(result, "NOT_PERSISTED");
+      expect(content).toMatch(/exact-label writes are not allowed for namespace memory/i);
+      expect(content).toMatch(/use topic/i);
+      expect(writes).toEqual([]);
+    });
+
+    it("requires either an exact static label or a topic", async () => {
+      const registry = buildRegistry([]);
+      const { tools } = createMemoryTools(registry);
+      const writeTool = tools.find((t) => t.name === "memory_write")!;
+
+      const result = await writeTool.execute({ content: "missing destination" }, DEFAULT_CTX);
+
+      expect(expectWriteError(result, "NOT_PERSISTED")).toMatch(
+        /requires either an exact label or a topic/i,
+      );
     });
 
     it("derives a peer-scoped label from topic when writing namespace memory", async () => {
@@ -452,7 +603,7 @@ describe("createMemoryTools", () => {
       const { tools } = createMemoryTools(registry);
       const writeTool = tools.find((t) => t.name === "memory_write")!;
       const result = await writeTool.execute({ topic: "preferences", content: "No context" });
-      expect(result).toMatch(/requires turn context/i);
+      expect(expectWriteError(result, "NOT_PERSISTED")).toMatch(/requires turn context/i);
     });
 
     it("explains peer memory setup when topic write has no writable namespace", async () => {
@@ -467,10 +618,11 @@ describe("createMemoryTools", () => {
           threadId: "th1",
         },
       );
-      expect(result).toContain("No writable current-peer memory provider");
-      expect(result).toContain("layeredMemory");
-      expect(result).toContain("Do not promise cross-session memory");
-      expect(result).toContain('exact "learned" label');
+      const content = expectWriteError(result, "NOT_PERSISTED");
+      expect(content).toContain("No writable current-peer memory provider");
+      expect(content).toContain("layeredMemory");
+      expect(content).toMatch(/do not retry a peer fact under an agent-global label/i);
+      expect(content).not.toMatch(/retry.*learned|learned.*retry/i);
     });
 
     it("explains peer memory setup when selected provider is unavailable", async () => {
@@ -485,9 +637,11 @@ describe("createMemoryTools", () => {
           threadId: "th1",
         },
       );
-      expect(result).toContain('No writable memory provider named "crmMemory"');
-      expect(result).toContain("layeredMemory");
-      expect(result).toContain("not visitor facts");
+      const content = expectWriteError(result, "NOT_PERSISTED");
+      expect(content).toContain('No writable memory provider named "crmMemory"');
+      expect(content).toContain("layeredMemory");
+      expect(content).toMatch(/do not retry a peer fact under an agent-global label/i);
+      expect(content).not.toMatch(/retry.*learned|learned.*retry/i);
     });
 
     it("describes current-peer memory setup in the tool description", () => {
@@ -497,7 +651,7 @@ describe("createMemoryTools", () => {
       expect(writeTool.description).toContain("topic + content");
       expect(writeTool.description).toContain("layeredMemory");
       expect(writeTool.description).toContain('exact label "learned"');
-      expect(writeTool.description).toContain("not visitor facts");
+      expect(writeTool.description).toContain("Never put visitor facts");
     });
 
     it("requires provider selection when topic write has multiple writable namespaces", async () => {
@@ -533,9 +687,10 @@ describe("createMemoryTools", () => {
           threadId: "th1",
         },
       );
-      expect(result).toMatch(/multiple writable memory providers/i);
-      expect(result).toContain("episodic");
-      expect(result).toContain("crmMemory");
+      const content = expectWriteError(result, "NOT_PERSISTED");
+      expect(content).toMatch(/multiple writable memory providers/i);
+      expect(content).toContain("episodic");
+      expect(content).toContain("crmMemory");
     });
 
     it("uses the selected provider when deriving memory labels from topic", async () => {
@@ -596,7 +751,7 @@ describe("createMemoryTools", () => {
       const { tools } = createMemoryTools(registry);
       const writeTool = tools.find((t) => t.name === "memory_write")!;
       const result = await writeTool.execute({ label: "learned", content: "no context" });
-      expect(result).toMatch(/requires turn context/i);
+      expect(expectWriteError(result, "NOT_PERSISTED")).toMatch(/requires turn context/i);
     });
 
     it("allows write with null peer in context (internal trigger = creator trust)", async () => {
@@ -1067,6 +1222,7 @@ describe("createMemoryTools", () => {
   describe("memory_write provenance", () => {
     it("passes peerId and trustLevel from context to namespace provider write", async () => {
       let receivedOpts: { peerId?: string; trustLevel?: string } | undefined;
+      let receivedLabel: string | undefined;
       const peerDerivedDefaults: MemoryDefaults = { ...defaults, origin: "peer-derived" };
       const providers: Augment[] = [
         {
@@ -1075,7 +1231,8 @@ describe("createMemoryTools", () => {
             owns: { kind: "namespace", prefix: "ep:" },
             defaults: peerDerivedDefaults,
             search: async () => [],
-            write: async (_label: string, _content: string, opts) => {
+            write: async (label: string, _content: string, opts) => {
+              receivedLabel = label;
               receivedOpts = opts;
             },
           },
@@ -1085,13 +1242,14 @@ describe("createMemoryTools", () => {
       const { tools } = createMemoryTools(registry);
       const writeTool = tools.find((t) => t.name === "memory_write")!;
       await writeTool.execute(
-        { label: "ep:vis_a:1", content: "x" },
+        { topic: "preference", content: "x" },
         {
           turnId: "t1",
           threadId: "th",
           peer: { id: "vis_a", kind: "human", trustLevel: "public", sourceAugment: "web" },
         },
       );
+      expect(receivedLabel).toBe("ep:vis_a:preference");
       expect(receivedOpts).toEqual({ peerId: "vis_a", trustLevel: "public" });
     });
   });

@@ -44,7 +44,7 @@ import {
 import {
   buildAgentPackageJson,
   getAuggyVersion,
-  resolveAuggyPackageSpecifierForCreate,
+  resolveScaffoldPackageSpecifiersForCreate,
 } from "../scaffold-package-json";
 import { runBunInstall, type BunInstallSpawnFactory } from "../bun-install";
 import { checkAgentRuntimeInstall, type RuntimeInstallCheck } from "../runtime-install-check";
@@ -616,12 +616,17 @@ async function runCreateIntoDir(
     writeFileSync(join(tempDir, ".gitignore"), GITIGNORE);
 
     const auggyVersion = getAuggyVersion();
+    const packageSpecifiers = resolveScaffoldPackageSpecifiersForCreate({
+      cwd: finalDir,
+      provider,
+      version: auggyVersion,
+    });
     writeFileSync(
       join(tempDir, "package.json"),
       buildAgentPackageJson({
         agentName: name,
         auggyVersion,
-        auggyPackageSpecifier: resolveAuggyPackageSpecifierForCreate({ cwd: finalDir }),
+        packageSpecifiers,
         provider,
         augments,
       }),

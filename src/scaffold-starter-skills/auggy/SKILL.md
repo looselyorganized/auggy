@@ -1,6 +1,6 @@
 ---
 name: auggy
-description: Help the creator understand, customize, and build out this Auggy agent with identity, skills, knowledge, augments, routes, clients, auth, memory, notifications, and deploy.
+description: Build and troubleshoot Auggy agent-native backends with custom augments, defineRoute route shapes, tools, generated clients, Next.js, Supabase/Clerk or custom app auth, memory, deploy, and CLI workflows.
 allowedTrustLevels:
   - creator
 ---
@@ -134,11 +134,21 @@ Then add markdown under `knowledge/local/` and list each endpoint in
 
 ### "I want you to remember people"
 
-Use:
+Inspect the live inventory first. Always distinguish an Auggy capability from
+what is installed in this agent. If `layeredMemory` is absent, say:
+
+> **Layered Memory — stable add-on, not installed in this agent.** Adds
+> peer-scoped episodic memory backed by SQLite. Explicit topic-based writes
+> work after installation; automatic extraction is off by default.
+
+Then suggest:
 
 ```bash
 auggy augment add layeredMemory
 ```
+
+If it is already installed, say so and explain that peer facts use
+`memory_write({ topic, content })`; do not recommend installing it again.
 
 For cross-session visitor continuity, pair it with:
 
@@ -148,6 +158,10 @@ auggy augment add visitorAuth
 
 Read `skills/auggy/references/authz-memory-trust.md` before explaining memory
 trust, learned behavior, or app auth.
+
+Existing projects can refresh this general guide with `auggy skill add auggy`.
+The augment-specific memory teaching can be refreshed with
+`auggy skill add layeredMemory` after that augment is installed.
 
 ### "I want a new route, API call, or app-specific tool"
 

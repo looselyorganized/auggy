@@ -1,5 +1,10 @@
 # Learned Behaviors Compatibility Plan
 
+Status: implemented for the 0.5 preview. New scaffolds, legacy fallback,
+dual-file doctor diagnostics, creator-only default writes, and regression
+coverage are in place. The logical `learned` label remains intentionally
+compatible.
+
 ## Goal
 
 Rename or reposition the scaffolded mutable agent-global note file from
@@ -25,7 +30,7 @@ guidance. User facts such as "my favorite color is blue" belong in
 - Any migration command should copy, not move, unless the user explicitly opts
   into removal.
 
-## Implementation Phases
+## Implemented Phases
 
 1. **Docs and prompt guidance**
    - Update README/docs/site wording from "learned notes" to "learned
