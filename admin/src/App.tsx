@@ -37,7 +37,7 @@ export function App() {
       <ConfirmProvider>
         <DashboardProvider value={dashboard}>
           <div className="flex h-full min-w-0 flex-col bg-background">
-            <div className="h-1.5 shrink-0 bg-[hsl(var(--brand-signal))]" />
+            <div className="auggy-brand-stripe" />
             <Header
               agentName={agentName}
               agentDescription={agentDescription}

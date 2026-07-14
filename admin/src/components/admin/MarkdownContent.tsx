@@ -1,5 +1,7 @@
+import { isValidElement, type ReactNode } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { HighlightedCode } from "@/components/ui/highlighted-code";
 import { cn } from "@/lib/utils";
 
 interface MarkdownContentProps {
@@ -94,6 +96,17 @@ const markdownComponents: Components = {
     return <p className="whitespace-pre-wrap">{children}</p>;
   },
   pre({ children }) {
+    const fenced = readFencedCode(children);
+    if (fenced) {
+      return (
+        <HighlightedCode
+          code={fenced.code}
+          language={fenced.language}
+          className="rounded-md"
+        />
+      );
+    }
+
     return (
       <pre className="overflow-x-auto rounded-md bg-muted/60 p-3 text-xs leading-5">
         {children}
@@ -126,6 +139,18 @@ const markdownComponents: Components = {
     return <ul className={cn("space-y-1 pl-5 list-disc", className)}>{children}</ul>;
   },
 };
+
+function readFencedCode(
+  children: ReactNode,
+): { code: string; language: string | undefined } | null {
+  const child = Array.isArray(children) ? children[0] : children;
+  if (!isValidElement<{ children?: ReactNode; className?: string }>(child)) return null;
+
+  const content = child.props.children;
+  const code = Array.isArray(content) ? content.join("") : String(content ?? "");
+  const language = child.props.className?.replace(/^language-/, "");
+  return { code: code.replace(/\n$/, ""), language };
+}
 
 export function MarkdownContent({ content, isUser = false, className }: MarkdownContentProps) {
   return (

@@ -1,64 +1,35 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "./auggy.css";
 
-@layer base {
-  :root {
-    --background: 43 39% 93%;
-    --foreground: 220 11% 10%;
-    --card: 40 100% 97%;
-    --card-foreground: 220 11% 10%;
-    --popover: 0 0% 100%;
-    --popover-foreground: 220 11% 10%;
-    --primary: 220 11% 10%;
-    --primary-foreground: 43 39% 93%;
-    --secondary: 39 34% 90%;
-    --secondary-foreground: 220 11% 10%;
-    --muted: 39 34% 90%;
-    --muted-foreground: 31 12% 44%;
-    --accent: 39 34% 90%;
-    --accent-foreground: 220 11% 10%;
-    --destructive: 0 84.2% 60.2%;
-    --destructive-foreground: 210 40% 98%;
-    --border: 38 29% 76%;
-    --input: 38 29% 76%;
-    --ring: 220 11% 10%;
-    --brand-signal: 18 82% 58%;
-    --radius: 0.5rem;
+@source "./**/*.{ts,tsx}";
+
+@layer components {
+  .console-code pre {
+    margin: 0;
+    min-width: max-content;
+    background: transparent !important;
+    padding: 0.75rem;
+    tab-size: 2;
   }
 
-  .dark {
-    --background: 220 11% 10%;
-    --foreground: 43 39% 93%;
-    --card: 220 10% 15%;
-    --card-foreground: 43 39% 93%;
-    --popover: 220 10% 15%;
-    --popover-foreground: 43 39% 93%;
-    --primary: 43 39% 93%;
-    --primary-foreground: 220 11% 10%;
-    --secondary: 220 10% 20%;
-    --secondary-foreground: 43 39% 93%;
-    --muted: 220 10% 20%;
-    --muted-foreground: 39 17% 70%;
-    --accent: 220 10% 20%;
-    --accent-foreground: 43 39% 93%;
-    --destructive: 0 62.8% 30.6%;
-    --destructive-foreground: 43 39% 93%;
-    --border: 220 10% 24%;
-    --input: 220 10% 24%;
-    --ring: 43 39% 93%;
-    --brand-signal: 18 82% 58%;
+  .console-code code {
+    display: block;
+    font-family: var(--auggy-font-mono), ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+      "Liberation Mono", "Courier New", monospace;
+    letter-spacing: 0;
+    white-space: pre;
   }
-}
 
-@layer base {
-  * {
-    @apply border-border;
+  .console-code-wrap pre {
+    min-width: 0;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
   }
-  body {
-    @apply bg-background text-foreground antialiased;
-    font-feature-settings:
-      "rlig" 1,
-      "calt" 1;
+
+  .console-code-wrap code {
+    white-space: inherit;
+  }
+
+  .console-code-compact pre {
+    padding: 0.5rem;
   }
 }

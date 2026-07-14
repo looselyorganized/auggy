@@ -3,6 +3,7 @@ import { Check, ChevronDown, ChevronRight, Copy, RotateCcw, Square } from "lucid
 import { MarkdownContent } from "@/components/admin/MarkdownContent";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { detectCodeLanguage, HighlightedCode } from "@/components/ui/highlighted-code";
 import { Textarea } from "@/components/ui/textarea";
 import { useDashboardContext } from "@/components/admin/DashboardContext";
 import { findCsrfToken } from "@/lib/api";
@@ -335,18 +336,7 @@ export function ChatTab() {
   }
 
   return (
-    <div className="relative h-full overflow-hidden bg-background">
-      <div
-        className="pointer-events-none absolute inset-0 opacity-45"
-        aria-hidden="true"
-        style={{
-          backgroundImage:
-            "linear-gradient(hsl(var(--border) / 0.45) 1px, transparent 1px), linear-gradient(90deg, hsl(var(--border) / 0.45) 1px, transparent 1px)",
-          backgroundSize: "32px 32px",
-        }}
-      />
-      <div className="pointer-events-none absolute inset-x-0 top-0 h-24 bg-gradient-to-b from-background to-transparent" />
-
+    <div className="auggy-grid-surface h-full bg-background">
       <MessageList
         messages={messages}
         streaming={streaming}
@@ -668,17 +658,25 @@ function ToolCallView({ tc }: { tc: ToolCall }) {
           {tc.args !== undefined && (
             <details>
               <summary className="cursor-pointer text-muted-foreground">args</summary>
-              <pre className="mt-1 max-h-48 overflow-y-auto whitespace-pre-wrap break-words rounded bg-muted/40 p-2 font-mono">
-                {tc.args || "(empty)"}
-              </pre>
+              <HighlightedCode
+                code={tc.args || "(empty)"}
+                language={detectCodeLanguage(tc.args)}
+                wrap
+                compact
+                className="mt-1 max-h-48 rounded"
+              />
             </details>
           )}
           {tc.result !== undefined && (
             <details open>
               <summary className="cursor-pointer text-muted-foreground">result</summary>
-              <pre className="mt-1 max-h-64 overflow-y-auto whitespace-pre-wrap break-words rounded bg-muted/40 p-2 font-mono">
-                {tc.result || "(empty)"}
-              </pre>
+              <HighlightedCode
+                code={tc.result || "(empty)"}
+                language={detectCodeLanguage(tc.result)}
+                wrap
+                compact
+                className="mt-1 max-h-64 rounded"
+              />
             </details>
           )}
         </div>

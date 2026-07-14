@@ -1,11 +1,12 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import tailwindcss from "@tailwindcss/vite";
 import { fileURLToPath, URL } from "node:url";
 
 const DEV_AGENT_PORT = Number(process.env.AUGGY_ADMIN_DEV_AGENT_PORT ?? 8081);
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), tailwindcss()],
   base: "/console/",
   resolve: {
     alias: {
