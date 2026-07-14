@@ -127,11 +127,115 @@ describe("scaffoldAgent", () => {
     expect(skill).toContain("  - creator");
     expect(skill).toContain("auggy augment create");
     expect(skill).toContain("auggy skill create");
-    expect(skill).toContain("httpRoutes:");
-    expect(skill).toContain('defineRoute.get("/services"');
-    expect(skill).toContain('defineRoute.post("/leads/create"');
-    expect(skill).toContain("auggy routes --client ts --target browser");
-    expect(skill).toContain("createAuggyClient");
+    expect(skill).toContain("skills/auggy/references/routes-tools-augments.md");
+    expect(skill).toContain("skills/auggy/references/generated-clients.md");
+    expect(skill).toContain("skills/auggy/references/authz-memory-trust.md");
+    expect(skill).toContain("skills/auggy/references/app-auth-bridge-e2e.md");
+    expect(skill).toContain("skills/auggy/references/nextjs-integration.md");
+    expect(skill).toContain("skills/auggy/assets/templates/custom-augment");
+  });
+
+  test("starter auggy skill references exist and are copied into fresh scaffolds", () => {
+    const dir = scaffoldAgent({ name: "zip", targetDir: join(TMP, "zip-auggy-refs") });
+    const skill = readFileSync(join(dir, "skills", "auggy", "SKILL.md"), "utf-8");
+    const referencePaths = [...skill.matchAll(/skills\/auggy\/references\/[a-z0-9.-]+\.md/g)].map(
+      (match) => match[0],
+    );
+
+    expect(referencePaths.length).toBeGreaterThanOrEqual(8);
+    for (const referencePath of new Set(referencePaths)) {
+      expect(existsSync(join(dir, referencePath))).toBe(true);
+    }
+
+    const routesReference = readFileSync(
+      join(dir, "skills", "auggy", "references", "routes-tools-augments.md"),
+      "utf-8",
+    );
+    expect(routesReference).toContain("httpRoutes");
+    expect(routesReference).toContain('defineRoute.get("/services"');
+    expect(routesReference).toContain('defineRoute.post("/leads/create"');
+
+    const clientsReference = readFileSync(
+      join(dir, "skills", "auggy", "references", "generated-clients.md"),
+      "utf-8",
+    );
+    expect(clientsReference).toContain("createAuggyClient");
+    expect(clientsReference).toContain("--target browser");
+
+    const appAuthReference = readFileSync(
+      join(dir, "skills", "auggy", "references", "app-auth-bridge-e2e.md"),
+      "utf-8",
+    );
+    expect(appAuthReference).toContain("authAssertion");
+    expect(appAuthReference).toContain("authorization-grant-missing");
+    expect(appAuthReference).toContain('requires: { action: "refund.issue"');
+  });
+
+  test("starter auggy skill templates exist and are copied into fresh scaffolds", () => {
+    const dir = scaffoldAgent({ name: "zip", targetDir: join(TMP, "zip-auggy-templates") });
+    const templatesRoot = join(dir, "skills", "auggy", "assets", "templates");
+
+    const customIndex = readFileSync(
+      join(templatesRoot, "custom-augment", "index.ts.txt"),
+      "utf-8",
+    );
+    expect(customIndex).toContain("defineAugment");
+    expect(customIndex).toContain("httpRoutes");
+    expect(customIndex).toContain('defineRoute.post("/leads/create"');
+
+    const browserClient = readFileSync(
+      join(templatesRoot, "nextjs-browser-client", "service-search.tsx.txt"),
+      "utf-8",
+    );
+    expect(browserClient).toContain("createAuggyClient");
+    expect(browserClient).toContain("authAssertion");
+    expect(browserClient).toContain("NEXT_PUBLIC_AUGGY_BASE_URL");
+
+    const authBridge = readFileSync(
+      join(templatesRoot, "app-auth-bridge", "next-route.ts.txt"),
+      "utf-8",
+    );
+    expect(authBridge).toContain("createExternalAuthAssertion");
+    expect(authBridge).toContain("AUGGY_EXTERNAL_AUTH_SECRET");
+
+    const supabaseBridge = readFileSync(
+      join(templatesRoot, "app-auth-bridge", "supabase-next-route.ts.txt"),
+      "utf-8",
+    );
+    expect(supabaseBridge).toContain("supabase.auth.getUser");
+    expect(supabaseBridge).toContain('provider: "supabase"');
+
+    const clerkBridge = readFileSync(
+      join(templatesRoot, "app-auth-bridge", "clerk-next-route.ts.txt"),
+      "utf-8",
+    );
+    expect(clerkBridge).toContain("await auth()");
+    expect(clerkBridge).toContain("await currentUser()");
+    expect(clerkBridge).toContain('provider: "clerk"');
+
+    const webTransportConfig = readFileSync(
+      join(templatesRoot, "app-auth-bridge", "webtransport-external-auth.yaml.txt"),
+      "utf-8",
+    );
+    expect(webTransportConfig).toContain("externalAuth:");
+    expect(webTransportConfig).toContain("AUGGY_EXTERNAL_AUTH_SECRET");
+    expect(webTransportConfig).toContain('allowedProviders: ["supabase", "clerk", "custom"]');
+
+    const replayStore = readFileSync(
+      join(templatesRoot, "app-auth-bridge", "replay-protection-store.ts.txt"),
+      "utf-8",
+    );
+    expect(replayStore).toContain("ExternalAuthReplayStore");
+    expect(replayStore).toContain("expiresAt - now");
+    expect(replayStore).toContain("replayProtection: { enabled: true, store: replayStore }");
+
+    const auditHook = readFileSync(
+      join(templatesRoot, "app-auth-bridge", "denial-audit-hook.ts.txt"),
+      "utf-8",
+    );
+    expect(auditHook).toContain("DelegatedAuthorizationDeniedAuditEvent");
+    expect(auditHook).toContain("onDelegatedAuthorizationDenied");
+    expect(auditHook).not.toContain("x-auggy-auth-assertion");
   });
 
   test(".gitignore excludes .env and workspace", () => {

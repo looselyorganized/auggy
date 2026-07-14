@@ -1,0 +1,21 @@
+type: webTransport
+config:
+  port: 8080
+  publicIntegration: false
+  auth:
+    type: bearer
+    token: ${AUGGY_WEB_TOKEN}
+  visitorTokens:
+    agentBinding: ${AUGGY_AGENT_ID}
+  externalAuth:
+    secret: ${AUGGY_EXTERNAL_AUTH_SECRET}
+    keyId: "2026-07"
+    secrets:
+      - keyId: "2026-06"
+        secret: ${AUGGY_EXTERNAL_AUTH_SECRET_PREVIOUS}
+    audience: ${AUGGY_EXTERNAL_AUTH_AUDIENCE}
+    allowedProviders: ["supabase", "clerk", "custom"]
+    maxTtlSeconds: 60
+    # Enable replay protection for high-risk flows. See the replay template.
+    replayProtection:
+      enabled: false

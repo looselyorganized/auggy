@@ -26,6 +26,10 @@
         "@anthropic-ai/sdk": "^0.94.0",
       },
     },
+    "packages/auggy-builder-skill": {
+      "name": "@auggy/builder-skill",
+      "version": "0.5.0",
+    },
     "packages/evals": {
       "name": "@auggy/evals",
       "version": "0.5.0",
@@ -61,6 +65,8 @@
     "@anthropic-ai/sdk": ["@anthropic-ai/sdk@0.94.0", "", { "dependencies": { "json-schema-to-ts": "^3.1.1" }, "peerDependencies": { "zod": "^3.25.0 || ^4.0.0" }, "optionalPeers": ["zod"], "bin": { "anthropic-ai-sdk": "bin/cli" } }, "sha512-OVlCttk5MyeTGtrWX5+F3MJOfEMDuEjK8+rm9aQMDfRPWndVMbhk37QG8WLnVbcc7huyUGngVMjT7iMN2llySA=="],
 
     "@auggy/anthropic": ["@auggy/anthropic@workspace:packages/anthropic"],
+
+    "@auggy/builder-skill": ["@auggy/builder-skill@workspace:packages/auggy-builder-skill"],
 
     "@auggy/evals": ["@auggy/evals@workspace:packages/evals"],
 

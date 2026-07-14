@@ -1,0 +1,10 @@
+import { describe, expect, test } from "bun:test";
+import { searchServices } from "./domain";
+
+describe("services augment domain", () => {
+  test("searches deterministic service data", () => {
+    expect(searchServices({ category: "planning" })).toEqual([
+      { id: "svc_consult", name: "Consultation", category: "planning" },
+    ]);
+  });
+});

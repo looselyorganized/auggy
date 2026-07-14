@@ -1,0 +1,26 @@
+import { z } from "zod";
+
+export const ServiceQuerySchema = z.object({
+  need: z.string().trim().min(1).optional(),
+  category: z.string().trim().min(1).optional(),
+});
+
+export const ServiceSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  category: z.string(),
+});
+
+export const LeadInputSchema = z.object({
+  email: z.string().trim().email(),
+  need: z.string().trim().min(1),
+  serviceId: z.string().trim().min(1).optional(),
+});
+
+export const LeadResponseSchema = z.object({
+  id: z.string(),
+  saved: z.boolean(),
+});
+
+export type ServiceQuery = z.infer<typeof ServiceQuerySchema>;
+export type LeadInput = z.infer<typeof LeadInputSchema>;

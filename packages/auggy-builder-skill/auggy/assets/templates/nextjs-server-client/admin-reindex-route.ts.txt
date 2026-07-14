@@ -1,0 +1,18 @@
+import { createAuggyClient } from "@/src/auggy-client.server";
+
+const api = createAuggyClient({
+  baseUrl: process.env.AUGGY_BASE_URL!,
+  bearerToken: () => process.env.AUGGY_BEARER_TOKEN,
+});
+
+export async function POST() {
+  const result = await api.post("/admin/reindex", {
+    body: { reason: "manual-refresh" },
+  });
+
+  if (!result.ok) {
+    return Response.json({ error: "reindex_failed" }, { status: result.status });
+  }
+
+  return Response.json(result.data);
+}
