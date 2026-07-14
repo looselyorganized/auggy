@@ -782,7 +782,6 @@ export async function layeredMemory(opts: LayeredMemoryOptions): Promise<Augment
     name: `layered-memory-${opts.namespace}`,
     type: "layeredMemory",
     category: "memory",
-    capabilities: ["context", "tools"],
     memory: {
       owns: { kind: "namespace", prefix },
       defaults: {

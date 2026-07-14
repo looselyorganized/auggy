@@ -13,7 +13,6 @@ export default function conciergeServices(opts: ConciergeServicesOptions = {}) {
   return defineAugment({
     name: "concierge-services",
     type: "custom",
-    capabilities: ["tools"],
     httpRoutes: [
       defineRoute.get("/services", {
         auth: "none",

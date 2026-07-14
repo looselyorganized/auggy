@@ -1028,8 +1028,6 @@ export interface TurnGateTicket {
 
 // === Augment (spec §3) ===
 
-export type AugmentCapability = "transport" | "context" | "tools" | "lifecycle";
-
 export interface AugmentConstraints {
   maxToolCallsPerTurn?: number;
   requiresHumanApproval?: string[];
@@ -1186,7 +1184,6 @@ export interface Augment {
    * registers the memory tools whenever any memory provider is mounted.
    */
   synthetic?: boolean;
-  capabilities?: AugmentCapability[];
   context?: (turn: TurnState, priorContext?: ContextBlock[]) => Promise<ContextBlock[] | string>;
   receivesPriorContext?: boolean;
   tools?: Tool[];

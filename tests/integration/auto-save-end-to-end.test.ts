@@ -68,7 +68,6 @@ function recordingBudgetGate(commits: RecordedCommit[]): Augment {
   };
   return {
     name: "recording-budget-gate",
-    capabilities: ["lifecycle"],
     turnGate,
   };
 }

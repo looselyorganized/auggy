@@ -166,8 +166,7 @@ describe("skills augment", () => {
   it("does not declare any tools", () => {
     const aug = skills({ dir: "/tmp" });
     expect(aug.tools ?? []).toHaveLength(0);
-    expect(aug.capabilities).toContain("context");
-    expect(aug.capabilities).not.toContain("tools");
+    expect(aug.context).toBeDefined();
   });
 
   it("entries are sorted alphabetically for deterministic output", async () => {

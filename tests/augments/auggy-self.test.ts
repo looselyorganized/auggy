@@ -79,7 +79,6 @@ function makeWebFetchAugment(): Augment {
     name: "webFetch",
     type: "webFetch",
     category: "capabilities",
-    capabilities: ["tools"],
     tools: [
       defineTool({
         name: "web_fetch",
@@ -116,7 +115,14 @@ describe("auggySelf augment", () => {
     const parsed = parseToolResult(await infoTool.execute({}, makeContext(creatorPeer))) as {
       status: string;
       agent: { name: string; creatorDisplayName: string; engine: { provider: string } };
-      augments: Array<{ type: string; hasSkill: boolean; skillMissing: boolean }>;
+      augments: Array<{
+        type: string;
+        hasSkill: boolean;
+        skillMissing: boolean;
+        toolCount: number;
+        hasContext: boolean;
+        capabilities?: unknown;
+      }>;
       skills: Array<{ folder: string; frontmatterValid: boolean }>;
       available: { stable: Array<{ type: string }>; preview: Array<{ type: string }> };
     };
@@ -126,8 +132,15 @@ describe("auggySelf augment", () => {
     expect(parsed.agent.creatorDisplayName).toBe("Alex");
     expect(parsed.agent.engine.provider).toBe("anthropic");
     expect(parsed.augments).toContainEqual(
-      expect.objectContaining({ type: "webFetch", hasSkill: true, skillMissing: false }),
+      expect.objectContaining({
+        type: "webFetch",
+        hasSkill: true,
+        skillMissing: false,
+        toolCount: 1,
+        hasContext: false,
+      }),
     );
+    expect(parsed.augments[0]).not.toHaveProperty("capabilities");
     expect(parsed.skills).toContainEqual(
       expect.objectContaining({ folder: "auggy", frontmatterValid: true }),
     );

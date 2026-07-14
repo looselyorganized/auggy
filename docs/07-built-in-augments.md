@@ -173,7 +173,6 @@ export function fileMemory(opts: FileMemoryOptions): Augment {
 
   return {
     name: `file-memory-${opts.label}`,
-    capabilities: ["context", "tools"],
     memory: {
       owns: { kind: "static", labels: [opts.label] },
       defaults: { ...opts, ttl: opts.ttl ?? "persistent" },

@@ -363,7 +363,6 @@ wireMemoryBus(augments, opts?) → {
    const { tools, onTurnEnd, onTurnStart } = createMemoryTools(registry, { maxPerTurn });
    {
      name: "memory-bus",
-     capabilities: ["tools"],
      constraints: { maxToolCallsPerTurn: maxPerTurn },
      tools,
      onTurnStart: async () => { onTurnStart(); },     // emergency cleanup backstop

@@ -72,7 +72,6 @@ function fakeTurnGate(opts: FakeTurnGateOpts): Augment {
   const decision = opts.decision ?? { allow: true };
   return {
     name: opts.name ?? "fake-gate",
-    capabilities: [],
     turnGate: {
       async prepare(args) {
         opts.recordPrepares?.push(args.turnId);
@@ -318,7 +317,6 @@ describe("Turn-gate 2PC dispatch", () => {
     let capturedTicket: TurnGateTicket | null = null;
     const gate: Augment = {
       name: "capture-gate",
-      capabilities: [],
       turnGate: {
         async prepare(args) {
           let done = false;

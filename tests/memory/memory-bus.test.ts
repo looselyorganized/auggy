@@ -97,7 +97,7 @@ describe("wireMemoryBus", () => {
     const wiring = wireMemoryBus(providers);
     expect(wiring.syntheticToolsAugment).not.toBeNull();
     expect(wiring.syntheticToolsAugment!.name).toBe("memory-bus");
-    expect(wiring.syntheticToolsAugment!.capabilities).toEqual(["context", "tools"]);
+    expect(wiring.syntheticToolsAugment!.context).toBeDefined();
     expect(wiring.syntheticToolsAugment!.tools).toBeDefined();
     expect(wiring.syntheticToolsAugment!.tools!.length).toBe(5);
   });

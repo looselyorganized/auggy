@@ -585,7 +585,6 @@ export function filesystem(opts: FilesystemOptions): Augment {
     name: "filesystem",
     type: "filesystem",
     category: "capabilities",
-    capabilities: ["tools", "context"],
     adminInfo,
     constraints: {
       maxToolCallsPerTurn: 15,

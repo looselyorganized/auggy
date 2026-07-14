@@ -395,7 +395,6 @@ describe("Augment.handleInternalTurn dispatch (ADR-027 Decision 5)", () => {
     // Mock budget-style turn-gate that records every commit.
     const budgetGate: Augment = {
       name: "mock-budgets",
-      capabilities: ["lifecycle"],
       turnGate: {
         prepare: async () => ({
           decision: { allow: true },

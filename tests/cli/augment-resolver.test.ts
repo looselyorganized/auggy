@@ -482,7 +482,7 @@ describe("resolveAugments — skills", () => {
     expect(augments).toHaveLength(1);
     expect(augments[0]!.name).toBe("skills");
     expect(augments[0]!.tools ?? []).toHaveLength(0);
-    expect(augments[0]!.capabilities).toContain("context");
+    expect(augments[0]!.context).toBeDefined();
   });
 
   test("defaults dir to ./skills when not specified", async () => {
@@ -567,7 +567,6 @@ describe("resolveAugments — custom", () => {
       `export default function(opts) {
         return {
           name: "from-factory",
-          capabilities: ["tools"],
           tools: [],
         };
       }`,
@@ -705,9 +704,8 @@ describe("resolveAugments — budgets", () => {
     expect(augments[0]!.turnGate).toBeDefined();
     // Budgets is not a memory provider.
     expect(augments[0]!.memory).toBeUndefined();
-    // Capabilities include lifecycle (for onShutdown) and context.
-    expect(augments[0]!.capabilities).toContain("lifecycle");
-    expect(augments[0]!.capabilities).toContain("context");
+    expect(augments[0]!.onShutdown).toBeDefined();
+    expect(augments[0]!.context).toBeDefined();
   });
 
   test("resolves budgets augment with default dbPath when omitted from options", async () => {

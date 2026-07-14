@@ -501,7 +501,6 @@ export function bash(opts: BashAugmentOptions = {}): Augment {
     name: "bash",
     type: "bash",
     category: "capabilities",
-    capabilities: ["tools"],
     constraints: {
       maxToolCallsPerTurn: opts.maxToolCallsPerTurn ?? 10,
       perTrustLevel: opts.perTrustLevel ?? {
