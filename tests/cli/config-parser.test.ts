@@ -257,6 +257,54 @@ describe("validation errors", () => {
   });
 });
 
+describe("link agent card capabilities", () => {
+  const linkOptions = {
+    dbPath: "./link.db",
+    agentCard: {
+      id: "00000000-0000-4000-8000-00000000aaaa",
+      name: "test-agent",
+      description: "Link test agent",
+      endpointUrl: "https://test-agent.example.org",
+      capabilities: ["answers catalog questions"],
+    },
+  };
+
+  test("preserves operator-advertised Link capabilities", () => {
+    const path = writeYaml(
+      "agent.yaml",
+      minimalConfig({
+        augments: [{ type: "link", options: linkOptions }],
+      }),
+    );
+
+    const config = parseConfig(path);
+    expect(config.augments[0]?.options?.agentCard).toMatchObject({
+      capabilities: ["answers catalog questions"],
+    });
+  });
+
+  test("rejects non-string Link capabilities", () => {
+    const path = writeYaml(
+      "agent.yaml",
+      minimalConfig({
+        augments: [
+          {
+            type: "link",
+            options: {
+              ...linkOptions,
+              agentCard: { ...linkOptions.agentCard, capabilities: ["valid", 42] },
+            },
+          },
+        ],
+      }),
+    );
+
+    expect(() => parseConfig(path)).toThrow(
+      "augments[0].options.agentCard.capabilities: must be an array of strings",
+    );
+  });
+});
+
 describe("engine.reasoningEffort validation", () => {
   for (const effort of ["none", "minimal", "low", "medium", "high", "xhigh"]) {
     test(`accepts ${effort}`, () => {

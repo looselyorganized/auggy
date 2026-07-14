@@ -403,7 +403,6 @@ Then in the returned Augment object, add the fields:
 ```ts
 return {
   name: "web",
-  capabilities: [...],
   transport: { ... },
   // ... existing fields
   adminInfo,

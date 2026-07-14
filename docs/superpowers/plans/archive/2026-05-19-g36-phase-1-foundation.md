@@ -282,7 +282,7 @@ export type AdminActionHandler = (
 ) => Promise<AdminActionResult>;
 ```
 
-Then, INSIDE the existing `Augment` interface (find `export interface Augment {`), ADD these two optional fields anywhere in the interface body (suggest: after the existing capabilities field, before any required fields):
+Then, INSIDE the existing `Augment` interface (find `export interface Augment {`), ADD these two optional fields anywhere in the interface body near the other optional augment surface fields:
 
 ```ts
   /** G36 — optional admin dashboard block + actions. */

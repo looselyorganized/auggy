@@ -40,7 +40,7 @@ The relevant pieces are:
   - `./skills` as read-only
   - `./data/workspace` as writable/deletable
 - `/console/api/dashboard` already has a sanitized operator-facing inventory of
-  mounted augments, capabilities, tools count, admin blocks, and skills, but
+  mounted augments, runtime surfaces, tool counts, admin blocks, and skills, but
   that surface is not available to the model as a tool or context block.
 
 ## CTO Assessment
@@ -138,8 +138,8 @@ Candidate tools:
 - `auggy_self_info()`
   - agent name, purpose, engine provider/model, creator display name, current
     trust level, runtime version.
-  - installed augments with type, category, stability, capabilities, tool count,
-    and whether a skill is installed.
+  - installed augments with type, category, stability, structural runtime
+    surfaces, tool count, and whether a skill is installed.
   - installed skills and invalid/missing skill warnings.
 - `auggy_self_catalog()`
   - stable available augments, preview available augments, and short use cases.
