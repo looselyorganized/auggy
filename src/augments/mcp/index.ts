@@ -43,7 +43,6 @@ export function mcp(opts: McpAugmentOptions = {}): Augment {
 
   return {
     name: "mcp",
-    capabilities: ["tools", "lifecycle"],
     tools: manager.tools,
     constraints: manager.constraints,
     adminInfo,

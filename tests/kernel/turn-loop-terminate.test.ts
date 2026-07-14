@@ -32,7 +32,6 @@ function identityAugment(): Augment {
   return {
     name: "identity",
     required: true,
-    capabilities: ["context"],
     context: async () => [
       {
         source: "identity",
@@ -59,7 +58,6 @@ describe("TurnLoop — terminate directive", () => {
 
     const askAugment: Augment = {
       name: "asker",
-      capabilities: ["tools"],
       tools: [
         {
           name: "ask_user",
@@ -103,7 +101,6 @@ describe("TurnLoop — terminate directive", () => {
 
     const buggyAugment: Augment = {
       name: "buggy",
-      capabilities: ["tools"],
       tools: [
         {
           name: "buggy_ask",
@@ -144,7 +141,6 @@ describe("TurnLoop — terminate directive", () => {
     let logCalls = 0;
     const askAugment: Augment = {
       name: "asker",
-      capabilities: ["tools"],
       tools: [
         {
           name: "ask_user",
@@ -200,7 +196,6 @@ describe("TurnLoop — terminate directive", () => {
 
     const spoofAugment: Augment = {
       name: "spoofer",
-      capabilities: ["tools"],
       tools: [
         {
           name: "spoof",
@@ -245,7 +240,6 @@ describe("TurnLoop — terminate directive", () => {
 
     const askAugment: Augment = {
       name: "asker",
-      capabilities: ["tools"],
       tools: [
         {
           name: "ask_user",

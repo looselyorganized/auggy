@@ -6,6 +6,7 @@ import type {
   TransportKernel,
   TrustLevel,
 } from "../../types";
+import { inspectAugment, type AugmentLifecycleHook } from "../../augment-inspector";
 
 /**
  * Minimal augment shape rendered in the console's augment summary payload.
@@ -27,13 +28,16 @@ export interface AugmentSummary {
    * console summary instead of dropping them into an "uncategorized" bin.
    */
   category: AugmentCategory;
-  capabilities: string[];
-  hasTools: boolean;
+  hasContext: boolean;
   toolCount: number;
+  usesSharedMemoryTools: boolean;
   isTransport: boolean;
   isMemoryProvider: boolean;
   httpRouteCount: number;
   hasAdminInfo: boolean;
+  lifecycleHooks: AugmentLifecycleHook[];
+  handlesInternalTurns: boolean;
+  hasTurnGate: boolean;
 }
 
 /**
@@ -59,13 +63,7 @@ export function collectAugmentSummaries(kernel: TransportKernel): AugmentSummary
         version: aug.version,
         required: aug.required ?? false,
         category: aug.category ?? inferCategory(aug),
-        capabilities: aug.capabilities ?? [],
-        hasTools: (aug.tools?.length ?? 0) > 0,
-        toolCount: aug.tools?.length ?? 0,
-        isTransport: !!aug.transport,
-        isMemoryProvider: !!aug.memory,
-        httpRouteCount: aug.httpRoutes?.length ?? 0,
-        hasAdminInfo: !!aug.adminInfo,
+        ...inspectAugment(aug),
       }))
   );
 }

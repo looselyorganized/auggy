@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Bounded workspace awareness for filesystem-backed agents.** A configured
+  `workspace` mount now contributes a request-ranked, metadata-only file
+  catalog to creator and agent turns. The catalog skips hidden paths, excluded
+  directories, and symlinks; never auto-loads file contents; and guides the
+  model to reuse canonical artifacts through the existing trust-gated
+  filesystem tools. Operators can tune or disable it with
+  `workspaceAwareness`.
+
 ## [0.5.0] - 2026-07-07
 
 ### Added

@@ -157,7 +157,6 @@ export function supabaseMemory(opts: SupabaseMemoryOptions): Augment {
     name: augmentName,
     type: "supabaseMemory",
     category: "memory",
-    capabilities: ["context", "tools"],
     memory: {
       owns: { kind: "namespace", prefix },
       defaults: {

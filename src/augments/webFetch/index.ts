@@ -350,7 +350,6 @@ export function webFetch(opts: WebFetchOptions = {}): Augment {
     name: "web-fetch",
     type: "webFetch",
     category: "capabilities",
-    capabilities: ["tools"],
     adminInfo,
     tools: [webFetchTool],
   };

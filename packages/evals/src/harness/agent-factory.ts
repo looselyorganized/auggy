@@ -38,7 +38,6 @@ export function buildEvalAgent(
 
   const evalAugment = defineAugment({
     name: "eval-catalog",
-    capabilities: ["tools"],
     tools,
     constraints,
   });

@@ -82,7 +82,6 @@ export function turnControl(opts: TurnControlOptions = {}): Augment {
     name: "turnControl",
     type: "turnControl",
     category: "capabilities",
-    capabilities: ["tools"],
     tools: [requestInput],
     adminInfo,
   });

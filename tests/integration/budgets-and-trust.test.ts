@@ -70,7 +70,6 @@ function creatorPeer(): PeerIdentity {
 function failingConfirmGate(): Augment {
   return {
     name: "fail-confirm-gate",
-    capabilities: [],
     turnGate: {
       async prepare(_args): Promise<TurnGateTicket> {
         return {

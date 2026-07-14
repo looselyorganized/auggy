@@ -22,7 +22,6 @@ export function createIdentityAugment(content: string): Augment {
   return {
     name: "identity",
     required: true,
-    capabilities: ["context"],
     context: async (): Promise<ContextBlock[]> => [
       {
         source: "identity",
@@ -44,7 +43,6 @@ export function createToolAugment(opts: {
 }): Augment {
   return {
     name: opts.name ?? "tool-augment",
-    capabilities: ["tools"],
     tools: [
       {
         name: opts.toolName,
@@ -88,7 +86,6 @@ export function createMockTransport(): {
 
   const augment: Augment = {
     name: "mock-transport",
-    capabilities: ["transport"],
     transport,
   };
 

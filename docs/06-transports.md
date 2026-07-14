@@ -549,7 +549,6 @@ public URL.
 ```ts
 return {
   name: "web",
-  capabilities: ["transport"],
   transport,
   async onBoot() {
     server = Bun.serve({ port: opts.port, async fetch(req) { /* route */ } });

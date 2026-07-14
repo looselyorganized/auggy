@@ -46,7 +46,6 @@ export function wireMemoryBus(
     type: "memoryBus",
     category: "memory",
     synthetic: true,
-    capabilities: ["context", "tools"],
     constraints: { maxToolCallsPerTurn: maxPerTurn },
     context: async (turn) => [buildMemoryCapabilityContext(registry, turn)],
     tools,

@@ -1,5 +1,8 @@
 import { describe, expect, it } from "bun:test";
-import { collectAdminInfoBlocks } from "@/transports/admin/admin-collector";
+import {
+  collectAdminInfoBlocks,
+  collectAugmentSummaries,
+} from "@/transports/admin/admin-collector";
 import type { AgentCard, Augment, TransportKernel, TurnResult } from "@/types";
 
 function mockKernel(augments: Augment[]): TransportKernel {
@@ -33,6 +36,41 @@ function mockAugment(overrides: Partial<Augment> = {}): Augment {
 }
 
 describe("admin-collector", () => {
+  it("reports structural augment surfaces without capability declarations", () => {
+    const summaries = collectAugmentSummaries(
+      mockKernel([
+        mockAugment({
+          name: "catalog",
+          type: "catalog",
+          tools: [],
+          context: async () => [],
+          onBoot: async () => {},
+          handleInternalTurn: async () => null,
+        }),
+        mockAugment({
+          name: "memory",
+          memory: {} as NonNullable<Augment["memory"]>,
+        }),
+      ]),
+    );
+
+    expect(summaries[0]).toMatchObject({
+      name: "catalog",
+      hasContext: true,
+      toolCount: 0,
+      usesSharedMemoryTools: false,
+      lifecycleHooks: ["onBoot"],
+      handlesInternalTurns: true,
+    });
+    expect(summaries[0]).not.toHaveProperty("capabilities");
+    expect(summaries[0]).not.toHaveProperty("hasTools");
+    expect(summaries[1]).toMatchObject({
+      hasContext: true,
+      usesSharedMemoryTools: true,
+      isMemoryProvider: true,
+    });
+  });
+
   it("returns empty list when no augments are registered", async () => {
     const blocks = await collectAdminInfoBlocks(mockKernel([]));
     expect(blocks).toEqual([]);

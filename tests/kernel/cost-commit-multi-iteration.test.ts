@@ -32,7 +32,6 @@ function identityAugment(): Augment {
   return {
     name: "identity",
     required: true,
-    capabilities: ["context"],
     context: async () => [
       {
         source: "identity",
@@ -96,7 +95,6 @@ describe("runCostCommit — multi-iteration sum", () => {
 
     const echoAug: Augment = {
       name: "echo-aug",
-      capabilities: ["tools"],
       tools: [
         {
           name: "echo",
@@ -147,7 +145,6 @@ describe("runCostCommit — multi-iteration sum", () => {
 
     const echoAug: Augment = {
       name: "echo-aug",
-      capabilities: ["tools"],
       tools: [
         {
           name: "echo",
@@ -215,7 +212,6 @@ describe("runCostCommit — multi-iteration sum", () => {
 
     const echoAug: Augment = {
       name: "echo-aug",
-      capabilities: ["tools"],
       tools: [
         {
           name: "echo",
@@ -277,7 +273,6 @@ describe("runCostCommit — multi-iteration sum", () => {
 
     const strictAug: Augment = {
       name: "strict-aug",
-      capabilities: ["tools"],
       tools: [
         {
           name: "strict",
