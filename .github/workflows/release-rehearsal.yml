@@ -59,6 +59,10 @@ jobs:
       - name: Install deps
         run: bun install --frozen-lockfile
 
+      - name: Install admin deps
+        working-directory: admin
+        run: bun install --frozen-lockfile
+
       - name: Lint
         run: bun run lint
 
