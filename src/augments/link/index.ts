@@ -764,7 +764,6 @@ export async function link(opts: LinkAugmentInternalOptions): Promise<Augment> {
     name: "link",
     type: "link",
     category: "transports",
-    capabilities: ["transport", "context", "tools"],
     transport,
     context,
     tools: [linkSendTool, linkListTool],

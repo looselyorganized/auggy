@@ -61,7 +61,6 @@ describe("defineAgent", () => {
 
     const mathAugment = {
       name: "math",
-      capabilities: ["tools" as const],
       tools: [
         {
           name: "add",

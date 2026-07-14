@@ -44,7 +44,6 @@ function createPeerCaptureAugment(): PeerCapture {
   const captured: PeerIdentity[] = [];
   const augment: Augment = {
     name: "peer-capture",
-    capabilities: ["context"],
     context: async (turn: TurnState) => {
       if (turn.peer) captured.push(turn.peer);
       return [];

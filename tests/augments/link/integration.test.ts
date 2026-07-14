@@ -140,12 +140,9 @@ function makeOpts(): Parameters<typeof link>[0] {
 // ---------------------------------------------------------------------------
 
 describe("link augment — construction", () => {
-  it("returns an augment with transport + context + tools capability", async () => {
+  it("returns an augment with transport, context, and tools", async () => {
     const aug = await link({ ...makeOpts(), _skipServer: true });
     expect(aug.name).toBe("link");
-    expect(aug.capabilities).toContain("transport");
-    expect(aug.capabilities).toContain("context");
-    expect(aug.capabilities).toContain("tools");
     expect(aug.transport).toBeDefined();
     expect(aug.context).toBeDefined();
     expect(aug.tools).toBeDefined();

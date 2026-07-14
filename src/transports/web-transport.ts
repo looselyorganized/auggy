@@ -1776,7 +1776,6 @@ export function webTransport(opts: WebTransportOptions): Augment {
     name: "web",
     type: "webTransport",
     category: "transports",
-    capabilities: ["transport"],
     transport,
     adminInfo,
     adminActions,

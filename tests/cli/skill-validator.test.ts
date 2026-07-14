@@ -334,7 +334,6 @@ describe("skill-validator — custom augments not validated", () => {
        export default function() {
          return {
            name: "custom",
-           capabilities: ["tools"],
            tools: [fakeTool],
          };
        }`,

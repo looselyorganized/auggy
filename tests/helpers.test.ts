@@ -54,6 +54,14 @@ describe("defineAugment", () => {
     expect(aug.name).toBe("test");
   });
 
+  it("rejects legacy capability declarations at compile time", () => {
+    type AugmentInputKey = keyof Parameters<typeof defineAugment>[0];
+    // @ts-expect-error Capabilities are inferred from concrete augment fields.
+    const legacyCapabilityKey: AugmentInputKey = "capabilities";
+
+    expect(String(legacyCapabilityKey)).toBe("capabilities");
+  });
+
   it("preserves string-returning context (kernel handles wrapping)", async () => {
     const aug = defineAugment({
       name: "notes",

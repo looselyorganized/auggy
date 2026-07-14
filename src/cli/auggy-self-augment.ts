@@ -448,7 +448,6 @@ export function auggySelf(opts: AuggySelfOptions): Augment {
     type: "auggySelf",
     category: "guardrails",
     synthetic: true,
-    capabilities: ["tools"],
     tools: [selfInfo, selfCatalog, selfRecommend],
     constraints: {
       perTrustLevel: {

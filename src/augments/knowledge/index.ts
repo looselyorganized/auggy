@@ -890,7 +890,6 @@ export function knowledge(opts: ManifestOptions): Augment {
     name: "knowledge",
     type: "knowledge",
     category: "memory",
-    capabilities: ["context", "tools"],
     tools: [manifestFetchTool],
     adminInfo,
 

@@ -666,7 +666,6 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
     name: "visitor-auth",
     type: "visitorAuth",
     category: "guardrails",
-    capabilities: ["tools", "context"],
     tools: [requestAuthTool],
     adminInfo,
     adminActions,

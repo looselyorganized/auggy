@@ -567,7 +567,6 @@ export function notify(opts: NotifyAugmentInternalOptions): Augment {
     name: "notify",
     type: "notify",
     category: "transports",
-    capabilities: ["tools"],
     tools: [notifyTool],
     adminInfo,
     adminActions,

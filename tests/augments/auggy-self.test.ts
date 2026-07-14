@@ -79,7 +79,6 @@ function makeWebFetchAugment(): Augment {
     name: "webFetch",
     type: "webFetch",
     category: "capabilities",
-    capabilities: ["tools"],
     tools: [
       defineTool({
         name: "web_fetch",
