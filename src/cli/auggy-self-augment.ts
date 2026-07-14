@@ -209,16 +209,35 @@ function recommend(goal: string, installed: Set<string>) {
   if (
     /\b(remember|memory|preference|visitor|profile|personalization|continuity)\b/.test(normalized)
   ) {
+    const layeredMemoryInstalled = has("layeredMemory");
+    const visitorAuthInstalled = has("visitorAuth");
+    const nextSteps = [
+      ...(layeredMemoryInstalled ? [] : ["Run `auggy augment add layeredMemory`."]),
+      ...(visitorAuthInstalled
+        ? []
+        : [
+            "Run `auggy augment add visitorAuth` if browser visitors should be recognized across sessions.",
+            "Use `auggy agentmail setup visitorAuth` for production magic-link email.",
+          ]),
+      ...(layeredMemoryInstalled
+        ? [
+            "Use `memory_write({ topic, content })` for stable peer facts; the runtime derives the peer-bound label.",
+          ]
+        : []),
+      ...(!layeredMemoryInstalled || !visitorAuthInstalled
+        ? ["Run `auggy doctor` and restart the agent after changing augments."]
+        : []),
+    ];
+
     return rec(
       "memory",
-      "Add layeredMemory, and visitorAuth for cross-session identity",
-      "Repeat-user memory needs peer-scoped storage; cross-session continuity also needs visitor verification.",
-      [
-        "Run `auggy augment add layeredMemory`.",
-        "Run `auggy augment add visitorAuth` if browser visitors should be recognized across sessions.",
-        "Use `auggy augment setup visitorAuth` for production magic-link email.",
-        "Run `auggy doctor` and restart the agent.",
-      ],
+      layeredMemoryInstalled
+        ? "Layered Memory — installed in this agent"
+        : "Layered Memory — stable add-on, not installed in this agent",
+      layeredMemoryInstalled
+        ? "This agent has peer-scoped episodic memory. Cross-session continuity still depends on a stable peer identity, normally visitorAuth or an external app-auth assertion."
+        : "Adds peer-scoped episodic memory backed by SQLite. Explicit topic-based writes work after installation; automatic extraction is off by default.",
+      nextSteps,
       { alreadyInstalledType: "layeredMemory" },
     );
   }

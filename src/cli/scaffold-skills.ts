@@ -89,15 +89,31 @@ export function copyBundledSkill(type: string, agentDir: string): boolean {
  */
 export function copyStarterSkills(agentDir: string): string[] {
   if (!existsSync(STARTER_SKILLS_ROOT)) return [];
-  const copied: string[] = [];
-  for (const entry of readdirSync(STARTER_SKILLS_ROOT, { withFileTypes: true })) {
-    if (!entry.isDirectory()) continue;
-    const src = join(STARTER_SKILLS_ROOT, entry.name);
-    const dest = join(agentDir, "skills", entry.name);
-    cpSync(src, dest, { recursive: true });
-    copied.push(entry.name);
-  }
-  return copied.sort();
+  const copied = listStarterSkillNames();
+  for (const name of copied) copyStarterSkill(name, agentDir);
+  return copied;
+}
+
+/** List canonical non-augment starter skills bundled with new agents. */
+export function listStarterSkillNames(): string[] {
+  if (!existsSync(STARTER_SKILLS_ROOT)) return [];
+  return readdirSync(STARTER_SKILLS_ROOT, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name)
+    .sort();
+}
+
+/**
+ * Install or refresh one canonical starter skill in an existing agent.
+ * Names are resolved from the bundled directory listing rather than treated as
+ * paths, preventing traversal outside the starter-skill root.
+ */
+export function copyStarterSkill(name: string, agentDir: string): boolean {
+  if (!listStarterSkillNames().includes(name)) return false;
+  const src = join(STARTER_SKILLS_ROOT, name);
+  const dest = join(agentDir, "skills", name);
+  cpSync(src, dest, { recursive: true });
+  return true;
 }
 
 // ---------------------------------------------------------------------------

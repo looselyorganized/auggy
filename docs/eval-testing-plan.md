@@ -16,8 +16,8 @@ These are deterministic tests — no LLM involved. They verify that the runtime 
 |------|-----------------|--------|
 | **Write survives restart** | `memory_write({ label: "learned", content: "X" })` → stop agent → start agent → `memory_read({ label: "learned" })` returns "X" | Integration test: boot agent, inject turn with tool call, stop, reboot, inject read, assert content |
 | **Write is atomic** | Partial write during crash doesn't corrupt the file | Kill process mid-write (SIGKILL), reboot, verify file is either old or new content, never corrupt |
-| **Supabase memory persists** | `memory_write({ label: "episode:test", content: "X" })` → restart → `memory_search({ query: "X" })` returns it | Integration test with mock Supabase (or real Supabase in CI) |
-| **Memory doesn't leak across agents** | Agent A's memory is invisible to Agent B | Boot two agents with different namespaces, write to A, search from B, assert empty |
+| **Peer memory persists** | `memory_write({ topic: "profile", content: "X" })` → restart → `memory_search({ query: "X" })` for the same peer returns it | Integration test with layeredMemory's SQLite store; repeat against the optional Supabase backend when that path changes |
+| **Memory doesn't leak across peers or agents** | Peer A's memory is invisible to peer B, and one agent namespace is invisible to another | Write with distinct runtime peer identities and agent namespaces, then search each boundary and assert isolation |
 
 ### 1.2 Memory Growth
 
@@ -138,14 +138,16 @@ cases:
       - type: tool_called
         name: memory_write
       - type: external_state
-        check: learned_md_contains
+        check: peer_memory_contains
         args: { substring: "researcher" }
       - type: llm
         dimension: memory-quality
         rubric: |
           The agent should write USEFUL information (role, institution, interest)
           not noise ("user said hello"). FAIL if the memory_write content is
-          trivial or redundant. PASS if it captures actionable visitor context.
+          trivial or redundant, or if visitor-specific facts are written to the
+          agent-global learned-behaviors file. PASS if it captures actionable
+          visitor context in the current peer's layered memory.
 ```
 
 ### 2.3 Grader Types

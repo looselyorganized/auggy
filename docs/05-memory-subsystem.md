@@ -8,7 +8,10 @@ Memory is just augment-territory in principle — any augment can contribute con
 
 The memory subsystem exists to **factor out the common machinery** so authors of memory-providing augments only have to implement the part that's unique to their backend (file? database? Redis?). The contract they implement is `MemoryProviderSpec`. Everything else — wiring, conflict detection, generic tools, context synthesis — is provided by the bus.
 
-The result: writing a new memory provider is ~50 LOC of backend-specific code. Both `fileMemory` and `supabaseMemory` are concrete proofs of the contract.
+The result: provider authors implement storage-specific behavior while the bus
+supplies routing, tools, trust checks, and context synthesis. `fileMemory` is
+the built-in static-provider example; `layeredMemory` is the primary namespace
+provider. `supabaseMemory` remains available for legacy migrations.
 
 ## The contract: `MemoryProviderSpec`
 
@@ -20,6 +23,7 @@ A memory provider is an augment that has a `memory` field of type `MemoryProvide
 export interface StaticMemoryProvider {
   owns: { kind: "static"; labels: string[] };
   defaults: MemoryDefaults;
+  writeTrustLevels?: readonly TrustLevel[];
   read: (label: string) => Promise<MemoryEntry | null>;
   write?: (label: string, content: string) => Promise<void>;
 }
@@ -39,10 +43,17 @@ A static provider declares **a fixed list of labels it owns**. The label space i
 export interface NamespaceMemoryProvider {
   owns: { kind: "namespace"; prefix: string };
   defaults: MemoryDefaults;
-  search: (query: string) => Promise<MemoryEntry[]>;
-  write?: (label: string, content: string) => Promise<void>;
+  writeTrustLevels?: readonly TrustLevel[];
+  search: (query: string, opts?: { peerId?: string }) => Promise<MemoryEntry[]>;
+  write?: (
+    label: string,
+    content: string,
+    opts?: { peerId?: string; trustLevel?: TrustLevel },
+  ) => Promise<void>;
   read?: (label: string) => Promise<MemoryEntry | null>;
   list?: () => Promise<string[]>;
+  forget?: (peerId: string) => Promise<number>;
+  listEntries?: (opts?: { peerId?: string; limit?: number }) => Promise<MemoryEntry[]>;
 }
 ```
 
@@ -50,16 +61,22 @@ A namespace provider declares **a prefix string** and owns every label that star
 
 `search(query)` is mandatory. This is the main retrieval path: given a query string, return relevant entries. Both substring and semantic search are valid implementations — the contract doesn't care.
 
-`read(label)`, `write(label, content)`, `list()`, and provider-specific
-destructive helpers such as `forget(peerId)` are optional:
+`read(label)`, `write(label, content, opts)`, `list()`, `listEntries(opts)`, and
+provider-specific destructive helpers such as `forget(peerId)` are optional:
 - `read` lets the model fetch a specific entry by exact label.
-- `write` enables the generic `memory_write` tool.
+- `write` enables the generic `memory_write` tool and receives the current peer
+  identity for namespace enforcement.
 - `list` lets `memory_list` expose namespace contents when the provider
   supports it.
+- `listEntries` lets context synthesis and the console retrieve bounded recent
+  rows without pretending a natural-language search occurred.
 - `forget` lets `memory_forget` delete peer-scoped episodic entries for
   right-to-erasure flows.
 
-**Example:** `supabaseMemory` is a namespace provider with `prefix: "episode:"` (or whatever the user configured) backed by a Supabase table with `(label, content, metadata, created_at)` columns. `search` does ILIKE on content; `read` does eq on label; `write` does insert.
+**Example:** `layeredMemory` is a namespace provider backed by SQLite by
+default, with an optional Supabase backend for manual/programmatic configs.
+Every read, write, search, recent-entry listing, and forget operation is scoped
+to the current peer.
 
 ### `MemoryDefaults`
 
@@ -140,7 +157,10 @@ Used by the generic memory tools to figure out which provider to dispatch a requ
 synthesizeContextFor(aug: Augment): Augment
 ```
 
-Wraps a memory provider augment with a `context()` function that automatically retrieves blocks from the provider's `read()` (static) or `search(query)` (namespace) and converts them into `ContextBlock`s using the provider's `defaults`.
+Wraps a memory provider augment with a `context()` function that automatically
+retrieves blocks from the provider's `read()` (static) or bounded recent-entry
+listing plus `search(query)` (namespace), then converts them into
+`ContextBlock`s using the provider defaults and any entry-specific provenance.
 
 This is what lets users write a memory provider without writing a `context()` function — the bus generates the context() for them. If an augment already has a `context()` function (because the author wants explicit control), `wireMemoryBus` skips the synthesis and uses the existing function as-is.
 
@@ -152,10 +172,17 @@ For a static provider, `context()` iterates every label in `owns.labels`, calls 
 
 For a namespace provider, `context()`:
 1. **Only retrieves on message triggers.** `if (turn.trigger.type !== "message") return [];` — the query is the user's message, so non-message triggers (scheduled, event, continuation) get no episodic retrieval.
-2. **Extracts the query from `payload.parts`** via `extractText(parts)`.
-3. **Calls `search(query)`** and pushes the resulting entries.
+2. **Loads up to five recent entries for the current peer** when the provider
+   implements `listEntries`. This makes a returning peer's short greeting
+   useful even when it contains no searchable terms.
+3. **Extracts the query from `payload.parts`** via `extractText(parts)`.
+4. **Calls `search(query, { peerId })`** and merges the results with the recent
+   entries, deduplicating identical memories.
 
-If `search` throws, the error is rethrown for **required** augments (which abort the turn) and swallowed for non-required augments (which contribute no blocks for this turn). This matches the kernel's overall "required augments are load-bearing, non-required are best-effort" philosophy.
+If recent listing or search throws, the error is rethrown for **required**
+augments (which abort the turn) and swallowed for non-required augments. This
+matches the kernel's overall "required augments are load-bearing, non-required
+are best-effort" philosophy.
 
 ### Block construction
 
@@ -163,7 +190,8 @@ Each retrieved entry becomes a `ContextBlock` with:
 - `source` = augment name, retained for traces and evictions but not rendered
   into the model-facing prompt
 - `content` = entry.content
-- `placement`, `priority`, `eviction`, `origin`, `ttl` = the provider's `defaults`
+- `placement`, `priority`, `eviction`, `ttl` = the provider's `defaults`
+- `origin` = the entry's provenance when present, otherwise the provider default
 - `provenance` = `"memory"` (always)
 
 Note that `metadata` from `MemoryEntry` is **not** transferred to the block — it's only available to code that calls `read()` or `search()` directly (e.g. via the generic tools).

@@ -32,6 +32,18 @@ auggy augment add layeredMemory
 
 Use both when repeat visitors need cross-session memory continuity.
 
+## Describe Current Capability Precisely
+
+Always separate framework capability from this agent's installed configuration.
+If self-inspection shows no `layeredMemory` provider, say that the stable add-on
+is not installed in this agent. Do not say that Auggy itself can only write to
+the global `learned` label. If `layeredMemory` is installed, say that current-
+peer topic memory is available and do not recommend installing it again.
+
+A writable `learned` label and unavailable peer-topic memory can both be true
+for one turn: the former is creator-approved global behavior, while the latter
+means this agent has no authorized peer-scoped destination.
+
 ## Learned Behavior Vs Peer Memory
 
 `learned-behaviors.md` is agent-global behavior guidance approved by the

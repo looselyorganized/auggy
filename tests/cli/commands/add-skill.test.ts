@@ -15,6 +15,10 @@ const BUNDLED_WEB_FETCH_SKILL = resolve(
   import.meta.dir,
   "../../../src/augments/webFetch/skill/SKILL.md",
 );
+const BUNDLED_AUGGY_SKILL = resolve(
+  import.meta.dir,
+  "../../../src/scaffold-starter-skills/auggy/SKILL.md",
+);
 
 let auggyDir: string;
 
@@ -45,7 +49,7 @@ describe("auggy skill — command shape", () => {
     expect(add).toBeDefined();
     expect(add?.helpInformation()).toContain("<skill>");
     expect(add?.options.map((o) => o.long)).toContain("--agent");
-    expect(add?.description()).toMatch(/bundled skill/i);
+    expect(add?.description()).toMatch(/bundled .*skill/i);
   });
 });
 
@@ -93,6 +97,21 @@ describe("auggy skill add — happy path (CWD-based)", () => {
     const installed = join(dir, "skills", "webFetch", "SKILL.md");
     expect(existsSync(installed)).toBe(true);
     expect(readFileSync(installed, "utf-8")).toBe(readFileSync(BUNDLED_WEB_FETCH_SKILL, "utf-8"));
+  });
+
+  test("refreshes the canonical Auggy starter skill in an existing agent", async () => {
+    const dir = makeAgentDir("zip");
+    const installed = join(dir, "skills", "auggy", "SKILL.md");
+    mkdirSync(join(dir, "skills", "auggy"), { recursive: true });
+    writeFileSync(installed, "stale Auggy guidance\n");
+
+    const exit = mock((_code: number) => {});
+    await skillCommand({ exit, auggyDir, cwd: dir }).parseAsync(["add", "auggy"], {
+      from: "user",
+    });
+
+    expect(exit).toHaveBeenCalledWith(0);
+    expect(readFileSync(installed, "utf-8")).toBe(readFileSync(BUNDLED_AUGGY_SKILL, "utf-8"));
   });
 });
 
@@ -204,6 +223,7 @@ describe("auggy skill add — invalid input", () => {
     expect(errOut).toContain("webFetch");
     expect(errOut).toContain("layeredMemory");
     expect(errOut).toContain("filesystem");
+    expect(errOut).toContain("auggy");
 
     // Nothing got written to disk.
     expect(existsSync(join(dir, "skills", "nonexistent-augment"))).toBe(false);

@@ -419,7 +419,7 @@ auggy deploy --yes
 | `auggy augment create <name>` | Scaffold a custom local augment |
 | `auggy augment install <agent> <path>` | Install a custom local augment |
 | `auggy skill create <name>` | Create a skill folder |
-| `auggy skill add <name>` | Reinstall a bundled augment skill |
+| `auggy skill add <name>` | Refresh a bundled starter or augment skill (`auggy`, `layeredMemory`, and others) |
 | `auggy routes [name]` | Inspect route manifests, OpenAPI, and generated TypeScript clients |
 | `auggy mcp init/list/show/add-json/remove/doctor` | Manage `.mcp.json` MCP servers |
 | `auggy models list [provider] --refresh` | Fetch and save the latest provider model list |

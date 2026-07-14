@@ -1,15 +1,19 @@
 /**
  * `auggy skill` — manage bundled and user-authored agent skills.
  *
- * `auggy skill add <skill>` repairs/restores a bundled skill by copying
- * `src/augments/<skill>/skill/*` into `<agent-dir>/skills/<skill>/`.
- * The argument is the canonical augment type/name, e.g. `webFetch`.
+ * `auggy skill add <skill>` repairs/restores a bundled augment skill or a
+ * canonical starter skill such as `auggy` in `<agent-dir>/skills/<skill>/`.
  */
 
 import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { Command } from "commander";
-import { buildFolderToTypeMap, copyBundledSkill } from "../scaffold-skills";
+import {
+  buildFolderToTypeMap,
+  copyBundledSkill,
+  copyStarterSkill,
+  listStarterSkillNames,
+} from "../scaffold-skills";
 import { displayPath } from "../display-path";
 
 function bundledSkillExists(type: string): boolean {
@@ -68,10 +72,19 @@ interface AddSkillCommandDeps {
 }
 
 function installBundledSkill(skill: string, agentDir: string): void {
+  if (listStarterSkillNames().includes(skill)) {
+    if (!copyStarterSkill(skill, agentDir)) {
+      throw new Error(`failed to copy bundled starter skill for "${skill}" (source not found).`);
+    }
+    return;
+  }
+
   const folderToType = buildFolderToTypeMap();
   const type = folderToType.get(skill);
   if (!type) {
-    const valid = [...folderToType.keys()].sort().join(", ");
+    const valid = [...new Set([...listStarterSkillNames(), ...folderToType.keys()])]
+      .sort()
+      .join(", ");
     throw new Error(`Unknown skill "${skill}".\n\n  Valid built-in skills: ${valid}`);
   }
 
@@ -91,7 +104,7 @@ export function skillCommand(deps: AddSkillCommandDeps = {}): Command {
 
   command
     .command("add <skill>")
-    .description("Install or restore a bundled skill for an installed augment")
+    .description("Install or refresh a bundled starter or augment skill")
     .option("--agent <name>", "agent project directory name (defaults to current directory)")
     .action(async (skill: string, opts: { agent?: string }) => {
       try {

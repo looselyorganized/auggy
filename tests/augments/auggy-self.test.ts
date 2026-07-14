@@ -187,4 +187,79 @@ describe("auggySelf augment", () => {
     expect(parsed.recommendation.alreadyInstalled).toBe(true);
     expect(parsed.recommendation.nextSteps.join("\n")).toContain("knowledge/local");
   });
+
+  test("describes layered memory as a stable add-on when it is not installed", async () => {
+    const aug = auggySelf({
+      agentDir: tempDir,
+      agent: {
+        name: "demo",
+        engine: { provider: "anthropic", model: "claude-sonnet-4-6" },
+      },
+      configs: [{ name: "fileMemory", type: "fileMemory", options: {} }],
+      augments: [],
+    });
+
+    const recommendTool = aug.tools!.find((tool) => tool.name === "auggy_self_recommend")!;
+    const parsed = parseToolResult(
+      await recommendTool.execute(
+        { goal: "I want you to remember repeat visitors." },
+        makeContext(creatorPeer),
+      ),
+    ) as {
+      recommendation: {
+        title: string;
+        why: string;
+        alreadyInstalled: boolean;
+        nextSteps: string[];
+      };
+    };
+
+    expect(parsed.recommendation.title).toBe(
+      "Layered Memory — stable add-on, not installed in this agent",
+    );
+    expect(parsed.recommendation.why).toContain("automatic extraction is off by default");
+    expect(parsed.recommendation.alreadyInstalled).toBe(false);
+    expect(parsed.recommendation.nextSteps).toContain("Run `auggy augment add layeredMemory`.");
+    expect(parsed.recommendation.nextSteps).toContain(
+      "Use `auggy agentmail setup visitorAuth` for production magic-link email.",
+    );
+  });
+
+  test("describes layered memory as installed without recommending reinstall", async () => {
+    const aug = auggySelf({
+      agentDir: tempDir,
+      agent: {
+        name: "demo",
+        engine: { provider: "anthropic", model: "claude-sonnet-4-6" },
+      },
+      configs: [
+        { name: "layeredMemory", type: "layeredMemory", options: {} },
+        { name: "visitorAuth", type: "visitorAuth", options: {} },
+      ],
+      augments: [],
+    });
+
+    const recommendTool = aug.tools!.find((tool) => tool.name === "auggy_self_recommend")!;
+    const parsed = parseToolResult(
+      await recommendTool.execute(
+        { goal: "How do you remember people?" },
+        makeContext(creatorPeer),
+      ),
+    ) as {
+      recommendation: {
+        title: string;
+        alreadyInstalled: boolean;
+        nextSteps: string[];
+      };
+    };
+
+    expect(parsed.recommendation.title).toBe("Layered Memory — installed in this agent");
+    expect(parsed.recommendation.alreadyInstalled).toBe(true);
+    expect(parsed.recommendation.nextSteps.join("\n")).not.toContain(
+      "auggy augment add layeredMemory",
+    );
+    expect(parsed.recommendation.nextSteps.join("\n")).toContain(
+      "memory_write({ topic, content })",
+    );
+  });
 });
