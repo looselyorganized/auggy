@@ -704,7 +704,7 @@ describe("filesystem augment", () => {
       await aug.onBoot!();
 
       const blocks = (await aug.context!(
-        messageTurn(creatorPeer, "Continue the market research report"),
+        messageTurn(creatorPeer, "Continue ------market-research------ report"),
       )) as ContextBlock[];
       const policy = blocks.find((block) => block.source === "filesystem-workspace-policy");
       const catalog = blocks.find((block) => block.source === "filesystem-workspace-catalog");
@@ -720,6 +720,28 @@ describe("filesystem augment", () => {
       expect(catalog?.origin).toBe("agent-derived");
       expect(catalog?.ttl).toBe("turn");
     });
+
+    it(
+      "processes adversarial query punctuation in bounded time",
+      async () => {
+        const workspace = join(tmp.path, "workspace-adversarial-query");
+        await mkdir(workspace, { recursive: true });
+        const aug = filesystem({
+          mounts: [{ name: "workspace", path: workspace }],
+          workspaceAwareness: { maxEntries: 1, scanLimit: 1 },
+        });
+        await aug.onBoot!();
+
+        const blocks = (await aug.context!(
+          messageTurn(creatorPeer, `a${"-".repeat(100_000)}b`),
+        )) as ContextBlock[];
+
+        expect(blocks.some((block) => block.source === "filesystem-workspace-catalog")).toBe(
+          true,
+        );
+      },
+      2_000,
+    );
 
     it("keeps workspace awareness out of public turns by default", async () => {
       const workspace = join(tmp.path, "workspace-public");

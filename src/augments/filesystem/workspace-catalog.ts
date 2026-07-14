@@ -263,10 +263,27 @@ function termsForQuery(query: string): string[] {
       query
         .toLowerCase()
         .split(/[^a-z0-9._-]+/)
-        .map((term) => term.replace(/^[._-]+|[._-]+$/g, ""))
+        .map(trimQueryTermBoundaryPunctuation)
         .filter((term) => term.length >= 3 && !STOP_WORDS.has(term)),
     ),
   ].slice(0, 20);
+}
+
+/**
+ * Trim query punctuation in linear time. Avoid a boundary-alternation regex
+ * here because the query is library input and long punctuation runs can cause
+ * polynomial backtracking in some JavaScript regexp engines.
+ */
+function trimQueryTermBoundaryPunctuation(term: string): string {
+  let start = 0;
+  let end = term.length;
+  while (start < end && isQueryTermBoundaryPunctuation(term.charCodeAt(start))) start++;
+  while (end > start && isQueryTermBoundaryPunctuation(term.charCodeAt(end - 1))) end--;
+  return term.slice(start, end);
+}
+
+function isQueryTermBoundaryPunctuation(code: number): boolean {
+  return code === 46 || code === 95 || code === 45; // ., _, -
 }
 
 function relevanceForPath(path: string, queryTerms: readonly string[]): number {
