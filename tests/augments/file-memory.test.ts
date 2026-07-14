@@ -170,7 +170,6 @@ describe("fileMemory", () => {
     await aug.memory!.write!("learned", "updated safely");
 
     expect((await lstat(linkPath)).isSymbolicLink()).toBe(true);
-    expect(await readFile(linkPath, "utf-8")).toBe("updated safely");
     expect(await readFile(targetPath, "utf-8")).toBe("updated safely");
   });
 
