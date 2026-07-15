@@ -16,6 +16,18 @@ treated as metadata only; catch-up fetches each full message before it can enter
 the ledger or turn loop. Received, spam, blocked, and unauthenticated variants
 remain distinct until inbound policy makes an explicit decision.
 
+Inbound durability is ledger-first. A validated live event is written to
+SQLite before it can trigger a turn. Catch-up lists oldest-first, fetches every
+full message in a page, then commits the whole page and its high-water
+checkpoint in one transaction. Restart queries overlap that checkpoint by one
+minute; replayed results are harmless because inbox ID plus message ID is the
+durable identity. Pending work is claimed with a renewable lease and reaches a
+terminal state only after explicit `processed` or policy-driven `discarded`
+acknowledgement. Expired leases become claimable again, while a stale lease
+token cannot complete the replacement claim. The database and its WAL/SHM
+companions are created with owner-only permissions because message bodies may
+contain sensitive data.
+
 Sends email through AgentMail with per-peer trust gating, recipient allowlist, rate limits, dedup, sensitive-content auditing, and console API status blocks. Exposes three model-facing tools whose names align with AgentMail's MCP standard: `send_message`, `reply_to_message`, `forward_message`.
 
 ## When to use

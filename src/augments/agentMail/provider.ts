@@ -231,7 +231,7 @@ function messageAsWirePayload(payload: unknown): unknown {
     inbox_id: message.inboxId,
     thread_id: message.threadId,
     message_id: message.messageId,
-    from: message.from_,
+    from: message.from_ ?? message.from,
     reply_to: message.replyTo,
     extracted_text: message.extractedText,
     extracted_html: message.extractedHtml,

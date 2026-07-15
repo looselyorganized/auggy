@@ -14,6 +14,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   validated canonical message envelope. Provider payloads fail closed on
   malformed IDs, timestamps, inbox substitution, or incoherent threads; no
   legacy `capabilities`/`supports` metadata is used.
+- **Durable AgentMail inbound ledger.** Live events and complete REST catch-up
+  pages are persisted before dispatch, deduplicated by inbox/message identity,
+  and processed through renewable SQLite leases. Catch-up checkpoints advance
+  atomically with their page and replay a timestamp overlap after restart;
+  stale workers cannot acknowledge a newer claim. Database, WAL, and shared
+  memory files are restricted to owner access.
 - **Transport readiness phase.** `TransportSpec.ready()` now starts inbound
   listeners only after every mounted transport has registered its kernel
   handle, closing startup races for web, Telegram, Link, and future inbound
