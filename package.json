@@ -99,6 +99,7 @@
     "@supabase/supabase-js": "^2.103.0",
     "agentmail": "0.5.14",
     "commander": "^14.0.3",
+    "svix": "1.96.1",
     "yaml": "^2.8.3",
     "zod": "^4.3.6"
   }

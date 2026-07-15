@@ -1,6 +1,8 @@
+import { Webhook, WebhookVerificationError } from "svix";
 import type { AugmentHttpRoute, RouteWebhookContext } from "../types";
 
 const DEFAULT_STRIPE_TIMESTAMP_TOLERANCE_SECONDS = 300;
+const DEFAULT_SVIX_TIMESTAMP_TOLERANCE_SECONDS = 300;
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
@@ -17,14 +19,30 @@ export function validateRouteWebhookPolicyConfig(
   const policy = route.policy;
   if (!policy) return undefined;
   if (policy.kind !== "webhook.signature") return undefined;
-  if (policy.provider !== "stripe") {
+  if (policy.provider !== "stripe" && policy.provider !== "svix") {
     return `Webhook signature provider "${policy.provider}" is not supported.`;
   }
 
-  if (!policy.secretEnv) return "Stripe webhook policy requires secretEnv.";
+  const providerName = policy.provider === "stripe" ? "Stripe" : "Svix";
+  if (!policy.secretEnv) return `${providerName} webhook policy requires secretEnv.`;
   const secret = env[policy.secretEnv];
   if (!secret || secret.trim().length === 0) {
-    return `Stripe webhook secret env ${policy.secretEnv} is not set.`;
+    return `${providerName} webhook secret env ${policy.secretEnv} is not set.`;
+  }
+
+  if (
+    policy.provider === "svix" &&
+    (policy.timestampToleranceSeconds ?? DEFAULT_SVIX_TIMESTAMP_TOLERANCE_SECONDS) >
+      DEFAULT_SVIX_TIMESTAMP_TOLERANCE_SECONDS
+  ) {
+    return "Svix webhook timestampToleranceSeconds cannot exceed 300 seconds.";
+  }
+  if (policy.provider === "svix") {
+    try {
+      new Webhook(secret);
+    } catch {
+      return `Svix webhook secret env ${policy.secretEnv} is invalid.`;
+    }
   }
 
   return undefined;
@@ -44,7 +62,7 @@ export async function verifyRouteWebhookPolicy(
   // Unsupported providers are a server configuration error. Boot-time
   // validation normally prevents this path, but request verification remains
   // fail-closed as defense in depth.
-  if (policy.provider !== "stripe") {
+  if (policy.provider !== "stripe" && policy.provider !== "svix") {
     return { ok: false, status: 500, error: "webhook-policy-unsupported" };
   }
 
@@ -54,6 +72,10 @@ export async function verifyRouteWebhookPolicy(
   const secret = env[policy.secretEnv];
   if (!secret || secret.trim().length === 0) {
     return { ok: false, status: 500, error: "webhook-policy-misconfigured" };
+  }
+
+  if (policy.provider === "svix") {
+    return verifySvixWebhook(policy, req, rawBody, secret, nowMs);
   }
 
   const header = req.headers.get("stripe-signature");
@@ -89,6 +111,60 @@ export async function verifyRouteWebhookPolicy(
       receivedAt: nowMs,
     },
   };
+}
+
+function verifySvixWebhook(
+  policy: Extract<NonNullable<AugmentHttpRoute["policy"]>, { kind: "webhook.signature" }>,
+  req: Request,
+  rawBody: Uint8Array,
+  secret: string,
+  nowMs: number,
+): RouteWebhookPolicyVerification {
+  const deliveryId = req.headers.get("svix-id");
+  const timestampHeader = req.headers.get("svix-timestamp");
+  const signature = req.headers.get("svix-signature");
+  if (!deliveryId || !timestampHeader || !signature) {
+    return { ok: false, status: 401, error: "webhook-signature-required" };
+  }
+
+  const timestamp = Number(timestampHeader);
+  if (!Number.isSafeInteger(timestamp) || timestamp <= 0) {
+    return { ok: false, status: 401, error: "webhook-signature-invalid" };
+  }
+  const tolerance = policy.timestampToleranceSeconds ?? DEFAULT_SVIX_TIMESTAMP_TOLERANCE_SECONDS;
+  if (tolerance > DEFAULT_SVIX_TIMESTAMP_TOLERANCE_SECONDS) {
+    return { ok: false, status: 500, error: "webhook-policy-misconfigured" };
+  }
+  if (Math.abs(nowMs / 1000 - timestamp) > tolerance) {
+    return { ok: false, status: 401, error: "webhook-signature-invalid" };
+  }
+
+  try {
+    const event = new Webhook(secret).verify(Buffer.from(rawBody), {
+      "svix-id": deliveryId,
+      "svix-timestamp": timestampHeader,
+      "svix-signature": signature,
+    });
+    return {
+      ok: true,
+      context: {
+        kind: "webhook.signature",
+        provider: "svix",
+        event,
+        deliveryId,
+        timestamp,
+        receivedAt: nowMs,
+      },
+    };
+  } catch (error) {
+    if (error instanceof WebhookVerificationError) {
+      return { ok: false, status: 401, error: "webhook-signature-invalid" };
+    }
+    if (error instanceof SyntaxError) {
+      return { ok: false, status: 400, error: "webhook-payload-invalid" };
+    }
+    return { ok: false, status: 500, error: "webhook-policy-misconfigured" };
+  }
 }
 
 function parseStripeSignatureHeader(

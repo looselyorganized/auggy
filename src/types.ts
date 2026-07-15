@@ -690,6 +690,8 @@ export interface RouteWebhookContext {
   provider: AugmentHttpRouteWebhookProvider;
   /** Parsed provider event payload after signature verification. */
   event: unknown;
+  /** Provider delivery identifier. Stable across retries when supplied. */
+  deliveryId?: string;
   /** Unix timestamp in seconds from the provider signature envelope. */
   timestamp?: number;
   /** Local wall-clock time when the transport accepted the webhook. */

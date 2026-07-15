@@ -26,6 +26,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   server to acknowledge the configured inbox and all four received-message
   classifications, runs catch-up before releasing that generation's events,
   filters outbound list entries, and fetches full bodies before checkpointing.
+- **Svix-verified AgentMail webhook admission.** HTTP webhook policies now
+  verify Svix's exact raw body and three signature headers with the official
+  verifier and a replay window capped at five minutes. The AgentMail route
+  factory validates the configured inbox and received classification, writes
+  to the durable ledger before acknowledging, deduplicates retries, and ignores
+  authenticated non-received events without creating work.
 - **Transport readiness phase.** `TransportSpec.ready()` now starts inbound
   listeners only after every mounted transport has registered its kernel
   handle, closing startup races for web, Telegram, Link, and future inbound

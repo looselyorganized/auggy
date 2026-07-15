@@ -185,8 +185,11 @@ function validateRoutePolicy(augmentName: string, route: AugmentHttpRoute): stri
   ) {
     return `Augment "${augmentName}" registered HTTP route ${route.method} "${route.path}" with invalid webhook.signature policy — secretEnv must be a non-empty string when provided.`;
   }
-  if (policy.provider === "stripe" && typeof policy.secretEnv !== "string") {
-    return `Augment "${augmentName}" registered HTTP route ${route.method} "${route.path}" with invalid webhook.signature policy — Stripe policies require secretEnv.`;
+  if (
+    (policy.provider === "stripe" || policy.provider === "svix") &&
+    typeof policy.secretEnv !== "string"
+  ) {
+    return `Augment "${augmentName}" registered HTTP route ${route.method} "${route.path}" with invalid webhook.signature policy — ${policy.provider === "stripe" ? "Stripe" : "Svix"} policies require secretEnv.`;
   }
   if (
     policy.timestampToleranceSeconds !== undefined &&

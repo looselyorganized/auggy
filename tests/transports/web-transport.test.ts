@@ -2894,7 +2894,7 @@ describe("webTransport augment-registered routes", () => {
   });
 
   it("fails boot closed for webhook signature providers without a verifier", async () => {
-    await withEnv({ AGENTMAIL_WEBHOOK_SECRET_TEST: "whsec_test" }, async () => {
+    await withEnv({ UNKNOWN_WEBHOOK_SECRET_TEST: "secret" }, async () => {
       const model = createMockModel();
       const port = 19983;
       const aug = webTransport({ port, auth: { type: "bearer", token: "test-token" } });
@@ -2904,8 +2904,8 @@ describe("webTransport augment-registered routes", () => {
         httpRoutes: [
           defineRoute.post("/webhooks/agentmail", {
             auth: "none",
-            policy: webhook.signature("svix", {
-              secretEnv: "AGENTMAIL_WEBHOOK_SECRET_TEST",
+            policy: webhook.signature("unknown-provider", {
+              secretEnv: "UNKNOWN_WEBHOOK_SECRET_TEST",
             }),
             handler: () => {
               calls += 1;
@@ -2917,7 +2917,7 @@ describe("webTransport augment-registered routes", () => {
       const agent = defineAgent({ name: "test", model: "mock", augments: [fixture, aug] }, model);
 
       await expect(agent.start()).rejects.toThrow(
-        'Webhook signature provider "svix" is not supported',
+        'Webhook signature provider "unknown-provider" is not supported',
       );
       expect(calls).toBe(0);
 

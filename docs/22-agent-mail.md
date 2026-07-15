@@ -38,6 +38,15 @@ types, waits for the server to confirm the inbox and event filters, and
 re-subscribes on every automatic reconnect. Reconnect confirmation runs a REST
 catch-up before new live events are released, closing the disconnect gap.
 
+Webhook admission uses the official Svix verifier against the exact raw HTTP
+body plus `svix-id`, `svix-timestamp`, and `svix-signature`. Startup fails when
+the secret is missing or malformed, replay tolerance cannot exceed five
+minutes, and the route acknowledges a received event only after the canonical
+envelope is in the durable ledger. Retries are deduplicated by inbox/message
+identity and provider event ID. The route factory is present as an ingestion
+primitive; inbound mode remains disabled until the turn worker and policy gates
+land in the next slice.
+
 Sends email through AgentMail with per-peer trust gating, recipient allowlist, rate limits, dedup, sensitive-content auditing, and console API status blocks. Exposes three model-facing tools whose names align with AgentMail's MCP standard: `send_message`, `reply_to_message`, `forward_message`.
 
 ## When to use

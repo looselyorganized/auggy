@@ -6,8 +6,9 @@
  * an `adminInfo` surface with ring-buffer dispatch log + cap-adjust action.
  *
  * Phase A is outbound only; `inbound.mode` MUST be `"none"` (default).
- * Phase B will add WebSocket/polling inbound, Phase C will add Svix-verified
- * webhook inbound. See plan at /Users/bigviking/.claude/plans/wild-waddling-sketch.md.
+ * The durable ledger and REST/WebSocket/Svix provider adapters are implemented
+ * behind structural boundaries. Inbound mode remains disabled until the turn
+ * worker and admission policy are wired end to end.
  *
  * Design notes:
  *   - Trust-level gate: by default only `creator` (and null/system) peers

@@ -111,7 +111,7 @@ export interface AgentMailSubscribeInput {
   onError(error: Error): void;
 }
 
-/** Live source contract implemented by WebSocket and verified webhook adapters. */
+/** Live subscription contract implemented by the reconnecting WebSocket adapter. */
 export interface AgentMailLiveEventSource {
   subscribe(input: AgentMailSubscribeInput): Promise<AgentMailEventSubscription>;
 }

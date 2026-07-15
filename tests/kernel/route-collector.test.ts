@@ -232,9 +232,10 @@ describe("collectAugmentRoutes", () => {
           timestampToleranceSeconds: 0,
         }),
       ]),
+      aug("g", [r("/g", { kind: "webhook.signature", provider: "svix" })]),
     ]);
 
-    expect(result.errors).toHaveLength(6);
+    expect(result.errors).toHaveLength(7);
     for (const e of result.errors) {
       expect(e).toContain("invalid");
       expect(e).toContain("policy");
