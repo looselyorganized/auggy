@@ -256,7 +256,25 @@ function makeMockKernel(opts: { handleInbound?: TransportKernel["handleInbound"]
 }
 
 describe("telegramTransport — polling lifecycle", () => {
-  it("starts polling on boot; dispatches turn for each text update via kernel.handleInbound", async () => {
+  it("rejects readiness before registration and is idempotent after registration", async () => {
+    const { client } = makeMockClient([[]]);
+    const { kernel } = makeMockKernel();
+    const aug = telegramTransport({
+      botToken: "T",
+      inbound: { mode: "polling", polling: { timeoutSec: 0 } },
+      auth: {},
+      _clientFactory: () => client,
+    } as unknown as Parameters<typeof telegramTransport>[0]);
+
+    await aug.onBoot?.();
+    await expect(aug.transport!.ready!()).rejects.toThrow("before kernel registration");
+    await aug.transport!.register(kernel, "telegram-transport");
+    await aug.transport!.ready!();
+    await aug.transport!.ready!();
+    await aug.onShutdown?.();
+  });
+
+  it("starts polling at readiness; dispatches turn for each text update via kernel.handleInbound", async () => {
     const updates: TelegramUpdate[] = [
       {
         update_id: 1,
@@ -280,6 +298,7 @@ describe("telegramTransport — polling lifecycle", () => {
     // Wire the kernel into the transport before booting receivers.
     await aug.transport!.register(kernel, "telegram-transport");
     await aug.onBoot?.();
+    await aug.transport!.ready?.();
     await new Promise((r) => setTimeout(r, 30));
     await aug.onShutdown?.();
     expect(handleInboundCalls).toHaveLength(1);
@@ -311,6 +330,7 @@ describe("telegramTransport — polling lifecycle", () => {
     } as unknown as Parameters<typeof telegramTransport>[0]);
     await aug.transport!.register(kernel, "telegram-transport");
     await aug.onBoot?.();
+    await aug.transport!.ready?.();
     await new Promise((r) => setTimeout(r, 30));
     // The kernel would invoke the outbound callback with an OutboundMessage
     // during a real turn. Simulate that here. The transport reads
@@ -362,6 +382,7 @@ describe("telegramTransport — polling lifecycle", () => {
 
     await aug.transport!.register(kernel, "telegram-transport");
     await aug.onBoot?.();
+    await aug.transport!.ready?.();
     await new Promise((r) => setTimeout(r, 30));
     await aug.onShutdown?.();
 
@@ -407,6 +428,7 @@ describe("telegramTransport — polling lifecycle", () => {
 
     await aug.transport!.register(kernel, "telegram-transport");
     await aug.onBoot?.();
+    await aug.transport!.ready?.();
     await new Promise((r) => setTimeout(r, 30));
     await aug.onShutdown?.();
 
@@ -442,6 +464,7 @@ describe("telegramTransport — polling lifecycle", () => {
 
     await aug.transport!.register(kernel, "telegram-transport");
     await aug.onBoot?.();
+    await aug.transport!.ready?.();
     await new Promise((r) => setTimeout(r, 30));
     await aug.onShutdown?.();
 
@@ -465,6 +488,7 @@ describe("telegramTransport — polling lifecycle", () => {
     } as unknown as Parameters<typeof telegramTransport>[0]);
     await aug.transport!.register(kernel, "telegram-transport");
     await aug.onBoot?.();
+    await aug.transport!.ready?.();
     await new Promise((r) => setTimeout(r, 30));
     await aug.onShutdown?.();
     expect(handleInboundCalls).toHaveLength(0);
@@ -493,5 +517,50 @@ describe("telegramTransport — polling lifecycle", () => {
     } as unknown as Parameters<typeof telegramTransport>[0]);
     expect(aug.transport!.identify({})).toBeNull();
     expect(aug.transport!.identify(null)).toBeNull();
+  });
+
+  it("rolls back the local webhook listener when Telegram webhook setup fails", async () => {
+    const port = 31_000 + Math.floor(Math.random() * 5_000);
+    let deleteCalls = 0;
+    const client: TelegramBotClient = {
+      async sendMessage(chatId) {
+        return { messageId: 1, chatId };
+      },
+      async getUpdates() {
+        return [];
+      },
+      async setWebhook() {
+        throw new Error("telegram unavailable");
+      },
+      async deleteWebhook() {
+        deleteCalls += 1;
+      },
+      async getChat(chatId) {
+        return { id: Number(chatId), type: "private" };
+      },
+    };
+    const { kernel } = makeMockKernel();
+    const aug = telegramTransport({
+      botToken: "T",
+      inbound: {
+        mode: "webhook",
+        webhook: {
+          publicUrl: "https://example.test/telegram",
+          port,
+          secretToken: "secret",
+        },
+      },
+      auth: {},
+      _clientFactory: () => client,
+    } as unknown as Parameters<typeof telegramTransport>[0]);
+
+    await aug.onBoot?.();
+    await aug.transport!.register(kernel, "telegram-transport");
+    await expect(aug.transport!.ready?.()).rejects.toThrow("telegram unavailable");
+    expect(deleteCalls).toBe(1);
+
+    const replacement = Bun.serve({ port, fetch: () => new Response("ok") });
+    replacement.stop(true);
+    await aug.onShutdown?.();
   });
 });

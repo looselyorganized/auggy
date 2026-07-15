@@ -14,8 +14,11 @@ returns AgentHandle                ─┘
 agent.start()                     ─┐
    │                               │
    ├─ lifecycle.boot()             │
-   ├─ register transports          │  startup
-   └─ start idle timer             │
+   ├─ validate augment routes      │
+   ├─ register all transports      │  startup
+   ├─ ready all transports         │
+   ├─ start idle timer             │
+   └─ open admission barrier       │
                                   ─┘
    │
 (running — turns happen via transports or inject)
@@ -185,7 +188,11 @@ Two important properties:
 
 **Sequential, in declared order.** If you have `[identity, episodic, web]`, `identity.onBoot` runs first, completes, then `episodic.onBoot`, then `web.onBoot`. There is no parallelism. This matters because augments may have dependencies — e.g. a memory provider that the transport needs to know about must boot first.
 
-**Fail-fast.** If any augment's `onBoot` throws, the lifecycle manager throws immediately, with a wrapped error message identifying the failing augment. The remaining augments **do not boot**. The agent fails to start.
+**Fail-fast and rollback-safe.** If any augment's `onBoot` throws, the
+lifecycle manager throws immediately, with a wrapped error message identifying
+the failing augment. The remaining augments **do not boot**. Every attempted
+augment, including the one whose hook partially allocated resources before
+throwing, receives `onShutdown()` in reverse order.
 
 This is intentional: a half-booted agent is worse than a non-running agent. If one augment is broken, you want to know immediately, not after some turns succeed and others mysteriously fail.
 
@@ -206,7 +213,7 @@ for (const aug of effectiveAugments) {
       getAgentCard: () => agentCard,
     };
 
-    await aug.transport.register(transportKernel);
+    await aug.transport.register(transportKernel, aug.name);
   }
 }
 ```
@@ -217,11 +224,32 @@ For each augment with a `transport` field:
 
 2. **Build a `TransportKernel` view.** This is the small interface the transport sees. It doesn't expose the full kernel — only `handleInbound`, `onOutbound`, and `getAgentCard`. The transport cannot reach into the agent for anything else.
 
-3. **`await aug.transport.register(transportKernel)`.** This is what the transport uses to "wake up." The web transport's `register` is a no-op — it just stores the kernel reference. Other transports (e.g. a future spine transport) might do more work here (subscribing to a queue, opening a connection).
+3. **`await aug.transport.register(transportKernel, aug.name)`.** Registration
+   captures the kernel handle and prepares any state needed by the transport.
+   It must not start polling, bind a listener, subscribe to a live queue, or
+   otherwise admit traffic.
 
-**Note that `register` is awaited.** If a transport's `register` is slow (e.g. it needs to handshake with an external service), `agent.start()` blocks until it's done. This is the correct behavior — the agent isn't fully started until all transports are registered.
+**Every `register` is awaited before any readiness hook runs.** If registration
+fails, no transport has started accepting traffic and startup rolls back all
+attempted augment resources.
 
-### 3. Start the idle timer
+### 3. Ready transports and open admission
+
+```ts
+for (const aug of effectiveAugments) {
+  await aug.transport?.ready?.();
+}
+```
+
+`ready()` is the first phase allowed to bind a port, start polling, or
+subscribe to live provider events. Readiness runs sequentially. A listener that
+receives traffic while a later transport is still becoming ready can call its
+kernel handle, but the call waits behind a startup admission barrier. The
+barrier opens only after every readiness hook succeeds. If one fails, pending
+traffic is rejected and attempted resources are shut down in reverse augment
+order.
+
+### 4. Start the idle timer
 
 ```ts
 lifecycle.startIdleTimer(async () => {
@@ -243,17 +271,19 @@ The timer is **reset every time a turn happens** (via `lifecycle.resetIdleTimer(
 
 In v1 nothing actually uses `onIdle` — it's reserved for future memory consolidators, background indexers, etc.
 
-### 4. Mark started
+### 5. Mark started and release traffic
 
 ```ts
 started = true;
+admission.open();
 ```
 
 A flag the `AgentHandle.ready()` method checks.
 
 After `start()` returns:
 - All augments have booted successfully (or `start()` threw).
-- All transports have been registered. The web transport's HTTP server is listening.
+- All transports have registered kernel handles and completed readiness.
+- The startup admission barrier is open; inbound traffic can now execute turns.
 - The idle timer is running.
 - Inbound requests can flow.
 

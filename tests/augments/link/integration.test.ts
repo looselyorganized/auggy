@@ -144,6 +144,7 @@ describe("link augment — construction", () => {
     const aug = await link({ ...makeOpts(), _skipServer: true });
     expect(aug.name).toBe("link");
     expect(aug.transport).toBeDefined();
+    expect(aug.transport?.ready).toBeDefined();
     expect(aug.context).toBeDefined();
     expect(aug.tools).toBeDefined();
     expect(aug.tools?.map((t) => t.name).sort()).toEqual(["link_list", "link_send"]);
@@ -158,6 +159,22 @@ describe("link augment — construction", () => {
     const aug = await link({ ...makeOpts(), _skipServer: true });
     expect(aug.onShutdown).toBeDefined();
     // Calling shutdown without prior register doesn't throw.
+    await aug.onShutdown!();
+  });
+
+  it("rejects readiness before registration and is idempotent after registration", async () => {
+    const aug = await link({ ...makeOpts(), _skipServer: true });
+    await expect(aug.transport!.ready!()).rejects.toThrow("before registration");
+    const kernel: TransportKernel = {
+      handleInbound: async (trigger) => completedResult(trigger, "ok"),
+      onOutbound: () => {},
+      getAgentCard: () => ({}) as AgentCard,
+      getAugmentRoutes: () => [],
+      getAugments: () => [],
+    };
+    await aug.transport!.register(kernel, "link");
+    await aug.transport!.ready!();
+    await aug.transport!.ready!();
     await aug.onShutdown!();
   });
 

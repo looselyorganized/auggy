@@ -599,9 +599,9 @@ What happens at boot:
 2. Both memory providers get synthesized `context()` functions.
 3. The synthetic `memory-bus` augment is appended with the five generic memory tools.
 4. `generateAgentCard` produces a card with `capabilities.memory: true` and `capabilities.transport: true`; model-facing tools stay out of the public A2A skills list.
-5. `lifecycle.boot()` runs: `fileMemory.onBoot()` reads `zip-soul.md`. `supabaseMemory` has no onBoot. `webTransport.onBoot()` starts Bun.serve on port 8080. `memory-bus` has no onBoot.
+5. `lifecycle.boot()` runs: `fileMemory.onBoot()` reads `zip-soul.md`. `supabaseMemory` and `memory-bus` have no onBoot; `webTransport.onBoot()` validates and prepares configuration without binding a port.
 6. The web transport is registered with a `TransportQueue` (concurrency 1, queue depth 50, rate limit 30/min/peer).
-7. The agent is now serving requests on `http://localhost:8080`.
+7. After every transport is registered, `webTransport.transport.ready()` starts Bun.serve on port 8080. The agent is now serving requests on `http://localhost:8080`.
 
 What happens on a turn:
 1. A peer POSTs to `/agent/run`. The web transport identifies them, builds a trigger.

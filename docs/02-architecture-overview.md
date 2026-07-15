@@ -297,14 +297,16 @@ agent.start()                            ← user code
    ├─ generateAgentCard(effectiveConfig) ← agent.ts
    ├─ lifecycle.boot()                   ← lifecycle-manager.ts
    │    └─ for each augment: aug.onBoot?.()
-   │       (fileMemory loads its file, supabaseMemory does nothing,
-   │        webTransport starts Bun.serve)
+   │       (fileMemory loads its file; transports validate and prepare)
    │
    ├─ for each transport augment:
    │    ├─ create TransportQueue(spec.concurrency, spec.maxQueueDepth, spec.rateLimitPerPeer)
    │    ├─ create TransportKernel { handleInbound, onOutbound, getAgentCard }
    │    └─ aug.transport.register(transportKernel)
-   │       (webTransport just stores the kernel reference for later)
+   │       (preparation only; no listener may accept traffic)
+   │
+   ├─ for each transport augment: aug.transport.ready?.()
+   │    └─ start HTTP servers, polling loops, and other ingress
    │
    └─ start idle timer (5min by default; calls aug.onIdle?.() on each augment)
 
@@ -317,6 +319,10 @@ agent.stop()                             ← user code
         └─ for each augment in REVERSE order: aug.onShutdown?.() (with 5s timeout)
            (webTransport stops Bun.serve)
 ```
+
+Startup is transactional: failures during boot, route validation, transport
+registration, or readiness run reverse-order shutdown before the original
+startup error is returned.
 
 ## Where invariants live
 

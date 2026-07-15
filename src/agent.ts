@@ -21,6 +21,37 @@ import { createTransportQueue } from "./kernel/transport-queue";
 import { collectAugmentRoutes } from "./kernel/route-collector";
 import type { CollectedRoute } from "./kernel/route-collector";
 
+interface StartupAdmissionBarrier {
+  wait(): Promise<void>;
+  open(): void;
+  close(error: Error): void;
+}
+
+function createStartupAdmissionBarrier(): StartupAdmissionBarrier {
+  let state: "pending" | "open" | "closed" = "pending";
+  let closeError: Error | null = null;
+  const waiters: Array<{ resolve: () => void; reject: (error: Error) => void }> = [];
+
+  return {
+    wait() {
+      if (state === "open") return Promise.resolve();
+      if (state === "closed") return Promise.reject(closeError);
+      return new Promise<void>((resolve, reject) => waiters.push({ resolve, reject }));
+    },
+    open() {
+      if (state !== "pending") return;
+      state = "open";
+      for (const waiter of waiters.splice(0)) waiter.resolve();
+    },
+    close(error) {
+      if (state !== "pending") return;
+      state = "closed";
+      closeError = error;
+      for (const waiter of waiters.splice(0)) waiter.reject(error);
+    },
+  };
+}
+
 export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandle {
   const tokenizer = createTokenizer();
 
@@ -59,6 +90,12 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
   >();
 
   let started = false;
+
+  async function rollbackStartup(): Promise<void> {
+    lifecycle.stopIdleTimer();
+    await lifecycle.shutdown();
+    outboundHandlers.clear();
+  }
 
   async function dispatchOutbound(result: TurnResult, trigger: TurnTrigger) {
     // Collect all messages to dispatch: single response + multi-destination responses
@@ -130,94 +167,100 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
   const handle: AgentHandle = {
     async start() {
       if (started) throw new Error("Agent already started. Call stop() first.");
-      await lifecycle.boot();
+      const admission = createStartupAdmissionBarrier();
+      try {
+        await lifecycle.boot();
 
-      // PR γ.1 — collect augment-registered HTTP routes AFTER boot so
-      // onBoot-populated route lists are visible, BEFORE any transport
-      // binds a port so a collision can't leave the agent half-bound.
-      const collected = collectAugmentRoutes(effectiveAugments);
-      if (collected.errors.length > 0) {
-        // Run shutdown to undo the boot side-effects we just performed
-        // (otherwise SQLite handles, file watchers, etc. leak).
-        try {
-          await lifecycle.shutdown();
-        } catch {
-          // best-effort; the original validation error wins
+        // Collect routes after boot but before transport registration. No
+        // transport may accept traffic until the later ready phase.
+        const collected = collectAugmentRoutes(effectiveAugments);
+        if (collected.errors.length > 0) {
+          throw new Error(
+            `Cannot start agent — augment HTTP route validation failed:\n  ` +
+              collected.errors.join("\n  "),
+          );
         }
-        throw new Error(
-          `Cannot start agent — augment HTTP route validation failed:\n  ` +
-            collected.errors.join("\n  "),
-        );
-      }
-      const augmentRoutes: readonly CollectedRoute[] = collected.routes;
+        const augmentRoutes: readonly CollectedRoute[] = collected.routes;
 
-      // G36 — frozen augment snapshot exposed to transports via kernel.getAugments().
-      // Downstream consumers (notably /admin's adminInfo collector) iterate this
-      // list; freezing prevents accidental mutation by a buggy adminInfo()
-      // implementation from corrupting iteration.
-      const frozenAugments: readonly Augment[] = Object.freeze(effectiveAugments.slice());
+        const frozenAugments: readonly Augment[] = Object.freeze(effectiveAugments.slice());
 
-      // Register transport augments
-      for (const aug of effectiveAugments) {
-        if (aug.transport) {
-          const queue = createTransportQueue({
-            concurrency: aug.transport.concurrency ?? 1,
-            maxQueueDepth: aug.transport.maxQueueDepth ?? 50,
-            rateLimitPerPeer: aug.transport.rateLimitPerPeer,
-          });
-
-          const transportKernel: TransportKernel = {
-            async handleInbound(
-              trigger: TurnTrigger,
-              opts?: { onEvent?: import("./types").KernelEventHandler },
-            ): Promise<TurnResult> {
-              return queue.enqueue(trigger, async (t) => {
-                lifecycle.resetIdleTimer();
-                const threadId = t.threadId ?? t.turnId;
-                const result = await turnLoop.executeTurn(t, threadId, {
-                  onEvent: opts?.onEvent,
-                });
-                await runPostTurn(result, t, threadId);
-                return result;
-              });
-            },
-            onOutbound(callback) {
-              outboundHandlers.set(aug.name, callback);
-            },
-            getAgentCard() {
-              return agentCard;
-            },
-            getAugmentRoutes() {
-              return augmentRoutes;
-            },
-            getAugments() {
-              return frozenAugments;
-            },
-          };
-          await aug.transport.register(transportKernel, aug.name);
-        }
-      }
-
-      // Start idle timer
-      lifecycle.startIdleTimer(async () => {
+        // Register every transport before any transport is allowed to start
+        // listeners. This closes the startup window where early inbound data
+        // could arrive without a kernel handle.
         for (const aug of effectiveAugments) {
-          if (aug.onIdle) {
-            try {
-              await aug.onIdle();
-            } catch {
-              // Log and continue
-            }
+          if (aug.transport) {
+            const queue = createTransportQueue({
+              concurrency: aug.transport.concurrency ?? 1,
+              maxQueueDepth: aug.transport.maxQueueDepth ?? 50,
+              rateLimitPerPeer: aug.transport.rateLimitPerPeer,
+            });
+
+            const transportKernel: TransportKernel = {
+              async handleInbound(
+                trigger: TurnTrigger,
+                opts?: { onEvent?: import("./types").KernelEventHandler },
+              ): Promise<TurnResult> {
+                // A listener may bind before a later transport finishes its
+                // ready hook. Hold all traffic until the entire ready phase
+                // succeeds so failed startup cannot process a partial turn.
+                await admission.wait();
+                return queue.enqueue(trigger, async (t) => {
+                  lifecycle.resetIdleTimer();
+                  const threadId = t.threadId ?? t.turnId;
+                  const result = await turnLoop.executeTurn(t, threadId, {
+                    onEvent: opts?.onEvent,
+                  });
+                  await runPostTurn(result, t, threadId);
+                  return result;
+                });
+              },
+              onOutbound(callback) {
+                outboundHandlers.set(aug.name, callback);
+              },
+              getAgentCard() {
+                return agentCard;
+              },
+              getAugmentRoutes() {
+                return augmentRoutes;
+              },
+              getAugments() {
+                return frozenAugments;
+              },
+            };
+            await aug.transport.register(transportKernel, aug.name);
           }
         }
-      });
 
-      started = true;
+        for (const aug of effectiveAugments) {
+          await aug.transport?.ready?.();
+        }
+
+        lifecycle.startIdleTimer(async () => {
+          for (const aug of effectiveAugments) {
+            if (aug.onIdle) {
+              try {
+                await aug.onIdle();
+              } catch {
+                // Log and continue
+              }
+            }
+          }
+        });
+
+        started = true;
+        admission.open();
+      } catch (err) {
+        admission.close(err instanceof Error ? err : new Error(String(err)));
+        await rollbackStartup();
+        throw err;
+      }
     },
 
     async stop() {
       if (!started) return; // no-op if not started
       lifecycle.stopIdleTimer();
       await lifecycle.shutdown();
+      outboundHandlers.clear();
       started = false;
     },
 

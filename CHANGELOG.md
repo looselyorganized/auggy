@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Transport readiness phase.** `TransportSpec.ready()` now starts inbound
+  listeners only after every mounted transport has registered its kernel
+  handle, closing startup races for web, Telegram, Link, and future inbound
+  channels.
 - **Bounded workspace awareness for filesystem-backed agents.** A configured
   `workspace` mount now contributes a request-ranked, metadata-only file
   catalog to creator and agent turns. The catalog skips hidden paths, excluded
@@ -25,6 +29,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `capabilities: [...]` from augment objects; runtime and console surfaces are
   inferred structurally. Agent Card capabilities, including Link's
   `agentCard.capabilities`, remain separate discovery metadata.
+
+### Fixed
+
+- **Agent startup is rollback-safe and webhook policies fail closed.** Boot,
+  route validation, transport registration, and readiness failures now clean
+  up attempted resources in reverse order while preserving the original
+  error. Signature policies without an implemented verifier now fail startup
+  instead of admitting unsigned requests.
 
 ## [0.5.0] - 2026-07-07
 

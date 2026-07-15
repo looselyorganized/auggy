@@ -247,6 +247,53 @@ export function telegramTransport(opts: TelegramTransportOptions): Augment {
         }
       });
     },
+    async ready() {
+      if (!kernel || !registeredName) {
+        throw new Error("[telegram-transport] cannot become ready before kernel registration");
+      }
+      if (pollHandle || webhookHandle) return;
+
+      if (opts.inbound.mode === "polling") {
+        pollHandle = runPollLoop({
+          client,
+          timeoutSec: opts.inbound.polling?.timeoutSec ?? 30,
+          onUpdate: (u) => handleUpdate(u),
+        });
+        return;
+      }
+
+      const webhook = opts.inbound.webhook;
+      if (!webhook) {
+        throw new Error(
+          "[telegram-transport] inbound.mode === 'webhook' requires inbound.webhook config",
+        );
+      }
+
+      // Bind locally only after kernel registration, then tell Telegram where
+      // to deliver. If the remote update fails, tear down the local listener
+      // and best-effort remove an ambiguously accepted remote webhook.
+      webhookHandle = await startWebhookServer({
+        port: webhook.port ?? 8081,
+        secretToken: webhook.secretToken,
+        onUpdate: (u) => handleUpdate(u),
+      });
+      try {
+        await client.setWebhook(webhook.publicUrl, webhook.secretToken, {
+          allowedUpdates: webhook.allowedUpdates,
+        });
+      } catch (err) {
+        webhookHandle.stop();
+        webhookHandle = null;
+        try {
+          await client.deleteWebhook();
+        } catch (cleanupErr) {
+          console.warn(
+            `[telegram-transport] deleteWebhook after readiness failure failed: ${(cleanupErr as Error).message}`,
+          );
+        }
+        throw err;
+      }
+    },
     identify,
   };
 
@@ -392,28 +439,12 @@ export function telegramTransport(opts: TelegramTransportOptions): Augment {
 
     async onBoot(): Promise<void> {
       await validateAdmittedAgents(auth.admittedAgents, client);
-
-      if (opts.inbound.mode === "polling") {
-        pollHandle = runPollLoop({
-          client,
-          timeoutSec: opts.inbound.polling?.timeoutSec ?? 30,
-          onUpdate: (u) => handleUpdate(u),
-        });
-      } else if (opts.inbound.mode === "webhook") {
-        if (!opts.inbound.webhook) {
-          throw new Error(
-            "[telegram-transport] inbound.mode === 'webhook' requires inbound.webhook config",
-          );
-        }
-        await client.setWebhook(opts.inbound.webhook.publicUrl, opts.inbound.webhook.secretToken, {
-          allowedUpdates: opts.inbound.webhook.allowedUpdates,
-        });
-        webhookHandle = await startWebhookServer({
-          port: opts.inbound.webhook.port ?? 8081,
-          secretToken: opts.inbound.webhook.secretToken,
-          onUpdate: (u) => handleUpdate(u),
-        });
-      } else {
+      if (opts.inbound.mode === "webhook" && !opts.inbound.webhook) {
+        throw new Error(
+          "[telegram-transport] inbound.mode === 'webhook' requires inbound.webhook config",
+        );
+      }
+      if (opts.inbound.mode !== "polling" && opts.inbound.mode !== "webhook") {
         throw new Error(
           `[telegram-transport] inbound.mode must be 'polling' or 'webhook' (got ${(opts.inbound as { mode: unknown }).mode})`,
         );
@@ -437,6 +468,9 @@ export function telegramTransport(opts: TelegramTransportOptions): Augment {
           );
         }
       }
+      kernel = null;
+      registeredName = null;
+      threadChatIds.clear();
     },
   };
 }

@@ -605,6 +605,17 @@ export interface TransportSpec {
    * messages route back through the agent's outboundHandlers map (keyed by aug.name).
    */
   register(kernel: TransportKernel, augmentName: string): Promise<void>;
+  /**
+   * Called after every mounted transport has successfully registered. This is
+   * the first lifecycle phase in which a transport may bind a listener, start
+   * polling, or otherwise admit inbound traffic.
+   *
+   * `register()` must remain preparation-only so no transport can deliver a
+   * turn before all transports have a kernel handle. Resources started here
+   * must be released idempotently by the owning augment's `onShutdown()`.
+   * Calls should be idempotent once readiness has been reached.
+   */
+  ready?(): Promise<void>;
   identify(raw: unknown): PeerIdentity | null;
   concurrency?: number;
   maxQueueDepth?: number;

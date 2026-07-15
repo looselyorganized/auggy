@@ -318,7 +318,7 @@ The current route surface is intentionally narrow:
 - Per-route rate limit
 - Webhook signature policy metadata in manifests and generated-client target
   filtering; `webhook.signature("stripe", ...)` is runtime verified, while
-  other providers still need future verifier slices
+  unsupported providers fail startup until future verifier slices land
 
 That is enough for many app primitives, callbacks, and admin APIs. It is not yet a full Express/Fastify replacement. The pitch should stay disciplined:
 

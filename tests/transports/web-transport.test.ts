@@ -23,6 +23,30 @@ describe("webTransport structure", () => {
     expect(aug.name).toBe("web");
     expect(aug.transport).toBeDefined();
   });
+
+  it("rejects readiness before registration", async () => {
+    const aug = webTransport({
+      port: 0,
+      auth: { type: "bearer", token: "test-token" },
+    });
+    await aug.onBoot?.();
+    await expect(aug.transport!.ready!()).rejects.toThrow("before kernel registration");
+    await aug.onShutdown?.();
+  });
+
+  it("treats readiness as idempotent after the listener is bound", async () => {
+    const aug = webTransport({
+      port: 0,
+      auth: { type: "bearer", token: "test-token" },
+    });
+    const agent = defineAgent(
+      { name: "web-ready-idempotent", model: "mock", augments: [aug] },
+      createMockModel(),
+    );
+    await agent.start();
+    await aug.transport!.ready!();
+    await agent.stop();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -895,6 +919,38 @@ describe("webTransport HTTP server", () => {
     } finally {
       await agent.stop();
     }
+  });
+
+  it("rolls back a readiness bind failure and can start cleanly on retry", async () => {
+    const port = 18911;
+    const blocker = Bun.serve({ port, fetch: () => new Response("occupied") });
+    let cleanups = 0;
+    const resource: Augment = {
+      name: "resource",
+      onShutdown: async () => {
+        cleanups += 1;
+      },
+    };
+    const agent = defineAgent(
+      {
+        name: "test",
+        model: "mock",
+        augments: [resource, webTransport({ port, auth: { type: "bearer", token: "test" } })],
+      },
+      createMockModel(),
+    );
+
+    await expect(agent.start()).rejects.toThrow();
+    expect(cleanups).toBe(1);
+    blocker.stop(true);
+
+    await agent.start();
+    try {
+      expect((await fetch(`http://localhost:${port}/health`)).status).toBe(200);
+    } finally {
+      await agent.stop();
+    }
+    expect(cleanups).toBe(2);
   });
 
   it("returning visitor with valid token gets no new token issued", async () => {
@@ -2834,6 +2890,48 @@ describe("webTransport augment-registered routes", () => {
       await expect(agent.start()).rejects.toThrow(
         "Stripe webhook secret env STRIPE_WEBHOOK_SECRET_TEST is not set",
       );
+    });
+  });
+
+  it("fails boot closed for webhook signature providers without a verifier", async () => {
+    await withEnv({ AGENTMAIL_WEBHOOK_SECRET_TEST: "whsec_test" }, async () => {
+      const model = createMockModel();
+      const port = 19983;
+      const aug = webTransport({ port, auth: { type: "bearer", token: "test-token" } });
+      let calls = 0;
+      const fixture: Augment = {
+        name: "agent-mail",
+        httpRoutes: [
+          defineRoute.post("/webhooks/agentmail", {
+            auth: "none",
+            policy: webhook.signature("svix", {
+              secretEnv: "AGENTMAIL_WEBHOOK_SECRET_TEST",
+            }),
+            handler: () => {
+              calls += 1;
+              return json({ ok: true });
+            },
+          }),
+        ],
+      };
+      const agent = defineAgent({ name: "test", model: "mock", augments: [fixture, aug] }, model);
+
+      await expect(agent.start()).rejects.toThrow(
+        'Webhook signature provider "svix" is not supported',
+      );
+      expect(calls).toBe(0);
+
+      // Registration failed before readiness, so the listener was never bound.
+      const replacement = defineAgent(
+        {
+          name: "replacement",
+          model: "mock",
+          augments: [webTransport({ port, auth: { type: "bearer", token: "replacement" } })],
+        },
+        createMockModel(),
+      );
+      await replacement.start();
+      await replacement.stop();
     });
   });
 

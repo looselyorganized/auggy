@@ -499,7 +499,9 @@ export async function link(opts: LinkAugmentInternalOptions): Promise<Augment> {
   let kernel: TransportKernel | null = null;
   let registeredName = "link";
   let linkHandle: LinkAppHandle | null = null;
+  let taskStore: InstanceType<typeof SqliteTaskStore> | null = null;
   let server: ReturnType<typeof Bun.serve> | null = null;
+  let ready = false;
 
   // ---------------------------------------------------------------------------
   // Inbound MessageHandler — the bridge from link → Auggy kernel
@@ -576,27 +578,39 @@ export async function link(opts: LinkAugmentInternalOptions): Promise<Augment> {
 
       // Construct the link handle BEFORE binding Bun.serve so any
       // configuration error surfaces synchronously at boot.
-      const taskStore = new SqliteTaskStore({ path: opts.dbPath });
+      taskStore = new SqliteTaskStore({ path: opts.dbPath });
       // Inlined from the former `buildLinkAgentCard` helper — `buildAgentCard`
       // is now bound from the lazy-loaded module at the top of the factory.
       // v0.1 advertises `skills: []`; v0.2 will harvest from the agent's
       // mounted skill folders.
-      const operatorCard = opts.agentCard;
-      const agentCard: LinkAgentCard = buildAgentCard({
-        id: operatorCard.id,
-        name: operatorCard.name,
-        description: operatorCard.description,
-        endpoint_url: operatorCard.endpointUrl,
-        capabilities: operatorCard.capabilities ?? [],
-        skills: [],
-      });
+      try {
+        const operatorCard = opts.agentCard;
+        const agentCard: LinkAgentCard = buildAgentCard({
+          id: operatorCard.id,
+          name: operatorCard.name,
+          description: operatorCard.description,
+          endpoint_url: operatorCard.endpointUrl,
+          capabilities: operatorCard.capabilities ?? [],
+          skills: [],
+        });
 
-      linkHandle = createLinkApp({
-        agentCard,
-        auth: dynamicAuth,
-        taskStore,
-        onMessage,
-      });
+        linkHandle = createLinkApp({
+          agentCard,
+          auth: dynamicAuth,
+          taskStore,
+          onMessage,
+        });
+      } catch (err) {
+        taskStore.close();
+        taskStore = null;
+        throw err;
+      }
+    },
+    async ready() {
+      if (!kernel || !linkHandle) {
+        throw new Error("link augment: cannot become ready before registration");
+      }
+      if (ready) return;
 
       if (!opts._skipServer) {
         server = Bun.serve({ port, fetch: linkHandle.fetch });
@@ -628,6 +642,7 @@ export async function link(opts: LinkAugmentInternalOptions): Promise<Augment> {
           })();
         }, intervalMs);
       }
+      ready = true;
     },
     identify,
   };
@@ -795,6 +810,14 @@ export async function link(opts: LinkAugmentInternalOptions): Promise<Augment> {
         }
         linkHandle = null;
       }
+      // LinkApp owns this store after successful construction, but close is
+      // idempotent. Keeping the reference lets rollback close it even when
+      // construction or LinkApp shutdown only partially succeeds.
+      taskStore?.close();
+      taskStore = null;
+      ready = false;
+      kernel = null;
+      registeredName = "link";
     },
   };
 }

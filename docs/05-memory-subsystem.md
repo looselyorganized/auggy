@@ -410,7 +410,10 @@ The lifecycle manager will boot the synthetic augment last (it has no `onBoot`, 
    - Creates the synthetic `memory-bus` augment with the five tools and the budget.
 3. **`defineAgent`** continues with `effectiveAugments = [identity', episodic', webTransport, memory-bus]` (where `'` denotes the wrapped versions).
 4. **`generateAgentCard`** walks the effective config and produces a card with `capabilities.memory: true` and `capabilities.transport: true`.
-5. **`agent.start()`** boots: `identity.onBoot()` reads the file into cache; `episodic` has no onBoot; `webTransport.onBoot()` starts Bun.serve; `memory-bus` has no onBoot.
+5. **`agent.start()`** boots: `identity.onBoot()` reads the file into cache;
+   `episodic` has no onBoot; `webTransport.onBoot()` validates and prepares its
+   listener; `memory-bus` has no onBoot. The kernel then registers every
+   transport and calls `webTransport.transport.ready()` to start Bun.serve.
 6. **A peer sends a message via `/agent/run`**. The trigger flows into the turn loop.
 7. **Phase 2 — `onTurnStart`:** `memory-bus.onTurnStart()` resets `budget.calls = 0`.
 8. **Phase 4 — context pipeline:**

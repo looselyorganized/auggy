@@ -17,7 +17,9 @@ export function validateRouteWebhookPolicyConfig(
   const policy = route.policy;
   if (!policy) return undefined;
   if (policy.kind !== "webhook.signature") return undefined;
-  if (policy.provider !== "stripe") return undefined;
+  if (policy.provider !== "stripe") {
+    return `Webhook signature provider "${policy.provider}" is not supported.`;
+  }
 
   if (!policy.secretEnv) return "Stripe webhook policy requires secretEnv.";
   const secret = env[policy.secretEnv];
@@ -39,9 +41,12 @@ export async function verifyRouteWebhookPolicy(
   if (!policy) return { ok: true };
   if (policy.kind !== "webhook.signature") return { ok: true };
 
-  // Non-Stripe providers remain manifest/client metadata until their verifier
-  // lands. This preserves the metadata-first route policy contract.
-  if (policy.provider !== "stripe") return { ok: true };
+  // Unsupported providers are a server configuration error. Boot-time
+  // validation normally prevents this path, but request verification remains
+  // fail-closed as defense in depth.
+  if (policy.provider !== "stripe") {
+    return { ok: false, status: 500, error: "webhook-policy-unsupported" };
+  }
 
   if (!policy.secretEnv) {
     return { ok: false, status: 500, error: "webhook-policy-misconfigured" };
