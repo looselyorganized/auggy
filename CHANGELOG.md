@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Structural AgentMail inbound provider boundary.** REST catch-up, WebSocket,
+  and verified-webhook adapters now share concrete typed contracts and a
+  validated canonical message envelope. Provider payloads fail closed on
+  malformed IDs, timestamps, inbox substitution, or incoherent threads; no
+  legacy `capabilities`/`supports` metadata is used.
 - **Transport readiness phase.** `TransportSpec.ready()` now starts inbound
   listeners only after every mounted transport has registered its kernel
   handle, closing startup races for web, Telegram, Link, and future inbound

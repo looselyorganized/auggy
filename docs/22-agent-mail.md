@@ -7,6 +7,15 @@ only on a live connection. It needs an arrival path (WebSocket/polling/webhook)
 and a restart catch-up/checkpoint pass so an agent that was offline can discover
 mail it missed and inject it into the turn loop deliberately.
 
+The Phase B foundation uses a structural provider boundary: REST catch-up,
+WebSocket, and verified-webhook adapters implement concrete reader/listener
+interfaces and produce the same validated inbound envelope. There is no
+provider `capabilities` or `supports` metadata bag. Runtime behavior is derived
+from the concrete adapter supplied for the configured mode. List responses are
+treated as metadata only; catch-up fetches each full message before it can enter
+the ledger or turn loop. Received, spam, blocked, and unauthenticated variants
+remain distinct until inbound policy makes an explicit decision.
+
 Sends email through AgentMail with per-peer trust gating, recipient allowlist, rate limits, dedup, sensitive-content auditing, and console API status blocks. Exposes three model-facing tools whose names align with AgentMail's MCP standard: `send_message`, `reply_to_message`, `forward_message`.
 
 ## When to use
