@@ -39,6 +39,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   messages through the normal transport queue. Email addresses never elevate
   identity: every sender remains public/anonymous, and reply/forward message
   IDs are scoped to the specific inbound turn.
+- **Durable AgentMail outbound review.** Valid outbound actions originating
+  from public peers now enter an owner-only persisted review queue by default.
+  Authenticated admin actions inspect, approve, or reject the exact queued
+  send, reply, or forward. Approval requires the inspection fingerprint and
+  rechecks current rate limits, while bounded retention, expiry, rejection,
+  ambiguous in-flight restart state, and provider failures fail closed. Plain
+  assistant responses are never auto-mailed.
 - **Transport readiness phase.** `TransportSpec.ready()` now starts inbound
   listeners only after every mounted transport has registered its kernel
   handle, closing startup races for web, Telegram, Link, and future inbound

@@ -212,6 +212,50 @@ describe("send_message trust-level gate", () => {
     expect(res.status).toBe("sent");
     expect(log.send).toHaveLength(1);
   });
+
+  test("public outbound is queued for review by default after trust opt-in", async () => {
+    const { client, log } = fakeClient();
+    const aug = agentMail({
+      ...baseOpts,
+      _client: client,
+      outbound: { allowedTrustLevels: ["public"] },
+    });
+    const result = JSON.parse(
+      await asStr(tool(aug, "send_message")).execute(
+        { to: ["customer@example.com"], subject: "Hi", text: "Body" },
+        ctx(peer("public")),
+      ),
+    );
+    expect(result).toMatchObject({ status: "pending_review" });
+    expect(log.send).toHaveLength(0);
+
+    const rejected = await aug.adminActions!["agentmail-review-reject"]!({
+      reviewId: result.reviewId,
+      reason: "operator declined",
+    });
+    expect(rejected.ok).toBe(true);
+    expect(log.send).toHaveLength(0);
+  });
+
+  test("autonomous public outbound requires an explicit empty review list", async () => {
+    const { client, log } = fakeClient();
+    const aug = agentMail({
+      ...baseOpts,
+      _client: client,
+      outbound: {
+        allowedTrustLevels: ["public"],
+        humanReview: { requiredForTrustLevels: [] },
+      },
+    });
+    const result = JSON.parse(
+      await asStr(tool(aug, "send_message")).execute(
+        { to: ["customer@example.com"], subject: "Hi", text: "Body" },
+        ctx(peer("public")),
+      ),
+    );
+    expect(result.status).toBe("sent");
+    expect(log.send).toHaveLength(1);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -940,7 +984,30 @@ describe("inbound lifecycle", () => {
         publicSubstate: "anonymous",
       });
       expect(ledger.get(baseOpts.inboxId, "message_inbound")?.state).toBe("processed");
-      expect(inTurnReply?.status).toBe("sent");
+      expect(inTurnReply?.status).toBe("pending_review");
+      expect(log.reply).toHaveLength(0);
+
+      const reviewId = String(inTurnReply?.reviewId);
+      const rejectedFingerprint = await aug.adminActions!["agentmail-review-approve"]!({
+        reviewId,
+        fingerprint: "not-the-inspected-action",
+      });
+      expect(rejectedFingerprint.ok).toBe(false);
+      expect(log.reply).toHaveLength(0);
+
+      const inspection = await aug.adminActions!["agentmail-review-inspect"]!({ reviewId });
+      expect(inspection.ok).toBe(true);
+      const inspected = JSON.parse(inspection.message);
+      expect(inspected).toMatchObject({
+        reviewId,
+        recipients: ["customer@example.com"],
+        request: { kind: "reply", messageId: "message_inbound", text: "Thanks" },
+      });
+      const approval = await aug.adminActions!["agentmail-review-approve"]!({
+        reviewId,
+        fingerprint: inspected.fingerprint,
+      });
+      expect(approval).toEqual({ ok: true, message: `Review ${reviewId} approved and sent` });
       expect(log.reply).toHaveLength(1);
 
       const outOfTurn = JSON.parse(

@@ -27,9 +27,15 @@
  */
 
 import { z } from "zod";
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { defineTool } from "../../helpers";
-import { createAgentMailClient, type AgentMailClient } from "../../agentmail-client";
+import {
+  createAgentMailClient,
+  type AgentMailClient,
+  type SendMessageResult,
+  type SendMessageError,
+} from "../../agentmail-client";
 import { createRingBuffer } from "../../lib/ring-buffer";
 import { readOverrides, writeOverrides } from "../../lib/admin-overrides";
 import type {
@@ -53,8 +59,17 @@ import {
 } from "./sdk-provider";
 import { AGENTMAIL_RECEIVED_EVENT_TYPES, type AgentMailEventSubscription } from "./provider";
 import { createAgentMailWebhookRoute } from "./webhook-provider";
+import {
+  createAgentMailReviewQueue,
+  type AgentMailReviewQueue,
+  type AgentMailReviewRecord,
+  type AgentMailReviewRequest,
+} from "./review-queue";
 
 const DEFAULT_ALLOWED_TRUST_LEVELS: TrustLevel[] = ["creator"];
+const DEFAULT_REVIEW_TRUST_LEVELS: TrustLevel[] = ["public"];
+const DEFAULT_REVIEW_EXPIRY_MS = 24 * 60 * 60_000;
+const MAX_REVIEW_EXPIRY_MS = 30 * 24 * 60 * 60_000;
 const RING_BUFFER_SIZE = 100;
 
 function looksLikePlaceholder(value: string): boolean {
@@ -82,6 +97,17 @@ function validateOptions(opts: AgentMailAugmentInternalOptions): void {
   if (mode === "webhook" && !opts.inbound?.webhook) {
     throw new Error("agentMail: inbound.webhook is required when inbound.mode is webhook");
   }
+  const reviewExpiry = opts.outbound?.humanReview?.expiresAfterMs;
+  if (
+    reviewExpiry !== undefined &&
+    (!Number.isSafeInteger(reviewExpiry) ||
+      reviewExpiry <= 0 ||
+      reviewExpiry > MAX_REVIEW_EXPIRY_MS)
+  ) {
+    throw new Error(
+      `agentMail: outbound.humanReview.expiresAfterMs must be between 1 and ${MAX_REVIEW_EXPIRY_MS}`,
+    );
+  }
 }
 
 function timestampHHMMSS(now: number): string {
@@ -99,6 +125,9 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
 
   const outboundOpts = opts.outbound ?? {};
   const allowedTrustLevels = outboundOpts.allowedTrustLevels ?? DEFAULT_ALLOWED_TRUST_LEVELS;
+  const reviewTrustLevels =
+    outboundOpts.humanReview?.requiredForTrustLevels ?? DEFAULT_REVIEW_TRUST_LEVELS;
+  const reviewExpiryMs = outboundOpts.humanReview?.expiresAfterMs ?? DEFAULT_REVIEW_EXPIRY_MS;
   const rateLimitOpts = outboundOpts.rateLimit ?? {};
   const yamlGlobalMaxPerHour = rateLimitOpts.globalMaxPerHour ?? 10;
 
@@ -121,6 +150,8 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
   const rateState =
     (opts.agentDir && loadRateState(opts.agentDir, now())) || createRateLimitState();
   const dispatches = createRingBuffer<DispatchRecord>(RING_BUFFER_SIZE);
+  const reviewQueue: AgentMailReviewQueue =
+    opts._reviewQueue ?? createAgentMailReviewQueue({ agentDir: opts.agentDir, now });
 
   /**
    * Persist rate-limit state after a successful send. No-op when no
@@ -330,6 +361,168 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
     return context?.peer?.trustLevel ?? "creator";
   }
 
+  function reviewFingerprint(input: {
+    trustLevel: TrustLevel;
+    recipients: string[];
+    rateKey: string;
+    request: AgentMailReviewRequest;
+  }): string {
+    return createHash("sha256")
+      .update(
+        JSON.stringify({
+          trustLevel: input.trustLevel,
+          recipients: input.recipients.map((recipient) => recipient.toLowerCase()).sort(),
+          rateKey: input.rateKey,
+          request: input.request,
+        }),
+      )
+      .digest("hex");
+  }
+
+  function queueForHumanReview(input: {
+    context: ToolExecuteContext | undefined;
+    tool: Exclude<DispatchRecord["tool"], "admin-test">;
+    recipients: string[];
+    subject: string;
+    rateKey: string;
+    request: AgentMailReviewRequest;
+    flaggedSensitive?: boolean;
+  }): string | undefined {
+    const trustLevel = trustLevelOf(input.context);
+    if (!reviewTrustLevels.includes(trustLevel)) return undefined;
+    const fingerprint = reviewFingerprint({
+      trustLevel,
+      recipients: input.recipients,
+      rateKey: input.rateKey,
+      request: input.request,
+    });
+    const queued = reviewQueue.enqueue({
+      trustLevel,
+      recipients: input.recipients,
+      subject: input.subject,
+      rateKey: input.rateKey,
+      fingerprint,
+      request: input.request,
+      expiresAt: now() + reviewExpiryMs,
+    });
+    recordDispatch({
+      timestamp: timestampHHMMSS(now()),
+      tool: input.tool,
+      status: "pending_review",
+      recipients: redactRecipients(input.recipients),
+      subject: input.subject.slice(0, 80),
+      flaggedSensitive: input.flaggedSensitive || undefined,
+      detail: queued.duplicate
+        ? `duplicate proposal reused review ${queued.record.id}`
+        : `queued for operator review as ${queued.record.id}`,
+    });
+    return JSON.stringify({
+      status: "pending_review",
+      reviewId: queued.record.id,
+      expiresAt: new Date(queued.record.expiresAt).toISOString(),
+      duplicate: queued.duplicate || undefined,
+    });
+  }
+
+  async function sendReviewedAction(
+    record: AgentMailReviewRecord,
+  ): Promise<SendMessageResult | SendMessageError> {
+    const request = record.request;
+    if (request.kind === "send") {
+      const { kind: _, ...input } = request;
+      return client.send({ inboxId: opts.inboxId, ...input });
+    }
+    if (request.kind === "reply") {
+      const { kind: _, ...input } = request;
+      return client.reply({ inboxId: opts.inboxId, ...input });
+    }
+    const { kind: _, ...input } = request;
+    return client.forward({ inboxId: opts.inboxId, ...input });
+  }
+
+  async function approveReview(
+    id: string,
+    expectedFingerprint: string,
+  ): Promise<AdminActionResult> {
+    const pending = reviewQueue.get(id);
+    if (!pending) return { ok: false, message: `Unknown review id "${id}"` };
+    if (pending.state !== "pending") {
+      return { ok: false, message: `Review ${id} is ${pending.state}, not pending` };
+    }
+    if (pending.fingerprint !== expectedFingerprint) {
+      return {
+        ok: false,
+        message: `Review ${id} fingerprint mismatch; inspect the exact queued action again`,
+      };
+    }
+    if (pending.trustLevel !== "creator") {
+      const decision = checkRateLimit(
+        rateState,
+        pending.recipients,
+        pending.rateKey,
+        effectiveRateLimit(),
+        now(),
+      );
+      if (!decision.allowed) {
+        return { ok: false, message: `Review ${id} remains pending: ${decision.reason}` };
+      }
+    }
+
+    let sending: AgentMailReviewRecord;
+    try {
+      sending = reviewQueue.beginApproval(id);
+    } catch (error) {
+      return { ok: false, message: (error as Error).message };
+    }
+
+    let result: SendMessageResult | SendMessageError;
+    try {
+      result = await sendReviewedAction(sending);
+    } catch (error) {
+      const detail = `agentmail client threw: ${(error as Error).message}`;
+      reviewQueue.fail(id, detail);
+      return { ok: false, message: `Review ${id} failed: ${detail}` };
+    }
+
+    const tool =
+      sending.request.kind === "send"
+        ? "send_message"
+        : sending.request.kind === "reply"
+          ? "reply_to_message"
+          : "forward_message";
+    if (result.status === "failed") {
+      reviewQueue.fail(id, result.detail);
+      recordDispatch({
+        timestamp: timestampHHMMSS(now()),
+        tool,
+        status: "failed",
+        recipients: redactRecipients(sending.recipients),
+        subject: sending.subject.slice(0, 80),
+        httpStatus: result.httpStatus,
+        detail: `review ${id}: ${result.detail}`,
+      });
+      return { ok: false, message: `Review ${id} failed: ${result.detail}` };
+    }
+
+    reviewQueue.approve(id, result);
+    if (sending.trustLevel !== "creator") {
+      recordSend(rateState, sending.recipients, sending.rateKey, now());
+      persistRateStateIfConfigured();
+    }
+    const body = "text" in sending.request ? (sending.request.text ?? "") : "";
+    const scan = body ? scanForSensitive(body) : { flagged: false, hits: [] };
+    recordDispatch({
+      timestamp: timestampHHMMSS(now()),
+      tool,
+      status: "sent",
+      recipients: redactRecipients(sending.recipients),
+      subject: sending.subject.slice(0, 80),
+      flaggedSensitive: scan.flagged || undefined,
+      detail: `approved review ${id}${scan.flagged ? `; sensitive content (${scan.hits.join(", ")})` : ""}`,
+    });
+    return { ok: true, message: `Review ${id} approved and sent` };
+  }
+
   function gateTrustLevel(
     context: ToolExecuteContext | undefined,
     tool: DispatchRecord["tool"],
@@ -428,6 +621,24 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
       }
 
       const scan = scanForSensitive(validation.value.text);
+
+      const review = queueForHumanReview({
+        context,
+        tool: "send_message",
+        recipients: validation.value.recipients,
+        subject: validation.value.subject,
+        rateKey: subjectForRateCheck,
+        request: {
+          kind: "send",
+          to: validation.value.recipients,
+          subject: validation.value.subject,
+          text: validation.value.text,
+          ...(validation.value.html ? { html: validation.value.html } : {}),
+          ...(input.labels && input.labels.length > 0 ? { labels: input.labels } : {}),
+        },
+        flaggedSensitive: scan.flagged,
+      });
+      if (review) return review;
 
       const result = await client.send({
         inboxId: opts.inboxId,
@@ -585,6 +796,24 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
 
       const scan = scanForSensitive(input.text);
 
+      const review = queueForHumanReview({
+        context,
+        tool: "reply_to_message",
+        recipients: validation.value.recipients,
+        subject: "(reply)",
+        rateKey: replyDedupKey,
+        request: {
+          kind: "reply",
+          messageId: input.messageId,
+          text: input.text,
+          ...(validation.value.html ? { html: validation.value.html } : {}),
+          ...(input.replyAll ? { replyAll: true } : {}),
+          ...(input.labels && input.labels.length > 0 ? { labels: input.labels } : {}),
+        },
+        flaggedSensitive: scan.flagged,
+      });
+      if (review) return review;
+
       const result = await client.reply({
         inboxId: opts.inboxId,
         messageId: input.messageId,
@@ -720,6 +949,25 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
       }
 
       const scan = input.text ? scanForSensitive(input.text) : { flagged: false, hits: [] };
+
+      const review = queueForHumanReview({
+        context,
+        tool: "forward_message",
+        recipients: validation.value.recipients,
+        subject: validation.value.subject,
+        rateKey: validation.value.subject,
+        request: {
+          kind: "forward",
+          messageId: input.messageId,
+          to: validation.value.recipients,
+          ...(input.subject ? { subject: validation.value.subject } : {}),
+          ...(input.text ? { text: input.text } : {}),
+          ...(validation.value.html ? { html: validation.value.html } : {}),
+          ...(input.labels && input.labels.length > 0 ? { labels: input.labels } : {}),
+        },
+        flaggedSensitive: scan.flagged,
+      });
+      if (review) return review;
 
       const result = await client.forward({
         inboxId: opts.inboxId,
@@ -866,6 +1114,8 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
 
   async function adminInfo(): Promise<AdminInfoBlock> {
     const recent = dispatches.snapshot().slice(-50);
+    const reviews = reviewQueue.list();
+    const pendingReviews = reviews.filter((review) => review.state === "pending");
     const sentInLastHour = recent.filter(
       (r) =>
         r.status === "sent" &&
@@ -896,6 +1146,11 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
               source: "yaml",
             },
             {
+              label: "Human review required",
+              value: reviewTrustLevels.join(", ") || "(none — autonomous)",
+              source: "yaml",
+            },
+            {
               label: "Recipient allowlist",
               value:
                 outboundOpts.allowedRecipients && outboundOpts.allowedRecipients.length > 0
@@ -908,6 +1163,7 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
               value: String(recent.filter((r) => r.status === "sent").length),
             },
             { label: "Recent dispatches", value: String(recent.length) },
+            { label: "Pending human reviews", value: String(pendingReviews.length) },
             {
               label: "(unused) sent-in-last-hour",
               value: String(sentInLastHour),
@@ -925,6 +1181,21 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
             e.subject,
           ]),
           caption: `Recent dispatches (${recent.length})`,
+        },
+        {
+          kind: "table",
+          columns: ["Review ID", "Trust", "State", "Recipients", "Subject", "Expires"],
+          rows: reviews
+            .slice(-50)
+            .map((review) => [
+              review.id,
+              review.trustLevel,
+              review.state,
+              redactRecipients(review.recipients),
+              review.subject.slice(0, 80),
+              new Date(review.expiresAt).toISOString(),
+            ]),
+          caption: `Outbound reviews (${reviews.length}) — message bodies are intentionally hidden`,
         },
       ],
       actions: [
@@ -962,6 +1233,42 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
               required: true,
               helpText: "Persists across restart via admin-overrides.json.",
             },
+          ],
+        },
+        {
+          id: "agentmail-review-inspect",
+          label: "Inspect queued email",
+          confirmRequired: false,
+          inputs: [{ name: "reviewId", label: "Review ID", type: "text", required: true }],
+        },
+        {
+          id: "agentmail-review-approve",
+          label: "Approve queued email",
+          confirmRequired: true,
+          inputs: [
+            {
+              name: "reviewId",
+              label: "Review ID",
+              type: "text",
+              required: true,
+              helpText: "Sends the exact queued action after rechecking current rate limits.",
+            },
+            {
+              name: "fingerprint",
+              label: "Inspection fingerprint",
+              type: "text",
+              required: true,
+              helpText: "Copy from Inspect queued email to bind approval to the reviewed content.",
+            },
+          ],
+        },
+        {
+          id: "agentmail-review-reject",
+          label: "Reject queued email",
+          confirmRequired: true,
+          inputs: [
+            { name: "reviewId", label: "Review ID", type: "text", required: true },
+            { name: "reason", label: "Reason", type: "text", required: false },
           ],
         },
       ],
@@ -1087,6 +1394,50 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
       globalMaxPerHour = yamlGlobalMaxPerHour;
       globalMaxSource = "yaml";
       return { ok: true, message: "globalMaxPerHour reset to yaml value" };
+    },
+    "agentmail-review-approve": async (params) => {
+      const reviewId = typeof params.reviewId === "string" ? params.reviewId.trim() : "";
+      if (!reviewId) return { ok: false, message: "Review ID is required" };
+      const fingerprint = typeof params.fingerprint === "string" ? params.fingerprint.trim() : "";
+      if (!fingerprint) return { ok: false, message: "Inspection fingerprint is required" };
+      return approveReview(reviewId, fingerprint);
+    },
+    "agentmail-review-inspect": async (params) => {
+      const reviewId = typeof params.reviewId === "string" ? params.reviewId.trim() : "";
+      if (!reviewId) return { ok: false, message: "Review ID is required" };
+      const record = reviewQueue.get(reviewId);
+      if (!record) return { ok: false, message: `Unknown review id "${reviewId}"` };
+      return {
+        ok: true,
+        message: JSON.stringify(
+          {
+            reviewId: record.id,
+            fingerprint: record.fingerprint,
+            state: record.state,
+            trustLevel: record.trustLevel,
+            expiresAt: new Date(record.expiresAt).toISOString(),
+            recipients: record.recipients,
+            subject: record.subject,
+            request: record.request,
+          },
+          null,
+          2,
+        ),
+      };
+    },
+    "agentmail-review-reject": async (params) => {
+      const reviewId = typeof params.reviewId === "string" ? params.reviewId.trim() : "";
+      if (!reviewId) return { ok: false, message: "Review ID is required" };
+      const reason =
+        typeof params.reason === "string" && params.reason.trim()
+          ? params.reason.trim()
+          : "rejected by operator";
+      try {
+        reviewQueue.reject(reviewId, reason);
+      } catch (error) {
+        return { ok: false, message: (error as Error).message };
+      }
+      return { ok: true, message: `Review ${reviewId} rejected` };
     },
   };
 

@@ -1510,6 +1510,18 @@ export interface AgentMailOutboundOptions {
   subjectPrefix?: string;
   /** Rate-limit configuration. */
   rateLimit?: AgentMailRateLimitOptions;
+  /**
+   * Durable operator review for outbound actions. By default, actions
+   * originating from public peers are queued instead of sent immediately.
+   * Set `requiredForTrustLevels: []` only when autonomous public sending is
+   * explicitly intended.
+   */
+  humanReview?: {
+    /** Trust levels whose valid outbound actions enter the review queue. Default `["public"]`. */
+    requiredForTrustLevels?: TrustLevel[];
+    /** Time an action remains approvable. Default 86400000 (24 hours), maximum 30 days. */
+    expiresAfterMs?: number;
+  };
 }
 
 export interface AgentMailInboundConfig {

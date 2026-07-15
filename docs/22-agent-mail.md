@@ -102,6 +102,13 @@ config:
     # Default ["creator"] — agent and public peers cannot send unless added.
     allowedTrustLevels: [creator]
 
+    # Public-originated actions are queued by default. The persisted queue is
+    # reviewed through the authenticated admin action API. An empty list opts
+    # into autonomous public sending and should be used deliberately.
+    humanReview:
+      requiredForTrustLevels: [public]
+      expiresAfterMs: 86400000  # 24 hours
+
     # When set, only these recipients may receive mail. Lowercased compare.
     # Glob form: "*@example.com" matches any address at that domain.
     # allowedRecipients:
@@ -166,7 +173,7 @@ config:
 
 | Tool | Inputs | Returns |
 |------|--------|---------|
-| `send_message` | `{ to[], subject, text, html?, labels?, threadKey? }` | `{ status: "sent" \| "rate_limited" \| "failed", messageId?, threadId?, message?, retryAfterSec? }` |
+| `send_message` | `{ to[], subject, text, html?, labels?, threadKey? }` | `{ status: "sent" \| "pending_review" \| "rate_limited" \| "failed", messageId?, threadId?, reviewId?, message?, retryAfterSec? }` |
 | `reply_to_message` | `{ messageId, text, html?, replyAll?, labels? }` | same envelope |
 | `forward_message` | `{ messageId, to[], text?, html?, subject?, labels? }` | same envelope |
 
@@ -179,6 +186,7 @@ different web or email turn from replaying an old message ID.
 | Layer | Behavior |
 |-------|----------|
 | **Trust-level gate** | Default `creator` only. `agent` and `public` peers rejected unless added to `outbound.allowedTrustLevels`. |
+| **Human review** | Valid actions from `public` peers enter a durable review queue by default. The authenticated inspect action returns exact content plus a fingerprint that approval must echo, binding consent to what was reviewed. Approval rechecks current rate limits; rejection and expiry are terminal. Configure `humanReview.requiredForTrustLevels: []` only for deliberate autonomous public mail. |
 | **Recipient allowlist** | If `outbound.allowedRecipients` is set, every recipient must match (exact or `*@domain` glob, lowercased). |
 | **Recipient cap** | `outbound.maxRecipients` (default 10, hard ceiling 50). |
 | **Body cap** | `outbound.bodyMaxBytes` (default 100KB). |
@@ -196,7 +204,7 @@ Future developer surfaces can show:
 
 - Masked API key, inbox ID, current global cap (yaml vs override), allowed trust levels, recipient allowlist size
 - Last 50 dispatches with timestamp / tool / status / **redacted** recipients / subject
-- Actions: "Send test email" and "Adjust globalMaxPerHour" (persists via `admin-overrides.json`)
+- Actions: "Send test email", "Adjust globalMaxPerHour", and inspect/approve/reject a queued outbound review
 
 Recipients in the audit table are redacted (`al***@example.com (+2)`) so the admin view never leaks full address lists.
 
@@ -206,15 +214,16 @@ Recipients in the audit table are redacted (`al***@example.com (+2)`) so the adm
 |---------|-------|-----|
 | Boot error: `AGENTMAIL_API_KEY is unresolved` | `.env` missing the var | Set `AGENTMAIL_API_KEY=am_…` in `.env`, restart |
 | Boot error: `healthcheck failed with HTTP 401` | Wrong API key | Verify the key in [console.agentmail.to](https://console.agentmail.to) |
-| Tool returns `failed: trust level "public" is not permitted` | Anonymous visitor asked the agent to send | Either ignore (correct) or add `agent`/`public` to `outbound.allowedTrustLevels` if you really want broader access |
+| Tool returns `failed: trust level "public" is not permitted` | Anonymous visitor asked the agent to send | Either ignore (correct) or add `public` to `outbound.allowedTrustLevels`; its action will still require human review by default |
+| Tool returns `pending_review` | A configured trust level proposed outbound mail | Inspect the exact action through the authenticated admin API, then approve with its returned fingerprint or reject it before expiry |
 | Tool returns `rate_limited` on every send | Global cap or dedup window misconfigured | Set `outbound.rateLimit.globalMaxPerHour` |
 | Audit table shows `⚠` marker | Body contained a token-shaped string | Read the dispatch detail — operator's job to nudge the model toward better behavior |
 
 ## What this augment does NOT do (yet)
 
-- **Automatic free-form response delivery** — inbound turns are active, but a
-  plain assistant response is not automatically mailed. Use the gated
-  `reply_to_message` tool; additional human-review controls land separately.
+- **Automatic free-form response delivery** — a plain assistant response is
+  never mailed. Use `reply_to_message`; public-originated replies enter human
+  review by default.
 - **Attachments** — AgentMail supports base64; not yet implemented in the augment.
 - **Drafts** — AgentMail's `/drafts` endpoints are not exposed; defer.
 - **WebSocket transport for outbound events** — `message.sent` / `message.delivered` / `message.bounced` lands in the audit ring buffer once Phase B's inbound channel exists.

@@ -276,6 +276,10 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
       dbPath: "./agent-mail.db",
       outbound: {
         allowedTrustLevels: ["creator"],
+        humanReview: {
+          requiredForTrustLevels: ["public"],
+          expiresAfterMs: 86_400_000,
+        },
         subjectPrefix: "[Auggy] ",
         maxRecipients: 10,
         bodyMaxBytes: 102_400,

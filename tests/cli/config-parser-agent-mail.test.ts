@@ -140,4 +140,47 @@ describe("config-parser: agentMail validation", () => {
     );
     expect(() => parseConfig(path)).toThrow(/maxRecipients/);
   });
+
+  test("accepts explicit outbound human-review policy", () => {
+    const path = writeYaml(
+      configWithAgentMail({
+        apiKey: "am_x",
+        inboxId: "inb_x",
+        outbound: {
+          allowedTrustLevels: ["public"],
+          humanReview: { requiredForTrustLevels: ["public"], expiresAfterMs: 60_000 },
+        },
+      }),
+    );
+    expect(() => parseConfig(path)).not.toThrow();
+  });
+
+  test("rejects malformed outbound human-review policy", () => {
+    const invalidLevel = writeYaml(
+      configWithAgentMail({
+        apiKey: "am_x",
+        inboxId: "inb_x",
+        outbound: { humanReview: { requiredForTrustLevels: ["mystery"] } },
+      }),
+    );
+    expect(() => parseConfig(invalidLevel)).toThrow(/humanReview.requiredForTrustLevels/);
+
+    const invalidExpiry = writeYaml(
+      configWithAgentMail({
+        apiKey: "am_x",
+        inboxId: "inb_x",
+        outbound: { humanReview: { expiresAfterMs: 0 } },
+      }),
+    );
+    expect(() => parseConfig(invalidExpiry)).toThrow(/humanReview.expiresAfterMs/);
+
+    const excessiveExpiry = writeYaml(
+      configWithAgentMail({
+        apiKey: "am_x",
+        inboxId: "inb_x",
+        outbound: { humanReview: { expiresAfterMs: 31 * 24 * 60 * 60_000 } },
+      }),
+    );
+    expect(() => parseConfig(excessiveExpiry)).toThrow(/humanReview.expiresAfterMs/);
+  });
 });

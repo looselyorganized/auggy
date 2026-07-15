@@ -705,6 +705,41 @@ function validateAgentMailOptions(
           }
         }
       }
+
+      if (out.humanReview !== undefined) {
+        if (typeof out.humanReview !== "object" || out.humanReview === null) {
+          errors.push(`${prefix}.outbound.humanReview: must be an object`);
+        } else {
+          const review = out.humanReview as Record<string, unknown>;
+          if (review.requiredForTrustLevels !== undefined) {
+            if (!Array.isArray(review.requiredForTrustLevels)) {
+              errors.push(
+                `${prefix}.outbound.humanReview.requiredForTrustLevels: must be an array`,
+              );
+            } else {
+              for (let i = 0; i < review.requiredForTrustLevels.length; i++) {
+                const level = review.requiredForTrustLevels[i];
+                if (typeof level !== "string" || !VALID_TRUST_LEVELS.has(level)) {
+                  errors.push(
+                    `${prefix}.outbound.humanReview.requiredForTrustLevels[${i}]: must be one of "creator", "agent", "public" (got ${JSON.stringify(level)})`,
+                  );
+                }
+              }
+            }
+          }
+          if (
+            review.expiresAfterMs !== undefined &&
+            (typeof review.expiresAfterMs !== "number" ||
+              !Number.isSafeInteger(review.expiresAfterMs) ||
+              review.expiresAfterMs <= 0 ||
+              review.expiresAfterMs > 30 * 24 * 60 * 60_000)
+          ) {
+            errors.push(
+              `${prefix}.outbound.humanReview.expiresAfterMs: must be between 1 and 2592000000`,
+            );
+          }
+        }
+      }
     }
   }
 
