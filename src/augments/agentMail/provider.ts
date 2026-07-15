@@ -105,6 +105,8 @@ export interface AgentMailEventSubscription {
 export interface AgentMailSubscribeInput {
   inboxId: string;
   eventTypes: readonly AgentMailReceivedEventType[];
+  /** Runs after each confirmed subscription, before that generation's events are delivered. */
+  onSubscribed?(input: { reconnected: boolean }): Promise<void>;
   onEvent(event: AgentMailInboundEnvelope): Promise<void>;
   onError(error: Error): void;
 }
@@ -159,7 +161,10 @@ const fullMessageSchema = z
     cc: stringList,
     bcc: stringList,
     reply_to: stringList,
-    subject: z.string(),
+    subject: z
+      .string()
+      .nullish()
+      .transform((value) => value ?? ""),
     preview: optionalString,
     text: optionalString,
     html: optionalString,
@@ -207,6 +212,10 @@ function asRecord(payload: unknown): Record<string, unknown> | undefined {
   return payload as Record<string, unknown>;
 }
 
+function providerTimestamp(value: unknown): unknown {
+  return value instanceof Date && Number.isFinite(value.getTime()) ? value.toISOString() : value;
+}
+
 /** Convert the documented TypeScript SDK model shape to provider wire names. */
 function messageAsWirePayload(payload: unknown): unknown {
   const message = asRecord(payload);
@@ -231,14 +240,15 @@ function messageAsWirePayload(payload: unknown): unknown {
     inbox_id: message.inboxId,
     thread_id: message.threadId,
     message_id: message.messageId,
+    timestamp: providerTimestamp(message.timestamp),
     from: message.from_ ?? message.from,
     reply_to: message.replyTo,
     extracted_text: message.extractedText,
     extracted_html: message.extractedHtml,
     attachments,
     in_reply_to: message.inReplyTo,
-    created_at: message.createdAt,
-    updated_at: message.updatedAt,
+    created_at: providerTimestamp(message.createdAt),
+    updated_at: providerTimestamp(message.updatedAt),
   };
 }
 
@@ -371,19 +381,26 @@ export function normalizeAgentMailReceivedEvent(
 }
 
 /** Infer the received classification used for REST catch-up from message labels. */
-export function receivedEventTypeForLabels(labels: readonly string[]): AgentMailReceivedEventType {
+export function receivedEventTypeForLabels(
+  labels: readonly string[],
+): AgentMailReceivedEventType | undefined {
   const normalized = new Set(labels.map((label) => label.toLowerCase()));
   if (normalized.has("blocked")) return "message.received.blocked";
   if (normalized.has("spam")) return "message.received.spam";
   if (normalized.has("unauthenticated")) return "message.received.unauthenticated";
-  return "message.received";
+  if (normalized.has("received")) return "message.received";
+  return undefined;
 }
 
 /** Wrap a full REST catch-up message in the same envelope used by live sources. */
 export function agentMailRestEnvelope(message: AgentMailInboundMessage): AgentMailInboundEnvelope {
+  const eventType = receivedEventTypeForLabels(message.labels);
+  if (!eventType) {
+    throw new AgentMailPayloadError("REST message is not labeled as received mail");
+  }
   return {
     source: "rest",
-    eventType: receivedEventTypeForLabels(message.labels),
+    eventType,
     providerEventId: undefined,
     message,
   };

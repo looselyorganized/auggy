@@ -20,6 +20,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   atomically with their page and replay a timestamp overlap after restart;
   stale workers cannot acknowledge a newer claim. Database, WAL, and shared
   memory files are restricted to owner access.
+- **AgentMail REST/WebSocket inbound adapters.** The pinned official SDK now
+  supplies authenticated REST pagination and an automatically reconnecting
+  WebSocket. The adapter re-subscribes after every reconnect, requires the
+  server to acknowledge the configured inbox and all four received-message
+  classifications, runs catch-up before releasing that generation's events,
+  filters outbound list entries, and fetches full bodies before checkpointing.
 - **Transport readiness phase.** `TransportSpec.ready()` now starts inbound
   listeners only after every mounted transport has registered its kernel
   handle, closing startup races for web, Telegram, Link, and future inbound

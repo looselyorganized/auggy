@@ -28,6 +28,16 @@ token cannot complete the replacement claim. The database and its WAL/SHM
 companions are created with owner-only permissions because message bodies may
 contain sensitive data.
 
+The REST/WebSocket adapter uses AgentMail TypeScript SDK 0.5.14.
+Every REST scan requests ascending order and explicitly includes spam, blocked,
+and unauthenticated mail; sent/outbound list entries advance the scanned
+watermark but never become inbound ledger work. Because list entries are
+metadata-only, each received entry is fetched through the full-message endpoint
+before the page commits. The WebSocket subscribes to all four received event
+types, waits for the server to confirm the inbox and event filters, and
+re-subscribes on every automatic reconnect. Reconnect confirmation runs a REST
+catch-up before new live events are released, closing the disconnect gap.
+
 Sends email through AgentMail with per-peer trust gating, recipient allowlist, rate limits, dedup, sensitive-content auditing, and console API status blocks. Exposes three model-facing tools whose names align with AgentMail's MCP standard: `send_message`, `reply_to_message`, `forward_message`.
 
 ## When to use

@@ -107,6 +107,12 @@ export interface AgentMailCatchUpBatchResult {
   checkpoint: string | undefined;
 }
 
+export interface AgentMailCatchUpWatermark {
+  inboxId: string;
+  /** Newest metadata timestamp fully scanned in this provider page. */
+  through: string;
+}
+
 export interface AgentMailLedgerCounts {
   pending: number;
   processing: number;
@@ -116,8 +122,11 @@ export interface AgentMailLedgerCounts {
 
 export interface AgentMailInboundLedger {
   enqueue(envelope: AgentMailInboundEnvelope): AgentMailLedgerEnqueueResult;
-  /** Atomically persist a complete REST page and advance through its newest message. */
-  recordCatchUpBatch(envelopes: readonly AgentMailInboundEnvelope[]): AgentMailCatchUpBatchResult;
+  /** Atomically persist a REST page's received mail and its fully scanned watermark. */
+  recordCatchUpBatch(
+    envelopes: readonly AgentMailInboundEnvelope[],
+    watermark?: AgentMailCatchUpWatermark,
+  ): AgentMailCatchUpBatchResult;
   /** Returns an overlapped cursor so timestamp ties and page-boundary crashes replay safely. */
   catchUpAfter(inboxId: string): string;
   checkpoint(inboxId: string): string | undefined;
@@ -573,9 +582,9 @@ export function createAgentMailInboundLedger(
       return immediate(() => enqueuePrepared(prepared, seenAt));
     },
 
-    recordCatchUpBatch(envelopes) {
+    recordCatchUpBatch(envelopes, watermark) {
       assertOpen();
-      if (envelopes.length === 0) {
+      if (envelopes.length === 0 && !watermark) {
         return { enqueued: 0, duplicates: 0, checkpoint: undefined };
       }
       const prepared = envelopes.map((envelope) => {
@@ -584,27 +593,38 @@ export function createAgentMailInboundLedger(
         }
         return prepareEnvelope(envelope);
       });
-      const inboxId = prepared[0]!.envelope.message.inboxId;
+      const inboxId = watermark?.inboxId ?? prepared[0]!.envelope.message.inboxId;
+      requireText(inboxId, "catch-up watermark inboxId");
       if (prepared.some((item) => item.envelope.message.inboxId !== inboxId)) {
         throw new Error("agentMail ledger: catch-up batch spans multiple inboxes");
+      }
+      const watermarkMs = watermark ? Date.parse(watermark.through) : undefined;
+      if (watermark && !Number.isFinite(watermarkMs)) {
+        throw new Error("agentMail ledger: catch-up watermark must be an ISO-8601 timestamp");
+      }
+      const newestMessage = prepared.reduce<PreparedEnvelope | undefined>(
+        (newest, item) => (!newest || item.timestampMs > newest.timestampMs ? item : newest),
+        undefined,
+      );
+      if (
+        watermarkMs !== undefined &&
+        newestMessage !== undefined &&
+        watermarkMs < newestMessage.timestampMs
+      ) {
+        throw new Error("agentMail ledger: catch-up watermark precedes a persisted message");
       }
       const seenAt = clock();
       return immediate(() => {
         let enqueued = 0;
         let duplicates = 0;
-        let newest = prepared[0]!;
         for (const item of prepared) {
           const result = enqueuePrepared(item, seenAt);
           if (result.status === "enqueued") enqueued++;
           else duplicates++;
-          if (item.timestampMs > newest.timestampMs) newest = item;
         }
-        upsertCheckpoint.run(
-          inboxId,
-          newest.envelope.message.timestamp,
-          newest.timestampMs,
-          seenAt,
-        );
+        const checkpointTimestamp = watermark?.through ?? newestMessage!.envelope.message.timestamp;
+        const checkpointMs = watermarkMs ?? newestMessage!.timestampMs;
+        upsertCheckpoint.run(inboxId, checkpointTimestamp, checkpointMs, seenAt);
         const checkpointRow = selectCheckpoint.get(inboxId);
         return {
           enqueued,

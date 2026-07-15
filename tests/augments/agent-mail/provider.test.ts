@@ -14,7 +14,7 @@ const fullMessage = {
   inbox_id: "support@agentmail.to",
   thread_id: "thread_1",
   message_id: "message_1",
-  labels: ["inbox"],
+  labels: ["received"],
   timestamp: "2026-07-14T10:20:30.000Z",
   from: "customer@example.com",
   to: ["support@agentmail.to"],
@@ -141,7 +141,7 @@ describe("AgentMail provider boundary", () => {
       threadId: fullMessage.thread_id,
       messageId: fullMessage.message_id,
       labels: fullMessage.labels,
-      timestamp: fullMessage.timestamp,
+      timestamp: new Date(fullMessage.timestamp),
       from_: fullMessage.from,
       to: fullMessage.to,
       subject: fullMessage.subject,
@@ -159,7 +159,7 @@ describe("AgentMail provider boundary", () => {
           contentDisposition: "attachment",
         },
       ],
-      createdAt: fullMessage.created_at,
+      createdAt: new Date(fullMessage.created_at),
     };
     const envelope = normalizeAgentMailReceivedEvent(
       {
@@ -177,6 +177,7 @@ describe("AgentMail provider boundary", () => {
     );
 
     expect(envelope.providerEventId).toBe("event_sdk");
+    expect(envelope.message.timestamp).toBe(fullMessage.timestamp);
     expect(envelope.message.from).toBe(fullMessage.from);
     expect(envelope.message.attachments[0]?.attachmentId).toBe("attachment_sdk");
   });
@@ -258,6 +259,7 @@ describe("AgentMail provider boundary", () => {
     expect(receivedEventTypeForLabels(["unauthenticated"])).toBe(
       "message.received.unauthenticated",
     );
+    expect(receivedEventTypeForLabels(["sent"])).toBeUndefined();
 
     const message = normalizeAgentMailMessage({ ...fullMessage, labels: ["spam"] });
     expect(agentMailRestEnvelope(message)).toMatchObject({
@@ -266,5 +268,13 @@ describe("AgentMail provider boundary", () => {
       providerEventId: undefined,
       message: { messageId: fullMessage.message_id },
     });
+  });
+
+  test("accepts a missing subject but rejects outbound REST messages", () => {
+    const inbound = normalizeAgentMailMessage({ ...fullMessage, subject: undefined });
+    expect(inbound.subject).toBe("");
+
+    const outbound = normalizeAgentMailMessage({ ...fullMessage, labels: ["sent"] });
+    expect(() => agentMailRestEnvelope(outbound)).toThrow(/not labeled as received/);
   });
 });
