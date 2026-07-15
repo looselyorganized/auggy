@@ -1348,6 +1348,26 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
         validateLinkOptions(linkOpts, optionsPrefix, errors);
       }
     }
+
+    const agentMailWebhookConfigured = augments.some((entry) => {
+      if (typeof entry !== "object" || entry === null) return false;
+      const augment = entry as Record<string, unknown>;
+      if (augment.type !== "agentMail") return false;
+      const options = augment.options as Record<string, unknown> | undefined;
+      const inbound = options?.inbound as Record<string, unknown> | undefined;
+      return inbound?.mode === "webhook";
+    });
+    const hasWebTransport = augments.some(
+      (entry) =>
+        typeof entry === "object" &&
+        entry !== null &&
+        (entry as Record<string, unknown>).type === "webTransport",
+    );
+    if (agentMailWebhookConfigured && !hasWebTransport) {
+      errors.push(
+        'agentMail inbound.mode "webhook" requires a webTransport augment to mount its verified HTTP route',
+      );
+    }
   }
 
   // Settings.

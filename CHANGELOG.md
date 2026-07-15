@@ -46,6 +46,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rechecks current rate limits, while bounded retention, expiry, rejection,
   ambiguous in-flight restart state, and provider failures fail closed. Plain
   assistant responses are never auto-mailed.
+- **AgentMail operational visibility.** Authenticated admin info now reports
+  inbound readiness, listener state, durable ledger counts, catch-up
+  checkpoint/result, latest event and worker outcome, sanitized provider
+  warnings, exact since-boot dispatch totals, and ambiguous review state.
+  Deployment docs cover mode selection, consistent backup/restore, the
+  single-process writer constraint, alert signals, and a fail-closed rollout.
 - **Transport readiness phase.** `TransportSpec.ready()` now starts inbound
   listeners only after every mounted transport has registered its kernel
   handle, closing startup races for web, Telegram, Link, and future inbound

@@ -150,6 +150,13 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
   const rateState =
     (opts.agentDir && loadRateState(opts.agentDir, now())) || createRateLimitState();
   const dispatches = createRingBuffer<DispatchRecord>(RING_BUFFER_SIZE);
+  const dispatchCounts: Record<DispatchRecord["status"], number> = {
+    sent: 0,
+    pending_review: 0,
+    rate_limited: 0,
+    blocked: 0,
+    failed: 0,
+  };
   const reviewQueue: AgentMailReviewQueue =
     opts._reviewQueue ?? createAgentMailReviewQueue({ agentDir: opts.agentDir, now });
 
@@ -214,6 +221,17 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
   let drainScheduled = false;
   let draining = false;
   let inboundReady = false;
+  let liveState: "disabled" | "starting" | "ready" | "subscribed" | "degraded" | "stopped" =
+    inboundMode === "none" ? "disabled" : "stopped";
+  let lastCatchUpAt: number | undefined;
+  let lastCatchUpSummary: string | undefined;
+  let lastInboundEventAt: number | undefined;
+  let lastWorkerOutcome: string | undefined;
+  let lastProviderError: string | undefined;
+
+  function recordProviderError(error: unknown): void {
+    lastProviderError = (error instanceof Error ? error.message : String(error)).slice(0, 500);
+  }
 
   function inboundPolicy() {
     const config = opts.inbound!;
@@ -232,11 +250,22 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
 
   async function catchUpInbound(): Promise<void> {
     if (!inboundLedger || !sdkAdapters) throw new Error("agentMail: inbound runtime is not booted");
-    await runAgentMailCatchUp({
-      reader: sdkAdapters.catchUp,
-      ledger: inboundLedger,
-      inboxId: opts.inboxId,
-    });
+    try {
+      const result = await runAgentMailCatchUp({
+        reader: sdkAdapters.catchUp,
+        ledger: inboundLedger,
+        inboxId: opts.inboxId,
+      });
+      lastCatchUpAt = now();
+      lastCatchUpSummary =
+        `${result.pages} page(s), ${result.scanned} scanned, ` +
+        `${result.enqueued} enqueued, ${result.duplicates} duplicate(s)`;
+      if (result.enqueued > 0) lastInboundEventAt = lastCatchUpAt;
+      lastProviderError = undefined;
+    } catch (error) {
+      recordProviderError(error);
+      throw error;
+    }
   }
 
   async function drainInbound(): Promise<void> {
@@ -245,6 +274,9 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
     try {
       for (let i = 0; i < 100; i++) {
         const result = await inboundWorker.processNext();
+        if (result.status !== "idle") {
+          lastWorkerOutcome = `${result.status}:${result.messageId}`;
+        }
         if (
           result.status === "idle" ||
           result.status === "retried" ||
@@ -311,18 +343,45 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
             });
 
             if (inboundMode === "websocket") {
-              liveSubscription = await sdkAdapters.live.subscribe({
-                inboxId: opts.inboxId,
-                eventTypes: AGENTMAIL_RECEIVED_EVENT_TYPES,
-                onSubscribed: catchUpInbound,
-                onEvent: async (envelope) => {
-                  inboundLedger!.enqueue(envelope);
-                  scheduleDrain();
-                },
-                onError: (error) => {
-                  console.warn(`[agent-mail] WebSocket: ${error.message}`);
-                },
-              });
+              liveState = "starting";
+              try {
+                liveSubscription = await sdkAdapters.live.subscribe({
+                  inboxId: opts.inboxId,
+                  eventTypes: AGENTMAIL_RECEIVED_EVENT_TYPES,
+                  onSubscribed: async () => {
+                    await catchUpInbound();
+                    liveState = "subscribed";
+                  },
+                  onEvent: async (envelope) => {
+                    inboundLedger!.enqueue(envelope);
+                    lastInboundEventAt = now();
+                    scheduleDrain();
+                  },
+                  onError: (error) => {
+                    liveState = "degraded";
+                    recordProviderError(error);
+                    console.warn(`[agent-mail] WebSocket: ${error.message}`);
+                  },
+                });
+                const subscription = liveSubscription;
+                void subscription.closed
+                  .then(() => {
+                    if (inboundReady && liveSubscription === subscription) {
+                      liveState = "degraded";
+                      recordProviderError("WebSocket subscription closed unexpectedly");
+                    }
+                  })
+                  .catch((error) => {
+                    if (inboundReady && liveSubscription === subscription) {
+                      liveState = "degraded";
+                      recordProviderError(error);
+                    }
+                  });
+              } catch (error) {
+                liveState = "degraded";
+                recordProviderError(error);
+                throw error;
+              }
             } else {
               await catchUpInbound();
             }
@@ -341,6 +400,7 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
             drainTimer = setInterval(() => void drainInbound(), 1_000);
             drainTimer.unref?.();
             inboundReady = true;
+            if (inboundMode !== "websocket") liveState = "ready";
             scheduleDrain();
           },
           identify: () => null,
@@ -354,6 +414,7 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
 
   function recordDispatch(record: DispatchRecord): void {
     dispatches.push(record);
+    dispatchCounts[record.status]++;
   }
 
   function trustLevelOf(context: ToolExecuteContext | undefined): TrustLevel {
@@ -1024,6 +1085,17 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
   // Lifecycle
   // ---------------------------------------------------------------------------
   async function onBoot(): Promise<void> {
+    dispatches.clear();
+    for (const status of Object.keys(dispatchCounts) as DispatchRecord["status"][]) {
+      dispatchCounts[status] = 0;
+    }
+    lastCatchUpAt = undefined;
+    lastCatchUpSummary = undefined;
+    lastInboundEventAt = undefined;
+    lastWorkerOutcome = undefined;
+    lastProviderError = undefined;
+    liveState = inboundMode === "none" ? "disabled" : "stopped";
+
     // Placeholder-resolution check — same pattern as visitor-auth.
     if (looksLikePlaceholder(opts.apiKey)) {
       throw new Error(
@@ -1058,7 +1130,10 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
             path: webhookOptions?.path,
             secretEnv: webhookOptions?.secretEnv,
             timestampToleranceSeconds: webhookOptions?.timestampToleranceSeconds,
-            onAccepted: scheduleDrain,
+            onAccepted: () => {
+              lastInboundEventAt = now();
+              scheduleDrain();
+            },
           }),
         );
       }
@@ -1079,6 +1154,7 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
       console.warn(
         `[agent-mail] inbox "${opts.inboxId}" healthcheck failed: ${health.detail}. Continuing boot — first real send will surface the same error.`,
       );
+      recordProviderError(health.detail);
       return;
     }
     // ok
@@ -1092,9 +1168,10 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
     drainTimer = undefined;
     drainKickTimer = undefined;
     drainScheduled = false;
+    inboundReady = false;
     await liveSubscription?.close();
     liveSubscription = undefined;
-    inboundReady = false;
+    liveState = inboundMode === "none" ? "disabled" : "stopped";
     inboundWorker = undefined;
     inboundKernel = undefined;
     seenMessagesByTurn.clear();
@@ -1116,19 +1193,40 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
     const recent = dispatches.snapshot().slice(-50);
     const reviews = reviewQueue.list();
     const pendingReviews = reviews.filter((review) => review.state === "pending");
-    const sentInLastHour = recent.filter(
-      (r) =>
-        r.status === "sent" &&
-        // The HH:MM:SS comparison is rough but adequate — for a precise
-        // window we'd need to add a `now` field to DispatchRecord. Skip
-        // the precision for the admin view.
-        true,
-    ).length;
+    const ambiguousReviews = reviews.filter((review) => review.state === "sending");
+    let ledgerCounts = { pending: 0, processing: 0, processed: 0, discarded: 0 };
+    let checkpoint: string | undefined;
+    if (inboundLedger) {
+      try {
+        ledgerCounts = inboundLedger.counts();
+        checkpoint = inboundLedger.checkpoint(opts.inboxId);
+      } catch (error) {
+        recordProviderError(error);
+      }
+    }
+    const operationalWarnings: string[] = [];
+    if (inboundMode !== "none" && !inboundReady) operationalWarnings.push("inbound not ready");
+    if (lastProviderError) operationalWarnings.push(`provider: ${lastProviderError}`);
+    if (ambiguousReviews.length > 0) {
+      operationalWarnings.push(
+        `${ambiguousReviews.length} review(s) stopped in ambiguous sending state`,
+      );
+    }
 
     return {
       augmentName: "agent-mail",
       title: "AgentMail",
       sections: [
+        {
+          kind: "status",
+          level: operationalWarnings.length === 0 ? "ok" : "warn",
+          message:
+            operationalWarnings.length === 0
+              ? inboundMode === "none"
+                ? "Outbound ready; inbound disabled"
+                : `Inbound ${inboundMode} ready`
+              : operationalWarnings.join("; "),
+        },
         {
           kind: "keyValue",
           rows: [
@@ -1160,14 +1258,35 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
             },
             {
               label: "Sent (since boot)",
-              value: String(recent.filter((r) => r.status === "sent").length),
+              value: String(dispatchCounts.sent),
+            },
+            { label: "Blocked (since boot)", value: String(dispatchCounts.blocked) },
+            {
+              label: "Rate limited (since boot)",
+              value: String(dispatchCounts.rate_limited),
             },
             { label: "Recent dispatches", value: String(recent.length) },
             { label: "Pending human reviews", value: String(pendingReviews.length) },
+            { label: "Ambiguous sending reviews", value: String(ambiguousReviews.length) },
+            { label: "Inbound mode", value: inboundMode, source: "yaml" },
+            { label: "Inbound runtime", value: liveState },
+            { label: "Inbound pending", value: String(ledgerCounts.pending) },
+            { label: "Inbound processing", value: String(ledgerCounts.processing) },
+            { label: "Inbound processed", value: String(ledgerCounts.processed) },
+            { label: "Inbound discarded", value: String(ledgerCounts.discarded) },
+            { label: "Catch-up checkpoint", value: checkpoint ?? "(none)" },
             {
-              label: "(unused) sent-in-last-hour",
-              value: String(sentInLastHour),
+              label: "Last catch-up",
+              value: lastCatchUpAt ? new Date(lastCatchUpAt).toISOString() : "(never)",
             },
+            { label: "Last catch-up result", value: lastCatchUpSummary ?? "(none)" },
+            {
+              label: "Last inbound event",
+              value: lastInboundEventAt
+                ? new Date(lastInboundEventAt).toISOString()
+                : "(none since boot)",
+            },
+            { label: "Last worker outcome", value: lastWorkerOutcome ?? "(none since boot)" },
           ],
         },
         {

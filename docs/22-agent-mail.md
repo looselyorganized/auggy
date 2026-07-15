@@ -198,15 +198,60 @@ different web or email turn from replaying an old message ID.
 
 ## Console/API info
 
-AgentMail exposes admin-info blocks to the console dashboard API. The v1
-chat-first console does not render these as top-level controls by default.
-Future developer surfaces can show:
+AgentMail exposes admin-info blocks to the authenticated console dashboard API:
 
+- Runtime status, inbound mode/readiness, durable ledger counts, catch-up checkpoint and latest catch-up summary
+- Last inbound event and worker outcome, plus sanitized provider errors
 - Masked API key, inbox ID, current global cap (yaml vs override), allowed trust levels, recipient allowlist size
 - Last 50 dispatches with timestamp / tool / status / **redacted** recipients / subject
 - Actions: "Send test email", "Adjust globalMaxPerHour", and inspect/approve/reject a queued outbound review
 
 Recipients in the audit table are redacted (`al***@example.com (+2)`) so the admin view never leaks full address lists.
+
+## Operations and rollout
+
+Choose one arrival mode per process:
+
+- `websocket` is the default when the agent can make outbound connections but
+  has no stable public URL. Every confirmed subscription runs REST catch-up
+  before live events are released.
+- `webhook` is appropriate behind an HTTPS-capable `webTransport`. Configure
+  the exact Svix signing secret and keep the default five-minute replay window
+  unless a smaller value is operationally safe.
+- `polling` is the simplest fallback. Polling and webhook startup both finish
+  REST catch-up before the inbound transport reports ready.
+
+Production state is sensitive and must move together during backup/restore:
+
+- `agent-mail.db`, `agent-mail.db-wal`, and `agent-mail.db-shm` hold inbound
+  bodies, checkpoints, leases, and terminal decisions. Stop the agent or use a
+  SQLite-consistent backup mechanism; do not copy only the main file while it
+  is running.
+- `agent-mail-reviews.json` holds exact queued outbound actions. It is written
+  atomically with owner-only permissions. A record left in `sending` after a
+  crash is intentionally ambiguous and is never auto-retried; reconcile it
+  against AgentMail before composing a replacement.
+- `agent-mail-state.json` holds outbound cooldown and dedup state. Losing it
+  weakens duplicate protection after restart.
+
+Run only one agent process per `agentDir`. SQLite safely serializes its ledger,
+but the review queue and outbound rate state are process-local writers backed
+by atomic JSON replacement, not a distributed coordination protocol.
+
+Rollout checklist:
+
+1. Start with `inbound.mode: none`; verify inbox credentials and a creator-only
+   test send.
+2. Configure an exact/domain sender allowlist and keep risky classifications
+   on `discard`.
+3. Enable one inbound mode and confirm the admin status is `ok`, the catch-up
+   checkpoint advances, and a test message reaches `processed` or an expected
+   durable discard state.
+4. If public mail may propose replies, add `public` to
+   `outbound.allowedTrustLevels` but keep default human review. Inspect the
+   exact action, then approve with its fingerprint.
+5. Alert on provider warnings, a growing pending/processing ledger, ambiguous
+   `sending` reviews, repeated discarded work, or a stale catch-up timestamp.
 
 ## Common operator pitfalls
 
@@ -217,6 +262,8 @@ Recipients in the audit table are redacted (`al***@example.com (+2)`) so the adm
 | Tool returns `failed: trust level "public" is not permitted` | Anonymous visitor asked the agent to send | Either ignore (correct) or add `public` to `outbound.allowedTrustLevels`; its action will still require human review by default |
 | Tool returns `pending_review` | A configured trust level proposed outbound mail | Inspect the exact action through the authenticated admin API, then approve with its returned fingerprint or reject it before expiry |
 | Tool returns `rate_limited` on every send | Global cap or dedup window misconfigured | Set `outbound.rateLimit.globalMaxPerHour` |
+| Admin status warns `inbound not ready` | Listener/catch-up never completed | Inspect the sanitized provider error, credentials, and network path; startup remains fail-closed for inbound |
+| Review remains `sending` after restart | Process stopped after dispatch began but before acknowledgement was persisted | Reconcile the provider message/thread before creating any replacement; the runtime will not auto-retry |
 | Audit table shows `⚠` marker | Body contained a token-shaped string | Read the dispatch detail — operator's job to nudge the model toward better behavior |
 
 ## What this augment does NOT do (yet)

@@ -884,6 +884,12 @@ describe("onBoot", () => {
     const aug = agentMail({ ...baseOpts, _client: failingClient.client });
     // Should NOT throw — transient outage shouldn't block boot.
     await expect(aug.onBoot?.()).resolves.toBeUndefined();
+    const info = await aug.adminInfo!();
+    expect(info.sections.find((section) => section.kind === "status")).toMatchObject({
+      kind: "status",
+      level: "warn",
+      message: expect.stringContaining("AgentMail 503"),
+    });
   });
 
   test("throws on 4xx healthcheck failure (config error)", async () => {
@@ -1018,6 +1024,70 @@ describe("inbound lifecycle", () => {
       );
       expect(outOfTurn.status).toBe("failed");
       expect(log.reply).toHaveLength(1);
+
+      const operations = await aug.adminInfo!();
+      expect(operations.sections.find((section) => section.kind === "status")).toMatchObject({
+        kind: "status",
+        level: "ok",
+        message: "Inbound webhook ready",
+      });
+      const runtime = operations.sections.find((section) => section.kind === "keyValue");
+      if (runtime?.kind !== "keyValue") throw new Error("missing AgentMail runtime rows");
+      expect(runtime.rows.find((row) => row.label === "Inbound processed")?.value).toBe("1");
+      expect(runtime.rows.find((row) => row.label === "Inbound pending")?.value).toBe("0");
+      expect(runtime.rows.find((row) => row.label === "Inbound runtime")?.value).toBe("ready");
+      expect(runtime.rows.find((row) => row.label === "Last catch-up result")?.value).toContain(
+        "1 page(s)",
+      );
+      expect(runtime.rows.find((row) => row.label === "Last inbound event")?.value).not.toContain(
+        "none",
+      );
+    } finally {
+      await aug.onShutdown!();
+      ledger.close();
+    }
+  });
+
+  test("reports an unexpected WebSocket subscription close as degraded", async () => {
+    const { client } = fakeClient();
+    let resolveClosed!: () => void;
+    const closed = new Promise<void>((resolve) => {
+      resolveClosed = resolve;
+    });
+    const sdk: AgentMailSdkAdapters = {
+      catchUp: emptySdkAdapters().catchUp,
+      live: {
+        subscribe: async (input) => {
+          await input.onSubscribed?.({ reconnected: false });
+          return { closed, close: async () => resolveClosed() };
+        },
+      },
+    };
+    const ledger = createAgentMailInboundLedger({ dbPath: ":memory:" });
+    const aug = agentMail({
+      ...baseOpts,
+      _client: client,
+      _inboundLedger: ledger,
+      _sdkAdapters: sdk,
+      inbound: { mode: "websocket", allowedSenders: ["*@example.com"] },
+    });
+
+    try {
+      await aug.onBoot!();
+      await aug.transport!.register(fakeInboundKernel([]), aug.name);
+      await aug.transport!.ready!();
+      expect((await aug.adminInfo!()).sections[0]).toMatchObject({ level: "ok" });
+
+      resolveClosed();
+      await eventually(async () => {
+        const status = (await aug.adminInfo!()).sections[0];
+        return status?.kind === "status" && status.level === "warn";
+      });
+      expect((await aug.adminInfo!()).sections[0]).toMatchObject({
+        kind: "status",
+        level: "warn",
+        message: expect.stringContaining("closed unexpectedly"),
+      });
     } finally {
       await aug.onShutdown!();
       ledger.close();
@@ -1249,9 +1319,9 @@ function receivedWebhookEvent(): Record<string, unknown> {
   };
 }
 
-async function eventually(predicate: () => boolean): Promise<void> {
+async function eventually(predicate: () => boolean | Promise<boolean>): Promise<void> {
   for (let i = 0; i < 50; i++) {
-    if (predicate()) return;
+    if (await predicate()) return;
     await new Promise((resolve) => setTimeout(resolve, 2));
   }
   throw new Error("condition was not met");

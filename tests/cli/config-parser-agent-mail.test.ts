@@ -19,7 +19,10 @@ function writeYaml(content: string): string {
   return path;
 }
 
-function configWithAgentMail(opts: Record<string, unknown>): string {
+function configWithAgentMail(
+  opts: Record<string, unknown>,
+  extraAugments: Record<string, unknown>[] = [],
+): string {
   const base = {
     id: "aug1_a3f7c2e1-8b4d-4f9e-a6c1-2d8e9f0b3a5c",
     name: "test-agent",
@@ -39,6 +42,7 @@ function configWithAgentMail(opts: Record<string, unknown>): string {
         },
       },
       { name: "agentmail", type: "agentMail", options: opts },
+      ...extraAugments,
     ],
   };
   return stringify(base);
@@ -118,9 +122,31 @@ describe("config-parser: agentMail validation", () => {
         webhook: { secretEnv: "AGENTMAIL_WEBHOOK_SECRET" },
       },
     ]) {
-      const path = writeYaml(configWithAgentMail({ apiKey: "am_x", inboxId: "inb_x", inbound }));
+      const path = writeYaml(
+        configWithAgentMail(
+          { apiKey: "am_x", inboxId: "inb_x", inbound },
+          inbound.mode === "webhook"
+            ? [{ name: "web", type: "webTransport", options: { port: 0 } }]
+            : [],
+        ),
+      );
       expect(() => parseConfig(path)).not.toThrow();
     }
+  });
+
+  test("rejects webhook mode without an HTTP transport to mount the route", () => {
+    const path = writeYaml(
+      configWithAgentMail({
+        apiKey: "am_x",
+        inboxId: "inb_x",
+        inbound: {
+          mode: "webhook",
+          allowedSenders: ["customer@example.com"],
+          webhook: { secretEnv: "AGENTMAIL_WEBHOOK_SECRET" },
+        },
+      }),
+    );
+    expect(() => parseConfig(path)).toThrow(/requires a webTransport/);
   });
 
   test("accepts inbound.mode = 'none'", () => {
