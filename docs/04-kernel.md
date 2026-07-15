@@ -379,7 +379,7 @@ createLifecycleManager({ name, augments, model? }) → {
 }
 ```
 
-**`boot()`** is fail-fast: if any augment's `onBoot` throws, the whole agent fails to start. The error message is wrapped to identify the augment: `Augment "name" failed to boot: <err>`. The manager tracks each attempted augment so startup rollback cleans up a partially failed hook and all earlier hooks, without calling shutdown on augments that were never attempted.
+**`boot()`** is fail-fast: if any augment's `onBoot` throws, the whole agent fails to start. The error message is wrapped to identify the augment: `Augment "name" failed to boot: <err>`.
 
 **`shutdown()`** is best-effort: each augment's `onShutdown` runs in reverse order with a 5-second timeout (via `withTimeout`). Failures and timeouts are swallowed — we want to give every augment a chance to clean up, even if some fail.
 
@@ -482,11 +482,8 @@ The orchestrator that ties everything together. ~200 LOC. Key responsibilities:
 
 4. **`start()`:**
    - `lifecycle.boot()` — runs every augment's `onBoot` in order.
-   - Collect and validate augment HTTP routes.
-   - For each transport augment: construct a `TransportQueue`, build a `TransportKernel` view, and `await aug.transport.register(transportKernel)`. Registration must not admit traffic.
-   - After all registrations succeed, call each optional `aug.transport.ready()` to start listeners.
+   - For each transport augment: construct a `TransportQueue`, build a `TransportKernel` view (with `handleInbound`, `onOutbound`, `getAgentCard`), and `await aug.transport.register(transportKernel)`.
    - Start the idle timer.
-   - Any failure rolls back attempted augments in reverse order and preserves the original startup error.
 
 5. **`handleInbound` (the function passed to each transport's `TransportKernel`):**
    - `queue.enqueue(trigger, handler)` where `handler` is the actual turn-execution function.
@@ -500,7 +497,7 @@ The orchestrator that ties everything together. ~200 LOC. Key responsibilities:
 
 6. **`inject(trigger)`:** the back door. Bypasses the queue entirely — runs the turn loop directly. Used by tests and by augments that need to schedule internal work.
 
-7. **`stop()`:** stops the idle timer, calls `lifecycle.shutdown()`, and clears registered outbound handlers.
+7. **`stop()`:** stops the idle timer, calls `lifecycle.shutdown()`.
 
 ## Why this shape
 

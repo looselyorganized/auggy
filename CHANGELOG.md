@@ -9,54 +9,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Structural AgentMail inbound provider boundary.** REST catch-up, WebSocket,
-  and verified-webhook adapters now share concrete typed contracts and a
-  validated canonical message envelope. Provider payloads fail closed on
-  malformed IDs, timestamps, inbox substitution, or incoherent threads; no
-  legacy `capabilities`/`supports` metadata is used.
-- **Durable AgentMail inbound ledger.** Live events and complete REST catch-up
-  pages are persisted before dispatch, deduplicated by inbox/message identity,
-  and processed through renewable SQLite leases. Catch-up checkpoints advance
-  atomically with their page and replay a timestamp overlap after restart;
-  stale workers cannot acknowledge a newer claim. Database, WAL, and shared
-  memory files are restricted to owner access.
-- **AgentMail REST/WebSocket inbound adapters.** The pinned official SDK now
-  supplies authenticated REST pagination and an automatically reconnecting
-  WebSocket. The adapter re-subscribes after every reconnect, requires the
-  server to acknowledge the configured inbox and all four received-message
-  classifications, runs catch-up before releasing that generation's events,
-  filters outbound list entries, and fetches full bodies before checkpointing.
-- **Svix-verified AgentMail webhook admission.** HTTP webhook policies now
-  verify Svix's exact raw body and three signature headers with the official
-  verifier and a replay window capped at five minutes. The AgentMail route
-  factory validates the configured inbox and received classification, writes
-  to the durable ledger before acknowledging, deduplicates retries, and ignores
-  authenticated non-received events without creating work.
-- **Policy-gated AgentMail inbound turns.** Polling, WebSocket, and webhook
-  modes now converge on a leased ledger worker that requires an explicit
-  sender allowlist, discards spam/blocked/unauthenticated mail by default,
-  renders byte-bounded escaped untrusted-email prompts, and admits accepted
-  messages through the normal transport queue. Email addresses never elevate
-  identity: every sender remains public/anonymous, and reply/forward message
-  IDs are scoped to the specific inbound turn.
-- **Durable AgentMail outbound review.** Valid outbound actions originating
-  from public peers now enter an owner-only persisted review queue by default.
-  A creator-authenticated, no-store detail route exposes the exact queued send,
-  reply, or forward without putting bodies into generic admin-action logs or
-  redirect URLs. Approval requires the detail fingerprint and rechecks current
-  rate limits, while bounded retention, expiry, rejection, ambiguous in-flight
-  restart state, and provider failures fail closed. Plain assistant responses
-  are never auto-mailed.
-- **AgentMail operational visibility.** Authenticated admin info now reports
-  inbound readiness, listener state, durable ledger counts, catch-up
-  checkpoint/result, latest event and worker outcome, sanitized provider
-  warnings, exact since-boot dispatch totals, and ambiguous review state.
-  Deployment docs cover mode selection, consistent backup/restore, the
-  single-process writer constraint, alert signals, and a fail-closed rollout.
-- **Transport readiness phase.** `TransportSpec.ready()` now starts inbound
-  listeners only after every mounted transport has registered its kernel
-  handle, closing startup races for web, Telegram, Link, and future inbound
-  channels.
 - **Bounded workspace awareness for filesystem-backed agents.** A configured
   `workspace` mount now contributes a request-ranked, metadata-only file
   catalog to creator and agent turns. The catalog skips hidden paths, excluded
@@ -73,14 +25,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `capabilities: [...]` from augment objects; runtime and console surfaces are
   inferred structurally. Agent Card capabilities, including Link's
   `agentCard.capabilities`, remain separate discovery metadata.
-
-### Fixed
-
-- **Agent startup is rollback-safe and webhook policies fail closed.** Boot,
-  route validation, transport registration, and readiness failures now clean
-  up attempted resources in reverse order while preserving the original
-  error. Signature policies without an implemented verifier now fail startup
-  instead of admitting unsigned requests.
 
 ## [0.5.0] - 2026-07-07
 

@@ -120,7 +120,7 @@ config:
 | **Best for** | Self-hosted / home lab / development; no reverse proxy required | Cloud deployments with a public domain |
 | **Limitation** | Higher API polling load during idle periods | Telegram's delivery guarantee requires your server to be reachable at all times |
 
-> **Telegram enforces one active mode per bot.** Calling `setWebhook` disables `getUpdates` polling on Telegram's side. Calling `deleteWebhook` (or letting the webhook lapse) re-enables polling. If you switch modes, Telegram may continue delivering to the old webhook endpoint for a short window. After all transports register, the augment starts its local listener and calls `setWebhook` during transport readiness; it calls `deleteWebhook` at shutdown.
+> **Telegram enforces one active mode per bot.** Calling `setWebhook` disables `getUpdates` polling on Telegram's side. Calling `deleteWebhook` (or letting the webhook lapse) re-enables polling. If you switch modes, Telegram may continue delivering to the old webhook endpoint for a short window. The augment calls `setWebhook` at boot in webhook mode and `deleteWebhook` at shutdown — mode transitions are handled automatically if you restart the agent cleanly.
 
 ## 5. Identity resolution
 
@@ -205,7 +205,7 @@ handle /telegram {
 
 Caddy forwards headers by default, so no explicit header passthrough directive is needed.
 
-**Shutdown behavior:** On `onShutdown`, the augment calls `deleteWebhook` (via the Telegram API) after stopping the local server. If readiness fails while registering the remote webhook, it also stops the local listener and attempts remote cleanup. If `deleteWebhook` fails, the warning is logged but shutdown continues.
+**Shutdown behavior:** On `onShutdown`, the augment calls `deleteWebhook` (via the Telegram API) after stopping the local server. This prevents Telegram from continuing to POST to a URL that is no longer listening. If `deleteWebhook` fails (e.g. network issue at shutdown), the warning is logged but shutdown continues.
 
 ## 10. Troubleshooting
 

@@ -529,8 +529,7 @@ export interface TransportKernel {
 }
 
 export interface TransportSpec {
-  register(kernel: TransportKernel, augmentName: string): Promise<void>;
-  ready?(): Promise<void>;
+  register(kernel: TransportKernel): Promise<void>;
   identify(raw: unknown): PeerIdentity | null;
   concurrency?: number;
   maxQueueDepth?: number;
@@ -538,17 +537,7 @@ export interface TransportSpec {
 }
 ```
 
-`TransportSpec` is what an augment puts on its `transport` field. Startup first
-calls `register(kernel, augmentName)` for every mounted transport. Registration
-captures the kernel and prepares transport state, but must not bind listeners or
-admit traffic. After all registrations succeed, the runtime calls each optional
-`ready()` hook to start polling, sockets, or HTTP listeners. Traffic received
-while readiness is still in progress waits behind the agent's startup admission
-barrier and is released only if every transport becomes ready.
-
-Resources allocated during registration or readiness must be released
-idempotently by the owning augment's `onShutdown()` hook. Any startup-phase
-failure triggers rollback of attempted augments in reverse order.
+`TransportSpec` is what an augment puts on its `transport` field. The runtime calls `register(kernel)` once at boot, passing in a `TransportKernel` that the augment can use to feed inbound triggers and listen for outbound messages.
 
 `identify(raw)` is a pure function from "whatever the transport's wire format hands you" to `PeerIdentity | null`. The web transport implements it by reading `x-peer-*` headers; a future spine transport would read auth tokens from a different envelope.
 

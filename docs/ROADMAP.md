@@ -109,9 +109,9 @@ querying SQLite or reading logs by hand.
 Goal: extend the runtime beyond browser chat while keeping inbound events
 auditable and deterministic.
 
-- AgentMail inbound hardening (implemented on the unreleased integration
-  line): durable receive/catch-up across polling, WebSocket, and verified
-  webhook modes, with policy-gated turns and reviewed public outbound actions.
+- AgentMail inbound hardening: receive mail as a real inbound channel, catch up
+  after downtime, and choose polling/WebSocket/webhook transport based on the
+  audit model.
 - Additional webhook verifiers after Stripe, likely GitHub and Svix-style HMAC
   providers.
 - Provider recipes for common app auth bridges beyond the current Supabase and

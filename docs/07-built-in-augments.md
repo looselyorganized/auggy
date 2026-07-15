@@ -19,10 +19,7 @@ Fourteen augments ship in `src/augments/` (plus `webTransport` under `src/transp
 - **`notify`** — outbound messaging to operator-configured destinations
 - **`mcp`** — external MCP server tools bridged into Auggy tools with
   allow/block lists and per-server/per-tool trust policy
-- **`agentMail`** — durable policy-gated AgentMail inbound plus outbound send,
-  reply, and forward tools with default human review for public-originated
-  mail; inbound is disabled until a sender allowlist and polling, WebSocket,
-  or Svix webhook mode are configured.
+- **`agentMail`** — outbound email via AgentMail with per-peer trust gate, allowlist, rate limits, audit ring (Phase A; inbound in Phase B)
 - **`turnControl`** — `request_input` for hand-off prompts
 - **`visitorAuth`** — email magic-link verification; promotes anonymous → recognized
 - **`link`** — peer-to-peer A2A v0.2 transport (preview mesh entry)
@@ -602,9 +599,9 @@ What happens at boot:
 2. Both memory providers get synthesized `context()` functions.
 3. The synthetic `memory-bus` augment is appended with the five generic memory tools.
 4. `generateAgentCard` produces a card with `capabilities.memory: true` and `capabilities.transport: true`; model-facing tools stay out of the public A2A skills list.
-5. `lifecycle.boot()` runs: `fileMemory.onBoot()` reads `zip-soul.md`. `supabaseMemory` and `memory-bus` have no onBoot; `webTransport.onBoot()` validates and prepares configuration without binding a port.
+5. `lifecycle.boot()` runs: `fileMemory.onBoot()` reads `zip-soul.md`. `supabaseMemory` has no onBoot. `webTransport.onBoot()` starts Bun.serve on port 8080. `memory-bus` has no onBoot.
 6. The web transport is registered with a `TransportQueue` (concurrency 1, queue depth 50, rate limit 30/min/peer).
-7. After every transport is registered, `webTransport.transport.ready()` starts Bun.serve on port 8080. The agent is now serving requests on `http://localhost:8080`.
+7. The agent is now serving requests on `http://localhost:8080`.
 
 What happens on a turn:
 1. A peer POSTs to `/agent/run`. The web transport identifies them, builds a trigger.

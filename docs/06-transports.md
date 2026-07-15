@@ -24,7 +24,6 @@ In v1 there is exactly **one built-in transport**: `webTransport`, which speaks 
 ```ts
 export interface TransportSpec {
   register(kernel: TransportKernel, augmentName: string): Promise<void>;
-  ready?(): Promise<void>;
   identify(raw: unknown): PeerIdentity | null;
   concurrency?: number;
   maxQueueDepth?: number;
@@ -32,9 +31,7 @@ export interface TransportSpec {
 }
 ```
 
-**`register(kernel, augmentName)`** is called once at agent startup. The transport receives a `TransportKernel` view onto the runtime — a small interface with three methods (`handleInbound`, `onOutbound`, `getAgentCard`). The transport also receives `augmentName`, the operator-chosen runtime name for this augment instance (e.g. `"web"`, `"telegram"`). Registration is preparation-only: it must not bind listeners, start polling, or admit traffic.
-
-**`ready()`** is optional and runs only after every mounted transport has successfully registered. This is the first phase where a transport may start accepting inbound traffic. If boot, route validation, registration, or readiness fails, startup rolls back through the augments' `onShutdown` hooks in reverse order.
+**`register(kernel, augmentName)`** is called once at agent startup. The transport receives a `TransportKernel` view onto the runtime — a small interface with three methods (`handleInbound`, `onOutbound`, `getAgentCard`). The transport also receives `augmentName`, the operator-chosen runtime name for this augment instance (e.g. `"web"`, `"telegram"`). The transport stores both references and uses them to feed inbound requests.
 
 The `augmentName` parameter was added in commit `0710e2f` (Phase B) to support correct outbound dispatch. See the multi-transport composition section below for why this matters.
 
@@ -562,7 +559,7 @@ return {
 };
 ```
 
-The web transport validates and prepares during `onBoot`/`register`, starts the HTTP server (`Bun.serve`) during transport `ready()`, and stops it in `onShutdown`. The listener therefore cannot receive traffic before its kernel handle exists. The 5-second shutdown timeout from the lifecycle manager applies to `onShutdown`.
+The web transport uses `onBoot` to start the HTTP server (Bun.serve) and `onShutdown` to stop it. Failures in `onBoot` abort agent startup (lifecycle manager throws). The 5-second shutdown timeout from the lifecycle manager applies to `onShutdown`.
 
 ## Per-transport concurrency and queueing
 
@@ -731,9 +728,9 @@ request body before the handler runs, applies a 300-second timestamp tolerance
 by default, and passes parsed event payload as `ctx.webhook.event`. The manifest
 exposes the env var name only, never the secret value.
 
-Other providers fail startup until their runtime verifier lands. Signature
-policy metadata is never treated as a substitute for verification, and an
-unsupported provider reaching request dispatch fails closed with HTTP 500.
+Other providers are still metadata-only until their verifiers land. For those
+providers, augment handlers must still perform any required signature/HMAC
+checks before trusting the request body.
 
 ### Caller IP & `trustedProxies`
 
@@ -767,7 +764,7 @@ CIDR ranges are not yet supported (v1 keeps it simple); list the exact IPs.
 | 405 | Augment registered the path for a different method. `Allow:` header lists the registered method. |
 | 413 | Request body exceeded `maxBodyBytes`. |
 | 429 | Per-route rate limit triggered. `Retry-After:` header set. |
-| 500 | Handler threw, or a signature policy reached dispatch without a supported verifier. Handler failures use opaque `{"error":"internal"}`; unsupported policies use `{"error":"webhook-policy-unsupported"}`. |
+| 500 | Handler threw. Body is opaque `{"error":"internal"}`; the actual error is logged to stderr with the route path. |
 | 504 | Handler exceeded `timeoutMs`. |
 
 ### Limits
@@ -777,7 +774,7 @@ CIDR ranges are not yet supported (v1 keeps it simple); list the exact IPs.
 - Exact paths and full-segment path params are supported (`/items/:id`). Prefix routes are not supported.
 - No streaming response support — handlers return discrete `Response` objects. AG-UI's SSE stays exclusive to `/agent/run`.
 - Routes are frozen at `agent.start()` — no dynamic add/remove during runtime.
-- Per-route auth schemes are `bearer`, `creator`, `none`, `visitor.optional`, `visitor.required`, and `agent.required`. For OAuth/custom schemes, augments wrap their handler with the additional check. `policy: webhook.signature("stripe", ...)` is runtime verified by `webTransport`; unsupported signature providers fail startup until their verifier lands.
+- Per-route auth schemes are `bearer`, `creator`, `none`, `visitor.optional`, `visitor.required`, and `agent.required`. For OAuth/custom schemes, augments wrap their handler with the additional check. `policy: webhook.signature("stripe", ...)` is runtime verified by `webTransport`; other providers remain manifest/client metadata until their verifiers land.
 
 ## The `/console` route
 
