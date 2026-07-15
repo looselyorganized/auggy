@@ -32,6 +32,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   factory validates the configured inbox and received classification, writes
   to the durable ledger before acknowledging, deduplicates retries, and ignores
   authenticated non-received events without creating work.
+- **Policy-gated AgentMail inbound turns.** Polling, WebSocket, and webhook
+  modes now converge on a leased ledger worker that requires an explicit
+  sender allowlist, discards spam/blocked/unauthenticated mail by default,
+  renders byte-bounded escaped untrusted-email prompts, and admits accepted
+  messages through the normal transport queue. Email addresses never elevate
+  identity: every sender remains public/anonymous, and reply/forward message
+  IDs are scoped to the specific inbound turn.
 - **Transport readiness phase.** `TransportSpec.ready()` now starts inbound
   listeners only after every mounted transport has registered its kernel
   handle, closing startup races for web, Telegram, Link, and future inbound

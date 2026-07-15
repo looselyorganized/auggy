@@ -1,14 +1,12 @@
 /**
- * agentMail augment — outbound email primitive (Phase A).
+ * agentMail augment — policy-gated outbound and inbound email.
  *
  * Exposes three model-facing tools (`send_message`, `reply_to_message`,
  * `forward_message`) aligned with AgentMail's MCP tool-name standard, plus
  * an `adminInfo` surface with ring-buffer dispatch log + cap-adjust action.
  *
- * Phase A is outbound only; `inbound.mode` MUST be `"none"` (default).
- * The durable ledger and REST/WebSocket/Svix provider adapters are implemented
- * behind structural boundaries. Inbound mode remains disabled until the turn
- * worker and admission policy are wired end to end.
+ * Inbound polling, WebSocket, and Svix webhook modes share a durable ledger,
+ * sender/classification policy, and normal transport admission path.
  *
  * Design notes:
  *   - Trust-level gate: by default only `creator` (and null/system) peers
@@ -16,21 +14,20 @@
  *     explicitly opts in via `outbound.allowedTrustLevels`.
  *   - `messageId` exposed to the model is the AgentMail message_id. The
  *     turn-scoped `seenMessages` map guards `reply_to_message` /
- *     `forward_message` from reaching arbitrary IDs; until Phase B lands
- *     inbound dispatch the map is always empty, so these two tools error
- *     by design. The map carries the inbound envelope (from, replyAllTo)
+ *     `forward_message` from reaching arbitrary IDs. The map carries the
+ *     inbound envelope (from, replyAllTo)
  *     so `reply_to_message` can apply the full outbound policy
  *     (allowlist, rate-limit, dedup) against the REAL recipients —
  *     Codex finding #1.
- *   - Rate-limit state is in-memory only. Phase A does not need SQLite —
- *     the notify augment precedent is in-memory + JSON admin-overrides
- *     for persisted ceiling adjustments.
+ *   - Outbound rate-limit state uses its existing compact persisted state;
+ *     the inbound SQLite ledger is separate and stores message work.
  *   - The augment does not duplicate AgentMail's REST client; it imports
  *     `createAgentMailClient` from `src/agentmail-client.ts` (shared with
  *     notify's agentmail adapter and visitor-auth's magic-link flow).
  */
 
 import { z } from "zod";
+import { join } from "node:path";
 import { defineTool } from "../../helpers";
 import { createAgentMailClient, type AgentMailClient } from "../../agentmail-client";
 import { createRingBuffer } from "../../lib/ring-buffer";
@@ -40,12 +37,22 @@ import type {
   AdminInfoBlock,
   Augment,
   ToolExecuteContext,
+  TransportKernel,
   TrustLevel,
 } from "../../types";
 import type { AgentMailAugmentInternalOptions, DispatchRecord } from "./types";
 import { redactRecipients, scanForSensitive, validateOutbound } from "./outbound";
 import { checkRateLimit, createRateLimitState, recordSend } from "./rate-limit";
 import { loadRateState, saveRateState } from "./persist-state";
+import { createAgentMailInboundLedger, type AgentMailInboundLedger } from "./inbound-ledger";
+import { createAgentMailInboundWorker, type AgentMailInboundWorker } from "./inbound-worker";
+import {
+  createAgentMailSdkAdapters,
+  runAgentMailCatchUp,
+  type AgentMailSdkAdapters,
+} from "./sdk-provider";
+import { AGENTMAIL_RECEIVED_EVENT_TYPES, type AgentMailEventSubscription } from "./provider";
+import { createAgentMailWebhookRoute } from "./webhook-provider";
 
 const DEFAULT_ALLOWED_TRUST_LEVELS: TrustLevel[] = ["creator"];
 const RING_BUFFER_SIZE = 100;
@@ -65,12 +72,15 @@ function validateOptions(opts: AgentMailAugmentInternalOptions): void {
   if (opts.outbound?.subjectPrefix !== undefined && opts.outbound.subjectPrefix.length === 0) {
     throw new Error("agentMail: outbound.subjectPrefix cannot be the empty string");
   }
-  // Phase A: only inbound.mode = "none" is supported.
   const mode = opts.inbound?.mode ?? "none";
-  if (mode !== "none") {
-    throw new Error(
-      `agentMail: inbound.mode "${mode}" is not yet implemented. Phase A ships outbound only — set inbound.mode to "none" (or omit) until Phase B lands websocket/polling.`,
-    );
+  if (
+    mode !== "none" &&
+    (!opts.inbound?.allowedSenders || opts.inbound.allowedSenders.length === 0)
+  ) {
+    throw new Error("agentMail: inbound.allowedSenders must be non-empty when inbound is enabled");
+  }
+  if (mode === "webhook" && !opts.inbound?.webhook) {
+    throw new Error("agentMail: inbound.webhook is required when inbound.mode is webhook");
   }
 }
 
@@ -132,9 +142,9 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
   }
 
   /**
-   * Turn-scoped seen map for reply/forward validation. Phase A ships empty
-   * (no inbound dispatch) so reply/forward effectively always error; Phase
-   * B's dispatcher populates this when injecting an inbound message.
+   * Turn-scoped seen map for reply/forward validation. The inbound worker
+   * populates only the turn it is about to admit and removes the scope when
+   * kernel dispatch settles.
    *
    * The map carries the inbound envelope so the reply path can apply the
    * SAME outbound policy (allowlist, rate-limit, dedup) against the actual
@@ -148,10 +158,164 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
     /** Other original recipients — used when the model passes replyAll: true. */
     replyAllTo?: string[];
   }
-  const seenMessages = new Map<string, SeenMessageMeta>();
+  const legacySeenMessages = new Map<string, SeenMessageMeta>();
+  const seenMessagesByTurn = new Map<string, Map<string, SeenMessageMeta>>();
+
+  function seenMessagesFor(context: ToolExecuteContext | undefined): Map<string, SeenMessageMeta> {
+    return (context ? seenMessagesByTurn.get(context.turnId) : undefined) ?? legacySeenMessages;
+  }
 
   const client: AgentMailClient =
     opts._client ?? createAgentMailClient({ apiKey: opts.apiKey, apiBaseUrl: opts.apiBaseUrl });
+
+  const inboundMode = opts.inbound?.mode ?? "none";
+  const inboundRoutes: NonNullable<Augment["httpRoutes"]> = [];
+  let inboundLedger: AgentMailInboundLedger | undefined = opts._inboundLedger;
+  let ownsInboundLedger = false;
+  let sdkAdapters: AgentMailSdkAdapters | undefined = opts._sdkAdapters;
+  let inboundKernel: TransportKernel | undefined;
+  let inboundRegisteredName = "agent-mail";
+  let inboundWorker: AgentMailInboundWorker | undefined;
+  let liveSubscription: AgentMailEventSubscription | undefined;
+  let pollTimer: ReturnType<typeof setInterval> | undefined;
+  let drainTimer: ReturnType<typeof setInterval> | undefined;
+  let drainKickTimer: ReturnType<typeof setTimeout> | undefined;
+  let drainScheduled = false;
+  let draining = false;
+  let inboundReady = false;
+
+  function inboundPolicy() {
+    const config = opts.inbound!;
+    return {
+      allowedSenders: config.allowedSenders ?? [],
+      classifications: {
+        "message.received": config.classifications?.received,
+        "message.received.spam": config.classifications?.spam,
+        "message.received.blocked": config.classifications?.blocked,
+        "message.received.unauthenticated": config.classifications?.unauthenticated,
+      },
+      maxPromptBytes: config.maxPromptBytes,
+      maxAttempts: config.maxAttempts,
+    };
+  }
+
+  async function catchUpInbound(): Promise<void> {
+    if (!inboundLedger || !sdkAdapters) throw new Error("agentMail: inbound runtime is not booted");
+    await runAgentMailCatchUp({
+      reader: sdkAdapters.catchUp,
+      ledger: inboundLedger,
+      inboxId: opts.inboxId,
+    });
+  }
+
+  async function drainInbound(): Promise<void> {
+    if (draining || !inboundWorker) return;
+    draining = true;
+    try {
+      for (let i = 0; i < 100; i++) {
+        const result = await inboundWorker.processNext();
+        if (
+          result.status === "idle" ||
+          result.status === "retried" ||
+          result.status === "lease-lost"
+        ) {
+          return;
+        }
+      }
+    } catch (error) {
+      console.warn(`[agent-mail] inbound worker failed: ${(error as Error).message}`);
+    } finally {
+      draining = false;
+    }
+  }
+
+  function scheduleDrain(): void {
+    if (drainScheduled) return;
+    drainScheduled = true;
+    drainKickTimer = setTimeout(() => {
+      drainScheduled = false;
+      drainKickTimer = undefined;
+      void drainInbound();
+    }, 0);
+  }
+
+  const inboundTransport: Augment["transport"] =
+    inboundMode === "none"
+      ? undefined
+      : {
+          async register(kernel, augmentName) {
+            inboundKernel = kernel;
+            inboundRegisteredName = augmentName;
+          },
+          async ready() {
+            if (inboundReady) return;
+            if (!inboundKernel || !inboundLedger || !sdkAdapters) {
+              throw new Error("agentMail: inbound transport was not registered or booted");
+            }
+            inboundWorker = createAgentMailInboundWorker({
+              ledger: inboundLedger,
+              kernel: inboundKernel,
+              inboxId: opts.inboxId,
+              sourceAugment: inboundRegisteredName,
+              policy: inboundPolicy(),
+              onTurnPrepared: ({ envelope, trigger }) => {
+                seenMessagesByTurn.set(
+                  trigger.turnId,
+                  new Map([
+                    [
+                      envelope.message.messageId,
+                      {
+                        from: envelope.message.from,
+                        replyAllTo: [...envelope.message.to, ...envelope.message.cc].filter(
+                          (address) => address.toLowerCase() !== opts.inboxId.toLowerCase(),
+                        ),
+                      },
+                    ],
+                  ]),
+                );
+              },
+              onTurnSettled: ({ trigger }) => {
+                seenMessagesByTurn.delete(trigger.turnId);
+              },
+            });
+
+            if (inboundMode === "websocket") {
+              liveSubscription = await sdkAdapters.live.subscribe({
+                inboxId: opts.inboxId,
+                eventTypes: AGENTMAIL_RECEIVED_EVENT_TYPES,
+                onSubscribed: catchUpInbound,
+                onEvent: async (envelope) => {
+                  inboundLedger!.enqueue(envelope);
+                  scheduleDrain();
+                },
+                onError: (error) => {
+                  console.warn(`[agent-mail] WebSocket: ${error.message}`);
+                },
+              });
+            } else {
+              await catchUpInbound();
+            }
+
+            const pollIntervalMs = opts.inbound?.pollIntervalMs ?? 60_000;
+            if (inboundMode === "polling") {
+              pollTimer = setInterval(() => {
+                void catchUpInbound()
+                  .then(() => scheduleDrain())
+                  .catch((error) => {
+                    console.warn(`[agent-mail] catch-up failed: ${(error as Error).message}`);
+                  });
+              }, pollIntervalMs);
+              pollTimer.unref?.();
+            }
+            drainTimer = setInterval(() => void drainInbound(), 1_000);
+            drainTimer.unref?.();
+            inboundReady = true;
+            scheduleDrain();
+          },
+          identify: () => null,
+          concurrency: 1,
+          maxQueueDepth: 50,
+        };
 
   function effectiveRateLimit() {
     return { ...rateLimitOpts, globalMaxPerHour };
@@ -338,7 +502,7 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
       const gate = gateTrustLevel(context, "reply_to_message");
       if (!gate.allowed) return gate.envelope;
 
-      const meta = seenMessages.get(input.messageId);
+      const meta = seenMessagesFor(context).get(input.messageId);
       if (!meta) {
         const detail = `reply_to_message: messageId "${input.messageId}" was not delivered to the agent this turn. Reply only to messages from your inbound trigger.`;
         recordDispatch({
@@ -494,7 +658,7 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
       const gate = gateTrustLevel(context, "forward_message");
       if (!gate.allowed) return gate.envelope;
 
-      if (!seenMessages.has(input.messageId)) {
+      if (!seenMessagesFor(context).has(input.messageId)) {
         const detail = `forward_message: messageId "${input.messageId}" was not delivered to the agent this turn.`;
         recordDispatch({
           timestamp: timestampHHMMSS(now()),
@@ -624,6 +788,34 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
       );
     }
 
+    if (inboundMode !== "none") {
+      if (!inboundLedger) {
+        inboundLedger = createAgentMailInboundLedger({
+          dbPath: opts.dbPath ?? join(opts.agentDir ?? process.cwd(), "agent-mail.db"),
+          now,
+        });
+        ownsInboundLedger = true;
+      }
+      sdkAdapters ??= createAgentMailSdkAdapters({
+        apiKey: opts.apiKey,
+        apiBaseUrl: opts.apiBaseUrl,
+        websocketBaseUrl: opts.inbound?.websocketBaseUrl,
+      });
+      if (inboundMode === "webhook" && inboundRoutes.length === 0) {
+        const webhookOptions = opts.inbound?.webhook;
+        inboundRoutes.push(
+          createAgentMailWebhookRoute({
+            inboxId: opts.inboxId,
+            ledger: inboundLedger,
+            path: webhookOptions?.path,
+            secretEnv: webhookOptions?.secretEnv,
+            timestampToleranceSeconds: webhookOptions?.timestampToleranceSeconds,
+            onAccepted: scheduleDrain,
+          }),
+        );
+      }
+    }
+
     // Best-effort inbox healthcheck. Warn-and-continue on failure (transient
     // outage shouldn't block agent boot; the first real send surfaces the
     // same error). 4xx is a config error and DOES throw.
@@ -645,8 +837,22 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
   }
 
   async function onShutdown(): Promise<void> {
-    // Phase A has no persistent resources (no SQLite, no WS). Phase B will
-    // close the WS connection and SQLite handle here.
+    if (pollTimer) clearInterval(pollTimer);
+    if (drainTimer) clearInterval(drainTimer);
+    if (drainKickTimer) clearTimeout(drainKickTimer);
+    pollTimer = undefined;
+    drainTimer = undefined;
+    drainKickTimer = undefined;
+    drainScheduled = false;
+    await liveSubscription?.close();
+    liveSubscription = undefined;
+    inboundReady = false;
+    inboundWorker = undefined;
+    inboundKernel = undefined;
+    seenMessagesByTurn.clear();
+    if (ownsInboundLedger) inboundLedger?.close();
+    inboundLedger = opts._inboundLedger;
+    ownsInboundLedger = false;
   }
 
   // ---------------------------------------------------------------------------
@@ -885,21 +1091,24 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
   };
 
   // ---------------------------------------------------------------------------
-  // Test-only seam: expose the seenMessages map so Phase B's inbound
-  // dispatcher (and reply/forward unit tests) can mark messages as seen
-  // alongside the inbound envelope. Production callers do not touch this.
-  // Phase B will move this to a proper kernel hook.
+  // Test-only seam for reply/forward unit tests. Production inbound work uses
+  // the per-turn map populated by onTurnPrepared above.
   // ---------------------------------------------------------------------------
   const aug: Augment & {
     _markSeenForTest?: (messageId: string, meta: { from: string; replyAllTo?: string[] }) => void;
   } = {
     name: "agent-mail",
     tools: [sendMessageTool, replyToMessageTool, forwardMessageTool],
+    ...(inboundTransport ? { transport: inboundTransport } : {}),
+    ...(inboundMode === "webhook" ? { httpRoutes: inboundRoutes } : {}),
     onBoot,
     onShutdown,
     adminInfo,
     adminActions,
-    _markSeenForTest: (messageId, meta) => seenMessages.set(messageId, meta),
+    onTurnEnd: async (result) => {
+      seenMessagesByTurn.delete(result.turnId);
+    },
+    _markSeenForTest: (messageId, meta) => legacySeenMessages.set(messageId, meta),
   };
 
   return aug;

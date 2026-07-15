@@ -1,6 +1,7 @@
 # `agentMail` augment
 
-**Status:** Phase A (outbound) — shipping. Phase B (WebSocket / polling inbound) and Phase C (Svix-verified webhook inbound) tracked separately.
+**Status:** Outbound is stable. Policy-gated polling, WebSocket, and
+Svix-verified webhook inbound are available on the unreleased integration line.
 
 Post-v1 inbound requirement: when inbound is enabled, `agentMail` must not rely
 only on a live connection. It needs an arrival path (WebSocket/polling/webhook)
@@ -44,8 +45,17 @@ the secret is missing or malformed, replay tolerance cannot exceed five
 minutes, and the route acknowledges a received event only after the canonical
 envelope is in the durable ledger. Retries are deduplicated by inbox/message
 identity and provider event ID. The route factory is present as an ingestion
-primitive; inbound mode remains disabled until the turn worker and policy gates
-land in the next slice.
+primitive and feeds the same durable turn worker as REST and WebSocket input.
+
+Inbound activation is fail-closed. Enabling any inbound mode requires a
+non-empty sender allowlist using exact addresses or `*@domain` patterns.
+Ordinary `message.received` mail is processed by default; spam, blocked, and
+unauthenticated variants are durably discarded unless the operator explicitly
+changes the matching classification action. Even allowlisted senders remain
+`public/anonymous`: an email `From:` address never establishes creator or agent
+identity. Accepted bodies are JSON-escaped, marked as untrusted external data,
+and capped before normal kernel admission. The normal transport queue, turn
+budgets, tool visibility, lifecycle hooks, and public-peer preamble all apply.
 
 Sends email through AgentMail with per-peer trust gating, recipient allowlist, rate limits, dedup, sensitive-content auditing, and console API status blocks. Exposes three model-facing tools whose names align with AgentMail's MCP standard: `send_message`, `reply_to_message`, `forward_message`.
 
@@ -116,7 +126,32 @@ config:
       dedupWindowMs: 300000           # 5 min subject-hash dedup
 
   inbound:
-    mode: none  # Phase A only. Phase B will add "websocket"/"polling"; Phase C "webhook".
+    # none | polling | websocket | webhook
+    mode: websocket
+
+    # Required whenever mode is not none. This is an admission allowlist,
+    # never an identity or trust-level promotion.
+    allowedSenders:
+      - customer@example.com
+      - "*@trusted.example"
+
+    # Secure defaults shown explicitly. Opting a classification into process
+    # still leaves that sender at public/anonymous trust.
+    classifications:
+      received: process
+      spam: discard
+      blocked: discard
+      unauthenticated: discard
+
+    pollIntervalMs: 60000
+    maxPromptBytes: 102400
+    maxAttempts: 5
+
+    # Required block for mode: webhook. Values below are defaults.
+    # webhook:
+    #   path: /webhooks/agentmail
+    #   secretEnv: AGENTMAIL_WEBHOOK_SECRET
+    #   timestampToleranceSeconds: 300
 ```
 
 ## Environment variables
@@ -135,7 +170,9 @@ config:
 | `reply_to_message` | `{ messageId, text, html?, replyAll?, labels? }` | same envelope |
 | `forward_message` | `{ messageId, to[], text?, html?, subject?, labels? }` | same envelope |
 
-`messageId` for reply/forward must be one the agent saw via its inbound trigger this turn. Phase A has no inbound delivery, so these two tools always fail in Phase A unless a test seam pre-populates the seen-set.
+`messageId` for reply/forward must be one the agent saw in that exact inbound
+turn. The runtime removes the message scope when the turn settles, preventing a
+different web or email turn from replaying an old message ID.
 
 ## Guards (every outbound tool)
 
@@ -175,7 +212,9 @@ Recipients in the audit table are redacted (`al***@example.com (+2)`) so the adm
 
 ## What this augment does NOT do (yet)
 
-- **Inbound delivery** — Phase B (WebSocket + polling) and Phase C (Svix webhook) ship separately.
+- **Automatic free-form response delivery** — inbound turns are active, but a
+  plain assistant response is not automatically mailed. Use the gated
+  `reply_to_message` tool; additional human-review controls land separately.
 - **Attachments** — AgentMail supports base64; not yet implemented in the augment.
 - **Drafts** — AgentMail's `/drafts` endpoints are not exposed; defer.
 - **WebSocket transport for outbound events** — `message.sent` / `message.delivered` / `message.bounced` lands in the audit ring buffer once Phase B's inbound channel exists.

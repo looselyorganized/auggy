@@ -12,8 +12,12 @@ describe("agentMail catalog entry", () => {
     expect(entry!.defaultName).toBe("agentMail");
   });
 
-  test("declares AGENTMAIL_API_KEY and AGENTMAIL_INBOX_ID env vars", () => {
-    expect(entry!.envVars).toEqual(["AGENTMAIL_API_KEY", "AGENTMAIL_INBOX_ID"]);
+  test("declares AgentMail API, inbox, and optional webhook secret env vars", () => {
+    expect(entry!.envVars).toEqual([
+      "AGENTMAIL_API_KEY",
+      "AGENTMAIL_INBOX_ID",
+      "AGENTMAIL_WEBHOOK_SECRET",
+    ]);
   });
 
   test("ships with a bundled skill", () => {

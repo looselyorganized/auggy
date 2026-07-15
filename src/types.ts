@@ -1462,13 +1462,12 @@ export interface NotifyAdapter {
 }
 
 // ---------------------------------------------------------------------------
-// agentMail augment (outbound + Phase B/C inbound)
+// agentMail augment (outbound + durable inbound)
 // ---------------------------------------------------------------------------
 
 /**
- * Inbound delivery modes for the agentMail augment.
- * Phase A ships "none" only. Phase B adds "websocket" (recommended) + "polling".
- * Phase C adds "webhook" via the Svix signature scheme.
+ * Inbound delivery modes for the agentMail augment. WebSocket is recommended
+ * when a public webhook URL is unavailable; every mode performs REST catch-up.
  */
 export type AgentMailInboundMode = "none" | "websocket" | "polling" | "webhook";
 
@@ -1514,8 +1513,31 @@ export interface AgentMailOutboundOptions {
 }
 
 export interface AgentMailInboundConfig {
-  /** Inbound delivery channel. Phase A ships `"none"`. */
+  /** Inbound delivery channel. */
   mode: AgentMailInboundMode;
+  /** Exact sender addresses or `*@domain` patterns. Required when inbound is enabled. */
+  allowedSenders?: string[];
+  /** Classification gates. Only ordinary received mail is processed by default. */
+  classifications?: {
+    received?: "process" | "discard";
+    spam?: "process" | "discard";
+    blocked?: "process" | "discard";
+    unauthenticated?: "process" | "discard";
+  };
+  /** Poll/catch-up cadence. Default 60 seconds. */
+  pollIntervalMs?: number;
+  /** Max bytes rendered into the untrusted email prompt. Default 100 KiB. */
+  maxPromptBytes?: number;
+  /** Attempts before durable discard. Default 5. */
+  maxAttempts?: number;
+  /** WebSocket origin override for sandbox providers. */
+  websocketBaseUrl?: string;
+  /** Svix route configuration when mode is `"webhook"`. */
+  webhook?: {
+    path?: string;
+    secretEnv?: string;
+    timestampToleranceSeconds?: number;
+  };
 }
 
 export interface AgentMailAugmentOptions {
@@ -1525,11 +1547,11 @@ export interface AgentMailAugmentOptions {
   inboxId: string;
   /** Override AgentMail API base URL (testing/sandbox). */
   apiBaseUrl?: string;
-  /** SQLite store path for inbound dedup (Phase B+). Default `"./agent-mail.db"`. */
+  /** SQLite store path for inbound dedup. Default `"./agent-mail.db"`. */
   dbPath?: string;
   /** Outbound policy + tools configuration. */
   outbound?: AgentMailOutboundOptions;
-  /** Inbound configuration. Phase A: `{ mode: "none" }` only. */
+  /** Inbound configuration. Omit or use `{ mode: "none" }` to disable receiving. */
   inbound?: AgentMailInboundConfig;
   /**
    * Agent project directory. When set,

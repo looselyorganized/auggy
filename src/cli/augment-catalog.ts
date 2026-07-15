@@ -265,9 +265,9 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
   },
   {
     label: "Agent Mail",
-    tagline: "send email through AgentMail",
+    tagline: "send and receive email through AgentMail",
     description:
-      "Lets the agent send email (send / reply / forward) via AgentMail. Trust-level gate, recipient allowlist, rate limits, dedup, audit ring. Requires AGENTMAIL_API_KEY + AGENTMAIL_INBOX_ID.",
+      "Policy-gated AgentMail transport with durable polling, WebSocket, or Svix webhook inbound plus send / reply / forward tools. Inbound is disabled by default and requires an explicit sender allowlist.",
     type: "agentMail",
     defaultName: "agentMail",
     defaultOptions: {
@@ -290,7 +290,7 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
     },
     required: false,
     stability: "stable",
-    envVars: ["AGENTMAIL_API_KEY", "AGENTMAIL_INBOX_ID"],
+    envVars: ["AGENTMAIL_API_KEY", "AGENTMAIL_INBOX_ID", "AGENTMAIL_WEBHOOK_SECRET"],
     hasSkill: true,
   },
   {

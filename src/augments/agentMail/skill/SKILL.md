@@ -169,7 +169,7 @@ BAD:
 ## What you cannot do
 
 - Send from an inbox other than the one configured (you have exactly one).
-- Email attachments — Phase A is text + optional HTML only.
+- Email attachments — outbound is text + optional HTML only.
 - Verify whether a recipient read your message — AgentMail does not surface read receipts to this augment.
 - Retract a sent message — `status: "sent"` is final.
 

@@ -101,11 +101,26 @@ describe("config-parser: agentMail validation", () => {
     expect(() => parseConfig(path)).toThrow(/unknown mode/);
   });
 
-  test("rejects not-yet-implemented inbound modes (Phase A guard)", () => {
+  test("requires an explicit sender allowlist for enabled inbound modes", () => {
     const path = writeYaml(
       configWithAgentMail({ apiKey: "am_x", inboxId: "inb_x", inbound: { mode: "websocket" } }),
     );
-    expect(() => parseConfig(path)).toThrow(/not yet implemented/);
+    expect(() => parseConfig(path)).toThrow(/allowedSenders/);
+  });
+
+  test("accepts enabled inbound modes with policy configuration", () => {
+    for (const inbound of [
+      { mode: "websocket", allowedSenders: ["*@example.com"] },
+      { mode: "polling", allowedSenders: ["customer@example.com"], pollIntervalMs: 60_000 },
+      {
+        mode: "webhook",
+        allowedSenders: ["customer@example.com"],
+        webhook: { secretEnv: "AGENTMAIL_WEBHOOK_SECRET" },
+      },
+    ]) {
+      const path = writeYaml(configWithAgentMail({ apiKey: "am_x", inboxId: "inb_x", inbound }));
+      expect(() => parseConfig(path)).not.toThrow();
+    }
   });
 
   test("accepts inbound.mode = 'none'", () => {

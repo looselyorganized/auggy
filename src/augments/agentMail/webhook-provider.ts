@@ -27,6 +27,7 @@ export interface AgentMailWebhookRouteOptions {
   secretEnv?: string;
   timestampToleranceSeconds?: number;
   maxBodyBytes?: number;
+  onAccepted?: () => void;
 }
 
 export function createAgentMailWebhookRoute(
@@ -64,6 +65,7 @@ export function createAgentMailWebhookRoute(
       try {
         const envelope = normalizeAgentMailReceivedEvent(verified.event, "webhook", inboxId);
         const result = options.ledger.enqueue(envelope);
+        options.onAccepted?.();
         return json({ accepted: true, duplicate: result.status === "duplicate" });
       } catch (error) {
         if (error instanceof AgentMailPayloadError) {

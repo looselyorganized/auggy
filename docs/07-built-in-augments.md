@@ -19,7 +19,9 @@ Fourteen augments ship in `src/augments/` (plus `webTransport` under `src/transp
 - **`notify`** — outbound messaging to operator-configured destinations
 - **`mcp`** — external MCP server tools bridged into Auggy tools with
   allow/block lists and per-server/per-tool trust policy
-- **`agentMail`** — outbound email via AgentMail with per-peer trust gate, allowlist, rate limits, audit ring (Phase A; inbound in Phase B)
+- **`agentMail`** — durable policy-gated AgentMail inbound plus outbound send,
+  reply, and forward tools; inbound is disabled until a sender allowlist and
+  polling, WebSocket, or Svix webhook mode are configured.
 - **`turnControl`** — `request_input` for hand-off prompts
 - **`visitorAuth`** — email magic-link verification; promotes anonymous → recognized
 - **`link`** — peer-to-peer A2A v0.2 transport (preview mesh entry)

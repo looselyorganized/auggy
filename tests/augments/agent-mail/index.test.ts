@@ -3,6 +3,8 @@ import { mkdtempSync, rmSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { agentMail } from "../../../src/augments/agentMail";
+import { createAgentMailInboundLedger } from "../../../src/augments/agentMail/inbound-ledger";
+import type { AgentMailSdkAdapters } from "../../../src/augments/agentMail/sdk-provider";
 import type {
   AgentMailClient,
   ReplyMessageInput,
@@ -14,8 +16,12 @@ import type {
   AdminActionResult,
   AdminInfoBlock,
   PeerIdentity,
+  RouteWebhookContext,
   ToolExecuteContext,
   Tool,
+  TransportKernel,
+  TurnResult,
+  TurnTrigger,
 } from "../../../src/types";
 import { asStringTool } from "../../fixtures/tool-helpers";
 
@@ -127,10 +133,29 @@ describe("agentMail factory", () => {
     ).toThrow(/subjectPrefix/);
   });
 
-  test("throws when inbound.mode is not implemented (Phase A)", () => {
+  test("requires an explicit sender allowlist when inbound is enabled", () => {
     expect(() => agentMail({ ...baseOpts, inbound: { mode: "websocket" } })).toThrow(
-      /Phase A ships outbound only|not yet implemented/,
+      /allowedSenders/,
     );
+  });
+
+  test("exposes inbound behavior through a concrete transport field", () => {
+    const aug = agentMail({
+      ...baseOpts,
+      inbound: { mode: "polling", allowedSenders: ["*@example.com"] },
+    });
+    expect(aug.transport).toBeDefined();
+    expect("capabilities" in aug).toBe(false);
+    expect("supports" in aug).toBe(false);
+  });
+
+  test("requires webhook configuration for webhook mode", () => {
+    expect(() =>
+      agentMail({
+        ...baseOpts,
+        inbound: { mode: "webhook", allowedSenders: ["customer@example.com"] },
+      }),
+    ).toThrow(/inbound.webhook/);
   });
 });
 
@@ -852,6 +877,87 @@ describe("onBoot", () => {
   });
 });
 
+describe("inbound lifecycle", () => {
+  test("boot-populates a verified webhook route and dispatches admitted ledger work", async () => {
+    const { client, log } = fakeClient();
+    const ledger = createAgentMailInboundLedger({ dbPath: ":memory:" });
+    const triggers: TurnTrigger[] = [];
+    const aug = agentMail({
+      ...baseOpts,
+      _client: client,
+      _inboundLedger: ledger,
+      _sdkAdapters: emptySdkAdapters(),
+      inbound: {
+        mode: "webhook",
+        allowedSenders: ["customer@example.com"],
+        webhook: {},
+      },
+      outbound: {
+        allowedTrustLevels: ["public"],
+        allowedRecipients: ["customer@example.com"],
+      },
+    });
+
+    try {
+      expect(aug.httpRoutes).toHaveLength(0);
+      await aug.onBoot!();
+      expect(aug.httpRoutes).toHaveLength(1);
+      expect(aug.httpRoutes?.[0]?.policy).toMatchObject({
+        kind: "webhook.signature",
+        provider: "svix",
+      });
+
+      let inTurnReply: Record<string, unknown> | undefined;
+      await aug.transport!.register(
+        fakeInboundKernel(triggers, async (trigger) => {
+          const reply = asStr(tool(aug, "reply_to_message"));
+          inTurnReply = JSON.parse(
+            await reply.execute(
+              { messageId: "message_inbound", text: "Thanks" },
+              {
+                turnId: trigger.turnId,
+                threadId: trigger.threadId!,
+                peer: trigger.peer ?? null,
+              },
+            ),
+          );
+        }),
+        aug.name,
+      );
+      await aug.transport!.ready!();
+      const response = await aug.httpRoutes![0]!.handler(
+        new Request("https://example.test/webhooks/agentmail", { method: "POST" }),
+        {
+          signal: AbortSignal.timeout(1_000),
+          webhook: verifiedWebhook(receivedWebhookEvent()),
+        },
+      );
+      expect(response.status).toBe(200);
+
+      await eventually(() => triggers.length === 1);
+      expect(triggers[0]?.peer).toMatchObject({
+        trustLevel: "public",
+        publicSubstate: "anonymous",
+      });
+      expect(ledger.get(baseOpts.inboxId, "message_inbound")?.state).toBe("processed");
+      expect(inTurnReply?.status).toBe("sent");
+      expect(log.reply).toHaveLength(1);
+
+      const outOfTurn = JSON.parse(
+        await asStr(tool(aug, "reply_to_message")).execute(
+          { messageId: "message_inbound", text: "Replay" },
+          { turnId: "other-turn", threadId: "other-thread", peer: peer("public") },
+        ),
+      );
+      expect(outOfTurn.status).toBe("failed");
+      expect(log.reply).toHaveLength(1);
+    } finally {
+      await aug.onShutdown!();
+      ledger.close();
+    }
+  });
+});
+
 describe("onShutdown", () => {
   test("resolves cleanly with no resources to release (Phase A)", async () => {
     const { client } = fakeClient();
@@ -999,3 +1105,87 @@ describe("sensitive-content scan", () => {
     }
   });
 });
+
+function emptySdkAdapters(): AgentMailSdkAdapters {
+  return {
+    catchUp: {
+      listMessages: async () => ({ messages: [], nextPageToken: undefined }),
+      getMessage: async () => {
+        throw new Error("unexpected getMessage");
+      },
+    },
+    live: {
+      subscribe: async () => {
+        throw new Error("unexpected WebSocket subscription");
+      },
+    },
+  };
+}
+
+function fakeInboundKernel(
+  triggers: TurnTrigger[],
+  onInbound?: (trigger: TurnTrigger) => void | Promise<void>,
+): TransportKernel {
+  return {
+    handleInbound: async (trigger) => {
+      triggers.push(trigger);
+      await onInbound?.(trigger);
+      return { success: true, status: "completed", turnId: trigger.turnId } as TurnResult;
+    },
+    onOutbound: () => {},
+    getAgentCard: () => ({
+      provider: { name: "test" },
+      capabilities: { streaming: false, pushNotifications: false, memory: false, transport: true },
+      skills: [],
+      interfaces: [],
+      extensions: {},
+    }),
+    getAugmentRoutes: () => [],
+    getAugments: () => [],
+  };
+}
+
+function verifiedWebhook(event: unknown): RouteWebhookContext {
+  return {
+    kind: "webhook.signature",
+    provider: "svix",
+    event,
+    deliveryId: "delivery_inbound",
+    timestamp: 1,
+    receivedAt: 1_000,
+  };
+}
+
+function receivedWebhookEvent(): Record<string, unknown> {
+  return {
+    type: "event",
+    event_type: "message.received",
+    event_id: "event_inbound",
+    message: {
+      inbox_id: baseOpts.inboxId,
+      thread_id: "thread_inbound",
+      message_id: "message_inbound",
+      labels: ["received"],
+      timestamp: "2026-07-14T10:20:30.000Z",
+      from: "customer@example.com",
+      to: [baseOpts.inboxId],
+      subject: "Need help",
+      preview: "Can you help?",
+      text: "Can you help?",
+      size: 512,
+    },
+    thread: {
+      inbox_id: baseOpts.inboxId,
+      thread_id: "thread_inbound",
+      message_count: 1,
+    },
+  };
+}
+
+async function eventually(predicate: () => boolean): Promise<void> {
+  for (let i = 0; i < 50; i++) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 2));
+  }
+  throw new Error("condition was not met");
+}
