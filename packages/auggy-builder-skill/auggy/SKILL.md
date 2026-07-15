@@ -1,6 +1,6 @@
 ---
 name: auggy
-description: Build and troubleshoot Auggy agent-native backends with custom augments, defineRoute route shapes, tools, generated clients, Next.js, Supabase/Clerk or custom app auth, memory, deploy, and CLI workflows.
+description: Build and troubleshoot self-hosted Auggy agents with custom augments, tools, memory, transports, skills, MCP, deployment, and optional app-integration routes.
 allowedTrustLevels:
   - creator
 ---
@@ -46,7 +46,7 @@ Read the matching reference before answering in depth:
 
 | Creator asks about | Read |
 | --- | --- |
-| What Auggy is, why it matters, routes vs tools | `skills/auggy/references/mental-model.md` |
+| What Auggy is, why it matters, kernel and augment model | `skills/auggy/references/mental-model.md` |
 | Install, create/init, provider keys, run, doctor, deploy | `skills/auggy/references/cli-workflows.md` |
 | Custom augments, `httpRoutes`, `defineRoute`, `defineTool` | `skills/auggy/references/routes-tools-augments.md` |
 | Generated browser/server route clients | `skills/auggy/references/generated-clients.md` |
@@ -63,22 +63,21 @@ surface and then give concise default guidance from this skill.
 
 ## What Auggy Is
 
-Auggy is a TypeScript framework/runtime for agent-native app backends.
+Auggy is a small TypeScript runtime for self-hosted agents.
 
-- **Routes** are deterministic HTTP behavior for frontends, webhooks, jobs,
-  server actions, generated clients, and route-backed UI.
-- **Tools** are model-mediated capabilities used during conversation.
-- **Augments** own runtime capabilities. They can provide routes, tools,
-  memory, context, transports, lifecycle hooks, policy, skills, and operator
-  diagnostics.
+- **The kernel** runs turns: receive input, assemble context, call a model,
+  execute validated tools, and return a result.
+- **Augments** add runtime capabilities such as tools, memory, context,
+  transports, lifecycle hooks, policy, skills, and operator diagnostics.
+- **Tools** are typed, model-callable capabilities used during a turn.
 - **Skills** are markdown teaching files the model reads on demand.
 - **Knowledge** is reference material fetched when relevant.
 - **Identity** is durable operator-authored persona, behavior, and safety
   policy.
 
-Core rule: use routes when software should decide; use tools when the agent
-should mediate. Put shared domain logic behind both when they belong to the
-same capability.
+Core rule: recommend the smallest augment or skill that gives the agent the
+needed capability. Optional routes and app authorization are advanced preview
+surfaces, not requirements for a normal Auggy project.
 
 ## Build-Out Decision Matrix
 
@@ -96,8 +95,8 @@ Use `auggy augment add` with no arguments to open the augment selector. Use
 | Send email as the agent | `auggy augment add agentMail` | Model-callable outbound mail with recipient policy |
 | Add external tool servers | `auggy augment add mcp` | Bridge MCP tools with trust policy |
 | Chat over Telegram | `auggy augment add telegramTransport` | Bidirectional Telegram transport |
-| Add app-specific API, routes, tools, integrations | `auggy augment create <name>` | Custom runtime code owned by this agent |
-| Let a frontend/server job call agent backend routes | `auggy routes --client ts` | Typed route client generated from route manifests |
+| Add app-specific tools or integrations | `auggy augment create <name>` | Custom runtime code owned by this agent |
+| Expose optional frontend/server routes | `auggy routes --client ts` | Advanced preview: typed client generated from route manifests |
 | Execute shell commands | `auggy augment add bash` | Preview host process execution; requires explicit creator intent |
 | Track spend guardrails | `auggy augment add budgets` | Preview soft guardrails; provider hard caps still matter |
 | Connect agents to each other | `auggy augment add link` | Preview mesh/A2A surface; not a default recommendation |

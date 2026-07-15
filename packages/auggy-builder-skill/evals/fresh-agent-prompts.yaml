@@ -6,25 +6,25 @@ owners:
 lastUpdated: 2026-07-08
 purpose: >
   Forward-test whether a fresh coding agent can use the Auggy skill to explain,
-  scaffold, extend, wire, and troubleshoot an Auggy app-backend without prior
+  scaffold, extend, connect, and troubleshoot a self-hosted Auggy agent without prior
   conversation context.
 
 cases:
-  - id: explain-agent-native-backend
+  - id: explain-runtime-and-augments
     category: mental-model
     activation: explicit
     prompt: >
-      Use $auggy at packages/auggy-builder-skill/auggy to explain why an
-      agent-native backend matters for a concierge app. Be concrete about when
-      routes beat tools and when tools beat routes.
+      Use $auggy at packages/auggy-builder-skill/auggy to explain Auggy's small
+      kernel and augment model. Be concrete about when to use a skill, a typed
+      tool, an existing augment, or a custom augment, and identify routes as an
+      optional advanced capability.
     requiredReferences:
       - references/mental-model.md
-      - references/routes-tools-augments.md
     successCriteria:
-      - says routes are for deterministic software decisions
-      - says tools are for agent-mediated decisions
-      - gives a practical app backend example instead of generic agent prose
-      - does not call Auggy only a chat SDK
+      - says the kernel runs turns
+      - says augments add capabilities around the kernel
+      - distinguishes instructions from runtime capabilities
+      - does not present routes as required for every Auggy project
 
   - id: first-run-install-and-doctor
     category: cli

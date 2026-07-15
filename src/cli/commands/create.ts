@@ -941,9 +941,9 @@ function printWelcome(): void {
   console.log();
   console.log(` ${bold("auggy")}  ${dim("·  by the Loosely Organized Research Facility")}`);
   console.log();
-  console.log(" Auggy is a framework for agent-native app backends.");
-  console.log(" Ship routes, model-mediated workflows, memory, tools,");
-  console.log(" and operator controls from one self-hosted project.");
+  console.log(" Auggy is a small runtime for self-hosted agents.");
+  console.log(" Start with a working agent, then add the tools, memory,");
+  console.log(" transports, skills, and policy it needs through augments.");
   console.log();
   console.log(dim(" ─────────────────────────────────────────────"));
   console.log();

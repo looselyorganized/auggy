@@ -1,176 +1,135 @@
 # Auggy Documentation
 
-Auggy is a Bun/TypeScript framework for agent-native app backends: self-hosted
-projects where deterministic routes, model-mediated workflows, memory,
-identity, tools, and operator controls are composed from augments. This
-directory contains reference docs, operator guides, strategy notes, historical
-plans, and research artifacts.
+Auggy is a small Bun/TypeScript runtime for building self-hosted agents from
+composable augments. The kernel runs agent turns; augments add tools, memory,
+transports, context, skills, policy, and integrations.
 
-For install and first-run instructions, start with the root
+For installation and first-run instructions, start with the root
 [`README.md`](../README.md).
 
-## Current strategy
+## Start Here
 
-The canonical product roadmap is [`ROADMAP.md`](./ROADMAP.md). The compact
-status matrix is [`FEATURES.md`](./FEATURES.md).
+- [Architecture Overview](./02-architecture-overview.md)
+- [Built-In Augments](./07-built-in-augments.md)
+- [Agent Lifecycle](./08-agent-lifecycle.md)
+- [Skills](./11-skills.md)
+- [Storage Layout](./16-storage-layout.md)
+- [Deploy](./18-deploy.md)
+- [Console](./21-console.md)
+- [Feature Status](./FEATURES.md)
 
-The current north star:
+## Mental Model
 
-> Auggy is the agent-native backend layer: deterministic APIs,
-> agent-mediated workflows, memory, identity, tools, operator controls, and
-> policy composed from augments.
+An Auggy project has four central concepts:
 
-Supporting strategy notes:
+1. **Agent** — a portable project with identity, configuration, skills, and
+   enabled augments.
+2. **Kernel** — the fixed runtime that receives input, assembles context, calls
+   a model, executes tools, and returns a turn result.
+3. **Augment** — the single extension surface for tools, context, memory,
+   transports, policy, routes, and lifecycle behavior.
+4. **Peer** — the human, agent, or system interacting with the runtime.
 
-- [Agent-Native App Backends](./use-cases/agent-native-app-backends.md)
-- [Agent-Native Backend Before And After](./use-cases/agent-native-backend-before-after.md)
-- [Agent-Native Backend Market Scan](./use-cases/agent-native-backend-market-scan.md)
-- [App Backend Architecture Strategy](./use-cases/app-backend-architecture-strategy.md)
-- [App Backend Route Use Cases](./use-cases/app-backend-route-use-cases.md)
-- [Auth Strategy for Agent-Native Apps](./use-cases/auth-strategy.md)
-- [Agent-Native Websites](./use-cases/agent-native-websites.md)
-- [Augments Over Tools: Use Cases](./23-augments-over-tools-use-cases.md)
+The current runtime is turn-oriented. It does not yet provide durable workflow
+execution or a persistent job queue.
 
-## Source authority
+## Source Authority
 
-Use this order when docs appear to disagree:
+Use this order when documentation disagrees:
 
-1. **Code in `src/`** defines current runtime behavior.
-2. **Numbered reference docs** (`01-26`) explain the current architecture and
-   should be updated when code changes.
-3. **`FEATURES.md` and `ROADMAP.md`** describe feature status and release
-   direction.
-4. **`docs/use-cases/`** describes product direction and planned architecture.
-   These notes may name concepts that do not exist yet.
-5. **`docs/plans/`, `docs/superpowers/*/archive/`, `docs/use-cases/archive/`,
-   research papers, and
-   previews** are historical or exploratory unless another current reference
-   doc explicitly promotes them.
+1. **Code in `src/`** defines current behavior.
+2. **Numbered reference docs** explain the implemented architecture.
+3. **`FEATURES.md`** summarizes current package status.
+4. **Use-case documents** are exploratory and may describe optional or future
+   applications of existing primitives.
+5. **Plans, archived specs, research, and previews** preserve design context;
+   they are not public product commitments.
 
-Historical docs are still useful for rationale, but they are not contracts for
-today's runtime.
-
-## Current system invariants
-
-These are the baseline assumptions for current architecture work:
+## Runtime Invariants
 
 - `agent.yaml` is the runtime source of truth for an agent project.
-- `identity.md` is stable operator-authored identity and policy context. It is
-  not a skill manifest and should not store learned peer facts.
-- `skills/` contains model-readable teaching files. The `skills` augment lists
-  mounted skills; the filesystem augment lets the model read them on demand.
-- `knowledge/` contains read-only reference sources installed by the
-  `knowledge` augment.
-- `data/` contains durable augment/runtime state such as SQLite files and
-  workspace data.
-- Secrets and external credentials live in `.env` or provider-owned systems,
-  not in prompt-visible files.
-- Runtime authentication and authorization are deterministic transport/runtime
-  decisions. The model does not decide who is authorized.
-- Current runtime trust levels are `creator`, `agent`, and `public`.
-  Team/internal app users are modeled today as `public` + `recognized` with
-  app-minted delegated scopes/grants; multi-operator/team trust is future work.
-- Learned or peer-derived memory must not be injected as operator-authored
-  system truth. Mutable memory should use derived origins and non-authoritative
-  placement unless explicitly promoted by an operator-controlled flow.
+- `identity.md` contains stable operator-authored identity and boundaries.
+- `skills/` contains model-readable instructions for using capabilities.
+- `data/` contains mutable runtime and augment state.
+- Secrets live in `.env` or provider-owned systems, not prompt-visible files.
+- Authentication and authorization are deterministic runtime decisions; the
+  model does not decide who a caller is or what they may do.
+- Learned or peer-derived memory is not injected as operator-authored truth.
+- Built-in and custom behavior use the same augment boundary.
 
-## Reference docs
-
-These docs should match the code in `src/`. If code and docs disagree, the code
-is the source of truth and the docs should be fixed.
+## Reference Documentation
 
 | Doc | What it covers |
 | --- | --- |
-| [Feature Status](./FEATURES.md) | Compact status matrix for published, on-main, planned, preview, and vision work |
-| [01 Philosophy](./01-philosophy.md) | Why Auggy exists and what it does not try to be |
+| [Feature Status](./FEATURES.md) | Current core, add-on, and preview capability status |
+| [01 Philosophy](./01-philosophy.md) | Runtime motivation and design principles |
 | [02 Architecture Overview](./02-architecture-overview.md) | Module map and turn data flow |
 | [03 Types](./03-types.md) | Shared runtime contracts |
-| [04 Kernel](./04-kernel.md) | Turn loop, allocator, capability table, history, tool selection |
-| [05 Memory Subsystem](./05-memory-subsystem.md) | Memory providers, registry, memory bus, generic memory tools |
-| [06 Transports](./06-transports.md) | Transport contract, web transport, AG-UI SSE |
-| [07 Built-In Augments](./07-built-in-augments.md) | Built-in augment catalog and conventions |
-| [08 Agent Lifecycle](./08-agent-lifecycle.md) | `defineAgent`, `AgentHandle`, lifecycle hooks, agent card |
+| [04 Kernel](./04-kernel.md) | Turn loop, context allocation, history, and tool execution |
+| [05 Memory Subsystem](./05-memory-subsystem.md) | Memory providers, registry, and tools |
+| [06 Transports](./06-transports.md) | Transport contract and AG-UI web transport |
+| [07 Built-In Augments](./07-built-in-augments.md) | Built-in augment catalog and configuration |
+| [08 Agent Lifecycle](./08-agent-lifecycle.md) | `defineAgent`, handles, and lifecycle hooks |
 | [09 Testing](./09-testing.md) | Test strategy and fixtures |
-| [10 System Diagrams](./10-system-diagrams.md) | Architecture diagrams and system maps |
-| [11 Skills](./11-skills.md) | Skill folders and model-facing skill surface |
-| [12 Budgets](./12-budgets.md) | Budget augment and turn-gate cost controls |
+| [10 System Diagrams](./10-system-diagrams.md) | Runtime architecture diagrams |
+| [11 Skills](./11-skills.md) | Skill folders and model-facing instructions |
+| [12 Budgets](./12-budgets.md) | Preview spend guardrails |
 | [13 Notify](./13-notify.md) | Outbound notification augment |
-| [14 Telegram Transport](./14-telegram-transport.md) | Telegram transport setup and identity mapping |
-| [16 Storage Layout](./16-storage-layout.md) | Agent project layout and deploy metadata |
-| [17 Turn Control](./17-turn-control.md) | `request_input` and input-required turns |
-| [18 Deploy](./18-deploy.md) | Railway deploy path and recovery |
-| [19 Visitor Auth](./19-visitor-auth.md) | Email magic-link verification and visitor tokens |
-| [20 Embedding](./20-embedding.md) | Visitor-side frontend/AG-UI integration primitives |
-| [21 Console](./21-console.md) | Creator console surface |
+| [14 Telegram Transport](./14-telegram-transport.md) | Telegram setup and identity mapping |
+| [16 Storage Layout](./16-storage-layout.md) | Agent project layout and runtime data |
+| [17 Turn Control](./17-turn-control.md) | Input-required turns |
+| [18 Deploy](./18-deploy.md) | Railway deployment and recovery |
+| [19 Visitor Auth](./19-visitor-auth.md) | Email magic-link recognition |
+| [20 Embedding](./20-embedding.md) | Browser and AG-UI integration |
+| [21 Console](./21-console.md) | Creator console |
 | [22 Agent Mail](./22-agent-mail.md) | AgentMail augment |
-| [24 MCP](./24-mcp.md) | MCP augment, local/remote servers, deploy posture |
-| [25 Generated Route Clients](./25-generated-route-clients.md) | TypeScript route client generation, targets, auth config, result handling |
-| [26 Delegated Authorization](./26-delegated-authorization.md) | App-session auth bridge, external assertions, route/tool `requires` |
+| [24 MCP](./24-mcp.md) | Local and remote MCP servers |
+| [25 Generated Route Clients](./25-generated-route-clients.md) | Preview route manifests and clients |
+| [26 Delegated Authorization](./26-delegated-authorization.md) | Preview app-session authorization bridge |
 
-## Use cases and product strategy
+## Common Add-Ons
 
-Use-case docs are exploratory but should stay grounded in real Auggy
-primitives.
+### Knowledge and memory
 
-- [Use Cases Index](./use-cases/README.md)
-- [Agent-Native App Backends](./use-cases/agent-native-app-backends.md)
-- [Agent-Native Backend Before And After](./use-cases/agent-native-backend-before-after.md)
-- [Agent-Native Backend Market Scan](./use-cases/agent-native-backend-market-scan.md)
-- [App Backend Architecture Strategy](./use-cases/app-backend-architecture-strategy.md)
-- [App Backend Route Use Cases](./use-cases/app-backend-route-use-cases.md)
-- [Auth Strategy for Agent-Native Apps](./use-cases/auth-strategy.md)
-- [Agent-Native Websites](./use-cases/agent-native-websites.md)
-- [Augments Over Tools: Use Cases](./23-augments-over-tools-use-cases.md)
+- [Memory Subsystem](./05-memory-subsystem.md)
+- [Built-In Augments: Knowledge](./07-built-in-augments.md)
+- [Visitor Auth](./19-visitor-auth.md)
 
-## Examples
+### Tools and integrations
 
-- [Concierge example](../examples/concierge/README.md) — public route/tool
-  domain example.
-- [App auth bridge example](../examples/app-auth-bridge/README.md) —
-  Supabase/Clerk-style app sessions, generated route clients, delegated
-  route/tool authorization, key rotation, and replay protection.
+- [MCP](./24-mcp.md)
+- [Notify](./13-notify.md)
+- [AgentMail](./22-agent-mail.md)
 
-## Plans
+### Channels
 
-Plans are implementation-specific or historical. They are useful context, but
-they are not the canonical roadmap.
+- [Web Transport](./06-transports.md)
+- [Telegram Transport](./14-telegram-transport.md)
+- [Embedding](./20-embedding.md)
 
-- [OSS v1 DX Execution Plan](./plans/oss-v1-dx-execution-plan.md) — historical
-  execution plan for v1 CLI/DX work.
-- [V1 Canonical Creator Identity](./plans/v1-canonical-creator-identity.md) —
-  accepted v1 identity decision for mapping verified creator surfaces to one
-  canonical runtime peer.
-- [Agent Project + Package Split Plan](./plans/agent-project-package-split.md)
-  — historical/package-layout plan; remaining future work should be tracked in
-  [`ROADMAP.md`](./ROADMAP.md).
-- [Auggy Builder Skill Plan](./plans/auggy-builder-skill-plan.md) —
-  companion-skill plan for Claude, Codex, Cursor, and other coding agents that
-  should be able to explain, set up, extend, and validate Auggy projects.
-- [Learned Behaviors Compatibility Plan](./plans/learned-behaviors-compatibility-plan.md)
-  — migration plan for renaming/repositioning `learned.md` as
-  agent-global learned behavior without breaking existing agents.
+## Advanced Preview: App Integration
+
+Custom augments can expose small policy-aware HTTP routes beside the agent
+runtime. The current preview includes route schemas, inspection, generated
+TypeScript clients, and delegated app authorization.
+
+These are optional integration capabilities, not the definition of every
+Auggy project and not a replacement for a general application backend.
+
+- [Generated Route Clients](./25-generated-route-clients.md)
+- [Delegated Authorization](./26-delegated-authorization.md)
+- [Concierge Example](../examples/concierge/README.md)
+- [App Auth Bridge Example](../examples/app-auth-bridge/README.md)
+
+## Exploratory Material
+
+`docs/use-cases/`, `docs/plans/`, `docs/research/`, and archived design specs
+contain useful rationale and product exploration. Treat them as internal design
+material unless a current reference document explicitly promotes a behavior.
 
 ## Operations
 
-- [Todos](./todos.md) — small bugs, UX issues, and polish only.
-- [0.5 Public Preview Launch](./0.5-preview-launch.md) — package posture,
-  launch readiness, and website handoff for the app-backend preview.
-- [Releasing](./RELEASING.md) — release process and checks.
-- [Eval Testing Plan](./eval-testing-plan.md) — security eval harness design.
-
-## Research and background
-
-Research artifacts are dated inputs to design decisions. They are not always
-current product commitments.
-
-- [Research Provenance](./research/research-provenance.md)
-- [Agent Eval Landscape 2026](./research/eval-landscape-2026-04-08.md)
-- [Rust Hybrid Analysis](./research/rust-hybrid-analysis-2026-04-09.md)
-- [Skill Folder Pattern](./research/skill-folder-pattern-2026-04-09.md)
-- [Budget-Aware Agents](./research/budget-aware-agents-2026-04-24.md)
-- [Twelve Papers on Agent Runtimes](./papers/2026-04-14-twelve-papers-on-agent-runtimes.md)
-
-## Previews
-
-`docs/previews/` contains static design experiments. Treat them as visual
-exploration, not shipped contracts.
+- [Releasing](./RELEASING.md)
+- [0.5 Public Preview Launch](./0.5-preview-launch.md)
+- [Todos](./todos.md)
+- [Eval Testing Plan](./eval-testing-plan.md)

@@ -1,52 +1,48 @@
 # Auggy 0.5 Preview Surface
 
-0.5 is a public preview for building agent-native app backends in TypeScript.
-It is useful now, but not a 1.0 stability promise.
+0.5 is a public preview of Auggy's small TypeScript agent runtime. It is useful
+now, but not a `1.0` stability promise.
 
 ## Ready To Demonstrate
 
-- `auggy create`
-- default `/console/chat`
-- file memory for `identity.md` and `learned-behaviors.md`
-- skill manifest plus on-demand `SKILL.md` reads
-- custom augments
-- `defineRoute` and `defineTool`
-- route manifests, JSON, OpenAPI-style output
-- generated TypeScript route clients
-- browser/server route-client target split
-- response schemas for successful route data
-- visitor auth and visitor tokens
-- external auth assertions for app-owned auth bridges
-- delegated route/tool authorization with `requires`
-- replay protection for external auth assertions
-- Stripe webhook signature policy
-- notify, agentMail outbound setup, knowledge, webFetch, MCP, Telegram
-- Railway deploy path
+- install, create, run, doctor, and deploy workflows,
+- the default console chat,
+- a fixed turn kernel with provider adapters,
+- composable built-in and custom augments,
+- typed tools,
+- identity, learned behavior, skills, and scoped filesystem access,
+- knowledge, web fetch, layered memory, and visitor recognition,
+- notify, AgentMail outbound, MCP, and Telegram,
+- Railway deployment.
 
-## Preview Or Use With Care
+## Advanced Preview
 
-- `bash`: host process execution, not a sandbox; creator-only intent required.
-- `budgets`: soft runtime guardrails; provider hard caps still matter.
-- `link`: early agent mesh/A2A direction.
-- generated client helper shape: `createAuggyClient` is emitted per generated
-  file and is not a package export yet.
-- app-builder companion skill packaging: in progress.
+- augment-owned GET/POST routes,
+- route manifests and OpenAPI-shaped output,
+- generated TypeScript route clients,
+- delegated app authorization,
+- Stripe webhook signature policy.
 
-## Not The Goal
+These capabilities are optional and do not make Auggy a general app backend.
 
-Do not position Auggy 0.5 as:
+## Use With Care
 
-- a replacement for Next.js, Supabase, Clerk, Stripe, Shopify, Rails, or
-  Postgres
-- a general-purpose identity provider
-- a full API framework
-- a fully stable 1.0 public API
-- a public OSS repository during private preview
+- `bash`: host process execution, not a sandbox.
+- `budgets`: soft runtime guardrails, not billing control.
+- `link`: configured peer traffic, not an open agent mesh.
+- generated client helper shape may change before `1.0`.
+
+## Not In This Release
+
+- durable workflow execution,
+- a persistent job queue,
+- first-class artifact/image handling,
+- a stable `1.0` public API.
 
 ## Launch Posture
 
-- npm package can be public.
-- Source repo may remain private during preview.
+- npm package is public preview software.
+- Source may remain private during preview.
 - License is Apache-2.0.
-- Public docs and support paths should be on `auggy.dev`.
-- NPM publish should be the final launch step after the walkthrough.
+- Public docs and support live on `auggy.dev`.
+- Pin exact versions for production work.

@@ -1,86 +1,70 @@
 # Auggy Mental Model
 
-Auggy is a TypeScript framework/runtime for agent-native app backends. It is
-not only a chat SDK and not only an LLM wrapper.
+Auggy is a small TypeScript runtime for building self-hosted agents from
+composable augments.
 
 The core product idea:
 
-- Use routes when software should decide.
-- Use tools when the agent should mediate.
-- Put shared domain logic behind both when they represent the same capability.
-- Keep auth, authorization, route exposure, memory, rate limits, and operator
-  posture as deterministic runtime behavior.
+- the kernel runs agent turns,
+- augments add the capabilities around those turns,
+- agent projects remain ordinary files and TypeScript,
+- operators install only what a particular agent needs.
 
 ## Primitives
 
 | Primitive | What it is | Use it for |
 | --- | --- | --- |
-| Augment | Runtime module mounted at boot | tools, routes, context, memory, transports, lifecycle hooks, policy |
-| Route | Deterministic HTTP behavior | apps, webhooks, generated clients, server jobs, route-backed UI |
-| Tool | Model-callable function | conversation-mediated lookup, drafting, intake, escalation, action |
+| Agent | Portable configured project | identity, engine, skills, enabled augments |
+| Kernel | Fixed turn runtime | context assembly, model calls, tool loops, results |
+| Augment | Runtime module mounted at boot | tools, context, memory, transports, lifecycle, policy |
+| Tool | Typed model-callable function | lookup, drafting, communication, action |
 | Skill | Markdown teaching file | when and how to use capabilities |
 | Knowledge | Fetchable reference material | docs, FAQs, product facts, policies |
 | Identity | Durable operator-authored behavior | persona, boundaries, non-negotiable rules |
 
 Augments are infrastructure. Tools are mechanism. Skills are teaching.
 
-## Why Agent-Native Backends Matter
-
-In a normal app, teams often build a form route, a chat tool, a webhook handler,
-and an admin job as separate surfaces. They drift:
-
-- validation differs
-- auth differs
-- rate limits differ
-- audit logging differs
-- business logic gets copied
-- chat can accidentally allow what the app route denies
-
-In Auggy, an augment can own both faces of a capability:
+## A Turn
 
 ```text
-frontend / webhook / server job
-  -> deterministic route
-  -> shared domain function
-
-agent conversation
-  -> model-callable tool
-  -> same shared domain function
+inbound message
+  -> transport identifies the peer
+  -> augments contribute context and memory
+  -> kernel calls the configured model
+  -> model requests typed tools when needed
+  -> kernel validates and executes tool calls
+  -> transport returns the result
 ```
 
-That is the winning architecture when a product needs both normal app UX and
-agent-mediated workflows.
+The runtime is turn-oriented. It does not currently provide a durable workflow
+engine or persistent job queue.
 
-## Route Or Tool
+## Choosing An Extension Point
 
-Choose a route when the caller already knows what it needs and the system
-should respond predictably:
+Use identity for durable persona and safety boundaries.
 
-- catalog search
-- availability lookup
-- lead creation
-- account lookup
-- checkout handoff
-- webhook receive
-- admin reindex
+Use a skill when the agent needs instructions or examples but no new runtime
+capability.
 
-Choose a tool when the agent needs to apply judgment:
+Use knowledge when the agent needs reference material fetched on demand.
 
-- decide which catalog query to run
-- ask clarifying questions before lead capture
-- compare options
-- draft a booking request
-- escalate to the creator
-- use memory and knowledge to tailor the action
+Use an existing augment for a supported capability such as memory, MCP,
+Telegram, notifications, or visitor recognition.
 
-Use both when the same capability should work from UI and conversation.
+Write a custom augment when the agent needs new tools, integrations, context,
+policy, lifecycle behavior, or a transport.
 
-## What Auggy Should Not Replace
+Use preview shell access only when a narrower typed tool cannot solve the task.
 
-Do not frame Auggy as a replacement for Next.js, Supabase, Clerk, Rails,
-Fastify, Shopify, Stripe, or Postgres. Auggy sits beside them when the app
-needs an agent-native backend: deterministic routes and model-mediated tools
-with shared runtime policy.
+## Optional Routes
 
-Keep existing auth providers, databases, frontends, and payment systems. Let
-Auggy mediate agent behavior and own agent-facing runtime boundaries.
+Custom augments may also expose small deterministic HTTP routes for a frontend,
+webhook, or server integration. Route manifests, generated clients, and
+delegated app authorization are advanced preview capabilities.
+
+Use a route when software already knows the exact operation it needs. Use a
+tool when the model should mediate the operation during a conversation. They do
+not need to duplicate each other.
+
+Routes are optional. Auggy is not a replacement for Next.js, Fastify, Rails,
+Postgres, an identity provider, or a durable workflow system.

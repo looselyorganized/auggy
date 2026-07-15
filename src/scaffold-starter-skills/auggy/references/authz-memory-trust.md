@@ -86,7 +86,7 @@ Interpret `memory_write` results literally:
 Apps that already use Supabase Auth, Clerk, Auth0, SSO, or custom sessions
 should keep that system as the source of truth.
 
-For copyable app-backend bridge files, inspect
+For copyable app-auth bridge files, inspect
 `skills/auggy/assets/templates/app-auth-bridge/`.
 For a complete protected route/tool walkthrough, read
 `skills/auggy/references/app-auth-bridge-e2e.md`.

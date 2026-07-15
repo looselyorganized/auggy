@@ -1,7 +1,7 @@
 interface:
   display_name: "Auggy Builder"
-  short_description: "Build and explain Auggy app backends"
-  default_prompt: "Use $auggy to set up or extend an Auggy agent-native app backend."
+  short_description: "Build and explain self-hosted Auggy agents"
+  default_prompt: "Use $auggy to set up or extend a self-hosted Auggy agent."
 
 policy:
   allow_implicit_invocation: true

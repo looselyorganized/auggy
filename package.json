@@ -1,7 +1,7 @@
 {
   "name": "auggy",
   "version": "0.5.0",
-  "description": "TypeScript framework for agent-native app backends: routes, tools, auth, memory, and operator controls.",
+  "description": "Small Bun/TypeScript runtime for building self-hosted agents from composable augments.",
   "keywords": [
     "agent",
     "agents",
@@ -13,17 +13,19 @@
     "llm",
     "runtime",
     "framework",
-    "backend",
-    "app-backend",
-    "routes",
+    "self-hosted",
+    "composable",
+    "augments",
     "tools",
-    "authorization",
+    "skills",
+    "transports",
     "bun",
     "typescript",
     "memory",
     "sqlite",
     "a2a",
-    "ag-ui"
+    "ag-ui",
+    "mcp"
   ],
   "license": "Apache-2.0",
   "author": "LORF (Loosely Organized Research Facility)",

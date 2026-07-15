@@ -54,15 +54,15 @@ describe("auggy builder skill mirrors", () => {
     const frontmatter = skill.split("---")[1] ?? "";
 
     for (const trigger of [
+      "self-hosted Auggy agents",
       "custom augments",
-      "defineRoute route shapes",
       "tools",
-      "generated clients",
-      "Next.js",
-      "Supabase/Clerk",
-      "custom app auth",
       "memory",
-      "deploy",
+      "transports",
+      "skills",
+      "MCP",
+      "deployment",
+      "app-integration routes",
       "troubleshoot",
     ]) {
       expect(frontmatter, trigger).toContain(trigger);
