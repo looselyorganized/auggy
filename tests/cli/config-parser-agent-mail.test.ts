@@ -169,16 +169,54 @@ describe("config-parser: agentMail validation", () => {
 
   test("accepts explicit outbound human-review policy", () => {
     const path = writeYaml(
+      configWithAgentMail(
+        {
+          apiKey: "am_x",
+          inboxId: "inb_x",
+          outbound: {
+            allowedTrustLevels: ["public"],
+            humanReview: { requiredForTrustLevels: ["public"], expiresAfterMs: 60_000 },
+          },
+        },
+        [{ name: "web", type: "webTransport", options: { port: 0 } }],
+      ),
+    );
+    expect(() => parseConfig(path)).not.toThrow();
+  });
+
+  test("rejects active human review without a creator-authenticated web route", () => {
+    const path = writeYaml(
       configWithAgentMail({
         apiKey: "am_x",
         inboxId: "inb_x",
         outbound: {
           allowedTrustLevels: ["public"],
-          humanReview: { requiredForTrustLevels: ["public"], expiresAfterMs: 60_000 },
+          humanReview: { requiredForTrustLevels: ["public"] },
         },
       }),
     );
-    expect(() => parseConfig(path)).not.toThrow();
+    expect(() => parseConfig(path)).toThrow(/human review requires a webTransport/);
+
+    const disabledAdmin = writeYaml(
+      configWithAgentMail(
+        {
+          apiKey: "am_x",
+          inboxId: "inb_x",
+          outbound: {
+            allowedTrustLevels: ["public"],
+            humanReview: { requiredForTrustLevels: ["public"] },
+          },
+        },
+        [
+          {
+            name: "web",
+            type: "webTransport",
+            options: { port: 0, adminRoute: false },
+          },
+        ],
+      ),
+    );
+    expect(() => parseConfig(disabledAdmin)).toThrow(/adminRoute enabled/);
   });
 
   test("rejects malformed outbound human-review policy", () => {

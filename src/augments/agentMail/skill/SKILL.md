@@ -81,7 +81,7 @@ Delivered to AgentMail. Save `messageId` if you might want to reply or forward l
 ```json
 { "status": "pending_review", "reviewId": "…", "expiresAt": "…" }
 ```
-The exact email action is waiting for an operator. Do not retry or claim it was sent. Tell the peer it is pending review; the operator can inspect it and approve with the returned fingerprint, or reject it, through the authenticated admin action API.
+The exact email action is waiting for an operator. Do not retry or claim it was sent. Tell the peer it is pending review; the operator can inspect it through the creator-authenticated review detail route, then approve with the returned fingerprint or reject it through the admin action API.
 
 ```json
 { "status": "rate_limited", "message": "…", "retryAfterSec": 180 }

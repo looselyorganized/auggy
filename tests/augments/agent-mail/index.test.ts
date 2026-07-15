@@ -949,10 +949,15 @@ describe("inbound lifecycle", () => {
     });
 
     try {
-      expect(aug.httpRoutes).toHaveLength(0);
-      await aug.onBoot!();
       expect(aug.httpRoutes).toHaveLength(1);
-      expect(aug.httpRoutes?.[0]?.policy).toMatchObject({
+      const reviewRoute = aug.httpRoutes!.find(
+        (route) => route.path === "/agentmail/reviews/:reviewId",
+      );
+      expect(reviewRoute).toMatchObject({ method: "GET", auth: "creator" });
+      await aug.onBoot!();
+      expect(aug.httpRoutes).toHaveLength(2);
+      const webhookRoute = aug.httpRoutes!.find((route) => route.path === "/webhooks/agentmail");
+      expect(webhookRoute?.policy).toMatchObject({
         kind: "webhook.signature",
         provider: "svix",
       });
@@ -975,7 +980,7 @@ describe("inbound lifecycle", () => {
         aug.name,
       );
       await aug.transport!.ready!();
-      const response = await aug.httpRoutes![0]!.handler(
+      const response = await webhookRoute!.handler(
         new Request("https://example.test/webhooks/agentmail", { method: "POST" }),
         {
           signal: AbortSignal.timeout(1_000),
@@ -994,6 +999,10 @@ describe("inbound lifecycle", () => {
       expect(log.reply).toHaveLength(0);
 
       const reviewId = String(inTurnReply?.reviewId);
+      const redactedAdmin = JSON.stringify(await aug.adminInfo!());
+      expect(redactedAdmin).not.toContain("Thanks");
+      expect(redactedAdmin).not.toContain("customer@example.com");
+      expect(redactedAdmin).toContain(`/agentmail/reviews/${reviewId}`);
       const rejectedFingerprint = await aug.adminActions!["agentmail-review-approve"]!({
         reviewId,
         fingerprint: "not-the-inspected-action",
@@ -1001,9 +1010,19 @@ describe("inbound lifecycle", () => {
       expect(rejectedFingerprint.ok).toBe(false);
       expect(log.reply).toHaveLength(0);
 
-      const inspection = await aug.adminActions!["agentmail-review-inspect"]!({ reviewId });
-      expect(inspection.ok).toBe(true);
-      const inspected = JSON.parse(inspection.message);
+      expect(aug.adminActions!["agentmail-review-inspect"]).toBeUndefined();
+      const inspection = await reviewRoute!.handler(
+        new Request(`https://example.test/agentmail/reviews/${reviewId}`),
+        { signal: AbortSignal.timeout(1_000), params: { reviewId } },
+      );
+      expect(inspection.status).toBe(200);
+      expect(inspection.headers.get("cache-control")).toBe("no-store");
+      const inspected = (await inspection.json()) as {
+        reviewId: string;
+        fingerprint: string;
+        recipients: string[];
+        request: { kind: string; messageId: string; text: string };
+      };
       expect(inspected).toMatchObject({
         reviewId,
         recipients: ["customer@example.com"],
@@ -1015,6 +1034,11 @@ describe("inbound lifecycle", () => {
       });
       expect(approval).toEqual({ ok: true, message: `Review ${reviewId} approved and sent` });
       expect(log.reply).toHaveLength(1);
+      const terminalInspection = await reviewRoute!.handler(
+        new Request(`https://example.test/agentmail/reviews/${reviewId}`),
+        { signal: AbortSignal.timeout(1_000), params: { reviewId } },
+      );
+      expect(terminalInspection.status).toBe(410);
 
       const outOfTurn = JSON.parse(
         await asStr(tool(aug, "reply_to_message")).execute(
@@ -1162,6 +1186,25 @@ describe("adminInfo", () => {
       to: "",
     })) as AdminActionResult;
     expect(result.ok).toBe(false);
+  });
+
+  test("admin-test-send does not echo provider response bodies into action results", async () => {
+    const { client } = fakeClient({
+      async send() {
+        return {
+          status: "failed" as const,
+          detail: "provider echoed recipient@example.com and sensitive message content",
+          httpStatus: 400,
+        };
+      },
+    });
+    const aug = agentMail({ ...baseOpts, _client: client });
+    const result = await aug.adminActions!["agentmail-test-send"]!({
+      to: "recipient@example.com",
+      subject: "Test",
+      text: "sensitive message content",
+    });
+    expect(result).toEqual({ ok: false, message: "Send failed (HTTP 400)" });
   });
 
   test("admin-cap-adjust persists override and updates state", async () => {

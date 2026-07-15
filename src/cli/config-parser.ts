@@ -1357,15 +1357,43 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
       const inbound = options?.inbound as Record<string, unknown> | undefined;
       return inbound?.mode === "webhook";
     });
+    const agentMailReviewConfigured = augments.some((entry) => {
+      if (typeof entry !== "object" || entry === null) return false;
+      const augment = entry as Record<string, unknown>;
+      if (augment.type !== "agentMail") return false;
+      const options = augment.options as Record<string, unknown> | undefined;
+      const outbound = options?.outbound as Record<string, unknown> | undefined;
+      const allowed = Array.isArray(outbound?.allowedTrustLevels)
+        ? outbound.allowedTrustLevels
+        : ["creator"];
+      const humanReview = outbound?.humanReview as Record<string, unknown> | undefined;
+      const reviewed = Array.isArray(humanReview?.requiredForTrustLevels)
+        ? humanReview.requiredForTrustLevels
+        : ["public"];
+      const executableTrustLevels = new Set(["creator", ...allowed]);
+      return reviewed.some((level) => executableTrustLevels.has(level));
+    });
     const hasWebTransport = augments.some(
       (entry) =>
         typeof entry === "object" &&
         entry !== null &&
         (entry as Record<string, unknown>).type === "webTransport",
     );
+    const hasAdminWebTransport = augments.some((entry) => {
+      if (typeof entry !== "object" || entry === null) return false;
+      const augment = entry as Record<string, unknown>;
+      if (augment.type !== "webTransport") return false;
+      const options = augment.options as Record<string, unknown> | undefined;
+      return options?.adminRoute !== false;
+    });
     if (agentMailWebhookConfigured && !hasWebTransport) {
       errors.push(
         'agentMail inbound.mode "webhook" requires a webTransport augment to mount its verified HTTP route',
+      );
+    }
+    if (agentMailReviewConfigured && !hasAdminWebTransport) {
+      errors.push(
+        "agentMail outbound human review requires a webTransport augment with adminRoute enabled for review decisions",
       );
     }
   }

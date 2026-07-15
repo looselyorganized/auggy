@@ -29,7 +29,7 @@
 import { z } from "zod";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
-import { defineTool } from "../../helpers";
+import { defineRoute, defineTool, json } from "../../helpers";
 import {
   createAgentMailClient,
   type AgentMailClient,
@@ -207,7 +207,40 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
     opts._client ?? createAgentMailClient({ apiKey: opts.apiKey, apiBaseUrl: opts.apiBaseUrl });
 
   const inboundMode = opts.inbound?.mode ?? "none";
-  const inboundRoutes: NonNullable<Augment["httpRoutes"]> = [];
+  const agentMailRoutes: NonNullable<Augment["httpRoutes"]> = [
+    defineRoute.get("/agentmail/reviews/:reviewId", {
+      auth: "creator",
+      params: z.object({ reviewId: z.string().min(1).max(128) }),
+      handler: ({ params }) => {
+        const record = reviewQueue.get(params.reviewId);
+        if (!record) return json({ error: "review-not-found" }, 404);
+        if (record.state !== "pending" && record.state !== "sending") {
+          return json({ error: "review-no-longer-inspectable", state: record.state }, 410);
+        }
+        return new Response(
+          JSON.stringify({
+            reviewId: record.id,
+            fingerprint: record.fingerprint,
+            state: record.state,
+            trustLevel: record.trustLevel,
+            expiresAt: new Date(record.expiresAt).toISOString(),
+            recipients: record.recipients,
+            subject: record.subject,
+            request: record.request,
+          }),
+          {
+            status: 200,
+            headers: {
+              "content-type": "application/json; charset=utf-8",
+              "cache-control": "no-store",
+              "x-content-type-options": "nosniff",
+            },
+          },
+        );
+      },
+    }),
+  ];
+  let webhookRouteInstalled = false;
   let inboundLedger: AgentMailInboundLedger | undefined = opts._inboundLedger;
   let ownsInboundLedger = false;
   let sdkAdapters: AgentMailSdkAdapters | undefined = opts._sdkAdapters;
@@ -525,7 +558,10 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
         now(),
       );
       if (!decision.allowed) {
-        return { ok: false, message: `Review ${id} remains pending: ${decision.reason}` };
+        return {
+          ok: false,
+          message: `Review ${id} remains pending: rate limit blocked approval${decision.retryAfterSec ? `; retry in ${decision.retryAfterSec}s` : ""}`,
+        };
       }
     }
 
@@ -542,7 +578,7 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
     } catch (error) {
       const detail = `agentmail client threw: ${(error as Error).message}`;
       reviewQueue.fail(id, detail);
-      return { ok: false, message: `Review ${id} failed: ${detail}` };
+      return { ok: false, message: `Review ${id} failed before provider acknowledgement` };
     }
 
     const tool =
@@ -562,7 +598,10 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
         httpStatus: result.httpStatus,
         detail: `review ${id}: ${result.detail}`,
       });
-      return { ok: false, message: `Review ${id} failed: ${result.detail}` };
+      return {
+        ok: false,
+        message: `Review ${id} failed${result.httpStatus ? ` (HTTP ${result.httpStatus})` : ""}`,
+      };
     }
 
     reviewQueue.approve(id, result);
@@ -1121,9 +1160,9 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
         apiBaseUrl: opts.apiBaseUrl,
         websocketBaseUrl: opts.inbound?.websocketBaseUrl,
       });
-      if (inboundMode === "webhook" && inboundRoutes.length === 0) {
+      if (inboundMode === "webhook" && !webhookRouteInstalled) {
         const webhookOptions = opts.inbound?.webhook;
-        inboundRoutes.push(
+        agentMailRoutes.push(
           createAgentMailWebhookRoute({
             inboxId: opts.inboxId,
             ledger: inboundLedger,
@@ -1136,6 +1175,7 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
             },
           }),
         );
+        webhookRouteInstalled = true;
       }
     }
 
@@ -1303,7 +1343,7 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
         },
         {
           kind: "table",
-          columns: ["Review ID", "Trust", "State", "Recipients", "Subject", "Expires"],
+          columns: ["Review ID", "Trust", "State", "Recipients", "Subject", "Expires", "Inspect"],
           rows: reviews
             .slice(-50)
             .map((review) => [
@@ -1313,8 +1353,9 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
               redactRecipients(review.recipients),
               review.subject.slice(0, 80),
               new Date(review.expiresAt).toISOString(),
+              `/agentmail/reviews/${encodeURIComponent(review.id)}`,
             ]),
-          caption: `Outbound reviews (${reviews.length}) — message bodies are intentionally hidden`,
+          caption: `Outbound reviews (${reviews.length}) — list is redacted; exact content requires creator auth`,
         },
       ],
       actions: [
@@ -1355,12 +1396,6 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
           ],
         },
         {
-          id: "agentmail-review-inspect",
-          label: "Inspect queued email",
-          confirmRequired: false,
-          inputs: [{ name: "reviewId", label: "Review ID", type: "text", required: true }],
-        },
-        {
           id: "agentmail-review-approve",
           label: "Approve queued email",
           confirmRequired: true,
@@ -1377,7 +1412,8 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
               label: "Inspection fingerprint",
               type: "text",
               required: true,
-              helpText: "Copy from Inspect queued email to bind approval to the reviewed content.",
+              helpText:
+                "Copy from the creator-authenticated review detail route to bind approval to the reviewed content.",
             },
           ],
         },
@@ -1484,7 +1520,10 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
         httpStatus: result.httpStatus,
         detail: result.detail,
       });
-      return { ok: false, message: `Send failed: ${result.detail}` };
+      return {
+        ok: false,
+        message: `Send failed${result.httpStatus ? ` (HTTP ${result.httpStatus})` : ""}`,
+      };
     },
     "agentmail-cap-adjust": async (params) => {
       const raw = params.value;
@@ -1521,29 +1560,6 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
       if (!fingerprint) return { ok: false, message: "Inspection fingerprint is required" };
       return approveReview(reviewId, fingerprint);
     },
-    "agentmail-review-inspect": async (params) => {
-      const reviewId = typeof params.reviewId === "string" ? params.reviewId.trim() : "";
-      if (!reviewId) return { ok: false, message: "Review ID is required" };
-      const record = reviewQueue.get(reviewId);
-      if (!record) return { ok: false, message: `Unknown review id "${reviewId}"` };
-      return {
-        ok: true,
-        message: JSON.stringify(
-          {
-            reviewId: record.id,
-            fingerprint: record.fingerprint,
-            state: record.state,
-            trustLevel: record.trustLevel,
-            expiresAt: new Date(record.expiresAt).toISOString(),
-            recipients: record.recipients,
-            subject: record.subject,
-            request: record.request,
-          },
-          null,
-          2,
-        ),
-      };
-    },
     "agentmail-review-reject": async (params) => {
       const reviewId = typeof params.reviewId === "string" ? params.reviewId.trim() : "";
       if (!reviewId) return { ok: false, message: "Review ID is required" };
@@ -1570,7 +1586,7 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
     name: "agent-mail",
     tools: [sendMessageTool, replyToMessageTool, forwardMessageTool],
     ...(inboundTransport ? { transport: inboundTransport } : {}),
-    ...(inboundMode === "webhook" ? { httpRoutes: inboundRoutes } : {}),
+    httpRoutes: agentMailRoutes,
     onBoot,
     onShutdown,
     adminInfo,

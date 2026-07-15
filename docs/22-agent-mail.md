@@ -102,9 +102,10 @@ config:
     # Default ["creator"] — agent and public peers cannot send unless added.
     allowedTrustLevels: [creator]
 
-    # Public-originated actions are queued by default. The persisted queue is
-    # reviewed through the authenticated admin action API. An empty list opts
-    # into autonomous public sending and should be used deliberately.
+    # Public-originated actions are queued by default. Exact content is read
+    # through the creator-authenticated, no-store review detail route; approval
+    # uses the admin action API. An empty list opts into autonomous public
+    # sending and should be used deliberately.
     humanReview:
       requiredForTrustLevels: [public]
       expiresAfterMs: 86400000  # 24 hours
@@ -186,7 +187,7 @@ different web or email turn from replaying an old message ID.
 | Layer | Behavior |
 |-------|----------|
 | **Trust-level gate** | Default `creator` only. `agent` and `public` peers rejected unless added to `outbound.allowedTrustLevels`. |
-| **Human review** | Valid actions from `public` peers enter a durable review queue by default. The authenticated inspect action returns exact content plus a fingerprint that approval must echo, binding consent to what was reviewed. Approval rechecks current rate limits; rejection and expiry are terminal. Configure `humanReview.requiredForTrustLevels: []` only for deliberate autonomous public mail. |
+| **Human review** | Valid actions from `public` peers enter a durable review queue by default. `GET /agentmail/reviews/:reviewId` requires creator auth, returns exact content with `Cache-Control: no-store`, and supplies the fingerprint approval must echo. Exact bodies never pass through generic admin-action results, logs, or redirect URLs. Approval rechecks current rate limits; rejection and expiry are terminal. Configure `humanReview.requiredForTrustLevels: []` only for deliberate autonomous public mail. |
 | **Recipient allowlist** | If `outbound.allowedRecipients` is set, every recipient must match (exact or `*@domain` glob, lowercased). |
 | **Recipient cap** | `outbound.maxRecipients` (default 10, hard ceiling 50). |
 | **Body cap** | `outbound.bodyMaxBytes` (default 100KB). |
@@ -204,7 +205,8 @@ AgentMail exposes admin-info blocks to the authenticated console dashboard API:
 - Last inbound event and worker outcome, plus sanitized provider errors
 - Masked API key, inbox ID, current global cap (yaml vs override), allowed trust levels, recipient allowlist size
 - Last 50 dispatches with timestamp / tool / status / **redacted** recipients / subject
-- Actions: "Send test email", "Adjust globalMaxPerHour", and inspect/approve/reject a queued outbound review
+- Redacted review rows link to the creator-authenticated exact-detail route
+- Actions: "Send test email", "Adjust globalMaxPerHour", and approve/reject a queued outbound review
 
 Recipients in the audit table are redacted (`al***@example.com (+2)`) so the admin view never leaks full address lists.
 
@@ -248,8 +250,9 @@ Rollout checklist:
    checkpoint advances, and a test message reaches `processed` or an expected
    durable discard state.
 4. If public mail may propose replies, add `public` to
-   `outbound.allowedTrustLevels` but keep default human review. Inspect the
-   exact action, then approve with its fingerprint.
+   `outbound.allowedTrustLevels`, mount `webTransport` with its admin route
+   enabled, and keep default human review. Inspect the exact action through its
+   creator-authenticated detail route, then approve with its fingerprint.
 5. Alert on provider warnings, a growing pending/processing ledger, ambiguous
    `sending` reviews, repeated discarded work, or a stale catch-up timestamp.
 
@@ -260,7 +263,7 @@ Rollout checklist:
 | Boot error: `AGENTMAIL_API_KEY is unresolved` | `.env` missing the var | Set `AGENTMAIL_API_KEY=am_…` in `.env`, restart |
 | Boot error: `healthcheck failed with HTTP 401` | Wrong API key | Verify the key in [console.agentmail.to](https://console.agentmail.to) |
 | Tool returns `failed: trust level "public" is not permitted` | Anonymous visitor asked the agent to send | Either ignore (correct) or add `public` to `outbound.allowedTrustLevels`; its action will still require human review by default |
-| Tool returns `pending_review` | A configured trust level proposed outbound mail | Inspect the exact action through the authenticated admin API, then approve with its returned fingerprint or reject it before expiry |
+| Tool returns `pending_review` | A configured trust level proposed outbound mail | Follow the redacted admin row to the creator-authenticated detail route, then approve with its returned fingerprint or reject it before expiry |
 | Tool returns `rate_limited` on every send | Global cap or dedup window misconfigured | Set `outbound.rateLimit.globalMaxPerHour` |
 | Admin status warns `inbound not ready` | Listener/catch-up never completed | Inspect the sanitized provider error, credentials, and network path; startup remains fail-closed for inbound |
 | Review remains `sending` after restart | Process stopped after dispatch began but before acknowledgement was persisted | Reconcile the provider message/thread before creating any replacement; the runtime will not auto-retry |
