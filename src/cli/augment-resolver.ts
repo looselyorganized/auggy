@@ -15,7 +15,7 @@
  */
 
 import { existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { isAbsolute, relative, resolve, sep } from "node:path";
 import { fileMemory } from "../augments/fileMemory";
 import { supabaseMemory } from "../augments/supabaseMemory";
 import { filesystem } from "../augments/filesystem";
@@ -62,6 +62,21 @@ import { auggySelf, type AuggySelfAgentMetadata } from "./auggy-self-augment";
 function resolvePath(path: string, agentDir: string): string {
   if (path.startsWith("/")) return path;
   return resolve(agentDir, path);
+}
+
+/** Resolve an operator-controlled relative path without allowing an escape. */
+function resolveContainedPath(path: string, root: string, label: string): string {
+  if (isAbsolute(path)) {
+    throw new Error(`[augment-resolver] ${label} must be relative when runtimeDataRoot is set`);
+  }
+
+  const resolvedPath = resolve(root, path);
+  const relativePath = relative(root, resolvedPath);
+  if (relativePath === ".." || relativePath.startsWith(`..${sep}`) || isAbsolute(relativePath)) {
+    throw new Error(`[augment-resolver] ${label} must stay within its AgentMail state directory`);
+  }
+
+  return resolvedPath;
 }
 
 // ---------------------------------------------------------------------------
@@ -383,8 +398,17 @@ function resolveVisitorAuth(opts: Record<string, unknown>, agentDir: string): Au
 export async function resolveAugments(
   configs: AugmentConfig[],
   agentDir: string,
-  resolverOpts: { creator?: CreatorConfig; selfInspection?: AuggySelfAgentMetadata } = {},
+  resolverOpts: {
+    creator?: CreatorConfig;
+    selfInspection?: AuggySelfAgentMetadata;
+    /** Absolute root for deployment-owned durable state, such as a Railway volume. */
+    runtimeDataRoot?: string;
+  } = {},
 ): Promise<Augment[]> {
+  if (resolverOpts.runtimeDataRoot !== undefined && !isAbsolute(resolverOpts.runtimeDataRoot)) {
+    throw new Error("[augment-resolver] runtimeDataRoot must be an absolute path");
+  }
+
   const augments: Augment[] = [];
   type NotifyToolExecute = NonNullable<Augment["tools"]>[number]["execute"];
   const notifyDestinationNames = new Set<string>();
@@ -609,14 +633,36 @@ export async function resolveAugments(
         });
         break;
       case "agentMail": {
+        const rawDbPath = (opts.dbPath as string | undefined) ?? "./agent-mail.db";
+        let stateDir: string | undefined;
+        let dbPath: string;
+
+        if (resolverOpts.runtimeDataRoot !== undefined) {
+          // Config parsing normally enforces this pattern. Repeat it here
+          // because callers may construct AugmentConfig objects directly.
+          if (!/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(config.name)) {
+            throw new Error(
+              `[augment-resolver] agentMail augment name "${config.name}" is not a safe state namespace`,
+            );
+          }
+          const agentMailRoot = resolve(resolverOpts.runtimeDataRoot, "agent-mail");
+          stateDir = resolve(agentMailRoot, config.name);
+          dbPath = resolveContainedPath(rawDbPath, stateDir, `agentMail "${config.name}" dbPath`);
+        } else {
+          // Locally, keep state beside agent.yaml and root relative database
+          // paths at that same agent project directory.
+          dbPath = resolvePath(rawDbPath, agentDir);
+        }
+
         augment = agentMail({
           apiKey: opts.apiKey as string,
           inboxId: opts.inboxId as string,
           apiBaseUrl: opts.apiBaseUrl as string | undefined,
-          dbPath: opts.dbPath as string | undefined,
+          dbPath,
           outbound: opts.outbound as AgentMailAugmentOptions["outbound"],
           inbound: opts.inbound as AgentMailAugmentOptions["inbound"],
           agentDir,
+          stateDir,
         });
         break;
       }

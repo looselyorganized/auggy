@@ -1,5 +1,20 @@
 import { describe, expect, test } from "bun:test";
-import { formatDevReadyMessage, formatRunDisplayPath } from "../../../src/cli/commands/dev";
+import {
+  formatDevReadyMessage,
+  formatRunDisplayPath,
+  resolveRuntimeDataRoot,
+} from "../../../src/cli/commands/dev";
+
+describe("resolveRuntimeDataRoot", () => {
+  test("selects the Railway volume root only for the exact Railway mode", () => {
+    expect(resolveRuntimeDataRoot("railway")).toBe("/app/data");
+    expect(resolveRuntimeDataRoot(undefined)).toBeUndefined();
+    expect(resolveRuntimeDataRoot("dev")).toBeUndefined();
+    expect(resolveRuntimeDataRoot("launchd")).toBeUndefined();
+    expect(resolveRuntimeDataRoot("Railway")).toBeUndefined();
+    expect(resolveRuntimeDataRoot("railway-preview")).toBeUndefined();
+  });
+});
 
 describe("formatDevReadyMessage", () => {
   test("prints the local run success banner with extension and Railway deploy guidance", () => {

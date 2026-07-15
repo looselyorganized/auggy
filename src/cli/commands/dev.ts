@@ -65,6 +65,11 @@ export interface DevOpts {
   onReady?: (info: DevReadyInfo) => void;
 }
 
+/** Resolve the persistent data root for deployment runtimes that provide one. */
+export function resolveRuntimeDataRoot(internalMode: string | undefined): string | undefined {
+  return internalMode === "railway" ? "/app/data" : undefined;
+}
+
 export function formatDevReadyMessage(args: {
   agentName: string;
   port: number | null;
@@ -155,6 +160,7 @@ export async function runDev(name: string | undefined, opts: DevOpts): Promise<v
   const configPath = resolveConfigPath(name, opts.config, { cwd: opts.cwd });
   const agentDir = dirname(configPath);
   const mode = opts.internalMode === "launchd" ? ("launchd" as const) : ("dev" as const);
+  const runtimeDataRoot = resolveRuntimeDataRoot(opts.internalMode);
 
   // Parse and validate config.
   const config = parseConfig(configPath);
@@ -197,6 +203,7 @@ export async function runDev(name: string | undefined, opts: DevOpts): Promise<v
     model = await resolveEngine(config.engine, agentDir);
     augments = await resolveAugments(config.augments, agentDir, {
       creator: config.creator,
+      ...(runtimeDataRoot ? { runtimeDataRoot } : {}),
       selfInspection: {
         name: agentName,
         displayName: config.displayName,

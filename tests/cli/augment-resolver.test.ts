@@ -22,6 +22,32 @@ function getLikelyFreePort(): number {
   return 20_000 + Math.floor(Math.random() * 30_000);
 }
 
+function agentMailConfig(name: string, dbPath?: string): AugmentConfig {
+  return {
+    name,
+    type: "agentMail",
+    options: {
+      apiKey: "am_resolver_test",
+      inboxId: `inbox_${name}`,
+      apiBaseUrl: "http://127.0.0.1:1/v0",
+      ...(dbPath === undefined ? {} : { dbPath }),
+      inbound: {
+        mode: "polling",
+        allowedSenders: ["*@example.com"],
+      },
+    },
+  };
+}
+
+async function bootAgentMailAugments(augments: Awaited<ReturnType<typeof resolveAugments>>) {
+  const warn = spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    for (const augment of augments) await augment.onBoot?.();
+  } finally {
+    warn.mockRestore();
+  }
+}
+
 async function startAgentIfSocketsAvailable(agent: AgentHandle): Promise<boolean> {
   try {
     await agent.start();
@@ -850,6 +876,118 @@ describe("resolveAugments — budgets", () => {
       expect(record.reason).toContain("$0.85 of $1.00");
     } finally {
       await budgetAugment?.onShutdown?.();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// agentMail runtime state paths
+// ---------------------------------------------------------------------------
+
+describe("resolveAugments — agentMail runtime state paths", () => {
+  test("rejects a relative runtime data root", async () => {
+    await expect(
+      resolveAugments([agentMailConfig("support")], TMP, {
+        runtimeDataRoot: "./railway-data",
+      }),
+    ).rejects.toThrow(/runtimeDataRoot must be an absolute path/i);
+  });
+
+  test("rejects an unsafe instance namespace even when config parsing is bypassed", async () => {
+    await expect(
+      resolveAugments([agentMailConfig("../support")], TMP, {
+        runtimeDataRoot: join(TMP, "railway-data"),
+      }),
+    ).rejects.toThrow(/not a safe state namespace/i);
+  });
+
+  test("resolves scaffold ./agent-mail.db inside the Railway instance state directory", async () => {
+    const runtimeDataRoot = join(TMP, "railway-data");
+    const augments = await resolveAugments([agentMailConfig("support", "./agent-mail.db")], TMP, {
+      runtimeDataRoot,
+    });
+
+    try {
+      await bootAgentMailAugments(augments);
+      expect(existsSync(join(runtimeDataRoot, "agent-mail", "support", "agent-mail.db"))).toBe(
+        true,
+      );
+      expect(existsSync(join(TMP, "agent-mail.db"))).toBe(false);
+    } finally {
+      await augments[0]?.onShutdown?.();
+    }
+  });
+
+  test("uses the augment name to isolate two Railway AgentMail ledgers", async () => {
+    const runtimeDataRoot = join(TMP, "railway-data");
+    const augments = await resolveAugments(
+      [agentMailConfig("support"), agentMailConfig("billing")],
+      TMP,
+      { runtimeDataRoot },
+    );
+
+    try {
+      await bootAgentMailAugments(augments);
+      expect(existsSync(join(runtimeDataRoot, "agent-mail", "support", "agent-mail.db"))).toBe(
+        true,
+      );
+      expect(existsSync(join(runtimeDataRoot, "agent-mail", "billing", "agent-mail.db"))).toBe(
+        true,
+      );
+    } finally {
+      for (const augment of augments) await augment.onShutdown?.();
+    }
+  });
+
+  test("rejects an absolute AgentMail dbPath when a Railway runtime root is active", async () => {
+    const runtimeDataRoot = join(TMP, "railway-data");
+    await expect(
+      resolveAugments([agentMailConfig("support", join(TMP, "escaped.db"))], TMP, {
+        runtimeDataRoot,
+      }),
+    ).rejects.toThrow(/agentMail.*dbPath.*relative/i);
+  });
+
+  test("rejects an AgentMail dbPath that traverses above its Railway namespace", async () => {
+    const runtimeDataRoot = join(TMP, "railway-data");
+    await expect(
+      resolveAugments([agentMailConfig("support", "../../escaped.db")], TMP, {
+        runtimeDataRoot,
+      }),
+    ).rejects.toThrow(/agentMail.*dbPath.*state directory/i);
+  });
+
+  test("rejects an AgentMail dbPath that enters a sibling instance namespace", async () => {
+    const runtimeDataRoot = join(TMP, "railway-data");
+    await expect(
+      resolveAugments([agentMailConfig("support", "../billing/agent-mail.db")], TMP, {
+        runtimeDataRoot,
+      }),
+    ).rejects.toThrow(/agentMail.*dbPath.*state directory/i);
+  });
+
+  test("keeps local relative AgentMail dbPath resolution anchored to agentDir", async () => {
+    const augments = await resolveAugments(
+      [agentMailConfig("support", "./local-state/agent-mail.db")],
+      TMP,
+    );
+
+    try {
+      await bootAgentMailAugments(augments);
+      expect(existsSync(join(TMP, "local-state", "agent-mail.db"))).toBe(true);
+    } finally {
+      await augments[0]?.onShutdown?.();
+    }
+  });
+
+  test("keeps the local default AgentMail dbPath beside agent.yaml", async () => {
+    const augments = await resolveAugments([agentMailConfig("support")], TMP);
+
+    try {
+      await bootAgentMailAugments(augments);
+      expect(existsSync(join(TMP, "agent-mail.db"))).toBe(true);
+    } finally {
+      await augments[0]?.onShutdown?.();
     }
   });
 });
