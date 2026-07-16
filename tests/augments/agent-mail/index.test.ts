@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, existsSync, readFileSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { agentMail } from "../../../src/augments/agentMail";
@@ -758,6 +758,83 @@ describe("body cap — Codex #4 HTML must count", () => {
 // ---------------------------------------------------------------------------
 
 describe("rate-limit persistence — Codex #3", () => {
+  test("routes rate and review state to stateDir while leaving agentDir immutable", async () => {
+    const agentDir = makeTmpDir();
+    const stateDir = makeTmpDir();
+    const { client } = fakeClient();
+    const aug = agentMail({
+      ...baseOpts,
+      _client: client,
+      agentDir,
+      stateDir,
+      outbound: {
+        allowedTrustLevels: ["creator", "agent", "public"],
+        rateLimit: { globalMaxPerHour: 100, perRecipientCooldownMs: 0, dedupWindowMs: 60_000 },
+      },
+    });
+    const send = asStr(tool(aug, "send_message"));
+
+    await send.execute(
+      { to: ["a@x.com"], subject: "Durable rate state", text: "B" },
+      ctx(peer("agent")),
+    );
+    await send.execute(
+      { to: ["b@x.com"], subject: "Durable review state", text: "B" },
+      ctx(peer("public")),
+    );
+
+    expect(existsSync(join(stateDir, "agent-mail-state.json"))).toBe(true);
+    expect(existsSync(join(stateDir, "agent-mail-reviews.json"))).toBe(true);
+    expect(existsSync(join(agentDir, "agent-mail-state.json"))).toBe(false);
+    expect(existsSync(join(agentDir, "agent-mail-reviews.json"))).toBe(false);
+
+    const restarted = agentMail({
+      ...baseOpts,
+      _client: fakeClient().client,
+      agentDir: makeTmpDir(),
+      stateDir,
+      outbound: {
+        allowedTrustLevels: ["creator", "agent", "public"],
+        rateLimit: { globalMaxPerHour: 100, perRecipientCooldownMs: 0, dedupWindowMs: 60_000 },
+      },
+    });
+    const afterRestart = JSON.parse(
+      await asStr(tool(restarted, "send_message")).execute(
+        { to: ["c@x.com"], subject: "Durable rate state", text: "B" },
+        ctx(peer("agent")),
+      ),
+    );
+    expect(afterRestart.status).toBe("rate_limited");
+  });
+
+  test("latches durable write failures and blocks subsequent non-creator sends", async () => {
+    const stateDir = makeTmpDir();
+    const { client, log } = fakeClient();
+    const aug = agentMail({
+      ...baseOpts,
+      _client: client,
+      stateDir,
+      outbound: {
+        allowedTrustLevels: ["creator", "agent"],
+        rateLimit: { globalMaxPerHour: 100, perRecipientCooldownMs: 0, dedupWindowMs: 0 },
+      },
+    });
+    rmSync(stateDir, { recursive: true });
+    writeFileSync(stateDir, "not a directory");
+    const send = asStr(tool(aug, "send_message"));
+
+    const accepted = JSON.parse(
+      await send.execute({ to: ["a@x.com"], subject: "First", text: "B" }, ctx(peer("agent"))),
+    );
+    const blocked = JSON.parse(
+      await send.execute({ to: ["b@x.com"], subject: "Second", text: "B" }, ctx(peer("agent"))),
+    );
+    expect(accepted.status).toBe("sent");
+    expect(blocked.status).toBe("rate_limited");
+    expect(blocked.message).toContain("durable rate-limit state is unavailable");
+    expect(log.send).toHaveLength(1);
+  });
+
   test("a fresh factory instance with the same agentDir inherits prior dedup state", async () => {
     const dir = makeTmpDir();
     let nowMs = 1_000_000_000_000;

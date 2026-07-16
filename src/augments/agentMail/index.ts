@@ -122,6 +122,7 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
   validateOptions(opts);
 
   const now = opts._now ?? (() => Date.now());
+  const stateDir = opts.stateDir ?? opts.agentDir;
 
   const outboundOpts = opts.outbound ?? {};
   const allowedTrustLevels = outboundOpts.allowedTrustLevels ?? DEFAULT_ALLOWED_TRUST_LEVELS;
@@ -145,10 +146,9 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
     }
   }
 
-  // Load persisted rate-limit / dedup state from agentDir if configured —
-  // Codex finding #3. Fresh empty state otherwise (test runs, no scaffold).
-  const rateState =
-    (opts.agentDir && loadRateState(opts.agentDir, now())) || createRateLimitState();
+  // Load persisted rate-limit / dedup state from the per-instance state
+  // directory. Missing state starts fresh; corrupt/newer state fails closed.
+  const rateState = (stateDir && loadRateState(stateDir, now())) || createRateLimitState();
   const dispatches = createRingBuffer<DispatchRecord>(RING_BUFFER_SIZE);
   const dispatchCounts: Record<DispatchRecord["status"], number> = {
     sent: 0,
@@ -158,25 +158,41 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
     failed: 0,
   };
   const reviewQueue: AgentMailReviewQueue =
-    opts._reviewQueue ?? createAgentMailReviewQueue({ agentDir: opts.agentDir, now });
+    opts._reviewQueue ?? createAgentMailReviewQueue({ stateDir, now });
+  let ratePersistenceFailure: string | undefined;
 
   /**
    * Persist rate-limit state after a successful send. No-op when no
-   * `agentDir` is configured (the augment is running in a test fixture
+   * `stateDir` is configured (the augment is running in a test fixture
    * or pre-scaffold dev context). Errors during persistence are logged
    * but swallowed — losing durability is a degraded mode, not a reason
    * to fail the send the model just received "sent" for.
    */
   function persistRateStateIfConfigured(): void {
-    if (!opts.agentDir) return;
+    if (!stateDir) return;
     try {
-      saveRateState(opts.agentDir, rateState, now());
+      saveRateState(stateDir, rateState, now());
     } catch (err) {
+      ratePersistenceFailure = (err as Error).message;
       console.warn(
         `[agent-mail] failed to persist rate-limit state: ${(err as Error).message}. ` +
-          `State remains in memory; a crash before the next successful send will lose recent history.`,
+          `State remains in memory; subsequent non-creator mail is blocked until restart/operator repair.`,
       );
     }
+  }
+
+  function checkOutboundRateLimit(
+    recipients: string[],
+    rateKey: string,
+  ): ReturnType<typeof checkRateLimit> {
+    if (ratePersistenceFailure) {
+      return {
+        allowed: false,
+        reason:
+          "agentMail: durable rate-limit state is unavailable; non-creator mail is blocked until restart/operator repair.",
+      };
+    }
+    return checkRateLimit(rateState, recipients, rateKey, effectiveRateLimit(), now());
   }
 
   /**
@@ -550,13 +566,7 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
       };
     }
     if (pending.trustLevel !== "creator") {
-      const decision = checkRateLimit(
-        rateState,
-        pending.recipients,
-        pending.rateKey,
-        effectiveRateLimit(),
-        now(),
-      );
+      const decision = checkOutboundRateLimit(pending.recipients, pending.rateKey);
       if (!decision.allowed) {
         return {
           ok: false,
@@ -696,13 +706,7 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
       const subjectToRateLimit = trustLevel === "creator" ? null : subjectForRateCheck;
       // Creator (and null peer) bypass rate limits entirely.
       if (subjectToRateLimit !== null) {
-        const decision = checkRateLimit(
-          rateState,
-          validation.value.recipients,
-          subjectToRateLimit,
-          effectiveRateLimit(),
-          now(),
-        );
+        const decision = checkOutboundRateLimit(validation.value.recipients, subjectToRateLimit);
         if (!decision.allowed) {
           recordDispatch({
             timestamp: timestampHHMMSS(now()),
@@ -870,13 +874,7 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
       const trustLevel = trustLevelOf(context);
       const replyDedupKey = `reply:${input.messageId}`;
       if (trustLevel !== "creator") {
-        const decision = checkRateLimit(
-          rateState,
-          validation.value.recipients,
-          replyDedupKey,
-          effectiveRateLimit(),
-          now(),
-        );
+        const decision = checkOutboundRateLimit(validation.value.recipients, replyDedupKey);
         if (!decision.allowed) {
           recordDispatch({
             timestamp: timestampHHMMSS(now()),
@@ -1024,12 +1022,9 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
 
       const trustLevel = trustLevelOf(context);
       if (trustLevel !== "creator") {
-        const decision = checkRateLimit(
-          rateState,
+        const decision = checkOutboundRateLimit(
           validation.value.recipients,
           validation.value.subject,
-          effectiveRateLimit(),
-          now(),
         );
         if (!decision.allowed) {
           recordDispatch({
@@ -1150,7 +1145,7 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
     if (inboundMode !== "none") {
       if (!inboundLedger) {
         inboundLedger = createAgentMailInboundLedger({
-          dbPath: opts.dbPath ?? join(opts.agentDir ?? process.cwd(), "agent-mail.db"),
+          dbPath: opts.dbPath ?? join(stateDir ?? process.cwd(), "agent-mail.db"),
           now,
         });
         ownsInboundLedger = true;

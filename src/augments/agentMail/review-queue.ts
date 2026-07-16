@@ -7,18 +7,10 @@
  */
 
 import { randomUUID } from "node:crypto";
-import {
-  chmodSync,
-  existsSync,
-  lstatSync,
-  mkdirSync,
-  readFileSync,
-  renameSync,
-  writeFileSync,
-} from "node:fs";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { z } from "zod";
 import type { TrustLevel } from "../../types";
+import { readDurableJson, writeDurableJson } from "../../lib/durable-json";
 
 const REVIEW_FILE = "agent-mail-reviews.json";
 const REVIEW_VERSION = 1;
@@ -127,6 +119,8 @@ export interface AgentMailReviewQueue {
 }
 
 export interface AgentMailReviewQueueOptions {
+  stateDir?: string;
+  /** @deprecated Use stateDir. Retained for direct-call compatibility. */
   agentDir?: string;
   now?: () => number;
   id?: () => string;
@@ -140,35 +134,24 @@ function reviewPath(agentDir: string): string {
   return join(agentDir, REVIEW_FILE);
 }
 
-function assertSafeExistingFile(path: string): void {
-  const stat = lstatSync(path, { throwIfNoEntry: false });
-  if (!stat) return;
-  if (stat.isSymbolicLink() || !stat.isFile()) {
-    throw new Error(`agentMail review queue: ${path} must be a regular file, not a symlink`);
-  }
-}
-
 export function createAgentMailReviewQueue(
   options: AgentMailReviewQueueOptions = {},
 ): AgentMailReviewQueue {
   const now = options.now ?? Date.now;
   const nextId = options.id ?? randomUUID;
-  const path = options.agentDir ? reviewPath(options.agentDir) : undefined;
+  const stateDir = options.stateDir ?? options.agentDir;
+  const path = stateDir ? reviewPath(stateDir) : undefined;
   let records: AgentMailReviewRecord[] = [];
 
-  if (path && existsSync(path)) {
-    assertSafeExistingFile(path);
-    let raw: unknown;
-    try {
-      raw = JSON.parse(readFileSync(path, "utf8"));
-    } catch (error) {
-      throw new Error(`agentMail review queue: cannot parse ${path}: ${(error as Error).message}`);
+  if (path) {
+    const raw = readDurableJson(path, "agentMail review queue");
+    if (raw !== null) {
+      const parsed = fileSchema.safeParse(raw);
+      if (!parsed.success) {
+        throw new Error(`agentMail review queue: ${path} failed validation`);
+      }
+      records = parsed.data.records;
     }
-    const parsed = fileSchema.safeParse(raw);
-    if (!parsed.success) {
-      throw new Error(`agentMail review queue: ${path} failed validation`);
-    }
-    records = parsed.data.records;
   }
 
   function clock(): number {
@@ -181,20 +164,15 @@ export function createAgentMailReviewQueue(
 
   function persist(): void {
     if (!path) return;
-    mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-    assertSafeExistingFile(path);
-    const temp = `${path}.tmp.${process.pid}.${randomUUID()}`;
-    writeFileSync(
-      temp,
-      JSON.stringify({
+    writeDurableJson(
+      path,
+      {
         version: REVIEW_VERSION,
         savedAt: new Date(clock()).toISOString(),
         records,
-      }),
-      { mode: 0o600 },
+      },
+      "agentMail review queue",
     );
-    renameSync(temp, path);
-    chmodSync(path, 0o600);
   }
 
   function expire(): void {
@@ -258,6 +236,14 @@ export function createAgentMailReviewQueue(
   return {
     enqueue(input) {
       expire();
+      const ambiguous = records.find(
+        (record) => record.state === "sending" && record.fingerprint === input.fingerprint,
+      );
+      if (ambiguous) {
+        throw new Error(
+          `agentMail review queue: matching review "${ambiguous.id}" has ambiguous sending state; operator reconciliation is required`,
+        );
+      }
       const existing = records.find(
         (record) => record.state === "pending" && record.fingerprint === input.fingerprint,
       );
