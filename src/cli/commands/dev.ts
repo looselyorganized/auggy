@@ -25,6 +25,7 @@ import { resolveConfigPath } from "../resolve-config";
 import { openBrowser } from "../open-browser";
 import type { AgentConfig, Augment, ModelClient } from "../../types";
 import { displayPath } from "../display-path";
+import { prepareRailwayRuntimeVolume } from "../runtime-volume";
 
 /**
  * Extract the webTransport port from augment configs (for the PID manifest
@@ -160,7 +161,10 @@ export async function runDev(name: string | undefined, opts: DevOpts): Promise<v
   const configPath = resolveConfigPath(name, opts.config, { cwd: opts.cwd });
   const agentDir = dirname(configPath);
   const mode = opts.internalMode === "launchd" ? ("launchd" as const) : ("dev" as const);
-  const runtimeDataRoot = resolveRuntimeDataRoot(opts.internalMode);
+  const requestedRuntimeDataRoot = resolveRuntimeDataRoot(opts.internalMode);
+  const runtimeDataRoot = requestedRuntimeDataRoot
+    ? prepareRailwayRuntimeVolume(process.env.RAILWAY_VOLUME_MOUNT_PATH)
+    : undefined;
 
   // Parse and validate config.
   const config = parseConfig(configPath);

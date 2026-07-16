@@ -58,8 +58,38 @@ describe("generateDockerfile", () => {
 });
 
 describe("generateEntrypoint", () => {
-  test("creates /app/data before symlinks (idempotent)", () => {
-    expect(generateEntrypoint()).toMatch(/mkdir -p \/app\/data/);
+  test("requires Railway to advertise the exact /app/data mount", () => {
+    const script = generateEntrypoint();
+    expect(script).toMatch(/RAILWAY_VOLUME_MOUNT_PATH:-.*!= "\/app\/data"/);
+    expect(script).toContain("RAILWAY_VOLUME_MOUNT_PATH must equal /app/data");
+  });
+
+  test("requires an existing real mount instead of creating an ephemeral fallback", () => {
+    const script = generateEntrypoint();
+    expect(script).toMatch(/\[ ! -d \/app\/data \] \|\| \[ -L \/app\/data \]/);
+    expect(script).not.toMatch(/mkdir[^\n]* \/app\/data\s*$/m);
+  });
+
+  test("creates a private direct AgentMail state root and rejects a symlink leaf", () => {
+    const script = generateEntrypoint();
+    expect(script).toMatch(/\[ -L \/app\/data\/agent-mail \]/);
+    expect(script).toMatch(/mkdir -p -m 0700 \/app\/data\/agent-mail/);
+    expect(script).toMatch(/chmod 0700 \/app\/data\/agent-mail/);
+    expect(script).toMatch(/umask 077/);
+  });
+
+  test("validates the mount before mutating state or legacy symlinks", () => {
+    const script = generateEntrypoint();
+    const mountCheck = script.indexOf("RAILWAY_VOLUME_MOUNT_PATH:-");
+    const mountDirectoryCheck = script.indexOf("[ ! -d /app/data ]");
+    const stateSymlinkCheck = script.indexOf("[ -L /app/data/agent-mail ]");
+    const stateMkdir = script.indexOf("mkdir -p -m 0700 /app/data/agent-mail");
+    const firstLegacySymlink = script.indexOf("ln -sf /app/data/memory.db");
+    expect(mountCheck).toBeGreaterThan(-1);
+    expect(mountDirectoryCheck).toBeGreaterThan(mountCheck);
+    expect(stateSymlinkCheck).toBeGreaterThan(mountDirectoryCheck);
+    expect(stateMkdir).toBeGreaterThan(stateSymlinkCheck);
+    expect(firstLegacySymlink).toBeGreaterThan(stateMkdir);
   });
 
   test("symlinks all four v1.0 SQLite dbs to the volume", () => {
@@ -72,6 +102,10 @@ describe("generateEntrypoint", () => {
 
   test("uses -f flag so redeploys don't trip on existing symlinks", () => {
     expect(generateEntrypoint()).toMatch(/ln -sf/);
+  });
+
+  test("does not create an AgentMail database symlink", () => {
+    expect(generateEntrypoint()).not.toMatch(/ln -sf[^\n]*agent-mail\.db/);
   });
 
   test("execs auggy via `bunx` with explicit /app/agent.yaml config", () => {
