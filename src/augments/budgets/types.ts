@@ -94,6 +94,8 @@ export interface BudgetsConfig {
    * (currently: dailyBudgetUsd). Admin actions persist back via this path.
    */
   agentDir?: string;
+  /** Canonical shared directory for admin-overrides.json. Defaults to agentDir. */
+  overrideDir?: string;
 }
 
 /**

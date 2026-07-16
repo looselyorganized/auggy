@@ -1,4 +1,4 @@
-import { describe, expect, it, spyOn } from "bun:test";
+import { describe, expect, it } from "bun:test";
 import {
   existsSync,
   mkdtempSync,
@@ -6,6 +6,7 @@ import {
   readdirSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -55,22 +56,32 @@ describe("admin-overrides — read", () => {
     }
   });
 
-  it("returns null + warns on corrupt JSON", () => {
+  it("preserves local compatibility through a symlinked agent directory", () => {
     const dir = makeTempAgentDir();
-    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    const link = `${dir}-link`;
     try {
-      writeFileSync(join(dir, "admin-overrides.json"), "{not valid json");
-      expect(readOverrides(dir)).toBeNull();
-      expect(warn).toHaveBeenCalled();
+      symlinkSync(dir, link);
+      writeOverrides(link, makeOverrides({ agentMail: { globalMaxPerHour: 17 } }));
+      expect(readOverrides(link)?.overrides.agentMail?.globalMaxPerHour).toBe(17);
+      expect(existsSync(join(dir, "admin-overrides.json"))).toBe(true);
     } finally {
+      rmSync(link, { force: true });
       rmSync(dir, { recursive: true, force: true });
-      warn.mockRestore();
     }
   });
 
-  it("returns null + warns per-field on schema mismatch", () => {
+  it("fails closed on corrupt JSON", () => {
     const dir = makeTempAgentDir();
-    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      writeFileSync(join(dir, "admin-overrides.json"), "{not valid json");
+      expect(() => readOverrides(dir)).toThrow(/failed to read/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed on schema mismatch", () => {
+    const dir = makeTempAgentDir();
     try {
       const bad = {
         version: 1,
@@ -81,12 +92,23 @@ describe("admin-overrides — read", () => {
         },
       };
       writeFileSync(join(dir, "admin-overrides.json"), JSON.stringify(bad));
-      expect(readOverrides(dir)).toBeNull();
-      const calls = warn.mock.calls.map((c) => String(c[0]));
-      expect(calls.some((c) => c.includes("overrides.budgets.dailyBudgetUsd"))).toBe(true);
+      expect(() => readOverrides(dir)).toThrow(/overrides\.budgets\.dailyBudgetUsd/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
-      warn.mockRestore();
+    }
+  });
+
+  it("fails closed on unknown policy fields instead of silently dropping typos", () => {
+    const dir = makeTempAgentDir();
+    try {
+      const typo = {
+        ...makeOverrides(),
+        overrides: { webTransport: { allowAnonymuos: false } },
+      };
+      writeFileSync(join(dir, "admin-overrides.json"), JSON.stringify(typo));
+      expect(() => readOverrides(dir)).toThrow(/unrecognized key.*allowAnonymuos/i);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 });

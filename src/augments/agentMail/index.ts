@@ -123,6 +123,7 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
 
   const now = opts._now ?? (() => Date.now());
   const stateDir = opts.stateDir ?? opts.agentDir;
+  const overrideDir = opts.overrideDir ?? opts.agentDir;
 
   const outboundOpts = opts.outbound ?? {};
   const allowedTrustLevels = outboundOpts.allowedTrustLevels ?? DEFAULT_ALLOWED_TRUST_LEVELS;
@@ -137,8 +138,8 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
   let globalMaxPerHour = yamlGlobalMaxPerHour;
   let globalMaxSource: "yaml" | "override" = "yaml";
 
-  if (opts.agentDir) {
-    const overrides = readOverrides(opts.agentDir);
+  if (overrideDir) {
+    const overrides = readOverrides(overrideDir);
     const overrideVal = overrides?.overrides.agentMail?.globalMaxPerHour;
     if (typeof overrideVal === "number" && Number.isFinite(overrideVal) && overrideVal > 0) {
       globalMaxPerHour = overrideVal;
@@ -1426,10 +1427,10 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
   }
 
   async function persistCapOverride(value: number): Promise<void> {
-    if (!opts.agentDir) {
-      throw new Error("agentDir not configured; admin overrides cannot persist");
+    if (!overrideDir) {
+      throw new Error("override storage not configured; admin overrides cannot persist");
     }
-    const current = readOverrides(opts.agentDir) ?? {
+    const current = readOverrides(overrideDir) ?? {
       version: 1 as const,
       lastModified: new Date().toISOString(),
       lastModifiedBy: "creator",
@@ -1441,12 +1442,12 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
       ...current.overrides.agentMail,
       globalMaxPerHour: value,
     };
-    writeOverrides(opts.agentDir, current);
+    writeOverrides(overrideDir, current);
   }
 
   async function clearCapOverride(): Promise<void> {
-    if (!opts.agentDir) return;
-    const current = readOverrides(opts.agentDir);
+    if (!overrideDir) return;
+    const current = readOverrides(overrideDir);
     if (!current) return;
     if (current.overrides.agentMail) {
       delete (current.overrides.agentMail as Record<string, unknown>).globalMaxPerHour;
@@ -1456,7 +1457,7 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
     }
     current.lastModified = new Date().toISOString();
     current.lastModifiedBy = "creator";
-    writeOverrides(opts.agentDir, current);
+    writeOverrides(overrideDir, current);
   }
 
   const adminActions: Record<

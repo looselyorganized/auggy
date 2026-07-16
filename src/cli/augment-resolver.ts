@@ -222,6 +222,7 @@ function resolveSkills(opts: Record<string, unknown>, agentDir: string): Augment
 function resolveWebTransport(
   opts: Record<string, unknown>,
   agentDir: string,
+  overrideDir: string,
   creator: CreatorConfig | undefined,
   lateBindings: {
     revocationCheck: ((id: string) => boolean) | null;
@@ -258,6 +259,7 @@ function resolveWebTransport(
     // this, the Credentials and Identity tabs render "agent directory not
     // configured" errors.
     agentDir,
+    overrideDir,
     creator,
   });
 }
@@ -408,6 +410,7 @@ export async function resolveAugments(
   if (resolverOpts.runtimeDataRoot !== undefined && !isAbsolute(resolverOpts.runtimeDataRoot)) {
     throw new Error("[augment-resolver] runtimeDataRoot must be an absolute path");
   }
+  const overrideDir = resolverOpts.runtimeDataRoot ?? agentDir;
 
   const augments: Augment[] = [];
   type NotifyToolExecute = NonNullable<Augment["tools"]>[number]["execute"];
@@ -571,7 +574,13 @@ export async function resolveAugments(
         augment = resolveFilesystem(opts, agentDir);
         break;
       case "webTransport":
-        augment = resolveWebTransport(opts, agentDir, resolverOpts.creator, lateBindings);
+        augment = resolveWebTransport(
+          opts,
+          agentDir,
+          overrideDir,
+          resolverOpts.creator,
+          lateBindings,
+        );
         break;
       case "webFetch":
         augment = resolveWebFetch(opts);
@@ -602,6 +611,7 @@ export async function resolveAugments(
         augment = budgets({
           dbPath: resolvePath(dbPath, agentDir),
           agentDir,
+          overrideDir,
           caps: opts.caps as BudgetsAugmentOptions["caps"],
           anonymousGlobalLimit: opts.anonymousGlobalLimit as number | undefined,
           dailyBudgetUsd: opts.dailyBudgetUsd as number | undefined,
@@ -619,6 +629,7 @@ export async function resolveAugments(
         augment = notify({
           destinations: opts.destinations as NotifyAugmentOptions["destinations"],
           rateLimit: opts.rateLimit as NotifyAugmentOptions["rateLimit"],
+          overrideDir,
         });
         break;
       }
@@ -663,6 +674,7 @@ export async function resolveAugments(
           inbound: opts.inbound as AgentMailAugmentOptions["inbound"],
           agentDir,
           stateDir,
+          overrideDir,
         });
         break;
       }

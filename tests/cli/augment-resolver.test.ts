@@ -1,8 +1,18 @@
 import { describe, test, expect, beforeEach, afterEach, spyOn } from "bun:test";
-import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  fstatSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { resolveAugments } from "../../src/cli/augment-resolver";
 import type { AugmentConfig } from "../../src/cli/types";
+import type { AdminOverrides } from "../../src/lib/admin-overrides";
 import { createVisitorToken, deriveSigningKey } from "../../src/transports/visitor-token";
 import { defineAgent } from "../../src/agent";
 import { createMockModel } from "../fixtures/mock-model";
@@ -772,6 +782,70 @@ describe("resolveAugments — budgets", () => {
       expect(parsed.overrides.budgets.dailyBudgetUsd).toBe(9);
     } finally {
       await budgetAugment.onShutdown?.();
+    }
+  });
+
+  test("routes all runtime overrides to one Railway volume file", async () => {
+    const runtimeDataRoot = join(TMP, "railway-overrides");
+    mkdirSync(runtimeDataRoot, { recursive: true });
+    const configs: AugmentConfig[] = [
+      {
+        name: "budgets",
+        type: "budgets",
+        options: { dbPath: "./railway-budgets.db", dailyBudgetUsd: 5 },
+      },
+      { name: "notify", type: "notify", options: { destinations: [] } },
+      {
+        name: "mail",
+        type: "agentMail",
+        options: { apiKey: "am_test", inboxId: "inbox_test" },
+      },
+      {
+        name: "web",
+        type: "webTransport",
+        options: {
+          port: getLikelyFreePort(),
+          auth: { type: "bearer", token: "test-token" },
+          visitorTokens: { enabled: false },
+        },
+      },
+    ];
+    const augments = await resolveAugments(configs, TMP, { runtimeDataRoot });
+    const budgets = augments.find((augment) => augment.name === "budgets")!;
+    const notify = augments.find((augment) => augment.name === "notify")!;
+    const mail = augments.find((augment) => augment.name === "mail")!;
+    const web = augments.find((augment) => augment.name === "web")!;
+
+    try {
+      expect(await budgets.adminActions?.["budget-cap-adjust"]?.({ value: "9" })).toMatchObject({
+        ok: true,
+      });
+      expect(await notify.adminActions?.["notify-cap-adjust"]?.({ value: "11" })).toMatchObject({
+        ok: true,
+      });
+      expect(await mail.adminActions?.["agentmail-cap-adjust"]?.({ value: "13" })).toMatchObject({
+        ok: true,
+      });
+      expect(await web.adminActions?.["posture-flip"]?.({ value: "true" })).toMatchObject({
+        ok: true,
+      });
+
+      const volumeOverride = join(runtimeDataRoot, "admin-overrides.json");
+      expect(existsSync(join(TMP, "admin-overrides.json"))).toBe(false);
+      const fd = openSync(volumeOverride, "r");
+      let parsed: AdminOverrides;
+      try {
+        expect(fstatSync(fd).isFile()).toBe(true);
+        parsed = JSON.parse(readFileSync(fd, "utf8"));
+      } finally {
+        closeSync(fd);
+      }
+      expect(parsed.overrides.budgets?.dailyBudgetUsd).toBe(9);
+      expect(parsed.overrides.notify?.globalMaxPerHour).toBe(11);
+      expect(parsed.overrides.agentMail?.globalMaxPerHour).toBe(13);
+      expect(parsed.overrides.webTransport?.allowAnonymous).toBe(true);
+    } finally {
+      for (const augment of augments) await augment.onShutdown?.();
     }
   });
 

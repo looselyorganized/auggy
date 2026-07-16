@@ -43,6 +43,8 @@ import { createAgentMailAdapter } from "./adapters/agentmail";
 import { createLogToFileAdapter } from "./adapters/log-to-file";
 
 export interface NotifyAugmentInternalOptions extends NotifyAugmentOptions {
+  /** Canonical shared directory for admin-overrides.json. Defaults to agentDir. */
+  overrideDir?: string;
   /**
    * Test-only adapter override. Production code does not pass this.
    * Partial — missing keys fall back to default adapters.
@@ -56,6 +58,7 @@ export interface NotifyAugmentInternalOptions extends NotifyAugmentOptions {
 }
 
 export function notify(opts: NotifyAugmentInternalOptions): Augment {
+  const overrideDir = opts.overrideDir ?? opts.agentDir;
   const defaults = {
     webhook: createWebhookAdapter(),
     telegram: createTelegramAdapter(),
@@ -77,8 +80,8 @@ export function notify(opts: NotifyAugmentInternalOptions): Augment {
   const dedupThreshold = rl.dedupThreshold ?? 0.6;
   const perPeerCooldownMs = rl.perPeerCooldownMs ?? cooldownMs;
 
-  if (opts.agentDir) {
-    const overrides = readOverrides(opts.agentDir);
+  if (overrideDir) {
+    const overrides = readOverrides(overrideDir);
     const overrideVal = overrides?.overrides.notify?.globalMaxPerHour;
     if (overrideVal !== undefined) {
       globalMaxPerHour = overrideVal;
@@ -379,10 +382,10 @@ export function notify(opts: NotifyAugmentInternalOptions): Augment {
   }
 
   async function persistNotifyOverride(value: number): Promise<void> {
-    if (!opts.agentDir) {
-      throw new Error("agentDir not configured; admin overrides cannot persist");
+    if (!overrideDir) {
+      throw new Error("override storage not configured; admin overrides cannot persist");
     }
-    const current = readOverrides(opts.agentDir) ?? {
+    const current = readOverrides(overrideDir) ?? {
       version: 1 as const,
       lastModified: new Date().toISOString(),
       lastModifiedBy: "creator",
@@ -394,12 +397,12 @@ export function notify(opts: NotifyAugmentInternalOptions): Augment {
       ...current.overrides.notify,
       globalMaxPerHour: value,
     };
-    writeOverrides(opts.agentDir, current);
+    writeOverrides(overrideDir, current);
   }
 
   async function clearNotifyOverride(): Promise<void> {
-    if (!opts.agentDir) return;
-    const current = readOverrides(opts.agentDir);
+    if (!overrideDir) return;
+    const current = readOverrides(overrideDir);
     if (!current) return;
     if (current.overrides.notify) {
       delete (current.overrides.notify as Record<string, unknown>).globalMaxPerHour;
@@ -409,7 +412,7 @@ export function notify(opts: NotifyAugmentInternalOptions): Augment {
     }
     current.lastModified = new Date().toISOString();
     current.lastModifiedBy = "creator";
-    writeOverrides(opts.agentDir, current);
+    writeOverrides(overrideDir, current);
   }
 
   async function adminInfo(): Promise<AdminInfoBlock> {
