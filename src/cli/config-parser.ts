@@ -608,15 +608,8 @@ function validateNotifyOptions(
   }
 }
 
-/**
- * Single source of truth for the `inbound.mode` discriminator on the
- * agentMail augment. Phase A ships `"none"`; Phase B adds `"websocket"`
- * and `"polling"`; Phase C adds `"webhook"`. Listing the future modes here
- * (rather than rejecting them outright) gives operators a clear error
- * message that distinguishes "not yet implemented" from "typo'd value".
- */
+/** Single source of truth for the AgentMail inbound mode discriminator. */
 const AGENT_MAIL_INBOUND_MODES = new Set(["none", "websocket", "polling", "webhook"]);
-const AGENT_MAIL_INBOUND_MODES_IMPLEMENTED = new Set(["none"]);
 const VALID_TRUST_LEVELS = new Set(["creator", "agent", "public"]);
 
 function validateAgentMailOptions(
@@ -712,6 +705,41 @@ function validateAgentMailOptions(
           }
         }
       }
+
+      if (out.humanReview !== undefined) {
+        if (typeof out.humanReview !== "object" || out.humanReview === null) {
+          errors.push(`${prefix}.outbound.humanReview: must be an object`);
+        } else {
+          const review = out.humanReview as Record<string, unknown>;
+          if (review.requiredForTrustLevels !== undefined) {
+            if (!Array.isArray(review.requiredForTrustLevels)) {
+              errors.push(
+                `${prefix}.outbound.humanReview.requiredForTrustLevels: must be an array`,
+              );
+            } else {
+              for (let i = 0; i < review.requiredForTrustLevels.length; i++) {
+                const level = review.requiredForTrustLevels[i];
+                if (typeof level !== "string" || !VALID_TRUST_LEVELS.has(level)) {
+                  errors.push(
+                    `${prefix}.outbound.humanReview.requiredForTrustLevels[${i}]: must be one of "creator", "agent", "public" (got ${JSON.stringify(level)})`,
+                  );
+                }
+              }
+            }
+          }
+          if (
+            review.expiresAfterMs !== undefined &&
+            (typeof review.expiresAfterMs !== "number" ||
+              !Number.isSafeInteger(review.expiresAfterMs) ||
+              review.expiresAfterMs <= 0 ||
+              review.expiresAfterMs > 30 * 24 * 60 * 60_000)
+          ) {
+            errors.push(
+              `${prefix}.outbound.humanReview.expiresAfterMs: must be between 1 and 2592000000`,
+            );
+          }
+        }
+      }
     }
   }
 
@@ -727,10 +755,78 @@ function validateAgentMailOptions(
         errors.push(
           `${prefix}.inbound.mode: unknown mode "${mode}" — valid modes are ${[...AGENT_MAIL_INBOUND_MODES].map((m) => `"${m}"`).join(", ")}`,
         );
-      } else if (!AGENT_MAIL_INBOUND_MODES_IMPLEMENTED.has(mode)) {
-        errors.push(
-          `${prefix}.inbound.mode: "${mode}" is not yet implemented. Phase A ships outbound only — set inbound.mode to "none" (or omit) until Phase B lands websocket/polling.`,
-        );
+      } else if (mode !== "none") {
+        if (!Array.isArray(inb.allowedSenders) || inb.allowedSenders.length === 0) {
+          errors.push(
+            `${prefix}.inbound.allowedSenders: required non-empty array when inbound is enabled`,
+          );
+        } else {
+          for (let i = 0; i < inb.allowedSenders.length; i++) {
+            if (typeof inb.allowedSenders[i] !== "string" || inb.allowedSenders[i].length === 0) {
+              errors.push(`${prefix}.inbound.allowedSenders[${i}]: must be a non-empty string`);
+            }
+          }
+        }
+        for (const field of ["pollIntervalMs", "maxPromptBytes", "maxAttempts"] as const) {
+          if (
+            inb[field] !== undefined &&
+            (typeof inb[field] !== "number" ||
+              !Number.isSafeInteger(inb[field]) ||
+              (inb[field] as number) <= 0)
+          ) {
+            errors.push(`${prefix}.inbound.${field}: must be a positive integer`);
+          }
+        }
+        if (typeof inb.maxPromptBytes === "number" && inb.maxPromptBytes < 512) {
+          errors.push(`${prefix}.inbound.maxPromptBytes: must be at least 512`);
+        }
+        if (inb.classifications !== undefined) {
+          if (typeof inb.classifications !== "object" || inb.classifications === null) {
+            errors.push(`${prefix}.inbound.classifications: must be an object`);
+          } else {
+            const classifications = inb.classifications as Record<string, unknown>;
+            for (const field of ["received", "spam", "blocked", "unauthenticated"] as const) {
+              const action = classifications[field];
+              if (action !== undefined && action !== "process" && action !== "discard") {
+                errors.push(
+                  `${prefix}.inbound.classifications.${field}: must be "process" or "discard"`,
+                );
+              }
+            }
+          }
+        }
+        if (mode === "webhook") {
+          if (typeof inb.webhook !== "object" || inb.webhook === null) {
+            errors.push(`${prefix}.inbound.webhook: required object when mode is "webhook"`);
+          } else {
+            const webhook = inb.webhook as Record<string, unknown>;
+            if (
+              webhook.path !== undefined &&
+              (typeof webhook.path !== "string" || !webhook.path.startsWith("/"))
+            ) {
+              errors.push(`${prefix}.inbound.webhook.path: must start with "/"`);
+            }
+            if (
+              webhook.secretEnv !== undefined &&
+              (typeof webhook.secretEnv !== "string" || webhook.secretEnv.length === 0)
+            ) {
+              errors.push(`${prefix}.inbound.webhook.secretEnv: must be a non-empty string`);
+            }
+            if (
+              webhook.timestampToleranceSeconds !== undefined &&
+              (typeof webhook.timestampToleranceSeconds !== "number" ||
+                !Number.isFinite(webhook.timestampToleranceSeconds) ||
+                webhook.timestampToleranceSeconds <= 0 ||
+                webhook.timestampToleranceSeconds > 300)
+            ) {
+              errors.push(
+                `${prefix}.inbound.webhook.timestampToleranceSeconds: must be between 1 and 300`,
+              );
+            }
+          }
+        } else if (inb.webhook !== undefined) {
+          errors.push(`${prefix}.inbound.webhook: only valid when mode is "webhook"`);
+        }
       }
     }
   }
@@ -1251,6 +1347,54 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
         const linkOpts = (aug.options ?? {}) as Record<string, unknown>;
         validateLinkOptions(linkOpts, optionsPrefix, errors);
       }
+    }
+
+    const agentMailWebhookConfigured = augments.some((entry) => {
+      if (typeof entry !== "object" || entry === null) return false;
+      const augment = entry as Record<string, unknown>;
+      if (augment.type !== "agentMail") return false;
+      const options = augment.options as Record<string, unknown> | undefined;
+      const inbound = options?.inbound as Record<string, unknown> | undefined;
+      return inbound?.mode === "webhook";
+    });
+    const agentMailReviewConfigured = augments.some((entry) => {
+      if (typeof entry !== "object" || entry === null) return false;
+      const augment = entry as Record<string, unknown>;
+      if (augment.type !== "agentMail") return false;
+      const options = augment.options as Record<string, unknown> | undefined;
+      const outbound = options?.outbound as Record<string, unknown> | undefined;
+      const allowed = Array.isArray(outbound?.allowedTrustLevels)
+        ? outbound.allowedTrustLevels
+        : ["creator"];
+      const humanReview = outbound?.humanReview as Record<string, unknown> | undefined;
+      const reviewed = Array.isArray(humanReview?.requiredForTrustLevels)
+        ? humanReview.requiredForTrustLevels
+        : ["public"];
+      const executableTrustLevels = new Set(["creator", ...allowed]);
+      return reviewed.some((level) => executableTrustLevels.has(level));
+    });
+    const hasWebTransport = augments.some(
+      (entry) =>
+        typeof entry === "object" &&
+        entry !== null &&
+        (entry as Record<string, unknown>).type === "webTransport",
+    );
+    const hasAdminWebTransport = augments.some((entry) => {
+      if (typeof entry !== "object" || entry === null) return false;
+      const augment = entry as Record<string, unknown>;
+      if (augment.type !== "webTransport") return false;
+      const options = augment.options as Record<string, unknown> | undefined;
+      return options?.adminRoute !== false;
+    });
+    if (agentMailWebhookConfigured && !hasWebTransport) {
+      errors.push(
+        'agentMail inbound.mode "webhook" requires a webTransport augment to mount its verified HTTP route',
+      );
+    }
+    if (agentMailReviewConfigured && !hasAdminWebTransport) {
+      errors.push(
+        "agentMail outbound human review requires a webTransport augment with adminRoute enabled for review decisions",
+      );
     }
   }
 

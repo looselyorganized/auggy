@@ -5,19 +5,24 @@
 
 import type { AgentMailClient } from "../../agentmail-client";
 import type { AgentMailAugmentOptions } from "../../types";
+import type { AgentMailInboundLedger } from "./inbound-ledger";
+import type { AgentMailSdkAdapters } from "./sdk-provider";
+import type { AgentMailReviewQueue } from "./review-queue";
 
 /**
- * Phase A-only internal options. Production callers do not pass these.
- *
- * Once Phase B lands (`_now` for SQLite cursor clock injection, transport
- * test seams, etc.) the surface here will grow. For now: just the client
- * factory hook and a clock injection point used by the rate-limit tests.
+ * Internal test seams. Production callers do not pass these.
  */
 export interface AgentMailAugmentInternalOptions extends AgentMailAugmentOptions {
   /** Test-only override; production constructs from apiKey via createAgentMailClient. */
   _client?: AgentMailClient;
   /** Test-only clock injection (ms epoch). Defaults to Date.now. */
   _now?: () => number;
+  /** Test-only inbound storage override. */
+  _inboundLedger?: AgentMailInboundLedger;
+  /** Test-only SDK boundary override. */
+  _sdkAdapters?: AgentMailSdkAdapters;
+  /** Test-only durable outbound-review queue override. */
+  _reviewQueue?: AgentMailReviewQueue;
 }
 
 /**
@@ -31,7 +36,7 @@ export interface DispatchRecord {
   /** Tool that produced this dispatch. */
   tool: "send_message" | "reply_to_message" | "forward_message" | "admin-test";
   /** Outcome surfaced back to the model / operator. */
-  status: "sent" | "rate_limited" | "blocked" | "failed";
+  status: "sent" | "pending_review" | "rate_limited" | "blocked" | "failed";
   /** Redacted recipient summary (e.g. `"al***@example.com (+2)"`). */
   recipients: string;
   /** First 80 chars of subject. */

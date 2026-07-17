@@ -558,6 +558,7 @@ function timingSafeEqual(a: string, b: string): boolean {
  */
 export function webTransport(opts: WebTransportOptions): Augment {
   let server: ReturnType<typeof Bun.serve> | null = null;
+  let startServer: (() => void) | null = null;
   let kernel: TransportKernel | null = null;
 
   // PR γ.1 — augment-registered routes captured at register() time.
@@ -1132,6 +1133,16 @@ export function webTransport(opts: WebTransportOptions): Augment {
             `or set \`allowAnonymous: true\` in agent.yaml to acknowledge.`,
         );
       }
+    },
+    async ready() {
+      if (!startServer) {
+        throw new Error("[web-transport] cannot become ready before onBoot preparation");
+      }
+      if (!kernel) {
+        throw new Error("[web-transport] cannot become ready before kernel registration");
+      }
+      if (server) return;
+      startServer();
     },
     identify,
     concurrency: opts.concurrency ?? 1,
@@ -1830,276 +1841,286 @@ export function webTransport(opts: WebTransportOptions): Augment {
         }
         signingKey = await deriveSigningKey(keySource);
       }
-      server = Bun.serve({
-        port: opts.port,
-        idleTimeout: 120, // 120s — covers long model calls + tool chains
-        async fetch(req, server) {
-          const url = new URL(req.url);
+      // Listener activation is deferred until TransportSpec.ready(), after
+      // every transport has captured its kernel handle.
+      startServer = () => {
+        server = Bun.serve({
+          port: opts.port,
+          idleTimeout: 120, // 120s — covers long model calls + tool chains
+          async fetch(req, server) {
+            const url = new URL(req.url);
 
-          // CORS preflight — required for browser-based AG-UI clients
-          if (req.method === "OPTIONS") {
-            return handleCorsPreFlight();
-          }
+            // CORS preflight — required for browser-based AG-UI clients
+            if (req.method === "OPTIONS") {
+              return handleCorsPreFlight();
+            }
 
-          // G36 — /console route. Opt-out via adminRoute: false makes the route
-          // look like a 404 (no signal that console exists when disabled).
-          // Exact-match on "/console" + scoped prefix on "/console/action/" — NOT
-          // startsWith("/console") which would also match /administrative and
-          // leak the opt-out setting (M3 fix).
-          const adminEnabled = opts.adminRoute !== false;
-          // SPA expansion — accept the bare `/console`, the action POST surface,
-          // and any client-side route under `/console/<path>`. Using the literal
-          // `/console/` prefix (note trailing slash) keeps siblings like
-          // `/administrative` from being captured (M3 fix preserved).
-          const isAdminPath = url.pathname === "/console" || url.pathname.startsWith("/console/");
-          if (adminEnabled && isAdminPath) {
-            if (req.method === "HEAD") {
-              return new Response(null, {
-                status: 405,
-                headers: { allow: "GET, POST" },
+            // G36 — /console route. Opt-out via adminRoute: false makes the route
+            // look like a 404 (no signal that console exists when disabled).
+            // Exact-match on "/console" + scoped prefix on "/console/action/" — NOT
+            // startsWith("/console") which would also match /administrative and
+            // leak the opt-out setting (M3 fix).
+            const adminEnabled = opts.adminRoute !== false;
+            // SPA expansion — accept the bare `/console`, the action POST surface,
+            // and any client-side route under `/console/<path>`. Using the literal
+            // `/console/` prefix (note trailing slash) keeps siblings like
+            // `/administrative` from being captured (M3 fix preserved).
+            const isAdminPath = url.pathname === "/console" || url.pathname.startsWith("/console/");
+            if (adminEnabled && isAdminPath) {
+              if (req.method === "HEAD") {
+                return new Response(null, {
+                  status: 405,
+                  headers: { allow: "GET, POST" },
+                });
+              }
+              if (req.method !== "GET" && req.method !== "POST") {
+                return new Response(null, {
+                  status: 405,
+                  headers: { allow: "GET, POST" },
+                });
+              }
+
+              // M4 fix — rate-limit BEFORE handling. Per-IP combined budget
+              // across the entire /console* surface: 60 req/min via synthetic
+              // route-key "admin" for compatibility. Defeats brute-force against
+              // HTTP Basic.
+              const adminIp = getCallerIp(req, server, trustedProxies, xffOnUntrusted);
+              const adminRl = checkRouteRateLimit("admin", adminIp, 60);
+              if (!adminRl.allowed) {
+                return new Response(null, {
+                  status: 429,
+                  headers: { "retry-after": String(adminRl.retryAfterSec) },
+                });
+              }
+
+              if (!kernel) return new Response(null, { status: 503 });
+              return handleAdminRoute(req, {
+                kernel,
+                bearer: opts.auth.token,
+                agentDir: opts.agentDir,
+                callerIp: adminIp,
+                trustForwardedProto: shouldTrustForwardedProto(req, server, trustedProxies),
+                actionRegistry,
+                staticDir: adminStaticDir,
+                selfPort: opts.port,
               });
             }
-            if (req.method !== "GET" && req.method !== "POST") {
-              return new Response(null, {
-                status: 405,
-                headers: { allow: "GET, POST" },
+
+            // G2 — GET / and HEAD / for the info endpoint or operator-configured
+            // redirect. URL validation + HTML caching ran once in register();
+            // per-request work is just method/branch + Response construction.
+            if ((req.method === "GET" || req.method === "HEAD") && url.pathname === "/") {
+              if (validatedPublicFrontendUrl !== undefined) {
+                // Both GET and HEAD use manual construction so URL validation
+                // happens at register-time only (not per-request). Body is null
+                // in both — visitors follow the Location header.
+                return new Response(null, {
+                  status: 302,
+                  headers: { location: validatedPublicFrontendUrl },
+                });
+              }
+              // Info page path. infoPageHtml is non-null here by construction
+              // in register() — the defensive guard exists in case of future
+              // refactor breakage.
+              if (infoPageHtml === null) return new Response(null, { status: 404 });
+              const headers = new Headers({
+                "content-type": "text/html; charset=utf-8",
+                "cache-control": PUBLIC_PAGE_CACHE_CONTROL,
+              });
+              // RFC 9110 §9.3.2 — HEAD's headers SHOULD match GET's. Set
+              // Content-Length explicitly. Bun's auto-compute behavior on
+              // null-body responses is verified by the Content-Length probe
+              // test in tests/transports/web-transport.test.ts; if Bun
+              // overrides this value to 0, the test documents the deviation.
+              headers.set("content-length", String(infoPageByteLength));
+              return new Response(req.method === "HEAD" ? null : infoPageHtml, {
+                status: 200,
+                headers,
               });
             }
 
-            // M4 fix — rate-limit BEFORE handling. Per-IP combined budget
-            // across the entire /console* surface: 60 req/min via synthetic
-            // route-key "admin" for compatibility. Defeats brute-force against
-            // HTTP Basic.
-            const adminIp = getCallerIp(req, server, trustedProxies, xffOnUntrusted);
-            const adminRl = checkRouteRateLimit("admin", adminIp, 60);
-            if (!adminRl.allowed) {
+            if (req.method === "POST" && url.pathname === "/agent/run") {
+              return handleAgentRun(req);
+            }
+            if ((req.method === "GET" || req.method === "HEAD") && url.pathname === "/agent/") {
+              if (!publicIntegration) return new Response(null, { status: 404 });
               return new Response(null, {
-                status: 429,
-                headers: { "retry-after": String(adminRl.retryAfterSec) },
+                status: 308,
+                headers: { location: "/agent" },
               });
             }
-
-            if (!kernel) return new Response(null, { status: 503 });
-            return handleAdminRoute(req, {
-              kernel,
-              bearer: opts.auth.token,
-              agentDir: opts.agentDir,
-              callerIp: adminIp,
-              trustForwardedProto: shouldTrustForwardedProto(req, server, trustedProxies),
-              actionRegistry,
-              staticDir: adminStaticDir,
-              selfPort: opts.port,
-            });
-          }
-
-          // G2 — GET / and HEAD / for the info endpoint or operator-configured
-          // redirect. URL validation + HTML caching ran once in register();
-          // per-request work is just method/branch + Response construction.
-          if ((req.method === "GET" || req.method === "HEAD") && url.pathname === "/") {
-            if (validatedPublicFrontendUrl !== undefined) {
-              // Both GET and HEAD use manual construction so URL validation
-              // happens at register-time only (not per-request). Body is null
-              // in both — visitors follow the Location header.
-              return new Response(null, {
-                status: 302,
-                headers: { location: validatedPublicFrontendUrl },
+            if ((req.method === "GET" || req.method === "HEAD") && url.pathname === "/agent") {
+              if (!publicIntegration || agentIntegrationPageHtml === null) {
+                return new Response(null, { status: 404 });
+              }
+              const headers = new Headers({
+                "content-type": "text/html; charset=utf-8",
+                "cache-control": PUBLIC_PAGE_CACHE_CONTROL,
+              });
+              headers.set("content-length", String(agentIntegrationPageByteLength));
+              return new Response(req.method === "HEAD" ? null : agentIntegrationPageHtml, {
+                status: 200,
+                headers,
               });
             }
-            // Info page path. infoPageHtml is non-null here by construction
-            // in register() — the defensive guard exists in case of future
-            // refactor breakage.
-            if (infoPageHtml === null) return new Response(null, { status: 404 });
-            const headers = new Headers({
-              "content-type": "text/html; charset=utf-8",
-              "cache-control": PUBLIC_PAGE_CACHE_CONTROL,
-            });
-            // RFC 9110 §9.3.2 — HEAD's headers SHOULD match GET's. Set
-            // Content-Length explicitly. Bun's auto-compute behavior on
-            // null-body responses is verified by the Content-Length probe
-            // test in tests/transports/web-transport.test.ts; if Bun
-            // overrides this value to 0, the test documents the deviation.
-            headers.set("content-length", String(infoPageByteLength));
-            return new Response(req.method === "HEAD" ? null : infoPageHtml, {
-              status: 200,
-              headers,
-            });
-          }
-
-          if (req.method === "POST" && url.pathname === "/agent/run") {
-            return handleAgentRun(req);
-          }
-          if ((req.method === "GET" || req.method === "HEAD") && url.pathname === "/agent/") {
-            if (!publicIntegration) return new Response(null, { status: 404 });
-            return new Response(null, {
-              status: 308,
-              headers: { location: "/agent" },
-            });
-          }
-          if ((req.method === "GET" || req.method === "HEAD") && url.pathname === "/agent") {
-            if (!publicIntegration || agentIntegrationPageHtml === null) {
-              return new Response(null, { status: 404 });
+            if (req.method === "GET" && url.pathname === "/health") {
+              return handleHealth();
             }
-            const headers = new Headers({
-              "content-type": "text/html; charset=utf-8",
-              "cache-control": PUBLIC_PAGE_CACHE_CONTROL,
-            });
-            headers.set("content-length", String(agentIntegrationPageByteLength));
-            return new Response(req.method === "HEAD" ? null : agentIntegrationPageHtml, {
-              status: 200,
-              headers,
-            });
-          }
-          if (req.method === "GET" && url.pathname === "/health") {
-            return handleHealth();
-          }
-          if (req.method === "GET" && url.pathname === "/.well-known/agent-card.json") {
-            return handleAgentCard(req);
-          }
+            if (req.method === "GET" && url.pathname === "/.well-known/agent-card.json") {
+              return handleAgentCard(req);
+            }
 
-          // PR γ.1 + v1.x — augment-registered routes. Exact routes win first;
-          // parameterized routes (`/items/:id`) are matched after exact paths.
-          const augmentRouteMatch = findAugmentRoute(req.method, url.pathname);
-          if (augmentRouteMatch) {
-            const { route: augmentRoute, params } = augmentRouteMatch;
-            const routeAuth = await authorizeAugmentRoute(req, augmentRoute.auth);
-            if (!routeAuth.ok) return routeAuth.response;
+            // PR γ.1 + v1.x — augment-registered routes. Exact routes win first;
+            // parameterized routes (`/items/:id`) are matched after exact paths.
+            const augmentRouteMatch = findAugmentRoute(req.method, url.pathname);
+            if (augmentRouteMatch) {
+              const { route: augmentRoute, params } = augmentRouteMatch;
+              const routeAuth = await authorizeAugmentRoute(req, augmentRoute.auth);
+              if (!routeAuth.ok) return routeAuth.response;
 
-            const authorization = evaluateDelegatedAuthorization(augmentRoute.requires, {
-              auth: routeAuth.context,
-              params,
-            });
-            if (!authorization.ok) {
-              emitDelegatedAuthorizationDenied(
-                delegatedAuthorizationDeniedAuditEvent({
-                  decision: authorization,
-                  auth: routeAuth.context,
-                  target: {
-                    type: "route",
-                    route: `${augmentRoute.method} ${augmentRoute.path}`,
-                    method: augmentRoute.method,
-                    path: augmentRoute.path,
-                    auth: augmentRoute.auth,
-                  },
+              const authorization = evaluateDelegatedAuthorization(augmentRoute.requires, {
+                auth: routeAuth.context,
+                params,
+              });
+              if (!authorization.ok) {
+                emitDelegatedAuthorizationDenied(
+                  delegatedAuthorizationDeniedAuditEvent({
+                    decision: authorization,
+                    auth: routeAuth.context,
+                    target: {
+                      type: "route",
+                      route: `${augmentRoute.method} ${augmentRoute.path}`,
+                      method: augmentRoute.method,
+                      path: augmentRoute.path,
+                      auth: augmentRoute.auth,
+                    },
+                  }),
+                );
+                return json(delegatedAuthorizationForbiddenErrorBody(authorization.reason), 403);
+              }
+
+              // Per-route rate limit runs before body buffering so rejected public
+              // POSTs do not force reads up to maxBodyBytes before receiving 429.
+              if (augmentRoute.rateLimit) {
+                const routeKey = `${augmentRoute.method} ${augmentRoute.path}`;
+                const ip = getCallerIp(req, server, trustedProxies, xffOnUntrusted);
+                const rl = checkRouteRateLimit(routeKey, ip, augmentRoute.rateLimit.maxPerMinute);
+                if (!rl.allowed) {
+                  return json({ error: "rate-limited" }, 429, {
+                    "retry-after": String(rl.retryAfterSec),
+                  });
+                }
+              }
+
+              // Finding 2 — body-size cap. Buffer the request body up to maxBodyBytes
+              // bytes, enforcing actual byte-count (not just content-length header).
+              // Adversarial clients can omit content-length or use chunked encoding
+              // to bypass a header-only check.
+              const maxBodyBytes = augmentRoute.maxBodyBytes ?? 1_048_576;
+              let dispatchReq: Request = req;
+              let rawBody: Uint8Array<ArrayBufferLike> = new Uint8Array();
+              if (req.method !== "GET" && req.method !== "HEAD" && req.body) {
+                try {
+                  const buffered = await readBodyWithCap(req.body, maxBodyBytes);
+                  if (buffered === null) {
+                    return json({ error: "payload-too-large" }, 413);
+                  }
+                  rawBody = buffered;
+                  // Reconstruct the Request with the buffered body so the handler
+                  // sees the same bytes (and can call req.text(), req.json(), etc).
+                  dispatchReq = new Request(req.url, {
+                    method: req.method,
+                    headers: req.headers,
+                    body: buffered,
+                  });
+                } catch (_err) {
+                  // Body read errors are 400 — caller's problem, not ours.
+                  return json({ error: "bad-body" }, 400);
+                }
+              }
+
+              const webhookPolicy = await verifyRouteWebhookPolicy(
+                augmentRoute,
+                dispatchReq,
+                rawBody,
+              );
+              if (!webhookPolicy.ok) {
+                return json({ error: webhookPolicy.error }, webhookPolicy.status);
+              }
+
+              try {
+                // Finding 1 — AbortController for cooperative cancellation on timeout.
+                // The controller fires on timeout so handlers that listen to the signal
+                // can bail out of side-effecting work instead of continuing after 504.
+                const timeoutMs = augmentRoute.timeoutMs ?? 30_000;
+                const controller = new AbortController();
+                const timer = setTimeout(() => controller.abort(), timeoutMs);
+                try {
+                  const response = await withTimeout(
+                    () =>
+                      augmentRoute.handler(dispatchReq, {
+                        signal: controller.signal,
+                        auth: routeAuth.context,
+                        params,
+                        ...(webhookPolicy.context ? { webhook: webhookPolicy.context } : {}),
+                        routePath: augmentRoute.path,
+                      }),
+                    timeoutMs,
+                  );
+                  return withCorsHeaders(response);
+                } finally {
+                  clearTimeout(timer);
+                }
+              } catch (err) {
+                if (err instanceof TimeoutError) {
+                  return json({ error: "timeout" }, 504);
+                }
+                const augmentName =
+                  (augmentRoute as { augmentName?: string }).augmentName ?? "unknown";
+                console.error(
+                  `[web-transport] augment "${augmentName}" handler ${augmentRoute.method} ${augmentRoute.path} threw: ${(err as Error).message}`,
+                );
+                return json({ error: "internal" }, 500);
+              }
+            }
+
+            // Method-mismatch detection: if any registered augment route matches
+            // the path but a different method, return 405 with Allow header listing
+            // all methods supported for that path (RFC 9110 §15.5.6).
+            const allowedMethods = [
+              ...new Set(
+                augmentRoutes
+                  .filter(
+                    (r) => r.method !== req.method && matchRoutePath(r.path, url.pathname) !== null,
+                  )
+                  .map((r) => r.method),
+              ),
+            ];
+            if (allowedMethods.length > 0) {
+              return withCorsHeaders(
+                new Response("Method Not Allowed", {
+                  status: 405,
+                  headers: { allow: allowedMethods.join(", ") },
                 }),
               );
-              return json(delegatedAuthorizationForbiddenErrorBody(authorization.reason), 403);
             }
 
-            // Per-route rate limit runs before body buffering so rejected public
-            // POSTs do not force reads up to maxBodyBytes before receiving 429.
-            if (augmentRoute.rateLimit) {
-              const routeKey = `${augmentRoute.method} ${augmentRoute.path}`;
-              const ip = getCallerIp(req, server, trustedProxies, xffOnUntrusted);
-              const rl = checkRouteRateLimit(routeKey, ip, augmentRoute.rateLimit.maxPerMinute);
-              if (!rl.allowed) {
-                return json({ error: "rate-limited" }, 429, {
-                  "retry-after": String(rl.retryAfterSec),
-                });
-              }
-            }
-
-            // Finding 2 — body-size cap. Buffer the request body up to maxBodyBytes
-            // bytes, enforcing actual byte-count (not just content-length header).
-            // Adversarial clients can omit content-length or use chunked encoding
-            // to bypass a header-only check.
-            const maxBodyBytes = augmentRoute.maxBodyBytes ?? 1_048_576;
-            let dispatchReq: Request = req;
-            let rawBody: Uint8Array<ArrayBufferLike> = new Uint8Array();
-            if (req.method !== "GET" && req.method !== "HEAD" && req.body) {
-              try {
-                const buffered = await readBodyWithCap(req.body, maxBodyBytes);
-                if (buffered === null) {
-                  return json({ error: "payload-too-large" }, 413);
-                }
-                rawBody = buffered;
-                // Reconstruct the Request with the buffered body so the handler
-                // sees the same bytes (and can call req.text(), req.json(), etc).
-                dispatchReq = new Request(req.url, {
-                  method: req.method,
-                  headers: req.headers,
-                  body: buffered,
-                });
-              } catch (_err) {
-                // Body read errors are 400 — caller's problem, not ours.
-                return json({ error: "bad-body" }, 400);
-              }
-            }
-
-            const webhookPolicy = await verifyRouteWebhookPolicy(
-              augmentRoute,
-              dispatchReq,
-              rawBody,
-            );
-            if (!webhookPolicy.ok) {
-              return json({ error: webhookPolicy.error }, webhookPolicy.status);
-            }
-
-            try {
-              // Finding 1 — AbortController for cooperative cancellation on timeout.
-              // The controller fires on timeout so handlers that listen to the signal
-              // can bail out of side-effecting work instead of continuing after 504.
-              const timeoutMs = augmentRoute.timeoutMs ?? 30_000;
-              const controller = new AbortController();
-              const timer = setTimeout(() => controller.abort(), timeoutMs);
-              try {
-                const response = await withTimeout(
-                  () =>
-                    augmentRoute.handler(dispatchReq, {
-                      signal: controller.signal,
-                      auth: routeAuth.context,
-                      params,
-                      ...(webhookPolicy.context ? { webhook: webhookPolicy.context } : {}),
-                      routePath: augmentRoute.path,
-                    }),
-                  timeoutMs,
-                );
-                return withCorsHeaders(response);
-              } finally {
-                clearTimeout(timer);
-              }
-            } catch (err) {
-              if (err instanceof TimeoutError) {
-                return json({ error: "timeout" }, 504);
-              }
-              const augmentName =
-                (augmentRoute as { augmentName?: string }).augmentName ?? "unknown";
-              console.error(
-                `[web-transport] augment "${augmentName}" handler ${augmentRoute.method} ${augmentRoute.path} threw: ${(err as Error).message}`,
-              );
-              return json({ error: "internal" }, 500);
-            }
-          }
-
-          // Method-mismatch detection: if any registered augment route matches
-          // the path but a different method, return 405 with Allow header listing
-          // all methods supported for that path (RFC 9110 §15.5.6).
-          const allowedMethods = [
-            ...new Set(
-              augmentRoutes
-                .filter(
-                  (r) => r.method !== req.method && matchRoutePath(r.path, url.pathname) !== null,
-                )
-                .map((r) => r.method),
-            ),
-          ];
-          if (allowedMethods.length > 0) {
-            return withCorsHeaders(
-              new Response("Method Not Allowed", {
-                status: 405,
-                headers: { allow: allowedMethods.join(", ") },
-              }),
-            );
-          }
-
-          return new Response("Not Found", { status: 404 });
-        },
-      });
+            return new Response("Not Found", { status: 404 });
+          },
+        });
+      };
     },
     async onShutdown() {
       if (server) {
         server.stop();
         server = null;
       }
+      startServer = null;
+      kernel = null;
+      augmentRoutes = [];
+      augmentRouteMap = new Map();
+      augmentPatternRoutes = [];
+      actionRegistry = new Map();
     },
   };
 }

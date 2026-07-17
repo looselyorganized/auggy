@@ -9,14 +9,8 @@
  * This catches multi-transport dispatch contract bugs (e.g., the trigger.source
  * vs aug.name keying issue from Phase B) that single-transport tests miss.
  *
- * ## Inbound delivery timing (same race as Phase B's single-transport test)
- *
- * lifecycle.boot() starts the poll loop before transport.register() wires the
- * kernel handle. The first getUpdates() can fire before the kernel is wired,
- * so handleUpdate sees kernel === null and drops the update. We use the same
- * pattern as telegram-transport.test.ts: getUpdates returns [] until
- * `registered` is set (after agent.start() resolves), then delivers the update
- * exactly once on the next iteration.
+ * Telegram returns an update on the first poll, proving readiness starts only
+ * after every mounted transport has registered its kernel handle.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
@@ -73,7 +67,6 @@ describe("multi-transport integration: webTransport + telegramTransport", () => 
     // -----------------------------------------------------------------------
 
     const sent: Array<{ chatId: number | string; text: string }> = [];
-    let registered = false; // flipped after agent.start() returns
     let delivered = false;
 
     const inboundUpdate: TelegramUpdate = {
@@ -87,14 +80,13 @@ describe("multi-transport integration: webTransport + telegramTransport", () => 
       },
     };
 
-    // Deliver the update only after transport.register() has wired the kernel.
     const tgClient: TelegramBotClient = {
       async sendMessage(chatId, text) {
         sent.push({ chatId, text });
         return { messageId: 1, chatId };
       },
       async getUpdates() {
-        if (registered && !delivered) {
+        if (!delivered) {
           delivered = true;
           return [inboundUpdate];
         }
@@ -157,11 +149,7 @@ describe("multi-transport integration: webTransport + telegramTransport", () => 
       model,
     );
 
-    // Boot the agent. After start() resolves, both transport.register() calls
-    // have completed and the kernel handles are wired. Flip the flag so the
-    // next telegram poll iteration returns the real update.
     await agent.start();
-    registered = true;
 
     // -----------------------------------------------------------------------
     // 1. Telegram inbound — wait for poll loop to deliver the update

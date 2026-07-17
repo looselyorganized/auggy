@@ -23,6 +23,30 @@ describe("webTransport structure", () => {
     expect(aug.name).toBe("web");
     expect(aug.transport).toBeDefined();
   });
+
+  it("rejects readiness before registration", async () => {
+    const aug = webTransport({
+      port: 0,
+      auth: { type: "bearer", token: "test-token" },
+    });
+    await aug.onBoot?.();
+    await expect(aug.transport!.ready!()).rejects.toThrow("before kernel registration");
+    await aug.onShutdown?.();
+  });
+
+  it("treats readiness as idempotent after the listener is bound", async () => {
+    const aug = webTransport({
+      port: 0,
+      auth: { type: "bearer", token: "test-token" },
+    });
+    const agent = defineAgent(
+      { name: "web-ready-idempotent", model: "mock", augments: [aug] },
+      createMockModel(),
+    );
+    await agent.start();
+    await aug.transport!.ready!();
+    await agent.stop();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -897,6 +921,38 @@ describe("webTransport HTTP server", () => {
     }
   });
 
+  it("rolls back a readiness bind failure and can start cleanly on retry", async () => {
+    const port = 18911;
+    const blocker = Bun.serve({ port, fetch: () => new Response("occupied") });
+    let cleanups = 0;
+    const resource: Augment = {
+      name: "resource",
+      onShutdown: async () => {
+        cleanups += 1;
+      },
+    };
+    const agent = defineAgent(
+      {
+        name: "test",
+        model: "mock",
+        augments: [resource, webTransport({ port, auth: { type: "bearer", token: "test" } })],
+      },
+      createMockModel(),
+    );
+
+    await expect(agent.start()).rejects.toThrow();
+    expect(cleanups).toBe(1);
+    blocker.stop(true);
+
+    await agent.start();
+    try {
+      expect((await fetch(`http://localhost:${port}/health`)).status).toBe(200);
+    } finally {
+      await agent.stop();
+    }
+    expect(cleanups).toBe(2);
+  });
+
   it("returning visitor with valid token gets no new token issued", async () => {
     const model = createMockModel({ response: "hello" });
     const port = 18921;
@@ -1647,6 +1703,23 @@ async function withEnv<T>(
   }
 }
 
+function withEnvSync<T>(patch: Record<string, string | undefined>, fn: () => T): T {
+  const saved: Record<string, string | undefined> = {};
+  for (const key of Object.keys(patch)) saved[key] = process.env[key];
+  for (const [key, value] of Object.entries(patch)) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+  try {
+    return fn();
+  } finally {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+}
+
 const stripeTestEncoder = new TextEncoder();
 
 async function stripeSignatureHeader(
@@ -1675,7 +1748,7 @@ async function stripeSignatureHeader(
 describe("webTransport allowAnonymous (G3)", () => {
   it("admits no-bearer requests when allowAnonymous=true (explicit yaml)", async () => {
     const model = createMockModel({ response: "ok" });
-    const port = 18990;
+    const port = 28990;
     const aug = webTransport({
       port,
       auth: { type: "bearer", token: "test-token" },
@@ -1699,7 +1772,7 @@ describe("webTransport allowAnonymous (G3)", () => {
 
   it("rejects wrong-bearer requests even when allowAnonymous=true", async () => {
     const model = createMockModel();
-    const port = 18991;
+    const port = 28991;
     const aug = webTransport({
       port,
       auth: { type: "bearer", token: "test-token" },
@@ -1724,7 +1797,7 @@ describe("webTransport allowAnonymous (G3)", () => {
 
   it("admits valid-bearer requests when allowAnonymous=true (no creator regression)", async () => {
     const model = createMockModel({ response: "ok" });
-    const port = 18992;
+    const port = 28992;
     const aug = webTransport({
       port,
       auth: { type: "bearer", token: "test-token" },
@@ -1749,109 +1822,109 @@ describe("webTransport allowAnonymous (G3)", () => {
   });
 
   it("uses env-based default: NODE_ENV=production → reject no-bearer", async () => {
-    await withEnv({ NODE_ENV: "production", AUGGY_ALLOW_ANONYMOUS: undefined }, async () => {
-      const model = createMockModel();
-      const port = 18993;
-      const aug = webTransport({ port, auth: { type: "bearer", token: "t" } });
-      const agent = defineAgent({ name: "t", model: "mock", augments: [aug] }, model);
-      await agent.start();
-      try {
-        const resp = await fetch(`http://localhost:${port}/agent/run`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
-        });
-        expect(resp.status).toBe(401);
-      } finally {
-        await agent.stop();
-      }
-    });
+    const model = createMockModel();
+    const port = 28993;
+    const aug = withEnvSync({ NODE_ENV: "production", AUGGY_ALLOW_ANONYMOUS: undefined }, () =>
+      webTransport({ port, auth: { type: "bearer", token: "t" } }),
+    );
+    const agent = defineAgent({ name: "t", model: "mock", augments: [aug] }, model);
+    await agent.start();
+    try {
+      const resp = await fetch(`http://localhost:${port}/agent/run`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
+      });
+      expect(resp.status).toBe(401);
+    } finally {
+      await agent.stop();
+    }
   });
 
   it("uses env-based default: NODE_ENV unset → admit no-bearer", async () => {
-    await withEnv({ NODE_ENV: undefined, AUGGY_ALLOW_ANONYMOUS: undefined }, async () => {
-      const model = createMockModel({ response: "ok" });
-      const port = 18994;
-      const aug = webTransport({ port, auth: { type: "bearer", token: "t" } });
-      const agent = defineAgent({ name: "t", model: "mock", augments: [aug] }, model);
-      await agent.start();
-      try {
-        const resp = await fetch(`http://localhost:${port}/agent/run`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
-        });
-        expect(resp.status).toBe(200);
-        await resp.text();
-      } finally {
-        await agent.stop();
-      }
-    });
+    const model = createMockModel({ response: "ok" });
+    const port = 28994;
+    const aug = withEnvSync({ NODE_ENV: undefined, AUGGY_ALLOW_ANONYMOUS: undefined }, () =>
+      webTransport({ port, auth: { type: "bearer", token: "t" } }),
+    );
+    const agent = defineAgent({ name: "t", model: "mock", augments: [aug] }, model);
+    await agent.start();
+    try {
+      const resp = await fetch(`http://localhost:${port}/agent/run`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
+      });
+      expect(resp.status).toBe(200);
+      await resp.text();
+    } finally {
+      await agent.stop();
+    }
   });
 
   it("env override: AUGGY_ALLOW_ANONYMOUS=true wins over NODE_ENV=production default", async () => {
-    await withEnv({ NODE_ENV: "production", AUGGY_ALLOW_ANONYMOUS: "true" }, async () => {
-      const model = createMockModel({ response: "ok" });
-      const port = 18995;
-      const aug = webTransport({ port, auth: { type: "bearer", token: "t" } });
-      const agent = defineAgent({ name: "t", model: "mock", augments: [aug] }, model);
-      await agent.start();
-      try {
-        const resp = await fetch(`http://localhost:${port}/agent/run`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
-        });
-        expect(resp.status).toBe(200);
-        await resp.text();
-      } finally {
-        await agent.stop();
-      }
-    });
+    const model = createMockModel({ response: "ok" });
+    const port = 28995;
+    const aug = withEnvSync({ NODE_ENV: "production", AUGGY_ALLOW_ANONYMOUS: "true" }, () =>
+      webTransport({ port, auth: { type: "bearer", token: "t" } }),
+    );
+    const agent = defineAgent({ name: "t", model: "mock", augments: [aug] }, model);
+    await agent.start();
+    try {
+      const resp = await fetch(`http://localhost:${port}/agent/run`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
+      });
+      expect(resp.status).toBe(200);
+      await resp.text();
+    } finally {
+      await agent.stop();
+    }
   });
 
   it("env override: AUGGY_ALLOW_ANONYMOUS=false wins over NODE_ENV unset default", async () => {
-    await withEnv({ NODE_ENV: undefined, AUGGY_ALLOW_ANONYMOUS: "false" }, async () => {
-      const model = createMockModel();
-      const port = 18996;
-      const aug = webTransport({ port, auth: { type: "bearer", token: "t" } });
-      const agent = defineAgent({ name: "t", model: "mock", augments: [aug] }, model);
-      await agent.start();
-      try {
-        const resp = await fetch(`http://localhost:${port}/agent/run`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
-        });
-        expect(resp.status).toBe(401);
-      } finally {
-        await agent.stop();
-      }
-    });
+    const model = createMockModel();
+    const port = 28996;
+    const aug = withEnvSync({ NODE_ENV: undefined, AUGGY_ALLOW_ANONYMOUS: "false" }, () =>
+      webTransport({ port, auth: { type: "bearer", token: "t" } }),
+    );
+    const agent = defineAgent({ name: "t", model: "mock", augments: [aug] }, model);
+    await agent.start();
+    try {
+      const resp = await fetch(`http://localhost:${port}/agent/run`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
+      });
+      expect(resp.status).toBe(401);
+    } finally {
+      await agent.stop();
+    }
   });
 
   it("yaml wins over env: allowAnonymous=false in opts overrides AUGGY_ALLOW_ANONYMOUS=true", async () => {
-    await withEnv({ AUGGY_ALLOW_ANONYMOUS: "true", NODE_ENV: undefined }, async () => {
-      const model = createMockModel();
-      const port = 18997;
-      const aug = webTransport({
+    const model = createMockModel();
+    const port = 28997;
+    const aug = withEnvSync({ AUGGY_ALLOW_ANONYMOUS: "true", NODE_ENV: undefined }, () =>
+      webTransport({
         port,
         auth: { type: "bearer", token: "t" },
         allowAnonymous: false,
+      }),
+    );
+    const agent = defineAgent({ name: "t", model: "mock", augments: [aug] }, model);
+    await agent.start();
+    try {
+      const resp = await fetch(`http://localhost:${port}/agent/run`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
       });
-      const agent = defineAgent({ name: "t", model: "mock", augments: [aug] }, model);
-      await agent.start();
-      try {
-        const resp = await fetch(`http://localhost:${port}/agent/run`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
-        });
-        expect(resp.status).toBe(401);
-      } finally {
-        await agent.stop();
-      }
-    });
+      expect(resp.status).toBe(401);
+    } finally {
+      await agent.stop();
+    }
   });
 
   it("emits a concise boot log line for anonymous posture", async () => {
@@ -1863,7 +1936,7 @@ describe("webTransport allowAnonymous (G3)", () => {
     try {
       await withEnv({ NODE_ENV: "production", AUGGY_ALLOW_ANONYMOUS: undefined }, async () => {
         const model = createMockModel();
-        const port = 18998;
+        const port = 28998;
         const aug = webTransport({ port, auth: { type: "bearer", token: "t" } });
         const agent = defineAgent({ name: "t", model: "mock", augments: [aug] }, model);
         await agent.start();
@@ -1894,7 +1967,7 @@ describe("webTransport allowAnonymous (G3)", () => {
     try {
       await withEnv({ NODE_ENV: undefined, AUGGY_ALLOW_ANONYMOUS: undefined }, async () => {
         const model = createMockModel();
-        const port = 18997;
+        const port = 28999;
         const aug = webTransport({ port, auth: { type: "bearer", token: "t" } });
         const agent = defineAgent({ name: "t", model: "mock", augments: [aug] }, model);
         await agent.start();
@@ -1918,7 +1991,7 @@ describe("webTransport allowAnonymous (G3)", () => {
     try {
       await withEnv({ NODE_ENV: undefined, AUGGY_ALLOW_ANONYMOUS: undefined }, async () => {
         const model = createMockModel();
-        const port = 18999;
+        const port = 29000;
         const aug = webTransport({ port, auth: { type: "bearer", token: "t" } });
         const agent = defineAgent({ name: "t", model: "mock", augments: [aug] }, model);
         await agent.start();
@@ -1955,7 +2028,7 @@ describe("webTransport allowAnonymous (G3)", () => {
         },
         async () => {
           const model = createMockModel();
-          const port = 18999;
+          const port = 29001;
           const aug = webTransport({ port, auth: { type: "bearer", token: "t" } });
           const agent = defineAgent({ name: "t", model: "mock", augments: [aug] }, model);
           await agent.start();
@@ -2834,6 +2907,48 @@ describe("webTransport augment-registered routes", () => {
       await expect(agent.start()).rejects.toThrow(
         "Stripe webhook secret env STRIPE_WEBHOOK_SECRET_TEST is not set",
       );
+    });
+  });
+
+  it("fails boot closed for webhook signature providers without a verifier", async () => {
+    await withEnv({ UNKNOWN_WEBHOOK_SECRET_TEST: "secret" }, async () => {
+      const model = createMockModel();
+      const port = 19983;
+      const aug = webTransport({ port, auth: { type: "bearer", token: "test-token" } });
+      let calls = 0;
+      const fixture: Augment = {
+        name: "agent-mail",
+        httpRoutes: [
+          defineRoute.post("/webhooks/agentmail", {
+            auth: "none",
+            policy: webhook.signature("unknown-provider", {
+              secretEnv: "UNKNOWN_WEBHOOK_SECRET_TEST",
+            }),
+            handler: () => {
+              calls += 1;
+              return json({ ok: true });
+            },
+          }),
+        ],
+      };
+      const agent = defineAgent({ name: "test", model: "mock", augments: [fixture, aug] }, model);
+
+      await expect(agent.start()).rejects.toThrow(
+        'Webhook signature provider "unknown-provider" is not supported',
+      );
+      expect(calls).toBe(0);
+
+      // Registration failed before readiness, so the listener was never bound.
+      const replacement = defineAgent(
+        {
+          name: "replacement",
+          model: "mock",
+          augments: [webTransport({ port, auth: { type: "bearer", token: "replacement" } })],
+        },
+        createMockModel(),
+      );
+      await replacement.start();
+      await replacement.stop();
     });
   });
 

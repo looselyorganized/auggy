@@ -21,11 +21,17 @@ export function createLifecycleManager(opts: {
   let idleTimerId: ReturnType<typeof setTimeout> | null = null;
   let idleIntervalMs = 300_000;
   let idleCallback: (() => Promise<void>) | null = null;
+  let attemptedAugments: Augment[] = [];
 
   const manager: LifecycleManager = {
     async boot() {
       bootTime = Date.now();
+      augmentStatus.clear();
+      attemptedAugments = [];
       for (const aug of augments) {
+        // Track before invoking onBoot so a hook that partially allocates and
+        // then throws is still eligible for rollback through onShutdown.
+        attemptedAugments.push(aug);
         try {
           if (aug.onBoot) await aug.onBoot();
           augmentStatus.set(aug.name, { status: "ok" });
@@ -41,7 +47,11 @@ export function createLifecycleManager(opts: {
 
     async shutdown() {
       if (idleTimerId) clearInterval(idleTimerId);
-      for (const aug of [...augments].reverse()) {
+      idleTimerId = null;
+      idleCallback = null;
+      const shutdownAugments = [...attemptedAugments].reverse();
+      attemptedAugments = [];
+      for (const aug of shutdownAugments) {
         try {
           if (aug.onShutdown) {
             await withTimeout(() => aug.onShutdown!(), 5000);

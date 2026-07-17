@@ -19,7 +19,10 @@ function writeYaml(content: string): string {
   return path;
 }
 
-function configWithAgentMail(opts: Record<string, unknown>): string {
+function configWithAgentMail(
+  opts: Record<string, unknown>,
+  extraAugments: Record<string, unknown>[] = [],
+): string {
   const base = {
     id: "aug1_a3f7c2e1-8b4d-4f9e-a6c1-2d8e9f0b3a5c",
     name: "test-agent",
@@ -39,6 +42,7 @@ function configWithAgentMail(opts: Record<string, unknown>): string {
         },
       },
       { name: "agentmail", type: "agentMail", options: opts },
+      ...extraAugments,
     ],
   };
   return stringify(base);
@@ -101,11 +105,48 @@ describe("config-parser: agentMail validation", () => {
     expect(() => parseConfig(path)).toThrow(/unknown mode/);
   });
 
-  test("rejects not-yet-implemented inbound modes (Phase A guard)", () => {
+  test("requires an explicit sender allowlist for enabled inbound modes", () => {
     const path = writeYaml(
       configWithAgentMail({ apiKey: "am_x", inboxId: "inb_x", inbound: { mode: "websocket" } }),
     );
-    expect(() => parseConfig(path)).toThrow(/not yet implemented/);
+    expect(() => parseConfig(path)).toThrow(/allowedSenders/);
+  });
+
+  test("accepts enabled inbound modes with policy configuration", () => {
+    for (const inbound of [
+      { mode: "websocket", allowedSenders: ["*@example.com"] },
+      { mode: "polling", allowedSenders: ["customer@example.com"], pollIntervalMs: 60_000 },
+      {
+        mode: "webhook",
+        allowedSenders: ["customer@example.com"],
+        webhook: { secretEnv: "AGENTMAIL_WEBHOOK_SECRET" },
+      },
+    ]) {
+      const path = writeYaml(
+        configWithAgentMail(
+          { apiKey: "am_x", inboxId: "inb_x", inbound },
+          inbound.mode === "webhook"
+            ? [{ name: "web", type: "webTransport", options: { port: 0 } }]
+            : [],
+        ),
+      );
+      expect(() => parseConfig(path)).not.toThrow();
+    }
+  });
+
+  test("rejects webhook mode without an HTTP transport to mount the route", () => {
+    const path = writeYaml(
+      configWithAgentMail({
+        apiKey: "am_x",
+        inboxId: "inb_x",
+        inbound: {
+          mode: "webhook",
+          allowedSenders: ["customer@example.com"],
+          webhook: { secretEnv: "AGENTMAIL_WEBHOOK_SECRET" },
+        },
+      }),
+    );
+    expect(() => parseConfig(path)).toThrow(/requires a webTransport/);
   });
 
   test("accepts inbound.mode = 'none'", () => {
@@ -124,5 +165,86 @@ describe("config-parser: agentMail validation", () => {
       }),
     );
     expect(() => parseConfig(path)).toThrow(/maxRecipients/);
+  });
+
+  test("accepts explicit outbound human-review policy", () => {
+    const path = writeYaml(
+      configWithAgentMail(
+        {
+          apiKey: "am_x",
+          inboxId: "inb_x",
+          outbound: {
+            allowedTrustLevels: ["public"],
+            humanReview: { requiredForTrustLevels: ["public"], expiresAfterMs: 60_000 },
+          },
+        },
+        [{ name: "web", type: "webTransport", options: { port: 0 } }],
+      ),
+    );
+    expect(() => parseConfig(path)).not.toThrow();
+  });
+
+  test("rejects active human review without a creator-authenticated web route", () => {
+    const path = writeYaml(
+      configWithAgentMail({
+        apiKey: "am_x",
+        inboxId: "inb_x",
+        outbound: {
+          allowedTrustLevels: ["public"],
+          humanReview: { requiredForTrustLevels: ["public"] },
+        },
+      }),
+    );
+    expect(() => parseConfig(path)).toThrow(/human review requires a webTransport/);
+
+    const disabledAdmin = writeYaml(
+      configWithAgentMail(
+        {
+          apiKey: "am_x",
+          inboxId: "inb_x",
+          outbound: {
+            allowedTrustLevels: ["public"],
+            humanReview: { requiredForTrustLevels: ["public"] },
+          },
+        },
+        [
+          {
+            name: "web",
+            type: "webTransport",
+            options: { port: 0, adminRoute: false },
+          },
+        ],
+      ),
+    );
+    expect(() => parseConfig(disabledAdmin)).toThrow(/adminRoute enabled/);
+  });
+
+  test("rejects malformed outbound human-review policy", () => {
+    const invalidLevel = writeYaml(
+      configWithAgentMail({
+        apiKey: "am_x",
+        inboxId: "inb_x",
+        outbound: { humanReview: { requiredForTrustLevels: ["mystery"] } },
+      }),
+    );
+    expect(() => parseConfig(invalidLevel)).toThrow(/humanReview.requiredForTrustLevels/);
+
+    const invalidExpiry = writeYaml(
+      configWithAgentMail({
+        apiKey: "am_x",
+        inboxId: "inb_x",
+        outbound: { humanReview: { expiresAfterMs: 0 } },
+      }),
+    );
+    expect(() => parseConfig(invalidExpiry)).toThrow(/humanReview.expiresAfterMs/);
+
+    const excessiveExpiry = writeYaml(
+      configWithAgentMail({
+        apiKey: "am_x",
+        inboxId: "inb_x",
+        outbound: { humanReview: { expiresAfterMs: 31 * 24 * 60 * 60_000 } },
+      }),
+    );
+    expect(() => parseConfig(excessiveExpiry)).toThrow(/humanReview.expiresAfterMs/);
   });
 });

@@ -3,6 +3,8 @@ import { mkdtempSync, rmSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { agentMail } from "../../../src/augments/agentMail";
+import { createAgentMailInboundLedger } from "../../../src/augments/agentMail/inbound-ledger";
+import type { AgentMailSdkAdapters } from "../../../src/augments/agentMail/sdk-provider";
 import type {
   AgentMailClient,
   ReplyMessageInput,
@@ -14,8 +16,12 @@ import type {
   AdminActionResult,
   AdminInfoBlock,
   PeerIdentity,
+  RouteWebhookContext,
   ToolExecuteContext,
   Tool,
+  TransportKernel,
+  TurnResult,
+  TurnTrigger,
 } from "../../../src/types";
 import { asStringTool } from "../../fixtures/tool-helpers";
 
@@ -127,10 +133,29 @@ describe("agentMail factory", () => {
     ).toThrow(/subjectPrefix/);
   });
 
-  test("throws when inbound.mode is not implemented (Phase A)", () => {
+  test("requires an explicit sender allowlist when inbound is enabled", () => {
     expect(() => agentMail({ ...baseOpts, inbound: { mode: "websocket" } })).toThrow(
-      /Phase A ships outbound only|not yet implemented/,
+      /allowedSenders/,
     );
+  });
+
+  test("exposes inbound behavior through a concrete transport field", () => {
+    const aug = agentMail({
+      ...baseOpts,
+      inbound: { mode: "polling", allowedSenders: ["*@example.com"] },
+    });
+    expect(aug.transport).toBeDefined();
+    expect("capabilities" in aug).toBe(false);
+    expect("supports" in aug).toBe(false);
+  });
+
+  test("requires webhook configuration for webhook mode", () => {
+    expect(() =>
+      agentMail({
+        ...baseOpts,
+        inbound: { mode: "webhook", allowedSenders: ["customer@example.com"] },
+      }),
+    ).toThrow(/inbound.webhook/);
   });
 });
 
@@ -185,6 +210,50 @@ describe("send_message trust-level gate", () => {
       await t.execute({ to: ["a@x.com"], subject: "Hi", text: "Body" }, ctx(peer("agent"))),
     );
     expect(res.status).toBe("sent");
+    expect(log.send).toHaveLength(1);
+  });
+
+  test("public outbound is queued for review by default after trust opt-in", async () => {
+    const { client, log } = fakeClient();
+    const aug = agentMail({
+      ...baseOpts,
+      _client: client,
+      outbound: { allowedTrustLevels: ["public"] },
+    });
+    const result = JSON.parse(
+      await asStr(tool(aug, "send_message")).execute(
+        { to: ["customer@example.com"], subject: "Hi", text: "Body" },
+        ctx(peer("public")),
+      ),
+    );
+    expect(result).toMatchObject({ status: "pending_review" });
+    expect(log.send).toHaveLength(0);
+
+    const rejected = await aug.adminActions!["agentmail-review-reject"]!({
+      reviewId: result.reviewId,
+      reason: "operator declined",
+    });
+    expect(rejected.ok).toBe(true);
+    expect(log.send).toHaveLength(0);
+  });
+
+  test("autonomous public outbound requires an explicit empty review list", async () => {
+    const { client, log } = fakeClient();
+    const aug = agentMail({
+      ...baseOpts,
+      _client: client,
+      outbound: {
+        allowedTrustLevels: ["public"],
+        humanReview: { requiredForTrustLevels: [] },
+      },
+    });
+    const result = JSON.parse(
+      await asStr(tool(aug, "send_message")).execute(
+        { to: ["customer@example.com"], subject: "Hi", text: "Body" },
+        ctx(peer("public")),
+      ),
+    );
+    expect(result.status).toBe("sent");
     expect(log.send).toHaveLength(1);
   });
 });
@@ -815,6 +884,12 @@ describe("onBoot", () => {
     const aug = agentMail({ ...baseOpts, _client: failingClient.client });
     // Should NOT throw — transient outage shouldn't block boot.
     await expect(aug.onBoot?.()).resolves.toBeUndefined();
+    const info = await aug.adminInfo!();
+    expect(info.sections.find((section) => section.kind === "status")).toMatchObject({
+      kind: "status",
+      level: "warn",
+      message: expect.stringContaining("AgentMail 503"),
+    });
   });
 
   test("throws on 4xx healthcheck failure (config error)", async () => {
@@ -849,6 +924,198 @@ describe("onBoot", () => {
       _client: client,
     });
     await expect(aug.onBoot?.()).rejects.toThrow(/AGENTMAIL_INBOX_ID is unresolved/);
+  });
+});
+
+describe("inbound lifecycle", () => {
+  test("boot-populates a verified webhook route and dispatches admitted ledger work", async () => {
+    const { client, log } = fakeClient();
+    const ledger = createAgentMailInboundLedger({ dbPath: ":memory:" });
+    const triggers: TurnTrigger[] = [];
+    const aug = agentMail({
+      ...baseOpts,
+      _client: client,
+      _inboundLedger: ledger,
+      _sdkAdapters: emptySdkAdapters(),
+      inbound: {
+        mode: "webhook",
+        allowedSenders: ["customer@example.com"],
+        webhook: {},
+      },
+      outbound: {
+        allowedTrustLevels: ["public"],
+        allowedRecipients: ["customer@example.com"],
+      },
+    });
+
+    try {
+      expect(aug.httpRoutes).toHaveLength(1);
+      const reviewRoute = aug.httpRoutes!.find(
+        (route) => route.path === "/agentmail/reviews/:reviewId",
+      );
+      expect(reviewRoute).toMatchObject({ method: "GET", auth: "creator" });
+      await aug.onBoot!();
+      expect(aug.httpRoutes).toHaveLength(2);
+      const webhookRoute = aug.httpRoutes!.find((route) => route.path === "/webhooks/agentmail");
+      expect(webhookRoute?.policy).toMatchObject({
+        kind: "webhook.signature",
+        provider: "svix",
+      });
+
+      let inTurnReply: Record<string, unknown> | undefined;
+      await aug.transport!.register(
+        fakeInboundKernel(triggers, async (trigger) => {
+          const reply = asStr(tool(aug, "reply_to_message"));
+          inTurnReply = JSON.parse(
+            await reply.execute(
+              { messageId: "message_inbound", text: "Thanks" },
+              {
+                turnId: trigger.turnId,
+                threadId: trigger.threadId!,
+                peer: trigger.peer ?? null,
+              },
+            ),
+          );
+        }),
+        aug.name,
+      );
+      await aug.transport!.ready!();
+      const response = await webhookRoute!.handler(
+        new Request("https://example.test/webhooks/agentmail", { method: "POST" }),
+        {
+          signal: AbortSignal.timeout(1_000),
+          webhook: verifiedWebhook(receivedWebhookEvent()),
+        },
+      );
+      expect(response.status).toBe(200);
+
+      await eventually(() => triggers.length === 1);
+      expect(triggers[0]?.peer).toMatchObject({
+        trustLevel: "public",
+        publicSubstate: "anonymous",
+      });
+      expect(ledger.get(baseOpts.inboxId, "message_inbound")?.state).toBe("processed");
+      expect(inTurnReply?.status).toBe("pending_review");
+      expect(log.reply).toHaveLength(0);
+
+      const reviewId = String(inTurnReply?.reviewId);
+      const redactedAdmin = JSON.stringify(await aug.adminInfo!());
+      expect(redactedAdmin).not.toContain("Thanks");
+      expect(redactedAdmin).not.toContain("customer@example.com");
+      expect(redactedAdmin).toContain(`/agentmail/reviews/${reviewId}`);
+      const rejectedFingerprint = await aug.adminActions!["agentmail-review-approve"]!({
+        reviewId,
+        fingerprint: "not-the-inspected-action",
+      });
+      expect(rejectedFingerprint.ok).toBe(false);
+      expect(log.reply).toHaveLength(0);
+
+      expect(aug.adminActions!["agentmail-review-inspect"]).toBeUndefined();
+      const inspection = await reviewRoute!.handler(
+        new Request(`https://example.test/agentmail/reviews/${reviewId}`),
+        { signal: AbortSignal.timeout(1_000), params: { reviewId } },
+      );
+      expect(inspection.status).toBe(200);
+      expect(inspection.headers.get("cache-control")).toBe("no-store");
+      const inspected = (await inspection.json()) as {
+        reviewId: string;
+        fingerprint: string;
+        recipients: string[];
+        request: { kind: string; messageId: string; text: string };
+      };
+      expect(inspected).toMatchObject({
+        reviewId,
+        recipients: ["customer@example.com"],
+        request: { kind: "reply", messageId: "message_inbound", text: "Thanks" },
+      });
+      const approval = await aug.adminActions!["agentmail-review-approve"]!({
+        reviewId,
+        fingerprint: inspected.fingerprint,
+      });
+      expect(approval).toEqual({ ok: true, message: `Review ${reviewId} approved and sent` });
+      expect(log.reply).toHaveLength(1);
+      const terminalInspection = await reviewRoute!.handler(
+        new Request(`https://example.test/agentmail/reviews/${reviewId}`),
+        { signal: AbortSignal.timeout(1_000), params: { reviewId } },
+      );
+      expect(terminalInspection.status).toBe(410);
+
+      const outOfTurn = JSON.parse(
+        await asStr(tool(aug, "reply_to_message")).execute(
+          { messageId: "message_inbound", text: "Replay" },
+          { turnId: "other-turn", threadId: "other-thread", peer: peer("public") },
+        ),
+      );
+      expect(outOfTurn.status).toBe("failed");
+      expect(log.reply).toHaveLength(1);
+
+      const operations = await aug.adminInfo!();
+      expect(operations.sections.find((section) => section.kind === "status")).toMatchObject({
+        kind: "status",
+        level: "ok",
+        message: "Inbound webhook ready",
+      });
+      const runtime = operations.sections.find((section) => section.kind === "keyValue");
+      if (runtime?.kind !== "keyValue") throw new Error("missing AgentMail runtime rows");
+      expect(runtime.rows.find((row) => row.label === "Inbound processed")?.value).toBe("1");
+      expect(runtime.rows.find((row) => row.label === "Inbound pending")?.value).toBe("0");
+      expect(runtime.rows.find((row) => row.label === "Inbound runtime")?.value).toBe("ready");
+      expect(runtime.rows.find((row) => row.label === "Last catch-up result")?.value).toContain(
+        "1 page(s)",
+      );
+      expect(runtime.rows.find((row) => row.label === "Last inbound event")?.value).not.toContain(
+        "none",
+      );
+    } finally {
+      await aug.onShutdown!();
+      ledger.close();
+    }
+  });
+
+  test("reports an unexpected WebSocket subscription close as degraded", async () => {
+    const { client } = fakeClient();
+    let resolveClosed!: () => void;
+    const closed = new Promise<void>((resolve) => {
+      resolveClosed = resolve;
+    });
+    const sdk: AgentMailSdkAdapters = {
+      catchUp: emptySdkAdapters().catchUp,
+      live: {
+        subscribe: async (input) => {
+          await input.onSubscribed?.({ reconnected: false });
+          return { closed, close: async () => resolveClosed() };
+        },
+      },
+    };
+    const ledger = createAgentMailInboundLedger({ dbPath: ":memory:" });
+    const aug = agentMail({
+      ...baseOpts,
+      _client: client,
+      _inboundLedger: ledger,
+      _sdkAdapters: sdk,
+      inbound: { mode: "websocket", allowedSenders: ["*@example.com"] },
+    });
+
+    try {
+      await aug.onBoot!();
+      await aug.transport!.register(fakeInboundKernel([]), aug.name);
+      await aug.transport!.ready!();
+      expect((await aug.adminInfo!()).sections[0]).toMatchObject({ level: "ok" });
+
+      resolveClosed();
+      await eventually(async () => {
+        const status = (await aug.adminInfo!()).sections[0];
+        return status?.kind === "status" && status.level === "warn";
+      });
+      expect((await aug.adminInfo!()).sections[0]).toMatchObject({
+        kind: "status",
+        level: "warn",
+        message: expect.stringContaining("closed unexpectedly"),
+      });
+    } finally {
+      await aug.onShutdown!();
+      ledger.close();
+    }
   });
 });
 
@@ -919,6 +1186,25 @@ describe("adminInfo", () => {
       to: "",
     })) as AdminActionResult;
     expect(result.ok).toBe(false);
+  });
+
+  test("admin-test-send does not echo provider response bodies into action results", async () => {
+    const { client } = fakeClient({
+      async send() {
+        return {
+          status: "failed" as const,
+          detail: "provider echoed recipient@example.com and sensitive message content",
+          httpStatus: 400,
+        };
+      },
+    });
+    const aug = agentMail({ ...baseOpts, _client: client });
+    const result = await aug.adminActions!["agentmail-test-send"]!({
+      to: "recipient@example.com",
+      subject: "Test",
+      text: "sensitive message content",
+    });
+    expect(result).toEqual({ ok: false, message: "Send failed (HTTP 400)" });
   });
 
   test("admin-cap-adjust persists override and updates state", async () => {
@@ -999,3 +1285,87 @@ describe("sensitive-content scan", () => {
     }
   });
 });
+
+function emptySdkAdapters(): AgentMailSdkAdapters {
+  return {
+    catchUp: {
+      listMessages: async () => ({ messages: [], nextPageToken: undefined }),
+      getMessage: async () => {
+        throw new Error("unexpected getMessage");
+      },
+    },
+    live: {
+      subscribe: async () => {
+        throw new Error("unexpected WebSocket subscription");
+      },
+    },
+  };
+}
+
+function fakeInboundKernel(
+  triggers: TurnTrigger[],
+  onInbound?: (trigger: TurnTrigger) => void | Promise<void>,
+): TransportKernel {
+  return {
+    handleInbound: async (trigger) => {
+      triggers.push(trigger);
+      await onInbound?.(trigger);
+      return { success: true, status: "completed", turnId: trigger.turnId } as TurnResult;
+    },
+    onOutbound: () => {},
+    getAgentCard: () => ({
+      provider: { name: "test" },
+      capabilities: { streaming: false, pushNotifications: false, memory: false, transport: true },
+      skills: [],
+      interfaces: [],
+      extensions: {},
+    }),
+    getAugmentRoutes: () => [],
+    getAugments: () => [],
+  };
+}
+
+function verifiedWebhook(event: unknown): RouteWebhookContext {
+  return {
+    kind: "webhook.signature",
+    provider: "svix",
+    event,
+    deliveryId: "delivery_inbound",
+    timestamp: 1,
+    receivedAt: 1_000,
+  };
+}
+
+function receivedWebhookEvent(): Record<string, unknown> {
+  return {
+    type: "event",
+    event_type: "message.received",
+    event_id: "event_inbound",
+    message: {
+      inbox_id: baseOpts.inboxId,
+      thread_id: "thread_inbound",
+      message_id: "message_inbound",
+      labels: ["received"],
+      timestamp: "2026-07-14T10:20:30.000Z",
+      from: "customer@example.com",
+      to: [baseOpts.inboxId],
+      subject: "Need help",
+      preview: "Can you help?",
+      text: "Can you help?",
+      size: 512,
+    },
+    thread: {
+      inbox_id: baseOpts.inboxId,
+      thread_id: "thread_inbound",
+      message_count: 1,
+    },
+  };
+}
+
+async function eventually(predicate: () => boolean | Promise<boolean>): Promise<void> {
+  for (let i = 0; i < 50; i++) {
+    if (await predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 2));
+  }
+  throw new Error("condition was not met");
+}

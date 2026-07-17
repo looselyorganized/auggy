@@ -79,6 +79,11 @@ Every tool returns a JSON envelope. Read it.
 Delivered to AgentMail. Save `messageId` if you might want to reply or forward later in the conversation.
 
 ```json
+{ "status": "pending_review", "reviewId": "…", "expiresAt": "…" }
+```
+The exact email action is waiting for an operator. Do not retry or claim it was sent. Tell the peer it is pending review; the operator can inspect it through the creator-authenticated review detail route, then approve with the returned fingerprint or reject it through the admin action API.
+
+```json
 { "status": "rate_limited", "message": "…", "retryAfterSec": 180 }
 ```
 **Do not retry the same content.** Rate limits exist to protect the recipient and the operator. A `rate_limited` result is the system telling you the recipient already heard from you (or is about to). Move on; if something genuinely new happens later, send a meaningfully different message.
@@ -169,7 +174,7 @@ BAD:
 ## What you cannot do
 
 - Send from an inbox other than the one configured (you have exactly one).
-- Email attachments — Phase A is text + optional HTML only.
+- Email attachments — outbound is text + optional HTML only.
 - Verify whether a recipient read your message — AgentMail does not surface read receipts to this augment.
 - Retract a sent message — `status: "sent"` is final.
 

@@ -1,13 +1,12 @@
 /**
- * agentMail augment — outbound email primitive (Phase A).
+ * agentMail augment — policy-gated outbound and inbound email.
  *
  * Exposes three model-facing tools (`send_message`, `reply_to_message`,
  * `forward_message`) aligned with AgentMail's MCP tool-name standard, plus
  * an `adminInfo` surface with ring-buffer dispatch log + cap-adjust action.
  *
- * Phase A is outbound only; `inbound.mode` MUST be `"none"` (default).
- * Phase B will add WebSocket/polling inbound, Phase C will add Svix-verified
- * webhook inbound. See plan at /Users/bigviking/.claude/plans/wild-waddling-sketch.md.
+ * Inbound polling, WebSocket, and Svix webhook modes share a durable ledger,
+ * sender/classification policy, and normal transport admission path.
  *
  * Design notes:
  *   - Trust-level gate: by default only `creator` (and null/system) peers
@@ -15,23 +14,28 @@
  *     explicitly opts in via `outbound.allowedTrustLevels`.
  *   - `messageId` exposed to the model is the AgentMail message_id. The
  *     turn-scoped `seenMessages` map guards `reply_to_message` /
- *     `forward_message` from reaching arbitrary IDs; until Phase B lands
- *     inbound dispatch the map is always empty, so these two tools error
- *     by design. The map carries the inbound envelope (from, replyAllTo)
+ *     `forward_message` from reaching arbitrary IDs. The map carries the
+ *     inbound envelope (from, replyAllTo)
  *     so `reply_to_message` can apply the full outbound policy
  *     (allowlist, rate-limit, dedup) against the REAL recipients —
  *     Codex finding #1.
- *   - Rate-limit state is in-memory only. Phase A does not need SQLite —
- *     the notify augment precedent is in-memory + JSON admin-overrides
- *     for persisted ceiling adjustments.
+ *   - Outbound rate-limit state uses its existing compact persisted state;
+ *     the inbound SQLite ledger is separate and stores message work.
  *   - The augment does not duplicate AgentMail's REST client; it imports
  *     `createAgentMailClient` from `src/agentmail-client.ts` (shared with
  *     notify's agentmail adapter and visitor-auth's magic-link flow).
  */
 
 import { z } from "zod";
-import { defineTool } from "../../helpers";
-import { createAgentMailClient, type AgentMailClient } from "../../agentmail-client";
+import { createHash } from "node:crypto";
+import { join } from "node:path";
+import { defineRoute, defineTool, json } from "../../helpers";
+import {
+  createAgentMailClient,
+  type AgentMailClient,
+  type SendMessageResult,
+  type SendMessageError,
+} from "../../agentmail-client";
 import { createRingBuffer } from "../../lib/ring-buffer";
 import { readOverrides, writeOverrides } from "../../lib/admin-overrides";
 import type {
@@ -39,14 +43,33 @@ import type {
   AdminInfoBlock,
   Augment,
   ToolExecuteContext,
+  TransportKernel,
   TrustLevel,
 } from "../../types";
 import type { AgentMailAugmentInternalOptions, DispatchRecord } from "./types";
 import { redactRecipients, scanForSensitive, validateOutbound } from "./outbound";
 import { checkRateLimit, createRateLimitState, recordSend } from "./rate-limit";
 import { loadRateState, saveRateState } from "./persist-state";
+import { createAgentMailInboundLedger, type AgentMailInboundLedger } from "./inbound-ledger";
+import { createAgentMailInboundWorker, type AgentMailInboundWorker } from "./inbound-worker";
+import {
+  createAgentMailSdkAdapters,
+  runAgentMailCatchUp,
+  type AgentMailSdkAdapters,
+} from "./sdk-provider";
+import { AGENTMAIL_RECEIVED_EVENT_TYPES, type AgentMailEventSubscription } from "./provider";
+import { createAgentMailWebhookRoute } from "./webhook-provider";
+import {
+  createAgentMailReviewQueue,
+  type AgentMailReviewQueue,
+  type AgentMailReviewRecord,
+  type AgentMailReviewRequest,
+} from "./review-queue";
 
 const DEFAULT_ALLOWED_TRUST_LEVELS: TrustLevel[] = ["creator"];
+const DEFAULT_REVIEW_TRUST_LEVELS: TrustLevel[] = ["public"];
+const DEFAULT_REVIEW_EXPIRY_MS = 24 * 60 * 60_000;
+const MAX_REVIEW_EXPIRY_MS = 30 * 24 * 60 * 60_000;
 const RING_BUFFER_SIZE = 100;
 
 function looksLikePlaceholder(value: string): boolean {
@@ -64,11 +87,25 @@ function validateOptions(opts: AgentMailAugmentInternalOptions): void {
   if (opts.outbound?.subjectPrefix !== undefined && opts.outbound.subjectPrefix.length === 0) {
     throw new Error("agentMail: outbound.subjectPrefix cannot be the empty string");
   }
-  // Phase A: only inbound.mode = "none" is supported.
   const mode = opts.inbound?.mode ?? "none";
-  if (mode !== "none") {
+  if (
+    mode !== "none" &&
+    (!opts.inbound?.allowedSenders || opts.inbound.allowedSenders.length === 0)
+  ) {
+    throw new Error("agentMail: inbound.allowedSenders must be non-empty when inbound is enabled");
+  }
+  if (mode === "webhook" && !opts.inbound?.webhook) {
+    throw new Error("agentMail: inbound.webhook is required when inbound.mode is webhook");
+  }
+  const reviewExpiry = opts.outbound?.humanReview?.expiresAfterMs;
+  if (
+    reviewExpiry !== undefined &&
+    (!Number.isSafeInteger(reviewExpiry) ||
+      reviewExpiry <= 0 ||
+      reviewExpiry > MAX_REVIEW_EXPIRY_MS)
+  ) {
     throw new Error(
-      `agentMail: inbound.mode "${mode}" is not yet implemented. Phase A ships outbound only — set inbound.mode to "none" (or omit) until Phase B lands websocket/polling.`,
+      `agentMail: outbound.humanReview.expiresAfterMs must be between 1 and ${MAX_REVIEW_EXPIRY_MS}`,
     );
   }
 }
@@ -88,6 +125,9 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
 
   const outboundOpts = opts.outbound ?? {};
   const allowedTrustLevels = outboundOpts.allowedTrustLevels ?? DEFAULT_ALLOWED_TRUST_LEVELS;
+  const reviewTrustLevels =
+    outboundOpts.humanReview?.requiredForTrustLevels ?? DEFAULT_REVIEW_TRUST_LEVELS;
+  const reviewExpiryMs = outboundOpts.humanReview?.expiresAfterMs ?? DEFAULT_REVIEW_EXPIRY_MS;
   const rateLimitOpts = outboundOpts.rateLimit ?? {};
   const yamlGlobalMaxPerHour = rateLimitOpts.globalMaxPerHour ?? 10;
 
@@ -110,6 +150,15 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
   const rateState =
     (opts.agentDir && loadRateState(opts.agentDir, now())) || createRateLimitState();
   const dispatches = createRingBuffer<DispatchRecord>(RING_BUFFER_SIZE);
+  const dispatchCounts: Record<DispatchRecord["status"], number> = {
+    sent: 0,
+    pending_review: 0,
+    rate_limited: 0,
+    blocked: 0,
+    failed: 0,
+  };
+  const reviewQueue: AgentMailReviewQueue =
+    opts._reviewQueue ?? createAgentMailReviewQueue({ agentDir: opts.agentDir, now });
 
   /**
    * Persist rate-limit state after a successful send. No-op when no
@@ -131,9 +180,9 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
   }
 
   /**
-   * Turn-scoped seen map for reply/forward validation. Phase A ships empty
-   * (no inbound dispatch) so reply/forward effectively always error; Phase
-   * B's dispatcher populates this when injecting an inbound message.
+   * Turn-scoped seen map for reply/forward validation. The inbound worker
+   * populates only the turn it is about to admit and removes the scope when
+   * kernel dispatch settles.
    *
    * The map carries the inbound envelope so the reply path can apply the
    * SAME outbound policy (allowlist, rate-limit, dedup) against the actual
@@ -147,10 +196,250 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
     /** Other original recipients — used when the model passes replyAll: true. */
     replyAllTo?: string[];
   }
-  const seenMessages = new Map<string, SeenMessageMeta>();
+  const legacySeenMessages = new Map<string, SeenMessageMeta>();
+  const seenMessagesByTurn = new Map<string, Map<string, SeenMessageMeta>>();
+
+  function seenMessagesFor(context: ToolExecuteContext | undefined): Map<string, SeenMessageMeta> {
+    return (context ? seenMessagesByTurn.get(context.turnId) : undefined) ?? legacySeenMessages;
+  }
 
   const client: AgentMailClient =
     opts._client ?? createAgentMailClient({ apiKey: opts.apiKey, apiBaseUrl: opts.apiBaseUrl });
+
+  const inboundMode = opts.inbound?.mode ?? "none";
+  const agentMailRoutes: NonNullable<Augment["httpRoutes"]> = [
+    defineRoute.get("/agentmail/reviews/:reviewId", {
+      auth: "creator",
+      params: z.object({ reviewId: z.string().min(1).max(128) }),
+      handler: ({ params }) => {
+        const record = reviewQueue.get(params.reviewId);
+        if (!record) return json({ error: "review-not-found" }, 404);
+        if (record.state !== "pending" && record.state !== "sending") {
+          return json({ error: "review-no-longer-inspectable", state: record.state }, 410);
+        }
+        return new Response(
+          JSON.stringify({
+            reviewId: record.id,
+            fingerprint: record.fingerprint,
+            state: record.state,
+            trustLevel: record.trustLevel,
+            expiresAt: new Date(record.expiresAt).toISOString(),
+            recipients: record.recipients,
+            subject: record.subject,
+            request: record.request,
+          }),
+          {
+            status: 200,
+            headers: {
+              "content-type": "application/json; charset=utf-8",
+              "cache-control": "no-store",
+              "x-content-type-options": "nosniff",
+            },
+          },
+        );
+      },
+    }),
+  ];
+  let webhookRouteInstalled = false;
+  let inboundLedger: AgentMailInboundLedger | undefined = opts._inboundLedger;
+  let ownsInboundLedger = false;
+  let sdkAdapters: AgentMailSdkAdapters | undefined = opts._sdkAdapters;
+  let inboundKernel: TransportKernel | undefined;
+  let inboundRegisteredName = "agent-mail";
+  let inboundWorker: AgentMailInboundWorker | undefined;
+  let liveSubscription: AgentMailEventSubscription | undefined;
+  let pollTimer: ReturnType<typeof setInterval> | undefined;
+  let drainTimer: ReturnType<typeof setInterval> | undefined;
+  let drainKickTimer: ReturnType<typeof setTimeout> | undefined;
+  let drainScheduled = false;
+  let draining = false;
+  let inboundReady = false;
+  let liveState: "disabled" | "starting" | "ready" | "subscribed" | "degraded" | "stopped" =
+    inboundMode === "none" ? "disabled" : "stopped";
+  let lastCatchUpAt: number | undefined;
+  let lastCatchUpSummary: string | undefined;
+  let lastInboundEventAt: number | undefined;
+  let lastWorkerOutcome: string | undefined;
+  let lastProviderError: string | undefined;
+
+  function recordProviderError(error: unknown): void {
+    lastProviderError = (error instanceof Error ? error.message : String(error)).slice(0, 500);
+  }
+
+  function inboundPolicy() {
+    const config = opts.inbound!;
+    return {
+      allowedSenders: config.allowedSenders ?? [],
+      classifications: {
+        "message.received": config.classifications?.received,
+        "message.received.spam": config.classifications?.spam,
+        "message.received.blocked": config.classifications?.blocked,
+        "message.received.unauthenticated": config.classifications?.unauthenticated,
+      },
+      maxPromptBytes: config.maxPromptBytes,
+      maxAttempts: config.maxAttempts,
+    };
+  }
+
+  async function catchUpInbound(): Promise<void> {
+    if (!inboundLedger || !sdkAdapters) throw new Error("agentMail: inbound runtime is not booted");
+    try {
+      const result = await runAgentMailCatchUp({
+        reader: sdkAdapters.catchUp,
+        ledger: inboundLedger,
+        inboxId: opts.inboxId,
+      });
+      lastCatchUpAt = now();
+      lastCatchUpSummary =
+        `${result.pages} page(s), ${result.scanned} scanned, ` +
+        `${result.enqueued} enqueued, ${result.duplicates} duplicate(s)`;
+      if (result.enqueued > 0) lastInboundEventAt = lastCatchUpAt;
+      lastProviderError = undefined;
+    } catch (error) {
+      recordProviderError(error);
+      throw error;
+    }
+  }
+
+  async function drainInbound(): Promise<void> {
+    if (draining || !inboundWorker) return;
+    draining = true;
+    try {
+      for (let i = 0; i < 100; i++) {
+        const result = await inboundWorker.processNext();
+        if (result.status !== "idle") {
+          lastWorkerOutcome = `${result.status}:${result.messageId}`;
+        }
+        if (
+          result.status === "idle" ||
+          result.status === "retried" ||
+          result.status === "lease-lost"
+        ) {
+          return;
+        }
+      }
+    } catch (error) {
+      console.warn(`[agent-mail] inbound worker failed: ${(error as Error).message}`);
+    } finally {
+      draining = false;
+    }
+  }
+
+  function scheduleDrain(): void {
+    if (drainScheduled) return;
+    drainScheduled = true;
+    drainKickTimer = setTimeout(() => {
+      drainScheduled = false;
+      drainKickTimer = undefined;
+      void drainInbound();
+    }, 0);
+  }
+
+  const inboundTransport: Augment["transport"] =
+    inboundMode === "none"
+      ? undefined
+      : {
+          async register(kernel, augmentName) {
+            inboundKernel = kernel;
+            inboundRegisteredName = augmentName;
+          },
+          async ready() {
+            if (inboundReady) return;
+            if (!inboundKernel || !inboundLedger || !sdkAdapters) {
+              throw new Error("agentMail: inbound transport was not registered or booted");
+            }
+            inboundWorker = createAgentMailInboundWorker({
+              ledger: inboundLedger,
+              kernel: inboundKernel,
+              inboxId: opts.inboxId,
+              sourceAugment: inboundRegisteredName,
+              policy: inboundPolicy(),
+              onTurnPrepared: ({ envelope, trigger }) => {
+                seenMessagesByTurn.set(
+                  trigger.turnId,
+                  new Map([
+                    [
+                      envelope.message.messageId,
+                      {
+                        from: envelope.message.from,
+                        replyAllTo: [...envelope.message.to, ...envelope.message.cc].filter(
+                          (address) => address.toLowerCase() !== opts.inboxId.toLowerCase(),
+                        ),
+                      },
+                    ],
+                  ]),
+                );
+              },
+              onTurnSettled: ({ trigger }) => {
+                seenMessagesByTurn.delete(trigger.turnId);
+              },
+            });
+
+            if (inboundMode === "websocket") {
+              liveState = "starting";
+              try {
+                liveSubscription = await sdkAdapters.live.subscribe({
+                  inboxId: opts.inboxId,
+                  eventTypes: AGENTMAIL_RECEIVED_EVENT_TYPES,
+                  onSubscribed: async () => {
+                    await catchUpInbound();
+                    liveState = "subscribed";
+                  },
+                  onEvent: async (envelope) => {
+                    inboundLedger!.enqueue(envelope);
+                    lastInboundEventAt = now();
+                    scheduleDrain();
+                  },
+                  onError: (error) => {
+                    liveState = "degraded";
+                    recordProviderError(error);
+                    console.warn(`[agent-mail] WebSocket: ${error.message}`);
+                  },
+                });
+                const subscription = liveSubscription;
+                void subscription.closed
+                  .then(() => {
+                    if (inboundReady && liveSubscription === subscription) {
+                      liveState = "degraded";
+                      recordProviderError("WebSocket subscription closed unexpectedly");
+                    }
+                  })
+                  .catch((error) => {
+                    if (inboundReady && liveSubscription === subscription) {
+                      liveState = "degraded";
+                      recordProviderError(error);
+                    }
+                  });
+              } catch (error) {
+                liveState = "degraded";
+                recordProviderError(error);
+                throw error;
+              }
+            } else {
+              await catchUpInbound();
+            }
+
+            const pollIntervalMs = opts.inbound?.pollIntervalMs ?? 60_000;
+            if (inboundMode === "polling") {
+              pollTimer = setInterval(() => {
+                void catchUpInbound()
+                  .then(() => scheduleDrain())
+                  .catch((error) => {
+                    console.warn(`[agent-mail] catch-up failed: ${(error as Error).message}`);
+                  });
+              }, pollIntervalMs);
+              pollTimer.unref?.();
+            }
+            drainTimer = setInterval(() => void drainInbound(), 1_000);
+            drainTimer.unref?.();
+            inboundReady = true;
+            if (inboundMode !== "websocket") liveState = "ready";
+            scheduleDrain();
+          },
+          identify: () => null,
+          concurrency: 1,
+          maxQueueDepth: 50,
+        };
 
   function effectiveRateLimit() {
     return { ...rateLimitOpts, globalMaxPerHour };
@@ -158,11 +447,180 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
 
   function recordDispatch(record: DispatchRecord): void {
     dispatches.push(record);
+    dispatchCounts[record.status]++;
   }
 
   function trustLevelOf(context: ToolExecuteContext | undefined): TrustLevel {
     // Null peer = internal trigger (scheduled / system) — treated as creator.
     return context?.peer?.trustLevel ?? "creator";
+  }
+
+  function reviewFingerprint(input: {
+    trustLevel: TrustLevel;
+    recipients: string[];
+    rateKey: string;
+    request: AgentMailReviewRequest;
+  }): string {
+    return createHash("sha256")
+      .update(
+        JSON.stringify({
+          trustLevel: input.trustLevel,
+          recipients: input.recipients.map((recipient) => recipient.toLowerCase()).sort(),
+          rateKey: input.rateKey,
+          request: input.request,
+        }),
+      )
+      .digest("hex");
+  }
+
+  function queueForHumanReview(input: {
+    context: ToolExecuteContext | undefined;
+    tool: Exclude<DispatchRecord["tool"], "admin-test">;
+    recipients: string[];
+    subject: string;
+    rateKey: string;
+    request: AgentMailReviewRequest;
+    flaggedSensitive?: boolean;
+  }): string | undefined {
+    const trustLevel = trustLevelOf(input.context);
+    if (!reviewTrustLevels.includes(trustLevel)) return undefined;
+    const fingerprint = reviewFingerprint({
+      trustLevel,
+      recipients: input.recipients,
+      rateKey: input.rateKey,
+      request: input.request,
+    });
+    const queued = reviewQueue.enqueue({
+      trustLevel,
+      recipients: input.recipients,
+      subject: input.subject,
+      rateKey: input.rateKey,
+      fingerprint,
+      request: input.request,
+      expiresAt: now() + reviewExpiryMs,
+    });
+    recordDispatch({
+      timestamp: timestampHHMMSS(now()),
+      tool: input.tool,
+      status: "pending_review",
+      recipients: redactRecipients(input.recipients),
+      subject: input.subject.slice(0, 80),
+      flaggedSensitive: input.flaggedSensitive || undefined,
+      detail: queued.duplicate
+        ? `duplicate proposal reused review ${queued.record.id}`
+        : `queued for operator review as ${queued.record.id}`,
+    });
+    return JSON.stringify({
+      status: "pending_review",
+      reviewId: queued.record.id,
+      expiresAt: new Date(queued.record.expiresAt).toISOString(),
+      duplicate: queued.duplicate || undefined,
+    });
+  }
+
+  async function sendReviewedAction(
+    record: AgentMailReviewRecord,
+  ): Promise<SendMessageResult | SendMessageError> {
+    const request = record.request;
+    if (request.kind === "send") {
+      const { kind: _, ...input } = request;
+      return client.send({ inboxId: opts.inboxId, ...input });
+    }
+    if (request.kind === "reply") {
+      const { kind: _, ...input } = request;
+      return client.reply({ inboxId: opts.inboxId, ...input });
+    }
+    const { kind: _, ...input } = request;
+    return client.forward({ inboxId: opts.inboxId, ...input });
+  }
+
+  async function approveReview(
+    id: string,
+    expectedFingerprint: string,
+  ): Promise<AdminActionResult> {
+    const pending = reviewQueue.get(id);
+    if (!pending) return { ok: false, message: `Unknown review id "${id}"` };
+    if (pending.state !== "pending") {
+      return { ok: false, message: `Review ${id} is ${pending.state}, not pending` };
+    }
+    if (pending.fingerprint !== expectedFingerprint) {
+      return {
+        ok: false,
+        message: `Review ${id} fingerprint mismatch; inspect the exact queued action again`,
+      };
+    }
+    if (pending.trustLevel !== "creator") {
+      const decision = checkRateLimit(
+        rateState,
+        pending.recipients,
+        pending.rateKey,
+        effectiveRateLimit(),
+        now(),
+      );
+      if (!decision.allowed) {
+        return {
+          ok: false,
+          message: `Review ${id} remains pending: rate limit blocked approval${decision.retryAfterSec ? `; retry in ${decision.retryAfterSec}s` : ""}`,
+        };
+      }
+    }
+
+    let sending: AgentMailReviewRecord;
+    try {
+      sending = reviewQueue.beginApproval(id);
+    } catch (error) {
+      return { ok: false, message: (error as Error).message };
+    }
+
+    let result: SendMessageResult | SendMessageError;
+    try {
+      result = await sendReviewedAction(sending);
+    } catch (error) {
+      const detail = `agentmail client threw: ${(error as Error).message}`;
+      reviewQueue.fail(id, detail);
+      return { ok: false, message: `Review ${id} failed before provider acknowledgement` };
+    }
+
+    const tool =
+      sending.request.kind === "send"
+        ? "send_message"
+        : sending.request.kind === "reply"
+          ? "reply_to_message"
+          : "forward_message";
+    if (result.status === "failed") {
+      reviewQueue.fail(id, result.detail);
+      recordDispatch({
+        timestamp: timestampHHMMSS(now()),
+        tool,
+        status: "failed",
+        recipients: redactRecipients(sending.recipients),
+        subject: sending.subject.slice(0, 80),
+        httpStatus: result.httpStatus,
+        detail: `review ${id}: ${result.detail}`,
+      });
+      return {
+        ok: false,
+        message: `Review ${id} failed${result.httpStatus ? ` (HTTP ${result.httpStatus})` : ""}`,
+      };
+    }
+
+    reviewQueue.approve(id, result);
+    if (sending.trustLevel !== "creator") {
+      recordSend(rateState, sending.recipients, sending.rateKey, now());
+      persistRateStateIfConfigured();
+    }
+    const body = "text" in sending.request ? (sending.request.text ?? "") : "";
+    const scan = body ? scanForSensitive(body) : { flagged: false, hits: [] };
+    recordDispatch({
+      timestamp: timestampHHMMSS(now()),
+      tool,
+      status: "sent",
+      recipients: redactRecipients(sending.recipients),
+      subject: sending.subject.slice(0, 80),
+      flaggedSensitive: scan.flagged || undefined,
+      detail: `approved review ${id}${scan.flagged ? `; sensitive content (${scan.hits.join(", ")})` : ""}`,
+    });
+    return { ok: true, message: `Review ${id} approved and sent` };
   }
 
   function gateTrustLevel(
@@ -264,6 +722,24 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
 
       const scan = scanForSensitive(validation.value.text);
 
+      const review = queueForHumanReview({
+        context,
+        tool: "send_message",
+        recipients: validation.value.recipients,
+        subject: validation.value.subject,
+        rateKey: subjectForRateCheck,
+        request: {
+          kind: "send",
+          to: validation.value.recipients,
+          subject: validation.value.subject,
+          text: validation.value.text,
+          ...(validation.value.html ? { html: validation.value.html } : {}),
+          ...(input.labels && input.labels.length > 0 ? { labels: input.labels } : {}),
+        },
+        flaggedSensitive: scan.flagged,
+      });
+      if (review) return review;
+
       const result = await client.send({
         inboxId: opts.inboxId,
         to: validation.value.recipients,
@@ -337,7 +813,7 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
       const gate = gateTrustLevel(context, "reply_to_message");
       if (!gate.allowed) return gate.envelope;
 
-      const meta = seenMessages.get(input.messageId);
+      const meta = seenMessagesFor(context).get(input.messageId);
       if (!meta) {
         const detail = `reply_to_message: messageId "${input.messageId}" was not delivered to the agent this turn. Reply only to messages from your inbound trigger.`;
         recordDispatch({
@@ -420,6 +896,24 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
 
       const scan = scanForSensitive(input.text);
 
+      const review = queueForHumanReview({
+        context,
+        tool: "reply_to_message",
+        recipients: validation.value.recipients,
+        subject: "(reply)",
+        rateKey: replyDedupKey,
+        request: {
+          kind: "reply",
+          messageId: input.messageId,
+          text: input.text,
+          ...(validation.value.html ? { html: validation.value.html } : {}),
+          ...(input.replyAll ? { replyAll: true } : {}),
+          ...(input.labels && input.labels.length > 0 ? { labels: input.labels } : {}),
+        },
+        flaggedSensitive: scan.flagged,
+      });
+      if (review) return review;
+
       const result = await client.reply({
         inboxId: opts.inboxId,
         messageId: input.messageId,
@@ -493,7 +987,7 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
       const gate = gateTrustLevel(context, "forward_message");
       if (!gate.allowed) return gate.envelope;
 
-      if (!seenMessages.has(input.messageId)) {
+      if (!seenMessagesFor(context).has(input.messageId)) {
         const detail = `forward_message: messageId "${input.messageId}" was not delivered to the agent this turn.`;
         recordDispatch({
           timestamp: timestampHHMMSS(now()),
@@ -556,6 +1050,25 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
 
       const scan = input.text ? scanForSensitive(input.text) : { flagged: false, hits: [] };
 
+      const review = queueForHumanReview({
+        context,
+        tool: "forward_message",
+        recipients: validation.value.recipients,
+        subject: validation.value.subject,
+        rateKey: validation.value.subject,
+        request: {
+          kind: "forward",
+          messageId: input.messageId,
+          to: validation.value.recipients,
+          ...(input.subject ? { subject: validation.value.subject } : {}),
+          ...(input.text ? { text: input.text } : {}),
+          ...(validation.value.html ? { html: validation.value.html } : {}),
+          ...(input.labels && input.labels.length > 0 ? { labels: input.labels } : {}),
+        },
+        flaggedSensitive: scan.flagged,
+      });
+      if (review) return review;
+
       const result = await client.forward({
         inboxId: opts.inboxId,
         messageId: input.messageId,
@@ -611,6 +1124,17 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
   // Lifecycle
   // ---------------------------------------------------------------------------
   async function onBoot(): Promise<void> {
+    dispatches.clear();
+    for (const status of Object.keys(dispatchCounts) as DispatchRecord["status"][]) {
+      dispatchCounts[status] = 0;
+    }
+    lastCatchUpAt = undefined;
+    lastCatchUpSummary = undefined;
+    lastInboundEventAt = undefined;
+    lastWorkerOutcome = undefined;
+    lastProviderError = undefined;
+    liveState = inboundMode === "none" ? "disabled" : "stopped";
+
     // Placeholder-resolution check — same pattern as visitor-auth.
     if (looksLikePlaceholder(opts.apiKey)) {
       throw new Error(
@@ -621,6 +1145,38 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
       throw new Error(
         `agentMail: AGENTMAIL_INBOX_ID is unresolved (got "${opts.inboxId}"). Set it in .env and restart.`,
       );
+    }
+
+    if (inboundMode !== "none") {
+      if (!inboundLedger) {
+        inboundLedger = createAgentMailInboundLedger({
+          dbPath: opts.dbPath ?? join(opts.agentDir ?? process.cwd(), "agent-mail.db"),
+          now,
+        });
+        ownsInboundLedger = true;
+      }
+      sdkAdapters ??= createAgentMailSdkAdapters({
+        apiKey: opts.apiKey,
+        apiBaseUrl: opts.apiBaseUrl,
+        websocketBaseUrl: opts.inbound?.websocketBaseUrl,
+      });
+      if (inboundMode === "webhook" && !webhookRouteInstalled) {
+        const webhookOptions = opts.inbound?.webhook;
+        agentMailRoutes.push(
+          createAgentMailWebhookRoute({
+            inboxId: opts.inboxId,
+            ledger: inboundLedger,
+            path: webhookOptions?.path,
+            secretEnv: webhookOptions?.secretEnv,
+            timestampToleranceSeconds: webhookOptions?.timestampToleranceSeconds,
+            onAccepted: () => {
+              lastInboundEventAt = now();
+              scheduleDrain();
+            },
+          }),
+        );
+        webhookRouteInstalled = true;
+      }
     }
 
     // Best-effort inbox healthcheck. Warn-and-continue on failure (transient
@@ -638,14 +1194,30 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
       console.warn(
         `[agent-mail] inbox "${opts.inboxId}" healthcheck failed: ${health.detail}. Continuing boot — first real send will surface the same error.`,
       );
+      recordProviderError(health.detail);
       return;
     }
     // ok
   }
 
   async function onShutdown(): Promise<void> {
-    // Phase A has no persistent resources (no SQLite, no WS). Phase B will
-    // close the WS connection and SQLite handle here.
+    if (pollTimer) clearInterval(pollTimer);
+    if (drainTimer) clearInterval(drainTimer);
+    if (drainKickTimer) clearTimeout(drainKickTimer);
+    pollTimer = undefined;
+    drainTimer = undefined;
+    drainKickTimer = undefined;
+    drainScheduled = false;
+    inboundReady = false;
+    await liveSubscription?.close();
+    liveSubscription = undefined;
+    liveState = inboundMode === "none" ? "disabled" : "stopped";
+    inboundWorker = undefined;
+    inboundKernel = undefined;
+    seenMessagesByTurn.clear();
+    if (ownsInboundLedger) inboundLedger?.close();
+    inboundLedger = opts._inboundLedger;
+    ownsInboundLedger = false;
   }
 
   // ---------------------------------------------------------------------------
@@ -659,19 +1231,42 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
 
   async function adminInfo(): Promise<AdminInfoBlock> {
     const recent = dispatches.snapshot().slice(-50);
-    const sentInLastHour = recent.filter(
-      (r) =>
-        r.status === "sent" &&
-        // The HH:MM:SS comparison is rough but adequate — for a precise
-        // window we'd need to add a `now` field to DispatchRecord. Skip
-        // the precision for the admin view.
-        true,
-    ).length;
+    const reviews = reviewQueue.list();
+    const pendingReviews = reviews.filter((review) => review.state === "pending");
+    const ambiguousReviews = reviews.filter((review) => review.state === "sending");
+    let ledgerCounts = { pending: 0, processing: 0, processed: 0, discarded: 0 };
+    let checkpoint: string | undefined;
+    if (inboundLedger) {
+      try {
+        ledgerCounts = inboundLedger.counts();
+        checkpoint = inboundLedger.checkpoint(opts.inboxId);
+      } catch (error) {
+        recordProviderError(error);
+      }
+    }
+    const operationalWarnings: string[] = [];
+    if (inboundMode !== "none" && !inboundReady) operationalWarnings.push("inbound not ready");
+    if (lastProviderError) operationalWarnings.push(`provider: ${lastProviderError}`);
+    if (ambiguousReviews.length > 0) {
+      operationalWarnings.push(
+        `${ambiguousReviews.length} review(s) stopped in ambiguous sending state`,
+      );
+    }
 
     return {
       augmentName: "agent-mail",
       title: "AgentMail",
       sections: [
+        {
+          kind: "status",
+          level: operationalWarnings.length === 0 ? "ok" : "warn",
+          message:
+            operationalWarnings.length === 0
+              ? inboundMode === "none"
+                ? "Outbound ready; inbound disabled"
+                : `Inbound ${inboundMode} ready`
+              : operationalWarnings.join("; "),
+        },
         {
           kind: "keyValue",
           rows: [
@@ -689,6 +1284,11 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
               source: "yaml",
             },
             {
+              label: "Human review required",
+              value: reviewTrustLevels.join(", ") || "(none — autonomous)",
+              source: "yaml",
+            },
+            {
               label: "Recipient allowlist",
               value:
                 outboundOpts.allowedRecipients && outboundOpts.allowedRecipients.length > 0
@@ -698,13 +1298,35 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
             },
             {
               label: "Sent (since boot)",
-              value: String(recent.filter((r) => r.status === "sent").length),
+              value: String(dispatchCounts.sent),
+            },
+            { label: "Blocked (since boot)", value: String(dispatchCounts.blocked) },
+            {
+              label: "Rate limited (since boot)",
+              value: String(dispatchCounts.rate_limited),
             },
             { label: "Recent dispatches", value: String(recent.length) },
+            { label: "Pending human reviews", value: String(pendingReviews.length) },
+            { label: "Ambiguous sending reviews", value: String(ambiguousReviews.length) },
+            { label: "Inbound mode", value: inboundMode, source: "yaml" },
+            { label: "Inbound runtime", value: liveState },
+            { label: "Inbound pending", value: String(ledgerCounts.pending) },
+            { label: "Inbound processing", value: String(ledgerCounts.processing) },
+            { label: "Inbound processed", value: String(ledgerCounts.processed) },
+            { label: "Inbound discarded", value: String(ledgerCounts.discarded) },
+            { label: "Catch-up checkpoint", value: checkpoint ?? "(none)" },
             {
-              label: "(unused) sent-in-last-hour",
-              value: String(sentInLastHour),
+              label: "Last catch-up",
+              value: lastCatchUpAt ? new Date(lastCatchUpAt).toISOString() : "(never)",
             },
+            { label: "Last catch-up result", value: lastCatchUpSummary ?? "(none)" },
+            {
+              label: "Last inbound event",
+              value: lastInboundEventAt
+                ? new Date(lastInboundEventAt).toISOString()
+                : "(none since boot)",
+            },
+            { label: "Last worker outcome", value: lastWorkerOutcome ?? "(none since boot)" },
           ],
         },
         {
@@ -718,6 +1340,22 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
             e.subject,
           ]),
           caption: `Recent dispatches (${recent.length})`,
+        },
+        {
+          kind: "table",
+          columns: ["Review ID", "Trust", "State", "Recipients", "Subject", "Expires", "Inspect"],
+          rows: reviews
+            .slice(-50)
+            .map((review) => [
+              review.id,
+              review.trustLevel,
+              review.state,
+              redactRecipients(review.recipients),
+              review.subject.slice(0, 80),
+              new Date(review.expiresAt).toISOString(),
+              `/agentmail/reviews/${encodeURIComponent(review.id)}`,
+            ]),
+          caption: `Outbound reviews (${reviews.length}) — list is redacted; exact content requires creator auth`,
         },
       ],
       actions: [
@@ -755,6 +1393,37 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
               required: true,
               helpText: "Persists across restart via admin-overrides.json.",
             },
+          ],
+        },
+        {
+          id: "agentmail-review-approve",
+          label: "Approve queued email",
+          confirmRequired: true,
+          inputs: [
+            {
+              name: "reviewId",
+              label: "Review ID",
+              type: "text",
+              required: true,
+              helpText: "Sends the exact queued action after rechecking current rate limits.",
+            },
+            {
+              name: "fingerprint",
+              label: "Inspection fingerprint",
+              type: "text",
+              required: true,
+              helpText:
+                "Copy from the creator-authenticated review detail route to bind approval to the reviewed content.",
+            },
+          ],
+        },
+        {
+          id: "agentmail-review-reject",
+          label: "Reject queued email",
+          confirmRequired: true,
+          inputs: [
+            { name: "reviewId", label: "Review ID", type: "text", required: true },
+            { name: "reason", label: "Reason", type: "text", required: false },
           ],
         },
       ],
@@ -851,7 +1520,10 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
         httpStatus: result.httpStatus,
         detail: result.detail,
       });
-      return { ok: false, message: `Send failed: ${result.detail}` };
+      return {
+        ok: false,
+        message: `Send failed${result.httpStatus ? ` (HTTP ${result.httpStatus})` : ""}`,
+      };
     },
     "agentmail-cap-adjust": async (params) => {
       const raw = params.value;
@@ -881,24 +1553,48 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
       globalMaxSource = "yaml";
       return { ok: true, message: "globalMaxPerHour reset to yaml value" };
     },
+    "agentmail-review-approve": async (params) => {
+      const reviewId = typeof params.reviewId === "string" ? params.reviewId.trim() : "";
+      if (!reviewId) return { ok: false, message: "Review ID is required" };
+      const fingerprint = typeof params.fingerprint === "string" ? params.fingerprint.trim() : "";
+      if (!fingerprint) return { ok: false, message: "Inspection fingerprint is required" };
+      return approveReview(reviewId, fingerprint);
+    },
+    "agentmail-review-reject": async (params) => {
+      const reviewId = typeof params.reviewId === "string" ? params.reviewId.trim() : "";
+      if (!reviewId) return { ok: false, message: "Review ID is required" };
+      const reason =
+        typeof params.reason === "string" && params.reason.trim()
+          ? params.reason.trim()
+          : "rejected by operator";
+      try {
+        reviewQueue.reject(reviewId, reason);
+      } catch (error) {
+        return { ok: false, message: (error as Error).message };
+      }
+      return { ok: true, message: `Review ${reviewId} rejected` };
+    },
   };
 
   // ---------------------------------------------------------------------------
-  // Test-only seam: expose the seenMessages map so Phase B's inbound
-  // dispatcher (and reply/forward unit tests) can mark messages as seen
-  // alongside the inbound envelope. Production callers do not touch this.
-  // Phase B will move this to a proper kernel hook.
+  // Test-only seam for reply/forward unit tests. Production inbound work uses
+  // the per-turn map populated by onTurnPrepared above.
   // ---------------------------------------------------------------------------
   const aug: Augment & {
     _markSeenForTest?: (messageId: string, meta: { from: string; replyAllTo?: string[] }) => void;
   } = {
     name: "agent-mail",
     tools: [sendMessageTool, replyToMessageTool, forwardMessageTool],
+    ...(inboundTransport ? { transport: inboundTransport } : {}),
+    httpRoutes: agentMailRoutes,
     onBoot,
     onShutdown,
     adminInfo,
     adminActions,
-    _markSeenForTest: (messageId, meta) => seenMessages.set(messageId, meta),
+    onTurnEnd: async (result) => {
+      seenMessagesByTurn.delete(result.turnId);
+    },
+    _markSeenForTest: (messageId, meta) => legacySeenMessages.set(messageId, meta),
   };
 
   return aug;
