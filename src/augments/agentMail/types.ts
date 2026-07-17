@@ -13,6 +13,10 @@ import type { AgentMailReviewQueue } from "./review-queue";
  * Internal test seams. Production callers do not pass these.
  */
 export interface AgentMailAugmentInternalOptions extends AgentMailAugmentOptions {
+  /** Deployment-owned directory for durable AgentMail state. Defaults to agentDir locally. */
+  stateDir?: string;
+  /** Canonical shared directory for admin-overrides.json. Defaults to agentDir locally. */
+  overrideDir?: string;
   /** Test-only override; production constructs from apiKey via createAgentMailClient. */
   _client?: AgentMailClient;
   /** Test-only clock injection (ms epoch). Defaults to Date.now. */

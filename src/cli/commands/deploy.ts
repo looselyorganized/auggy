@@ -22,8 +22,8 @@
  * crash when agent.yaml interpolates `${AUGGY_PUBLIC_URL}` or similar.
  */
 
-import { copyFileSync, existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
+import { copyFileSync, existsSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getAgentFromDir, setCloudForDir } from "../agent-index";
 import { parseConfig } from "../config-parser";
@@ -199,6 +199,18 @@ function maybeVendorLocalAuggyTarball(args: {
   return stagedTarballName;
 }
 
+function configuredDatabaseArtifacts(config: ReturnType<typeof parseConfig>): string[] {
+  const artifacts: string[] = [];
+  for (const augment of config.augments) {
+    for (const field of ["dbPath", "layeredMemoryDbPath"] as const) {
+      const dbPath = augment.options?.[field];
+      if (typeof dbPath !== "string" || dbPath.trim() === "") continue;
+      artifacts.push(dbPath, `${dbPath}-wal`, `${dbPath}-shm`, `${dbPath}-journal`);
+    }
+  }
+  return artifacts;
+}
+
 function resolveFileAuggyTarball(spec: string, agentDir: string): string | null {
   if (!spec.startsWith("file:")) return null;
   const rawPath = spec.slice("file:".length);
@@ -302,278 +314,296 @@ export async function runDeploy(
   // 4) Stage the bundle (excludes secrets + volume-bound state). New Railway
   //    project creation links the current directory, so staging must exist
   //    before we can create/link project state.
-  const stagingDir = stageBundle({ agentDir, agentName: name });
-  opts.logger.info(`Bundle staged at ${stagingDir}.`);
-
-  // 5) Write Dockerfile + entrypoint into the staging dir.
-  const vendoredRuntime = maybeVendorLocalAuggyTarball({
+  const stagingDir = stageBundle({
     agentDir,
-    stagingDir,
-    cwd: opts.cwd,
+    agentName: name,
+    excludedPaths: configuredDatabaseArtifacts(config),
   });
-  if (vendoredRuntime) {
-    opts.logger.info(`Vendored local Auggy runtime ${vendoredRuntime} into deploy bundle.`);
-  }
-  writeFileSync(
-    join(stagingDir, "Dockerfile"),
-    generateDockerfile({ agentName: name, runtimeTarballName: vendoredRuntime ?? undefined }),
-  );
-  writeFileSync(join(stagingDir, "auggy-entrypoint.sh"), generateEntrypoint());
 
-  let projectId: string;
-  let projectAlreadyLinked = false;
-  if (isRedeploy && existingCloud) {
-    projectId = existingCloud.projectId;
-    opts.logger.info(`Redeploying ${name} to Railway project ${projectId}.`);
-  } else if (savedProjectIdForRecreate) {
-    projectId = savedProjectIdForRecreate;
-    opts.logger.info(`Recreating ${name} service in Railway project ${projectId}.`);
-  } else if (opts.project) {
-    projectId = opts.project;
-    opts.logger.info(`First deploy of ${name} to existing Railway project ${projectId}.`);
-  } else {
-    const workspace = await resolveWorkspaceForFirstDeploy(opts);
-    const workspaceValue = workspace?.id ?? workspace?.name;
-    const projects =
-      workspaceValue && !opts.projectName
-        ? await listProjectsForWorkspace(opts, workspaceValue)
-        : [];
-    const target = opts.projectName
-      ? "new"
-      : await opts.promptProjectTarget({ workspace, projects });
-    if (target === "new") {
-      const projectName = opts.projectName?.trim() || (await opts.promptProjectName(name));
-      const createProject = (workspace?: string) =>
-        withProgress(opts, `Creating Railway project ${projectName}`, () =>
-          opts.cli.createProject({ projectName, workspace, cwd: stagingDir }),
-        );
-      try {
-        projectId = await createProject(workspaceValue);
-      } catch (err) {
-        if (!(err instanceof RailwayWorkspaceRequiredError)) throw err;
-        const workspace = await opts.promptWorkspace([]);
-        projectId = await createProject(workspace);
-      }
-      projectAlreadyLinked = true;
-      opts.logger.info(`Created Railway project ${projectName} (${projectId}).`);
-    } else {
-      projectId = await opts.promptProjectId(projects);
+  try {
+    opts.logger.info(`Bundle staged at ${stagingDir}.`);
+    // 5) Write Dockerfile + entrypoint into the staging dir.
+    const vendoredRuntime = maybeVendorLocalAuggyTarball({
+      agentDir,
+      stagingDir,
+      cwd: opts.cwd,
+    });
+    if (vendoredRuntime) {
+      opts.logger.info(`Vendored local Auggy runtime ${vendoredRuntime} into deploy bundle.`);
+    }
+    writeFileSync(
+      join(stagingDir, "Dockerfile"),
+      generateDockerfile({ agentName: name, runtimeTarballName: vendoredRuntime ?? undefined }),
+    );
+    writeFileSync(join(stagingDir, "auggy-entrypoint.sh"), generateEntrypoint());
+
+    let projectId: string;
+    let projectAlreadyLinked = false;
+    if (isRedeploy && existingCloud) {
+      projectId = existingCloud.projectId;
+      opts.logger.info(`Redeploying ${name} to Railway project ${projectId}.`);
+    } else if (savedProjectIdForRecreate) {
+      projectId = savedProjectIdForRecreate;
+      opts.logger.info(`Recreating ${name} service in Railway project ${projectId}.`);
+    } else if (opts.project) {
+      projectId = opts.project;
       opts.logger.info(`First deploy of ${name} to existing Railway project ${projectId}.`);
-    }
-  }
-
-  // 6) Load secrets plan and confirm with operator unless --yes.
-  const envPath = join(agentDir, ".env");
-  const plan = loadSecretsPlan(envPath);
-  if (plan.warnings.length > 0) {
-    for (const w of plan.warnings) opts.logger.warn(w);
-  }
-  if (!opts.yes) {
-    const summary =
-      plan.variables.length === 0
-        ? `No secrets to push (no .env file or all entries malformed).`
-        : `Push ${plan.variables.length} secret(s) to Railway:\n` +
-          plan.variables.map((v) => `  ${v.key} = ${v.redactedValue}`).join("\n");
-    const confirmed = await opts.promptConfirm(`${summary}\n\nProceed?`);
-    if (!confirmed) {
-      throw new Error("Deploy aborted by operator (declined secrets push).");
-    }
-  }
-
-  // 7) Link the staging dir to the Railway project/service.
-  //
-  // First deploy default: create a new Railway service named after the agent.
-  // First deploy with --service: link an existing Railway service by name/id.
-  // Redeploy: use the stored serviceId unless --service explicitly overrides.
-  if (!isRedeploy) {
-    if (!projectAlreadyLinked) {
-      await withProgress(opts, `Linking Railway project`, () =>
-        opts.cli.linkProject({ projectId, cwd: stagingDir }),
-      );
-      opts.logger.info(`Linked staging dir to project ${projectId}.`);
-    }
-    if (shouldPromptServiceTarget && !serviceName) {
-      const serviceTarget = await opts.promptServiceTarget({ defaultServiceName: name });
-      if (serviceTarget === "existing") {
-        serviceName = await opts.promptServiceName(name);
-      }
-    }
-    if (serviceName) {
-      const selectedServiceName = serviceName;
-      await withProgress(opts, `Linking Railway service ${selectedServiceName}`, () =>
-        opts.cli.linkService({ serviceName: selectedServiceName, cwd: stagingDir }),
-      );
-      opts.logger.info(`Using existing Railway service ${selectedServiceName}.`);
     } else {
-      await withProgress(opts, `Creating Railway service ${name}`, () =>
-        opts.cli.createService({ serviceName: name, cwd: stagingDir }),
-      );
-      opts.logger.info(`Created Railway service ${name}.`);
-    }
-  } else if (existingCloud) {
-    serviceName = opts.service ?? existingCloud.serviceId;
-    const selectedServiceName = serviceName;
-    let recoveredStaleService = false;
-    try {
-      await withProgress(opts, `Linking Railway service ${selectedServiceName}`, () =>
-        opts.cli.link({ projectId, serviceName: selectedServiceName, cwd: stagingDir }),
-      );
-    } catch (err) {
-      if (isRailwayServiceNotFoundError(err)) {
-        if (!opts.service) {
-          const metadataPath = join(agentDir, ".auggy-cloud.json");
-          clearCloudMetadataForDir(agentDir);
-          existingCloud = null;
-          isRedeploy = false;
-          opts.logger.warn(
-            formatStaleCloudMetadataWarning({
-              serviceName: selectedServiceName,
-              projectId,
-              metadataPath,
-            }),
+      const workspace = await resolveWorkspaceForFirstDeploy(opts);
+      const workspaceValue = workspace?.id ?? workspace?.name;
+      const projects =
+        workspaceValue && !opts.projectName
+          ? await listProjectsForWorkspace(opts, workspaceValue)
+          : [];
+      const target = opts.projectName
+        ? "new"
+        : await opts.promptProjectTarget({ workspace, projects });
+      if (target === "new") {
+        const projectName = opts.projectName?.trim() || (await opts.promptProjectName(name));
+        const createProject = (workspace?: string) =>
+          withProgress(opts, `Creating Railway project ${projectName}`, () =>
+            opts.cli.createProject({ projectName, workspace, cwd: stagingDir }),
           );
-          await withProgress(opts, `Creating Railway service ${name}`, () =>
-            opts.cli.createService({ serviceName: name, cwd: stagingDir }),
-          );
-          opts.logger.info(`Created Railway service ${name}.`);
-          projectAlreadyLinked = true;
-          recoveredStaleService = true;
-        } else {
-          throw formatMissingServiceError({
-            name,
-            projectId,
-            serviceName,
-            agentDir,
-            explicitService: Boolean(opts.service),
-          });
+        try {
+          projectId = await createProject(workspaceValue);
+        } catch (err) {
+          if (!(err instanceof RailwayWorkspaceRequiredError)) throw err;
+          const workspace = await opts.promptWorkspace([]);
+          projectId = await createProject(workspace);
         }
+        projectAlreadyLinked = true;
+        opts.logger.info(`Created Railway project ${projectName} (${projectId}).`);
       } else {
-        throw err;
+        projectId = await opts.promptProjectId(projects);
+        opts.logger.info(`First deploy of ${name} to existing Railway project ${projectId}.`);
       }
     }
-    if (!recoveredStaleService) {
-      opts.logger.info(
-        `Linked staging dir to project ${projectId}, service ${selectedServiceName}.`,
-      );
+
+    // 6) Load secrets plan and confirm with operator unless --yes.
+    const envPath = join(agentDir, ".env");
+    const plan = loadSecretsPlan(envPath);
+    if (plan.warnings.length > 0) {
+      for (const w of plan.warnings) opts.logger.warn(w);
     }
-  }
-
-  // 8) Volume: only add on first deploy. Redeploys keep the existing volume
-  //    (Railway preserves it via the volumeId in the existing CloudRecord).
-  if (!isRedeploy) {
-    await withProgress(opts, `Mounting Railway volume`, () =>
-      opts.cli.addVolume({
-        name: `${name}-data`,
-        mountPath: VOLUME_MOUNT_PATH,
-        cwd: stagingDir,
-      }),
-    );
-    opts.logger.info(`Volume "${name}-data" mounted at ${VOLUME_MOUNT_PATH}.`);
-  }
-
-  // 9) Generate (or recover) the public domain. Idempotent: second call
-  //    returns the existing URL.
-  const url = await withProgress(opts, `Generating public Railway URL`, () =>
-    opts.cli.generateDomain({ cwd: stagingDir }),
-  );
-  opts.logger.info(`Public URL: ${url}`);
-
-  // 10) Push secrets (.env keys + AUGGY_PUBLIC_URL). D7: AUGGY_PUBLIC_URL must
-  //    be set BEFORE `up` so visitorAuth sees the publicUrl on first boot.
-  await withProgress(opts, `Pushing ${plan.variables.length + 1} env var(s)`, async () => {
-    for (const v of plan.variables) {
-      await opts.cli.setVariable({ key: v.key, value: v.value, cwd: stagingDir });
+    if (!opts.yes) {
+      const summary =
+        plan.variables.length === 0
+          ? `No secrets to push (no .env file or all entries malformed).`
+          : `Push ${plan.variables.length} secret(s) to Railway:\n` +
+            plan.variables.map((v) => `  ${v.key} = ${v.redactedValue}`).join("\n");
+      const confirmed = await opts.promptConfirm(`${summary}\n\nProceed?`);
+      if (!confirmed) {
+        throw new Error("Deploy aborted by operator (declined secrets push).");
+      }
     }
-    await opts.cli.setVariable({ key: "AUGGY_PUBLIC_URL", value: url, cwd: stagingDir });
-  });
-  opts.logger.info(`Pushed ${plan.variables.length + 1} env var(s) to Railway.`);
 
-  // 11) Start the build + deploy. --detach so we return without tailing
-  //     build logs; operator follows progress via Railway UI / `railway logs`.
-  await withProgress(opts, `Starting Railway build`, () => opts.cli.up({ cwd: stagingDir }));
-  opts.logger.info(
-    `Build started. Railway will build the image, deploy it, then start the service.`,
-  );
-
-  // 12) Wait for Railway to report a terminal deployment state when the CLI
-  //     exposes one. If status is unavailable or shape-shifts, fall back to
-  //     the health check instead of blocking forever.
-  const deployWait =
-    opts.deployWait === false
-      ? {
-          state: "unknown" as const,
-          status: await opts.cli.status({ cwd: stagingDir }),
-          reason: "deployment wait disabled",
+    // 7) Link the staging dir to the Railway project/service.
+    //
+    // First deploy default: create a new Railway service named after the agent.
+    // First deploy with --service: link an existing Railway service by name/id.
+    // Redeploy: use the stored serviceId unless --service explicitly overrides.
+    if (!isRedeploy) {
+      if (!projectAlreadyLinked) {
+        await withProgress(opts, `Linking Railway project`, () =>
+          opts.cli.linkProject({ projectId, cwd: stagingDir }),
+        );
+        opts.logger.info(`Linked staging dir to project ${projectId}.`);
+      }
+      if (shouldPromptServiceTarget && !serviceName) {
+        const serviceTarget = await opts.promptServiceTarget({ defaultServiceName: name });
+        if (serviceTarget === "existing") {
+          serviceName = await opts.promptServiceName(name);
         }
-      : await withProgress(opts, `Waiting for Railway deployment`, () =>
-          waitForRailwayDeployment(opts, stagingDir),
+      }
+      if (serviceName) {
+        const selectedServiceName = serviceName;
+        await withProgress(opts, `Linking Railway service ${selectedServiceName}`, () =>
+          opts.cli.linkService({ serviceName: selectedServiceName, cwd: stagingDir }),
         );
-  if (deployWait.state === "ready") {
-    opts.logger.info(`Railway deployment finished: ${deployWait.statusText}.`);
-  } else if (deployWait.state === "failed") {
-    throw new Error(
-      `Railway deployment failed with status ${deployWait.statusText}. Check \`railway logs\` for details.`,
-    );
-  }
+        opts.logger.info(`Using existing Railway service ${selectedServiceName}.`);
+      } else {
+        await withProgress(opts, `Creating Railway service ${name}`, () =>
+          opts.cli.createService({ serviceName: name, cwd: stagingDir }),
+        );
+        opts.logger.info(`Created Railway service ${name}.`);
+      }
+    } else if (existingCloud) {
+      serviceName = opts.service ?? existingCloud.serviceId;
+      const selectedServiceName = serviceName;
+      let recoveredStaleService = false;
+      try {
+        await withProgress(opts, `Linking Railway service ${selectedServiceName}`, () =>
+          opts.cli.link({ projectId, serviceName: selectedServiceName, cwd: stagingDir }),
+        );
+      } catch (err) {
+        if (isRailwayServiceNotFoundError(err)) {
+          if (!opts.service) {
+            const metadataPath = join(agentDir, ".auggy-cloud.json");
+            clearCloudMetadataForDir(agentDir);
+            existingCloud = null;
+            isRedeploy = false;
+            opts.logger.warn(
+              formatStaleCloudMetadataWarning({
+                serviceName: selectedServiceName,
+                projectId,
+                metadataPath,
+              }),
+            );
+            await withProgress(opts, `Creating Railway service ${name}`, () =>
+              opts.cli.createService({ serviceName: name, cwd: stagingDir }),
+            );
+            opts.logger.info(`Created Railway service ${name}.`);
+            projectAlreadyLinked = true;
+            recoveredStaleService = true;
+          } else {
+            throw formatMissingServiceError({
+              name,
+              projectId,
+              serviceName,
+              agentDir,
+              explicitService: Boolean(opts.service),
+            });
+          }
+        } else {
+          throw err;
+        }
+      }
+      if (!recoveredStaleService) {
+        opts.logger.info(
+          `Linked staging dir to project ${projectId}, service ${selectedServiceName}.`,
+        );
+      }
+    }
 
-  // 13) Verify the public health endpoint. Timeout is non-destructive: the
-  //     deploy may still finish, but the operator needs recovery commands.
-  const healthCheckOptions = opts.healthCheck === false ? undefined : opts.healthCheck;
-  const health =
-    opts.healthCheck === false
-      ? { ok: false, url: new URL("/health", ensureTrailingSlash(url)).toString(), attempts: 0 }
-      : await withProgress(opts, `Verifying deployment health`, () =>
-          waitForHealth(url, healthCheckOptions),
-        );
-  if (health.ok) {
-    opts.logger.info(`Deployment health verified: ${health.url}`);
-  } else {
-    if (deployWait.state === "unknown") {
-      opts.logger.info(
-        `Railway deployment status not final yet; continuing with health check (${deployWait.reason}).`,
+    // 8) Volume: only add on first deploy. Redeploys keep the existing volume
+    //    (Railway preserves it via the volumeId in the existing CloudRecord).
+    if (!isRedeploy) {
+      await withProgress(opts, `Mounting Railway volume`, () =>
+        opts.cli.addVolume({
+          name: `${name}-data`,
+          mountPath: VOLUME_MOUNT_PATH,
+          cwd: stagingDir,
+        }),
+      );
+      opts.logger.info(`Volume "${name}-data" mounted at ${VOLUME_MOUNT_PATH}.`);
+    }
+
+    // 9) Generate (or recover) the public domain. Idempotent: second call
+    //    returns the existing URL.
+    const url = await withProgress(opts, `Generating public Railway URL`, () =>
+      opts.cli.generateDomain({ cwd: stagingDir }),
+    );
+    opts.logger.info(`Public URL: ${url}`);
+
+    // 10) Push secrets (.env keys + AUGGY_PUBLIC_URL). D7: AUGGY_PUBLIC_URL must
+    //    be set BEFORE `up` so visitorAuth sees the publicUrl on first boot.
+    await withProgress(opts, `Pushing ${plan.variables.length + 1} env var(s)`, async () => {
+      for (const v of plan.variables) {
+        await opts.cli.setVariable({ key: v.key, value: v.value, cwd: stagingDir });
+      }
+      await opts.cli.setVariable({ key: "AUGGY_PUBLIC_URL", value: url, cwd: stagingDir });
+    });
+    opts.logger.info(`Pushed ${plan.variables.length + 1} env var(s) to Railway.`);
+
+    // 11) Start the build + deploy. --detach so we return without tailing
+    //     build logs; operator follows progress via Railway UI / `railway logs`.
+    await withProgress(opts, `Starting Railway build`, () => opts.cli.up({ cwd: stagingDir }));
+    opts.logger.info(
+      `Build started. Railway will build the image, deploy it, then start the service.`,
+    );
+
+    // 12) Wait for Railway to report a terminal deployment state when the CLI
+    //     exposes one. If status is unavailable or shape-shifts, fall back to
+    //     the health check instead of blocking forever.
+    const deployWait =
+      opts.deployWait === false
+        ? {
+            state: "unknown" as const,
+            status: await opts.cli.status({ cwd: stagingDir }),
+            reason: "deployment wait disabled",
+          }
+        : await withProgress(opts, `Waiting for Railway deployment`, () =>
+            waitForRailwayDeployment(opts, stagingDir),
+          );
+    if (deployWait.state === "ready") {
+      opts.logger.info(`Railway deployment finished: ${deployWait.statusText}.`);
+    } else if (deployWait.state === "failed") {
+      throw new Error(
+        `Railway deployment failed with status ${deployWait.statusText}. Check \`railway logs\` for details.`,
       );
     }
-    const reason = health.status
-      ? `last HTTP status ${health.status}`
-      : health.error
-        ? `last error: ${health.error}`
-        : "no attempts completed";
-    opts.logger.info(
-      `Deployment health is pending (${reason}). Railway may still be building or starting the service.`,
-    );
+
+    // 13) Verify the public health endpoint. Timeout is non-destructive: the
+    //     deploy may still finish, but the operator needs recovery commands.
+    const healthCheckOptions = opts.healthCheck === false ? undefined : opts.healthCheck;
+    const health =
+      opts.healthCheck === false
+        ? { ok: false, url: new URL("/health", ensureTrailingSlash(url)).toString(), attempts: 0 }
+        : await withProgress(opts, `Verifying deployment health`, () =>
+            waitForHealth(url, healthCheckOptions),
+          );
+    if (health.ok) {
+      opts.logger.info(`Deployment health verified: ${health.url}`);
+    } else {
+      if (deployWait.state === "unknown") {
+        opts.logger.info(
+          `Railway deployment status not final yet; continuing with health check (${deployWait.reason}).`,
+        );
+      }
+      const reason = health.status
+        ? `last HTTP status ${health.status}`
+        : health.error
+          ? `last error: ${health.error}`
+          : "no attempts completed";
+      opts.logger.info(
+        `Deployment health is pending (${reason}). Railway may still be building or starting the service.`,
+      );
+    }
+
+    // 14) Capture service metadata for the CloudRecord.
+    const status = deployWait.status ?? (await opts.cli.status({ cwd: stagingDir }));
+    opts.logger.info(`Service status: ${formatRailwayServiceStatus(status, health.ok)}.`);
+
+    // 15) Write CloudRecord to the agent index.
+    const statusRecord = asRecord(status);
+    const serviceRecord = asRecord(statusRecord?.service);
+    const serviceId =
+      stringField(serviceRecord?.id) ??
+      stringField(serviceRecord?.name) ??
+      opts.service ??
+      existingCloud?.serviceId ??
+      name;
+    const result: DeployResult = {
+      name,
+      url,
+      projectId,
+      serviceId,
+      volumeId: `${name}-data`,
+      health,
+    };
+    setCloudForDir(agentDir, {
+      provider: "railway",
+      projectId: result.projectId,
+      serviceId: result.serviceId,
+      url: result.url,
+      volumeId: result.volumeId,
+      deployedAt: new Date().toISOString(),
+    });
+
+    return result;
+  } finally {
+    try {
+      rmSync(stagingDir, { recursive: true, force: true });
+    } catch (error) {
+      try {
+        opts.logger.warn(
+          `Could not remove deploy staging directory ${stagingDir}: ${(error as Error).message}`,
+        );
+      } catch {
+        // Cleanup and diagnostics must never mask the deploy result or root failure.
+      }
+    }
   }
-
-  // 14) Capture service metadata for the CloudRecord.
-  const status = deployWait.status ?? (await opts.cli.status({ cwd: stagingDir }));
-  opts.logger.info(`Service status: ${formatRailwayServiceStatus(status, health.ok)}.`);
-
-  // 15) Write CloudRecord to the agent index.
-  const statusRecord = asRecord(status);
-  const serviceRecord = asRecord(statusRecord?.service);
-  const serviceId =
-    stringField(serviceRecord?.id) ??
-    stringField(serviceRecord?.name) ??
-    opts.service ??
-    existingCloud?.serviceId ??
-    name;
-  const result: DeployResult = {
-    name,
-    url,
-    projectId,
-    serviceId,
-    volumeId: `${name}-data`,
-    health,
-  };
-  setCloudForDir(agentDir, {
-    provider: "railway",
-    projectId: result.projectId,
-    serviceId: result.serviceId,
-    url: result.url,
-    volumeId: result.volumeId,
-    deployedAt: new Date().toISOString(),
-  });
-
-  return result;
 }
 
 function assertRailwayDeploySafeConfig(configPath: string): ReturnType<typeof parseConfig> {
@@ -595,6 +625,8 @@ function assertRailwayDeploySafeConfig(configPath: string): ReturnType<typeof pa
       ].join("\n"),
     );
   }
+
+  assertRailwayLegacyDatabasePaths(config);
 
   const visitorAuth = config.augments.find((augment) => augment.type === "visitorAuth");
   if (!visitorAuth) return config;
@@ -621,6 +653,48 @@ function assertRailwayDeploySafeConfig(configPath: string): ReturnType<typeof pa
       "    This acknowledges that magic links will appear in Railway logs.",
     ].join("\n"),
   );
+}
+
+function assertRailwayLegacyDatabasePaths(config: ReturnType<typeof parseConfig>): void {
+  const expectedByType: Record<
+    string,
+    ReadonlyArray<{ field: "dbPath" | "layeredMemoryDbPath"; expected: string; nullable?: boolean }>
+  > = {
+    layeredMemory: [{ field: "dbPath", expected: "./memory.db" }],
+    budgets: [{ field: "dbPath", expected: "./budgets.db" }],
+    visitorAuth: [
+      { field: "dbPath", expected: "./visitor-auth.db" },
+      { field: "layeredMemoryDbPath", expected: "./memory.db", nullable: true },
+    ],
+    link: [{ field: "dbPath", expected: "./link.db" }],
+  };
+
+  for (const augment of config.augments) {
+    for (const rule of expectedByType[augment.type] ?? []) {
+      const value = augment.options?.[rule.field];
+      if (value === undefined || (rule.nullable && value === null)) continue;
+      const resolvedPath = typeof value === "string" ? resolve("/app", value) : "";
+      const fromVolume = relative("/app/data", resolvedPath);
+      const isDirectVolumePath =
+        fromVolume !== "" &&
+        fromVolume !== ".." &&
+        !fromVolume.startsWith(`..${sep}`) &&
+        !isAbsolute(fromVolume);
+      const isMappedDefault =
+        typeof value === "string" &&
+        !isAbsolute(value) &&
+        resolvedPath === resolve("/app", rule.expected);
+      if (isMappedDefault || (!isAbsolute(String(value)) && isDirectVolumePath)) continue;
+      throw new Error(
+        [
+          "Deploy preflight failed:",
+          `${augment.type}.${rule.field} must remain ${rule.expected} or resolve below ./data for Railway durability (found ${String(value)}).`,
+          "The current Railway entrypoint maps only the standard legacy SQLite paths onto /app/data.",
+          "Custom legacy database paths would be recreated on ephemeral container storage after redeploy.",
+        ].join("\n"),
+      );
+    }
+  }
 }
 
 async function acknowledgeBudgetsDeployPosture(

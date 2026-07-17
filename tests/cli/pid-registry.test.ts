@@ -9,6 +9,8 @@ import type { PidManifest } from "../../src/cli/types";
 // support an explicit auggyDir override for tests and embedded callers.
 import {
   writePidManifest,
+  claimRuntimePidManifest,
+  releaseRuntimePidManifest,
   readPidManifest,
   removePidManifest,
   listPidManifests,
@@ -102,6 +104,48 @@ describe("PID manifest lifecycle", () => {
 
   test("remove is idempotent (doesn't throw if already gone)", () => {
     expect(() => removePidManifest("nonexistent-xyz", { auggyDir })).not.toThrow();
+  });
+});
+
+describe("runtime PID manifest policy", () => {
+  test("Railway boot ignores a stale same-PID manifest without deleting it", () => {
+    const name = "railway-stale";
+    const manifest = {
+      pid: process.pid,
+      name,
+      port: 8080,
+      configPath: "/app/agent.yaml",
+      agentDir: "/app",
+      startedAt: new Date(0).toISOString(),
+      mode: "dev" as const,
+    };
+    writePidManifest(manifest, { auggyDir });
+
+    const claimed = claimRuntimePidManifest(manifest, {
+      auggyDir,
+      internalMode: "railway",
+    });
+    expect(claimed).toBe(false);
+    releaseRuntimePidManifest(name, claimed, { auggyDir });
+    expect(readPidManifest(name, { auggyDir })).toEqual(manifest);
+  });
+
+  test("local and launchd boots retain exclusive PID claims", () => {
+    const manifest = {
+      pid: process.pid,
+      name: "exclusive-runtime",
+      port: 8080,
+      configPath: "/tmp/agent.yaml",
+      agentDir: "/tmp",
+      startedAt: new Date().toISOString(),
+      mode: "launchd" as const,
+    };
+    expect(claimRuntimePidManifest(manifest, { auggyDir, internalMode: "launchd" })).toBe(true);
+    expect(() =>
+      claimRuntimePidManifest(manifest, { auggyDir, internalMode: "launchd" }),
+    ).toThrow();
+    releaseRuntimePidManifest(manifest.name, true, { auggyDir });
+    expect(readPidManifest(manifest.name, { auggyDir })).toBeNull();
   });
 });
 

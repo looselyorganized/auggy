@@ -1,7 +1,7 @@
-import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { realpathSync } from "node:fs";
 import { z } from "zod";
+import { readDurableJson, writeDurableJson } from "./durable-json";
 
 /**
  * Schema for the persistent admin-overrides file. Stored at
@@ -19,67 +19,66 @@ import { z } from "zod";
  * Adding a new override field is a schema migration — bump the version
  * number and add a per-version branch here.
  */
-const AdminOverridesV1Schema = z.object({
-  version: z.literal(1),
-  lastModified: z.string().datetime(),
-  lastModifiedBy: z.string(),
-  overrides: z.object({
-    webTransport: z
-      .object({ allowAnonymous: z.boolean().optional(), publicIntegration: z.boolean().optional() })
-      .optional(),
-    budgets: z.object({ dailyBudgetUsd: z.number().positive().optional() }).optional(),
-    notify: z.object({ globalMaxPerHour: z.number().int().positive().optional() }).optional(),
-    agentMail: z.object({ globalMaxPerHour: z.number().int().positive().optional() }).optional(),
-  }),
-});
+const AdminOverridesV1Schema = z
+  .object({
+    version: z.literal(1),
+    lastModified: z.string().datetime(),
+    lastModifiedBy: z.string(),
+    overrides: z
+      .object({
+        webTransport: z
+          .object({
+            allowAnonymous: z.boolean().optional(),
+            publicIntegration: z.boolean().optional(),
+          })
+          .strict()
+          .optional(),
+        budgets: z.object({ dailyBudgetUsd: z.number().positive().optional() }).strict().optional(),
+        notify: z
+          .object({ globalMaxPerHour: z.number().int().positive().optional() })
+          .strict()
+          .optional(),
+        agentMail: z
+          .object({ globalMaxPerHour: z.number().int().positive().optional() })
+          .strict()
+          .optional(),
+      })
+      .strict(),
+  })
+  .strict();
 
 export type AdminOverrides = z.infer<typeof AdminOverridesV1Schema>;
 
 function overrideFilePath(agentDir: string): string {
-  return join(agentDir, "admin-overrides.json");
+  return join(realpathSync(agentDir), "admin-overrides.json");
 }
 
 /**
  * Read the override file. Returns null when:
  *   - agentDir is undefined (no scaffold-aware launch path)
- *   - agentDir doesn't exist
  *   - the file doesn't exist
- *   - the file is corrupt JSON (warn logged)
- *   - the file fails schema validation (per-field warnings logged)
- *
- * For v1.0 simplicity: on schema validation failure, the whole file is
- * discarded. Per-field salvage (preserve valid fields, drop invalid ones)
- * is a v1.1 refinement.
+ * Corrupt JSON, symlinks, unknown versions, and invalid fields throw so a
+ * security-relevant override store can never silently reset to yaml values.
  */
 export function readOverrides(agentDir: string | undefined): AdminOverrides | null {
-  if (!agentDir || !existsSync(agentDir)) return null;
-  const path = overrideFilePath(agentDir);
-  if (!existsSync(path)) return null;
-
-  let parsed: unknown;
+  if (!agentDir) return null;
+  let path: string;
   try {
-    parsed = JSON.parse(readFileSync(path, "utf8"));
-  } catch (err) {
-    console.warn(
-      `[admin-overrides] failed to parse ${path}: ${(err as Error).message}. ` +
-        `Falling back to yaml values for all overrides.`,
-    );
-    return null;
+    path = overrideFilePath(agentDir);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
   }
+  const parsed = readDurableJson(path, "admin overrides", 1024 * 1024);
+  if (parsed === null) return null;
 
   const result = AdminOverridesV1Schema.safeParse(parsed);
   if (!result.success) {
-    for (const issue of result.error.issues) {
-      console.warn(
-        `[admin-overrides] field ${issue.path.join(".")} failed validation: ${issue.message}. ` +
-          `Falling back to yaml for this field.`,
-      );
-    }
-    console.warn(
-      `[admin-overrides] discarding entire override file due to validation errors. ` +
-        `Per-field salvage is a v1.1 refinement.`,
+    throw new Error(
+      `[admin-overrides] ${path} failed validation; refusing to reset runtime policy: ${result.error.issues
+        .map((issue) => `${issue.path.join(".")}: ${issue.message}`)
+        .join("; ")}`,
     );
-    return null;
   }
 
   return result.data;
@@ -96,13 +95,6 @@ export function readOverrides(agentDir: string | undefined): AdminOverrides | nu
  */
 export function writeOverrides(agentDir: string, overrides: AdminOverrides): void {
   const path = overrideFilePath(agentDir);
-  // Unique temp name per call. Current Bun is single-threaded JS — within
-  // one process, the read-modify-write sequence runs atomically because
-  // no `await` interleaves between the readFileSync/writeFileSync/renameSync
-  // calls. The UUID is defense-in-depth: if a future Bun version (or
-  // worker threads) breaks that invariant, two concurrent writers won't
-  // clobber each other's temp file before either renames.
-  const tmp = `${path}.tmp.${process.pid}.${randomUUID()}`;
-  writeFileSync(tmp, JSON.stringify(overrides, null, 2), { mode: 0o600 });
-  renameSync(tmp, path);
+  const parsed = AdminOverridesV1Schema.parse(overrides);
+  writeDurableJson(path, parsed, "admin overrides");
 }

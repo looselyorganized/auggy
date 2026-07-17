@@ -1,8 +1,19 @@
 import { describe, test, expect, beforeEach, afterEach, spyOn } from "bun:test";
-import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  fstatSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { resolveAugments } from "../../src/cli/augment-resolver";
 import type { AugmentConfig } from "../../src/cli/types";
+import type { AdminOverrides } from "../../src/lib/admin-overrides";
 import { createVisitorToken, deriveSigningKey } from "../../src/transports/visitor-token";
 import { defineAgent } from "../../src/agent";
 import { createMockModel } from "../fixtures/mock-model";
@@ -20,6 +31,32 @@ afterEach(() => {
 
 function getLikelyFreePort(): number {
   return 20_000 + Math.floor(Math.random() * 30_000);
+}
+
+function agentMailConfig(name: string, dbPath?: string): AugmentConfig {
+  return {
+    name,
+    type: "agentMail",
+    options: {
+      apiKey: "am_resolver_test",
+      inboxId: `inbox_${name}`,
+      apiBaseUrl: "http://127.0.0.1:1/v0",
+      ...(dbPath === undefined ? {} : { dbPath }),
+      inbound: {
+        mode: "polling",
+        allowedSenders: ["*@example.com"],
+      },
+    },
+  };
+}
+
+async function bootAgentMailAugments(augments: Awaited<ReturnType<typeof resolveAugments>>) {
+  const warn = spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    for (const augment of augments) await augment.onBoot?.();
+  } finally {
+    warn.mockRestore();
+  }
 }
 
 async function startAgentIfSocketsAvailable(agent: AgentHandle): Promise<boolean> {
@@ -749,6 +786,70 @@ describe("resolveAugments — budgets", () => {
     }
   });
 
+  test("routes all runtime overrides to one Railway volume file", async () => {
+    const runtimeDataRoot = join(TMP, "railway-overrides");
+    mkdirSync(runtimeDataRoot, { recursive: true });
+    const configs: AugmentConfig[] = [
+      {
+        name: "budgets",
+        type: "budgets",
+        options: { dbPath: "./railway-budgets.db", dailyBudgetUsd: 5 },
+      },
+      { name: "notify", type: "notify", options: { destinations: [] } },
+      {
+        name: "mail",
+        type: "agentMail",
+        options: { apiKey: "am_test", inboxId: "inbox_test" },
+      },
+      {
+        name: "web",
+        type: "webTransport",
+        options: {
+          port: getLikelyFreePort(),
+          auth: { type: "bearer", token: "test-token" },
+          visitorTokens: { enabled: false },
+        },
+      },
+    ];
+    const augments = await resolveAugments(configs, TMP, { runtimeDataRoot });
+    const budgets = augments.find((augment) => augment.name === "budgets")!;
+    const notify = augments.find((augment) => augment.name === "notify")!;
+    const mail = augments.find((augment) => augment.name === "mail")!;
+    const web = augments.find((augment) => augment.name === "web")!;
+
+    try {
+      expect(await budgets.adminActions?.["budget-cap-adjust"]?.({ value: "9" })).toMatchObject({
+        ok: true,
+      });
+      expect(await notify.adminActions?.["notify-cap-adjust"]?.({ value: "11" })).toMatchObject({
+        ok: true,
+      });
+      expect(await mail.adminActions?.["agentmail-cap-adjust"]?.({ value: "13" })).toMatchObject({
+        ok: true,
+      });
+      expect(await web.adminActions?.["posture-flip"]?.({ value: "true" })).toMatchObject({
+        ok: true,
+      });
+
+      const volumeOverride = join(runtimeDataRoot, "admin-overrides.json");
+      expect(existsSync(join(TMP, "admin-overrides.json"))).toBe(false);
+      const fd = openSync(volumeOverride, "r");
+      let parsed: AdminOverrides;
+      try {
+        expect(fstatSync(fd).isFile()).toBe(true);
+        parsed = JSON.parse(readFileSync(fd, "utf8"));
+      } finally {
+        closeSync(fd);
+      }
+      expect(parsed.overrides.budgets?.dailyBudgetUsd).toBe(9);
+      expect(parsed.overrides.notify?.globalMaxPerHour).toBe(11);
+      expect(parsed.overrides.agentMail?.globalMaxPerHour).toBe(13);
+      expect(parsed.overrides.webTransport?.allowAnonymous).toBe(true);
+    } finally {
+      for (const augment of augments) await augment.onShutdown?.();
+    }
+  });
+
   test("closes the store on shutdown without error", async () => {
     const configs: AugmentConfig[] = [
       {
@@ -850,6 +951,148 @@ describe("resolveAugments — budgets", () => {
       expect(record.reason).toContain("$0.85 of $1.00");
     } finally {
       await budgetAugment?.onShutdown?.();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// agentMail runtime state paths
+// ---------------------------------------------------------------------------
+
+describe("resolveAugments — agentMail runtime state paths", () => {
+  test("rejects a relative runtime data root", async () => {
+    await expect(
+      resolveAugments([agentMailConfig("support")], TMP, {
+        runtimeDataRoot: "./railway-data",
+      }),
+    ).rejects.toThrow(/runtimeDataRoot must be an absolute path/i);
+  });
+
+  test("rejects an unsafe instance namespace even when config parsing is bypassed", async () => {
+    await expect(
+      resolveAugments([agentMailConfig("../support")], TMP, {
+        runtimeDataRoot: join(TMP, "railway-data"),
+      }),
+    ).rejects.toThrow(/not a safe state namespace/i);
+  });
+
+  test("resolves scaffold ./agent-mail.db inside the Railway instance state directory", async () => {
+    const runtimeDataRoot = join(TMP, "railway-data");
+    mkdirSync(runtimeDataRoot, { recursive: true });
+    const augments = await resolveAugments([agentMailConfig("support", "./agent-mail.db")], TMP, {
+      runtimeDataRoot,
+    });
+
+    try {
+      await bootAgentMailAugments(augments);
+      expect(existsSync(join(runtimeDataRoot, "agent-mail", "support", "agent-mail.db"))).toBe(
+        true,
+      );
+      expect(existsSync(join(TMP, "agent-mail.db"))).toBe(false);
+    } finally {
+      await augments[0]?.onShutdown?.();
+    }
+  });
+
+  test("uses the augment name to isolate two Railway AgentMail ledgers", async () => {
+    const runtimeDataRoot = join(TMP, "railway-data");
+    mkdirSync(runtimeDataRoot, { recursive: true });
+    const augments = await resolveAugments(
+      [agentMailConfig("support"), agentMailConfig("billing")],
+      TMP,
+      { runtimeDataRoot },
+    );
+
+    try {
+      await bootAgentMailAugments(augments);
+      expect(existsSync(join(runtimeDataRoot, "agent-mail", "support", "agent-mail.db"))).toBe(
+        true,
+      );
+      expect(existsSync(join(runtimeDataRoot, "agent-mail", "billing", "agent-mail.db"))).toBe(
+        true,
+      );
+    } finally {
+      for (const augment of augments) await augment.onShutdown?.();
+    }
+  });
+
+  test("rejects two inbound AgentMail instances consuming the same inbox", async () => {
+    const first = agentMailConfig("support");
+    const second = agentMailConfig("billing");
+    second.options!.inboxId = first.options!.inboxId;
+
+    await expect(resolveAugments([first, second], TMP)).rejects.toThrow(
+      /one inbox may have only one inbound ledger/,
+    );
+  });
+
+  test("rejects an absolute AgentMail dbPath when a Railway runtime root is active", async () => {
+    const runtimeDataRoot = join(TMP, "railway-data");
+    await expect(
+      resolveAugments([agentMailConfig("support", join(TMP, "escaped.db"))], TMP, {
+        runtimeDataRoot,
+      }),
+    ).rejects.toThrow(/agentMail.*dbPath.*relative/i);
+  });
+
+  test("rejects an AgentMail dbPath that traverses above its Railway namespace", async () => {
+    const runtimeDataRoot = join(TMP, "railway-data");
+    await expect(
+      resolveAugments([agentMailConfig("support", "../../escaped.db")], TMP, {
+        runtimeDataRoot,
+      }),
+    ).rejects.toThrow(/agentMail.*dbPath.*state directory/i);
+  });
+
+  test("rejects an AgentMail dbPath that enters a sibling instance namespace", async () => {
+    const runtimeDataRoot = join(TMP, "railway-data");
+    await expect(
+      resolveAugments([agentMailConfig("support", "../billing/agent-mail.db")], TMP, {
+        runtimeDataRoot,
+      }),
+    ).rejects.toThrow(/agentMail.*dbPath.*state directory/i);
+  });
+
+  test("rejects symlinked directories inside a Railway AgentMail database path", async () => {
+    const runtimeDataRoot = join(TMP, "railway-data");
+    const stateDir = join(runtimeDataRoot, "agent-mail", "support");
+    const external = join(TMP, "external-mail-state");
+    mkdirSync(stateDir, { recursive: true });
+    mkdirSync(external, { recursive: true });
+    symlinkSync(external, join(stateDir, "nested"));
+
+    await expect(
+      resolveAugments([agentMailConfig("support", "nested/mail.bin")], TMP, {
+        runtimeDataRoot,
+      }),
+    ).rejects.toThrow(/must not contain symlinked directories/);
+    expect(existsSync(join(external, "mail.bin"))).toBe(false);
+    expect(existsSync(join(external, "mail.bin-wal"))).toBe(false);
+    expect(existsSync(join(external, "mail.bin-shm"))).toBe(false);
+  });
+
+  test("keeps local relative AgentMail dbPath resolution anchored to agentDir", async () => {
+    const augments = await resolveAugments(
+      [agentMailConfig("support", "./local-state/agent-mail.db")],
+      TMP,
+    );
+
+    try {
+      await bootAgentMailAugments(augments);
+      expect(existsSync(join(TMP, "local-state", "agent-mail.db"))).toBe(true);
+    } finally {
+      await augments[0]?.onShutdown?.();
+    }
+  });
+
+  test("keeps the local default AgentMail dbPath beside agent.yaml", async () => {
+    const augments = await resolveAugments([agentMailConfig("support")], TMP);
+
+    try {
+      await bootAgentMailAugments(augments);
+      expect(existsSync(join(TMP, "agent-mail.db"))).toBe(true);
+    } finally {
+      await augments[0]?.onShutdown?.();
     }
   });
 });

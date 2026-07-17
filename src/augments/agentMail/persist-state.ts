@@ -5,45 +5,48 @@
  * In a crash loop, deploy, or rollback, that erases the global cap, the
  * per-recipient cooldown, and the subject-hash dedup — exactly when
  * duplicate outbound mail is most likely. This module persists the state
- * to a JSON file in the agent directory (alongside `admin-overrides.json`)
- * and loads it on boot.
+ * to a JSON file in the augment's durable state directory and loads it
+ * during factory construction.
  *
  * Format:
  *   {
- *     "version": 1,
+ *     "version": 2,
  *     "savedAt": "<ISO8601>",
  *     "globalTimestamps": [<ms>, ...],
  *     "lastByRecipient": { "<email lowercased>": <ms>, ... },
- *     "subjectHashes": { "<normalized hash>": <ms>, ... }
+ *     "subjectHashes": { "<normalized hash>": <ms>, ... },
+ *     "reservations": { "<attempt id>": { ... } },
+ *     "accountedAttemptIds": { "<attempt id>": <ms>, ... }
  *   }
  *
  * Write semantics:
  *   - Synchronous atomic write (tmp + rename) with mode 0o600
- *   - Called after every successful send (cheap — ~KB JSON, atomic on POSIX)
+ *   - Called before provider delivery to reserve capacity, then again to
+ *     commit success or release a definitive rejection.
  *
  * Load semantics:
  *   - Read once at `onBoot`
- *   - Stale entries (older than 1h) are pruned at load
- *   - Corrupt file → log a warning, start fresh (do not throw — the augment
- *     must boot even if state is unreadable)
+ *   - Stale committed entries are pruned according to their configured windows
+ *   - Version 1 state migrates in memory without resetting prior limits
+ *   - Missing file → start fresh
+ *   - Corrupt, invalid, or newer state → throw and fail closed
  *
  * Scope:
- *   - Single inbox per augment instance — the state file lives in the
- *     declared `agentDir`. If two augments share an `agentDir`, they
- *     SHARE state (which is fine for single-process; multi-process is
- *     not supported by the in-memory rate-limit anyway).
+ *   - One namespaced state directory per augment instance on Railway.
+ *   - Multi-process writers are not supported.
  */
 
-import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { RateLimitState } from "./rate-limit";
+import { readDurableJson, writeDurableJson } from "../../lib/durable-json";
+import type { AgentMailRateLimitOptions } from "../../types";
+import type { RateLimitReservation, RateLimitState } from "./rate-limit";
 
 const HOUR_MS = 3_600_000;
-const STATE_VERSION = 1;
+const STATE_VERSION = 2;
 const STATE_FILENAME = "agent-mail-state.json";
+const ATTEMPT_RETENTION_MS = 30 * 24 * 60 * 60_000;
 
-interface PersistedRateState {
+interface PersistedRateStateV1 {
   version: 1;
   savedAt: string;
   globalTimestamps: number[];
@@ -51,70 +54,149 @@ interface PersistedRateState {
   subjectHashes: Record<string, number>;
 }
 
-function statePath(agentDir: string): string {
-  return join(agentDir, STATE_FILENAME);
+interface PersistedRateStateV2 {
+  version: 2;
+  savedAt: string;
+  globalTimestamps: number[];
+  lastByRecipient: Record<string, number>;
+  subjectHashes: Record<string, number>;
+  reservations: Record<string, RateLimitReservation>;
+  accountedAttemptIds: Record<string, number>;
 }
 
-function isPersistedRateState(v: unknown): v is PersistedRateState {
+function statePath(stateDir: string): string {
+  return join(stateDir, STATE_FILENAME);
+}
+
+function isSafeTimestamp(v: unknown): v is number {
+  return typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
+}
+
+function isTimestampRecord(v: unknown): v is Record<string, number> {
+  return (
+    typeof v === "object" &&
+    v !== null &&
+    !Array.isArray(v) &&
+    Object.entries(v).every(([key, value]) => key.length > 0 && isSafeTimestamp(value))
+  );
+}
+
+function hasBaseRateState(x: Record<string, unknown>): boolean {
+  return (
+    typeof x.savedAt === "string" &&
+    !Number.isNaN(Date.parse(x.savedAt)) &&
+    Array.isArray(x.globalTimestamps) &&
+    x.globalTimestamps.every(isSafeTimestamp) &&
+    isTimestampRecord(x.lastByRecipient) &&
+    isTimestampRecord(x.subjectHashes)
+  );
+}
+
+function isReservationRecord(v: unknown): v is Record<string, RateLimitReservation> {
+  return (
+    typeof v === "object" &&
+    v !== null &&
+    !Array.isArray(v) &&
+    Object.entries(v).every(
+      ([attemptId, reservation]) =>
+        attemptId.length > 0 &&
+        typeof reservation === "object" &&
+        reservation !== null &&
+        isSafeTimestamp((reservation as Record<string, unknown>).timestamp) &&
+        Array.isArray((reservation as Record<string, unknown>).recipients) &&
+        ((reservation as Record<string, unknown>).recipients as unknown[]).length > 0 &&
+        ((reservation as Record<string, unknown>).recipients as unknown[]).every(
+          (recipient) => typeof recipient === "string" && recipient.length > 0,
+        ) &&
+        typeof (reservation as Record<string, unknown>).subject === "string",
+    )
+  );
+}
+
+function isPersistedRateStateV1(v: unknown): v is PersistedRateStateV1 {
   if (typeof v !== "object" || v === null) return false;
   const x = v as Record<string, unknown>;
-  if (x.version !== 1) return false;
-  if (!Array.isArray(x.globalTimestamps)) return false;
-  if (typeof x.lastByRecipient !== "object" || x.lastByRecipient === null) return false;
-  if (typeof x.subjectHashes !== "object" || x.subjectHashes === null) return false;
-  return true;
+  return x.version === 1 && hasBaseRateState(x);
+}
+
+function isPersistedRateStateV2(v: unknown): v is PersistedRateStateV2 {
+  if (typeof v !== "object" || v === null) return false;
+  const x = v as Record<string, unknown>;
+  return (
+    x.version === STATE_VERSION &&
+    hasBaseRateState(x) &&
+    isReservationRecord(x.reservations) &&
+    isTimestampRecord(x.accountedAttemptIds)
+  );
 }
 
 /**
  * Load persisted rate-limit state. Returns null when:
- *   - agentDir is undefined or doesn't exist
+ *   - stateDir is undefined
  *   - state file doesn't exist
- *   - file is corrupt JSON or fails schema validation (warn logged)
+ * Corrupt JSON, unknown versions, and invalid values throw instead of
+ * erasing enforcement history.
  *
  * Stale entries (anything older than `now - HOUR_MS`) are pruned at load
  * so a crashed agent that comes back up an hour later doesn't drag old
  * timestamps forward.
  */
-export function loadRateState(agentDir: string | undefined, now: number): RateLimitState | null {
-  if (!agentDir || !existsSync(agentDir)) return null;
-  const path = statePath(agentDir);
-  if (!existsSync(path)) return null;
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(readFileSync(path, "utf8"));
-  } catch (err) {
-    console.warn(
-      `[agent-mail] failed to parse ${path}: ${(err as Error).message}. ` +
-        `Starting with empty rate-limit state.`,
-    );
-    return null;
+export function loadRateState(
+  stateDir: string | undefined,
+  now: number,
+  options: AgentMailRateLimitOptions = {},
+): RateLimitState | null {
+  if (!stateDir) return null;
+  if (!Number.isSafeInteger(now) || now < 0) {
+    throw new Error("[agent-mail] rate state clock must be a non-negative safe integer");
   }
+  const path = statePath(stateDir);
+  const parsed = readDurableJson(path, "agentMail rate state", 16 * 1024 * 1024);
+  if (parsed === null) return null;
 
-  if (!isPersistedRateState(parsed)) {
-    console.warn(
-      `[agent-mail] state file ${path} failed validation. ` +
-        `Starting with empty rate-limit state.`,
-    );
-    return null;
+  if (!isPersistedRateStateV1(parsed) && !isPersistedRateStateV2(parsed)) {
+    throw new Error(`[agent-mail] state file ${path} failed validation; refusing to reset limits`);
   }
 
   const windowStart = now - HOUR_MS;
-  const globalTimestamps = parsed.globalTimestamps.filter(
-    (t) => typeof t === "number" && t > windowStart,
-  );
+  const recipientWindowStart = now - (options.perRecipientCooldownMs ?? 300_000);
+  const dedupWindowStart = now - (options.dedupWindowMs ?? 300_000);
+  const globalTimestamps = parsed.globalTimestamps
+    .filter((t) => t > windowStart)
+    .sort((a, b) => a - b);
 
   const lastByRecipient = new Map<string, number>();
   for (const [k, v] of Object.entries(parsed.lastByRecipient)) {
-    if (typeof v === "number" && v > windowStart) lastByRecipient.set(k, v);
+    if (typeof v === "number" && v > recipientWindowStart) lastByRecipient.set(k, v);
   }
 
   const subjectHashes = new Map<string, number>();
   for (const [k, v] of Object.entries(parsed.subjectHashes)) {
-    if (typeof v === "number" && v > windowStart) subjectHashes.set(k, v);
+    if (typeof v === "number" && v > dedupWindowStart) subjectHashes.set(k, v);
   }
 
-  return { globalTimestamps, lastByRecipient, subjectHashes };
+  const retentionMs = Math.max(
+    ATTEMPT_RETENTION_MS,
+    HOUR_MS,
+    options.perRecipientCooldownMs ?? 300_000,
+    options.dedupWindowMs ?? 300_000,
+  );
+  const reservations = new Map<string, RateLimitReservation>();
+  const accountedAttemptIds = new Map<string, number>();
+  if (isPersistedRateStateV2(parsed)) {
+    for (const [attemptId, reservation] of Object.entries(parsed.reservations)) {
+      reservations.set(attemptId, {
+        timestamp: reservation.timestamp,
+        recipients: [...reservation.recipients],
+        subject: reservation.subject,
+      });
+    }
+    for (const [attemptId, timestamp] of Object.entries(parsed.accountedAttemptIds)) {
+      if (timestamp > now - retentionMs) accountedAttemptIds.set(attemptId, timestamp);
+    }
+  }
+
+  return { globalTimestamps, lastByRecipient, subjectHashes, reservations, accountedAttemptIds };
 }
 
 /**
@@ -124,20 +206,25 @@ export function loadRateState(agentDir: string | undefined, now: number): RateLi
  * timestamps — minor PII that shouldn't be world-readable on multi-user
  * hosts.
  *
- * Synchronous on purpose: the calling site is `recordSend` which is
- * already on the critical path of a successful tool execution. We want
- * the durability guarantee before returning "sent" to the model.
+ * Synchronous on purpose: reservation durability must be established before
+ * the provider call, and commit durability before returning "sent".
  */
-export function saveRateState(agentDir: string, state: RateLimitState, now: number): void {
-  const path = statePath(agentDir);
-  const payload: PersistedRateState = {
+export function saveRateState(stateDir: string, state: RateLimitState, now: number): void {
+  if (!Number.isSafeInteger(now) || now < 0) {
+    throw new Error("[agent-mail] rate state clock must be a non-negative safe integer");
+  }
+  const path = statePath(stateDir);
+  const payload: PersistedRateStateV2 = {
     version: STATE_VERSION,
     savedAt: new Date(now).toISOString(),
-    globalTimestamps: state.globalTimestamps,
+    globalTimestamps: [...state.globalTimestamps].sort((a, b) => a - b),
     lastByRecipient: Object.fromEntries(state.lastByRecipient),
     subjectHashes: Object.fromEntries(state.subjectHashes),
+    reservations: Object.fromEntries(state.reservations),
+    accountedAttemptIds: Object.fromEntries(state.accountedAttemptIds),
   };
-  const tmp = `${path}.tmp.${process.pid}.${randomUUID()}`;
-  writeFileSync(tmp, JSON.stringify(payload), { mode: 0o600 });
-  renameSync(tmp, path);
+  if (!isPersistedRateStateV2(payload)) {
+    throw new Error("[agent-mail] refusing to persist invalid rate-limit state");
+  }
+  writeDurableJson(path, payload, "agentMail rate state");
 }

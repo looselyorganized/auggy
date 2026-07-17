@@ -69,6 +69,7 @@ function formatPercent(threshold: number): string {
 }
 
 export function budgets(opts: BudgetsAugmentOptions): Augment {
+  const overrideDir = opts.overrideDir ?? opts.agentDir;
   const store: BudgetStore = createBudgetStore({
     dbPath: opts.dbPath,
     cleanupWindowMs: opts.cleanupWindowMs,
@@ -85,8 +86,8 @@ export function budgets(opts: BudgetsAugmentOptions): Augment {
   let currentDailyBudgetUsd = yamlDailyBudgetUsd;
   let dailyBudgetSource: "yaml" | "override" = "yaml";
 
-  if (opts.agentDir) {
-    const overrides = readOverrides(opts.agentDir);
+  if (overrideDir) {
+    const overrides = readOverrides(overrideDir);
     const overrideVal = overrides?.overrides.budgets?.dailyBudgetUsd;
     if (overrideVal !== undefined) {
       currentDailyBudgetUsd = overrideVal;
@@ -217,10 +218,10 @@ export function budgets(opts: BudgetsAugmentOptions): Augment {
   }
 
   async function persistDailyBudgetOverride(value: number): Promise<void> {
-    if (!opts.agentDir) {
-      throw new Error("agentDir not configured; admin overrides cannot persist");
+    if (!overrideDir) {
+      throw new Error("override storage not configured; admin overrides cannot persist");
     }
-    const current = readOverrides(opts.agentDir) ?? {
+    const current = readOverrides(overrideDir) ?? {
       version: 1 as const,
       lastModified: new Date().toISOString(),
       lastModifiedBy: "creator",
@@ -232,12 +233,12 @@ export function budgets(opts: BudgetsAugmentOptions): Augment {
       ...current.overrides.budgets,
       dailyBudgetUsd: value,
     };
-    writeOverrides(opts.agentDir, current);
+    writeOverrides(overrideDir, current);
   }
 
   async function clearDailyBudgetOverride(): Promise<void> {
-    if (!opts.agentDir) return;
-    const current = readOverrides(opts.agentDir);
+    if (!overrideDir) return;
+    const current = readOverrides(overrideDir);
     if (!current) return;
     if (current.overrides.budgets) {
       delete (current.overrides.budgets as Record<string, unknown>).dailyBudgetUsd;
@@ -247,7 +248,7 @@ export function budgets(opts: BudgetsAugmentOptions): Augment {
     }
     current.lastModified = new Date().toISOString();
     current.lastModifiedBy = "creator";
-    writeOverrides(opts.agentDir, current);
+    writeOverrides(overrideDir, current);
   }
 
   function formatCap(v: number | undefined): string {

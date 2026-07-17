@@ -14,8 +14,17 @@
  *    operator's chosen instance name from the config.
  */
 
-import { existsSync } from "node:fs";
-import { resolve } from "node:path";
+import {
+  closeSync,
+  constants,
+  existsSync,
+  fchmodSync,
+  fstatSync,
+  fsyncSync,
+  mkdirSync,
+  openSync,
+} from "node:fs";
+import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { fileMemory } from "../augments/fileMemory";
 import { supabaseMemory } from "../augments/supabaseMemory";
 import { filesystem } from "../augments/filesystem";
@@ -62,6 +71,87 @@ import { auggySelf, type AuggySelfAgentMetadata } from "./auggy-self-augment";
 function resolvePath(path: string, agentDir: string): string {
   if (path.startsWith("/")) return path;
   return resolve(agentDir, path);
+}
+
+/** Resolve an operator-controlled relative path without allowing an escape. */
+function resolveContainedPath(path: string, root: string, label: string): string {
+  if (isAbsolute(path)) {
+    throw new Error(`[augment-resolver] ${label} must be relative when runtimeDataRoot is set`);
+  }
+
+  const resolvedPath = resolve(root, path);
+  const relativePath = relative(root, resolvedPath);
+  if (relativePath === ".." || relativePath.startsWith(`..${sep}`) || isAbsolute(relativePath)) {
+    throw new Error(`[augment-resolver] ${label} must stay within its AgentMail state directory`);
+  }
+
+  return resolvedPath;
+}
+
+function ensureDurableDirectoryChain(root: string, target: string, label: string): void {
+  const relativeTarget = relative(root, target);
+  if (
+    relativeTarget === ".." ||
+    relativeTarget.startsWith(`..${sep}`) ||
+    isAbsolute(relativeTarget)
+  ) {
+    throw new Error(`[augment-resolver] ${label} escaped its runtime data root`);
+  }
+
+  let parentFd: number;
+  try {
+    parentFd = openSync(root, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  } catch (error) {
+    throw new Error(`[augment-resolver] ${label} root must be a real directory`, {
+      cause: error,
+    });
+  }
+  if (!fstatSync(parentFd).isDirectory()) {
+    closeSync(parentFd);
+    throw new Error(`[augment-resolver] ${label} root must be a real directory`);
+  }
+
+  let parent = root;
+  try {
+    for (const component of relativeTarget.split(sep).filter(Boolean)) {
+      const candidate = resolve(parent, component);
+      let created = false;
+      try {
+        mkdirSync(candidate, { mode: 0o700 });
+        created = true;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      }
+
+      let candidateFd: number | undefined;
+      try {
+        candidateFd = openSync(
+          candidate,
+          constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+        );
+        if (!fstatSync(candidateFd).isDirectory()) {
+          throw new Error(`[augment-resolver] ${label} must not contain non-directories`);
+        }
+        fchmodSync(candidateFd, 0o700);
+        if (created) fsyncSync(parentFd);
+      } catch (error) {
+        if (candidateFd !== undefined) closeSync(candidateFd);
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code === "ELOOP" || code === "ENOTDIR") {
+          throw new Error(`[augment-resolver] ${label} must not contain symlinked directories`, {
+            cause: error,
+          });
+        }
+        throw error;
+      }
+
+      closeSync(parentFd);
+      parentFd = candidateFd;
+      parent = candidate;
+    }
+  } finally {
+    closeSync(parentFd);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -207,6 +297,7 @@ function resolveSkills(opts: Record<string, unknown>, agentDir: string): Augment
 function resolveWebTransport(
   opts: Record<string, unknown>,
   agentDir: string,
+  overrideDir: string,
   creator: CreatorConfig | undefined,
   lateBindings: {
     revocationCheck: ((id: string) => boolean) | null;
@@ -243,6 +334,7 @@ function resolveWebTransport(
     // this, the Credentials and Identity tabs render "agent directory not
     // configured" errors.
     agentDir,
+    overrideDir,
     creator,
   });
 }
@@ -383,8 +475,34 @@ function resolveVisitorAuth(opts: Record<string, unknown>, agentDir: string): Au
 export async function resolveAugments(
   configs: AugmentConfig[],
   agentDir: string,
-  resolverOpts: { creator?: CreatorConfig; selfInspection?: AuggySelfAgentMetadata } = {},
+  resolverOpts: {
+    creator?: CreatorConfig;
+    selfInspection?: AuggySelfAgentMetadata;
+    /** Absolute root for deployment-owned durable state, such as a Railway volume. */
+    runtimeDataRoot?: string;
+  } = {},
 ): Promise<Augment[]> {
+  if (resolverOpts.runtimeDataRoot !== undefined && !isAbsolute(resolverOpts.runtimeDataRoot)) {
+    throw new Error("[augment-resolver] runtimeDataRoot must be an absolute path");
+  }
+  const overrideDir = resolverOpts.runtimeDataRoot ?? agentDir;
+
+  const inboundInboxOwners = new Map<string, string>();
+  for (const config of configs) {
+    if (config.type !== "agentMail") continue;
+    const inbound = config.options?.inbound as Record<string, unknown> | undefined;
+    if ((inbound?.mode ?? "none") === "none") continue;
+    const inboxId = config.options?.inboxId;
+    if (typeof inboxId !== "string") continue;
+    const existing = inboundInboxOwners.get(inboxId);
+    if (existing) {
+      throw new Error(
+        `[augment-resolver] inbound AgentMail inbox "${inboxId}" is configured by both "${existing}" and "${config.name}"; one inbox may have only one inbound ledger`,
+      );
+    }
+    inboundInboxOwners.set(inboxId, config.name);
+  }
+
   const augments: Augment[] = [];
   type NotifyToolExecute = NonNullable<Augment["tools"]>[number]["execute"];
   const notifyDestinationNames = new Set<string>();
@@ -547,7 +665,13 @@ export async function resolveAugments(
         augment = resolveFilesystem(opts, agentDir);
         break;
       case "webTransport":
-        augment = resolveWebTransport(opts, agentDir, resolverOpts.creator, lateBindings);
+        augment = resolveWebTransport(
+          opts,
+          agentDir,
+          overrideDir,
+          resolverOpts.creator,
+          lateBindings,
+        );
         break;
       case "webFetch":
         augment = resolveWebFetch(opts);
@@ -578,6 +702,7 @@ export async function resolveAugments(
         augment = budgets({
           dbPath: resolvePath(dbPath, agentDir),
           agentDir,
+          overrideDir,
           caps: opts.caps as BudgetsAugmentOptions["caps"],
           anonymousGlobalLimit: opts.anonymousGlobalLimit as number | undefined,
           dailyBudgetUsd: opts.dailyBudgetUsd as number | undefined,
@@ -595,6 +720,7 @@ export async function resolveAugments(
         augment = notify({
           destinations: opts.destinations as NotifyAugmentOptions["destinations"],
           rateLimit: opts.rateLimit as NotifyAugmentOptions["rateLimit"],
+          overrideDir,
         });
         break;
       }
@@ -609,14 +735,42 @@ export async function resolveAugments(
         });
         break;
       case "agentMail": {
+        const rawDbPath = (opts.dbPath as string | undefined) ?? "./agent-mail.db";
+        let stateDir: string | undefined;
+        let dbPath: string;
+
+        if (resolverOpts.runtimeDataRoot !== undefined) {
+          // Config parsing normally enforces this pattern. Repeat it here
+          // because callers may construct AugmentConfig objects directly.
+          if (!/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(config.name)) {
+            throw new Error(
+              `[augment-resolver] agentMail augment name "${config.name}" is not a safe state namespace`,
+            );
+          }
+          const agentMailRoot = resolve(resolverOpts.runtimeDataRoot, "agent-mail");
+          stateDir = resolve(agentMailRoot, config.name);
+          dbPath = resolveContainedPath(rawDbPath, stateDir, `agentMail "${config.name}" dbPath`);
+          ensureDurableDirectoryChain(
+            resolverOpts.runtimeDataRoot,
+            dirname(dbPath),
+            `agentMail "${config.name}" state path`,
+          );
+        } else {
+          // Locally, keep state beside agent.yaml and root relative database
+          // paths at that same agent project directory.
+          dbPath = resolvePath(rawDbPath, agentDir);
+        }
+
         augment = agentMail({
           apiKey: opts.apiKey as string,
           inboxId: opts.inboxId as string,
           apiBaseUrl: opts.apiBaseUrl as string | undefined,
-          dbPath: opts.dbPath as string | undefined,
+          dbPath,
           outbound: opts.outbound as AgentMailAugmentOptions["outbound"],
           inbound: opts.inbound as AgentMailAugmentOptions["inbound"],
           agentDir,
+          stateDir,
+          overrideDir,
         });
         break;
       }

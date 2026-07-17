@@ -1,5 +1,13 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { stringify } from "yaml";
@@ -763,6 +771,21 @@ describe("runDeploy", () => {
     expect(calls.up).toBe(1);
   });
 
+  test("rejects custom legacy SQLite paths outside the Railway volume", async () => {
+    appendAugmentId(agentDir, "budgets");
+    writeAugmentMetadata(agentDir, "budgets", {
+      type: "budgets",
+      config: { dbPath: "./runtime/budget-ledger.bin" },
+    });
+    const { cli, calls } = mockRailwayCli();
+
+    await expect(runDeploy("zip", baseDeployOptions(cli, auggyDir))).rejects.toThrow(
+      /budgets\.dbPath must remain \.\/budgets\.db or resolve below \.\/data/,
+    );
+    expect(calls.checkPresence).toBe(0);
+    expect(calls.up).toBe(0);
+  });
+
   test("aborts before Railway calls when budgets deploy posture is not acknowledged", async () => {
     appendAugmentId(agentDir, "budgets");
     writeAugmentMetadata(agentDir, "budgets", {
@@ -1394,22 +1417,58 @@ describe("runDeploy", () => {
 
   test("writes Dockerfile + entrypoint into the staging dir", async () => {
     const { cli, calls } = mockRailwayCli();
-    // Capture the cwd `linkProject` was called with — that's the staging dir.
     let stagingDir: string | undefined;
+    let stagedDockerfile: string | undefined;
+    let stagedEntrypoint: string | undefined;
     cli.linkProject = async (args) => {
       stagingDir = args.cwd;
       calls.linkProject.push(args);
+      stagedDockerfile = readFileSync(join(args.cwd, "Dockerfile"), "utf-8");
+      stagedEntrypoint = readFileSync(join(args.cwd, "auggy-entrypoint.sh"), "utf-8");
     };
     await runDeploy("zip", baseDeployOptions(cli, auggyDir));
     expect(stagingDir).toBeDefined();
-    expect(existsSync(join(stagingDir!, "Dockerfile"))).toBe(true);
-    expect(existsSync(join(stagingDir!, "auggy-entrypoint.sh"))).toBe(true);
-    const dockerfile = readFileSync(join(stagingDir!, "Dockerfile"), "utf-8");
-    expect(dockerfile).toMatch(/ENTRYPOINT \["\/app\/auggy-entrypoint\.sh", "zip"\]/);
-    const entrypoint = readFileSync(join(stagingDir!, "auggy-entrypoint.sh"), "utf-8");
-    expect(entrypoint).toMatch(
+    expect(stagedDockerfile).toMatch(/ENTRYPOINT \["\/app\/auggy-entrypoint\.sh", "zip"\]/);
+    expect(stagedEntrypoint).toMatch(
       /exec bunx auggy dev "\$1" --config \/app\/agent\.yaml --internal-mode railway/,
     );
+    expect(existsSync(stagingDir!)).toBe(false);
+  });
+
+  test("excludes a configured AgentMail ledger and sidecars with a custom extension", async () => {
+    writeAugmentMetadata(agentDir, "agentMail", {
+      type: "agentMail",
+      config: {
+        apiKey: "am_deploy_test",
+        inboxId: "inbox_deploy_test",
+        dbPath: "./runtime/mail-ledger.bin",
+      },
+    });
+    appendAugmentId(agentDir, "agentMail");
+    const runtimeDir = join(agentDir, "runtime");
+    mkdirSync(runtimeDir, { recursive: true });
+
+    const { cli, calls } = mockRailwayCli();
+    cli.checkPresence = async () => {
+      calls.checkPresence++;
+      for (const suffix of ["", "-wal", "-shm", "-journal"]) {
+        writeFileSync(
+          join(runtimeDir, `mail-ledger.bin${suffix}`),
+          `recipient=private@example.com body=DO_NOT_STAGE_AGENTMAIL${suffix}`,
+        );
+      }
+      return true as const;
+    };
+    let leaked = false;
+    cli.linkProject = async (args) => {
+      calls.linkProject.push(args);
+      leaked = ["", "-wal", "-shm", "-journal"].some((suffix) =>
+        existsSync(join(args.cwd, "runtime", `mail-ledger.bin${suffix}`)),
+      );
+    };
+
+    await runDeploy("zip", baseDeployOptions(cli, auggyDir));
+    expect(leaked).toBe(false);
   });
 
   test("vendors a local packed auggy runtime into the staging dir when available", async () => {
@@ -1418,22 +1477,30 @@ describe("runDeploy", () => {
     writeFileSync(join(dirname(agentDir), tarballName), "packed runtime");
     const { cli, calls } = mockRailwayCli();
     let stagingDir: string | undefined;
+    let stagedTarball = false;
+    let stagedAuggyDependency: unknown;
+    let stagedDockerfile: string | undefined;
     cli.linkProject = async (args) => {
       stagingDir = args.cwd;
       calls.linkProject.push(args);
+      stagedTarball = existsSync(join(args.cwd, tarballName));
+      const stagedPackage = JSON.parse(readFileSync(join(args.cwd, "package.json"), "utf-8")) as {
+        dependencies?: { auggy?: unknown };
+      };
+      stagedAuggyDependency = stagedPackage.dependencies?.auggy;
+      stagedDockerfile = readFileSync(join(args.cwd, "Dockerfile"), "utf-8");
     };
 
     await runDeploy("zip", baseDeployOptions(cli, auggyDir));
 
     expect(stagingDir).toBeDefined();
-    expect(existsSync(join(stagingDir!, tarballName))).toBe(true);
-    const stagedPackage = JSON.parse(readFileSync(join(stagingDir!, "package.json"), "utf-8"));
-    expect(stagedPackage.dependencies.auggy).toBe(`file:./${tarballName}`);
-    const dockerfile = readFileSync(join(stagingDir!, "Dockerfile"), "utf-8");
-    expect(dockerfile.indexOf(`COPY ${tarballName} /app/`)).toBeGreaterThan(-1);
-    expect(dockerfile.indexOf("RUN bun install")).toBeGreaterThan(
-      dockerfile.indexOf(`COPY ${tarballName} /app/`),
+    expect(stagedTarball).toBe(true);
+    expect(stagedAuggyDependency).toBe(`file:./${tarballName}`);
+    expect(stagedDockerfile!.indexOf(`COPY ${tarballName} /app/`)).toBeGreaterThan(-1);
+    expect(stagedDockerfile!.indexOf("RUN bun install")).toBeGreaterThan(
+      stagedDockerfile!.indexOf(`COPY ${tarballName} /app/`),
     );
+    expect(existsSync(stagingDir!)).toBe(false);
   });
 
   test("vendors an existing file: auggy tarball dependency before bun install", async () => {
@@ -1454,21 +1521,71 @@ describe("runDeploy", () => {
     );
     const { cli, calls } = mockRailwayCli();
     let stagingDir: string | undefined;
+    let stagedTarball = false;
+    let stagedAuggyDependency: unknown;
+    let stagedDockerfile: string | undefined;
     cli.linkProject = async (args) => {
       stagingDir = args.cwd;
       calls.linkProject.push(args);
+      stagedTarball = existsSync(join(args.cwd, tarballName));
+      const stagedPackage = JSON.parse(readFileSync(join(args.cwd, "package.json"), "utf-8")) as {
+        dependencies?: { auggy?: unknown };
+      };
+      stagedAuggyDependency = stagedPackage.dependencies?.auggy;
+      stagedDockerfile = readFileSync(join(args.cwd, "Dockerfile"), "utf-8");
     };
 
     await runDeploy("zip", baseDeployOptions(cli, auggyDir));
 
     expect(stagingDir).toBeDefined();
-    expect(existsSync(join(stagingDir!, tarballName))).toBe(true);
-    const stagedPackage = JSON.parse(readFileSync(join(stagingDir!, "package.json"), "utf-8"));
-    expect(stagedPackage.dependencies.auggy).toBe(`file:./${tarballName}`);
-    const dockerfile = readFileSync(join(stagingDir!, "Dockerfile"), "utf-8");
-    expect(dockerfile.indexOf(`COPY ${tarballName} /app/`)).toBeGreaterThan(-1);
-    expect(dockerfile.indexOf("RUN bun install")).toBeGreaterThan(
-      dockerfile.indexOf(`COPY ${tarballName} /app/`),
+    expect(stagedTarball).toBe(true);
+    expect(stagedAuggyDependency).toBe(`file:./${tarballName}`);
+    expect(stagedDockerfile!.indexOf(`COPY ${tarballName} /app/`)).toBeGreaterThan(-1);
+    expect(stagedDockerfile!.indexOf("RUN bun install")).toBeGreaterThan(
+      stagedDockerfile!.indexOf(`COPY ${tarballName} /app/`),
     );
+    expect(existsSync(stagingDir!)).toBe(false);
+  });
+
+  test("removes the staging directory when Railway setup fails", async () => {
+    const { cli, calls } = mockRailwayCli();
+    let stagingDir: string | undefined;
+    cli.linkProject = async (args) => {
+      stagingDir = args.cwd;
+      calls.linkProject.push(args);
+      expect(existsSync(join(args.cwd, "Dockerfile"))).toBe(true);
+    };
+    cli.createService = async (args) => {
+      calls.createService.push(args);
+      throw new Error("synthetic Railway setup failure");
+    };
+
+    await expect(runDeploy("zip", baseDeployOptions(cli, auggyDir))).rejects.toThrow(
+      /synthetic Railway setup failure/,
+    );
+    expect(stagingDir).toBeDefined();
+    expect(existsSync(stagingDir!)).toBe(false);
+  });
+
+  test("removes the staging directory when bundle logging fails", async () => {
+    const before = new Set(
+      readdirSync(tmpdir()).filter((name) => name.startsWith("auggy-deploy-zip-")),
+    );
+    const { cli } = mockRailwayCli();
+    const logger = {
+      info(message: string) {
+        if (message.startsWith("Bundle staged at ")) throw new Error("synthetic logger failure");
+      },
+      warn() {},
+      error() {},
+    };
+
+    await expect(runDeploy("zip", baseDeployOptions(cli, auggyDir, { logger }))).rejects.toThrow(
+      /synthetic logger failure/,
+    );
+    const leaked = readdirSync(tmpdir()).filter(
+      (name) => name.startsWith("auggy-deploy-zip-") && !before.has(name),
+    );
+    expect(leaked).toEqual([]);
   });
 });

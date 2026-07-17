@@ -225,6 +225,8 @@ export interface WebTransportOptions {
    * scaffold time; direct callers may leave it undefined.
    */
   agentDir?: string;
+  /** Canonical shared directory for admin-overrides.json. Defaults to agentDir. */
+  overrideDir?: string;
   /** Single v1 creator profile. Cosmetic only; bearer auth proves trust. */
   creator?: CreatorConfig;
 }
@@ -557,6 +559,7 @@ function timingSafeEqual(a: string, b: string): boolean {
  * opening the stream.
  */
 export function webTransport(opts: WebTransportOptions): Augment {
+  const overrideDir = opts.overrideDir ?? opts.agentDir;
   let server: ReturnType<typeof Bun.serve> | null = null;
   let startServer: (() => void) | null = null;
   let kernel: TransportKernel | null = null;
@@ -721,10 +724,10 @@ export function webTransport(opts: WebTransportOptions): Augment {
   }
 
   async function persistAllowAnonymousOverride(value: boolean): Promise<void> {
-    if (!opts.agentDir) {
-      throw new Error("agentDir not configured; admin overrides cannot persist");
+    if (!overrideDir) {
+      throw new Error("override storage not configured; admin overrides cannot persist");
     }
-    const current = readOverrides(opts.agentDir) ?? {
+    const current = readOverrides(overrideDir) ?? {
       version: 1 as const,
       lastModified: new Date().toISOString(),
       lastModifiedBy: "creator",
@@ -736,14 +739,14 @@ export function webTransport(opts: WebTransportOptions): Augment {
       ...current.overrides.webTransport,
       allowAnonymous: value,
     };
-    writeOverrides(opts.agentDir, current);
+    writeOverrides(overrideDir, current);
   }
 
   async function persistPublicIntegrationOverride(value: boolean): Promise<void> {
-    if (!opts.agentDir) {
-      throw new Error("agentDir not configured; admin overrides cannot persist");
+    if (!overrideDir) {
+      throw new Error("override storage not configured; admin overrides cannot persist");
     }
-    const current = readOverrides(opts.agentDir) ?? {
+    const current = readOverrides(overrideDir) ?? {
       version: 1 as const,
       lastModified: new Date().toISOString(),
       lastModifiedBy: "creator",
@@ -755,12 +758,12 @@ export function webTransport(opts: WebTransportOptions): Augment {
       ...current.overrides.webTransport,
       publicIntegration: value,
     };
-    writeOverrides(opts.agentDir, current);
+    writeOverrides(overrideDir, current);
   }
 
   async function clearAllowAnonymousOverride(): Promise<void> {
-    if (!opts.agentDir) return;
-    const current = readOverrides(opts.agentDir);
+    if (!overrideDir) return;
+    const current = readOverrides(overrideDir);
     if (!current) return;
     if (current.overrides.webTransport) {
       delete (current.overrides.webTransport as Record<string, unknown>).allowAnonymous;
@@ -770,7 +773,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
     }
     current.lastModified = new Date().toISOString();
     current.lastModifiedBy = "creator";
-    writeOverrides(opts.agentDir, current);
+    writeOverrides(overrideDir, current);
   }
 
   async function adminInfo(): Promise<AdminInfoBlock> {
@@ -1043,7 +1046,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
       // G36 — apply admin-overrides on top of yaml/env/default.
       // The override file is read once at boot; the closure values are the
       // runtime source of truth thereafter.
-      const overrides = readOverrides(opts.agentDir);
+      const overrides = readOverrides(overrideDir);
       if (overrides?.overrides.webTransport?.allowAnonymous !== undefined) {
         allowAnonymous = overrides.overrides.webTransport.allowAnonymous;
         // Mark the resolution source so /console can display "/console override".

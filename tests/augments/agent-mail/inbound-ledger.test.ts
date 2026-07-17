@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, statSync, symlinkSync } from "node:fs";
+import { chmodSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { Database } from "bun:sqlite";
@@ -101,6 +101,22 @@ describe("AgentMail inbound ledger", () => {
     const link = join(dirname(target), "linked.sqlite");
     symlinkSync(target, link);
     expect(() => createAgentMailInboundLedger({ dbPath: link })).toThrow(/symbolic link/);
+  });
+
+  test("rejects symlinked SQLite sidecars before chmod can follow them", () => {
+    const dbPath = tempDb();
+    const target = join(dirname(dbPath), "outside-journal");
+    writeFileSync(target, "outside");
+    chmodSync(target, 0o644);
+    symlinkSync(target, `${dbPath}-journal`);
+    expect(() => createAgentMailInboundLedger({ dbPath })).toThrow(/artifact.*non-symlink/i);
+    expect(statSync(target).mode & 0o777).not.toBe(0o600);
+  });
+
+  test("rejects dangling SQLite sidecar symlinks before opening the database", () => {
+    const dbPath = tempDb();
+    symlinkSync(join(dirname(dbPath), "missing-target"), `${dbPath}-wal`);
+    expect(() => createAgentMailInboundLedger({ dbPath })).toThrow(/artifact.*non-symlink/i);
   });
 
   test("refuses a newer schema without rewriting its version", () => {

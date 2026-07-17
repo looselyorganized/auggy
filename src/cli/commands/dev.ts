@@ -20,11 +20,12 @@ import { defineAgent } from "../../agent";
 import { parseConfig } from "../config-parser";
 import { resolveEngine } from "../engine-resolver";
 import { resolveAugments } from "../augment-resolver";
-import { writePidManifest, removePidManifest } from "../pid-registry";
+import { claimRuntimePidManifest, releaseRuntimePidManifest } from "../pid-registry";
 import { resolveConfigPath } from "../resolve-config";
 import { openBrowser } from "../open-browser";
 import type { AgentConfig, Augment, ModelClient } from "../../types";
 import { displayPath } from "../display-path";
+import { prepareRailwayRuntimeVolume } from "../runtime-volume";
 
 /**
  * Extract the webTransport port from augment configs (for the PID manifest
@@ -63,6 +64,11 @@ export interface DevOpts {
    * `--open` flag is plumbed through `opts.open` directly.
    */
   onReady?: (info: DevReadyInfo) => void;
+}
+
+/** Resolve the persistent data root for deployment runtimes that provide one. */
+export function resolveRuntimeDataRoot(internalMode: string | undefined): string | undefined {
+  return internalMode === "railway" ? "/app/data" : undefined;
 }
 
 export function formatDevReadyMessage(args: {
@@ -155,6 +161,10 @@ export async function runDev(name: string | undefined, opts: DevOpts): Promise<v
   const configPath = resolveConfigPath(name, opts.config, { cwd: opts.cwd });
   const agentDir = dirname(configPath);
   const mode = opts.internalMode === "launchd" ? ("launchd" as const) : ("dev" as const);
+  const requestedRuntimeDataRoot = resolveRuntimeDataRoot(opts.internalMode);
+  const runtimeDataRoot = requestedRuntimeDataRoot
+    ? prepareRailwayRuntimeVolume(process.env.RAILWAY_VOLUME_MOUNT_PATH)
+    : undefined;
 
   // Parse and validate config.
   const config = parseConfig(configPath);
@@ -170,16 +180,20 @@ export async function runDev(name: string | undefined, opts: DevOpts): Promise<v
   // Claim the name by writing the PID manifest atomically (wx flag).
   // This prevents TOCTOU races — the filesystem is the lock.
   const port = extractPort(config);
+  let pidManifestClaimed = false;
   try {
-    writePidManifest({
-      pid: process.pid,
-      name: agentName,
-      port,
-      configPath: resolve(configPath),
-      agentDir: resolve(agentDir),
-      startedAt: new Date().toISOString(),
-      mode,
-    });
+    pidManifestClaimed = claimRuntimePidManifest(
+      {
+        pid: process.pid,
+        name: agentName,
+        port,
+        configPath: resolve(configPath),
+        agentDir: resolve(agentDir),
+        startedAt: new Date().toISOString(),
+        mode,
+      },
+      { internalMode: opts.internalMode },
+    );
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "EEXIST") {
       throw new Error(
@@ -197,6 +211,7 @@ export async function runDev(name: string | undefined, opts: DevOpts): Promise<v
     model = await resolveEngine(config.engine, agentDir);
     augments = await resolveAugments(config.augments, agentDir, {
       creator: config.creator,
+      ...(runtimeDataRoot ? { runtimeDataRoot } : {}),
       selfInspection: {
         name: agentName,
         displayName: config.displayName,
@@ -220,7 +235,7 @@ export async function runDev(name: string | undefined, opts: DevOpts): Promise<v
       maxInferenceLoops: config.settings.maxInferenceLoops,
     };
   } catch (err) {
-    removePidManifest(agentName);
+    releaseRuntimePidManifest(agentName, pidManifestClaimed);
     throw err;
   }
 
@@ -238,7 +253,7 @@ export async function runDev(name: string | undefined, opts: DevOpts): Promise<v
     } catch (err) {
       console.error("Error during shutdown:", err);
     }
-    removePidManifest(agentName);
+    releaseRuntimePidManifest(agentName, pidManifestClaimed);
     console.log(`${agentName} stopped.`);
     process.exit(0);
   };
@@ -248,7 +263,7 @@ export async function runDev(name: string | undefined, opts: DevOpts): Promise<v
 
   // Also clean up PID on unexpected exit.
   process.on("exit", () => {
-    removePidManifest(agentName);
+    releaseRuntimePidManifest(agentName, pidManifestClaimed);
   });
 
   // Start the agent.
