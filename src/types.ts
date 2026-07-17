@@ -677,8 +677,8 @@ export interface AugmentHttpRouteWebhookSignaturePolicy {
    */
   secretEnv?: string;
   /**
-   * Max accepted age for provider timestamps. Stripe verification defaults to
-   * 300 seconds when omitted.
+   * Max accepted age for provider timestamps. Stripe and Svix verification
+   * default to 300 seconds when omitted.
    */
   timestampToleranceSeconds?: number;
 }

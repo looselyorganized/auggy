@@ -277,7 +277,10 @@ The `notifyOnFirstVerify` option (operator-alert email on each new visitor) cann
 - Set `signingKey` only in `visitorAuth`. The augment-resolver auto-injects it into `webTransport.visitorTokens` at boot. Setting it in both places triggers a warning and `visitorAuth`'s value takes precedence. If they differ, visitor tokens minted by visitorAuth will fail webTransport's verification.
 - AgentMail keys should be least-privilege. visitorAuth uses `inbox_read` during boot healthcheck and `message_send` for verification delivery, so a permission-whitelisted key needs both.
 - `publicUrl` MUST point to a host where the agent's `/visitor-auth/verify` route is reachable from the public internet. If you're running behind a tunnel (ngrok, Cloudflare), use the tunnel URL; if you're running on Railway, use the Railway domain.
-- Per-anonymous-peer rate limits are **in-memory only** — restart resets state. The verified_visitors UNIQUE-on-email constraint catches accidental double-verification.
+- Per-anonymous-peer rate limits are **in-memory only** — restart resets state.
+  Verification tokens and visitors live in the schema-branded SQLite store;
+  the unique email constraint and atomic token update prevent duplicate
+  verification commits.
 
 ## Operator commands
 
@@ -299,7 +302,8 @@ If a revoke is interrupted (e.g., Ctrl-C between the visitor-auth UPDATE and the
 3. visitorAuth validates: email format, email-must-appear-in-recent-messages (defense against confused-deputy), per-peer rate limit (1/hr, 3/day).
 4. Generates a UUID token. Writes a row to `visitor_auth_tokens` with 15-minute TTL. Sends email via `agentmail-client.ts` (direct, not through `notify`).
 5. Visitor clicks link in email. GET hits `/visitor-auth/verify?token=<uuid>`.
-6. Atomic `UPDATE visitor_auth_tokens SET consumed=1, consumed_at=? WHERE token=? AND consumed=0 AND expires_at > ?` — `changes()` decides single-use.
+6. One atomic `UPDATE ... RETURNING` both consumes the unexpired token and
+   returns the row needed for verification. Concurrent clicks cannot both win.
 7. On consumed=1: mints HMAC-signed `vis_<uuid>` (same key webTransport uses; reuses an existing visitorId on re-verify so memory continuity survives), writes verified_visitors row, runs anonymous→recognized peer-id migration on memory.db, returns success HTML.
 8. Success HTML stashes the token in localStorage + replaces URL via `history.replaceState`.
 9. Chat tab listens for `storage` events, picks up new token, includes it as `x-visitor-token` on next request.
@@ -310,7 +314,8 @@ If a revoke is interrupted (e.g., Ctrl-C between the visitor-auth UPDATE and the
 - **Confused-deputy defense (fix #4):** the augment refuses to send to an email that did not appear verbatim in one of the visitor's last 4 messages.
 - **Rate-limit defense (fix #1):** 1 send per anonymous peer per hour, 3 per day. Per-IP per-route limit (60/min) layered above by webTransport.
 - **Token leakage defense (fix #5):** verify-success page has `<meta name="referrer" content="no-referrer">`, zero external assets, runs `history.replaceState` on load to drop the token from the URL bar.
-- **Token replay defense (fix #8):** atomic SQL consume; one row update returns success, all others return 410.
+- **Token replay defense (fix #8):** atomic `UPDATE ... RETURNING`; one caller
+  receives the consumed token row and all later/concurrent callers return 410.
 - **Long-term key compromise (fix #9):** 90-day reverification TTL on `verified_visitors`. Operator can revoke at any time.
 
 ## Out of scope at v1
@@ -330,4 +335,4 @@ If a revoke is interrupted (e.g., Ctrl-C between the visitor-auth UPDATE and the
 | Verify link returns 410 "consumed" | Token was already used (visitor double-clicked, or someone with the link beat them) | Re-issue |
 | Visitor verifies but agent doesn't recognize them next visit | Cleared localStorage, or `VISITOR_SIGNING_KEY` rotated | Re-verify |
 | AgentMail healthcheck returns 403 | API key lacks access to the configured inbox, or a permission whitelist omitted `inbox_read` | Use an inbox-scoped key for `AGENTMAIL_INBOX_ID` with `inbox_read` and `message_send` |
-| `auggy visitors --revoke` errors "memory.db not found" | layeredMemory hasn't created its DB yet, or path mismatch | Check `layeredMemoryDbPath` in `augments/visitorAuth/augment.yaml`; CLI-installed agents use `./data/memory.db` |
+| `auggy visitors --revoke` reports `memory.db` missing | layeredMemory has not created its DB yet, or a local custom path differs | Check `layeredMemoryDbPath` in `augments/visitorAuth/augment.yaml`. Portable catalog defaults use `./memory.db`; Railway resolves it directly under `/app/data`. |

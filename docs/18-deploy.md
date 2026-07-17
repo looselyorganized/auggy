@@ -190,28 +190,36 @@ spend surface.
 
 ## Persistent state
 
-Railway mounts a volume at `/app/data`. Agent-local mutable paths default to
-`./data/*`, so SQLite-backed augments persist across redeploys without extra
-configuration:
+Railway mounts a volume at `/app/data`. Before resolving any augment, the
+runtime requires `RAILWAY_VOLUME_MOUNT_PATH=/app/data`, rejects symlinked state
+roots, creates `/app/data/agent-mail` with mode `0700`, and performs an atomic
+write/fsync/rename/delete probe. Startup fails closed when the advertised mount
+or durability contract is wrong.
+
+On Railway, the resolver routes core mutable SQLite paths directly into the
+volume even when an agent's portable config uses a project-relative default:
 
 - `/app/data/memory.db` (`layeredMemory` augment)
 - `/app/data/budgets.db` (`budgets` augment)
 - `/app/data/visitor-auth.db` (`visitorAuth` augment)
 - `/app/data/link.db` (`link` augment, when present)
+- `/app/data/agent-mail/<augment-name>/agent-mail.db` (`agentMail`; each
+  instance receives an isolated state namespace)
 
-For manual configs that still use root-level DB paths, the entrypoint script
-also symlinks these paths into the volume:
+Only Link retains a root-level compatibility symlink:
 
-- `/app/memory.db` → `/app/data/memory.db` (`layeredMemory` augment)
-- `/app/budgets.db` → `/app/data/budgets.db` (`budgets` augment)
-- `/app/visitor-auth.db` → `/app/data/visitor-auth.db` (`visitorAuth` augment)
 - `/app/link.db` → `/app/data/link.db` (`link` augment, when present)
 
-Augment config paths such as `dbPath: ./data/memory.db` work directly on the
-mounted volume. Root paths such as `dbPath: ./memory.db` also work through the
-symlinks.
+Do not add new database symlinks. The hardened SQLite stores reject symlink
+paths; core augments resolve their configured relative paths under the durable
+root, and AgentMail additionally prevents `dbPath` from escaping its
+per-augment namespace. Locally, those same relative paths still resolve from
+the agent project.
 
-**Drift risk:** if a future augment ships with a different SQLite path, update `SQLITE_DB_NAMES` in `src/cli/deploy/dockerfile.ts` (and add it to this doc). The `cross-session-recall` grader in the layered-memory eval suite catches data loss empirically.
+**Drift risk:** a new stateful augment must use the runtime data root directly,
+participate in deploy preflight, and document its recovery contract. Do not add
+it to the Link-only compatibility symlink list. The `cross-session-recall`
+grader in the layered-memory eval suite catches data loss empirically.
 
 ---
 
@@ -303,5 +311,6 @@ The Railway volume is **NOT** automatically deleted (Railway retains it as a saf
 | visitorAuth refuses to boot — "publicUrl required" | Check that `augments/visitorAuth/augment.yaml` has `publicUrl: ${AUGGY_PUBLIC_URL}` and the deploy actually generated a domain. Re-run `auggy deploy` to refresh. |
 | Deploy preflight fails because visitorAuth uses console mail | Run `auggy augment setup visitorAuth`, or set `allowConsoleInProduction: true` only for smoke tests where log-visible magic links are acceptable. |
 | Deploy preflight fails because MCP has an enabled `stdio` server | Use a remote HTTPS MCP server for cloud, or mark the local server `cloud: "disabled"` in `.mcp.json`. |
-| Memory disappears after redeploy | Check the volume is mounted (Railway dashboard → service → Volumes). If empty, the symlink list in the Dockerfile may be missing your dbPath — check `src/cli/deploy/dockerfile.ts`'s `SQLITE_DB_NAMES`. |
+| Runtime refuses to start with a volume-admission error | Confirm Railway mounted a real volume at exactly `/app/data` and exposes `RAILWAY_VOLUME_MOUNT_PATH=/app/data`. Remove symlinked state directories; the startup probe intentionally fails before state can fall back to ephemeral disk. |
+| Memory disappears after redeploy | Check Railway dashboard → service → Volumes and confirm the mount is `/app/data`. Core SQLite augments resolve directly to that root; do not repair this by adding an `/app/*.db` symlink. |
 | Daily budget cap hit unexpectedly | If you enabled autoSave with an extraction engine, extraction calls count against the cap. Run `bun run packages/evals/src/layered-memory/smoke.ts` to measure your per-extraction cost; lower the cadence in `augments/layeredMemory/augment.yaml` if needed. |

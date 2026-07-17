@@ -92,7 +92,7 @@ Use `auggy augment add` with no arguments to open the augment selector. Use
 | Remember repeat visitors | `auggy augment add layeredMemory` | Peer-scoped memory backed by SQLite |
 | Recognize visitors across sessions | `auggy augment add visitorAuth` | Email magic-link identity continuity |
 | Notify creator or ops endpoint | `auggy augment add notify` | Outbound alerts with destination policy and rate limits |
-| Send email as the agent | `auggy augment add agentMail` | Model-callable outbound mail with recipient policy |
+| Send or receive email as the agent | `auggy augment add agentMail` | Policy-gated mail with durable inbound recovery and outbound review |
 | Add external tool servers | `auggy augment add mcp` | Bridge MCP tools with trust policy |
 | Chat over Telegram | `auggy augment add telegramTransport` | Bidirectional Telegram transport |
 | Add app-specific tools or integrations | `auggy augment create <name>` | Custom runtime code owned by this agent |

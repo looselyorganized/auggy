@@ -1,6 +1,6 @@
 ---
 name: agentMail
-description: Send email through the AgentMail augment. Use to compose outbound messages, reply to inbound mail, or forward conversations to teammates. Covers when to use vs `notify` vs chat, what to omit from outbound, recipient/rate-limit semantics, and how to interpret `rate_limited` and `failed` results.
+description: Send and respond to email through the AgentMail augment. Use to compose outbound messages, reply to admitted inbound mail, or forward conversations to teammates. Covers channel choice, sensitive content, recipient/rate/review policy, and tool results including pending or ambiguous delivery.
 ---
 
 # AgentMail
@@ -76,7 +76,9 @@ Every tool returns a JSON envelope. Read it.
 ```json
 { "status": "sent", "messageId": "msg_…", "threadId": "thd_…" }
 ```
-Delivered to AgentMail. Save `messageId` if you might want to reply or forward later in the conversation.
+Delivered to AgentMail. This confirms provider acceptance; it does not make the
+outbound `messageId` eligible for reply/forward. Those tools accept only IDs
+from the current inbound trigger.
 
 ```json
 { "status": "pending_review", "reviewId": "…", "expiresAt": "…" }
@@ -91,7 +93,10 @@ The exact email action is waiting for an operator. Do not retry or claim it was 
 ```json
 { "status": "failed", "message": "…", "httpStatus": 401 }
 ```
-A 4xx means the recipient or your config is wrong — don't retry, surface the problem in chat or via `notify`. A 5xx is AgentMail's outage — you can try again later but not immediately.
+A 4xx means the recipient or your config is wrong — don't retry, surface the
+problem in chat or via `notify`. A provider 5xx can be retried later only when
+the result does not say the outcome is ambiguous. For any ambiguous outcome,
+do not retry; the operator must reconcile it against AgentMail.
 
 ```json
 { "status": "failed", "message": "trust level \"public\" is not permitted to send mail." }

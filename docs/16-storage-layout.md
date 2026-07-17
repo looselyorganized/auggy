@@ -37,7 +37,12 @@ to stay in sync with the filesystem.
 - `identity.md` is rendered from `src/scaffold-templates/identity.md` and ships with the agent's stable identity, voice, and baked-in security rules. It does **not** contain the skill manifest.
 - `learned-behaviors.md` is the scaffolded mutable `fileMemory` store. It is for creator-approved, agent-global operating guidance, not autonomous policy changes, operator identity, authorization facts, or visitor-specific memory. Default writes require runtime-verified creator trust. Legacy agents that still have `learned.md` continue to load it.
 - `skills/<augment>/` directories hold byte-for-byte copies of each augment's bundled `src/augments/<augment>/skill/` folder — copied automatically at `auggy create`/`auggy augment add` time. `skills/auggy/` is the canonical starter/build-out guide copied at create time. The runtime `skills` augment emits the model-facing skill manifest from these files. `auggy skill add <name>` refreshes either kind, including `auggy skill add auggy` for the general guide and `auggy skill add layeredMemory` for the peer-memory teaching. Refresh overwrites that bundled skill's installed snapshot, so preserve intentional local customizations elsewhere. The boot-time validator warns at startup if a tool-providing augment has no skill folder mounted.
-- `data/` is the durable runtime data mount. Core create uses `data/workspace`; optional augments such as `layeredMemory` and `budgets` place their SQLite files under `data/` when added.
+- `data/` is the project-local durable-data convention. Core create uses
+  `data/workspace`; locally, relative SQLite paths resolve from the agent
+  project. On Railway, the resolver roots layered memory, budgets, and visitor
+  auth directly under `/app/data` and isolates AgentMail beneath
+  `/app/data/agent-mail/<augment-name>`. Only Link retains a legacy
+  `/app/link.db` compatibility symlink. See [18-deploy.md](./18-deploy.md).
 - The filesystem augment catalogs bounded metadata from `data/workspace` on
   creator and agent turns. This makes durable artifacts visible without
   automatically loading their contents; the model still uses `fs_search`,

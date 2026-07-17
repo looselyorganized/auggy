@@ -305,8 +305,11 @@ defineRoute.post("/webhooks/stripe", {
 });
 ```
 
-Stripe verification has shipped because it forces raw-body HMAC handling.
-GitHub/Svix-style verifiers can follow without becoming peer identity.
+Stripe and Svix verification have shipped because they force raw-body
+signature handling and replay-age checks. GitHub-style verification can follow
+without becoming peer identity. AgentMail webhook inbound uses the Svix policy
+and still admits email senders through the `agentMail` augment's separate
+sender/classification rules.
 
 Keep webhook auth separate from route identity:
 
