@@ -3,15 +3,14 @@
  *
  * The deploy command writes these strings into the staging dir before
  * `railway up`. ADR-021 cloud design: admit only the expected Railway volume,
- * keep compatibility symlinks for legacy SQLite augments, and launch via
+ * keep the external link augment's compatibility symlink, and launch via
  * `auggy dev <name> --config /app/agent.yaml --internal-mode railway`.
  */
 
 const BUN_VERSION = "1.2.14-alpine";
 
 /**
- * Legacy SQLite paths in the agent dir that need to live on the Railway
- * volume across redeploys. Each is symlinked in the entrypoint script:
+ * External link storage still needs a compatibility path in the agent dir.
  *
  *   /app/<name>.db → /app/data/<name>.db   (volume target)
  *
@@ -19,11 +18,10 @@ const BUN_VERSION = "1.2.14-alpine";
  * attach, following the symlink. WAL/SHM sibling files are created
  * alongside the resolved symlink target (i.e. on the volume).
  *
- * New stateful augments must use the runtime-owned /app/data tree directly;
- * do not extend this compatibility list. AgentMail deliberately does not use
- * a symlink because its hardened storage rejects them.
+ * Core SQLite augments use the runtime-owned /app/data tree directly because
+ * hardened storage rejects database symlinks.
  */
-const SQLITE_DB_NAMES = ["memory.db", "budgets.db", "visitor-auth.db", "link.db"];
+const SQLITE_DB_NAMES = ["link.db"];
 
 interface DockerfileOptions {
   agentName: string;
@@ -73,8 +71,8 @@ export function generateEntrypoint(): string {
 #   mount already exists. Never create the mount point: a missing volume must
 #   not silently degrade to the container's ephemeral filesystem.
 # - AgentMail writes directly below /app/data/agent-mail with private modes.
-# - Legacy SQLite augments (layeredMemory, budgets, visitorAuth, link) still
-#   write to ./<name>.db; compatibility symlinks keep those files on-volume.
+# - Core SQLite augments write directly to /app/data. The external link
+#   augment retains one compatibility symlink to its volume-backed database.
 # - WAL/SHM siblings are created alongside the resolved symlink target by
 #   SQLite, i.e. they land on the volume.
 # - -f overwrites any prior symlink so redeploys don't fail on the second run.

@@ -2,6 +2,7 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Database } from "bun:sqlite";
 import { createSqliteVisitorAuthStore } from "../../../src/augments/visitorAuth/storage/sqlite-store";
 import type { VisitorAuthStore } from "../../../src/augments/visitorAuth/storage/types";
 
@@ -20,6 +21,30 @@ afterEach(() => {
 });
 
 describe("createSqliteVisitorAuthStore", () => {
+  test("rejects an unrelated SQLite database without adding visitor tables", () => {
+    const unrelatedPath = join(tmp, "unrelated.db");
+    const unrelated = new Database(unrelatedPath);
+    unrelated.run("CREATE TABLE foreign_owner (secret TEXT NOT NULL)");
+    unrelated.close();
+
+    expect(() => createSqliteVisitorAuthStore({ dbPath: unrelatedPath })).toThrow(
+      /recognized legacy schema/,
+    );
+
+    const probe = new Database(unrelatedPath, { readonly: true });
+    try {
+      const names = probe
+        .query<{ name: string }, []>(
+          "SELECT name FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' ORDER BY name",
+        )
+        .all()
+        .map((row) => row.name);
+      expect(names).toEqual(["foreign_owner"]);
+    } finally {
+      probe.close();
+    }
+  });
+
   describe("issueToken + consumeToken", () => {
     test("issued token can be consumed exactly once", () => {
       const now = 1_700_000_000_000;
@@ -80,6 +105,86 @@ describe("createSqliteVisitorAuthStore", () => {
       const results: boolean[] = [];
       for (let i = 0; i < 10; i++) results.push(store.consumeToken("tok-race", now).consumed);
       expect(results.filter((c) => c).length).toBe(1);
+    });
+
+    test("two independent handles can produce only one consume winner", () => {
+      const now = 1_700_000_000_000;
+      const dbPath = join(tmp, "visitor-auth.db");
+      const contender = createSqliteVisitorAuthStore({ dbPath });
+      contender.initialize();
+      try {
+        store.issueToken({
+          token: "tok-two-handles",
+          email: "winner@example.com",
+          peerId: "anon-winner",
+          threadId: "thread-winner",
+          expiresAt: now + 60_000,
+          sourceMessageId: null,
+        });
+
+        const attempts = [
+          store.consumeToken("tok-two-handles", now),
+          contender.consumeToken("tok-two-handles", now),
+        ];
+        const winners = attempts.filter((result) => result.consumed);
+        expect(winners).toHaveLength(1);
+        expect(winners[0]).toMatchObject({
+          email: "winner@example.com",
+          peerId: "anon-winner",
+          threadId: "thread-winner",
+        });
+      } finally {
+        contender.close();
+      }
+    });
+
+    test("RETURNING preserves the consumed identity across an AFTER UPDATE delete", () => {
+      const now = 1_700_000_000_000;
+      store.issueToken({
+        token: "tok-returning",
+        email: "returning@example.com",
+        peerId: "anon-returning",
+        threadId: "thread-returning",
+        expiresAt: now + 60_000,
+        sourceMessageId: null,
+      });
+      const probe = new Database(join(tmp, "visitor-auth.db"));
+      try {
+        probe.run(`CREATE TRIGGER delete_consumed_token
+          AFTER UPDATE OF consumed ON visitor_auth_tokens
+          WHEN NEW.token = 'tok-returning' AND NEW.consumed = 1
+          BEGIN
+            DELETE FROM visitor_auth_tokens WHERE token = NEW.token;
+          END`);
+      } finally {
+        probe.close();
+      }
+
+      expect(store.consumeToken("tok-returning", now)).toEqual({
+        consumed: true,
+        email: "returning@example.com",
+        peerId: "anon-returning",
+        threadId: "thread-returning",
+      });
+    });
+
+    test(":memory: remains supported by the hardened opener", () => {
+      const memoryStore = createSqliteVisitorAuthStore({ dbPath: ":memory:" });
+      memoryStore.initialize();
+      try {
+        const now = 1_700_000_000_000;
+        memoryStore.issueToken({
+          token: "tok-memory",
+          email: "memory@example.com",
+          peerId: "anon-memory",
+          threadId: "thread-memory",
+          expiresAt: now + 60_000,
+          sourceMessageId: null,
+        });
+        expect(memoryStore.consumeToken("tok-memory", now).consumed).toBe(true);
+      } finally {
+        memoryStore.close();
+      }
     });
   });
 

@@ -46,6 +46,23 @@ export interface SqlitePrepareContext {
   created: boolean;
 }
 
+export interface SqliteSchemaObject {
+  name: string;
+  sql: string;
+  type: string;
+}
+
+export interface OwnedSqliteSchemaOptions {
+  label: string;
+  applicationId: number;
+  schemaVersion: number;
+  initialize(db: Database): void;
+  validate(db: Database, objects: readonly SqliteSchemaObject[]): void;
+  /** Recognizes the exact un-stamped schema shipped before identity markers. */
+  isLegacy(db: Database, objects: readonly SqliteSchemaObject[]): boolean;
+  migrateLegacy?(db: Database): void;
+}
+
 export interface SqliteCheckpointResult {
   busy: number;
   log: number;
@@ -212,6 +229,74 @@ function quickCheck(db: Database, label: string): void {
   if (values.length !== 1 || values[0] !== "ok") {
     throw contextualError(label, `SQLite quick_check failed: ${values.join("; ") || "no result"}`);
   }
+}
+
+export function canonicalSqliteSchemaSql(sql: string): string {
+  return sql
+    .replace(/\bIF\s+NOT\s+EXISTS\b/gi, "")
+    .replace(/\s+/g, " ")
+    .replace(/\s*([(),])\s*/g, "$1")
+    .trim();
+}
+
+export function sqliteSchemaObjects(db: Database): SqliteSchemaObject[] {
+  return db
+    .query<SqliteSchemaObject, []>(
+      `SELECT type, name, sql FROM sqlite_schema
+       WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name`,
+    )
+    .all();
+}
+
+function pragmaSafeInteger(db: Database, name: "application_id" | "user_version", label: string) {
+  const row = db.query(`PRAGMA ${name}`).get() as Record<string, unknown> | null;
+  const value = row?.[name];
+  if (!Number.isSafeInteger(value)) throw contextualError(label, `invalid SQLite ${name}`);
+  return value as number;
+}
+
+/**
+ * Admits an empty database, an exact pre-marker legacy schema, or the current
+ * owned schema. Unrelated/lookalike databases are rejected before any DDL or
+ * journal-mode mutation. Must run inside openHardenedSqlite's prepare hook.
+ */
+export function admitOwnedSqliteSchema(db: Database, options: OwnedSqliteSchemaOptions): void {
+  const applicationId = pragmaSafeInteger(db, "application_id", options.label);
+  const userVersion = pragmaSafeInteger(db, "user_version", options.label);
+  const objects = sqliteSchemaObjects(db);
+
+  if (applicationId !== 0 && applicationId !== options.applicationId) {
+    throw contextualError(options.label, "database belongs to another application");
+  }
+  if (userVersion > options.schemaVersion) {
+    throw contextualError(
+      options.label,
+      `database schema ${userVersion} is newer than supported version ${options.schemaVersion}`,
+    );
+  }
+
+  const empty = objects.length === 0;
+  const unowned = applicationId === 0 && userVersion === 0;
+  if (empty) {
+    if (!unowned) {
+      throw contextualError(options.label, "database identity and schema version disagree");
+    }
+    options.initialize(db);
+  } else if (unowned) {
+    if (!options.isLegacy(db, objects)) {
+      throw contextualError(options.label, "database schema is not a recognized legacy schema");
+    }
+    options.migrateLegacy?.(db);
+  } else {
+    if (applicationId !== options.applicationId || userVersion !== options.schemaVersion) {
+      throw contextualError(options.label, "database identity and schema version disagree");
+    }
+  }
+
+  const admittedObjects = sqliteSchemaObjects(db);
+  options.validate(db, admittedObjects);
+  db.run(`PRAGMA application_id = ${options.applicationId}`);
+  db.run(`PRAGMA user_version = ${options.schemaVersion}`);
 }
 
 function artifactSize(path: string): number | null {

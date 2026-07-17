@@ -14,7 +14,13 @@
  * peer_id and expires_at speed up the open-token lookup path.
  */
 
-import { Database, type Statement } from "bun:sqlite";
+import type { Statement } from "bun:sqlite";
+import {
+  admitOwnedSqliteSchema,
+  canonicalSqliteSchemaSql,
+  openHardenedSqlite,
+  type SqliteSchemaObject,
+} from "../../../lib/sqlite";
 import type {
   ConsumeTokenResult,
   IssueTokenArgs,
@@ -64,6 +70,34 @@ const SCHEMA_STATEMENTS = [
   )`,
 ];
 
+const VISITOR_AUTH_APPLICATION_ID = 0x56415554; // "VAUT"
+const VISITOR_AUTH_SCHEMA_VERSION = 1;
+const EXPECTED_SCHEMA = new Map(
+  SCHEMA_STATEMENTS.map((sql) => {
+    const match = sql.match(/(?:TABLE|INDEX)\s+IF\s+NOT\s+EXISTS\s+([^\s(]+)/i);
+    if (!match?.[1]) throw new Error("visitorAuth store: invalid schema declaration");
+    return [match[1], canonicalSqliteSchemaSql(sql)] as const;
+  }),
+);
+
+function hasExactVisitorAuthSchema(objects: readonly SqliteSchemaObject[]): boolean {
+  return (
+    objects.length === EXPECTED_SCHEMA.size &&
+    objects.every(
+      (object) =>
+        EXPECTED_SCHEMA.get(object.name) === canonicalSqliteSchemaSql(object.sql),
+    )
+  );
+}
+
+function validateVisitorAuthSchema(objects: readonly SqliteSchemaObject[]): void {
+  if (!hasExactVisitorAuthSchema(objects)) {
+    throw new Error(
+      "visitorAuth store: database schema contains missing, incompatible, or unexpected objects",
+    );
+  }
+}
+
 interface VerifiedRow {
   visitor_id: string;
   email: string;
@@ -95,14 +129,31 @@ export interface SqliteVisitorAuthStoreConfig {
 export function createSqliteVisitorAuthStore(
   config: SqliteVisitorAuthStoreConfig,
 ): VisitorAuthStore {
-  const db = new Database(config.dbPath, { create: true });
-  db.run("PRAGMA journal_mode = WAL");
-  db.run("PRAGMA foreign_keys = ON");
+  const database = openHardenedSqlite({
+    path: config.dbPath,
+    label: "visitorAuth store",
+    prepare(db) {
+      admitOwnedSqliteSchema(db, {
+        label: "visitorAuth store",
+        applicationId: VISITOR_AUTH_APPLICATION_ID,
+        schemaVersion: VISITOR_AUTH_SCHEMA_VERSION,
+        initialize(db) {
+          for (const statement of SCHEMA_STATEMENTS) db.run(statement);
+        },
+        isLegacy(_db, objects) {
+          return hasExactVisitorAuthSchema(objects);
+        },
+        validate(_db, objects) {
+          validateVisitorAuthSchema(objects);
+        },
+      });
+    },
+  });
+  const db = database.db;
 
   // Statements prepared lazily after initialize() runs.
   let issueStmt: Statement | null = null;
   let consumeStmt: Statement | null = null;
-  let consumeReadStmt: Statement | null = null;
   let tokenStatusStmt: Statement | null = null;
   let findOpenStmt: Statement | null = null;
   let invalidateStmt: Statement | null = null;
@@ -135,10 +186,8 @@ export function createSqliteVisitorAuthStore(
     consumeStmt = db.prepare(
       `UPDATE visitor_auth_tokens
          SET consumed = 1, consumed_at = ?
-       WHERE token = ? AND consumed = 0 AND expires_at > ?`,
-    );
-    consumeReadStmt = db.prepare(
-      `SELECT email, peer_id, thread_id FROM visitor_auth_tokens WHERE token = ?`,
+       WHERE token = ? AND consumed = 0 AND expires_at > ?
+       RETURNING email, peer_id, thread_id`,
     );
     tokenStatusStmt = db.prepare(
       `SELECT consumed, expires_at FROM visitor_auth_tokens WHERE token = ?`,
@@ -210,7 +259,6 @@ export function createSqliteVisitorAuthStore(
 
   return {
     initialize(): void {
-      for (const stmt of SCHEMA_STATEMENTS) db.run(stmt);
       ensurePrepared();
     },
     issueToken(args: IssueTokenArgs): void {
@@ -227,15 +275,7 @@ export function createSqliteVisitorAuthStore(
     },
     consumeToken(token: string, now: number): ConsumeTokenResult {
       ensurePrepared();
-      const result = consumeStmt!.run(now, token, now);
-      if (result.changes === 0) return { consumed: false };
-      // changes === 1 proves the row exists and we just transitioned it.
-      // The follow-up SELECT reads the row's bound email/peer_id/thread_id
-      // for the caller; the `if (!row)` guard below is defensive against
-      // an impossible-in-practice race (separate connection deleting the
-      // row between UPDATE and SELECT) — Bun's single-connection sync
-      // model rules it out, but the cost of the guard is one branch.
-      const row = consumeReadStmt!.get(token) as
+      const row = consumeStmt!.get(now, token, now) as
         | { email: string; peer_id: string; thread_id: string }
         | undefined;
       if (!row) return { consumed: false };
@@ -392,7 +432,7 @@ export function createSqliteVisitorAuthStore(
       markNotifiedStmt!.run(email, now);
     },
     close(): void {
-      db.close();
+      database.close();
     },
   };
 }

@@ -1,5 +1,10 @@
-import { Database } from "bun:sqlite";
 import type { TurnGateTicket, CostResult, TrustLevel } from "../../types";
+import {
+  admitOwnedSqliteSchema,
+  canonicalSqliteSchemaSql,
+  openHardenedSqlite,
+  type SqliteSchemaObject,
+} from "../../lib/sqlite";
 import type {
   BudgetCaps,
   BudgetCommitRecord,
@@ -55,6 +60,32 @@ const SCHEMA_STATEMENTS = [
   `CREATE INDEX IF NOT EXISTS idx_anon_requests_ts
      ON anonymous_requests(timestamp)`,
 ];
+
+const BUDGETS_APPLICATION_ID = 0x42554447; // "BUDG"
+const BUDGETS_SCHEMA_VERSION = 1;
+const EXPECTED_SCHEMA = new Map(
+  SCHEMA_STATEMENTS.map((sql) => {
+    const match = sql.match(/(?:TABLE|INDEX)\s+IF\s+NOT\s+EXISTS\s+([^\s(]+)/i);
+    if (!match?.[1]) throw new Error("budgets store: invalid schema declaration");
+    return [match[1], canonicalSqliteSchemaSql(sql)] as const;
+  }),
+);
+
+function hasExactBudgetSchema(objects: readonly SqliteSchemaObject[]): boolean {
+  return (
+    objects.length === EXPECTED_SCHEMA.size &&
+    objects.every(
+      (object) =>
+        EXPECTED_SCHEMA.get(object.name) === canonicalSqliteSchemaSql(object.sql),
+    )
+  );
+}
+
+function validateBudgetSchema(objects: readonly SqliteSchemaObject[]): void {
+  if (!hasExactBudgetSchema(objects)) {
+    throw new Error("budgets store: database schema contains missing, incompatible, or unexpected objects");
+  }
+}
 
 // ────────────────────────────────────────────────────────────
 // Public interface
@@ -145,14 +176,27 @@ export function createBudgetStore(config: BudgetStoreConfig): BudgetStore {
   const cleanupWindowMs = config.cleanupWindowMs ?? 60 * 60_000; // 1 hour
   const configuredRetentionDays = validateRetentionDays(config.retentionDays);
 
-  const db = new Database(config.dbPath, { create: true });
-  db.run("PRAGMA journal_mode = WAL");
-  db.run("PRAGMA foreign_keys = ON");
-
-  // Schema before prepared statements (statements reference schema objects).
-  for (const stmt of SCHEMA_STATEMENTS) {
-    db.run(stmt);
-  }
+  const database = openHardenedSqlite({
+    path: config.dbPath,
+    label: "budgets store",
+    prepare(db) {
+      admitOwnedSqliteSchema(db, {
+        label: "budgets store",
+        applicationId: BUDGETS_APPLICATION_ID,
+        schemaVersion: BUDGETS_SCHEMA_VERSION,
+        initialize(db) {
+          for (const statement of SCHEMA_STATEMENTS) db.run(statement);
+        },
+        isLegacy(_db, objects) {
+          return hasExactBudgetSchema(objects);
+        },
+        validate(_db, objects) {
+          validateBudgetSchema(objects);
+        },
+      });
+    },
+  });
+  const db = database.db;
 
   // ── Prepared statements ──────────────────────────────────
 
@@ -338,6 +382,25 @@ export function createBudgetStore(config: BudgetStoreConfig): BudgetStore {
 
   let prepareChain: Promise<void> = Promise.resolve();
 
+  async function acquireQueue(): Promise<() => void> {
+    const priorChain = prepareChain;
+    let release!: () => void;
+    prepareChain = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await priorChain;
+    return release;
+  }
+
+  async function runQueued<T>(operation: () => T): Promise<T> {
+    const release = await acquireQueue();
+    try {
+      return operation();
+    } finally {
+      release();
+    }
+  }
+
   // ── prepare ─────────────────────────────────────────────
 
   async function prepare(input: {
@@ -352,12 +415,7 @@ export function createBudgetStore(config: BudgetStoreConfig): BudgetStore {
   }): Promise<TurnGateTicket> {
     // Wait for any in-flight prepare/confirm/rollback to finish before starting
     // our own. The chain advances when our ticket's confirm or rollback runs.
-    const priorChain = prepareChain;
-    let releaseChain!: () => void;
-    prepareChain = new Promise<void>((resolve) => {
-      releaseChain = resolve;
-    });
-    await priorChain;
+    const releaseChain = await acquireQueue();
 
     const now = Date.now();
     const dayKey = ymdUtc(now);
@@ -377,7 +435,12 @@ export function createBudgetStore(config: BudgetStoreConfig): BudgetStore {
       }
     }
 
-    db.run("BEGIN IMMEDIATE");
+    try {
+      db.run("BEGIN IMMEDIATE");
+    } catch (error) {
+      releaseChain();
+      throw error;
+    }
 
     try {
       // ── Retry path: if this turnId already has a reservation row,
@@ -456,6 +519,15 @@ export function createBudgetStore(config: BudgetStoreConfig): BudgetStore {
           done = true;
           try {
             db.run("COMMIT");
+          } catch (error) {
+            if (db.inTransaction) {
+              try {
+                db.run("ROLLBACK");
+              } catch {
+                // Preserve the COMMIT failure.
+              }
+            }
+            throw error;
           } finally {
             releaseChain();
           }
@@ -501,7 +573,7 @@ export function createBudgetStore(config: BudgetStoreConfig): BudgetStore {
       }
     });
 
-    return tx();
+    return runQueued(tx);
   }
 
   // ── getPeerUsage ─────────────────────────────────────────
@@ -513,17 +585,19 @@ export function createBudgetStore(config: BudgetStoreConfig): BudgetStore {
   ): Promise<{ thread: number; day: number; costUsd: number; unpricedTurns: number }> {
     const dayKey = day ?? ymdUtc(Date.now());
 
-    const threadRow = countActiveThreadStmt.get(peerId, threadId, dayKey);
-    const dayRow = countActiveDayStmt.get(peerId, dayKey);
-    const costRow = selectPeerCostStmt.get(peerId, dayKey);
-    const unpricedRow = selectPeerUnpricedTurnsStmt.get(peerId, dayKey);
+    return runQueued(() => {
+      const threadRow = countActiveThreadStmt.get(peerId, threadId, dayKey);
+      const dayRow = countActiveDayStmt.get(peerId, dayKey);
+      const costRow = selectPeerCostStmt.get(peerId, dayKey);
+      const unpricedRow = selectPeerUnpricedTurnsStmt.get(peerId, dayKey);
 
-    return {
-      thread: threadRow?.n ?? 0,
-      day: dayRow?.n ?? 0,
-      costUsd: costRow?.cost_usd ?? 0,
-      unpricedTurns: unpricedRow?.unpriced_turns ?? 0,
-    };
+      return {
+        thread: threadRow?.n ?? 0,
+        day: dayRow?.n ?? 0,
+        costUsd: costRow?.cost_usd ?? 0,
+        unpricedTurns: unpricedRow?.unpriced_turns ?? 0,
+      };
+    });
   }
 
   // ── getDaySpend (G36) ────────────────────────────────────
@@ -543,17 +617,19 @@ export function createBudgetStore(config: BudgetStoreConfig): BudgetStore {
     byPeer: Array<{ peerId: string; costUsd: number; unpricedTurns: number }>;
   }> {
     const dayKey = day ?? ymdUtc(Date.now());
-    const totalRow = selectDailyGlobalStmt.get(dayKey);
-    const rows = selectPeerDailyCostsStmt.all(dayKey);
-    return {
-      totalUsd: totalRow?.total_cost_usd ?? 0,
-      unpricedTurns: totalRow?.unpriced_turns ?? 0,
-      byPeer: rows.map((r) => ({
-        peerId: r.peer_id,
-        costUsd: r.cost_usd,
-        unpricedTurns: r.unpriced_turns,
-      })),
-    };
+    return runQueued(() => {
+      const totalRow = selectDailyGlobalStmt.get(dayKey);
+      const rows = selectPeerDailyCostsStmt.all(dayKey);
+      return {
+        totalUsd: totalRow?.total_cost_usd ?? 0,
+        unpricedTurns: totalRow?.unpriced_turns ?? 0,
+        byPeer: rows.map((r) => ({
+          peerId: r.peer_id,
+          costUsd: r.cost_usd,
+          unpricedTurns: r.unpriced_turns,
+        })),
+      };
+    });
   }
 
   // ── sweepIncompleteReservations ──────────────────────────
@@ -561,8 +637,7 @@ export function createBudgetStore(config: BudgetStoreConfig): BudgetStore {
   async function sweepIncompleteReservations(opts?: { olderThanMs?: number }): Promise<number> {
     const windowMs = opts?.olderThanMs ?? cleanupWindowMs;
     const cutoff = Date.now() - windowMs;
-    const result = sweepStmt.run(cutoff);
-    return result.changes;
+    return runQueued(() => sweepStmt.run(cutoff).changes);
   }
 
   // ── purgeOldRows ────────────────────────────────────────
@@ -583,13 +658,13 @@ export function createBudgetStore(config: BudgetStoreConfig): BudgetStore {
       const total = turnReservations + dailyGlobal + peerDailyCosts + anonymousRequests;
       return { turnReservations, dailyGlobal, peerDailyCosts, anonymousRequests, total };
     });
-    return tx();
+    return runQueued(tx);
   }
 
   // ── close ────────────────────────────────────────────────
 
   async function close(): Promise<void> {
-    db.close();
+    await runQueued(() => database.close());
   }
 
   return {

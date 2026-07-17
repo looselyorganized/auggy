@@ -10,8 +10,8 @@
  */
 
 import { existsSync } from "node:fs";
-import { Database } from "bun:sqlite";
 import { resolve } from "node:path";
+import { deleteSqliteMemoryForPeer } from "../../augments/layeredMemory/storage/sqlite-store";
 import { createSqliteVisitorAuthStore } from "../../augments/visitorAuth/storage/sqlite-store";
 import { parseAugmentConfigOnly } from "../yaml-helpers";
 import { resolveConfigPath } from "../resolve-config";
@@ -133,21 +133,10 @@ function cascadeMemoryDelete(
     log(`memory.db not found at ${memoryDb} — skipping memory cascade.`);
     return 0;
   }
-  let db: Database | null = null;
   try {
-    db = new Database(memoryDb, { readwrite: true });
-    const r = db.prepare(`DELETE FROM entries WHERE peer_id = ?`).run(visitorId);
-    return r.changes;
+    return deleteSqliteMemoryForPeer(memoryDb, visitorId);
   } catch (err) {
     log(`Memory cascade failed: ${(err as Error).message}. Operator should retry manually.`);
     return 0;
-  } finally {
-    if (db) {
-      try {
-        db.close();
-      } catch {
-        // ignore close errors
-      }
-    }
   }
 }

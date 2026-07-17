@@ -48,20 +48,26 @@ describe("visitor-auth cross-process SQLite (F19)", () => {
   it("the store enables WAL mode (PRAGMA journal_mode = 'wal')", () => {
     const tmp = mkdtempSync(join(tmpdir(), "va-wal-pragma-"));
     const dbPath = join(tmp, "visitor-auth.db");
+    let store: ReturnType<typeof createSqliteVisitorAuthStore> | undefined;
+    let probe: Database | undefined;
     try {
-      const store = createSqliteVisitorAuthStore({ dbPath });
+      store = createSqliteVisitorAuthStore({ dbPath });
       store.initialize();
-      // Read the journal-mode setting from a separate handle on the same
-      // file. SQLite reports the active WAL configuration globally, not
-      // per-connection — any reader sees the same value once it's set.
-      const probe = new Database(dbPath, { readonly: true });
+      // Read the journal-mode setting from a separate writable handle on the
+      // same file. A WAL reader may need write access to the shared-memory
+      // index, so OPEN_READONLY is not a valid concurrency probe here.
+      probe = new Database(dbPath);
       const row = probe.prepare("PRAGMA journal_mode").get() as { journal_mode?: string } | null;
       probe.close();
+      probe = undefined;
       store.close();
+      store = undefined;
       // bun:sqlite returns the pragma value lower-cased; SQLite reports it
       // in lower-case too.
       expect(row?.journal_mode?.toLowerCase()).toBe("wal");
     } finally {
+      probe?.close();
+      store?.close();
       rmSync(tmp, { recursive: true, force: true });
     }
   });

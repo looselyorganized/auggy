@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { join } from "node:path";
+import { Database } from "bun:sqlite";
 import { createSqliteStore } from "@/augments/layeredMemory/storage/sqlite-store";
 import { createTempDir } from "@tests/fixtures/temp-dir";
 import type { MemoryStore } from "@/augments/layeredMemory/storage/types";
@@ -23,6 +24,30 @@ describe("SqliteStore", () => {
   afterEach(async () => {
     await store.close();
     await cleanup();
+  });
+
+  it("rejects an unrelated SQLite database without adding memory tables", async () => {
+    const unrelatedPath = `${dbPath}.unrelated`;
+    const unrelated = new Database(unrelatedPath);
+    unrelated.run("CREATE TABLE foreign_owner (secret TEXT NOT NULL)");
+    unrelated.close();
+
+    expect(() =>
+      createSqliteStore({ dbPath: unrelatedPath, retentionDays: 90 }),
+    ).toThrow(/recognized legacy schema/);
+
+    const probe = new Database(unrelatedPath, { readonly: true });
+    try {
+      const names = probe
+        .query<{ name: string }, []>(
+          "SELECT name FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' ORDER BY name",
+        )
+        .all()
+        .map((row) => row.name);
+      expect(names).toEqual(["foreign_owner"]);
+    } finally {
+      probe.close();
+    }
   });
 
   it("writes and reads back an entry", async () => {
