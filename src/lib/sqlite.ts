@@ -143,24 +143,29 @@ function canonicalPersistentPath(configuredPath: string, create: boolean, label:
 }
 
 function descriptorForArtifact(path: string, label: string): number | undefined {
-  const stat = lstatSync(path, { throwIfNoEntry: false });
-  if (!stat) return undefined;
-  if (stat.isSymbolicLink() || !stat.isFile()) {
-    throw contextualError(label, `SQLite artifact must be a regular non-symlink file: ${path}`);
+  let fd: number;
+  try {
+    fd = openSync(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") return undefined;
+    if (code === "ELOOP") {
+      throw contextualError(
+        label,
+        `SQLite artifact must be a regular non-symlink file: ${path}`,
+        error,
+      );
+    }
+    throw error;
   }
-  if (stat.nlink !== 1) {
-    throw contextualError(label, `SQLite artifact must not be hard-linked: ${path}`);
-  }
-  const fd = openSync(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
   const descriptorStat = fstatSync(fd);
-  if (
-    !descriptorStat.isFile() ||
-    descriptorStat.nlink !== 1 ||
-    descriptorStat.dev !== stat.dev ||
-    descriptorStat.ino !== stat.ino
-  ) {
+  if (!descriptorStat.isFile()) {
     closeSync(fd);
-    throw contextualError(label, `SQLite artifact changed during admission: ${path}`);
+    throw contextualError(label, `SQLite artifact must be a regular file: ${path}`);
+  }
+  if (descriptorStat.nlink !== 1) {
+    closeSync(fd);
+    throw contextualError(label, `SQLite artifact must not be hard-linked: ${path}`);
   }
   if (typeof process.getuid === "function" && descriptorStat.uid !== process.getuid()) {
     closeSync(fd);
@@ -187,7 +192,6 @@ function admitArtifacts(path: string, label: string, mutateModes: boolean): void
 }
 
 function precreateDatabase(path: string, label: string): boolean {
-  if (lstatSync(path, { throwIfNoEntry: false })) return false;
   const parentFd = openSync(
     dirname(path),
     fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW,
