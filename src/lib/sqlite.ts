@@ -190,6 +190,7 @@ function precreateDatabase(path: string, label: string): boolean {
     return true;
   } catch (error) {
     if (fd !== undefined) closeSync(fd);
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
     throw contextualError(label, `failed to securely create ${path}`, error);
   } finally {
     closeSync(parentFd);
