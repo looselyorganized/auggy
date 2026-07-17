@@ -6,7 +6,7 @@ It is a status index, not a roadmap.
 Status values:
 
 - **Published** — available in the latest npm release.
-- **On main** — implemented in the current release candidate but not published.
+- **On main** — implemented in the current unreleased source but not published.
 - **Preview** — implemented for deliberate experimentation; its API or
   production posture may still change.
 
@@ -38,7 +38,8 @@ When this file disagrees with code, code wins.
 | Layered memory | Published | [`05`](./05-memory-subsystem.md), [`07`](./07-built-in-augments.md) | Peer-scoped episodic memory; SQLite default |
 | Visitor auth | Published | [`19`](./19-visitor-auth.md) | Email magic-link recognition and visitor tokens |
 | Notify | Published | [`13`](./13-notify.md) | File, webhook, Telegram, and AgentMail destinations |
-| AgentMail outbound | Published | [`22`](./22-agent-mail.md) | Trust-gated model-callable outbound email; setup improvements are on main |
+| AgentMail outbound | Published | [`22`](./22-agent-mail.md) | Trust-gated model-callable send, reply, and forward tools |
+| AgentMail inbound and outbound review | On main | [`22`](./22-agent-mail.md) | Polling/WebSocket/Svix delivery, REST catch-up, durable ledger, and creator review; not in the published package yet |
 | Telegram transport | Published | [`14`](./14-telegram-transport.md) | Bidirectional Telegram conversations |
 | MCP | Published | [`24`](./24-mcp.md) | Local stdio and remote HTTP MCP servers |
 | Budgets | Preview | [`12`](./12-budgets.md) | Turn and spend guardrails, not billing control |
@@ -53,7 +54,7 @@ When this file disagrees with code, code wins.
 | Route manifest and OpenAPI-shaped export | On main | [`25`](./25-generated-route-clients.md) | Inspection through `auggy routes` |
 | Generated TypeScript route clients | On main | [`25`](./25-generated-route-clients.md) | Browser/server targets and typed successful responses |
 | Route auth modes | On main | [`19`](./19-visitor-auth.md), [`25`](./25-generated-route-clients.md) | Public, visitor, creator, bearer, and agent route postures |
-| Webhook route policy | On main | [`25`](./25-generated-route-clients.md), [`26`](./26-delegated-authorization.md) | Policy metadata and Stripe signature verification |
+| Webhook route policy | On main | [`25`](./25-generated-route-clients.md), [`26`](./26-delegated-authorization.md) | Policy metadata plus Stripe and Svix signature verification |
 | Delegated app authorization | On main | [`26`](./26-delegated-authorization.md) | App-signed scopes/grants enforced on routes and tools |
 
 These capabilities are usable, but they do not make Auggy a general web
@@ -61,6 +62,6 @@ framework, durable workflow engine, or persistent job queue.
 
 ## Package Snapshot
 
-- Latest published package: `0.4.4`.
-- Current release candidate: `0.5.0` on `main`.
+- Latest published package: `0.5.0`.
+- Current source: unreleased post-`0.5.0` work.
 - Source of truth: code in `src/`, followed by the numbered reference docs.

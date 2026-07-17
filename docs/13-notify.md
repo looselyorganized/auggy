@@ -292,7 +292,10 @@ Optional fields on the destination:
 - **Recipient cap.** AgentMail supports at most 50 recipients across an email send/reply/forward. Auggy rejects explicit recipient arrays over that cap before making the network request; `replyAll` can still expand server-side and may be rejected by AgentMail.
 - **No idempotency on send.** AgentMail's `messages.send` does not accept an idempotency key as of this writing. Duplicate sends are possible if a network blip lands during the request. For high-stakes messages, rely on the notify augment's existing dedup window (`rateLimit.dedupThreshold`).
 - **Free tier hard cap.** 100 emails/day. The runtime's `dailyBudgetUsd` does not model AgentMail tier limits — the operator should be aware that AgentMail can refuse delivery independently of runtime budgets.
-- **Tier-side WebSocket and webhook inbound** are **not** part of this adapter. This is outbound-only. For bidirectional email (visitors emailing the agent), see the planned `emailTransport` augment.
+- **Inbound delivery is not part of this adapter.** `notify` remains
+  outbound-only. For bidirectional email, add the separate `agentMail` augment;
+  it owns sender admission, durable polling/WebSocket/Svix ingestion, and email
+  turns.
 
 ## 5. Rate limiting
 

@@ -24,7 +24,7 @@ The core app-backend foundation is now on `main` as the `0.5.0` candidate:
 - Browser/server generated-client target filtering.
 - Route auth for public, visitor, creator, bearer, and admitted agent callers.
 - Delegated app authorization for routes and protected tools.
-- Stripe webhook signature verification.
+- Stripe and Svix webhook signature verification.
 - Concierge and app-auth bridge examples.
 
 The remaining work is less about proving the architecture and more about making

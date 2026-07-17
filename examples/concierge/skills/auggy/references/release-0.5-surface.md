@@ -12,7 +12,7 @@ now, but not a `1.0` stability promise.
 - typed tools,
 - identity, learned behavior, skills, and scoped filesystem access,
 - knowledge, web fetch, layered memory, and visitor recognition,
-- notify, AgentMail outbound, MCP, and Telegram,
+- notify, published AgentMail outbound, MCP, and Telegram,
 - Railway deployment.
 
 ## Advanced Preview
@@ -22,6 +22,9 @@ now, but not a `1.0` stability promise.
 - generated TypeScript route clients,
 - delegated app authorization,
 - Stripe webhook signature policy.
+- current-source AgentMail inbound (polling, WebSocket, or Svix webhook),
+  durable catch-up, and outbound human review; these are not in the published
+  `0.5.0` package yet.
 
 These capabilities are optional and do not make Auggy a general app backend.
 

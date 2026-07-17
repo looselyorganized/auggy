@@ -170,7 +170,7 @@ Core augments make the default agent work and are installed by `auggy create`.
 | `knowledge` | Local Markdown or API-backed reference material |
 | `layeredMemory` | Peer-scoped episodic memory backed by SQLite |
 | `visitorAuth` | Email magic-link recognition for returning visitors |
-| `agentMail` | Model-callable outbound email with policy and audit |
+| `agentMail` | Policy-gated send/receive email with durable inbound recovery and outbound review |
 | `notify` | Outbound alerts through file, webhook, Telegram, or AgentMail |
 | `telegramTransport` | Bidirectional Telegram conversations |
 | `mcp` | Tools exposed by local or remote MCP servers |
@@ -300,7 +300,8 @@ The default notification destination writes JSON Lines locally with no secrets.
 Configure a webhook, Telegram, or AgentMail destination when you need real
 delivery.
 
-For model-callable outbound email:
+For model-callable email (outbound ships in `0.5.0`; durable inbound is in the
+current unreleased source):
 
 ```bash
 auggy augment add agentMail

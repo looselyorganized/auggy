@@ -6,11 +6,11 @@ the compact feature/status matrix.
 
 ## Release Framing
 
-- **Latest published release:** `0.4.4`.
-- **Current `main`:** `0.5.0` release candidate. The app-backend foundation has
-  landed on `main` and package metadata is prepared, but it has not yet been
-  published to npm.
-- **Pre-1.0 cadence:** do not jump straight from `0.4.x` to `1.0.0`. Ship useful
+- **Latest published release:** `0.5.0`.
+- **Current source:** unreleased post-`0.5.0` work. The app-backend foundation
+  has shipped; durable AgentMail inbound/review is implemented but not yet
+  published.
+- **Pre-1.0 cadence:** do not jump straight from `0.5.x` to `1.0.0`. Ship useful
   `0.x` releases as the app-backend surface hardens.
 - **`1.0.0`:** the OSS GA line. It should mean the docs, examples, release
   process, and first-run/operator experience are defensible, not that every
@@ -27,7 +27,7 @@ Roadmap features live here. Implementation plans belong in `docs/plans/` or
 
 ## 0.5.0 — App-Backend Foundation
 
-Status: **on `main`, package metadata prepared, not yet published**.
+Status: **published in `0.5.0`**.
 
 What has landed:
 
@@ -42,7 +42,7 @@ What has landed:
   non-2xx result behavior.
 - Route auth modes: `none`, `bearer`, `creator`, `visitor.optional`,
   `visitor.required`, and `agent.required`.
-- Webhook policy metadata and runtime Stripe signature verification.
+- Webhook policy metadata and runtime Stripe/Svix signature verification.
 - Delegated authorization bridge for Supabase/Clerk/custom app sessions:
   external assertions, explicit scopes/grants, route `requires`, protected-tool
   `requires`, input/param-bound resource grants, key rotation, denial audit
@@ -104,20 +104,18 @@ querying SQLite or reading logs by hand.
 
 ---
 
-## 0.8.0 Candidate — Channels and Provider Hardening
+## 0.8.0 Candidate — Channel Expansion
 
-Goal: extend the runtime beyond browser chat while keeping inbound events
-auditable and deterministic.
+Goal: build on the durable AgentMail channel shape without widening the runtime
+faster than its audit and recovery model.
 
-- AgentMail inbound hardening: receive mail as a real inbound channel, catch up
-  after downtime, and choose polling/WebSocket/webhook transport based on the
-  audit model.
-- Additional webhook verifiers after Stripe, likely GitHub and Svix-style HMAC
-  providers.
+- Operational soak and provider-compatibility testing for AgentMail polling,
+  WebSocket, Svix webhook, durable catch-up, and outbound reconciliation.
+- Additional webhook verifiers after Stripe and Svix, likely GitHub.
 - Provider recipes for common app auth bridges beyond the current Supabase and
   Clerk examples.
-- Slack/SMS/voice candidates only after AgentMail proves the inbound channel
-  shape.
+- Slack/SMS/voice candidates only after the shipped AgentMail channel shape is
+  proven in production.
 
 ---
 

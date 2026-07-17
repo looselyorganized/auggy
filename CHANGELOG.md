@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Durable bidirectional AgentMail runtime.** `agentMail` can now receive mail
+  through polling, reconnecting WebSocket, or Svix-verified webhook delivery;
+  every mode performs REST catch-up through a checkpointed SQLite ledger with
+  leases, deduplication, bounded retries, and durable discards. Enabled inbound
+  requires an explicit sender allowlist, admits messages as public anonymous
+  peers, and renders bounded email envelopes as untrusted JSON. Reply and
+  forward remain limited to message IDs delivered in the current turn.
+- **Durable outbound AgentMail review and reconciliation.** Configured trust
+  levels receive `pending_review` rather than an immediate send. Exact queued
+  content is creator-authenticated and fingerprint-bound; approvals recheck
+  rate limits, records expire after 24 hours by default, and ambiguous provider
+  outcomes require explicit operator reconciliation instead of unsafe retries.
+- **Fail-closed Railway state admission and shared SQLite hardening.** Railway
+  now proves `/app/data` supports the atomic durability operations required by
+  runtime state before boot, namespaces AgentMail under
+  `/app/data/agent-mail/<augment-name>`, and routes core SQLite stores directly
+  to the volume. AgentMail, budgets, layered memory, and visitor auth share
+  schema-validated, branded SQLite opening with WAL/full-sync defaults.
+- **Svix webhook route verification.** Route policies can verify Svix envelopes
+  from the raw request body, expose provider delivery metadata to handlers, and
+  default to a 300-second timestamp tolerance.
 - **Bounded workspace awareness for filesystem-backed agents.** A configured
   `workspace` mount now contributes a request-ranked, metadata-only file
   catalog to creator and agent turns. The catalog skips hidden paths, excluded

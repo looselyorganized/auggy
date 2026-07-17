@@ -1,44 +1,60 @@
 # `agentMail` augment
 
-**Status:** Phase A (outbound) — shipping. Phase B (WebSocket / polling inbound) and Phase C (Svix-verified webhook inbound) tracked separately.
+**Availability:** outbound email ships in `0.5.0`. Durable inbound delivery,
+outbound human review, and Svix webhook verification are implemented in the
+current unreleased source and are not in the published package yet.
 
-Post-v1 inbound requirement: when inbound is enabled, `agentMail` must not rely
-only on a live connection. It needs an arrival path (WebSocket/polling/webhook)
-and a restart catch-up/checkpoint pass so an agent that was offline can discover
-mail it missed and inject it into the turn loop deliberately.
-
-Sends email through AgentMail with per-peer trust gating, recipient allowlist, rate limits, dedup, sensitive-content auditing, and console API status blocks. Exposes three model-facing tools whose names align with AgentMail's MCP standard: `send_message`, `reply_to_message`, `forward_message`.
+`agentMail` gives an agent a policy-gated AgentMail inbox. It exposes
+`send_message`, `reply_to_message`, and `forward_message`, and can turn admitted
+inbound email into normal Auggy turns through polling, WebSocket, or verified
+webhook delivery. Every enabled inbound mode also uses REST catch-up and a
+durable SQLite ledger, so a live connection is never the only record of mail.
 
 ## When to use
 
-Add `agentMail` when you want your agent to be able to:
+Add `agentMail` when the agent itself needs to send or receive email. It is a
+good fit for support inboxes, operational follow-up, and workflows where a
+person replies by email and the reply should wake the agent.
 
-- Compose and send transactional or proactive email from a dedicated inbox
-- Reply to inbound mail (Phase B — when a WebSocket / webhook delivers an inbound message into the turn loop)
-- Forward inbound mail to teammates or escalate to the operator
+Two related features have narrower jobs:
 
-If you only need email for `visitorAuth` magic links, you don't need this augment — `visitorAuth` continues to use the shared `agentmail-client.ts` directly. Run `auggy augment setup visitorAuth` to provision or configure the AgentMail inbox used for magic links. If you only need outbound notifications to a fixed destination (e.g. "ping the operator"), `notify` with the `agentmail` adapter is simpler.
+- `notify` sends outbound alerts to operator-configured destinations. Its
+  AgentMail adapter is outbound-only and does not make email a conversation.
+- `visitorAuth` sends magic links through its own AgentMail configuration. You
+  do not need the `agentMail` augment just to recognize returning visitors.
 
-After installing the `agentMail` augment, configure its inbox with:
+Install and configure the augment with:
 
 ```bash
+auggy augment add agentMail
 auggy augment setup agentMail
 ```
 
-## Why an augment and not the MCP server
+## Why an augment instead of AgentMail MCP
 
-AgentMail also runs a hosted MCP server at `https://mcp.agentmail.to/mcp` with the same tool surface. Use this augment instead when you need either:
+AgentMail's hosted MCP server is useful for on-demand mail operations. The
+augment is the stronger fit when email must live inside the agent runtime:
 
-1. **Inbound delivery into turns** (Phase B+). MCP is pull-only — it cannot push a `message.received` event into the agent's turn loop. A scheduler-driven "check inbox" loop via MCP runs a full LLM turn for every empty poll, which costs roughly $30/day per agent at 60s polling. The augment runs the polling/listening at the REST/WS layer and only invokes the LLM when there's actually mail.
-2. **Per-peer policy.** MCP can't see who's currently talking to the agent. The augment applies trust-level gating, recipient allowlist, rate limiting, and audit logging on every outbound call.
+- inbound events wake the model only when admitted mail exists; an external
+  scheduler does not spend full model turns polling an empty inbox;
+- sender, recipient, trust, rate, review, and classification policy are
+  enforced next to the turn kernel;
+- checkpoints, retries, deduplication, and ambiguous-send reconciliation are
+  durable runtime state.
 
-If you don't need either, mounting the MCP server is fine and arguably simpler.
+If you need only occasional operator-driven mail actions, the MCP server may be
+simpler.
 
 ## Configuration
+
+Inbound is disabled by default. Enabling it requires a non-empty sender
+allowlist. Exact addresses and `*@domain` patterns are compared case
+insensitively.
 
 ```yaml
 # agent.yaml
 augments:
+  - webTransport
   - agentMail
 
 # augments/agentMail/augment.yaml
@@ -46,102 +62,215 @@ type: agentMail
 config:
   apiKey: ${AGENTMAIL_API_KEY}
   inboxId: ${AGENTMAIL_INBOX_ID}
-  # apiBaseUrl: https://api.agentmail.to/v0  # override for sandbox
+  # apiBaseUrl: https://api.agentmail.to/v0
+  # dbPath: ./agent-mail.db
 
   outbound:
-    # Default ["creator"] — agent and public peers cannot send unless added.
+    # Default: [creator]
     allowedTrustLevels: [creator]
 
-    # When set, only these recipients may receive mail. Lowercased compare.
-    # Glob form: "*@example.com" matches any address at that domain.
-    # allowedRecipients:
-    #   - operator@acme.com
-    #   - "*@trusted.com"
+    # Optional. If present, every recipient must match.
+    allowedRecipients:
+      - operator@example.com
+      - "*@trusted.example"
 
-    # Hard cap on recipients per send. AgentMail's absolute ceiling is 50;
-    # we default to 10 to make accidental list-blast impossible.
     maxRecipients: 10
-
-    bodyMaxBytes: 102400  # 100KB
-    allowHtml: false       # default; opt in if you specifically need HTML
-
-    # Prepended to every outbound subject so recipients can identify
-    # agent-sent mail. Cannot be empty.
+    bodyMaxBytes: 102400
+    allowHtml: false
     subjectPrefix: "[Auggy] "
 
     rateLimit:
       enabled: true
       globalMaxPerHour: 10
-      perRecipientCooldownMs: 300000  # 5 min between sends to same address
-      dedupWindowMs: 300000           # 5 min subject-hash dedup
+      perRecipientCooldownMs: 300000
+      dedupWindowMs: 300000
+
+    humanReview:
+      # Default: [public]. A reviewed trust level must also be allowed above
+      # before it can propose an outbound action.
+      requiredForTrustLevels: [public]
+      expiresAfterMs: 86400000
 
   inbound:
-    mode: none  # Phase A only. Phase B will add "websocket"/"polling"; Phase C "webhook".
+    # none | polling | websocket | webhook
+    mode: websocket
+    allowedSenders:
+      - support@example.com
+      - "*@customer.example"
+    pollIntervalMs: 60000
+    maxPromptBytes: 102400
+    maxAttempts: 5
+    classifications:
+      received: process
+      spam: discard
+      blocked: discard
+      unauthenticated: discard
+    # websocketBaseUrl: wss://api.agentmail.to/v0
+    # webhook:
+    #   path: /webhooks/agentmail
+    #   secretEnv: AGENTMAIL_WEBHOOK_SECRET
+    #   timestampToleranceSeconds: 300
 ```
+
+`webTransport` is required for `inbound.mode: webhook`. It is also required
+with `adminRoute` enabled whenever an executable trust level requires outbound
+human review, because review decisions are creator-authenticated admin actions.
+
+Only one enabled inbound `agentMail` augment may own a given inbox. Multiple
+outbound-only instances can coexist, but two workers must not compete for the
+same inbound stream.
+
+## Choosing an inbound mode
+
+| Mode | Arrival path | Recovery behavior | Use it when |
+| --- | --- | --- | --- |
+| `none` | No inbound turns | No ledger worker | The agent only sends mail |
+| `polling` | Periodic AgentMail REST reads | The same reads advance a durable checkpoint | Simplicity is more important than immediate delivery |
+| `websocket` | AgentMail live subscription | REST catch-up runs after subscription and the SDK reconnects | You want low latency without a public callback URL |
+| `webhook` | Svix-verified HTTP callback | REST catch-up runs at boot; webhook deliveries are deduplicated in the ledger | The agent has a stable public URL |
+
+All enabled modes drain the same SQLite ledger. The ledger records provider
+delivery IDs and message IDs, checkpoints catch-up reads with overlap, leases a
+message to one worker, retries failed turns with bounded backoff, and durably
+marks processed or discarded mail. The default first-run lookback is 24 hours;
+checkpoint reads overlap by one minute to avoid boundary loss, with duplicates
+removed by the ledger.
+
+## Inbound trust and prompt shape
+
+Email is untrusted input, even when its sender matches `allowedSenders`.
+Admitted senders become deterministic `public` + `anonymous` peer identities
+scoped to the inbox, sender, and thread. `visitorAuth` does not silently promote
+an email sender.
+
+The runtime renders the provider envelope as bounded, explicitly untrusted JSON
+inside the turn. It never promotes email headers or body text into system
+instructions. Ordinary `message.received` events are processed by default;
+spam, blocked, and unauthenticated classifications are discarded unless the
+operator deliberately overrides that posture.
+
+Failed turns are retried. After `maxAttempts` (default 5), the message is
+durably discarded rather than looping forever. `maxPromptBytes` defaults to
+100 KiB and must be at least 512 bytes.
+
+## Model-facing tools
+
+| Tool | Important inputs | Result statuses |
+| --- | --- | --- |
+| `send_message` | `to[]`, `subject`, `text`, optional `html`, `labels` | `sent`, `pending_review`, `rate_limited`, `failed` |
+| `reply_to_message` | `messageId`, `text`, optional `html`, `replyAll`, `labels` | same |
+| `forward_message` | `messageId`, `to[]`, optional `text`, `html`, `subject`, `labels` | same |
+
+`reply_to_message` and `forward_message` accept only a message ID delivered to
+the agent in the current inbound turn. This prevents a prompt from guessing or
+supplying an arbitrary provider message ID. The turn-scoped record also gives a
+reply enough trusted envelope metadata to re-run recipient policy.
+
+## Outbound guards and human review
+
+Every outbound action passes these checks before AgentMail is called:
+
+| Layer | Behavior |
+| --- | --- |
+| Trust | Only `outbound.allowedTrustLevels`; creator/system calls remain the strict default |
+| Recipients | Optional exact/domain allowlist, valid email syntax, 10-recipient default, 50 hard maximum |
+| Content | 100 KiB default body cap, HTML opt-in, mandatory subject prefix, control-character and SMTP envelope checks |
+| Rate and dedup | Global hourly cap, per-recipient cooldown, and subject-hash duplicate window |
+| Sensitive scan | Token-shaped strings are flagged in the operator audit surface; the send is not silently rewritten |
+| Human review | Configured trust levels receive `pending_review` instead of immediate delivery |
+
+A pending action is stored durably with an immutable content fingerprint and a
+24-hour default expiry. The admin list redacts recipients; the exact request is
+available only from the creator-authenticated, `no-store` review detail route.
+Approval requires that inspection fingerprint, rechecks current rate limits,
+and sends the exact queued request. Rejection records an operator reason.
+
+Because AgentMail does not expose an idempotency key for sends, a connection
+failure after the provider may have accepted a request is treated as
+**ambiguous**. Auggy tells the model not to retry. The operator must inspect the
+provider and reconcile the attempt as sent or not sent; automatic retry could
+duplicate real email.
+
+## Webhook verification
+
+Webhook mode mounts `POST /webhooks/agentmail` by default. The shared route
+policy verifies the Svix signature against the raw request body before JSON
+parsing, uses `AGENTMAIL_WEBHOOK_SECRET` unless configured otherwise, and
+defaults to a 300-second timestamp tolerance. Generated browser clients omit
+webhook-policy routes.
 
 ## Environment variables
 
-| Var | What |
-|-----|------|
-| `AGENTMAIL_API_KEY` | Your AgentMail API key (starts with `am_`). |
-| `AGENTMAIL_INBOX_ID` | Inbox ID to send from / receive at (e.g. `support-agent@agentmail.to`). |
-| `AGENTMAIL_WEBHOOK_SECRET` | Added with Phase C — the `whsec_…` from AgentMail's webhook dashboard. |
+| Variable | Required when | Purpose |
+| --- | --- | --- |
+| `AGENTMAIL_API_KEY` | Always | AgentMail bearer key (`am_...`) |
+| `AGENTMAIL_INBOX_ID` | Always | Inbox used for send and receive |
+| `AGENTMAIL_WEBHOOK_SECRET` | Webhook mode, unless `secretEnv` changes | Svix signing secret (`whsec_...`) |
 
-## Tools exposed to the model
+Prefer an inbox-scoped, least-privilege key. The exact AgentMail permissions
+depend on the enabled send, receive, and live-subscription paths.
 
-| Tool | Inputs | Returns |
-|------|--------|---------|
-| `send_message` | `{ to[], subject, text, html?, labels?, threadKey? }` | `{ status: "sent" \| "rate_limited" \| "failed", messageId?, threadId?, message?, retryAfterSec? }` |
-| `reply_to_message` | `{ messageId, text, html?, replyAll?, labels? }` | same envelope |
-| `forward_message` | `{ messageId, to[], text?, html?, subject?, labels? }` | same envelope |
+## State and Railway durability
 
-`messageId` for reply/forward must be one the agent saw via its inbound trigger this turn. Phase A has no inbound delivery, so these two tools always fail in Phase A unless a test seam pre-populates the seen-set.
+Locally, a relative `dbPath` is resolved from the agent project. On Railway,
+AgentMail state is always rooted under:
 
-## Guards (every outbound tool)
+```text
+/app/data/agent-mail/<augment-name>/
+```
 
-| Layer | Behavior |
-|-------|----------|
-| **Trust-level gate** | Default `creator` only. `agent` and `public` peers rejected unless added to `outbound.allowedTrustLevels`. |
-| **Recipient allowlist** | If `outbound.allowedRecipients` is set, every recipient must match (exact or `*@domain` glob, lowercased). |
-| **Recipient cap** | `outbound.maxRecipients` (default 10, hard ceiling 50). |
-| **Body cap** | `outbound.bodyMaxBytes` (default 100KB). |
-| **HTML opt-in** | `outbound.allowHtml: false` by default. |
-| **Subject prefix** | `outbound.subjectPrefix` (default `"[Auggy] "`) is applied automatically. Cannot be empty. |
-| **Sanitization** | Control characters (CR/tab/etc.) stripped from subject. Bodies containing the SMTP `CRLF.CRLF` envelope-end sequence are rejected. |
-| **Rate limits** | Global cap per hour + per-recipient cooldown + subject-hash dedup. Creator (and null/system peer) bypass. |
-| **Sensitive scan** | Bodies containing token shapes (`am_`/`sk-`/`xoxb-`/`eyJ`/`gh[ousr]_`/`AKIA…`) are flagged in the admin ring buffer but the send proceeds. The model is taught (via the bundled skill) what to omit. |
+The deploy runtime fails closed unless `/app/data` is the advertised real
+volume mount. It creates the AgentMail state leaf with mode `0700` and proves
+create, fsync, atomic rename, directory fsync, and delete durability before the
+agent starts. A relative `dbPath` cannot escape its per-augment namespace.
 
-## Console/API info
+Other core SQLite stores also resolve directly onto the volume. Do not rely on
+root-level compatibility symlinks for AgentMail, memory, budgets, or
+visitor-auth state; only Link retains its legacy symlink path.
 
-AgentMail exposes admin-info blocks to the console dashboard API. The v1
-chat-first console does not render these as top-level controls by default.
-Future developer surfaces can show:
+## Operator visibility
 
-- Masked API key, inbox ID, current global cap (yaml vs override), allowed trust levels, recipient allowlist size
-- Last 50 dispatches with timestamp / tool / status / **redacted** recipients / subject
-- Actions: "Send test email" and "Adjust globalMaxPerHour" (persists via `admin-overrides.json`)
+The creator-authenticated admin surface reports:
 
-Recipients in the audit table are redacted (`al***@example.com (+2)`) so the admin view never leaks full address lists.
+- inbound mode and live state;
+- pending, processing, processed, and discarded ledger counts;
+- catch-up checkpoint, last catch-up summary, last inbound event, and last
+  worker outcome;
+- last provider error;
+- outbound sent, blocked, rate-limited, pending-review, and ambiguous attempts;
+- redacted recent dispatches and review rows;
+- test-send, cap adjustment, approve/reject, and ambiguous-send reconciliation
+  actions.
 
-## Common operator pitfalls
+## Common failures
 
-| Symptom | Cause | Fix |
-|---------|-------|-----|
-| Boot error: `AGENTMAIL_API_KEY is unresolved` | `.env` missing the var | Set `AGENTMAIL_API_KEY=am_…` in `.env`, restart |
-| Boot error: `healthcheck failed with HTTP 401` | Wrong API key | Verify the key in [console.agentmail.to](https://console.agentmail.to) |
-| Tool returns `failed: trust level "public" is not permitted` | Anonymous visitor asked the agent to send | Either ignore (correct) or add `agent`/`public` to `outbound.allowedTrustLevels` if you really want broader access |
-| Tool returns `rate_limited` on every send | Global cap or dedup window misconfigured | Set `outbound.rateLimit.globalMaxPerHour` |
-| Audit table shows `⚠` marker | Body contained a token-shaped string | Read the dispatch detail — operator's job to nudge the model toward better behavior |
+| Symptom | Likely cause and fix |
+| --- | --- |
+| `AGENTMAIL_API_KEY is unresolved` | Set the variable in `.env` and restart |
+| Inbox healthcheck returns 401/403 | Check the key, inbox ID, and provider permissions |
+| Inbound config rejects an empty allowlist | Add at least one exact sender or `*@domain`; enabled inbound is deny-by-default |
+| Webhook mode says `webTransport` is required | Mount `webTransport` so the verified route can be served |
+| Human review says the admin route is required | Enable `webTransport.adminRoute` or change review/allowed trust levels |
+| A reply says the message was not delivered this turn | Reply only from the turn triggered by that inbound message |
+| A send outcome is ambiguous | Do not retry; verify with AgentMail and use the admin reconciliation action |
+| Mail vanishes after Railway redeploy | Confirm the volume is mounted at exactly `/app/data`; admission should fail before boot if it is not durable |
 
-## What this augment does NOT do (yet)
+## Current limits
 
-- **Inbound delivery** — Phase B (WebSocket + polling) and Phase C (Svix webhook) ship separately.
-- **Attachments** — AgentMail supports base64; not yet implemented in the augment.
-- **Drafts** — AgentMail's `/drafts` endpoints are not exposed; defer.
-- **WebSocket transport for outbound events** — `message.sent` / `message.delivered` / `message.bounced` lands in the audit ring buffer once Phase B's inbound channel exists.
+- Outbound attachments are not exposed.
+- Draft endpoints, read receipts, retraction, and delivery-event turns are not
+  exposed.
+- An inbound email turn sees the triggering message, not an automatically
+  fetched full thread transcript.
 
 ## Related
 
-- `src/agentmail-client.ts` — the shared REST client used by this augment, `notify`'s `agentmail` adapter, and `visitorAuth`'s magic-link flow.
-- [`07-built-in-augments.md`](./07-built-in-augments.md) — augment-catalog overview.
-- AgentMail docs: [welcome](https://docs.agentmail.to/welcome) · [API reference](https://docs.agentmail.to/api-reference) · [WebSockets](https://docs.agentmail.to/websockets/quickstart) · [Webhook verification](https://docs.agentmail.to/webhook-verification).
+- [`13-notify.md`](./13-notify.md) — outbound alerts, including the separate
+  outbound-only AgentMail destination adapter.
+- [`18-deploy.md`](./18-deploy.md) — Railway volume admission and recovery.
+- [`19-visitor-auth.md`](./19-visitor-auth.md) — magic-link visitor recognition.
+- [`25-generated-route-clients.md`](./25-generated-route-clients.md) — route
+  policy and generated-client behavior.
+- AgentMail documentation: [API](https://docs.agentmail.to/api-reference),
+  [WebSockets](https://docs.agentmail.to/websockets/quickstart), and
+  [webhook verification](https://docs.agentmail.to/webhook-verification).
