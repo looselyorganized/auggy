@@ -1,9 +1,12 @@
 import { describe, test, expect } from "bun:test";
 import {
   checkRateLimit,
+  commitReservation,
   createRateLimitState,
   hashSubject,
   recordSend,
+  releaseReservation,
+  reserveSend,
 } from "../../../src/augments/agentMail/rate-limit";
 import {
   containsSmtpDotSequence,
@@ -98,11 +101,77 @@ describe("checkRateLimit", () => {
     expect(d.allowed).toBe(true);
   });
 
+  test("recordSend retains entries for configured windows longer than one hour", () => {
+    const s = createRateLimitState();
+    const sentAt = now - 2 * 3_600_000;
+    const longWindow = 24 * 3_600_000;
+    recordSend(s, ["a@x.com"], "Daily Digest", sentAt, {
+      perRecipientCooldownMs: longWindow,
+      dedupWindowMs: longWindow,
+    });
+    recordSend(s, ["b@x.com"], "Other", now, {
+      perRecipientCooldownMs: longWindow,
+      dedupWindowMs: longWindow,
+    });
+    expect(s.lastByRecipient.get("a@x.com")).toBe(sentAt);
+    expect(s.subjectHashes.get("daily digest")).toBe(sentAt);
+  });
+
   test("enabled: false bypasses every check", () => {
     const s = createRateLimitState();
     for (let i = 0; i < 100; i++) recordSend(s, [`r${i}@x.com`], `s${i}`, now);
     const d = checkRateLimit(s, ["alice@x.com"], "x", { enabled: false, globalMaxPerHour: 1 }, now);
     expect(d.allowed).toBe(true);
+  });
+
+  test("a reservation consumes capacity before provider completion and releases definitively", () => {
+    const s = createRateLimitState();
+    reserveSend(s, "attempt-1", ["Alice@X.com"], "Reserved", now);
+    expect(checkRateLimit(s, ["other@x.com"], "Other", { globalMaxPerHour: 1 }, now).allowed).toBe(
+      false,
+    );
+    expect(
+      checkRateLimit(s, ["alice@x.com"], "Different", { perRecipientCooldownMs: 60_000 }, now)
+        .allowed,
+    ).toBe(false);
+    expect(
+      checkRateLimit(s, ["other@x.com"], "reserved", { dedupWindowMs: 60_000 }, now).allowed,
+    ).toBe(false);
+    expect(releaseReservation(s, "attempt-1")).toBe(true);
+    expect(checkRateLimit(s, ["other@x.com"], "Other", { globalMaxPerHour: 1 }, now).allowed).toBe(
+      true,
+    );
+  });
+
+  test("committing the same attempt is idempotent", () => {
+    const s = createRateLimitState();
+    reserveSend(s, "attempt-1", ["a@x.com"], "Once", now);
+    expect(commitReservation(s, "attempt-1")).toBe(true);
+    expect(commitReservation(s, "attempt-1")).toBe(false);
+    expect(s.globalTimestamps).toEqual([now]);
+    expect(s.reservations.size).toBe(0);
+    expect(s.accountedAttemptIds.get("attempt-1")).toBe(now);
+  });
+
+  test("attempt IDs cannot be reused for a different reservation payload", () => {
+    const s = createRateLimitState();
+    reserveSend(s, "attempt-1", ["a@x.com"], "First", now);
+    expect(() => reserveSend(s, "attempt-1", ["b@x.com"], "Other", now)).toThrow(
+      /payload mismatch/,
+    );
+  });
+
+  test("commits prune expired attempt tombstones without a restart", () => {
+    const s = createRateLimitState();
+    const thirtyOneDaysAgo = now - 31 * 24 * 3_600_000;
+    const oneDayAgo = now - 24 * 3_600_000;
+    s.accountedAttemptIds.set("expired", thirtyOneDaysAgo);
+    s.accountedAttemptIds.set("recent", oneDayAgo);
+    reserveSend(s, "current", ["a@x.com"], "Current", now);
+    commitReservation(s, "current", {}, now);
+    expect(s.accountedAttemptIds.has("expired")).toBe(false);
+    expect(s.accountedAttemptIds.get("recent")).toBe(oneDayAgo);
+    expect(s.accountedAttemptIds.get("current")).toBe(now);
   });
 });
 

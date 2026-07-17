@@ -750,7 +750,6 @@ describe("runDeploy", () => {
         signingKey: "${VISITOR_SIGNING_KEY}",
         agentBinding: "${AUGGY_AGENT_ID}",
         allowConsoleInProduction: true,
-        layeredMemoryDbPath: "./runtime/memory-ledger.bin",
       },
     });
     writeFileSync(
@@ -766,30 +765,25 @@ describe("runDeploy", () => {
     );
 
     const { cli, calls } = mockRailwayCli();
-    const runtimeDir = join(agentDir, "runtime");
-    mkdirSync(runtimeDir, { recursive: true });
-    cli.checkPresence = async () => {
-      calls.checkPresence++;
-      for (const suffix of ["", "-wal", "-shm", "-journal"]) {
-        writeFileSync(
-          join(runtimeDir, `memory-ledger.bin${suffix}`),
-          `peer=private@example.com memory=DO_NOT_STAGE_VISITOR_MEMORY${suffix}`,
-        );
-      }
-      return true as const;
-    };
-    let leakedLayeredMemory = false;
-    cli.linkProject = async (args) => {
-      calls.linkProject.push(args);
-      leakedLayeredMemory = ["", "-wal", "-shm", "-journal"].some((suffix) =>
-        existsSync(join(args.cwd, "runtime", `memory-ledger.bin${suffix}`)),
-      );
-    };
     await runDeploy("zip", baseDeployOptions(cli, auggyDir));
 
     expect(calls.checkPresence).toBe(1);
     expect(calls.up).toBe(1);
-    expect(leakedLayeredMemory).toBe(false);
+  });
+
+  test("rejects custom legacy SQLite paths outside the Railway volume", async () => {
+    appendAugmentId(agentDir, "budgets");
+    writeAugmentMetadata(agentDir, "budgets", {
+      type: "budgets",
+      config: { dbPath: "./runtime/budget-ledger.bin" },
+    });
+    const { cli, calls } = mockRailwayCli();
+
+    await expect(runDeploy("zip", baseDeployOptions(cli, auggyDir))).rejects.toThrow(
+      /budgets\.dbPath must remain \.\/budgets\.db or resolve below \.\/data/,
+    );
+    expect(calls.checkPresence).toBe(0);
+    expect(calls.up).toBe(0);
   });
 
   test("aborts before Railway calls when budgets deploy posture is not acknowledged", async () => {

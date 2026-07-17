@@ -1,9 +1,10 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { agentMail } from "../../../src/augments/agentMail";
 import { createAgentMailInboundLedger } from "../../../src/augments/agentMail/inbound-ledger";
+import { createAgentMailReviewQueue } from "../../../src/augments/agentMail/review-queue";
 import type { AgentMailSdkAdapters } from "../../../src/augments/agentMail/sdk-provider";
 import type {
   AgentMailClient,
@@ -255,6 +256,513 @@ describe("send_message trust-level gate", () => {
     );
     expect(result.status).toBe("sent");
     expect(log.send).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Reviewed-send crash safety
+// ---------------------------------------------------------------------------
+
+describe("reviewed send delivery outcomes", () => {
+  const request = { to: ["customer@example.com"], subject: "Hi", text: "Body" };
+  const outbound = { allowedTrustLevels: ["public" as const] };
+
+  async function queueAndApprove(
+    stateDir: string,
+    client: AgentMailClient,
+  ): Promise<{ reviewId: string; approval: AdminActionResult }> {
+    const queue = createAgentMailReviewQueue({ stateDir });
+    const aug = agentMail({
+      ...baseOpts,
+      stateDir,
+      _client: client,
+      _reviewQueue: queue,
+      outbound,
+    });
+    const proposed = JSON.parse(
+      await asStr(tool(aug, "send_message")).execute(request, ctx(peer("public"))),
+    ) as { status: string; reviewId: string };
+    expect(proposed.status).toBe("pending_review");
+    const fingerprint = queue.get(proposed.reviewId)?.fingerprint;
+    if (!fingerprint) throw new Error("queued review missing fingerprint");
+    const approval = await aug.adminActions!["agentmail-review-approve"]!({
+      reviewId: proposed.reviewId,
+      fingerprint,
+    });
+    return { reviewId: proposed.reviewId, approval };
+  }
+
+  async function expectRestartReplayBlocked(stateDir: string): Promise<void> {
+    const { client: restartedClient, log } = fakeClient();
+    const restarted = agentMail({ ...baseOpts, stateDir, _client: restartedClient, outbound });
+    const replay = JSON.parse(
+      await asStr(tool(restarted, "send_message")).execute(request, ctx(peer("public"))),
+    );
+    expect(["failed", "rate_limited"]).toContain(replay.status);
+    expect(log.send).toHaveLength(0);
+  }
+
+  test("a thrown reviewed send remains sending across restart and blocks replay", async () => {
+    const stateDir = makeTmpDir();
+    const { client } = fakeClient({
+      async send() {
+        throw new Error("socket reset after request write");
+      },
+    });
+    const { reviewId, approval } = await queueAndApprove(stateDir, client);
+
+    expect(approval).toEqual({
+      ok: false,
+      message: `Review ${reviewId} has an ambiguous delivery outcome; operator reconciliation is required`,
+    });
+    expect(createAgentMailReviewQueue({ stateDir }).get(reviewId)?.state).toBe("sending");
+    await expectRestartReplayBlocked(stateDir);
+  });
+
+  test("a status-less reviewed failure remains sending across restart and blocks replay", async () => {
+    const stateDir = makeTmpDir();
+    const { client } = fakeClient({
+      async send() {
+        return { status: "failed" as const, detail: "request timed out" };
+      },
+    });
+    const { reviewId, approval } = await queueAndApprove(stateDir, client);
+
+    expect(approval.ok).toBe(false);
+    expect(approval.message).toMatch(/ambiguous delivery outcome/);
+    expect(createAgentMailReviewQueue({ stateDir }).get(reviewId)?.state).toBe("sending");
+    await expectRestartReplayBlocked(stateDir);
+  });
+
+  test("a definitive HTTP rejection becomes retryable as a new review", async () => {
+    const stateDir = makeTmpDir();
+    const { client } = fakeClient({
+      async send() {
+        return {
+          status: "failed" as const,
+          detail: "agentmail returned 503: unavailable",
+          httpStatus: 503,
+        };
+      },
+    });
+    const { reviewId, approval } = await queueAndApprove(stateDir, client);
+
+    expect(approval).toEqual({ ok: false, message: `Review ${reviewId} failed (HTTP 503)` });
+    expect(createAgentMailReviewQueue({ stateDir }).get(reviewId)?.state).toBe("failed");
+
+    const { client: restartedClient, log } = fakeClient();
+    const restarted = agentMail({ ...baseOpts, stateDir, _client: restartedClient, outbound });
+    const retried = JSON.parse(
+      await asStr(tool(restarted, "send_message")).execute(request, ctx(peer("public"))),
+    ) as { status: string; reviewId: string };
+    expect(retried.status).toBe("pending_review");
+    expect(retried.reviewId).not.toBe(reviewId);
+    expect(log.send).toHaveLength(0);
+  });
+});
+
+describe("direct send durability journal", () => {
+  test("a durable reservation prevents concurrent sends from exceeding cap one", async () => {
+    const stateDir = makeTmpDir();
+    let releaseProvider!: () => void;
+    const providerGate = new Promise<void>((resolve) => {
+      releaseProvider = resolve;
+    });
+    let providerCalls = 0;
+    const { client } = fakeClient({
+      async send() {
+        providerCalls++;
+        await providerGate;
+        return { status: "sent", messageId: "first", threadId: "thread" };
+      },
+    });
+    const aug = agentMail({
+      ...baseOpts,
+      stateDir,
+      _client: client,
+      outbound: {
+        allowedTrustLevels: ["creator", "agent"],
+        rateLimit: { globalMaxPerHour: 1, perRecipientCooldownMs: 0, dedupWindowMs: 0 },
+      },
+    });
+    const send = asStr(tool(aug, "send_message"));
+    const first = send.execute(
+      { to: ["a@x.com"], subject: "First", text: "Body" },
+      ctx(peer("agent")),
+    );
+    await Promise.resolve();
+    const second = JSON.parse(
+      await send.execute({ to: ["b@x.com"], subject: "Second", text: "Body" }, ctx(peer("agent"))),
+    );
+    expect(second.status).toBe("rate_limited");
+    expect(providerCalls).toBe(1);
+    releaseProvider();
+    expect(JSON.parse(await first).status).toBe("sent");
+  });
+
+  test("an ambiguous attempt reserves capacity for different mail across restart", async () => {
+    const stateDir = makeTmpDir();
+    const options = {
+      ...baseOpts,
+      stateDir,
+      outbound: {
+        allowedTrustLevels: ["creator", "agent"] as PeerIdentity["trustLevel"][],
+        rateLimit: { globalMaxPerHour: 1, perRecipientCooldownMs: 0, dedupWindowMs: 0 },
+      },
+    };
+    const first = fakeClient({
+      async send() {
+        throw new Error("connection reset after provider acceptance");
+      },
+    });
+    await asStr(tool(agentMail({ ...options, _client: first.client }), "send_message")).execute(
+      { to: ["a@x.com"], subject: "Ambiguous", text: "Body" },
+      ctx(peer("agent")),
+    );
+    const restartedClient = fakeClient();
+    const restarted = agentMail({ ...options, _client: restartedClient.client });
+    const different = JSON.parse(
+      await asStr(tool(restarted, "send_message")).execute(
+        { to: ["b@x.com"], subject: "Different", text: "Body" },
+        ctx(peer("agent")),
+      ),
+    );
+    expect(different.status).toBe("rate_limited");
+    expect(restartedClient.log.send).toHaveLength(0);
+  });
+
+  test("an ambiguous direct send remains sending across restart and blocks provider replay", async () => {
+    const stateDir = makeTmpDir();
+    let firstCalls = 0;
+    const first = fakeClient({
+      async send() {
+        firstCalls++;
+        throw new Error("connection reset after provider acceptance");
+      },
+    });
+    const options = {
+      ...baseOpts,
+      stateDir,
+      outbound: {
+        allowedTrustLevels: ["creator", "agent"] as PeerIdentity["trustLevel"][],
+        rateLimit: { globalMaxPerHour: 100, perRecipientCooldownMs: 0, dedupWindowMs: 0 },
+      },
+    };
+    const input = { to: ["a@x.com"], subject: "Crash window", text: "Body" };
+    const initial = JSON.parse(
+      await asStr(tool(agentMail({ ...options, _client: first.client }), "send_message")).execute(
+        input,
+        ctx(peer("agent")),
+      ),
+    );
+    expect(initial).toMatchObject({ status: "failed" });
+    expect(initial.message).toMatch(/ambiguous.*Do not retry/i);
+    expect(firstCalls).toBe(1);
+
+    let replayCalls = 0;
+    const restarted = fakeClient({
+      async send() {
+        replayCalls++;
+        return { status: "sent", messageId: "duplicate", threadId: "duplicate-thread" };
+      },
+    });
+    const replay = JSON.parse(
+      await asStr(
+        tool(agentMail({ ...options, _client: restarted.client }), "send_message"),
+      ).execute(input, ctx(peer("agent"))),
+    );
+    expect(replay).toMatchObject({ status: "failed" });
+    expect(replay.message).toMatch(/ambiguous sending state|operator reconciliation/i);
+    expect(replayCalls).toBe(0);
+  });
+
+  test("an operator can reconcile a provider-confirmed send without replaying it", async () => {
+    const stateDir = makeTmpDir();
+    const options = {
+      ...baseOpts,
+      stateDir,
+      outbound: {
+        allowedTrustLevels: ["creator", "agent"] as PeerIdentity["trustLevel"][],
+        rateLimit: { globalMaxPerHour: 1, perRecipientCooldownMs: 0, dedupWindowMs: 0 },
+      },
+    };
+    const first = fakeClient({
+      async send() {
+        throw new Error("connection reset after provider acceptance");
+      },
+    });
+    await asStr(tool(agentMail({ ...options, _client: first.client }), "send_message")).execute(
+      { to: ["a@x.com"], subject: "Crash window", text: "Body" },
+      ctx(peer("agent")),
+    );
+    const ambiguous = createAgentMailReviewQueue({ stateDir }).list()[0]!;
+    expect(ambiguous.state).toBe("sending");
+
+    let replayCalls = 0;
+    const restartedClient = fakeClient({
+      async send(input) {
+        replayCalls++;
+        return { status: "sent", messageId: input.subject, threadId: "unexpected" };
+      },
+    });
+    const restarted = agentMail({ ...options, _client: restartedClient.client });
+    const reviewRoute = restarted.httpRoutes!.find(
+      (route) => route.path === "/agentmail/reviews/:reviewId",
+    )!;
+    const inspection = await reviewRoute.handler(
+      new Request(`https://example.test/agentmail/reviews/${ambiguous.id}`),
+      { signal: AbortSignal.timeout(1_000), params: { reviewId: ambiguous.id } },
+    );
+    expect(inspection.status).toBe(200);
+    expect(await inspection.json()).toMatchObject({ state: "sending" });
+
+    const reconciled = await restarted.adminActions!["agentmail-review-reconcile-sent"]!({
+      reviewId: ambiguous.id,
+      fingerprint: ambiguous.fingerprint,
+      messageId: "provider-confirmed-id",
+      threadId: "provider-confirmed-thread",
+      evidence: "matched the recipient, subject, and provider timestamp",
+    });
+    expect(reconciled).toEqual({
+      ok: true,
+      message: `Review ${ambiguous.id} reconciled as sent`,
+    });
+    expect(createAgentMailReviewQueue({ stateDir }).get(ambiguous.id)).toMatchObject({
+      state: "approved",
+      providerMessageId: "provider-confirmed-id",
+      providerThreadId: "provider-confirmed-thread",
+      detail: expect.stringContaining("matched the recipient, subject, and provider timestamp"),
+    });
+    const later = JSON.parse(
+      await asStr(tool(restarted, "send_message")).execute(
+        { to: ["b@x.com"], subject: "Other mail", text: "Body" },
+        ctx(peer("agent")),
+      ),
+    );
+    expect(later.status).toBe("rate_limited");
+    expect(replayCalls).toBe(0);
+  });
+
+  test("only fingerprint-bound evidence can release an ambiguous send for retry", async () => {
+    const stateDir = makeTmpDir();
+    const options = {
+      ...baseOpts,
+      stateDir,
+      outbound: {
+        allowedTrustLevels: ["creator", "agent"] as PeerIdentity["trustLevel"][],
+        rateLimit: { globalMaxPerHour: 100, perRecipientCooldownMs: 0, dedupWindowMs: 0 },
+      },
+    };
+    const first = fakeClient({
+      async send() {
+        throw new Error("connection reset after provider acceptance");
+      },
+    });
+    const input = { to: ["a@x.com"], subject: "Crash window", text: "Body" };
+    await asStr(tool(agentMail({ ...options, _client: first.client }), "send_message")).execute(
+      input,
+      ctx(peer("agent")),
+    );
+    const ambiguous = createAgentMailReviewQueue({ stateDir }).list()[0]!;
+    const restarted = agentMail({ ...options, _client: fakeClient().client });
+
+    expect(
+      await restarted.adminActions!["agentmail-review-reconcile-failed"]!({
+        reviewId: ambiguous.id,
+        fingerprint: "wrong-fingerprint",
+        reason: "provider search returned no matching message",
+      }),
+    ).toMatchObject({ ok: false, message: expect.stringContaining("fingerprint mismatch") });
+    expect(createAgentMailReviewQueue({ stateDir }).get(ambiguous.id)?.state).toBe("sending");
+
+    expect(
+      await restarted.adminActions!["agentmail-review-reconcile-failed"]!({
+        reviewId: ambiguous.id,
+        fingerprint: ambiguous.fingerprint,
+        reason: "provider search returned no matching message",
+      }),
+    ).toEqual({ ok: true, message: `Review ${ambiguous.id} reconciled as not sent` });
+    expect(createAgentMailReviewQueue({ stateDir }).get(ambiguous.id)).toMatchObject({
+      state: "failed",
+      detail: expect.stringContaining("provider search returned no matching message"),
+    });
+  });
+
+  test("reconciling after a queue commit crash charges one attempt exactly once", async () => {
+    const stateDir = makeTmpDir();
+    const durableQueue = createAgentMailReviewQueue({ stateDir });
+    const crashingQueue = {
+      ...durableQueue,
+      approve() {
+        throw new Error("simulated crash before queue approval commit");
+      },
+    };
+    const options = {
+      ...baseOpts,
+      stateDir,
+      outbound: {
+        allowedTrustLevels: ["creator", "agent"] as PeerIdentity["trustLevel"][],
+        rateLimit: { globalMaxPerHour: 10, perRecipientCooldownMs: 0, dedupWindowMs: 0 },
+      },
+    };
+    const first = fakeClient();
+    await expect(
+      asStr(
+        tool(
+          agentMail({ ...options, _client: first.client, _reviewQueue: crashingQueue }),
+          "send_message",
+        ),
+      ).execute({ to: ["a@x.com"], subject: "Commit crash", text: "Body" }, ctx(peer("agent"))),
+    ).rejects.toThrow(/simulated crash/);
+    const ambiguous = createAgentMailReviewQueue({ stateDir }).list()[0]!;
+    expect(ambiguous.state).toBe("sending");
+
+    const restarted = agentMail({ ...options, _client: fakeClient().client });
+    expect(
+      await restarted.adminActions!["agentmail-review-reconcile-sent"]!({
+        reviewId: ambiguous.id,
+        fingerprint: ambiguous.fingerprint,
+        messageId: "provider-confirmed-id",
+        evidence: "matched provider delivery log",
+      }),
+    ).toMatchObject({ ok: true });
+    const persisted = JSON.parse(readFileSync(join(stateDir, "agent-mail-state.json"), "utf8"));
+    expect(persisted.globalTimestamps).toHaveLength(1);
+    expect(Object.keys(persisted.accountedAttemptIds)).toEqual([ambiguous.id]);
+  });
+
+  for (const [label, executeContext] of [
+    ["creator", () => ctx(peer("creator"))],
+    ["system", () => ctx(null)],
+  ] as const) {
+    test(`${label} sends retain a durable ambiguous marker across restart`, async () => {
+      const stateDir = makeTmpDir();
+      const input = { to: ["a@x.com"], subject: `${label} crash`, text: "Body" };
+      let firstCalls = 0;
+      const first = fakeClient({
+        async send() {
+          firstCalls++;
+          throw new Error("connection reset after provider acceptance");
+        },
+      });
+      const firstAugment = agentMail({ ...baseOpts, stateDir, _client: first.client });
+      const initial = JSON.parse(
+        await asStr(tool(firstAugment, "send_message")).execute(input, executeContext()),
+      );
+      expect(initial.message).toMatch(/ambiguous/i);
+      expect(firstCalls).toBe(1);
+
+      let replayCalls = 0;
+      const restartedClient = fakeClient({
+        async send() {
+          replayCalls++;
+          return { status: "sent", messageId: "duplicate", threadId: "duplicate" };
+        },
+      });
+      const restarted = agentMail({ ...baseOpts, stateDir, _client: restartedClient.client });
+      const replay = JSON.parse(
+        await asStr(tool(restarted, "send_message")).execute(input, executeContext()),
+      );
+      expect(replay.message).toMatch(/ambiguous sending state|operator reconciliation/i);
+      expect(replayCalls).toBe(0);
+    });
+  }
+
+  test("admin test sends retain a durable ambiguous marker across restart", async () => {
+    const stateDir = makeTmpDir();
+    let firstCalls = 0;
+    const first = fakeClient({
+      async send() {
+        firstCalls++;
+        throw new Error("connection reset after provider acceptance");
+      },
+    });
+    const params = { to: "operator@x.com", subject: "Admin crash", text: "Body" };
+    const initial = await agentMail({
+      ...baseOpts,
+      stateDir,
+      _client: first.client,
+    }).adminActions!["agentmail-test-send"]!(params);
+    expect(initial).toMatchObject({ ok: false, message: expect.stringContaining("ambiguous") });
+    expect(firstCalls).toBe(1);
+
+    let replayCalls = 0;
+    const restartedClient = fakeClient({
+      async send() {
+        replayCalls++;
+        return { status: "sent", messageId: "duplicate", threadId: "duplicate" };
+      },
+    });
+    const replay = await agentMail({
+      ...baseOpts,
+      stateDir,
+      _client: restartedClient.client,
+    }).adminActions!["agentmail-test-send"]!(params);
+    expect(replay).toMatchObject({
+      ok: false,
+      message: expect.stringMatching(/ambiguous sending state|operator reconciliation/i),
+    });
+    expect(replayCalls).toBe(0);
+  });
+
+  test("creator reply and forward attempts cannot replay after ambiguous acceptance", async () => {
+    for (const kind of ["reply", "forward"] as const) {
+      const stateDir = makeTmpDir();
+      let firstCalls = 0;
+      const first = fakeClient({
+        async reply() {
+          firstCalls++;
+          throw new Error("connection reset after provider acceptance");
+        },
+        async forward() {
+          firstCalls++;
+          throw new Error("connection reset after provider acceptance");
+        },
+      });
+      const firstAugment = agentMail({
+        ...baseOpts,
+        stateDir,
+        _client: first.client,
+      }) as ReturnType<typeof agentMail> & {
+        _markSeenForTest: (id: string, meta: { from: string }) => void;
+      };
+      firstAugment._markSeenForTest("inbound_1", { from: "customer@example.com" });
+      const toolName = kind === "reply" ? "reply_to_message" : "forward_message";
+      const input =
+        kind === "reply"
+          ? { messageId: "inbound_1", text: "Reply body" }
+          : { messageId: "inbound_1", to: ["ops@example.com"], text: "Forward body" };
+      expect(
+        JSON.parse(await asStr(tool(firstAugment, toolName)).execute(input, ctx(peer("creator"))))
+          .message,
+      ).toMatch(/ambiguous/i);
+      expect(firstCalls).toBe(1);
+
+      let replayCalls = 0;
+      const restartedClient = fakeClient({
+        async reply() {
+          replayCalls++;
+          return { status: "sent", messageId: "duplicate", threadId: "duplicate" };
+        },
+        async forward() {
+          replayCalls++;
+          return { status: "sent", messageId: "duplicate", threadId: "duplicate" };
+        },
+      });
+      const restarted = agentMail({
+        ...baseOpts,
+        stateDir,
+        _client: restartedClient.client,
+      }) as ReturnType<typeof agentMail> & {
+        _markSeenForTest: (id: string, meta: { from: string }) => void;
+      };
+      restarted._markSeenForTest("inbound_1", { from: "customer@example.com" });
+      expect(
+        JSON.parse(await asStr(tool(restarted, toolName)).execute(input, ctx(peer("creator"))))
+          .message,
+      ).toMatch(/ambiguous sending state|operator reconciliation/i);
+      expect(replayCalls).toBe(0);
+    }
   });
 });
 
@@ -810,6 +1318,12 @@ describe("rate-limit persistence — Codex #3", () => {
   test("latches durable write failures and blocks subsequent non-creator sends", async () => {
     const stateDir = makeTmpDir();
     const { client, log } = fakeClient();
+    client.send = async (input) => {
+      log.send.push(input);
+      rmSync(join(stateDir, "agent-mail-state.json"));
+      mkdirSync(join(stateDir, "agent-mail-state.json"));
+      return { status: "sent", messageId: "msg_1", threadId: "thd_1" };
+    };
     const aug = agentMail({
       ...baseOpts,
       _client: client,
@@ -819,8 +1333,6 @@ describe("rate-limit persistence — Codex #3", () => {
         rateLimit: { globalMaxPerHour: 100, perRecipientCooldownMs: 0, dedupWindowMs: 0 },
       },
     });
-    rmSync(stateDir, { recursive: true });
-    writeFileSync(stateDir, "not a directory");
     const send = asStr(tool(aug, "send_message"));
 
     const accepted = JSON.parse(

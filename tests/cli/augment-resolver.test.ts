@@ -7,6 +7,7 @@ import {
   openSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
@@ -977,6 +978,7 @@ describe("resolveAugments — agentMail runtime state paths", () => {
 
   test("resolves scaffold ./agent-mail.db inside the Railway instance state directory", async () => {
     const runtimeDataRoot = join(TMP, "railway-data");
+    mkdirSync(runtimeDataRoot, { recursive: true });
     const augments = await resolveAugments([agentMailConfig("support", "./agent-mail.db")], TMP, {
       runtimeDataRoot,
     });
@@ -994,6 +996,7 @@ describe("resolveAugments — agentMail runtime state paths", () => {
 
   test("uses the augment name to isolate two Railway AgentMail ledgers", async () => {
     const runtimeDataRoot = join(TMP, "railway-data");
+    mkdirSync(runtimeDataRoot, { recursive: true });
     const augments = await resolveAugments(
       [agentMailConfig("support"), agentMailConfig("billing")],
       TMP,
@@ -1011,6 +1014,16 @@ describe("resolveAugments — agentMail runtime state paths", () => {
     } finally {
       for (const augment of augments) await augment.onShutdown?.();
     }
+  });
+
+  test("rejects two inbound AgentMail instances consuming the same inbox", async () => {
+    const first = agentMailConfig("support");
+    const second = agentMailConfig("billing");
+    second.options!.inboxId = first.options!.inboxId;
+
+    await expect(resolveAugments([first, second], TMP)).rejects.toThrow(
+      /one inbox may have only one inbound ledger/,
+    );
   });
 
   test("rejects an absolute AgentMail dbPath when a Railway runtime root is active", async () => {
@@ -1038,6 +1051,24 @@ describe("resolveAugments — agentMail runtime state paths", () => {
         runtimeDataRoot,
       }),
     ).rejects.toThrow(/agentMail.*dbPath.*state directory/i);
+  });
+
+  test("rejects symlinked directories inside a Railway AgentMail database path", async () => {
+    const runtimeDataRoot = join(TMP, "railway-data");
+    const stateDir = join(runtimeDataRoot, "agent-mail", "support");
+    const external = join(TMP, "external-mail-state");
+    mkdirSync(stateDir, { recursive: true });
+    mkdirSync(external, { recursive: true });
+    symlinkSync(external, join(stateDir, "nested"));
+
+    await expect(
+      resolveAugments([agentMailConfig("support", "nested/mail.bin")], TMP, {
+        runtimeDataRoot,
+      }),
+    ).rejects.toThrow(/must not contain symlinked directories/);
+    expect(existsSync(join(external, "mail.bin"))).toBe(false);
+    expect(existsSync(join(external, "mail.bin-wal"))).toBe(false);
+    expect(existsSync(join(external, "mail.bin-shm"))).toBe(false);
   });
 
   test("keeps local relative AgentMail dbPath resolution anchored to agentDir", async () => {

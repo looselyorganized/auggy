@@ -66,14 +66,19 @@ describe("AgentMail outbound review queue", () => {
   });
 
   test("requires the pending -> sending -> approved transition", () => {
-    const queue = createAgentMailReviewQueue({ now: () => 1_000, id: () => "r1" });
+    let now = 1_000;
+    const queue = createAgentMailReviewQueue({ now: () => now, id: () => "r1" });
     queue.enqueue(proposal());
     expect(() => queue.approve("r1", {})).toThrow(/expected sending/);
-    expect(queue.beginApproval("r1").state).toBe("sending");
-    expect(queue.approve("r1", { messageId: "sent_1" })).toMatchObject({
-      state: "approved",
-      providerMessageId: "sent_1",
-    });
+    now = 1_100;
+    expect(queue.beginApproval("r1")).toMatchObject({ state: "sending", attemptedAt: 1_100 });
+    expect(queue.approve("r1", { messageId: "sent_1", detail: "operator evidence" })).toMatchObject(
+      {
+        state: "approved",
+        providerMessageId: "sent_1",
+        detail: "operator evidence",
+      },
+    );
     expect(() => queue.beginApproval("r1")).toThrow(/approved/);
   });
 

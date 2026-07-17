@@ -23,7 +23,7 @@
  */
 
 import { copyFileSync, existsSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getAgentFromDir, setCloudForDir } from "../agent-index";
 import { parseConfig } from "../config-parser";
@@ -626,6 +626,8 @@ function assertRailwayDeploySafeConfig(configPath: string): ReturnType<typeof pa
     );
   }
 
+  assertRailwayLegacyDatabasePaths(config);
+
   const visitorAuth = config.augments.find((augment) => augment.type === "visitorAuth");
   if (!visitorAuth) return config;
 
@@ -651,6 +653,48 @@ function assertRailwayDeploySafeConfig(configPath: string): ReturnType<typeof pa
       "    This acknowledges that magic links will appear in Railway logs.",
     ].join("\n"),
   );
+}
+
+function assertRailwayLegacyDatabasePaths(config: ReturnType<typeof parseConfig>): void {
+  const expectedByType: Record<
+    string,
+    ReadonlyArray<{ field: "dbPath" | "layeredMemoryDbPath"; expected: string; nullable?: boolean }>
+  > = {
+    layeredMemory: [{ field: "dbPath", expected: "./memory.db" }],
+    budgets: [{ field: "dbPath", expected: "./budgets.db" }],
+    visitorAuth: [
+      { field: "dbPath", expected: "./visitor-auth.db" },
+      { field: "layeredMemoryDbPath", expected: "./memory.db", nullable: true },
+    ],
+    link: [{ field: "dbPath", expected: "./link.db" }],
+  };
+
+  for (const augment of config.augments) {
+    for (const rule of expectedByType[augment.type] ?? []) {
+      const value = augment.options?.[rule.field];
+      if (value === undefined || (rule.nullable && value === null)) continue;
+      const resolvedPath = typeof value === "string" ? resolve("/app", value) : "";
+      const fromVolume = relative("/app/data", resolvedPath);
+      const isDirectVolumePath =
+        fromVolume !== "" &&
+        fromVolume !== ".." &&
+        !fromVolume.startsWith(`..${sep}`) &&
+        !isAbsolute(fromVolume);
+      const isMappedDefault =
+        typeof value === "string" &&
+        !isAbsolute(value) &&
+        resolvedPath === resolve("/app", rule.expected);
+      if (isMappedDefault || (!isAbsolute(String(value)) && isDirectVolumePath)) continue;
+      throw new Error(
+        [
+          "Deploy preflight failed:",
+          `${augment.type}.${rule.field} must remain ${rule.expected} or resolve below ./data for Railway durability (found ${String(value)}).`,
+          "The current Railway entrypoint maps only the standard legacy SQLite paths onto /app/data.",
+          "Custom legacy database paths would be recreated on ephemeral container storage after redeploy.",
+        ].join("\n"),
+      );
+    }
+  }
 }
 
 async function acknowledgeBudgetsDeployPosture(

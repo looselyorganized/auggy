@@ -14,8 +14,17 @@
  *    operator's chosen instance name from the config.
  */
 
-import { existsSync } from "node:fs";
-import { isAbsolute, relative, resolve, sep } from "node:path";
+import {
+  chmodSync,
+  closeSync,
+  constants,
+  existsSync,
+  fsyncSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+} from "node:fs";
+import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { fileMemory } from "../augments/fileMemory";
 import { supabaseMemory } from "../augments/supabaseMemory";
 import { filesystem } from "../augments/filesystem";
@@ -77,6 +86,51 @@ function resolveContainedPath(path: string, root: string, label: string): string
   }
 
   return resolvedPath;
+}
+
+function ensureDurableDirectoryChain(root: string, target: string, label: string): void {
+  const relativeTarget = relative(root, target);
+  if (
+    relativeTarget === ".." ||
+    relativeTarget.startsWith(`..${sep}`) ||
+    isAbsolute(relativeTarget)
+  ) {
+    throw new Error(`[augment-resolver] ${label} escaped its runtime data root`);
+  }
+
+  const rootStat = lstatSync(root);
+  if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) {
+    throw new Error(`[augment-resolver] ${label} root must be a real directory`);
+  }
+
+  let parent = root;
+  for (const component of relativeTarget.split(sep).filter(Boolean)) {
+    const candidate = resolve(parent, component);
+    let created = false;
+    try {
+      mkdirSync(candidate, { mode: 0o700 });
+      created = true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    }
+    const stat = lstatSync(candidate);
+    if (stat.isSymbolicLink() || !stat.isDirectory()) {
+      throw new Error(`[augment-resolver] ${label} must not contain symlinked directories`);
+    }
+    chmodSync(candidate, 0o700);
+    if (created) {
+      const parentFd = openSync(
+        parent,
+        constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+      );
+      try {
+        fsyncSync(parentFd);
+      } finally {
+        closeSync(parentFd);
+      }
+    }
+    parent = candidate;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -412,6 +466,22 @@ export async function resolveAugments(
   }
   const overrideDir = resolverOpts.runtimeDataRoot ?? agentDir;
 
+  const inboundInboxOwners = new Map<string, string>();
+  for (const config of configs) {
+    if (config.type !== "agentMail") continue;
+    const inbound = config.options?.inbound as Record<string, unknown> | undefined;
+    if ((inbound?.mode ?? "none") === "none") continue;
+    const inboxId = config.options?.inboxId;
+    if (typeof inboxId !== "string") continue;
+    const existing = inboundInboxOwners.get(inboxId);
+    if (existing) {
+      throw new Error(
+        `[augment-resolver] inbound AgentMail inbox "${inboxId}" is configured by both "${existing}" and "${config.name}"; one inbox may have only one inbound ledger`,
+      );
+    }
+    inboundInboxOwners.set(inboxId, config.name);
+  }
+
   const augments: Augment[] = [];
   type NotifyToolExecute = NonNullable<Augment["tools"]>[number]["execute"];
   const notifyDestinationNames = new Set<string>();
@@ -659,6 +729,11 @@ export async function resolveAugments(
           const agentMailRoot = resolve(resolverOpts.runtimeDataRoot, "agent-mail");
           stateDir = resolve(agentMailRoot, config.name);
           dbPath = resolveContainedPath(rawDbPath, stateDir, `agentMail "${config.name}" dbPath`);
+          ensureDurableDirectoryChain(
+            resolverOpts.runtimeDataRoot,
+            dirname(dbPath),
+            `agentMail "${config.name}" state path`,
+          );
         } else {
           // Locally, keep state beside agent.yaml and root relative database
           // paths at that same agent project directory.

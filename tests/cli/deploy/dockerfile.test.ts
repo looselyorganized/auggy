@@ -84,28 +84,37 @@ describe("generateEntrypoint", () => {
     const mountDirectoryCheck = script.indexOf("[ ! -d /app/data ]");
     const stateSymlinkCheck = script.indexOf("[ -L /app/data/agent-mail ]");
     const stateMkdir = script.indexOf("mkdir -p -m 0700 /app/data/agent-mail");
-    const firstLegacySymlink = script.indexOf("ln -sf /app/data/memory.db");
+    const legacyAdmission = script.indexOf("for db_name in memory.db");
     expect(mountCheck).toBeGreaterThan(-1);
     expect(mountDirectoryCheck).toBeGreaterThan(mountCheck);
     expect(stateSymlinkCheck).toBeGreaterThan(mountDirectoryCheck);
     expect(stateMkdir).toBeGreaterThan(stateSymlinkCheck);
-    expect(firstLegacySymlink).toBeGreaterThan(stateMkdir);
+    expect(legacyAdmission).toBeGreaterThan(stateMkdir);
   });
 
   test("symlinks all four v1.0 SQLite dbs to the volume", () => {
     const script = generateEntrypoint();
-    expect(script).toMatch(/ln -sf \/app\/data\/memory\.db \/app\/memory\.db/);
-    expect(script).toMatch(/ln -sf \/app\/data\/budgets\.db \/app\/budgets\.db/);
-    expect(script).toMatch(/ln -sf \/app\/data\/visitor-auth\.db \/app\/visitor-auth\.db/);
-    expect(script).toMatch(/ln -sf \/app\/data\/link\.db \/app\/link\.db/);
+    expect(script).toContain("for db_name in memory.db budgets.db visitor-auth.db link.db");
+    expect(script).toContain('ln -sfn "$volume_db" "$app_db"');
   });
 
   test("uses -f flag so redeploys don't trip on existing symlinks", () => {
-    expect(generateEntrypoint()).toMatch(/ln -sf/);
+    expect(generateEntrypoint()).toMatch(/ln -sfn/);
+  });
+
+  test("admits only regular private legacy SQLite artifacts", () => {
+    const script = generateEntrypoint();
+    expect(script).toContain(
+      'for artifact in "$volume_db" "$volume_db-wal" "$volume_db-shm" "$volume_db-journal"',
+    );
+    expect(script).toContain('[ -L "$artifact" ]');
+    expect(script).toContain('[ -e "$artifact" ] && [ ! -f "$artifact" ]');
+    expect(script).toContain('chmod 0600 "$artifact"');
+    expect(script).toContain('[ -e "$app_db" ] && [ ! -L "$app_db" ]');
   });
 
   test("does not create an AgentMail database symlink", () => {
-    expect(generateEntrypoint()).not.toMatch(/ln -sf[^\n]*agent-mail\.db/);
+    expect(generateEntrypoint()).not.toMatch(/db_name in[^\n]*agent-mail\.db/);
   });
 
   test("execs auggy via `bunx` with explicit /app/agent.yaml config", () => {

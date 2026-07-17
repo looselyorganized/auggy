@@ -80,11 +80,17 @@ export function prepareRuntimeVolume({
   assertRealDirectory(runtimeDataRoot, "runtime data root");
 
   const stateDir = join(runtimeDataRoot, AGENT_MAIL_STATE_DIRECTORY);
+  let rootFd: number | undefined;
   let directoryFd: number | undefined;
   try {
+    rootFd = openSync(
+      runtimeDataRoot,
+      constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+    );
     mkdirSync(stateDir, { mode: 0o700 });
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+      closeQuietly(rootFd);
       throw new Error(
         `[runtime-volume] AgentMail state directory failed durability admission: ${(error as Error).message}`,
         { cause: error },
@@ -93,6 +99,9 @@ export function prepareRuntimeVolume({
   }
   try {
     assertRealDirectory(stateDir, "AgentMail state directory");
+    fsyncSync(rootFd!);
+    closeSync(rootFd!);
+    rootFd = undefined;
     directoryFd = openSync(
       stateDir,
       constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
@@ -110,6 +119,7 @@ export function prepareRuntimeVolume({
       throw new Error(`AgentMail state directory must have mode 0700: ${stateDir}`);
     }
   } catch (error) {
+    closeQuietly(rootFd);
     closeQuietly(directoryFd);
     throw new Error(
       `[runtime-volume] AgentMail state directory failed durability admission: ${(error as Error).message}`,

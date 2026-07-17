@@ -8,9 +8,18 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { chmodSync, existsSync, lstatSync, mkdirSync } from "node:fs";
-import { dirname, resolve } from "node:path";
-import { Database } from "bun:sqlite";
+import {
+  closeSync,
+  constants as fsConstants,
+  fchmodSync,
+  fstatSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  realpathSync,
+} from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
+import { constants, Database } from "bun:sqlite";
 import {
   normalizeAgentMailMessage,
   receivedEventTypeForLabels,
@@ -228,8 +237,12 @@ function optionalString(value: string | null): string | undefined {
 
 function prepareDatabasePath(configuredPath: string): { path: string; persistent: boolean } {
   if (configuredPath === ":memory:") return { path: configuredPath, persistent: false };
-  const path = resolve(configuredPath);
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  const lexicalPath = resolve(configuredPath);
+  mkdirSync(dirname(lexicalPath), { recursive: true, mode: 0o700 });
+  // SQLITE_OPEN_NOFOLLOW rejects any symlink component, including benign OS
+  // aliases such as macOS /var -> /private/var. Canonicalize the admitted
+  // parent while deliberately leaving the database leaf unresolved.
+  const path = join(realpathSync.native(dirname(lexicalPath)), basename(lexicalPath));
   const stat = lstatSync(path, { throwIfNoEntry: false });
   if (stat) {
     if (stat.isSymbolicLink()) {
@@ -243,8 +256,26 @@ function prepareDatabasePath(configuredPath: string): { path: string; persistent
 }
 
 function secureSqliteFiles(path: string): void {
-  for (const candidate of [path, `${path}-wal`, `${path}-shm`]) {
-    if (existsSync(candidate)) chmodSync(candidate, 0o600);
+  for (const candidate of [path, `${path}-wal`, `${path}-shm`, `${path}-journal`]) {
+    const stat = lstatSync(candidate, { throwIfNoEntry: false });
+    if (!stat) continue;
+    if (stat.isSymbolicLink() || !stat.isFile()) {
+      throw new Error(
+        `agentMail ledger: SQLite artifact must be a regular non-symlink file: ${candidate}`,
+      );
+    }
+    const fd = openSync(
+      candidate,
+      fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK,
+    );
+    try {
+      if (!fstatSync(fd).isFile()) {
+        throw new Error(`agentMail ledger: SQLite artifact must be a regular file: ${candidate}`);
+      }
+      fchmodSync(fd, 0o600);
+    } finally {
+      closeSync(fd);
+    }
   }
 }
 
@@ -262,7 +293,15 @@ export function createAgentMailInboundLedger(
   const now = options.now ?? Date.now;
   const nextLeaseToken = options.leaseToken ?? randomUUID;
   const databasePath = prepareDatabasePath(options.dbPath);
-  const db = new Database(databasePath.path, { create: true });
+  if (databasePath.persistent) secureSqliteFiles(databasePath.path);
+  const db = new Database(
+    databasePath.path,
+    databasePath.persistent
+      ? constants.SQLITE_OPEN_READWRITE |
+          constants.SQLITE_OPEN_CREATE |
+          constants.SQLITE_OPEN_NOFOLLOW
+      : { create: true },
+  );
   let closed = false;
 
   try {

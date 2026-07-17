@@ -20,7 +20,7 @@ import { defineAgent } from "../../agent";
 import { parseConfig } from "../config-parser";
 import { resolveEngine } from "../engine-resolver";
 import { resolveAugments } from "../augment-resolver";
-import { writePidManifest, removePidManifest } from "../pid-registry";
+import { claimRuntimePidManifest, releaseRuntimePidManifest } from "../pid-registry";
 import { resolveConfigPath } from "../resolve-config";
 import { openBrowser } from "../open-browser";
 import type { AgentConfig, Augment, ModelClient } from "../../types";
@@ -180,16 +180,20 @@ export async function runDev(name: string | undefined, opts: DevOpts): Promise<v
   // Claim the name by writing the PID manifest atomically (wx flag).
   // This prevents TOCTOU races — the filesystem is the lock.
   const port = extractPort(config);
+  let pidManifestClaimed = false;
   try {
-    writePidManifest({
-      pid: process.pid,
-      name: agentName,
-      port,
-      configPath: resolve(configPath),
-      agentDir: resolve(agentDir),
-      startedAt: new Date().toISOString(),
-      mode,
-    });
+    pidManifestClaimed = claimRuntimePidManifest(
+      {
+        pid: process.pid,
+        name: agentName,
+        port,
+        configPath: resolve(configPath),
+        agentDir: resolve(agentDir),
+        startedAt: new Date().toISOString(),
+        mode,
+      },
+      { internalMode: opts.internalMode },
+    );
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "EEXIST") {
       throw new Error(
@@ -231,7 +235,7 @@ export async function runDev(name: string | undefined, opts: DevOpts): Promise<v
       maxInferenceLoops: config.settings.maxInferenceLoops,
     };
   } catch (err) {
-    removePidManifest(agentName);
+    releaseRuntimePidManifest(agentName, pidManifestClaimed);
     throw err;
   }
 
@@ -249,7 +253,7 @@ export async function runDev(name: string | undefined, opts: DevOpts): Promise<v
     } catch (err) {
       console.error("Error during shutdown:", err);
     }
-    removePidManifest(agentName);
+    releaseRuntimePidManifest(agentName, pidManifestClaimed);
     console.log(`${agentName} stopped.`);
     process.exit(0);
   };
@@ -259,7 +263,7 @@ export async function runDev(name: string | undefined, opts: DevOpts): Promise<v
 
   // Also clean up PID on unexpected exit.
   process.on("exit", () => {
-    removePidManifest(agentName);
+    releaseRuntimePidManifest(agentName, pidManifestClaimed);
   });
 
   // Start the agent.

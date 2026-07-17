@@ -7,10 +7,8 @@
  *   3. Subject-hash dedup — block sends with the same normalized subject
  *      hash within a window (prevents accidental retry storms).
  *
- * Creator and null (system / scheduled) peers bypass all layers. The peer
- * gate is enforced one level up in `outbound.ts`; this module is purely
- * arithmetic and assumes the caller has already decided the peer is
- * subject to limits.
+ * Creator and null (system / scheduled) peers bypass rate layers, but their
+ * provider calls are still journaled by the augment for duplicate safety.
  *
  * Pure-ish: state is encapsulated; no IO. All time-sensitive calls take
  * `now: number` so tests can drive the clock deterministically.
@@ -19,6 +17,7 @@
 import type { AgentMailRateLimitOptions } from "../../types";
 
 const HOUR_MS = 3_600_000;
+const ATTEMPT_RETENTION_MS = 30 * 24 * HOUR_MS;
 
 export interface RateLimitDecision {
   allowed: boolean;
@@ -35,6 +34,16 @@ export interface RateLimitState {
   lastByRecipient: Map<string, number>;
   /** Subject-hash → first-seen timestamp within the dedup window. */
   subjectHashes: Map<string, number>;
+  /** Provider-bound attempts that consume capacity until committed or definitively released. */
+  reservations: Map<string, RateLimitReservation>;
+  /** Recently committed attempt IDs used to make crash recovery idempotent. */
+  accountedAttemptIds: Map<string, number>;
+}
+
+export interface RateLimitReservation {
+  timestamp: number;
+  recipients: string[];
+  subject: string;
 }
 
 export function createRateLimitState(): RateLimitState {
@@ -42,6 +51,8 @@ export function createRateLimitState(): RateLimitState {
     globalTimestamps: [],
     lastByRecipient: new Map(),
     subjectHashes: new Map(),
+    reservations: new Map(),
+    accountedAttemptIds: new Map(),
   };
 }
 
@@ -55,9 +66,8 @@ export function hashSubject(subject: string): string {
 }
 
 /**
- * Decide whether a send is allowed under current state. Does NOT mutate
- * state — call `recordSend` only after the actual HTTP call succeeds, so
- * a rejected/failed send doesn't burn the operator's quota.
+ * Decide whether a send is allowed under committed state plus durable
+ * in-flight reservations. Does not mutate state.
  */
 export function checkRateLimit(
   state: RateLimitState,
@@ -75,7 +85,12 @@ export function checkRateLimit(
   // Global hourly cap. Sliding window — prune anything older than 1h then
   // compare. We prune lazily on every check to keep the array bounded.
   const windowStart = now - HOUR_MS;
-  const recent = state.globalTimestamps.filter((t) => t > windowStart);
+  const recent = [
+    ...state.globalTimestamps.filter((t) => t > windowStart),
+    ...[...state.reservations.values()]
+      .map((reservation) => reservation.timestamp)
+      .filter((timestamp) => timestamp > windowStart),
+  ].sort((a, b) => a - b);
   if (recent.length >= globalMax) {
     const oldest = recent[0]!;
     const retryAfterSec = Math.max(1, Math.ceil((oldest + HOUR_MS - now) / 1000));
@@ -90,7 +105,20 @@ export function checkRateLimit(
   // entire send — we don't want to silently drop addresses from a list.
   for (const r of recipients) {
     const key = r.toLowerCase();
-    const last = state.lastByRecipient.get(key);
+    const reserved = [...state.reservations.values()]
+      .filter((reservation) => reservation.recipients.some((recipient) => recipient === key))
+      .reduce<number | undefined>(
+        (latest, reservation) =>
+          latest === undefined || reservation.timestamp > latest ? reservation.timestamp : latest,
+        undefined,
+      );
+    const committed = state.lastByRecipient.get(key);
+    const last =
+      committed === undefined
+        ? reserved
+        : reserved === undefined
+          ? committed
+          : Math.max(committed, reserved);
     if (last !== undefined && now - last < perRecipMs) {
       const retryAfterSec = Math.ceil((perRecipMs - (now - last)) / 1000);
       return {
@@ -104,7 +132,20 @@ export function checkRateLimit(
   // Subject-hash dedup. Skip when window is 0.
   if (dedupMs > 0) {
     const hash = hashSubject(subject);
-    const firstSeen = state.subjectHashes.get(hash);
+    const reserved = [...state.reservations.values()]
+      .filter((reservation) => hashSubject(reservation.subject) === hash)
+      .reduce<number | undefined>(
+        (latest, reservation) =>
+          latest === undefined || reservation.timestamp > latest ? reservation.timestamp : latest,
+        undefined,
+      );
+    const committed = state.subjectHashes.get(hash);
+    const firstSeen =
+      committed === undefined
+        ? reserved
+        : reserved === undefined
+          ? committed
+          : Math.max(committed, reserved);
     if (firstSeen !== undefined && now - firstSeen < dedupMs) {
       const retryAfterSec = Math.ceil((dedupMs - (now - firstSeen)) / 1000);
       return {
@@ -118,12 +159,100 @@ export function checkRateLimit(
   return { allowed: true };
 }
 
+function normalizedReservation(
+  recipients: string[],
+  subject: string,
+  timestamp: number,
+): RateLimitReservation {
+  if (!Number.isSafeInteger(timestamp) || timestamp < 0) {
+    throw new Error("agentMail rate reservation: timestamp must be a non-negative safe integer");
+  }
+  if (recipients.length === 0) {
+    throw new Error("agentMail rate reservation: recipients must not be empty");
+  }
+  return {
+    timestamp,
+    recipients: [...new Set(recipients.map((recipient) => recipient.toLowerCase()))].sort(),
+    subject,
+  };
+}
+
+export function hasRateAttempt(state: RateLimitState, attemptId: string): boolean {
+  return state.reservations.has(attemptId) || state.accountedAttemptIds.has(attemptId);
+}
+
+/** Reserve capacity synchronously before the provider can observe the request. */
+export function reserveSend(
+  state: RateLimitState,
+  attemptId: string,
+  recipients: string[],
+  subject: string,
+  timestamp: number,
+): boolean {
+  if (!attemptId) throw new Error("agentMail rate reservation: attemptId is required");
+  if (state.accountedAttemptIds.has(attemptId)) return false;
+  const next = normalizedReservation(recipients, subject, timestamp);
+  const existing = state.reservations.get(attemptId);
+  if (existing) {
+    if (JSON.stringify(existing) !== JSON.stringify(next)) {
+      throw new Error(`agentMail rate reservation: attempt id "${attemptId}" payload mismatch`);
+    }
+    return false;
+  }
+  state.reservations.set(attemptId, next);
+  return true;
+}
+
+/** Release capacity only when the provider definitively rejected the request. */
+export function releaseReservation(state: RateLimitState, attemptId: string): boolean {
+  if (state.accountedAttemptIds.has(attemptId)) {
+    throw new Error(`agentMail rate reservation: attempt "${attemptId}" is already committed`);
+  }
+  return state.reservations.delete(attemptId);
+}
+
+/** Convert a reservation to committed history exactly once. */
+export function commitReservation(
+  state: RateLimitState,
+  attemptId: string,
+  opts: AgentMailRateLimitOptions = {},
+  now: number = Date.now(),
+): boolean {
+  if (state.accountedAttemptIds.has(attemptId)) return false;
+  if (!Number.isSafeInteger(now) || now < 0) {
+    throw new Error("agentMail rate reservation: commit clock must be a non-negative safe integer");
+  }
+  const reservation = state.reservations.get(attemptId);
+  if (!reservation) {
+    throw new Error(`agentMail rate reservation: attempt "${attemptId}" is not reserved`);
+  }
+  recordSend(state, reservation.recipients, reservation.subject, reservation.timestamp, opts);
+  state.reservations.delete(attemptId);
+  state.accountedAttemptIds.set(attemptId, reservation.timestamp);
+  const retentionMs = Math.max(
+    ATTEMPT_RETENTION_MS,
+    HOUR_MS,
+    opts.perRecipientCooldownMs ?? 300_000,
+    opts.dedupWindowMs ?? 300_000,
+  );
+  const cutoff = now - retentionMs;
+  for (const [id, timestamp] of state.accountedAttemptIds) {
+    // Keep the just-committed tombstone even for an exceptionally old
+    // ambiguous attempt until its queue transition has a chance to persist.
+    if (id !== attemptId && timestamp <= cutoff) state.accountedAttemptIds.delete(id);
+  }
+  return true;
+}
+
 export function recordSend(
   state: RateLimitState,
   recipients: string[],
   subject: string,
   now: number,
+  opts: AgentMailRateLimitOptions = {},
 ): void {
+  const perRecipMs = opts.perRecipientCooldownMs ?? 300_000;
+  const dedupMs = opts.dedupWindowMs ?? 300_000;
   state.globalTimestamps.push(now);
   // Bound the array — keep at most 2x the largest realistic per-hour cap.
   // Prune anything older than 1h while we're at it.
@@ -133,11 +262,15 @@ export function recordSend(
   for (const r of recipients) {
     state.lastByRecipient.set(r.toLowerCase(), now);
   }
+  const recipientCutoff = now - perRecipMs;
+  for (const [recipient, ts] of state.lastByRecipient) {
+    if (ts < recipientCutoff) state.lastByRecipient.delete(recipient);
+  }
 
-  state.subjectHashes.set(hashSubject(subject), now);
+  if (dedupMs > 0) state.subjectHashes.set(hashSubject(subject), now);
 
   // Sweep stale subject hashes opportunistically (keeps map bounded).
-  const dedupCutoff = now - HOUR_MS;
+  const dedupCutoff = now - dedupMs;
   for (const [hash, ts] of state.subjectHashes) {
     if (ts < dedupCutoff) state.subjectHashes.delete(hash);
   }

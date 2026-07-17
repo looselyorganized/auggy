@@ -78,7 +78,11 @@ export interface SendMessageResult {
 export interface SendMessageError {
   status: "failed";
   detail: string;
-  /** HTTP status if the failure originated from AgentMail (vs. network). */
+  /**
+   * HTTP status if AgentMail definitively rejected the request. When absent,
+   * delivery may be ambiguous (for example, the connection was lost after
+   * AgentMail accepted the message), so reviewed sends must remain fail-closed.
+   */
   httpStatus?: number;
   /** AgentMail-returned Retry-After if 429. */
   retryAfterSec?: number;

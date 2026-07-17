@@ -65,6 +65,7 @@ const recordSchema = z.object({
   state: z.enum(["pending", "sending", "approved", "rejected", "expired", "failed"]),
   trustLevel: z.enum(["creator", "agent", "public"]),
   createdAt: z.number().int().nonnegative(),
+  attemptedAt: z.number().int().nonnegative().optional(),
   expiresAt: z.number().int().nonnegative(),
   resolvedAt: z.number().int().nonnegative().optional(),
   recipients: z.array(z.string()).min(1),
@@ -88,6 +89,8 @@ export interface AgentMailReviewRecord {
   state: AgentMailReviewState;
   trustLevel: TrustLevel;
   createdAt: number;
+  /** Timestamp immediately before the durable attempt may reach the provider. */
+  attemptedAt?: number;
   expiresAt: number;
   resolvedAt?: number;
   recipients: string[];
@@ -113,7 +116,10 @@ export interface AgentMailReviewQueue {
   list(): AgentMailReviewRecord[];
   get(id: string): AgentMailReviewRecord | undefined;
   beginApproval(id: string): AgentMailReviewRecord;
-  approve(id: string, result: { messageId?: string; threadId?: string }): AgentMailReviewRecord;
+  approve(
+    id: string,
+    result: { messageId?: string; threadId?: string; detail?: string },
+  ): AgentMailReviewRecord;
   reject(id: string, detail?: string): AgentMailReviewRecord;
   fail(id: string, detail: string): AgentMailReviewRecord;
 }
@@ -287,6 +293,7 @@ export function createAgentMailReviewQueue(
     beginApproval(id) {
       const record = requireState(id, "pending");
       record.state = "sending";
+      record.attemptedAt = clock();
       persist();
       return clone(record);
     },
@@ -297,6 +304,7 @@ export function createAgentMailReviewQueue(
       record.resolvedAt = clock();
       record.providerMessageId = result.messageId;
       record.providerThreadId = result.threadId;
+      record.detail = result.detail?.slice(0, 500);
       persist();
       return clone(record);
     },

@@ -25,6 +25,10 @@ interface PidRegistryOptions {
   auggyDir?: string;
 }
 
+interface RuntimePidRegistryOptions extends PidRegistryOptions {
+  internalMode?: string;
+}
+
 // No time-based staleness heuristic — always-on agents can run for weeks.
 // Liveness is determined solely by whether the PID is alive.
 
@@ -71,6 +75,35 @@ export function writePidManifest(manifest: PidManifest, opts: PidRegistryOptions
   ensureDir(opts);
   const path = manifestPath(manifest.name, opts);
   writeFileSync(path, JSON.stringify(manifest, null, 2), { flag: "wx" });
+}
+
+/**
+ * Claim the local PID registry only for runtimes where it is authoritative.
+ *
+ * Railway already enforces one process per volume-backed service, while its
+ * container may be restarted after SIGKILL/OOM with an old writable layer.
+ * A persisted PID (commonly PID 1 again) cannot identify the previous boot,
+ * so Railway deliberately does not participate in the local daemon registry.
+ *
+ * Returns whether a manifest was written; callers must release only a claim
+ * that returned true so a Railway process never removes unrelated local state.
+ */
+export function claimRuntimePidManifest(
+  manifest: PidManifest,
+  opts: RuntimePidRegistryOptions = {},
+): boolean {
+  if (opts.internalMode === "railway") return false;
+  writePidManifest(manifest, opts);
+  return true;
+}
+
+/** Release a manifest only when claimRuntimePidManifest actually wrote it. */
+export function releaseRuntimePidManifest(
+  name: string,
+  claimed: boolean,
+  opts: PidRegistryOptions = {},
+): void {
+  if (claimed) removePidManifest(name, opts);
 }
 
 /** Read a PID manifest. Returns null if not found. */

@@ -64,9 +64,7 @@ ENTRYPOINT ["/app/auggy-entrypoint.sh", "${opts.agentName}"]
 }
 
 export function generateEntrypoint(): string {
-  const symlinks = SQLITE_DB_NAMES.map((name) => `ln -sf /app/data/${name} /app/${name}`).join(
-    "\n",
-  );
+  const sqliteNames = SQLITE_DB_NAMES.join(" ");
 
   return `#!/bin/sh
 # Auggy Railway entrypoint.
@@ -105,7 +103,32 @@ fi
 mkdir -p -m 0700 /app/data/agent-mail
 chmod 0700 /app/data/agent-mail
 
-${symlinks}
+for db_name in ${sqliteNames}; do
+  volume_db="/app/data/$db_name"
+  app_db="/app/$db_name"
+
+  # Refuse links, directories, devices, and sockets at every SQLite artifact
+  # name before either SQLite or chmod can follow them.
+  for artifact in "$volume_db" "$volume_db-wal" "$volume_db-shm" "$volume_db-journal"; do
+    if [ -L "$artifact" ]; then
+      echo "Auggy Railway startup refused: $artifact must not be a symlink." >&2
+      exit 1
+    fi
+    if [ -e "$artifact" ] && [ ! -f "$artifact" ]; then
+      echo "Auggy Railway startup refused: $artifact must be a regular file." >&2
+      exit 1
+    fi
+    if [ -f "$artifact" ]; then
+      chmod 0600 "$artifact"
+    fi
+  done
+
+  if [ -e "$app_db" ] && [ ! -L "$app_db" ]; then
+    echo "Auggy Railway startup refused: $app_db must be a compatibility symlink." >&2
+    exit 1
+  fi
+  ln -sfn "$volume_db" "$app_db"
+done
 
 # bunx resolves auggy from the per-agent node_modules/ (installed in the
 # Dockerfile via \`bun install\`). v0.3.2 removed the global-install path

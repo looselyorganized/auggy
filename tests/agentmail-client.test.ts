@@ -103,7 +103,10 @@ describe("createAgentMailClient", () => {
     });
     const r = await client.send({ inboxId: "inb_x", to: ["a@b.com"], subject: "s", text: "t" });
     expect(r.status).toBe("failed");
-    if (r.status === "failed") expect(r.detail).toContain("ECONNREFUSED");
+    if (r.status === "failed") {
+      expect(r.detail).toContain("ECONNREFUSED");
+      expect(r.httpStatus).toBeUndefined();
+    }
   });
 
   test("rejects send requests with no recipients before hitting AgentMail", async () => {

@@ -36,6 +36,8 @@ describe("AgentMail persisted rate state", () => {
           ["old", 1],
           ["new", 9_000_000],
         ]),
+        reservations: new Map(),
+        accountedAttemptIds: new Map(),
       },
       9_000_000,
     );
@@ -46,6 +48,76 @@ describe("AgentMail persisted rate state", () => {
       "new@example.com": 9_000_000,
     });
     expect(Object.fromEntries(loaded?.subjectHashes ?? [])).toEqual({ new: 9_000_000 });
+  });
+
+  test("retains cooldown and dedup entries for configured windows longer than one hour", () => {
+    const dir = tempRoot();
+    const now = 24 * 3_600_000;
+    const twoHoursAgo = now - 2 * 3_600_000;
+    saveRateState(
+      dir,
+      {
+        globalTimestamps: [twoHoursAgo],
+        lastByRecipient: new Map([["durable@example.com", twoHoursAgo]]),
+        subjectHashes: new Map([["daily digest", twoHoursAgo]]),
+        reservations: new Map(),
+        accountedAttemptIds: new Map(),
+      },
+      now,
+    );
+
+    const loaded = loadRateState(dir, now, {
+      perRecipientCooldownMs: 24 * 3_600_000,
+      dedupWindowMs: 24 * 3_600_000,
+    });
+    expect(loaded?.globalTimestamps).toEqual([]);
+    expect(loaded?.lastByRecipient.get("durable@example.com")).toBe(twoHoursAgo);
+    expect(loaded?.subjectHashes.get("daily digest")).toBe(twoHoursAgo);
+  });
+
+  test("round-trips reservations and accounted attempt ids", () => {
+    const dir = tempRoot();
+    saveRateState(
+      dir,
+      {
+        globalTimestamps: [],
+        lastByRecipient: new Map(),
+        subjectHashes: new Map(),
+        reservations: new Map([
+          [
+            "sending-1",
+            { timestamp: 9_000_000, recipients: ["a@example.com"], subject: "Reserved" },
+          ],
+        ]),
+        accountedAttemptIds: new Map([["sent-1", 9_000_000]]),
+      },
+      9_000_000,
+    );
+    const loaded = loadRateState(dir, 9_000_100);
+    expect(loaded?.reservations.get("sending-1")).toEqual({
+      timestamp: 9_000_000,
+      recipients: ["a@example.com"],
+      subject: "Reserved",
+    });
+    expect(loaded?.accountedAttemptIds.get("sent-1")).toBe(9_000_000);
+  });
+
+  test("migrates version 1 state with empty attempt journals", () => {
+    const dir = tempRoot();
+    writeFileSync(
+      join(dir, "agent-mail-state.json"),
+      JSON.stringify({
+        version: 1,
+        savedAt: new Date(9_000_000).toISOString(),
+        globalTimestamps: [9_000_000],
+        lastByRecipient: { "a@example.com": 9_000_000 },
+        subjectHashes: { subject: 9_000_000 },
+      }),
+    );
+    const loaded = loadRateState(dir, 9_000_100);
+    expect(loaded?.globalTimestamps).toEqual([9_000_000]);
+    expect(loaded?.reservations.size).toBe(0);
+    expect(loaded?.accountedAttemptIds.size).toBe(0);
   });
 
   test("fails closed on corrupt JSON", () => {
@@ -88,14 +160,26 @@ describe("AgentMail persisted rate state", () => {
     expect(() =>
       saveRateState(
         dir,
-        { globalTimestamps: [1.5], lastByRecipient: new Map(), subjectHashes: new Map() },
+        {
+          globalTimestamps: [1.5],
+          lastByRecipient: new Map(),
+          subjectHashes: new Map(),
+          reservations: new Map(),
+          accountedAttemptIds: new Map(),
+        },
         10_000,
       ),
     ).toThrow(/invalid rate-limit state/);
     expect(() =>
       saveRateState(
         dir,
-        { globalTimestamps: [], lastByRecipient: new Map(), subjectHashes: new Map() },
+        {
+          globalTimestamps: [],
+          lastByRecipient: new Map(),
+          subjectHashes: new Map(),
+          reservations: new Map(),
+          accountedAttemptIds: new Map(),
+        },
         Number.MAX_SAFE_INTEGER + 1,
       ),
     ).toThrow(/clock/);

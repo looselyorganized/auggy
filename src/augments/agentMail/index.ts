@@ -48,7 +48,14 @@ import type {
 } from "../../types";
 import type { AgentMailAugmentInternalOptions, DispatchRecord } from "./types";
 import { redactRecipients, scanForSensitive, validateOutbound } from "./outbound";
-import { checkRateLimit, createRateLimitState, recordSend } from "./rate-limit";
+import {
+  checkRateLimit,
+  commitReservation,
+  createRateLimitState,
+  hasRateAttempt,
+  releaseReservation,
+  reserveSend,
+} from "./rate-limit";
 import { loadRateState, saveRateState } from "./persist-state";
 import { createAgentMailInboundLedger, type AgentMailInboundLedger } from "./inbound-ledger";
 import { createAgentMailInboundWorker, type AgentMailInboundWorker } from "./inbound-worker";
@@ -149,7 +156,8 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
 
   // Load persisted rate-limit / dedup state from the per-instance state
   // directory. Missing state starts fresh; corrupt/newer state fails closed.
-  const rateState = (stateDir && loadRateState(stateDir, now())) || createRateLimitState();
+  const rateState =
+    (stateDir && loadRateState(stateDir, now(), rateLimitOpts)) || createRateLimitState();
   const dispatches = createRingBuffer<DispatchRecord>(RING_BUFFER_SIZE);
   const dispatchCounts: Record<DispatchRecord["status"], number> = {
     sent: 0,
@@ -169,16 +177,18 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
    * but swallowed — losing durability is a degraded mode, not a reason
    * to fail the send the model just received "sent" for.
    */
-  function persistRateStateIfConfigured(): void {
-    if (!stateDir) return;
+  function persistRateStateIfConfigured(): boolean {
+    if (!stateDir) return true;
     try {
       saveRateState(stateDir, rateState, now());
+      return true;
     } catch (err) {
       ratePersistenceFailure = (err as Error).message;
       console.warn(
         `[agent-mail] failed to persist rate-limit state: ${(err as Error).message}. ` +
           `State remains in memory; subsequent non-creator mail is blocked until restart/operator repair.`,
       );
+      return false;
     }
   }
 
@@ -194,6 +204,65 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
       };
     }
     return checkRateLimit(rateState, recipients, rateKey, effectiveRateLimit(), now());
+  }
+
+  function attemptUsesRate(record: AgentMailReviewRecord): boolean {
+    return record.trustLevel !== "creator" && effectiveRateLimit().enabled !== false;
+  }
+
+  function reserveRateForAttempt(record: AgentMailReviewRecord): boolean {
+    if (!attemptUsesRate(record) || hasRateAttempt(rateState, record.id)) return true;
+    reserveSend(
+      rateState,
+      record.id,
+      record.recipients,
+      record.rateKey,
+      record.attemptedAt ?? record.createdAt,
+    );
+    return persistRateStateIfConfigured();
+  }
+
+  function releaseRateForAttempt(record: AgentMailReviewRecord): boolean {
+    if (!attemptUsesRate(record)) return true;
+    if (!rateState.reservations.has(record.id))
+      return !rateState.accountedAttemptIds.has(record.id);
+    releaseReservation(rateState, record.id);
+    return persistRateStateIfConfigured();
+  }
+
+  function commitRateForAttempt(record: AgentMailReviewRecord): boolean {
+    if (!attemptUsesRate(record)) return true;
+    if (!hasRateAttempt(rateState, record.id)) {
+      reserveSend(
+        rateState,
+        record.id,
+        record.recipients,
+        record.rateKey,
+        record.attemptedAt ?? record.createdAt,
+      );
+    }
+    commitReservation(rateState, record.id, effectiveRateLimit(), now());
+    return persistRateStateIfConfigured();
+  }
+
+  // A crash can occur after the review queue reaches `sending` but before
+  // its rate reservation is flushed. Restore that reservation at startup;
+  // already-committed attempt IDs make the repair idempotent.
+  for (const record of reviewQueue.list()) {
+    if (
+      record.state === "sending" &&
+      attemptUsesRate(record) &&
+      !hasRateAttempt(rateState, record.id)
+    ) {
+      reserveSend(
+        rateState,
+        record.id,
+        record.recipients,
+        record.rateKey,
+        record.attemptedAt ?? record.createdAt,
+      );
+      persistRateStateIfConfigured();
+    }
   }
 
   /**
@@ -535,6 +604,68 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
     });
   }
 
+  function beginDurableDirectAttempt(input: {
+    trustLevel: TrustLevel;
+    recipients: string[];
+    subject: string;
+    rateKey: string;
+    request: AgentMailReviewRequest;
+  }): { ok: true; record: AgentMailReviewRecord | undefined } | { ok: false; envelope: string } {
+    const fingerprint = reviewFingerprint(input);
+    try {
+      const queued = reviewQueue.enqueue({
+        ...input,
+        fingerprint,
+        expiresAt: now() + reviewExpiryMs,
+      });
+      if (queued.duplicate) {
+        return {
+          ok: false,
+          envelope: JSON.stringify({
+            status: "failed",
+            message: `agentMail review queue: matching pending attempt "${queued.record.id}" already exists. Do not retry; operator reconciliation is required.`,
+          }),
+        };
+      }
+      const record = reviewQueue.beginApproval(queued.record.id);
+      if (!reserveRateForAttempt(record)) {
+        return {
+          ok: false,
+          envelope: JSON.stringify({
+            status: "failed",
+            message: `agentMail durable rate reservation is unavailable for review ${record.id}; the provider was not called and operator reconciliation is required`,
+          }),
+        };
+      }
+      return { ok: true, record };
+    } catch (error) {
+      return {
+        ok: false,
+        envelope: JSON.stringify({
+          status: "failed",
+          message: `${(error as Error).message}. Do not retry; operator reconciliation is required.`,
+        }),
+      };
+    }
+  }
+
+  function markDirectAttemptFailed(
+    attempt: AgentMailReviewRecord | undefined,
+    result: SendMessageError,
+  ): void {
+    if (attempt && result.httpStatus !== undefined) {
+      if (releaseRateForAttempt(attempt)) reviewQueue.fail(attempt.id, result.detail);
+    }
+  }
+
+  function markDirectAttemptSent(
+    attempt: AgentMailReviewRecord | undefined,
+    result: SendMessageResult,
+    _rateStateDurable: boolean,
+  ): void {
+    if (attempt && commitRateForAttempt(attempt)) reviewQueue.approve(attempt.id, result);
+  }
+
   async function sendReviewedAction(
     record: AgentMailReviewRecord,
   ): Promise<SendMessageResult | SendMessageError> {
@@ -582,14 +713,21 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
     } catch (error) {
       return { ok: false, message: (error as Error).message };
     }
+    if (!reserveRateForAttempt(sending)) {
+      return {
+        ok: false,
+        message: `Review ${id} was not sent because durable rate reservation is unavailable; operator reconciliation is required`,
+      };
+    }
 
     let result: SendMessageResult | SendMessageError;
     try {
       result = await sendReviewedAction(sending);
-    } catch (error) {
-      const detail = `agentmail client threw: ${(error as Error).message}`;
-      reviewQueue.fail(id, detail);
-      return { ok: false, message: `Review ${id} failed before provider acknowledgement` };
+    } catch {
+      return {
+        ok: false,
+        message: `Review ${id} has an ambiguous delivery outcome; operator reconciliation is required`,
+      };
     }
 
     const tool =
@@ -599,6 +737,22 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
           ? "reply_to_message"
           : "forward_message";
     if (result.status === "failed") {
+      // A transport failure (or an invalid success response) may happen after
+      // AgentMail accepted the message. Without a provider HTTP response, keep
+      // the durable `sending` marker so a restart or repeated proposal cannot
+      // send the same reviewed action again.
+      if (result.httpStatus === undefined) {
+        return {
+          ok: false,
+          message: `Review ${id} has an ambiguous delivery outcome; operator reconciliation is required`,
+        };
+      }
+      if (!releaseRateForAttempt(sending)) {
+        return {
+          ok: false,
+          message: `Review ${id} remains in reconciliation because reservation release was not durable`,
+        };
+      }
       reviewQueue.fail(id, result.detail);
       recordDispatch({
         timestamp: timestampHHMMSS(now()),
@@ -615,10 +769,9 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
       };
     }
 
-    reviewQueue.approve(id, result);
-    if (sending.trustLevel !== "creator") {
-      recordSend(rateState, sending.recipients, sending.rateKey, now());
-      persistRateStateIfConfigured();
+    const rateStateDurable = commitRateForAttempt(sending);
+    if (rateStateDurable) {
+      reviewQueue.approve(id, result);
     }
     const body = "text" in sending.request ? (sending.request.text ?? "") : "";
     const scan = body ? scanForSensitive(body) : { flagged: false, hits: [] };
@@ -631,7 +784,90 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
       flaggedSensitive: scan.flagged || undefined,
       detail: `approved review ${id}${scan.flagged ? `; sensitive content (${scan.hits.join(", ")})` : ""}`,
     });
-    return { ok: true, message: `Review ${id} approved and sent` };
+    return {
+      ok: true,
+      message: rateStateDurable
+        ? `Review ${id} approved and sent`
+        : `Review ${id} was sent but remains in reconciliation because rate state was not durable`,
+    };
+  }
+
+  function requireAmbiguousReview(
+    id: string,
+    expectedFingerprint: string,
+  ): { ok: true; record: AgentMailReviewRecord } | { ok: false; result: AdminActionResult } {
+    const record = reviewQueue.get(id);
+    if (!record) {
+      return { ok: false, result: { ok: false, message: `Unknown review id "${id}"` } };
+    }
+    if (record.state !== "sending") {
+      return {
+        ok: false,
+        result: { ok: false, message: `Review ${id} is ${record.state}, not ambiguous` },
+      };
+    }
+    if (record.fingerprint !== expectedFingerprint) {
+      return {
+        ok: false,
+        result: {
+          ok: false,
+          message: `Review ${id} fingerprint mismatch; inspect the exact ambiguous action again`,
+        },
+      };
+    }
+    return { ok: true, record };
+  }
+
+  function reconcileReviewSent(
+    id: string,
+    expectedFingerprint: string,
+    result: { messageId: string; threadId?: string; evidence: string },
+  ): AdminActionResult {
+    const ambiguous = requireAmbiguousReview(id, expectedFingerprint);
+    if (!ambiguous.ok) return ambiguous.result;
+    if (ratePersistenceFailure) {
+      return {
+        ok: false,
+        message: `Review ${id} remains ambiguous: repair rate-state storage and restart before reconciling`,
+      };
+    }
+    if (!commitRateForAttempt(ambiguous.record)) {
+      return {
+        ok: false,
+        message: `Review ${id} remains ambiguous because rate state was not durable`,
+      };
+    }
+    try {
+      reviewQueue.approve(id, {
+        messageId: result.messageId,
+        ...(result.threadId ? { threadId: result.threadId } : {}),
+        detail: `operator confirmed sent: ${result.evidence}`,
+      });
+    } catch (error) {
+      return { ok: false, message: (error as Error).message };
+    }
+    return { ok: true, message: `Review ${id} reconciled as sent` };
+  }
+
+  function reconcileReviewFailed(
+    id: string,
+    expectedFingerprint: string,
+    reason: string,
+  ): AdminActionResult {
+    const ambiguous = requireAmbiguousReview(id, expectedFingerprint);
+    if (!ambiguous.ok) return ambiguous.result;
+    if (!releaseRateForAttempt(ambiguous.record)) {
+      return {
+        ok: false,
+        message: `Review ${id} remains ambiguous because reservation release was not durable`,
+      };
+    }
+    try {
+      reviewQueue.fail(id, `operator confirmed not sent: ${reason}`);
+    } catch (error) {
+      return { ok: false, message: (error as Error).message };
+    }
+    return { ok: true, message: `Review ${id} reconciled as not sent` };
   }
 
   function gateTrustLevel(
@@ -726,6 +962,14 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
       }
 
       const scan = scanForSensitive(validation.value.text);
+      const request: AgentMailReviewRequest = {
+        kind: "send",
+        to: validation.value.recipients,
+        subject: validation.value.subject,
+        text: validation.value.text,
+        ...(validation.value.html ? { html: validation.value.html } : {}),
+        ...(input.labels && input.labels.length > 0 ? { labels: input.labels } : {}),
+      };
 
       const review = queueForHumanReview({
         context,
@@ -733,33 +977,34 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
         recipients: validation.value.recipients,
         subject: validation.value.subject,
         rateKey: subjectForRateCheck,
-        request: {
-          kind: "send",
-          to: validation.value.recipients,
-          subject: validation.value.subject,
-          text: validation.value.text,
-          ...(validation.value.html ? { html: validation.value.html } : {}),
-          ...(input.labels && input.labels.length > 0 ? { labels: input.labels } : {}),
-        },
+        request,
         flaggedSensitive: scan.flagged,
       });
       if (review) return review;
 
-      const result = await client.send({
-        inboxId: opts.inboxId,
-        to: validation.value.recipients,
+      const attempt = beginDurableDirectAttempt({
+        trustLevel,
+        recipients: validation.value.recipients,
         subject: validation.value.subject,
-        text: validation.value.text,
-        ...(validation.value.html ? { html: validation.value.html } : {}),
-        ...(input.labels && input.labels.length > 0 ? { labels: input.labels } : {}),
+        rateKey: subjectForRateCheck,
+        request,
       });
+      if (!attempt.ok) return attempt.envelope;
+
+      let result: SendMessageResult | SendMessageError;
+      try {
+        const { kind: _, ...sendInput } = request;
+        result = await client.send({ inboxId: opts.inboxId, ...sendInput });
+      } catch {
+        return JSON.stringify({
+          status: "failed",
+          message:
+            "agentMail delivery outcome is ambiguous. Do not retry; operator reconciliation is required.",
+        });
+      }
 
       if (result.status === "sent") {
-        // Only burn quota when AgentMail actually accepted the message.
-        if (subjectToRateLimit !== null) {
-          recordSend(rateState, validation.value.recipients, subjectForRateCheck, now());
-          persistRateStateIfConfigured();
-        }
+        markDirectAttemptSent(attempt.record, result, true);
         recordDispatch({
           timestamp: timestampHHMMSS(now()),
           tool: "send_message",
@@ -778,6 +1023,8 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
         });
       }
 
+      markDirectAttemptFailed(attempt.record, result);
+
       recordDispatch({
         timestamp: timestampHHMMSS(now()),
         tool: "send_message",
@@ -789,7 +1036,10 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
       });
       return JSON.stringify({
         status: "failed",
-        message: result.detail,
+        message:
+          attempt.record && result.httpStatus === undefined
+            ? `${result.detail}. Do not retry; operator reconciliation is required.`
+            : result.detail,
         ...(result.httpStatus ? { httpStatus: result.httpStatus } : {}),
         ...(result.retryAfterSec ? { retryAfterSec: result.retryAfterSec } : {}),
       });
@@ -894,6 +1144,14 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
       }
 
       const scan = scanForSensitive(input.text);
+      const request: AgentMailReviewRequest = {
+        kind: "reply",
+        messageId: input.messageId,
+        text: input.text,
+        ...(validation.value.html ? { html: validation.value.html } : {}),
+        ...(input.replyAll ? { replyAll: true } : {}),
+        ...(input.labels && input.labels.length > 0 ? { labels: input.labels } : {}),
+      };
 
       const review = queueForHumanReview({
         context,
@@ -901,32 +1159,34 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
         recipients: validation.value.recipients,
         subject: "(reply)",
         rateKey: replyDedupKey,
-        request: {
-          kind: "reply",
-          messageId: input.messageId,
-          text: input.text,
-          ...(validation.value.html ? { html: validation.value.html } : {}),
-          ...(input.replyAll ? { replyAll: true } : {}),
-          ...(input.labels && input.labels.length > 0 ? { labels: input.labels } : {}),
-        },
+        request,
         flaggedSensitive: scan.flagged,
       });
       if (review) return review;
 
-      const result = await client.reply({
-        inboxId: opts.inboxId,
-        messageId: input.messageId,
-        text: input.text,
-        ...(validation.value.html ? { html: validation.value.html } : {}),
-        ...(input.replyAll ? { replyAll: true } : {}),
-        ...(input.labels && input.labels.length > 0 ? { labels: input.labels } : {}),
+      const attempt = beginDurableDirectAttempt({
+        trustLevel,
+        recipients: validation.value.recipients,
+        subject: "(reply)",
+        rateKey: replyDedupKey,
+        request,
       });
+      if (!attempt.ok) return attempt.envelope;
+
+      let result: SendMessageResult | SendMessageError;
+      try {
+        const { kind: _, ...replyInput } = request;
+        result = await client.reply({ inboxId: opts.inboxId, ...replyInput });
+      } catch {
+        return JSON.stringify({
+          status: "failed",
+          message:
+            "agentMail delivery outcome is ambiguous. Do not retry; operator reconciliation is required.",
+        });
+      }
 
       if (result.status === "sent") {
-        if (trustLevel !== "creator") {
-          recordSend(rateState, validation.value.recipients, replyDedupKey, now());
-          persistRateStateIfConfigured();
-        }
+        markDirectAttemptSent(attempt.record, result, true);
         recordDispatch({
           timestamp: timestampHHMMSS(now()),
           tool: "reply_to_message",
@@ -945,6 +1205,8 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
         });
       }
 
+      markDirectAttemptFailed(attempt.record, result);
+
       recordDispatch({
         timestamp: timestampHHMMSS(now()),
         tool: "reply_to_message",
@@ -956,7 +1218,10 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
       });
       return JSON.stringify({
         status: "failed",
-        message: result.detail,
+        message:
+          attempt.record && result.httpStatus === undefined
+            ? `${result.detail}. Do not retry; operator reconciliation is required.`
+            : result.detail,
         ...(result.httpStatus ? { httpStatus: result.httpStatus } : {}),
         ...(result.retryAfterSec ? { retryAfterSec: result.retryAfterSec } : {}),
       });
@@ -1045,6 +1310,15 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
       }
 
       const scan = input.text ? scanForSensitive(input.text) : { flagged: false, hits: [] };
+      const request: AgentMailReviewRequest = {
+        kind: "forward",
+        messageId: input.messageId,
+        to: validation.value.recipients,
+        ...(input.subject ? { subject: validation.value.subject } : {}),
+        ...(input.text ? { text: input.text } : {}),
+        ...(validation.value.html ? { html: validation.value.html } : {}),
+        ...(input.labels && input.labels.length > 0 ? { labels: input.labels } : {}),
+      };
 
       const review = queueForHumanReview({
         context,
@@ -1052,34 +1326,34 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
         recipients: validation.value.recipients,
         subject: validation.value.subject,
         rateKey: validation.value.subject,
-        request: {
-          kind: "forward",
-          messageId: input.messageId,
-          to: validation.value.recipients,
-          ...(input.subject ? { subject: validation.value.subject } : {}),
-          ...(input.text ? { text: input.text } : {}),
-          ...(validation.value.html ? { html: validation.value.html } : {}),
-          ...(input.labels && input.labels.length > 0 ? { labels: input.labels } : {}),
-        },
+        request,
         flaggedSensitive: scan.flagged,
       });
       if (review) return review;
 
-      const result = await client.forward({
-        inboxId: opts.inboxId,
-        messageId: input.messageId,
-        to: validation.value.recipients,
-        ...(input.subject ? { subject: validation.value.subject } : {}),
-        ...(input.text ? { text: input.text } : {}),
-        ...(validation.value.html ? { html: validation.value.html } : {}),
-        ...(input.labels && input.labels.length > 0 ? { labels: input.labels } : {}),
+      const attempt = beginDurableDirectAttempt({
+        trustLevel,
+        recipients: validation.value.recipients,
+        subject: validation.value.subject,
+        rateKey: validation.value.subject,
+        request,
       });
+      if (!attempt.ok) return attempt.envelope;
+
+      let result: SendMessageResult | SendMessageError;
+      try {
+        const { kind: _, ...forwardInput } = request;
+        result = await client.forward({ inboxId: opts.inboxId, ...forwardInput });
+      } catch {
+        return JSON.stringify({
+          status: "failed",
+          message:
+            "agentMail delivery outcome is ambiguous. Do not retry; operator reconciliation is required.",
+        });
+      }
 
       if (result.status === "sent") {
-        if (trustLevel !== "creator") {
-          recordSend(rateState, validation.value.recipients, validation.value.subject, now());
-          persistRateStateIfConfigured();
-        }
+        markDirectAttemptSent(attempt.record, result, true);
         recordDispatch({
           timestamp: timestampHHMMSS(now()),
           tool: "forward_message",
@@ -1098,6 +1372,8 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
         });
       }
 
+      markDirectAttemptFailed(attempt.record, result);
+
       recordDispatch({
         timestamp: timestampHHMMSS(now()),
         tool: "forward_message",
@@ -1109,7 +1385,10 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
       });
       return JSON.stringify({
         status: "failed",
-        message: result.detail,
+        message:
+          attempt.record && result.httpStatus === undefined
+            ? `${result.detail}. Do not retry; operator reconciliation is required.`
+            : result.detail,
         ...(result.httpStatus ? { httpStatus: result.httpStatus } : {}),
         ...(result.retryAfterSec ? { retryAfterSec: result.retryAfterSec } : {}),
       });
@@ -1422,6 +1701,63 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
             { name: "reason", label: "Reason", type: "text", required: false },
           ],
         },
+        {
+          id: "agentmail-review-reconcile-sent",
+          label: "Confirm ambiguous email was sent",
+          confirmRequired: true,
+          inputs: [
+            { name: "reviewId", label: "Review ID", type: "text", required: true },
+            {
+              name: "fingerprint",
+              label: "Inspection fingerprint",
+              type: "text",
+              required: true,
+              helpText:
+                "Use only after confirming delivery with AgentMail; this closes the durable attempt without resending it.",
+            },
+            {
+              name: "messageId",
+              label: "Provider message ID",
+              type: "text",
+              required: true,
+            },
+            {
+              name: "threadId",
+              label: "Provider thread ID",
+              type: "text",
+              required: false,
+            },
+            {
+              name: "evidence",
+              label: "Verification evidence",
+              type: "text",
+              required: true,
+              helpText: "Record how the provider-confirmed message ID was verified.",
+            },
+          ],
+        },
+        {
+          id: "agentmail-review-reconcile-failed",
+          label: "Confirm ambiguous email was not sent",
+          confirmRequired: true,
+          inputs: [
+            { name: "reviewId", label: "Review ID", type: "text", required: true },
+            {
+              name: "fingerprint",
+              label: "Inspection fingerprint",
+              type: "text",
+              required: true,
+            },
+            {
+              name: "reason",
+              label: "Verification evidence",
+              type: "text",
+              required: true,
+              helpText:
+                "Record how non-delivery was verified; only this outcome permits a later retry.",
+            },
+          ],
+        },
       ],
     };
   }
@@ -1488,15 +1824,37 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
         return { ok: false, message: validation.reason };
       }
 
-      const result = await client.send({
-        inboxId: opts.inboxId,
+      const request: AgentMailReviewRequest = {
+        kind: "send",
         to: validation.value.recipients,
         subject: validation.value.subject,
         text: validation.value.text,
         ...(validation.value.html ? { html: validation.value.html } : {}),
+      };
+      const attempt = beginDurableDirectAttempt({
+        trustLevel: "creator",
+        recipients: validation.value.recipients,
+        subject: validation.value.subject,
+        rateKey: validation.value.subject,
+        request,
       });
+      if (!attempt.ok) {
+        return { ok: false, message: JSON.parse(attempt.envelope).message as string };
+      }
+
+      let result: SendMessageResult | SendMessageError;
+      try {
+        const { kind: _, ...sendInput } = request;
+        result = await client.send({ inboxId: opts.inboxId, ...sendInput });
+      } catch {
+        return {
+          ok: false,
+          message: `Send outcome is ambiguous (review ${attempt.record?.id}); do not retry until reconciled`,
+        };
+      }
 
       if (result.status === "sent") {
+        markDirectAttemptSent(attempt.record, result, true);
         recordDispatch({
           timestamp: timestampHHMMSS(now()),
           tool: "admin-test",
@@ -1506,6 +1864,8 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
         });
         return { ok: true, message: `Test message sent to ${to}` };
       }
+
+      markDirectAttemptFailed(attempt.record, result);
 
       recordDispatch({
         timestamp: timestampHHMMSS(now()),
@@ -1518,7 +1878,10 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
       });
       return {
         ok: false,
-        message: `Send failed${result.httpStatus ? ` (HTTP ${result.httpStatus})` : ""}`,
+        message:
+          result.httpStatus === undefined
+            ? `Send outcome is ambiguous (review ${attempt.record?.id}); do not retry until reconciled`
+            : `Send failed (HTTP ${result.httpStatus})`,
       };
     },
     "agentmail-cap-adjust": async (params) => {
@@ -1569,6 +1932,40 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
         return { ok: false, message: (error as Error).message };
       }
       return { ok: true, message: `Review ${reviewId} rejected` };
+    },
+    "agentmail-review-reconcile-sent": async (params) => {
+      const reviewId = typeof params.reviewId === "string" ? params.reviewId.trim() : "";
+      if (!reviewId) return { ok: false, message: "Review ID is required" };
+      const fingerprint = typeof params.fingerprint === "string" ? params.fingerprint.trim() : "";
+      if (!fingerprint) return { ok: false, message: "Inspection fingerprint is required" };
+      const messageId = typeof params.messageId === "string" ? params.messageId.trim() : "";
+      if (!messageId) return { ok: false, message: "Provider message ID is required" };
+      const threadId = typeof params.threadId === "string" ? params.threadId.trim() : "";
+      if (messageId.length > 256 || threadId.length > 256) {
+        return { ok: false, message: "Provider IDs must be at most 256 characters" };
+      }
+      const evidence = typeof params.evidence === "string" ? params.evidence.trim() : "";
+      if (!evidence) return { ok: false, message: "Verification evidence is required" };
+      if (evidence.length > 400) {
+        return { ok: false, message: "Verification evidence must be at most 400 characters" };
+      }
+      return reconcileReviewSent(reviewId, fingerprint, {
+        messageId,
+        ...(threadId ? { threadId } : {}),
+        evidence,
+      });
+    },
+    "agentmail-review-reconcile-failed": async (params) => {
+      const reviewId = typeof params.reviewId === "string" ? params.reviewId.trim() : "";
+      if (!reviewId) return { ok: false, message: "Review ID is required" };
+      const fingerprint = typeof params.fingerprint === "string" ? params.fingerprint.trim() : "";
+      if (!fingerprint) return { ok: false, message: "Inspection fingerprint is required" };
+      const reason = typeof params.reason === "string" ? params.reason.trim() : "";
+      if (!reason) return { ok: false, message: "Verification evidence is required" };
+      if (reason.length > 400) {
+        return { ok: false, message: "Verification evidence must be at most 400 characters" };
+      }
+      return reconcileReviewFailed(reviewId, fingerprint, reason);
     },
   };
 
