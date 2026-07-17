@@ -257,17 +257,23 @@ function prepareDatabasePath(configuredPath: string): { path: string; persistent
 
 function secureSqliteFiles(path: string): void {
   for (const candidate of [path, `${path}-wal`, `${path}-shm`, `${path}-journal`]) {
-    const stat = lstatSync(candidate, { throwIfNoEntry: false });
-    if (!stat) continue;
-    if (stat.isSymbolicLink() || !stat.isFile()) {
-      throw new Error(
-        `agentMail ledger: SQLite artifact must be a regular non-symlink file: ${candidate}`,
+    let fd: number;
+    try {
+      fd = openSync(
+        candidate,
+        fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK,
       );
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOENT") continue;
+      if (code === "ELOOP") {
+        throw new Error(
+          `agentMail ledger: SQLite artifact must be a regular non-symlink file: ${candidate}`,
+          { cause: error },
+        );
+      }
+      throw error;
     }
-    const fd = openSync(
-      candidate,
-      fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK,
-    );
     try {
       if (!fstatSync(fd).isFile()) {
         throw new Error(`agentMail ledger: SQLite artifact must be a regular file: ${candidate}`);

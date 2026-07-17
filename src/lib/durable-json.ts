@@ -108,10 +108,6 @@ export function writeDurableJson(path: string, value: unknown, label: string): v
   const tempPath = join(parent, `.${randomUUID()}.tmp.${process.pid}`);
 
   try {
-    const parentStat = lstatSync(parent);
-    if (parentStat.isSymbolicLink() || !parentStat.isDirectory()) {
-      throw new Error(`${parent} must be a real directory`);
-    }
     if (createdParent) {
       const grandparent = dirname(parent);
       const grandparentFd = openSync(
@@ -124,10 +120,18 @@ export function writeDurableJson(path: string, value: unknown, label: string): v
         closeSync(grandparentFd);
       }
     }
-    directoryFd = openSync(
-      parent,
-      constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
-    );
+    try {
+      directoryFd = openSync(
+        parent,
+        constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+      );
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ELOOP" || code === "ENOTDIR") {
+        throw new Error(`${parent} must be a real directory`, { cause: error });
+      }
+      throw error;
+    }
     if (!fstatSync(directoryFd).isDirectory()) {
       throw new Error(`${parent} must be a real directory`);
     }

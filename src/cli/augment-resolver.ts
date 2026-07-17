@@ -15,12 +15,12 @@
  */
 
 import {
-  chmodSync,
   closeSync,
   constants,
   existsSync,
+  fchmodSync,
+  fstatSync,
   fsyncSync,
-  lstatSync,
   mkdirSync,
   openSync,
 } from "node:fs";
@@ -98,38 +98,59 @@ function ensureDurableDirectoryChain(root: string, target: string, label: string
     throw new Error(`[augment-resolver] ${label} escaped its runtime data root`);
   }
 
-  const rootStat = lstatSync(root);
-  if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) {
+  let parentFd: number;
+  try {
+    parentFd = openSync(root, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  } catch (error) {
+    throw new Error(`[augment-resolver] ${label} root must be a real directory`, {
+      cause: error,
+    });
+  }
+  if (!fstatSync(parentFd).isDirectory()) {
+    closeSync(parentFd);
     throw new Error(`[augment-resolver] ${label} root must be a real directory`);
   }
 
   let parent = root;
-  for (const component of relativeTarget.split(sep).filter(Boolean)) {
-    const candidate = resolve(parent, component);
-    let created = false;
-    try {
-      mkdirSync(candidate, { mode: 0o700 });
-      created = true;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-    }
-    const stat = lstatSync(candidate);
-    if (stat.isSymbolicLink() || !stat.isDirectory()) {
-      throw new Error(`[augment-resolver] ${label} must not contain symlinked directories`);
-    }
-    chmodSync(candidate, 0o700);
-    if (created) {
-      const parentFd = openSync(
-        parent,
-        constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
-      );
+  try {
+    for (const component of relativeTarget.split(sep).filter(Boolean)) {
+      const candidate = resolve(parent, component);
+      let created = false;
       try {
-        fsyncSync(parentFd);
-      } finally {
-        closeSync(parentFd);
+        mkdirSync(candidate, { mode: 0o700 });
+        created = true;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
       }
+
+      let candidateFd: number | undefined;
+      try {
+        candidateFd = openSync(
+          candidate,
+          constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+        );
+        if (!fstatSync(candidateFd).isDirectory()) {
+          throw new Error(`[augment-resolver] ${label} must not contain non-directories`);
+        }
+        fchmodSync(candidateFd, 0o700);
+        if (created) fsyncSync(parentFd);
+      } catch (error) {
+        if (candidateFd !== undefined) closeSync(candidateFd);
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code === "ELOOP" || code === "ENOTDIR") {
+          throw new Error(`[augment-resolver] ${label} must not contain symlinked directories`, {
+            cause: error,
+          });
+        }
+        throw error;
+      }
+
+      closeSync(parentFd);
+      parentFd = candidateFd;
+      parent = candidate;
     }
-    parent = candidate;
+  } finally {
+    closeSync(parentFd);
   }
 }
 
