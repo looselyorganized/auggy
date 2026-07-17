@@ -1151,9 +1151,7 @@ function migratePeerIdOnVerify(
   try {
     const changes = reassignSqliteMemoryPeerId(dbPath, oldPeerId, newPeerId);
     if (changes > 0) {
-      console.info(
-        `[visitor-auth] migrated ${changes} memory row(s) ${oldPeerId} → ${newPeerId}`,
-      );
+      console.info(`[visitor-auth] migrated ${changes} memory row(s) ${oldPeerId} → ${newPeerId}`);
     }
   } catch (err) {
     console.warn(

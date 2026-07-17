@@ -75,15 +75,16 @@ function hasExactBudgetSchema(objects: readonly SqliteSchemaObject[]): boolean {
   return (
     objects.length === EXPECTED_SCHEMA.size &&
     objects.every(
-      (object) =>
-        EXPECTED_SCHEMA.get(object.name) === canonicalSqliteSchemaSql(object.sql),
+      (object) => EXPECTED_SCHEMA.get(object.name) === canonicalSqliteSchemaSql(object.sql),
     )
   );
 }
 
 function validateBudgetSchema(objects: readonly SqliteSchemaObject[]): void {
   if (!hasExactBudgetSchema(objects)) {
-    throw new Error("budgets store: database schema contains missing, incompatible, or unexpected objects");
+    throw new Error(
+      "budgets store: database schema contains missing, incompatible, or unexpected objects",
+    );
   }
 }
 

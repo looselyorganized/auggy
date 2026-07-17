@@ -684,13 +684,13 @@ function assertRailwayLegacyDatabasePaths(config: ReturnType<typeof parseConfig>
         typeof value === "string" &&
         !isAbsolute(value) &&
         resolvedPath === resolve("/app", rule.expected);
-      if (isMappedDefault || (!isAbsolute(String(value)) && isDirectVolumePath)) continue;
+      if (isMappedDefault || isDirectVolumePath) continue;
       throw new Error(
         [
           "Deploy preflight failed:",
           `${augment.type}.${rule.field} must remain ${rule.expected} or resolve below ./data for Railway durability (found ${String(value)}).`,
-          "The current Railway entrypoint maps only the standard legacy SQLite paths onto /app/data.",
-          "Custom legacy database paths would be recreated on ephemeral container storage after redeploy.",
+          "Core SQLite paths must resolve directly below /app/data.",
+          "Paths outside that root would be recreated on ephemeral container storage after redeploy.",
         ].join("\n"),
       );
     }

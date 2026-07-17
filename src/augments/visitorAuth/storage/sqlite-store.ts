@@ -84,8 +84,7 @@ function hasExactVisitorAuthSchema(objects: readonly SqliteSchemaObject[]): bool
   return (
     objects.length === EXPECTED_SCHEMA.size &&
     objects.every(
-      (object) =>
-        EXPECTED_SCHEMA.get(object.name) === canonicalSqliteSchemaSql(object.sql),
+      (object) => EXPECTED_SCHEMA.get(object.name) === canonicalSqliteSchemaSql(object.sql),
     )
   );
 }

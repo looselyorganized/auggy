@@ -97,15 +97,50 @@ interface TableColumn {
   name: string;
   type: string;
   notnull: number;
+  dflt_value: string | null;
   pk: number;
 }
+
+const ENTRY_COLUMN_CONTRACT = new Map<
+  string,
+  { type: "TEXT" | "INTEGER" | "REAL"; notnull: number; defaultValue: string | null; pk: number }
+>([
+  ["id", { type: "TEXT", notnull: 0, defaultValue: null, pk: 1 }],
+  ["label", { type: "TEXT", notnull: 1, defaultValue: null, pk: 0 }],
+  ["content", { type: "TEXT", notnull: 1, defaultValue: null, pk: 0 }],
+  ["peer_id", { type: "TEXT", notnull: 0, defaultValue: null, pk: 0 }],
+  ["trust_level", { type: "TEXT", notnull: 0, defaultValue: null, pk: 0 }],
+  ["created_at", { type: "INTEGER", notnull: 1, defaultValue: null, pk: 0 }],
+  ["superseded_by", { type: "TEXT", notnull: 0, defaultValue: null, pk: 0 }],
+  ["retention_class", { type: "TEXT", notnull: 1, defaultValue: "'operational'", pk: 0 }],
+  ["is_verbatim", { type: "INTEGER", notnull: 1, defaultValue: "0", pk: 0 }],
+  ["provenance_model", { type: "TEXT", notnull: 0, defaultValue: null, pk: 0 }],
+  ["confidence", { type: "REAL", notnull: 0, defaultValue: null, pk: 0 }],
+  ["embedding_model", { type: "TEXT", notnull: 0, defaultValue: null, pk: 0 }],
+  ["scope", { type: "TEXT", notnull: 1, defaultValue: "'peer'", pk: 0 }],
+  ["expires_at", { type: "INTEGER", notnull: 0, defaultValue: null, pk: 0 }],
+  ["subject", { type: "TEXT", notnull: 0, defaultValue: null, pk: 0 }],
+  ["predicate", { type: "TEXT", notnull: 0, defaultValue: null, pk: 0 }],
+  ["object", { type: "TEXT", notnull: 0, defaultValue: null, pk: 0 }],
+  ["source_turn_id", { type: "TEXT", notnull: 0, defaultValue: null, pk: 0 }],
+  ["origin", { type: "TEXT", notnull: 0, defaultValue: null, pk: 0 }],
+]);
 
 function entryColumns(db: Database): TableColumn[] {
   return db.query<TableColumn, []>("PRAGMA table_info(entries)").all();
 }
 
-function hasExpectedNonEntryObjects(objects: readonly SqliteSchemaObject[]): boolean {
-  if (objects.length !== EXPECTED_OBJECT_SQL.size + 1) return false;
+function hasExpectedNonEntryObjects(
+  objects: readonly SqliteSchemaObject[],
+  legacy: boolean,
+): boolean {
+  if (!legacy && objects.length !== EXPECTED_OBJECT_SQL.size + 1) return false;
+  if (!objects.some((object) => object.name === "entries" && object.type === "table")) {
+    return false;
+  }
+  if (!objects.some((object) => object.name === "event_log" && object.type === "table")) {
+    return false;
+  }
   return objects.every((object) => {
     if (object.name === "entries") return object.type === "table";
     return EXPECTED_OBJECT_SQL.get(object.name) === canonicalSqliteSchemaSql(object.sql);
@@ -124,11 +159,18 @@ function columnsHaveExpectedShape(columns: readonly TableColumn[], legacy: boole
     return false;
   }
   return columns.every((column) => {
-    if (column.type.toUpperCase() !== (column.name === "confidence" ? "REAL" : column.name === "created_at" || column.name === "is_verbatim" || column.name === "expires_at" ? "INTEGER" : "TEXT")) {
+    const expected = ENTRY_COLUMN_CONTRACT.get(column.name);
+    if (!expected || column.type.toUpperCase() !== expected.type || column.pk !== expected.pk) {
       return false;
     }
-    if (column.name === "id") return column.pk === 1;
-    return column.pk === 0;
+    if (
+      (column.name === "retention_class" || column.name === "is_verbatim") &&
+      column.notnull === 0 &&
+      column.dflt_value === null
+    ) {
+      return true;
+    }
+    return column.notnull === expected.notnull && column.dflt_value === expected.defaultValue;
   });
 }
 
@@ -137,10 +179,14 @@ function isRecognizedLayeredMemorySchema(
   objects: readonly SqliteSchemaObject[],
   legacy: boolean,
 ): boolean {
-  return hasExpectedNonEntryObjects(objects) && columnsHaveExpectedShape(entryColumns(db), legacy);
+  return (
+    hasExpectedNonEntryObjects(objects, legacy) &&
+    columnsHaveExpectedShape(entryColumns(db), legacy)
+  );
 }
 
 function migrateLayeredMemorySchema(db: Database): void {
+  for (const statement of SCHEMA_STATEMENTS) db.run(statement);
   const colNames = new Set(entryColumns(db).map((column) => column.name));
   const additions: Array<{ name: string; ddl: string }> = [
     { name: "subject", ddl: "ALTER TABLE entries ADD COLUMN subject TEXT" },

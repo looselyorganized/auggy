@@ -98,9 +98,10 @@ describe("BudgetStore", () => {
 
     await expect(store.prepare(baseInput({ turnId: "closed-1" }))).rejects.toThrow();
     const second = await Promise.race([
-      store
-        .prepare(baseInput({ turnId: "closed-2" }))
-        .then(() => "resolved", () => "rejected"),
+      store.prepare(baseInput({ turnId: "closed-2" })).then(
+        () => "resolved",
+        () => "rejected",
+      ),
       new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 100)),
     ]);
 
