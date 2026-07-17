@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { lstatSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createAgentMailReviewQueue } from "../../../src/augments/agentMail/review-queue";
@@ -36,10 +36,13 @@ describe("AgentMail outbound review queue", () => {
 
     const path = join(dir, "agent-mail-reviews.json");
     expect(lstatSync(path).mode & 0o777).toBe(0o600);
-    expect(readFileSync(path, "utf8")).toContain('"messageId":"message_1"');
 
     const reloaded = createAgentMailReviewQueue({ agentDir: dir, now: () => 1_000 });
-    expect(reloaded.get("r1")).toMatchObject({ state: "pending", trustLevel: "public" });
+    expect(reloaded.get("r1")).toMatchObject({
+      state: "pending",
+      trustLevel: "public",
+      request: { messageId: "message_1" },
+    });
   });
 
   test("deduplicates an identical pending proposal", () => {
