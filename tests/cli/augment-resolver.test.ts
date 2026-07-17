@@ -1098,6 +1098,97 @@ describe("resolveAugments — agentMail runtime state paths", () => {
 });
 
 // ---------------------------------------------------------------------------
+// core SQLite runtime state paths
+// ---------------------------------------------------------------------------
+
+describe("resolveAugments — core SQLite runtime state paths", () => {
+  test("preserves ./data and contained absolute paths without double-rebasing", async () => {
+    const runtimeDataRoot = join(TMP, "data");
+    mkdirSync(runtimeDataRoot, { recursive: true });
+    const augments = await resolveAugments(
+      [
+        {
+          name: "memory",
+          type: "layeredMemory",
+          options: { backend: "sqlite", dbPath: "./data/memory.db", namespace: "test" },
+        },
+        {
+          name: "budgets",
+          type: "budgets",
+          options: { dbPath: join(runtimeDataRoot, "budgets.db") },
+        },
+        {
+          name: "visitor-auth",
+          type: "visitorAuth",
+          options: {
+            publicUrl: "https://zip.test",
+            dbPath: "./data/visitor-auth.db",
+            agentMail: { apiKey: "am_x", inboxId: "ibx_x" },
+            signingKey: "sig-x",
+            layeredMemoryDbPath: "./data/memory.db",
+          },
+        },
+      ],
+      TMP,
+      { runtimeDataRoot },
+    );
+
+    try {
+      expect(existsSync(join(runtimeDataRoot, "memory.db"))).toBe(true);
+      expect(existsSync(join(runtimeDataRoot, "budgets.db"))).toBe(true);
+      expect(existsSync(join(runtimeDataRoot, "visitor-auth.db"))).toBe(true);
+      expect(existsSync(join(runtimeDataRoot, "data"))).toBe(false);
+    } finally {
+      for (const augment of augments) await augment.onShutdown?.();
+    }
+  });
+
+  test("maps ordinary local defaults directly under the runtime root", async () => {
+    const runtimeDataRoot = join(TMP, "railway-data");
+    mkdirSync(runtimeDataRoot, { recursive: true });
+    const augments = await resolveAugments(
+      [
+        {
+          name: "memory",
+          type: "layeredMemory",
+          options: { backend: "sqlite", namespace: "test" },
+        },
+        { name: "budgets", type: "budgets", options: {} },
+      ],
+      TMP,
+      { runtimeDataRoot },
+    );
+
+    try {
+      expect(existsSync(join(runtimeDataRoot, "memory.db"))).toBe(true);
+      expect(existsSync(join(runtimeDataRoot, "budgets.db"))).toBe(true);
+      expect(existsSync(join(TMP, "memory.db"))).toBe(false);
+      expect(existsSync(join(TMP, "budgets.db"))).toBe(false);
+    } finally {
+      for (const augment of augments) await augment.onShutdown?.();
+    }
+  });
+
+  test("rejects a core SQLite absolute path outside the runtime root", async () => {
+    const runtimeDataRoot = join(TMP, "data");
+    mkdirSync(runtimeDataRoot, { recursive: true });
+    await expect(
+      resolveAugments(
+        [
+          {
+            name: "budgets",
+            type: "budgets",
+            options: { dbPath: join(TMP, "escaped.db") },
+          },
+        ],
+        TMP,
+        { runtimeDataRoot },
+      ),
+    ).rejects.toThrow(/budgets dbPath.*runtime data root/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // visitorAuth
 // ---------------------------------------------------------------------------
 

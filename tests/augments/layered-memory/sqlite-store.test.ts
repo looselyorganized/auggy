@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { join } from "node:path";
+import { Database } from "bun:sqlite";
 import { createSqliteStore } from "@/augments/layeredMemory/storage/sqlite-store";
 import { createTempDir } from "@tests/fixtures/temp-dir";
 import type { MemoryStore } from "@/augments/layeredMemory/storage/types";
@@ -23,6 +24,64 @@ describe("SqliteStore", () => {
   afterEach(async () => {
     await store.close();
     await cleanup();
+  });
+
+  it("rejects an unrelated SQLite database without adding memory tables", async () => {
+    const unrelatedPath = `${dbPath}.unrelated`;
+    const unrelated = new Database(unrelatedPath);
+    unrelated.run("CREATE TABLE foreign_owner (secret TEXT NOT NULL)");
+    unrelated.close();
+
+    expect(() => createSqliteStore({ dbPath: unrelatedPath, retentionDays: 90 })).toThrow(
+      /recognized legacy schema/,
+    );
+
+    const probe = new Database(unrelatedPath, { readonly: true });
+    try {
+      const names = probe
+        .query<{ name: string }, []>(
+          "SELECT name FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' ORDER BY name",
+        )
+        .all()
+        .map((row) => row.name);
+      expect(names).toEqual(["foreign_owner"]);
+    } finally {
+      probe.close();
+    }
+  });
+
+  it("rejects a nullable lookalike schema without stamping ownership", async () => {
+    const lookalikePath = `${dbPath}.lookalike`;
+    const valid = createSqliteStore({ dbPath: lookalikePath, retentionDays: 90 });
+    await valid.close();
+    const tamper = new Database(lookalikePath);
+    tamper.run("PRAGMA application_id = 0");
+    tamper.run("PRAGMA user_version = 0");
+    const originalSql = tamper
+      .query<{ sql: string }, []>("SELECT sql FROM sqlite_schema WHERE name = 'entries'")
+      .get()!.sql;
+    tamper.run("ALTER TABLE entries RENAME TO entries_valid");
+    tamper.run(originalSql.replace("label           TEXT NOT NULL", "label           TEXT"));
+    tamper.run("DROP TABLE entries_valid");
+    tamper.run("CREATE INDEX idx_entries_peer ON entries(peer_id)");
+    tamper.run("CREATE INDEX idx_entries_label ON entries(label)");
+    tamper.run("CREATE INDEX idx_entries_created ON entries(created_at DESC)");
+    tamper.run(
+      "CREATE INDEX idx_entries_expires ON entries(expires_at) WHERE expires_at IS NOT NULL",
+    );
+    tamper.close();
+
+    expect(() => createSqliteStore({ dbPath: lookalikePath, retentionDays: 90 })).toThrow(
+      /recognized legacy schema/,
+    );
+
+    const probe = new Database(lookalikePath, { readonly: true });
+    try {
+      expect(probe.query("PRAGMA application_id").get()).toEqual({ application_id: 0 });
+      expect(probe.query("PRAGMA user_version").get()).toEqual({ user_version: 0 });
+    } finally {
+      probe.close();
+    }
   });
 
   it("writes and reads back an entry", async () => {
@@ -324,6 +383,39 @@ describe("SqliteStore", () => {
     // matching write event.
     expect(entries?.count).toBe(1);
     expect(events?.count).toBe(1);
+  });
+
+  it("rolls back the entry when its audit insert is aborted", async () => {
+    const db2 = new Database(dbPath);
+    db2.run(`CREATE TRIGGER reject_write_audit
+      BEFORE INSERT ON event_log
+      WHEN NEW.action = 'write'
+      BEGIN
+        SELECT RAISE(ABORT, 'audit blocked');
+      END`);
+    db2.close();
+
+    await expect(
+      store.write({
+        label: "ep:vis_a:blocked",
+        content: "must roll back",
+        peerId: "vis_a",
+        trustLevel: "public",
+        createdAt: Date.now(),
+        supersededBy: null,
+        retentionClass: "operational",
+        isVerbatim: false,
+        expiresAt: null,
+      }),
+    ).rejects.toThrow(/audit blocked/);
+
+    const probe = new Database(dbPath);
+    try {
+      const row = probe.prepare("SELECT 1 FROM entries WHERE label = 'ep:vis_a:blocked'").get();
+      expect(row).toBeNull();
+    } finally {
+      probe.close();
+    }
   });
 
   it("expiry sweep is decoupled from write — does not retroactively fail successful writes", async () => {

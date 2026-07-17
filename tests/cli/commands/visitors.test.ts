@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runVisitorsList, type VisitorsCommandOptions } from "../../../src/cli/commands/visitors";
 import { createSqliteVisitorAuthStore } from "../../../src/augments/visitorAuth/storage/sqlite-store";
+import { createSqliteStore } from "../../../src/augments/layeredMemory/storage/sqlite-store";
 import { seedAgentForTest } from "../../../src/cli/agent-index";
 
 let tmp: string;
@@ -105,32 +106,28 @@ describe("auggy visitors <agent> (list)", () => {
 import { runVisitorsRevoke } from "../../../src/cli/commands/visitors-revoke";
 import { Database } from "bun:sqlite";
 
-function seedMemoryDb(memDbPath: string, peerId: string, n: number): void {
-  const db = new Database(memDbPath, { create: true });
-  db.run(
-    `CREATE TABLE IF NOT EXISTS entries (
-       id TEXT PRIMARY KEY, label TEXT NOT NULL, content TEXT NOT NULL,
-       peer_id TEXT, trust_level TEXT, created_at INTEGER NOT NULL,
-       superseded_by TEXT, retention_class TEXT NOT NULL DEFAULT 'operational',
-       is_verbatim INTEGER NOT NULL DEFAULT 0,
-       provenance_model TEXT, confidence REAL, embedding_model TEXT,
-       scope TEXT NOT NULL DEFAULT 'peer', expires_at INTEGER,
-       subject TEXT, predicate TEXT, object TEXT, source_turn_id TEXT, origin TEXT
-     )`,
-  );
-  const stmt = db.prepare(
-    `INSERT INTO entries (id, label, content, peer_id, created_at) VALUES (?, ?, ?, ?, ?)`,
-  );
+async function seedMemoryDb(memDbPath: string, peerId: string, n: number): Promise<void> {
+  const store = createSqliteStore({ dbPath: memDbPath, retentionDays: 90 });
   for (let i = 0; i < n; i++) {
-    stmt.run(`r-${i}`, `ep:${peerId}:${i}`, `c${i}`, peerId, Date.now());
+    await store.write({
+      label: `ep:${peerId}:${i}`,
+      content: `c${i}`,
+      peerId,
+      trustLevel: "public",
+      createdAt: Date.now(),
+      supersededBy: null,
+      retentionClass: "operational",
+      isVerbatim: false,
+      expiresAt: null,
+    });
   }
-  db.close();
+  await store.close();
 }
 
 describe("auggy visitors <agent> --revoke <email>", () => {
   test("hard-revokes the row + cascades memory_forget", async () => {
     seed([{ visitorId: "vis_rev1", email: "revoke@x", verifiedAt: 1000 }]);
-    seedMemoryDb(join(agentDir, "memory.db"), "vis_rev1", 4);
+    await seedMemoryDb(join(agentDir, "memory.db"), "vis_rev1", 4);
     const lines: string[] = [];
     await runVisitorsRevoke("zip", "revoke@x", {
       auggyDir,
@@ -176,7 +173,7 @@ describe("auggy visitors <agent> --revoke <email>", () => {
 
   test("with confirm:true and decline, makes no changes", async () => {
     seed([{ visitorId: "vis_safe", email: "safe@x", verifiedAt: 1000 }]);
-    seedMemoryDb(join(agentDir, "memory.db"), "vis_safe", 2);
+    await seedMemoryDb(join(agentDir, "memory.db"), "vis_safe", 2);
     const lines: string[] = [];
     await runVisitorsRevoke("zip", "safe@x", {
       auggyDir,
@@ -198,7 +195,7 @@ describe("auggy visitors <agent> --revoke <email>", () => {
     // memory.db still has rows under that visitorId (operator hit Ctrl-C
     // between the two operations, or the cascade threw mid-DELETE).
     seed([{ visitorId: "vis_orph", email: "orphan@x", verifiedAt: 1000, revoked: true }]);
-    seedMemoryDb(join(agentDir, "memory.db"), "vis_orph", 3);
+    await seedMemoryDb(join(agentDir, "memory.db"), "vis_orph", 3);
     const lines: string[] = [];
     await runVisitorsRevoke("zip", "orphan@x", {
       auggyDir,

@@ -1,5 +1,11 @@
-import { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
+import type { Database } from "bun:sqlite";
+import {
+  admitOwnedSqliteSchema,
+  canonicalSqliteSchemaSql,
+  openHardenedSqlite,
+  type SqliteSchemaObject,
+} from "../../../lib/sqlite";
 import type {
   MemoryStore,
   RetentionClass,
@@ -25,7 +31,12 @@ const SCHEMA_STATEMENTS = [
     confidence      REAL,
     embedding_model TEXT,
     scope           TEXT NOT NULL DEFAULT 'peer',
-    expires_at      INTEGER
+    expires_at      INTEGER,
+    subject         TEXT,
+    predicate       TEXT,
+    object          TEXT,
+    source_turn_id  TEXT,
+    origin          TEXT
   )`,
   `CREATE INDEX IF NOT EXISTS idx_entries_peer ON entries(peer_id)`,
   `CREATE INDEX IF NOT EXISTS idx_entries_label ON entries(label)`,
@@ -41,6 +52,214 @@ const SCHEMA_STATEMENTS = [
   )`,
   `CREATE INDEX IF NOT EXISTS idx_events_entry ON event_log(entry_id)`,
 ];
+
+const LAYERED_MEMORY_APPLICATION_ID = 0x4c4d454d; // "LMEM"
+const LAYERED_MEMORY_SCHEMA_VERSION = 1;
+const EXPECTED_OBJECT_SQL = new Map(
+  SCHEMA_STATEMENTS.slice(1).map((sql) => {
+    const match = sql.match(/(?:TABLE|INDEX)\s+IF\s+NOT\s+EXISTS\s+([^\s(]+)/i);
+    if (!match?.[1]) throw new Error("layeredMemory store: invalid schema declaration");
+    return [match[1], canonicalSqliteSchemaSql(sql)] as const;
+  }),
+);
+const ENTRY_COLUMN_NAMES = new Set([
+  "id",
+  "label",
+  "content",
+  "peer_id",
+  "trust_level",
+  "created_at",
+  "superseded_by",
+  "retention_class",
+  "is_verbatim",
+  "provenance_model",
+  "confidence",
+  "embedding_model",
+  "scope",
+  "expires_at",
+  "subject",
+  "predicate",
+  "object",
+  "source_turn_id",
+  "origin",
+]);
+const LEGACY_OPTIONAL_COLUMNS = new Set([
+  "retention_class",
+  "is_verbatim",
+  "subject",
+  "predicate",
+  "object",
+  "source_turn_id",
+  "origin",
+]);
+
+interface TableColumn {
+  name: string;
+  type: string;
+  notnull: number;
+  dflt_value: string | null;
+  pk: number;
+}
+
+const ENTRY_COLUMN_CONTRACT = new Map<
+  string,
+  { type: "TEXT" | "INTEGER" | "REAL"; notnull: number; defaultValue: string | null; pk: number }
+>([
+  ["id", { type: "TEXT", notnull: 0, defaultValue: null, pk: 1 }],
+  ["label", { type: "TEXT", notnull: 1, defaultValue: null, pk: 0 }],
+  ["content", { type: "TEXT", notnull: 1, defaultValue: null, pk: 0 }],
+  ["peer_id", { type: "TEXT", notnull: 0, defaultValue: null, pk: 0 }],
+  ["trust_level", { type: "TEXT", notnull: 0, defaultValue: null, pk: 0 }],
+  ["created_at", { type: "INTEGER", notnull: 1, defaultValue: null, pk: 0 }],
+  ["superseded_by", { type: "TEXT", notnull: 0, defaultValue: null, pk: 0 }],
+  ["retention_class", { type: "TEXT", notnull: 1, defaultValue: "'operational'", pk: 0 }],
+  ["is_verbatim", { type: "INTEGER", notnull: 1, defaultValue: "0", pk: 0 }],
+  ["provenance_model", { type: "TEXT", notnull: 0, defaultValue: null, pk: 0 }],
+  ["confidence", { type: "REAL", notnull: 0, defaultValue: null, pk: 0 }],
+  ["embedding_model", { type: "TEXT", notnull: 0, defaultValue: null, pk: 0 }],
+  ["scope", { type: "TEXT", notnull: 1, defaultValue: "'peer'", pk: 0 }],
+  ["expires_at", { type: "INTEGER", notnull: 0, defaultValue: null, pk: 0 }],
+  ["subject", { type: "TEXT", notnull: 0, defaultValue: null, pk: 0 }],
+  ["predicate", { type: "TEXT", notnull: 0, defaultValue: null, pk: 0 }],
+  ["object", { type: "TEXT", notnull: 0, defaultValue: null, pk: 0 }],
+  ["source_turn_id", { type: "TEXT", notnull: 0, defaultValue: null, pk: 0 }],
+  ["origin", { type: "TEXT", notnull: 0, defaultValue: null, pk: 0 }],
+]);
+
+function entryColumns(db: Database): TableColumn[] {
+  return db.query<TableColumn, []>("PRAGMA table_info(entries)").all();
+}
+
+function hasExpectedNonEntryObjects(
+  objects: readonly SqliteSchemaObject[],
+  legacy: boolean,
+): boolean {
+  if (!legacy && objects.length !== EXPECTED_OBJECT_SQL.size + 1) return false;
+  if (!objects.some((object) => object.name === "entries" && object.type === "table")) {
+    return false;
+  }
+  if (!objects.some((object) => object.name === "event_log" && object.type === "table")) {
+    return false;
+  }
+  return objects.every((object) => {
+    if (object.name === "entries") return object.type === "table";
+    return EXPECTED_OBJECT_SQL.get(object.name) === canonicalSqliteSchemaSql(object.sql);
+  });
+}
+
+function columnsHaveExpectedShape(columns: readonly TableColumn[], legacy: boolean): boolean {
+  const names = new Set(columns.map((column) => column.name));
+  if (names.size !== columns.length) return false;
+  if ([...names].some((name) => !ENTRY_COLUMN_NAMES.has(name))) return false;
+  if (
+    [...ENTRY_COLUMN_NAMES].some(
+      (name) => !names.has(name) && (!legacy || !LEGACY_OPTIONAL_COLUMNS.has(name)),
+    )
+  ) {
+    return false;
+  }
+  return columns.every((column) => {
+    const expected = ENTRY_COLUMN_CONTRACT.get(column.name);
+    if (!expected || column.type.toUpperCase() !== expected.type || column.pk !== expected.pk) {
+      return false;
+    }
+    if (
+      (column.name === "retention_class" || column.name === "is_verbatim") &&
+      column.notnull === 0 &&
+      column.dflt_value === null
+    ) {
+      return true;
+    }
+    return column.notnull === expected.notnull && column.dflt_value === expected.defaultValue;
+  });
+}
+
+function isRecognizedLayeredMemorySchema(
+  db: Database,
+  objects: readonly SqliteSchemaObject[],
+  legacy: boolean,
+): boolean {
+  return (
+    hasExpectedNonEntryObjects(objects, legacy) &&
+    columnsHaveExpectedShape(entryColumns(db), legacy)
+  );
+}
+
+function migrateLayeredMemorySchema(db: Database): void {
+  for (const statement of SCHEMA_STATEMENTS) db.run(statement);
+  const colNames = new Set(entryColumns(db).map((column) => column.name));
+  const additions: Array<{ name: string; ddl: string }> = [
+    { name: "subject", ddl: "ALTER TABLE entries ADD COLUMN subject TEXT" },
+    { name: "predicate", ddl: "ALTER TABLE entries ADD COLUMN predicate TEXT" },
+    { name: "object", ddl: "ALTER TABLE entries ADD COLUMN object TEXT" },
+    { name: "source_turn_id", ddl: "ALTER TABLE entries ADD COLUMN source_turn_id TEXT" },
+    { name: "origin", ddl: "ALTER TABLE entries ADD COLUMN origin TEXT" },
+    {
+      name: "is_verbatim",
+      ddl: "ALTER TABLE entries ADD COLUMN is_verbatim INTEGER NOT NULL DEFAULT 0",
+    },
+    {
+      name: "retention_class",
+      ddl: "ALTER TABLE entries ADD COLUMN retention_class TEXT NOT NULL DEFAULT 'operational'",
+    },
+  ];
+  for (const { name, ddl } of additions) {
+    if (!colNames.has(name)) db.run(ddl);
+  }
+}
+
+function openLayeredMemoryDatabase(dbPath: string, create = true) {
+  return openHardenedSqlite({
+    path: dbPath,
+    label: "layeredMemory store",
+    create,
+    prepare(db) {
+      admitOwnedSqliteSchema(db, {
+        label: "layeredMemory store",
+        applicationId: LAYERED_MEMORY_APPLICATION_ID,
+        schemaVersion: LAYERED_MEMORY_SCHEMA_VERSION,
+        initialize(db) {
+          for (const statement of SCHEMA_STATEMENTS) db.run(statement);
+        },
+        isLegacy(db, objects) {
+          return isRecognizedLayeredMemorySchema(db, objects, true);
+        },
+        migrateLegacy: migrateLayeredMemorySchema,
+        validate(db, objects) {
+          if (!isRecognizedLayeredMemorySchema(db, objects, false)) {
+            throw new Error(
+              "layeredMemory store: database schema contains missing, incompatible, or unexpected objects",
+            );
+          }
+        },
+      });
+    },
+  });
+}
+
+export function reassignSqliteMemoryPeerId(
+  dbPath: string,
+  oldPeerId: string,
+  newPeerId: string,
+): number {
+  const database = openLayeredMemoryDatabase(dbPath, false);
+  try {
+    return database.db
+      .prepare("UPDATE entries SET peer_id = ? WHERE peer_id = ?")
+      .run(newPeerId, oldPeerId).changes;
+  } finally {
+    database.close();
+  }
+}
+
+export function deleteSqliteMemoryForPeer(dbPath: string, peerId: string): number {
+  const database = openLayeredMemoryDatabase(dbPath, false);
+  try {
+    return database.db.prepare("DELETE FROM entries WHERE peer_id = ?").run(peerId).changes;
+  } finally {
+    database.close();
+  }
+}
 
 interface Row {
   id: string;
@@ -91,41 +310,8 @@ const CLEANUP_SAMPLE_RATE = 50;
 const CLEANUP_BATCH_SIZE = 100;
 
 export function createSqliteStore(config: SqliteStoreConfig): MemoryStore {
-  const db = new Database(config.dbPath, { create: true });
-  db.run("PRAGMA journal_mode = WAL");
-  db.run("PRAGMA foreign_keys = ON");
-
-  // Schema must exist before we prepare statements that reference it.
-  for (const stmt of SCHEMA_STATEMENTS) {
-    db.run(stmt);
-  }
-
-  // Phase 2 migration: add structured-fact + provenance columns idempotently.
-  // PRAGMA table_info detects which columns already exist; ALTER TABLE adds
-  // only the absent ones. Existing rows survive with NULLs in the new columns.
-  // is_verbatim + retention_class are already in SCHEMA_STATEMENTS above;
-  // they appear in the list so the migration is self-documenting and safe to
-  // re-run if applied to a DB that predates them (legacy schema path).
-  function ensureMigrations(): void {
-    const cols = db.prepare("PRAGMA table_info(entries)").all() as { name: string }[];
-    const colNames = new Set(cols.map((c) => c.name));
-
-    const additions: Array<{ name: string; ddl: string }> = [
-      { name: "subject", ddl: "ALTER TABLE entries ADD COLUMN subject TEXT" },
-      { name: "predicate", ddl: "ALTER TABLE entries ADD COLUMN predicate TEXT" },
-      { name: "object", ddl: "ALTER TABLE entries ADD COLUMN object TEXT" },
-      { name: "source_turn_id", ddl: "ALTER TABLE entries ADD COLUMN source_turn_id TEXT" },
-      { name: "origin", ddl: "ALTER TABLE entries ADD COLUMN origin TEXT" },
-      { name: "is_verbatim", ddl: "ALTER TABLE entries ADD COLUMN is_verbatim INTEGER" },
-      { name: "retention_class", ddl: "ALTER TABLE entries ADD COLUMN retention_class TEXT" },
-    ];
-
-    for (const { name, ddl } of additions) {
-      if (!colNames.has(name)) db.run(ddl);
-    }
-  }
-
-  ensureMigrations();
+  const database = openLayeredMemoryDatabase(config.dbPath);
+  const db = database.db;
 
   const retentionMs = config.retentionDays * 24 * 60 * 60 * 1000;
 
@@ -192,10 +378,12 @@ export function createSqliteStore(config: SqliteStoreConfig): MemoryStore {
     // sweep can never roll back the user's write. ~1-in-50 writes pay
     // the small constant DELETE cost; 49-in-50 writes pay nothing.
     if (Math.random() * CLEANUP_SAMPLE_RATE < 1) {
-      const result = cleanupStmt.run(Date.now(), CLEANUP_BATCH_SIZE);
-      if (result.changes > 0) {
-        logEvent("(batch)", "expire-sweep", null, { swept: result.changes });
-      }
+      db.transaction(() => {
+        const result = cleanupStmt.run(Date.now(), CLEANUP_BATCH_SIZE);
+        if (result.changes > 0) {
+          logEvent("(batch)", "expire-sweep", null, { swept: result.changes });
+        }
+      })();
     }
 
     return { ...input, id, expiresAt };
@@ -261,14 +449,18 @@ export function createSqliteStore(config: SqliteStoreConfig): MemoryStore {
   }
 
   async function forget(peerId: string): Promise<number> {
-    const result = db.prepare("DELETE FROM entries WHERE peer_id = ?").run(peerId);
-    logEvent("(batch)", "forget", peerId, { deleted: result.changes });
-    return result.changes;
+    return db.transaction(() => {
+      const result = db.prepare("DELETE FROM entries WHERE peer_id = ?").run(peerId);
+      logEvent("(batch)", "forget", peerId, { deleted: result.changes });
+      return result.changes;
+    })();
   }
 
   async function supersede(entryId: string, newEntryId: string): Promise<void> {
-    db.prepare("UPDATE entries SET superseded_by = ? WHERE id = ?").run(newEntryId, entryId);
-    logEvent(entryId, "supersede", null, { supersededBy: newEntryId });
+    db.transaction(() => {
+      db.prepare("UPDATE entries SET superseded_by = ? WHERE id = ?").run(newEntryId, entryId);
+      logEvent(entryId, "supersede", null, { supersededBy: newEntryId });
+    })();
   }
 
   async function cleanup(): Promise<number> {
@@ -301,36 +493,38 @@ export function createSqliteStore(config: SqliteStoreConfig): MemoryStore {
     const id = randomUUID();
     const createdAt = Date.now();
     const expiresAt = createdAt + retentionMs;
-    db.prepare(
-      `INSERT INTO entries
+    db.transaction(() => {
+      db.prepare(
+        `INSERT INTO entries
         (id, label, content, peer_id, trust_level, created_at, superseded_by,
          retention_class, is_verbatim, expires_at,
          subject, predicate, object, source_turn_id, origin,
          provenance_model, confidence)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'agent-derived', ?, ?)`,
-    ).run(
-      id,
-      args.label,
-      args.content,
-      args.peerId,
-      null,
-      createdAt,
-      null,
-      args.retentionClass,
-      args.isVerbatim ? 1 : 0,
-      expiresAt,
-      args.subject ?? null,
-      args.predicate ?? null,
-      args.object ?? null,
-      args.sourceTurnId,
-      args.model,
-      args.confidence,
-    );
-    logEvent(id, "auto-save", args.peerId, {
-      sourceTurnId: args.sourceTurnId,
-      model: args.model,
-      confidence: args.confidence,
-    });
+      ).run(
+        id,
+        args.label,
+        args.content,
+        args.peerId,
+        null,
+        createdAt,
+        null,
+        args.retentionClass,
+        args.isVerbatim ? 1 : 0,
+        expiresAt,
+        args.subject ?? null,
+        args.predicate ?? null,
+        args.object ?? null,
+        args.sourceTurnId,
+        args.model,
+        args.confidence,
+      );
+      logEvent(id, "auto-save", args.peerId, {
+        sourceTurnId: args.sourceTurnId,
+        model: args.model,
+        confidence: args.confidence,
+      });
+    })();
   }
 
   async function listEntriesByPeer(
@@ -387,7 +581,7 @@ export function createSqliteStore(config: SqliteStoreConfig): MemoryStore {
   }
 
   async function close(): Promise<void> {
-    db.close();
+    database.close();
   }
 
   return {

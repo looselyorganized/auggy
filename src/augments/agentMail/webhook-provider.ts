@@ -22,7 +22,7 @@ const DEFAULT_MAX_BODY_BYTES = 1_048_576;
 
 export interface AgentMailWebhookRouteOptions {
   inboxId: string;
-  ledger: AgentMailInboundLedger;
+  ledger: AgentMailInboundLedger | (() => AgentMailInboundLedger);
   path?: string;
   secretEnv?: string;
   timestampToleranceSeconds?: number;
@@ -64,7 +64,8 @@ export function createAgentMailWebhookRoute(
 
       try {
         const envelope = normalizeAgentMailReceivedEvent(verified.event, "webhook", inboxId);
-        const result = options.ledger.enqueue(envelope);
+        const ledger = typeof options.ledger === "function" ? options.ledger() : options.ledger;
+        const result = ledger.enqueue(envelope);
         options.onAccepted?.();
         return json({ accepted: true, duplicate: result.status === "duplicate" });
       } catch (error) {

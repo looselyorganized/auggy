@@ -63,10 +63,49 @@ describe("BudgetStore", () => {
     store = createBudgetStore({ dbPath });
   });
 
+  it("rejects an unrelated SQLite database without mutating it", async () => {
+    const unrelatedPath = `${dbPath}.unrelated`;
+    const { Database } = await import("bun:sqlite");
+    const unrelated = new Database(unrelatedPath, { create: true });
+    unrelated.run("CREATE TABLE foreign_owner (secret TEXT NOT NULL)");
+    unrelated.close();
+
+    expect(() => createBudgetStore({ dbPath: unrelatedPath })).toThrow(/recognized legacy schema/);
+
+    const probe = new Database(unrelatedPath, { readonly: true });
+    try {
+      const names = probe
+        .query<{ name: string }, []>(
+          "SELECT name FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' ORDER BY name",
+        )
+        .all()
+        .map((row) => row.name);
+      expect(names).toEqual(["foreign_owner"]);
+      expect(probe.query("PRAGMA journal_mode").get()).toEqual({ journal_mode: "delete" });
+    } finally {
+      probe.close();
+    }
+  });
+
   it("rejects fractional retentionDays at store construction", () => {
     expect(() => createBudgetStore({ dbPath, retentionDays: 1.5 })).toThrow(
       "budgets.retentionDays must be a positive integer",
     );
+  });
+
+  it("releases the prepare queue when BEGIN fails", async () => {
+    await store.close();
+
+    await expect(store.prepare(baseInput({ turnId: "closed-1" }))).rejects.toThrow();
+    const second = await Promise.race([
+      store.prepare(baseInput({ turnId: "closed-2" })).then(
+        () => "resolved",
+        () => "rejected",
+      ),
+      new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 100)),
+    ]);
+
+    expect(second).toBe("rejected");
   });
 
   // ── prepare: allow path ─────────────────────────────────
@@ -737,5 +776,18 @@ describe("BudgetStore", () => {
     await expect(
       store.commit("nonexistent-turn", "peer-1", { priced: true, costUsd: 1.0 }),
     ).resolves.toBeUndefined();
+  });
+
+  it("serializes a cost commit behind another turn's open reservation", async () => {
+    const admitted = await store.prepare(baseInput({ turnId: "costed-turn" }));
+    await admitted.confirm();
+
+    const open = await store.prepare(baseInput({ turnId: "open-turn" }));
+    const costCommit = store.commit("costed-turn", "peer-1", { priced: true, costUsd: 3 });
+    await open.rollback();
+    await costCommit;
+
+    const usage = await store.getPeerUsage("peer-1", "thread-1");
+    expect(usage.costUsd).toBe(3);
   });
 });

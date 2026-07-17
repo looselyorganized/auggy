@@ -84,7 +84,7 @@ describe("generateEntrypoint", () => {
     const mountDirectoryCheck = script.indexOf("[ ! -d /app/data ]");
     const stateSymlinkCheck = script.indexOf("[ -L /app/data/agent-mail ]");
     const stateMkdir = script.indexOf("mkdir -p -m 0700 /app/data/agent-mail");
-    const legacyAdmission = script.indexOf("for db_name in memory.db");
+    const legacyAdmission = script.indexOf("for db_name in link.db");
     expect(mountCheck).toBeGreaterThan(-1);
     expect(mountDirectoryCheck).toBeGreaterThan(mountCheck);
     expect(stateSymlinkCheck).toBeGreaterThan(mountDirectoryCheck);
@@ -92,9 +92,10 @@ describe("generateEntrypoint", () => {
     expect(legacyAdmission).toBeGreaterThan(stateMkdir);
   });
 
-  test("symlinks all four v1.0 SQLite dbs to the volume", () => {
+  test("keeps only the external link SQLite compatibility symlink", () => {
     const script = generateEntrypoint();
-    expect(script).toContain("for db_name in memory.db budgets.db visitor-auth.db link.db");
+    expect(script).toContain("for db_name in link.db");
+    expect(script).not.toContain("for db_name in memory.db");
     expect(script).toContain('ln -sfn "$volume_db" "$app_db"');
   });
 

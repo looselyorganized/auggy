@@ -786,6 +786,35 @@ describe("runDeploy", () => {
     expect(calls.up).toBe(0);
   });
 
+  test("accepts an absolute core SQLite path contained by the Railway volume", async () => {
+    appendAugmentId(agentDir, "budgets");
+    writeAugmentMetadata(agentDir, "budgets", {
+      type: "budgets",
+      config: { dbPath: "/app/data/budget-ledger.db" },
+    });
+    const { cli, calls } = mockRailwayCli();
+
+    await runDeploy("zip", baseDeployOptions(cli, auggyDir));
+
+    expect(calls.checkPresence).toBe(1);
+    expect(calls.up).toBe(1);
+  });
+
+  test("rejects an absolute core SQLite path outside the Railway volume", async () => {
+    appendAugmentId(agentDir, "budgets");
+    writeAugmentMetadata(agentDir, "budgets", {
+      type: "budgets",
+      config: { dbPath: "/app/runtime/budget-ledger.db" },
+    });
+    const { cli, calls } = mockRailwayCli();
+
+    await expect(runDeploy("zip", baseDeployOptions(cli, auggyDir))).rejects.toThrow(
+      /budgets\.dbPath must remain \.\/budgets\.db or resolve below \.\/data/,
+    );
+    expect(calls.checkPresence).toBe(0);
+    expect(calls.up).toBe(0);
+  });
+
   test("aborts before Railway calls when budgets deploy posture is not acknowledged", async () => {
     appendAugmentId(agentDir, "budgets");
     writeAugmentMetadata(agentDir, "budgets", {

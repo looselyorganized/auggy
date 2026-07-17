@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
 import { visitorAuth } from "../../../src/augments/visitorAuth";
+import { createSqliteStore } from "../../../src/augments/layeredMemory/storage/sqlite-store";
 
 let tmp: string;
 beforeEach(() => {
@@ -13,27 +14,22 @@ afterEach(() => {
   rmSync(tmp, { recursive: true, force: true });
 });
 
-function seedLayeredMemoryDb(memDbPath: string, peerId: string, n: number): void {
-  const db = new Database(memDbPath, { create: true });
-  db.run("PRAGMA journal_mode = WAL");
-  db.run(
-    `CREATE TABLE IF NOT EXISTS entries (
-      id TEXT PRIMARY KEY, label TEXT NOT NULL, content TEXT NOT NULL,
-      peer_id TEXT, trust_level TEXT, created_at INTEGER NOT NULL,
-      superseded_by TEXT, retention_class TEXT NOT NULL DEFAULT 'operational',
-      is_verbatim INTEGER NOT NULL DEFAULT 0,
-      provenance_model TEXT, confidence REAL, embedding_model TEXT,
-      scope TEXT NOT NULL DEFAULT 'peer', expires_at INTEGER,
-      subject TEXT, predicate TEXT, object TEXT, source_turn_id TEXT, origin TEXT
-    )`,
-  );
-  const stmt = db.prepare(
-    `INSERT INTO entries (id, label, content, peer_id, created_at) VALUES (?, ?, ?, ?, ?)`,
-  );
+async function seedLayeredMemoryDb(memDbPath: string, peerId: string, n: number): Promise<void> {
+  const store = createSqliteStore({ dbPath: memDbPath, retentionDays: 90 });
   for (let i = 0; i < n; i++) {
-    stmt.run(`row-${i}`, `ep:${peerId}:${i}`, `content ${i}`, peerId, Date.now());
+    await store.write({
+      label: `ep:${peerId}:${i}`,
+      content: `content ${i}`,
+      peerId,
+      trustLevel: "public",
+      createdAt: Date.now(),
+      supersededBy: null,
+      retentionClass: "operational",
+      isVerbatim: false,
+      expiresAt: null,
+    });
   }
-  db.close();
+  await store.close();
 }
 
 function countRowsForPeer(memDbPath: string, peerId: string): number {
@@ -49,7 +45,7 @@ describe("anonymous → recognized peer-id migration on verify", () => {
   test("migrates rows from anon-<threadId> to vis_<uuid> after verify", async () => {
     const dbPath = join(tmp, "va.db");
     const memPath = join(tmp, "memory.db");
-    seedLayeredMemoryDb(memPath, "anon-th-mig", 5);
+    await seedLayeredMemoryDb(memPath, "anon-th-mig", 5);
 
     const sendCalls: { text: string }[] = [];
     const aug = visitorAuth({

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { agentMail } from "../../../src/augments/agentMail";
 import { createAgentMailInboundLedger } from "../../../src/augments/agentMail/inbound-ledger";
+import { normalizeAgentMailReceivedEvent } from "../../../src/augments/agentMail/provider";
 import { createAgentMailReviewQueue } from "../../../src/augments/agentMail/review-queue";
 import type { AgentMailSdkAdapters } from "../../../src/augments/agentMail/sdk-provider";
 import type {
@@ -1713,6 +1714,146 @@ describe("onShutdown", () => {
     const { client } = fakeClient();
     const aug = agentMail({ ...baseOpts, _client: client });
     await expect(aug.onShutdown?.()).resolves.toBeUndefined();
+  });
+
+  test("releases an owned ledger even when subscription close fails", async () => {
+    const { client } = fakeClient();
+    const dbPath = join(makeTmpDir(), "shutdown.sqlite");
+    let closeCalls = 0;
+    const sdk: AgentMailSdkAdapters = {
+      catchUp: emptySdkAdapters().catchUp,
+      live: {
+        subscribe: async (input) => {
+          await input.onSubscribed?.({ reconnected: false });
+          return {
+            closed: new Promise<void>(() => {}),
+            async close() {
+              closeCalls++;
+              throw new Error("subscription close failed");
+            },
+          };
+        },
+      },
+    };
+    const aug = agentMail({
+      ...baseOpts,
+      dbPath,
+      _client: client,
+      _sdkAdapters: sdk,
+      inbound: { mode: "websocket", allowedSenders: ["*@example.com"] },
+    });
+    await aug.onBoot!();
+    await aug.transport!.register(fakeInboundKernel([]), aug.name);
+    await aug.transport!.ready!();
+
+    const first = aug.onShutdown!();
+    const concurrent = aug.onShutdown!();
+    await expect(Promise.all([first, concurrent])).rejects.toThrow("subscription close failed");
+    expect(closeCalls).toBe(1);
+
+    const reopened = createAgentMailInboundLedger({ dbPath });
+    expect(reopened.counts()).toEqual({ pending: 0, processing: 0, processed: 0, discarded: 0 });
+    reopened.close();
+    await expect(aug.onShutdown!()).resolves.toBeUndefined();
+    expect(closeCalls).toBe(1);
+  });
+
+  test("reuses a webhook route with the current owned ledger after restart", async () => {
+    const { client } = fakeClient();
+    const aug = agentMail({
+      ...baseOpts,
+      dbPath: join(makeTmpDir(), "webhook-restart.sqlite"),
+      _client: client,
+      _sdkAdapters: emptySdkAdapters(),
+      inbound: { mode: "webhook", allowedSenders: ["customer@example.com"], webhook: {} },
+    });
+    await aug.onBoot!();
+    const route = aug.httpRoutes!.find((candidate) => candidate.path === "/webhooks/agentmail")!;
+    await aug.onShutdown!();
+    await aug.onBoot!();
+
+    const response = await route.handler(
+      new Request("https://example.test/webhooks/agentmail", { method: "POST" }),
+      {
+        signal: AbortSignal.timeout(1_000),
+        webhook: verifiedWebhook(receivedWebhookEvent()),
+      },
+    );
+    expect(response.status).toBe(200);
+    await aug.onShutdown!();
+  });
+
+  test("retains queued WebSocket delivery until listener shutdown quiesces", async () => {
+    const { client } = fakeClient();
+    const dbPath = join(makeTmpDir(), "queued-shutdown.sqlite");
+    const sdk: AgentMailSdkAdapters = {
+      catchUp: emptySdkAdapters().catchUp,
+      live: {
+        subscribe: async (input) => {
+          await input.onSubscribed?.({ reconnected: false });
+          return {
+            closed: new Promise<void>(() => {}),
+            async close() {
+              await input.onEvent(
+                normalizeAgentMailReceivedEvent(
+                  receivedWebhookEvent(),
+                  "websocket",
+                  baseOpts.inboxId,
+                ),
+              );
+            },
+          };
+        },
+      },
+    };
+    const aug = agentMail({
+      ...baseOpts,
+      dbPath,
+      _client: client,
+      _sdkAdapters: sdk,
+      inbound: { mode: "websocket", allowedSenders: ["*@example.com"] },
+    });
+    await aug.onBoot!();
+    await aug.transport!.register(fakeInboundKernel([]), aug.name);
+    await aug.transport!.ready!();
+    await aug.onShutdown!();
+
+    const reopened = createAgentMailInboundLedger({ dbPath });
+    expect(reopened.counts().pending).toBe(1);
+    reopened.close();
+  });
+
+  test("bounds a hung subscription and still releases its owned ledger", async () => {
+    const { client } = fakeClient();
+    const dbPath = join(makeTmpDir(), "hung-shutdown.sqlite");
+    const sdk: AgentMailSdkAdapters = {
+      catchUp: emptySdkAdapters().catchUp,
+      live: {
+        subscribe: async (input) => {
+          await input.onSubscribed?.({ reconnected: false });
+          return {
+            closed: new Promise<void>(() => {}),
+            close: () => new Promise<void>(() => {}),
+          };
+        },
+      },
+    };
+    const aug = agentMail({
+      ...baseOpts,
+      dbPath,
+      _client: client,
+      _sdkAdapters: sdk,
+      _shutdownTimeoutMs: 20,
+      inbound: { mode: "websocket", allowedSenders: ["*@example.com"] },
+    });
+    await aug.onBoot!();
+    await aug.transport!.register(fakeInboundKernel([]), aug.name);
+    await aug.transport!.ready!();
+
+    await expect(aug.onShutdown!()).rejects.toThrow(/subscription shutdown timed out/i);
+    const reopened = createAgentMailInboundLedger({ dbPath });
+    expect(reopened.counts()).toEqual({ pending: 0, processing: 0, processed: 0, discarded: 0 });
+    reopened.close();
   });
 });
 

@@ -12,7 +12,6 @@
  */
 
 import { existsSync } from "node:fs";
-import { Database } from "bun:sqlite";
 import { z } from "zod";
 import { defineRoute, defineTool, json } from "../../helpers";
 import { createAgentMailClient, type AgentMailClient } from "../../agentmail-client";
@@ -39,6 +38,7 @@ import {
 import type { VisitorAuthStore } from "./storage/types";
 import { emailAppearsInRecentMessages, isWellFormedEmail } from "./email-validation";
 import { createVisitorAuthRateLimiter, type VisitorAuthRateLimiter } from "./rate-limiter";
+import { reassignSqliteMemoryPeerId } from "../layeredMemory/storage/sqlite-store";
 import {
   buildVerifyConfirmPage,
   buildVerifyFailurePage,
@@ -1148,31 +1148,15 @@ function migratePeerIdOnVerify(
   // No-op when ids are identical (re-verify after token-expiry where peer
   // already arrives as vis_*; nothing to migrate).
   if (oldPeerId === newPeerId) return;
-  let db: Database | null = null;
   try {
-    db = new Database(dbPath, { readwrite: true });
-    db.run("PRAGMA journal_mode = WAL");
-    const result = db
-      .prepare(`UPDATE entries SET peer_id = ? WHERE peer_id = ?`)
-      .run(newPeerId, oldPeerId);
-    if (result.changes > 0) {
-      console.info(
-        `[visitor-auth] migrated ${result.changes} memory row(s) ${oldPeerId} → ${newPeerId}`,
-      );
+    const changes = reassignSqliteMemoryPeerId(dbPath, oldPeerId, newPeerId);
+    if (changes > 0) {
+      console.info(`[visitor-auth] migrated ${changes} memory row(s) ${oldPeerId} → ${newPeerId}`);
     }
   } catch (err) {
     console.warn(
       `[visitor-auth] peer-id migration failed for ${oldPeerId} → ${newPeerId}: ${(err as Error).message}`,
     );
-  } finally {
-    // Guarantee close on every path (success, mid-statement throw, anything).
-    if (db) {
-      try {
-        db.close();
-      } catch {
-        // Ignore close errors — db is already in an unrecoverable state.
-      }
-    }
   }
 }
 

@@ -82,7 +82,9 @@ function resolveContainedPath(path: string, root: string, label: string): string
   const resolvedPath = resolve(root, path);
   const relativePath = relative(root, resolvedPath);
   if (relativePath === ".." || relativePath.startsWith(`..${sep}`) || isAbsolute(relativePath)) {
-    throw new Error(`[augment-resolver] ${label} must stay within its AgentMail state directory`);
+    throw new Error(
+      `[augment-resolver] ${label} must stay within its state directory/runtime data root`,
+    );
   }
 
   return resolvedPath;
@@ -154,6 +156,29 @@ function ensureDurableDirectoryChain(root: string, target: string, label: string
   }
 }
 
+function resolveSqlitePath(
+  path: string,
+  agentDir: string,
+  runtimeDataRoot: string | undefined,
+  label: string,
+): string {
+  if (!runtimeDataRoot) return resolvePath(path, agentDir);
+  const configuredPath = resolvePath(path, agentDir);
+  const relativeConfiguredPath = relative(runtimeDataRoot, configuredPath);
+  const alreadyContained =
+    relativeConfiguredPath !== ".." &&
+    !relativeConfiguredPath.startsWith(`..${sep}`) &&
+    !isAbsolute(relativeConfiguredPath);
+  if (isAbsolute(path) && !alreadyContained) {
+    throw new Error(`[augment-resolver] ${label} must stay within its runtime data root`);
+  }
+  const dbPath = alreadyContained
+    ? configuredPath
+    : resolveContainedPath(path, runtimeDataRoot, label);
+  ensureDurableDirectoryChain(runtimeDataRoot, dirname(dbPath), label);
+  return dbPath;
+}
+
 // ---------------------------------------------------------------------------
 // Built-in resolvers
 // ---------------------------------------------------------------------------
@@ -186,6 +211,7 @@ function resolveFileMemory(opts: Record<string, unknown>, agentDir: string): Aug
 async function resolveLayeredMemory(
   opts: Record<string, unknown>,
   agentDir: string,
+  runtimeDataRoot?: string,
 ): Promise<Augment> {
   const { layeredMemory } = await import("../augments/layeredMemory");
   const backend = (opts.backend as string | undefined) ?? "sqlite";
@@ -200,7 +226,12 @@ async function resolveLayeredMemory(
     const dbPath = opts.dbPath as string | undefined;
     return layeredMemory({
       backend: "sqlite",
-      dbPath: dbPath ? resolvePath(dbPath, agentDir) : resolvePath("./memory.db", agentDir),
+      dbPath: resolveSqlitePath(
+        dbPath ?? "./memory.db",
+        agentDir,
+        runtimeDataRoot,
+        "layeredMemory dbPath",
+      ),
       namespace,
       retentionDays,
       autoSave,
@@ -438,7 +469,11 @@ async function resolveLink(opts: Record<string, unknown>, agentDir: string): Pro
   return await link(linkOpts);
 }
 
-function resolveVisitorAuth(opts: Record<string, unknown>, agentDir: string): Augment {
+function resolveVisitorAuth(
+  opts: Record<string, unknown>,
+  agentDir: string,
+  runtimeDataRoot?: string,
+): Augment {
   const dbPath = (opts.dbPath as string | undefined) ?? "./visitor-auth.db";
   // CRITICAL: distinguish `null` (operator opt-out) from `undefined` (defaults to ./memory.db).
   // Using ?? would coerce both to the default string — wrong for opt-out semantics.
@@ -449,7 +484,7 @@ function resolveVisitorAuth(opts: Record<string, unknown>, agentDir: string): Au
 
   const config: VisitorAuthOptions = {
     publicUrl: opts.publicUrl as string,
-    dbPath: resolvePath(dbPath, agentDir),
+    dbPath: resolveSqlitePath(dbPath, agentDir, runtimeDataRoot, "visitorAuth dbPath"),
     agentMail: opts.agentMail as VisitorAuthOptions["agentMail"],
     signingKey: opts.signingKey as string,
     agentBinding: opts.agentBinding as string | undefined,
@@ -458,7 +493,14 @@ function resolveVisitorAuth(opts: Record<string, unknown>, agentDir: string): Au
     tokenTtlMinutes: opts.tokenTtlMinutes as number | undefined,
     notifyOnFirstVerify: opts.notifyOnFirstVerify as VisitorAuthOptions["notifyOnFirstVerify"],
     layeredMemoryDbPath:
-      layeredMemoryDbPath === null ? null : resolvePath(layeredMemoryDbPath, agentDir),
+      layeredMemoryDbPath === null
+        ? null
+        : resolveSqlitePath(
+            layeredMemoryDbPath,
+            agentDir,
+            runtimeDataRoot,
+            "visitorAuth layeredMemoryDbPath",
+          ),
     // G34: forward the production-override flag. The `agentMail.transport`
     // discriminator already flows through `opts.agentMail` above; no separate
     // wiring needed for it.
@@ -659,7 +701,7 @@ export async function resolveAugments(
         augment = await resolveSupabaseMemory(opts);
         break;
       case "layeredMemory":
-        augment = await resolveLayeredMemory(opts, agentDir);
+        augment = await resolveLayeredMemory(opts, agentDir, resolverOpts.runtimeDataRoot);
         break;
       case "filesystem":
         augment = resolveFilesystem(opts, agentDir);
@@ -700,7 +742,12 @@ export async function resolveAugments(
           }
         }
         augment = budgets({
-          dbPath: resolvePath(dbPath, agentDir),
+          dbPath: resolveSqlitePath(
+            dbPath,
+            agentDir,
+            resolverOpts.runtimeDataRoot,
+            "budgets dbPath",
+          ),
           agentDir,
           overrideDir,
           caps: opts.caps as BudgetsAugmentOptions["caps"],
@@ -784,7 +831,7 @@ export async function resolveAugments(
         augment = turnControl(opts as TurnControlOptions);
         break;
       case "visitorAuth":
-        augment = resolveVisitorAuth(opts, agentDir);
+        augment = resolveVisitorAuth(opts, agentDir, resolverOpts.runtimeDataRoot);
         break;
       case "link":
         augment = await resolveLink(opts, agentDir);

@@ -126,6 +126,14 @@ function isToolResult(value: unknown): value is { error: string } {
 }
 
 export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
+  const shutdownTimeoutMs = opts._shutdownTimeoutMs ?? 4_000;
+  if (
+    !Number.isSafeInteger(shutdownTimeoutMs) ||
+    shutdownTimeoutMs <= 0 ||
+    shutdownTimeoutMs >= 5_000
+  ) {
+    throw new Error("agentMail: shutdown timeout must be an integer between 1 and 4999ms");
+  }
   validateOptions(opts);
 
   const now = opts._now ?? (() => Date.now());
@@ -337,8 +345,9 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
   let pollTimer: ReturnType<typeof setInterval> | undefined;
   let drainTimer: ReturnType<typeof setInterval> | undefined;
   let drainKickTimer: ReturnType<typeof setTimeout> | undefined;
+  let shutdownPromise: Promise<void> | undefined;
+  let activeDrain: Promise<void> | undefined;
   let drainScheduled = false;
-  let draining = false;
   let inboundReady = false;
   let liveState: "disabled" | "starting" | "ready" | "subscribed" | "degraded" | "stopped" =
     inboundMode === "none" ? "disabled" : "stopped";
@@ -387,28 +396,33 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
     }
   }
 
-  async function drainInbound(): Promise<void> {
-    if (draining || !inboundWorker) return;
-    draining = true;
-    try {
-      for (let i = 0; i < 100; i++) {
-        const result = await inboundWorker.processNext();
-        if (result.status !== "idle") {
-          lastWorkerOutcome = `${result.status}:${result.messageId}`;
+  function drainInbound(): Promise<void> {
+    if (activeDrain) return activeDrain;
+    const worker = inboundWorker;
+    if (!worker) return Promise.resolve();
+    const drain = (async () => {
+      try {
+        for (let i = 0; i < 100; i++) {
+          const result = await worker.processNext();
+          if (result.status !== "idle") {
+            lastWorkerOutcome = `${result.status}:${result.messageId}`;
+          }
+          if (
+            result.status === "idle" ||
+            result.status === "retried" ||
+            result.status === "lease-lost"
+          ) {
+            return;
+          }
         }
-        if (
-          result.status === "idle" ||
-          result.status === "retried" ||
-          result.status === "lease-lost"
-        ) {
-          return;
-        }
+      } catch (error) {
+        console.warn(`[agent-mail] inbound worker failed: ${(error as Error).message}`);
       }
-    } catch (error) {
-      console.warn(`[agent-mail] inbound worker failed: ${(error as Error).message}`);
-    } finally {
-      draining = false;
-    }
+    })().finally(() => {
+      if (activeDrain === drain) activeDrain = undefined;
+    });
+    activeDrain = drain;
+    return drain;
   }
 
   function scheduleDrain(): void {
@@ -1440,7 +1454,10 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
         agentMailRoutes.push(
           createAgentMailWebhookRoute({
             inboxId: opts.inboxId,
-            ledger: inboundLedger,
+            ledger: () => {
+              if (!inboundLedger) throw new Error("agentMail: inbound runtime is not booted");
+              return inboundLedger;
+            },
             path: webhookOptions?.path,
             secretEnv: webhookOptions?.secretEnv,
             timestampToleranceSeconds: webhookOptions?.timestampToleranceSeconds,
@@ -1476,23 +1493,85 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
   }
 
   async function onShutdown(): Promise<void> {
-    if (pollTimer) clearInterval(pollTimer);
-    if (drainTimer) clearInterval(drainTimer);
-    if (drainKickTimer) clearTimeout(drainKickTimer);
-    pollTimer = undefined;
-    drainTimer = undefined;
-    drainKickTimer = undefined;
-    drainScheduled = false;
-    inboundReady = false;
-    await liveSubscription?.close();
-    liveSubscription = undefined;
-    liveState = inboundMode === "none" ? "disabled" : "stopped";
-    inboundWorker = undefined;
-    inboundKernel = undefined;
-    seenMessagesByTurn.clear();
-    if (ownsInboundLedger) inboundLedger?.close();
-    inboundLedger = opts._inboundLedger;
-    ownsInboundLedger = false;
+    if (shutdownPromise) return shutdownPromise;
+    shutdownPromise = (async () => {
+      const deadline = Date.now() + shutdownTimeoutMs;
+      async function withinDeadline<T>(promise: Promise<T>, label: string): Promise<T> {
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) throw new Error(`agentMail: ${label} timed out`);
+        let timeout: ReturnType<typeof setTimeout> | undefined;
+        try {
+          return await Promise.race([
+            promise,
+            new Promise<never>((_, reject) => {
+              timeout = setTimeout(
+                () => reject(new Error(`agentMail: ${label} timed out`)),
+                remaining,
+              );
+            }),
+          ]);
+        } finally {
+          if (timeout) clearTimeout(timeout);
+        }
+      }
+      if (pollTimer) clearInterval(pollTimer);
+      if (drainTimer) clearInterval(drainTimer);
+      if (drainKickTimer) clearTimeout(drainKickTimer);
+      pollTimer = undefined;
+      drainTimer = undefined;
+      drainKickTimer = undefined;
+      drainScheduled = false;
+      inboundReady = false;
+
+      const subscription = liveSubscription;
+      const ownedLedger = ownsInboundLedger ? inboundLedger : undefined;
+
+      let failure: unknown;
+      let subscriptionClose: Promise<void> | undefined;
+      try {
+        subscriptionClose = subscription?.close();
+      } catch (error) {
+        failure = error;
+      }
+      try {
+        if (subscriptionClose) {
+          await withinDeadline(subscriptionClose, "subscription shutdown");
+        }
+      } catch (error) {
+        failure ??= error;
+      }
+
+      // Listener close drains its queued delivery chain. Retain the current
+      // ledger until it quiesces, then capture the latest worker drain so an
+      // event delivered during close cannot be lost or race a closed handle.
+      if (drainKickTimer) clearTimeout(drainKickTimer);
+      drainKickTimer = undefined;
+      drainScheduled = false;
+      try {
+        if (activeDrain) await withinDeadline(activeDrain, "inbound drain shutdown");
+      } catch (error) {
+        failure ??= error;
+      }
+
+      liveSubscription = undefined;
+      inboundLedger = opts._inboundLedger;
+      ownsInboundLedger = false;
+      liveState = inboundMode === "none" ? "disabled" : "stopped";
+      inboundWorker = undefined;
+      inboundKernel = undefined;
+      seenMessagesByTurn.clear();
+      try {
+        ownedLedger?.close();
+      } catch (error) {
+        failure ??= error;
+      }
+      if (failure) throw failure;
+    })();
+    try {
+      await shutdownPromise;
+    } finally {
+      shutdownPromise = undefined;
+    }
   }
 
   // ---------------------------------------------------------------------------

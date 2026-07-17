@@ -25,6 +25,8 @@ export interface AgentMailAugmentInternalOptions extends AgentMailAugmentOptions
   _inboundLedger?: AgentMailInboundLedger;
   /** Test-only SDK boundary override. */
   _sdkAdapters?: AgentMailSdkAdapters;
+  /** Test-only shutdown deadline override. Production uses four seconds. */
+  _shutdownTimeoutMs?: number;
   /** Test-only durable outbound-review queue override. */
   _reviewQueue?: AgentMailReviewQueue;
 }

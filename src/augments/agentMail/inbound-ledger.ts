@@ -8,18 +8,8 @@
  */
 
 import { randomUUID } from "node:crypto";
-import {
-  closeSync,
-  constants as fsConstants,
-  fchmodSync,
-  fstatSync,
-  lstatSync,
-  mkdirSync,
-  openSync,
-  realpathSync,
-} from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
-import { constants, Database } from "bun:sqlite";
+import type { Database } from "bun:sqlite";
+import { openHardenedSqlite } from "../../lib/sqlite";
 import {
   normalizeAgentMailMessage,
   receivedEventTypeForLabels,
@@ -29,7 +19,8 @@ import {
   type AgentMailReceivedEventType,
 } from "./provider";
 
-const SCHEMA_VERSION = 1;
+export const AGENTMAIL_LEDGER_APPLICATION_ID = 0x414d494c; // "AMIL"
+export const AGENTMAIL_LEDGER_SCHEMA_VERSION = 1;
 const DEFAULT_INITIAL_LOOKBACK_MS = 24 * 60 * 60_000;
 const DEFAULT_CHECKPOINT_OVERLAP_MS = 60_000;
 const MAX_LEASE_MS = 60 * 60_000;
@@ -80,6 +71,255 @@ const SCHEMA_STATEMENTS = [
     updated_at      INTEGER NOT NULL
   )`,
 ];
+
+const EXPECTED_SCHEMA: ReadonlyMap<string, string> = new Map([
+  ["agentmail_inbound_meta", SCHEMA_STATEMENTS[0]!],
+  ["agentmail_inbound_messages", SCHEMA_STATEMENTS[1]!],
+  ["idx_agentmail_inbound_claim", SCHEMA_STATEMENTS[2]!],
+  ["idx_agentmail_inbound_thread", SCHEMA_STATEMENTS[3]!],
+  ["agentmail_inbound_checkpoints", SCHEMA_STATEMENTS[4]!],
+] as const);
+
+function canonicalSchemaSql(sql: string): string {
+  return sql
+    .replace(/\bIF\s+NOT\s+EXISTS\b/gi, "")
+    .replace(/\s+/g, " ")
+    .replace(/\s*([(),])\s*/g, "$1")
+    .trim();
+}
+
+function pragmaInteger(db: Database, name: "application_id" | "user_version"): number {
+  const row = db.query(`PRAGMA ${name}`).get() as Record<string, unknown> | null;
+  const value = row?.[name];
+  if (!Number.isSafeInteger(value)) {
+    throw new Error(`agentMail ledger: invalid SQLite ${name}`);
+  }
+  return value as number;
+}
+
+function schemaObjects(db: Database): Array<{ name: string; sql: string; type: string }> {
+  return db
+    .query<{ name: string; sql: string; type: string }, []>(
+      `SELECT type, name, sql FROM sqlite_schema
+       WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name`,
+    )
+    .all();
+}
+
+function validateExactSchema(db: Database): void {
+  const objects = schemaObjects(db);
+  if (objects.length !== EXPECTED_SCHEMA.size) {
+    throw new Error("agentMail ledger: database schema contains missing or unexpected objects");
+  }
+  for (const object of objects) {
+    const expected = EXPECTED_SCHEMA.get(object.name);
+    if (!expected || canonicalSchemaSql(object.sql) !== canonicalSchemaSql(expected)) {
+      throw new Error(`agentMail ledger: database schema object is incompatible: ${object.name}`);
+    }
+  }
+
+  const versions = db
+    .query<{ key: string; value: string }, []>(
+      "SELECT key, value FROM agentmail_inbound_meta ORDER BY key",
+    )
+    .all();
+  if (
+    versions.length !== 1 ||
+    versions[0]?.key !== "schema_version" ||
+    versions[0].value !== String(AGENTMAIL_LEDGER_SCHEMA_VERSION)
+  ) {
+    throw new Error("agentMail ledger: database schema version metadata is incompatible");
+  }
+}
+
+function safeStoredInteger(value: unknown, label: string): number {
+  if (!Number.isSafeInteger(value) || (value as number) < 0) {
+    throw new Error(`agentMail ledger: stored ${label} is invalid`);
+  }
+  return value as number;
+}
+
+function storedText(value: unknown, label: string, max = 500): string {
+  if (typeof value !== "string" || !value.trim() || value.length > max) {
+    throw new Error(`agentMail ledger: stored ${label} is invalid`);
+  }
+  for (const character of value) {
+    const codePoint = character.codePointAt(0) ?? 0;
+    if (codePoint <= 31 || codePoint === 127) {
+      throw new Error(`agentMail ledger: stored ${label} contains control characters`);
+    }
+  }
+  return value;
+}
+
+function validateStoredRows(db: Database): void {
+  const messages = db
+    .query<Record<string, unknown>, []>("SELECT * FROM agentmail_inbound_messages")
+    .all();
+  for (const row of messages) {
+    const inboxId = storedText(row.inbox_id, "inbox_id", 256);
+    const messageId = storedText(row.message_id, "message_id", 256);
+    const threadId = storedText(row.thread_id, "thread_id", 256);
+    const eventType = storedText(row.event_type, "event_type", 64);
+    const firstSource = storedText(row.first_source, "first_source", 16);
+    const lastSource = storedText(row.last_source, "last_source", 16);
+    const timestamp = storedText(row.message_timestamp, "message_timestamp", 128);
+    const messageTimestamp = safeStoredInteger(row.message_ts_ms, "message_ts_ms");
+    const attemptCount = safeStoredInteger(row.attempt_count, "attempt_count");
+    safeStoredInteger(row.available_at, "available_at");
+    const firstSeenAt = safeStoredInteger(row.first_seen_at, "first_seen_at");
+    const lastSeenAt = safeStoredInteger(row.last_seen_at, "last_seen_at");
+    if (lastSeenAt < firstSeenAt) {
+      throw new Error("agentMail ledger: stored message timestamps are inconsistent");
+    }
+    if (row.provider_event_id !== null) storedText(row.provider_event_id, "provider_event_id", 256);
+    if ((firstSource !== "rest" || lastSource !== "rest") && row.provider_event_id === null) {
+      throw new Error("agentMail ledger: stored live source is missing provider_event_id");
+    }
+    if (row.last_error !== null) storedText(row.last_error, "last_error", MAX_ANNOTATION_CHARS);
+    if (row.discard_reason !== null) {
+      storedText(row.discard_reason, "discard_reason", MAX_ANNOTATION_CHARS);
+    }
+    if (row.lease_owner !== null) storedText(row.lease_owner, "lease_owner", 128);
+    if (row.lease_token !== null) storedText(row.lease_token, "lease_token", 256);
+
+    let message: AgentMailInboundMessage;
+    try {
+      message = normalizeAgentMailMessage(JSON.parse(String(row.payload_json)), inboxId);
+    } catch (error) {
+      throw new Error("agentMail ledger: stored payload is invalid", { cause: error });
+    }
+    if (
+      message.inboxId !== inboxId ||
+      message.messageId !== messageId ||
+      message.threadId !== threadId ||
+      message.timestamp !== timestamp ||
+      Date.parse(message.timestamp) !== messageTimestamp ||
+      receivedEventTypeForLabels(message.labels) !== eventType
+    ) {
+      throw new Error("agentMail ledger: stored payload identity is inconsistent");
+    }
+
+    const state = row.state;
+    const hasLease =
+      row.lease_owner !== null || row.lease_token !== null || row.lease_expires_at !== null;
+    const processedAt =
+      row.processed_at === null ? undefined : safeStoredInteger(row.processed_at, "processed_at");
+    if (processedAt !== undefined && (processedAt < firstSeenAt || processedAt > lastSeenAt)) {
+      throw new Error("agentMail ledger: stored processed_at is inconsistent");
+    }
+    if (state === "pending") {
+      if (hasLease || processedAt !== undefined || row.discard_reason !== null) {
+        throw new Error("agentMail ledger: stored pending state is inconsistent");
+      }
+    } else if (state === "processing") {
+      if (
+        attemptCount < 1 ||
+        typeof row.lease_owner !== "string" ||
+        typeof row.lease_token !== "string" ||
+        !row.lease_owner ||
+        !row.lease_token ||
+        row.lease_expires_at === null ||
+        processedAt !== undefined ||
+        row.discard_reason !== null
+      ) {
+        throw new Error("agentMail ledger: stored processing state is inconsistent");
+      }
+      safeStoredInteger(row.lease_expires_at, "lease_expires_at");
+    } else if (state === "processed") {
+      if (
+        hasLease ||
+        attemptCount < 1 ||
+        processedAt === undefined ||
+        row.last_error !== null ||
+        row.discard_reason !== null
+      ) {
+        throw new Error("agentMail ledger: stored processed state is inconsistent");
+      }
+    } else if (state === "discarded") {
+      if (
+        hasLease ||
+        attemptCount < 1 ||
+        processedAt === undefined ||
+        row.last_error !== null ||
+        typeof row.discard_reason !== "string" ||
+        !row.discard_reason
+      ) {
+        throw new Error("agentMail ledger: stored discarded state is inconsistent");
+      }
+    } else {
+      throw new Error("agentMail ledger: stored message state is invalid");
+    }
+  }
+
+  const checkpoints = db
+    .query<Record<string, unknown>, []>("SELECT * FROM agentmail_inbound_checkpoints")
+    .all();
+  for (const row of checkpoints) {
+    storedText(row.inbox_id, "checkpoint inbox_id", 256);
+    const timestamp = storedText(row.after_timestamp, "checkpoint timestamp", 128);
+    const timestampMs = safeStoredInteger(row.after_ts_ms, "checkpoint after_ts_ms");
+    safeStoredInteger(row.updated_at, "checkpoint updated_at");
+    if (Date.parse(timestamp) !== timestampMs) {
+      throw new Error("agentMail ledger: stored checkpoint timestamp is inconsistent");
+    }
+  }
+}
+
+function prepareAgentMailDatabase(db: Database): void {
+  const applicationId = pragmaInteger(db, "application_id");
+  const userVersion = pragmaInteger(db, "user_version");
+  const objects = schemaObjects(db);
+
+  if (applicationId !== 0 && applicationId !== AGENTMAIL_LEDGER_APPLICATION_ID) {
+    throw new Error("agentMail ledger: database belongs to another application");
+  }
+  if (userVersion > AGENTMAIL_LEDGER_SCHEMA_VERSION) {
+    throw new Error(
+      `agentMail ledger: database schema ${userVersion} is newer than supported version ${AGENTMAIL_LEDGER_SCHEMA_VERSION}`,
+    );
+  }
+  if (
+    objects.some((object) => object.type === "table" && object.name === "agentmail_inbound_meta")
+  ) {
+    try {
+      const row = db
+        .query<{ value: string }, []>(
+          "SELECT value FROM agentmail_inbound_meta WHERE key = 'schema_version'",
+        )
+        .get();
+      const metaVersion = row ? Number(row.value) : undefined;
+      if (metaVersion !== undefined && metaVersion > AGENTMAIL_LEDGER_SCHEMA_VERSION) {
+        throw new Error(
+          `agentMail ledger: database schema ${row?.value} is newer than supported version ${AGENTMAIL_LEDGER_SCHEMA_VERSION}`,
+        );
+      }
+    } catch (error) {
+      if ((error as Error).message.includes("newer than supported")) throw error;
+      // Exact structural admission below reports malformed lookalike metadata.
+    }
+  }
+
+  if (applicationId === 0 && userVersion === 0 && objects.length === 0) {
+    for (const statement of SCHEMA_STATEMENTS) db.run(statement);
+    db.prepare("INSERT INTO agentmail_inbound_meta (key, value) VALUES ('schema_version', ?)").run(
+      String(AGENTMAIL_LEDGER_SCHEMA_VERSION),
+    );
+  } else {
+    if (
+      (applicationId === 0 && userVersion !== 0) ||
+      (applicationId === AGENTMAIL_LEDGER_APPLICATION_ID && userVersion < 1)
+    ) {
+      throw new Error("agentMail ledger: database identity and schema version disagree");
+    }
+    validateExactSchema(db);
+  }
+
+  validateExactSchema(db);
+  validateStoredRows(db);
+  db.run(`PRAGMA application_id = ${AGENTMAIL_LEDGER_APPLICATION_ID}`);
+  db.run(`PRAGMA user_version = ${AGENTMAIL_LEDGER_SCHEMA_VERSION}`);
+}
 
 export type AgentMailLedgerState = "pending" | "processing" | "processed" | "discarded";
 
@@ -205,6 +445,14 @@ function validateDuration(value: number, label: string): number {
   return value;
 }
 
+function checkedTimestampAdd(base: number, duration: number, label: string): number {
+  const result = base + duration;
+  if (!Number.isSafeInteger(result) || result < 0) {
+    throw new Error(`agentMail ledger: ${label} exceeds the safe timestamp range`);
+  }
+  return result;
+}
+
 function replaceControlCharacters(value: string): string {
   let output = "";
   for (const character of value) {
@@ -235,56 +483,6 @@ function optionalString(value: string | null): string | undefined {
   return value === null ? undefined : value;
 }
 
-function prepareDatabasePath(configuredPath: string): { path: string; persistent: boolean } {
-  if (configuredPath === ":memory:") return { path: configuredPath, persistent: false };
-  const lexicalPath = resolve(configuredPath);
-  mkdirSync(dirname(lexicalPath), { recursive: true, mode: 0o700 });
-  // SQLITE_OPEN_NOFOLLOW rejects any symlink component, including benign OS
-  // aliases such as macOS /var -> /private/var. Canonicalize the admitted
-  // parent while deliberately leaving the database leaf unresolved.
-  const path = join(realpathSync.native(dirname(lexicalPath)), basename(lexicalPath));
-  const stat = lstatSync(path, { throwIfNoEntry: false });
-  if (stat) {
-    if (stat.isSymbolicLink()) {
-      throw new Error("agentMail ledger: dbPath must not be a symbolic link");
-    }
-    if (!stat.isFile()) {
-      throw new Error("agentMail ledger: dbPath must point to a regular file");
-    }
-  }
-  return { path, persistent: true };
-}
-
-function secureSqliteFiles(path: string): void {
-  for (const candidate of [path, `${path}-wal`, `${path}-shm`, `${path}-journal`]) {
-    let fd: number;
-    try {
-      fd = openSync(
-        candidate,
-        fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK,
-      );
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code === "ENOENT") continue;
-      if (code === "ELOOP") {
-        throw new Error(
-          `agentMail ledger: SQLite artifact must be a regular non-symlink file: ${candidate}`,
-          { cause: error },
-        );
-      }
-      throw error;
-    }
-    try {
-      if (!fstatSync(fd).isFile()) {
-        throw new Error(`agentMail ledger: SQLite artifact must be a regular file: ${candidate}`);
-      }
-      fchmodSync(fd, 0o600);
-    } finally {
-      closeSync(fd);
-    }
-  }
-}
-
 export function createAgentMailInboundLedger(
   options: AgentMailInboundLedgerOptions,
 ): AgentMailInboundLedger {
@@ -298,55 +496,15 @@ export function createAgentMailInboundLedger(
   );
   const now = options.now ?? Date.now;
   const nextLeaseToken = options.leaseToken ?? randomUUID;
-  const databasePath = prepareDatabasePath(options.dbPath);
-  if (databasePath.persistent) secureSqliteFiles(databasePath.path);
-  const db = new Database(
-    databasePath.path,
-    databasePath.persistent
-      ? constants.SQLITE_OPEN_READWRITE |
-          constants.SQLITE_OPEN_CREATE |
-          constants.SQLITE_OPEN_NOFOLLOW
-      : { create: true },
-  );
+  const database = openHardenedSqlite({
+    path: options.dbPath,
+    label: "agentMail ledger",
+    foreignKeys: true,
+    synchronous: "FULL",
+    prepare: prepareAgentMailDatabase,
+  });
+  const db = database.db;
   let closed = false;
-
-  try {
-    if (databasePath.persistent) secureSqliteFiles(databasePath.path);
-    db.run("PRAGMA busy_timeout = 5000");
-    db.run("PRAGMA journal_mode = WAL");
-    db.run("PRAGMA synchronous = FULL");
-    db.run(SCHEMA_STATEMENTS[0]!);
-
-    const versionRow = db
-      .prepare<{ value: string }, [string]>(
-        `SELECT value FROM agentmail_inbound_meta WHERE key = ?`,
-      )
-      .get("schema_version");
-    if (versionRow) {
-      const version = Number(versionRow.value);
-      if (!Number.isSafeInteger(version) || version < 1) {
-        throw new Error("agentMail ledger: database schema version is invalid");
-      }
-      if (version > SCHEMA_VERSION) {
-        throw new Error(
-          `agentMail ledger: database schema ${versionRow.value} is newer than supported version ${SCHEMA_VERSION}`,
-        );
-      }
-    }
-    for (const statement of SCHEMA_STATEMENTS.slice(1)) db.run(statement);
-    db.prepare(
-      `INSERT INTO agentmail_inbound_meta (key, value) VALUES ('schema_version', ?)
-       ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
-    ).run(String(SCHEMA_VERSION));
-    if (databasePath.persistent) secureSqliteFiles(databasePath.path);
-  } catch (error) {
-    try {
-      db.close();
-    } catch {
-      // Preserve the initialization failure.
-    }
-    throw error;
-  }
 
   const selectMessage = db.prepare<LedgerRow, [string, string]>(
     `SELECT * FROM agentmail_inbound_messages WHERE inbox_id = ? AND message_id = ?`,
@@ -448,7 +606,7 @@ export function createAgentMailInboundLedger(
   }
 
   function secureAfterWrite(): void {
-    if (databasePath.persistent) secureSqliteFiles(databasePath.path);
+    database.secureArtifacts();
   }
 
   function immediate<T>(fn: () => T): T {
@@ -473,6 +631,10 @@ export function createAgentMailInboundLedger(
       throw new Error("agentMail ledger: invalid inbound source");
     }
     const message = normalizeAgentMailMessage(envelope.message, envelope.message.inboxId);
+    storedText(message.inboxId, "inbox_id", 256);
+    storedText(message.messageId, "message_id", 256);
+    storedText(message.threadId, "thread_id", 256);
+    storedText(message.timestamp, "message_timestamp", 128);
     const inferredType = receivedEventTypeForLabels(message.labels);
     if (envelope.eventType !== inferredType) {
       throw new AgentMailLedgerConflictError("event classification does not match message labels");
@@ -480,12 +642,13 @@ export function createAgentMailInboundLedger(
     if (envelope.source === "rest" && envelope.providerEventId !== undefined) {
       throw new Error("agentMail ledger: REST catch-up must not declare a provider event ID");
     }
-    if (envelope.source !== "rest") {
-      requireText(envelope.providerEventId ?? "", "providerEventId");
-    }
+    const providerEventId =
+      envelope.source === "rest"
+        ? undefined
+        : requireText(envelope.providerEventId ?? "", "providerEventId");
     const timestampMs = Date.parse(message.timestamp);
     return {
-      envelope: { ...envelope, message },
+      envelope: { ...envelope, providerEventId, message },
       payloadJson: JSON.stringify(message),
       timestampMs,
     };
@@ -639,11 +802,12 @@ export function createAgentMailInboundLedger(
         return prepareEnvelope(envelope);
       });
       const inboxId = watermark?.inboxId ?? prepared[0]!.envelope.message.inboxId;
-      requireText(inboxId, "catch-up watermark inboxId");
+      storedText(inboxId, "checkpoint inbox_id", 256);
       if (prepared.some((item) => item.envelope.message.inboxId !== inboxId)) {
         throw new Error("agentMail ledger: catch-up batch spans multiple inboxes");
       }
       const watermarkMs = watermark ? Date.parse(watermark.through) : undefined;
+      if (watermark) storedText(watermark.through, "checkpoint timestamp", 128);
       if (watermark && !Number.isFinite(watermarkMs)) {
         throw new Error("agentMail ledger: catch-up watermark must be an ISO-8601 timestamp");
       }
@@ -699,7 +863,7 @@ export function createAgentMailInboundLedger(
       const leaseMs = validateLeaseMs(input.leaseMs);
       const claimedAt = clock();
       const token = requireText(nextLeaseToken(), "lease token", 256);
-      const expiresAt = claimedAt + leaseMs;
+      const expiresAt = checkedTimestampAdd(claimedAt, leaseMs, "lease expiry");
       const row = claimMessage.get(workerId, token, expiresAt, claimedAt, claimedAt, claimedAt);
       if (!row) return null;
       secureAfterWrite();
@@ -718,7 +882,7 @@ export function createAgentMailInboundLedger(
       const leaseMs = validateLeaseMs(leaseMsInput);
       const renewedAt = clock();
       const result = renewClaim.run(
-        renewedAt + leaseMs,
+        checkedTimestampAdd(renewedAt, leaseMs, "lease expiry"),
         renewedAt,
         claim.envelope.message.inboxId,
         claim.envelope.message.messageId,
@@ -806,8 +970,7 @@ export function createAgentMailInboundLedger(
     close() {
       if (closed) return;
       closed = true;
-      db.close();
-      if (databasePath.persistent) secureSqliteFiles(databasePath.path);
+      database.close();
     },
   };
 }
