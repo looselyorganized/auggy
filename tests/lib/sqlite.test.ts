@@ -1,11 +1,14 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import {
   chmodSync,
+  closeSync,
   existsSync,
+  fstatSync,
   linkSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readFileSync,
   realpathSync,
   rmSync,
@@ -179,8 +182,13 @@ describe("openHardenedSqlite", () => {
 
       expect(() => open(dbPath)).toThrow();
       expect(mode(target)).toBe(0o644);
-      expect(statSync(target).nlink).toBe(2);
-      expect(readFileSync(target, "utf8")).toBe("unchanged");
+      const fd = openSync(target, "r");
+      try {
+        expect(fstatSync(fd).nlink).toBe(2);
+        expect(readFileSync(fd, "utf8")).toBe("unchanged");
+      } finally {
+        closeSync(fd);
+      }
     });
 
     test(`rejects a FIFO at the ${artifact.name} path without blocking`, () => {

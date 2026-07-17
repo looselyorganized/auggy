@@ -53,7 +53,11 @@ describe("AgentMail outbound review queue", () => {
     }
 
     const reloaded = createAgentMailReviewQueue({ agentDir: dir, now: () => 1_000 });
-    expect(reloaded.get("r1")).toMatchObject({ state: "pending", trustLevel: "public" });
+    expect(reloaded.get("r1")).toMatchObject({
+      state: "pending",
+      trustLevel: "public",
+      request: { messageId: "message_1" },
+    });
   });
 
   test("deduplicates an identical pending proposal", () => {
