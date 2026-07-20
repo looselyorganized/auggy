@@ -830,14 +830,18 @@ web transport augment config:
 
 ```yaml
 type: webTransport
-options:
+config:
   consoleChat:
     dbPath: ./data/console-chat.db # set to null for ephemeral chat
 ```
 
 Relative local paths resolve from the agent directory. Under a Railway runtime
 they resolve within `/app/data`; an absolute path outside the runtime data root
-is rejected. SQLite console storage assumes one Auggy process and one writer.
+is rejected. Railway must mount a persistent volume at exactly `/app/data`; the
+default database is `/app/data/console-chat.db`. SQLite console storage assumes
+one Auggy process and one writer, so keep the service at one replica. The volume
+survives process replacement but is not a backup; stop writes and capture the
+database plus any WAL/SHM siblings together when making a file-level backup.
 
 ### Auth
 

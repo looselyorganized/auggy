@@ -346,6 +346,12 @@ Auggy stages the current agent, pushes configured secrets, creates or links a
 Railway service, mounts persistent data at `/app/data`, starts the deployment,
 and verifies `/health` when deployment status is available.
 
+Keep the service at **one replica** while it uses Auggy's SQLite stores. Console
+chat history lives at `/app/data/console-chat.db` by default; the `/app/data`
+volume is required for that history to survive deploys and restarts. A durable
+volume is not a backup, so snapshot or back it up separately if the history is
+important.
+
 After the first deploy, the selected target is saved locally. Useful follow-up
 commands:
 

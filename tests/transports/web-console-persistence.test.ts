@@ -1,8 +1,10 @@
 import { describe, expect, it } from "bun:test";
+import { join } from "node:path";
 import { defineAgent } from "@/agent";
 import { generateCsrfToken } from "@/transports/admin/admin-csrf";
 import { webTransport } from "@/transports/web-transport";
 import { createMockModel } from "@tests/fixtures/mock-model";
+import { createTempDir } from "@tests/fixtures/temp-dir";
 import type { ModelClient } from "@/types";
 
 const bearer = "console-persistence-test-token";
@@ -35,6 +37,83 @@ async function readThread(port: number, threadId: string) {
 }
 
 describe("webTransport console persistence boundary", () => {
+  it("restores a file-backed transcript and kernel history after a full agent restart", async () => {
+    const firstPort = 39444;
+    const secondPort = 39445;
+    const directory = await createTempDir();
+    const dbPath = join(directory.path, "console-chat.db");
+    const firstModel = createMockModel({ response: "first persisted reply" });
+    const firstTransport = webTransport({
+      port: firstPort,
+      auth: { type: "bearer", token: bearer },
+      consoleChat: { dbPath },
+    });
+    const firstAgent = defineAgent(
+      { name: "console-persistence-test", model: "mock", augments: [firstTransport] },
+      firstModel,
+    );
+    let firstStarted = false;
+    let secondAgent: ReturnType<typeof defineAgent> | null = null;
+
+    try {
+      await firstAgent.start();
+      firstStarted = true;
+      const first = await sendConsoleMessage(firstPort, "restart-thread", "first question");
+      expect(first.status).toBe(200);
+      expect(await first.text()).toContain("first persisted reply");
+      expect(firstModel.calls[0]?.messages.map((message) => message.content)).toEqual([
+        "first question",
+      ]);
+
+      await firstAgent.stop();
+      firstStarted = false;
+
+      const secondModel = createMockModel({ response: "second persisted reply" });
+      const secondTransport = webTransport({
+        port: secondPort,
+        auth: { type: "bearer", token: bearer },
+        consoleChat: { dbPath },
+      });
+      secondAgent = defineAgent(
+        { name: "console-persistence-test", model: "mock", augments: [secondTransport] },
+        secondModel,
+      );
+      await secondAgent.start();
+
+      const restoredBeforeTurn = (await readThread(secondPort, "restart-thread")).thread;
+      expect(restoredBeforeTurn.runStatus).toBe("complete");
+      expect(restoredBeforeTurn.messages.map((message) => [message.role, message.content])).toEqual(
+        [
+          ["user", "first question"],
+          ["assistant", "first persisted reply"],
+        ],
+      );
+
+      const second = await sendConsoleMessage(secondPort, "restart-thread", "second question");
+      expect(second.status).toBe(200);
+      expect(await second.text()).toContain("second persisted reply");
+      expect(secondModel.calls).toHaveLength(1);
+      expect(secondModel.calls[0]?.messages.map((message) => message.content)).toEqual([
+        "first question",
+        "first persisted reply",
+        "second question",
+      ]);
+
+      const restoredAfterTurn = (await readThread(secondPort, "restart-thread")).thread;
+      expect(restoredAfterTurn.runStatus).toBe("complete");
+      expect(restoredAfterTurn.messages.map((message) => [message.role, message.content])).toEqual([
+        ["user", "first question"],
+        ["assistant", "first persisted reply"],
+        ["user", "second question"],
+        ["assistant", "second persisted reply"],
+      ]);
+    } finally {
+      if (firstStarted) await firstAgent.stop();
+      if (secondAgent) await secondAgent.stop();
+      await directory.cleanup();
+    }
+  });
+
   it("durably finishes the transcript before exposing RUN_FINISHED and blocks direct reuse", async () => {
     const port = 19441;
     const model = createMockModel({ response: "persisted assistant reply" });

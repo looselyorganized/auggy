@@ -815,6 +815,78 @@ describe("runDeploy", () => {
     expect(calls.up).toBe(0);
   });
 
+  test("rejects a console chat database path outside the Railway volume", async () => {
+    writeAugmentMetadata(agentDir, "webTransport", {
+      type: "webTransport",
+      config: {
+        port: 8080,
+        auth: { type: "bearer", token: "${AUGGY_WEB_TOKEN}" },
+        consoleChat: { dbPath: "/app/runtime/console-chat.db" },
+      },
+    });
+    const { cli, calls } = mockRailwayCli();
+
+    await expect(runDeploy("zip", baseDeployOptions(cli, auggyDir))).rejects.toThrow(
+      /webTransport\.consoleChat\.dbPath must resolve below \/app\/data/,
+    );
+    expect(calls.checkPresence).toBe(0);
+    expect(calls.up).toBe(0);
+  });
+
+  test("rejects a relative console chat database escape before Railway calls", async () => {
+    writeAugmentMetadata(agentDir, "webTransport", {
+      type: "webTransport",
+      config: {
+        port: 8080,
+        auth: { type: "bearer", token: "${AUGGY_WEB_TOKEN}" },
+        consoleChat: { dbPath: "../console-chat.db" },
+      },
+    });
+    const { cli, calls } = mockRailwayCli();
+
+    await expect(runDeploy("zip", baseDeployOptions(cli, auggyDir))).rejects.toThrow(
+      /webTransport\.consoleChat\.dbPath must resolve below \/app\/data/,
+    );
+    expect(calls.checkPresence).toBe(0);
+    expect(calls.up).toBe(0);
+  });
+
+  test("validates an explicit console chat path even when the console route is disabled", async () => {
+    writeAugmentMetadata(agentDir, "webTransport", {
+      type: "webTransport",
+      config: {
+        port: 8080,
+        auth: { type: "bearer", token: "${AUGGY_WEB_TOKEN}" },
+        adminRoute: false,
+        consoleChat: { dbPath: "/app/runtime/console-chat.db" },
+      },
+    });
+    const { cli, calls } = mockRailwayCli();
+
+    await expect(runDeploy("zip", baseDeployOptions(cli, auggyDir))).rejects.toThrow(
+      /webTransport\.consoleChat\.dbPath must resolve below \/app\/data/,
+    );
+    expect(calls.checkPresence).toBe(0);
+    expect(calls.up).toBe(0);
+  });
+
+  test("accepts console chat storage below the Railway volume", async () => {
+    writeAugmentMetadata(agentDir, "webTransport", {
+      type: "webTransport",
+      config: {
+        port: 8080,
+        auth: { type: "bearer", token: "${AUGGY_WEB_TOKEN}" },
+        consoleChat: { dbPath: "/app/data/console/history.db" },
+      },
+    });
+    const { cli, calls } = mockRailwayCli();
+
+    await runDeploy("zip", baseDeployOptions(cli, auggyDir));
+
+    expect(calls.checkPresence).toBe(1);
+    expect(calls.up).toBe(1);
+  });
+
   test("aborts before Railway calls when budgets deploy posture is not acknowledged", async () => {
     appendAugmentId(agentDir, "budgets");
     writeAugmentMetadata(agentDir, "budgets", {

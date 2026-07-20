@@ -196,6 +196,12 @@ roots, creates `/app/data/agent-mail` with mode `0700`, and performs an atomic
 write/fsync/rename/delete probe. Startup fails closed when the advertised mount
 or durability contract is wrong.
 
+The volume is required, not optional container storage. Mount the Railway
+volume at the directory `/app/data`—not at an individual `.db` file and not at
+a neighboring directory. The generated entrypoint deliberately refuses to
+boot if this exact mount contract is absent, preventing an apparently healthy
+deploy from silently recreating state on the ephemeral image filesystem.
+
 On Railway, the resolver routes core mutable SQLite paths directly into the
 volume even when an agent's portable config uses a project-relative default:
 
@@ -206,6 +212,12 @@ volume even when an agent's portable config uses a project-relative default:
 - `/app/data/console-chat.db` (`webTransport` operator conversations)
 - `/app/data/agent-mail/<augment-name>/agent-mail.db` (`agentMail`; each
   instance receives an isolated state namespace)
+
+`/app/data/console-chat.db` contains the operator console's conversation list,
+messages, unread markers, and resumable model history. Completed turns survive
+redeploys and process restarts. If the process exits during an active turn, the
+next boot marks that run interrupted instead of presenting it as still
+streaming.
 
 Only Link retains a root-level compatibility symlink:
 
@@ -221,6 +233,21 @@ the agent project.
 participate in deploy preflight, and document its recovery contract. Do not add
 it to the Link-only compatibility symlink list. The `cross-session-recall`
 grader in the layered-memory eval suite catches data loss empirically.
+
+### Replica and backup requirements
+
+Keep each deployed Auggy service at **one Railway replica** while it uses these
+SQLite stores. They assume one process and one writer; attaching multiple
+replicas to the same volume is not a supported scaling strategy. Use a shared
+database implementation before enabling horizontal replicas.
+
+The volume survives container replacement, but it is not an independent
+backup. Establish a separate volume snapshot or file backup policy for state
+you cannot recreate. For a file-level backup, stop the agent before copying and
+capture each database with any `-wal` and `-shm` siblings as one set; copying a
+live `.db` file alone can omit committed WAL data. Restore and test the complete
+set before starting the agent. The CLI does not currently schedule backups or
+verify restores for you.
 
 ---
 
@@ -291,7 +318,8 @@ The Railway volume is **NOT** automatically deleted (Railway retains it as a saf
 ## What you should NOT expect from the current Railway deploy path
 
 - **Auto-rollback** on failed deploys. If `railway up` succeeds but the agent crashes at boot, Railway's auto-restart loop kicks in but doesn't roll back to the previous build. Use `railway logs` to diagnose.
-- **Multi-instance / horizontal scaling.** One Railway service runs one Auggy instance. The SQLite-on-volume design assumes a single writer.
+- **Multi-instance / horizontal scaling.** Configure exactly one Railway replica. The SQLite-on-volume design assumes one process and one writer.
+- **Managed backups.** The deploy path provisions durable storage but does not schedule snapshots, export SQLite files, or test restores.
 - **Plugin abstraction for other providers.** `--to fly` / `--to render` are deferred until concrete demand.
 - **Cross-machine cloud-record sync.** Each checkout has its own `<agent-dir>/.auggy-cloud.json`. Cloud deployment doesn't sync state back.
 - **Built-in observability.** Use Railway's metrics dashboard and `railway logs`. Long-term observability is a v2 concern.
@@ -314,4 +342,5 @@ The Railway volume is **NOT** automatically deleted (Railway retains it as a saf
 | Deploy preflight fails because MCP has an enabled `stdio` server | Use a remote HTTPS MCP server for cloud, or mark the local server `cloud: "disabled"` in `.mcp.json`. |
 | Runtime refuses to start with a volume-admission error | Confirm Railway mounted a real volume at exactly `/app/data` and exposes `RAILWAY_VOLUME_MOUNT_PATH=/app/data`. Remove symlinked state directories; the startup probe intentionally fails before state can fall back to ephemeral disk. |
 | Memory disappears after redeploy | Check Railway dashboard → service → Volumes and confirm the mount is `/app/data`. Core SQLite augments resolve directly to that root; do not repair this by adding an `/app/*.db` symlink. |
+| Console chats disappear after restart | Confirm the database exists at `/app/data/console-chat.db`, the service still has the `/app/data` volume attached, `webTransport.consoleChat.dbPath` is not `null`, and the service is configured for one replica. An explicit custom path must remain below `/app/data`. |
 | Daily budget cap hit unexpectedly | If you enabled autoSave with an extraction engine, extraction calls count against the cap. Run `bun run packages/evals/src/layered-memory/smoke.ts` to measure your per-extraction cost; lower the cadence in `augments/layeredMemory/augment.yaml` if needed. |
