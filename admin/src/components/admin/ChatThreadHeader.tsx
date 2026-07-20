@@ -177,7 +177,7 @@ export function ChatThreadHeader({
               />
             </DropdownMenuTrigger>
             <DropdownMenuContent>
-              <DropdownMenuItem onClick={openRenameDialog}>
+              <DropdownMenuItem disabled={streaming} onClick={openRenameDialog}>
                 <Pencil aria-hidden="true" />
                 Rename
               </DropdownMenuItem>
@@ -189,7 +189,7 @@ export function ChatThreadHeader({
                 Copy transcript
               </DropdownMenuItem>
               <DropdownMenuItem
-                disabled={unread}
+                disabled={unread || streaming}
                 onClick={() => void runAction("mark-unread", onMarkUnread)}
               >
                 <Mail aria-hidden="true" />

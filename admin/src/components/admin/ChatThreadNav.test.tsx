@@ -38,4 +38,37 @@ describe("ChatThreadNav", () => {
     expect(html).toContain("Long task, Streaming response");
     expect(html).toContain("Broken task, Response failed");
   });
+
+  it("shows a non-interactive loading affordance while chats hydrate", () => {
+    const html = renderToStaticMarkup(
+      <ChatThreadNav
+        threads={[thread("draft", "Draft chat")]}
+        activeId="draft"
+        loading
+        onNew={() => {}}
+        onSelect={() => {}}
+      />,
+    );
+
+    expect(html).toContain("Loading chats…");
+    expect(html).not.toContain("Draft chat");
+    expect(html).toContain("disabled=\"\"");
+  });
+
+  it("hides stale drafts and reports a hydration failure", () => {
+    const html = renderToStaticMarkup(
+      <ChatThreadNav
+        threads={[thread("draft", "Draft chat")]}
+        activeId="draft"
+        error="database unavailable"
+        onNew={() => {}}
+        onSelect={() => {}}
+      />,
+    );
+
+    expect(html).toContain("Chats unavailable");
+    expect(html).toContain('role="alert"');
+    expect(html).toContain('title="database unavailable"');
+    expect(html).not.toContain("Draft chat");
+  });
 });

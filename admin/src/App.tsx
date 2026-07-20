@@ -1,5 +1,14 @@
-import { lazy, Suspense, useEffect, type ReactNode } from "react";
-import { NavLink, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
+import { lazy, Suspense, useEffect, useState, type ReactNode } from "react";
+import {
+  NavLink,
+  Navigate,
+  Route,
+  Routes,
+  matchPath,
+  useLocation,
+  useNavigate,
+  useParams,
+} from "react-router-dom";
 import { MessageSquare, Network, Plug } from "lucide-react";
 import { ChatThreadNav } from "@/components/admin/ChatThreadNav";
 import {
@@ -11,6 +20,11 @@ import { ToastProvider } from "@/lib/toast";
 import { ConfirmProvider } from "@/lib/confirm";
 import { DashboardProvider } from "@/components/admin/DashboardContext";
 import { useDashboard } from "@/hooks/useDashboard";
+import {
+  chatThreadPath,
+  decodeChatThreadRouteParam,
+  isChatThreadActuallyVisible,
+} from "@/lib/chat-route";
 import { cn } from "@/lib/utils";
 
 const ChatTab = lazy(() => import("@/routes/ChatTab").then((m) => ({ default: m.ChatTab })));
@@ -66,10 +80,23 @@ function ConsoleShell({
   online: "online" | "offline" | "unknown";
   dashboard: ReturnType<typeof useDashboard>["data"];
 }) {
-  const { state, create, select, setChatVisible } = useChatWorkspace();
+  const { state, create, select, hydrationStatus, hydrationError, setChatVisible } =
+    useChatWorkspace();
   const navigate = useNavigate();
   const location = useLocation();
-  const chatVisible = location.pathname.startsWith("/chat");
+  const documentVisible = useDocumentVisible();
+  const chatRouteActive = location.pathname.startsWith("/chat");
+  const routedThreadId = decodeChatThreadRouteParam(
+    matchPath("/chat/:threadId", location.pathname)?.params.threadId,
+  );
+  const chatVisible = isChatThreadActuallyVisible({
+    chatRouteActive,
+    documentVisible,
+    routedThreadId,
+    activeThreadId: state.activeThreadId,
+  });
+  const activeNavId =
+    !routedThreadId || routedThreadId === state.activeThreadId ? state.activeThreadId : "";
   const threads = [...state.threads].sort((a, b) => {
     if (a.updatedAt !== b.updatedAt) return b.updatedAt.localeCompare(a.updatedAt);
     if (a.createdAt !== b.createdAt) return b.createdAt.localeCompare(a.createdAt);
@@ -78,12 +105,12 @@ function ConsoleShell({
 
   useEffect(() => setChatVisible(chatVisible), [chatVisible, setChatVisible]);
   const openNewChat = () => {
-    create();
-    navigate("/chat");
+    const threadId = create();
+    navigate(chatThreadPath(threadId));
   };
   const openChat = (threadId: string) => {
-    select(threadId);
-    navigate("/chat");
+    if (!select(threadId)) return;
+    navigate(chatThreadPath(threadId));
   };
 
   return (
@@ -95,12 +122,14 @@ function ConsoleShell({
         online={online}
         dashboard={dashboard}
       />
-      {chatVisible && (
+      {chatRouteActive && (
         <div className="border-b bg-background px-2 py-1.5 sm:hidden">
           <ChatThreadNav
             compact
             threads={threads}
-            activeId={state.activeThreadId}
+            activeId={activeNavId}
+            loading={hydrationStatus === "loading"}
+            error={hydrationStatus === "error" ? hydrationError : null}
             onNew={openNewChat}
             onSelect={openChat}
           />
@@ -111,7 +140,9 @@ function ConsoleShell({
           <div className="min-h-0 flex-1 overflow-y-auto">
             <ChatThreadNav
               threads={threads}
-              activeId={state.activeThreadId}
+              activeId={activeNavId}
+              loading={hydrationStatus === "loading"}
+              error={hydrationStatus === "error" ? hydrationError : null}
               onNew={openNewChat}
               onSelect={openChat}
             />
@@ -148,13 +179,168 @@ function ConsoleShell({
           <Suspense fallback={<ConsoleRouteFallback />}>
             <Routes>
               <Route path="/" element={<Navigate to="/chat" replace />} />
-              <Route path="/chat" element={<ChatTab />} />
+              <Route path="/chat" element={<ChatRoute />} />
+              <Route path="/chat/:threadId" element={<ChatRoute />} />
               <Route path="/integrations" element={<IntegrationsTab />} />
               <Route path="/capabilities" element={<CapabilitiesTab />} />
               <Route path="*" element={<Navigate to="/chat" replace />} />
             </Routes>
           </Suspense>
         </main>
+      </div>
+    </div>
+  );
+}
+
+function useDocumentVisible(): boolean {
+  const [visible, setVisible] = useState(
+    () => typeof document === "undefined" || document.visibilityState !== "hidden",
+  );
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    const update = () => setVisible(document.visibilityState !== "hidden");
+    document.addEventListener("visibilitychange", update);
+    update();
+    return () => document.removeEventListener("visibilitychange", update);
+  }, []);
+  return visible;
+}
+
+type ChatRouteLookup =
+  | { threadId: string; status: "loading" }
+  | { threadId: string; status: "ready" }
+  | { threadId: string; status: "not-found" }
+  | { threadId: string; status: "error"; detail: string };
+
+/**
+ * Keeps the URL as the durable conversation selector. Thread details are lazy-loaded
+ * so a copied deep link works without fetching every transcript into the sidebar.
+ */
+function ChatRoute() {
+  const { threadId } = useParams<{ threadId?: string }>();
+  const {
+    state,
+    activeThread,
+    hydrationStatus,
+    hydrationError,
+    loadThread,
+    create,
+  } = useChatWorkspace();
+  const navigate = useNavigate();
+  const [lookup, setLookup] = useState<ChatRouteLookup | null>(null);
+
+  useEffect(() => {
+    if (hydrationStatus === "ready" && !threadId) {
+      navigate(chatThreadPath(state.activeThreadId), { replace: true });
+    }
+  }, [hydrationStatus, navigate, state.activeThreadId, threadId]);
+
+  useEffect(() => {
+    if (hydrationStatus !== "ready" || !threadId) return;
+    let current = true;
+    setLookup({ threadId, status: "loading" });
+    void loadThread(threadId).then(
+      (found) => {
+        if (current) setLookup({ threadId, status: found ? "ready" : "not-found" });
+      },
+      (error: unknown) => {
+        if (current) {
+          setLookup({
+            threadId,
+            status: "error",
+            detail: error instanceof Error ? error.message : "The conversation is unavailable.",
+          });
+        }
+      },
+    );
+    return () => {
+      current = false;
+    };
+  }, [hydrationStatus, loadThread, threadId]);
+
+  if (hydrationStatus === "loading") {
+    return <ChatRouteStatus title="Loading chat…" />;
+  }
+
+  if (hydrationStatus === "error") {
+    return (
+      <ChatRouteStatus
+        title="Could not load chats"
+        detail={hydrationError ?? "The conversation list is unavailable."}
+        actionLabel="Try again"
+        onAction={() => window.location.reload()}
+      />
+    );
+  }
+
+  if (threadId && lookup?.threadId !== threadId) {
+    return <ChatRouteStatus title="Loading chat…" />;
+  }
+
+  if (!threadId || lookup?.status === "loading") {
+    return <ChatRouteStatus title="Loading chat…" />;
+  }
+
+  const requestedThreadWasRemoved =
+    lookup?.status === "ready" &&
+    !state.threads.some((candidate) => candidate.id === threadId);
+
+  if (lookup?.status === "not-found" || requestedThreadWasRemoved) {
+    return (
+      <ChatRouteStatus
+        title="Chat not found"
+        detail="It may have been deleted, or this link may be invalid."
+        actionLabel="Start a new chat"
+        onAction={() => navigate(chatThreadPath(create()), { replace: true })}
+      />
+    );
+  }
+
+  if (lookup?.status === "error") {
+    return (
+      <ChatRouteStatus
+        title="Could not load this chat"
+        detail={lookup.detail}
+        actionLabel="Back to chats"
+        onAction={() => navigate("/chat", { replace: true })}
+      />
+    );
+  }
+
+  // loadThread selects atomically. Do not render the previous conversation under
+  // the requested URL while its detail is still resolving.
+  if (lookup?.status !== "ready" || activeThread.id !== threadId) {
+    return <ChatRouteStatus title="Loading chat…" />;
+  }
+
+  return <ChatTab />;
+}
+
+function ChatRouteStatus({
+  title,
+  detail,
+  actionLabel,
+  onAction,
+}: {
+  title: string;
+  detail?: string;
+  actionLabel?: string;
+  onAction?: () => void;
+}) {
+  return (
+    <div className="grid h-full place-items-center p-6">
+      <div className="max-w-sm text-center">
+        <p className="text-sm font-medium text-foreground">{title}</p>
+        {detail && <p className="mt-1 text-sm text-muted-foreground">{detail}</p>}
+        {actionLabel && onAction && (
+          <button
+            type="button"
+            className="mt-4 rounded-md border bg-background px-3 py-2 text-sm font-medium text-foreground hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            onClick={onAction}
+          >
+            {actionLabel}
+          </button>
+        )}
       </div>
     </div>
   );
