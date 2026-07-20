@@ -26,7 +26,7 @@ augments:
     type: fileMemory
     options:
       label: learned
-      source: ./learned.md
+      source: ./learned-behaviors.md
       mutable: true
       origin: agent
       priority: normal

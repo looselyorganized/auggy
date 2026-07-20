@@ -466,8 +466,40 @@ describe("runDoctor", () => {
 
     const learned = checks.find((c) => c.name === "learned behavior files");
     expect(learned?.status).toBe("warn");
-    expect(learned?.message).toContain("runtime prefers learned-behaviors.md");
-    expect(learned?.fix).toContain("Consolidate behavior notes");
+    expect(learned?.message).toContain("unsupported learned.md is ignored");
+    expect(learned?.fix).toContain("remove learned.md");
+  });
+
+  test("fails with migration guidance when config references learned.md", async () => {
+    const dir = writeAgent("zip", {
+      installDeps: true,
+      installSkill: true,
+      includeFileMemory: true,
+    });
+    writeAugmentMetadata(dir, "fileMemory", {
+      type: "fileMemory",
+      config: {
+        label: "learned",
+        source: "./learned.md",
+        mutable: true,
+        origin: "operator",
+        writeTrustLevels: ["creator"],
+        priority: "high",
+        placement: "preamble",
+        eviction: "drop",
+      },
+    });
+    writeFileSync(join(dir, "learned.md"), "legacy note");
+
+    const checks = await runDoctor("zip", {
+      auggyDir,
+      isPortAvailable: async () => true,
+    });
+
+    const learned = checks.find((c) => c.name === "learned behavior files");
+    expect(learned?.status).toBe("fail");
+    expect(learned?.message).toContain("config references unsupported learned.md");
+    expect(learned?.fix).toContain("Rename learned.md to learned-behaviors.md");
   });
 
   test("lists custom augment routes and warns for public routes", async () => {

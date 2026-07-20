@@ -178,15 +178,31 @@ function checkLearnedBehaviorFiles(agentDir: string, config: ParsedConfig): Doct
   const legacy = join(agentDir, "learned.md");
   const hasCanonical = existsSync(canonical);
   const hasLegacy = existsSync(legacy);
-  const usesLearnedBehaviorStore = config.augments.some(
+  const learnedBehaviorStore = config.augments.find(
     (aug) =>
       aug.type === "fileMemory" &&
       aug.options?.label === "learned" &&
       typeof aug.options.source === "string",
   );
+  const usesLearnedBehaviorStore = Boolean(learnedBehaviorStore);
+  const configuredSource = learnedBehaviorStore?.options?.source as string | undefined;
+  const usesLegacySource = configuredSource
+    ? /(^|\/)learned\.md$/.test(configuredSource.replaceAll("\\", "/"))
+    : false;
 
   if (!usesLearnedBehaviorStore && !hasCanonical && !hasLegacy) {
     return [];
+  }
+
+  if (usesLegacySource) {
+    return [
+      {
+        name: "learned behavior files",
+        status: "fail",
+        message: "agent config references unsupported learned.md",
+        fix: "Rename learned.md to learned-behaviors.md and update the fileMemory source to ./learned-behaviors.md.",
+      },
+    ];
   }
 
   if (hasCanonical && hasLegacy) {
@@ -194,9 +210,8 @@ function checkLearnedBehaviorFiles(agentDir: string, config: ParsedConfig): Doct
       {
         name: "learned behavior files",
         status: "warn",
-        message:
-          "both learned-behaviors.md and legacy learned.md exist; runtime prefers learned-behaviors.md",
-        fix: "Consolidate behavior notes into learned-behaviors.md, then remove learned.md after confirming nothing relies on it.",
+        message: "learned-behaviors.md is active; unsupported learned.md is ignored",
+        fix: "Confirm learned-behaviors.md contains the behavior notes you want to keep, then remove learned.md.",
       },
     ];
   }
@@ -215,9 +230,11 @@ function checkLearnedBehaviorFiles(agentDir: string, config: ParsedConfig): Doct
     return [
       {
         name: "learned behavior files",
-        status: "warn",
-        message: "using legacy learned.md; new agents use learned-behaviors.md",
-        fix: "Rename or copy learned.md to learned-behaviors.md when you are ready to migrate.",
+        status: usesLearnedBehaviorStore ? "fail" : "warn",
+        message: usesLearnedBehaviorStore
+          ? "learned-behaviors.md is missing; unsupported learned.md will not be loaded"
+          : "unsupported learned.md exists but is not configured",
+        fix: "Rename learned.md to learned-behaviors.md and update the fileMemory source if this agent still needs those behavior notes.",
       },
     ];
   }
