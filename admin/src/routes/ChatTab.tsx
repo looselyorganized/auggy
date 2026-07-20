@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Check, ChevronDown, ChevronRight, Copy, Square, SquarePen } from "lucide-react";
 import { MarkdownContent } from "@/components/admin/MarkdownContent";
+import { ChatThreadHeader } from "@/components/admin/ChatThreadHeader";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { detectCodeLanguage, HighlightedCode } from "@/components/ui/highlighted-code";
@@ -69,35 +70,29 @@ export function ChatTab() {
     activeThread,
     anonymousAllowed,
     hasVisitorToken,
-    create,
+    rename,
+    markUnread,
+    deleteThread,
     setPreviewMode,
     send,
     stop,
-    refreshVisitorToken,
   } = useChatWorkspace();
   const { push } = useToast();
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [sendErrors, setSendErrors] = useState<Record<string, string | null>>({});
-  const [copiedTranscript, setCopiedTranscript] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  const copiedTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const wasStreamingRef = useRef(false);
   const input = drafts[activeThread.id] ?? "";
   const messages = activeThread.messages;
   const streaming = state.activeRun?.threadId === activeThread.id;
   const globallyStreaming = state.activeRun !== null;
   const previewMode = activeThread.previewMode;
+  const visitorVerificationRequired = previewMode === "visitor" && !hasVisitorToken;
+  const interactionDisabled = globallyStreaming || visitorVerificationRequired;
   const lastAssistantError = [...messages]
     .reverse()
     .find((message) => message.role === "assistant" && message.error)?.error;
   const streamError = sendErrors[activeThread.id] ?? lastAssistantError ?? null;
-
-  useEffect(
-    () => () => {
-      if (copiedTimeoutRef.current) clearTimeout(copiedTimeoutRef.current);
-    },
-    [],
-  );
 
   useEffect(() => {
     if (wasStreamingRef.current && !streaming) {
@@ -145,12 +140,6 @@ export function ChatTab() {
     requestAnimationFrame(() => inputRef.current?.focus({ preventScroll: true }));
   };
 
-  const handleClearVisitor = () => {
-    clearVisitorToken();
-    refreshVisitorToken();
-    requestAnimationFrame(() => inputRef.current?.focus({ preventScroll: true }));
-  };
-
   const handleCopyTranscript = useCallback(async () => {
     if (messages.length === 0) return;
     const transcript = formatChatTranscript(messages, {
@@ -162,10 +151,7 @@ export function ChatTab() {
     try {
       if (!navigator.clipboard?.writeText) throw new Error("Clipboard API unavailable");
       await navigator.clipboard.writeText(transcript);
-      setCopiedTranscript(true);
       push("success", "copied transcript");
-      if (copiedTimeoutRef.current) clearTimeout(copiedTimeoutRef.current);
-      copiedTimeoutRef.current = setTimeout(() => setCopiedTranscript(false), 1800);
     } catch (copyError) {
       push("error", `copy failed: ${(copyError as Error).message}`);
     }
@@ -193,7 +179,36 @@ export function ChatTab() {
   }
 
   return (
-    <div className="auggy-grid-surface h-full bg-background">
+    <div className="auggy-grid-surface relative flex h-full min-h-0 flex-col bg-background">
+      <ChatThreadHeader
+        title={activeThread.title}
+        previewMode={previewMode}
+        hasMessages={messages.length > 0}
+        unread={activeThread.unread}
+        streaming={streaming}
+        anonymousAllowed={anonymousAllowed}
+        hasVisitorToken={hasVisitorToken}
+        previewModeDisabledReason={
+          globallyStreaming ? "Wait for the active response to finish or stop it first." : undefined
+        }
+        onPreviewModeChange={handlePreviewModeChange}
+        onRename={(title) => {
+          const result = rename(activeThread.id, title);
+          if (!result.valid) throw new Error(result.message);
+        }}
+        onCopyTranscript={handleCopyTranscript}
+        onMarkUnread={() => {
+          if (!markUnread(activeThread.id)) throw new Error("This chat no longer exists.");
+        }}
+        onDelete={() => {
+          if (!deleteThread(activeThread.id)) {
+            throw new Error("This chat cannot be deleted while its response is running.");
+          }
+        }}
+        onActionError={(action, actionError) => {
+          push("error", `${action} failed: ${(actionError as Error).message}`);
+        }}
+      />
       <MessageList
         messages={messages}
         streaming={streaming}
@@ -202,6 +217,14 @@ export function ChatTab() {
         identityLabel={identityLabel}
         emptyPrompts={emptyPrompts}
         onPrompt={sendFromThread}
+        disabled={interactionDisabled}
+        disabledReason={
+          visitorVerificationRequired
+            ? "Verify a visitor again to continue. This chat remains bound to its original identity."
+            : globallyStreaming && !streaming
+              ? "A response is running in another chat."
+              : undefined
+        }
       />
       <div className="absolute inset-x-0 bottom-0 z-10 px-3 pb-3 sm:px-6 sm:pb-6">
         <div className="mx-auto max-w-3xl">
@@ -213,6 +236,11 @@ export function ChatTab() {
           {!streaming && globallyStreaming && (
             <div className="mb-2 rounded-md border bg-background/95 px-3 py-2 text-xs text-muted-foreground shadow-sm">
               A response is running in another chat.
+            </div>
+          )}
+          {visitorVerificationRequired && (
+            <div className="mb-2 rounded-md border bg-background/95 px-3 py-2 text-xs text-muted-foreground shadow-sm">
+              Verify a visitor again to continue. This chat remains bound to its original identity.
             </div>
           )}
           <div className="rounded-lg border bg-card/95 p-3 shadow-lg backdrop-blur">
@@ -231,7 +259,7 @@ export function ChatTab() {
                 }}
                 placeholder={`Message ${agentName}...`}
                 rows={3}
-                disabled={globallyStreaming}
+                disabled={interactionDisabled}
                 className="max-h-48 min-h-[5rem] resize-none border-0 bg-transparent px-2 py-2 shadow-none focus-visible:ring-0"
                 aria-label={`Message ${agentName}`}
               />
@@ -241,49 +269,10 @@ export function ChatTab() {
                 </Button>
               )}
             </div>
-            <div className="mt-2 flex items-center justify-between gap-3 px-1">
-              <div className="flex min-w-0 flex-wrap items-center gap-2">
-                <span className="truncate font-mono text-[11px] text-muted-foreground">
-                  {identityLabel}
-                </span>
-                <div className="flex shrink-0 items-center rounded-md border bg-background/80 p-0.5">
-                  {(["creator", "anonymous", "visitor"] as const).map((mode) => (
-                    <Button
-                      key={mode}
-                      type="button"
-                      variant={previewMode === mode ? "secondary" : "ghost"}
-                      size="sm"
-                      onClick={() => handlePreviewModeChange(mode)}
-                      disabled={
-                        globallyStreaming ||
-                        (mode === "anonymous" && !anonymousAllowed) ||
-                        (mode === "visitor" && !hasVisitorToken)
-                      }
-                      className="h-6 rounded-sm px-2 text-[11px]"
-                    >
-                      {CHAT_PREVIEW_MODE_LABELS[mode]}
-                    </Button>
-                  ))}
-                </div>
-                {hasVisitorToken && (
-                  <Button variant="ghost" size="sm" onClick={handleClearVisitor} className="h-7 px-2 text-xs">
-                    Clear visitor
-                  </Button>
-                )}
-              </div>
+            <div className="mt-2 flex items-center justify-end gap-3 px-1">
               <div className="flex shrink-0 items-center gap-2 text-[11px] text-muted-foreground">
                 <span className="hidden sm:inline">Enter to send</span>
                 <span className="hidden sm:inline">Shift+Enter for a new line</span>
-                {messages.length > 0 && (
-                  <>
-                    <Button variant="ghost" size="icon" onClick={() => void handleCopyTranscript()} className="size-7" aria-label="Copy chat transcript">
-                      {copiedTranscript ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
-                    </Button>
-                    <Button variant="ghost" size="sm" onClick={() => create()} disabled={globallyStreaming} className="h-7 px-2 text-xs">
-                      <SquarePen className="mr-1.5 size-3.5" />New thread
-                    </Button>
-                  </>
-                )}
               </div>
             </div>
           </div>
@@ -703,6 +692,8 @@ function MessageList({
   identityLabel,
   emptyPrompts,
   onPrompt,
+  disabled = false,
+  disabledReason,
 }: {
   messages: Message[];
   streaming: boolean;
@@ -711,6 +702,8 @@ function MessageList({
   identityLabel: string;
   emptyPrompts: string[];
   onPrompt: (prompt: string) => void;
+  disabled?: boolean;
+  disabledReason?: string;
 }) {
   const endRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -736,7 +729,7 @@ function MessageList({
 
   if (messages.length === 0) {
     return (
-      <div className="relative z-[1] flex h-full items-center justify-center px-4 pb-36 text-center">
+      <div className="relative z-[1] flex min-h-0 flex-1 items-center justify-center px-4 pb-36 text-center">
         <div className="w-full max-w-2xl">
           <p className="mb-2 text-sm font-medium text-muted-foreground">{identityLabel}</p>
           <h2 className="text-2xl font-semibold tracking-normal sm:text-3xl">
@@ -746,6 +739,11 @@ function MessageList({
             Use this workspace to test behavior, tool calls, memory, and integration posture before
             publishing a frontend.
           </p>
+          {disabledReason && (
+            <p className="mx-auto mt-3 max-w-xl text-xs text-muted-foreground" role="status">
+              {disabledReason}
+            </p>
+          )}
           <div className="mt-6 grid gap-2 sm:grid-cols-2">
             {emptyPrompts.map((prompt) => (
               <Button
@@ -753,6 +751,7 @@ function MessageList({
                 type="button"
                 variant="outline"
                 onClick={() => onPrompt(prompt)}
+                disabled={disabled}
                 className="h-auto min-h-11 justify-start whitespace-normal bg-card/85 px-3 py-2 text-left text-sm shadow-sm hover:bg-muted"
               >
                 {prompt}
@@ -767,7 +766,7 @@ function MessageList({
   return (
     <div
       ref={containerRef}
-      className="relative z-[1] h-full overflow-y-auto px-4 pb-44 pt-8 sm:px-6"
+      className="relative z-[1] min-h-0 flex-1 overflow-y-auto px-4 pb-44 pt-8 sm:px-6"
       role="log"
       aria-live="polite"
     >
