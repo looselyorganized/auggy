@@ -265,6 +265,16 @@ describe("formatRoutesReport", () => {
     );
   });
 
+  test("reports canonical VisitorAuth routes as intentional public posture", async () => {
+    const root = tempRoot();
+    writeVisitorAuthAgent(root, "zip");
+    const report = await runRoutes("zip", { cwd: root });
+
+    expect(formatRoutesReport(report)).toContain(
+      "INFO route posture: 3 route(s): 3 intentional VisitorAuth public, 0 private",
+    );
+  });
+
   test("prints an empty state when no routes are registered", () => {
     const report: RoutesReport = {
       agent: { name: "zip", configPath: "/tmp/zip/agent.yaml" },
