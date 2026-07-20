@@ -186,16 +186,19 @@ function resolveSqlitePath(
 function resolveFileMemory(opts: Record<string, unknown>, agentDir: string): Augment {
   const source = opts.source as string;
   const resolvedSource = resolvePath(source, agentDir);
+  const isLegacyLearnedBehaviorStore =
+    opts.label === "learned" && /(^|\/)learned\.md$/.test(resolvedSource);
+  if (isLegacyLearnedBehaviorStore) {
+    throw new Error(
+      "[augment-resolver] learned.md is no longer supported; rename it to learned-behaviors.md and update the fileMemory source.",
+    );
+  }
   const isLearnedBehaviorStore =
-    opts.label === "learned" && /(^|\/)learned(?:-behaviors)?\.md$/.test(resolvedSource);
-  const learnedBehaviorBase = isLearnedBehaviorStore
-    ? resolvedSource.replace(/learned(?:-behaviors)?\.md$/, "")
-    : undefined;
+    opts.label === "learned" && /(^|\/)learned-behaviors\.md$/.test(resolvedSource);
 
   return fileMemory({
     label: opts.label as string,
-    source: learnedBehaviorBase ? `${learnedBehaviorBase}learned-behaviors.md` : resolvedSource,
-    fallbackSources: learnedBehaviorBase ? [`${learnedBehaviorBase}learned.md`] : undefined,
+    source: resolvedSource,
     mutable: opts.mutable as boolean,
     origin: isLearnedBehaviorStore ? "operator" : (opts.origin as ContextOrigin),
     writeTrustLevels: isLearnedBehaviorStore

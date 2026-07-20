@@ -122,6 +122,18 @@ describe("runModelsDoctor", () => {
     expect(out).toContain("cannot enforce dollar spend");
     expect(out).toContain("engine.costOverride");
   });
+
+  test("reports unknown pricing as info when no USD budget depends on it", () => {
+    const root = tempRoot();
+    writeAgent(root, "zip", { model: "claude-future-99" });
+
+    const result = runModelsDoctor("zip", { cwd: root });
+    const out = formatModelsDoctor(result);
+
+    expect(result.usdBudgets).toBe(false);
+    expect(out).toContain("INFO model pricing");
+    expect(out).not.toContain("WARN model pricing");
+  });
 });
 
 describe("modelsCommand", () => {

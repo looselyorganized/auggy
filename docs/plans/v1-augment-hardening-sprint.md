@@ -59,7 +59,7 @@ Plan:
 
 Acceptance:
 
-- Fresh agents create `learned-behaviors.md`; legacy `learned.md` remains compatible.
+- Fresh agents create `learned-behaviors.md`; the former `learned.md` compatibility path was removed after the preview migration window.
 - Generated learned memory remains mutable.
 - Generated learned memory is not system-origin.
 - Existing explicit operator-authored `fileMemory` configs are unchanged.

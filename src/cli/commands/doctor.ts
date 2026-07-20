@@ -24,10 +24,14 @@ import {
   formatModelSnapshotRef,
   readModelSnapshot,
 } from "../model-snapshot";
-import { formatRouteManifestEntry, inspectAugmentRoutes } from "../route-inspector";
+import {
+  formatRouteManifestEntry,
+  inspectAugmentRoutes,
+  isIntentionalFrameworkPublicRoute,
+} from "../route-inspector";
 import type { AugmentConfig, ParsedConfig } from "../types";
 
-export type DoctorStatus = "pass" | "warn" | "fail";
+export type DoctorStatus = "pass" | "info" | "warn" | "fail";
 
 export interface DoctorCheck {
   name: string;
@@ -129,7 +133,7 @@ function checkModelSnapshot(agentDir: string, config: ParsedConfig): DoctorCheck
     return [
       {
         name: "model snapshot",
-        status: "warn",
+        status: "info",
         message: `${formatModelSnapshotRef(selected)} does not match agent.yaml ${config.engine.provider}/${config.engine.model}`,
         fix: `Update or delete ${MODEL_SNAPSHOT_RELATIVE_PATH}; agent.yaml remains the source of truth.`,
       },
@@ -161,7 +165,7 @@ function checkModelPricing(config: ParsedConfig): DoctorCheck {
   const usdBudgets = hasUsdBudgetCaps(config.augments);
   return {
     name: "model pricing",
-    status: "warn",
+    status: usdBudgets ? "warn" : "info",
     message: pricing.message,
     fix: usdBudgets
       ? "Add engine.costOverride in agent.yaml so budgets can enforce USD caps for this model."
@@ -174,15 +178,31 @@ function checkLearnedBehaviorFiles(agentDir: string, config: ParsedConfig): Doct
   const legacy = join(agentDir, "learned.md");
   const hasCanonical = existsSync(canonical);
   const hasLegacy = existsSync(legacy);
-  const usesLearnedBehaviorStore = config.augments.some(
+  const learnedBehaviorStore = config.augments.find(
     (aug) =>
       aug.type === "fileMemory" &&
       aug.options?.label === "learned" &&
       typeof aug.options.source === "string",
   );
+  const usesLearnedBehaviorStore = Boolean(learnedBehaviorStore);
+  const configuredSource = learnedBehaviorStore?.options?.source as string | undefined;
+  const usesLegacySource = configuredSource
+    ? /(^|\/)learned\.md$/.test(configuredSource.replaceAll("\\", "/"))
+    : false;
 
   if (!usesLearnedBehaviorStore && !hasCanonical && !hasLegacy) {
     return [];
+  }
+
+  if (usesLegacySource) {
+    return [
+      {
+        name: "learned behavior files",
+        status: "fail",
+        message: "agent config references unsupported learned.md",
+        fix: "Rename learned.md to learned-behaviors.md and update the fileMemory source to ./learned-behaviors.md.",
+      },
+    ];
   }
 
   if (hasCanonical && hasLegacy) {
@@ -190,9 +210,8 @@ function checkLearnedBehaviorFiles(agentDir: string, config: ParsedConfig): Doct
       {
         name: "learned behavior files",
         status: "warn",
-        message:
-          "both learned-behaviors.md and legacy learned.md exist; runtime prefers learned-behaviors.md",
-        fix: "Consolidate behavior notes into learned-behaviors.md, then remove learned.md after confirming nothing relies on it.",
+        message: "learned-behaviors.md is active; unsupported learned.md is ignored",
+        fix: "Confirm learned-behaviors.md contains the behavior notes you want to keep, then remove learned.md.",
       },
     ];
   }
@@ -211,9 +230,11 @@ function checkLearnedBehaviorFiles(agentDir: string, config: ParsedConfig): Doct
     return [
       {
         name: "learned behavior files",
-        status: "warn",
-        message: "using legacy learned.md; new agents use learned-behaviors.md",
-        fix: "Rename or copy learned.md to learned-behaviors.md when you are ready to migrate.",
+        status: usesLearnedBehaviorStore ? "fail" : "warn",
+        message: usesLearnedBehaviorStore
+          ? "learned-behaviors.md is missing; unsupported learned.md will not be loaded"
+          : "unsupported learned.md exists but is not configured",
+        fix: "Rename learned.md to learned-behaviors.md and update the fileMemory source if this agent still needs those behavior notes.",
       },
     ];
   }
@@ -538,19 +559,37 @@ async function checkAugmentRoutes(
   const { manifest, summary } = inspected;
   if (manifest.length === 0) return [];
 
-  const checks: DoctorCheck[] = [
-    {
+  const intentionalPublicRoutes = manifest.filter((route) =>
+    isIntentionalFrameworkPublicRoute(route, configs),
+  );
+  const publicRoutesToReview = manifest.filter(
+    (route) => route.public && !isIntentionalFrameworkPublicRoute(route, configs),
+  );
+
+  const checks: DoctorCheck[] = [];
+  if (publicRoutesToReview.length > 0) {
+    checks.push({
       name: "augment route posture",
-      status: summary.publicRoutes > 0 ? "warn" : "pass",
+      status: "warn",
       message: `${summary.totalRoutes} route(s): ${summary.publicRoutes} public, ${summary.privateRoutes} private`,
-      fix:
-        summary.publicRoutes > 0
-          ? 'Review public routes and confirm auth: "none" or auth: "visitor.optional" is intentional.'
-          : undefined,
-    },
-  ];
+      fix: 'Review public routes and confirm auth: "none" or auth: "visitor.optional" is intentional.',
+    });
+  } else if (intentionalPublicRoutes.length > 0) {
+    checks.push({
+      name: "visitorAuth routes",
+      status: "info",
+      message: `${intentionalPublicRoutes.length} intentional public routes for magic-link request and verification; rate-limited, with agent tools protected separately`,
+    });
+  } else {
+    checks.push({
+      name: "augment route posture",
+      status: "pass",
+      message: `${summary.totalRoutes} route(s): 0 public, ${summary.privateRoutes} private`,
+    });
+  }
 
   for (const route of manifest) {
+    if (isIntentionalFrameworkPublicRoute(route, configs)) continue;
     checks.push({
       name: `route ${route.method} ${route.path}`,
       status: route.public ? "warn" : "pass",
@@ -649,7 +688,7 @@ function summarizeDoctorCheck(check: DoctorCheck): string {
 function formatStatus(status: DoctorStatus, color: boolean): string {
   const label = status.toUpperCase();
   if (!color) return label;
-  const code = status === "pass" ? 32 : status === "warn" ? 33 : 31;
+  const code = status === "pass" ? 32 : status === "info" ? 36 : status === "warn" ? 33 : 31;
   return `\x1b[${code}m${label}\x1b[0m`;
 }
 

@@ -5,7 +5,7 @@ import { parseConfig } from "../config-parser";
 import { createTypeScriptClient, type TypeScriptClientTarget } from "../routes-client";
 import { createOpenApiDocument } from "../routes-openapi";
 import { resolveConfigPath } from "../resolve-config";
-import { inspectAugmentRoutes } from "../route-inspector";
+import { inspectAugmentRoutes, isIntentionalFrameworkPublicRoute } from "../route-inspector";
 import type { RouteManifestEntry, RouteManifestSummary } from "../../kernel/route-manifest";
 
 export interface RoutesOptions {
@@ -21,6 +21,7 @@ export interface RoutesReport {
   };
   summary: RouteManifestSummary;
   routes: readonly RouteManifestEntry[];
+  intentionalPublicRoutes?: number;
 }
 
 export interface RoutesCommandDeps {
@@ -57,6 +58,9 @@ export async function runRoutes(
     },
     summary: inspected.summary,
     routes: inspected.manifest,
+    intentionalPublicRoutes: inspected.manifest.filter((route) =>
+      isIntentionalFrameworkPublicRoute(route, config.augments),
+    ).length,
   };
 }
 
@@ -68,10 +72,15 @@ export function formatRoutesReport(report: RoutesReport): string {
     return lines.join("\n");
   }
 
+  const intentionalPublicRoutes = report.intentionalPublicRoutes ?? 0;
+  const publicRoutesToReview = report.summary.publicRoutes - intentionalPublicRoutes;
+  const posture = publicRoutesToReview > 0 ? "WARN" : intentionalPublicRoutes > 0 ? "INFO" : "PASS";
+  const publicDescription =
+    intentionalPublicRoutes > 0 && publicRoutesToReview === 0
+      ? `${intentionalPublicRoutes} intentional VisitorAuth public`
+      : `${report.summary.publicRoutes} public`;
   lines.push(
-    `${report.summary.publicRoutes > 0 ? "WARN" : "PASS"} route posture: ${
-      report.summary.totalRoutes
-    } route(s): ${report.summary.publicRoutes} public, ${report.summary.privateRoutes} private`,
+    `${posture} route posture: ${report.summary.totalRoutes} route(s): ${publicDescription}, ${report.summary.privateRoutes} private`,
     "",
   );
 
