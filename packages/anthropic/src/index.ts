@@ -103,7 +103,7 @@ export function createAnthropicEngine(opts: AnthropicEngineOptions): ModelClient
 
     async complete(
       prompt: AssembledPrompt,
-      opts2?: { onDelta?: (delta: ModelDelta) => void },
+      opts2?: { onDelta?: (delta: ModelDelta) => void; signal?: AbortSignal },
     ): Promise<ModelResponse> {
       const system = assembleSystemBlocks(prompt);
       const messages = convertMessages(prompt.messages);
@@ -151,7 +151,7 @@ export function createAnthropicEngine(opts: AnthropicEngineOptions): ModelClient
           // Tool-use blocks are NOT streamed in v1 — they arrive in the
           // finalMessage. This is intentional: text streaming is the latency
           // win; tool args are small.
-          const stream = client.messages.stream(params);
+          const stream = client.messages.stream(params, { signal: opts2.signal });
           stream.on("text", (text) => {
             opts2.onDelta!({ kind: "text_delta", text });
           });
@@ -160,7 +160,7 @@ export function createAnthropicEngine(opts: AnthropicEngineOptions): ModelClient
         }
 
         // Non-streaming path (backward compat for tests, other consumers)
-        const response = await client.messages.create(params);
+        const response = await client.messages.create(params, { signal: opts2?.signal });
         return withCost(buildModelResponse(response), response.usage);
       } catch (err) {
         rewrapCostCapError(err);

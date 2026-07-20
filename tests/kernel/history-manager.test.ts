@@ -93,6 +93,69 @@ describe("HistoryManager", () => {
     expect(history[0]!.content).toBe("Hello");
   });
 
+  it("snapshots and replaces history without sharing mutable message objects", () => {
+    const hm = createHistoryManager({ threadId: "t1" });
+    hm.append(msg("user", "Hello", 5));
+    const snapshot = hm.snapshot();
+    snapshot.messages[0]!.content = "changed outside";
+    expect(hm.getHistory(100)[0]!.content).toBe("Hello");
+
+    const restored = createHistoryManager({ threadId: "t2" });
+    restored.replace(hm.snapshot());
+    expect(restored.getHistory(100)[0]!.content).toBe("Hello");
+    expect(restored.totalTokens()).toBe(5);
+  });
+
+  it("rejects malformed snapshots atomically", () => {
+    const hm = createHistoryManager({ threadId: "t1" });
+    hm.append(msg("user", "existing", 2));
+
+    expect(() =>
+      hm.replace({
+        version: 1,
+        messages: [{ id: "bad", role: "user", content: "bad", timestamp: -1, tokenCount: 1 }],
+      }),
+    ).toThrow("Invalid thread history message");
+    expect(hm.getHistory(100).map((message) => message.content)).toEqual(["existing"]);
+    expect(hm.totalTokens()).toBe(2);
+  });
+
+  it("rejects duplicate ids and invalid tool pairs", () => {
+    const duplicate = msg("user", "one", 1);
+    expect(() =>
+      createHistoryManager({ threadId: "t1" }).replace({
+        version: 1,
+        messages: [duplicate, { ...duplicate, content: "two" }],
+      }),
+    ).toThrow("duplicate message id");
+
+    expect(() =>
+      createHistoryManager({ threadId: "t1" }).replace({
+        version: 1,
+        messages: [msg("tool_result", "orphan", 1)],
+      }),
+    ).toThrow("orphaned tool_result");
+
+    const call = { ...msg("tool_use", "call", 1), toolCallId: "call-1" };
+    const result = { ...msg("tool_result", "result", 1), toolCallId: "call-2" };
+    expect(() =>
+      createHistoryManager({ threadId: "t1" }).replace({
+        version: 1,
+        messages: [call, result],
+      }),
+    ).toThrow("has no matching result");
+  });
+
+  it("rejects malformed persisted JSON without changing resident history", async () => {
+    const hm = createHistoryManager({ threadId: "t1" });
+    hm.append(msg("assistant", "keep me", 2));
+    const storage = createInMemoryStorage();
+    await storage.put("history:t1", "{not-json");
+
+    await expect(hm.restore(storage)).rejects.toThrow("malformed JSON");
+    expect(hm.getHistory(100).map((message) => message.content)).toEqual(["keep me"]);
+  });
+
   it("tracks total tokens", () => {
     const hm = createHistoryManager({ threadId: "t1" });
     hm.append(msg("user", "Hello", 5));

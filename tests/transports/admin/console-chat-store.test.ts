@@ -8,10 +8,11 @@ import {
   CONSOLE_CHAT_SCHEMA_VERSION,
   consoleChatOwnerMatchesPeer,
   createConsoleChatStore,
+  createConsoleThreadHistoryPersistence,
   type AppendConsoleChatMessageInput,
   type ConsoleChatStore,
 } from "@/transports/admin/console-chat-store";
-import type { Message as KernelMessage } from "@/types";
+import type { Message as KernelMessage, PeerIdentity } from "@/types";
 
 const THREAD = {
   id: "thread-1",
@@ -70,6 +71,13 @@ const KERNEL_HISTORY: KernelMessage[] = [
     tokenCount: 2,
   },
 ];
+
+const CREATOR_PEER: PeerIdentity = {
+  id: "creator",
+  kind: "human",
+  trustLevel: "creator",
+  sourceAugment: "web",
+};
 
 describe("console chat SQLite store", () => {
   const cleanups: Array<() => Promise<void>> = [];
@@ -439,5 +447,110 @@ describe("console chat SQLite store", () => {
         },
       }),
     ).toThrow(/does not match preview mode/);
+  });
+
+  it("atomically claims an unbound thread before loading committed kernel history", async () => {
+    const { store } = await openStore();
+    store.createThread({ ...THREAD, owner: null });
+    const persistence = createConsoleThreadHistoryPersistence(store);
+
+    expect(await persistence.load(THREAD.id, CREATOR_PEER)).toBeNull();
+    expect(store.getThread(THREAD.id)?.owner).toEqual(THREAD.owner);
+
+    await persistence.commit(THREAD.id, CREATOR_PEER, {
+      version: 1,
+      messages: KERNEL_HISTORY,
+    });
+    expect(await persistence.load(THREAD.id, CREATOR_PEER)).toEqual({
+      version: 1,
+      messages: KERNEL_HISTORY,
+    });
+  });
+
+  it("rejects a preview-mode mismatch without claiming the thread", async () => {
+    const { store } = await openStore();
+    store.createThread({ ...THREAD, id: "visitor-thread", previewMode: "visitor", owner: null });
+    const persistence = createConsoleThreadHistoryPersistence(store);
+
+    await expect(persistence.load("visitor-thread", CREATOR_PEER)).rejects.toThrow(/access denied/);
+    expect(store.getThread("visitor-thread")?.owner).toBeNull();
+  });
+
+  it("requires the exact resolved identity for every load, access check, and commit", async () => {
+    const { store } = await openStore();
+    const visitor: PeerIdentity = {
+      id: "vis_first",
+      kind: "human",
+      trustLevel: "public",
+      publicSubstate: "recognized",
+      sourceAugment: "web",
+      displayName: "Sensitive display name is not persisted",
+      orgId: "org-not-persisted",
+    };
+    const impostor: PeerIdentity = { ...visitor, id: "vis_second" };
+    store.createThread({ ...THREAD, id: "visitor-thread", previewMode: "visitor", owner: null });
+    const persistence = createConsoleThreadHistoryPersistence(store);
+
+    await persistence.assertAccess("visitor-thread", visitor);
+    await persistence.commit("visitor-thread", visitor, { version: 1, messages: KERNEL_HISTORY });
+    await expect(persistence.assertAccess("visitor-thread", impostor)).rejects.toThrow(
+      /access denied/,
+    );
+    await expect(persistence.load("visitor-thread", impostor)).rejects.toThrow(/access denied/);
+    await expect(
+      persistence.commit("visitor-thread", impostor, { version: 1, messages: [] }),
+    ).rejects.toThrow(/access denied/);
+    expect(await persistence.load("visitor-thread", visitor)).toEqual({
+      version: 1,
+      messages: KERNEL_HISTORY,
+    });
+
+    expect(store.getThread("visitor-thread")?.owner).toEqual({
+      peerId: visitor.id,
+      kind: visitor.kind,
+      trustLevel: visitor.trustLevel,
+      publicSubstate: visitor.publicSubstate ?? null,
+    });
+  });
+
+  it("binds anonymous persistence only to the thread-derived peer identity", async () => {
+    const { store } = await openStore();
+    store.createThread({
+      ...THREAD,
+      id: "anonymous-thread",
+      previewMode: "anonymous",
+      owner: null,
+    });
+    const persistence = createConsoleThreadHistoryPersistence(store);
+    const anonymous: PeerIdentity = {
+      id: "anon-anonymous-thread",
+      kind: "human",
+      trustLevel: "public",
+      publicSubstate: "anonymous",
+      sourceAugment: "web",
+    };
+
+    await persistence.assertAccess("anonymous-thread", anonymous);
+    await expect(
+      persistence.assertAccess("anonymous-thread", {
+        ...anonymous,
+        id: "anon-some-other-thread",
+      }),
+    ).rejects.toThrow(/access denied/);
+  });
+
+  it("validates versioned snapshots before committing", async () => {
+    const { store } = await openStore();
+    store.createThread({ ...THREAD, owner: null });
+    const persistence = createConsoleThreadHistoryPersistence(store);
+
+    await expect(
+      persistence.commit(THREAD.id, CREATOR_PEER, {
+        version: 2,
+        messages: [],
+      } as never),
+    ).rejects.toThrow(/invalid kernel history snapshot/);
+    expect(store.getThread(THREAD.id)?.owner).toBeNull();
+    expect(store.loadKernelHistory(THREAD.id)).toBeNull();
   });
 });

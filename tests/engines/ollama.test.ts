@@ -366,6 +366,17 @@ describe("createOllamaEngine — response translation", () => {
 // ---------------------------------------------------------------------------
 
 describe("createOllamaEngine — streaming", () => {
+  test("does not start a request when the AbortSignal is already aborted", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const engine = createOllamaEngine({ model: "llama3.2" });
+
+    await expect(
+      engine.complete(emptyPrompt(), { onDelta: () => {}, signal: controller.signal }),
+    ).rejects.toMatchObject({ name: "AbortError" });
+    expect(lastChatArgs).toBeNull();
+  });
+
   test("emits text_delta for each chunk + buffers final ModelResponse", async () => {
     const engine = createOllamaEngine({ model: "llama3.2" });
     nextStreamChunks = [

@@ -527,7 +527,7 @@ export type ModelDelta = { kind: "text_delta"; text: string };
 export interface ModelClient {
   complete(
     prompt: AssembledPrompt,
-    opts?: { onDelta?: (delta: ModelDelta) => void },
+    opts?: { onDelta?: (delta: ModelDelta) => void; signal?: AbortSignal },
   ): Promise<ModelResponse>;
   countTokens(text: string): number;
   maxContextTokens: number;
@@ -540,6 +540,30 @@ export interface Storage {
   put(key: string, value: string): Promise<void>;
   delete(key: string): Promise<void>;
   list(prefix: string): Promise<string[]>;
+}
+
+/**
+ * Durable, versioned representation of the model-visible history for one
+ * thread. Implementations must treat the payload as opaque; the kernel
+ * validates every loaded snapshot before installing it.
+ */
+export interface ThreadHistorySnapshot {
+  version: 1;
+  messages: Message[];
+}
+
+/**
+ * Optional transport-owned persistence for model-visible thread history.
+ *
+ * The transport passes this only after it has resolved the request's real
+ * peer identity. Implementations own the authorization boundary: `load` must
+ * atomically claim a new thread or verify its exact owner, while
+ * `assertAccess` and `commit` must reject any owner mismatch.
+ */
+export interface ThreadHistoryPersistence {
+  load(threadId: string, peer: PeerIdentity): Promise<unknown | null>;
+  assertAccess(threadId: string, peer: PeerIdentity): Promise<void>;
+  commit(threadId: string, peer: PeerIdentity, snapshot: ThreadHistorySnapshot): Promise<void>;
 }
 
 // === Agent Card (A2A-shaped, used for discovery) ===
@@ -578,8 +602,14 @@ export interface AgentCard {
 export interface TransportKernel {
   handleInbound(
     trigger: TurnTrigger,
-    options?: { onEvent?: KernelEventHandler },
+    options?: {
+      onEvent?: KernelEventHandler;
+      signal?: AbortSignal;
+      historyPersistence?: ThreadHistoryPersistence;
+    },
   ): Promise<TurnResult>;
+  /** Evict an in-memory thread so a later request restores durable state. */
+  forgetThreadHistory?(threadId: string): void;
   onOutbound(callback: (peer: PeerIdentity, message: OutboundMessage) => Promise<void>): void;
   getAgentCard(): AgentCard;
   /**

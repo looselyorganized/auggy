@@ -6,7 +6,14 @@ import {
   type SqliteDiagnostics,
   type SqliteSchemaObject,
 } from "../../lib/sqlite";
-import type { Message as KernelMessage, PeerIdentity, PeerKind, TrustLevel } from "../../types";
+import type {
+  Message as KernelMessage,
+  PeerIdentity,
+  PeerKind,
+  ThreadHistoryPersistence,
+  ThreadHistorySnapshot,
+  TrustLevel,
+} from "../../types";
 
 export const CONSOLE_CHAT_APPLICATION_ID = 0x43434854; // "CCHT"
 export const CONSOLE_CHAT_SCHEMA_VERSION = 1;
@@ -158,8 +165,48 @@ export interface ConsoleChatStore {
   loadKernelHistory(threadId: string): KernelMessage[] | null;
   saveKernelHistory(threadId: string, messages: readonly KernelMessage[], updatedAt: number): void;
   clearKernelHistory(threadId: string): boolean;
+  /**
+   * Atomically claim an unbound thread for this peer, or verify that its
+   * existing owner is an exact identity match. This is the authorization
+   * boundary used by kernel history persistence.
+   */
+  assertKernelHistoryAccess(threadId: string, peer: PeerIdentity): void;
+  /** Claim/check access and return only the last committed history row. */
+  loadKernelHistoryForPeer(threadId: string, peer: PeerIdentity): KernelMessage[] | null;
+  /** Check access and atomically replace the committed history row. */
+  commitKernelHistoryForPeer(
+    threadId: string,
+    peer: PeerIdentity,
+    messages: readonly KernelMessage[],
+  ): void;
   diagnostics(): SqliteDiagnostics;
   close(): void;
+}
+
+/**
+ * Adapt the console transcript store to the kernel's transport-scoped history
+ * contract. The store deliberately retains only the stable authorization
+ * tuple from PeerIdentity; credentials and cosmetic/PII fields never cross
+ * this boundary.
+ */
+export function createConsoleThreadHistoryPersistence(
+  store: ConsoleChatStore,
+): ThreadHistoryPersistence {
+  return {
+    async load(threadId, peer) {
+      const messages = store.loadKernelHistoryForPeer(threadId, peer);
+      return messages === null ? null : ({ version: 1, messages } satisfies ThreadHistorySnapshot);
+    },
+    async assertAccess(threadId, peer) {
+      store.assertKernelHistoryAccess(threadId, peer);
+    },
+    async commit(threadId, peer, snapshot) {
+      if (!isPlainObject(snapshot) || snapshot.version !== 1 || !Array.isArray(snapshot.messages)) {
+        throw new Error(`${STORE_LABEL}: invalid kernel history snapshot`);
+      }
+      store.commitKernelHistoryForPeer(threadId, peer, snapshot.messages);
+    },
+  };
 }
 
 const SCHEMA_STATEMENTS = [
@@ -674,6 +721,76 @@ export function createConsoleChatStore(options: {
     );
   }
 
+  function claimOrAssertKernelHistoryOwner(
+    threadId: string,
+    peer: PeerIdentity,
+  ): { id: string; owner: ConsoleChatOwnerIdentity } {
+    const id = assertIdentifier(threadId, "threadId");
+    const previewMode = previewModeForPeer(peer, id);
+    const owner = normalizeOwner(consoleChatOwnerFromPeer(peer), id, previewMode);
+    if (owner === null) throw new Error(`${STORE_LABEL}: kernel history access denied`);
+
+    // A conditional UPDATE is the claim operation. It takes SQLite's write
+    // lock before the verification SELECT, so two processes cannot both claim
+    // the same unbound row with different identities. The deployment contract
+    // still requires one application replica because in-memory kernel state is
+    // process-local.
+    db.run(
+      `UPDATE console_chat_threads
+          SET bound_peer_id = ?, owner_peer_kind = ?, owner_trust_level = ?,
+              owner_public_substate = ?
+        WHERE id = ? AND preview_mode = ?
+          AND bound_peer_id IS NULL AND owner_peer_kind IS NULL
+          AND owner_trust_level IS NULL AND owner_public_substate IS NULL`,
+      [owner.peerId, owner.kind, owner.trustLevel, owner.publicSubstate, id, previewMode],
+    );
+
+    const row = getThreadStatement.get(id) as ThreadRow | null;
+    if (!row) throw new Error(`${STORE_LABEL}: kernel history access denied`);
+    const thread = rowToThread(row);
+    if (
+      thread.previewMode !== previewMode ||
+      thread.owner === null ||
+      !sameOwner(thread.owner, owner)
+    ) {
+      throw new Error(`${STORE_LABEL}: kernel history access denied`);
+    }
+    return { id, owner };
+  }
+
+  function assertKernelHistoryAccess(threadId: string, peer: PeerIdentity): void {
+    db.transaction(() => {
+      claimOrAssertKernelHistoryOwner(threadId, peer);
+    })();
+  }
+
+  function loadKernelHistoryForPeer(threadId: string, peer: PeerIdentity): KernelMessage[] | null {
+    return db.transaction(() => {
+      const { id } = claimOrAssertKernelHistoryOwner(threadId, peer);
+      const row = getHistoryStatement.get(id) as HistoryRow | null;
+      if (!row) return null;
+      if (typeof row.history_json !== "string") {
+        throw new Error(`${STORE_LABEL}: invalid kernel history row`);
+      }
+      return parseKernelHistory(row.history_json);
+    })();
+  }
+
+  function commitKernelHistoryForPeer(
+    threadId: string,
+    peer: PeerIdentity,
+    messages: readonly KernelMessage[],
+  ): void {
+    // Validate and bound the entire snapshot before opening the transaction.
+    // saveKernelHistory repeats serialization inside the transaction so no
+    // unchecked value can reach SQLite if this implementation changes later.
+    serializeKernelHistory(messages);
+    db.transaction(() => {
+      const { id } = claimOrAssertKernelHistoryOwner(threadId, peer);
+      saveKernelHistory(id, messages, assertTimestamp(now(), "now()"));
+    })();
+  }
+
   function requiredThread(threadId: string): ConsoleChatThread {
     const thread = getThread(threadId);
     if (!thread) throw new Error(`${STORE_LABEL}: thread disappeared: ${threadId}`);
@@ -715,6 +832,9 @@ export function createConsoleChatStore(options: {
     loadKernelHistory,
     saveKernelHistory,
     clearKernelHistory,
+    assertKernelHistoryAccess,
+    loadKernelHistoryForPeer,
+    commitKernelHistoryForPeer,
     diagnostics: database.diagnostics,
     close: database.close,
   };
@@ -940,6 +1060,34 @@ function assertOwnerMatchesPreviewMode(
   if (!expected) {
     throw new Error(`${STORE_LABEL}: thread owner does not match preview mode`);
   }
+}
+
+function previewModeForPeer(peer: PeerIdentity, threadId: string): ConsoleChatPreviewMode {
+  const owner = consoleChatOwnerFromPeer(peer);
+  if (
+    owner.peerId === "creator" &&
+    owner.kind === "human" &&
+    owner.trustLevel === "creator" &&
+    owner.publicSubstate === null
+  ) {
+    return "creator";
+  }
+  if (
+    owner.peerId === `anon-${threadId}` &&
+    owner.kind === "human" &&
+    owner.trustLevel === "public" &&
+    owner.publicSubstate === "anonymous"
+  ) {
+    return "anonymous";
+  }
+  if (
+    owner.kind === "human" &&
+    owner.trustLevel === "public" &&
+    owner.publicSubstate === "recognized"
+  ) {
+    return "visitor";
+  }
+  throw new Error(`${STORE_LABEL}: kernel history access denied`);
 }
 
 function normalizeModel(model: ConsoleChatModelSnapshot | null): ConsoleChatModelSnapshot | null {

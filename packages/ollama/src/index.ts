@@ -101,7 +101,7 @@ export function createOllamaEngine(opts: OllamaEngineOptions): ModelClient {
 
     async complete(
       prompt: AssembledPrompt,
-      opts2?: { onDelta?: (delta: ModelDelta) => void },
+      opts2?: { onDelta?: (delta: ModelDelta) => void; signal?: AbortSignal },
     ): Promise<ModelResponse> {
       const messages = convertMessages(prompt);
       const tools = convertTools(prompt.tools);
@@ -124,19 +124,31 @@ export function createOllamaEngine(opts: OllamaEngineOptions): ModelClient {
         // chunk that does NOT repeat tool_calls. We must accumulate
         // tool_calls across all chunks — relying on the last chunk loses
         // them entirely (silent empty turn, model output discarded).
+        opts2.signal?.throwIfAborted();
         const stream = await client.chat({ ...baseRequest, stream: true });
+        const abortStream = () => stream.abort();
+        opts2.signal?.addEventListener("abort", abortStream, { once: true });
+        if (opts2.signal?.aborted) {
+          stream.abort();
+          opts2.signal.removeEventListener("abort", abortStream);
+          opts2.signal.throwIfAborted();
+        }
         let accumulated = "";
         let lastChunk: ChatResponse | null = null;
         const accumulatedToolCalls: NonNullable<OllamaMessage["tool_calls"]> = [];
-        for await (const chunk of stream) {
-          if (chunk.message?.content) {
-            accumulated += chunk.message.content;
-            opts2.onDelta({ kind: "text_delta", text: chunk.message.content });
+        try {
+          for await (const chunk of stream) {
+            if (chunk.message?.content) {
+              accumulated += chunk.message.content;
+              opts2.onDelta({ kind: "text_delta", text: chunk.message.content });
+            }
+            if (chunk.message?.tool_calls) {
+              accumulatedToolCalls.push(...chunk.message.tool_calls);
+            }
+            lastChunk = chunk;
           }
-          if (chunk.message?.tool_calls) {
-            accumulatedToolCalls.push(...chunk.message.tool_calls);
-          }
-          lastChunk = chunk;
+        } finally {
+          opts2.signal?.removeEventListener("abort", abortStream);
         }
         if (!lastChunk) {
           throw new Error("Ollama stream returned no chunks");
