@@ -131,7 +131,7 @@ writeFileSync(
     "    type: webTransport",
     "    options:",
     `      port: ${PORT}`,
-    "      allowAnonymous: false",
+    "      allowAnonymous: true",
     "      publicIntegration: true",
     "      auth:",
     "        type: bearer",
@@ -182,7 +182,7 @@ const agent = defineAgent(
       webTransport({
         port: PORT,
         auth: { type: "bearer", token: BEARER },
-        allowAnonymous: false,
+        allowAnonymous: true,
         publicIntegration: true,
         adminRoute: true,
         agentDir,

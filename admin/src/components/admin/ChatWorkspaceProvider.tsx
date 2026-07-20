@@ -52,7 +52,11 @@ export interface ChatWorkspaceContextValue {
   markUnread: (threadId: string, unread?: boolean) => boolean;
   deleteThread: (threadId: string) => boolean;
   setPreviewMode: (previewMode: ChatPreviewMode) => ChatWorkspaceThreadCommandResult;
-  send: (message: string, threadId?: string) => Promise<ChatWorkspaceCommandResult>;
+  send: (
+    message: string,
+    threadId?: string,
+    onAccepted?: () => void,
+  ) => Promise<ChatWorkspaceCommandResult>;
   stop: () => boolean;
   refreshVisitorToken: () => boolean;
 }
@@ -137,6 +141,23 @@ export function ChatWorkspaceProvider({
       window.removeEventListener("storage", refresh);
     };
   }, [refreshVisitorToken]);
+
+  useEffect(() => {
+    const model = modelSnapshotFromDashboard(data);
+    if (!model) return;
+    const at = dependenciesRef.current.now().toISOString();
+    for (const thread of stateRef.current.threads) {
+      if (!isEmptyChatThread(thread)) continue;
+      if (
+        thread.model?.id === model.id &&
+        thread.model.displayName === model.displayName &&
+        thread.model.provider === model.provider
+      ) {
+        continue;
+      }
+      dispatch({ type: "thread.model-set", threadId: thread.id, model, at });
+    }
+  }, [data, dispatch]);
 
   const create = useCallback(
     (previewMode?: ChatPreviewMode) => {
@@ -254,7 +275,11 @@ export function ChatWorkspaceProvider({
   }, []);
 
   const send = useCallback(
-    async (message: string, requestedThreadId?: string): Promise<ChatWorkspaceCommandResult> => {
+    async (
+      message: string,
+      requestedThreadId?: string,
+      onAccepted?: () => void,
+    ): Promise<ChatWorkspaceCommandResult> => {
       const text = message.trim();
       if (!text) return { ok: false, error: "Write a message before sending." };
       if (runLockRef.current) {
@@ -334,6 +359,11 @@ export function ChatWorkspaceProvider({
         model: modelSnapshotFromDashboard(deps.data),
         at: sentAt,
       });
+      try {
+        onAccepted?.();
+      } catch {
+        // UI acknowledgement must not be able to orphan an accepted agent run.
+      }
 
       const toolCalls = new Map<string, ChatToolCall>();
       let receivedText = "";
