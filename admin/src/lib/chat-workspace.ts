@@ -71,7 +71,7 @@ export type ChatWorkspaceAction =
   | { type: "draft.activate"; draft: ChatThread }
   | { type: "thread.select"; threadId: string; at: string }
   | { type: "thread.rename"; threadId: string; title: string; at: string }
-  | { type: "thread.delete"; threadId: string; fallbackDraft: ChatThread }
+  | { type: "thread.delete"; threadId: string; fallbackDraft: ChatThread; at: string }
   | { type: "thread.preview-mode-set"; threadId: string; previewMode: ChatPreviewMode; at: string }
   | { type: "thread.model-set"; threadId: string; model: ChatModelSnapshot | null; at: string }
   | { type: "thread.read-state-set"; threadId: string; unread: boolean; at: string }
@@ -188,6 +188,7 @@ export function chatWorkspaceReducer(
         previewMode: action.draft.previewMode,
         model: action.draft.model,
         updatedAt: action.draft.updatedAt,
+        lastReadAt: action.draft.updatedAt,
         unread: false,
         runStatus: "idle",
       };
@@ -237,7 +238,11 @@ export function chatWorkspaceReducer(
       const fallback = mostRecentlyUpdated(remaining);
       return {
         ...state,
-        threads: replaceThread(remaining, { ...fallback, unread: false }),
+        threads: replaceThread(remaining, {
+          ...fallback,
+          unread: false,
+          lastReadAt: action.at,
+        }),
         activeThreadId: fallback.id,
       };
     }

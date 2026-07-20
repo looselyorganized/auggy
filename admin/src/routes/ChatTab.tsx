@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { detectCodeLanguage, HighlightedCode } from "@/components/ui/highlighted-code";
 import { Textarea } from "@/components/ui/textarea";
 import { useDashboardContext } from "@/components/admin/DashboardContext";
+import { useChatWorkspace } from "@/components/admin/ChatWorkspaceProvider";
 import { findCsrfToken } from "@/lib/api";
 import { formatChatTranscript } from "@/lib/chat-transcript";
 import { useToast } from "@/lib/toast";
@@ -62,6 +63,237 @@ interface Message {
 // ---------------------------------------------------------------------------
 
 export function ChatTab() {
+  const { data, loading, error } = useDashboardContext();
+  const {
+    state,
+    activeThread,
+    anonymousAllowed,
+    hasVisitorToken,
+    create,
+    setPreviewMode,
+    send,
+    stop,
+    refreshVisitorToken,
+  } = useChatWorkspace();
+  const { push } = useToast();
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [sendErrors, setSendErrors] = useState<Record<string, string | null>>({});
+  const [copiedTranscript, setCopiedTranscript] = useState(false);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const copiedTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const wasStreamingRef = useRef(false);
+  const input = drafts[activeThread.id] ?? "";
+  const messages = activeThread.messages;
+  const streaming = state.activeRun?.threadId === activeThread.id;
+  const globallyStreaming = state.activeRun !== null;
+  const previewMode = activeThread.previewMode;
+  const lastAssistantError = [...messages]
+    .reverse()
+    .find((message) => message.role === "assistant" && message.error)?.error;
+  const streamError = sendErrors[activeThread.id] ?? lastAssistantError ?? null;
+
+  useEffect(
+    () => () => {
+      if (copiedTimeoutRef.current) clearTimeout(copiedTimeoutRef.current);
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (wasStreamingRef.current && !streaming) {
+      requestAnimationFrame(() => inputRef.current?.focus({ preventScroll: true }));
+    }
+    wasStreamingRef.current = streaming;
+  }, [streaming]);
+
+  const agentName = useMemo(() => {
+    if (!data) return "Agent";
+    return (
+      data.agentMeta?.displayName ??
+      data.card.provider.displayName ??
+      data.agentMeta?.name ??
+      data.card.provider.name ??
+      "Agent"
+    );
+  }, [data]);
+  const identityLabel = `Previewing as ${CHAT_PREVIEW_MODE_LABELS[previewMode].toLowerCase()}`;
+  const emptyPrompts = previewMode === "creator" ? CREATOR_EMPTY_PROMPTS : PEER_EMPTY_PROMPTS;
+
+  const sendFromThread = useCallback(
+    (overrideText?: string) => {
+      const threadId = activeThread.id;
+      const text = (overrideText ?? input).trim();
+      if (!text || globallyStreaming) return;
+      setDrafts((current) => ({ ...current, [threadId]: "" }));
+      setSendErrors((current) => ({ ...current, [threadId]: null }));
+      void send(text, threadId).then((result) => {
+        if (!result.ok) {
+          setSendErrors((current) => ({ ...current, [threadId]: result.error }));
+        }
+      });
+    },
+    [activeThread.id, globallyStreaming, input, send],
+  );
+
+  const handlePreviewModeChange = (mode: ChatPreviewMode) => {
+    const result = setPreviewMode(mode);
+    if (!result.ok) {
+      setSendErrors((current) => ({ ...current, [activeThread.id]: result.error }));
+      return;
+    }
+    setSendErrors((current) => ({ ...current, [result.threadId]: null }));
+    requestAnimationFrame(() => inputRef.current?.focus({ preventScroll: true }));
+  };
+
+  const handleClearVisitor = () => {
+    clearVisitorToken();
+    refreshVisitorToken();
+    requestAnimationFrame(() => inputRef.current?.focus({ preventScroll: true }));
+  };
+
+  const handleCopyTranscript = useCallback(async () => {
+    if (messages.length === 0) return;
+    const transcript = formatChatTranscript(messages, {
+      agentName,
+      previewModeLabel: CHAT_PREVIEW_MODE_LABELS[previewMode],
+      threadId: activeThread.id,
+      copiedAt: new Date(),
+    });
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error("Clipboard API unavailable");
+      await navigator.clipboard.writeText(transcript);
+      setCopiedTranscript(true);
+      push("success", "copied transcript");
+      if (copiedTimeoutRef.current) clearTimeout(copiedTimeoutRef.current);
+      copiedTimeoutRef.current = setTimeout(() => setCopiedTranscript(false), 1800);
+    } catch (copyError) {
+      push("error", `copy failed: ${(copyError as Error).message}`);
+    }
+  }, [activeThread.id, agentName, messages, previewMode, push]);
+
+  if (loading && !data) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle>Chat</CardTitle>
+          <CardDescription>Loading…</CardDescription>
+        </CardHeader>
+      </Card>
+    );
+  }
+  if (error && !data) {
+    return (
+      <Card className="border-destructive/40">
+        <CardHeader>
+          <CardTitle className="text-destructive">Chat load failed</CardTitle>
+          <CardDescription className="font-mono text-xs">{error}</CardDescription>
+        </CardHeader>
+      </Card>
+    );
+  }
+
+  return (
+    <div className="auggy-grid-surface h-full bg-background">
+      <MessageList
+        messages={messages}
+        streaming={streaming}
+        agentName={agentName}
+        responseLabel={agentName}
+        identityLabel={identityLabel}
+        emptyPrompts={emptyPrompts}
+        onPrompt={sendFromThread}
+      />
+      <div className="absolute inset-x-0 bottom-0 z-10 px-3 pb-3 sm:px-6 sm:pb-6">
+        <div className="mx-auto max-w-3xl">
+          {streamError && (
+            <div className="mb-2 rounded-md border border-destructive/30 bg-background/95 px-3 py-2 text-xs text-destructive shadow-sm">
+              {streamError}
+            </div>
+          )}
+          {!streaming && globallyStreaming && (
+            <div className="mb-2 rounded-md border bg-background/95 px-3 py-2 text-xs text-muted-foreground shadow-sm">
+              A response is running in another chat.
+            </div>
+          )}
+          <div className="rounded-lg border bg-card/95 p-3 shadow-lg backdrop-blur">
+            <div className="flex items-end gap-2">
+              <Textarea
+                ref={inputRef}
+                value={input}
+                onChange={(event) =>
+                  setDrafts((current) => ({ ...current, [activeThread.id]: event.target.value }))
+                }
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+                    event.preventDefault();
+                    sendFromThread();
+                  }
+                }}
+                placeholder={`Message ${agentName}...`}
+                rows={3}
+                disabled={globallyStreaming}
+                className="max-h-48 min-h-[5rem] resize-none border-0 bg-transparent px-2 py-2 shadow-none focus-visible:ring-0"
+                aria-label={`Message ${agentName}`}
+              />
+              {streaming && (
+                <Button onClick={stop} variant="outline" size="icon" aria-label="Stop">
+                  <Square className="size-4" />
+                </Button>
+              )}
+            </div>
+            <div className="mt-2 flex items-center justify-between gap-3 px-1">
+              <div className="flex min-w-0 flex-wrap items-center gap-2">
+                <span className="truncate font-mono text-[11px] text-muted-foreground">
+                  {identityLabel}
+                </span>
+                <div className="flex shrink-0 items-center rounded-md border bg-background/80 p-0.5">
+                  {(["creator", "anonymous", "visitor"] as const).map((mode) => (
+                    <Button
+                      key={mode}
+                      type="button"
+                      variant={previewMode === mode ? "secondary" : "ghost"}
+                      size="sm"
+                      onClick={() => handlePreviewModeChange(mode)}
+                      disabled={
+                        globallyStreaming ||
+                        (mode === "anonymous" && !anonymousAllowed) ||
+                        (mode === "visitor" && !hasVisitorToken)
+                      }
+                      className="h-6 rounded-sm px-2 text-[11px]"
+                    >
+                      {CHAT_PREVIEW_MODE_LABELS[mode]}
+                    </Button>
+                  ))}
+                </div>
+                {hasVisitorToken && (
+                  <Button variant="ghost" size="sm" onClick={handleClearVisitor} className="h-7 px-2 text-xs">
+                    Clear visitor
+                  </Button>
+                )}
+              </div>
+              <div className="flex shrink-0 items-center gap-2 text-[11px] text-muted-foreground">
+                <span className="hidden sm:inline">Enter to send</span>
+                <span className="hidden sm:inline">Shift+Enter for a new line</span>
+                {messages.length > 0 && (
+                  <>
+                    <Button variant="ghost" size="icon" onClick={() => void handleCopyTranscript()} className="size-7" aria-label="Copy chat transcript">
+                      {copiedTranscript ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
+                    </Button>
+                    <Button variant="ghost" size="sm" onClick={() => create()} disabled={globallyStreaming} className="h-7 px-2 text-xs">
+                      <SquarePen className="mr-1.5 size-3.5" />New thread
+                    </Button>
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export function LegacyChatTab() {
   const { data, loading, error } = useDashboardContext();
   const { push } = useToast();
   const [messages, setMessages] = useState<Message[]>([]);

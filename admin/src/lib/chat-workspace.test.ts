@@ -159,6 +159,7 @@ describe("chat workspace drafts and navigation", () => {
       type: "thread.delete",
       threadId: "active",
       fallbackDraft: thread("unused"),
+      at: T2,
     });
     expect(next.activeThreadId).toBe("newer");
 
@@ -166,6 +167,7 @@ describe("chat workspace drafts and navigation", () => {
       type: "thread.delete",
       threadId: "only",
       fallbackDraft: createChatThread({ id: "fallback", previewMode: "anonymous", now: T2 }),
+      at: T2,
     });
     expect(lastDeleted.activeThreadId).toBe("fallback");
 
@@ -175,6 +177,7 @@ describe("chat workspace drafts and navigation", () => {
         type: "thread.delete",
         threadId: "running",
         fallbackDraft: thread("fallback"),
+        at: T2,
       }),
     ).toBe(running);
   });

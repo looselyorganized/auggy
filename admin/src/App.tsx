@@ -1,6 +1,11 @@
 import { lazy, Suspense, type ReactNode } from "react";
-import { NavLink, Navigate, Route, Routes } from "react-router-dom";
+import { NavLink, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { MessageSquare, Network, Plug } from "lucide-react";
+import { ChatThreadNav } from "@/components/admin/ChatThreadNav";
+import {
+  ChatWorkspaceProvider,
+  useChatWorkspace,
+} from "@/components/admin/ChatWorkspaceProvider";
 import { Header } from "@/components/layout/Header";
 import { ToastProvider } from "@/lib/toast";
 import { ConfirmProvider } from "@/lib/confirm";
@@ -36,63 +41,117 @@ export function App() {
     <ToastProvider>
       <ConfirmProvider>
         <DashboardProvider value={dashboard}>
-          <div className="flex h-full min-w-0 flex-col bg-background">
-            <div className="auggy-brand-stripe" />
-            <Header
+          <ChatWorkspaceProvider>
+            <ConsoleShell
               agentName={agentName}
               agentDescription={agentDescription}
               online={online}
               dashboard={dashboard.data ?? null}
             />
-            <div className="flex min-h-0 flex-1 overflow-hidden">
-              <aside className="hidden w-52 shrink-0 border-r bg-background/80 p-3 sm:flex sm:flex-col">
-                <nav className="grid gap-1" aria-label="Console sections">
-                  <ConsoleNavLink to="/chat" icon={<MessageSquare className="size-4" />}>
-                    Chat
-                  </ConsoleNavLink>
-                  <ConsoleNavLink to="/integrations" icon={<Plug className="size-4" />}>
-                    Integrations
-                  </ConsoleNavLink>
-                  <ConsoleNavLink to="/capabilities" icon={<Network className="size-4" />}>
-                    Capabilities
-                  </ConsoleNavLink>
-                </nav>
-                <ConsoleAgentSummary
-                  agentName={agentName}
-                  agentDescription={agentDescription}
-                  online={online}
-                />
-              </aside>
-              <nav
-                className="fixed inset-x-0 bottom-0 z-10 flex h-12 items-center justify-around border-t bg-background sm:hidden"
-                aria-label="Console sections"
-              >
-                <ConsoleNavLink to="/chat" icon={<MessageSquare className="size-4" />}>
-                  Chat
-                </ConsoleNavLink>
-                <ConsoleNavLink to="/integrations" icon={<Plug className="size-4" />}>
-                  Integrations
-                </ConsoleNavLink>
-                <ConsoleNavLink to="/capabilities" icon={<Network className="size-4" />}>
-                  Capabilities
-                </ConsoleNavLink>
-              </nav>
-              <main className="min-h-0 flex-1 overflow-hidden bg-muted/30 pb-12 sm:pb-0">
-                <Suspense fallback={<ConsoleRouteFallback />}>
-                  <Routes>
-                    <Route path="/" element={<Navigate to="/chat" replace />} />
-                    <Route path="/chat" element={<ChatTab />} />
-                    <Route path="/integrations" element={<IntegrationsTab />} />
-                    <Route path="/capabilities" element={<CapabilitiesTab />} />
-                    <Route path="*" element={<Navigate to="/chat" replace />} />
-                  </Routes>
-                </Suspense>
-              </main>
-            </div>
-          </div>
+          </ChatWorkspaceProvider>
         </DashboardProvider>
       </ConfirmProvider>
     </ToastProvider>
+  );
+}
+
+function ConsoleShell({
+  agentName,
+  agentDescription,
+  online,
+  dashboard,
+}: {
+  agentName: string;
+  agentDescription?: string;
+  online: "online" | "offline" | "unknown";
+  dashboard: ReturnType<typeof useDashboard>["data"];
+}) {
+  const { state, create, select } = useChatWorkspace();
+  const navigate = useNavigate();
+  const location = useLocation();
+  const threads = [...state.threads].sort((a, b) =>
+    a.createdAt === b.createdAt ? a.id.localeCompare(b.id) : b.createdAt.localeCompare(a.createdAt),
+  );
+  const openNewChat = () => {
+    create();
+    navigate("/chat");
+  };
+  const openChat = (threadId: string) => {
+    select(threadId);
+    navigate("/chat");
+  };
+
+  return (
+    <div className="flex h-full min-w-0 flex-col bg-background">
+      <div className="auggy-brand-stripe" />
+      <Header
+        agentName={agentName}
+        agentDescription={agentDescription}
+        online={online}
+        dashboard={dashboard}
+      />
+      {location.pathname.startsWith("/chat") && (
+        <div className="border-b bg-background px-2 py-1.5 sm:hidden">
+          <ChatThreadNav
+            compact
+            threads={threads}
+            activeId={state.activeThreadId}
+            onNew={openNewChat}
+            onSelect={openChat}
+          />
+        </div>
+      )}
+      <div className="flex min-h-0 flex-1 overflow-hidden">
+        <aside className="hidden w-52 shrink-0 border-r bg-background/80 p-3 sm:flex sm:flex-col">
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            <ChatThreadNav
+              threads={threads}
+              activeId={state.activeThreadId}
+              onNew={openNewChat}
+              onSelect={openChat}
+            />
+            <nav className="mt-3 grid gap-1 border-t pt-3" aria-label="Console sections">
+              <ConsoleNavLink to="/integrations" icon={<Plug className="size-4" />}>
+                Integrations
+              </ConsoleNavLink>
+              <ConsoleNavLink to="/capabilities" icon={<Network className="size-4" />}>
+                Capabilities
+              </ConsoleNavLink>
+            </nav>
+          </div>
+          <ConsoleAgentSummary
+            agentName={agentName}
+            agentDescription={agentDescription}
+            online={online}
+          />
+        </aside>
+        <nav
+          className="fixed inset-x-0 bottom-0 z-10 flex h-12 items-center justify-around border-t bg-background sm:hidden"
+          aria-label="Console sections"
+        >
+          <ConsoleNavLink to="/chat" icon={<MessageSquare className="size-4" />}>
+            Chat
+          </ConsoleNavLink>
+          <ConsoleNavLink to="/integrations" icon={<Plug className="size-4" />}>
+            Integrations
+          </ConsoleNavLink>
+          <ConsoleNavLink to="/capabilities" icon={<Network className="size-4" />}>
+            Capabilities
+          </ConsoleNavLink>
+        </nav>
+        <main className="min-h-0 flex-1 overflow-hidden bg-muted/30 pb-12 sm:pb-0">
+          <Suspense fallback={<ConsoleRouteFallback />}>
+            <Routes>
+              <Route path="/" element={<Navigate to="/chat" replace />} />
+              <Route path="/chat" element={<ChatTab />} />
+              <Route path="/integrations" element={<IntegrationsTab />} />
+              <Route path="/capabilities" element={<CapabilitiesTab />} />
+              <Route path="*" element={<Navigate to="/chat" replace />} />
+            </Routes>
+          </Suspense>
+        </main>
+      </div>
+    </div>
   );
 }
 
