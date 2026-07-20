@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Check, ChevronDown, ChevronRight, Copy, RotateCcw, Square } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, Copy, Square, SquarePen } from "lucide-react";
 import { MarkdownContent } from "@/components/admin/MarkdownContent";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -426,18 +426,17 @@ export function ChatTab() {
                   <>
                     <Button
                       variant="ghost"
-                      size="sm"
+                      size="icon"
                       onClick={() => void handleCopyTranscript()}
-                      className="h-7 shrink-0 px-2 text-xs"
+                      className="size-7 shrink-0"
                       aria-label="Copy chat transcript"
                       title="Copy chat transcript"
                     >
                       {copiedTranscript ? (
-                        <Check className="mr-1.5 size-3.5" />
+                        <Check className="size-3.5" />
                       ) : (
-                        <Copy className="mr-1.5 size-3.5" />
+                        <Copy className="size-3.5" />
                       )}
-                      Copy transcript
                     </Button>
                     <Button
                       variant="ghost"
@@ -446,7 +445,7 @@ export function ChatTab() {
                       disabled={streaming}
                       className="h-7 shrink-0 px-2 text-xs"
                     >
-                      <RotateCcw className="mr-1.5 size-3.5" />
+                      <SquarePen className="mr-1.5 size-3.5" />
                       New thread
                     </Button>
                   </>
