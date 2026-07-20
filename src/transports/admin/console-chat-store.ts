@@ -16,13 +16,17 @@ import type {
 } from "../../types";
 
 export const CONSOLE_CHAT_APPLICATION_ID = 0x43434854; // "CCHT"
-export const CONSOLE_CHAT_SCHEMA_VERSION = 1;
+export const CONSOLE_CHAT_SCHEMA_VERSION = 2;
+
+export const CONSOLE_CHAT_RESTART_INTERRUPTION =
+  "Response interrupted because the console server restarted.";
 
 const STORE_LABEL = "console chat store";
 const MAX_ID_LENGTH = 256;
 const MAX_TITLE_LENGTH = 80;
 const MAX_MODEL_FIELD_LENGTH = 512;
 const MAX_PEER_ID_LENGTH = 1_024;
+const MAX_RUN_ERROR_LENGTH = 4_096;
 const MAX_MESSAGE_CONTENT_LENGTH = 16 * 1024 * 1024;
 const MAX_TOOL_JSON_LENGTH = 16 * 1024 * 1024;
 const MAX_KERNEL_HISTORY_JSON_LENGTH = 64 * 1024 * 1024;
@@ -136,7 +140,32 @@ export interface UpdateConsoleChatThreadInput {
   lastReadAt?: number | null;
 }
 
+export interface BeginConsoleChatRunInput {
+  thread: CreateConsoleChatThreadInput;
+  peer: PeerIdentity;
+  runId: string;
+  userMessage: AppendConsoleChatMessageInput;
+  assistantMessage: AppendConsoleChatMessageInput;
+}
+
+export interface FinishConsoleChatRunInput {
+  status: "complete" | "error" | "interrupted";
+  content?: string;
+  toolCalls?: ConsoleChatToolCall[] | null;
+  error?: string | null;
+  unread: boolean;
+  updatedAt: number;
+}
+
+export interface AbandonConsoleChatRunInput {
+  status: "error" | "interrupted";
+  error: string;
+  unread: boolean;
+  updatedAt: number;
+}
+
 export interface ConsoleChatStore {
+  hasThread(threadId: string): boolean;
   listThreads(): ConsoleChatThreadSummary[];
   getThread(threadId: string): ConsoleChatThread | null;
   createThread(input: CreateConsoleChatThreadInput): ConsoleChatThread;
@@ -155,6 +184,25 @@ export interface ConsoleChatStore {
     messageId: string,
     input: UpdateConsoleChatMessageInput,
   ): ConsoleChatMessage | null;
+  beginRun(input: BeginConsoleChatRunInput): ConsoleChatThread;
+  updateRun(
+    threadId: string,
+    runId: string,
+    assistantMessageId: string,
+    input: UpdateConsoleChatMessageInput,
+  ): ConsoleChatMessage | null;
+  finishRun(
+    threadId: string,
+    runId: string,
+    assistantMessageId: string,
+    input: FinishConsoleChatRunInput,
+  ): ConsoleChatThread | null;
+  abandonRun(
+    threadId: string,
+    runId: string,
+    assistantMessageId: string,
+    input: AbandonConsoleChatRunInput,
+  ): ConsoleChatThread | null;
   renameThread(threadId: string, title: string, updatedAt: number): ConsoleChatThreadSummary | null;
   setThreadReadState(
     threadId: string,
@@ -226,12 +274,16 @@ const SCHEMA_STATEMENTS = [
     last_read_at      INTEGER CHECK(last_read_at IS NULL OR last_read_at >= 0),
     unread            INTEGER NOT NULL CHECK(unread IN (0, 1)),
     run_status        TEXT NOT NULL CHECK(run_status IN ('idle', 'streaming', 'complete', 'error', 'interrupted')),
+    active_run_id     TEXT CHECK(active_run_id IS NULL OR length(active_run_id) BETWEEN 1 AND 256),
+    active_assistant_message_id TEXT CHECK(active_assistant_message_id IS NULL OR length(active_assistant_message_id) BETWEEN 1 AND 256),
     CHECK((bound_peer_id IS NULL AND owner_peer_kind IS NULL AND owner_trust_level IS NULL AND owner_public_substate IS NULL) OR
           (bound_peer_id IS NOT NULL AND owner_peer_kind IS NOT NULL AND owner_trust_level IS NOT NULL AND
            ((owner_trust_level = 'public' AND owner_public_substate IS NOT NULL) OR
             (owner_trust_level != 'public' AND owner_public_substate IS NULL)))),
     CHECK((model_id IS NULL AND model_display IS NULL AND model_provider IS NULL) OR
-          (model_id IS NOT NULL AND model_display IS NOT NULL))
+          (model_id IS NOT NULL AND model_display IS NOT NULL)),
+    CHECK((run_status = 'streaming' AND active_run_id IS NOT NULL AND active_assistant_message_id IS NOT NULL) OR
+          (run_status != 'streaming' AND active_run_id IS NULL AND active_assistant_message_id IS NULL))
   )`,
   `CREATE INDEX IF NOT EXISTS idx_console_chat_threads_updated
     ON console_chat_threads(updated_at DESC, id ASC)`,
@@ -300,6 +352,8 @@ interface ThreadRow {
   last_read_at: unknown;
   unread: unknown;
   run_status: unknown;
+  active_run_id: unknown;
+  active_assistant_message_id: unknown;
 }
 
 interface MessageRow {
@@ -345,19 +399,36 @@ export function createConsoleChatStore(options: {
   });
   const db = database.db;
 
-  // A process exit cannot leave an attached stream. Preserve its transcript,
-  // but make the terminal state truthful before serving any reads.
+  // A process exit cannot leave an attached stream. Preserve and annotate its
+  // partial transcript, then make the terminal state truthful before serving
+  // any reads. Both updates commit together so no reader can observe a
+  // terminal thread without its interrupted assistant placeholder.
   const openedAt = assertTimestamp(now(), "now()");
-  db.run(
-    `UPDATE console_chat_threads
-       SET run_status = 'interrupted', updated_at = MAX(updated_at, ?)
-     WHERE run_status = 'streaming'`,
-    [openedAt],
-  );
+  db.transaction(() => {
+    db.run(
+      `UPDATE console_chat_messages
+          SET error = COALESCE(error, ?), updated_at = MAX(updated_at, ?)
+        WHERE role = 'assistant' AND EXISTS (
+          SELECT 1 FROM console_chat_threads AS thread
+           WHERE thread.id = console_chat_messages.thread_id
+             AND thread.run_status = 'streaming'
+             AND thread.active_assistant_message_id = console_chat_messages.id
+        )`,
+      [CONSOLE_CHAT_RESTART_INTERRUPTION, openedAt],
+    );
+    db.run(
+      `UPDATE console_chat_threads
+          SET run_status = 'interrupted', updated_at = MAX(updated_at, ?),
+              active_run_id = NULL, active_assistant_message_id = NULL
+        WHERE run_status = 'streaming'`,
+      [openedAt],
+    );
+  })();
 
   const listThreadsStatement = db.prepare(
     `SELECT * FROM console_chat_threads ORDER BY updated_at DESC, id ASC`,
   );
+  const hasThreadStatement = db.prepare(`SELECT 1 AS found FROM console_chat_threads WHERE id = ?`);
   const getThreadStatement = db.prepare(`SELECT * FROM console_chat_threads WHERE id = ?`);
   const getMessagesStatement = db.prepare(
     `SELECT id, sequence, role, content, tool_calls_json, error, created_at, updated_at
@@ -377,6 +448,11 @@ export function createConsoleChatStore(options: {
   const getHistoryStatement = db.prepare(
     `SELECT history_json, updated_at FROM console_chat_kernel_history WHERE thread_id = ?`,
   );
+
+  function hasThread(threadId: string): boolean {
+    const id = assertIdentifier(threadId, "threadId");
+    return hasThreadStatement.get(id) !== null;
+  }
 
   function listThreads(): ConsoleChatThreadSummary[] {
     return (listThreadsStatement.all() as ThreadRow[]).map(rowToThread);
@@ -444,6 +520,9 @@ export function createConsoleChatStore(options: {
     const existingRow = getThreadStatement.get(value.id) as ThreadRow | null;
     if (existingRow) {
       const existing = rowToThread(existingRow);
+      if (existing.runStatus === "streaming") {
+        throw new Error(`${STORE_LABEL}: streaming thread must be changed through its active run`);
+      }
       assertTimestampNotBefore(value.updatedAt, existing.updatedAt, "thread.updatedAt");
       if (hasMessages(value.id)) {
         if (
@@ -489,6 +568,9 @@ export function createConsoleChatStore(options: {
     const existingRow = getThreadStatement.get(id) as ThreadRow | null;
     if (!existingRow) return null;
     const existing = rowToThread(existingRow);
+    if (existing.runStatus === "streaming") {
+      throw new Error(`${STORE_LABEL}: streaming thread must be changed through its active run`);
+    }
     const updatedAt = assertTimestamp(input.updatedAt, "thread.updatedAt");
     if (updatedAt < existing.createdAt)
       throw new Error(`${STORE_LABEL}: updatedAt predates thread`);
@@ -500,6 +582,9 @@ export function createConsoleChatStore(options: {
         : normalizeOwner(input.owner, id, existing.previewMode);
     const runStatus = input.runStatus ?? existing.runStatus;
     assertRunStatus(runStatus);
+    if (runStatus === "streaming") {
+      throw new Error(`${STORE_LABEL}: streaming state must be started with beginRun`);
+    }
     const unread = input.unread ?? existing.unread;
     const lastReadAt =
       input.lastReadAt === undefined
@@ -569,6 +654,9 @@ export function createConsoleChatStore(options: {
       const threadRow = getThreadStatement.get(id) as ThreadRow | null;
       if (!threadRow) throw new Error(`${STORE_LABEL}: thread not found: ${id}`);
       const storedThread = rowToThread(threadRow);
+      if (storedThread.runStatus === "streaming") {
+        throw new Error(`${STORE_LABEL}: streaming thread must be changed through its active run`);
+      }
       if (storedThread.owner === null) {
         throw new Error(`${STORE_LABEL}: populated thread requires an identified owner`);
       }
@@ -596,38 +684,279 @@ export function createConsoleChatStore(options: {
   ): ConsoleChatMessage | null {
     const thread = assertIdentifier(threadId, "threadId");
     const message = assertIdentifier(messageId, "messageId");
+    const threadRow = getThreadStatement.get(thread) as ThreadRow | null;
+    if (threadRow && rowToThread(threadRow).runStatus === "streaming") {
+      throw new Error(`${STORE_LABEL}: streaming thread must be changed through its active run`);
+    }
     const existingRow = getMessageStatement.get(thread, message) as MessageRow | null;
     if (!existingRow) return null;
     const existing = rowToMessage(existingRow);
-    const updatedAt = assertTimestamp(input.updatedAt, "message.updatedAt");
-    if (updatedAt < existing.createdAt)
-      throw new Error(`${STORE_LABEL}: updatedAt predates message`);
-    assertTimestampNotBefore(updatedAt, existing.updatedAt, "message.updatedAt");
-    const content =
-      input.content === undefined
-        ? existing.content
-        : boundedString(input.content, MAX_MESSAGE_CONTENT_LENGTH, "message.content", true);
-    const toolCalls =
-      input.toolCalls === undefined ? existing.toolCalls : normalizeToolCalls(input.toolCalls);
-    const error =
-      input.error === undefined
-        ? existing.error
-        : nullableBoundedString(input.error, MAX_MESSAGE_CONTENT_LENGTH, "message.error", true);
+    const update = normalizeMessageUpdate(existing, input);
 
     const transaction = db.transaction(() => {
       db.run(
         `UPDATE console_chat_messages
            SET content = ?, tool_calls_json = ?, error = ?, updated_at = ?
          WHERE thread_id = ? AND id = ?`,
-        [content, serializeToolCalls(toolCalls), error, updatedAt, thread, message],
+        [
+          update.content,
+          serializeToolCalls(update.toolCalls),
+          update.error,
+          update.updatedAt,
+          thread,
+          message,
+        ],
       );
       db.run(`UPDATE console_chat_threads SET updated_at = MAX(updated_at, ?) WHERE id = ?`, [
-        updatedAt,
+        update.updatedAt,
         thread,
       ]);
     });
     transaction();
     return requiredMessage(thread, message);
+  }
+
+  function beginRun(input: BeginConsoleChatRunInput): ConsoleChatThread {
+    const runId = assertIdentifier(input.runId, "run.id");
+    const expectedMode = previewModeForPeer(input.peer, input.thread.id);
+    if (input.thread.previewMode !== expectedMode) {
+      throw new Error(`${STORE_LABEL}: kernel history access denied`);
+    }
+    const owner = normalizeOwner(
+      consoleChatOwnerFromPeer(input.peer),
+      input.thread.id,
+      expectedMode,
+    );
+    if (owner === null) throw new Error(`${STORE_LABEL}: kernel history access denied`);
+    const thread = normalizeThreadInput({
+      ...input.thread,
+      owner,
+      // A streaming state is installed only after both messages exist.
+      runStatus: "idle",
+    });
+    const userMessage = normalizeMessageInput(input.userMessage);
+    const assistantMessage = normalizeMessageInput(input.assistantMessage);
+    if (userMessage.role !== "user") {
+      throw new Error(`${STORE_LABEL}: run user message must have role user`);
+    }
+    if (assistantMessage.role !== "assistant") {
+      throw new Error(`${STORE_LABEL}: run assistant message must have role assistant`);
+    }
+    if (userMessage.id === assistantMessage.id) {
+      throw new Error(`${STORE_LABEL}: run message ids must be unique`);
+    }
+    if (assistantMessage.createdAt < userMessage.createdAt) {
+      throw new Error(`${STORE_LABEL}: assistant message predates user message`);
+    }
+
+    db.transaction(() => {
+      const initialRow = getThreadStatement.get(thread.id) as ThreadRow | null;
+      if (!initialRow) {
+        insertThread({
+          ...input.thread,
+          owner,
+          runStatus: "idle",
+        });
+      } else {
+        claimOrAssertKernelHistoryOwner(thread.id, input.peer);
+      }
+
+      const storedRow = getThreadStatement.get(thread.id) as ThreadRow | null;
+      if (!storedRow) throw new Error(`${STORE_LABEL}: thread disappeared: ${thread.id}`);
+      const stored = rowToThread(storedRow);
+      if (stored.runStatus === "streaming") {
+        throw new Error(`${STORE_LABEL}: thread already has a streaming run`);
+      }
+      if (userMessage.createdAt < stored.createdAt) {
+        throw new Error(`${STORE_LABEL}: message timestamp predates thread`);
+      }
+
+      const populated = hasMessages(thread.id);
+      if (populated && thread.model !== null && !sameModel(thread.model, stored.model)) {
+        throw new Error(`${STORE_LABEL}: populated thread identity and model are immutable`);
+      }
+      const model = populated || thread.model === null ? stored.model : thread.model;
+      const next = getNextSequenceStatement.get(thread.id) as { sequence?: unknown } | null;
+      if (!Number.isSafeInteger(next?.sequence) || (next?.sequence as number) < 0) {
+        throw new Error(`${STORE_LABEL}: invalid message sequence`);
+      }
+      const sequence = next!.sequence as number;
+      insertMessage(thread.id, sequence, userMessage);
+      insertMessage(thread.id, sequence + 1, assistantMessage);
+      const activityAt = Math.max(
+        stored.updatedAt,
+        userMessage.updatedAt,
+        assistantMessage.updatedAt,
+      );
+      db.run(
+        `UPDATE console_chat_threads
+            SET model_provider = ?, model_id = ?, model_display = ?,
+                updated_at = ?, unread = ?, run_status = 'streaming',
+                active_run_id = ?, active_assistant_message_id = ?
+          WHERE id = ?`,
+        [
+          model?.provider ?? null,
+          model?.id ?? null,
+          model?.displayName ?? null,
+          activityAt,
+          thread.unread ? 1 : 0,
+          runId,
+          assistantMessage.id,
+          thread.id,
+        ],
+      );
+    })();
+
+    return requiredThread(thread.id);
+  }
+
+  function lockActiveRun(threadId: string, runId: string, assistantMessageId: string): boolean {
+    return (
+      db.run(
+        `UPDATE console_chat_threads SET active_run_id = active_run_id
+          WHERE id = ? AND run_status = 'streaming'
+            AND active_run_id = ? AND active_assistant_message_id = ?`,
+        [threadId, runId, assistantMessageId],
+      ).changes === 1
+    );
+  }
+
+  function writeMessageUpdate(
+    threadId: string,
+    messageId: string,
+    update: ReturnType<typeof normalizeMessageUpdate>,
+  ): void {
+    const result = db.run(
+      `UPDATE console_chat_messages
+          SET content = ?, tool_calls_json = ?, error = ?, updated_at = ?
+        WHERE thread_id = ? AND id = ? AND role = 'assistant'`,
+      [
+        update.content,
+        serializeToolCalls(update.toolCalls),
+        update.error,
+        update.updatedAt,
+        threadId,
+        messageId,
+      ],
+    );
+    if (result.changes !== 1) {
+      throw new Error(`${STORE_LABEL}: active assistant message is missing`);
+    }
+  }
+
+  function updateRun(
+    threadId: string,
+    runId: string,
+    assistantMessageId: string,
+    input: UpdateConsoleChatMessageInput,
+  ): ConsoleChatMessage | null {
+    const thread = assertIdentifier(threadId, "threadId");
+    const run = assertIdentifier(runId, "run.id");
+    const assistant = assertIdentifier(assistantMessageId, "assistantMessageId");
+    return db.transaction(() => {
+      if (!lockActiveRun(thread, run, assistant)) return null;
+      const row = getMessageStatement.get(thread, assistant) as MessageRow | null;
+      if (!row) throw new Error(`${STORE_LABEL}: active assistant message is missing`);
+      const update = normalizeMessageUpdate(rowToMessage(row), input);
+      writeMessageUpdate(thread, assistant, update);
+      db.run(`UPDATE console_chat_threads SET updated_at = MAX(updated_at, ?) WHERE id = ?`, [
+        update.updatedAt,
+        thread,
+      ]);
+      return requiredMessage(thread, assistant);
+    })();
+  }
+
+  function finishRun(
+    threadId: string,
+    runId: string,
+    assistantMessageId: string,
+    input: FinishConsoleChatRunInput,
+  ): ConsoleChatThread | null {
+    const thread = assertIdentifier(threadId, "threadId");
+    const run = assertIdentifier(runId, "run.id");
+    const assistant = assertIdentifier(assistantMessageId, "assistantMessageId");
+    assertTerminalRunStatus(input.status);
+    if (typeof input.unread !== "boolean") {
+      throw new Error(`${STORE_LABEL}: unread must be a boolean`);
+    }
+    return db.transaction(() => {
+      if (!lockActiveRun(thread, run, assistant)) return null;
+      const row = getMessageStatement.get(thread, assistant) as MessageRow | null;
+      if (!row) throw new Error(`${STORE_LABEL}: active assistant message is missing`);
+      const update = normalizeMessageUpdate(rowToMessage(row), input);
+      writeMessageUpdate(thread, assistant, update);
+      db.run(
+        `UPDATE console_chat_threads
+            SET updated_at = MAX(updated_at, ?), unread = ?,
+                last_read_at = CASE
+                  WHEN ? = 0 THEN MAX(COALESCE(last_read_at, 0), ?)
+                  ELSE last_read_at
+                END,
+                run_status = ?, active_run_id = NULL, active_assistant_message_id = NULL
+          WHERE id = ?`,
+        [
+          update.updatedAt,
+          input.unread ? 1 : 0,
+          input.unread ? 1 : 0,
+          update.updatedAt,
+          input.status,
+          thread,
+        ],
+      );
+      return requiredThread(thread);
+    })();
+  }
+
+  function abandonRun(
+    threadId: string,
+    runId: string,
+    assistantMessageId: string,
+    input: AbandonConsoleChatRunInput,
+  ): ConsoleChatThread | null {
+    const thread = assertIdentifier(threadId, "threadId");
+    const run = assertIdentifier(runId, "run.id");
+    const assistant = assertIdentifier(assistantMessageId, "assistantMessageId");
+    if (input.status !== "error" && input.status !== "interrupted") {
+      throw new Error(`${STORE_LABEL}: invalid abandoned run status`);
+    }
+    if (typeof input.unread !== "boolean") {
+      throw new Error(`${STORE_LABEL}: unread must be a boolean`);
+    }
+    const error = boundedString(input.error, MAX_RUN_ERROR_LENGTH, "run.error");
+    const updatedAt = assertTimestamp(input.updatedAt, "run.updatedAt");
+
+    return db.transaction(() => {
+      if (!lockActiveRun(thread, run, assistant)) return null;
+      const row = getMessageStatement.get(thread, assistant) as MessageRow | null;
+      if (!row) throw new Error(`${STORE_LABEL}: active assistant message is missing`);
+      const existing = rowToMessage(row);
+      if (updatedAt < existing.createdAt) {
+        throw new Error(`${STORE_LABEL}: updatedAt predates message`);
+      }
+      assertTimestampNotBefore(updatedAt, existing.updatedAt, "run.updatedAt");
+
+      const messageResult = db.run(
+        `UPDATE console_chat_messages SET error = ?, updated_at = ?
+          WHERE thread_id = ? AND id = ? AND role = 'assistant'`,
+        [error, updatedAt, thread, assistant],
+      );
+      if (messageResult.changes !== 1) {
+        throw new Error(`${STORE_LABEL}: active assistant message is missing`);
+      }
+      db.run(
+        `UPDATE console_chat_threads
+            SET updated_at = MAX(updated_at, ?), unread = ?,
+                last_read_at = CASE
+                  WHEN ? = 0 THEN MAX(COALESCE(last_read_at, 0), ?)
+                  ELSE last_read_at
+                END,
+                run_status = ?, active_run_id = NULL, active_assistant_message_id = NULL
+          WHERE id = ?`,
+        [updatedAt, input.unread ? 1 : 0, input.unread ? 1 : 0, updatedAt, input.status, thread],
+      );
+      return requiredThread(thread);
+    })();
   }
 
   function renameThread(
@@ -636,7 +965,7 @@ export function createConsoleChatStore(options: {
     updatedAt: number,
   ): ConsoleChatThreadSummary | null {
     const id = assertIdentifier(threadId, "threadId");
-    const normalizedTitle = boundedString(title.trim(), MAX_TITLE_LENGTH, "thread.title");
+    const normalizedTitle = boundedCodePointString(title.trim(), MAX_TITLE_LENGTH, "thread.title");
     const timestamp = assertTimestamp(updatedAt, "thread.updatedAt");
     const existingRow = getThreadStatement.get(id) as ThreadRow | null;
     if (!existingRow) return null;
@@ -673,9 +1002,16 @@ export function createConsoleChatStore(options: {
 
   function deleteThread(threadId: string): boolean {
     const id = assertIdentifier(threadId, "threadId");
-    // Bun/SQLite includes rows removed by FK cascades in `changes` on some
-    // versions, so this is deliberately a positive check rather than `=== 1`.
-    return db.run(`DELETE FROM console_chat_threads WHERE id = ?`, [id]).changes > 0;
+    return db.transaction(() => {
+      const row = getThreadStatement.get(id) as ThreadRow | null;
+      if (!row) return false;
+      if (rowToThread(row).runStatus === "streaming") {
+        throw new Error(`${STORE_LABEL}: cannot delete a streaming thread`);
+      }
+      // Bun/SQLite includes rows removed by FK cascades in `changes` on some
+      // versions, so this is deliberately a positive check rather than `=== 1`.
+      return db.run(`DELETE FROM console_chat_threads WHERE id = ?`, [id]).changes > 0;
+    })();
   }
 
   function loadKernelHistory(threadId: string): KernelMessage[] | null {
@@ -818,6 +1154,7 @@ export function createConsoleChatStore(options: {
   }
 
   return {
+    hasThread,
     listThreads,
     getThread,
     createThread,
@@ -826,6 +1163,10 @@ export function createConsoleChatStore(options: {
     updateThread,
     appendMessage,
     updateMessage,
+    beginRun,
+    updateRun,
+    finishRun,
+    abandonRun,
     renameThread,
     setThreadReadState,
     deleteThread,
@@ -848,11 +1189,14 @@ function normalizeThreadInput(input: CreateConsoleChatThreadInput) {
   assertPreviewMode(input.previewMode);
   const runStatus = input.runStatus ?? "idle";
   assertRunStatus(runStatus);
+  if (runStatus === "streaming") {
+    throw new Error(`${STORE_LABEL}: streaming state must be started with beginRun`);
+  }
   const unread = input.unread ?? false;
   if (typeof unread !== "boolean") throw new Error(`${STORE_LABEL}: unread must be a boolean`);
   return {
     id,
-    title: boundedString(input.title.trim(), MAX_TITLE_LENGTH, "thread.title"),
+    title: boundedCodePointString(input.title.trim(), MAX_TITLE_LENGTH, "thread.title"),
     previewMode: input.previewMode,
     owner: normalizeOwner(input.owner ?? null, id, input.previewMode),
     model: normalizeModel(input.model ?? null),
@@ -905,11 +1249,48 @@ function normalizeMessageInput(input: AppendConsoleChatMessageInput) {
   };
 }
 
+function normalizeMessageUpdate(
+  existing: ConsoleChatMessage,
+  input: UpdateConsoleChatMessageInput,
+) {
+  const updatedAt = assertTimestamp(input.updatedAt, "message.updatedAt");
+  if (updatedAt < existing.createdAt) {
+    throw new Error(`${STORE_LABEL}: updatedAt predates message`);
+  }
+  assertTimestampNotBefore(updatedAt, existing.updatedAt, "message.updatedAt");
+  return {
+    content:
+      input.content === undefined
+        ? existing.content
+        : boundedString(input.content, MAX_MESSAGE_CONTENT_LENGTH, "message.content", true),
+    toolCalls:
+      input.toolCalls === undefined ? existing.toolCalls : normalizeToolCalls(input.toolCalls),
+    error:
+      input.error === undefined
+        ? existing.error
+        : nullableBoundedString(input.error, MAX_MESSAGE_CONTENT_LENGTH, "message.error", true),
+    updatedAt,
+  };
+}
+
 function rowToThread(row: ThreadRow): ConsoleChatThreadSummary {
   const id = assertIdentifier(row.id, "stored thread.id");
-  const title = boundedString(row.title, MAX_TITLE_LENGTH, "stored thread.title");
+  const title = boundedCodePointString(row.title, MAX_TITLE_LENGTH, "stored thread.title");
   assertPreviewMode(row.preview_mode);
   assertRunStatus(row.run_status);
+  const activeRunId =
+    row.active_run_id === null ? null : assertIdentifier(row.active_run_id, "stored active run id");
+  const activeAssistantMessageId =
+    row.active_assistant_message_id === null
+      ? null
+      : assertIdentifier(row.active_assistant_message_id, "stored active assistant message id");
+  if (
+    (row.run_status === "streaming" &&
+      (activeRunId === null || activeAssistantMessageId === null)) ||
+    (row.run_status !== "streaming" && (activeRunId !== null || activeAssistantMessageId !== null))
+  ) {
+    throw new Error(`${STORE_LABEL}: invalid stored active run state`);
+  }
   const createdAt = assertTimestamp(row.created_at, "stored thread.createdAt");
   const updatedAt = assertTimestamp(row.updated_at, "stored thread.updatedAt");
   if (updatedAt < createdAt)
@@ -1236,6 +1617,15 @@ function boundedString(
   return value;
 }
 
+function boundedCodePointString(value: unknown, maxLength: number, field: string): string {
+  if (typeof value !== "string") throw new Error(`${STORE_LABEL}: ${field} must be a string`);
+  const length = Array.from(value).length;
+  if (length === 0 || length > maxLength) {
+    throw new Error(`${STORE_LABEL}: ${field} has an invalid length`);
+  }
+  return value;
+}
+
 function nullableBoundedString(
   value: unknown,
   maxLength: number,
@@ -1272,6 +1662,14 @@ function assertRunStatus(value: unknown): asserts value is ConsoleChatRunStatus 
     value !== "interrupted"
   ) {
     throw new Error(`${STORE_LABEL}: invalid run status`);
+  }
+}
+
+function assertTerminalRunStatus(
+  value: unknown,
+): asserts value is FinishConsoleChatRunInput["status"] {
+  if (value !== "complete" && value !== "error" && value !== "interrupted") {
+    throw new Error(`${STORE_LABEL}: invalid terminal run status`);
   }
 }
 

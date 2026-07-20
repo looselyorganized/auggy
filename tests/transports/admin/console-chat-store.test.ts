@@ -182,11 +182,11 @@ describe("console chat SQLite store", () => {
 
     expect(
       store.updateThread("thread-1", {
-        runStatus: "streaming",
+        runStatus: "complete",
         unread: true,
         updatedAt: 1_600,
       }),
-    ).toMatchObject({ owner: THREAD.owner, runStatus: "streaming", unread: true });
+    ).toMatchObject({ owner: THREAD.owner, runStatus: "complete", unread: true });
     expect(store.setThreadReadState("thread-1", false, 1_700)).toMatchObject({
       unread: false,
       lastReadAt: 1_700,
@@ -316,7 +316,13 @@ describe("console chat SQLite store", () => {
 
   it("converts stale streaming threads to interrupted when reopened", async () => {
     const { dbPath, store } = await openStore(2_000);
-    store.createThread({ ...THREAD, runStatus: "streaming" });
+    store.beginRun({
+      thread: { ...THREAD, runStatus: "streaming" },
+      peer: CREATOR_PEER,
+      runId: "stale-run",
+      userMessage: USER_MESSAGE,
+      assistantMessage: ASSISTANT_MESSAGE,
+    });
     store.close();
     stores.pop();
 
@@ -325,6 +331,13 @@ describe("console chat SQLite store", () => {
     expect(reopened.getThread(THREAD.id)).toMatchObject({
       runStatus: "interrupted",
       updatedAt: 5_000,
+      messages: [
+        expect.objectContaining({ id: USER_MESSAGE.id }),
+        expect.objectContaining({
+          id: ASSISTANT_MESSAGE.id,
+          error: "Response interrupted because the console server restarted.",
+        }),
+      ],
     });
   });
 
@@ -552,5 +565,259 @@ describe("console chat SQLite store", () => {
     ).rejects.toThrow(/invalid kernel history snapshot/);
     expect(store.getThread(THREAD.id)?.owner).toBeNull();
     expect(store.loadKernelHistory(THREAD.id)).toBeNull();
+  });
+
+  it("begins a run atomically with a claimed owner and paired transcript placeholders", async () => {
+    const { store } = await openStore();
+    expect(store.hasThread(THREAD.id)).toBe(false);
+
+    const begun = store.beginRun({
+      thread: { ...THREAD, owner: null, runStatus: "streaming" },
+      peer: CREATOR_PEER,
+      runId: "run-1",
+      userMessage: USER_MESSAGE,
+      assistantMessage: ASSISTANT_MESSAGE,
+    });
+    expect(store.hasThread(THREAD.id)).toBe(true);
+    expect(begun).toMatchObject({
+      id: THREAD.id,
+      owner: THREAD.owner,
+      runStatus: "streaming",
+      messages: [
+        { id: USER_MESSAGE.id, role: "user", sequence: 0 },
+        { id: ASSISTANT_MESSAGE.id, role: "assistant", sequence: 1 },
+      ],
+    });
+
+    expect(() =>
+      store.beginRun({
+        thread: THREAD,
+        peer: CREATOR_PEER,
+        runId: "run-2",
+        userMessage: { ...USER_MESSAGE, id: "another-user", createdAt: 1_200 },
+        assistantMessage: {
+          ...ASSISTANT_MESSAGE,
+          id: "another-assistant",
+          createdAt: 1_201,
+        },
+      }),
+    ).toThrow(/already has a streaming run/);
+    expect(store.getThread(THREAD.id)?.messages).toHaveLength(2);
+  });
+
+  it("updates and finishes only the exact active run and assistant message", async () => {
+    const { store } = await openStore();
+    store.beginRun({
+      thread: THREAD,
+      peer: CREATOR_PEER,
+      runId: "run-1",
+      userMessage: USER_MESSAGE,
+      assistantMessage: ASSISTANT_MESSAGE,
+    });
+
+    expect(
+      store.updateRun(THREAD.id, "stale-run", ASSISTANT_MESSAGE.id, {
+        content: "must not persist",
+        updatedAt: 1_200,
+      }),
+    ).toBeNull();
+    expect(
+      store.updateRun(THREAD.id, "run-1", "stale-assistant", {
+        content: "must not persist",
+        updatedAt: 1_200,
+      }),
+    ).toBeNull();
+
+    expect(
+      store.updateRun(THREAD.id, "run-1", ASSISTANT_MESSAGE.id, {
+        content: "Partial response",
+        toolCalls: [{ id: "call-1", name: "lookup", status: "completed", result: "ok" }],
+        updatedAt: 1_200,
+      }),
+    ).toMatchObject({ content: "Partial response", toolCalls: [{ status: "completed" }] });
+    expect(
+      store.finishRun(THREAD.id, "run-1", ASSISTANT_MESSAGE.id, {
+        status: "complete",
+        content: "Final response",
+        error: null,
+        unread: true,
+        updatedAt: 1_300,
+      }),
+    ).toMatchObject({
+      runStatus: "complete",
+      unread: true,
+      messages: [
+        expect.objectContaining({ id: USER_MESSAGE.id }),
+        expect.objectContaining({ id: ASSISTANT_MESSAGE.id, content: "Final response" }),
+      ],
+    });
+    expect(
+      store.updateRun(THREAD.id, "run-1", ASSISTANT_MESSAGE.id, {
+        content: "late corruption",
+        updatedAt: 1_400,
+      }),
+    ).toBeNull();
+    expect(store.getThread(THREAD.id)?.messages[1]?.content).toBe("Final response");
+  });
+
+  it("rejects active-run deletion and permits deletion after a terminal finish", async () => {
+    const { store } = await openStore();
+    store.beginRun({
+      thread: THREAD,
+      peer: CREATOR_PEER,
+      runId: "run-1",
+      userMessage: USER_MESSAGE,
+      assistantMessage: ASSISTANT_MESSAGE,
+    });
+
+    expect(() => store.deleteThread(THREAD.id)).toThrow(/cannot delete a streaming thread/);
+    expect(store.hasThread(THREAD.id)).toBe(true);
+    store.finishRun(THREAD.id, "run-1", ASSISTANT_MESSAGE.id, {
+      status: "interrupted",
+      error: "Stopped",
+      unread: false,
+      updatedAt: 1_300,
+    });
+    expect(store.deleteThread(THREAD.id)).toBe(true);
+  });
+
+  it("abandons an exact active run after an oversized update, then permits retry and deletion", async () => {
+    const { store } = await openStore();
+    store.beginRun({
+      thread: THREAD,
+      peer: CREATOR_PEER,
+      runId: "run-1",
+      userMessage: USER_MESSAGE,
+      assistantMessage: ASSISTANT_MESSAGE,
+    });
+    const validTools = [
+      { id: "call-1", name: "lookup", status: "completed" as const, result: "safe" },
+    ];
+    store.updateRun(THREAD.id, "run-1", ASSISTANT_MESSAGE.id, {
+      content: "Last valid partial",
+      toolCalls: validTools,
+      updatedAt: 1_200,
+    });
+
+    const oversizedContent = "x".repeat(16 * 1024 * 1024 + 1);
+    expect(() =>
+      store.updateRun(THREAD.id, "run-1", ASSISTANT_MESSAGE.id, {
+        content: oversizedContent,
+        updatedAt: 1_300,
+      }),
+    ).toThrow(/invalid length/);
+    expect(() => store.deleteThread(THREAD.id)).toThrow(/cannot delete a streaming thread/);
+
+    const abandoned = store.abandonRun(THREAD.id, "run-1", ASSISTANT_MESSAGE.id, {
+      status: "error",
+      error: "The response could not be persisted.",
+      unread: true,
+      updatedAt: 1_300,
+    });
+    expect(abandoned).toMatchObject({
+      runStatus: "error",
+      unread: true,
+      messages: [
+        expect.objectContaining({ id: USER_MESSAGE.id }),
+        expect.objectContaining({
+          id: ASSISTANT_MESSAGE.id,
+          content: "Last valid partial",
+          toolCalls: validTools,
+          error: "The response could not be persisted.",
+        }),
+      ],
+    });
+    expect(
+      store.abandonRun(THREAD.id, "run-1", ASSISTANT_MESSAGE.id, {
+        status: "interrupted",
+        error: "stale",
+        unread: false,
+        updatedAt: 1_301,
+      }),
+    ).toBeNull();
+
+    store.beginRun({
+      thread: { ...THREAD, updatedAt: 1_400 },
+      peer: CREATOR_PEER,
+      runId: "run-2",
+      userMessage: { ...USER_MESSAGE, id: "retry-user", createdAt: 1_400 },
+      assistantMessage: { ...ASSISTANT_MESSAGE, id: "retry-assistant", createdAt: 1_401 },
+    });
+    store.finishRun(THREAD.id, "run-2", "retry-assistant", {
+      status: "complete",
+      content: "Retry succeeded",
+      unread: false,
+      updatedAt: 1_500,
+    });
+    expect(store.deleteThread(THREAD.id)).toBe(true);
+  });
+
+  it("bounds abandon errors without releasing the active run", async () => {
+    const { store } = await openStore();
+    store.beginRun({
+      thread: THREAD,
+      peer: CREATOR_PEER,
+      runId: "run-1",
+      userMessage: USER_MESSAGE,
+      assistantMessage: ASSISTANT_MESSAGE,
+    });
+
+    expect(() =>
+      store.abandonRun(THREAD.id, "run-1", ASSISTANT_MESSAGE.id, {
+        status: "error",
+        error: "x".repeat(4_097),
+        unread: true,
+        updatedAt: 1_300,
+      }),
+    ).toThrow(/run\.error has an invalid length/);
+    expect(store.getThread(THREAD.id)?.runStatus).toBe("streaming");
+
+    expect(
+      store.abandonRun(THREAD.id, "run-1", ASSISTANT_MESSAGE.id, {
+        status: "interrupted",
+        error: "Stopped safely.",
+        unread: false,
+        updatedAt: 1_300,
+      }),
+    ).toMatchObject({ runStatus: "interrupted", unread: false });
+  });
+
+  it("preserves populated thread metadata and treats a null run model as unspecified", async () => {
+    const { store } = await openStore();
+    store.createThreadWithMessages(THREAD, [USER_MESSAGE, ASSISTANT_MESSAGE]);
+
+    expect(() =>
+      store.beginRun({
+        thread: {
+          ...THREAD,
+          title: "A stale client title",
+          model: { provider: "other", id: "changed", displayName: "Changed" },
+          updatedAt: 1_300,
+        },
+        peer: CREATOR_PEER,
+        runId: "model-mismatch",
+        userMessage: { ...USER_MESSAGE, id: "user-2", createdAt: 1_300 },
+        assistantMessage: { ...ASSISTANT_MESSAGE, id: "assistant-2", createdAt: 1_301 },
+      }),
+    ).toThrow(/identity and model are immutable/);
+
+    const begun = store.beginRun({
+      thread: { ...THREAD, title: "A stale client title", model: null, updatedAt: 1_300 },
+      peer: CREATOR_PEER,
+      runId: "run-2",
+      userMessage: { ...USER_MESSAGE, id: "user-2", createdAt: 1_300 },
+      assistantMessage: { ...ASSISTANT_MESSAGE, id: "assistant-2", createdAt: 1_301 },
+    });
+    expect(begun.title).toBe(THREAD.title);
+    expect(begun.model).toEqual(THREAD.model);
+  });
+
+  it("accepts titles up to 80 Unicode code points", async () => {
+    const { store } = await openStore();
+    const eightyEmoji = "🧪".repeat(80);
+    expect(store.createThread({ ...THREAD, title: eightyEmoji }).title).toBe(eightyEmoji);
+    expect(() =>
+      store.createThread({ ...THREAD, id: "too-long", title: `${eightyEmoji}🧪` }),
+    ).toThrow(/invalid length/);
   });
 });

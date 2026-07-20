@@ -42,6 +42,12 @@ import {
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
+import type {
+  ConsoleChatModelSnapshot,
+  ConsoleChatStore,
+  ConsoleChatThread,
+  ConsoleChatThreadSummary,
+} from "./console-chat-store";
 
 const AUGGY_VERSION = readPackageVersion();
 
@@ -251,6 +257,10 @@ export interface AdminRouteContext {
    * when unset.
    */
   selfPort?: number;
+  /** Durable console transcript storage. Omitted when console chat persistence is disabled. */
+  consoleChat?: ConsoleChatStore;
+  /** Unpredictable process-local marker authorizing console persistence on the self-fetch. */
+  consoleChatInternalMarker?: string;
 }
 
 const ACTION_ROUTE_RE = /^\/console\/action\/([^/]+)(?:\/row\/([^/]+))?$/;
@@ -279,6 +289,10 @@ const CRED_DELETE_ACTION = "cred-delete";
 const CRED_RENAME_ACTION = "cred-rename";
 
 const CONSOLE_CHAT_ACTION = "console-chat";
+const CONSOLE_CHAT_THREAD_ROUTE_RE = /^\/console\/api\/chat\/threads\/([^/]+)$/;
+const CONSOLE_CHAT_THREAD_ACTION_ROUTE_RE =
+  /^\/console\/api\/chat\/threads\/([^/]+)\/(rename|read-state|delete)$/;
+const CONSOLE_CHAT_THREAD_ID_RE = /^[A-Za-z0-9](?:[A-Za-z0-9._:-]{0,255})$/;
 const CHAT_PREVIEW_MODES = new Set(["creator", "anonymous", "visitor"]);
 type ChatPreviewMode = "creator" | "anonymous" | "visitor";
 
@@ -369,6 +383,35 @@ export async function handleAdminRoute(req: Request, ctx: AdminRouteContext): Pr
   // Chat SSE proxy --------------------------------------------------------
   if (req.method === "POST" && url.pathname === "/console/api/chat") {
     return handleChatProxy(req, ctx, agentName);
+  }
+
+  // Persisted console threads --------------------------------------------
+  if (url.pathname === "/console/api/chat/threads") {
+    if (req.method !== "GET") return methodNotAllowed("GET");
+    return handleConsoleThreadList(ctx);
+  }
+  const consoleThreadActionMatch = url.pathname.match(CONSOLE_CHAT_THREAD_ACTION_ROUTE_RE);
+  if (consoleThreadActionMatch) {
+    if (req.method !== "POST") return methodNotAllowed("POST");
+    const threadId = decodeConsoleThreadId(consoleThreadActionMatch[1]!);
+    if (!threadId) return jsonResponse({ error: "invalid thread id" }, 400);
+    return handleConsoleThreadAction(
+      req,
+      ctx,
+      agentName,
+      threadId,
+      consoleThreadActionMatch[2] as "rename" | "read-state" | "delete",
+    );
+  }
+  const consoleThreadMatch = url.pathname.match(CONSOLE_CHAT_THREAD_ROUTE_RE);
+  if (consoleThreadMatch) {
+    if (req.method !== "GET") return methodNotAllowed("GET");
+    const threadId = decodeConsoleThreadId(consoleThreadMatch[1]!);
+    if (!threadId) return jsonResponse({ error: "invalid thread id" }, 400);
+    return handleConsoleThreadRead(ctx, threadId);
+  }
+  if (url.pathname.startsWith("/console/api/chat/threads/")) {
+    return jsonResponse({ error: "not found" }, 404);
   }
 
   // Credentials API -------------------------------------------------------
@@ -867,8 +910,225 @@ export async function buildAdminActionRegistry(
 }
 
 // ===========================================================================
-// Chat SSE proxy
+// Persisted console threads + chat SSE proxy
 // ===========================================================================
+
+interface ConsoleChatThreadDto {
+  id: string;
+  title: string;
+  previewMode: ChatPreviewMode;
+  model: {
+    id: string;
+    displayName: string;
+    provider?: string;
+  } | null;
+  createdAt: string;
+  updatedAt: string;
+  lastReadAt: string | null;
+  unread: boolean;
+  runStatus: ConsoleChatThreadSummary["runStatus"];
+  messages?: Array<{
+    id: string;
+    role: "user" | "assistant";
+    content: string;
+    toolCalls?: NonNullable<ConsoleChatThread["messages"][number]["toolCalls"]>;
+    error?: string;
+    createdAt: string;
+    updatedAt: string;
+  }>;
+}
+
+function handleConsoleThreadList(ctx: AdminRouteContext): Response {
+  if (!ctx.consoleChat) return consoleChatUnavailableResponse();
+  try {
+    return jsonResponse({ threads: ctx.consoleChat.listThreads().map(consoleThreadDto) });
+  } catch {
+    return jsonResponse({ error: "Unable to read console chats." }, 500);
+  }
+}
+
+function handleConsoleThreadRead(ctx: AdminRouteContext, threadId: string): Response {
+  if (!ctx.consoleChat) return consoleChatUnavailableResponse();
+  try {
+    const thread = ctx.consoleChat.getThread(threadId);
+    if (!thread) return jsonResponse({ error: "thread not found" }, 404);
+    return jsonResponse({ thread: consoleThreadDto(thread) });
+  } catch {
+    return jsonResponse({ error: "Unable to read console chat." }, 500);
+  }
+}
+
+async function handleConsoleThreadAction(
+  req: Request,
+  ctx: AdminRouteContext,
+  agentName: string,
+  threadId: string,
+  action: "rename" | "read-state" | "delete",
+): Promise<Response> {
+  if (!ctx.consoleChat) return consoleChatUnavailableResponse();
+
+  const body = await readStrictJsonObject(req);
+  if (!body) return jsonResponse({ error: "invalid JSON body" }, 400);
+  const expectedKeys =
+    action === "rename"
+      ? new Set(["csrf", "title"])
+      : action === "read-state"
+        ? new Set(["csrf", "unread"])
+        : new Set(["csrf"]);
+  if (Object.keys(body).some((key) => !expectedKeys.has(key))) {
+    return jsonResponse({ error: "unexpected field" }, 400);
+  }
+  const csrf = await validateConsoleChatCsrf(ctx, agentName, body.csrf);
+  if (!csrf.ok) return jsonResponse({ error: csrf.message }, csrf.status);
+
+  try {
+    const existing = ctx.consoleChat.getThread(threadId);
+    if (!existing) return jsonResponse({ error: "thread not found" }, 404);
+
+    if (action === "rename") {
+      const title = validateConsoleThreadTitle(body.title);
+      if (!title) return jsonResponse({ error: "invalid title" }, 400);
+      const thread = ctx.consoleChat.renameThread(threadId, title, Date.now());
+      return thread
+        ? jsonResponse({ thread: consoleThreadDto(thread) })
+        : jsonResponse({ error: "thread not found" }, 404);
+    }
+
+    if (action === "read-state") {
+      if (typeof body.unread !== "boolean") {
+        return jsonResponse({ error: "unread must be a boolean" }, 400);
+      }
+      const thread = ctx.consoleChat.setThreadReadState(threadId, body.unread, Date.now());
+      return thread
+        ? jsonResponse({ thread: consoleThreadDto(thread) })
+        : jsonResponse({ error: "thread not found" }, 404);
+    }
+
+    if (existing.runStatus === "streaming") {
+      return jsonResponse({ error: "Cannot delete a chat while it is streaming." }, 409);
+    }
+    if (!ctx.consoleChat.deleteThread(threadId)) {
+      return jsonResponse({ error: "thread not found" }, 404);
+    }
+    ctx.kernel.forgetThreadHistory?.(threadId);
+    return jsonResponse({ ok: true });
+  } catch {
+    // deleteThread performs its own transactional streaming check. If a run
+    // starts after our optimistic read, classify that race without coupling
+    // the API to a storage-engine error string.
+    if (action === "delete") {
+      try {
+        if (ctx.consoleChat.getThread(threadId)?.runStatus === "streaming") {
+          return jsonResponse({ error: "Cannot delete a chat while it is streaming." }, 409);
+        }
+      } catch {
+        // Preserve the generic failure below if the follow-up read also fails.
+      }
+    }
+    return jsonResponse({ error: "Unable to update console chat." }, 500);
+  }
+}
+
+function consoleThreadDto(
+  thread: ConsoleChatThreadSummary | ConsoleChatThread,
+): ConsoleChatThreadDto {
+  const dto: ConsoleChatThreadDto = {
+    id: thread.id,
+    title: thread.title,
+    previewMode: thread.previewMode,
+    model: consoleModelDto(thread.model),
+    createdAt: new Date(thread.createdAt).toISOString(),
+    updatedAt: new Date(thread.updatedAt).toISOString(),
+    lastReadAt: thread.lastReadAt === null ? null : new Date(thread.lastReadAt).toISOString(),
+    unread: thread.unread,
+    runStatus: thread.runStatus,
+  };
+  if ("messages" in thread) {
+    dto.messages = thread.messages.map((message) => ({
+      id: message.id,
+      role: message.role,
+      content: message.content,
+      ...(message.toolCalls ? { toolCalls: message.toolCalls } : {}),
+      ...(message.error ? { error: message.error } : {}),
+      createdAt: new Date(message.createdAt).toISOString(),
+      updatedAt: new Date(message.updatedAt).toISOString(),
+    }));
+  }
+  return dto;
+}
+
+function consoleModelDto(model: ConsoleChatModelSnapshot | null): ConsoleChatThreadDto["model"] {
+  if (!model) return null;
+  return {
+    id: model.id,
+    displayName: model.displayName,
+    ...(model.provider ? { provider: model.provider } : {}),
+  };
+}
+
+function decodeConsoleThreadId(segment: string): string | null {
+  let value: string;
+  try {
+    value = decodeURIComponent(segment);
+  } catch {
+    return null;
+  }
+  return CONSOLE_CHAT_THREAD_ID_RE.test(value) ? value : null;
+}
+
+function validateConsoleThreadTitle(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const title = value.trim();
+  if (!title || Array.from(title).length > 80 || hasControlCharacters(title)) return null;
+  return title;
+}
+
+async function readStrictJsonObject(req: Request): Promise<Record<string, unknown> | null> {
+  try {
+    const body = await req.json();
+    if (typeof body !== "object" || body === null || Array.isArray(body)) return null;
+    return body as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+async function validateConsoleChatCsrf(
+  ctx: AdminRouteContext,
+  agentName: string,
+  token: unknown,
+): Promise<{ ok: true } | { ok: false; status: number; message: string }> {
+  if (typeof token !== "string" || token.length === 0) {
+    return { ok: false, status: 400, message: "missing csrf" };
+  }
+  const result = await validateCsrfToken({
+    token,
+    bearer: ctx.bearer,
+    agentName,
+    actionId: CONSOLE_CHAT_ACTION,
+  });
+  if (result.valid) return { ok: true };
+  if (result.reason === "expired") {
+    return { ok: false, status: 419, message: "Session expired — reload the page." };
+  }
+  return { ok: false, status: 403, message: "CSRF check failed." };
+}
+
+function consoleChatUnavailableResponse(): Response {
+  return jsonResponse({ error: "Console chat persistence is unavailable." }, 503);
+}
+
+function methodNotAllowed(allow: string): Response {
+  return new Response(JSON.stringify({ error: "method not allowed" }), {
+    status: 405,
+    headers: {
+      allow,
+      "content-type": "application/json",
+      "cache-control": "no-store, must-revalidate",
+      "x-robots-tag": "noindex, nofollow",
+    },
+  });
+}
 
 /**
  * Proxies a chat message to the agent's own `/agent/run` SSE endpoint on
@@ -902,12 +1162,15 @@ async function handleChatProxy(
     threadId?: unknown;
     chatMode?: unknown;
     visitorToken?: unknown;
+    title?: unknown;
+    model?: unknown;
+    runId?: unknown;
+    userMessageId?: unknown;
+    assistantMessageId?: unknown;
   };
-  try {
-    body = (await req.json()) as typeof body;
-  } catch {
-    return jsonResponse({ error: "invalid JSON body" }, 400);
-  }
+  const parsedBody = await readStrictJsonObject(req);
+  if (!parsedBody) return jsonResponse({ error: "invalid JSON body" }, 400);
+  body = parsedBody;
   if (typeof body.csrf !== "string" || body.csrf.length === 0) {
     return jsonResponse({ error: "missing csrf" }, 400);
   }
@@ -926,11 +1189,21 @@ async function handleChatProxy(
   if (typeof body.message !== "string" || body.message.length === 0) {
     return jsonResponse({ error: "missing message" }, 400);
   }
+  if (body.message.length > 16 * 1024 * 1024) {
+    return jsonResponse({ error: "message is too long" }, 400);
+  }
   const chatMode = parseChatPreviewMode(body.chatMode, body.visitorToken);
   if (!chatMode) {
     return jsonResponse({ error: "invalid chat preview mode" }, 400);
   }
-  const threadId = typeof body.threadId === "string" ? body.threadId : undefined;
+  let threadId: string | undefined;
+  if (body.threadId !== undefined) {
+    threadId =
+      typeof body.threadId === "string"
+        ? (decodeConsoleThreadId(body.threadId) ?? undefined)
+        : undefined;
+    if (!threadId) return jsonResponse({ error: "invalid thread id" }, 400);
+  }
   let visitorToken: string | undefined;
   if (typeof body.visitorToken === "string" && body.visitorToken.trim() !== "") {
     if (body.visitorToken.length > 4096 || /[\r\n]/.test(body.visitorToken)) {
@@ -945,6 +1218,48 @@ async function handleChatProxy(
     return jsonResponse({ error: "visitor preview mode requires a visitor token" }, 400);
   }
 
+  let consoleMetadata:
+    | {
+        previewMode: ChatPreviewMode;
+        title?: string;
+        model?: ConsoleChatModelSnapshot;
+        unreadOnFinish: true;
+        runId?: string;
+        userMessageId?: string;
+        assistantMessageId?: string;
+      }
+    | undefined;
+  if (ctx.consoleChat) {
+    if (!ctx.consoleChatInternalMarker || !threadId) {
+      return consoleChatUnavailableResponse();
+    }
+    const title = body.title === undefined ? undefined : validateConsoleThreadTitle(body.title);
+    if (body.title !== undefined && !title) return jsonResponse({ error: "invalid title" }, 400);
+    const model = validateConsoleChatModel(body.model);
+    if (body.model !== undefined && !model) return jsonResponse({ error: "invalid model" }, 400);
+    const runId = validateOptionalConsoleMessageId(body.runId);
+    if (body.runId !== undefined && !runId) {
+      return jsonResponse({ error: "invalid run id" }, 400);
+    }
+    const userMessageId = validateOptionalConsoleMessageId(body.userMessageId);
+    if (body.userMessageId !== undefined && !userMessageId) {
+      return jsonResponse({ error: "invalid user message id" }, 400);
+    }
+    const assistantMessageId = validateOptionalConsoleMessageId(body.assistantMessageId);
+    if (body.assistantMessageId !== undefined && !assistantMessageId) {
+      return jsonResponse({ error: "invalid assistant message id" }, 400);
+    }
+    consoleMetadata = {
+      previewMode: chatMode,
+      ...(title ? { title } : {}),
+      ...(model ? { model } : {}),
+      unreadOnFinish: true,
+      ...(runId ? { runId } : {}),
+      ...(userMessageId ? { userMessageId } : {}),
+      ...(assistantMessageId ? { assistantMessageId } : {}),
+    };
+  }
+
   let upstream: Response;
   const headers: Record<string, string> = {
     "content-type": "application/json",
@@ -954,6 +1269,9 @@ async function handleChatProxy(
   } else if (chatMode === "visitor") {
     headers["x-visitor-token"] = visitorToken!;
   }
+  if (consoleMetadata) {
+    headers["x-auggy-console-internal"] = ctx.consoleChatInternalMarker!;
+  }
   try {
     upstream = await fetch(`http://127.0.0.1:${ctx.selfPort}/agent/run`, {
       method: "POST",
@@ -961,6 +1279,7 @@ async function handleChatProxy(
       body: JSON.stringify({
         messages: [{ role: "user", content: body.message }],
         threadId,
+        ...(consoleMetadata ? { __console: consoleMetadata } : {}),
       }),
       signal: req.signal,
     });
@@ -973,8 +1292,61 @@ async function handleChatProxy(
 
   return new Response(upstream.body, {
     status: upstream.status,
-    headers: { "content-type": "text/event-stream" },
+    headers: {
+      "content-type": upstream.headers.get("content-type") ?? "application/octet-stream",
+      "cache-control": "no-store, must-revalidate",
+      "x-robots-tag": "noindex, nofollow",
+    },
   });
+}
+
+function validateOptionalConsoleMessageId(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || !CONSOLE_CHAT_THREAD_ID_RE.test(value)) return undefined;
+  return value;
+}
+
+function validateConsoleChatModel(value: unknown): ConsoleChatModelSnapshot | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "object" || Array.isArray(value)) return undefined;
+  const model = value as Record<string, unknown>;
+  if (
+    Object.keys(model).some((key) => key !== "id" && key !== "displayName" && key !== "provider")
+  ) {
+    return undefined;
+  }
+  if (!isBoundedNonemptyString(model.id, 512) || !isBoundedNonemptyString(model.displayName, 512)) {
+    return undefined;
+  }
+  if (
+    model.provider !== undefined &&
+    model.provider !== null &&
+    !isBoundedNonemptyString(model.provider, 512)
+  ) {
+    return undefined;
+  }
+  return {
+    id: model.id,
+    displayName: model.displayName,
+    provider: typeof model.provider === "string" ? model.provider : null,
+  };
+}
+
+function isBoundedNonemptyString(value: unknown, maxLength: number): value is string {
+  return (
+    typeof value === "string" &&
+    value.length > 0 &&
+    value.length <= maxLength &&
+    !hasControlCharacters(value)
+  );
+}
+
+function hasControlCharacters(value: string): boolean {
+  for (const character of value) {
+    const codePoint = character.codePointAt(0)!;
+    if (codePoint <= 0x1f || codePoint === 0x7f) return true;
+  }
+  return false;
 }
 
 function parseChatPreviewMode(mode: unknown, visitorToken: unknown): ChatPreviewMode | null {
