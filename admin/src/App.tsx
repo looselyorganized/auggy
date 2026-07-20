@@ -1,4 +1,4 @@
-import { lazy, Suspense, type ReactNode } from "react";
+import { lazy, Suspense, useEffect, type ReactNode } from "react";
 import { NavLink, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { MessageSquare, Network, Plug } from "lucide-react";
 import { ChatThreadNav } from "@/components/admin/ChatThreadNav";
@@ -66,12 +66,17 @@ function ConsoleShell({
   online: "online" | "offline" | "unknown";
   dashboard: ReturnType<typeof useDashboard>["data"];
 }) {
-  const { state, create, select } = useChatWorkspace();
+  const { state, create, select, setChatVisible } = useChatWorkspace();
   const navigate = useNavigate();
   const location = useLocation();
-  const threads = [...state.threads].sort((a, b) =>
-    a.createdAt === b.createdAt ? a.id.localeCompare(b.id) : b.createdAt.localeCompare(a.createdAt),
-  );
+  const chatVisible = location.pathname.startsWith("/chat");
+  const threads = [...state.threads].sort((a, b) => {
+    if (a.updatedAt !== b.updatedAt) return b.updatedAt.localeCompare(a.updatedAt);
+    if (a.createdAt !== b.createdAt) return b.createdAt.localeCompare(a.createdAt);
+    return a.id.localeCompare(b.id);
+  });
+
+  useEffect(() => setChatVisible(chatVisible), [chatVisible, setChatVisible]);
   const openNewChat = () => {
     create();
     navigate("/chat");
@@ -90,7 +95,7 @@ function ConsoleShell({
         online={online}
         dashboard={dashboard}
       />
-      {location.pathname.startsWith("/chat") && (
+      {chatVisible && (
         <div className="border-b bg-background px-2 py-1.5 sm:hidden">
           <ChatThreadNav
             compact

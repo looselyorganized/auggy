@@ -1,0 +1,41 @@
+import { describe, expect, it } from "bun:test";
+import { renderToStaticMarkup } from "react-dom/server";
+
+import { createChatThread, type ChatThread } from "@/lib/chat-workspace";
+import { ChatThreadNav } from "./ChatThreadNav";
+
+function thread(id: string, title: string, patch: Partial<ChatThread> = {}): ChatThread {
+  return {
+    ...createChatThread({
+      id,
+      title,
+      previewMode: "creator",
+      now: "2026-07-20T10:00:00.000Z",
+    }),
+    ...patch,
+  };
+}
+
+describe("ChatThreadNav", () => {
+  it("labels new, active, unread, streaming, and failed conversations", () => {
+    const html = renderToStaticMarkup(
+      <ChatThreadNav
+        threads={[
+          thread("active", "Current chat"),
+          thread("unread", "Background result", { unread: true }),
+          thread("streaming", "Long task", { runStatus: "streaming" }),
+          thread("failed", "Broken task", { runStatus: "error" }),
+        ]}
+        activeId="active"
+        onNew={() => {}}
+        onSelect={() => {}}
+      />,
+    );
+
+    expect(html).toContain("New chat");
+    expect(html).toContain('aria-current="page"');
+    expect(html).toContain("Background result, Unread");
+    expect(html).toContain("Long task, Streaming response");
+    expect(html).toContain("Broken task, Response failed");
+  });
+});

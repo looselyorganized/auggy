@@ -96,7 +96,8 @@ export function ChatComposer({
   return (
     <div
       className={cn(
-        "rounded-2xl border bg-card/95 px-3 pb-2.5 pt-3 shadow-lg backdrop-blur",
+        "rounded-2xl border bg-card/95 px-3 pb-2.5 pt-3 shadow-lg backdrop-blur transition-shadow",
+        "focus-within:border-ring focus-within:ring-2 focus-within:ring-ring/50",
         className,
       )}
     >

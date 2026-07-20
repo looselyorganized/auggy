@@ -49,6 +49,7 @@ export function ChatTab() {
     markUnread,
     deleteThread,
     setPreviewMode,
+    clearVisitor,
     send,
     stop,
   } = useChatWorkspace();
@@ -63,7 +64,9 @@ export function ChatTab() {
   const previewMode = activeThread.previewMode;
   const visitorVerificationRequired = previewMode === "visitor" && !hasVisitorToken;
   const disabledReason = visitorVerificationRequired
-    ? "Verify a visitor again to continue. This chat remains bound to its original identity."
+    ? messages.length > 0
+      ? "This visitor credential is unavailable. Start a new verified visitor chat to continue."
+      : "Verify a visitor before using this chat."
     : anotherThreadStreaming
       ? `A response is running in ${
           state.threads.find((thread) => thread.id === state.activeRun?.threadId)?.title ??
@@ -117,11 +120,13 @@ export function ChatTab() {
   );
 
   const handlePreviewModeChange = (mode: ChatPreviewMode) => {
+    if (mode === previewMode) return;
     const result = setPreviewMode(mode);
     if (!result.ok) {
       setPreflightErrors((current) => ({ ...current, [activeThread.id]: result.error }));
       return;
     }
+    setDrafts((current) => ({ ...current, [result.threadId]: "" }));
     setPreflightErrors((current) => ({ ...current, [result.threadId]: null }));
   };
 
@@ -182,6 +187,7 @@ export function ChatTab() {
         onMarkUnread={() => {
           if (!markUnread(activeThread.id)) throw new Error("This chat no longer exists.");
         }}
+        onClearVisitor={clearVisitor}
         onDelete={() => {
           if (!deleteThread(activeThread.id)) {
             throw new Error("This chat cannot be deleted while its response is running.");
@@ -199,6 +205,7 @@ export function ChatTab() {
 
       <MessageList
         messages={messages}
+        threadId={activeThread.id}
         streaming={streaming}
         responseLabel={agentName}
         agentName={agentName}
@@ -244,6 +251,7 @@ export function ChatTab() {
 
 function MessageList({
   messages,
+  threadId,
   streaming,
   agentName,
   responseLabel,
@@ -254,6 +262,7 @@ function MessageList({
   disabledReason,
 }: {
   messages: ChatMessage[];
+  threadId: string;
   streaming: boolean;
   agentName: string;
   responseLabel: string;
@@ -268,6 +277,7 @@ function MessageList({
   const pinnedToBottomRef = useRef(true);
 
   useEffect(() => {
+    pinnedToBottomRef.current = true;
     const element = containerRef.current;
     if (!element) return;
     const onScroll = () => {
@@ -276,7 +286,7 @@ function MessageList({
     };
     element.addEventListener("scroll", onScroll);
     return () => element.removeEventListener("scroll", onScroll);
-  }, []);
+  }, [threadId, messages.length === 0]);
 
   useEffect(() => {
     if (pinnedToBottomRef.current) endRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -324,6 +334,7 @@ function MessageList({
       className="relative z-[1] min-h-0 flex-1 overflow-y-auto px-4 py-6 sm:px-6"
       role="log"
       aria-live="polite"
+      aria-busy={streaming}
     >
       <div className="mx-auto flex max-w-3xl flex-col gap-6">
         {messages.map((message) => (

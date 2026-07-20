@@ -59,6 +59,8 @@ export interface ChatWorkspaceContextValue {
   ) => Promise<ChatWorkspaceCommandResult>;
   stop: () => boolean;
   refreshVisitorToken: () => boolean;
+  clearVisitor: () => void;
+  setChatVisible: (visible: boolean) => void;
 }
 
 interface ChatWorkspaceProviderProps {
@@ -106,6 +108,7 @@ export function ChatWorkspaceProvider({
   // request made by a thread. A later token must never silently inherit that
   // thread's privileged model context.
   const visitorTokenByThreadRef = useRef(new Map<string, string>());
+  const invalidatedVisitorThreadsRef = useRef(new Set<string>());
   const mountedRef = useRef(true);
   const [hasVisitorToken, setHasVisitorToken] = useState(() => Boolean(readVisitorToken()));
 
@@ -123,14 +126,39 @@ export function ChatWorkspaceProvider({
       runLockRef.current?.controller.abort();
       runLockRef.current = null;
       visitorTokenByThreadRef.current.clear();
+      invalidatedVisitorThreadsRef.current.clear();
     };
   }, []);
 
   const refreshVisitorToken = useCallback(() => {
     const available = Boolean(readVisitorToken());
+    if (!available) {
+      for (const threadId of visitorTokenByThreadRef.current.keys()) {
+        invalidatedVisitorThreadsRef.current.add(threadId);
+      }
+    }
     if (mountedRef.current) setHasVisitorToken(available);
     return available;
   }, []);
+
+  const clearVisitor = useCallback(() => {
+    for (const threadId of visitorTokenByThreadRef.current.keys()) {
+      invalidatedVisitorThreadsRef.current.add(threadId);
+    }
+    clearVisitorToken();
+    if (mountedRef.current) setHasVisitorToken(false);
+  }, []);
+
+  const setChatVisible = useCallback(
+    (visible: boolean) => {
+      dispatch({
+        type: "workspace.visibility-set",
+        visible,
+        at: dependenciesRef.current.now().toISOString(),
+      });
+    },
+    [dispatch],
+  );
 
   useEffect(() => {
     const refresh = () => refreshVisitorToken();
@@ -224,6 +252,7 @@ export function ChatWorkspaceProvider({
       const at = deps.now().toISOString();
       const active = getActiveChatThread(current);
       visitorTokenByThreadRef.current.delete(threadId);
+      invalidatedVisitorThreadsRef.current.delete(threadId);
       dispatch({
         type: "thread.delete",
         threadId,
@@ -244,6 +273,9 @@ export function ChatWorkspaceProvider({
     (previewMode: ChatPreviewMode): ChatWorkspaceThreadCommandResult => {
       const current = getActiveChatThread(stateRef.current);
       if (!current) return { ok: false, error: "The active chat no longer exists." };
+      if (stateRef.current.activeRun) {
+        return { ok: false, error: "Wait for the active response to finish or stop it first." };
+      }
       const availabilityError = previewModeAvailabilityError(
         previewMode,
         dependenciesRef.current.data?.web.allowAnonymous.value !== false,
@@ -305,6 +337,13 @@ export function ChatWorkspaceProvider({
       );
       if (availabilityError) return { ok: false, error: availabilityError };
       if (thread.previewMode === "visitor" && visitorToken) {
+        if (invalidatedVisitorThreadsRef.current.has(threadId)) {
+          return {
+            ok: false,
+            error:
+              "This visitor credential was cleared. Start a new verified visitor chat to continue.",
+          };
+        }
         const boundToken = visitorTokenByThreadRef.current.get(threadId);
         if (boundToken && boundToken !== visitorToken) {
           return {
@@ -408,6 +447,16 @@ export function ChatWorkspaceProvider({
         if (!response.body) throw new Error("The agent returned an empty response.");
 
         for await (const event of parseSSEStream(response.body, { signal: controller.signal })) {
+          if (
+            event.type === "RUN_STARTED" &&
+            event.threadId &&
+            event.threadId !== threadId
+          ) {
+            outcome = "error";
+            eventError = "The agent responded with a mismatched chat identifier.";
+            sawTerminalEvent = true;
+            break;
+          }
           const eventResult = applyStreamEvent(event, toolCalls, receivedText);
           receivedText = eventResult.receivedText;
           if (eventResult.patch) updateAssistant(eventResult.patch);
@@ -469,9 +518,12 @@ export function ChatWorkspaceProvider({
       send,
       stop,
       refreshVisitorToken,
+      clearVisitor,
+      setChatVisible,
     }),
     [
       activeThread,
+      clearVisitor,
       create,
       data?.web.allowAnonymous.value,
       deleteThread,
@@ -482,6 +534,7 @@ export function ChatWorkspaceProvider({
       select,
       send,
       setPreviewMode,
+      setChatVisible,
       state,
       stop,
     ],
@@ -605,6 +658,16 @@ function readVisitorToken(): string | undefined {
     return token && token.trim() !== "" ? token : undefined;
   } catch {
     return undefined;
+  }
+}
+
+function clearVisitorToken(): void {
+  try {
+    if (typeof localStorage !== "undefined") {
+      localStorage.removeItem(VISITOR_TOKEN_STORAGE_KEY);
+    }
+  } catch {
+    // Storage can be unavailable in private browsing or sandboxed contexts.
   }
 }
 

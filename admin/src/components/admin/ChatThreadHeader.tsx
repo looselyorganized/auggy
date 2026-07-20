@@ -41,6 +41,7 @@ export type ChatThreadHeaderAction =
   | "rename"
   | "copy"
   | "mark-unread"
+  | "clear-visitor"
   | "delete";
 
 export interface ChatThreadHeaderProps {
@@ -57,6 +58,7 @@ export interface ChatThreadHeaderProps {
   onRename: (title: string) => void | Promise<void>;
   onCopyTranscript: () => void | Promise<void>;
   onMarkUnread: () => void | Promise<void>;
+  onClearVisitor: () => void | Promise<void>;
   onDelete: () => void | Promise<void>;
   /** Receives rejected callbacks so the shell can surface a toast or telemetry. */
   onActionError?: (action: ChatThreadHeaderAction, error: unknown) => void;
@@ -80,6 +82,7 @@ export function ChatThreadHeader({
   onRename,
   onCopyTranscript,
   onMarkUnread,
+  onClearVisitor,
   onDelete,
   onActionError,
   className,
@@ -256,6 +259,18 @@ export function ChatThreadHeader({
                 );
               })}
             </div>
+            {hasVisitorToken && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                disabled={Boolean(previewModeDisabledReason)}
+                onClick={() => void runAction("clear-visitor", onClearVisitor)}
+                className="h-7 px-2 text-[11px] text-muted-foreground"
+              >
+                Clear visitor
+              </Button>
+            )}
           </div>
         </div>
       </header>

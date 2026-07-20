@@ -132,6 +132,7 @@ describe("chat workspace drafts and navigation", () => {
     const state: ChatWorkspaceState = {
       threads: [thread("first"), { ...thread("second"), unread: true }],
       activeThreadId: "first",
+      chatVisible: true,
       activeRun: null,
     };
     const selected = chatWorkspaceReducer(state, {
@@ -153,6 +154,7 @@ describe("chat workspace drafts and navigation", () => {
     const state: ChatWorkspaceState = {
       threads: [thread("active"), thread("older", T1), thread("newer", T2)],
       activeThreadId: "active",
+      chatVisible: true,
       activeRun: null,
     };
     const next = chatWorkspaceReducer(state, {
@@ -206,6 +208,7 @@ describe("chat workspace run ownership", () => {
     const initial: ChatWorkspaceState = {
       threads: [thread("one"), thread("two")],
       activeThreadId: "one",
+      chatVisible: true,
       activeRun: null,
     };
     const running = startRun(initial, "one");
@@ -217,6 +220,7 @@ describe("chat workspace run ownership", () => {
     let state: ChatWorkspaceState = {
       threads: [thread("one"), thread("two")],
       activeThreadId: "one",
+      chatVisible: true,
       activeRun: null,
     };
     state = startRun(state, "one");
@@ -232,6 +236,31 @@ describe("chat workspace run ownership", () => {
     expect(getChatThread(state, "one")?.messages.at(-1)?.content).toBe("Background reply");
     expect(getChatThread(state, "one")?.unread).toBe(true);
     expect(getChatThread(state, "two")?.messages).toHaveLength(0);
+  });
+
+  it("marks activity unread while the selected chat is hidden and clears it on return", () => {
+    let state = startRun(createChatWorkspace(thread("one")), "one");
+    state = chatWorkspaceReducer(state, {
+      type: "workspace.visibility-set",
+      visible: false,
+      at: T1,
+    });
+    state = chatWorkspaceReducer(state, {
+      type: "run.message-update",
+      clientRunId: "run-1",
+      threadId: "one",
+      messageId: "run-1-assistant",
+      patch: { content: "Finished in the background" },
+      at: T2,
+    });
+    expect(getActiveChatThread(state)?.unread).toBe(true);
+
+    state = chatWorkspaceReducer(state, {
+      type: "workspace.visibility-set",
+      visible: true,
+      at: T2,
+    });
+    expect(getActiveChatThread(state)?.unread).toBe(false);
   });
 
   it("ignores stale, mismatched, and duplicate terminal events", () => {

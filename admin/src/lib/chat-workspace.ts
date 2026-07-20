@@ -45,6 +45,8 @@ export interface ChatThread {
 export interface ChatWorkspaceState {
   threads: ChatThread[];
   activeThreadId: string;
+  /** Whether the active conversation is actually visible, not just selected. */
+  chatVisible: boolean;
   /** The only run allowed to own a live stream. Its client ID rejects stale SSE callbacks. */
   activeRun: ActiveChatRun | null;
 }
@@ -69,6 +71,7 @@ export type ChatThreadTitleValidation =
 
 export type ChatWorkspaceAction =
   | { type: "draft.activate"; draft: ChatThread }
+  | { type: "workspace.visibility-set"; visible: boolean; at: string }
   | { type: "thread.select"; threadId: string; at: string }
   | { type: "thread.rename"; threadId: string; title: string; at: string }
   | { type: "thread.delete"; threadId: string; fallbackDraft: ChatThread; at: string }
@@ -120,6 +123,7 @@ export function createChatWorkspace(initialThread: ChatThread): ChatWorkspaceSta
   return {
     threads: [initialThread],
     activeThreadId: initialThread.id,
+    chatVisible: true,
     activeRun: null,
   };
 }
@@ -172,6 +176,23 @@ export function chatWorkspaceReducer(
   action: ChatWorkspaceAction,
 ): ChatWorkspaceState {
   switch (action.type) {
+    case "workspace.visibility-set": {
+      if (!action.visible) {
+        return state.chatVisible ? { ...state, chatVisible: false } : state;
+      }
+      const active = getActiveChatThread(state);
+      if (!active) return state;
+      return {
+        ...state,
+        chatVisible: true,
+        threads: replaceThread(state.threads, {
+          ...active,
+          unread: false,
+          lastReadAt: action.at,
+        }),
+      };
+    }
+
     case "draft.activate": {
       const reusable = state.threads.find(isEmptyChatThread);
       if (!reusable) {
@@ -270,6 +291,7 @@ export function chatWorkspaceReducer(
       if (!matchesActiveRun(state, action)) return state;
       return updateThreadWithActivity(state, action.threadId, action.at, (thread) => {
         if (action.messageId !== state.activeRun?.assistantMessageId) return thread;
+        if (!thread.messages.some((message) => message.id === action.messageId)) return thread;
         return {
           ...thread,
           messages: thread.messages.map((message) =>
@@ -356,8 +378,9 @@ function updateThreadWithActivity(
     return {
       ...nextThread,
       updatedAt: at,
-      unread: threadId === state.activeThreadId ? false : true,
-      lastReadAt: threadId === state.activeThreadId ? at : thread.lastReadAt,
+      unread: state.chatVisible && threadId === state.activeThreadId ? false : true,
+      lastReadAt:
+        state.chatVisible && threadId === state.activeThreadId ? at : thread.lastReadAt,
     };
   });
 }
