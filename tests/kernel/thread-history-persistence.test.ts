@@ -89,6 +89,37 @@ async function runtime(model: ModelClient, concurrency = 2, extraAugments: Augme
 }
 
 describe("kernel thread-history persistence", () => {
+  it("requires injected continuations to prove the persisted thread owner", async () => {
+    const model = createMockModel({ response: "private response" });
+    const historyPersistence = persistence({
+      assertAccess: async (_threadId, peer) => {
+        if (peer.id !== PEER.id) throw new Error("history owner mismatch");
+      },
+    });
+    const { agent, kernel } = await runtime(model);
+
+    try {
+      await kernel.handleInbound(trigger("injected-owner", "authorized"), {
+        historyPersistence,
+      });
+
+      const otherPeer = { ...PEER, id: "visitor-2" };
+      await expect(
+        agent.inject(trigger("injected-owner", "read private history", otherPeer)),
+      ).rejects.toThrow("history owner mismatch");
+
+      const withoutPeer = trigger("injected-owner", "read without identity");
+      withoutPeer.peer = null;
+      if (withoutPeer.payload && "peer" in withoutPeer.payload) {
+        withoutPeer.payload.peer = null;
+      }
+      await expect(agent.inject(withoutPeer)).rejects.toThrow("resolved peer identity is required");
+      expect(model.calls).toHaveLength(1);
+    } finally {
+      await agent.stop();
+    }
+  });
+
   it("fails closed before inference when durable restore throws", async () => {
     const model = createMockModel({ response: "must not run" });
     const { agent, kernel } = await runtime(model);

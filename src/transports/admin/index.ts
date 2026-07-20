@@ -1235,8 +1235,14 @@ async function handleChatProxy(
     }
     const title = body.title === undefined ? undefined : validateConsoleThreadTitle(body.title);
     if (body.title !== undefined && !title) return jsonResponse({ error: "invalid title" }, 400);
-    const model = validateConsoleChatModel(body.model);
-    if (body.model !== undefined && !model) return jsonResponse({ error: "invalid model" }, 400);
+    const requestedModel = validateConsoleChatModel(body.model);
+    if (body.model !== undefined && !requestedModel) {
+      return jsonResponse({ error: "invalid model" }, 400);
+    }
+    // Existing clients hydrate the thread's historical model snapshot. The
+    // server is authoritative for the model actually running now, otherwise a
+    // conversation continued after an engine change would remain mislabeled.
+    const model = configuredConsoleChatModel(ctx.agentDir) ?? requestedModel;
     const runId = validateOptionalConsoleMessageId(body.runId);
     if (body.runId !== undefined && !runId) {
       return jsonResponse({ error: "invalid run id" }, 400);
@@ -1330,6 +1336,23 @@ function validateConsoleChatModel(value: unknown): ConsoleChatModelSnapshot | un
     displayName: model.displayName,
     provider: typeof model.provider === "string" ? model.provider : null,
   };
+}
+
+function configuredConsoleChatModel(
+  agentDir: string | undefined,
+): ConsoleChatModelSnapshot | undefined {
+  const engine = readAgentMeta(agentDir)?.engine;
+  const provider = engine?.provider?.trim();
+  const model = engine?.model?.trim();
+  if (
+    (provider !== undefined && !isBoundedNonemptyString(provider, 512)) ||
+    (model !== undefined && !isBoundedNonemptyString(model, 512))
+  ) {
+    return undefined;
+  }
+  if (!provider && !model) return undefined;
+  const id = model ?? provider!;
+  return { id, displayName: id, provider: provider ?? null };
 }
 
 function isBoundedNonemptyString(value: unknown, maxLength: number): value is string {

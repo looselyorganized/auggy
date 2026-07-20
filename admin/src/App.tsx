@@ -9,7 +9,7 @@ import {
   useNavigate,
   useParams,
 } from "react-router-dom";
-import { MessageSquare, Network, Plug } from "lucide-react";
+import { LoaderCircle, MessageSquare, Network, Plug } from "lucide-react";
 import { ChatThreadNav } from "@/components/admin/ChatThreadNav";
 import {
   ChatWorkspaceProvider,
@@ -25,6 +25,7 @@ import {
   decodeChatThreadRouteParam,
   isChatThreadActuallyVisible,
 } from "@/lib/chat-route";
+import { getMobileChatNavigationState } from "@/lib/chat-run-state";
 import { cn } from "@/lib/utils";
 
 const ChatTab = lazy(() => import("@/routes/ChatTab").then((m) => ({ default: m.ChatTab })));
@@ -102,6 +103,7 @@ function ConsoleShell({
     if (a.createdAt !== b.createdAt) return b.createdAt.localeCompare(a.createdAt);
     return a.id.localeCompare(b.id);
   });
+  const mobileChatNavigation = getMobileChatNavigationState(state.threads, chatRouteActive);
 
   useEffect(() => setChatVisible(chatVisible), [chatVisible, setChatVisible]);
   const openNewChat = () => {
@@ -165,9 +167,28 @@ function ConsoleShell({
           className="fixed inset-x-0 bottom-0 z-10 flex h-12 items-center justify-around border-t bg-background sm:hidden"
           aria-label="Console sections"
         >
-          <ConsoleNavLink to="/chat" icon={<MessageSquare className="size-4" />}>
+          <ConsoleNavLink
+            to="/chat"
+            ariaLabel={mobileChatNavigation.accessibleLabel}
+            icon={
+              <span className="relative" aria-hidden="true">
+                <MessageSquare className="size-4" />
+                {mobileChatNavigation.showIndicator &&
+                  (mobileChatNavigation.streamingCount > 0 ? (
+                    <LoaderCircle className="absolute -right-1.5 -top-1.5 size-2.5 animate-spin text-primary" />
+                  ) : (
+                    <span className="absolute -right-1 -top-1 size-2 rounded-full bg-primary ring-2 ring-background" />
+                  ))}
+              </span>
+            }
+          >
             Chat
           </ConsoleNavLink>
+          {mobileChatNavigation.statusMessage && (
+            <span className="sr-only" role="status" aria-live="polite">
+              Chat: {mobileChatNavigation.statusMessage}
+            </span>
+          )}
           <ConsoleNavLink to="/integrations" icon={<Plug className="size-4" />}>
             Integrations
           </ConsoleNavLink>
@@ -390,15 +411,18 @@ function ConsoleAgentSummary({
 function ConsoleNavLink({
   to,
   icon,
+  ariaLabel,
   children,
 }: {
   to: string;
   icon: ReactNode;
+  ariaLabel?: string;
   children: ReactNode;
 }) {
   return (
     <NavLink
       to={to}
+      aria-label={ariaLabel}
       className={({ isActive }) =>
         cn(
           "inline-flex h-9 items-center gap-2 rounded-md px-3 text-sm font-medium text-muted-foreground",

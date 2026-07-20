@@ -1572,6 +1572,41 @@ describe("runDeploy", () => {
     expect(leaked).toBe(false);
   });
 
+  test("excludes a configured console chat database and sidecars with a custom extension", async () => {
+    writeAugmentMetadata(agentDir, "webTransport", {
+      type: "webTransport",
+      config: {
+        port: 8080,
+        auth: { type: "bearer", token: "${AUGGY_WEB_TOKEN}" },
+        consoleChat: { dbPath: "./runtime/console-ledger.bin" },
+      },
+    });
+    const runtimeDir = join(agentDir, "runtime");
+    mkdirSync(runtimeDir, { recursive: true });
+
+    const { cli, calls } = mockRailwayCli();
+    cli.checkPresence = async () => {
+      calls.checkPresence++;
+      for (const suffix of ["", "-wal", "-shm", "-journal"]) {
+        writeFileSync(
+          join(runtimeDir, `console-ledger.bin${suffix}`),
+          `private transcript DO_NOT_STAGE_CONSOLE_CHAT${suffix}`,
+        );
+      }
+      return true as const;
+    };
+    let leaked = false;
+    cli.linkProject = async (args) => {
+      calls.linkProject.push(args);
+      leaked = ["", "-wal", "-shm", "-journal"].some((suffix) =>
+        existsSync(join(args.cwd, "runtime", `console-ledger.bin${suffix}`)),
+      );
+    };
+
+    await runDeploy("zip", baseDeployOptions(cli, auggyDir));
+    expect(leaked).toBe(false);
+  });
+
   test("vendors a local packed auggy runtime into the staging dir when available", async () => {
     const version = getAuggyVersion();
     const tarballName = `auggy-${version}.tgz`;

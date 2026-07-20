@@ -197,6 +197,14 @@ export interface ConsoleChatStore {
     assistantMessageId: string,
     input: FinishConsoleChatRunInput,
   ): ConsoleChatThread | null;
+  finishRunWithKernelHistory(
+    threadId: string,
+    runId: string,
+    assistantMessageId: string,
+    peer: PeerIdentity,
+    snapshot: ThreadHistorySnapshot,
+    input: FinishConsoleChatRunInput,
+  ): ConsoleChatThread | null;
   abandonRun(
     threadId: string,
     runId: string,
@@ -231,6 +239,12 @@ export interface ConsoleChatStore {
   close(): void;
 }
 
+export interface DeferredConsoleThreadHistoryPersistence extends ThreadHistoryPersistence {
+  pendingSnapshot(threadId: string, peer: PeerIdentity): ThreadHistorySnapshot | null;
+  discardPending(threadId: string): void;
+  discardAllPending(): void;
+}
+
 /**
  * Adapt the console transcript store to the kernel's transport-scoped history
  * contract. The store deliberately retains only the stable authorization
@@ -253,6 +267,67 @@ export function createConsoleThreadHistoryPersistence(
         throw new Error(`${STORE_LABEL}: invalid kernel history snapshot`);
       }
       store.commitKernelHistoryForPeer(threadId, peer, snapshot.messages);
+    },
+  };
+}
+
+/**
+ * Console runs cannot publish kernel history before their visible transcript
+ * reaches the same durable terminal state. This adapter keeps the kernel's
+ * validated replacement snapshot in process memory; webTransport commits it
+ * together with finishRun in one SQLite transaction.
+ */
+export function createDeferredConsoleThreadHistoryPersistence(
+  store: ConsoleChatStore,
+): DeferredConsoleThreadHistoryPersistence {
+  const pending = new Map<
+    string,
+    { owner: ConsoleChatOwnerIdentity; snapshot: ThreadHistorySnapshot }
+  >();
+
+  return {
+    async load(threadId, peer) {
+      const messages = store.loadKernelHistoryForPeer(threadId, peer);
+      return messages === null ? null : ({ version: 1, messages } satisfies ThreadHistorySnapshot);
+    },
+    async assertAccess(threadId, peer) {
+      store.assertKernelHistoryAccess(threadId, peer);
+    },
+    async commit(threadId, peer, snapshot) {
+      if (!isPlainObject(snapshot) || snapshot.version !== 1 || !Array.isArray(snapshot.messages)) {
+        throw new Error(`${STORE_LABEL}: invalid kernel history snapshot`);
+      }
+      store.assertKernelHistoryAccess(threadId, peer);
+      const normalized = parseKernelHistory(serializeKernelHistory(snapshot.messages));
+      const thread = store.getThread(threadId);
+      if (!thread) throw new Error(`${STORE_LABEL}: thread not found: ${threadId}`);
+      if (thread.runStatus !== "streaming") {
+        store.commitKernelHistoryForPeer(threadId, peer, normalized);
+        pending.delete(threadId);
+        return;
+      }
+      pending.set(threadId, {
+        owner: consoleChatOwnerFromPeer(peer),
+        snapshot: { version: 1, messages: normalized },
+      });
+    },
+    pendingSnapshot(threadId, peer) {
+      const id = assertIdentifier(threadId, "threadId");
+      const value = pending.get(id);
+      if (!value) return null;
+      if (!sameOwner(value.owner, consoleChatOwnerFromPeer(peer))) {
+        throw new Error(`${STORE_LABEL}: kernel history access denied`);
+      }
+      return {
+        version: 1,
+        messages: value.snapshot.messages.map((message) => ({ ...message })),
+      };
+    },
+    discardPending(threadId) {
+      pending.delete(assertIdentifier(threadId, "threadId"));
+    },
+    discardAllPending() {
+      pending.clear();
     },
   };
 }
@@ -771,11 +846,11 @@ export function createConsoleChatStore(options: {
         throw new Error(`${STORE_LABEL}: message timestamp predates thread`);
       }
 
-      const populated = hasMessages(thread.id);
-      if (populated && thread.model !== null && !sameModel(thread.model, stored.model)) {
-        throw new Error(`${STORE_LABEL}: populated thread identity and model are immutable`);
-      }
-      const model = populated || thread.model === null ? stored.model : thread.model;
+      // The runtime model can change between process lifetimes. A supplied
+      // snapshot describes the model handling this run and replaces stale
+      // metadata; null means the current runtime could not identify itself, so
+      // retain the last known snapshot rather than erasing it.
+      const model = thread.model ?? stored.model;
       const next = getNextSequenceStatement.get(thread.id) as { sequence?: unknown } | null;
       if (!Number.isSafeInteger(next?.sequence) || (next?.sequence as number) < 0) {
         throw new Error(`${STORE_LABEL}: invalid message sequence`);
@@ -873,6 +948,37 @@ export function createConsoleChatStore(options: {
     assistantMessageId: string,
     input: FinishConsoleChatRunInput,
   ): ConsoleChatThread | null {
+    return finishRunTransaction(threadId, runId, assistantMessageId, input, null);
+  }
+
+  function finishRunWithKernelHistory(
+    threadId: string,
+    runId: string,
+    assistantMessageId: string,
+    peer: PeerIdentity,
+    snapshot: ThreadHistorySnapshot,
+    input: FinishConsoleChatRunInput,
+  ): ConsoleChatThread | null {
+    if (!isPlainObject(snapshot) || snapshot.version !== 1 || !Array.isArray(snapshot.messages)) {
+      throw new Error(`${STORE_LABEL}: invalid kernel history snapshot`);
+    }
+    // Bound and normalize before taking SQLite's write lock. The transaction
+    // repeats serialization through saveKernelHistory so unchecked data can
+    // never reach the database if this code changes later.
+    const normalizedHistory = parseKernelHistory(serializeKernelHistory(snapshot.messages));
+    return finishRunTransaction(threadId, runId, assistantMessageId, input, {
+      peer,
+      messages: normalizedHistory,
+    });
+  }
+
+  function finishRunTransaction(
+    threadId: string,
+    runId: string,
+    assistantMessageId: string,
+    input: FinishConsoleChatRunInput,
+    history: { peer: PeerIdentity; messages: readonly KernelMessage[] } | null,
+  ): ConsoleChatThread | null {
     const thread = assertIdentifier(threadId, "threadId");
     const run = assertIdentifier(runId, "run.id");
     const assistant = assertIdentifier(assistantMessageId, "assistantMessageId");
@@ -885,6 +991,10 @@ export function createConsoleChatStore(options: {
       const row = getMessageStatement.get(thread, assistant) as MessageRow | null;
       if (!row) throw new Error(`${STORE_LABEL}: active assistant message is missing`);
       const update = normalizeMessageUpdate(rowToMessage(row), input);
+      if (history) {
+        claimOrAssertKernelHistoryOwner(thread, history.peer);
+        saveKernelHistory(thread, history.messages, update.updatedAt);
+      }
       writeMessageUpdate(thread, assistant, update);
       db.run(
         `UPDATE console_chat_threads
@@ -1166,6 +1276,7 @@ export function createConsoleChatStore(options: {
     beginRun,
     updateRun,
     finishRun,
+    finishRunWithKernelHistory,
     abandonRun,
     renameThread,
     setThreadReadState,

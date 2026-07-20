@@ -45,8 +45,16 @@ import {
 const VISITOR_TOKEN_STORAGE_KEY = "auggy-visitor-token";
 const EXTERNAL_RUN_POLL_INITIAL_MS = 750;
 const EXTERNAL_RUN_POLL_MAX_MS = 5_000;
+const DETAIL_RECONCILIATION_RETRY_MAX_MS = 30_000;
 const CHAT_RECONCILIATION_ERROR =
   "The saved transcript could not be refreshed. It will retry automatically.";
+
+interface DetailReconciliationRetry {
+  failures: number;
+  retryAt: number;
+  failedUpdatedAt: string;
+  failedRunStatus: ChatThread["runStatus"];
+}
 
 export type ChatWorkspaceCommandResult =
   | { ok: true }
@@ -145,6 +153,7 @@ export function ChatWorkspaceProvider({
   const mutationRequestRef = useRef(new Map<string, number>());
   const readMutationQueueRef = useRef(new Map<string, Promise<unknown>>());
   const threadRevisionRef = useRef(new Map<string, number>());
+  const detailReconciliationRetriesRef = useRef(new Map<string, DetailReconciliationRetry>());
   const draftRenamedIdsRef = useRef(new Set<string>());
   const deletingThreadIdsRef = useRef(new Set<string>());
   const nextRequestIdRef = useRef(0);
@@ -373,7 +382,11 @@ export function ChatWorkspaceProvider({
   useEffect(() => {
     if (hydrationStatus !== "ready") return;
     const controller = new AbortController();
-    let delay = externalStreamingKey ? EXTERNAL_RUN_POLL_INITIAL_MS : EXTERNAL_RUN_POLL_MAX_MS;
+    let delay = nextReconciliationPollDelay(
+      Boolean(externalStreamingKey),
+      externalStreamingKey ? EXTERNAL_RUN_POLL_INITIAL_MS : EXTERNAL_RUN_POLL_MAX_MS,
+      detailReconciliationRetriesRef.current,
+    );
     let timer: ReturnType<typeof setTimeout> | undefined;
 
     const poll = async () => {
@@ -410,7 +423,19 @@ export function ChatWorkspaceProvider({
             continue;
           }
 
+          const detailRetry = detailReconciliationRetriesRef.current.get(summary.id);
+          if (
+            detailRetry &&
+            !sameDetailReconciliationRevision(detailRetry, summary)
+          ) {
+            // A newer server revision is not the response that failed to load.
+            // Reconcile it immediately so a new background run is never hidden
+            // behind an old terminal-detail backoff window.
+            detailReconciliationRetriesRef.current.delete(summary.id);
+          }
+          if (shouldDeferDetailReconciliation(detailRetry, summary, Date.now())) continue;
           const changed =
+            detailRetry !== undefined ||
             summary.updatedAt !== current.updatedAt ||
             summary.title !== current.title ||
             summary.previewMode !== current.previewMode ||
@@ -434,6 +459,7 @@ export function ChatWorkspaceProvider({
                 stateRef.current.activeRun?.threadId !== summary.id &&
                 (threadRevisionRef.current.get(summary.id) ?? 0) === beforeRevision
               ) {
+                detailReconciliationRetriesRef.current.delete(summary.id);
                 dispatch({ type: "thread.detail-merge", thread: detail });
                 if (
                   detail.runStatus !== "streaming" &&
@@ -451,8 +477,15 @@ export function ChatWorkspaceProvider({
               if (summary.runStatus !== "streaming") {
                 // Unlock this thread using an explicit local error state while
                 // retaining its last known transcript. Because the server
-                // summary remains terminal, the status mismatch retries detail
-                // on the next reconciliation pass.
+                // summary remains terminal, the explicit pending marker retries
+                // detail even when the server and local error statuses match.
+                const failures = (detailRetry?.failures ?? 0) + 1;
+                detailReconciliationRetriesRef.current.set(summary.id, {
+                  failures,
+                  retryAt: Date.now() + detailReconciliationRetryDelay(failures),
+                  failedUpdatedAt: summary.updatedAt,
+                  failedRunStatus: summary.runStatus,
+                });
                 dispatch({
                   type: "thread.reconciliation-failed",
                   thread: summary,
@@ -491,6 +524,7 @@ export function ChatWorkspaceProvider({
           persistedThreadIdsRef.current.delete(thread.id);
           loadedThreadIdsRef.current.delete(thread.id);
           detailRequestRef.current.delete(thread.id);
+          detailReconciliationRetriesRef.current.delete(thread.id);
           visitorTokenByThreadRef.current.delete(thread.id);
           invalidatedVisitorThreadsRef.current.delete(thread.id);
           const localDraft = next.threads.find(
@@ -504,9 +538,14 @@ export function ChatWorkspaceProvider({
             thread.runStatus === "streaming" &&
             stateRef.current.activeRun?.threadId !== thread.id,
         );
-        delay = hasExternalRun
+        const baseDelay = hasExternalRun
           ? Math.min(Math.round(delay * 1.5), EXTERNAL_RUN_POLL_MAX_MS)
           : EXTERNAL_RUN_POLL_MAX_MS;
+        delay = nextReconciliationPollDelay(
+          hasExternalRun,
+          baseDelay,
+          detailReconciliationRetriesRef.current,
+        );
       } catch (error) {
         if (isAbortError(error) || controller.signal.aborted) return;
         delay = Math.min(delay * 2, EXTERNAL_RUN_POLL_MAX_MS);
@@ -601,6 +640,7 @@ export function ChatWorkspaceProvider({
             return false;
           }
           loadedThreadIdsRef.current.add(threadId);
+          detailReconciliationRetriesRef.current.delete(threadId);
         }
         persistedThreadIdsRef.current.add(threadId);
         if (selectionRequest === selectionRequestRef.current) select(threadId);
@@ -721,6 +761,7 @@ export function ChatWorkspaceProvider({
         persistedThreadIdsRef.current.delete(threadId);
         loadedThreadIdsRef.current.delete(threadId);
         detailRequestRef.current.delete(threadId);
+        detailReconciliationRetriesRef.current.delete(threadId);
         visitorTokenByThreadRef.current.delete(threadId);
         invalidatedVisitorThreadsRef.current.delete(threadId);
         draftRenamedIdsRef.current.delete(threadId);
@@ -868,6 +909,7 @@ export function ChatWorkspaceProvider({
       };
       const controller = new AbortController();
       const lock: RunLock = { clientRunId, threadId, assistantMessageId, controller };
+      const runModel = modelSnapshotFromDashboard(deps.data);
       const submittedTitle =
         thread.messages.length === 0 && !draftRenamedIdsRef.current.has(threadId)
           ? deriveChatThreadTitle(text)
@@ -883,7 +925,7 @@ export function ChatWorkspaceProvider({
         title: submittedTitle,
         userMessage,
         assistantMessage,
-        model: modelSnapshotFromDashboard(deps.data),
+        model: runModel,
         at: sentAt,
       });
 
@@ -917,7 +959,7 @@ export function ChatWorkspaceProvider({
             threadId,
             chatMode: thread.previewMode,
             title: submittedTitle,
-            ...(thread.model ? { model: thread.model } : {}),
+            ...(runModel ? { model: runModel } : {}),
             runId: clientRunId,
             userMessageId: userMessage.id,
             assistantMessageId,
@@ -1078,6 +1120,44 @@ export function useChatWorkspace(): ChatWorkspaceContextValue {
     throw new Error("useChatWorkspace must be used inside <ChatWorkspaceProvider>");
   }
   return context;
+}
+
+function detailReconciliationRetryDelay(failures: number): number {
+  const exponent = Math.min(Math.max(failures - 1, 0), 16);
+  return Math.min(
+    EXTERNAL_RUN_POLL_INITIAL_MS * 2 ** exponent,
+    DETAIL_RECONCILIATION_RETRY_MAX_MS,
+  );
+}
+
+function sameDetailReconciliationRevision(
+  retry: DetailReconciliationRetry,
+  summary: Pick<ChatThread, "updatedAt" | "runStatus">,
+): boolean {
+  return (
+    retry.failedUpdatedAt === summary.updatedAt && retry.failedRunStatus === summary.runStatus
+  );
+}
+
+export function shouldDeferDetailReconciliation(
+  retry: DetailReconciliationRetry | undefined,
+  summary: Pick<ChatThread, "updatedAt" | "runStatus">,
+  now: number,
+): boolean {
+  return Boolean(retry && sameDetailReconciliationRevision(retry, summary) && retry.retryAt > now);
+}
+
+function nextReconciliationPollDelay(
+  externalRun: boolean,
+  baseDelay: number,
+  retries: ReadonlyMap<string, DetailReconciliationRetry>,
+): number {
+  let delay = externalRun ? Math.min(baseDelay, EXTERNAL_RUN_POLL_MAX_MS) : baseDelay;
+  const now = Date.now();
+  for (const retry of retries.values()) {
+    delay = Math.min(delay, Math.max(retry.retryAt - now, 25));
+  }
+  return delay;
 }
 
 function modelSnapshotFromDashboard(

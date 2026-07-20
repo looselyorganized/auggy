@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it } from "bun:test";
+import { writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { generateCsrfToken } from "@/transports/admin/admin-csrf";
 import {
   createConsoleChatStore,
@@ -10,6 +12,7 @@ import {
   type AdminRouteContext,
 } from "@/transports/admin/index";
 import type { AgentCard, TransportKernel, TurnResult } from "@/types";
+import { createTempDir } from "@tests/fixtures/temp-dir";
 
 const openedStores: ConsoleChatStore[] = [];
 
@@ -349,6 +352,57 @@ describe("persisted console chat routes", () => {
       expect(JSON.stringify(forwardedBody)).not.toContain("visitor.payload.signature");
     } finally {
       globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("uses the currently configured engine for persisted run metadata", async () => {
+    const store = createStore();
+    const directory = await createTempDir();
+    const originalFetch = globalThis.fetch;
+    let forwardedBody: Record<string, unknown> | undefined;
+    globalThis.fetch = (async (_input, init) => {
+      forwardedBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      return new Response('{"error":"owner mismatch"}', {
+        status: 403,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    try {
+      await writeFile(
+        join(directory.path, "agent.yaml"),
+        "name: zip\nengine:\n  provider: anthropic\n  model: claude-current\n",
+      );
+      const ctx = await makeContext({
+        agentDir: directory.path,
+        consoleChat: store,
+        consoleChatInternalMarker: "private-process-marker",
+        selfPort: 9999,
+      });
+      const response = await handleAdminRoute(
+        post("/console/api/chat", {
+          csrf: await csrf(),
+          message: "continue after rotation",
+          threadId: "thread-1",
+          chatMode: "creator",
+          model: { id: "claude-old", displayName: "Claude Old", provider: "anthropic" },
+        }),
+        ctx,
+      );
+
+      expect(response.status).toBe(403);
+      expect(forwardedBody).toMatchObject({
+        __console: {
+          model: {
+            id: "claude-current",
+            displayName: "claude-current",
+            provider: "anthropic",
+          },
+        },
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+      await directory.cleanup();
     }
   });
 

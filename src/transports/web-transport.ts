@@ -58,7 +58,7 @@ import {
 import { renderAgentIntegrationPage, renderInfoPage } from "./info-page";
 import {
   createConsoleChatStore,
-  createConsoleThreadHistoryPersistence,
+  createDeferredConsoleThreadHistoryPersistence,
   type ConsoleChatModelSnapshot,
   type ConsoleChatPreviewMode,
   type ConsoleChatStore,
@@ -698,8 +698,9 @@ export function webTransport(opts: WebTransportOptions): Augment {
   let startServer: (() => void) | null = null;
   let kernel: TransportKernel | null = null;
   let consoleChatStore: ConsoleChatStore | null = null;
-  let consoleHistoryPersistence: ReturnType<typeof createConsoleThreadHistoryPersistence> | null =
-    null;
+  let consoleHistoryPersistence: ReturnType<
+    typeof createDeferredConsoleThreadHistoryPersistence
+  > | null = null;
   // Capability shared only with the same-process authenticated admin proxy.
   // It is deliberately never added to CORS or any response/log surface.
   const consoleInternalRunMarker = opts.adminRoute === false ? null : crypto.randomUUID();
@@ -2001,25 +2002,42 @@ export function webTransport(opts: WebTransportOptions): Augment {
           if (consoleMetadata && consoleChatStore) {
             flushProgress();
             try {
-              const finished = consoleChatStore.finishRun(
-                threadId,
-                turnId,
-                consoleMetadata.assistantMessageId,
-                {
-                  status,
-                  content: assistantContent,
-                  toolCalls: currentToolCalls(),
-                  error: assistantError,
-                  unread: consoleMetadata.unreadOnFinish,
-                  updatedAt: Date.now(),
-                },
-              );
+              const finishInput = {
+                status,
+                content: assistantContent,
+                toolCalls: currentToolCalls(),
+                error: assistantError,
+                unread: consoleMetadata.unreadOnFinish,
+                updatedAt: Date.now(),
+              } as const;
+              const pendingHistory = consoleHistoryPersistence?.pendingSnapshot(threadId, peer);
+              const finished = pendingHistory
+                ? consoleChatStore.finishRunWithKernelHistory(
+                    threadId,
+                    turnId,
+                    consoleMetadata.assistantMessageId,
+                    peer,
+                    pendingHistory,
+                    finishInput,
+                  )
+                : consoleChatStore.finishRun(
+                    threadId,
+                    turnId,
+                    consoleMetadata.assistantMessageId,
+                    finishInput,
+                  );
               if (!finished) {
                 throw persistenceFailure ?? new Error("console chat run is no longer active");
               }
+              consoleHistoryPersistence?.discardPending(threadId);
               persistenceFailure = null;
             } catch (error) {
               persistenceFailure ??= error;
+              consoleHistoryPersistence?.discardPending(threadId);
+              // The resident manager may contain a response that did not reach
+              // the atomic transcript/history commit. Force the next attempt to
+              // restore the last durable snapshot instead of retaining it.
+              k.forgetThreadHistory?.(threadId);
               // A terminal aggregate can itself be invalid (for example an
               // oversized model response). Clear the run lease without
               // replacing the last valid partial transcript.
@@ -2285,7 +2303,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
         // openHardenedSqlite creates missing parents with mode 0700 and
         // rejects unsafe existing directories without mutating operator paths.
         consoleChatStore = createConsoleChatStore({ dbPath: consoleDbPath });
-        consoleHistoryPersistence = createConsoleThreadHistoryPersistence(consoleChatStore);
+        consoleHistoryPersistence = createDeferredConsoleThreadHistoryPersistence(consoleChatStore);
       }
       // Listener activation is deferred until TransportSpec.ready(), after
       // every transport has captured its kernel handle.
@@ -2565,9 +2583,10 @@ export function webTransport(opts: WebTransportOptions): Augment {
         server.stop();
         server = null;
       }
+      consoleHistoryPersistence?.discardAllPending();
+      consoleHistoryPersistence = null;
       consoleChatStore?.close();
       consoleChatStore = null;
-      consoleHistoryPersistence = null;
       startServer = null;
       kernel = null;
       augmentRoutes = [];

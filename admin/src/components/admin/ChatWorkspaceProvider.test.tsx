@@ -4,6 +4,7 @@ import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { DashboardProvider } from "@/components/admin/DashboardContext";
 import {
   ChatWorkspaceProvider,
+  shouldDeferDetailReconciliation,
   useChatWorkspace,
   type ChatWorkspaceContextValue,
 } from "@/components/admin/ChatWorkspaceProvider";
@@ -69,6 +70,28 @@ afterEach(async () => {
 });
 
 describe("ChatWorkspaceProvider persistence", () => {
+  it("backs off only the unchanged terminal revision that failed to reconcile", () => {
+    const retry = {
+      failures: 4,
+      retryAt: 10_000,
+      failedUpdatedAt: T1,
+      failedRunStatus: "error" as const,
+    };
+
+    expect(
+      shouldDeferDetailReconciliation(retry, { updatedAt: T1, runStatus: "error" }, 1_000),
+    ).toBe(true);
+    expect(
+      shouldDeferDetailReconciliation(retry, { updatedAt: T0, runStatus: "error" }, 1_000),
+    ).toBe(false);
+    expect(
+      shouldDeferDetailReconciliation(retry, { updatedAt: T1, runStatus: "streaming" }, 1_000),
+    ).toBe(false);
+    expect(
+      shouldDeferDetailReconciliation(retry, { updatedAt: T1, runStatus: "error" }, 10_000),
+    ).toBe(false);
+  });
+
   it("hydrates summaries and lazily loads the selected transcript", async () => {
     const saved = populatedThread("saved", "Saved chat");
     const fetchImpl = mockFetch(async (path) => {
@@ -354,6 +377,79 @@ describe("ChatWorkspaceProvider persistence", () => {
     expect(harness.value.activeThread.messages.at(-1)?.content).toBe("Part and final");
     expect(harness.value.activeThread.unread).toBe(false);
     expect(calls).toContain("/console/api/chat/threads/external/read-state");
+  });
+
+  it("retries terminal error detail after a transient reconciliation failure", async () => {
+    const partial = {
+      ...populatedThread("failed-external", "Failed external run"),
+      runStatus: "streaming" as const,
+      messages: [
+        ...populatedThread("failed-external", "Failed external run").messages,
+        {
+          id: "failed-external-live-assistant",
+          role: "assistant" as const,
+          content: "Partial",
+          createdAt: T0,
+          updatedAt: T0,
+        },
+      ],
+    };
+    const terminal = {
+      ...partial,
+      updatedAt: T1,
+      runStatus: "error" as const,
+      unread: true,
+      messages: partial.messages.map((message) =>
+        message.id === "failed-external-live-assistant"
+          ? { ...message, content: "Saved failure detail", error: "Provider failed", updatedAt: T1 }
+          : message,
+      ),
+    };
+    let detailCalls = 0;
+    const fetchImpl = mockFetch(async (path) => {
+      if (path === "/console/api/chat/threads") {
+        return json({ threads: [summary(terminal)] });
+      }
+      if (path === "/console/api/chat/threads/failed-external") {
+        detailCalls++;
+        return detailCalls <= 2
+          ? json({ error: "temporary read failure" }, 500)
+          : json({ thread: terminal });
+      }
+      if (path.endsWith("/read-state")) {
+        return json({ thread: { ...summary(terminal), unread: false, lastReadAt: T1 } });
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    const harness = await mountProvider({
+      fetchImpl,
+      initialState: createChatWorkspace(partial),
+    });
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, EXTERNAL_POLL_TEST_WAIT_MS));
+    });
+    expect(detailCalls).toBe(1);
+    expect(harness.value.activeThread.runStatus).toBe("error");
+    expect(harness.value.activeThread.messages.at(-1)?.error).toContain("could not be refreshed");
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, EXTERNAL_POLL_TEST_WAIT_MS));
+    });
+    expect(detailCalls).toBe(2);
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, EXTERNAL_POLL_TEST_WAIT_MS));
+    });
+    expect(detailCalls).toBe(2);
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, EXTERNAL_POLL_TEST_WAIT_MS));
+    });
+    expect(detailCalls).toBeGreaterThanOrEqual(3);
+    expect(harness.value.activeThread.messages.at(-1)).toMatchObject({
+      content: "Saved failure detail",
+      error: "Provider failed",
+    });
   });
 
   it("reconciles cross-tab additions and deletions instead of polling stale navigation", async () => {

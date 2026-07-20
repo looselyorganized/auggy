@@ -42,6 +42,7 @@ function startRun(
   threadId: string,
   clientRunId = "run-1",
   at = T1,
+  model = MODEL,
 ): ChatWorkspaceState {
   return chatWorkspaceReducer(state, {
     type: "run.start",
@@ -49,7 +50,7 @@ function startRun(
     threadId,
     userMessage: message(`${clientRunId}-user`, "user", "  Review\n my agent  ", at),
     assistantMessage: message(`${clientRunId}-assistant`, "assistant", "", at),
-    model: MODEL,
+    model,
     at,
   });
 }
@@ -209,7 +210,7 @@ describe("chat workspace drafts and navigation", () => {
 });
 
 describe("chat workspace run ownership", () => {
-  it("atomically adds both messages, derives the title, freezes the model, and claims the run", () => {
+  it("atomically adds both messages, records the run model, and claims the run", () => {
     const state = startRun(createChatWorkspace(thread("one")), "one");
     expect(state.activeRun).toEqual({
       clientRunId: "run-1",
@@ -225,6 +226,18 @@ describe("chat workspace run ownership", () => {
       "user",
       "assistant",
     ]);
+  });
+
+  it("updates model attribution when a populated thread continues after model rotation", () => {
+    const existing = {
+      ...thread("one"),
+      model: { id: "old", displayName: "Old model" },
+      messages: [message("earlier", "user", "Earlier question")],
+    };
+    const nextModel = { id: "new", displayName: "New model", provider: "test" };
+    const state = startRun(createChatWorkspace(existing), "one", "run-1", T1, nextModel);
+
+    expect(getActiveChatThread(state)?.model).toEqual(nextModel);
   });
 
   it("allows only one global run", () => {

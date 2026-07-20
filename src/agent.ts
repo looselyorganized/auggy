@@ -155,9 +155,16 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
     }
 
     if (source === "inject" && persistence === undefined && restored) {
-      // Kernel-internal continuation of an already-authorized thread. It
-      // inherits the exact persistence association established by the
-      // transport request and is still committed before releasing the lock.
+      // An injected continuation may reuse the transport-established
+      // persistence capability, but never its identity. The injected trigger
+      // must independently carry the same resolved peer and pass the store's
+      // exact owner check before model-visible history is exposed.
+      if (!peer) {
+        throw new Error(
+          `Thread history access denied for "${threadId}": resolved peer identity is required`,
+        );
+      }
+      await restored.persistence.assertAccess(threadId, peer);
       return restored;
     }
 

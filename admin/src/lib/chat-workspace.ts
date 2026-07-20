@@ -463,7 +463,10 @@ export function chatWorkspaceReducer(
           thread.messages.some((message) => message.role === "user")
             ? thread.title
             : action.title?.trim() || deriveChatThreadTitle(action.userMessage.content),
-        model: thread.messages.length === 0 ? action.model : thread.model,
+        // A thread may continue after the agent's configured model changes.
+        // Attribute the conversation to the model serving the latest run;
+        // retain the last known snapshot only when runtime metadata is absent.
+        model: action.model ?? thread.model,
         messages: [...thread.messages, action.userMessage, action.assistantMessage],
         runStatus: "streaming",
         updatedAt: action.at,

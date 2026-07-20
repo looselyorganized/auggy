@@ -806,6 +806,11 @@ endpoints are intentionally not promoted as top-level `0.5` console tabs.
 | `GET` | `/console/capabilities` | Runtime map of augments, routes, tools, memory, auth posture, and warnings. |
 | `GET` | `/console/api/dashboard` | Agent card, agent metadata, augment summaries, tool inventory, web posture, live route manifest, CSRF tokens, skills snapshot, and admin blocks. |
 | `POST` | `/console/api/chat` | CSRF-protected chat proxy to `/agent/run`. |
+| `GET` | `/console/api/chat/threads` | Authenticated conversation summaries for the creator console. |
+| `GET` | `/console/api/chat/threads/<threadId>` | Authenticated conversation detail and transcript. |
+| `POST` | `/console/api/chat/threads/<threadId>/rename` | CSRF-protected conversation rename. |
+| `POST` | `/console/api/chat/threads/<threadId>/read-state` | CSRF-protected read/unread update. |
+| `POST` | `/console/api/chat/threads/<threadId>/delete` | CSRF-protected conversation deletion. |
 | `POST` | `/console/action/<id>` | Augment-level action dispatch. CSRF-protected. |
 | `POST` | `/console/action/<id>/row/<rowKey>` | Row-scoped action dispatch. CSRF-protected. |
 

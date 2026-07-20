@@ -377,6 +377,30 @@ describe("createOllamaEngine — streaming", () => {
     expect(lastChatArgs).toBeNull();
   });
 
+  test("does not start a buffered request when the AbortSignal is already aborted", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const engine = createOllamaEngine({ model: "llama3.2" });
+
+    await expect(
+      engine.complete(emptyPrompt(), { signal: controller.signal }),
+    ).rejects.toMatchObject({ name: "AbortError" });
+    expect(lastChatArgs).toBeNull();
+  });
+
+  test("uses Ollama's abortable stream when a buffered call has a signal", async () => {
+    const controller = new AbortController();
+    const engine = createOllamaEngine({ model: "llama3.2" });
+    nextStreamChunks = [
+      { ...defaultResponse(), message: { role: "assistant", content: "buffered" } },
+    ];
+
+    const result = await engine.complete(emptyPrompt(), { signal: controller.signal });
+
+    expect(lastChatArgs?.stream).toBe(true);
+    expect(result.content).toBe("buffered");
+  });
+
   test("emits text_delta for each chunk + buffers final ModelResponse", async () => {
     const engine = createOllamaEngine({ model: "llama3.2" });
     nextStreamChunks = [

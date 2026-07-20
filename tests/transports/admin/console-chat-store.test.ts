@@ -8,6 +8,7 @@ import {
   CONSOLE_CHAT_SCHEMA_VERSION,
   consoleChatOwnerMatchesPeer,
   createConsoleChatStore,
+  createDeferredConsoleThreadHistoryPersistence,
   createConsoleThreadHistoryPersistence,
   type AppendConsoleChatMessageInput,
   type ConsoleChatStore,
@@ -312,6 +313,133 @@ describe("console chat SQLite store", () => {
     store.saveKernelHistory(THREAD.id, [], 1_300);
     expect(store.clearKernelHistory(THREAD.id)).toBe(true);
     expect(store.clearKernelHistory(THREAD.id)).toBe(false);
+  });
+
+  it("defers console kernel history until the transcript finishes atomically", async () => {
+    const { store } = await openStore();
+    store.createThread(THREAD);
+    store.saveKernelHistory(THREAD.id, KERNEL_HISTORY.slice(0, 1), 1_050);
+    store.beginRun({
+      thread: THREAD,
+      peer: CREATOR_PEER,
+      runId: "run-1",
+      userMessage: USER_MESSAGE,
+      assistantMessage: ASSISTANT_MESSAGE,
+    });
+    const persistence = createDeferredConsoleThreadHistoryPersistence(store);
+    const nextHistory = [...KERNEL_HISTORY, { ...KERNEL_HISTORY[1]!, id: "kernel-assistant-2" }];
+
+    await persistence.commit(THREAD.id, CREATOR_PEER, {
+      version: 1,
+      messages: nextHistory,
+    });
+    expect(store.loadKernelHistory(THREAD.id)).toEqual(KERNEL_HISTORY.slice(0, 1));
+
+    const snapshot = persistence.pendingSnapshot(THREAD.id, CREATOR_PEER);
+    expect(snapshot).toEqual({ version: 1, messages: nextHistory });
+    expect(
+      store.finishRunWithKernelHistory(
+        THREAD.id,
+        "run-1",
+        ASSISTANT_MESSAGE.id,
+        CREATOR_PEER,
+        snapshot!,
+        {
+          status: "complete",
+          content: "Yes.",
+          unread: true,
+          updatedAt: 1_300,
+        },
+      ),
+    ).toMatchObject({ runStatus: "complete", messages: [USER_MESSAGE, expect.any(Object)] });
+    persistence.discardPending(THREAD.id);
+    expect(persistence.pendingSnapshot(THREAD.id, CREATOR_PEER)).toBeNull();
+    expect(store.loadKernelHistory(THREAD.id)).toEqual(nextHistory);
+  });
+
+  it("commits deferred-adapter history immediately outside an active console run", async () => {
+    const { store } = await openStore();
+    store.createThread(THREAD);
+    const persistence = createDeferredConsoleThreadHistoryPersistence(store);
+
+    await persistence.commit(THREAD.id, CREATOR_PEER, {
+      version: 1,
+      messages: KERNEL_HISTORY,
+    });
+
+    expect(store.loadKernelHistory(THREAD.id)).toEqual(KERNEL_HISTORY);
+    expect(persistence.pendingSnapshot(THREAD.id, CREATOR_PEER)).toBeNull();
+  });
+
+  it("rolls back deferred history when atomic transcript finalization fails", async () => {
+    const { store } = await openStore();
+    store.createThread(THREAD);
+    const priorHistory = KERNEL_HISTORY.slice(0, 1);
+    store.saveKernelHistory(THREAD.id, priorHistory, 1_050);
+    store.beginRun({
+      thread: THREAD,
+      peer: CREATOR_PEER,
+      runId: "run-1",
+      userMessage: USER_MESSAGE,
+      assistantMessage: ASSISTANT_MESSAGE,
+    });
+    const persistence = createDeferredConsoleThreadHistoryPersistence(store);
+    await persistence.commit(THREAD.id, CREATOR_PEER, {
+      version: 1,
+      messages: KERNEL_HISTORY,
+    });
+
+    expect(() =>
+      store.finishRunWithKernelHistory(
+        THREAD.id,
+        "run-1",
+        ASSISTANT_MESSAGE.id,
+        CREATOR_PEER,
+        persistence.pendingSnapshot(THREAD.id, CREATOR_PEER)!,
+        {
+          status: "complete",
+          content: "must roll back",
+          unread: true,
+          updatedAt: 1_000,
+        },
+      ),
+    ).toThrow(/predates message/);
+    expect(store.loadKernelHistory(THREAD.id)).toEqual(priorHistory);
+    expect(store.getThread(THREAD.id)).toMatchObject({
+      runStatus: "streaming",
+      messages: [
+        expect.objectContaining({ id: USER_MESSAGE.id }),
+        expect.objectContaining({ id: ASSISTANT_MESSAGE.id, content: "" }),
+      ],
+    });
+    expect(persistence.pendingSnapshot(THREAD.id, CREATOR_PEER)).not.toBeNull();
+  });
+
+  it("drops an unfinalized deferred snapshot across a crash boundary", async () => {
+    const { dbPath, store } = await openStore(2_000);
+    store.createThread(THREAD);
+    const priorHistory = KERNEL_HISTORY.slice(0, 1);
+    store.saveKernelHistory(THREAD.id, priorHistory, 1_050);
+    store.beginRun({
+      thread: THREAD,
+      peer: CREATOR_PEER,
+      runId: "crashed-run",
+      userMessage: USER_MESSAGE,
+      assistantMessage: ASSISTANT_MESSAGE,
+    });
+    const persistence = createDeferredConsoleThreadHistoryPersistence(store);
+    await persistence.commit(THREAD.id, CREATOR_PEER, {
+      version: 1,
+      messages: KERNEL_HISTORY,
+    });
+    expect(persistence.pendingSnapshot(THREAD.id, CREATOR_PEER)).not.toBeNull();
+
+    store.close();
+    stores.pop();
+    const reopened = createConsoleChatStore({ dbPath, now: () => 5_000 });
+    stores.push(reopened);
+    expect(reopened.getThread(THREAD.id)).toMatchObject({ runStatus: "interrupted" });
+    expect(reopened.loadKernelHistory(THREAD.id)).toEqual(priorHistory);
   });
 
   it("converts stale streaming threads to interrupted when reopened", async () => {
@@ -782,34 +910,39 @@ describe("console chat SQLite store", () => {
     ).toMatchObject({ runStatus: "interrupted", unread: false });
   });
 
-  it("preserves populated thread metadata and treats a null run model as unspecified", async () => {
+  it("rotates populated thread model metadata and treats a null run model as unspecified", async () => {
     const { store } = await openStore();
     store.createThreadWithMessages(THREAD, [USER_MESSAGE, ASSISTANT_MESSAGE]);
 
-    expect(() =>
-      store.beginRun({
-        thread: {
-          ...THREAD,
-          title: "A stale client title",
-          model: { provider: "other", id: "changed", displayName: "Changed" },
-          updatedAt: 1_300,
-        },
-        peer: CREATOR_PEER,
-        runId: "model-mismatch",
-        userMessage: { ...USER_MESSAGE, id: "user-2", createdAt: 1_300 },
-        assistantMessage: { ...ASSISTANT_MESSAGE, id: "assistant-2", createdAt: 1_301 },
-      }),
-    ).toThrow(/identity and model are immutable/);
+    const rotated = store.beginRun({
+      thread: {
+        ...THREAD,
+        title: "A stale client title",
+        model: { provider: "other", id: "changed", displayName: "Changed" },
+        updatedAt: 1_300,
+      },
+      peer: CREATOR_PEER,
+      runId: "model-rotation",
+      userMessage: { ...USER_MESSAGE, id: "user-2", createdAt: 1_300 },
+      assistantMessage: { ...ASSISTANT_MESSAGE, id: "assistant-2", createdAt: 1_301 },
+    });
+    expect(rotated.title).toBe(THREAD.title);
+    expect(rotated.model).toEqual({ provider: "other", id: "changed", displayName: "Changed" });
+    store.finishRun(THREAD.id, "model-rotation", "assistant-2", {
+      status: "complete",
+      unread: false,
+      updatedAt: 1_302,
+    });
 
     const begun = store.beginRun({
       thread: { ...THREAD, title: "A stale client title", model: null, updatedAt: 1_300 },
       peer: CREATOR_PEER,
       runId: "run-2",
-      userMessage: { ...USER_MESSAGE, id: "user-2", createdAt: 1_300 },
-      assistantMessage: { ...ASSISTANT_MESSAGE, id: "assistant-2", createdAt: 1_301 },
+      userMessage: { ...USER_MESSAGE, id: "user-3", createdAt: 1_303 },
+      assistantMessage: { ...ASSISTANT_MESSAGE, id: "assistant-3", createdAt: 1_304 },
     });
     expect(begun.title).toBe(THREAD.title);
-    expect(begun.model).toEqual(THREAD.model);
+    expect(begun.model).toEqual(rotated.model);
   });
 
   it("accepts titles up to 80 Unicode code points", async () => {

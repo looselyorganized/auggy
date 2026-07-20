@@ -200,15 +200,26 @@ function maybeVendorLocalAuggyTarball(args: {
 }
 
 function configuredDatabaseArtifacts(config: ReturnType<typeof parseConfig>): string[] {
-  const artifacts: string[] = [];
+  const artifacts = new Set<string>();
+  const addDatabase = (dbPath: string) => {
+    for (const suffix of ["", "-wal", "-shm", "-journal"]) {
+      artifacts.add(`${dbPath}${suffix}`);
+    }
+  };
   for (const augment of config.augments) {
     for (const field of ["dbPath", "layeredMemoryDbPath"] as const) {
       const dbPath = augment.options?.[field];
       if (typeof dbPath !== "string" || dbPath.trim() === "") continue;
-      artifacts.push(dbPath, `${dbPath}-wal`, `${dbPath}-shm`, `${dbPath}-journal`);
+      addDatabase(dbPath);
+    }
+    if (augment.type === "webTransport") {
+      const consoleDbPath = asRecord(augment.options?.consoleChat)?.dbPath;
+      if (typeof consoleDbPath === "string" && consoleDbPath.trim() !== "") {
+        addDatabase(consoleDbPath);
+      }
     }
   }
-  return artifacts;
+  return [...artifacts];
 }
 
 function resolveFileAuggyTarball(spec: string, agentDir: string): string | null {
