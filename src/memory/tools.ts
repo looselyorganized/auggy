@@ -17,7 +17,7 @@ const DEFAULT_MAX_MEMORY_OPS_PER_TURN = 20;
 const EMERGENCY_CLEANUP_THRESHOLD = 1000;
 const MAX_DERIVED_TOPIC_LENGTH = 80;
 const NO_PEER_MEMORY_GUIDANCE =
-  "No writable current-peer memory provider is available. Nothing was persisted. Peer-specific facts require a writable namespace provider such as layeredMemory and a stable peer identity for cross-session recall. Do not retry a peer fact under an agent-global label.";
+  "No writable current-peer memory provider is available. Nothing was persisted. Peer-specific facts require a writable namespace provider such as layeredMemory and a stable peer identity for cross-session recall. Do not retry a peer fact under an exact static label.";
 
 function notPersisted(message: string): ToolResult {
   return { content: `NOT_PERSISTED: ${message}`, isError: true };
@@ -183,7 +183,7 @@ export function createMemoryTools(
   const memoryWrite = defineTool({
     name: "memory_write",
     description:
-      'Persist one of two distinct memory types. For a peer-specific fact, use topic + content; this requires a writable namespace provider such as layeredMemory. For creator-approved, agent-global operating behavior, use exact label "learned" + content. Never put visitor facts in "learned". Do not provide both label and topic. A write is persisted only when the result starts with PERSISTED.',
+      "Persist memory. For a peer-specific fact, use topic + content; this requires a writable namespace provider such as layeredMemory. Advanced configurations may expose exact writable static labels through label + content. Never put peer facts in a static label. Do not provide both label and topic. A write is persisted only when the result starts with PERSISTED.",
     category: "memory",
     input: z.object({
       label: z.string().optional().describe("Optional exact memory label to write to"),

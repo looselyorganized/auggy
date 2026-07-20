@@ -75,8 +75,8 @@ describe("auggy builder skill mirrors", () => {
       "utf-8",
     );
 
-    expect(reference).toContain("operator origin");
-    expect(reference).toContain("runtime-verified `creator` turns");
+    expect(reference).toContain("`layeredMemory`");
+    expect(reference).toContain("current-peer topic memory");
     expect(reference).toContain("stable runtime identity");
     expect(reference).toContain("`PERSISTED`");
     expect(reference).toContain("`NOT_PERSISTED`");

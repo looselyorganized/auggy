@@ -290,7 +290,7 @@ describe("listAugments and removeAugment", () => {
 
   test("formats augment list as human label plus code type", () => {
     const text = formatAugmentList([
-      { label: "File Memory", name: "learned", type: "fileMemory", category: "built-in" },
+      { label: "File Memory", name: "notes", type: "fileMemory", category: "built-in" },
       { label: "Web Fetch", name: "fetch", type: "webFetch", category: "built-in" },
       {
         label: "Weather",
@@ -307,7 +307,7 @@ describe("listAugments and removeAugment", () => {
     expect(text).toContain("SOURCE");
     expect(text).toContain("File Memory");
     expect(text).toContain("fileMemory");
-    expect(text).not.toContain("learned");
+    expect(text).not.toContain("notes");
     expect(text).toContain("Weather");
     expect(text).toContain("built-in");
     expect(text).toContain("custom");

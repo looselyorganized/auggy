@@ -576,10 +576,6 @@ async function runCreateIntoDir(
       }),
     );
 
-    if (augments.some((e) => e.type === "fileMemory")) {
-      writeFileSync(join(tempDir, "learned-behaviors.md"), "");
-    }
-
     if (knowledgeSelected) {
       writeKnowledgeScaffold(
         tempDir,

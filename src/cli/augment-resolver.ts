@@ -185,22 +185,12 @@ function resolveSqlitePath(
 
 function resolveFileMemory(opts: Record<string, unknown>, agentDir: string): Augment {
   const source = opts.source as string;
-  const resolvedSource = resolvePath(source, agentDir);
-  const isLearnedBehaviorStore =
-    opts.label === "learned" && /(^|\/)learned(?:-behaviors)?\.md$/.test(resolvedSource);
-  const learnedBehaviorBase = isLearnedBehaviorStore
-    ? resolvedSource.replace(/learned(?:-behaviors)?\.md$/, "")
-    : undefined;
-
   return fileMemory({
     label: opts.label as string,
-    source: learnedBehaviorBase ? `${learnedBehaviorBase}learned-behaviors.md` : resolvedSource,
-    fallbackSources: learnedBehaviorBase ? [`${learnedBehaviorBase}learned.md`] : undefined,
+    source: resolvePath(source, agentDir),
     mutable: opts.mutable as boolean,
-    origin: isLearnedBehaviorStore ? "operator" : (opts.origin as ContextOrigin),
-    writeTrustLevels: isLearnedBehaviorStore
-      ? ["creator"]
-      : (opts.writeTrustLevels as ("creator" | "agent" | "public")[] | undefined),
+    origin: opts.origin as ContextOrigin,
+    writeTrustLevels: opts.writeTrustLevels as ("creator" | "agent" | "public")[] | undefined,
     priority: opts.priority as "required" | "high" | "normal" | "low" | "evictable",
     placement: opts.placement as "system" | "preamble" | "assistant-preamble",
     eviction: opts.eviction as "never" | "summarize" | "drop",

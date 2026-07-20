@@ -30,7 +30,7 @@ describe("buildPreamble", () => {
     expect(preamble).toContain("web");
   });
 
-  it("marks creator peers as verified creator/operator and permits learned behavior updates", () => {
+  it("marks creator peers as verified creator/operator", () => {
     const peer: PeerIdentity = {
       id: "creator",
       kind: "human",
@@ -42,9 +42,7 @@ describe("buildPreamble", () => {
     expect(preamble).toContain("Runtime identity: creator");
     expect(preamble).toContain("Peer: Mike (human)");
     expect(preamble).toContain("verified creator/operator");
-    expect(preamble).toContain("agent-global learned behavior updates");
-    expect(preamble).toContain("`memory_write`");
-    expect(preamble).toContain('exact label "learned"');
+    expect(preamble).toContain("actions exposed to creator trust");
     expect(preamble).toContain("identity, authorization, or security policy mutable through chat");
     expect(preamble).toContain("explicit file/config edit flow");
   });
@@ -62,7 +60,7 @@ describe("buildPreamble", () => {
     expect(preamble).toContain("(trust: public)");
     expect(preamble).toContain("Public substate: recognized");
     expect(preamble).not.toContain("verified creator/operator");
-    expect(preamble).toContain("This public peer cannot update agent-global learned behavior");
+    expect(preamble).toContain("This public peer cannot update identity");
   });
 
   const trustStates: Array<{ name: string; peer: PeerIdentity | null }> = [

@@ -92,6 +92,11 @@ describe("augment catalog", () => {
     expect(entry?.hasSkill).toBe(true);
   });
 
+  it("does not expose the removed learned-behavior fileMemory preset", () => {
+    expect(AUGMENT_CATALOG.some((entry) => entry.type === "fileMemory")).toBe(false);
+    expect(resolveCatalogEntry("fileMemory")).toBeNull();
+  });
+
   it("resolves canonical type names", () => {
     expect(resolveCatalogEntry("webFetch")?.defaultName).toBe("webFetch");
     expect(resolveCatalogEntry("turnControl")?.type).toBe("turnControl");

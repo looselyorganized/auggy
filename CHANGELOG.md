@@ -40,6 +40,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- **Scaffolded agent-global learned behavior memory.** Fresh agents no longer
+  create or mount `learned-behaviors.md`, and the CLI/runtime no longer carries
+  the legacy `learned.md` fallback, special label guidance, or related doctor
+  checks. `fileMemory` remains available for explicit static-file context and
+  continues to back the immutable `identity:` shorthand; writable visitor
+  memory belongs in `layeredMemory`.
 - **Redundant augment capability declarations.** Custom augments now describe
   their runtime shape only through concrete fields such as `tools`, `context`,
   `transport`, `memory`, routes, and lifecycle hooks. Remove

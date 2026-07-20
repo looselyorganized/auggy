@@ -245,7 +245,7 @@ describe("ContextAllocator", () => {
     });
 
     const blocks: ContextBlock[] = [
-      { ...block("learned", "Agent self-note from earlier turn"), origin: "agent" },
+      { ...block("notes", "Agent self-note from earlier turn"), origin: "agent" },
     ];
 
     const prompt = allocator.assemble(blocks, [], []);

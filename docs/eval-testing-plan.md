@@ -14,8 +14,6 @@ These are deterministic tests — no LLM involved. They verify that the runtime 
 
 | Test | What it verifies | Method |
 |------|-----------------|--------|
-| **Write survives restart** | `memory_write({ label: "learned", content: "X" })` → stop agent → start agent → `memory_read({ label: "learned" })` returns "X" | Integration test: boot agent, inject turn with tool call, stop, reboot, inject read, assert content |
-| **Write is atomic** | Partial write during crash doesn't corrupt the file | Kill process mid-write (SIGKILL), reboot, verify file is either old or new content, never corrupt |
 | **Peer memory persists** | `memory_write({ topic: "profile", content: "X" })` → restart → `memory_search({ query: "X" })` for the same peer returns it | Integration test with layeredMemory's SQLite store; repeat against the optional Supabase backend when that path changes |
 | **Memory doesn't leak across peers or agents** | Peer A's memory is invisible to peer B, and one agent namespace is invisible to another | Write with distinct runtime peer identities and agent namespaces, then search each boundary and assert isolation |
 
@@ -23,9 +21,9 @@ These are deterministic tests — no LLM involved. They verify that the runtime 
 
 | Test | What it verifies | Method |
 |------|-----------------|--------|
-| **learned-behaviors.md size after N turns** | File doesn't grow unbounded | Run 50 turns with diverse inputs, measure file size, assert under threshold (e.g., 50KB) |
-| **Context budget pressure** | Large learned-behaviors.md doesn't evict identity | Fill learned-behaviors.md to 10KB, run a turn, verify identity context block is still in the assembled prompt (check trace) |
-| **Eviction behavior** | Allocator drops learned-behaviors.md (eviction: drop) before identity (eviction: never) | Fill context to capacity, verify identity survives and learned behavior context is evicted via trace inspection |
+| **Peer-memory growth after N turns** | The episodic store does not grow without useful bounds | Run 50 turns with diverse inputs, inspect entry count and retained content |
+| **Context budget pressure** | Retrieved peer memory does not evict identity | Populate many peer memories, run a turn, and verify identity remains in the assembled prompt |
+| **Eviction behavior** | The allocator drops evictable retrieved memory before required identity | Fill context to capacity and inspect the trace |
 
 ### 1.3 Tool Mounting
 
@@ -145,9 +143,8 @@ cases:
         rubric: |
           The agent should write USEFUL information (role, institution, interest)
           not noise ("user said hello"). FAIL if the memory_write content is
-          trivial or redundant, or if visitor-specific facts are written to the
-          agent-global learned-behaviors file. PASS if it captures actionable
-          visitor context in the current peer's layered memory.
+          trivial or redundant. PASS if it captures actionable visitor context
+          in the current peer's layered memory.
 ```
 
 ### 2.3 Grader Types
@@ -205,7 +202,7 @@ response: {agent_response}
 | **Cost per turn** | Input + output tokens × model price | `TurnTrace.inferenceSteps` |
 | **Latency (p50, p95)** | Time from request to final response | `TurnTrace.durationMs` |
 | **Tool invocation accuracy** | Correct tool called with correct args | Eval graders |
-| **Memory write quality** | Useful vs noise ratio in learned-behaviors.md and peer memory | LLM judge on memory_write content |
+| **Memory write quality** | Useful vs noise ratio in peer memory | LLM judge on memory_write content |
 | **Tokens per turn** | Total tokens consumed | Trace |
 
 ### 3.3 Anti-metrics (explicitly NOT tracked as quality signals)
@@ -262,11 +259,11 @@ This avoids:
 
 Before building `auggy eval run`, test these manually against a running Zip agent:
 
-### Memory & Learning
-- [ ] Send "My name is Alice" → With `layeredMemory` installed, does it write peer memory instead of learned behaviors?
+### Memory
+- [ ] Send "My name is Alice" → With `layeredMemory` installed, does it write useful peer memory?
 - [ ] Stop agent, restart → Does it remember Alice?
-- [ ] Send 20 messages → How big is learned-behaviors.md? Is the content useful or noise?
-- [ ] Send "Forget everything" → Does it comply? (It shouldn't — identity is immutable, learned is mutable but should resist)
+- [ ] Send 20 messages → How many peer-memory entries exist? Are they useful or noise?
+- [ ] Send "Forget everything" → Does it erase only the current peer's memory while leaving identity untouched?
 
 ### Tool Use
 - [ ] Send a URL → Does it use web_fetch?
@@ -340,7 +337,7 @@ A healthy eval practice for Auggy agents:
 
 ```
 Every commit:
-  → bun test (310 runtime tests, deterministic, <2s)
+  → bun test (deterministic runtime suite)
   → auggy eval run eval/regression/ (20-50 cases, Pass^3 ≥95%)
 
 Every feature:
@@ -348,7 +345,7 @@ Every feature:
   → Manual transcript review of 5-10 cases
 
 Weekly:
-  → Review learned-behaviors.md growth across all agents
+  → Review peer-memory growth across all agents
   → Sample 10 production conversations for quality
   → Check cost/latency trends
 

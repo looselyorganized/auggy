@@ -33,7 +33,6 @@ The principle: Auggy ships the *contracts* (`MemoryProviderSpec`, `TransportSpec
 
 Fresh agents are scaffolded for the shortest path to chat:
 
-- `fileMemory` learned-behavior store
 - `filesystem` with read-only `./skills` and writable `./workspace`
 - `webTransport` for `/console`, `/console/chat`, `/agent/run`, and `/health`
 - `webFetch`
@@ -105,17 +104,11 @@ A static `MemoryProviderSpec` backed by a single file. Loads the file's contents
 
 ### When to use it
 
-Two main use cases:
-
-**1. Identity / soul.** The agent's foundational character — who it is, how it talks, what it knows about itself. Pinned (`mutable: false`), operator-origin, system-placement, never-evict. The model sees it on every turn as part of the system prompt. This is what makes Zip "Zip" instead of a generic assistant.
-
-**2. Creator-approved learned behavior.** Agent-global operating guidance the
-runtime-verified creator can update across turns. The default store is
-operator-origin, preamble-placement, drop-on-eviction, and creator-only for
-writes. The model reads and writes it through the generic `memory_read` and
-`memory_write({ label: "learned", ... })` tools. Do not use it for operator
-identity, authorization facts, autonomous policy changes, or durable
-per-visitor profile data; peer-scoped memory belongs in `layeredMemory`.
+The primary use case is identity: the agent's foundational character, voice,
+and boundaries. It is pinned (`mutable: false`), operator-origin,
+system-placement, and never evicted. The `identity:` shorthand creates this
+provider automatically. Advanced configurations can also mount other explicit
+static files; use `layeredMemory` for writable peer-scoped memory.
 
 ### Why it's built in
 

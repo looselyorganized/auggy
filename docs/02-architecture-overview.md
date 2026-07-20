@@ -124,7 +124,7 @@ Built-in augments. This directory is intentionally small — only augments that 
 
 | File | Responsibility |
 |------|---------------|
-| `file-memory/` | `fileMemory(opts)` — static memory provider backed by a single file. Loads at boot, optionally writes back. Used for identity (`mutable: false`) and self-notes (`mutable: true`). |
+| `file-memory/` | `fileMemory(opts)` — static memory provider backed by a single file. Loads at boot and optionally writes back. The `identity:` shorthand uses an immutable instance. |
 | `supabase-memory/` | `supabaseMemory(opts)` — namespace memory provider backed by a Supabase table. Insert + ILIKE search + label-prefix isolation. |
 | `layered-memory/` | `layeredMemory(opts)` — peer-scoped episodic memory with L0–L3 provenance tiers (SQLite or Supabase backend). Includes background fact-extraction (`autoSave`). |
 | `filesystem/` | `filesystem(opts)` — multi-mount scoped file access (6 tools, realpath-based sandbox). Bundled `skill/SKILL.md` shipped alongside. |

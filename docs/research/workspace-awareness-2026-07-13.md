@@ -17,11 +17,10 @@ or “put everything in a vector database.” It is:
 3. maintain durable artifacts through explicit operations;
 4. keep destructive maintenance bounded and permissioned.
 
-This closes a real gap in Auggy. `fileMemory` automatically supplies global
-guidance such as `learned-behaviors.md`, and `layeredMemory` retrieves
-peer-scoped facts from a database. The filesystem could already read and write
-arbitrary workspace artifacts, but Auggy had no automatic signal that those
-artifacts existed.
+This closes a real gap in Auggy. Immutable identity supplies global guidance,
+and `layeredMemory` retrieves peer-scoped facts from a database. The filesystem
+could already read and write arbitrary workspace artifacts, but Auggy had no
+automatic signal that those artifacts existed.
 
 ## Research Evidence
 

@@ -30,7 +30,7 @@ When this file disagrees with code, code wins.
 
 | Augment or capability | Status | Primary docs | Notes |
 | --- | --- | --- | --- |
-| File memory | Published | [`05`](./05-memory-subsystem.md), [`07`](./07-built-in-augments.md) | Identity and creator-approved learned behavior |
+| File memory | Published | [`05`](./05-memory-subsystem.md), [`07`](./07-built-in-augments.md) | Static file-backed context; used internally by the `identity:` shorthand |
 | Filesystem | Published | [`07`](./07-built-in-augments.md) | Named scoped mounts for skills and workspace data |
 | Web fetch | Published | [`07`](./07-built-in-augments.md) | Public HTTP fetching with SSRF protection |
 | Turn control | Published | [`17`](./17-turn-control.md) | Explicit input-required turns |

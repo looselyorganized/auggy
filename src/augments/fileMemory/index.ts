@@ -15,7 +15,6 @@ import type {
 export interface FileMemoryOptions {
   label: string;
   source: string;
-  fallbackSources?: string[];
   mutable: boolean;
   /** Optional peer trust write allowlist. Omit to use the origin-based policy. */
   writeTrustLevels?: readonly TrustLevel[];
@@ -31,8 +30,8 @@ export interface FileMemoryOptions {
  * serves read requests from the cache, and (if mutable) persists
  * writes both in-memory and to disk.
  *
- * Used for identity (immutable operator guidance) and for creator-approved
- * learned behavior (mutable operator guidance with a write trust allowlist).
+ * Used for identity (immutable operator guidance) and other explicitly
+ * configured static file-backed context.
  */
 export function fileMemory(opts: FileMemoryOptions): Augment {
   let cache: string | null = null;
@@ -97,12 +96,6 @@ export function fileMemory(opts: FileMemoryOptions): Augment {
           rows: [
             { label: "Label", value: opts.label },
             { label: "Source path", value: opts.source },
-            ...(opts.fallbackSources?.length
-              ? [{ label: "Fallback source paths", value: opts.fallbackSources.join(", ") }]
-              : []),
-            ...(activeSource !== opts.source
-              ? [{ label: "Active source path", value: activeSource }]
-              : []),
             { label: "Mutable", value: opts.mutable ? "true" : "false" },
             { label: "Origin", value: opts.origin },
             { label: "Priority", value: opts.priority },
@@ -147,18 +140,9 @@ export function fileMemory(opts: FileMemoryOptions): Augment {
       write,
     },
     onBoot: async () => {
-      let lastError: unknown;
-      for (const source of [opts.source, ...(opts.fallbackSources ?? [])]) {
-        try {
-          cache = await readFile(source, "utf-8");
-          activeSource = source;
-          activeWriteTarget = await realpath(source);
-          return;
-        } catch (err) {
-          lastError = err;
-        }
-      }
-      throw lastError;
+      cache = await readFile(opts.source, "utf-8");
+      activeSource = opts.source;
+      activeWriteTarget = await realpath(opts.source);
     },
     adminInfo,
   };

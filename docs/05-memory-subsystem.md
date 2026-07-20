@@ -221,11 +221,9 @@ Read, write, search, and list enforce the same trust rule before executing:
 
 For writes, a provider may additionally declare `writeTrustLevels`. This is a
 peer trust allowlist layered on top of the origin rule; peerless
-internal/scheduled turns do not satisfy it. The scaffolded `learned` provider
-uses `writeTrustLevels: ["creator"]`, so admitted agents and public peers cannot
-change agent-global behavior even though creator and agent trust can normally
-access non-peer memory. `memory_forget` has its own stricter destructive-action
-gate.
+internal/scheduled turns do not satisfy it. This lets advanced static-memory
+configurations restrict writes more tightly than their origin alone would.
+`memory_forget` has its own stricter destructive-action gate.
 
 Null peer (internal/scheduled triggers) is treated as creator trust for the
 general origin rule, per `effectiveTrustLevel` in capability-table.ts. It does
@@ -256,11 +254,11 @@ topic. The model does not invent visitor IDs or internal labels. If multiple
 writable namespace providers are visible, the tool returns an error naming the
 candidates; retry with `provider`.
 
-Exact label writes are still supported. The default `learned` label is for
-creator-approved agent-global operating behavior, never visitor facts:
+Exact label writes remain available for explicitly configured writable static
+providers:
 
 ```ts
-memory_write({ label: "learned", content: "..." })
+memory_write({ label: "project-notes", content: "..." })
 ```
 
 For exact labels, routing is the same as `memory_read`: `lookupProvider` finds

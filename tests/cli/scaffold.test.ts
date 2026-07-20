@@ -18,7 +18,7 @@ describe("scaffoldAgent", () => {
     expect(existsSync(join(dir, "agent.yaml"))).toBe(true);
     expect(existsSync(join(dir, ".env"))).toBe(true);
     expect(existsSync(join(dir, "identity.md"))).toBe(true);
-    expect(existsSync(join(dir, "learned-behaviors.md"))).toBe(true);
+    expect(existsSync(join(dir, "learned-behaviors.md"))).toBe(false);
     expect(existsSync(join(dir, "learned.md"))).toBe(false);
     expect(existsSync(join(dir, ".gitignore"))).toBe(true);
     expect(existsSync(join(dir, "skills"))).toBe(true);
@@ -250,13 +250,7 @@ describe("scaffoldAgent", () => {
     const parsed = parseYaml(readFileSync(join(dir, "agent.yaml"), "utf-8")) as {
       augments: string[];
     };
-    expect(parsed.augments).toEqual([
-      "fileMemory",
-      "filesystem",
-      "webTransport",
-      "webFetch",
-      "turnControl",
-    ]);
+    expect(parsed.augments).toEqual(["filesystem", "webTransport", "webFetch", "turnControl"]);
   });
 
   test(".gitignore includes budgets.db lines", () => {
@@ -378,7 +372,6 @@ describe("scaffoldAgent", () => {
 
       expect(yaml).toContain("identity: ./identity.md");
       // No explicit fileMemory entry with placement: system in default scaffold.
-      // (The 'learned' fileMemory entry uses placement: preamble — that's fine.)
       const explicitSystemFileMemory = /placement:\s*system/i.test(yaml);
       expect(explicitSystemFileMemory).toBe(false);
     });

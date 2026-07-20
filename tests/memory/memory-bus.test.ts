@@ -107,9 +107,9 @@ describe("wireMemoryBus", () => {
     const operatorDefaults: MemoryDefaults = { ...defaults, mutable: true, origin: "operator" };
     const providers: Augment[] = [
       {
-        name: "learned-memory",
+        name: "operator-notes",
         memory: {
-          owns: { kind: "static", labels: ["learned"] },
+          owns: { kind: "static", labels: ["operator-notes"] },
           defaults: operatorDefaults,
           writeTrustLevels: ["creator"],
           read: async () => null,
@@ -151,46 +151,19 @@ describe("wireMemoryBus", () => {
       origin: "system",
       ttl: "turn",
     });
-    expect(blocks[0]!.content).toContain('Exact writable labels: "learned", "peer-note".');
-    expect(blocks[0]!.content).toContain(
-      'The "learned" label is writable for agent-global behavior.',
-    );
+    expect(blocks[0]!.content).toContain('Exact writable labels: "operator-notes", "peer-note".');
     expect(blocks[0]!.content).toContain(
       'Current-peer topic memory: writable via "layered-memory".',
     );
   });
 
-  it("describes learned memory as agent-global only for the canonical hardened shape", async () => {
+  it("does not advertise unauthorized static labels to public peers", async () => {
     const operatorDefaults: MemoryDefaults = { ...defaults, mutable: true, origin: "operator" };
     const providers: Augment[] = [
       {
-        name: "learned-memory",
+        name: "operator-notes",
         memory: {
-          owns: { kind: "static", labels: ["learned"] },
-          defaults: operatorDefaults,
-          writeTrustLevels: ["creator", "agent"],
-          read: async () => null,
-          write: async () => {},
-        },
-      },
-    ];
-
-    const wiring = wireMemoryBus(providers);
-    const blocks = await wiring.syntheticToolsAugment!.context!(turn(creatorPeer));
-    expect(Array.isArray(blocks)).toBe(true);
-    if (!Array.isArray(blocks)) throw new Error("Expected memory capability context blocks");
-
-    expect(blocks[0]!.content).toContain('Exact writable labels: "learned".');
-    expect(blocks[0]!.content).not.toContain("agent-global behavior");
-  });
-
-  it("does not advertise unauthorized global labels to public peers", async () => {
-    const operatorDefaults: MemoryDefaults = { ...defaults, mutable: true, origin: "operator" };
-    const providers: Augment[] = [
-      {
-        name: "learned-memory",
-        memory: {
-          owns: { kind: "static", labels: ["learned"] },
+          owns: { kind: "static", labels: ["operator-notes"] },
           defaults: operatorDefaults,
           read: async () => null,
           write: async () => {},
@@ -205,8 +178,7 @@ describe("wireMemoryBus", () => {
     const content = blocks[0]!.content;
 
     expect(content).toContain("Exact writable labels: none.");
-    expect(content).not.toContain('"learned"');
-    expect(content).not.toContain("agent-global");
+    expect(content).not.toContain('"operator-notes"');
     expect(content).toContain("Current-peer topic memory: unavailable");
   });
 

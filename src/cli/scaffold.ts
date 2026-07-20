@@ -6,7 +6,6 @@
  *     agent.yaml         Config (source of truth) — uses `identity:` shorthand
  *     .env               Secrets template (gitignored)
  *     identity.md        Who the agent is — security rules + voice
- *     learned-behaviors.md What the agent has learned about how to operate
  *     skills/            Skill folders (read-only fs mount), one per
  *                        tool-providing augment plus starter authoring skills
  *     data/workspace/    Agent's mutable workspace
@@ -77,7 +76,7 @@ export function scaffoldAgent(opts: ScaffoldOptions): string {
   // skill copy (which copies SKILL.md files into <agent>/skills/<augment>/).
   // The runtime `skills` augment surfaces them to the model from disk at
   // every context() call — no longer threaded into identity.md per ADR-030.
-  const augmentTypes = ["fileMemory", "filesystem", "webTransport", "webFetch", "turnControl"];
+  const augmentTypes = ["filesystem", "webTransport", "webFetch", "turnControl"];
 
   // Create directory structure.
   mkdirSync(dir, { recursive: true });
@@ -110,9 +109,6 @@ export function scaffoldAgent(opts: ScaffoldOptions): string {
       operatorName,
     }),
   );
-
-  // Write learned-behaviors.md (empty, agent appends creator-approved behavior notes).
-  writeFileSync(join(dir, "learned-behaviors.md"), "");
 
   // Write agent.yaml using the identity: shorthand (per α-5).
   writeFileSync(

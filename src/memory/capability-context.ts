@@ -51,14 +51,6 @@ export function buildMemoryCapabilityContext(
     writableTopicProviders.length > 0
       ? `writable via ${writableTopicProviders.map((name) => JSON.stringify(name)).join(", ")}`
       : "unavailable (no authorized writable namespace provider for the current peer)";
-  const learnedProvider = registry.static.get("learned")?.memory;
-  const learnedCapability =
-    staticLabels.includes("learned") &&
-    learnedProvider?.defaults.origin === "operator" &&
-    learnedProvider.writeTrustLevels?.length === 1 &&
-    learnedProvider.writeTrustLevels[0] === "creator"
-      ? ' The "learned" label is writable for agent-global behavior.'
-      : "";
   const peerIdentityCaveat =
     writableTopicProviders.length > 0 && turn.peer?.trustLevel === "public"
       ? turn.peer.publicSubstate === "recognized"
@@ -70,7 +62,7 @@ export function buildMemoryCapabilityContext(
     source: "memory-bus",
     content: [
       "Memory write destinations for this turn:",
-      `- Exact writable labels: ${exactLabels}.${learnedCapability}`,
+      `- Exact writable labels: ${exactLabels}.`,
       `- Current-peer topic memory: ${topicCapability}.${peerIdentityCaveat}`,
       "Only claim persistence after memory_write reports PERSISTED.",
     ].join("\n"),

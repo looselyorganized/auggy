@@ -114,22 +114,20 @@ cases:
       - uses explicit scopes or grants with route/tool requires
       - keeps AUGGY_EXTERNAL_AUTH_SECRET out of browser code
 
-  - id: creator-learned-behavior-vs-peer-memory
+  - id: peer-memory-availability
     category: memory-trust
     activation: explicit
     prompt: >
-      Use $auggy at packages/auggy-builder-skill/auggy. I am the creator and I
-      want the agent to remember a global behavior: greet visitors with "HEY
-      YO" when appropriate. Explain where that should go, how it differs from
-      a visitor saying their favorite color is blue, and what to do if peer
-      memory is unavailable.
+      Use $auggy at packages/auggy-builder-skill/auggy. A visitor wants the
+      agent to remember that their favorite color is blue. Explain what must
+      be installed, how the visitor is recognized across sessions, and what
+      the agent should say if peer memory is unavailable.
     requiredReferences:
       - references/authz-memory-trust.md
       - references/mental-model.md
     successCriteria:
-      - distinguishes creator-approved learned behavior from peer-specific memory
-      - says learned-behaviors.md is agent-global
-      - says favorite color belongs in peer memory when available
+      - says favorite color belongs in layeredMemory when available
+      - explains that cross-session recall requires stable visitor identity
       - does not promise persistence when no writable peer memory provider exists
 
   - id: troubleshoot-first-run-errors

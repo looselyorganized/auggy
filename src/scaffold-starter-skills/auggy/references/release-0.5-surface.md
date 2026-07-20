@@ -10,7 +10,7 @@ now, but not a `1.0` stability promise.
 - a fixed turn kernel with provider adapters,
 - composable built-in and custom augments,
 - typed tools,
-- identity, learned behavior, skills, and scoped filesystem access,
+- identity, skills, peer-scoped memory, and scoped filesystem access,
 - knowledge, web fetch, layered memory, and visitor recognition,
 - notify, published AgentMail outbound, MCP, and Telegram,
 - Railway deployment.

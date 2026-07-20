@@ -116,11 +116,11 @@ describe("createMemoryTools", () => {
     it("blocks public peer from reading origin:system label", async () => {
       const providers: Augment[] = [
         {
-          name: "learned",
+          name: "notes",
           memory: {
-            owns: { kind: "static", labels: ["learned"] },
+            owns: { kind: "static", labels: ["notes"] },
             defaults,
-            read: async () => ({ label: "learned", content: "system content" }),
+            read: async () => ({ label: "notes", content: "system content" }),
           },
         },
       ];
@@ -128,7 +128,7 @@ describe("createMemoryTools", () => {
       const { tools } = createMemoryTools(registry);
       const readTool = tools.find((t) => t.name === "memory_read")!;
       const result = await readTool.execute(
-        { label: "learned" },
+        { label: "notes" },
         {
           turnId: "t1",
           peer: { id: "vis_1", kind: "human", trustLevel: "public", sourceAugment: "web" },
@@ -308,9 +308,9 @@ describe("createMemoryTools", () => {
       const writes: string[] = [];
       const providers: Augment[] = [
         {
-          name: "learned",
+          name: "notes",
           memory: {
-            owns: { kind: "static", labels: ["learned"] },
+            owns: { kind: "static", labels: ["notes"] },
             defaults,
             writeTrustLevels: ["creator"],
             read: async () => null,
@@ -325,7 +325,7 @@ describe("createMemoryTools", () => {
       const writeTool = tools.find((t) => t.name === "memory_write")!;
 
       const agentResult = await writeTool.execute(
-        { label: "learned", content: "agent update" },
+        { label: "notes", content: "agent update" },
         {
           turnId: "agent-turn",
           peer: { id: "agent-1", kind: "agent", trustLevel: "agent", sourceAugment: "test" },
@@ -333,7 +333,7 @@ describe("createMemoryTools", () => {
         },
       );
       const publicResult = await writeTool.execute(
-        { label: "learned", content: "public update" },
+        { label: "notes", content: "public update" },
         {
           turnId: "public-turn",
           peer: { id: "visitor-1", kind: "human", trustLevel: "public", sourceAugment: "test" },
@@ -341,11 +341,11 @@ describe("createMemoryTools", () => {
         },
       );
       const internalResult = await writeTool.execute(
-        { label: "learned", content: "internal update" },
+        { label: "notes", content: "internal update" },
         { turnId: "internal-turn", peer: null, threadId: "thread-1" },
       );
       const creatorResult = await writeTool.execute(
-        { label: "learned", content: "creator update" },
+        { label: "notes", content: "creator update" },
         {
           turnId: "creator-turn",
           peer: { id: "creator-1", kind: "human", trustLevel: "creator", sourceAugment: "test" },
@@ -383,9 +383,9 @@ describe("createMemoryTools", () => {
     it("blocks public peer from writing to origin:system label", async () => {
       const providers: Augment[] = [
         {
-          name: "learned",
+          name: "notes",
           memory: {
-            owns: { kind: "static", labels: ["learned"] },
+            owns: { kind: "static", labels: ["notes"] },
             defaults,
             read: async () => null,
             write: async () => {},
@@ -396,7 +396,7 @@ describe("createMemoryTools", () => {
       const { tools } = createMemoryTools(registry);
       const writeTool = tools.find((t) => t.name === "memory_write")!;
       const result = await writeTool.execute(
-        { label: "learned", content: "poisoned" },
+        { label: "notes", content: "poisoned" },
         {
           turnId: "t1",
           peer: { id: "vis_1", kind: "human", trustLevel: "public", sourceAugment: "web" },
@@ -409,9 +409,9 @@ describe("createMemoryTools", () => {
     it("blocks public peer from writing to origin:system label", async () => {
       const providers: Augment[] = [
         {
-          name: "learned",
+          name: "notes",
           memory: {
-            owns: { kind: "static", labels: ["learned"] },
+            owns: { kind: "static", labels: ["notes"] },
             defaults,
             read: async () => null,
             write: async () => {},
@@ -422,7 +422,7 @@ describe("createMemoryTools", () => {
       const { tools } = createMemoryTools(registry);
       const writeTool = tools.find((t) => t.name === "memory_write")!;
       const result = await writeTool.execute(
-        { label: "learned", content: "poisoned" },
+        { label: "notes", content: "poisoned" },
         {
           turnId: "t1",
           peer: { id: "vis_1", kind: "human", trustLevel: "public", sourceAugment: "web" },
@@ -436,9 +436,9 @@ describe("createMemoryTools", () => {
       const writes: string[] = [];
       const providers: Augment[] = [
         {
-          name: "learned",
+          name: "notes",
           memory: {
-            owns: { kind: "static", labels: ["learned"] },
+            owns: { kind: "static", labels: ["notes"] },
             defaults,
             read: async () => null,
             write: async (_l: string, c: string) => {
@@ -451,7 +451,7 @@ describe("createMemoryTools", () => {
       const { tools } = createMemoryTools(registry);
       const writeTool = tools.find((t) => t.name === "memory_write")!;
       const result = await writeTool.execute(
-        { label: "learned", content: "operator note" },
+        { label: "notes", content: "operator note" },
         {
           turnId: "t1",
           peer: { id: "op", kind: "human", trustLevel: "creator", sourceAugment: "web" },
@@ -466,9 +466,9 @@ describe("createMemoryTools", () => {
       const writes: string[] = [];
       const providers: Augment[] = [
         {
-          name: "learned",
+          name: "notes",
           memory: {
-            owns: { kind: "static", labels: ["learned"] },
+            owns: { kind: "static", labels: ["notes"] },
             defaults,
             read: async () => null,
             write: async (_l: string, c: string) => {
@@ -481,7 +481,7 @@ describe("createMemoryTools", () => {
       const { tools } = createMemoryTools(registry);
       const writeTool = tools.find((t) => t.name === "memory_write")!;
       const result = await writeTool.execute(
-        { label: "learned", content: "facility update" },
+        { label: "notes", content: "facility update" },
         {
           turnId: "t1",
           peer: { id: "agent-1", kind: "agent", trustLevel: "agent", sourceAugment: "spine" },
@@ -621,8 +621,7 @@ describe("createMemoryTools", () => {
       const content = expectWriteError(result, "NOT_PERSISTED");
       expect(content).toContain("No writable current-peer memory provider");
       expect(content).toContain("layeredMemory");
-      expect(content).toMatch(/do not retry a peer fact under an agent-global label/i);
-      expect(content).not.toMatch(/retry.*learned|learned.*retry/i);
+      expect(content).toMatch(/do not retry a peer fact under an exact static label/i);
     });
 
     it("explains peer memory setup when selected provider is unavailable", async () => {
@@ -640,8 +639,7 @@ describe("createMemoryTools", () => {
       const content = expectWriteError(result, "NOT_PERSISTED");
       expect(content).toContain('No writable memory provider named "crmMemory"');
       expect(content).toContain("layeredMemory");
-      expect(content).toMatch(/do not retry a peer fact under an agent-global label/i);
-      expect(content).not.toMatch(/retry.*learned|learned.*retry/i);
+      expect(content).toMatch(/do not retry a peer fact under an exact static label/i);
     });
 
     it("describes current-peer memory setup in the tool description", () => {
@@ -650,8 +648,8 @@ describe("createMemoryTools", () => {
       const writeTool = tools.find((t) => t.name === "memory_write")!;
       expect(writeTool.description).toContain("topic + content");
       expect(writeTool.description).toContain("layeredMemory");
-      expect(writeTool.description).toContain('exact label "learned"');
-      expect(writeTool.description).toContain("Never put visitor facts");
+      expect(writeTool.description).toContain("exact writable static labels");
+      expect(writeTool.description).toContain("Never put peer facts in a static label");
     });
 
     it("requires provider selection when topic write has multiple writable namespaces", async () => {
@@ -738,9 +736,9 @@ describe("createMemoryTools", () => {
     it("denies write when context is missing (fail-closed)", async () => {
       const providers: Augment[] = [
         {
-          name: "learned",
+          name: "notes",
           memory: {
-            owns: { kind: "static", labels: ["learned"] },
+            owns: { kind: "static", labels: ["notes"] },
             defaults,
             read: async () => null,
             write: async () => {},
@@ -750,7 +748,7 @@ describe("createMemoryTools", () => {
       const registry = buildRegistry(providers);
       const { tools } = createMemoryTools(registry);
       const writeTool = tools.find((t) => t.name === "memory_write")!;
-      const result = await writeTool.execute({ label: "learned", content: "no context" });
+      const result = await writeTool.execute({ label: "notes", content: "no context" });
       expect(expectWriteError(result, "NOT_PERSISTED")).toMatch(/requires turn context/i);
     });
 
@@ -758,9 +756,9 @@ describe("createMemoryTools", () => {
       const writes: string[] = [];
       const providers: Augment[] = [
         {
-          name: "learned",
+          name: "notes",
           memory: {
-            owns: { kind: "static", labels: ["learned"] },
+            owns: { kind: "static", labels: ["notes"] },
             defaults,
             read: async () => null,
             write: async (_l: string, c: string) => {
@@ -773,7 +771,7 @@ describe("createMemoryTools", () => {
       const { tools } = createMemoryTools(registry);
       const writeTool = tools.find((t) => t.name === "memory_write")!;
       const result = await writeTool.execute(
-        { label: "learned", content: "internal" },
+        { label: "notes", content: "internal" },
         { turnId: "t1", peer: null, threadId: "th1" },
       );
       expect(result).toMatch(/success/i);
@@ -942,9 +940,9 @@ describe("createMemoryTools", () => {
           },
         },
         {
-          name: "learned",
+          name: "notes",
           memory: {
-            owns: { kind: "static", labels: ["learned"] },
+            owns: { kind: "static", labels: ["notes"] },
             defaults,
             read: async () => null,
           },
@@ -979,7 +977,7 @@ describe("createMemoryTools", () => {
       );
       const parsed = JSON.parse(result);
       expect(parsed.static).not.toContain("self");
-      expect(parsed.static).not.toContain("learned");
+      expect(parsed.static).not.toContain("notes");
       expect(parsed.namespaces).not.toContain("sys:*");
       expect(parsed.namespaces).toContain("ep:*");
     });

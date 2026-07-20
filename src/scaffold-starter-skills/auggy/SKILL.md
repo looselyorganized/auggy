@@ -156,7 +156,7 @@ auggy augment add visitorAuth
 ```
 
 Read `skills/auggy/references/authz-memory-trust.md` before explaining memory
-trust, learned behavior, or app auth.
+trust, peer identity, or app auth.
 
 Existing projects can refresh this general guide with `auggy skill add auggy`.
 The augment-specific memory teaching can be refreshed with
@@ -236,8 +236,6 @@ are clear. Do not require these scripts when shell access is unavailable.
 - `augments/<id>/index.ts`: common entry point for custom augment code.
 - `identity.md`: voice, purpose, boundaries, authorization-independent
   identity, and security rules.
-- `learned-behaviors.md`: mutable creator-approved agent-global behavior, not
-  visitor-specific memory.
 - `skills/`: instruction packs the agent can read on demand.
 - `knowledge/`: local and remote knowledge source config.
 - `.mcp.json`: MCP server definitions.

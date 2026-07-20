@@ -12,9 +12,9 @@
 > **Current-state note:** This brief preserves the problem statement that led
 > to `layeredMemory`. Some "current" gaps below have since changed: the memory
 > bus now has structural trust gates and `memory_forget`; `layeredMemory`
-> provides peer-scoped episodic memory. The scaffolded `learned-behaviors.md`
-> fileMemory path remains a mutable agent-global behavior store and should not
-> be treated as identity, authorization, or peer-profile authority.
+> provides peer-scoped episodic memory. The experimental mutable agent-global
+> behavior store described below was subsequently removed from the scaffold
+> and runtime conventions; it remains here only as historical context.
 
 ## The Problem
 

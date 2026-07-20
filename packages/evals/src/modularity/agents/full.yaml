@@ -22,16 +22,6 @@ augments:
       priority: required
       placement: system
       eviction: never
-  - name: learned
-    type: fileMemory
-    options:
-      label: learned
-      source: ./learned.md
-      mutable: true
-      origin: agent
-      priority: normal
-      placement: context
-      eviction: drop
   - name: files
     type: filesystem
     options:

@@ -97,7 +97,6 @@ uses capabilities, and completes turns.
 my-agent/
   agent.yaml
   identity.md
-  learned-behaviors.md
   package.json
   .env
   .env.example
@@ -114,8 +113,7 @@ my-agent/
 `agent.yaml` is the runtime entry point. It selects the engine and lists enabled
 augments in boot order.
 
-`identity.md` contains operator-authored identity and boundaries.
-`learned-behaviors.md` stores creator-approved operating guidance. Augment
+`identity.md` contains operator-authored identity and boundaries. Augment
 configuration lives under `augments/`, skills are plain Markdown folders, and
 mutable runtime data stays under `data/`.
 
@@ -128,7 +126,6 @@ Fresh agents include a compact chat-ready set:
 
 | Augment | Purpose |
 | --- | --- |
-| `fileMemory` | Loads identity and creator-approved learned behavior |
 | `filesystem` | Provides scoped access to skills and the agent workspace |
 | `webTransport` | Serves chat, console, health, and home pages |
 | `webFetch` | Fetches public URLs and APIs with SSRF protection |
@@ -157,7 +154,7 @@ Core augments make the default agent work and are installed by `auggy create`.
 
 | Augment | What it adds |
 | --- | --- |
-| `fileMemory` | File-backed identity and learned behavior |
+| `fileMemory` | File-backed static context; backs the `identity:` shorthand |
 | `filesystem` | Named, scoped filesystem mounts |
 | `webTransport` | HTTP/SSE chat and the operator console |
 | `webFetch` | Public web and API fetching |

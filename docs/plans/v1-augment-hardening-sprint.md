@@ -44,25 +44,12 @@ walkthrough relies on them.
 
 ## Hardening Order
 
-### 1. `fileMemory` learned-memory authority
+### 1. Mutable agent-global file memory (superseded)
 
-Risk: the scaffolded learned-memory file is mutable and currently lands as
-system-origin preamble context. Self-written memory must not silently become
-system-weight context.
-
-Plan:
-
-- Change the built-in learned-memory default to agent-origin context.
-- Keep identity memory separate: immutable, operator-origin, system-placement.
-- Add CLI scaffold coverage that asserts the generated `fileMemory` learned
-  config is not `origin: system`.
-
-Acceptance:
-
-- Fresh agents create `learned-behaviors.md`; legacy `learned.md` remains compatible.
-- Generated learned memory remains mutable.
-- Generated learned memory is not system-origin.
-- Existing explicit operator-authored `fileMemory` configs are unchanged.
+The interim scaffolded store was hardened during this sprint and later removed.
+Fresh agents now keep immutable identity separate and use `layeredMemory` for
+writable, peer-scoped memory. Explicit `fileMemory` remains available for
+advanced static-file configurations.
 
 ### 2. `filesystem` mount-root removal guard
 

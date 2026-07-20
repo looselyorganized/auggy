@@ -408,13 +408,7 @@ describe("runCreate scaffolding integration", () => {
     const config = parseYaml(readFileSync(join(dir, "agent.yaml"), "utf-8")) as {
       augments: string[];
     };
-    expect(config.augments).toEqual([
-      "fileMemory",
-      "filesystem",
-      "webTransport",
-      "webFetch",
-      "turnControl",
-    ]);
+    expect(config.augments).toEqual(["filesystem", "webTransport", "webFetch", "turnControl"]);
     expect(existsSync(join(dir, "skills", "auggy", "SKILL.md"))).toBe(true);
     expect(existsSync(join(dir, "skills", "filesystem", "SKILL.md"))).toBe(true);
     expect(existsSync(join(dir, "skills", "webFetch", "SKILL.md"))).toBe(true);
@@ -642,7 +636,7 @@ describe("runCreate scaffolding integration", () => {
     const dir = agentDirFor("demo-full");
     expect(existsSync(join(dir, "agent.yaml"))).toBe(true);
     expect(existsSync(join(dir, "identity.md"))).toBe(true);
-    expect(existsSync(join(dir, "learned-behaviors.md"))).toBe(true);
+    expect(existsSync(join(dir, "learned-behaviors.md"))).toBe(false);
     expect(existsSync(join(dir, "learned.md"))).toBe(false);
     expect(existsSync(join(dir, "skills"))).toBe(true);
     expect(existsSync(join(dir, "skills", "auggy", "SKILL.md"))).toBe(true);
@@ -677,32 +671,11 @@ describe("runCreate scaffolding integration", () => {
       creator: { displayName: string };
       operators?: unknown;
     };
-    const learnedMemory = parseYaml(
-      readFileSync(join(dir, "augments", "fileMemory", "augment.yaml"), "utf-8"),
-    ) as {
-      type: string;
-      config: {
-        label: string;
-        source: string;
-        mutable: boolean;
-        origin: string;
-        placement: string;
-      };
-    };
     const identity = readFileSync(join(dir, "identity.md"), "utf-8");
     expect(config.displayName).toBe("Jim");
     expect(config.creator.displayName).toBe("the creator");
     expect("operators" in config).toBe(false);
-    expect(learnedMemory.type).toBe("fileMemory");
-    expect(learnedMemory.config).toMatchObject({
-      label: "learned",
-      source: "./learned-behaviors.md",
-      mutable: true,
-      origin: "operator",
-      writeTrustLevels: ["creator"],
-      placement: "preamble",
-    });
-    expect(learnedMemory.config.origin).not.toBe("system");
+    expect(existsSync(join(dir, "augments", "fileMemory"))).toBe(false);
     expect(identity).toContain("# Jim");
     expect(identity).toContain("You are Jim,");
   });

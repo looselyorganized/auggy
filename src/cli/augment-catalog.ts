@@ -67,27 +67,6 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
   // the very first scaffold. The scaffold and the create command emit the
   // shorthand directly; the catalog never carries an identity row.
   {
-    label: "File Memory",
-    tagline: "learned-behaviors store",
-    description:
-      "Mutable file for creator-approved, agent-global learned behaviors (./learned-behaviors.md). Mounted as operator-origin guidance and writable only from creator-trust turns.",
-    type: "fileMemory",
-    defaultName: "fileMemory",
-    defaultOptions: {
-      label: "learned",
-      source: "./learned-behaviors.md",
-      mutable: true,
-      origin: "operator",
-      writeTrustLevels: ["creator"],
-      priority: "high",
-      placement: "preamble",
-      eviction: "drop",
-    },
-    required: true,
-    stability: "core",
-    hasSkill: false,
-  },
-  {
     label: "Layered Memory",
     tagline: "peer-scoped memory for repeat visitors",
     description:
