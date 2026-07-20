@@ -116,7 +116,9 @@ export function formatModelsDoctor(result: ModelsDoctorResult): string {
   const lines = [`Model doctor for ${result.agent.name}`, ""];
 
   if (result.pricing.status === "unknown") {
-    lines.push(`WARN model pricing: ${model} has no Auggy pricing entry.`);
+    lines.push(
+      `${result.usdBudgets ? "WARN" : "INFO"} model pricing: ${model} has no Auggy pricing entry.`,
+    );
     if (result.usdBudgets) {
       lines.push("USD budget caps will record unpriced turns but cannot enforce dollar spend.");
       lines.push("Add engine.costOverride in agent.yaml for reliable USD budgets.");

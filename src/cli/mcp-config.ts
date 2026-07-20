@@ -47,7 +47,7 @@ export interface McpConfig {
 
 export interface McpServerDiagnostic {
   name: string;
-  status: "pass" | "warn" | "fail";
+  status: "pass" | "info" | "warn" | "fail";
   message: string;
   fix?: string;
 }
@@ -193,7 +193,7 @@ export function diagnoseMcpConfig(
       if (policy === "disabled" || policy === "localOnly" || policy === "local-only") {
         out.push({
           name: `mcp ${name} cloud`,
-          status: "warn",
+          status: "info",
           message: "stdio server is marked local-only/disabled for cloud",
         });
       } else {
