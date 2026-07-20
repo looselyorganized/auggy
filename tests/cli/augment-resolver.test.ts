@@ -102,8 +102,7 @@ describe("resolveAugments — fileMemory", () => {
     expect(augments[0]!.memory).toBeDefined();
   });
 
-  test("maps legacy learned.md configs to learned-behaviors.md with fallback", async () => {
-    writeFileSync(join(TMP, "learned-behaviors.md"), "canonical");
+  test("rejects the unsupported learned.md source with migration guidance", async () => {
     writeFileSync(join(TMP, "learned.md"), "legacy");
 
     const configs: AugmentConfig[] = [
@@ -123,38 +122,9 @@ describe("resolveAugments — fileMemory", () => {
       },
     ];
 
-    const augments = await resolveAugments(configs, TMP);
-    await augments[0]!.onBoot!();
-    expect((await augments[0]!.memory!.read!("learned"))?.content).toBe("canonical");
-    expect(augments[0]!.memory!.defaults.origin).toBe("operator");
-    expect(augments[0]!.memory!.writeTrustLevels).toEqual(["creator"]);
-  });
-
-  test("keeps legacy learned.md configs working when only the legacy file exists", async () => {
-    writeFileSync(join(TMP, "learned.md"), "legacy");
-
-    const configs: AugmentConfig[] = [
-      {
-        name: "fileMemory",
-        type: "fileMemory",
-        options: {
-          label: "learned",
-          source: "./learned.md",
-          mutable: true,
-          origin: "agent",
-          writeTrustLevels: ["public"],
-          priority: "high",
-          placement: "preamble",
-          eviction: "drop",
-        },
-      },
-    ];
-
-    const augments = await resolveAugments(configs, TMP);
-    await augments[0]!.onBoot!();
-    expect((await augments[0]!.memory!.read!("learned"))?.content).toBe("legacy");
-    expect(augments[0]!.memory!.defaults.origin).toBe("operator");
-    expect(augments[0]!.memory!.writeTrustLevels).toEqual(["creator"]);
+    await expect(resolveAugments(configs, TMP)).rejects.toThrow(
+      /learned\.md is no longer supported.*rename it to learned-behaviors\.md/i,
+    );
   });
 
   test("hardens canonical learned-behaviors.md config metadata", async () => {

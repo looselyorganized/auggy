@@ -40,6 +40,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- **Legacy `learned.md` compatibility.** The canonical creator-approved
+  behavior store remains `learned-behaviors.md`. Agents still referencing
+  `learned.md` must rename the file and update the `fileMemory` source; the
+  runtime no longer silently falls back to or translates the legacy filename.
 - **Redundant augment capability declarations.** Custom augments now describe
   their runtime shape only through concrete fields such as `tools`, `context`,
   `transport`, `memory`, routes, and lifecycle hooks. Remove
