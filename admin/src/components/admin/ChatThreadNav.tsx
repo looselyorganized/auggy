@@ -6,6 +6,8 @@ import { cn } from "@/lib/utils";
 export interface ChatThreadNavProps {
   threads: ChatThread[];
   activeId: string;
+  loading?: boolean;
+  error?: string | null;
   onNew: () => void;
   onSelect: (threadId: string) => void;
   /** Uses a horizontal, overflow-safe layout suitable for the mobile chat picker. */
@@ -19,6 +21,8 @@ export interface ChatThreadNavProps {
 export function ChatThreadNav({
   threads,
   activeId,
+  loading = false,
+  error = null,
   onNew,
   onSelect,
   compact = false,
@@ -35,9 +39,11 @@ export function ChatThreadNav({
         <button
           type="button"
           onClick={onNew}
+          disabled={loading || Boolean(error)}
           className={cn(
             "inline-flex h-9 w-full items-center gap-2 rounded-md px-2 text-left text-sm font-medium",
             "text-foreground transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+            "disabled:cursor-wait disabled:opacity-50",
           )}
         >
           <Plus className="size-4 shrink-0" aria-hidden="true" />
@@ -49,9 +55,11 @@ export function ChatThreadNav({
         <button
           type="button"
           onClick={onNew}
+          disabled={loading || Boolean(error)}
           className={cn(
             "inline-flex size-9 shrink-0 items-center justify-center rounded-md",
             "text-foreground transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+            "disabled:cursor-wait disabled:opacity-50",
           )}
           aria-label="New chat"
           title="New chat"
@@ -68,15 +76,33 @@ export function ChatThreadNav({
             : "grid gap-0.5",
         )}
       >
-        {threads.map((thread) => (
-          <ThreadButton
-            key={thread.id}
-            thread={thread}
-            active={thread.id === activeId}
-            compact={compact}
-            onSelect={onSelect}
-          />
-        ))}
+        {loading || error ? (
+          <div
+            className={cn(
+              "flex h-9 items-center gap-2 px-2 text-xs text-muted-foreground",
+              compact && "shrink-0",
+            )}
+            role={error ? "alert" : "status"}
+            title={error ?? undefined}
+          >
+            {loading ? (
+              <LoaderCircle className="size-3 animate-spin" aria-hidden="true" />
+            ) : (
+              <CircleAlert className="size-3 text-destructive" aria-hidden="true" />
+            )}
+            <span>{loading ? "Loading chats…" : "Chats unavailable"}</span>
+          </div>
+        ) : (
+          threads.map((thread) => (
+            <ThreadButton
+              key={thread.id}
+              thread={thread}
+              active={thread.id === activeId}
+              compact={compact}
+              onSelect={onSelect}
+            />
+          ))
+        )}
       </div>
     </nav>
   );

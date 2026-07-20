@@ -148,6 +148,31 @@ const VALID_ROUTING_SORTS = new Set(["price", "throughput", "latency"]);
 // Per-augment option validators
 // ---------------------------------------------------------------------------
 
+function validateWebTransportOptions(
+  opts: Record<string, unknown>,
+  optionsPrefix: string,
+  errors: string[],
+): void {
+  if (opts.consoleChat === undefined) return;
+  if (
+    opts.consoleChat === null ||
+    typeof opts.consoleChat !== "object" ||
+    Array.isArray(opts.consoleChat)
+  ) {
+    errors.push(`${optionsPrefix}.consoleChat: must be an object`);
+    return;
+  }
+
+  const consoleChat = opts.consoleChat as Record<string, unknown>;
+  if (
+    consoleChat.dbPath !== undefined &&
+    consoleChat.dbPath !== null &&
+    (typeof consoleChat.dbPath !== "string" || consoleChat.dbPath.trim().length === 0)
+  ) {
+    errors.push(`${optionsPrefix}.consoleChat.dbPath: must be a non-empty string or null`);
+  }
+}
+
 /**
  * Validate a BudgetCaps object (used for agent, public.anonymous, public.recognized).
  * Each field must be a positive number when present.
@@ -1328,7 +1353,10 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
         errors.push(`${entryPrefix}.source: required for type "custom"`);
       }
 
-      if (type === "budgets") {
+      if (type === "webTransport") {
+        const webOpts = (aug.options ?? {}) as Record<string, unknown>;
+        validateWebTransportOptions(webOpts, optionsPrefix, errors);
+      } else if (type === "budgets") {
         const opts = (aug.options ?? {}) as Record<string, unknown>;
         validateBudgetsOptions(opts, optionsPrefix, errors);
       } else if (type === "notify") {

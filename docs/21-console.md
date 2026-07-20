@@ -76,6 +76,53 @@ Chat Markdown rendering does not enable raw HTML, does not render remote images,
 and blocks unsafe link protocols such as `javascript:`, `data:`, `vbscript:`,
 and `file:`.
 
+## Conversation Storage
+
+With the console enabled, CLI-started agents persist console conversations to
+`<agentDir>/data/console-chat.db` by default. This project-local file survives
+browser refreshes and local agent restarts as long as the agent directory is
+retained.
+
+On Railway, persistence requires a volume mounted at the directory
+**`/app/data`**. The default database is the exact path
+**`/app/data/console-chat.db`** inside that volume. The generated Railway
+entrypoint fails closed unless Railway advertises
+`RAILWAY_VOLUME_MOUNT_PATH=/app/data` and that path is a real mounted
+directory; it never creates an ephemeral `/app/data` fallback.
+
+Configure a different path under the web transport augment, or opt into
+ephemeral process memory explicitly:
+
+```yaml
+type: webTransport
+config:
+  consoleChat:
+    dbPath: null # explicit opt-out: refresh/restart durability is disabled
+```
+
+Relative paths resolve from the agent directory locally. In a Railway runtime,
+they are confined to `/app/data`; absolute paths outside `/app/data` are
+rejected during deploy preflight and again by the runtime resolver.
+
+### Restart, scaling, and backup contract
+
+- Completed conversations, unread state, titles, and model history survive a
+  process restart. A run that was active during a crash or restart is recovered
+  as interrupted rather than left permanently streaming.
+- Keep the Railway service at **exactly one replica**. The SQLite-backed console
+  has one process/one writer semantics; mounting the same database from multiple
+  replicas is unsupported and can produce contention or inconsistent runtime
+  ownership. Move chat state to a shared database before horizontal scaling.
+- A Railway volume provides restart durability, not an independent backup.
+  Include `console-chat.db` in the agent's backup and restore plan. Do not copy
+  only the main database while the agent is writing: stop the agent first, then
+  copy the database and any `console-chat.db-wal` / `console-chat.db-shm`
+  siblings together, or use a storage snapshot with an equivalent consistency
+  guarantee. Test restoration before relying on the backup.
+- Deleting a thread removes it from the SQLite database. External backups and
+  snapshots are the recovery boundary; the volume itself has no trash, and the
+  console has no built-in point-in-time restore.
+
 HTTPS is enforced on non-loopback hostnames. Loopback requests skip the bearer
 check because shell access to the host already grants `.env` access.
 

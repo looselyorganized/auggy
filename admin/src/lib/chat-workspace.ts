@@ -42,6 +42,8 @@ export interface ChatThread {
   runStatus: ChatRunStatus;
 }
 
+export type ChatThreadSummary = Omit<ChatThread, "messages">;
+
 export interface ChatWorkspaceState {
   threads: ChatThread[];
   activeThreadId: string;
@@ -70,7 +72,12 @@ export type ChatThreadTitleValidation =
   | { valid: false; reason: "empty" | "too-long"; message: string };
 
 export type ChatWorkspaceAction =
-  | { type: "draft.activate"; draft: ChatThread }
+  | { type: "draft.activate"; draft: ChatThread; reusableThreadId?: string }
+  | {
+      type: "workspace.hydrate";
+      threads: ChatThread[];
+      activeThreadId: string;
+    }
   | { type: "workspace.visibility-set"; visible: boolean; at: string }
   | { type: "thread.select"; threadId: string; at: string }
   | { type: "thread.rename"; threadId: string; title: string; at: string }
@@ -78,6 +85,25 @@ export type ChatWorkspaceAction =
   | { type: "thread.preview-mode-set"; threadId: string; previewMode: ChatPreviewMode; at: string }
   | { type: "thread.model-set"; threadId: string; model: ChatModelSnapshot | null; at: string }
   | { type: "thread.read-state-set"; threadId: string; unread: boolean; at: string }
+  | {
+      type: "thread.rename-confirmed";
+      threadId: string;
+      title: string;
+      updatedAt: string;
+    }
+  | {
+      type: "thread.read-state-confirmed";
+      threadId: string;
+      unread: boolean;
+      lastReadAt: string | null;
+    }
+  | { type: "thread.summary-merge"; thread: Omit<ChatThread, "messages"> }
+  | { type: "thread.detail-merge"; thread: ChatThread }
+  | {
+      type: "thread.reconciliation-failed";
+      thread: Omit<ChatThread, "messages">;
+      error: string;
+    }
   | {
       type: "run.message-update";
       clientRunId: string;
@@ -90,10 +116,17 @@ export type ChatWorkspaceAction =
       type: "run.start";
       clientRunId: string;
       threadId: string;
+      title?: string;
       userMessage: ChatMessage;
       assistantMessage: ChatMessage;
       model: ChatModelSnapshot | null;
       at: string;
+    }
+  | {
+      type: "run.rollback";
+      clientRunId: string;
+      threadId: string;
+      previousThread: ChatThread;
     }
   | {
       type: "run.finish";
@@ -144,7 +177,53 @@ export function isEmptyChatThread(thread: ChatThread): boolean {
 }
 
 export function canStartChatRun(state: ChatWorkspaceState, threadId: string): boolean {
-  return state.activeRun === null && getChatThread(state, threadId) !== undefined;
+  const target = getChatThread(state, threadId);
+  return state.activeRun === null && target !== undefined && target.runStatus !== "streaming";
+}
+
+export function mergeHydratedChatThreads(
+  state: ChatWorkspaceState,
+  summaries: readonly ChatThreadSummary[],
+  options: {
+    localDraftId: string;
+    persistedThreadIds: ReadonlySet<string>;
+    loadedThreadIds: ReadonlySet<string>;
+  },
+): ChatThread[] {
+  const serverIds = new Set(summaries.map((thread) => thread.id));
+  const hydrated = summaries.map((summary) => {
+    const existing = getChatThread(state, summary.id);
+    return existing && options.loadedThreadIds.has(summary.id)
+      ? mergeChatThreadSummary(existing, summary)
+      : chatThreadFromSummary(summary);
+  });
+  const localDraft = getChatThread(state, options.localDraftId);
+  if (localDraft && !serverIds.has(localDraft.id) && isEmptyChatThread(localDraft)) {
+    hydrated.push(localDraft);
+  }
+  // A run can start while the list request is in flight. It is not in that
+  // snapshot and is not marked persisted until the chat response is accepted.
+  for (const thread of state.threads) {
+    if (
+      (options.persistedThreadIds.has(thread.id) || !isEmptyChatThread(thread)) &&
+      !serverIds.has(thread.id) &&
+      !hydrated.some((candidate) => candidate.id === thread.id)
+    ) {
+      hydrated.push(thread);
+    }
+  }
+  return hydrated;
+}
+
+export function chatThreadFromSummary(summary: ChatThreadSummary): ChatThread {
+  return { ...summary, messages: [] };
+}
+
+export function mergeChatThreadSummary(
+  thread: ChatThread,
+  summary: ChatThreadSummary,
+): ChatThread {
+  return { ...summary, messages: thread.messages };
 }
 
 export function deriveChatThreadTitle(prompt: string): string {
@@ -176,6 +255,20 @@ export function chatWorkspaceReducer(
   action: ChatWorkspaceAction,
 ): ChatWorkspaceState {
   switch (action.type) {
+    case "workspace.hydrate": {
+      if (action.threads.length === 0) return state;
+      const activeThreadId = action.threads.some(
+        (thread) => thread.id === action.activeThreadId,
+      )
+        ? action.activeThreadId
+        : action.threads[0].id;
+      return {
+        ...state,
+        threads: action.threads,
+        activeThreadId,
+      };
+    }
+
     case "workspace.visibility-set": {
       if (!action.visible) {
         return state.chatVisible ? { ...state, chatVisible: false } : state;
@@ -194,7 +287,11 @@ export function chatWorkspaceReducer(
     }
 
     case "draft.activate": {
-      const reusable = state.threads.find(isEmptyChatThread);
+      const reusable = action.reusableThreadId
+        ? state.threads.find(
+            (thread) => thread.id === action.reusableThreadId && isEmptyChatThread(thread),
+          )
+        : state.threads.find(isEmptyChatThread);
       if (!reusable) {
         return {
           ...state,
@@ -287,6 +384,49 @@ export function chatWorkspaceReducer(
         lastReadAt: action.unread ? thread.lastReadAt : action.at,
       }));
 
+    case "thread.rename-confirmed":
+      return updateThread(state, action.threadId, (thread) => ({
+        ...thread,
+        title: action.title,
+        updatedAt: action.updatedAt,
+      }));
+
+    case "thread.read-state-confirmed":
+      return updateThread(state, action.threadId, (thread) => ({
+        ...thread,
+        unread: action.unread,
+        lastReadAt: action.lastReadAt,
+      }));
+
+    case "thread.summary-merge":
+      return updateThread(state, action.thread.id, (thread) => ({
+        ...action.thread,
+        messages: thread.messages,
+      }));
+
+    case "thread.detail-merge":
+      return updateThread(state, action.thread.id, () => action.thread);
+
+    case "thread.reconciliation-failed":
+      return updateThread(state, action.thread.id, (thread) => {
+        let lastAssistantIndex = -1;
+        for (let index = thread.messages.length - 1; index >= 0; index--) {
+          if (thread.messages[index]?.role === "assistant") {
+            lastAssistantIndex = index;
+            break;
+          }
+        }
+        return {
+          ...action.thread,
+          runStatus: "error",
+          messages: thread.messages.map((message, index) =>
+            index === lastAssistantIndex
+              ? { ...message, error: action.error, updatedAt: action.thread.updatedAt }
+              : message,
+          ),
+        };
+      });
+
     case "run.message-update": {
       if (!matchesActiveRun(state, action)) return state;
       return updateThreadWithActivity(state, action.threadId, action.at, (thread) => {
@@ -322,8 +462,11 @@ export function chatWorkspaceReducer(
         title:
           thread.messages.some((message) => message.role === "user")
             ? thread.title
-            : deriveChatThreadTitle(action.userMessage.content),
-        model: thread.messages.length === 0 ? action.model : thread.model,
+            : action.title?.trim() || deriveChatThreadTitle(action.userMessage.content),
+        // A thread may continue after the agent's configured model changes.
+        // Attribute the conversation to the model serving the latest run;
+        // retain the last known snapshot only when runtime metadata is absent.
+        model: action.model ?? thread.model,
         messages: [...thread.messages, action.userMessage, action.assistantMessage],
         runStatus: "streaming",
         updatedAt: action.at,
@@ -335,6 +478,16 @@ export function chatWorkspaceReducer(
           threadId: action.threadId,
           assistantMessageId: action.assistantMessage.id,
         },
+      };
+    }
+
+    case "run.rollback": {
+      if (!matchesActiveRun(state, action)) return state;
+      if (action.previousThread.id !== action.threadId) return state;
+      return {
+        ...state,
+        threads: replaceThread(state.threads, action.previousThread),
+        activeRun: null,
       };
     }
 

@@ -136,7 +136,7 @@ export function createOpenRouterEngine(opts: OpenRouterEngineOptions): ModelClie
 
     async complete(
       prompt: AssembledPrompt,
-      _opts?: { onDelta?: (delta: ModelDelta) => void },
+      requestOptions?: { onDelta?: (delta: ModelDelta) => void; signal?: AbortSignal },
     ): Promise<ModelResponse> {
       const systemMessage = assembleOpenAISystemMessage(prompt);
       const messages = convertOpenAIMessages(prompt.messages);
@@ -163,6 +163,7 @@ export function createOpenRouterEngine(opts: OpenRouterEngineOptions): ModelClie
       try {
         completion = await client.chat.completions.create(
           params as OpenAI.Chat.ChatCompletionCreateParamsNonStreaming,
+          { signal: requestOptions?.signal },
         );
       } catch (err) {
         // Wrap with provider+model context. Without this, an OpenRouter

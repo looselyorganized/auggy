@@ -12,13 +12,24 @@ import { useDashboardContext } from "@/components/admin/DashboardContext";
 import { findCsrfToken } from "@/lib/api";
 import { parseSSEStream, type AGUIEvent } from "@/lib/ag-ui-parse";
 import {
+  deleteConsoleChatThread,
+  getConsoleChatThread,
+  isConsoleChatApiError,
+  listConsoleChatThreads,
+  renameConsoleChatThread,
+  setConsoleChatThreadReadState,
+} from "@/lib/console-chat-api";
+import {
   canStartChatRun,
+  chatThreadFromSummary,
   chatWorkspaceReducer,
   createChatThread,
   createChatWorkspace,
+  deriveChatThreadTitle,
   getActiveChatThread,
   getChatThread,
   isEmptyChatThread,
+  mergeHydratedChatThreads,
   validateRenamedChatThreadTitle,
   type ActiveChatRun,
   type ChatMessage,
@@ -32,6 +43,18 @@ import {
 } from "@/lib/chat-workspace";
 
 const VISITOR_TOKEN_STORAGE_KEY = "auggy-visitor-token";
+const EXTERNAL_RUN_POLL_INITIAL_MS = 750;
+const EXTERNAL_RUN_POLL_MAX_MS = 5_000;
+const DETAIL_RECONCILIATION_RETRY_MAX_MS = 30_000;
+const CHAT_RECONCILIATION_ERROR =
+  "The saved transcript could not be refreshed. It will retry automatically.";
+
+interface DetailReconciliationRetry {
+  failures: number;
+  retryAt: number;
+  failedUpdatedAt: string;
+  failedRunStatus: ChatThread["runStatus"];
+}
 
 export type ChatWorkspaceCommandResult =
   | { ok: true }
@@ -44,13 +67,17 @@ export type ChatWorkspaceThreadCommandResult =
 export interface ChatWorkspaceContextValue {
   state: ChatWorkspaceState;
   activeThread: ChatThread;
+  deletingThreadIds: ReadonlySet<string>;
+  hydrationStatus: "loading" | "ready" | "error";
+  hydrationError: string | null;
   anonymousAllowed: boolean;
   hasVisitorToken: boolean;
   create: (previewMode?: ChatPreviewMode) => string;
   select: (threadId: string) => boolean;
-  rename: (threadId: string, title: string) => ChatThreadTitleValidation;
-  markUnread: (threadId: string, unread?: boolean) => boolean;
-  deleteThread: (threadId: string) => boolean;
+  loadThread: (threadId: string) => Promise<boolean>;
+  rename: (threadId: string, title: string) => Promise<ChatThreadTitleValidation>;
+  markUnread: (threadId: string, unread?: boolean) => Promise<boolean>;
+  deleteThread: (threadId: string) => Promise<boolean>;
   setPreviewMode: (previewMode: ChatPreviewMode) => ChatWorkspaceThreadCommandResult;
   send: (
     message: string,
@@ -91,19 +118,45 @@ export function ChatWorkspaceProvider({
 
   const initialStateRef = useRef<ChatWorkspaceState | null>(null);
   if (initialStateRef.current === null) {
-    const createdAt = now().toISOString();
-    const initialThread = createChatThread({
-      id: createId(),
-      previewMode: "creator",
-      model: modelSnapshotFromDashboard(data),
-      now: createdAt,
-    });
-    initialStateRef.current = initialState ?? createChatWorkspace(initialThread);
+    if (initialState) {
+      initialStateRef.current = initialState;
+    } else {
+      const createdAt = now().toISOString();
+      const initialThread = createChatThread({
+        id: createId(),
+        previewMode: "creator",
+        model: modelSnapshotFromDashboard(data),
+        now: createdAt,
+      });
+      initialStateRef.current = createChatWorkspace(initialThread);
+    }
   }
 
   const [state, setState] = useState<ChatWorkspaceState>(initialStateRef.current);
   const stateRef = useRef(state);
   const runLockRef = useRef<RunLock | null>(null);
+  const localDraftIdRef = useRef(initialStateRef.current.activeThreadId);
+  const persistedThreadIdsRef = useRef(
+    new Set(
+      initialState
+        ? initialState.threads
+            .filter((thread) => !isEmptyChatThread(thread))
+            .map((thread) => thread.id)
+        : [],
+    ),
+  );
+  const loadedThreadIdsRef = useRef(
+    new Set(initialState ? initialState.threads.map((thread) => thread.id) : []),
+  );
+  const detailRequestRef = useRef(new Map<string, number>());
+  const selectionRequestRef = useRef(0);
+  const mutationRequestRef = useRef(new Map<string, number>());
+  const readMutationQueueRef = useRef(new Map<string, Promise<unknown>>());
+  const threadRevisionRef = useRef(new Map<string, number>());
+  const detailReconciliationRetriesRef = useRef(new Map<string, DetailReconciliationRetry>());
+  const draftRenamedIdsRef = useRef(new Set<string>());
+  const deletingThreadIdsRef = useRef(new Set<string>());
+  const nextRequestIdRef = useRef(0);
   // Visitor credentials are deliberately memory-only and bound to the first
   // request made by a thread. A later token must never silently inherit that
   // thread's privileged model context.
@@ -111,9 +164,37 @@ export function ChatWorkspaceProvider({
   const invalidatedVisitorThreadsRef = useRef(new Set<string>());
   const mountedRef = useRef(true);
   const [hasVisitorToken, setHasVisitorToken] = useState(() => Boolean(readVisitorToken()));
+  const [hydrationStatus, setHydrationStatus] = useState<"loading" | "ready" | "error">(
+    initialState ? "ready" : "loading",
+  );
+  const [hydrationError, setHydrationError] = useState<string | null>(null);
+  const [visibilityKnown, setVisibilityKnown] = useState(false);
+  const [deletingThreadIds, setDeletingThreadIds] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
+  const consoleChatCsrfToken = consoleChatCsrf(data);
 
   const dispatch = useCallback((action: ChatWorkspaceAction) => {
-    const next = chatWorkspaceReducer(stateRef.current, action);
+    const previous = stateRef.current;
+    const next = chatWorkspaceReducer(previous, action);
+    if (next !== previous) {
+      const previousById = new Map(previous.threads.map((thread) => [thread.id, thread]));
+      for (const thread of next.threads) {
+        if (previousById.get(thread.id) !== thread) {
+          threadRevisionRef.current.set(
+            thread.id,
+            (threadRevisionRef.current.get(thread.id) ?? 0) + 1,
+          );
+        }
+        previousById.delete(thread.id);
+      }
+      for (const removedId of previousById.keys()) {
+        threadRevisionRef.current.set(
+          removedId,
+          (threadRevisionRef.current.get(removedId) ?? 0) + 1,
+        );
+      }
+    }
     stateRef.current = next;
     if (mountedRef.current) setState(next);
     return next;
@@ -127,8 +208,49 @@ export function ChatWorkspaceProvider({
       runLockRef.current = null;
       visitorTokenByThreadRef.current.clear();
       invalidatedVisitorThreadsRef.current.clear();
+      deletingThreadIdsRef.current.clear();
+      draftRenamedIdsRef.current.clear();
     };
   }, []);
+
+  useEffect(() => {
+    if (initialState) return;
+    const controller = new AbortController();
+    ++nextRequestIdRef.current;
+
+    void listConsoleChatThreads({
+      signal: controller.signal,
+      fetchImpl: dependenciesRef.current.fetchImpl,
+    })
+      .then((summaries) => {
+        if (!mountedRef.current || controller.signal.aborted) return;
+        const current = stateRef.current;
+        const serverIds = new Set(summaries.map((thread) => thread.id));
+        for (const id of serverIds) persistedThreadIdsRef.current.add(id);
+
+        const hydrated = mergeHydratedChatThreads(current, summaries, {
+          localDraftId: localDraftIdRef.current,
+          persistedThreadIds: persistedThreadIdsRef.current,
+          loadedThreadIds: loadedThreadIdsRef.current,
+        });
+        const activeThreadId =
+          !current.activeRun &&
+          current.activeThreadId === localDraftIdRef.current &&
+          summaries[0]
+            ? summaries[0].id
+            : current.activeThreadId;
+        dispatch({ type: "workspace.hydrate", threads: hydrated, activeThreadId });
+        setHydrationStatus("ready");
+        setHydrationError(null);
+      })
+      .catch((error: unknown) => {
+        if (!mountedRef.current || controller.signal.aborted || isAbortError(error)) return;
+        setHydrationStatus("error");
+        setHydrationError(errorMessage(error, "Could not load saved chats."));
+      });
+
+    return () => controller.abort();
+  }, [dispatch, initialState]);
 
   const refreshVisitorToken = useCallback(() => {
     const available = Boolean(readVisitorToken());
@@ -149,16 +271,76 @@ export function ChatWorkspaceProvider({
     if (mountedRef.current) setHasVisitorToken(false);
   }, []);
 
-  const setChatVisible = useCallback(
-    (visible: boolean) => {
-      dispatch({
-        type: "workspace.visibility-set",
-        visible,
-        at: dependenciesRef.current.now().toISOString(),
-      });
+  const persistReadState = useCallback(
+    async (threadId: string, unread: boolean): Promise<boolean> => {
+      if (!persistedThreadIdsRef.current.has(threadId)) return false;
+      const csrf = consoleChatCsrf(dependenciesRef.current.data);
+      if (!csrf) throw new Error("Session expired — reload the page.");
+      const key = `${threadId}:read`;
+      const requestId = ++nextRequestIdRef.current;
+      mutationRequestRef.current.set(key, requestId);
+      const previous = readMutationQueueRef.current.get(threadId) ?? Promise.resolve();
+      const request = previous
+        .catch(() => {
+          // A rejected earlier marker must not prevent a newer explicit intent.
+        })
+        .then(() =>
+          setConsoleChatThreadReadState(threadId, unread, csrf, {
+            fetchImpl: dependenciesRef.current.fetchImpl,
+          }),
+        );
+      readMutationQueueRef.current.set(threadId, request);
+      let summary;
+      try {
+        summary = await request;
+      } finally {
+        if (readMutationQueueRef.current.get(threadId) === request) {
+          readMutationQueueRef.current.delete(threadId);
+        }
+      }
+      if (
+        mountedRef.current &&
+        mutationRequestRef.current.get(key) === requestId &&
+        getChatThread(stateRef.current, threadId)
+      ) {
+        dispatch({
+          type: "thread.read-state-confirmed",
+          threadId,
+          unread: summary.unread,
+          lastReadAt: summary.lastReadAt,
+        });
+      }
+      return true;
     },
     [dispatch],
   );
+
+  const setChatVisible = useCallback(
+    (visible: boolean) => {
+      const at = dependenciesRef.current.now().toISOString();
+      dispatch({ type: "workspace.visibility-set", visible, at });
+      setVisibilityKnown(true);
+    },
+    [dispatch],
+  );
+
+  // Selection/visibility can become ready before the dashboard CSRF payload.
+  // Key this retry to the stable token and active route state so the durable
+  // read marker cannot be lost during initial parallel hydration.
+  useEffect(() => {
+    if (!visibilityKnown || !consoleChatCsrfToken || !state.chatVisible) return;
+    if (!persistedThreadIdsRef.current.has(state.activeThreadId)) return;
+    void persistReadState(state.activeThreadId, false).catch(() => {
+      // Explicit mark-unread errors remain user-visible; passive read markers
+      // are retried by the next selection, visibility change, or page load.
+    });
+  }, [
+    consoleChatCsrfToken,
+    persistReadState,
+    state.activeThreadId,
+    state.chatVisible,
+    visibilityKnown,
+  ]);
 
   useEffect(() => {
     const refresh = () => refreshVisitorToken();
@@ -175,6 +357,7 @@ export function ChatWorkspaceProvider({
     if (!model) return;
     const at = dependenciesRef.current.now().toISOString();
     for (const thread of stateRef.current.threads) {
+      if (persistedThreadIdsRef.current.has(thread.id)) continue;
       if (!isEmptyChatThread(thread)) continue;
       if (
         thread.model?.id === model.id &&
@@ -187,6 +370,199 @@ export function ChatWorkspaceProvider({
     }
   }, [data, dispatch]);
 
+  const externalStreamingKey = state.threads
+    .filter(
+      (thread) =>
+        thread.runStatus === "streaming" && state.activeRun?.threadId !== thread.id,
+    )
+    .map((thread) => thread.id)
+    .sort()
+    .join("\0");
+
+  useEffect(() => {
+    if (hydrationStatus !== "ready") return;
+    const controller = new AbortController();
+    let delay = nextReconciliationPollDelay(
+      Boolean(externalStreamingKey),
+      externalStreamingKey ? EXTERNAL_RUN_POLL_INITIAL_MS : EXTERNAL_RUN_POLL_MAX_MS,
+      detailReconciliationRetriesRef.current,
+    );
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    const poll = async () => {
+      const revisionsBeforeRequest = new Map(threadRevisionRef.current);
+      try {
+        const summaries = await listConsoleChatThreads({
+          signal: controller.signal,
+          fetchImpl: dependenciesRef.current.fetchImpl,
+        });
+        const summaryIds = new Set(summaries.map(({ id }) => id));
+        for (const summary of summaries) {
+          const current = getChatThread(stateRef.current, summary.id);
+          if (!current) {
+            if (
+              deletingThreadIdsRef.current.has(summary.id) ||
+              (threadRevisionRef.current.get(summary.id) ?? 0) !==
+                (revisionsBeforeRequest.get(summary.id) ?? 0)
+            ) {
+              continue;
+            }
+            persistedThreadIdsRef.current.add(summary.id);
+            dispatch({
+              type: "workspace.hydrate",
+              threads: [...stateRef.current.threads, chatThreadFromSummary(summary)],
+              activeThreadId: stateRef.current.activeThreadId,
+            });
+            continue;
+          }
+          if (stateRef.current.activeRun?.threadId === summary.id) continue;
+          if (
+            (threadRevisionRef.current.get(summary.id) ?? 0) !==
+            (revisionsBeforeRequest.get(summary.id) ?? 0)
+          ) {
+            continue;
+          }
+
+          const detailRetry = detailReconciliationRetriesRef.current.get(summary.id);
+          if (
+            detailRetry &&
+            !sameDetailReconciliationRevision(detailRetry, summary)
+          ) {
+            // A newer server revision is not the response that failed to load.
+            // Reconcile it immediately so a new background run is never hidden
+            // behind an old terminal-detail backoff window.
+            detailReconciliationRetriesRef.current.delete(summary.id);
+          }
+          if (shouldDeferDetailReconciliation(detailRetry, summary, Date.now())) continue;
+          const changed =
+            detailRetry !== undefined ||
+            summary.updatedAt !== current.updatedAt ||
+            summary.title !== current.title ||
+            summary.previewMode !== current.previewMode ||
+            summary.model?.id !== current.model?.id ||
+            summary.model?.displayName !== current.model?.displayName ||
+            summary.model?.provider !== current.model?.provider ||
+            summary.runStatus !== current.runStatus ||
+            summary.unread !== current.unread ||
+            summary.lastReadAt !== current.lastReadAt;
+          if (!changed) continue;
+          if (loadedThreadIdsRef.current.has(summary.id)) {
+            const beforeRevision = threadRevisionRef.current.get(summary.id) ?? 0;
+            try {
+              const detail = await getConsoleChatThread(summary.id, {
+                signal: controller.signal,
+                fetchImpl: dependenciesRef.current.fetchImpl,
+              });
+              const latest = getChatThread(stateRef.current, summary.id);
+              if (
+                latest &&
+                stateRef.current.activeRun?.threadId !== summary.id &&
+                (threadRevisionRef.current.get(summary.id) ?? 0) === beforeRevision
+              ) {
+                detailReconciliationRetriesRef.current.delete(summary.id);
+                dispatch({ type: "thread.detail-merge", thread: detail });
+                if (
+                  detail.runStatus !== "streaming" &&
+                  stateRef.current.chatVisible &&
+                  stateRef.current.activeThreadId === detail.id
+                ) {
+                  void persistReadState(detail.id, false).catch(() => {
+                    // Keep the reconciled transcript usable; selection retries the marker.
+                  });
+                }
+              }
+              continue;
+            } catch (error) {
+              if (isAbortError(error)) return;
+              if (summary.runStatus !== "streaming") {
+                // Unlock this thread using an explicit local error state while
+                // retaining its last known transcript. Because the server
+                // summary remains terminal, the explicit pending marker retries
+                // detail even when the server and local error statuses match.
+                const failures = (detailRetry?.failures ?? 0) + 1;
+                detailReconciliationRetriesRef.current.set(summary.id, {
+                  failures,
+                  retryAt: Date.now() + detailReconciliationRetryDelay(failures),
+                  failedUpdatedAt: summary.updatedAt,
+                  failedRunStatus: summary.runStatus,
+                });
+                dispatch({
+                  type: "thread.reconciliation-failed",
+                  thread: summary,
+                  error: CHAT_RECONCILIATION_ERROR,
+                });
+                continue;
+              }
+            }
+          }
+          dispatch({ type: "thread.summary-merge", thread: summary });
+        }
+
+        for (const thread of stateRef.current.threads) {
+          if (
+            !persistedThreadIdsRef.current.has(thread.id) ||
+            stateRef.current.activeRun?.threadId === thread.id ||
+            summaryIds.has(thread.id) ||
+            (threadRevisionRef.current.get(thread.id) ?? 0) !==
+              (revisionsBeforeRequest.get(thread.id) ?? 0)
+          ) {
+            continue;
+          }
+          const deps = dependenciesRef.current;
+          const at = deps.now().toISOString();
+          const next = dispatch({
+            type: "thread.delete",
+            threadId: thread.id,
+            at,
+            fallbackDraft: createChatThread({
+              id: deps.createId(),
+              previewMode: thread.previewMode,
+              model: modelSnapshotFromDashboard(deps.data),
+              now: at,
+            }),
+          });
+          persistedThreadIdsRef.current.delete(thread.id);
+          loadedThreadIdsRef.current.delete(thread.id);
+          detailRequestRef.current.delete(thread.id);
+          detailReconciliationRetriesRef.current.delete(thread.id);
+          visitorTokenByThreadRef.current.delete(thread.id);
+          invalidatedVisitorThreadsRef.current.delete(thread.id);
+          const localDraft = next.threads.find(
+            (candidate) =>
+              !persistedThreadIdsRef.current.has(candidate.id) && isEmptyChatThread(candidate),
+          );
+          if (localDraft) localDraftIdRef.current = localDraft.id;
+        }
+        const hasExternalRun = stateRef.current.threads.some(
+          (thread) =>
+            thread.runStatus === "streaming" &&
+            stateRef.current.activeRun?.threadId !== thread.id,
+        );
+        const baseDelay = hasExternalRun
+          ? Math.min(Math.round(delay * 1.5), EXTERNAL_RUN_POLL_MAX_MS)
+          : EXTERNAL_RUN_POLL_MAX_MS;
+        delay = nextReconciliationPollDelay(
+          hasExternalRun,
+          baseDelay,
+          detailReconciliationRetriesRef.current,
+        );
+      } catch (error) {
+        if (isAbortError(error) || controller.signal.aborted) return;
+        delay = Math.min(delay * 2, EXTERNAL_RUN_POLL_MAX_MS);
+      }
+
+      if (!controller.signal.aborted) {
+        timer = setTimeout(() => void poll(), delay);
+      }
+    };
+
+    timer = setTimeout(() => void poll(), delay);
+    return () => {
+      controller.abort();
+      if (timer) clearTimeout(timer);
+    };
+  }, [dispatch, externalStreamingKey, hydrationStatus, persistReadState]);
+
   const create = useCallback(
     (previewMode?: ChatPreviewMode) => {
       const current = getActiveChatThread(stateRef.current);
@@ -198,7 +574,13 @@ export function ChatWorkspaceProvider({
         model: modelSnapshotFromDashboard(deps.data),
         now: createdAt,
       });
-      const next = dispatch({ type: "draft.activate", draft });
+      const next = dispatch({
+        type: "draft.activate",
+        draft,
+        reusableThreadId: localDraftIdRef.current,
+      });
+      localDraftIdRef.current = next.activeThreadId;
+      draftRenamedIdsRef.current.delete(next.activeThreadId);
       return next.activeThreadId;
     },
     [dispatch],
@@ -207,64 +589,203 @@ export function ChatWorkspaceProvider({
   const select = useCallback(
     (threadId: string) => {
       if (!getChatThread(stateRef.current, threadId)) return false;
-      dispatch({ type: "thread.select", threadId, at: dependenciesRef.current.now().toISOString() });
+      dispatch({
+        type: "thread.select",
+        threadId,
+        at: dependenciesRef.current.now().toISOString(),
+      });
       return true;
     },
     [dispatch],
   );
 
+  const loadThread = useCallback(
+    async (threadId: string): Promise<boolean> => {
+      const selectionRequest = ++selectionRequestRef.current;
+      const existing = getChatThread(stateRef.current, threadId);
+      if (existing && !persistedThreadIdsRef.current.has(threadId)) {
+        if (selectionRequest === selectionRequestRef.current) select(threadId);
+        return true;
+      }
+      if (existing && loadedThreadIdsRef.current.has(threadId)) {
+        if (selectionRequest === selectionRequestRef.current) select(threadId);
+        return true;
+      }
+
+      const detailRequest = ++nextRequestIdRef.current;
+      detailRequestRef.current.set(threadId, detailRequest);
+      const beforeRevision = threadRevisionRef.current.get(threadId) ?? 0;
+      try {
+        const detail = await getConsoleChatThread(threadId, {
+          fetchImpl: dependenciesRef.current.fetchImpl,
+        });
+        if (!mountedRef.current || detailRequestRef.current.get(threadId) !== detailRequest) {
+          return false;
+        }
+        const current = getChatThread(stateRef.current, threadId);
+        const revisionUnchanged =
+          (threadRevisionRef.current.get(threadId) ?? 0) === beforeRevision;
+        if (stateRef.current.activeRun?.threadId !== threadId) {
+          if (current) {
+            const threadToMerge =
+              revisionUnchanged ? detail : { ...current, messages: detail.messages };
+            dispatch({ type: "thread.detail-merge", thread: threadToMerge });
+          } else if (revisionUnchanged) {
+            dispatch({
+              type: "workspace.hydrate",
+              threads: [...stateRef.current.threads, detail],
+              activeThreadId: stateRef.current.activeThreadId,
+            });
+          } else {
+            return false;
+          }
+          loadedThreadIdsRef.current.add(threadId);
+          detailReconciliationRetriesRef.current.delete(threadId);
+        }
+        persistedThreadIdsRef.current.add(threadId);
+        if (selectionRequest === selectionRequestRef.current) select(threadId);
+        return true;
+      } catch (error) {
+        if (isConsoleChatApiError(error) && error.code === "not-found") return false;
+        throw error;
+      }
+    },
+    [dispatch, select],
+  );
+
   const rename = useCallback(
-    (threadId: string, title: string) => {
+    async (threadId: string, title: string): Promise<ChatThreadTitleValidation> => {
       const validation = validateRenamedChatThreadTitle(title);
       if (!validation.valid || !getChatThread(stateRef.current, threadId)) return validation;
-      dispatch({
-        type: "thread.rename",
-        threadId,
-        title: validation.title,
-        at: dependenciesRef.current.now().toISOString(),
+      if (deletingThreadIdsRef.current.has(threadId)) {
+        throw new Error("This chat is being deleted.");
+      }
+      if (stateRef.current.activeRun?.threadId === threadId) {
+        throw new Error("Wait for this response to finish before renaming the chat.");
+      }
+      if (!persistedThreadIdsRef.current.has(threadId)) {
+        dispatch({
+          type: "thread.rename",
+          threadId,
+          title: validation.title,
+          at: dependenciesRef.current.now().toISOString(),
+        });
+        draftRenamedIdsRef.current.add(threadId);
+        return validation;
+      }
+      const csrf = consoleChatCsrf(dependenciesRef.current.data);
+      if (!csrf) throw new Error("Session expired — reload the page.");
+      const key = `${threadId}:rename`;
+      const requestId = ++nextRequestIdRef.current;
+      mutationRequestRef.current.set(key, requestId);
+      const summary = await renameConsoleChatThread(threadId, validation.title, csrf, {
+        fetchImpl: dependenciesRef.current.fetchImpl,
       });
+      if (
+        mountedRef.current &&
+        mutationRequestRef.current.get(key) === requestId &&
+        getChatThread(stateRef.current, threadId)
+      ) {
+        dispatch({
+          type: "thread.rename-confirmed",
+          threadId,
+          title: summary.title,
+          updatedAt: summary.updatedAt,
+        });
+      }
       return validation;
     },
     [dispatch],
   );
 
   const markUnread = useCallback(
-    (threadId: string, unread = true) => {
+    async (threadId: string, unread = true): Promise<boolean> => {
       if (!getChatThread(stateRef.current, threadId)) return false;
-      dispatch({
-        type: "thread.read-state-set",
-        threadId,
-        unread,
-        at: dependenciesRef.current.now().toISOString(),
-      });
+      if (deletingThreadIdsRef.current.has(threadId)) {
+        throw new Error("This chat is being deleted.");
+      }
+      if (stateRef.current.activeRun?.threadId === threadId) {
+        throw new Error("Wait for this response to finish before changing its unread state.");
+      }
+      if (persistedThreadIdsRef.current.has(threadId)) {
+        await persistReadState(threadId, unread);
+      } else {
+        dispatch({
+          type: "thread.read-state-set",
+          threadId,
+          unread,
+          at: dependenciesRef.current.now().toISOString(),
+        });
+      }
       return true;
     },
-    [dispatch],
+    [dispatch, persistReadState],
   );
 
   const deleteThread = useCallback(
-    (threadId: string) => {
+    async (threadId: string): Promise<boolean> => {
       const current = stateRef.current;
-      if (!getChatThread(current, threadId) || current.activeRun?.threadId === threadId) {
+      const target = getChatThread(current, threadId);
+      if (
+        !target ||
+        deletingThreadIdsRef.current.has(threadId) ||
+        target.runStatus === "streaming" ||
+        current.activeRun?.threadId === threadId
+      ) {
         return false;
       }
-      const deps = dependenciesRef.current;
-      const at = deps.now().toISOString();
-      const active = getActiveChatThread(current);
-      visitorTokenByThreadRef.current.delete(threadId);
-      invalidatedVisitorThreadsRef.current.delete(threadId);
-      dispatch({
-        type: "thread.delete",
-        threadId,
-        at,
-        fallbackDraft: createChatThread({
-          id: deps.createId(),
-          previewMode: active?.previewMode ?? "creator",
-          model: modelSnapshotFromDashboard(deps.data),
-          now: at,
-        }),
-      });
-      return true;
+      deletingThreadIdsRef.current.add(threadId);
+      setDeletingThreadIds(new Set(deletingThreadIdsRef.current));
+      try {
+        if (persistedThreadIdsRef.current.has(threadId)) {
+          const csrf = consoleChatCsrf(dependenciesRef.current.data);
+          if (!csrf) throw new Error("Session expired — reload the page.");
+          const key = `${threadId}:delete`;
+          const requestId = ++nextRequestIdRef.current;
+          mutationRequestRef.current.set(key, requestId);
+          await deleteConsoleChatThread(threadId, csrf, {
+            fetchImpl: dependenciesRef.current.fetchImpl,
+          });
+          if (!mountedRef.current || mutationRequestRef.current.get(key) !== requestId) {
+            return false;
+          }
+        }
+        // The pending-delete guard prevents a send from claiming this thread
+        // while the server mutation is in flight. Re-check before removing
+        // persistence bookkeeping so future refactors cannot reintroduce it.
+        if (stateRef.current.activeRun?.threadId === threadId) return false;
+
+        const deps = dependenciesRef.current;
+        const at = deps.now().toISOString();
+        const active = getActiveChatThread(stateRef.current);
+        persistedThreadIdsRef.current.delete(threadId);
+        loadedThreadIdsRef.current.delete(threadId);
+        detailRequestRef.current.delete(threadId);
+        detailReconciliationRetriesRef.current.delete(threadId);
+        visitorTokenByThreadRef.current.delete(threadId);
+        invalidatedVisitorThreadsRef.current.delete(threadId);
+        draftRenamedIdsRef.current.delete(threadId);
+        const next = dispatch({
+          type: "thread.delete",
+          threadId,
+          at,
+          fallbackDraft: createChatThread({
+            id: deps.createId(),
+            previewMode: active?.previewMode ?? "creator",
+            model: modelSnapshotFromDashboard(deps.data),
+            now: at,
+          }),
+        });
+        const localDraft = next.threads.find(
+          (candidate) =>
+            !persistedThreadIdsRef.current.has(candidate.id) && isEmptyChatThread(candidate),
+        );
+        if (localDraft) localDraftIdRef.current = localDraft.id;
+        return true;
+      } finally {
+        deletingThreadIdsRef.current.delete(threadId);
+        if (mountedRef.current) setDeletingThreadIds(new Set(deletingThreadIdsRef.current));
+      }
     },
     [dispatch],
   );
@@ -275,6 +796,9 @@ export function ChatWorkspaceProvider({
       if (!current) return { ok: false, error: "The active chat no longer exists." };
       if (stateRef.current.activeRun) {
         return { ok: false, error: "Wait for the active response to finish or stop it first." };
+      }
+      if (current.runStatus === "streaming") {
+        return { ok: false, error: "This response is running in another console session." };
       }
       const availabilityError = previewModeAvailabilityError(
         previewMode,
@@ -322,6 +846,9 @@ export function ChatWorkspaceProvider({
       const threadId = requestedThreadId ?? currentState.activeThreadId;
       const thread = getChatThread(currentState, threadId);
       if (!thread) return { ok: false, error: "This chat no longer exists." };
+      if (deletingThreadIdsRef.current.has(threadId)) {
+        return { ok: false, error: "This chat is being deleted." };
+      }
       if (!canStartChatRun(currentState, threadId)) {
         return { ok: false, error: "Another response is already running." };
       }
@@ -382,33 +909,32 @@ export function ChatWorkspaceProvider({
       };
       const controller = new AbortController();
       const lock: RunLock = { clientRunId, threadId, assistantMessageId, controller };
+      const runModel = modelSnapshotFromDashboard(deps.data);
+      const submittedTitle =
+        thread.messages.length === 0 && !draftRenamedIdsRef.current.has(threadId)
+          ? deriveChatThreadTitle(text)
+          : thread.title;
 
       // Claim the global stream synchronously. React state updates alone cannot prevent
       // two send calls in the same event turn from racing past the guard above.
       runLockRef.current = lock;
-      if (thread.previewMode === "visitor" && visitorToken) {
-        visitorTokenByThreadRef.current.set(threadId, visitorToken);
-      }
       dispatch({
         type: "run.start",
         clientRunId,
         threadId,
+        title: submittedTitle,
         userMessage,
         assistantMessage,
-        model: modelSnapshotFromDashboard(deps.data),
+        model: runModel,
         at: sentAt,
       });
-      try {
-        onAccepted?.();
-      } catch {
-        // UI acknowledgement must not be able to orphan an accepted agent run.
-      }
 
       const toolCalls = new Map<string, ChatToolCall>();
       let receivedText = "";
       let eventError: string | undefined;
       let outcome: "complete" | "error" | "interrupted" = "complete";
       let sawTerminalEvent = false;
+      let accepted = false;
 
       const updateAssistant = (
         patch: Partial<Pick<ChatMessage, "content" | "toolCalls" | "error">>,
@@ -432,6 +958,11 @@ export function ChatWorkspaceProvider({
             message: text,
             threadId,
             chatMode: thread.previewMode,
+            title: submittedTitle,
+            ...(runModel ? { model: runModel } : {}),
+            runId: clientRunId,
+            userMessageId: userMessage.id,
+            assistantMessageId,
             ...(visitorToken ? { visitorToken } : {}),
           }),
           signal: controller.signal,
@@ -443,6 +974,18 @@ export function ChatWorkspaceProvider({
           throw new Error(
             `${response.status} ${response.statusText}${detail ? ` — ${detail}` : ""}`,
           );
+        }
+        accepted = true;
+        persistedThreadIdsRef.current.add(threadId);
+        loadedThreadIdsRef.current.add(threadId);
+        draftRenamedIdsRef.current.delete(threadId);
+        if (thread.previewMode === "visitor" && visitorToken) {
+          visitorTokenByThreadRef.current.set(threadId, visitorToken);
+        }
+        try {
+          onAccepted?.();
+        } catch {
+          // UI acknowledgement must not be able to orphan an accepted agent run.
         }
         if (!response.body) throw new Error("The agent returned an empty response.");
 
@@ -481,21 +1024,41 @@ export function ChatWorkspaceProvider({
       } finally {
         // A future request must never clear a newer owner's lock or reducer state.
         if (runLockRef.current?.clientRunId === clientRunId) runLockRef.current = null;
-        dispatch({
-          type: "run.finish",
-          clientRunId,
-          threadId,
-          outcome,
-          error: eventError,
-          at: dependenciesRef.current.now().toISOString(),
-        });
+        const next = accepted
+          ? dispatch({
+              type: "run.finish",
+              clientRunId,
+              threadId,
+              outcome,
+              error: eventError,
+              at: dependenciesRef.current.now().toISOString(),
+            })
+          : dispatch({
+              type: "run.rollback",
+              clientRunId,
+              threadId,
+              previousThread: thread,
+            });
+        if (
+          accepted &&
+          persistedThreadIdsRef.current.has(threadId) &&
+          next.chatVisible &&
+          next.activeThreadId === threadId
+        ) {
+          try {
+            await persistReadState(threadId, false);
+          } catch {
+            // The conversation itself completed successfully. A later selection or
+            // visibility transition retries the read marker with a fresh CSRF token.
+          }
+        }
       }
 
       return outcome === "complete"
         ? { ok: true }
         : { ok: false, error: eventError ?? "The response did not complete." };
     },
-    [dispatch],
+    [dispatch, persistReadState],
   );
 
   const activeThread = getActiveChatThread(state);
@@ -507,10 +1070,14 @@ export function ChatWorkspaceProvider({
     () => ({
       state,
       activeThread,
+      deletingThreadIds,
+      hydrationStatus,
+      hydrationError,
       anonymousAllowed: data?.web.allowAnonymous.value !== false,
       hasVisitorToken,
       create,
       select,
+      loadThread,
       rename,
       markUnread,
       deleteThread,
@@ -527,7 +1094,11 @@ export function ChatWorkspaceProvider({
       create,
       data?.web.allowAnonymous.value,
       deleteThread,
+      deletingThreadIds,
       hasVisitorToken,
+      hydrationError,
+      hydrationStatus,
+      loadThread,
       markUnread,
       refreshVisitorToken,
       rename,
@@ -551,6 +1122,44 @@ export function useChatWorkspace(): ChatWorkspaceContextValue {
   return context;
 }
 
+function detailReconciliationRetryDelay(failures: number): number {
+  const exponent = Math.min(Math.max(failures - 1, 0), 16);
+  return Math.min(
+    EXTERNAL_RUN_POLL_INITIAL_MS * 2 ** exponent,
+    DETAIL_RECONCILIATION_RETRY_MAX_MS,
+  );
+}
+
+function sameDetailReconciliationRevision(
+  retry: DetailReconciliationRetry,
+  summary: Pick<ChatThread, "updatedAt" | "runStatus">,
+): boolean {
+  return (
+    retry.failedUpdatedAt === summary.updatedAt && retry.failedRunStatus === summary.runStatus
+  );
+}
+
+export function shouldDeferDetailReconciliation(
+  retry: DetailReconciliationRetry | undefined,
+  summary: Pick<ChatThread, "updatedAt" | "runStatus">,
+  now: number,
+): boolean {
+  return Boolean(retry && sameDetailReconciliationRevision(retry, summary) && retry.retryAt > now);
+}
+
+function nextReconciliationPollDelay(
+  externalRun: boolean,
+  baseDelay: number,
+  retries: ReadonlyMap<string, DetailReconciliationRetry>,
+): number {
+  let delay = externalRun ? Math.min(baseDelay, EXTERNAL_RUN_POLL_MAX_MS) : baseDelay;
+  const now = Date.now();
+  for (const retry of retries.values()) {
+    delay = Math.min(delay, Math.max(retry.retryAt - now, 25));
+  }
+  return delay;
+}
+
 function modelSnapshotFromDashboard(
   data: ReturnType<typeof useDashboardContext>["data"],
 ): ChatModelSnapshot | null {
@@ -559,6 +1168,16 @@ function modelSnapshotFromDashboard(
   if (!provider && !model) return null;
   const id = model ?? provider ?? "unknown";
   return { id, displayName: model ?? provider ?? id, ...(provider ? { provider } : {}) };
+}
+
+function consoleChatCsrf(
+  data: ReturnType<typeof useDashboardContext>["data"],
+): string | null {
+  return findCsrfToken(data?.csrfTokens ?? [], "console-chat");
+}
+
+function errorMessage(error: unknown, fallback: string): string {
+  return error instanceof Error && error.message.trim() ? error.message : fallback;
 }
 
 function previewModeAvailabilityError(

@@ -6,6 +6,7 @@ import type {
   PeerIdentity,
   Part,
   ToolCallRecord,
+  ThreadHistorySnapshot,
 } from "../types";
 
 /**
@@ -32,6 +33,13 @@ export interface HistoryManager {
   compact(tokenBudget: number, strategy: CompactionStrategy): void;
   save(storage: Storage): Promise<void>;
   restore(storage: Storage): Promise<void>;
+  /** Return an isolated, versioned snapshot suitable for durable storage. */
+  snapshot(): ThreadHistorySnapshot;
+  /**
+   * Validate and atomically replace model-visible history. Invalid snapshots
+   * throw without modifying the current history.
+   */
+  replace(snapshot: unknown): void;
   totalTokens(): number;
   /**
    * Record a per-turn snapshot at turn completion. Called by the turn-loop
@@ -55,6 +63,91 @@ export interface HistoryManager {
  * Bounded to prevent unbounded growth on long threads.
  */
 const MAX_TURN_SNAPSHOTS = 32;
+
+const MESSAGE_ROLES = new Set(["user", "assistant", "tool_use", "tool_result"]);
+
+function parseSnapshot(snapshot: unknown): Message[] {
+  // Accept the legacy bare-array shape written by HistoryManager.save() in
+  // older releases, but validate it with the same strict rules. New writes
+  // always use the versioned envelope.
+  const candidate = Array.isArray(snapshot)
+    ? snapshot
+    : typeof snapshot === "object" &&
+        snapshot !== null &&
+        (snapshot as { version?: unknown }).version === 1
+      ? (snapshot as { messages?: unknown }).messages
+      : undefined;
+
+  if (!Array.isArray(candidate)) {
+    throw new Error("Invalid thread history snapshot: expected version 1 messages");
+  }
+
+  const seenIds = new Set<string>();
+  const validated: Message[] = candidate.map((value, index) => {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) {
+      throw new Error(`Invalid thread history message at index ${index}`);
+    }
+    const message = value as Record<string, unknown>;
+    if (
+      typeof message.id !== "string" ||
+      message.id.length === 0 ||
+      typeof message.role !== "string" ||
+      !MESSAGE_ROLES.has(message.role) ||
+      typeof message.content !== "string" ||
+      typeof message.timestamp !== "number" ||
+      !Number.isSafeInteger(message.timestamp) ||
+      message.timestamp < 0 ||
+      typeof message.tokenCount !== "number" ||
+      !Number.isSafeInteger(message.tokenCount) ||
+      message.tokenCount < 0 ||
+      (message.peerId !== undefined &&
+        (typeof message.peerId !== "string" || message.peerId.length === 0)) ||
+      (message.toolCallId !== undefined &&
+        (typeof message.toolCallId !== "string" || message.toolCallId.length === 0))
+    ) {
+      throw new Error(`Invalid thread history message at index ${index}`);
+    }
+    if (seenIds.has(message.id)) {
+      throw new Error(`Invalid thread history snapshot: duplicate message id "${message.id}"`);
+    }
+    seenIds.add(message.id);
+    return {
+      id: message.id,
+      role: message.role as Message["role"],
+      ...(message.peerId === undefined ? {} : { peerId: message.peerId as string }),
+      ...(message.toolCallId === undefined ? {} : { toolCallId: message.toolCallId as string }),
+      content: message.content,
+      timestamp: message.timestamp,
+      tokenCount: message.tokenCount,
+    };
+  });
+
+  for (let index = 0; index < validated.length; index++) {
+    const message = validated[index]!;
+    if (message.role === "tool_use") {
+      const result = validated[index + 1];
+      if (
+        !message.toolCallId ||
+        result?.role !== "tool_result" ||
+        result.toolCallId !== message.toolCallId
+      ) {
+        throw new Error(
+          `Invalid thread history snapshot: tool_use at index ${index} has no matching result`,
+        );
+      }
+      index++;
+      continue;
+    }
+    if (message.role === "tool_result") {
+      throw new Error(`Invalid thread history snapshot: orphaned tool_result at index ${index}`);
+    }
+    if (message.toolCallId !== undefined) {
+      throw new Error(`Invalid thread history snapshot: ${message.role} message has a toolCallId`);
+    }
+  }
+
+  return validated;
+}
 
 export function createHistoryManager(opts: { threadId: string }): HistoryManager {
   let messages: Message[] = [];
@@ -175,15 +268,41 @@ export function createHistoryManager(opts: { threadId: string }): HistoryManager
     },
 
     async save(storage: Storage) {
-      await storage.put(storageKey, JSON.stringify(messages));
+      await storage.put(
+        storageKey,
+        JSON.stringify({
+          version: 1,
+          messages: messages.map((message) => ({ ...message })),
+        } satisfies ThreadHistorySnapshot),
+      );
     },
 
     async restore(storage: Storage) {
       const data = await storage.get(storageKey);
       if (data) {
-        messages = JSON.parse(data);
-        runningTokens = messages.reduce((sum, m) => sum + m.tokenCount, 0);
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(data);
+        } catch {
+          throw new Error("Invalid thread history snapshot: malformed JSON");
+        }
+        const validated = parseSnapshot(parsed);
+        messages = validated;
+        runningTokens = validated.reduce((sum, message) => sum + message.tokenCount, 0);
       }
+    },
+
+    snapshot() {
+      return {
+        version: 1,
+        messages: messages.map((message) => ({ ...message })),
+      };
+    },
+
+    replace(snapshot: unknown) {
+      const validated = parseSnapshot(snapshot);
+      messages = validated;
+      runningTokens = validated.reduce((sum, message) => sum + message.tokenCount, 0);
     },
 
     totalTokens() {

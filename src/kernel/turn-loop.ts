@@ -41,6 +41,7 @@ async function streamingInference(
   prompt: AssembledPrompt,
   turnId: string,
   emitEvent: KernelEventHandler,
+  signal?: AbortSignal,
 ): Promise<{ response: ModelResponse; streamed: boolean; messageId: string }> {
   const messageId = crypto.randomUUID();
   let streamed = false;
@@ -48,6 +49,7 @@ async function streamingInference(
   let response: ModelResponse;
   try {
     response = await model.complete(prompt, {
+      signal,
       onDelta: (delta) => {
         if (delta.kind === "text_delta") {
           if (!streamed) {
@@ -107,6 +109,9 @@ export interface TurnLoop {
     options?: TurnLoopOptions,
   ): Promise<TurnResult>;
   getHistoryManager(threadId: string): HistoryManager;
+  hasHistoryManager(threadId: string): boolean;
+  forgetHistoryManager(threadId: string): void;
+  clearHistoryManagers(): void;
 }
 
 export function createTurnLoop(opts: {
@@ -114,6 +119,7 @@ export function createTurnLoop(opts: {
   model: ModelClient;
   tokenizer: Tokenizer;
   config: AgentConfig;
+  onHistoryEvicted?: (threadId: string) => void;
 }): TurnLoop {
   const { augments, model, tokenizer, config } = opts;
 
@@ -121,6 +127,12 @@ export function createTurnLoop(opts: {
   const historyManagers = new Map<string, HistoryManager>();
   const historyLastAccess = new Map<string, number>();
   const MAX_HISTORY_THREADS = 500;
+
+  function evictHistory(threadId: string) {
+    historyManagers.delete(threadId);
+    historyLastAccess.delete(threadId);
+    opts.onHistoryEvicted?.(threadId);
+  }
 
   function getOrCreateHistory(threadId: string): HistoryManager {
     let hm = historyManagers.get(threadId);
@@ -136,8 +148,7 @@ export function createTurnLoop(opts: {
           }
         }
         if (oldestId) {
-          historyManagers.delete(oldestId);
-          historyLastAccess.delete(oldestId);
+          evictHistory(oldestId);
         }
       }
       hm = createHistoryManager({ threadId });
@@ -149,6 +160,18 @@ export function createTurnLoop(opts: {
 
   return {
     getHistoryManager: getOrCreateHistory,
+    hasHistoryManager(threadId: string) {
+      return historyManagers.has(threadId);
+    },
+    forgetHistoryManager(threadId: string) {
+      evictHistory(threadId);
+    },
+    clearHistoryManagers() {
+      const threadIds = [...historyManagers.keys()];
+      historyManagers.clear();
+      historyLastAccess.clear();
+      for (const threadId of threadIds) opts.onHistoryEvicted?.(threadId);
+    },
 
     async executeTurn(
       trigger: TurnTrigger,
@@ -742,7 +765,7 @@ export function createTurnLoop(opts: {
           response,
           streamed: streamedText,
           messageId: streamMessageId,
-        } = await streamingInference(model, currentPrompt, trigger.turnId, emitEvent);
+        } = await streamingInference(model, currentPrompt, trigger.turnId, emitEvent, signal);
         const inferDuration = Date.now() - inferStart;
 
         traceEmitter.recordInference(trace, {
@@ -1112,7 +1135,7 @@ export function createTurnLoop(opts: {
             response: finalResponse,
             streamed: termStreamed,
             messageId: termMessageId,
-          } = await streamingInference(model, currentPrompt, trigger.turnId, emitEvent);
+          } = await streamingInference(model, currentPrompt, trigger.turnId, emitEvent, signal);
           const termInferDuration = Date.now() - termInferStart;
 
           // Record this final inference so its cost lands in trace.inferenceSteps[]

@@ -101,8 +101,9 @@ export function createOllamaEngine(opts: OllamaEngineOptions): ModelClient {
 
     async complete(
       prompt: AssembledPrompt,
-      opts2?: { onDelta?: (delta: ModelDelta) => void },
+      opts2?: { onDelta?: (delta: ModelDelta) => void; signal?: AbortSignal },
     ): Promise<ModelResponse> {
+      opts2?.signal?.throwIfAborted();
       const messages = convertMessages(prompt);
       const tools = convertTools(prompt.tools);
 
@@ -114,9 +115,12 @@ export function createOllamaEngine(opts: OllamaEngineOptions): ModelClient {
         ...(tools.length > 0 ? { tools } : {}),
       };
 
-      if (opts2?.onDelta) {
-        // Streaming path: emit text deltas as they arrive. Ollama streams
-        // NDJSON chunks; the SDK exposes them as an AsyncIterable.
+      if (opts2?.onDelta || opts2?.signal) {
+        // Ollama only exposes request cancellation through its abortable
+        // streaming iterator. Use that path whenever a signal is supplied,
+        // even when the caller wants a buffered response and no deltas.
+        // Ollama streams NDJSON chunks; the SDK exposes them as an
+        // AsyncIterable.
         //
         // Tool-call quirk: Ollama emits the entire `tool_calls` array in a
         // single intermediate chunk (typically the FIRST chunk for a
@@ -125,18 +129,29 @@ export function createOllamaEngine(opts: OllamaEngineOptions): ModelClient {
         // tool_calls across all chunks — relying on the last chunk loses
         // them entirely (silent empty turn, model output discarded).
         const stream = await client.chat({ ...baseRequest, stream: true });
+        const abortStream = () => stream.abort();
+        opts2.signal?.addEventListener("abort", abortStream, { once: true });
+        if (opts2.signal?.aborted) {
+          stream.abort();
+          opts2.signal.removeEventListener("abort", abortStream);
+          opts2.signal.throwIfAborted();
+        }
         let accumulated = "";
         let lastChunk: ChatResponse | null = null;
         const accumulatedToolCalls: NonNullable<OllamaMessage["tool_calls"]> = [];
-        for await (const chunk of stream) {
-          if (chunk.message?.content) {
-            accumulated += chunk.message.content;
-            opts2.onDelta({ kind: "text_delta", text: chunk.message.content });
+        try {
+          for await (const chunk of stream) {
+            if (chunk.message?.content) {
+              accumulated += chunk.message.content;
+              opts2.onDelta?.({ kind: "text_delta", text: chunk.message.content });
+            }
+            if (chunk.message?.tool_calls) {
+              accumulatedToolCalls.push(...chunk.message.tool_calls);
+            }
+            lastChunk = chunk;
           }
-          if (chunk.message?.tool_calls) {
-            accumulatedToolCalls.push(...chunk.message.tool_calls);
-          }
-          lastChunk = chunk;
+        } finally {
+          opts2.signal?.removeEventListener("abort", abortStream);
         }
         if (!lastChunk) {
           throw new Error("Ollama stream returned no chunks");

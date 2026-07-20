@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
+import { useNavigate } from "react-router-dom";
 
 import { ChatComposer } from "@/components/admin/ChatComposer";
 import { useChatWorkspace } from "@/components/admin/ChatWorkspaceProvider";
@@ -10,6 +11,8 @@ import { Button } from "@/components/ui/button";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { detectCodeLanguage, HighlightedCode } from "@/components/ui/highlighted-code";
 import { formatChatTranscript } from "@/lib/chat-transcript";
+import { chatThreadPath } from "@/lib/chat-route";
+import { getChatRunPresentation } from "@/lib/chat-run-state";
 import {
   type ChatMessage,
   type ChatPreviewMode,
@@ -39,10 +42,12 @@ const PEER_EMPTY_PROMPTS = [
 ];
 
 export function ChatTab() {
+  const navigate = useNavigate();
   const { data, loading, error } = useDashboardContext();
   const {
     state,
     activeThread,
+    deletingThreadIds,
     anonymousAllowed,
     hasVisitorToken,
     rename,
@@ -59,20 +64,33 @@ export function ChatTab() {
 
   const input = drafts[activeThread.id] ?? "";
   const messages = activeThread.messages;
-  const streaming = state.activeRun?.threadId === activeThread.id;
-  const anotherThreadStreaming = state.activeRun !== null && !streaming;
+  const { ownsLocalStream, activeThreadStreaming: streaming } = getChatRunPresentation(
+    state.threads,
+    activeThread.id,
+    state.activeRun,
+  );
+  const anotherLocalStream =
+    state.activeRun !== null && state.activeRun.threadId !== activeThread.id;
+  const externalActiveStream = streaming && !ownsLocalStream;
+  const anyThreadStreaming = streaming || anotherLocalStream;
   const previewMode = activeThread.previewMode;
   const visitorVerificationRequired = previewMode === "visitor" && !hasVisitorToken;
-  const disabledReason = visitorVerificationRequired
+  const deleting = deletingThreadIds.has(activeThread.id);
+  const disabledReason = deleting
+    ? "This chat is being deleted."
+    : visitorVerificationRequired
     ? messages.length > 0
       ? "This visitor credential is unavailable. Start a new verified visitor chat to continue."
       : "Verify a visitor before using this chat."
-    : anotherThreadStreaming
-      ? `A response is running in ${
-          state.threads.find((thread) => thread.id === state.activeRun?.threadId)?.title ??
-          "another chat"
-        }.`
-      : undefined;
+    : externalActiveStream
+      ? "This response is still running in another console session."
+      : anotherLocalStream
+        ? `A response is running in ${
+            state.threads.find(
+              (thread) => thread.id !== activeThread.id && thread.runStatus === "streaming",
+            )?.title ?? "another chat"
+          }.`
+        : undefined;
 
   const agentName = useMemo(() => {
     if (!data) return "Agent";
@@ -104,7 +122,9 @@ export function ChatTab() {
     (overrideText?: string) => {
       const threadId = activeThread.id;
       const text = (overrideText ?? input).trim();
-      if (!text || streaming || anotherThreadStreaming || visitorVerificationRequired) return;
+      if (!text || deleting || streaming || anotherLocalStream || visitorVerificationRequired) {
+        return;
+      }
 
       setPreflightErrors((current) => ({ ...current, [threadId]: null }));
       let accepted = false;
@@ -116,7 +136,15 @@ export function ChatTab() {
           setPreflightErrors((current) => ({ ...current, [threadId]: result.error }));
         }
       });
-    }, [activeThread.id, anotherThreadStreaming, input, send, streaming, visitorVerificationRequired],
+    }, [
+      activeThread.id,
+      anotherLocalStream,
+      deleting,
+      input,
+      send,
+      streaming,
+      visitorVerificationRequired,
+    ],
   );
 
   const handlePreviewModeChange = (mode: ChatPreviewMode) => {
@@ -128,6 +156,7 @@ export function ChatTab() {
     }
     setDrafts((current) => ({ ...current, [result.threadId]: "" }));
     setPreflightErrors((current) => ({ ...current, [result.threadId]: null }));
+    navigate(chatThreadPath(result.threadId));
   };
 
   const handleCopyTranscript = useCallback(async () => {
@@ -168,6 +197,7 @@ export function ChatTab() {
   return (
     <div className="auggy-grid-surface relative flex h-full min-h-0 flex-col bg-background">
       <ChatThreadHeader
+        key={activeThread.id}
         title={activeThread.title}
         previewMode={previewMode}
         hasMessages={messages.length > 0}
@@ -176,22 +206,29 @@ export function ChatTab() {
         anonymousAllowed={anonymousAllowed}
         hasVisitorToken={hasVisitorToken}
         previewModeDisabledReason={
-          state.activeRun ? "Wait for the active response to finish or stop it first." : undefined
+          anyThreadStreaming
+            ? externalActiveStream
+              ? "This response is running in another console session."
+              : "Wait for the active response to finish or stop it first."
+            : undefined
         }
         onPreviewModeChange={handlePreviewModeChange}
-        onRename={(title) => {
-          const result = rename(activeThread.id, title);
+        onRename={async (title) => {
+          const result = await rename(activeThread.id, title);
           if (!result.valid) throw new Error(result.message);
         }}
         onCopyTranscript={handleCopyTranscript}
-        onMarkUnread={() => {
-          if (!markUnread(activeThread.id)) throw new Error("This chat no longer exists.");
+        onMarkUnread={async () => {
+          if (!(await markUnread(activeThread.id))) {
+            throw new Error("This chat no longer exists.");
+          }
         }}
         onClearVisitor={clearVisitor}
-        onDelete={() => {
-          if (!deleteThread(activeThread.id)) {
+        onDelete={async () => {
+          if (!(await deleteThread(activeThread.id))) {
             throw new Error("This chat cannot be deleted while its response is running.");
           }
+          navigate("/chat", { replace: true });
         }}
         onActionError={(action, actionError) => {
           push(
@@ -237,7 +274,7 @@ export function ChatTab() {
             onSend={sendFromThread}
             disabled={Boolean(disabledReason)}
             disabledReason={disabledReason}
-            streaming={streaming}
+            streaming={ownsLocalStream}
             onStop={stop}
             agentName={agentName}
             modelDisplayName={modelDisplayName}

@@ -7,6 +7,7 @@ import {
   deriveChatThreadTitle,
   getActiveChatThread,
   getChatThread,
+  mergeHydratedChatThreads,
   validateRenamedChatThreadTitle,
   type ChatMessage,
   type ChatModelSnapshot,
@@ -41,6 +42,7 @@ function startRun(
   threadId: string,
   clientRunId = "run-1",
   at = T1,
+  model = MODEL,
 ): ChatWorkspaceState {
   return chatWorkspaceReducer(state, {
     type: "run.start",
@@ -48,7 +50,7 @@ function startRun(
     threadId,
     userMessage: message(`${clientRunId}-user`, "user", "  Review\n my agent  ", at),
     assistantMessage: message(`${clientRunId}-assistant`, "assistant", "", at),
-    model: MODEL,
+    model,
     at,
   });
 }
@@ -78,6 +80,28 @@ describe("chat workspace titles", () => {
 });
 
 describe("chat workspace drafts and navigation", () => {
+  it("preserves an in-flight local thread when initial list hydration resolves", () => {
+    const running = startRun(createChatWorkspace(thread("local-draft")), "local-draft");
+    const persisted = {
+      ...thread("persisted", T0),
+      title: "Persisted chat",
+      messages: [message("persisted-user", "user", "Earlier", T0)],
+    };
+    const { messages: _messages, ...summary } = persisted;
+
+    const hydrated = mergeHydratedChatThreads(running, [summary], {
+      localDraftId: "local-draft",
+      persistedThreadIds: new Set(),
+      loadedThreadIds: new Set(),
+    });
+
+    expect(hydrated.map((candidate) => candidate.id)).toEqual([
+      "persisted",
+      "local-draft",
+    ]);
+    expect(hydrated[1]).toBe(running.threads[0]);
+  });
+
   it("starts with exactly one active draft and reuses it", () => {
     const initial = createChatWorkspace(thread("draft-one"));
     const state = chatWorkspaceReducer(initial, {
@@ -186,7 +210,7 @@ describe("chat workspace drafts and navigation", () => {
 });
 
 describe("chat workspace run ownership", () => {
-  it("atomically adds both messages, derives the title, freezes the model, and claims the run", () => {
+  it("atomically adds both messages, records the run model, and claims the run", () => {
     const state = startRun(createChatWorkspace(thread("one")), "one");
     expect(state.activeRun).toEqual({
       clientRunId: "run-1",
@@ -204,6 +228,18 @@ describe("chat workspace run ownership", () => {
     ]);
   });
 
+  it("updates model attribution when a populated thread continues after model rotation", () => {
+    const existing = {
+      ...thread("one"),
+      model: { id: "old", displayName: "Old model" },
+      messages: [message("earlier", "user", "Earlier question")],
+    };
+    const nextModel = { id: "new", displayName: "New model", provider: "test" };
+    const state = startRun(createChatWorkspace(existing), "one", "run-1", T1, nextModel);
+
+    expect(getActiveChatThread(state)?.model).toEqual(nextModel);
+  });
+
   it("allows only one global run", () => {
     const initial: ChatWorkspaceState = {
       threads: [thread("one"), thread("two")],
@@ -214,6 +250,49 @@ describe("chat workspace run ownership", () => {
     const running = startRun(initial, "one");
     expect(canStartChatRun(running, "two")).toBe(false);
     expect(startRun(running, "two", "run-2", T2)).toBe(running);
+  });
+
+  it("blocks the externally streaming thread without blocking a different local thread", () => {
+    const state: ChatWorkspaceState = {
+      threads: [thread("draft"), { ...thread("remote"), runStatus: "streaming" }],
+      activeThreadId: "draft",
+      chatVisible: true,
+      activeRun: null,
+    };
+    expect(canStartChatRun(state, "remote")).toBe(false);
+    expect(canStartChatRun(state, "draft")).toBe(true);
+    expect(startRun(state, "draft")).not.toBe(state);
+  });
+
+  it("unlocks a transcript when terminal detail reconciliation fails", () => {
+    const remote = {
+      ...thread("remote"),
+      messages: [
+        {
+          id: "partial",
+          role: "assistant" as const,
+          content: "Partial response",
+          createdAt: T0,
+          updatedAt: T0,
+        },
+      ],
+      runStatus: "streaming" as const,
+    };
+    const state: ChatWorkspaceState = {
+      threads: [remote],
+      activeThreadId: remote.id,
+      chatVisible: true,
+      activeRun: null,
+    };
+    const { messages: _messages, ...remoteSummary } = remote;
+    const next = chatWorkspaceReducer(state, {
+      type: "thread.reconciliation-failed",
+      thread: { ...remoteSummary, runStatus: "complete" },
+      error: "Saved transcript unavailable.",
+    });
+    expect(getActiveChatThread(next)?.runStatus).toBe("error");
+    expect(getActiveChatThread(next)?.messages[0]?.error).toBe("Saved transcript unavailable.");
+    expect(canStartChatRun(next, "remote")).toBe(true);
   });
 
   it("routes background deltas to their owner and marks that thread unread", () => {
