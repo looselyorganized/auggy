@@ -218,6 +218,19 @@ export interface WebTransportOptions {
    */
   adminRoute?: boolean;
   /**
+   * Storage configuration for operator-console conversations.
+   *
+   * When omitted, console chat persistence is enabled whenever the console is
+   * enabled and `agentDir` is available. The CLI resolves that default to
+   * `<agentDir>/data/console-chat.db` locally and to
+   * `/app/data/console-chat.db` on Railway. Set `dbPath` to an explicit path to
+   * override the location, or to `null` to keep console conversations in
+   * process memory only.
+   */
+  consoleChat?: {
+    dbPath?: string | null;
+  };
+  /**
    * G36 — agent project directory. Used by
    * the admin module to read/write `admin-overrides.json`. When unset,
    * admin overrides are skipped silently (the runtime falls back to yaml +

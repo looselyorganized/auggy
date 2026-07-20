@@ -76,6 +76,26 @@ Chat Markdown rendering does not enable raw HTML, does not render remote images,
 and blocks unsafe link protocols such as `javascript:`, `data:`, `vbscript:`,
 and `file:`.
 
+## Conversation Storage
+
+With the console enabled, CLI-started agents persist console conversations to
+`<agentDir>/data/console-chat.db` by default. Railway resolves this default to
+`/app/data/console-chat.db`, which is covered by the service's mounted volume.
+
+Configure a different path under the web transport augment, or opt into
+ephemeral process memory explicitly:
+
+```yaml
+type: webTransport
+options:
+  consoleChat:
+    dbPath: null # no cross-restart conversation persistence
+```
+
+The SQLite-backed console is a single-process store. Keep Railway at one
+replica; move this state to a shared database before horizontally scaling the
+agent.
+
 HTTPS is enforced on non-loopback hostnames. Loopback requests skip the bearer
 check because shell access to the host already grants `.env` access.
 

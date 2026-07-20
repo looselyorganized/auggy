@@ -203,6 +203,7 @@ volume even when an agent's portable config uses a project-relative default:
 - `/app/data/budgets.db` (`budgets` augment)
 - `/app/data/visitor-auth.db` (`visitorAuth` augment)
 - `/app/data/link.db` (`link` augment, when present)
+- `/app/data/console-chat.db` (`webTransport` operator conversations)
 - `/app/data/agent-mail/<augment-name>/agent-mail.db` (`agentMail`; each
   instance receives an isolated state namespace)
 

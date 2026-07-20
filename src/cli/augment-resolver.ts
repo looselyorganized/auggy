@@ -28,7 +28,7 @@ import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { fileMemory } from "../augments/fileMemory";
 import { supabaseMemory } from "../augments/supabaseMemory";
 import { filesystem } from "../augments/filesystem";
-import { webTransport } from "../transports/web-transport";
+import { webTransport, type WebTransportOptions } from "../transports/web-transport";
 import { webFetch } from "../augments/webFetch";
 import { knowledgeRoot } from "../augments/knowledge";
 import { skills } from "../augments/skills";
@@ -325,10 +325,35 @@ function resolveSkills(opts: Record<string, unknown>, agentDir: string): Augment
   return skills({ dir: resolvePath(rawDir, agentDir) });
 }
 
+/** Resolve console-chat storage without opening the database. */
+export function resolveConsoleChatOptions(
+  opts: Record<string, unknown>,
+  agentDir: string,
+  runtimeDataRoot?: string,
+): WebTransportOptions["consoleChat"] {
+  const configured = opts.consoleChat as { dbPath?: string | null } | undefined;
+
+  // With the console explicitly disabled there is no implicit chat store to
+  // initialize. Preserve an explicit value so re-enabling the route later
+  // retains the operator's chosen location.
+  if (configured === undefined && opts.adminRoute === false) return undefined;
+  if (configured?.dbPath === null) return { dbPath: null };
+
+  return {
+    dbPath: resolveSqlitePath(
+      configured?.dbPath ?? "./data/console-chat.db",
+      agentDir,
+      runtimeDataRoot,
+      "webTransport consoleChat.dbPath",
+    ),
+  };
+}
+
 function resolveWebTransport(
   opts: Record<string, unknown>,
   agentDir: string,
   overrideDir: string,
+  runtimeDataRoot: string | undefined,
   creator: CreatorConfig | undefined,
   lateBindings: {
     revocationCheck: ((id: string) => boolean) | null;
@@ -360,6 +385,8 @@ function resolveWebTransport(
     // time — breaking the "operator's most-explicit choice wins" contract.
     allowAnonymous: opts.allowAnonymous as boolean | undefined,
     publicIntegration: opts.publicIntegration as boolean | undefined,
+    adminRoute: opts.adminRoute as boolean | undefined,
+    consoleChat: resolveConsoleChatOptions(opts, agentDir, runtimeDataRoot),
     // Wire the agent dir through to webTransport so the /console module can
     // read/write `.env`, `identity.md`, and admin-overrides.json. Without
     // this, the Credentials and Identity tabs render "agent directory not
@@ -711,6 +738,7 @@ export async function resolveAugments(
           opts,
           agentDir,
           overrideDir,
+          resolverOpts.runtimeDataRoot,
           resolverOpts.creator,
           lateBindings,
         );

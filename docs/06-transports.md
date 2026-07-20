@@ -231,6 +231,10 @@ export interface WebTransportOptions {
   };
   publicFrontendUrl?: string;    // optional 302 redirect target for GET /
   publicIntegration?: boolean;   // publish developer discovery: /agent + public agent-card JSON
+  adminRoute?: boolean;          // built-in /console surface; default true
+  consoleChat?: {
+    dbPath?: string | null;      // durable SQLite path; null keeps chat in memory
+  };
 }
 ```
 
@@ -813,6 +817,27 @@ on the console surface return 405.
 Set `adminRoute: false` in `webTransport(opts)` to disable the console surface
 entirely. When disabled, requests against `/console` fall through to the 404
 handler.
+
+### Console conversation storage
+
+When the console is enabled and the CLI supplies an agent directory, console
+conversation persistence defaults to `data/console-chat.db` inside that agent
+directory. On Railway the same default resolves to
+`/app/data/console-chat.db` on the mounted volume.
+
+Override the location, or explicitly select process-memory-only chat, in the
+web transport augment config:
+
+```yaml
+type: webTransport
+options:
+  consoleChat:
+    dbPath: ./data/console-chat.db # set to null for ephemeral chat
+```
+
+Relative local paths resolve from the agent directory. Under a Railway runtime
+they resolve within `/app/data`; an absolute path outside the runtime data root
+is rejected. SQLite console storage assumes one Auggy process and one writer.
 
 ### Auth
 
