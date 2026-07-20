@@ -140,6 +140,7 @@ describe("Anthropic message coalescing", () => {
 
 let nextAnthropicResponse: Record<string, unknown> | null = null;
 let nextAnthropicError: { status: number; message: string } | null = null;
+let lastAnthropicRequestOptions: { signal?: AbortSignal } | null = null;
 
 mock.module("@anthropic-ai/sdk", () => {
   const makeResponse = (overrides?: Record<string, unknown>) =>
@@ -156,7 +157,11 @@ mock.module("@anthropic-ai/sdk", () => {
 
   class FakeAnthropic {
     messages = {
-      create: async (_params: Record<string, unknown>) => {
+      create: async (
+        _params: Record<string, unknown>,
+        requestOptions?: { signal?: AbortSignal },
+      ) => {
+        lastAnthropicRequestOptions = requestOptions ?? null;
         if (nextAnthropicError !== null) {
           // Mimic the shape of `Anthropic.APIError` (has `status` and `message`).
           throw Object.assign(new Error(nextAnthropicError.message), {
@@ -189,6 +194,15 @@ function emptyPrompt(over: Partial<AssembledPrompt> = {}): AssembledPrompt {
     ...over,
   };
 }
+
+describe("createAnthropicEngine — cancellation", () => {
+  it("forwards AbortSignal to the SDK request", async () => {
+    const controller = new AbortController();
+    const engine = createAnthropicEngine({ model: "claude-sonnet-4-6" });
+    await engine.complete(emptyPrompt(), { signal: controller.signal });
+    expect(lastAnthropicRequestOptions?.signal).toBe(controller.signal);
+  });
+});
 
 function anthropicMsg(partial: Partial<Message>): Message {
   return {

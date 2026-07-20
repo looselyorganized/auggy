@@ -11,6 +11,7 @@ import type {
   PeerIdentity,
   OutboundMessage,
   SchedulerContext,
+  ThreadHistoryPersistence,
 } from "./types";
 import { createTokenizer } from "./tokenizer";
 import { generateAgentCard } from "./agent-card";
@@ -77,17 +78,23 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
     augments: effectiveAugments,
     model,
   });
+  const restoredThreads = new Map<
+    string,
+    { persistence: ThreadHistoryPersistence; peer: PeerIdentity }
+  >();
   const turnLoop = createTurnLoop({
     augments: effectiveAugments,
     model,
     tokenizer,
     config: effectiveConfig,
+    onHistoryEvicted: (threadId) => restoredThreads.delete(threadId),
   });
 
   const outboundHandlers = new Map<
     string,
     (peer: PeerIdentity, message: OutboundMessage) => Promise<void>
   >();
+  const threadTails = new Map<string, Promise<void>>();
 
   let started = false;
 
@@ -115,12 +122,156 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
     }
   }
 
-  // Post-turn pipeline: outbound dispatch → eager compaction → onTurnEnd
+  async function withThreadLock<T>(threadId: string, task: () => Promise<T>): Promise<T> {
+    const previous = threadTails.get(threadId) ?? Promise.resolve();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const tail = previous.catch(() => {}).then(() => gate);
+    threadTails.set(threadId, tail);
+
+    await previous.catch(() => {});
+    try {
+      return await task();
+    } finally {
+      release();
+      if (threadTails.get(threadId) === tail) threadTails.delete(threadId);
+    }
+  }
+
+  async function preparePersistentHistory(
+    threadId: string,
+    peer: PeerIdentity | null,
+    persistence: ThreadHistoryPersistence | undefined,
+    source: "transport" | "inject",
+  ): Promise<{ persistence: ThreadHistoryPersistence; peer: PeerIdentity } | null> {
+    let restored = restoredThreads.get(threadId);
+    if (restored && !turnLoop.hasHistoryManager(threadId)) {
+      // Defensive repair for any eviction path that predates or bypasses the
+      // callback. Never commit an empty replacement over durable history.
+      restoredThreads.delete(threadId);
+      restored = undefined;
+    }
+
+    if (source === "inject" && persistence === undefined && restored) {
+      // An injected continuation may reuse the transport-established
+      // persistence capability, but never its identity. The injected trigger
+      // must independently carry the same resolved peer and pass the store's
+      // exact owner check before model-visible history is exposed.
+      if (!peer) {
+        throw new Error(
+          `Thread history access denied for "${threadId}": resolved peer identity is required`,
+        );
+      }
+      await restored.persistence.assertAccess(threadId, peer);
+      return restored;
+    }
+
+    if (!persistence) {
+      if (restored) {
+        throw new Error(
+          `Thread history access denied for "${threadId}": persistence authorization is required`,
+        );
+      }
+      return null;
+    }
+    if (!peer) {
+      throw new Error(
+        `Thread history access denied for "${threadId}": resolved peer identity is required`,
+      );
+    }
+
+    if (restored) {
+      if (restored.persistence !== persistence) {
+        throw new Error(
+          `Thread history access denied for "${threadId}": persistence provider changed`,
+        );
+      }
+      await persistence.assertAccess(threadId, peer);
+      return { persistence, peer };
+    }
+
+    const history = turnLoop.getHistoryManager(threadId);
+    if (history.snapshot().messages.length > 0) {
+      throw new Error(
+        `Thread history access denied for "${threadId}": unmanaged history already exists`,
+      );
+    }
+
+    // load() is the durable authorization boundary. It atomically claims a
+    // new thread or rejects an owner mismatch before any model work begins.
+    const snapshot = await persistence.load(threadId, peer);
+    history.replace(snapshot ?? { version: 1, messages: [] });
+    const association = { persistence, peer: { ...peer } };
+    restoredThreads.set(threadId, association);
+    return association;
+  }
+
+  async function compactAndCommitHistory(
+    threadId: string,
+    association: { persistence: ThreadHistoryPersistence; peer: PeerIdentity } | null,
+  ): Promise<void> {
+    const historyBudget = Math.floor(
+      model.maxContextTokens * ((config.contextBudget?.historyPercent ?? 40) / 100),
+    );
+    const history = turnLoop.getHistoryManager(threadId);
+    history.compact(historyBudget, config.compactionStrategy ?? "truncate");
+    if (association) {
+      try {
+        await association.persistence.commit(threadId, association.peer, history.snapshot());
+      } catch (error) {
+        // The durable outcome is unknown. Drop the resident copy so a retry
+        // must re-authorize and restore the store's authoritative snapshot.
+        turnLoop.forgetHistoryManager(threadId);
+        throw error;
+      }
+    }
+  }
+
+  async function executeThreadTurn(
+    trigger: TurnTrigger,
+    threadId: string,
+    options: {
+      onEvent?: import("./types").KernelEventHandler;
+      signal?: AbortSignal;
+      historyPersistence?: ThreadHistoryPersistence;
+      source: "transport" | "inject";
+    },
+  ): Promise<TurnResult> {
+    return withThreadLock(threadId, async () => {
+      const association = await preparePersistentHistory(
+        threadId,
+        trigger.peer ?? null,
+        options.historyPersistence,
+        options.source,
+      );
+      let result: TurnResult;
+      try {
+        result = await turnLoop.executeTurn(trigger, threadId, {
+          onEvent: options.onEvent,
+          signal: options.signal,
+        });
+      } catch (error) {
+        // Model/tool failures can happen after history was mutated. Persist a
+        // compact terminal snapshot before surfacing the original failure.
+        await compactAndCommitHistory(threadId, association);
+        throw error;
+      }
+      await compactAndCommitHistory(threadId, association);
+      return result;
+    });
+  }
+
+  // Post-turn pipeline: outbound dispatch → onTurnEnd
   // hooks → scheduleAfterTurn dispatch. Used by both transport-driven turns
   // (handleInbound) and kernel-injected ones (inject). ADR-027 requires both
   // paths run the same surface so PR β's auto-save and any future post-turn
   // augment behavior fires identically regardless of how the turn entered.
-  // Sequential ordering preserves ADR-027 Decision 2: scheduleAfterTurn
+  // History compaction and durable commit happen before this function, while
+  // holding the per-thread lock. The lock is deliberately released before
+  // hooks so scheduleAfterTurn can inject into the same thread without a
+  // self-deadlock. Sequential ordering preserves ADR-027 Decision 2: scheduleAfterTurn
   // must observe a fully-settled onTurnEnd. Errors in either hook family
   // are caught and logged so background work is best-effort.
   async function runPostTurn(
@@ -129,13 +280,6 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
     threadId: string,
   ): Promise<void> {
     await dispatchOutbound(result, trigger);
-
-    const historyBudget = Math.floor(
-      model.maxContextTokens * ((config.contextBudget?.historyPercent ?? 40) / 100),
-    );
-    turnLoop
-      .getHistoryManager(threadId)
-      .compact(historyBudget, config.compactionStrategy ?? "truncate");
 
     for (const a of effectiveAugments) {
       if (a.onTurnEnd) {
@@ -198,7 +342,11 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
             const transportKernel: TransportKernel = {
               async handleInbound(
                 trigger: TurnTrigger,
-                opts?: { onEvent?: import("./types").KernelEventHandler },
+                opts?: {
+                  onEvent?: import("./types").KernelEventHandler;
+                  signal?: AbortSignal;
+                  historyPersistence?: ThreadHistoryPersistence;
+                },
               ): Promise<TurnResult> {
                 // A listener may bind before a later transport finishes its
                 // ready hook. Hold all traffic until the entire ready phase
@@ -207,8 +355,11 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
                 return queue.enqueue(trigger, async (t) => {
                   lifecycle.resetIdleTimer();
                   const threadId = t.threadId ?? t.turnId;
-                  const result = await turnLoop.executeTurn(t, threadId, {
+                  const result = await executeThreadTurn(t, threadId, {
                     onEvent: opts?.onEvent,
+                    signal: opts?.signal,
+                    historyPersistence: opts?.historyPersistence,
+                    source: "transport",
                   });
                   await runPostTurn(result, t, threadId);
                   return result;
@@ -225,6 +376,9 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
               },
               getAugments() {
                 return frozenAugments;
+              },
+              forgetThreadHistory(threadId: string) {
+                turnLoop.forgetHistoryManager(threadId);
               },
             };
             await aug.transport.register(transportKernel, aug.name);
@@ -260,7 +414,11 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
       if (!started) return; // no-op if not started
       lifecycle.stopIdleTimer();
       await lifecycle.shutdown();
+      await Promise.all([...threadTails.values()].map((tail) => tail.catch(() => {})));
       outboundHandlers.clear();
+      turnLoop.clearHistoryManagers();
+      restoredThreads.clear();
+      threadTails.clear();
       started = false;
     },
 
@@ -279,7 +437,7 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
     async inject(trigger: TurnTrigger): Promise<TurnResult> {
       lifecycle.resetIdleTimer();
       const threadId = trigger.threadId ?? trigger.turnId;
-      const result = await turnLoop.executeTurn(trigger, threadId);
+      const result = await executeThreadTurn(trigger, threadId, { source: "inject" });
       await runPostTurn(result, trigger, threadId);
       return result;
     },

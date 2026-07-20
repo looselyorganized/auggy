@@ -13,12 +13,31 @@ import type { DashboardData, CsrfToken } from "./types";
  * the fetch URL against a credentials-stripped clone of `window.location` so
  * both auth-entry paths (native prompt OR inline URL credentials) work.
  */
-async function adminFetch(input: string, init: RequestInit = {}): Promise<Response> {
-  const base = new URL(window.location.href);
+export interface AdminFetchDependencies {
+  fetchImpl?: AdminFetch;
+  locationHref?: string;
+}
+
+export type AdminFetch = (
+  input: string | URL | Request,
+  init?: RequestInit,
+) => Promise<Response>;
+
+export async function adminFetch(
+  input: string,
+  init: RequestInit = {},
+  dependencies: AdminFetchDependencies = {},
+): Promise<Response> {
+  const base = new URL(dependencies.locationHref ?? window.location.href);
   base.username = "";
   base.password = "";
-  const url = new URL(input, base).toString();
-  return fetch(url, init);
+  const url = new URL(input, base);
+  if (url.origin !== base.origin) {
+    throw new Error("Admin API requests must remain same-origin.");
+  }
+  url.username = "";
+  url.password = "";
+  return (dependencies.fetchImpl ?? fetch)(url.toString(), init);
 }
 
 export async function fetchDashboard(signal?: AbortSignal): Promise<DashboardData> {

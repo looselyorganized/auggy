@@ -815,6 +815,78 @@ describe("runDeploy", () => {
     expect(calls.up).toBe(0);
   });
 
+  test("rejects a console chat database path outside the Railway volume", async () => {
+    writeAugmentMetadata(agentDir, "webTransport", {
+      type: "webTransport",
+      config: {
+        port: 8080,
+        auth: { type: "bearer", token: "${AUGGY_WEB_TOKEN}" },
+        consoleChat: { dbPath: "/app/runtime/console-chat.db" },
+      },
+    });
+    const { cli, calls } = mockRailwayCli();
+
+    await expect(runDeploy("zip", baseDeployOptions(cli, auggyDir))).rejects.toThrow(
+      /webTransport\.consoleChat\.dbPath must resolve below \/app\/data/,
+    );
+    expect(calls.checkPresence).toBe(0);
+    expect(calls.up).toBe(0);
+  });
+
+  test("rejects a relative console chat database escape before Railway calls", async () => {
+    writeAugmentMetadata(agentDir, "webTransport", {
+      type: "webTransport",
+      config: {
+        port: 8080,
+        auth: { type: "bearer", token: "${AUGGY_WEB_TOKEN}" },
+        consoleChat: { dbPath: "../console-chat.db" },
+      },
+    });
+    const { cli, calls } = mockRailwayCli();
+
+    await expect(runDeploy("zip", baseDeployOptions(cli, auggyDir))).rejects.toThrow(
+      /webTransport\.consoleChat\.dbPath must resolve below \/app\/data/,
+    );
+    expect(calls.checkPresence).toBe(0);
+    expect(calls.up).toBe(0);
+  });
+
+  test("validates an explicit console chat path even when the console route is disabled", async () => {
+    writeAugmentMetadata(agentDir, "webTransport", {
+      type: "webTransport",
+      config: {
+        port: 8080,
+        auth: { type: "bearer", token: "${AUGGY_WEB_TOKEN}" },
+        adminRoute: false,
+        consoleChat: { dbPath: "/app/runtime/console-chat.db" },
+      },
+    });
+    const { cli, calls } = mockRailwayCli();
+
+    await expect(runDeploy("zip", baseDeployOptions(cli, auggyDir))).rejects.toThrow(
+      /webTransport\.consoleChat\.dbPath must resolve below \/app\/data/,
+    );
+    expect(calls.checkPresence).toBe(0);
+    expect(calls.up).toBe(0);
+  });
+
+  test("accepts console chat storage below the Railway volume", async () => {
+    writeAugmentMetadata(agentDir, "webTransport", {
+      type: "webTransport",
+      config: {
+        port: 8080,
+        auth: { type: "bearer", token: "${AUGGY_WEB_TOKEN}" },
+        consoleChat: { dbPath: "/app/data/console/history.db" },
+      },
+    });
+    const { cli, calls } = mockRailwayCli();
+
+    await runDeploy("zip", baseDeployOptions(cli, auggyDir));
+
+    expect(calls.checkPresence).toBe(1);
+    expect(calls.up).toBe(1);
+  });
+
   test("aborts before Railway calls when budgets deploy posture is not acknowledged", async () => {
     appendAugmentId(agentDir, "budgets");
     writeAugmentMetadata(agentDir, "budgets", {
@@ -1493,6 +1565,41 @@ describe("runDeploy", () => {
       calls.linkProject.push(args);
       leaked = ["", "-wal", "-shm", "-journal"].some((suffix) =>
         existsSync(join(args.cwd, "runtime", `mail-ledger.bin${suffix}`)),
+      );
+    };
+
+    await runDeploy("zip", baseDeployOptions(cli, auggyDir));
+    expect(leaked).toBe(false);
+  });
+
+  test("excludes a configured console chat database and sidecars with a custom extension", async () => {
+    writeAugmentMetadata(agentDir, "webTransport", {
+      type: "webTransport",
+      config: {
+        port: 8080,
+        auth: { type: "bearer", token: "${AUGGY_WEB_TOKEN}" },
+        consoleChat: { dbPath: "./runtime/console-ledger.bin" },
+      },
+    });
+    const runtimeDir = join(agentDir, "runtime");
+    mkdirSync(runtimeDir, { recursive: true });
+
+    const { cli, calls } = mockRailwayCli();
+    cli.checkPresence = async () => {
+      calls.checkPresence++;
+      for (const suffix of ["", "-wal", "-shm", "-journal"]) {
+        writeFileSync(
+          join(runtimeDir, `console-ledger.bin${suffix}`),
+          `private transcript DO_NOT_STAGE_CONSOLE_CHAT${suffix}`,
+        );
+      }
+      return true as const;
+    };
+    let leaked = false;
+    cli.linkProject = async (args) => {
+      calls.linkProject.push(args);
+      leaked = ["", "-wal", "-shm", "-journal"].some((suffix) =>
+        existsSync(join(args.cwd, "runtime", `console-ledger.bin${suffix}`)),
       );
     };
 

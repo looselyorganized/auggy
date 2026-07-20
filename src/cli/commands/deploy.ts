@@ -200,15 +200,26 @@ function maybeVendorLocalAuggyTarball(args: {
 }
 
 function configuredDatabaseArtifacts(config: ReturnType<typeof parseConfig>): string[] {
-  const artifacts: string[] = [];
+  const artifacts = new Set<string>();
+  const addDatabase = (dbPath: string) => {
+    for (const suffix of ["", "-wal", "-shm", "-journal"]) {
+      artifacts.add(`${dbPath}${suffix}`);
+    }
+  };
   for (const augment of config.augments) {
     for (const field of ["dbPath", "layeredMemoryDbPath"] as const) {
       const dbPath = augment.options?.[field];
       if (typeof dbPath !== "string" || dbPath.trim() === "") continue;
-      artifacts.push(dbPath, `${dbPath}-wal`, `${dbPath}-shm`, `${dbPath}-journal`);
+      addDatabase(dbPath);
+    }
+    if (augment.type === "webTransport") {
+      const consoleDbPath = asRecord(augment.options?.consoleChat)?.dbPath;
+      if (typeof consoleDbPath === "string" && consoleDbPath.trim() !== "") {
+        addDatabase(consoleDbPath);
+      }
     }
   }
-  return artifacts;
+  return [...artifacts];
 }
 
 function resolveFileAuggyTarball(spec: string, agentDir: string): string | null {
@@ -626,7 +637,7 @@ function assertRailwayDeploySafeConfig(configPath: string): ReturnType<typeof pa
     );
   }
 
-  assertRailwayLegacyDatabasePaths(config);
+  assertRailwayDatabasePaths(config);
 
   const visitorAuth = config.augments.find((augment) => augment.type === "visitorAuth");
   if (!visitorAuth) return config;
@@ -655,7 +666,7 @@ function assertRailwayDeploySafeConfig(configPath: string): ReturnType<typeof pa
   );
 }
 
-function assertRailwayLegacyDatabasePaths(config: ReturnType<typeof parseConfig>): void {
+function assertRailwayDatabasePaths(config: ReturnType<typeof parseConfig>): void {
   const expectedByType: Record<
     string,
     ReadonlyArray<{ field: "dbPath" | "layeredMemoryDbPath"; expected: string; nullable?: boolean }>
@@ -694,6 +705,45 @@ function assertRailwayLegacyDatabasePaths(config: ReturnType<typeof parseConfig>
         ].join("\n"),
       );
     }
+  }
+
+  for (const webTransport of config.augments.filter((augment) => augment.type === "webTransport")) {
+    const consoleChat = asRecord(webTransport.options?.consoleChat);
+    const configuredPath = consoleChat?.dbPath;
+    // `null` is an explicit, documented opt-out from cross-restart persistence.
+    // Omitted config uses the runtime default at /app/data/console-chat.db when
+    // the console is enabled. An explicit path is still resolved when
+    // adminRoute is false so it must obey the same boundary as runtime startup.
+    if (configuredPath === undefined || configuredPath === null) continue;
+    if (typeof configuredPath !== "string") continue; // Config parsing reports shape errors.
+
+    const configuredFromAgent = resolve("/app", configuredPath);
+    const configuredFromAgentRelative = relative(VOLUME_MOUNT_PATH, configuredFromAgent);
+    const alreadyBelowVolume =
+      configuredFromAgentRelative !== ".." &&
+      !configuredFromAgentRelative.startsWith(`..${sep}`) &&
+      !isAbsolute(configuredFromAgentRelative);
+    const resolvedPath =
+      isAbsolute(configuredPath) || alreadyBelowVolume
+        ? configuredFromAgent
+        : resolve(VOLUME_MOUNT_PATH, configuredPath);
+    const fromVolume = relative(VOLUME_MOUNT_PATH, resolvedPath);
+    const isDurablePath =
+      fromVolume !== "" &&
+      fromVolume !== ".." &&
+      !fromVolume.startsWith(`..${sep}`) &&
+      !isAbsolute(fromVolume);
+    if (isDurablePath) continue;
+
+    throw new Error(
+      [
+        "Deploy preflight failed:",
+        `webTransport.consoleChat.dbPath must resolve below ${VOLUME_MOUNT_PATH} for Railway durability (found ${configuredPath}).`,
+        `Omit dbPath to use ${VOLUME_MOUNT_PATH}/console-chat.db, use a relative path`,
+        `that stays below the runtime data root, or set dbPath: null to explicitly`,
+        "choose process-memory-only console chats.",
+      ].join("\n"),
+    );
   }
 }
 

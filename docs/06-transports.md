@@ -231,6 +231,10 @@ export interface WebTransportOptions {
   };
   publicFrontendUrl?: string;    // optional 302 redirect target for GET /
   publicIntegration?: boolean;   // publish developer discovery: /agent + public agent-card JSON
+  adminRoute?: boolean;          // built-in /console surface; default true
+  consoleChat?: {
+    dbPath?: string | null;      // durable SQLite path; null keeps chat in memory
+  };
 }
 ```
 
@@ -802,6 +806,11 @@ endpoints are intentionally not promoted as top-level `0.5` console tabs.
 | `GET` | `/console/capabilities` | Runtime map of augments, routes, tools, memory, auth posture, and warnings. |
 | `GET` | `/console/api/dashboard` | Agent card, agent metadata, augment summaries, tool inventory, web posture, live route manifest, CSRF tokens, skills snapshot, and admin blocks. |
 | `POST` | `/console/api/chat` | CSRF-protected chat proxy to `/agent/run`. |
+| `GET` | `/console/api/chat/threads` | Authenticated conversation summaries for the creator console. |
+| `GET` | `/console/api/chat/threads/<threadId>` | Authenticated conversation detail and transcript. |
+| `POST` | `/console/api/chat/threads/<threadId>/rename` | CSRF-protected conversation rename. |
+| `POST` | `/console/api/chat/threads/<threadId>/read-state` | CSRF-protected read/unread update. |
+| `POST` | `/console/api/chat/threads/<threadId>/delete` | CSRF-protected conversation deletion. |
 | `POST` | `/console/action/<id>` | Augment-level action dispatch. CSRF-protected. |
 | `POST` | `/console/action/<id>/row/<rowKey>` | Row-scoped action dispatch. CSRF-protected. |
 
@@ -813,6 +822,31 @@ on the console surface return 405.
 Set `adminRoute: false` in `webTransport(opts)` to disable the console surface
 entirely. When disabled, requests against `/console` fall through to the 404
 handler.
+
+### Console conversation storage
+
+When the console is enabled and the CLI supplies an agent directory, console
+conversation persistence defaults to `data/console-chat.db` inside that agent
+directory. On Railway the same default resolves to
+`/app/data/console-chat.db` on the mounted volume.
+
+Override the location, or explicitly select process-memory-only chat, in the
+web transport augment config:
+
+```yaml
+type: webTransport
+config:
+  consoleChat:
+    dbPath: ./data/console-chat.db # set to null for ephemeral chat
+```
+
+Relative local paths resolve from the agent directory. Under a Railway runtime
+they resolve within `/app/data`; an absolute path outside the runtime data root
+is rejected. Railway must mount a persistent volume at exactly `/app/data`; the
+default database is `/app/data/console-chat.db`. SQLite console storage assumes
+one Auggy process and one writer, so keep the service at one replica. The volume
+survives process replacement but is not a backup; stop writes and capture the
+database plus any WAL/SHM siblings together when making a file-level backup.
 
 ### Auth
 
