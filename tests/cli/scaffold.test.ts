@@ -70,6 +70,14 @@ describe("scaffoldAgent", () => {
     expect(identity).not.toContain("{SKILL_MANIFEST}");
   });
 
+  test("identity.md keeps routine skill discovery out of user-facing narration", () => {
+    const dir = scaffoldAgent({ name: "zip", targetDir: join(TMP, "zip") });
+    const identity = readFileSync(join(dir, "identity.md"), "utf-8");
+
+    expect(identity).toContain("Read skill guides silently");
+    expect(identity).toContain("respond with the first user-relevant result or question");
+  });
+
   test("generated agent.yaml parses through the config parser", () => {
     const dir = scaffoldAgent({ name: "zip", targetDir: join(TMP, "zip") });
     process.env.AUGGY_WEB_TOKEN = "test-token";
