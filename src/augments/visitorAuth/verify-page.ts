@@ -19,6 +19,8 @@ export interface VerifyConfirmPageInput {
 export interface VerifySuccessPageInput {
   visitorToken: string;
   email: string;
+  /** Authoritative originating thread read from the consumed one-time token. */
+  threadId: string;
 }
 
 export interface VerifyFailurePageInput {
@@ -114,45 +116,67 @@ export function buildVerifyConfirmPage(input: VerifyConfirmPageInput): string {
 export function buildVerifySuccessPage(input: VerifySuccessPageInput): string {
   const tokenLit = jsStringLiteral(input.visitorToken);
   const emailLit = jsStringLiteral(input.email);
+  const threadIdLit = jsStringLiteral(input.threadId);
   return `${COMMON_HEAD}
 <body>
 <h1 id="title">Verifying…</h1>
 <p id="msg">Please wait.</p>
 <p id="storage-fallback" style="display:none">
-  Verified, but your browser blocked storage access. Copy this token manually to your chat tab:
-  <br><code id="manual-token" style="word-break:break-all"></code>
-  <br><small>(This may happen in private/incognito mode or sandboxed iframes.)</small>
+  Your email was verified, but this browser blocked the storage needed to apply the identity.
+  Reopen the verification link in the same browser as the console with storage and JavaScript enabled,
+  or request a new link from the originating chat.
 </p>
 <script>
 (function () {
   var token = ${tokenLit};
   var email = ${emailLit};
+  var threadId = ${threadIdLit};
+  var tokenTag = (function (value) {
+    var hash = 2166136261;
+    for (var i = 0; i < value.length; i++) {
+      hash ^= value.charCodeAt(i);
+      hash = Math.imul(hash, 16777619);
+    }
+    return 'fnv1a32-' + (hash >>> 0).toString(16).padStart(8, '0');
+  })(token);
+  var promotionIntent = {
+    type: 'visitor-auth.verified',
+    version: 1,
+    threadId: threadId,
+    tokenTag: tokenTag
+  };
   var storageWorks = false;
   try {
     localStorage.setItem('auggy-visitor-token', token);
+    localStorage.setItem('auggy-visitor-promotion-intent', JSON.stringify(promotionIntent));
     storageWorks = true;
   } catch (_) { /* storage may be denied in private/incognito mode or sandboxed iframes */ }
+  if (storageWorks && typeof BroadcastChannel === 'function') {
+    try {
+      var channel = new BroadcastChannel('auggy-visitor-auth');
+      channel.postMessage({ type: promotionIntent.type, version: 1 });
+      channel.close();
+    } catch (_) { /* storage/focus events remain as compatibility fallbacks */ }
+  }
   try {
     history.replaceState(null, '', './verified');
   } catch (_) { /* older browsers — best-effort */ }
   var titleEl = document.getElementById('title');
   var msgEl = document.getElementById('msg');
   var fallbackEl = document.getElementById('storage-fallback');
-  var manualEl = document.getElementById('manual-token');
   if (titleEl) titleEl.textContent = 'Verified.';
   if (storageWorks) {
     if (msgEl) {
-      msgEl.textContent = 'Email verified: ' + email + '. You may close this tab. In the console chat, choose Verified visitor to preview with this identity. If you opened this link on a different device, refresh your chat tab.';
+      msgEl.textContent = 'Email verified: ' + email + '. You can close this window and return to the originating console chat. Your verified identity will be picked up automatically when you continue. If the chat does not update, refresh it. If you opened this link in a different browser or on another device, open the console there to use this identity.';
     }
   } else {
     if (msgEl) msgEl.style.display = 'none';
     if (fallbackEl) fallbackEl.style.display = '';
-    if (manualEl) manualEl.textContent = token;
   }
 })();
 </script>
 <noscript>
-<p>Email verified, but JavaScript is required to apply the new identity to your chat tab. Please re-open your chat tab manually.</p>
+<p>Email verified, but JavaScript is required to apply the verified identity automatically. Enable JavaScript, then request a new verification link from the originating chat.</p>
 </noscript>
 </body>
 </html>`;

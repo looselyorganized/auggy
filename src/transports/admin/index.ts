@@ -261,6 +261,12 @@ export interface AdminRouteContext {
   consoleChat?: ConsoleChatStore;
   /** Unpredictable process-local marker authorizing console persistence on the self-fetch. */
   consoleChatInternalMarker?: string;
+  /** Resolve a browser-held visitor credential without exposing its stable internal id. */
+  resolveConsoleVisitorIdentity?: (visitorToken: string) => Promise<{
+    status: "verified";
+    email: string;
+    expiresAt: number;
+  } | null>;
 }
 
 const ACTION_ROUTE_RE = /^\/console\/action\/([^/]+)(?:\/row\/([^/]+))?$/;
@@ -378,6 +384,12 @@ export async function handleAdminRoute(req: Request, ctx: AdminRouteContext): Pr
   }
   if (req.method === "POST" && url.pathname === "/console/api/identity") {
     return handleIdentityWrite(req, ctx, agentName);
+  }
+
+  // Visitor identity summary ---------------------------------------------
+  if (url.pathname === "/console/api/visitor-identity") {
+    if (req.method !== "POST") return methodNotAllowed("POST");
+    return handleConsoleVisitorIdentity(req, ctx, agentName);
   }
 
   // Chat SSE proxy --------------------------------------------------------
@@ -1112,6 +1124,60 @@ async function validateConsoleChatCsrf(
     return { ok: false, status: 419, message: "Session expired — reload the page." };
   }
   return { ok: false, status: 403, message: "CSRF check failed." };
+}
+
+async function handleConsoleVisitorIdentity(
+  req: Request,
+  ctx: AdminRouteContext,
+  agentName: string,
+): Promise<Response> {
+  const body = await readStrictJsonObject(req);
+  if (
+    !body ||
+    Object.keys(body).some((key) => key !== "csrf" && key !== "visitorToken") ||
+    typeof body.visitorToken !== "string" ||
+    body.visitorToken.length === 0 ||
+    body.visitorToken.length > 4096 ||
+    /[\r\n]/.test(body.visitorToken)
+  ) {
+    return jsonResponse({ error: "invalid request", code: "invalid_request" }, 400);
+  }
+
+  const csrf = await validateConsoleChatCsrf(ctx, agentName, body.csrf);
+  if (!csrf.ok) return jsonResponse({ error: csrf.message, code: "csrf_rejected" }, csrf.status);
+
+  if (!ctx.resolveConsoleVisitorIdentity) {
+    return jsonResponse(
+      {
+        error: "Visitor identity resolution is unavailable.",
+        code: "visitor_identity_unavailable",
+      },
+      503,
+    );
+  }
+
+  let identity: Awaited<ReturnType<NonNullable<typeof ctx.resolveConsoleVisitorIdentity>>>;
+  try {
+    identity = await ctx.resolveConsoleVisitorIdentity(body.visitorToken);
+  } catch {
+    return jsonResponse(
+      {
+        error: "Visitor identity resolution is temporarily unavailable.",
+        code: "visitor_identity_unavailable",
+      },
+      503,
+    );
+  }
+  if (!identity) {
+    return jsonResponse(
+      {
+        error: "Visitor credential is invalid, expired, or revoked.",
+        code: "visitor_credential_rejected",
+      },
+      401,
+    );
+  }
+  return jsonResponse({ identity });
 }
 
 function consoleChatUnavailableResponse(): Response {

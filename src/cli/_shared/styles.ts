@@ -18,6 +18,14 @@ export function failureMark(opts: CliStyleOptions = {}): string {
   return ansi(31, "✖", opts);
 }
 
+export function infoLabel(opts: CliStyleOptions = {}): string {
+  return ansi(36, "INFO", opts);
+}
+
 export function warningLabel(opts: CliStyleOptions = {}): string {
   return ansi(33, "WARN", opts);
+}
+
+export function errorLabel(opts: CliStyleOptions = {}): string {
+  return ansi(31, "ERROR", opts);
 }

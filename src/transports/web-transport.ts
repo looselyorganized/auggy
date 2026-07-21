@@ -136,6 +136,11 @@ export interface WebTransportOptions {
       visitorId: string,
     ) => Omit<RouteVisitorIdentity, "agentId" | "issuedAt" | "expiresAt"> | null;
     /**
+     * Authorize an anonymous console thread's one-way promotion after the
+     * visitor consumed a magic link issued from that exact thread.
+     */
+    threadPromotionCheck?: (visitorId: string, threadId: string) => boolean;
+    /**
      * Stable identifier for this agent used to scope visitor tokens (fix C2).
      * MUST match visitorAuth's `agentBinding` option. Default: `"auggy"`.
      * Tokens minted for a different agentBinding are rejected, preventing
@@ -574,6 +579,11 @@ function resolveConsoleChatDbPath(opts: WebTransportOptions): string | null {
     return configured;
   }
   return opts.agentDir ? join(opts.agentDir, "data", "console-chat.db") : ":memory:";
+}
+
+function appendTextSegmentBoundary(content: string): string {
+  if (!content || content.endsWith("\n\n")) return content;
+  return content.endsWith("\n") ? `${content}\n` : `${content}\n\n`;
 }
 
 function isConsoleChatIdentifier(value: unknown): value is string {
@@ -1469,6 +1479,50 @@ export function webTransport(opts: WebTransportOptions): Augment {
     return mergeMatchingExternalVisitorAuth(visitorAuth, await resolveExternalVisitorAuth(req));
   }
 
+  async function resolveConsoleVisitorIdentity(visitorToken: string): Promise<{
+    status: "verified";
+    email: string;
+    expiresAt: number;
+  } | null> {
+    if (!visitorTokensEnabled || !signingKey || !opts.visitorTokens?.identityLookup) return null;
+    let payload: VisitorTokenPayload | null;
+    try {
+      payload = await verifyVisitorToken(signingKey, visitorToken);
+    } catch {
+      return null;
+    }
+    if (
+      !payload ||
+      typeof payload.visitorId !== "string" ||
+      payload.visitorId.length === 0 ||
+      typeof payload.agentId !== "string" ||
+      !Number.isFinite(payload.expiresAt) ||
+      payload.expiresAt < 0 ||
+      payload.expiresAt > 8_640_000_000_000_000
+    ) {
+      return null;
+    }
+    const expectedBinding = opts.visitorTokens.agentBinding ?? "auggy";
+    if (payload.agentId !== expectedBinding) return null;
+    if (opts.visitorTokens.revocationCheck?.(payload.visitorId)) return null;
+
+    const identity = opts.visitorTokens.identityLookup(payload.visitorId);
+    if (
+      !identity ||
+      identity.visitorId !== payload.visitorId ||
+      typeof identity.email !== "string" ||
+      identity.email.trim().length === 0 ||
+      identity.email.length > 320
+    ) {
+      return null;
+    }
+    return {
+      status: "verified",
+      email: identity.email,
+      expiresAt: payload.expiresAt,
+    };
+  }
+
   function mergeMatchingExternalVisitorAuth(
     visitorAuth: Extract<RouteVisitorAuthContext, { state: "recognized" }>,
     externalAuth: RouteVisitorAuthContext | null,
@@ -1790,6 +1844,27 @@ export function webTransport(opts: WebTransportOptions): Augment {
       return json({ error: "missing peer identity" }, 400);
     }
 
+    if (
+      consoleMetadata?.previewMode === "visitor" &&
+      previewModeForPeer(peer) === "visitor" &&
+      consoleChatStore
+    ) {
+      try {
+        const existing = consoleChatStore.getThread(threadId);
+        if (existing?.previewMode === "anonymous") {
+          const promotionAllowed =
+            visitorPayload !== null &&
+            opts.visitorTokens?.threadPromotionCheck?.(visitorPayload.visitorId, threadId) === true;
+          if (!promotionAllowed) {
+            return json({ error: "console thread verification does not match" }, 403);
+          }
+          consoleChatStore.promoteAnonymousThread(threadId, peer, Date.now());
+        }
+      } catch {
+        return json({ error: "console thread identity promotion failed" }, 409);
+      }
+    }
+
     if (consoleMetadata && previewModeForPeer(peer) !== consoleMetadata.previewMode) {
       // In particular, an expired/revoked visitor token resolves anonymous and
       // is rejected here before history restore or model inference.
@@ -1866,6 +1941,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
         let assistantContent = "";
         let assistantError: string | null = null;
         const messageRoles = new Map<string, string>();
+        let lastAssistantMessageId: string | null = null;
         const toolCalls = new Map<string, ConsoleChatToolCall>();
         let persistenceFailure: unknown = null;
         let progressFlushTimer: ReturnType<typeof setTimeout> | null = null;
@@ -1935,6 +2011,12 @@ export function webTransport(opts: WebTransportOptions): Augment {
           switch (event.type) {
             case "TEXT_MESSAGE_START":
               messageRoles.set(event.messageId, event.role);
+              if (event.role === "assistant" && lastAssistantMessageId !== event.messageId) {
+                if (lastAssistantMessageId !== null) {
+                  assistantContent = appendTextSegmentBoundary(assistantContent);
+                }
+                lastAssistantMessageId = event.messageId;
+              }
               return;
             case "TEXT_MESSAGE_CONTENT":
               if (messageRoles.get(event.messageId) === "assistant") {
@@ -2370,6 +2452,9 @@ export function webTransport(opts: WebTransportOptions): Augment {
                 ...(consoleChatStore ? { consoleChat: consoleChatStore } : {}),
                 ...(consoleInternalRunMarker
                   ? { consoleChatInternalMarker: consoleInternalRunMarker }
+                  : {}),
+                ...(visitorTokensEnabled && opts.visitorTokens?.identityLookup
+                  ? { resolveConsoleVisitorIdentity }
                   : {}),
               });
             }

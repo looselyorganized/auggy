@@ -59,6 +59,22 @@ export interface CatalogEntry {
   packageDeps?: Record<string, string>;
 }
 
+/**
+ * Known visitorAuth scaffold policies. The AgentMail setup command uses the
+ * local value as an exact migration sentinel: only an untouched scaffold is
+ * rewritten when delivery changes, while operator-customized limits survive.
+ */
+export const VISITOR_AUTH_LOCAL_RATE_LIMIT_DEFAULT = {
+  minIntervalSeconds: 10,
+  perHour: 360,
+  perDay: 8_640,
+} as const;
+
+export const VISITOR_AUTH_AGENTMAIL_RATE_LIMIT_DEFAULT = {
+  perHour: 1,
+  perDay: 3,
+} as const;
+
 export const AUGMENT_CATALOG: CatalogEntry[] = [
   // NOTE on identity: the agent's identity preamble is mounted via the
   // top-level `identity: ./identity.md` shorthand (see config-parser §α-5),
@@ -380,7 +396,7 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
       },
       signingKey: "${VISITOR_SIGNING_KEY}",
       agentBinding: "${AUGGY_AGENT_ID}",
-      rateLimit: { perHour: 1, perDay: 3 },
+      rateLimit: { ...VISITOR_AUTH_LOCAL_RATE_LIMIT_DEFAULT },
       reverifyAfterDays: 90,
       tokenTtlMinutes: 15,
       layeredMemoryDbPath: "./memory.db",

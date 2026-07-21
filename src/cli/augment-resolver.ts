@@ -361,6 +361,7 @@ function resolveWebTransport(
   lateBindings: {
     revocationCheck: ((id: string) => boolean) | null;
     identityLookup: VisitorAuthAugmentExtras["resolveVisitorIdentity"] | null;
+    threadPromotionCheck: VisitorAuthAugmentExtras["canPromoteAnonymousThread"] | null;
   },
 ): Augment {
   const vtBase = opts.visitorTokens as
@@ -380,6 +381,8 @@ function resolveWebTransport(
           ...vtBase,
           revocationCheck: (id: string) => lateBindings.revocationCheck?.(id) ?? false,
           identityLookup: (id: string) => lateBindings.identityLookup?.(id) ?? null,
+          threadPromotionCheck: (id: string, threadId: string) =>
+            lateBindings.threadPromotionCheck?.(id, threadId) ?? false,
         }
       : undefined,
     // G3: explicit yaml value must reach webTransport so the yaml > env >
@@ -631,9 +634,11 @@ export async function resolveAugments(
   const lateBindings: {
     revocationCheck: ((id: string) => boolean) | null;
     identityLookup: VisitorAuthAugmentExtras["resolveVisitorIdentity"] | null;
+    threadPromotionCheck: VisitorAuthAugmentExtras["canPromoteAnonymousThread"] | null;
   } = {
     revocationCheck: null,
     identityLookup: null,
+    threadPromotionCheck: null,
   };
 
   // Fix F2 — single-source signingKey + conservative handling of operator's
@@ -910,6 +915,9 @@ export async function resolveAugments(
   if (va?.resolveVisitorIdentity) {
     lateBindings.identityLookup = va.resolveVisitorIdentity.bind(va);
   }
+  if (va?.canPromoteAnonymousThread) {
+    lateBindings.threadPromotionCheck = va.canPromoteAnonymousThread.bind(va);
+  }
 
   // Fix F18: throw when multiple visitorAuth augments are declared.
   // Both would attempt to register GET/POST /visitor-auth/verify routes
@@ -929,22 +937,25 @@ export async function resolveAugments(
   // silently strands visitors: the magic-link flow succeeds, but the next request
   // rejects the minted token because the agentBinding field won't match.
   const vaConfig = configs.find((c) => c.type === "visitorAuth");
-  const wtConfig = configs.find((c) => c.type === "webTransport");
-  if (vaConfig && wtConfig) {
-    const vaBinding = (vaConfig.options as Record<string, unknown> | undefined)?.agentBinding as
-      | string
-      | undefined;
-    const wtBinding = (
-      (wtConfig.options as Record<string, unknown> | undefined)?.visitorTokens as
-        | Record<string, unknown>
-        | undefined
-    )?.agentBinding as string | undefined;
-    if (vaBinding !== wtBinding) {
-      throw new Error(
-        `Cross-augment config mismatch: visitorAuth.agentBinding (${vaBinding ?? "unset"}) ` +
-          `must match webTransport.visitorTokens.agentBinding (${wtBinding ?? "unset"}). ` +
-          `Set them both to the same value (e.g., \${AUGGY_AGENT_ID}) in augments/visitorAuth/augment.yaml and augments/webTransport/augment.yaml.`,
-      );
+  const wtConfigs = configs.filter((c) => c.type === "webTransport");
+  if (vaConfig) {
+    const configuredVaBinding = (vaConfig.options as Record<string, unknown> | undefined)
+      ?.agentBinding as string | undefined;
+    const vaBinding = configuredVaBinding ?? "auggy";
+    for (const wtConfig of wtConfigs) {
+      const configuredWtBinding = (
+        (wtConfig.options as Record<string, unknown> | undefined)?.visitorTokens as
+          | Record<string, unknown>
+          | undefined
+      )?.agentBinding as string | undefined;
+      const wtBinding = configuredWtBinding ?? "auggy";
+      if (vaBinding !== wtBinding) {
+        throw new Error(
+          `Cross-augment config mismatch: visitorAuth.agentBinding (${configuredVaBinding ?? `unset; effective ${vaBinding}`}) ` +
+            `must match webTransport "${wtConfig.name}" visitorTokens.agentBinding (${configuredWtBinding ?? `unset; effective ${wtBinding}`}). ` +
+            `Set them both to the same value (e.g., \${AUGGY_AGENT_ID}) in augments/visitorAuth/augment.yaml and augments/webTransport/augment.yaml.`,
+        );
+      }
     }
   }
 

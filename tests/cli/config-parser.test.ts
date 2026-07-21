@@ -154,6 +154,51 @@ describe("parseConfig", () => {
   });
 });
 
+describe("visitorAuth rate-limit config", () => {
+  test("accepts a local minimum interval with positive rolling caps", () => {
+    const path = writeYaml(
+      "visitor-auth-rate-limit.yaml",
+      minimalConfig({
+        augments: [
+          {
+            type: "visitorAuth",
+            options: {
+              rateLimit: { minIntervalSeconds: 10, perHour: 360, perDay: 8_640 },
+            },
+          },
+        ],
+      }),
+    );
+
+    const config = parseConfig(path);
+    expect(config.augments[0]?.options?.rateLimit).toEqual({
+      minIntervalSeconds: 10,
+      perHour: 360,
+      perDay: 8_640,
+    });
+  });
+
+  test("rejects fractional, non-positive, and negative visitorAuth limits", () => {
+    const path = writeYaml(
+      "visitor-auth-invalid-rate-limit.yaml",
+      minimalConfig({
+        augments: [
+          {
+            type: "visitorAuth",
+            options: {
+              rateLimit: { minIntervalSeconds: -1, perHour: 0, perDay: 2.5 },
+            },
+          },
+        ],
+      }),
+    );
+
+    expect(() => parseConfig(path)).toThrow("rateLimit.minIntervalSeconds");
+    expect(() => parseConfig(path)).toThrow("rateLimit.perHour");
+    expect(() => parseConfig(path)).toThrow("rateLimit.perDay");
+  });
+});
+
 describe("validation errors", () => {
   test("rejects missing id", () => {
     const path = writeYaml("agent.yaml", minimalConfig({ id: undefined }));

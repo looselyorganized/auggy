@@ -92,6 +92,7 @@ function ConsoleShell({
 }) {
   const {
     state,
+    ephemeralDraftId,
     create,
     select,
     rename,
@@ -119,6 +120,7 @@ function ConsoleShell({
     chatRouteActive,
     routedThreadId,
     activeThreadId: state.activeThreadId,
+    ephemeralDraftId,
   });
   const mobileChatNavigation = getMobileChatNavigationState(
     state.threads,

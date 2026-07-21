@@ -68,6 +68,104 @@ describe("createSqliteVisitorAuthStore", () => {
       expect(second.email).toBeUndefined();
     });
 
+    test("authorizes promotion only for the exact thread that completed verification", () => {
+      const now = 1_700_000_000_000;
+      store.issueToken({
+        token: "tok-promote",
+        email: "promote@example.com",
+        peerId: "anon-thread-promote",
+        threadId: "thread-promote",
+        expiresAt: now + 60_000,
+        sourceMessageId: "message-promote",
+      });
+      store.recordVerifiedVisitor({
+        visitorId: "vis_promote",
+        email: "promote@example.com",
+        verifiedAt: now,
+        lastSeenAt: now,
+        reverifyDueAt: now + 86_400_000,
+        revoked: false,
+        revokedAt: null,
+        revokedReason: null,
+      });
+
+      expect(store.canPromoteAnonymousThread("vis_promote", "thread-promote")).toBe(false);
+      expect(store.consumeToken("tok-promote", now)).toMatchObject({ consumed: true });
+      expect(store.canPromoteAnonymousThread("vis_promote", "thread-promote")).toBe(true);
+      expect(store.canPromoteAnonymousThread("vis_promote", "another-thread")).toBe(false);
+      expect(store.canPromoteAnonymousThread("vis_other", "thread-promote")).toBe(false);
+
+      store.revokeByEmail("promote@example.com", "security review", now + 1);
+      expect(store.canPromoteAnonymousThread("vis_promote", "thread-promote")).toBe(false);
+    });
+
+    test("rejects a consumed token whose anonymous peer is not bound to its thread", () => {
+      const now = 1_700_000_000_000;
+      store.issueToken({
+        token: "tok-mismatched-peer",
+        email: "mismatch@example.com",
+        peerId: "anon-some-other-thread",
+        threadId: "target-thread",
+        expiresAt: now + 60_000,
+        sourceMessageId: null,
+      });
+      expect(store.consumeToken("tok-mismatched-peer", now)).toMatchObject({ consumed: true });
+      store.recordVerifiedVisitor({
+        visitorId: "vis_mismatch",
+        email: "mismatch@example.com",
+        verifiedAt: now,
+        lastSeenAt: now,
+        reverifyDueAt: now + 86_400_000,
+        revoked: false,
+        revokedAt: null,
+        revokedReason: null,
+      });
+
+      expect(store.canPromoteAnonymousThread("vis_mismatch", "target-thread")).toBe(false);
+    });
+
+    test("does not carry old thread proof across revoke-and-rotate identity epochs", () => {
+      const now = 1_700_000_000_000;
+      store.issueToken({
+        token: "tok-old-identity",
+        email: "rotate@example.com",
+        peerId: "anon-old-thread",
+        threadId: "old-thread",
+        expiresAt: now + 60_000,
+        sourceMessageId: null,
+      });
+      expect(store.consumeToken("tok-old-identity", now)).toMatchObject({ consumed: true });
+      store.recordVerifiedVisitor({
+        visitorId: "vis_old",
+        email: "rotate@example.com",
+        verifiedAt: now,
+        lastSeenAt: now,
+        reverifyDueAt: now + 86_400_000,
+        revoked: false,
+        revokedAt: null,
+        revokedReason: null,
+      });
+      expect(store.canPromoteAnonymousThread("vis_old", "old-thread")).toBe(true);
+
+      store.revokeByEmail("rotate@example.com", "rotate identity", now + 1);
+      expect(
+        store.unrevokeAndRotate("rotate@example.com", "vis_new", now + 2, now + 86_400_000),
+      ).toBe(true);
+      expect(store.canPromoteAnonymousThread("vis_old", "old-thread")).toBe(false);
+      expect(store.canPromoteAnonymousThread("vis_new", "old-thread")).toBe(false);
+
+      store.issueToken({
+        token: "tok-new-identity",
+        email: "rotate@example.com",
+        peerId: "anon-new-thread",
+        threadId: "new-thread",
+        expiresAt: now + 60_000,
+        sourceMessageId: null,
+      });
+      expect(store.consumeToken("tok-new-identity", now + 3)).toMatchObject({ consumed: true });
+      expect(store.canPromoteAnonymousThread("vis_new", "new-thread")).toBe(true);
+    });
+
     test("expired token cannot be consumed (consumed:false)", () => {
       const now = 1_700_000_000_000;
       store.issueToken({

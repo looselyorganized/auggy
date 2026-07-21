@@ -127,6 +127,13 @@ export interface VisitorAuthStore {
    */
   findVisitorById(visitorId: string): VerifiedVisitorRow | null;
   /**
+   * True only when this recognized visitor consumed a verification token that
+   * was issued from the exact anonymous thread. Used to authorize the
+   * anonymous-to-recognized console thread transition without allowing an
+   * unrelated visitor token to claim existing history.
+   */
+  canPromoteAnonymousThread(visitorId: string, threadId: string): boolean;
+  /**
    * Un-revoke a previously-revoked row and rotate to a fresh visitorId.
    * Called by the verify route when a visitor re-verifies after their identity
    * was revoked. A single UPDATE atomically clears revocation state, writes the

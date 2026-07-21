@@ -19,11 +19,11 @@ describe("createVisitorAuthRateLimiter", () => {
     }
   });
 
-  test("allows a second send after the hour rolls", () => {
+  test("allows a second send at the exact hourly boundary", () => {
     const rl = createVisitorAuthRateLimiter({ perHour: 1, perDay: 3 });
     const t = 1_000_000_000_000;
     rl.record("anon-1", t);
-    expect(rl.check("anon-1", t + 60 * 60_000 + 1).allowed).toBe(true);
+    expect(rl.check("anon-1", t + 60 * 60_000)).toEqual({ allowed: true });
   });
 
   test("blocks the 4th send within 24h even when hourly resets", () => {
@@ -40,6 +40,15 @@ describe("createVisitorAuthRateLimiter", () => {
     }
   });
 
+  test("allows another send at the exact daily boundary", () => {
+    const rl = createVisitorAuthRateLimiter({ perHour: 3, perDay: 3 });
+    const t = 1_000_000_000_000;
+    rl.record("anon-1", t);
+    rl.record("anon-1", t + 1);
+    rl.record("anon-1", t + 2);
+    expect(rl.check("anon-1", t + 24 * 60 * 60_000)).toEqual({ allowed: true });
+  });
+
   test("counts are independent per peer", () => {
     const rl = createVisitorAuthRateLimiter({ perHour: 1, perDay: 3 });
     const t = 1_000_000_000_000;
@@ -54,6 +63,56 @@ describe("createVisitorAuthRateLimiter", () => {
     const r = rl.check("anon-1", t + 30 * 60_000);
     if (r.allowed) throw new Error("expected blocked");
     expect(r.retryAfterSec).toBe(30 * 60); // 30 min remaining
+  });
+
+  test("enforces an exact minimum interval boundary", () => {
+    const rl = createVisitorAuthRateLimiter({
+      perHour: 360,
+      perDay: 8_640,
+      minIntervalSeconds: 10,
+    });
+    const t = 1_000_000_000_000;
+    rl.record("anon-1", t);
+
+    const immediate = rl.check("anon-1", t);
+    expect(immediate).toEqual({
+      allowed: false,
+      reason: "cooldown",
+      retryAfterSec: 10,
+    });
+    const atNineSeconds = rl.check("anon-1", t + 9_000);
+    expect(atNineSeconds).toEqual({
+      allowed: false,
+      reason: "cooldown",
+      retryAfterSec: 1,
+    });
+    expect(rl.check("anon-1", t + 10_000)).toEqual({ allowed: true });
+  });
+
+  test("allows an explicit zero cooldown", () => {
+    const rl = createVisitorAuthRateLimiter({
+      perHour: 2,
+      perDay: 3,
+      minIntervalSeconds: 0,
+    });
+    const t = 1_000_000_000_000;
+    rl.record("anon-1", t);
+    expect(rl.check("anon-1", t)).toEqual({ allowed: true });
+  });
+
+  test("reports the longest active retry window when policies overlap", () => {
+    const rl = createVisitorAuthRateLimiter({
+      perHour: 1,
+      perDay: 3,
+      minIntervalSeconds: 10,
+    });
+    const t = 1_000_000_000_000;
+    rl.record("anon-1", t);
+    expect(rl.check("anon-1", t)).toEqual({
+      allowed: false,
+      reason: "hourly",
+      retryAfterSec: 3_600,
+    });
   });
 
   test("forget(peerId) clears the window state", () => {

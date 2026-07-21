@@ -1,13 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { useState, type ReactNode } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 
 import { DashboardProvider } from "@/components/admin/DashboardContext";
 import {
   ChatWorkspaceProvider,
   shouldDeferDetailReconciliation,
+  shouldRetryChatHydration,
   useChatWorkspace,
   type ChatWorkspaceContextValue,
 } from "@/components/admin/ChatWorkspaceProvider";
+import { ConsoleChatApiError } from "@/lib/console-chat-api";
 import {
   createChatThread,
   createChatWorkspace,
@@ -20,6 +23,8 @@ import type { DashboardData } from "@/lib/types";
 const T0 = "2026-07-20T10:00:00.000Z";
 const T1 = "2026-07-20T10:01:00.000Z";
 const MODEL = { id: "claude-sonnet", displayName: "Claude Sonnet", provider: "anthropic" };
+const VISITOR_TOKEN_KEY = "auggy-visitor-token";
+const VISITOR_PROMOTION_INTENT_KEY = "auggy-visitor-promotion-intent";
 
 const dashboardData = {
   card: { provider: { name: "test-agent" } },
@@ -70,6 +75,32 @@ afterEach(async () => {
 });
 
 describe("ChatWorkspaceProvider persistence", () => {
+  it("retries only transient startup hydration failures", () => {
+    expect(
+      shouldRetryChatHydration(
+        new ConsoleChatApiError("Unavailable", { status: 503, code: "unavailable" }),
+      ),
+    ).toBe(true);
+    expect(
+      shouldRetryChatHydration(
+        new ConsoleChatApiError("Network failure", { status: 0, code: "request-failed" }),
+      ),
+    ).toBe(true);
+    expect(
+      shouldRetryChatHydration(
+        new ConsoleChatApiError("Unauthorized", { status: 401, code: "request-failed" }),
+      ),
+    ).toBe(false);
+    expect(
+      shouldRetryChatHydration(
+        new ConsoleChatApiError("Malformed response", {
+          status: 200,
+          code: "invalid-response",
+        }),
+      ),
+    ).toBe(false);
+  });
+
   it("backs off only the unchanged terminal revision that failed to reconcile", () => {
     const retry = {
       failures: 4,
@@ -118,26 +149,85 @@ describe("ChatWorkspaceProvider persistence", () => {
     ]);
   });
 
+  it("automatically restores saved chats when the backend becomes available", async () => {
+    const saved = populatedThread("saved-after-restart", "Saved before restart");
+    let listCalls = 0;
+    const fetchImpl = mockFetch(async (path) => {
+      if (path !== "/console/api/chat/threads") {
+        throw new Error(`Unexpected request: ${path}`);
+      }
+      listCalls++;
+      if (listCalls === 1) {
+        return json({ error: "Console chat is starting." }, 503);
+      }
+      return json({ threads: [summary(saved)] });
+    });
+    const harness = await mountProvider({ fetchImpl });
+
+    expect(harness.value.hydrationStatus).toBe("error");
+    expect(harness.value.hydrationError).toMatch(/reconnecting automatically/i);
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, EXTERNAL_POLL_TEST_WAIT_MS));
+    });
+
+    expect(listCalls).toBeGreaterThanOrEqual(2);
+    expect(harness.value.hydrationStatus).toBe("ready");
+    expect(harness.value.hydrationError).toBeNull();
+    expect(harness.value.state.threads.map(({ id }) => id)).toEqual([
+      "saved-after-restart",
+      "id-1",
+    ]);
+    expect(harness.value.state.activeThreadId).toBe("saved-after-restart");
+  });
+
+  it("does not retry a permanently invalid hydration response", async () => {
+    let listCalls = 0;
+    const fetchImpl = mockFetch(async (path) => {
+      if (path !== "/console/api/chat/threads") {
+        throw new Error(`Unexpected request: ${path}`);
+      }
+      listCalls++;
+      return json({ threads: "not-an-array" });
+    });
+    const harness = await mountProvider({ fetchImpl });
+
+    expect(harness.value.hydrationStatus).toBe("error");
+    expect(harness.value.hydrationError).not.toMatch(/reconnecting automatically/i);
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, EXTERNAL_POLL_TEST_WAIT_MS));
+    });
+
+    expect(listCalls).toBe(1);
+  });
+
   it("sends stable run/message IDs, generated title, and model, then durably marks an active visible completion read", async () => {
     const initial = createChatWorkspace(
       createChatThread({ id: "draft", previewMode: "creator", model: MODEL, now: T0 }),
     );
     const requests: Array<{ path: string; body: Record<string, unknown> }> = [];
-    const fetchImpl = mockFetch(async (path, init) => {
-      const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
-      requests.push({ path, body });
-      if (path === "/console/api/chat") return completedSse("draft");
-      if (path.endsWith("/read-state")) {
-        return json({
-          thread: {
-            ...summary(populatedThread("draft", "Review auth behavior")),
-            unread: false,
-            lastReadAt: T1,
-          },
-        });
-      }
-      throw new Error(`Unexpected request: ${path}`);
-    });
+    let sendReceiver: unknown = "not-called";
+    const fetchImpl = mockFetch(
+      async (path, init) => {
+        const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+        requests.push({ path, body });
+        if (path === "/console/api/chat") return completedSse("draft");
+        if (path.endsWith("/read-state")) {
+          return json({
+            thread: {
+              ...summary(populatedThread("draft", "Review auth behavior")),
+              unread: false,
+              lastReadAt: T1,
+            },
+          });
+        }
+        throw new Error(`Unexpected request: ${path}`);
+      },
+      (receiver, path) => {
+        if (path === "/console/api/chat") sendReceiver = receiver;
+      },
+    );
     const harness = await mountProvider({ fetchImpl, initialState: initial });
 
     await act(async () => {
@@ -161,6 +251,360 @@ describe("ChatWorkspaceProvider persistence", () => {
     expect(requests[1]).toMatchObject({
       path: "/console/api/chat/threads/draft/read-state",
       body: { csrf: "csrf-token", unread: false },
+    });
+    expect(sendReceiver).toBeUndefined();
+  });
+
+  it("continues the originating anonymous thread as verified after its token arrives", async () => {
+    const storage = new Map<string, string>();
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      value: {
+        getItem: (key: string) => storage.get(key) ?? null,
+        removeItem: (key: string) => storage.delete(key),
+      },
+    });
+    const anonymous = {
+      ...populatedThread("verified-origin", "Manage order"),
+      previewMode: "anonymous" as const,
+    };
+    const initial = createChatWorkspace(anonymous);
+    let submitted: Record<string, unknown> | undefined;
+    const fetchImpl = mockFetch(async (path, init) => {
+      if (path === "/console/api/chat") {
+        submitted = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+        return completedSse(anonymous.id);
+      }
+      if (path.endsWith("/read-state")) {
+        return json({
+          thread: { ...summary(anonymous), previewMode: "visitor", lastReadAt: T1 },
+        });
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    const harness = await mountProvider({ fetchImpl, initialState: initial });
+
+    storage.set(VISITOR_TOKEN_KEY, "verified.payload.signature");
+    storage.set(
+      VISITOR_PROMOTION_INTENT_KEY,
+      promotionIntent(anonymous.id, "verified.payload.signature"),
+    );
+    await act(async () => {
+      expect(harness.value.refreshVisitorToken()).toBe(true);
+      expect(await harness.value.send("Done")).toEqual({ ok: true });
+    });
+
+    expect(submitted).toMatchObject({
+      threadId: anonymous.id,
+      chatMode: "visitor",
+      visitorToken: "verified.payload.signature",
+    });
+    expect(harness.value.activeThread.previewMode).toBe("visitor");
+    expect(storage.get(VISITOR_TOKEN_KEY)).toBe("verified.payload.signature");
+    expect(storage.has(VISITOR_PROMOTION_INTENT_KEY)).toBe(false);
+  });
+
+  it("continues the originating anonymous thread as verified when its token exists at startup", async () => {
+    const storage = new Map<string, string>([
+      [VISITOR_TOKEN_KEY, "verified.payload.signature"],
+      [
+        VISITOR_PROMOTION_INTENT_KEY,
+        promotionIntent("verified-origin", "verified.payload.signature"),
+      ],
+    ]);
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      value: {
+        getItem: (key: string) => storage.get(key) ?? null,
+        removeItem: (key: string) => storage.delete(key),
+      },
+    });
+    const anonymous = {
+      ...populatedThread("verified-origin", "Manage order"),
+      previewMode: "anonymous" as const,
+    };
+    const initial = createChatWorkspace(anonymous);
+    let submitted: Record<string, unknown> | undefined;
+    const fetchImpl = mockFetch(async (path, init) => {
+      if (path === "/console/api/chat") {
+        submitted = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+        return completedSse(anonymous.id);
+      }
+      if (path.endsWith("/read-state")) {
+        return json({
+          thread: { ...summary(anonymous), previewMode: "visitor", lastReadAt: T1 },
+        });
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    const harness = await mountProvider({ fetchImpl, initialState: initial });
+
+    await act(async () => {
+      expect(await harness.value.send("Done")).toEqual({ ok: true });
+    });
+
+    expect(submitted).toMatchObject({
+      threadId: anonymous.id,
+      chatMode: "visitor",
+      visitorToken: "verified.payload.signature",
+    });
+    expect(harness.value.activeThread.previewMode).toBe("visitor");
+    expect(storage.has(VISITOR_PROMOTION_INTENT_KEY)).toBe(false);
+  });
+
+  it("never promotes a selected anonymous thread that is not the intent origin", async () => {
+    const storage = new Map<string, string>([
+      [VISITOR_TOKEN_KEY, "verified.payload.signature"],
+      [
+        VISITOR_PROMOTION_INTENT_KEY,
+        promotionIntent("different-origin", "verified.payload.signature"),
+      ],
+    ]);
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      value: {
+        getItem: (key: string) => storage.get(key) ?? null,
+        removeItem: (key: string) => storage.delete(key),
+      },
+    });
+    const anonymous = {
+      ...populatedThread("selected-anonymous", "Unrelated test"),
+      previewMode: "anonymous" as const,
+    };
+    let submitted: Record<string, unknown> | undefined;
+    const fetchImpl = mockFetch(async (path, init) => {
+      if (path === "/console/api/chat") {
+        submitted = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+        return completedSse(anonymous.id);
+      }
+      if (path.endsWith("/read-state")) {
+        return json({ thread: { ...summary(anonymous), lastReadAt: T1 } });
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    const harness = await mountProvider({
+      fetchImpl,
+      initialState: createChatWorkspace(anonymous),
+    });
+
+    await act(async () => {
+      expect(await harness.value.send("Keep this anonymous")).toEqual({ ok: true });
+    });
+
+    expect(submitted).toMatchObject({
+      threadId: anonymous.id,
+      chatMode: "anonymous",
+    });
+    expect(submitted).not.toHaveProperty("visitorToken");
+    expect(harness.value.activeThread.previewMode).toBe("anonymous");
+    expect(storage.has(VISITOR_PROMOTION_INTENT_KEY)).toBe(true);
+  });
+
+  it("never pairs a stale promotion intent with a newer visitor token", async () => {
+    const storage = new Map<string, string>([
+      [VISITOR_TOKEN_KEY, "new.payload.signature"],
+      [
+        VISITOR_PROMOTION_INTENT_KEY,
+        promotionIntent("verified-origin", "old.payload.signature"),
+      ],
+    ]);
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      value: {
+        getItem: (key: string) => storage.get(key) ?? null,
+        removeItem: (key: string) => storage.delete(key),
+      },
+    });
+    const anonymous = {
+      ...populatedThread("verified-origin", "Manage order"),
+      previewMode: "anonymous" as const,
+    };
+    let submitted: Record<string, unknown> | undefined;
+    const fetchImpl = mockFetch(async (path, init) => {
+      if (path === "/console/api/chat") {
+        submitted = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+        return completedSse(anonymous.id);
+      }
+      if (path.endsWith("/read-state")) {
+        return json({ thread: { ...summary(anonymous), lastReadAt: T1 } });
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    const harness = await mountProvider({
+      fetchImpl,
+      initialState: createChatWorkspace(anonymous),
+    });
+
+    await act(async () => {
+      expect(await harness.value.send("Keep this anonymous")).toEqual({ ok: true });
+    });
+
+    expect(submitted).toMatchObject({ chatMode: "anonymous" });
+    expect(submitted).not.toHaveProperty("visitorToken");
+    expect(harness.value.activeThread.previewMode).toBe("anonymous");
+  });
+
+  it("quarantines an exact promotion intent when the server rejects its proof", async () => {
+    const storage = new Map<string, string>([
+      [VISITOR_TOKEN_KEY, "verified.payload.signature"],
+      [
+        VISITOR_PROMOTION_INTENT_KEY,
+        promotionIntent("verified-origin", "verified.payload.signature"),
+      ],
+    ]);
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      value: {
+        getItem: (key: string) => storage.get(key) ?? null,
+        removeItem: (key: string) => storage.delete(key),
+      },
+    });
+    const anonymous = {
+      ...populatedThread("verified-origin", "Manage order"),
+      previewMode: "anonymous" as const,
+    };
+    const fetchImpl = mockFetch(async (path) => {
+      if (path === "/console/api/visitor-identity") {
+        return identityResponse("visitor@example.com");
+      }
+      if (path === "/console/api/chat") {
+        return json({ error: "console thread verification does not match" }, 403);
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    const harness = await mountProvider({
+      fetchImpl,
+      initialState: createChatWorkspace(anonymous),
+    });
+
+    await act(async () => {
+      expect(await harness.value.send("Done")).toMatchObject({ ok: false });
+    });
+
+    expect(storage.has(VISITOR_PROMOTION_INTENT_KEY)).toBe(false);
+    expect(harness.value.activeThread.previewMode).toBe("anonymous");
+  });
+
+  it("clears both the compatible visitor token and pending intent on signout", async () => {
+    const storage = new Map<string, string>([
+      [VISITOR_TOKEN_KEY, "verified.payload.signature"],
+      [
+        VISITOR_PROMOTION_INTENT_KEY,
+        promotionIntent("origin", "verified.payload.signature"),
+      ],
+    ]);
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      value: {
+        getItem: (key: string) => storage.get(key) ?? null,
+        removeItem: (key: string) => storage.delete(key),
+      },
+    });
+    const harness = await mountProvider({
+      fetchImpl: mockFetch(async (path) => {
+        throw new Error(`Unexpected request: ${path}`);
+      }),
+      initialState: createChatWorkspace(
+        createChatThread({ id: "draft", previewMode: "creator", model: MODEL, now: T0 }),
+      ),
+    });
+
+    act(() => harness.value.clearVisitor());
+
+    expect(storage.has(VISITOR_TOKEN_KEY)).toBe(false);
+    expect(storage.has(VISITOR_PROMOTION_INTENT_KEY)).toBe(false);
+    expect(harness.value.hasVisitorToken).toBe(false);
+  });
+
+  it("ignores stale identity responses after token rotation and signout", async () => {
+    const storage = new Map<string, string>([[VISITOR_TOKEN_KEY, "token-a"]]);
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      value: {
+        getItem: (key: string) => storage.get(key) ?? null,
+        removeItem: (key: string) => storage.delete(key),
+      },
+    });
+    const requests = new Map<string, ReturnType<typeof deferred<Response>>>();
+    const fetchImpl = mockFetch(async (path, init) => {
+      if (path !== "/console/api/visitor-identity") {
+        throw new Error(`Unexpected request: ${path}`);
+      }
+      const body = JSON.parse(String(init?.body)) as { visitorToken: string };
+      const request = deferred<Response>();
+      requests.set(body.visitorToken, request);
+      return request.promise;
+    });
+    const harness = await mountProvider({
+      fetchImpl,
+      initialState: createChatWorkspace(
+        createChatThread({ id: "draft", previewMode: "creator", model: MODEL, now: T0 }),
+      ),
+    });
+
+    storage.set(VISITOR_TOKEN_KEY, "token-b");
+    await act(async () => {
+      harness.value.refreshVisitorToken();
+      requests.get("token-b")?.resolve(identityResponse("b@example.com"));
+    });
+    expect(harness.value.visitorIdentity).toMatchObject({
+      status: "verified",
+      email: "b@example.com",
+    });
+
+    await act(async () => {
+      requests.get("token-a")?.resolve(identityResponse("a@example.com"));
+    });
+    expect(harness.value.visitorIdentity).toMatchObject({
+      status: "verified",
+      email: "b@example.com",
+    });
+
+    storage.set(VISITOR_TOKEN_KEY, "token-c");
+    act(() => {
+      harness.value.refreshVisitorToken();
+      harness.value.clearVisitor();
+    });
+    await act(async () => {
+      requests.get("token-c")?.resolve(identityResponse("c@example.com"));
+    });
+    expect(harness.value.visitorIdentity).toEqual({ status: "absent" });
+  });
+
+  it("validates a stored visitor token when dashboard CSRF arrives after mount", async () => {
+    const storage = new Map<string, string>([[VISITOR_TOKEN_KEY, "stored-token"]]);
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      value: {
+        getItem: (key: string) => storage.get(key) ?? null,
+        removeItem: (key: string) => storage.delete(key),
+      },
+    });
+    let identityRequests = 0;
+    const fetchImpl = mockFetch(async (path) => {
+      if (path === "/console/api/visitor-identity") {
+        identityRequests++;
+        return identityResponse("stored@example.com");
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    const harness = await mountProvider({
+      fetchImpl,
+      dashboard: null,
+      initialState: createChatWorkspace(
+        createChatThread({ id: "draft", previewMode: "creator", model: MODEL, now: T0 }),
+      ),
+    });
+
+    expect(identityRequests).toBe(0);
+    expect(harness.value.visitorIdentity).toMatchObject({ status: "unavailable" });
+
+    await act(async () => harness.setDashboard(dashboardData));
+
+    expect(identityRequests).toBe(1);
+    expect(harness.value.visitorIdentity).toMatchObject({
+      status: "verified",
+      email: "stored@example.com",
     });
   });
 
@@ -188,6 +632,34 @@ describe("ChatWorkspaceProvider persistence", () => {
     expect(harness.value.activeThread.messages).toEqual([]);
     expect(harness.value.activeThread.runStatus).toBe("idle");
     expect(harness.value.activeThread.title).toBe("New chat");
+  });
+
+  it("separates assistant text emitted by multiple tool-loop inference segments", async () => {
+    const initial = createChatWorkspace(
+      createChatThread({ id: "draft", previewMode: "creator", model: MODEL, now: T0 }),
+    );
+    const fetchImpl = mockFetch(async (path) => {
+      if (path === "/console/api/chat") return segmentedSse("draft");
+      if (path.endsWith("/read-state")) {
+        return json({
+          thread: {
+            ...summary(populatedThread("draft", "Check an order")),
+            unread: false,
+            lastReadAt: T1,
+          },
+        });
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    const harness = await mountProvider({ fetchImpl, initialState: initial });
+
+    await act(async () => {
+      expect(await harness.value.send("Check an order")).toEqual({ ok: true });
+    });
+
+    expect(harness.value.activeThread.messages.at(-1)?.content).toBe(
+      "I'll check the order.\n\nThe address is current.",
+    );
   });
 
   it("preserves an explicit empty-draft rename as the first persisted title", async () => {
@@ -504,6 +976,53 @@ describe("ChatWorkspaceProvider persistence", () => {
     expect(harness.value.activeThread.id).toBe("second");
   });
 
+  it("refetches detail instead of masking a newer revision with a delayed transcript", async () => {
+    const saved = populatedThread("saved", "Original");
+    const staleDetail = deferred<Response>();
+    const fresh = {
+      ...saved,
+      title: "Renamed",
+      updatedAt: T1,
+      messages: saved.messages.map((message) =>
+        message.role === "assistant"
+          ? { ...message, content: "Fresh answer", updatedAt: T1 }
+          : message,
+      ),
+    };
+    let detailCalls = 0;
+    const fetchImpl = mockFetch(async (path) => {
+      if (path === "/console/api/chat/threads") {
+        return json({ threads: [summary(saved)] });
+      }
+      if (path === "/console/api/chat/threads/saved") {
+        detailCalls++;
+        return detailCalls === 1 ? staleDetail.promise : json({ thread: fresh });
+      }
+      if (path.endsWith("/rename")) {
+        return json({ thread: summary(fresh) });
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    const harness = await mountProvider({ fetchImpl });
+
+    let load!: Promise<boolean>;
+    await act(async () => {
+      load = harness.value.loadThread("saved");
+      await Promise.resolve();
+      await harness.value.rename("saved", "Renamed");
+    });
+    await act(async () => staleDetail.resolve(json({ thread: saved })));
+    await act(async () => expect(await load).toBe(true));
+
+    expect(detailCalls).toBe(2);
+    expect(harness.value.activeThread).toMatchObject({
+      id: "saved",
+      title: "Renamed",
+      updatedAt: T1,
+    });
+    expect(harness.value.activeThread.messages.at(-1)?.content).toBe("Fresh answer");
+  });
+
   it("does not resurrect a thread deleted while its detail request is in flight", async () => {
     const removed = {
       ...populatedThread("removed", "Deleted elsewhere"),
@@ -537,24 +1056,37 @@ describe("ChatWorkspaceProvider persistence", () => {
 async function mountProvider(options: {
   fetchImpl: typeof fetch;
   initialState?: ChatWorkspaceState;
+  dashboard?: DashboardData | null;
 }) {
   let value: ChatWorkspaceContextValue | null = null;
+  let setDashboard!: (data: DashboardData | null) => void;
   let nextId = 0;
   function Probe() {
     value = useChatWorkspace();
     return null;
   }
-  await act(async () => {
-    renderer = create(
+  function DashboardHarness({ children }: { children: ReactNode }) {
+    const [data, setData] = useState<DashboardData | null>(
+      options.dashboard === undefined ? dashboardData : options.dashboard,
+    );
+    setDashboard = setData;
+    return (
       <DashboardProvider
         value={{
-          data: dashboardData,
+          data,
           error: null,
-          loading: false,
+          loading: data === null,
           refresh: async () => {},
           updateData: () => {},
         }}
       >
+        {children}
+      </DashboardProvider>
+    );
+  }
+  await act(async () => {
+    renderer = create(
+      <DashboardHarness>
         <ChatWorkspaceProvider
           initialState={options.initialState}
           fetchImpl={options.fetchImpl}
@@ -563,7 +1095,7 @@ async function mountProvider(options: {
         >
           <Probe />
         </ChatWorkspaceProvider>
-      </DashboardProvider>,
+      </DashboardHarness>,
     );
   });
   if (!value) throw new Error("Provider did not render");
@@ -572,6 +1104,7 @@ async function mountProvider(options: {
       if (!value) throw new Error("Provider unmounted");
       return value;
     },
+    setDashboard,
   };
 }
 
@@ -619,13 +1152,63 @@ function completedSse(threadId: string): Response {
   return new Response(body, { headers: { "content-type": "text/event-stream" } });
 }
 
+function identityResponse(email: string): Response {
+  return json({
+    identity: {
+      status: "verified",
+      email,
+      expiresAt: Date.now() + 60_000,
+    },
+  });
+}
+
+function segmentedSse(threadId: string): Response {
+  const body = [
+    { type: "TEXT_MESSAGE_START", messageId: "segment-one", role: "assistant" },
+    { type: "TEXT_MESSAGE_CONTENT", messageId: "segment-one", delta: "I'll check the order." },
+    { type: "TEXT_MESSAGE_END", messageId: "segment-one" },
+    { type: "TEXT_MESSAGE_START", messageId: "segment-two", role: "assistant" },
+    {
+      type: "TEXT_MESSAGE_CONTENT",
+      messageId: "segment-two",
+      delta: "The address is current.",
+    },
+    { type: "TEXT_MESSAGE_END", messageId: "segment-two" },
+    { type: "RUN_FINISHED", threadId, result: { status: "completed" } },
+  ]
+    .map((event) => `data: ${JSON.stringify(event)}\n\n`)
+    .join("");
+  return new Response(body, { headers: { "content-type": "text/event-stream" } });
+}
+
 function mockFetch(
   handler: (path: string, init?: RequestInit) => Response | Promise<Response>,
+  observeReceiver?: (receiver: unknown, path: string) => void,
 ): typeof fetch {
-  return (async (input: URL | RequestInfo, init?: RequestInit) => {
+  return (async function (this: unknown, input: URL | RequestInfo, init?: RequestInit) {
     const raw = input instanceof Request ? input.url : String(input);
-    return handler(new URL(raw, "http://localhost:8080").pathname, init);
+    const path = new URL(raw, "http://localhost:8080").pathname;
+    observeReceiver?.(this, path);
+    return handler(path, init);
   }) as typeof fetch;
+}
+
+function promotionIntent(threadId: string, visitorToken: string): string {
+  return JSON.stringify({
+    type: "visitor-auth.verified",
+    version: 1,
+    threadId,
+    tokenTag: testVisitorTokenTag(visitorToken),
+  });
+}
+
+function testVisitorTokenTag(token: string): string {
+  let hash = 2_166_136_261;
+  for (let index = 0; index < token.length; index++) {
+    hash ^= token.charCodeAt(index);
+    hash = Math.imul(hash, 16_777_619);
+  }
+  return `fnv1a32-${(hash >>> 0).toString(16).padStart(8, "0")}`;
 }
 
 function deferred<T>() {

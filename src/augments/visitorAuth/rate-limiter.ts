@@ -16,7 +16,7 @@ const DAY_MS = 24 * HOUR_MS;
 
 export type RateLimitDecision =
   | { allowed: true }
-  | { allowed: false; reason: "hourly" | "daily"; retryAfterSec: number };
+  | { allowed: false; reason: "cooldown" | "hourly" | "daily"; retryAfterSec: number };
 
 export interface VisitorAuthRateLimiter {
   check(peerId: string, now: number): RateLimitDecision;
@@ -49,18 +49,39 @@ export function createVisitorAuthRateLimiter(caps: VisitorAuthRateLimit): Visito
   return {
     check(peerId: string, now: number): RateLimitDecision {
       const list = pruneAndGet(peerId, now);
+      const blocked: Array<Exclude<RateLimitDecision, { allowed: true }>> = [];
+      if (caps.minIntervalSeconds !== undefined && list.length > 0) {
+        const mostRecent = Math.max(...list);
+        const retryAfterSec = Math.ceil((mostRecent + caps.minIntervalSeconds * 1000 - now) / 1000);
+        if (retryAfterSec > 0) {
+          blocked.push({ allowed: false, reason: "cooldown", retryAfterSec });
+        }
+      }
       const inHour = list.filter((t) => t > now - HOUR_MS).length;
       if (inHour >= caps.perHour) {
         const oldestInHour = list
           .filter((t) => t > now - HOUR_MS)
           .reduce((a, b) => Math.min(a, b), now);
         const retryAfterSec = Math.ceil((oldestInHour + HOUR_MS - now) / 1000);
-        return { allowed: false, reason: "hourly", retryAfterSec: Math.max(1, retryAfterSec) };
+        blocked.push({
+          allowed: false,
+          reason: "hourly",
+          retryAfterSec: Math.max(1, retryAfterSec),
+        });
       }
       if (list.length >= caps.perDay) {
         const oldestInDay = list.reduce((a, b) => Math.min(a, b), now);
         const retryAfterSec = Math.ceil((oldestInDay + DAY_MS - now) / 1000);
-        return { allowed: false, reason: "daily", retryAfterSec: Math.max(1, retryAfterSec) };
+        blocked.push({
+          allowed: false,
+          reason: "daily",
+          retryAfterSec: Math.max(1, retryAfterSec),
+        });
+      }
+      if (blocked.length > 0) {
+        return blocked.reduce((longest, decision) =>
+          decision.retryAfterSec > longest.retryAfterSec ? decision : longest,
+        );
       }
       return { allowed: true };
     },

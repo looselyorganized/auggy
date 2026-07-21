@@ -2,7 +2,7 @@ import { describe, expect, mock, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { parse as parseYaml } from "yaml";
+import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import type { AgentMailProvisioningClient } from "../../../src/cli/agentmail-provisioning";
 import { formatAgentMailSetupResult, runAgentMailSetup } from "../../../src/cli/commands/agentmail";
 import { parseEnvFile } from "../../../src/cli/env-parse";
@@ -66,6 +66,10 @@ describe("agentmail setup command", () => {
         subjectPrefix: "[Verify] ",
         apiKey: "${AGENTMAIL_API_KEY}",
         inboxId: "${AGENTMAIL_INBOX_ID}",
+      });
+      expect(readVisitorAuthConfig(paths.augmentPath).rateLimit).toEqual({
+        perHour: 1,
+        perDay: 3,
       });
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -262,6 +266,54 @@ describe("agentmail setup command", () => {
     }
   });
 
+  test("preserves custom visitorAuth limits when switching console delivery to AgentMail", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agentmail-setup-custom-rate-limit-"));
+    try {
+      const paths = writeVisitorAuthAgent(root);
+      const customRateLimit = {
+        minIntervalSeconds: 15,
+        perHour: 100,
+        perDay: 500,
+        operatorExtension: 2,
+      };
+      const doc = parseYaml(readFileSync(paths.augmentPath, "utf-8")) as {
+        config: Record<string, unknown>;
+      };
+      doc.config.rateLimit = customRateLimit;
+      writeFileSync(paths.augmentPath, stringifyYaml(doc));
+
+      const provisioner: AgentMailProvisioningClient = {
+        signUp: mock(async () => {
+          throw new Error("not used");
+        }),
+        verify: mock(async () => {
+          throw new Error("not used");
+        }),
+        createInbox: mock(async () => {
+          throw new Error("not used");
+        }),
+        createInboxApiKey: mock(async () => {
+          throw new Error("not used");
+        }),
+      };
+
+      await runAgentMailSetup(
+        "visitorAuth",
+        {
+          config: paths.configPath,
+          mode: "manual",
+          apiKey: "am_existing",
+          inboxId: "inb_existing",
+        },
+        { provisioner },
+      );
+
+      expect(readVisitorAuthConfig(paths.augmentPath).rateLimit).toEqual(customRateLimit);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("requires visitorAuth to be installed before setup", async () => {
     const root = mkdtempSync(join(tmpdir(), "agentmail-setup-missing-"));
     try {
@@ -340,6 +392,10 @@ function writeVisitorAuthAgent(root: string): {
       '    transport: "console"',
       '    subjectPrefix: "[Verify] "',
       "  signingKey: ${VISITOR_SIGNING_KEY}",
+      "  rateLimit:",
+      "    minIntervalSeconds: 10",
+      "    perHour: 360",
+      "    perDay: 8640",
       "",
     ].join("\n"),
   );
@@ -395,10 +451,14 @@ function readEnv(envPath: string): Record<string, string> {
 }
 
 function readVisitorAuthAgentMail(augmentPath: string): Record<string, unknown> {
+  return (readVisitorAuthConfig(augmentPath).agentMail as Record<string, unknown>) ?? {};
+}
+
+function readVisitorAuthConfig(augmentPath: string): Record<string, unknown> {
   const parsed = parseYaml(readFileSync(augmentPath, "utf-8")) as {
-    config?: { agentMail?: Record<string, unknown> };
+    config?: Record<string, unknown>;
   };
-  return parsed.config?.agentMail ?? {};
+  return parsed.config ?? {};
 }
 
 function readAgentMailConfig(augmentPath: string): Record<string, unknown> {

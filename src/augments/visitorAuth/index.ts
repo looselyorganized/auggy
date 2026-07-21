@@ -30,6 +30,7 @@ import type {
   RequestAuthResult,
   VisitorAuthAugmentExtras,
   VisitorAuthOptions,
+  VisitorAuthRateLimit,
 } from "./types";
 import {
   createSqliteVisitorAuthStore,
@@ -47,8 +48,20 @@ import {
 
 const DEFAULT_TOKEN_TTL_MIN = 15;
 const DEFAULT_REVERIFY_DAYS = 90;
-const DEFAULT_RATE_LIMIT = { perHour: 1, perDay: 3 };
+const DEFAULT_AGENTMAIL_RATE_LIMIT = { perHour: 1, perDay: 3 };
+const DEFAULT_CONSOLE_RATE_LIMIT = {
+  minIntervalSeconds: 10,
+  // These ceilings are exactly what a 10-second cooldown permits, so the
+  // local default behaves as a cooldown without a surprising longer window.
+  perHour: 360,
+  perDay: 8_640,
+};
 const VERIFY_PATH = "/visitor-auth/verify";
+const VERIFY_HTML_HEADERS = {
+  "content-type": "text/html; charset=utf-8",
+  "cache-control": "no-store, max-age=0",
+  pragma: "no-cache",
+} as const;
 const REQUEST_PATH = "/visitor-auth/request";
 const APP_REQUEST_PEER_PREFIX = "auth:";
 const REQUEST_AUTH_ROUTE_META_MAX_BYTES = 2_048;
@@ -169,6 +182,24 @@ function validateOptions(opts: VisitorAuthInternalOptions): void {
   if (!opts.dbPath) {
     throw new Error("visitorAuth: dbPath is required");
   }
+  if (opts.rateLimit) validateRateLimit(opts.rateLimit);
+}
+
+function validateRateLimit(rateLimit: VisitorAuthRateLimit): void {
+  for (const [name, value] of [
+    ["perHour", rateLimit.perHour],
+    ["perDay", rateLimit.perDay],
+  ] as const) {
+    if (!Number.isSafeInteger(value) || value < 1) {
+      throw new Error(`visitorAuth: rateLimit.${name} must be a positive integer`);
+    }
+  }
+  if (
+    rateLimit.minIntervalSeconds !== undefined &&
+    (!Number.isSafeInteger(rateLimit.minIntervalSeconds) || rateLimit.minIntervalSeconds < 0)
+  ) {
+    throw new Error("visitorAuth: rateLimit.minIntervalSeconds must be a non-negative integer");
+  }
 }
 
 function looksLikePlaceholder(value: string): boolean {
@@ -240,9 +271,33 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
   const now = opts._now ?? (() => Date.now());
   const tokenTtlMin = opts.tokenTtlMinutes ?? DEFAULT_TOKEN_TTL_MIN;
   const reverifyDays = opts.reverifyAfterDays ?? DEFAULT_REVERIFY_DAYS;
-  const rateLimitCaps = opts.rateLimit ?? DEFAULT_RATE_LIMIT;
+  const rateLimitCaps =
+    opts.rateLimit ??
+    (opts.agentMail.transport === "console"
+      ? DEFAULT_CONSOLE_RATE_LIMIT
+      : DEFAULT_AGENTMAIL_RATE_LIMIT);
   const subjectPrefix = opts.agentMail.subjectPrefix ?? "[Verify] ";
   const agentBinding = opts.agentBinding ?? "auggy";
+  const verificationDelivery = opts.agentMail.transport === "console" ? "console" : "email";
+  const verificationQueues = new Map<string, Promise<void>>();
+
+  async function withVerificationLock<T>(key: string, work: () => Promise<T>): Promise<T> {
+    const previous = verificationQueues.get(key) ?? Promise.resolve();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const tail = previous.then(() => gate);
+    verificationQueues.set(key, tail);
+
+    await previous;
+    try {
+      return await work();
+    } finally {
+      release();
+      if (verificationQueues.get(key) === tail) verificationQueues.delete(key);
+    }
+  }
 
   const storeConfig: SqliteVisitorAuthStoreConfig = { dbPath: opts.dbPath };
   const store: VisitorAuthStore = createSqliteVisitorAuthStore(storeConfig);
@@ -401,7 +456,13 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
       status: "rejected" | "failed",
       code: RequestAuthCode,
       message: string,
-    ): RequestAuthResult => ({ status, code, message });
+      retryAfterSec?: number,
+    ): RequestAuthResult => ({
+      status,
+      code,
+      message,
+      ...(retryAfterSec === undefined ? {} : { retryAfterSec }),
+    });
 
     if (!booted) {
       return fail(
@@ -433,70 +494,72 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
     // Keying on email prevents an attacker from rotating peer.id / threadId
     // to escape the rate limit. The "email:" prefix namespaces the key so
     // future per-IP keying (e.g. "ip:...") can coexist without collision.
-    const t = now();
     const rlKey = `email:${email}`;
-    const rl = rateLimiter.check(rlKey, t);
-    if (!rl.allowed) {
-      const wait = Math.ceil(rl.retryAfterSec / 60);
-      return fail(
-        "rejected",
-        "rate_limited",
-        `Verification rate limit reached for this visitor (${rl.reason}). Try again in ~${wait} minute(s).`,
-      );
-    }
+    return withVerificationLock(rlKey, async () => {
+      const t = now();
+      const rl = rateLimiter.check(rlKey, t);
+      if (!rl.allowed) {
+        return fail(
+          "rejected",
+          "rate_limited",
+          `Verification rate limit reached for this visitor (${rl.reason}). Try again in ${rl.retryAfterSec} second(s).`,
+          rl.retryAfterSec,
+        );
+      }
 
-    // Invalidate any prior open token for this peer; only one open at a time.
-    store.invalidateOpenTokensForPeer(input.peerId, t);
+      // Invalidate any prior open token for this peer; only one open at a time.
+      store.invalidateOpenTokensForPeer(input.peerId, t);
 
-    // Mint a fresh token + write the row + build URL.
-    const token = crypto.randomUUID();
-    const ttlMs = tokenTtlMin * 60_000;
-    store.issueToken({
-      token,
-      email,
-      peerId: input.peerId,
-      threadId: input.threadId,
-      expiresAt: t + ttlMs,
-      sourceMessageId,
+      // Mint a fresh token + write the row + build URL.
+      const token = crypto.randomUUID();
+      const ttlMs = tokenTtlMin * 60_000;
+      store.issueToken({
+        token,
+        email,
+        peerId: input.peerId,
+        threadId: input.threadId,
+        expiresAt: t + ttlMs,
+        sourceMessageId,
+      });
+      const verifyUrl = buildVerifyUrl(token);
+      const { subject, text, html } = buildEmailBody(verifyUrl, tokenTtlMin);
+
+      // Serialize sends for the same email so parallel requests cannot bypass
+      // the cooldown between the policy check and successful delivery record.
+      const sendResult = await agentMail.send({
+        inboxId: mailInboxId,
+        to: [email],
+        subject,
+        text,
+        html,
+        labels: ["visitor-auth", "verify"],
+      });
+
+      if (sendResult.status !== "sent") {
+        // A failed delivery does not consume quota, but its token must not be redeemable.
+        store.invalidateTokenIfStillOpen(token, t + 1);
+        return fail(
+          "failed",
+          "send_failed",
+          verificationDelivery === "console"
+            ? `Failed to print verification link to the local agent console: ${sendResult.detail ?? "unknown error"}`
+            : `Failed to send verification email: ${sendResult.detail ?? "unknown error"}`,
+        );
+      }
+
+      // Record the rate-limit tick AFTER successful send (keyed to email, not peer).
+      rateLimiter.record(rlKey, t);
+
+      return {
+        status: "sent",
+        delivery: verificationDelivery,
+        message:
+          verificationDelivery === "console"
+            ? `Verification link created for ${email} and printed to the local agent console. No email was sent. Open the console link within ${tokenTtlMin} minutes.`
+            : `Verification email sent to ${email}. The link expires in ${tokenTtlMin} minutes.`,
+        expiresInSec: Math.floor(ttlMs / 1000),
+      };
     });
-    const verifyUrl = buildVerifyUrl(token);
-    const { subject, text, html } = buildEmailBody(verifyUrl, tokenTtlMin);
-
-    // Send via agentmail-client.ts (direct — see plan §"Spec deviation").
-    // In console mode `mailInboxId` is the routing placeholder "console";
-    // the ConsoleMailClient ignores it and prints the verify URL instead.
-    const sendResult = await agentMail.send({
-      inboxId: mailInboxId,
-      to: [email],
-      subject,
-      text,
-      html,
-      labels: ["visitor-auth", "verify"],
-    });
-
-    if (sendResult.status !== "sent") {
-      // Mark THIS token consumed so it can't be redeemed despite the visitor
-      // never receiving it. Use the token-scoped variant (F3): a peer-wide
-      // invalidate would steamroll a sibling concurrent request_auth call's
-      // token if one was issued in between (the line-192 pre-invalidate kills
-      // OUR pending token from the sibling's perspective; OUR failure cleanup
-      // must not return the favor).
-      store.invalidateTokenIfStillOpen(token, t + 1);
-      return fail(
-        "failed",
-        "send_failed",
-        `Failed to send verification email: ${sendResult.detail ?? "unknown error"}`,
-      );
-    }
-
-    // Record the rate-limit tick AFTER successful send (keyed to email, not peer).
-    rateLimiter.record(rlKey, t);
-
-    return {
-      status: "sent",
-      message: `Verification email sent to ${email}. The link expires in ${tokenTtlMin} minutes.`,
-      expiresInSec: Math.floor(ttlMs / 1000),
-    };
   }
 
   function requestAuthHttpStatus(result: RequestAuthResult): number {
@@ -510,7 +573,9 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
   const requestAuthTool = defineTool({
     name: "request_auth",
     description:
-      "Send a verification email to a visitor's claimed address. Use this to promote an anonymous visitor to recognized identity. method: 'email' is the only supported value at v1. Returns status: 'sent' | 'rejected' | 'failed'.",
+      verificationDelivery === "console"
+        ? "Create an email-address verification link for an anonymous visitor and print it to the local agent console. No email is sent in this configuration. The result's delivery field is authoritative. method: 'email' is the only supported value at v1."
+        : "Send a verification email to a visitor's claimed address. Use this to promote an anonymous visitor to recognized identity. The result's delivery field is authoritative. method: 'email' is the only supported value at v1.",
     category: "communication",
     input: z.object({
       method: z.literal("email"),
@@ -525,6 +590,30 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
           status: "failed",
           code: "missing_peer",
           message: "request_auth requires turn context with a peer identity.",
+        } satisfies RequestAuthResult);
+      }
+      const isAnonymousPublicVisitor =
+        ctx.peer.trustLevel === "public" &&
+        ctx.peer.publicSubstate === "anonymous" &&
+        (ctx.peer.kind === "human" || ctx.peer.kind === "anonymous");
+      const isRecognizedHuman =
+        ctx.peer.trustLevel === "public" &&
+        ctx.peer.publicSubstate === "recognized" &&
+        ctx.peer.kind === "human";
+      const recognizedRow = isRecognizedHuman && booted ? store.findVisitorById(ctx.peer.id) : null;
+      const isReverificationDue =
+        isRecognizedHuman &&
+        (!booted ||
+          (recognizedRow !== null &&
+            !recognizedRow.revoked &&
+            recognizedRow.reverifyDueAt <= now()));
+      if (!isAnonymousPublicVisitor && !isReverificationDue) {
+        return JSON.stringify({
+          status: "rejected",
+          code: isRecognizedHuman ? "reverification_not_due" : "peer_not_anonymous",
+          message: isRecognizedHuman
+            ? "This recognized visitor does not need reverification yet."
+            : "request_auth is only available to an anonymous public visitor.",
         } satisfies RequestAuthResult);
       }
       if (input.method !== "email") {
@@ -587,6 +676,11 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
       verifiedAt: row.verifiedAt,
       reverifyDueAt: row.reverifyDueAt,
     };
+  }
+
+  function canPromoteAnonymousThread(visitorId: string, threadId: string): boolean {
+    if (!booted) return false;
+    return store.canPromoteAnonymousThread(visitorId, threadId);
   }
 
   async function adminInfo(): Promise<AdminInfoBlock> {
@@ -662,7 +756,10 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
   };
 
   const augment: Augment &
-    Pick<VisitorAuthAugmentExtras, "isVisitorRevoked" | "resolveVisitorIdentity"> = {
+    Pick<
+      VisitorAuthAugmentExtras,
+      "isVisitorRevoked" | "resolveVisitorIdentity" | "canPromoteAnonymousThread"
+    > = {
     name: "visitor-auth",
     type: "visitorAuth",
     category: "guardrails",
@@ -671,6 +768,7 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
     adminActions,
     isVisitorRevoked,
     resolveVisitorIdentity,
+    canPromoteAnonymousThread,
     httpRoutes: [
       // -----------------------------------------------------------------------
       // GET /visitor-auth/verify?token=<uuid>
@@ -690,7 +788,7 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
           if (!booted || !signingCryptoKey) {
             return new Response(buildVerifyFailurePage({ reason: "unknown" }), {
               status: 503,
-              headers: { "content-type": "text/html; charset=utf-8" },
+              headers: VERIFY_HTML_HEADERS,
             });
           }
           const url = new URL(req.url);
@@ -703,13 +801,13 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
           ) {
             return new Response(buildVerifyFailurePage({ reason: "malformed" }), {
               status: 400,
-              headers: { "content-type": "text/html; charset=utf-8" },
+              headers: VERIFY_HTML_HEADERS,
             });
           }
           // Do NOT touch the store — token is consumed only by POST.
           return new Response(buildVerifyConfirmPage({ token, publicUrl: opts.publicUrl }), {
             status: 200,
-            headers: { "content-type": "text/html; charset=utf-8" },
+            headers: VERIFY_HTML_HEADERS,
           });
         },
       },
@@ -729,7 +827,7 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
           if (!booted || !signingCryptoKey) {
             return new Response(buildVerifyFailurePage({ reason: "unknown" }), {
               status: 503,
-              headers: { "content-type": "text/html; charset=utf-8" },
+              headers: VERIFY_HTML_HEADERS,
             });
           }
 
@@ -763,7 +861,7 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
           if (postReason) {
             return new Response(buildVerifyFailurePage({ reason: postReason }), {
               status: 400,
-              headers: { "content-type": "text/html; charset=utf-8" },
+              headers: VERIFY_HTML_HEADERS,
             });
           }
           // postReason is null ⟹ parse succeeded AND token is a valid UUID string.
@@ -778,7 +876,7 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
             const httpStatus = status === "unknown" ? 404 : 410;
             return new Response(buildVerifyFailurePage({ reason }), {
               status: httpStatus,
-              headers: { "content-type": "text/html; charset=utf-8" },
+              headers: VERIFY_HTML_HEADERS,
             });
           }
 
@@ -910,10 +1008,14 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
           }
 
           return new Response(
-            buildVerifySuccessPage({ visitorToken: minted.token, email: consume.email! }),
+            buildVerifySuccessPage({
+              visitorToken: minted.token,
+              email: consume.email!,
+              threadId: consume.threadId!,
+            }),
             {
               status: 200,
-              headers: { "content-type": "text/html; charset=utf-8" },
+              headers: VERIFY_HTML_HEADERS,
             },
           );
         },
@@ -1089,14 +1191,20 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
       }
       if (recent.expiresAt <= t) {
         return [
-          block(`Verification email to ${recent.email} expired. Visitor may request a new one.`),
+          block(
+            verificationDelivery === "console"
+              ? `Console verification link for ${recent.email} expired. Visitor may request a new one.`
+              : `Verification email to ${recent.email} expired. Visitor may request a new one.`,
+          ),
         ];
       }
       const sentMin = Math.max(0, Math.floor((t - recent.issuedAt) / 60_000));
       const expiresMin = Math.max(1, Math.ceil((recent.expiresAt - t) / 60_000));
       return [
         block(
-          `Verification email sent to ${recent.email} (sent ${sentMin}m ago, expires in ${expiresMin}m). Awaiting click.`,
+          verificationDelivery === "console"
+            ? `Verification link for ${recent.email} was printed to the local agent console ${sentMin}m ago; no email was sent. It expires in ${expiresMin}m. Awaiting click.`
+            : `Verification email sent to ${recent.email} (sent ${sentMin}m ago, expires in ${expiresMin}m). Awaiting click.`,
         ),
       ];
     },

@@ -15,6 +15,10 @@ import { upsertEnvValues } from "../env-writer";
 import { readAgentName, resolveConfigPath } from "../resolve-config";
 import { VALID_NAME_RE } from "../config-parser";
 import { writeFileSafely } from "../safe-write";
+import {
+  VISITOR_AUTH_AGENTMAIL_RATE_LIMIT_DEFAULT,
+  VISITOR_AUTH_LOCAL_RATE_LIMIT_DEFAULT,
+} from "../augment-catalog";
 
 export type AgentMailSetupTarget = "visitorAuth" | "agentMail";
 export type AgentMailSetupMode = "signup" | "existing" | "manual" | "env";
@@ -295,12 +299,19 @@ function patchAgentMailConfig(target: AgentMailSetupTarget, augmentPath: string)
         ? (config.agentMail as Record<string, unknown>)
         : {};
 
+    const transitionsFromConsole = currentAgentMail.transport === "console";
     config.agentMail = {
       ...currentAgentMail,
       transport: "agentmail",
       apiKey: "${AGENTMAIL_API_KEY}",
       inboxId: "${AGENTMAIL_INBOX_ID}",
     };
+    if (
+      transitionsFromConsole &&
+      isExactRecord(config.rateLimit, VISITOR_AUTH_LOCAL_RATE_LIMIT_DEFAULT)
+    ) {
+      config.rateLimit = { ...VISITOR_AUTH_AGENTMAIL_RATE_LIMIT_DEFAULT };
+    }
   } else {
     config.apiKey = "${AGENTMAIL_API_KEY}";
     config.inboxId = "${AGENTMAIL_INBOX_ID}";
@@ -308,6 +319,17 @@ function patchAgentMailConfig(target: AgentMailSetupTarget, augmentPath: string)
 
   doc.config = config;
   writeFileSafely(augmentPath, stringifyYaml(doc));
+}
+
+function isExactRecord(value: unknown, expected: Readonly<Record<string, number>>): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  const actualKeys = Object.keys(record).sort();
+  const expectedKeys = Object.keys(expected).sort();
+  return (
+    actualKeys.length === expectedKeys.length &&
+    actualKeys.every((key, index) => key === expectedKeys[index] && record[key] === expected[key])
+  );
 }
 
 async function resolveMode(

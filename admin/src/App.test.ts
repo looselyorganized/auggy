@@ -91,12 +91,68 @@ describe("console chat routes", () => {
       chatRouteActive: true,
       routedThreadId: undefined,
       activeThreadId: draft.id,
+      ephemeralDraftId: draft.id,
     });
 
     expect(navigation.activeId).toBe("");
     expect(navigation.threads.map((candidate) => candidate.id)).toEqual([
       saved.id,
     ]);
+  });
+
+  it("does not list the untouched restart draft beside a routed saved chat", () => {
+    const saved = thread("saved", "Saved investigation", {
+      messages: [
+        {
+          id: "message",
+          role: "user",
+          content: "Hello",
+          createdAt: "2026-07-20T10:01:00.000Z",
+          updatedAt: "2026-07-20T10:01:00.000Z",
+        },
+      ],
+    });
+    const restartDraft = thread("restart-draft", "New chat");
+
+    const navigation = getChatNavigationState({
+      threads: [restartDraft, saved],
+      chatRouteActive: true,
+      routedThreadId: saved.id,
+      activeThreadId: saved.id,
+      ephemeralDraftId: restartDraft.id,
+    });
+
+    expect(navigation.activeId).toBe(saved.id);
+    expect(navigation.threads.map((candidate) => candidate.id)).toEqual([
+      saved.id,
+    ]);
+  });
+
+  it("lists the reusable restart draft after it becomes a real conversation", () => {
+    const restartDraft = thread("restart-draft", "Shipping address", {
+      messages: [
+        {
+          id: "message",
+          role: "user",
+          content: "Change my shipping address",
+          createdAt: "2026-07-20T10:01:00.000Z",
+          updatedAt: "2026-07-20T10:01:00.000Z",
+        },
+      ],
+    });
+
+    const navigation = getChatNavigationState({
+      threads: [restartDraft],
+      chatRouteActive: true,
+      routedThreadId: restartDraft.id,
+      activeThreadId: restartDraft.id,
+      ephemeralDraftId: restartDraft.id,
+    });
+
+    expect(navigation).toMatchObject({
+      activeId: restartDraft.id,
+      threads: [restartDraft],
+    });
   });
 
   it("selects an exact routed chat and clears selection outside chat routes", () => {

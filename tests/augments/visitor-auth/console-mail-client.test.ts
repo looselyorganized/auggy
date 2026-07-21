@@ -13,9 +13,10 @@ describe("createConsoleMailClient", () => {
     });
     expect(result.status).toBe("sent");
     expect(lines).toHaveLength(1);
-    expect(lines[0]).toContain("[visitor-auth:console] would-send");
-    expect(lines[0]).toContain("dave@example.com");
-    expect(lines[0]).toContain('subject="[Verify] Confirm your email"');
+    expect(lines[0]).toStartWith("INFO visitorAuth local verification link");
+    expect(lines[0]).toContain("  To: dave@example.com");
+    expect(lines[0]).toContain("  Subject: [Verify] Confirm your email");
+    expect(lines[0]).not.toContain("would-send");
   });
 
   it("send embeds the verbatim message text (with verify URL) so operators can copy from terminal", async () => {
@@ -31,6 +32,7 @@ describe("createConsoleMailClient", () => {
     });
     expect(lines[0]).toContain(verifyUrl);
     expect(lines[0]).toContain("Expires in 15 minutes.");
+    expect(lines[0]?.split(verifyUrl)).toHaveLength(2);
   });
 
   it("send returns synthetic messageId / threadId with the 'console-' prefix", async () => {

@@ -165,6 +165,42 @@ describe("visitorAuth (skeleton)", () => {
     ).toThrow(/signingKey/);
   });
 
+  test("factory rejects malformed rate-limit configuration", () => {
+    const base = {
+      publicUrl: "https://example.com",
+      dbPath,
+      agentMail: { apiKey: "am_x", inboxId: "ibx_x" },
+      signingKey: "sig",
+    };
+    expect(() => visitorAuth({ ...base, rateLimit: { perHour: 0, perDay: 3 } })).toThrow(
+      /rateLimit\.perHour.*positive integer/,
+    );
+    expect(() => visitorAuth({ ...base, rateLimit: { perHour: 1.5, perDay: 3 } })).toThrow(
+      /rateLimit\.perHour.*positive integer/,
+    );
+    expect(() =>
+      visitorAuth({ ...base, rateLimit: { perHour: 1, perDay: Number.POSITIVE_INFINITY } }),
+    ).toThrow(/rateLimit\.perDay.*positive integer/);
+    expect(() =>
+      visitorAuth({
+        ...base,
+        rateLimit: { perHour: 1, perDay: 3, minIntervalSeconds: 1.5 },
+      }),
+    ).toThrow(/rateLimit\.minIntervalSeconds.*non-negative integer/);
+    expect(() =>
+      visitorAuth({
+        ...base,
+        rateLimit: { perHour: 1, perDay: 3, minIntervalSeconds: -1 },
+      }),
+    ).toThrow(/rateLimit\.minIntervalSeconds.*non-negative integer/);
+    expect(() =>
+      visitorAuth({
+        ...base,
+        rateLimit: { perHour: 1, perDay: 3, minIntervalSeconds: 0 },
+      }),
+    ).not.toThrow();
+  });
+
   test("onBoot calls AgentMail.getInbox; warns on failure but does not throw", async () => {
     let getInboxCalls = 0;
     const aug = visitorAuth({
@@ -358,6 +394,22 @@ describe("visitorAuth (skeleton)", () => {
     expect(result).toEqual([]);
     await aug.onShutdown?.();
   });
+
+  test("thread promotion proof fails closed before boot and after shutdown", async () => {
+    const aug = visitorAuth({
+      publicUrl: "https://example.com",
+      dbPath,
+      agentMail: { apiKey: "am_x", inboxId: "ibx_x" },
+      signingKey: "sig",
+      _agentMailClient: fakeAgentMail(),
+    });
+
+    expect(aug.canPromoteAnonymousThread("vis_unknown", "thread-1")).toBe(false);
+    await aug.onBoot?.();
+    expect(aug.canPromoteAnonymousThread("vis_unknown", "thread-1")).toBe(false);
+    await aug.onShutdown?.();
+    expect(aug.canPromoteAnonymousThread("vis_unknown", "thread-1")).toBe(false);
+  });
 });
 
 describe("buildVerifyUrl (F6) — URL-spec-compliant construction", () => {
@@ -450,16 +502,22 @@ describe("buildVerifyUrl (F6) — URL-spec-compliant construction", () => {
 describe("request_auth tool", () => {
   function buildAug(overrides?: {
     sendImpl?: AgentMailClient["send"];
-    rateLimit?: { perHour: number; perDay: number };
+    rateLimit?: { perHour: number; perDay: number; minIntervalSeconds?: number };
+    useDefaultRateLimit?: boolean;
     nowFn?: () => number;
+    consoleDelivery?: boolean;
   }) {
     const sendCalls: Array<Parameters<AgentMailClient["send"]>[0]> = [];
     const aug = visitorAuth({
       publicUrl: "https://zip.test",
       dbPath,
-      agentMail: { apiKey: "am_x", inboxId: "ibx_x" },
+      agentMail: overrides?.consoleDelivery
+        ? { transport: "console" }
+        : { apiKey: "am_x", inboxId: "ibx_x" },
       signingKey: "sig",
-      rateLimit: overrides?.rateLimit ?? { perHour: 1, perDay: 3 },
+      ...(overrides?.useDefaultRateLimit
+        ? {}
+        : { rateLimit: overrides?.rateLimit ?? { perHour: 1, perDay: 3 } }),
       _now: overrides?.nowFn,
       _agentMailClient: fakeAgentMail({
         send: async (input) => {
@@ -472,7 +530,11 @@ describe("request_auth tool", () => {
     return { aug, sendCalls };
   }
 
-  function turnWithVisitor(text: string, peerId = "anon-thread1") {
+  function turnWithVisitor(
+    text: string,
+    peerId = "anon-thread1",
+    kind: "human" | "anonymous" = "anonymous",
+  ) {
     return {
       turnId: "tu",
       threadId: "thread1",
@@ -482,7 +544,7 @@ describe("request_auth tool", () => {
         timestamp: 0,
         peer: {
           id: peerId,
-          kind: "anonymous",
+          kind,
           trustLevel: "public",
           publicSubstate: "anonymous",
           sourceAugment: "web",
@@ -492,7 +554,7 @@ describe("request_auth tool", () => {
           sourceAugment: "web",
           peer: {
             id: peerId,
-            kind: "anonymous",
+            kind,
             trustLevel: "public",
             publicSubstate: "anonymous",
             sourceAugment: "web",
@@ -502,7 +564,7 @@ describe("request_auth tool", () => {
       },
       peer: {
         id: peerId,
-        kind: "anonymous",
+        kind,
         trustLevel: "public",
         publicSubstate: "anonymous",
         sourceAugment: "web",
@@ -559,6 +621,126 @@ describe("request_auth tool", () => {
     await aug.onShutdown?.();
   });
 
+  test("rejects request_auth outside the anonymous public visitor boundary", async () => {
+    const { aug, sendCalls } = buildAug();
+    await aug.onBoot?.();
+    const rejectedPeers: NonNullable<ToolExecuteContext["peer"]>[] = [
+      {
+        id: "creator",
+        kind: "human",
+        trustLevel: "creator",
+        sourceAugment: "web",
+      },
+      {
+        id: "agent:worker",
+        kind: "agent",
+        trustLevel: "agent",
+        sourceAugment: "web",
+      },
+      {
+        id: "system",
+        kind: "system",
+        trustLevel: "public",
+        publicSubstate: "anonymous",
+        sourceAugment: "web",
+      },
+    ];
+
+    for (const peer of rejectedPeers) {
+      const raw = await aug.tools![0]!.execute(
+        { method: "email", email: "alice@example.com" },
+        { turnId: `turn-${peer.id}`, threadId: `thread-${peer.id}`, peer },
+      );
+      expect(JSON.parse(raw as string)).toEqual({
+        status: "rejected",
+        code: "peer_not_anonymous",
+        message: "request_auth is only available to an anonymous public visitor.",
+      });
+    }
+    expect(sendCalls).toHaveLength(0);
+    await aug.onShutdown?.();
+  });
+
+  test("allows recognized visitors to request auth only when reverification is due", async () => {
+    const clock = 2_000;
+    const seedStore = createSqliteVisitorAuthStore({ dbPath });
+    seedStore.initialize();
+    seedStore.recordVerifiedVisitor({
+      visitorId: "vis_due",
+      email: "due@example.com",
+      verifiedAt: 500,
+      lastSeenAt: 500,
+      reverifyDueAt: clock,
+      revoked: false,
+      revokedAt: null,
+      revokedReason: null,
+    });
+    seedStore.recordVerifiedVisitor({
+      visitorId: "vis_current",
+      email: "current@example.com",
+      verifiedAt: 1_000,
+      lastSeenAt: 1_000,
+      reverifyDueAt: clock + 1,
+      revoked: false,
+      revokedAt: null,
+      revokedReason: null,
+    });
+    seedStore.close();
+
+    const { aug, sendCalls } = buildAug({ nowFn: () => clock });
+    await aug.onBoot?.();
+    const executeAs = async (visitorId: string, email: string) => {
+      await aug.onTurnStart?.(turnWithVisitor(email, visitorId, "human"));
+      const raw = await aug.tools![0]!.execute(
+        { method: "email", email },
+        {
+          turnId: `turn-${visitorId}`,
+          threadId: `thread-${visitorId}`,
+          peer: {
+            id: visitorId,
+            kind: "human",
+            trustLevel: "public",
+            publicSubstate: "recognized",
+            sourceAugment: "web",
+          },
+        },
+      );
+      return JSON.parse(raw as string);
+    };
+
+    expect(await executeAs("vis_current", "current@example.com")).toEqual({
+      status: "rejected",
+      code: "reverification_not_due",
+      message: "This recognized visitor does not need reverification yet.",
+    });
+    expect(await executeAs("vis_due", "due@example.com")).toMatchObject({ status: "sent" });
+    expect(sendCalls).toHaveLength(1);
+    await aug.onShutdown?.();
+  });
+
+  test("allows a human peer in the anonymous public visitor state", async () => {
+    const { aug, sendCalls } = buildAug();
+    await aug.onBoot?.();
+    await aug.onTurnStart?.(turnWithVisitor("alice@example.com", "anon-human-thread", "human"));
+    const raw = await aug.tools![0]!.execute(
+      { method: "email", email: "alice@example.com" },
+      {
+        turnId: "turn-human",
+        threadId: "human-thread",
+        peer: {
+          id: "anon-human-thread",
+          kind: "human",
+          trustLevel: "public",
+          publicSubstate: "anonymous",
+          sourceAugment: "web",
+        },
+      },
+    );
+    expect(JSON.parse(raw as string)).toMatchObject({ status: "sent" });
+    expect(sendCalls).toHaveLength(1);
+    await aug.onShutdown?.();
+  });
+
   test("rejects when email did not appear in recent messages (fix #4)", async () => {
     const { aug } = buildAug();
     await aug.onBoot?.();
@@ -603,6 +785,8 @@ describe("request_auth tool", () => {
     );
     const result = JSON.parse(raw as string);
     expect(result.status).toBe("sent");
+    expect(result.delivery).toBe("email");
+    expect(result.message).toMatch(/email sent/i);
     expect(result.expiresInSec).toBeGreaterThan(0);
     expect(sendCalls).toHaveLength(1);
     expect(sendCalls[0]?.to).toEqual(["alice@example.com"]);
@@ -610,6 +794,264 @@ describe("request_auth tool", () => {
     expect(sendCalls[0]?.html).toMatch(/https:\/\/zip\.test\/visitor-auth\/verify\?token=/);
     expect(sendCalls[0]?.html).toMatch(/Verify email/);
     expect(sendCalls[0]?.subject).toMatch(/verify/i);
+    await aug.onShutdown?.();
+  });
+
+  test("console delivery says that no email was sent", async () => {
+    const { aug } = buildAug({ consoleDelivery: true });
+    expect(aug.tools![0]!.description).toMatch(/No email is sent/i);
+    await aug.onBoot?.();
+    await aug.onTurnStart?.(turnWithVisitor("my email is alice@example.com"));
+    const raw = await aug.tools![0]!.execute(
+      { method: "email", email: "alice@example.com" },
+      {
+        turnId: "t1",
+        threadId: "thread1",
+        peer: {
+          id: "anon-thread1",
+          kind: "anonymous",
+          trustLevel: "public",
+          publicSubstate: "anonymous",
+          sourceAugment: "web",
+        },
+      },
+    );
+    const result = JSON.parse(raw as string);
+    expect(result).toMatchObject({
+      status: "sent",
+      delivery: "console",
+    });
+    expect(result.message).toMatch(/printed to the local agent console/i);
+    expect(result.message).toMatch(/no email was sent/i);
+    expect(result.message).not.toMatch(/verification email sent/i);
+    await aug.onShutdown?.();
+  });
+
+  test("console delivery failure does not claim an email send failed", async () => {
+    const { aug } = buildAug({
+      consoleDelivery: true,
+      sendImpl: async () => ({ status: "failed", detail: "stdout unavailable" }),
+    });
+    await aug.onBoot?.();
+    await aug.onTurnStart?.(turnWithVisitor("my email is alice@example.com"));
+    const raw = await aug.tools![0]!.execute(
+      { method: "email", email: "alice@example.com" },
+      {
+        turnId: "t1",
+        threadId: "thread1",
+        peer: {
+          id: "anon-thread1",
+          kind: "anonymous",
+          trustLevel: "public",
+          publicSubstate: "anonymous",
+          sourceAugment: "web",
+        },
+      },
+    );
+    const result = JSON.parse(raw as string);
+    expect(result).toMatchObject({
+      status: "failed",
+      code: "send_failed",
+    });
+    expect(result.message).toMatch(/print verification link to the local agent console/i);
+    expect(result.message).toContain("stdout unavailable");
+    expect(result.message).not.toMatch(/send verification email/i);
+    await aug.onShutdown?.();
+  });
+
+  test("console delivery defaults to an exact 10-second cooldown", async () => {
+    let clock = 1_000_000_000_000;
+    const { aug, sendCalls } = buildAug({
+      consoleDelivery: true,
+      useDefaultRateLimit: true,
+      nowFn: () => clock,
+    });
+    await aug.onBoot?.();
+    await aug.onTurnStart?.(turnWithVisitor("alice@example.com"));
+    const ctx: ToolExecuteContext = {
+      turnId: "t",
+      threadId: "thread1",
+      peer: {
+        id: "anon-thread1",
+        kind: "anonymous",
+        trustLevel: "public",
+        publicSubstate: "anonymous",
+        sourceAugment: "web",
+      },
+    };
+
+    const first = JSON.parse(
+      (await aug.tools![0]!.execute(
+        { method: "email", email: "alice@example.com" },
+        ctx,
+      )) as string,
+    );
+    expect(first.status).toBe("sent");
+
+    clock += 9_000;
+    const blocked = JSON.parse(
+      (await aug.tools![0]!.execute(
+        { method: "email", email: "alice@example.com" },
+        ctx,
+      )) as string,
+    );
+    expect(blocked).toMatchObject({
+      status: "rejected",
+      code: "rate_limited",
+      retryAfterSec: 1,
+    });
+    expect(blocked.message).toContain("Try again in 1 second(s).");
+    expect(blocked.message).not.toMatch(/minute|~/i);
+
+    clock += 1_000;
+    const afterCooldown = JSON.parse(
+      (await aug.tools![0]!.execute(
+        { method: "email", email: "alice@example.com" },
+        ctx,
+      )) as string,
+    );
+    expect(afterCooldown.status).toBe("sent");
+    expect(sendCalls).toHaveLength(2);
+    await aug.onShutdown?.();
+  });
+
+  test("serializes concurrent sends for one email so cooldown cannot be bypassed", async () => {
+    let sendStarted!: () => void;
+    let finishSend!: () => void;
+    const started = new Promise<void>((resolve) => {
+      sendStarted = resolve;
+    });
+    const pendingSend = new Promise<void>((resolve) => {
+      finishSend = resolve;
+    });
+    const { aug, sendCalls } = buildAug({
+      consoleDelivery: true,
+      useDefaultRateLimit: true,
+      sendImpl: async () => {
+        sendStarted();
+        await pendingSend;
+        return { status: "sent", messageId: "m1", threadId: "t1" };
+      },
+    });
+    await aug.onBoot?.();
+    await aug.onTurnStart?.(turnWithVisitor("alice@example.com"));
+    const ctx: ToolExecuteContext = {
+      turnId: "t",
+      threadId: "thread1",
+      peer: {
+        id: "anon-thread1",
+        kind: "anonymous",
+        trustLevel: "public",
+        publicSubstate: "anonymous",
+        sourceAugment: "web",
+      },
+    };
+
+    const firstPromise = aug.tools![0]!.execute(
+      { method: "email", email: "alice@example.com" },
+      ctx,
+    );
+    await started;
+    const secondPromise = aug.tools![0]!.execute(
+      { method: "email", email: "alice@example.com" },
+      ctx,
+    );
+    finishSend();
+
+    const [first, second] = await Promise.all([firstPromise, secondPromise]).then((results) =>
+      results.map((raw) => JSON.parse(raw as string)),
+    );
+    expect(first.status).toBe("sent");
+    expect(second).toMatchObject({
+      status: "rejected",
+      code: "rate_limited",
+      retryAfterSec: 10,
+    });
+    expect(sendCalls).toHaveLength(1);
+    await aug.onShutdown?.();
+  });
+
+  test("AgentMail delivery keeps the existing one-per-hour default", async () => {
+    let clock = 1_000_000_000_000;
+    const { aug } = buildAug({ useDefaultRateLimit: true, nowFn: () => clock });
+    await aug.onBoot?.();
+    await aug.onTurnStart?.(turnWithVisitor("alice@example.com"));
+    const ctx: ToolExecuteContext = {
+      turnId: "t",
+      threadId: "thread1",
+      peer: {
+        id: "anon-thread1",
+        kind: "anonymous",
+        trustLevel: "public",
+        publicSubstate: "anonymous",
+        sourceAugment: "web",
+      },
+    };
+    const first = JSON.parse(
+      (await aug.tools![0]!.execute(
+        { method: "email", email: "alice@example.com" },
+        ctx,
+      )) as string,
+    );
+    expect(first.status).toBe("sent");
+
+    clock += 10_000;
+    const blocked = JSON.parse(
+      (await aug.tools![0]!.execute(
+        { method: "email", email: "alice@example.com" },
+        ctx,
+      )) as string,
+    );
+    expect(blocked).toMatchObject({
+      status: "rejected",
+      code: "rate_limited",
+      retryAfterSec: 3_590,
+    });
+    expect(blocked.message).toContain("3590 second(s)");
+    await aug.onShutdown?.();
+  });
+
+  test("a failed local delivery does not consume the cooldown", async () => {
+    let attempts = 0;
+    const { aug } = buildAug({
+      consoleDelivery: true,
+      useDefaultRateLimit: true,
+      sendImpl: async () => {
+        attempts++;
+        return attempts === 1
+          ? { status: "failed", detail: "stdout unavailable" }
+          : { status: "sent", messageId: "m2", threadId: "t2" };
+      },
+    });
+    await aug.onBoot?.();
+    await aug.onTurnStart?.(turnWithVisitor("alice@example.com"));
+    const ctx: ToolExecuteContext = {
+      turnId: "t",
+      threadId: "thread1",
+      peer: {
+        id: "anon-thread1",
+        kind: "anonymous",
+        trustLevel: "public",
+        publicSubstate: "anonymous",
+        sourceAugment: "web",
+      },
+    };
+
+    const failed = JSON.parse(
+      (await aug.tools![0]!.execute(
+        { method: "email", email: "alice@example.com" },
+        ctx,
+      )) as string,
+    );
+    const retry = JSON.parse(
+      (await aug.tools![0]!.execute(
+        { method: "email", email: "alice@example.com" },
+        ctx,
+      )) as string,
+    );
+    expect(failed.code).toBe("send_failed");
+    expect(retry.status).toBe("sent");
+    expect(attempts).toBe(2);
     await aug.onShutdown?.();
   });
 
@@ -766,7 +1208,8 @@ describe("request_auth tool", () => {
 
   // F3 — failure-path token cleanup must be token-scoped, not peer-scoped.
   //
-  // Race scenario: A and B run in parallel for the same peer.
+  // Race scenario: A and B run in parallel for the same peer but different
+  // email keys (same-email requests are serialized by the delivery lock).
   //   1. A: pre-invalidate (no priors), issue tokenA, await send (→ fails).
   //   2. B: pre-invalidate (kills tokenA — line 192's intentional
   //      one-open-at-a-time policy), issue tokenB, await send (→ succeeds).
@@ -799,7 +1242,7 @@ describe("request_auth tool", () => {
         }) as unknown as ReturnType<AgentMailClient["send"]>,
     });
     await aug.onBoot?.();
-    await aug.onTurnStart?.(turnWithVisitor("alice@example.com"));
+    await aug.onTurnStart?.(turnWithVisitor("alice@example.com and bob@example.com"));
     const ctx: ToolExecuteContext = {
       turnId: "t",
       threadId: "thread1",
@@ -812,7 +1255,8 @@ describe("request_auth tool", () => {
       },
     };
 
-    // Kick off two parallel calls. Both pass rate-limit and pre-invalidate,
+    // Kick off two parallel calls. Their distinct email locks both pass the
+    // rate limit and pre-invalidate,
     // then both await send. Their `execute()` Promises stay pending until
     // we resolve their corresponding entries in sendResolvers.
     const callA = aug.tools![0]!.execute({ method: "email", email: "alice@example.com" }, ctx);
@@ -820,7 +1264,7 @@ describe("request_auth tool", () => {
     // pre-invalidates. Without this yield, the relative ordering of
     // pre-invalidate vs. issueToken can interleave unpredictably.
     await new Promise((r) => setTimeout(r, 0));
-    const callB = aug.tools![0]!.execute({ method: "email", email: "alice@example.com" }, ctx);
+    const callB = aug.tools![0]!.execute({ method: "email", email: "bob@example.com" }, ctx);
     await new Promise((r) => setTimeout(r, 0));
     expect(sendCallCount).toBe(2);
 
@@ -1380,6 +1824,58 @@ describe("context() block", () => {
     expect(result).toHaveLength(1);
     expect(result![0]?.content).toMatch(/alice@example\.com/);
     expect(result![0]?.content.toLowerCase()).toMatch(/awaiting|sent|expires/);
+    await aug.onShutdown?.();
+  });
+
+  test("console context consistently says the link was printed and no email was sent", async () => {
+    let clock = 1_700_000_000_000;
+    const aug = visitorAuth({
+      publicUrl: "https://zip.test",
+      dbPath,
+      agentMail: { transport: "console" },
+      signingKey: "sig",
+      tokenTtlMinutes: 15,
+      _now: () => clock,
+      _agentMailClient: fakeAgentMail(),
+    });
+    await aug.onBoot?.();
+    const peer = {
+      id: "anon-console-context",
+      kind: "anonymous" as const,
+      trustLevel: "public" as const,
+      publicSubstate: "anonymous" as const,
+      sourceAugment: "web",
+    };
+    await aug.onTurnStart?.({
+      turnId: "t",
+      threadId: "th",
+      trigger: {
+        type: "message",
+        turnId: "t",
+        timestamp: clock,
+        payload: {
+          parts: [{ kind: "text", text: "alice@example.com" }],
+          sourceAugment: "web",
+          peer,
+          timestamp: clock,
+        },
+      },
+      peer,
+      toolCallsSoFar: 0,
+      turnStartedAt: clock,
+      metadata: {},
+    } as never);
+    await aug.tools![0]!.execute(
+      { method: "email", email: "alice@example.com" },
+      { turnId: "t", threadId: "th", peer },
+    );
+
+    clock += 3 * 60_000;
+    const result = (await aug.context?.({ peer } as never)) as ContextBlock[];
+    expect(result).toHaveLength(1);
+    expect(result[0]?.content).toContain("printed to the local agent console");
+    expect(result[0]?.content).toContain("no email was sent");
+    expect(result[0]?.content).not.toMatch(/verification email sent/i);
     await aug.onShutdown?.();
   });
 
