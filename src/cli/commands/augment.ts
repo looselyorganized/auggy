@@ -1,6 +1,7 @@
 import { Command } from "commander";
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { basename, dirname, join, relative, resolve } from "node:path";
+import { confirm } from "@inquirer/prompts";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { AUGMENT_CATALOG, resolveCatalogEntry, type CatalogEntry } from "../augment-catalog";
 import { runAdd, type AddOpts } from "./add";
@@ -26,6 +27,22 @@ export interface AugmentCommandDeps {
   removeAugment?: typeof removeAugment;
   exit?: (code: number) => void;
   auggyDir?: string;
+  cwd?: string;
+  promptCreateSkill?: (slug: string) => Promise<boolean>;
+}
+
+export interface CreateCustomAugmentOptions {
+  slug: string;
+  cwd?: string;
+  includeSkill?: boolean;
+  force?: boolean;
+}
+
+export interface CreateCustomAugmentResult {
+  configPath: string;
+  augmentDir: string;
+  skillDir: string | null;
+  name: string;
 }
 
 export interface InstallCustomAugmentOptions {
@@ -40,7 +57,6 @@ export interface InstallCustomAugmentResult {
   agentDir: string;
   source: string;
   name: string;
-  skillCopied: boolean;
 }
 
 export interface RemoveAugmentOptions {
@@ -92,6 +108,15 @@ export function augmentCommand(deps: AugmentCommandDeps = {}): Command {
   const setup = deps.setupAugment ?? runAugmentSetup;
   const remove = deps.removeAugment ?? removeAugment;
   const exit = deps.exit ?? ((code: number) => process.exit(code));
+  const promptCreateSkill =
+    deps.promptCreateSkill ??
+    ((slug: string) => {
+      if (!process.stdin.isTTY) return Promise.resolve(false);
+      return confirm({
+        message: `Create skills/${slug}/SKILL.md? It becomes model-visible guidance, so only add it if you plan to edit it.`,
+        default: false,
+      });
+    });
 
   const command = new Command("augment").description("Add, remove, list, and create augments");
 
@@ -192,22 +217,53 @@ export function augmentCommand(deps: AugmentCommandDeps = {}): Command {
 
   command
     .command("create <slug>")
-    .description("Scaffold a local custom augment")
-    .option("--dir <path>", "target directory (defaults to ./augments/<slug>)")
+    .description("Create and register a custom augment in the current agent")
     .option("--force", "overwrite an existing target directory")
-    .action(async (slug: string, opts: { dir?: string; force?: boolean }) => {
-      try {
-        const dir = scaffold({
-          slug,
-          targetDir: opts.dir,
-          force: opts.force ?? false,
-        });
-        console.log(`Created custom augment "${slug}" at ${displayPath(dir)}`);
-      } catch (err) {
-        console.error(`Error: ${(err as Error).message}`);
-        exit(1);
-      }
-    });
+    .option("--with-skill", "also scaffold skills/<slug>/SKILL.md without prompting")
+    .option("--without-skill", "do not scaffold a skill without prompting")
+    .action(
+      async (
+        slug: string,
+        opts: { force?: boolean; withSkill?: boolean; withoutSkill?: boolean },
+      ) => {
+        try {
+          if (opts.withSkill && opts.withoutSkill) {
+            throw new Error("Choose either --with-skill or --without-skill, not both.");
+          }
+          if (!VALID_NAME_RE.test(slug.trim())) {
+            throw new Error(
+              `Invalid augment slug "${slug}". Use lowercase letters, numbers, hyphens, or underscores.`,
+            );
+          }
+          // Fail before prompting when the command is not running at an agent root.
+          resolveConfigPath(undefined, undefined, { cwd: deps.cwd ?? process.cwd() });
+          const includeSkill = opts.withSkill
+            ? true
+            : opts.withoutSkill
+              ? false
+              : await promptCreateSkill(slug);
+          const result = createCustomAugment(
+            {
+              slug,
+              cwd: deps.cwd,
+              includeSkill,
+              force: opts.force ?? false,
+            },
+            { scaffold },
+          );
+          console.log(
+            `Created and installed custom augment "${slug}" at ${displayPath(result.augmentDir, deps.cwd)}.`,
+          );
+          if (result.skillDir) {
+            console.log(`Created skill at ${displayPath(result.skillDir, deps.cwd)}/SKILL.md.`);
+            console.log("Edit this model-visible guidance before running the agent.");
+          }
+        } catch (err) {
+          console.error(`Error: ${(err as Error).message}`);
+          exit(1);
+        }
+      },
+    );
 
   command
     .command("install <agent> <path>")
@@ -224,11 +280,6 @@ export function augmentCommand(deps: AugmentCommandDeps = {}): Command {
         console.log(
           `Installed custom augment "${result.name}" in ${displayPath(result.configPath)}`,
         );
-        if (result.skillCopied) {
-          console.log(
-            `Copied skill to ${displayPath(join(result.agentDir, "skills", result.name))}/`,
-          );
-        }
       } catch (err) {
         console.error(`Error: ${(err as Error).message}`);
         exit(1);
@@ -540,6 +591,52 @@ function humanizeIdentifier(value: string): string {
     .replace(/\b\w/g, (char) => char.toUpperCase());
 }
 
+/**
+ * Create a custom augment inside the current agent project and make it active.
+ * Skills are a separate, optional runtime surface under skills/<slug>/.
+ */
+export function createCustomAugment(
+  opts: CreateCustomAugmentOptions,
+  deps: { scaffold?: typeof scaffoldCustomAugment } = {},
+): CreateCustomAugmentResult {
+  const slug = opts.slug.trim();
+  if (!VALID_NAME_RE.test(slug)) {
+    throw new Error(
+      `Invalid augment slug "${opts.slug}". Use lowercase letters, numbers, hyphens, or underscores.`,
+    );
+  }
+
+  const cwd = resolve(opts.cwd ?? process.cwd());
+  const configPath = resolveConfigPath(undefined, undefined, { cwd });
+  const agentDir = dirname(configPath);
+  const doc = readAgentYaml(configPath);
+  if (!Array.isArray(doc.augments)) doc.augments = [];
+
+  const existing = readAugments(doc, agentDir).find((augment) => augment.name === slug);
+  if (existing && !opts.force) {
+    throw new Error(
+      `Augment "${slug}" is already declared in ${configPath}. Re-run with --force to overwrite its scaffold.`,
+    );
+  }
+
+  const augmentDir = join(agentDir, "augments", slug);
+  const skillDir = opts.includeSkill ? join(agentDir, "skills", slug) : null;
+  const scaffold = deps.scaffold ?? scaffoldCustomAugment;
+  scaffold({
+    slug,
+    targetDir: augmentDir,
+    skillTargetDir: skillDir ?? undefined,
+    force: opts.force ?? false,
+  });
+
+  if (!existing) {
+    (doc.augments as unknown[]).push(slug);
+    writeFileSafely(configPath, `# Agent configuration\n\n${stringifyYaml(doc)}`);
+  }
+
+  return { configPath, augmentDir, skillDir, name: slug };
+}
+
 export function installCustomAugment(
   opts: InstallCustomAugmentOptions,
 ): InstallCustomAugmentResult {
@@ -588,8 +685,7 @@ export function installCustomAugment(
   (doc.augments as unknown[]).push(augmentName);
   writeFileSafely(configPath, `# Agent configuration\n\n${stringifyYaml(doc)}`);
 
-  const skillCopied = copyCustomSkillIfPresent(sourceFile, agentDir, augmentName);
-  return { configPath, agentDir, source: agentSource, name: augmentName, skillCopied };
+  return { configPath, agentDir, source: agentSource, name: augmentName };
 }
 
 function resolveSourceFile(sourceEntry: string): string {
@@ -605,18 +701,4 @@ function resolveSourceFile(sourceEntry: string): string {
 function normalizeRelativePath(path: string): string {
   const normalized = path.replace(/\\/g, "/");
   return normalized.startsWith(".") ? normalized : `./${normalized}`;
-}
-
-function copyCustomSkillIfPresent(
-  sourceFile: string,
-  agentDir: string,
-  augmentName: string,
-): boolean {
-  const sourceDir = dirname(sourceFile);
-  const skillFile = join(sourceDir, "SKILL.md");
-  if (!existsSync(skillFile)) return false;
-  const dest = join(agentDir, "skills", augmentName);
-  mkdirSync(dest, { recursive: true });
-  cpSync(skillFile, join(dest, "SKILL.md"));
-  return true;
 }

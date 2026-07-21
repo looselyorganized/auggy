@@ -293,18 +293,22 @@ Acceptance:
 
 Behavior:
 
-- Scaffolds a local custom augment.
-- Default target when run inside an agent: `./augments/<slug>/`.
+- Requires the command to run from an agent project containing `agent.yaml`.
+- Scaffolds `./augments/<slug>/` and registers it in `agent.yaml` immediately.
+- Asks whether to scaffold an optional runtime skill at `./skills/<slug>/SKILL.md`.
 - Generated augment compiles and exposes one example tool.
 
 Generated shape:
 
 ```text
 augments/<slug>/
+  augment.yaml
   index.ts
-  SKILL.md
   README.md
   <slug>.test.ts
+
+skills/<slug>/       # optional; created only with operator consent
+  SKILL.md
 ```
 
 Likely files:
@@ -317,6 +321,8 @@ Likely files:
 Tests:
 
 - Creates expected files.
+- Registers the augment without a second install command.
+- Writes an accepted skill under `skills/`, never under `augments/`.
 - Rejects invalid slug.
 - Does not overwrite without `--force`.
 - Generated `index.ts` has a default export factory.
@@ -331,7 +337,7 @@ Behavior:
 
 - Adds a local custom augment to an agent config.
 - Uses a relative `source` path from the agent dir.
-- Installs `SKILL.md` into `skills/<slug>/` when present.
+- Does not infer a runtime skill from files beside the augment source.
 
 Likely files:
 
@@ -342,7 +348,7 @@ Likely files:
 Tests:
 
 - Adds `type: custom` with correct `source`.
-- Copies skill when present.
+- Leaves skill creation and ownership to the agent project's `skills/` surface.
 - Does not duplicate an existing custom augment.
 - Missing path fails clearly.
 

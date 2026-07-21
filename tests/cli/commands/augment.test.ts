@@ -6,6 +6,7 @@ import { parse as parseYaml } from "yaml";
 import { seedAgentForTest } from "../../../src/cli/agent-index";
 import {
   augmentCommand,
+  createCustomAugment,
   formatAugmentCatalog,
   formatAugmentList,
   installCustomAugment,
@@ -137,8 +138,13 @@ describe("auggy augment command", () => {
     });
   });
 
-  test("create dispatches to scaffold helper", async () => {
-    const scaffold = mock(() => "/tmp/weather");
+  test("create scaffolds, registers, and optionally creates a runtime skill", async () => {
+    const root = mkdtempSync(join(tmpdir(), "augment-create-command-"));
+    writeFileSync(
+      join(root, "agent.yaml"),
+      "name: demo\nengine:\n  provider: anthropic\n  model: claude-sonnet-4-6\naugments: []\n",
+    );
+    const promptCreateSkill = mock(async () => true);
     const logs: string[] = [];
     const origLog = console.log;
     console.log = (msg: unknown) => {
@@ -146,23 +152,21 @@ describe("auggy augment command", () => {
     };
 
     try {
-      const cmd = augmentCommand({ scaffoldCustomAugment: scaffold });
-      await cmd.parseAsync(["create", "weather", "--dir", "/tmp/weather", "--force"], {
-        from: "user",
-      });
+      const cmd = augmentCommand({ cwd: root, promptCreateSkill });
+      await cmd.parseAsync(["create", "weather"], { from: "user" });
     } finally {
       console.log = origLog;
+      rmSync(root, { recursive: true, force: true });
     }
 
-    expect(scaffold).toHaveBeenCalledWith({
-      slug: "weather",
-      targetDir: "/tmp/weather",
-      force: true,
-    });
-    expect(logs.join("\n")).toContain('Created custom augment "weather"');
+    expect(promptCreateSkill).toHaveBeenCalledWith("weather");
+    expect(logs.join("\n")).toContain('Created and installed custom augment "weather"');
+    expect(logs.join("\n")).toContain("skills/weather/SKILL.md");
   });
 
   test("create exits 1 on scaffold errors", async () => {
+    const root = mkdtempSync(join(tmpdir(), "augment-create-error-"));
+    writeFileSync(join(root, "agent.yaml"), "name: demo\naugments: []\n");
     const scaffold = mock(() => {
       throw new Error("bad slug");
     });
@@ -174,10 +178,16 @@ describe("auggy augment command", () => {
     };
 
     try {
-      const cmd = augmentCommand({ scaffoldCustomAugment: scaffold, exit });
-      await cmd.parseAsync(["create", "Bad"], { from: "user" });
+      const cmd = augmentCommand({
+        cwd: root,
+        scaffoldCustomAugment: scaffold,
+        exit,
+        promptCreateSkill: async () => false,
+      });
+      await cmd.parseAsync(["create", "weather"], { from: "user" });
     } finally {
       console.error = origErr;
+      rmSync(root, { recursive: true, force: true });
     }
 
     expect(exit).toHaveBeenCalledWith(1);
@@ -190,7 +200,6 @@ describe("auggy augment command", () => {
       agentDir: "/tmp/agent",
       source: "./augments/weather/index.ts",
       name: "weather",
-      skillCopied: true,
     }));
     const logs: string[] = [];
     const origLog = console.log;
@@ -452,8 +461,34 @@ describe("listAugments and removeAugment", () => {
   });
 });
 
+describe("createCustomAugment", () => {
+  test("requires the command to run inside an agent and registers the augment", () => {
+    const root = mkdtempSync(join(tmpdir(), "augment-create-"));
+    try {
+      expect(() => createCustomAugment({ slug: "weather", cwd: root })).toThrow(
+        /no agent specified and no agent.yaml found/i,
+      );
+
+      writeFileSync(
+        join(root, "agent.yaml"),
+        "name: demo\nengine:\n  provider: anthropic\n  model: claude-sonnet-4-6\naugments: []\n",
+      );
+      const result = createCustomAugment({ slug: "weather", cwd: root, includeSkill: true });
+      expect(result.augmentDir).toBe(join(root, "augments", "weather"));
+      expect(existsSync(join(root, "augments", "weather", "SKILL.md"))).toBe(false);
+      expect(existsSync(join(root, "skills", "weather", "SKILL.md"))).toBe(true);
+      const parsed = parseYaml(readFileSync(join(root, "agent.yaml"), "utf-8")) as {
+        augments: string[];
+      };
+      expect(parsed.augments).toEqual(["weather"]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("installCustomAugment", () => {
-  test("adds a type: custom augment with source relative to the agent dir and copies SKILL.md", () => {
+  test("adds a type: custom augment without treating its source folder as a skill bundle", () => {
     const root = mkdtempSync(join(tmpdir(), "augment-install-"));
     try {
       const auggyDir = join(root, "auggy");
@@ -484,8 +519,7 @@ describe("installCustomAugment", () => {
       });
 
       expect(result.source).toBe("./augments/weather/index.ts");
-      expect(result.skillCopied).toBe(true);
-      expect(existsSync(join(agentDir, "skills", "weather", "SKILL.md"))).toBe(true);
+      expect(existsSync(join(agentDir, "skills", "weather", "SKILL.md"))).toBe(false);
 
       const parsed = parseYaml(readFileSync(join(agentDir, "agent.yaml"), "utf-8")) as {
         augments: string[];

@@ -642,6 +642,32 @@ describe("runAdd no-op cases", () => {
     expect(existsSync(join(dir, "skills", "visitorAuth", "SKILL.md"))).toBe(true);
   });
 
+  test("declining visitorAuth mail setup explains console delivery and the setup command", async () => {
+    const dir = setupAgent("with-auth-console");
+    const logs: string[] = [];
+    const originalLog = console.log;
+    console.log = (...args: unknown[]) => logs.push(args.map(String).join(" "));
+
+    try {
+      await runAdd("with-auth-console", {
+        config: join(dir, "agent.yaml"),
+        auggyDir,
+        augment: "visitorAuth",
+        skipInstall: true,
+        interactive: true,
+        confirmSetup: async () => false,
+        bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
+      });
+    } finally {
+      console.log = originalLog;
+    }
+
+    const output = logs.join("\n");
+    expect(output).toContain("visitorAuth will use console delivery for now");
+    expect(output).toContain("Local magic links will be printed to the agent console");
+    expect(output).toContain("auggy augment setup visitorAuth");
+  });
+
   test("adding visitorAuth fills blank generated env vars", async () => {
     const dir = setupAgent("with-auth-blank");
     writeFileSync(join(dir, ".env"), "AUGGY_AGENT_ID=\nAUGGY_PUBLIC_URL=\nVISITOR_SIGNING_KEY=\n");

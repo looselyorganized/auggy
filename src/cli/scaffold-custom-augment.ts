@@ -1,10 +1,11 @@
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { VALID_NAME_RE } from "./config-parser";
 
 export interface CustomAugmentScaffoldOptions {
   slug: string;
-  targetDir?: string;
+  targetDir: string;
+  skillTargetDir?: string;
   force?: boolean;
 }
 
@@ -16,17 +17,29 @@ export function scaffoldCustomAugment(opts: CustomAugmentScaffoldOptions): strin
     );
   }
 
-  const dir = resolve(opts.targetDir ?? join(process.cwd(), "augments", slug));
+  const dir = resolve(opts.targetDir);
   if (existsSync(dir) && !opts.force) {
     throw new Error(`Directory already exists: ${dir}. Re-run with --force to overwrite.`);
+  }
+  const skillDir = opts.skillTargetDir ? resolve(opts.skillTargetDir) : null;
+  if (skillDir && existsSync(skillDir) && !opts.force) {
+    throw new Error(
+      `Skill directory already exists: ${skillDir}. Re-run with --force to overwrite.`,
+    );
   }
 
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, "augment.yaml"), augmentYamlTemplate());
   writeFileSync(join(dir, "index.ts"), indexTemplate(slug));
-  writeFileSync(join(dir, "SKILL.md"), skillTemplate(slug));
+  // Clean up the pre-0.5 scaffold location when the operator explicitly
+  // overwrites an older custom augment. Runtime skills only live in /skills.
+  rmSync(join(dir, "SKILL.md"), { force: true });
   writeFileSync(join(dir, "README.md"), readmeTemplate(slug));
   writeFileSync(join(dir, `${slug}.test.ts`), testTemplate(slug));
+  if (skillDir) {
+    mkdirSync(skillDir, { recursive: true });
+    writeFileSync(join(skillDir, "SKILL.md"), skillTemplate(slug));
+  }
   return dir;
 }
 
@@ -102,11 +115,8 @@ function readmeTemplate(slug: string): string {
 
 Custom Auggy augment scaffolded by \`auggy augment create ${slug}\`.
 
-## Install
-
-\`\`\`bash
-auggy augment install <agent> ./augments/${slug}
-\`\`\`
+The create command also registers this augment in the current project's
+\`agent.yaml\`.
 
 ## Test
 

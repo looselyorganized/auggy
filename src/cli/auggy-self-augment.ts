@@ -293,7 +293,8 @@ function recommend(goal: string, installed: Set<string>) {
         "Run `auggy augment create <name>`.",
         "Implement narrow typed tools or routes in `augments/<name>/index.ts`.",
         "Run `auggy augment test ./augments/<name>`.",
-        "Install it with `auggy augment install <agent> ./<agent>/augments/<name>`.",
+        "The create command registers it in the current agent automatically.",
+        "Create `skills/<name>/SKILL.md` only when the model needs usage guidance.",
       ],
     );
   }
