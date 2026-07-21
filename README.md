@@ -187,11 +187,14 @@ Preview augments require deliberate setup and may still change before `1.0`.
 
 ## Write A Custom Augment
 
-Scaffold a local augment:
+From an agent project, create and install a local augment:
 
 ```bash
 auggy augment create weather
 ```
+
+Auggy writes `augments/weather/`, adds it to `agent.yaml`, and asks whether the
+agent also needs a `skills/weather/SKILL.md` instruction pack.
 
 A tool-providing augment is ordinary TypeScript:
 
@@ -364,8 +367,8 @@ auggy deploy --yes
 | `auggy doctor [name]` | Check configuration, environment, dependencies, port, and skills |
 | `auggy augment list` | Show core, stable, and preview augments |
 | `auggy augment add [name...]` | Select or add built-in augments |
-| `auggy augment create <name>` | Scaffold a custom local augment |
-| `auggy augment install <agent> <path>` | Install a custom local augment |
+| `auggy augment create <name>` | Create and register a custom augment in the current agent |
+| `auggy augment install <agent> <path>` | Import a custom augment authored elsewhere |
 | `auggy skill create <name>` | Create a skill folder |
 | `auggy skill add <name>` | Install or refresh a bundled skill |
 | `auggy routes [name]` | Inspect preview routes and generate clients |

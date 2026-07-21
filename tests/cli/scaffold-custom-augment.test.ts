@@ -15,7 +15,7 @@ afterEach(() => {
 });
 
 describe("scaffoldCustomAugment", () => {
-  test("creates a custom augment folder with source, skill, readme, and test", () => {
+  test("creates a custom augment folder without a stranded skill", () => {
     const target = join(dir, "weather");
 
     const result = scaffoldCustomAugment({ slug: "weather", targetDir: target });
@@ -23,7 +23,7 @@ describe("scaffoldCustomAugment", () => {
     expect(result).toBe(target);
     expect(existsSync(join(target, "augment.yaml"))).toBe(true);
     expect(existsSync(join(target, "index.ts"))).toBe(true);
-    expect(existsSync(join(target, "SKILL.md"))).toBe(true);
+    expect(existsSync(join(target, "SKILL.md"))).toBe(false);
     expect(existsSync(join(target, "README.md"))).toBe(true);
     expect(existsSync(join(target, "weather.test.ts"))).toBe(true);
 
@@ -37,6 +37,22 @@ describe("scaffoldCustomAugment", () => {
     const metadata = readFileSync(join(target, "augment.yaml"), "utf-8");
     expect(metadata).toContain("type: custom");
     expect(metadata).toContain("source: ./index.ts");
+    expect(readFileSync(join(target, "README.md"), "utf-8")).not.toContain("augment install");
+  });
+
+  test("writes an optional skill under the requested skills directory", () => {
+    const target = join(dir, "augments", "weather");
+    const skillTarget = join(dir, "skills", "weather");
+
+    scaffoldCustomAugment({
+      slug: "weather",
+      targetDir: target,
+      skillTargetDir: skillTarget,
+    });
+
+    expect(existsSync(join(target, "SKILL.md"))).toBe(false);
+    expect(existsSync(join(skillTarget, "SKILL.md"))).toBe(true);
+    expect(readFileSync(join(skillTarget, "SKILL.md"), "utf-8")).toContain("name: weather");
   });
 
   test("supports hyphenated slugs", () => {
@@ -75,5 +91,15 @@ describe("scaffoldCustomAugment", () => {
     expect(readFileSync(join(target, "README.md"), "utf-8")).toContain(
       "Custom Auggy augment scaffolded",
     );
+  });
+
+  test("force removes a legacy SKILL.md from the augment folder", () => {
+    const target = join(dir, "weather");
+    scaffoldCustomAugment({ slug: "weather", targetDir: target });
+    writeFileSync(join(target, "SKILL.md"), "legacy");
+
+    scaffoldCustomAugment({ slug: "weather", targetDir: target, force: true });
+
+    expect(existsSync(join(target, "SKILL.md"))).toBe(false);
   });
 });

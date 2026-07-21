@@ -55,6 +55,10 @@ export interface AddOpts {
   cwd?: string;
   /** Skip preview augment confirmation prompts. */
   yes?: boolean;
+  /** Test seam: override whether post-install setup prompts are shown. */
+  interactive?: boolean;
+  /** Test seam: inject the post-install setup confirmation prompt. */
+  confirmSetup?: (message: string, defaultValue: boolean) => Promise<boolean>;
 }
 
 export async function runAdd(target: string | undefined, opts: AddOpts): Promise<void> {
@@ -421,7 +425,7 @@ async function offerSetupForAddedAugments(
   configPath: string,
   opts: AddOpts,
 ): Promise<void> {
-  if (opts.yes || !process.stdin.isTTY) return;
+  if (opts.yes || !(opts.interactive ?? process.stdin.isTTY)) return;
 
   const targets = selected
     .map((entry) => entry.type)
@@ -433,11 +437,22 @@ async function offerSetupForAddedAugments(
       target === "agentMail"
         ? "Set up AgentMail inbox credentials now?"
         : "Set up AgentMail delivery for visitorAuth magic links now?";
-    const proceed = await confirm({
-      message,
-      default: target === "agentMail",
-    });
-    if (!proceed) continue;
+    const proceed = opts.confirmSetup
+      ? await opts.confirmSetup(message, target === "agentMail")
+      : await confirm({
+          message,
+          default: target === "agentMail",
+        });
+    if (!proceed) {
+      if (target === "visitorAuth") {
+        console.log();
+        console.log(
+          "ℹ visitorAuth will use console delivery for now. Local magic links will be printed to the agent console until AgentMail is configured.",
+        );
+        console.log("  Run `auggy augment setup visitorAuth` to enable AgentMail delivery.");
+      }
+      continue;
+    }
 
     try {
       const result = await runAgentMailSetup(target, { config: configPath }, { cwd: opts.cwd });

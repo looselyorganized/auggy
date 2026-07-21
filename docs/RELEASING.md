@@ -143,9 +143,9 @@ Augment checks:
 auggy augment add visitorAuth
 auggy doctor
 
-auggy augment create weather --dir augments/weather
+cd dx-smoke
+auggy augment create weather --without-skill
 auggy augment test augments/weather
-auggy augment install dx-smoke augments/weather
 auggy doctor
 ```
 

@@ -10,6 +10,9 @@ Create one with:
 auggy augment create <name>
 ```
 
+Run this from the agent project. The command registers the augment in
+`agent.yaml` and asks whether to add a separate runtime skill.
+
 ## Structure
 
 Typical custom augment:
@@ -21,7 +24,9 @@ augments/<name>/
   schemas.ts
   domain.ts
   <name>.test.ts
-  SKILL.md
+
+skills/<name>/
+  SKILL.md        # optional usage guidance, not augment source
 ```
 
 Keep business logic in `domain.ts` or ordinary functions. Routes and tools
