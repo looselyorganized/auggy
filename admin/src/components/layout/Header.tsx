@@ -12,6 +12,7 @@ import {
 import { apply, getTheme, setTheme, subscribeSystemTheme, type Theme } from "@/lib/theme";
 import { formatModelLabel } from "@/lib/dashboard-format";
 import type { DashboardData } from "@/lib/types";
+import { cn } from "@/lib/utils";
 
 export interface HeaderProps {
   agentName: string;
@@ -19,9 +20,10 @@ export interface HeaderProps {
   port?: number;
   online: "online" | "offline" | "unknown";
   dashboard: DashboardData | null;
+  floating?: boolean;
 }
 
-export function Header({ port, online, dashboard }: HeaderProps) {
+export function Header({ port, online, dashboard, floating = false }: HeaderProps) {
   const [theme, setThemeState] = useState<Theme>(() => getTheme());
   const auggyVersion = dashboard?.auggyVersion;
 
@@ -39,8 +41,26 @@ export function Header({ port, online, dashboard }: HeaderProps) {
   const ThemeIcon = theme === "dark" ? Moon : Sun;
   const nextTheme = theme === "light" ? "dark" : "light";
   return (
-    <header className="flex h-16 items-center justify-between gap-3 border-b bg-background/90 px-4">
-      <div className="flex min-w-0 items-center gap-3 overflow-hidden">
+    <header
+      className={cn(
+        "flex h-16 items-center justify-between gap-3 px-4",
+        floating
+          ? "pointer-events-none absolute inset-x-0 top-1"
+          : "border-b bg-background/90",
+      )}
+    >
+      {floating && (
+        <div
+          aria-hidden="true"
+          className="absolute inset-0 z-30 bg-gradient-to-b from-background via-background/85 to-transparent"
+        />
+      )}
+      <div
+        className={cn(
+          "flex min-w-0 items-center gap-3 overflow-hidden",
+          floating && "relative z-50",
+        )}
+      >
         <div
           className="min-w-0 shrink-0"
           aria-label={auggyVersion ? `Auggy v${auggyVersion}` : "Auggy creator console"}
@@ -62,7 +82,12 @@ export function Header({ port, online, dashboard }: HeaderProps) {
           </span>
         )}
       </div>
-      <div className="flex shrink-0 items-center gap-1">
+      <div
+        className={cn(
+          "flex shrink-0 items-center gap-1",
+          floating && "pointer-events-auto relative z-50",
+        )}
+      >
         <AgentDetailsButton dashboard={dashboard} online={online} />
         <Button
           variant="ghost"

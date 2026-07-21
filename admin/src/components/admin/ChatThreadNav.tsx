@@ -1,5 +1,23 @@
-import { CircleAlert, LoaderCircle, Plus } from "lucide-react";
+import {
+  CircleAlert,
+  LoaderCircle,
+  MessageSquare,
+  MoreHorizontal,
+  Plus,
+} from "lucide-react";
 
+import {
+  ChatThreadDeleteMenuItem,
+  ChatThreadMutationDialogs,
+  ChatThreadRenameMenuItem,
+  type ChatThreadMutationControls,
+} from "@/components/admin/ChatThreadMutationDialogs";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import type { ChatThread } from "@/lib/chat-workspace";
 import { cn } from "@/lib/utils";
 
@@ -10,6 +28,9 @@ export interface ChatThreadNavProps {
   error?: string | null;
   onNew: () => void;
   onSelect: (threadId: string) => void;
+  onRename?: (threadId: string, title: string) => void | Promise<void>;
+  onDelete?: (threadId: string) => void | Promise<void>;
+  deletingThreadIds?: ReadonlySet<string>;
   /** Uses a horizontal, overflow-safe layout suitable for the mobile chat picker. */
   compact?: boolean;
 }
@@ -25,14 +46,20 @@ export function ChatThreadNav({
   error = null,
   onNew,
   onSelect,
+  onRename,
+  onDelete,
+  deletingThreadIds,
   compact = false,
 }: ChatThreadNavProps) {
   return (
     <nav
       aria-label="Chat conversations"
-      className={cn("min-w-0", compact ? "flex items-center gap-2" : "grid gap-1")}
+      className={cn(
+        "min-w-0",
+        compact ? "flex items-center gap-2" : "grid gap-1",
+      )}
     >
-      <div className={cn("min-w-0", compact && "sr-only")}>
+      <div className={cn("min-w-0", compact ? "sr-only" : "pt-2")}>
         <h2 className="px-2 pb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
           Chat
         </h2>
@@ -47,7 +74,7 @@ export function ChatThreadNav({
           )}
         >
           <Plus className="size-4 shrink-0" aria-hidden="true" />
-          <span className="truncate">New chat</span>
+          <span className="truncate">New</span>
         </button>
       </div>
 
@@ -86,9 +113,15 @@ export function ChatThreadNav({
             title={error ?? undefined}
           >
             {loading ? (
-              <LoaderCircle className="size-3 animate-spin" aria-hidden="true" />
+              <LoaderCircle
+                className="size-3 animate-spin"
+                aria-hidden="true"
+              />
             ) : (
-              <CircleAlert className="size-3 text-destructive" aria-hidden="true" />
+              <CircleAlert
+                className="size-3 text-destructive"
+                aria-hidden="true"
+              />
             )}
             <span>{loading ? "Loading chats…" : "Chats unavailable"}</span>
           </div>
@@ -100,6 +133,9 @@ export function ChatThreadNav({
               active={thread.id === activeId}
               compact={compact}
               onSelect={onSelect}
+              onRename={onRename}
+              onDelete={onDelete}
+              deleting={deletingThreadIds?.has(thread.id) ?? false}
             />
           ))
         )}
@@ -113,51 +149,139 @@ function ThreadButton({
   active,
   compact,
   onSelect,
+  onRename,
+  onDelete,
+  deleting,
 }: {
   thread: ChatThread;
   active: boolean;
   compact: boolean;
   onSelect: (threadId: string) => void;
+  onRename?: (threadId: string, title: string) => void | Promise<void>;
+  onDelete?: (threadId: string) => void | Promise<void>;
+  deleting: boolean;
 }) {
   const runLabel = getRunLabel(thread.runStatus);
   const itemLabel = [thread.title, thread.unread ? "Unread" : null, runLabel]
     .filter(Boolean)
     .join(", ");
+  const streaming = thread.runStatus === "streaming";
+  const row = (mutationControls?: ChatThreadMutationControls) => (
+    <ThreadRow
+      thread={thread}
+      itemLabel={itemLabel}
+      active={active}
+      compact={compact}
+      deleting={deleting}
+      onSelect={onSelect}
+      mutationControls={mutationControls}
+    />
+  );
+
+  if (compact || !onRename || !onDelete) return row();
 
   return (
-    <button
-      type="button"
-      onClick={() => onSelect(thread.id)}
-      aria-current={active ? "page" : undefined}
-      aria-label={itemLabel}
-      title={itemLabel}
+    <ChatThreadMutationDialogs
+      title={thread.title}
+      renameDisabled={streaming || deleting}
+      deleteDisabled={streaming || deleting}
+      deletePending={deleting}
+      onRename={(title) => onRename(thread.id, title)}
+      onDelete={() => onDelete(thread.id)}
+    >
+      {row}
+    </ChatThreadMutationDialogs>
+  );
+}
+
+interface ThreadRowProps {
+  thread: ChatThread;
+  itemLabel: string;
+  active: boolean;
+  compact: boolean;
+  deleting: boolean;
+  onSelect: (threadId: string) => void;
+  mutationControls?: ChatThreadMutationControls;
+}
+
+function ThreadRow({
+  thread,
+  itemLabel,
+  active,
+  compact,
+  deleting,
+  onSelect,
+  mutationControls,
+}: ThreadRowProps) {
+  return (
+    <div
       className={cn(
-        "group inline-flex h-9 min-w-0 items-center gap-2 rounded-md px-2 text-left text-sm transition-colors",
-        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+        "group flex h-9 min-w-0 items-center rounded-md text-sm transition-colors",
         active
           ? "bg-muted font-medium text-foreground"
           : "text-muted-foreground hover:bg-muted hover:text-foreground",
         compact ? "max-w-48 shrink-0" : "w-full",
+        deleting && "pointer-events-none opacity-50",
       )}
     >
-      <span className="relative flex size-3 shrink-0 items-center justify-center" aria-hidden="true">
-        {thread.runStatus === "streaming" ? (
-          <LoaderCircle className="size-3 animate-spin text-primary" />
-        ) : thread.runStatus === "error" || thread.runStatus === "interrupted" ? (
-          <CircleAlert className="size-3 text-destructive" />
-        ) : thread.unread ? (
-          <span className="size-2 rounded-full bg-primary" />
-        ) : (
-          <span className="size-1.5 rounded-full bg-muted-foreground/40 opacity-0 transition-opacity group-hover:opacity-100" />
+      <button
+        type="button"
+        onClick={() => onSelect(thread.id)}
+        aria-current={active ? "page" : undefined}
+        aria-label={itemLabel}
+        title={itemLabel}
+        className={cn(
+          "inline-flex h-full min-w-0 flex-1 items-center gap-2 rounded-md px-2 text-left",
+          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
         )}
-      </span>
-      <span className="truncate">{thread.title}</span>
-      {(thread.runStatus === "error" || thread.runStatus === "interrupted") && (
-        <span className="sr-only">{runLabel}</span>
+      >
+        <ThreadStatusIcon thread={thread} />
+        <span className="truncate">{thread.title}</span>
+      </button>
+
+      {mutationControls && (
+        <DropdownMenu>
+          <DropdownMenuTrigger
+            className={cn(
+              "pointer-events-none mr-1 inline-flex size-7 shrink-0 items-center justify-center rounded-md opacity-0 transition-opacity",
+              "hover:bg-background/60 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+              "group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100 data-popup-open:pointer-events-auto data-popup-open:opacity-100",
+            )}
+            aria-label={`Actions for ${thread.title}`}
+            title="Chat actions"
+          >
+            <MoreHorizontal className="size-4" aria-hidden="true" />
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <ChatThreadRenameMenuItem
+              disabled={thread.runStatus === "streaming" || deleting}
+              onClick={mutationControls.openRename}
+            />
+            <DropdownMenuSeparator />
+            <ChatThreadDeleteMenuItem
+              disabled={thread.runStatus === "streaming" || deleting}
+              onClick={mutationControls.openDelete}
+            />
+          </DropdownMenuContent>
+        </DropdownMenu>
       )}
-      {thread.runStatus === "streaming" && <span className="sr-only">Streaming response</span>}
-      {thread.unread && <span className="sr-only">Unread</span>}
-    </button>
+    </div>
+  );
+}
+
+function ThreadStatusIcon({ thread }: { thread: ChatThread }) {
+  return (
+    <MessageSquare
+      className={cn(
+        "size-3 shrink-0",
+        thread.runStatus === "error" || thread.runStatus === "interrupted"
+          ? "text-destructive"
+          : thread.runStatus === "streaming" || thread.unread
+            ? "text-primary"
+            : "text-muted-foreground",
+      )}
+      aria-hidden="true"
+    />
   );
 }
 
