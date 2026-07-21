@@ -194,12 +194,19 @@ function browserSnippet(endpoint: string, auth: BrowserSnippetAuth): string {
 
   return `${sseReaderSource()}
 
-async function* streamAgentMessage(threadId: string, message: string) {
+async function* streamAgentMessage(
+  threadId: string,
+  turnId: string,
+  message: string,
+  signal?: AbortSignal,
+) {
 ${setup}
+  headers["idempotency-key"] = turnId;
   const response = await fetch(${JSON.stringify(endpoint)}, {
     method: "POST",
     headers,
     body: JSON.stringify({ threadId, messages: [{ role: "user", content: message }] }),
+    signal,
   });
   if (!response.ok) throw new Error(\`Agent request failed: \${response.status}\`);${rotate}
   yield* readAgentEvents(response);
@@ -209,7 +216,12 @@ ${setup}
 function serverSnippet(endpoint: string): string {
   return `${sseReaderSource()}
 
-async function* streamAgentMessage(threadId: string, message: string) {
+async function* streamAgentMessage(
+  threadId: string,
+  turnId: string,
+  message: string,
+  signal?: AbortSignal,
+) {
   const token = process.env.AUGGY_WEB_TOKEN;
   if (!token) throw new Error("AUGGY_WEB_TOKEN is not configured");
   const response = await fetch(${JSON.stringify(endpoint)}, {
@@ -217,8 +229,10 @@ async function* streamAgentMessage(threadId: string, message: string) {
     headers: {
       authorization: \`Bearer \${token}\`,
       "content-type": "application/json",
+      "idempotency-key": turnId,
     },
     body: JSON.stringify({ threadId, messages: [{ role: "user", content: message }] }),
+    signal,
   });
   if (!response.ok) throw new Error(\`Agent request failed: \${response.status}\`);
   yield* readAgentEvents(response);
@@ -226,9 +240,11 @@ async function* streamAgentMessage(threadId: string, message: string) {
 }
 
 function serverCurl(endpoint: string): string {
-  return `curl -N ${shellSingleQuote(endpoint)} \\
-  -H 'Authorization: Bearer '"$AUGGY_WEB_TOKEN" \\
+  return `: "\${AUGGY_WEB_TOKEN:?Set AUGGY_WEB_TOKEN in the server environment}"
+curl --fail-with-body --silent --show-error -N ${shellSingleQuote(endpoint)} \\
+  -H "Authorization: Bearer $AUGGY_WEB_TOKEN" \\
   -H 'Content-Type: application/json' \\
+  -H 'Idempotency-Key: support-turn-123' \\
   --data '{"threadId":"support-123","messages":[{"role":"user","content":"What can you help with?"}]}'`;
 }
 
@@ -246,36 +262,41 @@ function sseReaderSource(): string {
   const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
   let buffer = "";
   let runError: Error | null = null;
-  while (true) {
-    const { value = "", done } = await reader.read();
-    buffer += value;
-    let boundary = buffer.search(/\\r?\\n\\r?\\n/);
-    while (boundary >= 0) {
-      const frame = buffer.slice(0, boundary);
-      const separator = buffer.slice(boundary).match(/^\\r?\\n\\r?\\n/)?.[0] ?? "\\n\\n";
-      buffer = buffer.slice(boundary + separator.length);
-      const event = frame.match(/^event:\\s*(.*)$/m)?.[1] ?? "message";
-      const data = frame
-        .split(/\\r?\\n/)
-        .filter((line) => line.startsWith("data:"))
-        .map((line) => line.slice(5).trimStart())
-        .join("\\n");
-      if (data) {
-        const payload = JSON.parse(data);
-        if (payload.type === "RUN_ERROR") {
-          runError = new Error(payload.message || "Agent run failed");
+  try {
+    while (true) {
+      const { value = "", done } = await reader.read();
+      buffer += value;
+      let boundary = buffer.search(/\\r?\\n\\r?\\n/);
+      while (boundary >= 0) {
+        const frame = buffer.slice(0, boundary);
+        const separator = buffer.slice(boundary).match(/^\\r?\\n\\r?\\n/)?.[0] ?? "\\n\\n";
+        buffer = buffer.slice(boundary + separator.length);
+        const event = frame.match(/^event:\\s*(.*)$/m)?.[1] ?? "message";
+        const data = frame
+          .split(/\\r?\\n/)
+          .filter((line) => line.startsWith("data:"))
+          .map((line) => line.slice(5).trimStart())
+          .join("\\n");
+        if (data) {
+          const payload = JSON.parse(data);
+          if (payload.type === "RUN_ERROR") {
+            runError = new Error(payload.message || "Agent run failed");
+          }
+          yield { event, data: payload };
+          if (payload.type === "RUN_FINISHED") {
+            if (runError) throw runError;
+            return;
+          }
         }
-        yield { event, data: payload };
-        if (payload.type === "RUN_FINISHED") {
-          if (runError) throw runError;
-          return;
-        }
+        boundary = buffer.search(/\\r?\\n\\r?\\n/);
       }
-      boundary = buffer.search(/\\r?\\n\\r?\\n/);
+      if (done) break;
     }
-    if (done) break;
+    if (runError) throw runError;
+    throw new Error("Agent stream ended before RUN_FINISHED");
+  } finally {
+    await reader.cancel().catch(() => undefined);
+    reader.releaseLock();
   }
-  if (runError) throw runError;
-  throw new Error("Agent stream ended before RUN_FINISHED");
 }`;
 }

@@ -126,6 +126,9 @@ describe("browser integration guidance", () => {
       expect(example).toContain("JSON.parse(data)");
       expect(example).toContain('payload.type === "RUN_ERROR"');
       expect(example).toContain('payload.type === "RUN_FINISHED"');
+      expect(example).toContain('headers["idempotency-key"] = turnId');
+      expect(example).toContain("signal,");
+      expect(example).toContain("reader.cancel()");
       expect(example).not.toContain("console.log(chunk)");
       assertBrowserSafe(example);
     }
@@ -155,9 +158,13 @@ describe("server integration guidance", () => {
     });
     expect(guidance.typescript).toContain("process.env.AUGGY_WEB_TOKEN");
     expect(guidance.typescript).toContain("Bearer ${token}");
+    expect(guidance.typescript).toContain('"idempotency-key": turnId');
+    expect(guidance.typescript).toContain("signal,");
     expect(guidance.typescript).not.toContain("<token>");
     expect(guidance.typescript).not.toContain(SECRET_SENTINEL);
-    expect(guidance.curl).toContain('"$AUGGY_WEB_TOKEN"');
+    expect(guidance.curl).toContain('"Authorization: Bearer $AUGGY_WEB_TOKEN"');
+    expect(guidance.curl).toContain("AUGGY_WEB_TOKEN:?");
+    expect(guidance.curl).toContain("Idempotency-Key: support-turn-123");
     expect(guidance.curl).not.toContain("<token>");
     expect(guidance.curl).not.toContain(SECRET_SENTINEL);
   });

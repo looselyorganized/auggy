@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { BrowserIntegrationPanel } from "@/components/integrations/BrowserIntegrationPanel";
+import { ServerIntegrationPanel } from "@/components/integrations/ServerIntegrationPanel";
 import {
   IntegrationModeSelector,
   type IntegrationMode,
@@ -7,7 +8,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { useDashboardContext } from "@/components/admin/DashboardContext";
-import { selectBrowserConnection } from "@/lib/integration-guidance";
+import { selectBrowserConnection, selectServerConnection } from "@/lib/integration-guidance";
 
 export function IntegrationsTab() {
   const { data, loading, error } = useDashboardContext();
@@ -46,6 +47,7 @@ export function IntegrationsTab() {
     data.card.provider.name ??
     "agent";
   const browser = selectBrowserConnection(origin, data.web);
+  const server = selectServerConnection(origin);
 
   async function copy(label: string, value: string) {
     if (!value || typeof navigator === "undefined") return;
@@ -80,9 +82,12 @@ export function IntegrationsTab() {
         )}
 
         {mode === "server" && (
-          <ModePlaceholder
-            title="Server application"
-            description="Trusted backend connection guidance arrives in the next implementation slice."
+          <ServerIntegrationPanel
+            agentName={data.agentMeta?.name ?? "<agent>"}
+            guidance={server}
+            routes={data.routes.entries}
+            copied={copied}
+            onCopy={copy}
           />
         )}
 
