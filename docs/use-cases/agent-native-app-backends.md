@@ -249,6 +249,10 @@ Current references:
 
 - [Generated Route Clients](../25-generated-route-clients.md)
 - [Delegated Authorization Bridge](../26-delegated-authorization.md)
+- [Examples index](../../examples/README.md)
+- [Pickleball storefront](../../examples/pickleball-storefront/README.md)
+- [Secure order support](../../examples/order-support/README.md)
+- [Field-service dispatch](../../examples/service-dispatch/README.md)
 - [Concierge example](../../examples/concierge/README.md)
 - [App auth bridge example](../../examples/app-auth-bridge/README.md)
 

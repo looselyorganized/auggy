@@ -1,0 +1,12 @@
+type: webTransport
+config:
+  port: 8088
+  allowAnonymous: true
+  publicFrontendUrl: http://localhost:3000
+  publicIntegration: true
+  cors:
+    origins:
+      - http://localhost:3000
+  auth:
+    type: bearer
+    token: ${AUGGY_WEB_TOKEN}

@@ -1,0 +1,15 @@
+{
+  "name": "auggy-example-pickleball-storefront",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "bun test augments/pickleball-storefront/storefront.test.ts",
+    "generate:client": "auggy routes --client ts --target browser --out web/auggy-client.ts",
+    "web": "bun web/server.ts"
+  },
+  "dependencies": {
+    "@auggy/anthropic": "file:../../packages/anthropic",
+    "auggy": "file:../..",
+    "zod": "^4.4.3"
+  }
+}

@@ -1,0 +1,20 @@
+id: aug1_761996a1-67c5-4f25-a877-42dcf5f0dfab
+name: order-support
+displayName: Northstar Order Support
+purpose: Help verified customers inspect orders and safely change shipping addresses.
+creator:
+  displayName: Support operator
+identity: ./identity.md
+engine:
+  provider: anthropic
+  model: claude-sonnet-4-6
+  maxContextTokens: 200000
+  maxTokens: 4096
+settings:
+  compactionStrategy: truncate
+  maxInferenceLoops: 8
+augments:
+  - webTransport
+  - visitorAuth
+  - budgets
+  - order-support
