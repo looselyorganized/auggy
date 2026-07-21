@@ -55,6 +55,7 @@ const EXTERNAL_RUN_POLL_MAX_MS = 5_000;
 const CHAT_HYDRATION_RETRY_INITIAL_MS = 750;
 const CHAT_HYDRATION_RETRY_MAX_MS = 5_000;
 const DETAIL_RECONCILIATION_RETRY_MAX_MS = 30_000;
+const STALE_DETAIL_LOAD_RETRY_MAX = 3;
 const CHAT_RECONCILIATION_ERROR =
   "The saved transcript could not be refreshed. It will retry automatically.";
 
@@ -370,6 +371,18 @@ export function ChatWorkspaceProvider({
     resolveVisitorIdentity(token, forceIdentity);
     return available;
   }, [resolveVisitorIdentity]);
+
+  // The workspace mounts in parallel with dashboard hydration. A stored
+  // visitor token may therefore be discovered before the console CSRF token
+  // is available. Retry as soon as that session capability arrives instead of
+  // leaving the identity stuck in an unavailable state until focus changes.
+  useEffect(() => {
+    if (!consoleChatCsrfToken) return;
+    const token = readVisitorToken();
+    if (!token) return;
+    currentVisitorTokenRef.current = token;
+    resolveVisitorIdentity(token);
+  }, [consoleChatCsrfToken, resolveVisitorIdentity]);
 
   const clearVisitor = useCallback(() => {
     for (const threadId of visitorTokenByThreadRef.current.keys()) {
@@ -763,43 +776,54 @@ export function ChatWorkspaceProvider({
         return true;
       }
 
-      const detailRequest = ++nextRequestIdRef.current;
-      detailRequestRef.current.set(threadId, detailRequest);
-      const beforeRevision = threadRevisionRef.current.get(threadId) ?? 0;
-      try {
-        const detail = await getConsoleChatThread(threadId, {
-          fetchImpl: dependenciesRef.current.fetchImpl,
-        });
-        if (!mountedRef.current || detailRequestRef.current.get(threadId) !== detailRequest) {
-          return false;
-        }
-        const current = getChatThread(stateRef.current, threadId);
-        const revisionUnchanged =
-          (threadRevisionRef.current.get(threadId) ?? 0) === beforeRevision;
-        if (stateRef.current.activeRun?.threadId !== threadId) {
-          if (current) {
-            const threadToMerge =
-              revisionUnchanged ? detail : { ...current, messages: detail.messages };
-            dispatch({ type: "thread.detail-merge", thread: threadToMerge });
-          } else if (revisionUnchanged) {
-            dispatch({
-              type: "workspace.hydrate",
-              threads: [...stateRef.current.threads, detail],
-              activeThreadId: stateRef.current.activeThreadId,
-            });
-          } else {
+      for (let attempt = 0; attempt < STALE_DETAIL_LOAD_RETRY_MAX; attempt++) {
+        const detailRequest = ++nextRequestIdRef.current;
+        detailRequestRef.current.set(threadId, detailRequest);
+        const beforeRevision = threadRevisionRef.current.get(threadId) ?? 0;
+        try {
+          const detail = await getConsoleChatThread(threadId, {
+            fetchImpl: dependenciesRef.current.fetchImpl,
+          });
+          if (!mountedRef.current || detailRequestRef.current.get(threadId) !== detailRequest) {
             return false;
           }
-          loadedThreadIdsRef.current.add(threadId);
-          detailReconciliationRetriesRef.current.delete(threadId);
+          const current = getChatThread(stateRef.current, threadId);
+          const revisionUnchanged =
+            (threadRevisionRef.current.get(threadId) ?? 0) === beforeRevision;
+          if (current && !revisionUnchanged && current.updatedAt >= detail.updatedAt) {
+            // A newer summary or local mutation landed while this request was
+            // in flight. Never combine its metadata with an older transcript:
+            // that would make future summary polls believe the stale messages
+            // were current. Keep the thread unloaded and request fresh detail.
+            loadedThreadIdsRef.current.delete(threadId);
+            continue;
+          }
+          if (stateRef.current.activeRun?.threadId !== threadId) {
+            if (current) {
+              const threadToMerge =
+                revisionUnchanged ? detail : { ...current, messages: detail.messages };
+              dispatch({ type: "thread.detail-merge", thread: threadToMerge });
+            } else if (revisionUnchanged) {
+              dispatch({
+                type: "workspace.hydrate",
+                threads: [...stateRef.current.threads, detail],
+                activeThreadId: stateRef.current.activeThreadId,
+              });
+            } else {
+              return false;
+            }
+            loadedThreadIdsRef.current.add(threadId);
+            detailReconciliationRetriesRef.current.delete(threadId);
+          }
+          persistedThreadIdsRef.current.add(threadId);
+          if (selectionRequest === selectionRequestRef.current) select(threadId);
+          return true;
+        } catch (error) {
+          if (isConsoleChatApiError(error) && error.code === "not-found") return false;
+          throw error;
         }
-        persistedThreadIdsRef.current.add(threadId);
-        if (selectionRequest === selectionRequestRef.current) select(threadId);
-        return true;
-      } catch (error) {
-        if (isConsoleChatApiError(error) && error.code === "not-found") return false;
-        throw error;
       }
+      throw new Error("The conversation changed while it was loading. Try again.");
     },
     [dispatch, select],
   );

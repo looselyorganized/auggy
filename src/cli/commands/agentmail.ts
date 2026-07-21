@@ -321,19 +321,14 @@ function patchAgentMailConfig(target: AgentMailSetupTarget, augmentPath: string)
   writeFileSafely(augmentPath, stringifyYaml(doc));
 }
 
-function isExactRecord(
-  value: unknown,
-  expected: Readonly<Record<string, number>>,
-): boolean {
+function isExactRecord(value: unknown, expected: Readonly<Record<string, number>>): boolean {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const record = value as Record<string, unknown>;
   const actualKeys = Object.keys(record).sort();
   const expectedKeys = Object.keys(expected).sort();
   return (
     actualKeys.length === expectedKeys.length &&
-    actualKeys.every((key, index) =>
-      key === expectedKeys[index] && record[key] === expected[key]
-    )
+    actualKeys.every((key, index) => key === expectedKeys[index] && record[key] === expected[key])
   );
 }
 

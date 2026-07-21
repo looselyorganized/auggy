@@ -551,13 +551,13 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
       rateLimiter.record(rlKey, t);
 
       return {
-      status: "sent",
-      delivery: verificationDelivery,
-      message:
-        verificationDelivery === "console"
-          ? `Verification link created for ${email} and printed to the local agent console. No email was sent. Open the console link within ${tokenTtlMin} minutes.`
-          : `Verification email sent to ${email}. The link expires in ${tokenTtlMin} minutes.`,
-      expiresInSec: Math.floor(ttlMs / 1000),
+        status: "sent",
+        delivery: verificationDelivery,
+        message:
+          verificationDelivery === "console"
+            ? `Verification link created for ${email} and printed to the local agent console. No email was sent. Open the console link within ${tokenTtlMin} minutes.`
+            : `Verification email sent to ${email}. The link expires in ${tokenTtlMin} minutes.`,
+        expiresInSec: Math.floor(ttlMs / 1000),
       };
     });
   }
@@ -590,6 +590,30 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
           status: "failed",
           code: "missing_peer",
           message: "request_auth requires turn context with a peer identity.",
+        } satisfies RequestAuthResult);
+      }
+      const isAnonymousPublicVisitor =
+        ctx.peer.trustLevel === "public" &&
+        ctx.peer.publicSubstate === "anonymous" &&
+        (ctx.peer.kind === "human" || ctx.peer.kind === "anonymous");
+      const isRecognizedHuman =
+        ctx.peer.trustLevel === "public" &&
+        ctx.peer.publicSubstate === "recognized" &&
+        ctx.peer.kind === "human";
+      const recognizedRow = isRecognizedHuman && booted ? store.findVisitorById(ctx.peer.id) : null;
+      const isReverificationDue =
+        isRecognizedHuman &&
+        (!booted ||
+          (recognizedRow !== null &&
+            !recognizedRow.revoked &&
+            recognizedRow.reverifyDueAt <= now()));
+      if (!isAnonymousPublicVisitor && !isReverificationDue) {
+        return JSON.stringify({
+          status: "rejected",
+          code: isRecognizedHuman ? "reverification_not_due" : "peer_not_anonymous",
+          message: isRecognizedHuman
+            ? "This recognized visitor does not need reverification yet."
+            : "request_auth is only available to an anonymous public visitor.",
         } satisfies RequestAuthResult);
       }
       if (input.method !== "email") {

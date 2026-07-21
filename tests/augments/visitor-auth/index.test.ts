@@ -175,9 +175,9 @@ describe("visitorAuth (skeleton)", () => {
     expect(() => visitorAuth({ ...base, rateLimit: { perHour: 0, perDay: 3 } })).toThrow(
       /rateLimit\.perHour.*positive integer/,
     );
-    expect(() =>
-      visitorAuth({ ...base, rateLimit: { perHour: 1.5, perDay: 3 } }),
-    ).toThrow(/rateLimit\.perHour.*positive integer/);
+    expect(() => visitorAuth({ ...base, rateLimit: { perHour: 1.5, perDay: 3 } })).toThrow(
+      /rateLimit\.perHour.*positive integer/,
+    );
     expect(() =>
       visitorAuth({ ...base, rateLimit: { perHour: 1, perDay: Number.POSITIVE_INFINITY } }),
     ).toThrow(/rateLimit\.perDay.*positive integer/);
@@ -530,7 +530,11 @@ describe("request_auth tool", () => {
     return { aug, sendCalls };
   }
 
-  function turnWithVisitor(text: string, peerId = "anon-thread1") {
+  function turnWithVisitor(
+    text: string,
+    peerId = "anon-thread1",
+    kind: "human" | "anonymous" = "anonymous",
+  ) {
     return {
       turnId: "tu",
       threadId: "thread1",
@@ -540,7 +544,7 @@ describe("request_auth tool", () => {
         timestamp: 0,
         peer: {
           id: peerId,
-          kind: "anonymous",
+          kind,
           trustLevel: "public",
           publicSubstate: "anonymous",
           sourceAugment: "web",
@@ -550,7 +554,7 @@ describe("request_auth tool", () => {
           sourceAugment: "web",
           peer: {
             id: peerId,
-            kind: "anonymous",
+            kind,
             trustLevel: "public",
             publicSubstate: "anonymous",
             sourceAugment: "web",
@@ -560,7 +564,7 @@ describe("request_auth tool", () => {
       },
       peer: {
         id: peerId,
-        kind: "anonymous",
+        kind,
         trustLevel: "public",
         publicSubstate: "anonymous",
         sourceAugment: "web",
@@ -614,6 +618,126 @@ describe("request_auth tool", () => {
       },
     );
     expect(JSON.parse(raw as string).status).toBe("rejected");
+    await aug.onShutdown?.();
+  });
+
+  test("rejects request_auth outside the anonymous public visitor boundary", async () => {
+    const { aug, sendCalls } = buildAug();
+    await aug.onBoot?.();
+    const rejectedPeers: NonNullable<ToolExecuteContext["peer"]>[] = [
+      {
+        id: "creator",
+        kind: "human",
+        trustLevel: "creator",
+        sourceAugment: "web",
+      },
+      {
+        id: "agent:worker",
+        kind: "agent",
+        trustLevel: "agent",
+        sourceAugment: "web",
+      },
+      {
+        id: "system",
+        kind: "system",
+        trustLevel: "public",
+        publicSubstate: "anonymous",
+        sourceAugment: "web",
+      },
+    ];
+
+    for (const peer of rejectedPeers) {
+      const raw = await aug.tools![0]!.execute(
+        { method: "email", email: "alice@example.com" },
+        { turnId: `turn-${peer.id}`, threadId: `thread-${peer.id}`, peer },
+      );
+      expect(JSON.parse(raw as string)).toEqual({
+        status: "rejected",
+        code: "peer_not_anonymous",
+        message: "request_auth is only available to an anonymous public visitor.",
+      });
+    }
+    expect(sendCalls).toHaveLength(0);
+    await aug.onShutdown?.();
+  });
+
+  test("allows recognized visitors to request auth only when reverification is due", async () => {
+    const clock = 2_000;
+    const seedStore = createSqliteVisitorAuthStore({ dbPath });
+    seedStore.initialize();
+    seedStore.recordVerifiedVisitor({
+      visitorId: "vis_due",
+      email: "due@example.com",
+      verifiedAt: 500,
+      lastSeenAt: 500,
+      reverifyDueAt: clock,
+      revoked: false,
+      revokedAt: null,
+      revokedReason: null,
+    });
+    seedStore.recordVerifiedVisitor({
+      visitorId: "vis_current",
+      email: "current@example.com",
+      verifiedAt: 1_000,
+      lastSeenAt: 1_000,
+      reverifyDueAt: clock + 1,
+      revoked: false,
+      revokedAt: null,
+      revokedReason: null,
+    });
+    seedStore.close();
+
+    const { aug, sendCalls } = buildAug({ nowFn: () => clock });
+    await aug.onBoot?.();
+    const executeAs = async (visitorId: string, email: string) => {
+      await aug.onTurnStart?.(turnWithVisitor(email, visitorId, "human"));
+      const raw = await aug.tools![0]!.execute(
+        { method: "email", email },
+        {
+          turnId: `turn-${visitorId}`,
+          threadId: `thread-${visitorId}`,
+          peer: {
+            id: visitorId,
+            kind: "human",
+            trustLevel: "public",
+            publicSubstate: "recognized",
+            sourceAugment: "web",
+          },
+        },
+      );
+      return JSON.parse(raw as string);
+    };
+
+    expect(await executeAs("vis_current", "current@example.com")).toEqual({
+      status: "rejected",
+      code: "reverification_not_due",
+      message: "This recognized visitor does not need reverification yet.",
+    });
+    expect(await executeAs("vis_due", "due@example.com")).toMatchObject({ status: "sent" });
+    expect(sendCalls).toHaveLength(1);
+    await aug.onShutdown?.();
+  });
+
+  test("allows a human peer in the anonymous public visitor state", async () => {
+    const { aug, sendCalls } = buildAug();
+    await aug.onBoot?.();
+    await aug.onTurnStart?.(turnWithVisitor("alice@example.com", "anon-human-thread", "human"));
+    const raw = await aug.tools![0]!.execute(
+      { method: "email", email: "alice@example.com" },
+      {
+        turnId: "turn-human",
+        threadId: "human-thread",
+        peer: {
+          id: "anon-human-thread",
+          kind: "human",
+          trustLevel: "public",
+          publicSubstate: "anonymous",
+          sourceAugment: "web",
+        },
+      },
+    );
+    expect(JSON.parse(raw as string)).toMatchObject({ status: "sent" });
+    expect(sendCalls).toHaveLength(1);
     await aug.onShutdown?.();
   });
 

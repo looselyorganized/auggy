@@ -164,6 +164,8 @@ export interface RequestAuthResult {
   code?:
     | "not_booted"
     | "missing_peer"
+    | "peer_not_anonymous"
+    | "reverification_not_due"
     | "unsupported_method"
     | "malformed_email"
     | "email_not_recent"

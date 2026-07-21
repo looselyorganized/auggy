@@ -101,10 +101,7 @@ describe("bundled skill frontmatter", () => {
   }
 
   it("scopes visitorAuth guidance to public peers", () => {
-    const path = resolve(
-      import.meta.dir,
-      "../../src/augments/visitorAuth/skill/SKILL.md",
-    );
+    const path = resolve(import.meta.dir, "../../src/augments/visitorAuth/skill/SKILL.md");
     expect(readSkillFrontmatter(path)?.allowedTrustLevels).toEqual(["public"]);
   });
 });

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { useState, type ReactNode } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 
 import { DashboardProvider } from "@/components/admin/DashboardContext";
@@ -570,6 +571,43 @@ describe("ChatWorkspaceProvider persistence", () => {
     expect(harness.value.visitorIdentity).toEqual({ status: "absent" });
   });
 
+  it("validates a stored visitor token when dashboard CSRF arrives after mount", async () => {
+    const storage = new Map<string, string>([[VISITOR_TOKEN_KEY, "stored-token"]]);
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      value: {
+        getItem: (key: string) => storage.get(key) ?? null,
+        removeItem: (key: string) => storage.delete(key),
+      },
+    });
+    let identityRequests = 0;
+    const fetchImpl = mockFetch(async (path) => {
+      if (path === "/console/api/visitor-identity") {
+        identityRequests++;
+        return identityResponse("stored@example.com");
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    const harness = await mountProvider({
+      fetchImpl,
+      dashboard: null,
+      initialState: createChatWorkspace(
+        createChatThread({ id: "draft", previewMode: "creator", model: MODEL, now: T0 }),
+      ),
+    });
+
+    expect(identityRequests).toBe(0);
+    expect(harness.value.visitorIdentity).toMatchObject({ status: "unavailable" });
+
+    await act(async () => harness.setDashboard(dashboardData));
+
+    expect(identityRequests).toBe(1);
+    expect(harness.value.visitorIdentity).toMatchObject({
+      status: "verified",
+      email: "stored@example.com",
+    });
+  });
+
   it("rolls back optimistic messages and preserves the draft when the server rejects a run", async () => {
     const initial = createChatWorkspace(
       createChatThread({ id: "draft", previewMode: "creator", model: MODEL, now: T0 }),
@@ -938,6 +976,53 @@ describe("ChatWorkspaceProvider persistence", () => {
     expect(harness.value.activeThread.id).toBe("second");
   });
 
+  it("refetches detail instead of masking a newer revision with a delayed transcript", async () => {
+    const saved = populatedThread("saved", "Original");
+    const staleDetail = deferred<Response>();
+    const fresh = {
+      ...saved,
+      title: "Renamed",
+      updatedAt: T1,
+      messages: saved.messages.map((message) =>
+        message.role === "assistant"
+          ? { ...message, content: "Fresh answer", updatedAt: T1 }
+          : message,
+      ),
+    };
+    let detailCalls = 0;
+    const fetchImpl = mockFetch(async (path) => {
+      if (path === "/console/api/chat/threads") {
+        return json({ threads: [summary(saved)] });
+      }
+      if (path === "/console/api/chat/threads/saved") {
+        detailCalls++;
+        return detailCalls === 1 ? staleDetail.promise : json({ thread: fresh });
+      }
+      if (path.endsWith("/rename")) {
+        return json({ thread: summary(fresh) });
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    const harness = await mountProvider({ fetchImpl });
+
+    let load!: Promise<boolean>;
+    await act(async () => {
+      load = harness.value.loadThread("saved");
+      await Promise.resolve();
+      await harness.value.rename("saved", "Renamed");
+    });
+    await act(async () => staleDetail.resolve(json({ thread: saved })));
+    await act(async () => expect(await load).toBe(true));
+
+    expect(detailCalls).toBe(2);
+    expect(harness.value.activeThread).toMatchObject({
+      id: "saved",
+      title: "Renamed",
+      updatedAt: T1,
+    });
+    expect(harness.value.activeThread.messages.at(-1)?.content).toBe("Fresh answer");
+  });
+
   it("does not resurrect a thread deleted while its detail request is in flight", async () => {
     const removed = {
       ...populatedThread("removed", "Deleted elsewhere"),
@@ -971,24 +1056,37 @@ describe("ChatWorkspaceProvider persistence", () => {
 async function mountProvider(options: {
   fetchImpl: typeof fetch;
   initialState?: ChatWorkspaceState;
+  dashboard?: DashboardData | null;
 }) {
   let value: ChatWorkspaceContextValue | null = null;
+  let setDashboard!: (data: DashboardData | null) => void;
   let nextId = 0;
   function Probe() {
     value = useChatWorkspace();
     return null;
   }
-  await act(async () => {
-    renderer = create(
+  function DashboardHarness({ children }: { children: ReactNode }) {
+    const [data, setData] = useState<DashboardData | null>(
+      options.dashboard === undefined ? dashboardData : options.dashboard,
+    );
+    setDashboard = setData;
+    return (
       <DashboardProvider
         value={{
-          data: dashboardData,
+          data,
           error: null,
-          loading: false,
+          loading: data === null,
           refresh: async () => {},
           updateData: () => {},
         }}
       >
+        {children}
+      </DashboardProvider>
+    );
+  }
+  await act(async () => {
+    renderer = create(
+      <DashboardHarness>
         <ChatWorkspaceProvider
           initialState={options.initialState}
           fetchImpl={options.fetchImpl}
@@ -997,7 +1095,7 @@ async function mountProvider(options: {
         >
           <Probe />
         </ChatWorkspaceProvider>
-      </DashboardProvider>,
+      </DashboardHarness>,
     );
   });
   if (!value) throw new Error("Provider did not render");
@@ -1006,6 +1104,7 @@ async function mountProvider(options: {
       if (!value) throw new Error("Provider unmounted");
       return value;
     },
+    setDashboard,
   };
 }
 

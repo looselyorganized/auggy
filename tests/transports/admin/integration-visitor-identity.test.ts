@@ -19,7 +19,9 @@ async function freePort(): Promise<number> {
   });
   const address = probe.address();
   if (!address || typeof address === "string") throw new Error("failed to allocate test port");
-  await new Promise<void>((resolve, reject) => probe.close((error) => (error ? reject(error) : resolve())));
+  await new Promise<void>((resolve, reject) =>
+    probe.close((error) => (error ? reject(error) : resolve())),
+  );
   return address.port;
 }
 
@@ -76,14 +78,11 @@ describe("webTransport console visitor identity summary", () => {
     try {
       const key = await deriveSigningKey(signingSecret);
       const valid = await createVisitorToken(key, agentBinding, 3_600, visitorId);
-      const unauthorized = await fetch(
-        `http://127.0.0.1:${port}/console/api/visitor-identity`,
-        {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ csrf: "untrusted", visitorToken: valid.token }),
-        },
-      );
+      const unauthorized = await fetch(`http://127.0.0.1:${port}/console/api/visitor-identity`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ csrf: "untrusted", visitorToken: valid.token }),
+      });
       expect([401, 403]).toContain(unauthorized.status);
 
       const accepted = await summaryRequest(port, valid.token);

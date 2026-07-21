@@ -200,9 +200,7 @@ function validateVisitorAuthOptions(
     (!Number.isSafeInteger(rateLimit.minIntervalSeconds) ||
       (rateLimit.minIntervalSeconds as number) < 0)
   ) {
-    errors.push(
-      `${optionsPrefix}.rateLimit.minIntervalSeconds: must be a non-negative integer`,
-    );
+    errors.push(`${optionsPrefix}.rateLimit.minIntervalSeconds: must be a non-negative integer`);
   }
 }
 

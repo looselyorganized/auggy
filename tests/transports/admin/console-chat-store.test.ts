@@ -641,9 +641,9 @@ describe("console chat SQLite store", () => {
     expect(() => store.promoteAnonymousThread(THREAD.id, visitorPeer, 2_000)).toThrow(
       /only its bound anonymous thread can be promoted/,
     );
-    expect(() =>
-      store.promoteAnonymousThread(anonymousThread.id, anonymousPeer, 2_000),
-    ).toThrow(/requires recognized visitor identity/);
+    expect(() => store.promoteAnonymousThread(anonymousThread.id, anonymousPeer, 2_000)).toThrow(
+      /requires recognized visitor identity/,
+    );
 
     store.beginRun({
       thread: { ...anonymousThread, runStatus: "streaming" },

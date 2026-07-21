@@ -128,10 +128,7 @@ describe("console visitor identity summary route", () => {
 
   it("requires console-chat CSRF and a strict bounded request body", async () => {
     const ctx = await context(async () => null);
-    const missingCsrf = await handleAdminRoute(
-      request({ visitorToken: "token" }),
-      ctx,
-    );
+    const missingCsrf = await handleAdminRoute(request({ visitorToken: "token" }), ctx);
     expect(missingCsrf.status).toBe(400);
 
     const wrongCsrf = await generateCsrfToken({ bearer, agentName, actionId: "identity-save" });

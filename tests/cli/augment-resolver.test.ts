@@ -1632,6 +1632,30 @@ describe("resolveAugments — cross-augment agentBinding validation (fix H3)", (
     );
   });
 
+  test("checks every webTransport for an agentBinding mismatch", async () => {
+    const first = wtConfig("agent-A");
+    first.name = "web-primary";
+    const second = wtConfig("agent-B");
+    second.name = "web-secondary";
+    await expect(resolveAugments([vaConfig("agent-A"), first, second], TMP)).rejects.toThrow(
+      /web-secondary.*agentBinding/,
+    );
+  });
+
+  test("treats omitted bindings as the effective auggy default", async () => {
+    const defaulted = await resolveAugments([vaConfig(undefined), wtConfig(undefined)], TMP);
+    expect(defaulted).toHaveLength(2);
+
+    const explicitVisitorDefault = await resolveAugments(
+      [vaConfig("auggy"), wtConfig(undefined)],
+      TMP,
+    );
+    expect(explicitVisitorDefault).toHaveLength(2);
+
+    const explicitWebDefault = await resolveAugments([vaConfig(undefined), wtConfig("auggy")], TMP);
+    expect(explicitWebDefault).toHaveLength(2);
+  });
+
   test("does not throw when neither augment is present", async () => {
     // Solo webFetch — no visitorAuth, no webTransport: no validation needed.
     const augments = await resolveAugments([{ type: "webFetch", name: "fetch", options: {} }], TMP);

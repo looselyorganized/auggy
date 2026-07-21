@@ -149,12 +149,7 @@ describe("createSqliteVisitorAuthStore", () => {
 
       store.revokeByEmail("rotate@example.com", "rotate identity", now + 1);
       expect(
-        store.unrevokeAndRotate(
-          "rotate@example.com",
-          "vis_new",
-          now + 2,
-          now + 86_400_000,
-        ),
+        store.unrevokeAndRotate("rotate@example.com", "vis_new", now + 2, now + 86_400_000),
       ).toBe(true);
       expect(store.canPromoteAnonymousThread("vis_old", "old-thread")).toBe(false);
       expect(store.canPromoteAnonymousThread("vis_new", "old-thread")).toBe(false);

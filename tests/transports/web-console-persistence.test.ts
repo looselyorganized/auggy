@@ -313,12 +313,7 @@ describe("webTransport console persistence boundary", () => {
         ],
       });
 
-      const unrelatedToken = await createVisitorToken(
-        key,
-        agentBinding,
-        3_600,
-        "vis_unrelated",
-      );
+      const unrelatedToken = await createVisitorToken(key, agentBinding, 3_600, "vis_unrelated");
       const unrelated = await sendConsolePreviewMessage(
         port,
         "verification-thread",

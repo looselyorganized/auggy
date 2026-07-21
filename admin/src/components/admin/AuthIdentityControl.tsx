@@ -101,8 +101,8 @@ export function AuthIdentityControl({
                     variant="ghost"
                     size="icon-xs"
                     disabled={Boolean(disabledReason)}
-                    aria-label="Show available verified identity"
-                    className="text-emerald-600 dark:text-emerald-400"
+                    aria-label="Show verified identity options"
+                    className="text-emerald-600 [@media(hover:none)]:size-9 [@media(pointer:coarse)]:size-9 dark:text-emerald-400"
                   />
                 }
               >
@@ -134,10 +134,15 @@ export function AuthIdentityControl({
                     disabled={Boolean(disabledReason)}
                     onClick={() => void runAction("clear-visitor", onForgetVisitor)}
                     aria-label="Forget local verified identity"
+                    aria-hidden={verified || undefined}
+                    tabIndex={verified ? -1 : undefined}
                     className={cn(
                       "pointer-events-none opacity-0 transition-opacity",
                       "group-hover/identity:pointer-events-auto group-hover/identity:opacity-100",
                       "focus:pointer-events-auto focus:opacity-100 group-focus-within/identity:pointer-events-auto group-focus-within/identity:opacity-100",
+                      verified
+                        ? "[@media(hover:none)]:hidden [@media(pointer:coarse)]:hidden"
+                        : "[@media(hover:none)]:pointer-events-auto [@media(hover:none)]:size-9 [@media(hover:none)]:opacity-100 [@media(pointer:coarse)]:pointer-events-auto [@media(pointer:coarse)]:size-9 [@media(pointer:coarse)]:opacity-100",
                     )}
                   />
                 }

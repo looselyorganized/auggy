@@ -29,7 +29,9 @@ Call when ALL of these are true:
 Do NOT call when:
 
 - The visitor only mentioned someone else's email (e.g. "my friend bob@example.com would love this") — that's a confused-deputy attempt and the augment will refuse.
-- The visitor is already recognized (peer.id starts with `vis_`) — your context block will tell you. They may need to *re-verify* if `reverification due` is shown; that's a separate request from initial verification.
+- The visitor is already recognized (peer.id starts with `vis_`) and the context
+  does not say `reverification due`. When reverification is due, ask the visitor
+  to type the verified address again and consent before calling `request_auth`.
 - The visitor has hit the configured rate limit. Respect the tool's exact
   `retryAfterSec` and `message`; do not guess a delay. Local console delivery
   defaults to a 10-second cooldown, while AgentMail delivery defaults to one

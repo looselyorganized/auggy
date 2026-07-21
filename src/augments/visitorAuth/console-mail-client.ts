@@ -56,7 +56,9 @@ export function createConsoleMailClient(opts: ConsoleMailClientOptions = {}): Ag
       };
     },
     async reply(input): Promise<SendMessageResult> {
-      sink(`INFO visitorAuth local reply\n  Message: ${input.messageId}\n  ${input.text.replace(/\n/g, "\n  ")}`);
+      sink(
+        `INFO visitorAuth local reply\n  Message: ${input.messageId}\n  ${input.text.replace(/\n/g, "\n  ")}`,
+      );
       return {
         status: "sent",
         messageId: `console-${crypto.randomUUID()}`,

@@ -937,22 +937,25 @@ export async function resolveAugments(
   // silently strands visitors: the magic-link flow succeeds, but the next request
   // rejects the minted token because the agentBinding field won't match.
   const vaConfig = configs.find((c) => c.type === "visitorAuth");
-  const wtConfig = configs.find((c) => c.type === "webTransport");
-  if (vaConfig && wtConfig) {
-    const vaBinding = (vaConfig.options as Record<string, unknown> | undefined)?.agentBinding as
-      | string
-      | undefined;
-    const wtBinding = (
-      (wtConfig.options as Record<string, unknown> | undefined)?.visitorTokens as
-        | Record<string, unknown>
-        | undefined
-    )?.agentBinding as string | undefined;
-    if (vaBinding !== wtBinding) {
-      throw new Error(
-        `Cross-augment config mismatch: visitorAuth.agentBinding (${vaBinding ?? "unset"}) ` +
-          `must match webTransport.visitorTokens.agentBinding (${wtBinding ?? "unset"}). ` +
-          `Set them both to the same value (e.g., \${AUGGY_AGENT_ID}) in augments/visitorAuth/augment.yaml and augments/webTransport/augment.yaml.`,
-      );
+  const wtConfigs = configs.filter((c) => c.type === "webTransport");
+  if (vaConfig) {
+    const configuredVaBinding = (vaConfig.options as Record<string, unknown> | undefined)
+      ?.agentBinding as string | undefined;
+    const vaBinding = configuredVaBinding ?? "auggy";
+    for (const wtConfig of wtConfigs) {
+      const configuredWtBinding = (
+        (wtConfig.options as Record<string, unknown> | undefined)?.visitorTokens as
+          | Record<string, unknown>
+          | undefined
+      )?.agentBinding as string | undefined;
+      const wtBinding = configuredWtBinding ?? "auggy";
+      if (vaBinding !== wtBinding) {
+        throw new Error(
+          `Cross-augment config mismatch: visitorAuth.agentBinding (${configuredVaBinding ?? `unset; effective ${vaBinding}`}) ` +
+            `must match webTransport "${wtConfig.name}" visitorTokens.agentBinding (${configuredWtBinding ?? `unset; effective ${wtBinding}`}). ` +
+            `Set them both to the same value (e.g., \${AUGGY_AGENT_ID}) in augments/visitorAuth/augment.yaml and augments/webTransport/augment.yaml.`,
+        );
+      }
     }
   }
 
