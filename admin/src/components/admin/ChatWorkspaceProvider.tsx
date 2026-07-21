@@ -9,7 +9,7 @@ import {
   type ReactNode,
 } from "react";
 import { useDashboardContext } from "@/components/admin/DashboardContext";
-import { findCsrfToken } from "@/lib/api";
+import { findCsrfToken, type AdminFetch } from "@/lib/api";
 import { parseSSEStream, type AGUIEvent } from "@/lib/ag-ui-parse";
 import {
   deleteConsoleChatThread,
@@ -45,6 +45,8 @@ import {
 const VISITOR_TOKEN_STORAGE_KEY = "auggy-visitor-token";
 const EXTERNAL_RUN_POLL_INITIAL_MS = 750;
 const EXTERNAL_RUN_POLL_MAX_MS = 5_000;
+const CHAT_HYDRATION_RETRY_INITIAL_MS = 750;
+const CHAT_HYDRATION_RETRY_MAX_MS = 5_000;
 const DETAIL_RECONCILIATION_RETRY_MAX_MS = 30_000;
 const CHAT_RECONCILIATION_ERROR =
   "The saved transcript could not be refreshed. It will retry automatically.";
@@ -67,6 +69,7 @@ export type ChatWorkspaceThreadCommandResult =
 export interface ChatWorkspaceContextValue {
   state: ChatWorkspaceState;
   activeThread: ChatThread;
+  ephemeralDraftId: string;
   deletingThreadIds: ReadonlySet<string>;
   hydrationStatus: "loading" | "ready" | "error";
   hydrationError: string | null;
@@ -94,7 +97,7 @@ interface ChatWorkspaceProviderProps {
   children: ReactNode;
   /** Intended for tests and, later, durable server hydration. */
   initialState?: ChatWorkspaceState;
-  fetchImpl?: typeof fetch;
+  fetchImpl?: AdminFetch;
   createId?: () => string;
   now?: () => Date;
 }
@@ -108,7 +111,7 @@ const ChatWorkspaceContext = createContext<ChatWorkspaceContextValue | null>(nul
 export function ChatWorkspaceProvider({
   children,
   initialState,
-  fetchImpl = fetch,
+  fetchImpl = (input, init) => globalThis.fetch(input, init),
   createId = defaultCreateId,
   now = () => new Date(),
 }: ChatWorkspaceProviderProps) {
@@ -216,13 +219,16 @@ export function ChatWorkspaceProvider({
   useEffect(() => {
     if (initialState) return;
     const controller = new AbortController();
-    ++nextRequestIdRef.current;
+    let retryDelay = CHAT_HYDRATION_RETRY_INITIAL_MS;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
 
-    void listConsoleChatThreads({
-      signal: controller.signal,
-      fetchImpl: dependenciesRef.current.fetchImpl,
-    })
-      .then((summaries) => {
+    const hydrate = async () => {
+      ++nextRequestIdRef.current;
+      try {
+        const summaries = await listConsoleChatThreads({
+          signal: controller.signal,
+          fetchImpl: dependenciesRef.current.fetchImpl,
+        });
         if (!mountedRef.current || controller.signal.aborted) return;
         const current = stateRef.current;
         const serverIds = new Set(summaries.map((thread) => thread.id));
@@ -242,14 +248,28 @@ export function ChatWorkspaceProvider({
         dispatch({ type: "workspace.hydrate", threads: hydrated, activeThreadId });
         setHydrationStatus("ready");
         setHydrationError(null);
-      })
-      .catch((error: unknown) => {
+      } catch (error: unknown) {
         if (!mountedRef.current || controller.signal.aborted || isAbortError(error)) return;
         setHydrationStatus("error");
-        setHydrationError(errorMessage(error, "Could not load saved chats."));
-      });
+        const retryable = shouldRetryChatHydration(error);
+        setHydrationError(
+          retryable
+            ? `${errorMessage(error, "Could not load saved chats.")} Reconnecting automatically…`
+            : errorMessage(error, "Could not load saved chats."),
+        );
+        if (retryable) {
+          retryTimer = setTimeout(() => void hydrate(), retryDelay);
+          retryDelay = Math.min(retryDelay * 2, CHAT_HYDRATION_RETRY_MAX_MS);
+        }
+      }
+    };
 
-    return () => controller.abort();
+    void hydrate();
+
+    return () => {
+      controller.abort();
+      if (retryTimer) clearTimeout(retryTimer);
+    };
   }, [dispatch, initialState]);
 
   const refreshVisitorToken = useCallback(() => {
@@ -931,6 +951,7 @@ export function ChatWorkspaceProvider({
 
       const toolCalls = new Map<string, ChatToolCall>();
       let receivedText = "";
+      const textStreamState: { lastMessageId: string | null } = { lastMessageId: null };
       let eventError: string | undefined;
       let outcome: "complete" | "error" | "interrupted" = "complete";
       let sawTerminalEvent = false;
@@ -950,7 +971,12 @@ export function ChatWorkspaceProvider({
       };
 
       try {
-        const response = await deps.fetchImpl(buildSameOriginUrl("/console/api/chat"), {
+        // Do not call a native Window.fetch stored on `deps` as an object
+        // method. WebKit treats that object as the receiver and throws
+        // "Illegal invocation". Detaching injected fetch functions also keeps
+        // this seam consistent with a normal standalone function call.
+        const sendFetch = deps.fetchImpl;
+        const response = await sendFetch(buildSameOriginUrl("/console/api/chat"), {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
@@ -1000,7 +1026,7 @@ export function ChatWorkspaceProvider({
             sawTerminalEvent = true;
             break;
           }
-          const eventResult = applyStreamEvent(event, toolCalls, receivedText);
+          const eventResult = applyStreamEvent(event, toolCalls, receivedText, textStreamState);
           receivedText = eventResult.receivedText;
           if (eventResult.patch) updateAssistant(eventResult.patch);
           if (eventResult.error) {
@@ -1070,6 +1096,7 @@ export function ChatWorkspaceProvider({
     () => ({
       state,
       activeThread,
+      ephemeralDraftId: localDraftIdRef.current,
       deletingThreadIds,
       hydrationStatus,
       hydrationError,
@@ -1206,9 +1233,17 @@ function applyStreamEvent(
   event: AGUIEvent,
   toolCalls: Map<string, ChatToolCall>,
   receivedText: string,
+  textStreamState: { lastMessageId: string | null },
 ): AppliedStreamEvent {
   switch (event.type) {
     case "TEXT_MESSAGE_CONTENT": {
+      if (event.messageId && textStreamState.lastMessageId !== event.messageId) {
+        receivedText =
+          textStreamState.lastMessageId === null
+            ? receivedText
+            : appendTextSegmentBoundary(receivedText);
+        textStreamState.lastMessageId = event.messageId;
+      }
       const nextText = receivedText + (event.delta ?? "");
       return { receivedText: nextText, patch: { content: nextText } };
     }
@@ -1268,6 +1303,17 @@ function applyStreamEvent(
     case "TEXT_MESSAGE_END":
       return { receivedText };
   }
+}
+
+function appendTextSegmentBoundary(content: string): string {
+  if (!content || content.endsWith("\n\n")) return content;
+  return content.endsWith("\n") ? `${content}\n` : `${content}\n\n`;
+}
+
+/** Retry startup races and transport/server outages, but not auth or malformed-data failures. */
+export function shouldRetryChatHydration(error: unknown): boolean {
+  if (!isConsoleChatApiError(error)) return false;
+  return error.status === 0 || error.status >= 500;
 }
 
 function readVisitorToken(): string | undefined {

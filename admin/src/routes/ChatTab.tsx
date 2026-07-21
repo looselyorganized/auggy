@@ -369,21 +369,29 @@ function MessageList({
       aria-busy={streaming}
     >
       <div className="mx-auto flex max-w-3xl flex-col gap-6">
-        {messages.map((message) => (
-          <MessageView key={message.id} message={message} responseLabel={responseLabel} />
+        {messages.map((message, index) => (
+          <MessageView
+            key={message.id}
+            message={message}
+            responseLabel={responseLabel}
+            streaming={streaming && index === messages.length - 1 && message.role === "assistant"}
+          />
         ))}
-        {streaming && (
-          <div className="inline-block animate-pulse font-mono text-xs text-muted-foreground">
-            ▍
-          </div>
-        )}
         <div ref={endRef} />
       </div>
     </div>
   );
 }
 
-function MessageView({ message, responseLabel }: { message: ChatMessage; responseLabel: string }) {
+function MessageView({
+  message,
+  responseLabel,
+  streaming,
+}: {
+  message: ChatMessage;
+  responseLabel: string;
+  streaming: boolean;
+}) {
   const isUser = message.role === "user";
   return (
     <article className={cn("flex", isUser ? "justify-end" : "justify-start")}>
@@ -398,6 +406,11 @@ function MessageView({ message, responseLabel }: { message: ChatMessage; respons
         <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
           {isUser ? "you" : responseLabel}
         </div>
+        {streaming && !message.content && (
+          <div className="flex h-6 items-center" aria-label={`${responseLabel} is responding`}>
+            <span className="animate-pulse font-mono text-xs text-muted-foreground">▍</span>
+          </div>
+        )}
         {message.content && <MarkdownContent content={message.content} isUser={isUser} />}
         {message.toolCalls && message.toolCalls.length > 0 && (
           <div className="space-y-1.5">

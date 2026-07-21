@@ -36,14 +36,15 @@ export function getChatNavigationState(options: {
   chatRouteActive: boolean;
   routedThreadId: string | undefined;
   activeThreadId: string;
+  ephemeralDraftId?: string;
 }): { activeId: string; threads: ChatThread[] } {
-  const { threads, chatRouteActive, routedThreadId, activeThreadId } = options;
-  const landingDraftId =
-    chatRouteActive && routedThreadId === undefined
-      ? threads.find(
-          (thread) => thread.id === activeThreadId && isEmptyChatThread(thread),
-        )?.id
-      : undefined;
+  const {
+    threads,
+    chatRouteActive,
+    routedThreadId,
+    activeThreadId,
+    ephemeralDraftId,
+  } = options;
 
   return {
     activeId:
@@ -51,7 +52,12 @@ export function getChatNavigationState(options: {
         ? activeThreadId
         : "",
     threads: threads
-      .filter((thread) => thread.id !== landingDraftId)
+      // The workspace keeps one reusable local draft ready for the composer.
+      // It is not a conversation yet and must never appear beside durable chats.
+      .filter(
+        (thread) =>
+          thread.id !== ephemeralDraftId || !isEmptyChatThread(thread),
+      )
       .sort((a, b) => {
         if (a.updatedAt !== b.updatedAt)
           return b.updatedAt.localeCompare(a.updatedAt);

@@ -5,9 +5,11 @@ import { DashboardProvider } from "@/components/admin/DashboardContext";
 import {
   ChatWorkspaceProvider,
   shouldDeferDetailReconciliation,
+  shouldRetryChatHydration,
   useChatWorkspace,
   type ChatWorkspaceContextValue,
 } from "@/components/admin/ChatWorkspaceProvider";
+import { ConsoleChatApiError } from "@/lib/console-chat-api";
 import {
   createChatThread,
   createChatWorkspace,
@@ -70,6 +72,32 @@ afterEach(async () => {
 });
 
 describe("ChatWorkspaceProvider persistence", () => {
+  it("retries only transient startup hydration failures", () => {
+    expect(
+      shouldRetryChatHydration(
+        new ConsoleChatApiError("Unavailable", { status: 503, code: "unavailable" }),
+      ),
+    ).toBe(true);
+    expect(
+      shouldRetryChatHydration(
+        new ConsoleChatApiError("Network failure", { status: 0, code: "request-failed" }),
+      ),
+    ).toBe(true);
+    expect(
+      shouldRetryChatHydration(
+        new ConsoleChatApiError("Unauthorized", { status: 401, code: "request-failed" }),
+      ),
+    ).toBe(false);
+    expect(
+      shouldRetryChatHydration(
+        new ConsoleChatApiError("Malformed response", {
+          status: 200,
+          code: "invalid-response",
+        }),
+      ),
+    ).toBe(false);
+  });
+
   it("backs off only the unchanged terminal revision that failed to reconcile", () => {
     const retry = {
       failures: 4,
@@ -118,26 +146,85 @@ describe("ChatWorkspaceProvider persistence", () => {
     ]);
   });
 
+  it("automatically restores saved chats when the backend becomes available", async () => {
+    const saved = populatedThread("saved-after-restart", "Saved before restart");
+    let listCalls = 0;
+    const fetchImpl = mockFetch(async (path) => {
+      if (path !== "/console/api/chat/threads") {
+        throw new Error(`Unexpected request: ${path}`);
+      }
+      listCalls++;
+      if (listCalls === 1) {
+        return json({ error: "Console chat is starting." }, 503);
+      }
+      return json({ threads: [summary(saved)] });
+    });
+    const harness = await mountProvider({ fetchImpl });
+
+    expect(harness.value.hydrationStatus).toBe("error");
+    expect(harness.value.hydrationError).toMatch(/reconnecting automatically/i);
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, EXTERNAL_POLL_TEST_WAIT_MS));
+    });
+
+    expect(listCalls).toBeGreaterThanOrEqual(2);
+    expect(harness.value.hydrationStatus).toBe("ready");
+    expect(harness.value.hydrationError).toBeNull();
+    expect(harness.value.state.threads.map(({ id }) => id)).toEqual([
+      "saved-after-restart",
+      "id-1",
+    ]);
+    expect(harness.value.state.activeThreadId).toBe("saved-after-restart");
+  });
+
+  it("does not retry a permanently invalid hydration response", async () => {
+    let listCalls = 0;
+    const fetchImpl = mockFetch(async (path) => {
+      if (path !== "/console/api/chat/threads") {
+        throw new Error(`Unexpected request: ${path}`);
+      }
+      listCalls++;
+      return json({ threads: "not-an-array" });
+    });
+    const harness = await mountProvider({ fetchImpl });
+
+    expect(harness.value.hydrationStatus).toBe("error");
+    expect(harness.value.hydrationError).not.toMatch(/reconnecting automatically/i);
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, EXTERNAL_POLL_TEST_WAIT_MS));
+    });
+
+    expect(listCalls).toBe(1);
+  });
+
   it("sends stable run/message IDs, generated title, and model, then durably marks an active visible completion read", async () => {
     const initial = createChatWorkspace(
       createChatThread({ id: "draft", previewMode: "creator", model: MODEL, now: T0 }),
     );
     const requests: Array<{ path: string; body: Record<string, unknown> }> = [];
-    const fetchImpl = mockFetch(async (path, init) => {
-      const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
-      requests.push({ path, body });
-      if (path === "/console/api/chat") return completedSse("draft");
-      if (path.endsWith("/read-state")) {
-        return json({
-          thread: {
-            ...summary(populatedThread("draft", "Review auth behavior")),
-            unread: false,
-            lastReadAt: T1,
-          },
-        });
-      }
-      throw new Error(`Unexpected request: ${path}`);
-    });
+    let sendReceiver: unknown = "not-called";
+    const fetchImpl = mockFetch(
+      async (path, init) => {
+        const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+        requests.push({ path, body });
+        if (path === "/console/api/chat") return completedSse("draft");
+        if (path.endsWith("/read-state")) {
+          return json({
+            thread: {
+              ...summary(populatedThread("draft", "Review auth behavior")),
+              unread: false,
+              lastReadAt: T1,
+            },
+          });
+        }
+        throw new Error(`Unexpected request: ${path}`);
+      },
+      (receiver, path) => {
+        if (path === "/console/api/chat") sendReceiver = receiver;
+      },
+    );
     const harness = await mountProvider({ fetchImpl, initialState: initial });
 
     await act(async () => {
@@ -162,6 +249,7 @@ describe("ChatWorkspaceProvider persistence", () => {
       path: "/console/api/chat/threads/draft/read-state",
       body: { csrf: "csrf-token", unread: false },
     });
+    expect(sendReceiver).toBeUndefined();
   });
 
   it("rolls back optimistic messages and preserves the draft when the server rejects a run", async () => {
@@ -188,6 +276,34 @@ describe("ChatWorkspaceProvider persistence", () => {
     expect(harness.value.activeThread.messages).toEqual([]);
     expect(harness.value.activeThread.runStatus).toBe("idle");
     expect(harness.value.activeThread.title).toBe("New chat");
+  });
+
+  it("separates assistant text emitted by multiple tool-loop inference segments", async () => {
+    const initial = createChatWorkspace(
+      createChatThread({ id: "draft", previewMode: "creator", model: MODEL, now: T0 }),
+    );
+    const fetchImpl = mockFetch(async (path) => {
+      if (path === "/console/api/chat") return segmentedSse("draft");
+      if (path.endsWith("/read-state")) {
+        return json({
+          thread: {
+            ...summary(populatedThread("draft", "Check an order")),
+            unread: false,
+            lastReadAt: T1,
+          },
+        });
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    const harness = await mountProvider({ fetchImpl, initialState: initial });
+
+    await act(async () => {
+      expect(await harness.value.send("Check an order")).toEqual({ ok: true });
+    });
+
+    expect(harness.value.activeThread.messages.at(-1)?.content).toBe(
+      "I'll check the order.\n\nThe address is current.",
+    );
   });
 
   it("preserves an explicit empty-draft rename as the first persisted title", async () => {
@@ -619,12 +735,34 @@ function completedSse(threadId: string): Response {
   return new Response(body, { headers: { "content-type": "text/event-stream" } });
 }
 
+function segmentedSse(threadId: string): Response {
+  const body = [
+    { type: "TEXT_MESSAGE_START", messageId: "segment-one", role: "assistant" },
+    { type: "TEXT_MESSAGE_CONTENT", messageId: "segment-one", delta: "I'll check the order." },
+    { type: "TEXT_MESSAGE_END", messageId: "segment-one" },
+    { type: "TEXT_MESSAGE_START", messageId: "segment-two", role: "assistant" },
+    {
+      type: "TEXT_MESSAGE_CONTENT",
+      messageId: "segment-two",
+      delta: "The address is current.",
+    },
+    { type: "TEXT_MESSAGE_END", messageId: "segment-two" },
+    { type: "RUN_FINISHED", threadId, result: { status: "completed" } },
+  ]
+    .map((event) => `data: ${JSON.stringify(event)}\n\n`)
+    .join("");
+  return new Response(body, { headers: { "content-type": "text/event-stream" } });
+}
+
 function mockFetch(
   handler: (path: string, init?: RequestInit) => Response | Promise<Response>,
+  observeReceiver?: (receiver: unknown, path: string) => void,
 ): typeof fetch {
-  return (async (input: URL | RequestInfo, init?: RequestInit) => {
+  return (async function (this: unknown, input: URL | RequestInfo, init?: RequestInit) {
     const raw = input instanceof Request ? input.url : String(input);
-    return handler(new URL(raw, "http://localhost:8080").pathname, init);
+    const path = new URL(raw, "http://localhost:8080").pathname;
+    observeReceiver?.(this, path);
+    return handler(path, init);
   }) as typeof fetch;
 }
 
