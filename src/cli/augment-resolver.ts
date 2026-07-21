@@ -391,6 +391,7 @@ function resolveWebTransport(
     // time — breaking the "operator's most-explicit choice wins" contract.
     allowAnonymous: opts.allowAnonymous as boolean | undefined,
     publicIntegration: opts.publicIntegration as boolean | undefined,
+    publicFrontendUrl: opts.publicFrontendUrl as string | undefined,
     adminRoute: opts.adminRoute as boolean | undefined,
     consoleChat: resolveConsoleChatOptions(opts, agentDir, runtimeDataRoot),
     // Wire the agent dir through to webTransport so the /console module can

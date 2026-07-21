@@ -308,6 +308,33 @@ describe("resolveAugments — webTransport", () => {
     }
   });
 
+  test("forwards publicFrontendUrl from yaml options to the root redirect", async () => {
+    const port = getLikelyFreePort();
+    const configs: AugmentConfig[] = [
+      {
+        name: "web",
+        type: "webTransport",
+        options: {
+          port,
+          auth: { type: "bearer", token: "test-token" },
+          publicFrontendUrl: "https://store.example.com/",
+        },
+      },
+    ];
+
+    const augments = await resolveAugments(configs, TMP);
+    const model = createMockModel();
+    const agent = defineAgent({ name: "test", model: "mock", augments }, model);
+    if (!(await startAgentIfSocketsAvailable(agent))) return;
+    try {
+      const response = await fetch(`http://localhost:${port}/`, { redirect: "manual" });
+      expect(response.status).toBe(302);
+      expect(response.headers.get("location")).toBe("https://store.example.com/");
+    } finally {
+      await agent.stop();
+    }
+  });
+
   // G3 + codex adversarial finding #2: allowAnonymous in agent.yaml MUST be
   // forwarded by the resolver to webTransport, otherwise the documented
   // yaml > env > default precedence is broken end-to-end. This test exercises
