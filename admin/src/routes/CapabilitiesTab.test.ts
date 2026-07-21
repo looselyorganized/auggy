@@ -13,7 +13,14 @@ describe("buildConversationSurfaceRows", () => {
       {
         title: "POST /agent/run",
         detail: "AG-UI chat, creator auth",
-        badges: ["creator"],
+        badges: [
+          {
+            id: "auth:creator",
+            kind: "auth",
+            label: "creator",
+            tone: "success",
+          },
+        ],
       },
     ]);
     expect(rows.map((row) => row.title)).not.toContain("GET /agent");
@@ -28,7 +35,14 @@ describe("buildConversationSurfaceRows", () => {
     });
 
     expect(rows[0]?.detail).toBe("AG-UI chat, anonymous allowed");
-    expect(rows[0]?.badges).toEqual(["anonymous"]);
+    expect(rows[0]?.badges).toEqual([
+      {
+        id: "auth:anonymous",
+        kind: "auth",
+        label: "anonymous",
+        tone: "neutral",
+      },
+    ]);
   });
 });
 

@@ -49,7 +49,7 @@ describe("buildCapabilityModel", () => {
           route("POST", "/unspecified"),
           route("GET", "/page", { responseMediaTypes: ["text/html"] }),
           route("POST", "/json", {
-            requestMediaTypes: ["application/problem+json"],
+            requestMediaTypes: ["Application/Problem+JSON; charset=utf-8"],
             responseMediaTypes: ["application/json"],
           }),
         ],
@@ -134,12 +134,19 @@ describe("buildCapabilityModel", () => {
   });
 
   it("models tool restrictions as safeguards rather than findings", () => {
-    const restrictedTool = tool("delete_order", {
-      neverExpose: true,
-      requiresHumanApproval: true,
-      hiddenFromTrustLevels: ["public"],
-      approvalRequiredForTrustLevels: ["agent"],
-    });
+    const restrictedTool = {
+      ...tool(
+        "delete_order",
+        {
+          neverExpose: true,
+          requiresHumanApproval: true,
+          hiddenFromTrustLevels: ["public"],
+          approvalRequiredForTrustLevels: ["agent"],
+        },
+        false,
+      ),
+      requires: { grant: "orders:delete" },
+    };
     const model = buildCapabilityModel(
       dashboard({
         augments: [augment("orders")],
@@ -256,6 +263,8 @@ describe("buildCapabilityModel", () => {
       toolCount: 1,
       memoryAugmentCount: 1,
       issueCount: 0,
+      errorCount: 0,
+      warningCount: 0,
       noteCount: 0,
     });
     expect(selected.summary.memoryAugmentCount).toBe(1);

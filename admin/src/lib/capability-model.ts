@@ -12,6 +12,7 @@ export type CapabilityFindingCode =
   | "route.request-json-schema-missing"
   | "route.response-json-schema-missing"
   | "route.response-media-schema-conflict"
+  | "route.exposure-metadata-conflict"
   | "route.visitor-identity-required-unavailable"
   | "route.visitor-identity-optional-unavailable"
   | "route.delegated-auth-unreachable"
@@ -99,6 +100,8 @@ export interface CapabilitySurfaceSummary {
   memoryAugmentCount: number;
   /** Findings requiring action: errors plus warnings. */
   issueCount: number;
+  errorCount: number;
+  warningCount: number;
   noteCount: number;
 }
 
@@ -244,8 +247,9 @@ function buildRouteView(route: RouteManifestEntry, data: DashboardData): RouteCa
     data.web.visitorTokensEnabled === true || data.web.externalAuthEnabled === true;
   const externalAuthAvailable = data.web.externalAuthEnabled === true;
   const agentAccessAvailable = configuredAgentAccessEntries(data.web.agentAccessEntries) > 0;
+  const publiclyReachable = isPubliclyReachable(route);
   const badges: CapabilityBadge[] = [
-    badge("exposure", route.public ? "public" : "private", "neutral"),
+    badge("exposure", publiclyReachable ? "public" : "private", "neutral"),
     badge(
       "auth",
       route.auth,
@@ -253,7 +257,7 @@ function buildRouteView(route: RouteManifestEntry, data: DashboardData): RouteCa
     ),
   ];
 
-  if (route.requestJsonSchema) {
+  if (hasRequestBodySchema) {
     badges.push(badge("request-schema", "request schema", "info"));
   } else if (expectsJsonRequest) {
     badges.push(badge("request-schema", "request schema missing", "info"));
@@ -264,10 +268,10 @@ function buildRouteView(route: RouteManifestEntry, data: DashboardData): RouteCa
     badges.push(badge("response-schema", "response schema missing", "info"));
   }
   for (const mediaType of requestMediaTypes) {
-    badges.push(badge("request-media-type", mediaType, "neutral"));
+    badges.push(badge("request-media-type", `accepts ${mediaType}`, "neutral"));
   }
   for (const mediaType of responseMediaTypes) {
-    badges.push(badge("response-media-type", mediaType, "neutral"));
+    badges.push(badge("response-media-type", `returns ${mediaType}`, "neutral"));
   }
   if (route.rateLimit) {
     badges.push(badge("rate-limit", `${route.rateLimit.maxPerMinute}/min`, "info"));
@@ -379,6 +383,13 @@ function routeFindings(
       "Route declares a JSON success response without a response schema.",
     );
   }
+  if (route.public !== isPubliclyReachable(route)) {
+    add(
+      "route.exposure-metadata-conflict",
+      "warning",
+      "Route exposure metadata disagrees with its authentication mode.",
+    );
+  }
   if (
     route.responseJsonSchema &&
     route.responseMediaTypes !== undefined &&
@@ -430,6 +441,7 @@ function routeFindings(
 }
 
 function toolFindings(tool: ToolSummary, externalAuthAvailable: boolean): CapabilityFinding[] {
+  if (tool.constraints.neverExpose) return [];
   const findings: CapabilityFinding[] = [];
   if (!tool.hasInputSchema) {
     findings.push({
@@ -494,6 +506,8 @@ function summarize(
     issueCount: findings.filter(
       (finding) => finding.severity === "error" || finding.severity === "warning",
     ).length,
+    errorCount: findings.filter((finding) => finding.severity === "error").length,
+    warningCount: findings.filter((finding) => finding.severity === "warning").length,
     noteCount: findings.filter((finding) => finding.severity === "note").length,
   };
 }
@@ -532,7 +546,7 @@ function authTone(
   }
   if (route.auth === "visitor.required" && !identityAvailable) return "danger";
   if (route.auth === "agent.required" && !agentAccessAvailable) return "danger";
-  if (route.auth === "visitor.optional" && !identityAvailable) return "neutral";
+  if (route.auth === "visitor.optional") return identityAvailable ? "info" : "neutral";
   return route.auth === "none" ? "neutral" : "success";
 }
 
@@ -542,9 +556,14 @@ function hasMemorySurface(augment: AugmentSummary): boolean {
 
 function includesJsonMediaType(mediaTypes: readonly string[]): boolean {
   return mediaTypes.some((mediaType) => {
-    const subtype = mediaType.toLowerCase().split("/", 2)[1];
+    const normalized = mediaType.split(";", 1)[0]?.trim().toLowerCase() ?? "";
+    const subtype = normalized.split("/", 2)[1];
     return subtype === "json" || subtype?.endsWith("+json") === true;
   });
+}
+
+function isPubliclyReachable(route: RouteManifestEntry): boolean {
+  return route.auth === "none" || route.auth === "visitor.optional";
 }
 
 function configuredAgentAccessEntries(value: string | undefined): number {
