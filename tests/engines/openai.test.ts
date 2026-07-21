@@ -9,6 +9,7 @@ import type { Message, ToolDefinition, AssembledPrompt } from "../../src/types";
 // ---------------------------------------------------------------------------
 
 let lastCreateArgs: Record<string, unknown> | null = null;
+let lastCreateOptions: { signal?: AbortSignal } | null = null;
 let lastConstructorArgs: Record<string, unknown> | null = null;
 let nextResponse: OpenAI.Chat.ChatCompletion | null = null;
 let throwOnCreate: Error | null = null;
@@ -37,8 +38,12 @@ mock.module("openai", () => {
   class FakeOpenAI {
     chat = {
       completions: {
-        create: async (params: Record<string, unknown>): Promise<OpenAI.Chat.ChatCompletion> => {
+        create: async (
+          params: Record<string, unknown>,
+          options?: { signal?: AbortSignal },
+        ): Promise<OpenAI.Chat.ChatCompletion> => {
           lastCreateArgs = params;
+          lastCreateOptions = options ?? null;
           if (throwOnCreate) throw throwOnCreate;
           return nextResponse ?? defaultResponse();
         },
@@ -64,6 +69,7 @@ const {
 
 beforeEach(() => {
   lastCreateArgs = null;
+  lastCreateOptions = null;
   lastConstructorArgs = null;
   nextResponse = null;
   throwOnCreate = null;
@@ -565,6 +571,13 @@ describe("buildOpenAIModelResponse", () => {
 // ---------------------------------------------------------------------------
 
 describe("createOpenAIEngine — SDK call payload", () => {
+  test("forwards AbortSignal to the SDK request", async () => {
+    const controller = new AbortController();
+    const engine = createOpenAIEngine({ model: "gpt-5" });
+    await engine.complete(emptyPrompt(), { signal: controller.signal });
+    expect(lastCreateOptions?.signal).toBe(controller.signal);
+  });
+
   test("sends max_completion_tokens (NOT max_tokens)", async () => {
     const engine = createOpenAIEngine({ model: "gpt-5", maxTokens: 1024 });
     await engine.complete(emptyPrompt({ messages: [msg({ content: "hi" })] }));

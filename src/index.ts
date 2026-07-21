@@ -64,6 +64,8 @@ export type {
   AssembledPrompt,
   // Storage
   Storage,
+  ThreadHistoryPersistence,
+  ThreadHistorySnapshot,
   // Transport
   RouteAgentAuthContext,
   RouteAuthContext,

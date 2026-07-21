@@ -7,6 +7,7 @@ import type { Message, AssembledPrompt } from "../../src/types";
 // ---------------------------------------------------------------------------
 
 let lastCreateArgs: Record<string, unknown> | null = null;
+let lastCreateOptions: { signal?: AbortSignal } | null = null;
 let lastConstructorArgs: Record<string, unknown> | null = null;
 let throwOnCreate: Error | null = null;
 let nextResponse: OpenAI.Chat.ChatCompletion | null = null;
@@ -31,8 +32,12 @@ mock.module("openai", () => {
   class FakeOpenAI {
     chat = {
       completions: {
-        create: async (params: Record<string, unknown>): Promise<OpenAI.Chat.ChatCompletion> => {
+        create: async (
+          params: Record<string, unknown>,
+          options?: { signal?: AbortSignal },
+        ): Promise<OpenAI.Chat.ChatCompletion> => {
           lastCreateArgs = params;
+          lastCreateOptions = options ?? null;
           if (throwOnCreate) throw throwOnCreate;
           return nextResponse ?? defaultResponse();
         },
@@ -53,6 +58,7 @@ const ORIGINAL_OPENAI = process.env.OPENAI_API_KEY;
 
 beforeEach(() => {
   lastCreateArgs = null;
+  lastCreateOptions = null;
   lastConstructorArgs = null;
   throwOnCreate = null;
   nextResponse = null;
@@ -159,6 +165,16 @@ describe("createOpenRouterEngine — SDK construction", () => {
 // ---------------------------------------------------------------------------
 
 describe("createOpenRouterEngine — SDK call payload", () => {
+  test("forwards AbortSignal to the SDK request", async () => {
+    const controller = new AbortController();
+    const engine = createOpenRouterEngine({
+      model: "qwen/qwen3.5-397b-a17b",
+      apiKey: "sk-test",
+    });
+    await engine.complete(emptyPrompt(), { signal: controller.signal });
+    expect(lastCreateOptions?.signal).toBe(controller.signal);
+  });
+
   beforeEach(() => {
     process.env.OPENROUTER_API_KEY = "sk-test";
   });

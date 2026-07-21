@@ -56,9 +56,19 @@ import {
   resolveDistDir,
 } from "./admin/index";
 import { renderAgentIntegrationPage, renderInfoPage } from "./info-page";
+import {
+  createConsoleChatStore,
+  createDeferredConsoleThreadHistoryPersistence,
+  type ConsoleChatModelSnapshot,
+  type ConsoleChatPreviewMode,
+  type ConsoleChatStore,
+  type ConsoleChatToolCall,
+} from "./admin/console-chat-store";
+import { join } from "node:path";
 
 const PUBLIC_PAGE_CACHE_CONTROL = "public, max-age=0, must-revalidate";
 const DEFAULT_EXTERNAL_AUTH_ASSERTION_HEADER = "x-auggy-auth-assertion";
+const CONSOLE_INTERNAL_RUN_HEADER = "x-auggy-console-internal";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -218,6 +228,19 @@ export interface WebTransportOptions {
    */
   adminRoute?: boolean;
   /**
+   * Storage configuration for operator-console conversations.
+   *
+   * When omitted, console chat persistence is enabled whenever the console is
+   * enabled and `agentDir` is available. The CLI resolves that default to
+   * `<agentDir>/data/console-chat.db` locally and to
+   * `/app/data/console-chat.db` on Railway. Set `dbPath` to an explicit path to
+   * override the location, or to `null` to keep console conversations in
+   * process memory only.
+   */
+  consoleChat?: {
+    dbPath?: string | null;
+  };
+  /**
    * G36 — agent project directory. Used by
    * the admin module to read/write `admin-overrides.json`. When unset,
    * admin overrides are skipped silently (the runtime falls back to yaml +
@@ -236,6 +259,26 @@ interface AGUIRunRequestBody {
   threadId?: string;
   contextId?: string;
   taskId?: string;
+  /** Server-only metadata injected by the authenticated console proxy. */
+  __console?: {
+    previewMode?: unknown;
+    title?: unknown;
+    model?: unknown;
+    unreadOnFinish?: unknown;
+    runId?: unknown;
+    userMessageId?: unknown;
+    assistantMessageId?: unknown;
+  };
+}
+
+interface ConsoleRunMetadata {
+  previewMode: ConsoleChatPreviewMode;
+  title: string;
+  model: ConsoleChatModelSnapshot | null;
+  unreadOnFinish: boolean;
+  runId: string | null;
+  userMessageId: string;
+  assistantMessageId: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -520,6 +563,97 @@ function timingSafeEqual(a: string, b: string): boolean {
   return diff === 0;
 }
 
+function resolveConsoleChatDbPath(opts: WebTransportOptions): string | null {
+  if (opts.adminRoute === false) return null;
+  const configured = opts.consoleChat?.dbPath;
+  if (configured === null) return ":memory:";
+  if (configured !== undefined) {
+    if (configured.trim() === "") {
+      throw new Error("[web-transport] consoleChat.dbPath must be non-empty or null.");
+    }
+    return configured;
+  }
+  return opts.agentDir ? join(opts.agentDir, "data", "console-chat.db") : ":memory:";
+}
+
+function isConsoleChatIdentifier(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= 256;
+}
+
+function previewModeForPeer(peer: PeerIdentity): ConsoleChatPreviewMode | null {
+  if (peer.trustLevel === "creator") return "creator";
+  if (peer.trustLevel !== "public") return null;
+  return peer.publicSubstate === "recognized" ? "visitor" : "anonymous";
+}
+
+function defaultConsoleThreadTitle(message: string): string {
+  const normalized = message.replace(/\s+/g, " ").trim();
+  if (normalized.length === 0) return "New chat";
+  const codePoints = Array.from(normalized);
+  return codePoints.length <= 80 ? normalized : `${codePoints.slice(0, 77).join("").trimEnd()}…`;
+}
+
+function parseConsoleRunMetadata(
+  value: AGUIRunRequestBody["__console"],
+  message: string,
+): ConsoleRunMetadata | null {
+  if (!value) return null;
+  if (
+    value.previewMode !== "creator" &&
+    value.previewMode !== "anonymous" &&
+    value.previewMode !== "visitor"
+  ) {
+    return null;
+  }
+  const title = value.title === undefined ? defaultConsoleThreadTitle(message) : value.title;
+  if (
+    typeof title !== "string" ||
+    title.trim().length === 0 ||
+    Array.from(title.trim()).length > 80
+  ) {
+    return null;
+  }
+  let model: ConsoleChatModelSnapshot | null = null;
+  if (value.model !== undefined && value.model !== null) {
+    if (typeof value.model !== "object" || Array.isArray(value.model)) return null;
+    const raw = value.model as Record<string, unknown>;
+    if (
+      typeof raw.id !== "string" ||
+      raw.id.trim() === "" ||
+      typeof raw.displayName !== "string" ||
+      raw.displayName.trim() === "" ||
+      (raw.provider !== null && typeof raw.provider !== "string")
+    ) {
+      return null;
+    }
+    model = {
+      id: raw.id,
+      displayName: raw.displayName,
+      provider: raw.provider as string | null,
+    };
+  }
+  if (value.unreadOnFinish !== undefined && typeof value.unreadOnFinish !== "boolean") return null;
+  if (value.runId !== undefined && !isConsoleChatIdentifier(value.runId)) return null;
+  if (value.userMessageId !== undefined && !isConsoleChatIdentifier(value.userMessageId)) {
+    return null;
+  }
+  if (
+    value.assistantMessageId !== undefined &&
+    !isConsoleChatIdentifier(value.assistantMessageId)
+  ) {
+    return null;
+  }
+  return {
+    previewMode: value.previewMode,
+    title: title.trim(),
+    model,
+    unreadOnFinish: value.unreadOnFinish ?? true,
+    runId: value.runId ?? null,
+    userMessageId: value.userMessageId ?? crypto.randomUUID(),
+    assistantMessageId: value.assistantMessageId ?? crypto.randomUUID(),
+  };
+}
+
 /**
  * AG-UI-compatible HTTP transport.
  *
@@ -563,6 +697,13 @@ export function webTransport(opts: WebTransportOptions): Augment {
   let server: ReturnType<typeof Bun.serve> | null = null;
   let startServer: (() => void) | null = null;
   let kernel: TransportKernel | null = null;
+  let consoleChatStore: ConsoleChatStore | null = null;
+  let consoleHistoryPersistence: ReturnType<
+    typeof createDeferredConsoleThreadHistoryPersistence
+  > | null = null;
+  // Capability shared only with the same-process authenticated admin proxy.
+  // It is deliberately never added to CORS or any response/log surface.
+  const consoleInternalRunMarker = opts.adminRoute === false ? null : crypto.randomUUID();
 
   // PR γ.1 — augment-registered routes captured at register() time.
   // Empty until register fires; once populated, immutable for the server's lifetime.
@@ -1422,6 +1563,16 @@ export function webTransport(opts: WebTransportOptions): Augment {
   }
 
   async function handleAgentRun(req: Request): Promise<Response> {
+    const suppliedConsoleMarker = req.headers.get(CONSOLE_INTERNAL_RUN_HEADER);
+    const isConsoleRun =
+      suppliedConsoleMarker !== null &&
+      consoleInternalRunMarker !== null &&
+      timingSafeEqual(suppliedConsoleMarker, consoleInternalRunMarker);
+    // Treat any attempted use of the private capability as an authorization
+    // failure. The marker value is never reflected or logged.
+    if (suppliedConsoleMarker !== null && !isConsoleRun) {
+      return json({ error: "forbidden" }, 403);
+    }
     const authHeader = req.headers.get("authorization") ?? "";
     let externalVisitorAuth: RouteVisitorAuthContext | null | undefined;
     async function readExternalVisitorAuth(): Promise<RouteVisitorAuthContext | null> {
@@ -1547,7 +1698,9 @@ export function webTransport(opts: WebTransportOptions): Augment {
     // --- Build headers map ---
     const headers: Record<string, string> = {};
     req.headers.forEach((v, k) => {
-      headers[k.toLowerCase()] = v;
+      if (k.toLowerCase() !== CONSOLE_INTERNAL_RUN_HEADER) {
+        headers[k.toLowerCase()] = v;
+      }
     });
 
     // --- Parse body (needed for threadId for anonymous peer ID) ---
@@ -1572,7 +1725,40 @@ export function webTransport(opts: WebTransportOptions): Augment {
     }
 
     // Derive threadId — needed before identify() so anonymous peer IDs are stable.
+    if (
+      (body.threadId !== undefined && typeof body.threadId !== "string") ||
+      (body.contextId !== undefined && typeof body.contextId !== "string")
+    ) {
+      return json({ error: "invalid thread id" }, 400);
+    }
     const threadId = body.threadId ?? body.contextId ?? crypto.randomUUID();
+    if (isConsoleRun && !isConsoleChatIdentifier(threadId)) {
+      return json({ error: "invalid console thread id" }, 400);
+    }
+    let threadIsConsoleManaged = false;
+    if (isConsoleChatIdentifier(threadId)) {
+      try {
+        threadIsConsoleManaged = consoleChatStore?.hasThread(threadId) ?? false;
+      } catch {
+        return json({ error: "console chat storage unavailable" }, 503);
+      }
+    }
+    // A normal /agent/run caller may choose arbitrary thread IDs, but it may
+    // never attach to a console-owned conversation and inherit its history.
+    if (threadIsConsoleManaged && !isConsoleRun) {
+      return json({ error: "forbidden" }, 403);
+    }
+
+    const consoleMetadata = isConsoleRun ? parseConsoleRunMetadata(body.__console, text) : null;
+    if (isConsoleRun && (!consoleChatStore || !consoleHistoryPersistence || !consoleMetadata)) {
+      return json({ error: "invalid console run metadata" }, 400);
+    }
+    if (consoleMetadata?.runId) {
+      if (idempotencyKey !== null && turnId !== consoleMetadata.runId) {
+        return json({ error: "conflicting console run id" }, 400);
+      }
+      turnId = consoleMetadata.runId;
+    }
 
     // Build identify argument. Inject __threadId so the anonymous path can use
     // it. Inject __bearerValidated so Path 1 (creator) can refuse to mint
@@ -1604,6 +1790,46 @@ export function webTransport(opts: WebTransportOptions): Augment {
       return json({ error: "missing peer identity" }, 400);
     }
 
+    if (consoleMetadata && previewModeForPeer(peer) !== consoleMetadata.previewMode) {
+      // In particular, an expired/revoked visitor token resolves anonymous and
+      // is rejected here before history restore or model inference.
+      return json({ error: "console thread identity does not match" }, 403);
+    }
+
+    const runStartedAt = Date.now();
+    if (consoleMetadata && consoleChatStore) {
+      try {
+        consoleChatStore.beginRun({
+          thread: {
+            id: threadId,
+            title: consoleMetadata.title,
+            previewMode: consoleMetadata.previewMode,
+            model: consoleMetadata.model,
+            createdAt: runStartedAt,
+            updatedAt: runStartedAt,
+            unread: false,
+            runStatus: "streaming",
+          },
+          peer,
+          runId: turnId,
+          userMessage: {
+            id: consoleMetadata.userMessageId,
+            role: "user",
+            content: text,
+            createdAt: runStartedAt,
+          },
+          assistantMessage: {
+            id: consoleMetadata.assistantMessageId,
+            role: "assistant",
+            content: "",
+            createdAt: runStartedAt,
+          },
+        });
+      } catch {
+        return json({ error: "console thread access denied or already running" }, 409);
+      }
+    }
+
     const turnAuth = resolveAgentRunTurnAuth(visitorPayload, await readExternalVisitorAuth());
     const parts: Part[] = [{ kind: "text", text }];
     const inbound: InboundMessage = {
@@ -1629,10 +1855,20 @@ export function webTransport(opts: WebTransportOptions): Augment {
 
     const k = kernel;
     const encoder = new TextEncoder();
+    // The kernel keys restored thread authorization by persistence object
+    // identity, so every run must receive this stable transport-level adapter.
+    const runHistoryPersistence = consoleMetadata ? consoleHistoryPersistence : null;
 
     const stream = new ReadableStream<Uint8Array>({
       start(controller) {
         let streamClosed = false;
+        let bufferedRunFinished: AGUIEvent | null = null;
+        let assistantContent = "";
+        let assistantError: string | null = null;
+        const messageRoles = new Map<string, string>();
+        const toolCalls = new Map<string, ConsoleChatToolCall>();
+        let persistenceFailure: unknown = null;
+        let progressFlushTimer: ReturnType<typeof setTimeout> | null = null;
 
         const patchThreadId = (e: AGUIEvent): AGUIEvent => {
           if (e.type === "RUN_FINISHED" && !e.threadId) {
@@ -1653,18 +1889,191 @@ export function webTransport(opts: WebTransportOptions): Augment {
           }
         };
 
+        const currentToolCalls = (): ConsoleChatToolCall[] | null =>
+          toolCalls.size === 0 ? null : Array.from(toolCalls.values(), (call) => ({ ...call }));
+
+        const writeProgress = (): void => {
+          if (!consoleMetadata || !consoleChatStore || persistenceFailure) return;
+          try {
+            const updated = consoleChatStore.updateRun(
+              threadId,
+              turnId,
+              consoleMetadata.assistantMessageId,
+              {
+                content: assistantContent,
+                toolCalls: currentToolCalls(),
+                error: assistantError,
+                updatedAt: Date.now(),
+              },
+            );
+            if (!updated) throw new Error("console chat run is no longer active");
+          } catch (error) {
+            persistenceFailure = error;
+          }
+        };
+
+        const persistProgress = (): void => {
+          if (!consoleMetadata || !consoleChatStore || persistenceFailure) return;
+          // Throttle rather than debounce: a long, continuously streaming
+          // response still needs periodic crash-recoverable checkpoints.
+          if (progressFlushTimer !== null) return;
+          progressFlushTimer = setTimeout(() => {
+            progressFlushTimer = null;
+            writeProgress();
+          }, 40);
+        };
+
+        const flushProgress = (): void => {
+          if (progressFlushTimer !== null) {
+            clearTimeout(progressFlushTimer);
+            progressFlushTimer = null;
+          }
+          writeProgress();
+        };
+
+        const observeEvent = (event: AGUIEvent): void => {
+          switch (event.type) {
+            case "TEXT_MESSAGE_START":
+              messageRoles.set(event.messageId, event.role);
+              return;
+            case "TEXT_MESSAGE_CONTENT":
+              if (messageRoles.get(event.messageId) === "assistant") {
+                assistantContent += event.delta;
+                persistProgress();
+              }
+              return;
+            case "TEXT_MESSAGE_END":
+              messageRoles.delete(event.messageId);
+              return;
+            case "TOOL_CALL_START":
+              toolCalls.set(event.toolCallId, {
+                id: event.toolCallId,
+                name: event.toolCallName,
+                status: "running",
+              });
+              persistProgress();
+              return;
+            case "TOOL_CALL_ARGS": {
+              const call = toolCalls.get(event.toolCallId);
+              if (call) {
+                call.args = `${call.args ?? ""}${event.delta}`;
+                persistProgress();
+              }
+              return;
+            }
+            case "TOOL_CALL_END":
+              return;
+            case "TOOL_CALL_RESULT": {
+              const call = toolCalls.get(event.toolCallId);
+              if (call) {
+                call.result = event.content;
+                call.status = "completed";
+                persistProgress();
+              }
+              return;
+            }
+            case "RUN_ERROR":
+              assistantError = event.message;
+              for (const call of toolCalls.values()) {
+                if (call.status === "running") call.status = "error";
+              }
+              persistProgress();
+              return;
+            default:
+              return;
+          }
+        };
+
+        const emitTranslatedEvent = (event: AGUIEvent): void => {
+          const patched = patchThreadId(event);
+          if (patched.type === "RUN_FINISHED") {
+            bufferedRunFinished = patched;
+            return;
+          }
+          observeEvent(patched);
+          writeEvent(patched);
+        };
+
+        const finishPersistedRun = (
+          status: "complete" | "error" | "interrupted",
+          terminal: AGUIEvent,
+          emitTerminal = true,
+        ): void => {
+          if (consoleMetadata && consoleChatStore) {
+            flushProgress();
+            try {
+              const finishInput = {
+                status,
+                content: assistantContent,
+                toolCalls: currentToolCalls(),
+                error: assistantError,
+                unread: consoleMetadata.unreadOnFinish,
+                updatedAt: Date.now(),
+              } as const;
+              const pendingHistory = consoleHistoryPersistence?.pendingSnapshot(threadId, peer);
+              const finished = pendingHistory
+                ? consoleChatStore.finishRunWithKernelHistory(
+                    threadId,
+                    turnId,
+                    consoleMetadata.assistantMessageId,
+                    peer,
+                    pendingHistory,
+                    finishInput,
+                  )
+                : consoleChatStore.finishRun(
+                    threadId,
+                    turnId,
+                    consoleMetadata.assistantMessageId,
+                    finishInput,
+                  );
+              if (!finished) {
+                throw persistenceFailure ?? new Error("console chat run is no longer active");
+              }
+              consoleHistoryPersistence?.discardPending(threadId);
+              persistenceFailure = null;
+            } catch (error) {
+              persistenceFailure ??= error;
+              consoleHistoryPersistence?.discardPending(threadId);
+              // The resident manager may contain a response that did not reach
+              // the atomic transcript/history commit. Force the next attempt to
+              // restore the last durable snapshot instead of retaining it.
+              k.forgetThreadHistory?.(threadId);
+              // A terminal aggregate can itself be invalid (for example an
+              // oversized model response). Clear the run lease without
+              // replacing the last valid partial transcript.
+              try {
+                consoleChatStore.abandonRun(threadId, turnId, consoleMetadata.assistantMessageId, {
+                  status: status === "interrupted" ? "interrupted" : "error",
+                  error: "Console response could not be fully persisted.",
+                  unread: consoleMetadata.unreadOnFinish,
+                  updatedAt: Date.now(),
+                });
+              } catch {
+                // The outer handler still emits a failed terminal event. A
+                // process restart recovers any genuinely unreachable lease.
+              }
+              throw error;
+            }
+          }
+          if (emitTerminal) writeEvent(terminal);
+        };
+
         const onEvent = (kernelEvent: KernelEvent) => {
           if (kernelEvent.kind === "delegated_authorization_denied") {
             emitDelegatedAuthorizationDenied(kernelEvent);
           }
           for (const e of translateKernelEvent(kernelEvent)) {
-            writeEvent(e);
+            emitTranslatedEvent(e);
           }
         };
 
         (async () => {
           try {
-            const result = await k.handleInbound(trigger, { onEvent });
+            const result = await k.handleInbound(trigger, {
+              onEvent,
+              signal: req.signal,
+              ...(runHistoryPersistence ? { historyPersistence: runHistoryPersistence } : {}),
+            });
             if (result.status === "rejected") {
               // Map errorClass to a structured code for SSE consumers.
               // T5 will refine this to return 429/503 HTTP status before
@@ -1677,18 +2086,63 @@ export function webTransport(opts: WebTransportOptions): Augment {
               } else {
                 code = "REJECTED";
               }
+              const errorEvent = runError({
+                message: result.errorResponse ?? "request rejected by transport",
+                code,
+              });
+              observeEvent(errorEvent);
+              writeEvent(errorEvent);
+              bufferedRunFinished = runFinished({
+                threadId,
+                runId: trigger.turnId,
+                status: result.status,
+              });
+            }
+            const persistedStatus =
+              result.status === "canceled"
+                ? "interrupted"
+                : result.status === "failed" || result.status === "rejected"
+                  ? "error"
+                  : "complete";
+            finishPersistedRun(
+              persistedStatus,
+              bufferedRunFinished ??
+                runFinished({ threadId, runId: trigger.turnId, status: result.status }),
+            );
+          } catch (err) {
+            const interrupted = req.signal.aborted;
+            const normalizedError = runError({ message: String(err), code: "INTERNAL" });
+            const errorEvent = interrupted
+              ? runError({ message: "Request interrupted.", code: "ABORTED" })
+              : !consoleMetadata || normalizedError.code?.startsWith("PROVIDER_")
+                ? normalizedError
+                : runError({ message: "Internal error.", code: "INTERNAL" });
+            observeEvent(errorEvent);
+            writeEvent(errorEvent);
+            try {
+              finishPersistedRun(
+                interrupted ? "interrupted" : "error",
+                runFinished({
+                  threadId,
+                  runId: trigger.turnId,
+                  status: interrupted ? "canceled" : "failed",
+                }),
+                true,
+              );
+            } catch {
+              // Never expose a buffered success when durability failed, but
+              // always terminate the client stream so the composer cannot
+              // remain stuck in a streaming state.
               writeEvent(
-                runError({
-                  message: result.errorResponse ?? "request rejected by transport",
-                  code,
+                runFinished({
+                  threadId,
+                  runId: trigger.turnId,
+                  status: interrupted ? "canceled" : "failed",
                 }),
               );
-              writeEvent(runFinished({ threadId, runId: trigger.turnId, status: result.status }));
             }
-          } catch (err) {
-            writeEvent(runError({ message: String(err), code: "INTERNAL" }));
-            writeEvent(runFinished({ threadId, runId: trigger.turnId, status: "failed" }));
           } finally {
+            if (progressFlushTimer !== null) clearTimeout(progressFlushTimer);
             streamClosed = true;
             try {
               controller.close();
@@ -1844,6 +2298,13 @@ export function webTransport(opts: WebTransportOptions): Augment {
         }
         signingKey = await deriveSigningKey(keySource);
       }
+      const consoleDbPath = resolveConsoleChatDbPath(opts);
+      if (consoleDbPath !== null) {
+        // openHardenedSqlite creates missing parents with mode 0700 and
+        // rejects unsafe existing directories without mutating operator paths.
+        consoleChatStore = createConsoleChatStore({ dbPath: consoleDbPath });
+        consoleHistoryPersistence = createDeferredConsoleThreadHistoryPersistence(consoleChatStore);
+      }
       // Listener activation is deferred until TransportSpec.ready(), after
       // every transport has captured its kernel handle.
       startServer = () => {
@@ -1906,6 +2367,10 @@ export function webTransport(opts: WebTransportOptions): Augment {
                 actionRegistry,
                 staticDir: adminStaticDir,
                 selfPort: opts.port,
+                ...(consoleChatStore ? { consoleChat: consoleChatStore } : {}),
+                ...(consoleInternalRunMarker
+                  ? { consoleChatInternalMarker: consoleInternalRunMarker }
+                  : {}),
               });
             }
 
@@ -2118,6 +2583,10 @@ export function webTransport(opts: WebTransportOptions): Augment {
         server.stop();
         server = null;
       }
+      consoleHistoryPersistence?.discardAllPending();
+      consoleHistoryPersistence = null;
+      consoleChatStore?.close();
+      consoleChatStore = null;
       startServer = null;
       kernel = null;
       augmentRoutes = [];

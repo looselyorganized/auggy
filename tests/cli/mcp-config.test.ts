@@ -83,7 +83,7 @@ describe("mcp config helpers", () => {
       expect(
         diagnoseMcpConfig(dir, { cloud: true }).find((check) => check.name === "mcp local cloud")
           ?.status,
-      ).toBe("warn");
+      ).toBe("info");
     } finally {
       cleanup();
     }
@@ -101,7 +101,7 @@ describe("mcp config helpers", () => {
       expect(
         diagnoseMcpConfig(dir, { cloud: true }).find((check) => check.name === "mcp local cloud")
           ?.status,
-      ).toBe("warn");
+      ).toBe("info");
     } finally {
       cleanup();
     }

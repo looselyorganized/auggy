@@ -41,6 +41,7 @@ function writeAgent(
   name: string,
   opts: {
     provider?: "anthropic" | "openai";
+    model?: string;
     port?: number;
     token?: string;
     includePackageJson?: boolean;
@@ -75,7 +76,7 @@ function writeAgent(
     name,
     engine: {
       provider,
-      model: provider === "openai" ? "gpt-5" : "claude-sonnet-4-6",
+      model: opts.model ?? (provider === "openai" ? "gpt-5" : "claude-sonnet-4-6"),
     },
     augments: [
       ...(opts.includeFileMemory ? ["fileMemory"] : []),
@@ -363,7 +364,7 @@ describe("runDoctor", () => {
     expect(formatDoctorChecks(checks)).toContain("PASS model snapshot: static, priced");
   });
 
-  test("warns when model snapshot drifts from agent.yaml", async () => {
+  test("reports model snapshot drift as info because agent.yaml is authoritative", async () => {
     const dir = writeAgent("zip", { installDeps: true, installSkill: true });
     mkdirSync(join(dir, ".auggy"), { recursive: true });
     writeFileSync(
@@ -387,7 +388,7 @@ describe("runDoctor", () => {
     });
 
     const snapshot = checks.find((c) => c.name === "model snapshot");
-    expect(snapshot?.status).toBe("warn");
+    expect(snapshot?.status).toBe("info");
     expect(snapshot?.message).toContain("does not match agent.yaml");
     expect(snapshot?.fix).toContain(".auggy/models.lock.json");
     expect(hasDoctorFailures(checks)).toBe(false);
@@ -405,6 +406,36 @@ describe("runDoctor", () => {
     expect(checks.find((c) => c.name === "env VISITOR_SIGNING_KEY")?.status).toBe("pass");
     expect(formatDoctorChecks(checks)).toContain("PASS env: VISITOR_SIGNING_KEY");
     expect(hasDoctorFailures(checks)).toBe(false);
+  });
+
+  test("reports canonical VisitorAuth public routes as one informational check", async () => {
+    writeAgent("zip", { installDeps: true, installSkill: true, includeVisitorAuth: true });
+
+    const checks = await runDoctor("zip", {
+      auggyDir,
+      isPortAvailable: async () => true,
+    });
+
+    const visitorRoutes = checks.find((check) => check.name === "visitorAuth routes");
+    expect(visitorRoutes?.status).toBe("info");
+    expect(visitorRoutes?.message).toContain("3 intentional public routes");
+    expect(checks.some((check) => check.name.includes("/visitor-auth/"))).toBe(false);
+    expect(formatDoctorChecks(checks)).toContain("INFO visitorAuth routes:");
+  });
+
+  test("reports unknown pricing as info when no USD budget depends on it", async () => {
+    writeAgent("zip", {
+      installDeps: true,
+      installSkill: true,
+      model: "claude-future-99",
+    });
+
+    const checks = await runDoctor("zip", {
+      auggyDir,
+      isPortAvailable: async () => true,
+    });
+
+    expect(checks.find((check) => check.name === "model pricing")?.status).toBe("info");
   });
 
   test("passes learned behavior file check for the canonical default fileMemory store", async () => {
@@ -435,8 +466,40 @@ describe("runDoctor", () => {
 
     const learned = checks.find((c) => c.name === "learned behavior files");
     expect(learned?.status).toBe("warn");
-    expect(learned?.message).toContain("runtime prefers learned-behaviors.md");
-    expect(learned?.fix).toContain("Consolidate behavior notes");
+    expect(learned?.message).toContain("unsupported learned.md is ignored");
+    expect(learned?.fix).toContain("remove learned.md");
+  });
+
+  test("fails with migration guidance when config references learned.md", async () => {
+    const dir = writeAgent("zip", {
+      installDeps: true,
+      installSkill: true,
+      includeFileMemory: true,
+    });
+    writeAugmentMetadata(dir, "fileMemory", {
+      type: "fileMemory",
+      config: {
+        label: "learned",
+        source: "./learned.md",
+        mutable: true,
+        origin: "operator",
+        writeTrustLevels: ["creator"],
+        priority: "high",
+        placement: "preamble",
+        eviction: "drop",
+      },
+    });
+    writeFileSync(join(dir, "learned.md"), "legacy note");
+
+    const checks = await runDoctor("zip", {
+      auggyDir,
+      isPortAvailable: async () => true,
+    });
+
+    const learned = checks.find((c) => c.name === "learned behavior files");
+    expect(learned?.status).toBe("fail");
+    expect(learned?.message).toContain("config references unsupported learned.md");
+    expect(learned?.fix).toContain("Rename learned.md to learned-behaviors.md");
   });
 
   test("lists custom augment routes and warns for public routes", async () => {
@@ -637,6 +700,7 @@ describe("doctor formatting and command", () => {
         message: "/tmp/auggy-agent/node_modules/@auggy/anthropic",
       },
       { name: "port 8080", status: "pass", message: "available" },
+      { name: "note", status: "info", message: "expected posture" },
       {
         name: "skill webFetch",
         status: "pass",
@@ -651,6 +715,7 @@ describe("doctor formatting and command", () => {
     expect(text).toContain("PASS env: ANTHROPIC_API_KEY");
     expect(text).toContain("PASS dependency: @auggy/anthropic");
     expect(text).toContain("PASS port: 8080 available");
+    expect(text).toContain("INFO note: expected posture");
     expect(text).toContain("PASS skill: webFetch");
     expect(text).toContain("FAIL dep: missing");
     expect(text).toContain("fix: run bun install");

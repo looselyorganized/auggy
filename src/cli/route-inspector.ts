@@ -26,6 +26,37 @@ export interface RouteInspectionResult {
   issues: readonly RouteInspectionIssue[];
 }
 
+const INTENTIONAL_VISITOR_AUTH_ROUTES = new Map<
+  string,
+  { auth: RouteManifestEntry["auth"]; maxPerMinute: number }
+>([
+  ["GET /visitor-auth/verify", { auth: "none", maxPerMinute: 60 }],
+  ["POST /visitor-auth/verify", { auth: "none", maxPerMinute: 60 }],
+  ["POST /visitor-auth/request", { auth: "visitor.optional", maxPerMinute: 20 }],
+] as const);
+
+/**
+ * Recognize only Auggy-owned public routes whose security posture exactly
+ * matches the built-in VisitorAuth contract. Custom augments never inherit
+ * this classification merely by using the same route or augment name.
+ */
+export function isIntentionalFrameworkPublicRoute(
+  route: RouteManifestEntry,
+  configs: readonly AugmentConfig[],
+): boolean {
+  const visitorAuthNames = new Set(
+    configs.filter((config) => config.type === "visitorAuth").map((config) => config.name),
+  );
+  if (!route.public || !visitorAuthNames.has(route.augmentName)) return false;
+
+  const expected = INTENTIONAL_VISITOR_AUTH_ROUTES.get(`${route.method} ${route.path}`);
+  return (
+    expected !== undefined &&
+    route.auth === expected.auth &&
+    route.rateLimit?.maxPerMinute === expected.maxPerMinute
+  );
+}
+
 export async function inspectAugmentRoutes(
   agentDir: string,
   configs: readonly AugmentConfig[],

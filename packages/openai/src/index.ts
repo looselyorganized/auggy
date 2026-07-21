@@ -122,7 +122,7 @@ export function createOpenAIEngine(opts: OpenAIEngineOptions): ModelClient {
 
     async complete(
       prompt: AssembledPrompt,
-      _opts?: { onDelta?: (delta: ModelDelta) => void },
+      requestOptions?: { onDelta?: (delta: ModelDelta) => void; signal?: AbortSignal },
     ): Promise<ModelResponse> {
       const systemMessage = assembleOpenAISystemMessage(prompt);
       const messages = convertOpenAIMessages(prompt.messages);
@@ -147,7 +147,9 @@ export function createOpenAIEngine(opts: OpenAIEngineOptions): ModelClient {
 
       let completion: OpenAI.Chat.ChatCompletion;
       try {
-        completion = await client.chat.completions.create(params);
+        completion = await client.chat.completions.create(params, {
+          signal: requestOptions?.signal,
+        });
       } catch (err) {
         // Wrap the SDK error so logs identify which engine + model failed,
         // not just "OpenAIError: 429". `cause` preserves the original SDK

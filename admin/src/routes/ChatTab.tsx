@@ -1,19 +1,25 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Check, ChevronDown, ChevronRight, Copy, RotateCcw, Square } from "lucide-react";
-import { MarkdownContent } from "@/components/admin/MarkdownContent";
-import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import { detectCodeLanguage, HighlightedCode } from "@/components/ui/highlighted-code";
-import { Textarea } from "@/components/ui/textarea";
+import { ChevronDown, ChevronRight } from "lucide-react";
+import { useNavigate } from "react-router-dom";
+
+import { ChatComposer } from "@/components/admin/ChatComposer";
+import { useChatWorkspace } from "@/components/admin/ChatWorkspaceProvider";
+import { ChatThreadHeader } from "@/components/admin/ChatThreadHeader";
 import { useDashboardContext } from "@/components/admin/DashboardContext";
-import { findCsrfToken } from "@/lib/api";
+import { MarkdownContent } from "@/components/admin/MarkdownContent";
+import { Button } from "@/components/ui/button";
+import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { detectCodeLanguage, HighlightedCode } from "@/components/ui/highlighted-code";
 import { formatChatTranscript } from "@/lib/chat-transcript";
+import { chatThreadPath } from "@/lib/chat-route";
+import { getChatRunPresentation } from "@/lib/chat-run-state";
+import {
+  type ChatMessage,
+  type ChatPreviewMode,
+  type ChatToolCall,
+} from "@/lib/chat-workspace";
 import { useToast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
-import { parseSSEStream, type AGUIEvent } from "@/lib/ag-ui-parse";
-
-const VISITOR_TOKEN_STORAGE_KEY = "auggy-visitor-token";
-type ChatPreviewMode = "creator" | "anonymous" | "visitor";
 
 const CHAT_PREVIEW_MODE_LABELS: Record<ChatPreviewMode, string> = {
   creator: "Verified creator",
@@ -35,246 +41,56 @@ const PEER_EMPTY_PROMPTS = [
   "Summarize this conversation so far.",
 ];
 
-// ---------------------------------------------------------------------------
-// Local message model — session-scoped, no localStorage persistence, no
-// per-source keying. If operators ask for chat history across reloads we'll
-// add it then.
-// ---------------------------------------------------------------------------
-
-interface ToolCall {
-  id: string;
-  name: string;
-  args?: string;
-  result?: string;
-  status: "running" | "completed" | "error";
-}
-
-interface Message {
-  id: string;
-  role: "user" | "assistant";
-  content: string;
-  toolCalls?: ToolCall[];
-  error?: string;
-}
-
-// ---------------------------------------------------------------------------
-// Tab
-// ---------------------------------------------------------------------------
-
 export function ChatTab() {
+  const navigate = useNavigate();
   const { data, loading, error } = useDashboardContext();
+  const {
+    state,
+    activeThread,
+    deletingThreadIds,
+    anonymousAllowed,
+    hasVisitorToken,
+    rename,
+    markUnread,
+    deleteThread,
+    setPreviewMode,
+    clearVisitor,
+    send,
+    stop,
+  } = useChatWorkspace();
   const { push } = useToast();
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [input, setInput] = useState("");
-  const [streaming, setStreaming] = useState(false);
-  const [streamError, setStreamError] = useState<string | null>(null);
-  const [threadId, setThreadId] = useState<string>(() => crypto.randomUUID());
-  const [previewMode, setPreviewMode] = useState<ChatPreviewMode>("creator");
-  const [hasVisitorToken, setHasVisitorToken] = useState(() => Boolean(readVisitorToken()));
-  const [copiedTranscript, setCopiedTranscript] = useState(false);
-  const abortRef = useRef<AbortController | null>(null);
-  const inputRef = useRef<HTMLTextAreaElement>(null);
-  const copiedTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const wasStreamingRef = useRef(false);
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [preflightErrors, setPreflightErrors] = useState<Record<string, string | null>>({});
 
-  // Cleanup on unmount — kill any in-flight stream.
-  useEffect(() => () => abortRef.current?.abort(), []);
-
-  useEffect(
-    () => () => {
-      if (copiedTimeoutRef.current) clearTimeout(copiedTimeoutRef.current);
-    },
-    [],
+  const input = drafts[activeThread.id] ?? "";
+  const messages = activeThread.messages;
+  const { ownsLocalStream, activeThreadStreaming: streaming } = getChatRunPresentation(
+    state.threads,
+    activeThread.id,
+    state.activeRun,
   );
-
-  useEffect(() => {
-    const refreshVisitorTokenState = () => setHasVisitorToken(Boolean(readVisitorToken()));
-    refreshVisitorTokenState();
-    window.addEventListener("focus", refreshVisitorTokenState);
-    window.addEventListener("storage", refreshVisitorTokenState);
-    return () => {
-      window.removeEventListener("focus", refreshVisitorTokenState);
-      window.removeEventListener("storage", refreshVisitorTokenState);
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!hasVisitorToken && previewMode === "visitor") {
-      setPreviewMode("creator");
-    }
-  }, [hasVisitorToken, previewMode]);
-
-  const anonymousAllowed = data?.web?.allowAnonymous.value !== false;
-
-  useEffect(() => {
-    if (!anonymousAllowed && previewMode === "anonymous") {
-      setPreviewMode("creator");
-    }
-  }, [anonymousAllowed, previewMode]);
-
-  useEffect(() => {
-    if (wasStreamingRef.current && !streaming) {
-      requestAnimationFrame(() => inputRef.current?.focus({ preventScroll: true }));
-    }
-    wasStreamingRef.current = streaming;
-  }, [streaming]);
-
-  const sendMessage = useCallback(async (overrideText?: string) => {
-    const text = (overrideText ?? input).trim();
-    if (!text || streaming) return;
-    const storedVisitorToken = readVisitorToken();
-    setHasVisitorToken(Boolean(storedVisitorToken));
-    const visitorToken = previewMode === "visitor" ? storedVisitorToken : undefined;
-    if (previewMode === "visitor" && !visitorToken) {
-      setStreamError("Verify a visitor first, then choose Verified visitor.");
-      return;
-    }
-
-    const userMsg: Message = { id: crypto.randomUUID(), role: "user", content: text };
-    const assistantMsg: Message = {
-      id: crypto.randomUUID(),
-      role: "assistant",
-      content: "",
-      toolCalls: [],
-    };
-    setMessages((m) => [...m, userMsg, assistantMsg]);
-    setInput("");
-    setStreaming(true);
-    setStreamError(null);
-
-    const ctrl = new AbortController();
-    abortRef.current = ctrl;
-
-    const toolCallMap = new Map<string, ToolCall>();
-    let receivedText = "";
-
-    const update = (patch: Partial<Message>) =>
-      setMessages((ms) => ms.map((m) => (m.id === assistantMsg.id ? { ...m, ...patch } : m)));
-
-    try {
-      const csrf = findCsrfToken(data?.csrfTokens ?? [], "console-chat");
-      if (!csrf) {
-        throw new Error(
-          "Missing CSRF token — reload the page to mint a fresh /console/api/chat token.",
-        );
-      }
-      const url = buildSameOriginUrl("/console/api/chat");
-      const res = await fetch(url, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ csrf, message: text, threadId, chatMode: previewMode, visitorToken }),
-        signal: ctrl.signal,
-      });
-      if (res.status === 419) {
-        throw new Error("Session expired — reload the page.");
-      }
-      if (!res.ok) {
-        const detail = await readErrorDetail(res);
-        throw new Error(`${res.status} ${res.statusText}${detail ? ` — ${detail}` : ""}`);
-      }
-      if (!res.body) throw new Error("Empty response body");
-
-      for await (const ev of parseSSEStream(res.body, { signal: ctrl.signal })) {
-        applyEvent(ev);
-      }
-    } catch (err) {
-      if ((err as Error).name !== "AbortError") {
-        const msg = (err as Error).message;
-        setStreamError(msg);
-        update({ error: msg });
-      }
-    } finally {
-      setStreaming(false);
-      abortRef.current = null;
-    }
-
-    function applyEvent(ev: AGUIEvent) {
-      switch (ev.type) {
-        case "RUN_STARTED":
-          if (ev.threadId) setThreadId(ev.threadId);
-          break;
-        case "TEXT_MESSAGE_CONTENT":
-          receivedText += ev.delta ?? "";
-          update({ content: receivedText });
-          break;
-        case "TOOL_CALL_START": {
-          const tc: ToolCall = {
-            id: ev.toolCallId,
-            name: ev.toolCallName ?? "unknown",
-            status: "running",
-          };
-          toolCallMap.set(ev.toolCallId, tc);
-          update({ toolCalls: [...toolCallMap.values()] });
-          break;
-        }
-        case "TOOL_CALL_ARGS": {
-          const tc = toolCallMap.get(ev.toolCallId);
-          if (tc) {
-            tc.args = (tc.args ?? "") + (ev.delta ?? "");
-            update({ toolCalls: [...toolCallMap.values()] });
-          }
-          break;
-        }
-        case "TOOL_CALL_RESULT": {
-          const tc = toolCallMap.get(ev.toolCallId);
-          if (tc) {
-            tc.result = ev.content ?? "";
-            tc.status = "completed";
-            update({ toolCalls: [...toolCallMap.values()] });
-          }
-          break;
-        }
-        case "TOOL_CALL_END": {
-          const tc = toolCallMap.get(ev.toolCallId);
-          if (tc && tc.status === "running") tc.status = "completed";
-          update({ toolCalls: [...toolCallMap.values()] });
-          break;
-        }
-        case "RUN_ERROR":
-          update({ error: ev.message ?? "Agent error" });
-          break;
-      }
-    }
-  }, [input, streaming, threadId, data, previewMode]);
-
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      void sendMessage();
-    }
-  };
-
-  const handleStop = () => abortRef.current?.abort();
-
-  const handleClear = () => {
-    if (streaming) return;
-    setMessages([]);
-    setThreadId(crypto.randomUUID());
-    setStreamError(null);
-    requestAnimationFrame(() => inputRef.current?.focus({ preventScroll: true }));
-  };
-
-  const handleClearVisitor = () => {
-    if (streaming) return;
-    clearVisitorToken();
-    setHasVisitorToken(false);
-    setPreviewMode("creator");
-    setMessages([]);
-    setThreadId(crypto.randomUUID());
-    setStreamError(null);
-    requestAnimationFrame(() => inputRef.current?.focus({ preventScroll: true }));
-  };
-
-  const handlePreviewModeChange = (mode: ChatPreviewMode) => {
-    if (streaming || mode === previewMode) return;
-    if (mode === "anonymous" && !anonymousAllowed) return;
-    if (mode === "visitor" && !hasVisitorToken) return;
-    setPreviewMode(mode);
-    setMessages([]);
-    setThreadId(crypto.randomUUID());
-    setStreamError(null);
-    requestAnimationFrame(() => inputRef.current?.focus({ preventScroll: true }));
-  };
+  const anotherLocalStream =
+    state.activeRun !== null && state.activeRun.threadId !== activeThread.id;
+  const externalActiveStream = streaming && !ownsLocalStream;
+  const anyThreadStreaming = streaming || anotherLocalStream;
+  const previewMode = activeThread.previewMode;
+  const visitorVerificationRequired = previewMode === "visitor" && !hasVisitorToken;
+  const deleting = deletingThreadIds.has(activeThread.id);
+  const disabledReason = deleting
+    ? "This chat is being deleted."
+    : visitorVerificationRequired
+    ? messages.length > 0
+      ? "This visitor credential is unavailable. Start a new verified visitor chat to continue."
+      : "Verify a visitor before using this chat."
+    : externalActiveStream
+      ? "This response is still running in another console session."
+      : anotherLocalStream
+        ? `A response is running in ${
+            state.threads.find(
+              (thread) => thread.id !== activeThread.id && thread.runStatus === "streaming",
+            )?.title ?? "another chat"
+          }.`
+        : undefined;
 
   const agentName = useMemo(() => {
     if (!data) return "Agent";
@@ -286,33 +102,76 @@ export function ChatTab() {
       "Agent"
     );
   }, [data]);
-  const responseLabel = agentName;
+
+  const liveProvider = data?.agentMeta?.engine?.provider?.trim();
+  const liveModel = data?.agentMeta?.engine?.model?.trim();
+  const model = activeThread.model;
+  const modelDisplayName = model?.displayName ?? liveModel ?? liveProvider ?? null;
+  const modelProvider = model?.provider ?? liveProvider;
+  const modelId = model?.id ?? liveModel;
+  const modelRawName =
+    modelProvider && modelId
+      ? `${modelProvider} / ${modelId}`
+      : modelProvider ?? modelId ?? modelDisplayName;
+
   const identityLabel = `Previewing as ${CHAT_PREVIEW_MODE_LABELS[previewMode].toLowerCase()}`;
   const emptyPrompts = previewMode === "creator" ? CREATOR_EMPTY_PROMPTS : PEER_EMPTY_PROMPTS;
+  const preflightError = preflightErrors[activeThread.id] ?? null;
+
+  const sendFromThread = useCallback(
+    (overrideText?: string) => {
+      const threadId = activeThread.id;
+      const text = (overrideText ?? input).trim();
+      if (!text || deleting || streaming || anotherLocalStream || visitorVerificationRequired) {
+        return;
+      }
+
+      setPreflightErrors((current) => ({ ...current, [threadId]: null }));
+      let accepted = false;
+      void send(text, threadId, () => {
+        accepted = true;
+        setDrafts((current) => ({ ...current, [threadId]: "" }));
+      }).then((result) => {
+        if (!result.ok && !accepted) {
+          setPreflightErrors((current) => ({ ...current, [threadId]: result.error }));
+        }
+      });
+    }, [
+      activeThread.id,
+      anotherLocalStream,
+      deleting,
+      input,
+      send,
+      streaming,
+      visitorVerificationRequired,
+    ],
+  );
+
+  const handlePreviewModeChange = (mode: ChatPreviewMode) => {
+    if (mode === previewMode) return;
+    const result = setPreviewMode(mode);
+    if (!result.ok) {
+      setPreflightErrors((current) => ({ ...current, [activeThread.id]: result.error }));
+      return;
+    }
+    setDrafts((current) => ({ ...current, [result.threadId]: "" }));
+    setPreflightErrors((current) => ({ ...current, [result.threadId]: null }));
+    navigate(chatThreadPath(result.threadId));
+  };
 
   const handleCopyTranscript = useCallback(async () => {
     if (messages.length === 0) return;
-
     const transcript = formatChatTranscript(messages, {
       agentName,
       previewModeLabel: CHAT_PREVIEW_MODE_LABELS[previewMode],
-      threadId,
+      threadId: activeThread.id,
       copiedAt: new Date(),
     });
 
-    try {
-      if (!navigator.clipboard?.writeText) {
-        throw new Error("Clipboard API unavailable");
-      }
-      await navigator.clipboard.writeText(transcript);
-      setCopiedTranscript(true);
-      push("success", "copied transcript");
-      if (copiedTimeoutRef.current) clearTimeout(copiedTimeoutRef.current);
-      copiedTimeoutRef.current = setTimeout(() => setCopiedTranscript(false), 1800);
-    } catch (err) {
-      push("error", `copy failed: ${(err as Error).message}`);
-    }
-  }, [agentName, messages, previewMode, push, threadId]);
+    if (!navigator.clipboard?.writeText) throw new Error("Clipboard API unavailable");
+    await navigator.clipboard.writeText(transcript);
+    push("success", "copied transcript");
+  }, [activeThread.id, agentName, messages, previewMode, push]);
 
   if (loading && !data) {
     return (
@@ -336,177 +195,144 @@ export function ChatTab() {
   }
 
   return (
-    <div className="auggy-grid-surface h-full bg-background">
-      <MessageList
-        messages={messages}
+    <div className="auggy-grid-surface relative flex h-full min-h-0 flex-col bg-background">
+      <ChatThreadHeader
+        key={activeThread.id}
+        title={activeThread.title}
+        previewMode={previewMode}
+        hasMessages={messages.length > 0}
+        unread={activeThread.unread}
         streaming={streaming}
-        agentName={agentName}
-        responseLabel={responseLabel}
-        identityLabel={identityLabel}
-        emptyPrompts={emptyPrompts}
-        onPrompt={(prompt) => void sendMessage(prompt)}
+        anonymousAllowed={anonymousAllowed}
+        hasVisitorToken={hasVisitorToken}
+        previewModeDisabledReason={
+          anyThreadStreaming
+            ? externalActiveStream
+              ? "This response is running in another console session."
+              : "Wait for the active response to finish or stop it first."
+            : undefined
+        }
+        onPreviewModeChange={handlePreviewModeChange}
+        onRename={async (title) => {
+          const result = await rename(activeThread.id, title);
+          if (!result.valid) throw new Error(result.message);
+        }}
+        onCopyTranscript={handleCopyTranscript}
+        onMarkUnread={async () => {
+          if (!(await markUnread(activeThread.id))) {
+            throw new Error("This chat no longer exists.");
+          }
+        }}
+        onClearVisitor={clearVisitor}
+        onDelete={async () => {
+          if (!(await deleteThread(activeThread.id))) {
+            throw new Error("This chat cannot be deleted while its response is running.");
+          }
+          navigate("/chat", { replace: true });
+        }}
+        onActionError={(action, actionError) => {
+          push(
+            "error",
+            `${action} failed: ${
+              actionError instanceof Error ? actionError.message : "Unknown error"
+            }`,
+          );
+        }}
       />
 
-      <div className="absolute inset-x-0 bottom-0 z-10 px-3 pb-3 sm:px-6 sm:pb-6">
+      <MessageList
+        messages={messages}
+        threadId={activeThread.id}
+        streaming={streaming}
+        responseLabel={agentName}
+        agentName={agentName}
+        identityLabel={identityLabel}
+        emptyPrompts={emptyPrompts}
+        onPrompt={sendFromThread}
+        disabled={Boolean(disabledReason)}
+        disabledReason={disabledReason}
+      />
+
+      <div className="relative z-10 shrink-0 px-3 pb-3 sm:px-6 sm:pb-6">
         <div className="mx-auto max-w-3xl">
-          {streamError && (
-            <div className="mb-2 rounded-md border border-destructive/30 bg-background/95 px-3 py-2 text-xs text-destructive shadow-sm">
-              {streamError}
+          {preflightError && (
+            <div
+              role="alert"
+              className="mb-2 rounded-md border border-destructive/30 bg-background/95 px-3 py-2 text-xs text-destructive shadow-sm"
+            >
+              {preflightError}
             </div>
           )}
-          <div className="rounded-lg border bg-card/95 p-3 shadow-lg backdrop-blur">
-            <div className="flex items-end gap-2">
-              <Textarea
-                ref={inputRef}
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={handleKeyDown}
-                placeholder={`Message ${agentName}...`}
-                rows={3}
-                disabled={streaming}
-                className="max-h-48 min-h-[5rem] resize-none border-0 bg-transparent px-2 py-2 shadow-none focus-visible:ring-0"
-                aria-label={`Message ${agentName}`}
-              />
-              {streaming && (
-                <Button onClick={handleStop} variant="outline" size="icon" aria-label="Stop">
-                  <Square className="size-4" />
-                </Button>
-              )}
-            </div>
-            <div className="mt-2 flex items-center justify-between gap-3 px-1">
-              <div className="flex min-w-0 flex-wrap items-center gap-2">
-                <span className="truncate font-mono text-[11px] text-muted-foreground">
-                  {identityLabel}
-                </span>
-                <div className="flex shrink-0 items-center rounded-md border bg-background/80 p-0.5">
-                  {(["creator", "anonymous", "visitor"] as const).map((mode) => {
-                    const disabled =
-                      streaming ||
-                      (mode === "anonymous" && !anonymousAllowed) ||
-                      (mode === "visitor" && !hasVisitorToken);
-                    return (
-                      <Button
-                        key={mode}
-                        type="button"
-                        variant={previewMode === mode ? "secondary" : "ghost"}
-                        size="sm"
-                        onClick={() => handlePreviewModeChange(mode)}
-                        disabled={disabled}
-                        className="h-6 rounded-sm px-2 text-[11px]"
-                        title={
-                          mode === "anonymous" && !anonymousAllowed
-                            ? "Anonymous chat is disabled for this agent"
-                            : mode === "visitor" && !hasVisitorToken
-                            ? "Verify a visitor first"
-                            : `Preview as ${CHAT_PREVIEW_MODE_LABELS[mode]}`
-                        }
-                      >
-                        {CHAT_PREVIEW_MODE_LABELS[mode]}
-                      </Button>
-                    );
-                  })}
-                </div>
-                {hasVisitorToken && (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={handleClearVisitor}
-                    disabled={streaming}
-                    className="h-7 shrink-0 px-2 text-xs"
-                  >
-                    Clear visitor
-                  </Button>
-                )}
-              </div>
-              <div className="flex shrink-0 items-center gap-2 text-[11px] text-muted-foreground">
-                <span className="hidden sm:inline">Enter to send</span>
-                <span className="hidden text-muted-foreground/40 sm:inline">|</span>
-                <span className="hidden sm:inline">Shift+Enter for a new line</span>
-                {messages.length > 0 && (
-                  <>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => void handleCopyTranscript()}
-                      className="h-7 shrink-0 px-2 text-xs"
-                      aria-label="Copy chat transcript"
-                      title="Copy chat transcript"
-                    >
-                      {copiedTranscript ? (
-                        <Check className="mr-1.5 size-3.5" />
-                      ) : (
-                        <Copy className="mr-1.5 size-3.5" />
-                      )}
-                      Copy transcript
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={handleClear}
-                      disabled={streaming}
-                      className="h-7 shrink-0 px-2 text-xs"
-                    >
-                      <RotateCcw className="mr-1.5 size-3.5" />
-                      New thread
-                    </Button>
-                  </>
-                )}
-              </div>
-            </div>
-          </div>
+          <ChatComposer
+            value={input}
+            onChange={(value) => {
+              setDrafts((current) => ({ ...current, [activeThread.id]: value }));
+              if (preflightError) {
+                setPreflightErrors((current) => ({ ...current, [activeThread.id]: null }));
+              }
+            }}
+            onSend={sendFromThread}
+            disabled={Boolean(disabledReason)}
+            disabledReason={disabledReason}
+            streaming={ownsLocalStream}
+            onStop={stop}
+            agentName={agentName}
+            modelDisplayName={modelDisplayName}
+            modelRawName={modelRawName}
+          />
         </div>
       </div>
     </div>
   );
 }
 
-// ---------------------------------------------------------------------------
-// Message list
-// ---------------------------------------------------------------------------
-
 function MessageList({
   messages,
+  threadId,
   streaming,
   agentName,
   responseLabel,
   identityLabel,
   emptyPrompts,
   onPrompt,
+  disabled,
+  disabledReason,
 }: {
-  messages: Message[];
+  messages: ChatMessage[];
+  threadId: string;
   streaming: boolean;
   agentName: string;
   responseLabel: string;
   identityLabel: string;
   emptyPrompts: string[];
   onPrompt: (prompt: string) => void;
+  disabled: boolean;
+  disabledReason?: string;
 }) {
   const endRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const pinnedToBottomRef = useRef(true);
 
-  // Track whether the user is near the bottom; only auto-scroll then.
   useEffect(() => {
-    const el = containerRef.current;
-    if (!el) return;
+    pinnedToBottomRef.current = true;
+    const element = containerRef.current;
+    if (!element) return;
     const onScroll = () => {
-      const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-      pinnedToBottomRef.current = distFromBottom < 40;
+      const distance = element.scrollHeight - element.scrollTop - element.clientHeight;
+      pinnedToBottomRef.current = distance < 40;
     };
-    el.addEventListener("scroll", onScroll);
-    return () => el.removeEventListener("scroll", onScroll);
-  }, []);
+    element.addEventListener("scroll", onScroll);
+    return () => element.removeEventListener("scroll", onScroll);
+  }, [threadId, messages.length === 0]);
 
   useEffect(() => {
-    if (pinnedToBottomRef.current) {
-      endRef.current?.scrollIntoView({ behavior: "smooth" });
-    }
+    if (pinnedToBottomRef.current) endRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
   if (messages.length === 0) {
     return (
-      <div className="relative z-[1] flex h-full items-center justify-center px-4 pb-36 text-center">
-        <div className="w-full max-w-2xl">
+      <div className="relative z-[1] min-h-0 flex-1 overflow-y-auto px-4 py-8 text-center">
+        <div className="mx-auto flex min-h-full w-full max-w-2xl flex-col justify-center">
           <p className="mb-2 text-sm font-medium text-muted-foreground">{identityLabel}</p>
           <h2 className="text-2xl font-semibold tracking-normal sm:text-3xl">
             Talk to {agentName}
@@ -515,6 +341,11 @@ function MessageList({
             Use this workspace to test behavior, tool calls, memory, and integration posture before
             publishing a frontend.
           </p>
+          {disabledReason && (
+            <p className="mx-auto mt-3 max-w-xl text-xs text-muted-foreground" role="status">
+              {disabledReason}
+            </p>
+          )}
           <div className="mt-6 grid gap-2 sm:grid-cols-2">
             {emptyPrompts.map((prompt) => (
               <Button
@@ -522,6 +353,7 @@ function MessageList({
                 type="button"
                 variant="outline"
                 onClick={() => onPrompt(prompt)}
+                disabled={disabled}
                 className="h-auto min-h-11 justify-start whitespace-normal bg-card/85 px-3 py-2 text-left text-sm shadow-sm hover:bg-muted"
               >
                 {prompt}
@@ -536,13 +368,14 @@ function MessageList({
   return (
     <div
       ref={containerRef}
-      className="relative z-[1] h-full overflow-y-auto px-4 pb-44 pt-8 sm:px-6"
+      className="relative z-[1] min-h-0 flex-1 overflow-y-auto px-4 py-6 sm:px-6"
       role="log"
       aria-live="polite"
+      aria-busy={streaming}
     >
       <div className="mx-auto flex max-w-3xl flex-col gap-6">
-        {messages.map((m) => (
-          <MessageView key={m.id} message={m} responseLabel={responseLabel} />
+        {messages.map((message) => (
+          <MessageView key={message.id} message={message} responseLabel={responseLabel} />
         ))}
         {streaming && (
           <div className="inline-block animate-pulse font-mono text-xs text-muted-foreground">
@@ -555,7 +388,7 @@ function MessageList({
   );
 }
 
-function MessageView({ message, responseLabel }: { message: Message; responseLabel: string }) {
+function MessageView({ message, responseLabel }: { message: ChatMessage; responseLabel: string }) {
   const isUser = message.role === "user";
   return (
     <article className={cn("flex", isUser ? "justify-end" : "justify-start")}>
@@ -573,8 +406,8 @@ function MessageView({ message, responseLabel }: { message: Message; responseLab
         {message.content && <MarkdownContent content={message.content} isUser={isUser} />}
         {message.toolCalls && message.toolCalls.length > 0 && (
           <div className="space-y-1.5">
-            {message.toolCalls.map((tc) => (
-              <ToolCallView key={tc.id} tc={tc} />
+            {message.toolCalls.map((toolCall) => (
+              <ToolCallView key={toolCall.id} toolCall={toolCall} />
             ))}
           </div>
         )}
@@ -588,46 +421,23 @@ function MessageView({ message, responseLabel }: { message: Message; responseLab
   );
 }
 
-function readVisitorToken(): string | undefined {
-  try {
-    const value = localStorage.getItem(VISITOR_TOKEN_STORAGE_KEY);
-    return value && value.trim() !== "" ? value : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-function clearVisitorToken() {
-  try {
-    localStorage.removeItem(VISITOR_TOKEN_STORAGE_KEY);
-  } catch {
-    // Storage can be unavailable in private browsing or sandboxed contexts.
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Tool call — render memory_* tool calls with the same affordance as bash /
-// fs_read / web_fetch. The "live state" spec ask is satisfied by surfacing
-// every TOOL_CALL_* event inline as it streams in.
-// ---------------------------------------------------------------------------
-
-function ToolCallView({ tc }: { tc: ToolCall }) {
+function ToolCallView({ toolCall }: { toolCall: ChatToolCall }) {
   const [expanded, setExpanded] = useState(true);
-  const isMemoryOp = tc.name.startsWith("memory_");
+  const isMemoryOperation = toolCall.name.startsWith("memory_");
 
   return (
     <div
       className={cn(
         "overflow-hidden rounded border text-xs",
-        tc.status === "running" && "border-amber-500/40 bg-amber-500/5",
-        tc.status === "error" && "border-destructive/40 bg-destructive/5",
-        tc.status === "completed" && "border-muted bg-muted/30",
+        toolCall.status === "running" && "border-amber-500/40 bg-amber-500/5",
+        toolCall.status === "error" && "border-destructive/40 bg-destructive/5",
+        toolCall.status === "completed" && "border-muted bg-muted/30",
       )}
     >
       <Button
         type="button"
         variant="ghost"
-        onClick={() => setExpanded((e) => !e)}
+        onClick={() => setExpanded((value) => !value)}
         className="h-auto w-full justify-start rounded-none px-2 py-1.5 text-left hover:bg-muted/40 [&_svg]:size-3"
         aria-expanded={expanded}
       >
@@ -636,8 +446,8 @@ function ToolCallView({ tc }: { tc: ToolCall }) {
         ) : (
           <ChevronRight className="size-3 shrink-0 text-muted-foreground" />
         )}
-        <span className="font-mono text-xs">{tc.name}</span>
-        {isMemoryOp && (
+        <span className="font-mono text-xs">{toolCall.name}</span>
+        {isMemoryOperation && (
           <span className="text-[9px] font-semibold uppercase tracking-wide text-sky-500">
             memory
           </span>
@@ -645,34 +455,34 @@ function ToolCallView({ tc }: { tc: ToolCall }) {
         <span
           className={cn(
             "ml-auto text-[10px] uppercase tracking-wide",
-            tc.status === "running" && "text-amber-500",
-            tc.status === "error" && "text-destructive",
-            tc.status === "completed" && "text-muted-foreground",
+            toolCall.status === "running" && "text-amber-500",
+            toolCall.status === "error" && "text-destructive",
+            toolCall.status === "completed" && "text-muted-foreground",
           )}
         >
-          {tc.status === "running" ? "running…" : tc.status}
+          {toolCall.status === "running" ? "running…" : toolCall.status}
         </span>
       </Button>
       {expanded && (
         <div className="space-y-2 border-t bg-background/50 p-2 text-[11px]">
-          {tc.args !== undefined && (
+          {toolCall.args !== undefined && (
             <details>
               <summary className="cursor-pointer text-muted-foreground">args</summary>
               <HighlightedCode
-                code={tc.args || "(empty)"}
-                language={detectCodeLanguage(tc.args)}
+                code={toolCall.args || "(empty)"}
+                language={detectCodeLanguage(toolCall.args)}
                 wrap
                 compact
                 className="mt-1 max-h-48 rounded"
               />
             </details>
           )}
-          {tc.result !== undefined && (
+          {toolCall.result !== undefined && (
             <details open>
               <summary className="cursor-pointer text-muted-foreground">result</summary>
               <HighlightedCode
-                code={tc.result || "(empty)"}
-                language={detectCodeLanguage(tc.result)}
+                code={toolCall.result || "(empty)"}
+                language={detectCodeLanguage(toolCall.result)}
                 wrap
                 compact
                 className="mt-1 max-h-64 rounded"
@@ -683,28 +493,4 @@ function ToolCallView({ tc }: { tc: ToolCall }) {
       )}
     </div>
   );
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function buildSameOriginUrl(path: string): string {
-  const base = new URL(window.location.href);
-  base.username = "";
-  base.password = "";
-  return new URL(path, base).toString();
-}
-
-async function readErrorDetail(res: Response): Promise<string> {
-  try {
-    const body = (await res.json()) as { error?: string; message?: string };
-    return body.error ?? body.message ?? "";
-  } catch {
-    try {
-      return (await res.text()).slice(0, 300);
-    } catch {
-      return "";
-    }
-  }
 }

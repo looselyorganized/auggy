@@ -32,11 +32,25 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      - name: Install console dependencies
+        working-directory: admin
+        run: bun install --frozen-lockfile
+
       - name: Lint (Biome)
         run: bun run lint
 
       - name: Typecheck
         run: bun run typecheck
+
+      - name: Validate creator console
+        working-directory: admin
+        run: |
+          bun run lint
+          bun test
+          bun run build
+
+      - name: Verify creator console bundle is current
+        run: git diff --exit-code -- admin/dist
 
       - name: Pricing freshness check
         run: bun run scripts/check-pricing-freshness.ts
@@ -58,8 +72,13 @@ jobs:
             tests/cli/deploy/health.test.ts \
             tests/cli/deploy/railway-cli.test.ts \
             tests/cli/deploy/secrets.test.ts \
+            tests/cli/console-chat-config.test.ts \
             tests/cli/scaffold-package-json.test.ts \
             tests/cli/model-picker.test.ts \
+            tests/kernel/thread-history-persistence.test.ts \
+            tests/transports/admin/console-chat-store.test.ts \
+            tests/transports/admin/console-chat-routes.test.ts \
+            tests/transports/web-console-persistence.test.ts \
             tests/augments/mcp.test.ts \
             tests/augments/knowledge.test.ts \
             tests/augments/notify.test.ts \
