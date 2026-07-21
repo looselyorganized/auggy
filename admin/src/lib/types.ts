@@ -133,6 +133,7 @@ export interface InstalledSkillInfo {
   name: string | null;
   description: string | null;
   source: "bundled" | "modified" | "manual";
+  fromAugmentType?: string;
   frontmatterValid: boolean;
   contentBytes: number;
 }

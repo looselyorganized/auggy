@@ -36,7 +36,7 @@ describe("buildCapabilityModel", () => {
     expect(model.summary.noteCount).toBe(0);
     expect(model.scope.routes[0]?.contract.expectsJsonResponse).toBe(false);
     expect(model.scope.routes[0]?.badges.find((badge) => badge.kind === "auth")).toMatchObject({
-      label: "none",
+      label: "no route auth",
       tone: "neutral",
     });
   });
@@ -163,8 +163,8 @@ describe("buildCapabilityModel", () => {
     });
     expect(model.scope.tools[0]?.badges).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ kind: "visibility-safeguard", tone: "success" }),
-        expect.objectContaining({ kind: "approval-safeguard", tone: "success" }),
+        expect.objectContaining({ kind: "visibility-safeguard", tone: "info" }),
+        expect.objectContaining({ kind: "approval-safeguard", tone: "info" }),
       ]),
     );
   });
@@ -216,7 +216,7 @@ describe("buildCapabilityModel", () => {
     ]);
     expect(
       model.scope.routes[1]?.badges.find((badge) => badge.kind === "webhook-safeguard"),
-    ).toMatchObject({ tone: "success" });
+    ).toMatchObject({ tone: "info" });
   });
 
   it("flags a JSON schema paired exclusively with non-JSON response media", () => {
@@ -261,6 +261,7 @@ describe("buildCapabilityModel", () => {
     expect(selected.scope.summary).toEqual({
       routeCount: 0,
       toolCount: 1,
+      skillCount: 0,
       memoryAugmentCount: 1,
       issueCount: 0,
       errorCount: 0,
@@ -314,6 +315,151 @@ describe("buildCapabilityModel", () => {
     expect(model.notes).toEqual([]);
     expect(model.augmentNodes[0]?.summary.issueCount).toBe(2);
   });
+
+  it("scopes owned skills by augment type while keeping manual skills in All", () => {
+    const model = buildCapabilityModel(
+      dashboard({
+        augments: [augment("orders")],
+        skills: {
+          installed: [
+            ({
+              folder: "orders",
+              name: "Order support",
+              description: "Manage orders",
+              source: "bundled",
+              frontmatterValid: true,
+              contentBytes: 120,
+              fromAugmentType: "orders",
+            } as DashboardData["skills"]["installed"][number] & {
+              fromAugmentType: string;
+            }),
+            {
+              folder: "custom",
+              name: "Custom",
+              description: null,
+              source: "manual",
+              frontmatterValid: false,
+              contentBytes: 40,
+            },
+          ],
+          available: [
+            {
+              folder: "returns",
+              name: "Returns",
+              description: "Handle returns",
+              fromAugmentType: "orders",
+            },
+          ],
+          skillsDir: "/agent/skills",
+        },
+      }),
+      { selectedAugmentName: "orders" },
+    );
+
+    expect(model.scope.skills.map((skill) => skill.title)).toEqual(["Order support", "Returns"]);
+    expect(model.scope.notes.map((finding) => finding.code)).toEqual([
+      "skill.available-not-installed",
+    ]);
+    expect(model.notes.map((finding) => finding.code)).toEqual([
+      "skill.frontmatter-invalid",
+      "skill.available-not-installed",
+    ]);
+    expect(model.scope.summary).toMatchObject({ skillCount: 1, issueCount: 0, noteCount: 1 });
+    expect(model.summary).toMatchObject({ skillCount: 2, issueCount: 0, noteCount: 2 });
+  });
+
+  it("shares type-owned skill notes across instances without inflating global counts", () => {
+    const first = { ...augment("orders-east"), type: "orders" };
+    const second = { ...augment("orders-west"), type: "orders" };
+    const data = dashboard({
+      augments: [first, second],
+      skills: {
+        installed: [],
+        available: [
+          {
+            folder: "orders",
+            name: "Order support",
+            description: "Manage orders",
+            fromAugmentType: "orders",
+          },
+        ],
+        skillsDir: "/agent/skills",
+      },
+    });
+
+    const global = buildCapabilityModel(data);
+    const selected = buildCapabilityModel(data, { selectedAugmentName: "orders-west" });
+
+    expect(global.notes).toHaveLength(1);
+    expect(global.summary).toMatchObject({ skillCount: 0, noteCount: 1 });
+    expect(global.augmentNodes.map((node) => node.summary.noteCount)).toEqual([1, 1]);
+    expect(selected.scope.skills).toHaveLength(1);
+    expect(selected.scope.notes).toHaveLength(1);
+  });
+
+  it("models sanitized route, tool, augment, and web safeguards", () => {
+    const model = buildCapabilityModel(
+      dashboard({
+        augments: [
+          {
+            ...augment("web"),
+            type: "webTransport",
+            hasTurnGate: true,
+            handlesInternalTurns: true,
+            lifecycleHooks: ["onBoot", "onShutdown"],
+          },
+          augment("orders"),
+        ],
+        routes: [
+          route("POST", "/webhook", {
+            augmentName: "orders",
+            auth: "visitor.required",
+            public: false,
+            requires: { grants: ["secret:grant"] },
+            policy: {
+              kind: "webhook.signature",
+              provider: "stripe",
+              secretEnv: "DO_NOT_EXPOSE",
+            },
+          }),
+        ],
+        tools: [
+          tool("change_order", {
+            hiddenFromTrustLevels: ["public"],
+            approvalRequiredForTrustLevels: ["agent"],
+            maxToolCallsPerTurn: 2,
+            toolTimeoutMs: 5000,
+          }),
+        ],
+        web: { externalAuthEnabled: true },
+      }),
+    );
+
+    expect(model.safeguards.map((entry) => entry.kind)).toEqual(
+      expect.arrayContaining([
+        "route-auth",
+        "route-requirements",
+        "webhook-signature",
+        "tool-visibility",
+        "tool-approval",
+        "turn-gate",
+        "web-auth-posture",
+      ]),
+    );
+    expect(JSON.stringify(model.safeguards)).not.toContain("DO_NOT_EXPOSE");
+    expect(JSON.stringify(model.safeguards)).not.toContain("secret:grant");
+    expect(model.safeguards.map((entry) => entry.kind)).not.toContain("lifecycle");
+    expect(model.safeguards.map((entry) => entry.kind)).not.toContain("internal-turns");
+    expect(model.scope.tools[0]?.badges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: "call-limit", label: "2/turn" }),
+        expect.objectContaining({ kind: "timeout", label: "5000ms timeout" }),
+      ]),
+    );
+    expect(
+      model.safeguards.find((entry) => entry.kind === "web-auth-posture"),
+    ).toMatchObject({ configurationHref: "/integrations" });
+  });
 });
 
 function dashboard({
@@ -322,12 +468,14 @@ function dashboard({
   tools = [],
   web = {},
   blocks = [],
+  skills = { installed: [], available: [], skillsDir: null },
 }: {
   augments?: AugmentSummary[];
   routes?: RouteManifestEntry[];
   tools?: ToolSummary[];
   web?: Partial<DashboardData["web"]>;
   blocks?: DashboardData["blocks"];
+  skills?: DashboardData["skills"];
 } = {}): DashboardData {
   return {
     card: { provider: { name: "test" } },
@@ -356,7 +504,7 @@ function dashboard({
     },
     blocks,
     csrfTokens: [],
-    skills: { installed: [], available: [], skillsDir: null },
+    skills,
   };
 }
 

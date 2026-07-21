@@ -1,4 +1,5 @@
-import { AlertTriangle, Brain, Info, Network, Route, Shield, Wrench } from "lucide-react";
+import { AlertTriangle, BookOpen, Brain, Info, Network, Route, Shield, Wrench } from "lucide-react";
+import { Link } from "react-router-dom";
 import { Badge } from "@/components/ui/badge";
 import type {
   AugmentCapabilityModel,
@@ -24,14 +25,13 @@ export function CapabilityDetail({
     ? model.augmentNodes.find((node) => node.augment.name === model.scope.selectedAugmentName)
     : undefined;
   const showConversation = shouldShowConversation(selectedNode?.augment);
-  const showAuth = !selectedNode || isWebTransport(selectedNode.augment);
-  const safeguards = model.scope.tools.filter(hasSafeguards);
   const hasScopedSurface =
     showConversation ||
-    showAuth ||
     model.scope.routes.length > 0 ||
     model.scope.tools.length > 0 ||
+    model.scope.skills.length > 0 ||
     model.scope.memoryAugments.length > 0 ||
+    model.scope.safeguards.length > 0 ||
     model.scope.findings.length > 0;
 
   return (
@@ -52,22 +52,26 @@ export function CapabilityDetail({
           {showConversation && <ConversationSurface data={data} />}
           {model.scope.routes.length > 0 && <RouteSurface model={model} />}
           {model.scope.tools.length > 0 && <ToolSurface model={model} />}
+          {model.scope.skills.length > 0 && <SkillSurface model={model} />}
           {model.scope.memoryAugments.length > 0 && <MemorySurface model={model} />}
-          {showAuth && <AuthSurface data={data} />}
-          {safeguards.length > 0 && (
+          {model.scope.safeguards.length > 0 && (
             <CapabilitySurface title="Safeguards" icon={<Shield className="size-4" />}>
-              {safeguards.map((tool) => (
+              {model.scope.safeguards.map((safeguard) => (
                 <CapabilityRow
-                  key={tool.id}
-                  title={tool.title}
-                  detail={safeguardDetail(tool)}
-                  badges={tool.badges.filter(
-                    (badge) =>
-                      badge.kind === "visibility-safeguard" ||
-                      badge.kind === "approval-safeguard",
-                  )}
+                  key={safeguard.id}
+                  title={safeguard.title}
+                  detail={safeguard.detail}
+                  badges={safeguard.badges}
                 />
               ))}
+              {model.scope.safeguards.some((entry) => entry.configurationHref) && (
+                <Link
+                  to="/integrations"
+                  className="block px-3 py-2 text-xs font-medium text-sky-700 hover:underline dark:text-sky-300"
+                >
+                  Change auth and integration settings →
+                </Link>
+              )}
             </CapabilitySurface>
           )}
           {model.scope.notes.length > 0 && (
@@ -143,32 +147,52 @@ export function buildConversationSurfaceRows(
 }
 
 function RouteSurface({ model }: { model: CapabilityModel }) {
+  const scoped = model.scope.selectedAugmentName !== null;
   return (
     <CapabilitySurface title="App routes" icon={<Route className="size-4" />}>
       {model.scope.routes.map((route) => (
         <CapabilityRow
           key={route.id}
           title={route.title}
-          detail={route.detail}
+          detail={scoped ? route.detail : `${route.augmentName} · ${route.detail}`}
           badges={route.badges}
         />
       ))}
+      <Link
+        to="/integrations"
+        className="block px-3 py-2 text-xs font-medium text-sky-700 hover:underline dark:text-sky-300"
+      >
+        Connection and client setup →
+      </Link>
     </CapabilitySurface>
   );
 }
 
 function ToolSurface({ model }: { model: CapabilityModel }) {
+  const scoped = model.scope.selectedAugmentName !== null;
   return (
     <CapabilitySurface title="Tools" icon={<Wrench className="size-4" />}>
       {model.scope.tools.map((tool) => (
         <CapabilityRow
           key={tool.id}
           title={tool.title}
-          detail={tool.detail}
-          badges={tool.badges.filter(
-            (badge) =>
-              badge.kind !== "visibility-safeguard" && badge.kind !== "approval-safeguard",
-          )}
+          detail={scoped ? tool.detail : `${tool.augmentName} · ${tool.detail}`}
+          badges={tool.badges}
+        />
+      ))}
+    </CapabilitySurface>
+  );
+}
+
+function SkillSurface({ model }: { model: CapabilityModel }) {
+  return (
+    <CapabilitySurface title="Skills" icon={<BookOpen className="size-4" />}>
+      {model.scope.skills.map((skill) => (
+        <CapabilityRow
+          key={skill.id}
+          title={skill.title}
+          detail={skill.detail}
+          badges={skill.badges}
         />
       ))}
     </CapabilitySurface>
@@ -200,59 +224,6 @@ export function formatMemorySurfaceCapabilities(
   return capabilities.length > 0 ? capabilities.join(", ") : undefined;
 }
 
-function AuthSurface({ data }: { data: DashboardData }) {
-  const rows: Array<{ title: string; detail: string; badges: CapabilityBadge[] }> = [
-    {
-      title: "Anonymous chat",
-      detail: data.web.allowAnonymous.value === true ? "Allowed" : "Disabled",
-      badges: [
-        semanticBadge(
-          "auth",
-          data.web.allowAnonymous.value === true ? "anonymous" : "creator",
-          data.web.allowAnonymous.value === true ? "neutral" : "success",
-        ),
-      ],
-    },
-    {
-      title: "Visitor tokens",
-      detail: data.web.visitorTokensEnabled === true ? "Enabled" : "Disabled",
-      badges: [
-        semanticBadge(
-          "auth",
-          data.web.visitorTokensEnabled === true ? "enabled" : "disabled",
-          data.web.visitorTokensEnabled === true ? "success" : "neutral",
-        ),
-      ],
-    },
-    {
-      title: "External auth",
-      detail:
-        data.web.externalAuthEnabled === true
-          ? data.web.externalAuthHeader ?? "x-auggy-auth-assertion"
-          : "Disabled",
-      badges: [
-        semanticBadge(
-          "auth",
-          data.web.externalAuthEnabled === true ? "enabled" : "disabled",
-          data.web.externalAuthEnabled === true ? "success" : "neutral",
-        ),
-      ],
-    },
-    {
-      title: "Agent access",
-      detail: `${data.web.agentAccessEntries ?? "0"} configured entries`,
-      badges: [semanticBadge("auth", "agent.required", "neutral")],
-    },
-  ];
-  return (
-    <CapabilitySurface title="Guardrails / Auth" icon={<Shield className="size-4" />}>
-      {rows.map((row) => (
-        <CapabilityRow key={row.title} {...row} />
-      ))}
-    </CapabilitySurface>
-  );
-}
-
 function shouldShowConversation(augment?: AugmentSummary): boolean {
   if (!augment) return true;
   return isWebTransport(augment);
@@ -278,28 +249,4 @@ function semanticBadge(
   tone: CapabilityBadge["tone"],
 ): CapabilityBadge {
   return { id: `${kind}:${label}`, kind, label, tone };
-}
-
-function hasSafeguards(tool: CapabilityModel["scope"]["tools"][number]): boolean {
-  return (
-    tool.safeguards.globallyHidden ||
-    tool.safeguards.requiresHumanApproval ||
-    tool.safeguards.hiddenFromTrustLevels.length > 0 ||
-    tool.safeguards.approvalRequiredForTrustLevels.length > 0
-  );
-}
-
-function safeguardDetail(tool: CapabilityModel["scope"]["tools"][number]): string {
-  const details: string[] = [];
-  if (tool.safeguards.globallyHidden) details.push("hidden globally");
-  if (tool.safeguards.hiddenFromTrustLevels.length > 0) {
-    details.push(`hidden from ${tool.safeguards.hiddenFromTrustLevels.join(", ")}`);
-  }
-  if (tool.safeguards.requiresHumanApproval) details.push("human approval always required");
-  if (tool.safeguards.approvalRequiredForTrustLevels.length > 0) {
-    details.push(
-      `approval for ${tool.safeguards.approvalRequiredForTrustLevels.join(", ")}`,
-    );
-  }
-  return details.join(" · ");
 }

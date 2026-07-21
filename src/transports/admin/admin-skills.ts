@@ -46,6 +46,11 @@ export interface InstalledSkillInfo {
   description: string | null;
   /** Source classification — drives the Edit / Remove / Reset affordances. */
   source: SkillSource;
+  /**
+   * Canonical type of the mounted augment that owns this bundled skill.
+   * Absent for manual skills and bundled skills whose augment is not mounted.
+   */
+  fromAugmentType?: string;
   /** True when the SKILL.md frontmatter parses cleanly (validator-friendly). */
   frontmatterValid: boolean;
   /** SKILL.md size in bytes (raw file, no parsing). */
@@ -188,6 +193,7 @@ export function collectSkillsInfo(
 ): SkillsInfo {
   const installedFolders = listInstalledFolders(agentDir);
   const installedSet = new Set(installedFolders);
+  const folderToType = buildFolderToTypeMap();
 
   const installed: InstalledSkillInfo[] = installedFolders.map((folder) => {
     const dir = installedSkillDir(agentDir, folder)!;
@@ -201,11 +207,17 @@ export function collectSkillsInfo(
       // file missing or unreadable — surfaced as frontmatterValid=false below
     }
     const fm: SkillFrontmatter | null = content ? readSkillFrontmatter(file) : null;
+    const source = content ? classifyInstalledSkill(folder, content) : "manual";
+    const fromAugmentType = folderToType.get(folder);
+    const isMountedOwner =
+      fromAugmentType !== undefined &&
+      (mountedAugmentTypes === undefined || mountedAugmentTypes.has(fromAugmentType));
     return {
       folder,
       name: fm?.name ?? null,
       description: fm?.description ?? null,
-      source: content ? classifyInstalledSkill(folder, content) : "manual",
+      source,
+      ...(source !== "manual" && isMountedOwner ? { fromAugmentType } : {}),
       frontmatterValid: fm !== null,
       contentBytes,
     };
@@ -214,7 +226,6 @@ export function collectSkillsInfo(
   // Available bundled skills: gaps where the augment IS mounted but the
   // bundled SKILL.md is missing on disk. If a caller doesn't pass a mount
   // filter, fall back to showing all bundled skills (legacy callers + tests).
-  const folderToType = buildFolderToTypeMap();
   const available: AvailableSkillInfo[] = [];
   for (const [folder, type] of folderToType) {
     if (installedSet.has(folder)) continue;

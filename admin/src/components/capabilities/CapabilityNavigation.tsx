@@ -1,4 +1,4 @@
-import { AlertTriangle, Brain, Info, Package, Route, Wrench } from "lucide-react";
+import { AlertTriangle, BookOpen, Brain, Info, Package, Route, Wrench } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import type {
   AugmentCapabilityModel,
@@ -31,6 +31,7 @@ export function CapabilitySummaryBar({ model }: { model: CapabilityModel }) {
       : []),
     { label: "Routes", value: summary.routeCount, icon: Route },
     { label: "Tools", value: summary.toolCount, icon: Wrench },
+    { label: "Skills", value: summary.skillCount, icon: BookOpen },
     { label: "Memory", value: summary.memoryAugmentCount, icon: Brain },
     { label: "Issues", value: summary.issueCount, icon: AlertTriangle },
     { label: "Notes", value: summary.noteCount, icon: Info },
@@ -154,6 +155,9 @@ function NavigationButton({
         )}
         {summary.toolCount > 0 && (
           <Badge variant="secondary">{countLabel(summary.toolCount, "tool")}</Badge>
+        )}
+        {summary.skillCount > 0 && (
+          <Badge variant="outline">{countLabel(summary.skillCount, "skill")}</Badge>
         )}
         {summary.memoryAugmentCount > 0 && <Badge variant="success">memory</Badge>}
         {summary.noteCount > 0 && (
