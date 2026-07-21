@@ -4,7 +4,11 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { createChatThread, type ChatThread } from "@/lib/chat-workspace";
 import { ChatThreadNav } from "./ChatThreadNav";
 
-function thread(id: string, title: string, patch: Partial<ChatThread> = {}): ChatThread {
+function thread(
+  id: string,
+  title: string,
+  patch: Partial<ChatThread> = {},
+): ChatThread {
   return {
     ...createChatThread({
       id,
@@ -32,7 +36,7 @@ describe("ChatThreadNav", () => {
       />,
     );
 
-    expect(html).toContain("New chat");
+    expect(html).toContain(">New</span>");
     expect(html).toContain('aria-current="page"');
     expect(html).toContain("Background result, Unread");
     expect(html).toContain("Long task, Streaming response");
@@ -52,7 +56,7 @@ describe("ChatThreadNav", () => {
 
     expect(html).toContain("Loading chats…");
     expect(html).not.toContain("Draft chat");
-    expect(html).toContain("disabled=\"\"");
+    expect(html).toContain('disabled=""');
   });
 
   it("hides stale drafts and reports a hydration failure", () => {
@@ -70,5 +74,34 @@ describe("ChatThreadNav", () => {
     expect(html).toContain('role="alert"');
     expect(html).toContain('title="database unavailable"');
     expect(html).not.toContain("Draft chat");
+  });
+
+  it("leaves every chat unselected when another console section is active", () => {
+    const html = renderToStaticMarkup(
+      <ChatThreadNav
+        threads={[thread("draft", "Draft chat")]}
+        activeId=""
+        onNew={() => {}}
+        onSelect={() => {}}
+      />,
+    );
+
+    expect(html).not.toContain('aria-current="page"');
+  });
+
+  it("renders a permanent chat icon and desktop mutation affordance", () => {
+    const html = renderToStaticMarkup(
+      <ChatThreadNav
+        threads={[thread("active", "Current chat")]}
+        activeId="active"
+        onNew={() => {}}
+        onSelect={() => {}}
+        onRename={() => {}}
+        onDelete={() => {}}
+      />,
+    );
+
+    expect(html).toContain("lucide-message-square");
+    expect(html).toContain('aria-label="Actions for Current chat"');
   });
 });

@@ -114,7 +114,6 @@ export function ChatTab() {
       ? `${modelProvider} / ${modelId}`
       : modelProvider ?? modelId ?? modelDisplayName;
 
-  const identityLabel = `Previewing as ${CHAT_PREVIEW_MODE_LABELS[previewMode].toLowerCase()}`;
   const emptyPrompts = previewMode === "creator" ? CREATOR_EMPTY_PROMPTS : PEER_EMPTY_PROMPTS;
   const preflightError = preflightErrors[activeThread.id] ?? null;
 
@@ -246,7 +245,6 @@ export function ChatTab() {
         streaming={streaming}
         responseLabel={agentName}
         agentName={agentName}
-        identityLabel={identityLabel}
         emptyPrompts={emptyPrompts}
         onPrompt={sendFromThread}
         disabled={Boolean(disabledReason)}
@@ -292,7 +290,6 @@ function MessageList({
   streaming,
   agentName,
   responseLabel,
-  identityLabel,
   emptyPrompts,
   onPrompt,
   disabled,
@@ -303,7 +300,6 @@ function MessageList({
   streaming: boolean;
   agentName: string;
   responseLabel: string;
-  identityLabel: string;
   emptyPrompts: string[];
   onPrompt: (prompt: string) => void;
   disabled: boolean;
@@ -331,9 +327,8 @@ function MessageList({
 
   if (messages.length === 0) {
     return (
-      <div className="relative z-[1] min-h-0 flex-1 overflow-y-auto px-4 py-8 text-center">
+      <div className="relative z-[1] min-h-0 flex-1 overflow-y-auto px-4 pb-8 pt-28 text-center">
         <div className="mx-auto flex min-h-full w-full max-w-2xl flex-col justify-center">
-          <p className="mb-2 text-sm font-medium text-muted-foreground">{identityLabel}</p>
           <h2 className="text-2xl font-semibold tracking-normal sm:text-3xl">
             Talk to {agentName}
           </h2>
@@ -368,7 +363,7 @@ function MessageList({
   return (
     <div
       ref={containerRef}
-      className="relative z-[1] min-h-0 flex-1 overflow-y-auto px-4 py-6 sm:px-6"
+      className="relative z-[1] min-h-0 flex-1 overflow-y-auto px-4 pb-6 pt-28 sm:px-6"
       role="log"
       aria-live="polite"
       aria-busy={streaming}
