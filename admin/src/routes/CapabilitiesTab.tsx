@@ -1,7 +1,12 @@
 import { useMemo, useState } from "react";
-import { CapabilityNavigation, CapabilitySummaryBar } from "@/components/capabilities/CapabilityNavigation";
+import {
+  CAPABILITY_DETAIL_ID,
+  CapabilityMobileSelector,
+  CapabilityNavigation,
+  CapabilitySummaryBar,
+} from "@/components/capabilities/CapabilityNavigation";
 import { CapabilityDetail } from "@/components/capabilities/CapabilitySurfaces";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardHeader } from "@/components/ui/card";
 import { useDashboardContext } from "@/components/admin/DashboardContext";
 import { buildCapabilityModel } from "@/lib/capability-model";
 
@@ -20,23 +25,32 @@ export function CapabilitiesTab() {
 
   if (loading && !data) {
     return (
-      <Card>
-        <CardHeader>
-          <CardTitle>Capabilities</CardTitle>
-          <CardDescription>Loading...</CardDescription>
-        </CardHeader>
-      </Card>
+      <div className="h-full w-full overflow-y-auto p-3 sm:p-4">
+        <Card className="mx-auto max-w-6xl" role="status" aria-live="polite">
+          <CardHeader>
+            <h2 className="font-semibold leading-none">Capabilities</h2>
+            <CardDescription>Loading...</CardDescription>
+          </CardHeader>
+        </Card>
+      </div>
     );
   }
 
   if (error && !data) {
     return (
-      <Card className="border-destructive/40">
-        <CardHeader>
-          <CardTitle className="text-destructive">Capabilities load failed</CardTitle>
-          <CardDescription className="font-mono text-xs">{error}</CardDescription>
-        </CardHeader>
-      </Card>
+      <div className="h-full w-full overflow-y-auto p-3 sm:p-4">
+        <Card
+          className="mx-auto max-w-6xl border-destructive/40"
+          role="alert"
+        >
+          <CardHeader>
+            <h2 className="font-semibold leading-none text-destructive">
+              Capabilities load failed
+            </h2>
+            <CardDescription className="break-words font-mono text-xs">{error}</CardDescription>
+          </CardHeader>
+        </Card>
+      </div>
     );
   }
 
@@ -45,6 +59,9 @@ export function CapabilitiesTab() {
   const selectedNode = model.scope.selectedAugmentName
     ? model.augmentNodes.find((node) => node.augment.name === model.scope.selectedAugmentName)
     : undefined;
+  const scopeLabel = selectedNode
+    ? `${selectedNode.augment.type}, runtime ${selectedNode.augment.name}`
+    : "all runtime capabilities";
 
   return (
     <div className="h-full w-full overflow-y-auto">
@@ -57,12 +74,16 @@ export function CapabilitiesTab() {
             </p>
           </div>
           <CapabilitySummaryBar model={model} />
+          <CapabilityMobileSelector model={model} onSelect={setSelectedAugmentName} />
+          <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+            Showing {scopeLabel}.
+          </p>
         </section>
 
-        <div className="grid min-h-0 gap-4 lg:grid-cols-[minmax(20rem,0.95fr)_minmax(0,1.45fr)]">
-          <Card>
+        <div className="grid min-h-0 min-w-0 gap-4 lg:grid-cols-[18rem_minmax(0,1fr)]">
+          <Card className="hidden self-start lg:sticky lg:top-4 lg:block lg:max-h-[calc(100dvh-2rem)] lg:overflow-y-auto">
             <CardHeader className="pb-4">
-              <CardTitle>Mounted augments</CardTitle>
+              <h3 className="font-semibold leading-none">Mounted augments</h3>
               <CardDescription>Select an owner to scope the runtime map.</CardDescription>
             </CardHeader>
             <CardContent>
@@ -70,13 +91,15 @@ export function CapabilitiesTab() {
             </CardContent>
           </Card>
 
-          <Card>
+          <Card id={CAPABILITY_DETAIL_ID} className="min-w-0 scroll-mt-4">
             <CardHeader className="pb-4">
-              <CardTitle>{selectedNode ? "Selected augment" : "All runtime capabilities"}</CardTitle>
+              <h3 className="font-semibold leading-none">
+                {selectedNode ? "Selected augment" : "All runtime capabilities"}
+              </h3>
               <CardDescription>
                 {selectedNode
                   ? `Surfaces owned by ${selectedNode.augment.name}.`
-                  : "Conversation, app routes, tools, memory, and access posture."}
+                  : "Conversation, app routes, tools, skills, memory, and access posture."}
               </CardDescription>
             </CardHeader>
             <CardContent>

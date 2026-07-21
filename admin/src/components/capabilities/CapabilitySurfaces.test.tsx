@@ -3,10 +3,10 @@ import { act, create } from "react-test-renderer";
 import { MemoryRouter } from "react-router-dom";
 import { buildCapabilityModel } from "@/lib/capability-model";
 import type { DashboardData } from "@/lib/types";
-import { CapabilityDetail } from "./CapabilitySurfaces";
+import { buildConversationSurfaceRows, CapabilityDetail } from "./CapabilitySurfaces";
 
 describe("CapabilityDetail", () => {
-  it("renders first-class skills, safeguards, notes, and the integrations link", async () => {
+  it("renders first-class skills, access controls, notes, and the integrations link", async () => {
     const data = dashboard();
     const model = buildCapabilityModel(data);
     let renderer: ReturnType<typeof create> | undefined;
@@ -21,11 +21,22 @@ describe("CapabilityDetail", () => {
 
     const output = JSON.stringify(renderer?.toJSON());
     expect(output).toContain("Skills");
-    expect(output).toContain("Safeguards");
+    expect(output).toContain("Access & controls");
     expect(output).toContain("Notes");
     expect(output).toContain("Web authentication posture");
     expect(output).toContain("Change auth and integration settings");
     expect(renderer?.root.findAllByType("a")[0]?.props.href).toBe("/integrations");
+  });
+
+  it("renders unknown conversation auth as unreported", () => {
+    const rows = buildConversationSurfaceRows({
+      web: { allowAnonymous: { value: null } },
+    });
+
+    expect(rows[0]).toMatchObject({
+      detail: "AG-UI chat authentication not reported",
+      badges: [{ label: "auth not reported", tone: "neutral" }],
+    });
   });
 });
 

@@ -40,7 +40,7 @@ export function CapabilityDetail({
       {!hasScopedSurface ? (
         <CapabilityEmptyState
           title="No runtime surfaces"
-          detail="This augment is mounted but does not expose routes, tools, memory, or operator findings."
+          detail="This augment is mounted but reports no routes, tools, skills, memory, access controls, or operator findings."
         />
       ) : (
         <>
@@ -55,7 +55,7 @@ export function CapabilityDetail({
           {model.scope.skills.length > 0 && <SkillSurface model={model} />}
           {model.scope.memoryAugments.length > 0 && <MemorySurface model={model} />}
           {model.scope.safeguards.length > 0 && (
-            <CapabilitySurface title="Safeguards" icon={<Shield className="size-4" />}>
+            <CapabilitySurface title="Access & controls" icon={<Shield className="size-4" />}>
               {model.scope.safeguards.map((safeguard) => (
                 <CapabilityRow
                   key={safeguard.id}
@@ -65,12 +65,14 @@ export function CapabilityDetail({
                 />
               ))}
               {model.scope.safeguards.some((entry) => entry.configurationHref) && (
-                <Link
-                  to="/integrations"
-                  className="block px-3 py-2 text-xs font-medium text-sky-700 hover:underline dark:text-sky-300"
-                >
-                  Change auth and integration settings →
-                </Link>
+                <div role="listitem">
+                  <Link
+                    to="/integrations"
+                    className="block rounded-sm px-3 py-2 text-xs font-medium text-sky-700 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring dark:text-sky-300"
+                  >
+                    Change auth and integration settings →
+                  </Link>
+                </div>
               )}
             </CapabilitySurface>
           )}
@@ -89,12 +91,14 @@ function AugmentIdentity({ node }: { node: AugmentCapabilityModel }) {
   const { augment } = node;
   return (
     <div className="grid gap-3 rounded-md border bg-muted/20 p-3">
-      <div className="flex flex-wrap items-start justify-between gap-3">
+      <div className="flex min-w-0 flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
-          <div className="truncate text-base font-semibold" title={augment.type}>
+          <h4 className="break-words text-base font-semibold" title={augment.type}>
             {augment.type}
+          </h4>
+          <div className="mt-1 break-all font-mono text-xs text-muted-foreground">
+            {augment.name}
           </div>
-          <div className="mt-1 font-mono text-xs text-muted-foreground">{augment.name}</div>
         </div>
         <div className="flex flex-wrap gap-1">
           <Badge variant="outline">{augment.category}</Badge>
@@ -130,18 +134,22 @@ function ConversationSurface({ data }: { data: DashboardData }) {
 export function buildConversationSurfaceRows(
   data: { web: Pick<DashboardData["web"], "allowAnonymous"> },
 ): Array<{ title: string; detail: string; badges: CapabilityBadge[] }> {
-  const allowAnonymous = data.web.allowAnonymous.value === true;
+  const allowAnonymous = data.web.allowAnonymous.value;
+  const detail = allowAnonymous === true
+    ? "AG-UI chat, anonymous allowed"
+    : allowAnonymous === false
+      ? "AG-UI chat, creator auth"
+      : "AG-UI chat authentication not reported";
+  const label = allowAnonymous === true
+    ? "anonymous"
+    : allowAnonymous === false
+      ? "creator"
+      : "auth not reported";
   return [
     {
       title: "POST /agent/run",
-      detail: allowAnonymous ? "AG-UI chat, anonymous allowed" : "AG-UI chat, creator auth",
-      badges: [
-        semanticBadge(
-          "auth",
-          allowAnonymous ? "anonymous" : "creator",
-          allowAnonymous ? "neutral" : "success",
-        ),
-      ],
+      detail,
+      badges: [semanticBadge("auth", label, "neutral")],
     },
   ];
 }
@@ -158,12 +166,14 @@ function RouteSurface({ model }: { model: CapabilityModel }) {
           badges={route.badges}
         />
       ))}
-      <Link
-        to="/integrations"
-        className="block px-3 py-2 text-xs font-medium text-sky-700 hover:underline dark:text-sky-300"
-      >
-        Connection and client setup →
-      </Link>
+      <div role="listitem">
+        <Link
+          to="/integrations"
+          className="block rounded-sm px-3 py-2 text-xs font-medium text-sky-700 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring dark:text-sky-300"
+        >
+          Connection and client setup →
+        </Link>
+      </div>
     </CapabilitySurface>
   );
 }

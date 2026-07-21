@@ -18,7 +18,7 @@ describe("buildConversationSurfaceRows", () => {
             id: "auth:creator",
             kind: "auth",
             label: "creator",
-            tone: "success",
+            tone: "neutral",
           },
         ],
       },

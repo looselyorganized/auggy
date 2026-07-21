@@ -1,4 +1,4 @@
-import type { ComponentProps, ReactNode } from "react";
+import { useId, type ComponentProps, type ReactNode } from "react";
 import { Badge } from "@/components/ui/badge";
 import type {
   CapabilityBadge,
@@ -21,7 +21,12 @@ export function CapabilityBadges({ badges }: { badges: readonly CapabilityBadge[
   return (
     <div className="flex min-w-0 flex-wrap justify-end gap-1">
       {badges.map((badge) => (
-        <Badge key={badge.id} variant={BADGE_VARIANTS[badge.tone]}>
+        <Badge
+          key={badge.id}
+          variant={BADGE_VARIANTS[badge.tone]}
+          className="h-auto max-w-48 truncate py-1 text-left sm:max-w-64"
+          title={badge.label}
+        >
           {badge.label}
         </Badge>
       ))}
@@ -38,13 +43,19 @@ export function CapabilitySurface({
   icon: ReactNode;
   children: ReactNode;
 }) {
+  const headingId = useId();
   return (
-    <section className="grid gap-2">
-      <div className="flex items-center gap-2 text-sm font-semibold">
-        <span className="text-muted-foreground">{icon}</span>
+    <section className="grid min-w-0 gap-2" aria-labelledby={headingId}>
+      <h3 id={headingId} className="flex items-center gap-2 text-sm font-semibold">
+        <span className="text-muted-foreground" aria-hidden="true">{icon}</span>
         {title}
+      </h3>
+      <div
+        className="min-w-0 divide-y overflow-hidden rounded-md border bg-background"
+        role="list"
+      >
+        {children}
       </div>
-      <div className="divide-y rounded-md border bg-background">{children}</div>
     </section>
   );
 }
@@ -59,14 +70,14 @@ export function CapabilityRow({
   badges?: readonly CapabilityBadge[];
 }) {
   return (
-    <div className="grid gap-2 px-3 py-2">
+    <div className="grid gap-2 px-3 py-2" role="listitem">
       <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
-        <div className="min-w-0 break-all font-mono text-xs" title={title}>
+        <div className="min-w-0 break-all font-mono text-xs leading-5" title={title}>
           {title}
         </div>
         {badges && badges.length > 0 && <CapabilityBadges badges={badges} />}
       </div>
-      <div className="min-w-0 text-xs text-muted-foreground" title={detail}>
+      <div className="min-w-0 break-words text-xs leading-5 text-muted-foreground" title={detail}>
         {detail}
       </div>
     </div>
@@ -75,7 +86,7 @@ export function CapabilityRow({
 
 export function FindingRows({ findings }: { findings: readonly CapabilityFinding[] }) {
   return findings.map((finding) => (
-    <div key={finding.id} className="grid gap-2 px-3 py-2">
+    <div key={finding.id} className="grid gap-2 px-3 py-2" role="listitem">
       <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
         <div className="min-w-0 break-all font-mono text-xs" title={finding.surfaceLabel}>
           {finding.surfaceLabel}

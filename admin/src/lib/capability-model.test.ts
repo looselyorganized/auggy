@@ -75,7 +75,7 @@ describe("buildCapabilityModel", () => {
 
     expect(model.findings).toEqual([]);
     expect(model.scope.routes[0]?.badges.find((badge) => badge.kind === "auth")?.tone).toBe(
-      "success",
+      "info",
     );
   });
 
@@ -314,6 +314,38 @@ describe("buildCapabilityModel", () => {
     ]);
     expect(model.notes).toEqual([]);
     expect(model.augmentNodes[0]?.summary.issueCount).toBe(2);
+    expect(JSON.stringify(model.findings)).not.toContain("Credentials rejected");
+    expect(JSON.stringify(model.findings)).not.toContain("Retries elevated");
+  });
+
+  it("keeps missing auth telemetry unknown instead of reporting it as disabled", () => {
+    const model = buildCapabilityModel(
+      dashboard({
+        augments: [augment("webTransport")],
+        routes: [
+          route("GET", "/visitor", { auth: "visitor.required", public: false }),
+          route("GET", "/agent", { auth: "agent.required", public: false }),
+        ],
+        web: {
+          allowAnonymous: { value: null },
+          visitorTokensEnabled: null,
+          externalAuthEnabled: null,
+          agentAccessEntries: undefined,
+        },
+      }),
+    );
+
+    expect(model.findings).toEqual([]);
+    expect(model.scope.routes.map((routeView) =>
+      routeView.badges.find((entry) => entry.kind === "auth")?.tone
+    )).toEqual(["neutral", "neutral"]);
+    const posture = model.safeguards.find((entry) => entry.kind === "web-auth-posture");
+    expect(posture?.detail).toContain("not reported");
+    expect(posture?.badges.map((entry) => entry.label)).toEqual([
+      "chat auth not reported",
+      "visitor tokens not reported",
+      "external auth not reported",
+    ]);
   });
 
   it("scopes owned skills by augment type while keeping manual skills in All", () => {

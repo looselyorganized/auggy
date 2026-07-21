@@ -29,9 +29,17 @@ Primary surfaces:
     `/agent/run`
   - CLI commands for route JSON, OpenAPI, and generated route clients
 - Capabilities runtime map
-  - Mounted augments grouped by runtime role
-  - Routes, tools, memory providers, and auth posture by owner
-  - Warnings for public/auth/schema mismatches derived from live state
+  - An observed snapshot of the currently mounted runtime, not a declaration of
+    everything an agent was intended to support
+  - Mounted augments grouped by runtime role, with owner-scoped routes, tools,
+    memory surfaces, installed or available skills, and reported access controls
+  - **Issues** for errors and warnings that may prevent a surface from working;
+    **Notes** for incomplete metadata or non-blocking observations
+  - Access controls describe controls the runtime reports as configured. Their
+    presence is not a blanket claim that an augment, route, or deployment is
+    secure
+  - Connection strings, client generation, CORS, and authentication setup stay
+    on Integrations; Capabilities links there when configuration work is needed
 
 Secondary surface:
 
@@ -44,7 +52,9 @@ Secondary surface:
 - Augment count
 - Copy diagnostics
 
-Connection and generated-client guidance lives on the Integrations page.
+Connection and generated-client guidance lives on the Integrations page. The
+Capabilities page intentionally avoids repeating credentials, connection URLs,
+raw schemas, and authorization constraint objects.
 
 The operator questions this UI answers are: "Am I talking to the right agent?",
 "is it working?", and "what can this running agent do right now?"
@@ -68,10 +78,12 @@ logs, and augment installation.
 
 ## Auth
 
-HTTP Basic auth. Username blank, password is the agent bearer
-(`AUGGY_WEB_TOKEN` in the agent's `.env`). The same bearer is accepted by
-`/agent/run` for creator-authorized chat, but the transport may also allow
-anonymous, visitor-token, or external-auth traffic depending on configuration.
+On non-loopback hosts, `/console` uses HTTP Basic auth with a blank username and
+the agent bearer as the password (`AUGGY_WEB_TOKEN` in the agent's `.env`). The
+same bearer is accepted by `/agent/run` for creator-authorized chat, but the
+transport may also allow anonymous, visitor-token, or external-auth traffic
+depending on configuration. Loopback console requests skip the bearer check
+because shell access to the host already grants access to the local `.env`.
 
 State-mutating endpoints additionally require a CSRF token bound to the
 specific action. Chat uses a dedicated `console-chat` CSRF token because the
@@ -128,8 +140,7 @@ rejected during deploy preflight and again by the runtime resolver.
   snapshots are the recovery boundary; the volume itself has no trash, and the
   console has no built-in point-in-time restore.
 
-HTTPS is enforced on non-loopback hostnames. Loopback requests skip the bearer
-check because shell access to the host already grants `.env` access.
+HTTPS is enforced on non-loopback hostnames.
 
 ## Implementation
 
