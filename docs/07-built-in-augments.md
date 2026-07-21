@@ -23,7 +23,7 @@ Fourteen augments ship in `src/augments/` (plus `webTransport` under `src/transp
   polling/WebSocket/Svix delivery, outbound review, and operator audit
 - **`turnControl`** — `request_input` for hand-off prompts
 - **`visitorAuth`** — email magic-link verification; promotes anonymous → recognized
-- **`link`** — peer-to-peer A2A v0.2 transport (preview mesh entry)
+- **`link`** — legacy A2A-v0.2 peer transport (preview only; not current A2A)
 
 The selection is deliberate. Together they cover: identity, episodic memory, web chat, Telegram chat, filesystem access, external knowledge, shell execution, cost management, operator alerting, turn-end input requests, and visitor email verification. Anything beyond this (model routing, evals, retrieval over special data sources) belongs in application-specific augments that live in the application's repo, not in Auggy itself.
 
@@ -599,7 +599,9 @@ What happens at boot:
 1. `wireMemoryBus` builds the registry: `{ static: { "self" → fileMemory }, namespaces: [{ "episode:" → supabaseMemory }] }`. No conflicts.
 2. Both memory providers get synthesized `context()` functions.
 3. The synthetic `memory-bus` augment is appended with the five generic memory tools.
-4. `generateAgentCard` produces a card with `capabilities.memory: true` and `capabilities.transport: true`; model-facing tools stay out of the public A2A skills list.
+4. `generateAgentCard` produces internal Auggy metadata with capability flags
+   and tool-derived skill entries. This generic payload is not a current A2A
+   Agent Card and must not be assumed safe to publish without review.
 5. `lifecycle.boot()` runs: `fileMemory.onBoot()` reads `zip-soul.md`. `supabaseMemory` has no onBoot. `webTransport.onBoot()` starts Bun.serve on port 8080. `memory-bus` has no onBoot.
 6. The web transport is registered with a `TransportQueue` (concurrency 1, queue depth 50, rate limit 30/min/peer).
 7. The agent is now serving requests on `http://localhost:8080`.
@@ -1296,7 +1298,7 @@ The console dashboard API exposes a **Visitors** block with:
 - **Status section** — shows the configured mail transport and warns when console magic links are being used outside a local-only setup.
 - **Table** — verified visitors (email, verified-at, revoked) with a per-row `visitor-revoke` action. Revoke uses the email as the rowKey; calls `revokeByEmail` + `addRevokedVisitorId` so the denylist survives `unrevokeAndRotate`.
 
-## `link` — Peer-to-peer A2A v0.2 transport
+## `link` — Legacy peer transport (A2A v0.2 preview)
 
 ```yaml
 # agent.yaml
@@ -1330,19 +1332,26 @@ config:
 
 ### What it is
 
-The preview mesh entry point. Imports the `@auggy/link` library to expose this
-agent at an HTTP endpoint speaking A2A v0.2 (JSON-RPC), and to send outbound
-traffic to configured peers. Peer-to-peer with mutual bearer auth — no central
-service. Binds its own port, separate from `webTransport`.
+The legacy preview mesh entry point. It imports the `@auggy/link` library to
+expose this agent at an HTTP endpoint using the obsolete A2A v0.2 JSON-RPC
+shape, and to send outbound traffic to configured peers. It is not compatible
+with current A2A 1.0 clients or cards. Peer-to-peer traffic uses mutual bearer
+auth with no central service and binds a separate port from `webTransport`.
 
-`link` remains preview in the pre-1.0 line. Every configured inbound peer that presents a
-valid bearer is admitted as `trustLevel: "agent"`; there is no
-authenticated-but-reduced peer tier yet. Do not use it for public, customer, or
-semi-trusted collaborator traffic until the granular trust model lands.
+`link` remains a legacy preview in the pre-1.0 line. Every configured inbound
+peer that presents a valid bearer is admitted as `trustLevel: "agent"`; there
+is no authenticated-but-reduced peer tier yet. Do not use it for public,
+customer, semi-trusted collaborator, or production A2A interoperability traffic
+until the roadmap acceptance criteria are met.
 
 ### When to use it
 
-You're running two or more Auggy agents that need to talk to each other. The other agent can be on the same machine, a different Railway project, a different cloud — anywhere reachable over HTTPS. Configured peers are addressed by short name (`researcher`, `analyst`, etc.) in the LLM-facing tool surface.
+Use it only for controlled Auggy-to-Auggy preview evaluation when two or more
+agents need to talk to each other. The other agent can be on the same machine,
+a different Railway project, or another cloud reachable over HTTPS. Configured
+peers are addressed by short name (`researcher`, `analyst`, etc.) in the
+LLM-facing tool surface. Do not choose `link` for standards-based A2A
+interoperability.
 
 ### Tools (2)
 
@@ -1448,8 +1457,9 @@ the preview peer directory.
 
 ### AgentCard fields
 
-The `agentCard` block populates `/.well-known/agent.json` served at this
-agent's link endpoint. Anyone who can reach the URL can read it — keep
+The `agentCard` block populates the legacy `/.well-known/agent.json` document
+served at this agent's link endpoint. This is an obsolete preview shape, not a
+current A2A Agent Card. Anyone who can reach the URL can read it — keep
 descriptions and `capabilities[]` appropriately vague if you're cross-org.
 `capabilities` is a free-form `string[]`: semantic, not structural.
 
@@ -1463,7 +1473,7 @@ is one reason the roadmap calls for a more granular trust model.
 
 Operationally, treat each inbound peer bearer like an agent-privilege
 credential. Rotate inbound and outbound bearers independently, keep them out of
-registries and public agent cards, and expose the link port only to peers that
+registries and public metadata documents, and expose the link port only to peers that
 should receive the current `agent` capability surface.
 
 ### Forward-compat with the coordinator

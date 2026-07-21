@@ -36,11 +36,17 @@ This is the inverse of how most frameworks evolve. Most frameworks accumulate fe
 
 ### 2. Framework-agnostic at the boundary, opinionated inside
 
-At the *boundary* — what types you pass in, what protocol you speak — Auggy adopts standards instead of inventing them. Content uses A2A's `Part[]` shape. Discovery uses A2A's Agent Card shape. The chat transport speaks AG-UI's SSE event protocol. Task lifecycle uses A2A's `TaskState` enum.
+At the *boundary* — what types you pass in, what protocol you speak — Auggy
+prefers standards over invention. Some internal content and task types were
+inspired by earlier A2A vocabulary, but the current runtime metadata is not an
+A2A 1.0 Agent Card or wire implementation. The chat transport speaks Auggy's
+documented subset of AG-UI's SSE event protocol.
 
 Inside the kernel, opinionated decisions get made: turn-oriented (not task-oriented), sequential context pipeline (not parallel), pre-built capability table (not runtime checks), explicit token budget (not "fits in the window"). These choices are deliberate trade-offs explained in the relevant docs.
 
-The principle: **adopt standard type shapes early; defer standard wire formats until you need interop.** Types are cheap to change before users exist. Wire formats are expensive once they're in production.
+The principle: **use standard-inspired internal shapes as implementation
+scaffolding, but claim interoperability only after conformance testing.** Wire
+formats are expensive once they are in production.
 
 ### 3. The kernel is turn-oriented, transports are task-oriented
 
@@ -160,7 +166,7 @@ Most of the portable-agent architecture is already in place — it falls out nat
 | `PeerIdentity.orgId` for org-tagging | In the type system |
 | Multiple transports mountable simultaneously | Working — each gets its own queue |
 | Memory namespace isolation across orgs | Working — registry prevents prefix collisions |
-| Agent Card as portable identity | Working — generated from effective config |
+| Legacy Auggy runtime metadata | Working — generated from effective config; not a portable A2A identity |
 | Per-org capability scoping | **Needed** — capability table is currently global |
 | Runtime augment swapping (de-register + re-register) | **Needed** — augments are fixed at `defineAgent` time today |
 | Cross-org federation protocol | **Needed** — A2A transport (Plan 8+) |
@@ -184,7 +190,10 @@ These are deliberate omissions, not oversights. Several are documented as "defer
 ### Deferred to a later plan
 
 - **Token-level streaming from the model.** The current `webTransport` streams *event-level* (RUN_STARTED, TEXT_MESSAGE_CONTENT delta as one chunk, etc.) but the model call is still buffered. True token streaming is a Plan 7+ enhancement.
-- **Full A2A wire protocol.** Plan 2 ships A2A-shaped *types*; Plan 4+ ships A2A-shaped *messages on the wire*. The internal data already matches.
+- **Full A2A wire protocol.** Current internal types are A2A-inspired
+  scaffolding, not a guarantee that the data already matches current A2A. A
+  future transport must include an explicit schema migration and conformance
+  layer.
 - **Additional MCP shapes.** The current `mcp` augment bridges external MCP
   servers into Auggy tools. Other MCP server/hosting shapes are future work.
 - **Multi-vendor model routing.** A future augment.

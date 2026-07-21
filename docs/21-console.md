@@ -18,13 +18,16 @@ Primary surfaces:
     emphasis
   - Copyable Markdown transcript for debugging the visible conversation,
     including rendered messages, visible tool calls, and assistant errors
-- Integrations/status view for the agent's current runtime surfaces
-  - Built-in web endpoints and which ones are safe to open directly
-  - Public discovery posture (`publicIntegration`, `/agent`, agent card)
-  - Read-only web auth posture (`allowAnonymous`, CORS, visitor tokens, external auth)
-  - TypeScript request example first, cURL smoke-test example second
-  - Live augment HTTP route manifest summary
-  - CLI commands for route JSON, OpenAPI, and generated clients
+- Integrations view organized by caller
+  - **Browser application** first, with posture-aware authentication guidance,
+    a browser-safe AG-UI example, CORS state, and browser-callable app routes
+  - **Server application** with server-only bearer guidance and AG-UI examples
+    that read the credential from the environment
+  - **Agent-to-agent** labeled **Coming soon** until the A2A acceptance criteria
+    in [`ROADMAP.md`](./ROADMAP.md#agent-to-agent-mesh) are met
+  - Live augment HTTP route manifest summary, kept distinct from chat over
+    `/agent/run`
+  - CLI commands for route JSON, OpenAPI, and generated route clients
 - Capabilities runtime map
   - Mounted augments grouped by runtime role
   - Routes, tools, memory providers, and auth posture by owner
@@ -54,7 +57,8 @@ These stay out of the v1 first-run console:
 - Credential editing
 - Skill editing
 - Budget internals
-- Visitor/auth policy editing beyond the current public discovery toggle
+- Visitor/auth policy editing beyond disabling an already-published legacy
+  discovery surface
 - Process controls
 - Cross-agent views
 

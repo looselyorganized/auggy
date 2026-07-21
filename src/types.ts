@@ -566,7 +566,7 @@ export interface ThreadHistoryPersistence {
   commit(threadId: string, peer: PeerIdentity, snapshot: ThreadHistorySnapshot): Promise<void>;
 }
 
-// === Agent Card (A2A-shaped, used for discovery) ===
+// === Legacy Auggy runtime metadata (not a current A2A Agent Card) ===
 
 export interface AgentCardProvider {
   name: string;

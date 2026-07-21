@@ -257,27 +257,26 @@ function AugmentNode({
 }
 
 function ConversationSurface({ data }: { data: DashboardData }) {
-  const publicIntegration = data.web.publicIntegration.value === true;
-  const allowAnonymous = data.web.allowAnonymous.value === true;
   return (
     <SurfaceGroup title="Conversation" icon={<Network className="size-4" />}>
-      <SurfaceRow
-        title="POST /agent/run"
-        detail={allowAnonymous ? "AG-UI chat, anonymous allowed" : "AG-UI chat, creator auth"}
-        badges={[allowAnonymous ? "anonymous" : "creator"]}
-      />
-      <SurfaceRow
-        title="GET /agent"
-        detail={publicIntegration ? "Developer integration page published" : "404 until published"}
-        badges={[publicIntegration ? "public" : "private"]}
-      />
-      <SurfaceRow
-        title="GET /.well-known/agent-card.json"
-        detail={publicIntegration ? "Public agent card discovery" : "Bearer-only discovery"}
-        badges={[publicIntegration ? "public" : "bearer"]}
-      />
+      {buildConversationSurfaceRows(data).map((row) => (
+        <SurfaceRow key={row.title} {...row} />
+      ))}
     </SurfaceGroup>
   );
+}
+
+export function buildConversationSurfaceRows(
+  data: { web: Pick<DashboardData["web"], "allowAnonymous"> },
+): Array<{ title: string; detail: string; badges: string[] }> {
+  const allowAnonymous = data.web.allowAnonymous.value === true;
+  return [
+    {
+      title: "POST /agent/run",
+      detail: allowAnonymous ? "AG-UI chat, anonymous allowed" : "AG-UI chat, creator auth",
+      badges: [allowAnonymous ? "anonymous" : "creator"],
+    },
+  ];
 }
 
 function RouteSurface({
@@ -404,9 +403,16 @@ function AuthSurface({ data }: { data: DashboardData }) {
   return (
     <SurfaceGroup title="Guardrails / Auth" icon={<Shield className="size-4" />}>
       <SurfaceRow
-        title="Public discovery"
-        detail={data.web.publicIntegration.value === true ? "Published" : "Private"}
-        badges={[data.web.publicIntegration.value === true ? "public" : "private"]}
+        title="Legacy runtime metadata"
+        detail={
+          data.web.publicIntegration.value === true
+            ? "Published through Auggy-only endpoints; not an A2A integration"
+            : "Private Auggy-only metadata; not an A2A integration"
+        }
+        badges={[
+          "legacy",
+          data.web.publicIntegration.value === true ? "public" : "private",
+        ]}
       />
       <SurfaceRow
         title="Anonymous chat"

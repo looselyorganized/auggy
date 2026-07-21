@@ -101,7 +101,8 @@ The card is built **once at construction time**, from the effective config. This
 
 The card is immutable after construction. If you change augments at runtime (which you can't, because there's no API to do that), the card wouldn't update. This is intentional — the card represents what the agent *advertised at startup*, and changing it mid-flight would invalidate any consumer that cached it.
 
-See [03-types.md § agent card](./03-types.md#section-12--agent-card-a2a-discovery) for the card schema.
+See [03-types.md § agent card](./03-types.md#section-12--agent-card-legacy-auggy-metadata)
+for the current internal metadata schema and its interoperability caveat.
 
 ### 5. Construct the lifecycle manager
 

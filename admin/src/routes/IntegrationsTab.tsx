@@ -1,17 +1,22 @@
 import { useState } from "react";
+import { useActionDispatcher } from "@/components/admin/useActionDispatcher";
+import { AgentIntegrationPanel } from "@/components/integrations/AgentIntegrationPanel";
 import { BrowserIntegrationPanel } from "@/components/integrations/BrowserIntegrationPanel";
 import { ServerIntegrationPanel } from "@/components/integrations/ServerIntegrationPanel";
 import {
   IntegrationModeSelector,
   type IntegrationMode,
 } from "@/components/integrations/IntegrationModeSelector";
-import { Badge } from "@/components/ui/badge";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { useDashboardContext } from "@/components/admin/DashboardContext";
 import { selectBrowserConnection, selectServerConnection } from "@/lib/integration-guidance";
+import type { DashboardData } from "@/lib/types";
+
+const PUBLIC_INTEGRATION_SIGNAL_KEY = "auggy-public-integration";
 
 export function IntegrationsTab() {
-  const { data, loading, error } = useDashboardContext();
+  const { data, loading, error, updateData } = useDashboardContext();
+  const { dispatch, busy } = useActionDispatcher();
   const [mode, setMode] = useState<IntegrationMode>("browser");
   const [copied, setCopied] = useState<string | null>(null);
   const origin = typeof window === "undefined" ? "" : window.location.origin;
@@ -48,12 +53,26 @@ export function IntegrationsTab() {
     "agent";
   const browser = selectBrowserConnection(origin, data.web);
   const server = selectServerConnection(origin);
+  const legacyDiscoveryPublic = data.web.publicIntegration.value === true;
 
   async function copy(label: string, value: string) {
     if (!value || typeof navigator === "undefined") return;
     await navigator.clipboard.writeText(value);
     setCopied(label);
     window.setTimeout(() => setCopied((current) => (current === label ? null : current)), 1200);
+  }
+
+  async function makeLegacyDiscoveryPrivate() {
+    if (!legacyDiscoveryPublic) return;
+    const ok = await dispatch({
+      actionId: "posture-public-integration-set",
+      values: { value: "false" },
+      confirmRequired: false,
+      refresh: "none",
+    });
+    if (!ok) return;
+    updateData((current) => patchPublicIntegration(current, false));
+    signalPublicIntegrationChange(false);
   }
 
   return (
@@ -92,10 +111,10 @@ export function IntegrationsTab() {
         )}
 
         {mode === "agent" && (
-          <ModePlaceholder
-            title="Agent-to-agent"
-            description="Standards-based agent interoperability is coming soon."
-            badge="Coming soon"
+          <AgentIntegrationPanel
+            legacyDiscoveryPublic={legacyDiscoveryPublic}
+            disabling={busy}
+            onMakePrivate={makeLegacyDiscoveryPrivate}
           />
         )}
 
@@ -107,24 +126,41 @@ export function IntegrationsTab() {
   );
 }
 
-function ModePlaceholder({
-  title,
-  description,
-  badge,
-}: {
-  title: string;
-  description: string;
-  badge?: string;
-}) {
-  return (
-    <section className="rounded-lg border border-dashed p-6" aria-labelledby={`${title}-title`}>
-      <div className="flex flex-wrap items-center gap-2">
-        <h3 id={`${title}-title`} className="text-base font-semibold">
-          {title}
-        </h3>
-        {badge && <Badge variant="secondary">{badge}</Badge>}
-      </div>
-      <p className="mt-2 text-sm text-muted-foreground">{description}</p>
-    </section>
-  );
+function signalPublicIntegrationChange(value: boolean): void {
+  try {
+    localStorage.setItem(PUBLIC_INTEGRATION_SIGNAL_KEY, `${value}:${Date.now()}`);
+  } catch {
+    /* localStorage unavailable */
+  }
+}
+
+function patchPublicIntegration(data: DashboardData, value: boolean): DashboardData {
+  return {
+    ...data,
+    web: {
+      ...data.web,
+      publicIntegration: {
+        ...data.web.publicIntegration,
+        value,
+        source: "/console override",
+      },
+    },
+    blocks: data.blocks.map((block) => {
+      if (block.augmentName !== "web" || block.title !== "Posture") return block;
+      return {
+        ...block,
+        sections: block.sections.map((section) => {
+          if (section.kind !== "keyValue") return section;
+          return {
+            ...section,
+            rows: section.rows.map((row) =>
+              row.label === "publicIntegration"
+                ? { ...row, value: String(value), source: "/console override" }
+                : row,
+            ),
+          };
+        }),
+      };
+    }),
+  };
 }

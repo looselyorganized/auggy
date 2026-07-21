@@ -178,10 +178,28 @@ because the current primitives point in the right direction.
 
 ### Agent-to-Agent Mesh
 
-Auggy already has an `agent` trust tier, agent-shaped route auth, `link` preview
-peer traffic, agent cards, budgets, and A2A-shaped internal types. The long-term
-mesh adds peer discovery, signed identity, scoped delegation, per-peer policy,
-and budgeted route-backed actions.
+Status: **Coming soon.** Auggy is not currently a production A2A implementation.
+The generic payload served from `/.well-known/agent-card.json` is Auggy runtime
+metadata, not a current A2A Agent Card, and the `link` augment is a legacy
+A2A-v0.2 preview rather than a supported interoperability surface.
+
+The existing `agent` trust tier, agent-shaped route auth, preview peer traffic,
+budgets, and A2A-shaped internal types are useful implementation primitives.
+They do not constitute protocol compatibility. Agent-to-agent support is ready
+to leave "Coming soon" only when all of these acceptance criteria are met:
+
+- Emit a current A2A 1.0 Agent Card with the required schema, supported
+  interfaces, task capabilities, and authentication declarations.
+- Publish only explicit, sanitized, opt-in capabilities. Internal/model-facing
+  tools and operator metadata must never become public by implication.
+- Implement authenticated peer discovery and task exchange, including clear
+  identity and credential-rotation boundaries.
+- Enforce scoped peer permissions, budgets, and durable audit records instead
+  of treating every authenticated peer as universally trusted.
+- Pass independent protocol-conformance and cross-implementation
+  interoperability tests, not only Auggy-to-Auggy tests.
+- Provide an explicit migration and removal path for the generic legacy card
+  payload and the `link` augment's v0.2 wire format and discovery URL.
 
 ### Delegated Human Consent
 

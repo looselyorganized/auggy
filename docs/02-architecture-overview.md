@@ -77,7 +77,11 @@ Defines `defineAgent(config, model) → AgentHandle`. This is the primary entry 
 `start()` boots all augments, registers transports (each gets its own `TransportQueue` and a `TransportKernel` view onto the runtime), and starts the idle timer.
 
 ### `src/agent-card.ts`
-`generateAgentCard(config) → AgentCard`. Walks the augment list and produces a JSON document conforming to the A2A Agent Card shape: provider, purpose, capabilities (memory/transport detected from augments), skills (tool name+description+category from every augment's tools), interfaces, extensions.
+`generateAgentCard(config) → AgentCard`. Walks the augment list and produces
+legacy Auggy runtime metadata: provider, purpose, capabilities
+(memory/transport detected from augments), skills derived from every augment's
+tools, interfaces, and extensions. This internal shape predates current A2A 1.0
+and is not an interoperable A2A Agent Card.
 
 ### `src/kernel/`
 The runtime. Each file is one component with one responsibility. See [04-kernel.md](./04-kernel.md) for details on each.
