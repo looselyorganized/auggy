@@ -40,7 +40,7 @@ For copyable Next.js usage files, inspect
 
 | Target | Includes | Omits | Credentials |
 | --- | --- | --- | --- |
-| browser | `none`, `visitor.optional`, `visitor.required` | `bearer`, `creator`, `agent.required`, webhook-policy routes | `visitorToken`, `onVisitorToken`, `authAssertion` |
+| browser | `none`, `visitor.optional`, `visitor.required` | `bearer`, `creator`, `agent.required`, webhook-policy routes | `visitorToken`, `onVisitorToken`, `authAssertion`, `authAssertionHeader` |
 | server | `none`, `bearer`, `creator`, `agent.required`, server-callable webhook-policy routes | visitor-token routes | `bearerToken`, `agentCredentials` |
 
 Never ship creator bearer tokens, agent credentials, provider API keys, or
@@ -60,6 +60,8 @@ const api = createAuggyClient({
     if (!res.ok) return undefined;
     return (await res.json()).assertion;
   },
+  // Match webTransport.externalAuth.header when it is customized.
+  authAssertionHeader: "x-auggy-auth-assertion",
 });
 
 const services = await api.get("/services");
@@ -69,8 +71,10 @@ if (services.ok) {
 ```
 
 `authAssertion` is for app-signed visitor assertions from a normal app login.
-The browser client forwards the assertion with `x-auggy-auth-assertion`; it
-does not create or verify assertions.
+The browser client forwards the assertion with `x-auggy-auth-assertion` by
+default; set `authAssertionHeader` to the same non-reserved `x-*` header as
+`webTransport.externalAuth.header` when customized. It does not create or
+verify assertions.
 
 ## Server Usage
 

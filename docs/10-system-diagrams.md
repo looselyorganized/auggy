@@ -496,7 +496,7 @@ auggy/
 │   ├── helpers.ts ················ defineAugment, defineTool
 │   ├── tokenizer.ts ·············· char/4 estimator (future: Rust native)
 │   ├── agent.ts ·················· defineAgent → AgentHandle
-│   ├── agent-card.ts ············· generateAgentCard (A2A discovery)
+│   ├── agent-card.ts ············· generateAgentCard (legacy Auggy metadata)
 │   ├── index.ts ·················· public API surface
 │   │
 │   ├── kernel/ ··················· THE RUNTIME (finished, ~1000 LOC)

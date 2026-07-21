@@ -61,9 +61,10 @@ export interface ContextBlock {
 
 **`tokenCount`** is optional. If absent, the allocator computes it via the tokenizer. Augments can pre-compute it if they have a faster path.
 
-## Section 2 — A2A-compatible content (`Part`)
+## Section 2 — A2A-inspired content (`Part`)
 
-Content is polymorphic. Following A2A's shape:
+Content is polymorphic. This internal union was inspired by an earlier A2A
+shape; it is not itself a current A2A wire contract:
 
 ```ts
 export type Part =
@@ -91,7 +92,11 @@ export type TaskState =
   | "rejected";
 ```
 
-This is straight from A2A's task states. v1 only ever produces `completed`, `failed`, `canceled`, and `rejected` — but the type space exists so transports that need to expose `input-required` (approval gates) or `auth-required` (credential prompts) can do so without a type change.
+This internal state set was inspired by A2A task states. v1 only ever produces
+`completed`, `failed`, `canceled`, and `rejected` — but the type space exists so
+transports that need to expose `input-required` (approval gates) or
+`auth-required` (credential prompts) can do so without a type change. A future
+A2A transport must translate against the then-current protocol explicitly.
 
 `TurnResult.status` is one of these values. `KernelEvent { kind: "run_finished" }` carries one too.
 
@@ -459,7 +464,7 @@ export interface Storage {
 
 A minimal KV interface that the history manager uses for `save()` and `restore()`. There is no built-in `Storage` implementation in v1 — it's defined so augments can plug in whatever backend (filesystem, Redis, SQLite, Supabase) without touching the kernel.
 
-## Section 12 — Agent Card (A2A discovery)
+## Section 12 — Agent Card (legacy Auggy metadata)
 
 ```ts
 export interface AgentCardProvider {
@@ -499,7 +504,10 @@ export interface AgentCard {
 }
 ```
 
-The Agent Card is the JSON document an agent serves at `/.well-known/agent-card.json`. Other agents and discovery services use it to learn what an agent can do.
+This `AgentCard` is the legacy Auggy metadata document served at
+`/.well-known/agent-card.json`. It is useful for internal inspection, but it
+does not conform to the current A2A 1.0 Agent Card schema and should not be used
+as an interoperability contract.
 
 In v1:
 - `provider.name` = the `name` from `AgentConfig`
@@ -508,11 +516,16 @@ In v1:
 - `capabilities.pushNotifications` = `false` (reserved for the future webhook augment)
 - `capabilities.memory` = `true` if any augment has a `memory` field
 - `capabilities.transport` = `true` if any augment has a `transport` field
-- `skills` = explicit public A2A capabilities only; omitted when none are declared
+- `skills` = tool-derived entries from every configured augment
 - `interfaces` = `["HTTP+JSON"]` (will grow as more transports land)
-- `extensions.auggy.tools` = internal runtime tool inventory (`name`, `description`, `category`)
+- `extensions.auggy.tools` = reserved internal extension field (currently empty
+  in generated cards)
 
-The card is built once at `defineAgent` time from the *effective* config (after `wireMemoryBus` adds the synthetic `memory-bus` augment), so generic memory tools appear under `extensions.auggy.tools`. They are not published as A2A skills.
+The card is built once at `defineAgent` time from the *effective* config (after
+`wireMemoryBus` adds the synthetic `memory-bus` augment), so generic memory
+tools and other model-facing tools can appear in `skills`. Enabling public
+legacy discovery therefore requires an explicit content review; the generator
+does not provide a sanitized public-capability boundary.
 
 ## Section 13 — Transport contract
 
@@ -593,8 +606,8 @@ model-facing context blocks.
 
 An augment's runtime surfaces are defined by the concrete fields it provides.
 Tools, context, transports, memory, and lifecycle hooks need no duplicate
-capability declaration. Agent Card discovery is likewise derived from the
-mounted augment structure.
+capability declaration. Legacy Auggy runtime metadata is likewise derived from
+the mounted augment structure; it is not a sanitized A2A discovery contract.
 
 **`context()`** is the augment's contribution to the prompt. Returns either an array of `ContextBlock`s or a single string (which gets wrapped as a default-priority block).
 

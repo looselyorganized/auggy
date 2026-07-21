@@ -1,5 +1,36 @@
 import { describe, expect, it } from "bun:test";
-import { formatMemorySurfaceCapabilities } from "./CapabilitiesTab";
+import { buildConversationSurfaceRows, formatMemorySurfaceCapabilities } from "./CapabilitiesTab";
+
+describe("buildConversationSurfaceRows", () => {
+  it("reports the supported conversation endpoint without promoting legacy metadata routes", () => {
+    const rows = buildConversationSurfaceRows({
+      web: {
+        allowAnonymous: { value: false, source: "default" },
+      },
+    });
+
+    expect(rows).toEqual([
+      {
+        title: "POST /agent/run",
+        detail: "AG-UI chat, creator auth",
+        badges: ["creator"],
+      },
+    ]);
+    expect(rows.map((row) => row.title)).not.toContain("GET /agent");
+    expect(rows.map((row) => row.title)).not.toContain("GET /.well-known/agent-card.json");
+  });
+
+  it("describes anonymous access when the runtime allows it", () => {
+    const rows = buildConversationSurfaceRows({
+      web: {
+        allowAnonymous: { value: true, source: "config" },
+      },
+    });
+
+    expect(rows[0]?.detail).toBe("AG-UI chat, anonymous allowed");
+    expect(rows[0]?.badges).toEqual(["anonymous"]);
+  });
+});
 
 describe("formatMemorySurfaceCapabilities", () => {
   it("preserves the context and tools memory badge", () => {

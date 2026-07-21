@@ -77,7 +77,11 @@ Defines `defineAgent(config, model) → AgentHandle`. This is the primary entry 
 `start()` boots all augments, registers transports (each gets its own `TransportQueue` and a `TransportKernel` view onto the runtime), and starts the idle timer.
 
 ### `src/agent-card.ts`
-`generateAgentCard(config) → AgentCard`. Walks the augment list and produces a JSON document conforming to the A2A Agent Card shape: provider, purpose, capabilities (memory/transport detected from augments), skills (tool name+description+category from every augment's tools), interfaces, extensions.
+`generateAgentCard(config) → AgentCard`. Walks the augment list and produces
+legacy Auggy runtime metadata: provider, purpose, capabilities
+(memory/transport detected from augments), skills derived from every augment's
+tools, interfaces, and extensions. This internal shape predates current A2A 1.0
+and is not an interoperable A2A Agent Card.
 
 ### `src/kernel/`
 The runtime. Each file is one component with one responsibility. See [04-kernel.md](./04-kernel.md) for details on each.
@@ -189,7 +193,7 @@ Turns Auggy from "write a `main.ts`" into "configure a YAML file and run `auggy 
 ### `src/parts.ts`, `src/helpers.ts`, `src/tokenizer.ts`, `src/http.ts`
 Small utility modules.
 
-- `parts.ts` — `extractText(parts)`, `textPart(text)`, `dataPart(data)`. The A2A `Part[]` shape requires helpers to convert between text-only and the polymorphic content type.
+- `parts.ts` — `extractText(parts)`, `textPart(text)`, `dataPart(data)`. Auggy's standard-inspired `Part[]` shape requires helpers to convert between text-only and polymorphic content; it is not a current A2A wire contract.
 - `helpers.ts` — `defineAugment(spec)`, `defineTool(spec)`. These are pass-throughs that exist purely for type inference (so users get autocomplete on partial specs). They're not factories — they don't add behavior.
 - `tokenizer.ts` — `createTokenizer()` returns a `{count(text)}` object. v1 uses a simple character-divided-by-4 estimate. Real tokenization is a model-specific concern that should live in the `ModelClient` adapter.
 - `http.ts` — shared HTTP client used by `webFetch` and `knowledge`. Enforces redirect security (same-origin on auth redirects), body size cap, and auth-header stripping on cross-origin redirects.

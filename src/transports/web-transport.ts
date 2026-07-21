@@ -69,6 +69,25 @@ import { join } from "node:path";
 const PUBLIC_PAGE_CACHE_CONTROL = "public, max-age=0, must-revalidate";
 const DEFAULT_EXTERNAL_AUTH_ASSERTION_HEADER = "x-auggy-auth-assertion";
 const CONSOLE_INTERNAL_RUN_HEADER = "x-auggy-console-internal";
+const HTTP_HEADER_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
+const RESERVED_EXTERNAL_AUTH_HEADERS = new Set([
+  "authorization",
+  "content-type",
+  "idempotency-key",
+  "x-agent-id",
+  "x-agent-secret",
+  CONSOLE_INTERNAL_RUN_HEADER,
+  "x-org-id",
+  "x-peer-id",
+  "x-peer-kind",
+  "x-peer-name",
+  "x-visitor-token",
+  "x-forwarded-for",
+  "x-forwarded-host",
+  "x-forwarded-port",
+  "x-forwarded-proto",
+  "x-real-ip",
+]);
 
 // ---------------------------------------------------------------------------
 // Types
@@ -104,7 +123,7 @@ export interface WebTransportExternalAuthOptions extends ExternalAuthPrincipalOp
 export interface WebTransportOptions {
   port: number;
   auth: { type: "bearer"; token: string };
-  cors?: { origins: string[] };
+  cors?: { origins: [string] };
   maxMessageLength?: number;
   /**
    * Admitted agent list. Each entry has an `id` (sent as `x-agent-id` header)
@@ -704,6 +723,8 @@ function parseConsoleRunMetadata(
  */
 export function webTransport(opts: WebTransportOptions): Augment {
   const overrideDir = opts.overrideDir ?? opts.agentDir;
+  const externalAuthHeaderName =
+    opts.externalAuth?.header?.trim().toLowerCase() ?? DEFAULT_EXTERNAL_AUTH_ASSERTION_HEADER;
   let server: ReturnType<typeof Bun.serve> | null = null;
   let startServer: (() => void) | null = null;
   let kernel: TransportKernel | null = null;
@@ -977,7 +998,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
             },
             {
               label: "External auth header",
-              value: opts.externalAuth?.header ?? DEFAULT_EXTERNAL_AUTH_ASSERTION_HEADER,
+              value: externalAuthHeaderName,
             },
             {
               label: "External auth audience",
@@ -1016,7 +1037,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
               type: "boolean",
               required: true,
               helpText:
-                "Persists across restart via admin-overrides.json. Publishes /agent and unauthenticated agent-card discovery; does not publish /agent/run.",
+                "Persists across restart via admin-overrides.json. Publishes /agent and unauthenticated legacy Auggy runtime metadata; does not publish /agent/run or a current A2A Agent Card.",
             },
           ],
         },
@@ -1379,8 +1400,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
     const config = opts.externalAuth;
     if (!config) return null;
 
-    const headerName = config.header ?? DEFAULT_EXTERNAL_AUTH_ASSERTION_HEADER;
-    const assertion = req.headers.get(headerName);
+    const assertion = req.headers.get(externalAuthHeaderName);
     if (!assertion) return null;
 
     const verified = verifyExternalAuthAssertion(assertion, {
@@ -1421,39 +1441,40 @@ export function webTransport(opts: WebTransportOptions): Augment {
       state: "anonymous",
       principal: anonymousRoutePrincipal(),
     };
-    const externalOrAnonymous = async () => (await resolveExternalVisitorAuth(req)) ?? anonymous;
-    if (!visitorTokensEnabled || !signingKey) return externalOrAnonymous();
+    const externalAuth = await resolveExternalVisitorAuth(req);
+    if (externalAuth?.state === "recognized") return externalAuth;
+    if (!visitorTokensEnabled || !signingKey) return anonymous;
 
     const tokenHeader = req.headers.get("x-visitor-token");
-    if (!tokenHeader) return externalOrAnonymous();
+    if (!tokenHeader) return anonymous;
 
     const payload = await verifyVisitorToken(signingKey, tokenHeader);
-    if (!payload) return externalOrAnonymous();
+    if (!payload) return anonymous;
 
     try {
       if (opts.visitorTokens?.revocationCheck?.(payload.visitorId)) {
-        return externalOrAnonymous();
+        return anonymous;
       }
     } catch {
-      return externalOrAnonymous();
+      return anonymous;
     }
 
     const expectedBinding = opts.visitorTokens?.agentBinding;
     if (expectedBinding !== undefined && payload.agentId !== expectedBinding) {
-      return externalOrAnonymous();
+      return anonymous;
     }
 
     let identity: Omit<RouteVisitorIdentity, "agentId" | "issuedAt" | "expiresAt"> | null = null;
     try {
       identity = opts.visitorTokens?.identityLookup?.(payload.visitorId) ?? null;
     } catch {
-      return externalOrAnonymous();
+      return anonymous;
     }
     if (opts.visitorTokens?.identityLookup && !identity) {
-      return externalOrAnonymous();
+      return anonymous;
     }
     if (identity && identity.visitorId !== payload.visitorId) {
-      return externalOrAnonymous();
+      return anonymous;
     }
 
     const visitorAuth: RouteVisitorAuthContext = {
@@ -1476,7 +1497,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
         ...(identity?.externalAuth !== undefined ? { externalAuth: identity.externalAuth } : {}),
       },
     };
-    return mergeMatchingExternalVisitorAuth(visitorAuth, await resolveExternalVisitorAuth(req));
+    return visitorAuth;
   }
 
   async function resolveConsoleVisitorIdentity(visitorToken: string): Promise<{
@@ -1520,38 +1541,6 @@ export function webTransport(opts: WebTransportOptions): Augment {
       status: "verified",
       email: identity.email,
       expiresAt: payload.expiresAt,
-    };
-  }
-
-  function mergeMatchingExternalVisitorAuth(
-    visitorAuth: Extract<RouteVisitorAuthContext, { state: "recognized" }>,
-    externalAuth: RouteVisitorAuthContext | null,
-  ): RouteVisitorAuthContext {
-    if (externalAuth?.state !== "recognized" || externalAuth.visitorId !== visitorAuth.visitorId) {
-      return visitorAuth;
-    }
-
-    const email = visitorAuth.email ?? externalAuth.email;
-    const verifiedAt = visitorAuth.verifiedAt ?? externalAuth.verifiedAt;
-    const reverifyDueAt = visitorAuth.reverifyDueAt ?? externalAuth.reverifyDueAt;
-
-    return {
-      ...visitorAuth,
-      ...(email !== undefined ? { email } : {}),
-      ...(verifiedAt !== undefined ? { verifiedAt } : {}),
-      ...(reverifyDueAt !== undefined ? { reverifyDueAt } : {}),
-      ...(externalAuth.externalAuth !== undefined
-        ? { externalAuth: externalAuth.externalAuth }
-        : {}),
-      principal: {
-        ...visitorAuth.principal,
-        ...(email !== undefined ? { email } : {}),
-        ...(verifiedAt !== undefined ? { verifiedAt } : {}),
-        ...(reverifyDueAt !== undefined ? { reverifyDueAt } : {}),
-        ...(externalAuth.externalAuth !== undefined
-          ? { externalAuth: externalAuth.externalAuth }
-          : {}),
-      },
     };
   }
 
@@ -1676,7 +1665,6 @@ export function webTransport(opts: WebTransportOptions): Augment {
     let visitorPayload: VisitorTokenPayload | null = null;
     let newToken: string | null = null;
     async function applyExternalVisitorAuth(): Promise<void> {
-      if (visitorPayload) return;
       const externalAuth = await readExternalVisitorAuth();
       if (externalAuth?.state === "recognized") {
         visitorPayload = {
@@ -2265,9 +2253,8 @@ export function webTransport(opts: WebTransportOptions): Augment {
       "x-agent-secret",
       "idempotency-key",
     ];
-    const externalAuthHeader = opts.externalAuth?.header?.toLowerCase();
-    if (externalAuthHeader && !allowedHeaders.includes(externalAuthHeader)) {
-      allowedHeaders.push(externalAuthHeader);
+    if (opts.externalAuth && !allowedHeaders.includes(externalAuthHeaderName)) {
+      allowedHeaders.push(externalAuthHeaderName);
     }
     const headers: Record<string, string> = {
       "access-control-allow-methods": "GET, POST, OPTIONS",
@@ -2330,6 +2317,11 @@ export function webTransport(opts: WebTransportOptions): Augment {
     adminInfo,
     adminActions,
     async onBoot() {
+      if (opts.cors && opts.cors.origins.length !== 1) {
+        throw new Error(
+          "[web-transport] cors.origins must contain exactly one browser origin. Multiple Access-Control-Allow-Origin values are not valid; run separate public origins behind an app proxy until dynamic origin matching is supported.",
+        );
+      }
       if (opts.externalAuth) {
         if (!opts.externalAuth.secret) {
           throw new Error(
@@ -2351,8 +2343,18 @@ export function webTransport(opts: WebTransportOptions): Augment {
             );
           }
         }
-        if (opts.externalAuth.header !== undefined && opts.externalAuth.header.trim() === "") {
-          throw new Error("[web-transport] externalAuth.header must be non-empty when configured.");
+        if (opts.externalAuth.header !== undefined) {
+          const header = externalAuthHeaderName;
+          if (
+            !header ||
+            !HTTP_HEADER_NAME.test(header) ||
+            !header.startsWith("x-") ||
+            RESERVED_EXTERNAL_AUTH_HEADERS.has(header)
+          ) {
+            throw new Error(
+              "[web-transport] externalAuth.header must be a non-reserved x-* HTTP header name.",
+            );
+          }
         }
         if (opts.externalAuth.maxTtlSeconds !== undefined && opts.externalAuth.maxTtlSeconds <= 0) {
           throw new Error(

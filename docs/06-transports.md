@@ -218,7 +218,7 @@ The reference transport implementation. ~250 LOC. Speaks AG-UI over SSE on three
 export interface WebTransportOptions {
   port: number;
   auth: { type: "bearer"; token: string };
-  cors?: { origins: string[] };
+  cors?: { origins: [string] }; // exactly one browser origin in the current static-CORS implementation
   maxMessageLength?: number;     // default 4000
   access?: { agents?: AgentAccessEntry[] };  // admitted agent list
   concurrency?: number;          // default 1
@@ -230,7 +230,7 @@ export interface WebTransportOptions {
     signingKey?: string;     // derive from VISITOR_SIGNING_KEY; ephemeral if absent
   };
   publicFrontendUrl?: string;    // optional 302 redirect target for GET /
-  publicIntegration?: boolean;   // publish developer discovery: /agent + public agent-card JSON
+  publicIntegration?: boolean;   // publish legacy discovery: /agent + generic runtime metadata
   adminRoute?: boolean;          // built-in /console surface; default true
   consoleChat?: {
     dbPath?: string | null;      // durable SQLite path; null keeps chat in memory
@@ -246,7 +246,7 @@ export interface WebTransportOptions {
 | `GET` | `/` | Optional 302 redirect to `publicFrontendUrl`; otherwise a minimal public placeholder. |
 | `GET` | `/agent` | Optional published developer integration page when `publicIntegration: true`. |
 | `GET` | `/health` | Liveness check. Returns `{status: "healthy"}`. |
-| `GET` | `/.well-known/agent-card.json` | Agent card discovery. Published only when `publicIntegration: true`; otherwise bearer-only. |
+| `GET` | `/.well-known/agent-card.json` | Legacy Auggy runtime metadata. Published only when `publicIntegration: true`; otherwise bearer-only. Not a current A2A Agent Card. |
 | (anything else) | `404 Not Found` |
 
 ### `POST /agent/run` — the main path
@@ -481,21 +481,32 @@ function handleAgentCard(req: Request): Response {
 }
 ```
 
-Returns the JSON-encoded `AgentCard`. The card was generated once at `defineAgent` time and cached.
+Returns the JSON-encoded internal `AgentCard` generated at `defineAgent` time
+and cached. Despite the well-known path, this payload does not implement the
+current A2A 1.0 Agent Card schema and must not be advertised to A2A clients as
+an interoperable discovery document.
 
-The path `/.well-known/agent-card.json` is an A2A convention — A2A discovery clients know to check this path on any agent host. Auggy keeps that discovery private by default: unauthenticated requests return `404` unless the creator sets `webTransport.options.publicIntegration: true`. Creator/developer requests with the web bearer can still fetch the card while public discovery is disabled.
+Auggy keeps this legacy discovery payload private by default: unauthenticated
+requests return `404` unless the creator sets
+`webTransport.config.publicIntegration: true`. Creator/developer requests with
+the web bearer can still fetch it while public discovery is disabled.
 
-`publicIntegration: true` publishes developer discovery surfaces only. It does **not** make `POST /agent/run` unauthenticated, does **not** expose `/console`, and does **not** publish secrets or operator-only setup details.
+`publicIntegration: true` publishes `/agent` and this metadata payload. It does
+**not** make `POST /agent/run` unauthenticated and does **not** expose
+`/console`, but the payload can describe mounted capabilities and tools.
+Operators must review that content before publishing it; it is not a
+public-safety or A2A-conformance boundary.
 
 ### `GET /agent` and `HEAD /agent` — optional published developer integration page
 
-`/agent` is the human-readable companion to the agent card. It is disabled by default and returns `404`.
+`/agent` is the human-readable companion to the legacy Auggy metadata payload.
+It is disabled by default and returns `404`.
 
 When `publicIntegration: true`, `GET /agent` returns a conservative public HTML page containing:
 
-- Agent name and public-safe purpose
+- Agent name and configured purpose
 - Protocol-level summary
-- Link to `/.well-known/agent-card.json`
+- Link to the legacy `/.well-known/agent-card.json` metadata
 - Generic `POST /agent/run` request shape with no secrets
 - Generic authentication guidance
 
@@ -540,7 +551,12 @@ The HTML body is rendered once at agent boot and cached in the transport — per
 
 **Other methods on `/`** (POST, PUT, DELETE, PATCH) continue to return `404 Not Found`. CORS preflight (`OPTIONS /`) is unchanged. `/agent/run`, `/health`, `/agent`, and `/.well-known/agent-card.json` are unaffected by `publicFrontendUrl`.
 
-**Auth posture.** The default `/` page is unauthenticated and intentionally minimal. Developer discovery is separate and private by default: `publicIntegration: true` is the creator's explicit decision to publish `/agent` and the agent card. It does not change `/agent/run` authentication or `/console` access.
+**Auth posture.** The default `/` page is unauthenticated and intentionally
+minimal. Legacy developer discovery is separate and private by default:
+`publicIntegration: true` is the creator's explicit decision to publish
+`/agent` and the generic runtime metadata. It does not change `/agent/run`
+authentication or `/console` access, and it does not sanitize the published
+tool-derived entries.
 
 For local operator testing, run `auggy chat` instead — it provides a polished
 chat surface against agents you've started with `auggy dev`, without exposing a
@@ -627,7 +643,9 @@ Plus the full integration test in `tests/integration/full-agent.test.ts` which e
 These are deferred to future plans or future improvements:
 
 - **Token-level streaming** — the `text_message` kernel event arrives as one chunk; future work splits it.
-- **Full A2A wire format** — the spine transport (Plan 4) will speak A2A natively.
+- **Current A2A wire format** — the generic card and `link` preview are legacy
+  Auggy surfaces, not production A2A. See the acceptance criteria in
+  [`ROADMAP.md`](./ROADMAP.md#agent-to-agent-mesh).
 - **MCP server transport** — Plan 6.
 - **Cancellation from the client side** — the client closing the SSE stream doesn't currently abort the kernel turn.
 - **Synchronous gate-decision API (T5)** — would allow returning 429/503 before opening the stream, replacing the current in-stream error code approach.

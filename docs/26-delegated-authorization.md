@@ -342,8 +342,9 @@ if (result.ok) {
 }
 ```
 
-The generated client sends the assertion as `x-auggy-auth-assertion`. It does
-not create the assertion, verify the app session, or know the assertion secret.
+The generated client sends the assertion as `x-auggy-auth-assertion` by default,
+or as the same custom header configured in `webTransport.externalAuth.header`.
+It does not create the assertion, verify the app session, or know the assertion secret.
 `currentAppAccessToken` is only needed for token-backed sessions such as the
 Supabase bearer example above; cookie-backed Clerk/Supabase apps can return
 `undefined`.

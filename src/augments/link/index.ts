@@ -654,7 +654,7 @@ export async function link(opts: LinkAugmentInternalOptions): Promise<Augment> {
   const linkSendTool = defineTool({
     name: "link_send",
     description:
-      "Send a text message to another agent via A2A peer-to-peer. The `to` parameter must be one of the peers configured in this agent's link config — call `link_list` to see them. Returns the peer's synchronous reply text when available, or a task id if the peer chose to handle the request asynchronously.",
+      "Send a text message to another configured agent through Auggy's legacy A2A-v0.2 link preview. The `to` parameter must be one of the peers configured in this agent's link config — call `link_list` to see them. Returns the peer's synchronous reply text when available, or a task id if the peer chose to handle the request asynchronously.",
     category: "communication",
     input: z.object({
       to: z
@@ -702,7 +702,7 @@ export async function link(opts: LinkAugmentInternalOptions): Promise<Augment> {
   const linkListTool = defineTool({
     name: "link_list",
     description:
-      "List the peers configured for outbound A2A traffic. Returns `{ peers: [{ name, purpose?, examples? }] }`. The `name` is the value to pass as the `to` argument to `link_send`. `purpose` and `examples` (when present) describe what the peer is good for and what kinds of asks to delegate.",
+      "List peers configured for Auggy's legacy A2A-v0.2 link preview. Returns `{ peers: [{ name, purpose?, examples? }] }`. The `name` is the value to pass as the `to` argument to `link_send`. `purpose` and `examples` (when present) describe what the peer is good for and what kinds of asks to delegate.",
     category: "communication",
     input: z.object({}),
     execute: async () => {

@@ -397,7 +397,11 @@ const effectiveAugments = wiring.syntheticToolsAugment
 
 The synthetic augment is appended **at the end** of the augment list. This matters for the context pipeline order: every other augment's `context()` runs before the synthesized memory contexts, which run before any augments declared after memory providers in the user's config (there shouldn't be any in practice, but the order is well-defined).
 
-The lifecycle manager will boot the synthetic augment last (it has no `onBoot`, so this is a no-op). The capability table will see it as an augment with 5 tools and a 20-call limit. The agent card marks memory as available; model-facing tool details stay in the tool schema, not in the public A2A skills list.
+The lifecycle manager will boot the synthetic augment last (it has no `onBoot`,
+so this is a no-op). The capability table will see it as an augment with 5
+tools and a 20-call limit. The legacy Auggy card marks memory as available and
+also includes tool-derived skill entries; it is not a sanitized public A2A
+capability list.
 
 ## How it all fits together at runtime
 

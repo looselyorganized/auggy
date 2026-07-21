@@ -76,11 +76,11 @@ describe("renderInfoPage — HTML structure", () => {
     );
   });
 
-  it("includes alternate link to /.well-known/agent-card.json when publicIntegration is enabled", () => {
+  it("does not mislabel legacy metadata as an alternate representation", () => {
     const html = renderInfoPage(mockCard({ name: "zip", purpose: "concierge agent" }), {
       publicIntegration: true,
     });
-    expect(html).toContain(
+    expect(html).not.toContain(
       '<link rel="alternate" type="application/json" href="/.well-known/agent-card.json">',
     );
   });
@@ -106,7 +106,7 @@ describe("renderInfoPage — HTML structure", () => {
 });
 
 describe("renderAgentIntegrationPage", () => {
-  it("renders the public developer surface and links the canonical agent card", () => {
+  it("renders the public developer surface and labels legacy metadata honestly", () => {
     const html = renderAgentIntegrationPage(mockCard({ name: "zip", purpose: "concierge agent" }));
     expect(html).toContain("<title>zip — developer surface</title>");
     expect(html).toContain("<h1>Developer surface for zip.</h1>");
@@ -115,7 +115,10 @@ describe("renderAgentIntegrationPage", () => {
     expect(html).toContain(
       "Use custom routes when a frontend or webhook needs deterministic app behavior.",
     );
-    expect(html).toContain(
+    expect(html).toContain("Legacy discovery published");
+    expect(html).toContain("not a current A2A Agent Card");
+    expect(html).toContain("View legacy runtime metadata");
+    expect(html).not.toContain(
       '<link rel="alternate" type="application/json" href="/.well-known/agent-card.json">',
     );
   });

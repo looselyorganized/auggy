@@ -39,7 +39,7 @@ not interchangeable.
 
 | Target | Included routes | Omitted routes | Credential config |
 | --- | --- | --- | --- |
-| `browser` | `none`, `visitor.optional`, `visitor.required` | `bearer`, `creator`, `agent.required`, webhook-signature policy routes | `visitorToken`, `onVisitorToken`, `authAssertion` |
+| `browser` | `none`, `visitor.optional`, `visitor.required` | `bearer`, `creator`, `agent.required`, webhook-signature policy routes | `visitorToken`, `onVisitorToken`, `authAssertion`, `authAssertionHeader` |
 | `server` | `none`, `bearer`, `creator`, `agent.required`, webhook-policy routes that are otherwise server-callable | visitor-token routes | `bearerToken`, `agentCredentials` |
 
 Do not ship creator bearer tokens or agent credentials to browser code. Browser
@@ -59,6 +59,8 @@ const api = createAuggyClient({
   visitorToken: () => localStorage.getItem("auggyVisitorToken") ?? undefined,
   onVisitorToken: (token) => localStorage.setItem("auggyVisitorToken", token),
   authAssertion: async () => sessionStorage.getItem("auggyAuthAssertion") ?? undefined,
+  // Set this when webTransport.externalAuth.header uses a custom name.
+  authAssertionHeader: "x-auggy-auth-assertion",
 });
 
 const services = await api.get("/services");
@@ -69,9 +71,10 @@ if (services.ok) {
 ```
 
 Use `authAssertion` for app-signed visitor assertions, such as a normal app
-session bridged into Auggy visitor auth. The generated client only forwards the
-assertion with `x-auggy-auth-assertion`; it does not create or verify the
-assertion. Do not put assertion-signing secrets in browser code. See
+session bridged into Auggy visitor auth. The generated client forwards the
+assertion with `x-auggy-auth-assertion` by default, or `authAssertionHeader`
+when configured; it does not create or verify the assertion. Do not put
+assertion-signing secrets in browser code. See
 [`26-delegated-authorization.md`](./26-delegated-authorization.md) for
 copyable Supabase/Clerk assertion recipes and the route `requires` model. See
 [`examples/app-auth-bridge`](../examples/app-auth-bridge/README.md) for a
@@ -233,7 +236,9 @@ const api = createAuggyClient({
 ```
 
 The assertion should be short-lived and signed by trusted server-side app code.
-The generated browser client sends it as `x-auggy-auth-assertion`. Auggy runtime
+The generated browser client sends it as `x-auggy-auth-assertion` by default. Set
+`authAssertionHeader` to the same non-reserved `x-*` header configured in
+`webTransport.externalAuth.header` when using a custom name. Auggy runtime
 verifies it and resolves visitor context. The model never verifies identity from
 chat claims.
 

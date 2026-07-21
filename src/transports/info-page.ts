@@ -241,9 +241,6 @@ ${actions
 export function renderInfoPage(card: AgentCard, opts: InfoPageOptions = {}): string {
   const { escapedName, escapedPurpose, hasName, hasPurpose, heading } = getAgentText(card);
   const title = hasName ? `${escapedName} — agent-native app backend` : FALLBACK;
-  const alternateLink = opts.publicIntegration
-    ? `  <link rel="alternate" type="application/json" href="/.well-known/agent-card.json">\n`
-    : "";
   const integrationValue = opts.publicIntegration ? '<a href="/agent">Published</a>' : "Private";
   const integrationLink = opts.publicIntegration
     ? `\n          <p>Developers can review the <a href="/agent">public developer surface</a>.</p>`
@@ -294,7 +291,6 @@ ${renderPanel({
   return renderPublicDocument({
     body,
     description: escapedPurpose,
-    extraHead: alternateLink,
     title,
   });
 }
@@ -314,7 +310,7 @@ export function renderAgentIntegrationPage(card: AgentCard): string {
       ariaLabel: "Developer surface status",
       subtitle: "Public developer surface",
       title: heading,
-      status: "Developer discovery published",
+      status: "Legacy discovery published",
     }),
     renderContent(`      <section class="hero" aria-label="Developer surface overview">
         <div class="hero-main">
@@ -322,18 +318,18 @@ export function renderAgentIntegrationPage(card: AgentCard): string {
           <h1>Developer surface for ${heading}.</h1>
           <p class="lede">Use <code>/agent/run</code> for AG-UI conversation. Use custom augment routes for deterministic app and API traffic.</p>${purposeParagraph}
 ${renderActions([
-  { href: "/.well-known/agent-card.json", label: "View agent card JSON", primary: true },
+  { href: "/.well-known/agent-card.json", label: "View legacy runtime metadata", primary: true },
   { href: "/console/integrations", label: "Creator setup" },
   { href: "/", label: "Back to home" },
 ])}
         </div>
         <aside class="panel" aria-label="Protocol summary">
           <h2>Surface summary</h2>
-          <p>Public-safe metadata. Creator-only setup, credentials, and diagnostics stay in <code>/console</code>.</p>
+          <p>Legacy Auggy metadata, not a current A2A Agent Card. Review its capability and tool-derived entries before publishing it.</p>
           ${renderFacts([
             ["Conversation", "POST /agent/run"],
             ["App routes", "Custom augment routes"],
-            ["Discovery", "/.well-known/agent-card.json"],
+            ["Legacy metadata", "/.well-known/agent-card.json"],
             ["Auth", "Configured by creator"],
           ])}
         </aside>
@@ -346,7 +342,8 @@ ${renderPanel({
             <li><span class="mark">2</span><span>Use custom routes when a frontend or webhook needs deterministic app behavior.</span></li>
             <li><span class="mark">3</span><span>Put both in one augment when they belong to the same business capability.</span></li>
           </ul>
-          <pre>curl /.well-known/agent-card.json</pre>`,
+          <pre># Legacy Auggy metadata; not A2A discovery
+curl /.well-known/agent-card.json</pre>`,
 })}
 ${renderPanel({
   title: "Conversation request shape",
@@ -369,7 +366,6 @@ Content-Type: application/json
   return renderPublicDocument({
     body,
     description: escapedPurpose,
-    extraHead: `  <link rel="alternate" type="application/json" href="/.well-known/agent-card.json">\n`,
     title,
   });
 }

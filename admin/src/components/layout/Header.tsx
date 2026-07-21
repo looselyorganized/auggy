@@ -113,8 +113,6 @@ function AgentDetailsButton({
   const [copied, setCopied] = useState<string | null>(null);
   const origin = typeof window === "undefined" ? "" : window.location.origin;
   const publicUrl = origin || "unknown";
-  const agentCardUrl = origin ? `${origin}/.well-known/agent-card.json` : "";
-  const healthUrl = origin ? `${origin}/health` : "";
   const agentName =
     dashboard?.agentMeta?.displayName ??
     dashboard?.card.provider.displayName ??
@@ -167,9 +165,7 @@ function AgentDetailsButton({
               ["Auggy version", auggyVersion ? `v${auggyVersion}` : "unknown"],
               ["Engine", modelLabel ?? "unknown"],
               ["Agent UUID", agentId ?? "not set"],
-              ["Runtime URL", publicUrl],
-              ["Agent card", agentCardUrl],
-              ["Health", healthUrl],
+              ...buildRuntimeEndpointRows(origin),
               ["Transports", transports.length > 0 ? transports.join(", ") : "none reported"],
               ["Augments", String(augmentCount)],
             ]}
@@ -195,6 +191,14 @@ function AgentDetailsButton({
       </DialogContent>
     </Dialog>
   );
+}
+
+export function buildRuntimeEndpointRows(origin: string): Array<[string, string]> {
+  const runtimeUrl = origin || "unknown";
+  return [
+    ["Runtime URL", runtimeUrl],
+    ["Health", origin ? `${origin}/health` : "unknown"],
+  ];
 }
 
 function DetailGrid({

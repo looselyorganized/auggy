@@ -1,11 +1,11 @@
 import type { AgentConfig, AgentCard } from "./types";
 
 /**
- * Generate an A2A-shaped Agent Card from an agent's configuration.
- * Describes the agent's provider, purpose, capabilities, and skills.
+ * Generate Auggy's legacy runtime metadata from an agent's configuration.
+ * This internal shape predates current A2A and is not an interoperable Agent Card.
  *
  * For v1, the card is generated but not signed. The web transport
- * serves it from /.well-known/agent-card.json for basic discovery.
+ * serves it from /.well-known/agent-card.json for legacy Auggy discovery.
  * The card is accessible to any transport augment via
  * TransportKernel.getAgentCard().
  */

@@ -35,9 +35,10 @@ A normal website has pages, forms, APIs, auth, and maybe a chat widget.
 An Auggy website can have:
 
 - `/` as the public homepage or product surface
-- `/agent/run` as an AG-UI compliant chat endpoint
+- `/agent/run` as an SSE chat endpoint using Auggy's documented AG-UI subset
 - `/console/chat` as the creator/operator chat surface
-- `/.well-known/agent-card.json` for agent card discovery
+- `/.well-known/agent-card.json` for legacy Auggy runtime metadata (not current
+  A2A discovery)
 - `/visitor-auth/verify` for visitor magic-link verification
 - Persistent visitor memory
 - Trust-tiered capability gates
@@ -165,7 +166,8 @@ The strong version depends on making the frontend/runtime unity feel real:
 - Scaffold a usable public homepage.
 - Make AG-UI chat easy to embed there.
 - Make visitor auth work cleanly.
-- Expose agent card discovery.
+- Publish a sanitized, conformant A2A Agent Card once the roadmap acceptance
+  criteria are met.
 - Support public, recognized, creator, and agent trust modes.
 - Make operator escalation first-class.
 - Add agent auth and `link` when ready.

@@ -167,6 +167,7 @@ function clientConfig(target: TypeScriptClientTarget): string {
       : [
           "  visitorToken?: TokenProvider;",
           "  authAssertion?: TokenProvider;",
+          "  authAssertionHeader?: string;",
           "  onVisitorToken?: (token: string) => void;",
         ]),
     "  headers?: HeadersProvider;",
@@ -305,7 +306,7 @@ async function request(
     headers.set("x-visitor-token", credentials.visitorToken);
   }
   if (credentials.authAssertion) {
-    headers.set("x-auggy-auth-assertion", credentials.authAssertion);
+    headers.set(resolveAuthAssertionHeader(config.authAssertionHeader), credentials.authAssertion);
   }`
       : ""
   }
@@ -389,8 +390,10 @@ async function credentialsForRoute(
       : `if (auth === "visitor.required" || auth === "visitor.optional") {
     const authAssertion = await resolveToken(config.authAssertion);
     const credentials: RouteCredentials = authAssertion ? { authAssertion } : {};
-    const token = await resolveToken(config.visitorToken);
-    if (token) credentials.visitorToken = token;
+    if (!authAssertion) {
+      const token = await resolveToken(config.visitorToken);
+      if (token) credentials.visitorToken = token;
+    }
     if (auth === "visitor.required" && !credentials.visitorToken && !credentials.authAssertion) {
       throw new Error("This Auggy route requires a visitorToken or authAssertion.");
     }
@@ -426,6 +429,29 @@ function isRequestOptions(value: unknown): value is AuggyRequestOptions {
 async function resolveToken(provider: TokenProvider | undefined): Promise<string | undefined> {
   if (typeof provider === "function") return provider();
   return provider;
+}
+${
+  target === "browser"
+    ? `
+function resolveAuthAssertionHeader(value: string | undefined): string {
+  const header = value?.trim().toLowerCase() ?? "x-auggy-auth-assertion";
+  const reserved = [
+    "authorization", "content-type", "idempotency-key", "x-agent-id", "x-agent-secret",
+    "x-auggy-console-internal", "x-org-id", "x-peer-id", "x-peer-kind", "x-peer-name",
+    "x-visitor-token", "x-forwarded-for", "x-forwarded-host", "x-forwarded-port",
+    "x-forwarded-proto", "x-real-ip",
+  ];
+  try {
+    new Headers([[header, "assertion"]]);
+  } catch {
+    throw new Error("authAssertionHeader must be a non-reserved x-* HTTP header name.");
+  }
+  if (!header.startsWith("x-") || reserved.includes(header)) {
+    throw new Error("authAssertionHeader must be a non-reserved x-* HTTP header name.");
+  }
+  return header;
+}`
+    : ""
 }
 ${
   target === "server"
