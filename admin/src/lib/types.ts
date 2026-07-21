@@ -178,6 +178,8 @@ export interface RouteManifestEntry {
     body?: Record<string, unknown>;
   };
   responseJsonSchema?: Record<string, unknown>;
+  requestMediaTypes?: string[];
+  responseMediaTypes?: string[];
 }
 
 export interface RouteManifestSummary {

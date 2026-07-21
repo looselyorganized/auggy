@@ -81,6 +81,10 @@ interface RouteOptionsBase {
   rateLimit?: RouteRateLimit;
   policy?: AugmentHttpRoutePolicy;
   requires?: AuthorizationRequirement | readonly AuthorizationRequirement[];
+  /** Explicit request-body representations; overrides JSON-schema inference. */
+  requestMediaTypes?: readonly string[];
+  /** Explicit success-response representations; overrides JSON-schema inference. */
+  responseMediaTypes?: readonly string[];
 }
 
 export interface DefineGetRouteOptions<
@@ -155,6 +159,8 @@ function routeBase(
     ...(opts.requires !== undefined ? { requires: opts.requires } : {}),
     ...(requestJsonSchema ? { requestJsonSchema } : {}),
     ...(responseJsonSchema ? { responseJsonSchema } : {}),
+    ...(opts.requestMediaTypes ? { requestMediaTypes: [...opts.requestMediaTypes] } : {}),
+    ...(opts.responseMediaTypes ? { responseMediaTypes: [...opts.responseMediaTypes] } : {}),
   };
 }
 

@@ -86,6 +86,31 @@ describe("route manifest", () => {
     expect(Object.isFrozen(manifest)).toBe(true);
     expect(Object.isFrozen(manifest[0])).toBe(true);
     expect(Object.isFrozen(manifest[0]?.params)).toBe(true);
+    expect(manifest[0]?.requestMediaTypes).toBeUndefined();
+    expect(manifest[0]?.responseMediaTypes).toBeUndefined();
+  });
+
+  test("copies and freezes only explicit media type metadata", () => {
+    const requestMediaTypes = ["application/x-www-form-urlencoded", "application/json"];
+    const responseMediaTypes = ["text/html", "application/json"];
+    const collected = collectAugmentRoutes([
+      aug("custom", [
+        route("POST", "/custom", "none", {
+          requestJsonSchema: { body: { type: "object" } },
+          responseJsonSchema: { type: "object" },
+          requestMediaTypes,
+          responseMediaTypes,
+        }),
+      ]),
+    ]);
+
+    const manifest = createRouteManifest(collected.routes);
+    expect(manifest[0]?.requestMediaTypes).toEqual(requestMediaTypes);
+    expect(manifest[0]?.responseMediaTypes).toEqual(responseMediaTypes);
+    expect(manifest[0]?.requestMediaTypes).not.toBe(requestMediaTypes);
+    expect(manifest[0]?.responseMediaTypes).not.toBe(responseMediaTypes);
+    expect(Object.isFrozen(manifest[0]?.requestMediaTypes)).toBe(true);
+    expect(Object.isFrozen(manifest[0]?.responseMediaTypes)).toBe(true);
   });
 
   test("summarizes public and private route posture", () => {

@@ -962,11 +962,24 @@ export interface AugmentHttpRoute {
    */
   requestJsonSchema?: AugmentHttpRouteRequestJsonSchema;
   /**
+   * Ordered media types accepted by the request body. The first entry is the
+   * preferred representation for generated artifacts. When omitted, a JSON
+   * body schema implies `application/json` without materializing this field.
+   */
+  requestMediaTypes?: readonly string[];
+  /**
    * Optional JSON Schema for the route's successful JSON response.
    * v1.x models only the default success payload; non-2xx error contracts remain
    * intentionally generic until Auggy has a stable route error protocol.
    */
   responseJsonSchema?: AugmentHttpRouteResponseJsonSchema;
+  /**
+   * Ordered media types returned by a successful response. The first entry is
+   * the preferred representation for generated artifacts. When omitted, a
+   * JSON response schema implies `application/json` without materializing
+   * this field.
+   */
+  responseMediaTypes?: readonly string[];
   /**
    * Delegated app authorization requirements. These are satisfied only by
    * verified external auth claims (`scopes` / `grants`) on recognized visitor

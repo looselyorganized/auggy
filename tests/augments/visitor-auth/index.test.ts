@@ -48,14 +48,57 @@ describe("visitorAuth (skeleton)", () => {
     expect(aug.httpRoutes?.[0]?.path).toBe("/visitor-auth/verify");
     expect(aug.httpRoutes?.[0]?.auth).toBe("none");
     expect(aug.httpRoutes?.[0]?.method).toBe("GET");
+    expect(aug.httpRoutes?.[0]?.requestJsonSchema?.query).toMatchObject({
+      type: "object",
+      required: ["token"],
+      properties: { token: { type: "string" } },
+    });
+    expect(aug.httpRoutes?.[0]?.requestMediaTypes).toBeUndefined();
+    expect(aug.httpRoutes?.[0]?.responseJsonSchema).toBeUndefined();
+    expect(aug.httpRoutes?.[0]?.responseMediaTypes).toEqual(["text/html"]);
     // POST route: consumes the token and mints the vis_ visitor token.
     expect(aug.httpRoutes?.[1]?.path).toBe("/visitor-auth/verify");
     expect(aug.httpRoutes?.[1]?.auth).toBe("none");
     expect(aug.httpRoutes?.[1]?.method).toBe("POST");
+    expect(aug.httpRoutes?.[1]?.requestJsonSchema?.body).toMatchObject({
+      type: "object",
+      required: ["token"],
+      properties: { token: { type: "string" } },
+    });
+    expect(aug.httpRoutes?.[1]?.requestMediaTypes).toEqual([
+      "application/x-www-form-urlencoded",
+      "application/json",
+    ]);
+    expect(aug.httpRoutes?.[1]?.responseJsonSchema).toBeUndefined();
+    expect(aug.httpRoutes?.[1]?.responseMediaTypes).toEqual(["text/html"]);
     // POST route: deterministic app-backend request for a magic link.
     expect(aug.httpRoutes?.[2]?.path).toBe("/visitor-auth/request");
     expect(aug.httpRoutes?.[2]?.auth).toBe("visitor.optional");
     expect(aug.httpRoutes?.[2]?.method).toBe("POST");
+    expect(aug.httpRoutes?.[2]?.requestJsonSchema?.body).toMatchObject({
+      type: "object",
+      required: ["email"],
+      properties: {
+        email: { type: "string" },
+        meta: { type: "object" },
+      },
+    });
+    expect(aug.httpRoutes?.[2]?.requestMediaTypes).toEqual(["application/json"]);
+    const responseVariants = aug.httpRoutes?.[2]?.responseJsonSchema?.oneOf as Array<{
+      properties: Record<string, { const?: string; enum?: string[]; type?: string }>;
+      required?: string[];
+    }>;
+    expect(responseVariants.map((variant) => variant.properties.status?.const)).toEqual([
+      "sent",
+      "rejected",
+      "failed",
+    ]);
+    const [sent, rejected, failed] = responseVariants;
+    expect(sent?.properties.delivery?.enum).toEqual(["email", "console"]);
+    expect(sent?.required).toEqual(["status", "delivery", "message", "expiresInSec"]);
+    expect(rejected?.properties.code?.enum).toEqual(["malformed_email", "rate_limited"]);
+    expect(failed?.properties.code?.enum).toEqual(["not_booted", "send_failed"]);
+    expect(aug.httpRoutes?.[2]?.responseMediaTypes).toEqual(["application/json"]);
   });
 
   test("resolveVisitorIdentity returns metadata for active visitors and null for revoked visitors", async () => {

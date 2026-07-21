@@ -136,6 +136,8 @@ describe("defineRoute", () => {
       },
       required: ["method", "need", "bodyIsUndefined"],
     });
+    expect(route.requestMediaTypes).toBeUndefined();
+    expect(route.responseMediaTypes).toBeUndefined();
 
     const res = await route.handler(
       new Request("http://localhost/services?need=gifting&tag=a&tag=b"),
@@ -312,6 +314,8 @@ describe("defineRoute", () => {
       },
       required: ["saved", "email"],
     });
+    expect(route.requestMediaTypes).toBeUndefined();
+    expect(route.responseMediaTypes).toBeUndefined();
 
     const res = await route.handler(
       new Request("http://localhost/leads/create", {
@@ -323,6 +327,24 @@ describe("defineRoute", () => {
 
     expect(res.status).toBe(201);
     expect(await res.json()).toEqual({ saved: true, email: "ada@example.com" });
+  });
+
+  it("lets explicit media types override JSON-schema inference", () => {
+    const requestMediaTypes = ["application/x-www-form-urlencoded", "application/json"] as const;
+    const responseMediaTypes = ["text/html", "application/json"] as const;
+    const route = defineRoute.post("/visitor-auth/verify", {
+      auth: "none",
+      body: z.object({ token: z.string() }),
+      response: z.object({ status: z.string() }),
+      requestMediaTypes,
+      responseMediaTypes,
+      handler: () => json({ status: "ok" }),
+    });
+
+    expect(route.requestMediaTypes).toEqual(requestMediaTypes);
+    expect(route.responseMediaTypes).toEqual(responseMediaTypes);
+    expect(route.requestMediaTypes).not.toBe(requestMediaTypes);
+    expect(route.responseMediaTypes).not.toBe(responseMediaTypes);
   });
 
   it("attaches webhook policy metadata to helper routes", () => {

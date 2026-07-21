@@ -15,6 +15,8 @@ import type { Augment, AugmentHttpRoute } from "../types";
 import { validateAuthorizationRequirements } from "../authz/delegated-authorization";
 import { parseRoutePattern, routePatternsOverlap } from "./route-pattern";
 
+const MEDIA_TYPE = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+\/[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
+
 /**
  * Paths reserved by webTransport. Augments that try to register these get
  * a validation error. Order matches webTransport's own dispatch order.
@@ -118,6 +120,12 @@ export function collectAugmentRoutes(augments: readonly Augment[]): CollectAugme
         continue;
       }
 
+      const mediaTypesError = validateRouteMediaTypes(aug.name, r);
+      if (mediaTypesError) {
+        errors.push(mediaTypesError);
+        continue;
+      }
+
       const authorizationError = validateRouteAuthorizationRequirements(aug.name, r);
       if (authorizationError) {
         errors.push(authorizationError);
@@ -156,6 +164,26 @@ export function collectAugmentRoutes(augments: readonly Augment[]): CollectAugme
     routes: Object.freeze(routes) as readonly CollectedRoute[],
     errors: Object.freeze(errors) as readonly string[],
   };
+}
+
+function validateRouteMediaTypes(augmentName: string, route: AugmentHttpRoute): string | undefined {
+  for (const [field, value] of [
+    ["requestMediaTypes", route.requestMediaTypes],
+    ["responseMediaTypes", route.responseMediaTypes],
+  ] as const) {
+    if (value === undefined) continue;
+    if (!Array.isArray(value) || value.length === 0) {
+      return `Augment "${augmentName}" registered HTTP route ${route.method} "${route.path}" with invalid ${field} — must be a non-empty array of media types.`;
+    }
+    if (value.some((mediaType) => typeof mediaType !== "string" || !MEDIA_TYPE.test(mediaType))) {
+      return `Augment "${augmentName}" registered HTTP route ${route.method} "${route.path}" with invalid ${field} — each entry must be a type/subtype media type without parameters.`;
+    }
+    const normalized = value.map((mediaType) => mediaType.toLowerCase());
+    if (new Set(normalized).size !== normalized.length) {
+      return `Augment "${augmentName}" registered HTTP route ${route.method} "${route.path}" with invalid ${field} — duplicate media types are not allowed.`;
+    }
+  }
+  return undefined;
 }
 
 function validateRouteAuthorizationRequirements(

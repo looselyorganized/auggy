@@ -126,13 +126,15 @@ function queryParameters(schema: JsonObject | undefined): JsonObject[] {
 }
 
 function requestBody(route: RouteManifestEntry): JsonObject {
+  const mediaTypes = route.requestMediaTypes ?? ["application/json"];
   return {
     required: true,
-    content: {
-      "application/json": {
-        schema: route.requestJsonSchema?.body,
-      },
-    },
+    content: Object.fromEntries(
+      mediaTypes.map((mediaType) => [
+        mediaType,
+        route.requestJsonSchema?.body ? { schema: route.requestJsonSchema.body } : {},
+      ]),
+    ),
   };
 }
 
@@ -152,15 +154,18 @@ function responsesForRoute(route: RouteManifestEntry): JsonObject {
 }
 
 function successResponse(route: RouteManifestEntry): JsonObject {
+  const mediaTypes =
+    route.responseMediaTypes ?? (route.responseJsonSchema ? ["application/json"] : undefined);
   return {
     description: "OK",
-    ...(route.responseJsonSchema
+    ...(mediaTypes
       ? {
-          content: {
-            "application/json": {
-              schema: route.responseJsonSchema,
-            },
-          },
+          content: Object.fromEntries(
+            mediaTypes.map((mediaType) => [
+              mediaType,
+              route.responseJsonSchema ? { schema: route.responseJsonSchema } : {},
+            ]),
+          ),
         }
       : {}),
   };
@@ -189,6 +194,8 @@ function augmentRouteMetadata(route: RouteManifestEntry): JsonObject {
     ...(route.rateLimit ? { rateLimit: route.rateLimit } : {}),
     ...(route.policy ? { policy: route.policy } : {}),
     ...(route.requires ? { requires: route.requires } : {}),
+    ...(route.requestMediaTypes ? { requestMediaTypes: route.requestMediaTypes } : {}),
+    ...(route.responseMediaTypes ? { responseMediaTypes: route.responseMediaTypes } : {}),
   };
 }
 
