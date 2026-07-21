@@ -1022,9 +1022,12 @@ describe("webTransport HTTP server", () => {
       subject: "user_123",
       ttlSeconds: 60,
     });
+    const key = await deriveSigningKey("visitor-route-secret");
+    const staleIdentity = await createVisitorToken(key, "test", 3600, "vis_previous_user");
     const aug = webTransport({
       port,
       auth: { type: "bearer", token: "test-token" },
+      cors: { origins: ["https://app.example"] },
       visitorTokens: {
         enabled: true,
         signingKey: "visitor-route-secret",
@@ -1032,6 +1035,7 @@ describe("webTransport HTTP server", () => {
       },
       externalAuth: {
         secret: "app-auth-secret",
+        header: " X-Product-Identity ",
         audience: "test",
         allowedProviders: ["clerk"],
         visitorId: (claims) => `vis_app_${claims.subject}`,
@@ -1048,8 +1052,9 @@ describe("webTransport HTTP server", () => {
         method: "POST",
         headers: {
           "content-type": "application/json",
-          "x-visitor-token": "stale-token",
-          "x-auggy-auth-assertion": assertion,
+          origin: "https://app.example",
+          "x-visitor-token": staleIdentity.token,
+          "x-product-identity": assertion,
         },
         body: JSON.stringify({
           messages: [{ role: "user", content: "hello from app" }],
@@ -1062,6 +1067,12 @@ describe("webTransport HTTP server", () => {
       const system = model.calls[0]?.systemBlocks.join("\n") ?? "";
       expect(system).toContain("trust: public");
       expect(system).toContain("Runtime identity: vis_app_user_123");
+
+      const preflight = await fetch(`http://localhost:${port}/agent/run`, {
+        method: "OPTIONS",
+        headers: { origin: "https://app.example" },
+      });
+      expect(preflight.headers.get("access-control-allow-headers")).toContain("x-product-identity");
     } finally {
       await agent.stop();
     }
@@ -2140,6 +2151,7 @@ describe("webTransport external auth config guard", () => {
       "authorization",
       "idempotency-key",
       "cookie",
+      "x-forwarded-for",
       "bad\nheader",
     ].entries()) {
       const aug = webTransport({
@@ -2163,7 +2175,7 @@ describe("webTransport CORS config guard", () => {
       const aug = webTransport({
         port: 19630 + origins.length,
         auth: { type: "bearer", token: "test-token" },
-        cors: { origins },
+        cors: { origins: origins as [string] },
       });
       const agent = defineAgent(
         { name: `test-cors-${origins.length}`, model: "mock", augments: [aug] },
@@ -3925,7 +3937,7 @@ describe("webTransport augment-registered routes", () => {
     }
   });
 
-  it("auth: visitor.required merges matching external auth claims onto a valid visitor token", async () => {
+  it("auth: visitor.required prefers current external auth over a matching visitor token", async () => {
     const model = createMockModel();
     const port = 19430;
     const now = Date.now();
@@ -3985,8 +3997,6 @@ describe("webTransport augment-registered routes", () => {
         state: "recognized",
         visitorId,
         agentId: agentBinding,
-        issuedAt: issued.payload.issuedAt,
-        expiresAt: issued.payload.expiresAt,
         externalAuth: {
           provider: "clerk",
           subject: "user_123",
@@ -4010,7 +4020,7 @@ describe("webTransport augment-registered routes", () => {
     }
   });
 
-  it("auth: visitor.required does not merge external auth claims for a different visitor token", async () => {
+  it("auth: visitor.required prefers current external auth over a different visitor token", async () => {
     const model = createMockModel();
     const port = 19431;
     const now = Date.now();
@@ -4068,9 +4078,9 @@ describe("webTransport augment-registered routes", () => {
         externalAuth?: unknown;
         principal: { externalAuth?: unknown };
       };
-      expect(body.visitorId).toBe("vis_token_user");
-      expect(body.externalAuth).toBeUndefined();
-      expect(body.principal.externalAuth).toBeUndefined();
+      expect(body.visitorId).toBe("vis_app_different_user");
+      expect(body.externalAuth).toBeDefined();
+      expect(body.principal.externalAuth).toBeDefined();
     } finally {
       await agent.stop();
     }

@@ -49,7 +49,7 @@ export function IntegrationModeSelector({
             variant="outline"
             role="tab"
             aria-selected={selected}
-            aria-controls={`integration-panel-${mode.id}`}
+            aria-controls={selected ? `integration-panel-${mode.id}` : undefined}
             tabIndex={selected ? 0 : -1}
             onClick={() => onChange(mode.id)}
             onKeyDown={(event) => navigateModes(event, index, onChange)}

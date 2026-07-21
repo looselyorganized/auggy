@@ -370,7 +370,7 @@ function resolveWebTransport(
   return webTransport({
     port: opts.port as number,
     auth: opts.auth as { type: "bearer"; token: string },
-    cors: opts.cors as { origins: string[] } | undefined,
+    cors: opts.cors as { origins: [string] } | undefined,
     maxMessageLength: opts.maxMessageLength as number | undefined,
     access: opts.access as { agents?: Array<{ id: string; sharedSecret: string }> } | undefined,
     concurrency: opts.concurrency as number | undefined,

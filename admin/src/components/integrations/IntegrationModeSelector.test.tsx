@@ -47,4 +47,38 @@ describe("IntegrationModeSelector", () => {
     await act(async () => server?.props.onClick());
     expect(changes).toEqual(["server"]);
   });
+
+  it("supports End and arrow-key tab navigation", async () => {
+    const changes: IntegrationMode[] = [];
+    let focused = "";
+    const previousDocument = globalThis.document;
+    Object.defineProperty(globalThis, "document", {
+      configurable: true,
+      value: {
+        getElementById: (id: string) => ({ focus: () => (focused = id) }),
+      },
+    });
+    try {
+      await act(async () => {
+        renderer = create(
+          <IntegrationModeSelector value="browser" onChange={(mode) => changes.push(mode)} />,
+        );
+      });
+      const browser = renderer?.root
+        .findAll((node) => node.props.role === "tab")
+        .find((node) => node.props.id === "integration-mode-browser");
+      let prevented = false;
+      await act(async () =>
+        browser?.props.onKeyDown({ key: "End", preventDefault: () => (prevented = true) }),
+      );
+      expect(changes).toEqual(["agent"]);
+      expect(focused).toBe("integration-mode-agent");
+      expect(prevented).toBeTrue();
+    } finally {
+      Object.defineProperty(globalThis, "document", {
+        configurable: true,
+        value: previousDocument,
+      });
+    }
+  });
 });

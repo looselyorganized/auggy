@@ -14,6 +14,11 @@ const RESERVED_EXTERNAL_AUTH_HEADERS = new Set([
   "x-peer-kind",
   "x-peer-name",
   "x-visitor-token",
+  "x-forwarded-for",
+  "x-forwarded-host",
+  "x-forwarded-port",
+  "x-forwarded-proto",
+  "x-real-ip",
 ]);
 
 type BrowserPosture = Pick<

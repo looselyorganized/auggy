@@ -63,7 +63,7 @@ describe("AgentIntegrationPanel", () => {
       />,
     );
 
-    expect(html).toContain('role="alert"');
+    expect(html).toContain('role="note"');
     expect(html).toContain("Legacy developer discovery is currently public");
     expect(html).toContain("not a standards-compatible A2A connection");
     expect(html).toContain("Making private…");

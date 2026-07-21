@@ -40,6 +40,7 @@ describe("BrowserIntegrationPanel", () => {
     );
 
     expect(html).toContain("Browser application");
+    expect(html).toContain("External auth");
     expect(html).toContain("getAuggyAuthAssertion");
     expect(html).toContain("x-product-identity");
     expect(html).toContain("Configured origin: https://app.example");
@@ -54,10 +55,18 @@ describe("BrowserIntegrationPanel", () => {
     );
 
     expect(html).toContain("Same-origin only");
+    expect(html).toContain("Visitor identity");
     expect(html).toContain("bootstrap");
     expect(html).toContain("x-visitor-token");
     expect(html).toContain("rotated visitor token");
     expect(html).toContain("share an origin");
+  });
+
+  it("labels intentionally unauthenticated access honestly", () => {
+    const html = renderBrowser(posture({ allowAnonymous: { value: true } }));
+
+    expect(html).toContain("Anonymous access");
+    expect(html).not.toContain("Auth ready");
   });
 
   it("fails closed without rendering a runnable browser conversation example", () => {

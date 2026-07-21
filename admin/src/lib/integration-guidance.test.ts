@@ -62,7 +62,13 @@ describe("browser integration guidance", () => {
   });
 
   it("fails closed for invalid or credential-conflicting assertion headers", () => {
-    for (const externalAuthHeader of ['unsafe\nheader: "value"', "authorization", "idempotency-key", "cookie"]) {
+    for (const externalAuthHeader of [
+      'unsafe\nheader: "value"',
+      "authorization",
+      "idempotency-key",
+      "cookie",
+      "x-forwarded-for",
+    ]) {
       const guidance = selectBrowserConnection(
         "https://agent.example",
         posture({ externalAuthEnabled: true, externalAuthHeader }),

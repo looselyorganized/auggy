@@ -17,7 +17,7 @@ export function AgentIntegrationPanel({
       <Card>
         <CardHeader>
           <div className="flex flex-wrap items-center gap-2">
-            <h3 id="agent-integration-title" className="font-semibold leading-none">
+            <h3 id="agent-integration-title" className="text-lg font-semibold leading-none">
               Agent-to-agent
             </h3>
             <Badge variant="secondary">Coming soon</Badge>
@@ -43,7 +43,7 @@ export function AgentIntegrationPanel({
 
       {legacyDiscoveryPublic ? (
         <section
-          role="alert"
+          role="note"
           className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-4 text-amber-950 dark:text-amber-100"
           aria-labelledby="legacy-discovery-warning-title"
         >

@@ -21,6 +21,7 @@ export function IntegrationsTab() {
   const [mode, setMode] = useState<IntegrationMode>(DEFAULT_INTEGRATION_MODE);
   const [copied, setCopied] = useState<string | null>(null);
   const [copyStatus, setCopyStatus] = useState("");
+  const [copyError, setCopyError] = useState("");
   const origin = typeof window === "undefined" ? "" : window.location.origin;
 
   if (loading && !data) {
@@ -56,20 +57,24 @@ export function IntegrationsTab() {
   const browser = selectBrowserConnection(origin, data.web);
   const server = selectServerConnection(origin);
   const legacyDiscoveryPublic = data.web.publicIntegration.value === true;
+  const agentCliName = data.agentMeta?.name ?? data.card.provider.name ?? "agent";
 
   async function copy(label: string, value: string) {
     if (!value || typeof navigator === "undefined" || !navigator.clipboard) {
       setCopyStatus(`Could not copy ${label}.`);
+      setCopyError(`Could not copy ${label}. Select the text and copy it manually.`);
       return;
     }
     try {
       await navigator.clipboard.writeText(value);
       setCopied(label);
       setCopyStatus(`${label} copied.`);
+      setCopyError("");
       window.setTimeout(() => setCopied((current) => (current === label ? null : current)), 1200);
     } catch {
       setCopied(null);
       setCopyStatus(`Could not copy ${label}.`);
+      setCopyError(`Could not copy ${label}. Select the text and copy it manually.`);
     }
   }
 
@@ -124,7 +129,7 @@ export function IntegrationsTab() {
         {mode === "browser" && (
           <IntegrationPanel mode="browser">
             <BrowserIntegrationPanel
-              agentName={data.agentMeta?.name ?? "<agent>"}
+              agentName={agentCliName}
               guidance={browser}
               web={data.web}
               routes={data.routes.entries}
@@ -137,7 +142,7 @@ export function IntegrationsTab() {
         {mode === "server" && (
           <IntegrationPanel mode="server">
             <ServerIntegrationPanel
-              agentName={data.agentMeta?.name ?? "<agent>"}
+              agentName={agentCliName}
               guidance={server}
               routes={data.routes.entries}
               copied={copied}
@@ -154,6 +159,15 @@ export function IntegrationsTab() {
               onMakePrivate={makeLegacyDiscoveryPrivate}
             />
           </IntegrationPanel>
+        )}
+
+        {copyError && (
+          <p
+            className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+            role="alert"
+          >
+            {copyError}
+          </p>
         )}
 
         <div className="sr-only" role="status" aria-live="polite">

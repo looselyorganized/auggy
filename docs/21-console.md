@@ -39,11 +39,12 @@ Secondary surface:
 - Purpose/description
 - Agent UUID, copyable
 - Runtime URL, copyable
-- Agent card URL, copyable
 - Health URL, copyable
 - Mounted transport summary
 - Augment count
 - Copy diagnostics
+
+Connection and generated-client guidance lives on the Integrations page.
 
 The operator questions this UI answers are: "Am I talking to the right agent?",
 "is it working?", and "what can this running agent do right now?"

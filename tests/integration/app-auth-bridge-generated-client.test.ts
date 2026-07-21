@@ -373,7 +373,10 @@ async function loadGeneratedBrowserClient(routesAugment: Augment): Promise<Loade
   };
   const source = createTypeScriptClient(report, { target: "browser" });
   expect(source).toContain("authAssertion?: TokenProvider;");
-  expect(source).toContain('headers.set("x-auggy-auth-assertion", credentials.authAssertion);');
+  expect(source).toContain("authAssertionHeader?: string;");
+  expect(source).toContain(
+    "headers.set(resolveAuthAssertionHeader(config.authAssertionHeader), credentials.authAssertion);",
+  );
   expect(source).toContain('"GET /orders/:id"');
   expect(source).toContain('auth: "visitor.required"');
   expect(source).toContain("requires:");

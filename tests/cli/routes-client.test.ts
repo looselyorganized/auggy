@@ -571,7 +571,7 @@ describe("createTypeScriptClient", () => {
     expect(source).toContain("authAssertion?: TokenProvider;");
     expect(source).toContain("authAssertionHeader?: string;");
     expect(source).toContain(
-      'headers.set(config.authAssertionHeader ?? "x-auggy-auth-assertion", credentials.authAssertion);',
+      "headers.set(resolveAuthAssertionHeader(config.authAssertionHeader), credentials.authAssertion);",
     );
     expect(source).toContain("requires a visitorToken or authAssertion");
     expect(source).toContain('"GET /services/:serviceId":');
@@ -1101,6 +1101,12 @@ describe("createTypeScriptClient", () => {
       authAssertion: async () => "assertion-only",
       authAssertionHeader: "x-product-identity",
     });
+    const invalidHeaderApi = mod.createAuggyClient({
+      baseUrl: "https://agent.example",
+      fetch: fetchImpl,
+      authAssertion: "assertion-only",
+      authAssertionHeader: "authorization",
+    });
 
     const getResult = await api.get("/services/:serviceId", {
       params: { serviceId: "hair cut" },
@@ -1109,6 +1115,9 @@ describe("createTypeScriptClient", () => {
     await api.get("/me");
     await api.get("/me", { headers: { "x-test": "1" } });
     await assertionOnlyApi.get("/me");
+    await expect(invalidHeaderApi.get("/me")).rejects.toThrow(
+      "authAssertionHeader must be a non-reserved x-* HTTP header name",
+    );
     await expect(
       api.post("/leads/:leadId/notes", {
         params: { leadId: "lead 1" },
@@ -1130,7 +1139,7 @@ describe("createTypeScriptClient", () => {
     expect(new Headers(calls[0]?.init.headers).get("x-visitor-token")).toBeNull();
     expect(new Headers(calls[0]?.init.headers).get("x-auggy-auth-assertion")).toBeNull();
     expect(calls[1]?.url).toBe("https://agent.example/me");
-    expect(new Headers(calls[1]?.init.headers).get("x-visitor-token")).toBe("visitor-token");
+    expect(new Headers(calls[1]?.init.headers).get("x-visitor-token")).toBeNull();
     expect(new Headers(calls[1]?.init.headers).get("x-auggy-auth-assertion")).toBe("app-assertion");
     expect(calls[2]?.url).toBe("https://agent.example/me");
     expect(new Headers(calls[2]?.init.headers).get("x-test")).toBe("1");

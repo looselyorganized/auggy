@@ -48,7 +48,7 @@ config:
             Browser application
           </h3>
           <Badge variant={guidance.ready ? "success" : "warn"}>
-            {guidance.ready ? "Auth ready" : "Setup required"}
+            {browserStatusLabel(guidance)}
           </Badge>
         </div>
         <p className="mt-1 text-sm text-muted-foreground">
@@ -186,6 +186,13 @@ config:
       </Card>
     </section>
   );
+}
+
+function browserStatusLabel(guidance: BrowserConnectionGuidance): string {
+  if (!guidance.ready) return "Setup required";
+  if (guidance.mode === "external-auth") return "External auth";
+  if (guidance.mode === "visitor-token") return "Visitor identity";
+  return "Anonymous access";
 }
 
 function AuthenticationNote({ mode }: { mode: BrowserConnectionGuidance["mode"] }) {
