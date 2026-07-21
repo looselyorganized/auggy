@@ -375,6 +375,37 @@ describe("createOpenApiDocument", () => {
     });
   });
 
+  test("exports an explicit request media contract without inventing a schema", () => {
+    const doc = createOpenApiDocument({
+      agent: { name: "upload", configPath: "/tmp/upload/agent.yaml" },
+      summary: {
+        totalRoutes: 1,
+        publicRoutes: 1,
+        privateRoutes: 0,
+        publicRoutePaths: ["/upload"],
+      },
+      routes: [
+        {
+          method: "POST",
+          path: "/upload",
+          augmentName: "upload",
+          auth: "none",
+          params: [],
+          public: true,
+          security: "public",
+          requestMediaTypes: ["application/octet-stream"],
+        },
+      ],
+    }) as {
+      paths: Record<string, Record<string, { requestBody?: unknown }>>;
+    };
+
+    expect(doc.paths["/upload"]?.post?.requestBody).toEqual({
+      required: true,
+      content: { "application/octet-stream": {} },
+    });
+  });
+
   test("exports creator route auth as bearer security with semantic metadata", () => {
     const doc = createOpenApiDocument({
       agent: { name: "zip", configPath: "/tmp/zip/agent.yaml" },

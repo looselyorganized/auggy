@@ -19,7 +19,7 @@ export function buildSafeguards(
       kind: "route-auth",
       augmentName: route.augmentName,
       title: route.title,
-      detail: routeAccessLabel(route.auth),
+      detail: routeAccessLabel(route.auth, route.hasDelegatedRequirements),
       badges: authBadge ? [authBadge] : [],
     });
     if (route.hasDelegatedRequirements) {
@@ -102,7 +102,7 @@ export function buildSafeguards(
           reportedState(
             data.web.allowAnonymous.value,
             "anonymous chat",
-            "creator chat",
+            "chat auth required",
             "chat auth not reported",
           ),
           "neutral",
@@ -138,7 +138,7 @@ function webAuthPostureDetail(data: DashboardData): string {
   const chat = reportedState(
     data.web.allowAnonymous.value,
     "anonymous chat allowed",
-    "creator-only chat",
+    "chat authentication required",
     "chat authentication not reported",
   );
   const visitors = reportedState(

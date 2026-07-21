@@ -36,7 +36,11 @@ export function buildRouteView(
   const badges: CapabilityBadge[] = [
     badge(
       "exposure",
-      isPubliclyReachable(route) ? "publicly reachable" : "private route",
+      isPubliclyReachable(route) && route.requires === undefined
+        ? "publicly reachable"
+        : route.requires
+          ? "delegated access"
+          : "private route",
       "neutral",
     ),
     badge(
@@ -86,7 +90,7 @@ export function buildRouteView(
   return {
     id: routeId(route),
     title: routeLabel(route),
-    detail: routeAccessLabel(route.auth),
+    detail: routeAccessLabel(route.auth, route.requires !== undefined),
     augmentName: route.augmentName,
     auth: route.auth,
     hasDelegatedRequirements: route.requires !== undefined,
@@ -220,7 +224,15 @@ export function configuredAgentAccessEntries(value: string | undefined): number 
   return Number(value);
 }
 
-export function routeAccessLabel(auth: RouteManifestEntry["auth"]): string {
+export function routeAccessLabel(
+  auth: RouteManifestEntry["auth"],
+  hasDelegatedRequirements = false,
+): string {
+  if (hasDelegatedRequirements) {
+    return auth === "visitor.required" || auth === "visitor.optional"
+      ? "External identity with delegated authorization claims required."
+      : `Delegated authorization requirements are incompatible with ${auth} route auth.`;
+  }
   switch (auth) {
     case "none": return "Public access without identity.";
     case "visitor.optional": return "Anonymous access with optional visitor identity.";

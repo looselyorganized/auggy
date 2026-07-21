@@ -92,7 +92,9 @@ function operationForRoute(route: RouteManifestEntry, operationIds: Set<string>)
     summary: `${route.method} ${route.path}`,
     security: securityForRoute(route),
     parameters: parametersForRoute(route),
-    ...(route.requestJsonSchema?.body ? { requestBody: requestBody(route) } : {}),
+    ...(route.requestJsonSchema?.body || route.requestMediaTypes
+      ? { requestBody: requestBody(route) }
+      : {}),
     responses: responsesForRoute(route),
     "x-auggy": augmentRouteMetadata(route),
   };

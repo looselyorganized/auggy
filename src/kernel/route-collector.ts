@@ -167,6 +167,12 @@ export function collectAugmentRoutes(augments: readonly Augment[]): CollectAugme
 }
 
 function validateRouteMediaTypes(augmentName: string, route: AugmentHttpRoute): string | undefined {
+  if (
+    route.method === "GET" &&
+    (route.requestMediaTypes !== undefined || route.requestJsonSchema?.body !== undefined)
+  ) {
+    return `Augment "${augmentName}" registered HTTP route ${route.method} "${route.path}" with request body metadata — GET routes cannot declare request bodies.`;
+  }
   for (const [field, value] of [
     ["requestMediaTypes", route.requestMediaTypes],
     ["responseMediaTypes", route.responseMediaTypes],
@@ -175,8 +181,13 @@ function validateRouteMediaTypes(augmentName: string, route: AugmentHttpRoute): 
     if (!Array.isArray(value) || value.length === 0) {
       return `Augment "${augmentName}" registered HTTP route ${route.method} "${route.path}" with invalid ${field} — must be a non-empty array of media types.`;
     }
-    if (value.some((mediaType) => typeof mediaType !== "string" || !MEDIA_TYPE.test(mediaType))) {
-      return `Augment "${augmentName}" registered HTTP route ${route.method} "${route.path}" with invalid ${field} — each entry must be a type/subtype media type without parameters.`;
+    if (
+      value.some(
+        (mediaType) =>
+          typeof mediaType !== "string" || !MEDIA_TYPE.test(mediaType) || mediaType.includes("*"),
+      )
+    ) {
+      return `Augment "${augmentName}" registered HTTP route ${route.method} "${route.path}" with invalid ${field} — each entry must be a concrete type/subtype media type without parameters.`;
     }
     const normalized = value.map((mediaType) => mediaType.toLowerCase());
     if (new Set(normalized).size !== normalized.length) {

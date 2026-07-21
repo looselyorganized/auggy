@@ -962,9 +962,10 @@ export interface AugmentHttpRoute {
    */
   requestJsonSchema?: AugmentHttpRouteRequestJsonSchema;
   /**
-   * Ordered media types accepted by the request body. The first entry is the
-   * preferred representation for generated artifacts. When omitted, a JSON
-   * body schema implies `application/json` without materializing this field.
+   * Ordered, concrete media types accepted by the request body. The first entry
+   * is the preferred representation for generated artifacts. Wildcard ranges
+   * and GET request bodies are rejected. When omitted, a JSON body schema
+   * implies `application/json` without materializing this field.
    */
   requestMediaTypes?: readonly string[];
   /**
@@ -974,10 +975,10 @@ export interface AugmentHttpRoute {
    */
   responseJsonSchema?: AugmentHttpRouteResponseJsonSchema;
   /**
-   * Ordered media types returned by a successful response. The first entry is
-   * the preferred representation for generated artifacts. When omitted, a
-   * JSON response schema implies `application/json` without materializing
-   * this field.
+   * Ordered, concrete media types returned by a successful response. The first
+   * entry is the preferred representation for generated artifacts. Wildcard
+   * ranges are rejected. When omitted, a JSON response schema implies
+   * `application/json` without materializing this field.
    */
   responseMediaTypes?: readonly string[];
   /**

@@ -46,10 +46,10 @@ export function CapabilitySurface({
   const headingId = useId();
   return (
     <section className="grid min-w-0 gap-2" aria-labelledby={headingId}>
-      <h3 id={headingId} className="flex items-center gap-2 text-sm font-semibold">
+      <h4 id={headingId} className="flex items-center gap-2 text-sm font-semibold">
         <span className="text-muted-foreground" aria-hidden="true">{icon}</span>
         {title}
-      </h3>
+      </h4>
       <div
         className="min-w-0 divide-y overflow-hidden rounded-md border bg-background"
         role="list"

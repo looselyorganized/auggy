@@ -219,6 +219,30 @@ describe("buildCapabilityModel", () => {
     ).toMatchObject({ tone: "info" });
   });
 
+  it("does not present delegated visitor-optional routes as anonymous", () => {
+    const model = buildCapabilityModel(
+      dashboard({
+        augments: [augment("orders")],
+        routes: [
+          route("POST", "/orders", {
+            augmentName: "orders",
+            auth: "visitor.optional",
+            requires: { scope: "orders:write" },
+          }),
+        ],
+        web: { externalAuthEnabled: true },
+      }),
+    );
+
+    expect(model.findings).toEqual([]);
+    expect(model.scope.routes[0]).toMatchObject({
+      detail: "External identity with delegated authorization claims required.",
+      badges: expect.arrayContaining([
+        expect.objectContaining({ kind: "exposure", label: "delegated access" }),
+      ]),
+    });
+  });
+
   it("flags a JSON schema paired exclusively with non-JSON response media", () => {
     const model = buildCapabilityModel(
       dashboard({

@@ -12,12 +12,12 @@ describe("buildConversationSurfaceRows", () => {
     expect(rows).toEqual([
       {
         title: "POST /agent/run",
-        detail: "AG-UI chat, creator auth",
+        detail: "AG-UI chat, authentication required",
         badges: [
           {
-            id: "auth:creator",
+            id: "auth:auth required",
             kind: "auth",
-            label: "creator",
+            label: "auth required",
             tone: "neutral",
           },
         ],

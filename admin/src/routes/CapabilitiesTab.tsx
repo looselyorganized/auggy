@@ -70,7 +70,7 @@ export function CapabilitiesTab() {
           <div>
             <h2 className="text-xl font-semibold tracking-normal">Capabilities</h2>
             <p className="text-sm text-muted-foreground">
-              Runtime map of mounted augments and the surfaces they expose.
+              Observed map of mounted augments and the surfaces reported by the runtime.
             </p>
           </div>
           <CapabilitySummaryBar model={model} />
@@ -81,7 +81,7 @@ export function CapabilitiesTab() {
         </section>
 
         <div className="grid min-h-0 min-w-0 gap-4 lg:grid-cols-[18rem_minmax(0,1fr)]">
-          <Card className="hidden self-start lg:sticky lg:top-4 lg:block lg:max-h-[calc(100dvh-2rem)] lg:overflow-y-auto">
+          <Card className="hidden self-start lg:sticky lg:top-4 lg:block lg:max-h-[calc(100dvh-6rem)] lg:overflow-y-auto">
             <CardHeader className="pb-4">
               <h3 className="font-semibold leading-none">Mounted augments</h3>
               <CardDescription>Select an owner to scope the runtime map.</CardDescription>

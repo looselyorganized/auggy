@@ -51,7 +51,7 @@ export function CapabilitySummaryBar({ model }: { model: CapabilityModel }) {
       : []),
     { label: "Routes", value: summary.routeCount, icon: Route },
     { label: "Tools", value: summary.toolCount, icon: Wrench },
-    { label: "Skills", value: summary.skillCount, icon: BookOpen },
+    { label: "Installed skills", value: summary.skillCount, icon: BookOpen },
     { label: "Memory", value: summary.memoryAugmentCount, icon: Brain },
     { label: "Issues", value: summary.issueCount, icon: AlertTriangle },
     { label: "Notes", value: summary.noteCount, icon: Info },
@@ -86,7 +86,7 @@ export function CapabilityNavigation({
     <nav className="grid gap-4" aria-label="Capability owners">
       <NavigationButton
         title="All capabilities"
-        subtitle="Complete runtime map"
+        subtitle="Observed runtime map"
         summary={model.summary}
         selected={model.scope.selectedAugmentName === null}
         onSelect={() => onSelect(null)}
@@ -154,7 +154,7 @@ export function CapabilityMobileSelector({
         >
           <OwnerMenuItem
             title="All capabilities"
-            subtitle="Complete runtime map"
+            subtitle="Observed runtime map"
             selected={model.scope.selectedAugmentName === null}
             onSelect={() => onSelect(null)}
           />
@@ -293,7 +293,7 @@ function NavigationButton({
         {summary.skillCount > 0 && (
           <Badge variant="outline">{countLabel(summary.skillCount, "skill")}</Badge>
         )}
-        {summary.memoryAugmentCount > 0 && <Badge variant="success">memory</Badge>}
+        {summary.memoryAugmentCount > 0 && <Badge variant="info">memory</Badge>}
         {summary.noteCount > 0 && (
           <Badge variant="outline">{countLabel(summary.noteCount, "note")}</Badge>
         )}

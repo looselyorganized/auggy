@@ -60,7 +60,11 @@ export function CapabilityDetail({
                 <CapabilityRow
                   key={safeguard.id}
                   title={safeguard.title}
-                  detail={safeguard.detail}
+                  detail={
+                    model.scope.selectedAugmentName || !safeguard.augmentName
+                      ? safeguard.detail
+                      : `${safeguard.augmentName} · ${safeguard.detail}`
+                  }
                   badges={safeguard.badges}
                 />
               ))}
@@ -116,6 +120,7 @@ function AugmentIdentity({ node }: { node: AugmentCapabilityModel }) {
         ) : (
           <span className="text-xs text-muted-foreground">No lifecycle hooks reported.</span>
         )}
+        {augment.handlesInternalTurns && <Badge variant="info">internal turns</Badge>}
       </div>
     </div>
   );
@@ -138,12 +143,12 @@ export function buildConversationSurfaceRows(
   const detail = allowAnonymous === true
     ? "AG-UI chat, anonymous allowed"
     : allowAnonymous === false
-      ? "AG-UI chat, creator auth"
+      ? "AG-UI chat, authentication required"
       : "AG-UI chat authentication not reported";
   const label = allowAnonymous === true
     ? "anonymous"
     : allowAnonymous === false
-      ? "creator"
+      ? "auth required"
       : "auth not reported";
   return [
     {
@@ -245,7 +250,7 @@ function isWebTransport(augment: AugmentSummary): boolean {
 
 function memoryBadges(augment: AugmentSummary): CapabilityBadge[] {
   const badges: CapabilityBadge[] = [];
-  if (augment.isMemoryProvider) badges.push(semanticBadge("tool-category", "provider", "success"));
+  if (augment.isMemoryProvider) badges.push(semanticBadge("tool-category", "provider", "info"));
   if (augment.hasContext) badges.push(semanticBadge("tool-category", "context", "info"));
   if (augment.usesSharedMemoryTools) {
     badges.push(semanticBadge("tool-category", "shared tools", "info"));

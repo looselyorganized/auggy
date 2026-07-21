@@ -225,12 +225,29 @@ describe("collectAugmentRoutes", () => {
       aug("d", [withMedia("/d", "responseMediaTypes", "application/json")]),
       aug("e", [withMedia("/e", "requestMediaTypes", ["application/json; charset=utf-8"])]),
       aug("f", [withMedia("/f", "responseMediaTypes", ["application/json", "Application/JSON"])]),
+      aug("g", [withMedia("/g", "requestMediaTypes", ["application/*"])]),
     ]);
 
     expect(result.routes).toEqual([]);
-    expect(result.errors).toHaveLength(6);
+    expect(result.errors).toHaveLength(7);
     expect(result.errors.join("\n")).toContain("requestMediaTypes");
     expect(result.errors.join("\n")).toContain("responseMediaTypes");
+  });
+
+  test("rejects request body metadata on GET routes", () => {
+    const result = collectAugmentRoutes([
+      aug("download", [
+        {
+          ...route("GET", "/download", "none"),
+          requestMediaTypes: ["application/octet-stream"],
+        },
+      ]),
+    ]);
+
+    expect(result.routes).toEqual([]);
+    expect(result.errors).toEqual([
+      'Augment "download" registered HTTP route GET "/download" with request body metadata — GET routes cannot declare request bodies.',
+    ]);
   });
 
   test("rejects routes with invalid delegated authorization requirements", () => {
