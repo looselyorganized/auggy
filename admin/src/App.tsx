@@ -151,7 +151,7 @@ function ConsoleShell({
     }
   };
   return (
-    <div className="flex h-full min-w-0 flex-col bg-background">
+    <div className="flex h-full min-w-0 flex-col overflow-hidden bg-background">
       <div className="auggy-brand-stripe" />
       <Header
         agentName={agentName}
