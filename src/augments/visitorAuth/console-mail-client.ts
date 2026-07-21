@@ -3,7 +3,7 @@
  *
  * Implements the `AgentMailClient` interface so visitorAuth's `request_auth`
  * tool can swap it in transparently — no branching in the send call site.
- * Instead of POSTing to AgentMail, this adapter prints the would-be email
+ * Instead of POSTing to AgentMail, this adapter prints the verification details
  * (with the verify URL embedded verbatim in `input.text`) to stdout. The
  * operator copies the URL from their terminal and opens it in a browser to
  * complete verification.
@@ -47,7 +47,7 @@ export function createConsoleMailClient(opts: ConsoleMailClientOptions = {}): Ag
       // line into a browser to complete verification.
       const recipient = input.to.join(", ");
       sink(
-        `[visitor-auth:console] would-send to=${recipient} subject="${input.subject}"\n${input.text}`,
+        `INFO visitorAuth local verification link\n  To: ${recipient}\n  Subject: ${input.subject}\n  ${input.text.replace(/\n/g, "\n  ")}`,
       );
       return {
         status: "sent",
@@ -56,7 +56,7 @@ export function createConsoleMailClient(opts: ConsoleMailClientOptions = {}): Ag
       };
     },
     async reply(input): Promise<SendMessageResult> {
-      sink(`[visitor-auth:console] would-reply messageId=${input.messageId}\n${input.text}`);
+      sink(`INFO visitorAuth local reply\n  Message: ${input.messageId}\n  ${input.text.replace(/\n/g, "\n  ")}`);
       return {
         status: "sent",
         messageId: `console-${crypto.randomUUID()}`,
@@ -65,7 +65,7 @@ export function createConsoleMailClient(opts: ConsoleMailClientOptions = {}): Ag
     },
     async forward(input): Promise<SendMessageResult> {
       sink(
-        `[visitor-auth:console] would-forward messageId=${input.messageId} to=${input.to.join(", ")}`,
+        `INFO visitorAuth local forward\n  Message: ${input.messageId}\n  To: ${input.to.join(", ")}`,
       );
       return {
         status: "sent",

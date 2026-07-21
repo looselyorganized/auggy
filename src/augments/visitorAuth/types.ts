@@ -163,6 +163,11 @@ export interface RequestAuthResult {
     | "rate_limited"
     | "send_failed";
   message: string;
+  /**
+   * Present iff status === "sent". The channel that received the magic link.
+   * `console` means the link was printed locally and no email was sent.
+   */
+  delivery?: "email" | "console";
   /** Present iff status === "sent". TTL of the issued token. */
   expiresInSec?: number;
 }

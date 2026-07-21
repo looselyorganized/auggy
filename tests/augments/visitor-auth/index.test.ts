@@ -452,12 +452,15 @@ describe("request_auth tool", () => {
     sendImpl?: AgentMailClient["send"];
     rateLimit?: { perHour: number; perDay: number };
     nowFn?: () => number;
+    consoleDelivery?: boolean;
   }) {
     const sendCalls: Array<Parameters<AgentMailClient["send"]>[0]> = [];
     const aug = visitorAuth({
       publicUrl: "https://zip.test",
       dbPath,
-      agentMail: { apiKey: "am_x", inboxId: "ibx_x" },
+      agentMail: overrides?.consoleDelivery
+        ? { transport: "console" }
+        : { apiKey: "am_x", inboxId: "ibx_x" },
       signingKey: "sig",
       rateLimit: overrides?.rateLimit ?? { perHour: 1, perDay: 3 },
       _now: overrides?.nowFn,
@@ -603,6 +606,8 @@ describe("request_auth tool", () => {
     );
     const result = JSON.parse(raw as string);
     expect(result.status).toBe("sent");
+    expect(result.delivery).toBe("email");
+    expect(result.message).toMatch(/email sent/i);
     expect(result.expiresInSec).toBeGreaterThan(0);
     expect(sendCalls).toHaveLength(1);
     expect(sendCalls[0]?.to).toEqual(["alice@example.com"]);
@@ -610,6 +615,68 @@ describe("request_auth tool", () => {
     expect(sendCalls[0]?.html).toMatch(/https:\/\/zip\.test\/visitor-auth\/verify\?token=/);
     expect(sendCalls[0]?.html).toMatch(/Verify email/);
     expect(sendCalls[0]?.subject).toMatch(/verify/i);
+    await aug.onShutdown?.();
+  });
+
+  test("console delivery says that no email was sent", async () => {
+    const { aug } = buildAug({ consoleDelivery: true });
+    expect(aug.tools![0]!.description).toMatch(/No email is sent/i);
+    await aug.onBoot?.();
+    await aug.onTurnStart?.(turnWithVisitor("my email is alice@example.com"));
+    const raw = await aug.tools![0]!.execute(
+      { method: "email", email: "alice@example.com" },
+      {
+        turnId: "t1",
+        threadId: "thread1",
+        peer: {
+          id: "anon-thread1",
+          kind: "anonymous",
+          trustLevel: "public",
+          publicSubstate: "anonymous",
+          sourceAugment: "web",
+        },
+      },
+    );
+    const result = JSON.parse(raw as string);
+    expect(result).toMatchObject({
+      status: "sent",
+      delivery: "console",
+    });
+    expect(result.message).toMatch(/printed to the local agent console/i);
+    expect(result.message).toMatch(/no email was sent/i);
+    expect(result.message).not.toMatch(/verification email sent/i);
+    await aug.onShutdown?.();
+  });
+
+  test("console delivery failure does not claim an email send failed", async () => {
+    const { aug } = buildAug({
+      consoleDelivery: true,
+      sendImpl: async () => ({ status: "failed", detail: "stdout unavailable" }),
+    });
+    await aug.onBoot?.();
+    await aug.onTurnStart?.(turnWithVisitor("my email is alice@example.com"));
+    const raw = await aug.tools![0]!.execute(
+      { method: "email", email: "alice@example.com" },
+      {
+        turnId: "t1",
+        threadId: "thread1",
+        peer: {
+          id: "anon-thread1",
+          kind: "anonymous",
+          trustLevel: "public",
+          publicSubstate: "anonymous",
+          sourceAugment: "web",
+        },
+      },
+    );
+    const result = JSON.parse(raw as string);
+    expect(result).toMatchObject({
+      status: "failed",
+      code: "send_failed",
+    });
+    expect(result.message).toMatch(/print verification link to the local agent console/i);
+    expect(result.message).toContain("stdout unavailable");
+    expect(result.message).not.toMatch(/send verification email/i);
     await aug.onShutdown?.();
   });
 
@@ -1380,6 +1447,58 @@ describe("context() block", () => {
     expect(result).toHaveLength(1);
     expect(result![0]?.content).toMatch(/alice@example\.com/);
     expect(result![0]?.content.toLowerCase()).toMatch(/awaiting|sent|expires/);
+    await aug.onShutdown?.();
+  });
+
+  test("console context consistently says the link was printed and no email was sent", async () => {
+    let clock = 1_700_000_000_000;
+    const aug = visitorAuth({
+      publicUrl: "https://zip.test",
+      dbPath,
+      agentMail: { transport: "console" },
+      signingKey: "sig",
+      tokenTtlMinutes: 15,
+      _now: () => clock,
+      _agentMailClient: fakeAgentMail(),
+    });
+    await aug.onBoot?.();
+    const peer = {
+      id: "anon-console-context",
+      kind: "anonymous" as const,
+      trustLevel: "public" as const,
+      publicSubstate: "anonymous" as const,
+      sourceAugment: "web",
+    };
+    await aug.onTurnStart?.({
+      turnId: "t",
+      threadId: "th",
+      trigger: {
+        type: "message",
+        turnId: "t",
+        timestamp: clock,
+        payload: {
+          parts: [{ kind: "text", text: "alice@example.com" }],
+          sourceAugment: "web",
+          peer,
+          timestamp: clock,
+        },
+      },
+      peer,
+      toolCallsSoFar: 0,
+      turnStartedAt: clock,
+      metadata: {},
+    } as never);
+    await aug.tools![0]!.execute(
+      { method: "email", email: "alice@example.com" },
+      { turnId: "t", threadId: "th", peer },
+    );
+
+    clock += 3 * 60_000;
+    const result = (await aug.context?.({ peer } as never)) as ContextBlock[];
+    expect(result).toHaveLength(1);
+    expect(result[0]?.content).toContain("printed to the local agent console");
+    expect(result[0]?.content).toContain("no email was sent");
+    expect(result[0]?.content).not.toMatch(/verification email sent/i);
     await aug.onShutdown?.();
   });
 

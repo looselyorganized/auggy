@@ -73,6 +73,22 @@ describe("buildVerifySuccessPage", () => {
   test("contains a human-readable success message", () => {
     const html = buildVerifySuccessPage({ visitorToken: "t.s", email: "a@x.com" });
     expect(html.toLowerCase()).toMatch(/verified|success/);
+    expect(html).toContain("return to the originating console chat");
+    expect(html).toContain("picked up automatically when you continue");
+    expect(html).toContain("If the chat does not update, refresh it.");
+    expect(html).toContain("open the console there to use this identity");
+    expect(html).not.toContain("choose Verified visitor");
+    expect(html).not.toContain("switch to Verified");
+  });
+
+  test("gives an accurate fallback when JavaScript cannot apply the identity", () => {
+    const html = buildVerifySuccessPage({ visitorToken: "t.s", email: "a@x.com" });
+    expect(html).toContain("JavaScript is required to apply the verified identity automatically");
+    expect(html).toContain("request a new verification link from the originating chat");
+    expect(html).toContain("storage and JavaScript enabled");
+    expect(html).not.toContain("Copy this token manually");
+    expect(html).not.toContain('id="manual-token"');
+    expect(html).not.toContain("re-open your chat tab manually");
   });
 
   // F8: localStorage failure detection
@@ -82,8 +98,8 @@ describe("buildVerifySuccessPage", () => {
     expect(html).toContain("storageWorks");
     // Both branches are represented in the rendered HTML
     expect(html.toLowerCase()).toMatch(/storage.*(blocked|denied|fallback)|fallback.*storage/);
-    // The manual-token element must exist for the fallback path
-    expect(html).toContain("manual-token");
+    // The fallback offers only supported recovery actions; there is no token-paste UI.
+    expect(html).not.toContain("manual-token");
   });
 
   test("storage-fallback element is present but hidden by default (F8)", () => {
@@ -92,11 +108,10 @@ describe("buildVerifySuccessPage", () => {
     expect(html).toMatch(/id="storage-fallback"[^>]*style="display:none"/);
   });
 
-  test("manual-token element receives token via textContent, not innerHTML (F8)", () => {
+  test("storage fallback does not expose the bearer token for an unsupported manual flow", () => {
     const html = buildVerifySuccessPage({ visitorToken: "t.s", email: "a@x.com" });
-    // Token must be assigned to textContent (XSS-safe), never innerHTML
-    expect(html).toContain("manualEl.textContent = token");
-    expect(html).not.toContain("manualEl.innerHTML");
+    expect(html).not.toContain("manualEl");
+    expect(html).not.toContain("Copy this token");
   });
 });
 

@@ -21,6 +21,12 @@ function fakeAgentMail() {
   };
 }
 
+function expectPrivateVerificationHtml(res: Response): void {
+  expect(res.headers.get("content-type")).toBe("text/html; charset=utf-8");
+  expect(res.headers.get("cache-control")).toContain("no-store");
+  expect(res.headers.get("pragma")).toBe("no-cache");
+}
+
 async function setupAug(dbPath: string) {
   const aug = visitorAuth({
     publicUrl: "https://zip.test",
@@ -41,6 +47,7 @@ describe("visitorAuth verify route", () => {
       { signal: new AbortController().signal },
     );
     expect(res.status).toBe(400);
+    expectPrivateVerificationHtml(res);
     expect((await res.text()).toLowerCase()).toContain("malformed");
     await aug.onShutdown?.();
   });
@@ -58,6 +65,7 @@ describe("visitorAuth verify route", () => {
       { signal: new AbortController().signal },
     );
     expect(res.status).toBe(200);
+    expectPrivateVerificationHtml(res);
     const html = await res.text();
     // The confirm page has a form with method="POST" — the failure page does not.
     expect(html).toMatch(/<form[^>]+method="POST"/i);
@@ -77,6 +85,7 @@ describe("visitorAuth verify route", () => {
       { signal: new AbortController().signal },
     );
     expect(res.status).toBe(404);
+    expectPrivateVerificationHtml(res);
     await aug.onShutdown?.();
   });
 
@@ -156,6 +165,7 @@ describe("visitorAuth verify route", () => {
       { signal: new AbortController().signal },
     );
     expect(post.status).toBe(200);
+    expectPrivateVerificationHtml(post);
     expect((await post.text()).toLowerCase()).toContain("verified");
 
     await aug.onShutdown?.();

@@ -5,7 +5,7 @@ description: Use to verify a visitor's email and promote them from anonymous to 
 
 # visitor-auth
 
-You are talking to someone whose identity is currently anonymous (peer.id starts with `anon-`). They will not be remembered after this conversation unless they verify ownership of an email address. The `request_auth` tool sends a one-click verification email.
+You are talking to someone whose identity is currently anonymous (peer.id starts with `anon-`). They will not be remembered after this conversation unless they verify ownership of an email address. The `request_auth` tool creates a one-click verification link. Depending on the configured delivery channel, it either emails the link or prints it to the local agent console.
 
 ## When to call `request_auth`
 
@@ -13,7 +13,7 @@ Call when ALL of these are true:
 
 - **The visitor explicitly typed their email address** in this conversation. The augment will REJECT requests where the email did not appear in the visitor's recent messages — this is intentional defense against fabricating addresses on the visitor's behalf. Always quote back what they typed before calling.
 - **You have a real reason** to want continuity. Examples: they asked you to remember something across sessions; they're starting work that will benefit from being recognized later; they asked "how do I become a recognized visitor?" Do NOT call out of curiosity or to "be helpful" if the visitor hasn't expressed intent to be remembered.
-- **The visitor consents** to receiving an email at the address they typed. Confirm verbally first if there's any ambiguity.
+- **The visitor consents** to verifying the address they typed. Confirm verbally first if there's any ambiguity.
 
 Do NOT call when:
 
@@ -30,13 +30,16 @@ Do NOT call when:
 }
 ```
 
-The result has shape `{status, message, expiresInSec?}`:
+The result has shape `{status, message, delivery?, expiresInSec?}`. On success, `delivery` is authoritative:
 
-| `status` | What to do |
+| Result | What to do |
 |---|---|
-| `"sent"` | Tell them: "I've sent a verification link to <email>. Click it within ~15 minutes to verify. Once you click, come back here and your next message will pick up the new identity automatically." |
-| `"rejected"` | Read `message`. Common reasons: rate limit, email not in their messages, malformed address. Convey the reason honestly; don't retry without addressing it. |
-| `"failed"` | Read `message` — likely AgentMail / network. Tell them honestly: "I couldn't send the verification email right now. Please try again shortly, or share your email again so I can retry." |
+| `status: "sent", delivery: "email"` | Tell them the verification email was sent, when the link expires, and to return after clicking it. |
+| `status: "sent", delivery: "console"` | Tell them no email was sent. The verification link was printed to the local agent console for the developer to open before it expires. |
+| `status: "rejected"` | Read `message`. Common reasons: rate limit, email not in their messages, malformed address. Convey the reason honestly; don't retry without addressing it. |
+| `status: "failed"` | Read `message` and report the delivery failure honestly. Do not claim a link was delivered. |
+
+Never claim that an email was sent when `delivery` is `"console"`, even though the legacy success status is named `"sent"`.
 
 ## After they click
 
@@ -50,6 +53,7 @@ You don't need to do anything. The next message they send will arrive with the n
 
 ## Failure modes you may encounter
 
-- **Bounce** (recipient doesn't exist) — surface this to the visitor; they may have typed it wrong.
-- **Visitor never gets the email** — check spam; if not there, ask them to try again. The previous token is invalidated when they re-request.
+- **Email bounce** (`delivery: "email"`) — surface this to the visitor; they may have typed it wrong.
+- **Visitor never gets the email** (`delivery: "email"`) — check spam; if not there, ask them to try again. The previous token is invalidated when they re-request.
+- **Console link is not visible to the visitor** (`delivery: "console"`) — the local developer must copy or open the link printed by the running agent. Do not direct the visitor to an email inbox.
 - **Verify link clicked on a different device than the chat tab** — the success page tells them to refresh their chat tab. They will.
