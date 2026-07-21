@@ -1,0 +1,14 @@
+{
+  "name": "auggy-example-order-support",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "bun test augments/order-support/order-support.test.ts",
+    "generate:client": "auggy routes --client ts --target browser --out order-support-client.ts"
+  },
+  "dependencies": {
+    "@auggy/anthropic": "file:../../packages/anthropic",
+    "auggy": "file:../..",
+    "zod": "^4.4.3"
+  }
+}

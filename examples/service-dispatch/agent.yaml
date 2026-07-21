@@ -1,0 +1,21 @@
+id: aug1_ee81bb1a-810c-4431-b70b-29a02db6cf6e
+name: service-dispatch
+displayName: North Shore Home Services
+purpose: Turn customer problems into structured service intake and confirmed appointments.
+creator:
+  displayName: Dispatch operator
+identity: ./identity.md
+engine:
+  provider: anthropic
+  model: claude-sonnet-4-6
+  maxContextTokens: 200000
+  maxTokens: 4096
+settings:
+  compactionStrategy: truncate
+  maxInferenceLoops: 8
+augments:
+  - webTransport
+  - visitorAuth
+  - budgets
+  - notify
+  - service-dispatch

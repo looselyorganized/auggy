@@ -1,0 +1,17 @@
+type: notify
+config:
+  destinations:
+    - name: dispatcher
+      transport: log-to-file
+      path: ./data/dispatch-notifications.jsonl
+      allowedTrustLevels:
+        - creator
+        - agent
+        - public
+      publicPolicy: escalation-only
+  rateLimit:
+    cooldownMs: 30000
+    globalMaxPerHour: 20
+    dedupWindowMs: 300000
+    dedupThreshold: 0.7
+    perPeerCooldownMs: 30000
