@@ -131,11 +131,19 @@ export function buildVerifySuccessPage(input: VerifySuccessPageInput): string {
   var token = ${tokenLit};
   var email = ${emailLit};
   var threadId = ${threadIdLit};
+  var tokenTag = (function (value) {
+    var hash = 2166136261;
+    for (var i = 0; i < value.length; i++) {
+      hash ^= value.charCodeAt(i);
+      hash = Math.imul(hash, 16777619);
+    }
+    return 'fnv1a32-' + (hash >>> 0).toString(16).padStart(8, '0');
+  })(token);
   var promotionIntent = {
     type: 'visitor-auth.verified',
     version: 1,
     threadId: threadId,
-    visitorToken: token
+    tokenTag: tokenTag
   };
   var storageWorks = false;
   try {
@@ -146,7 +154,7 @@ export function buildVerifySuccessPage(input: VerifySuccessPageInput): string {
   if (storageWorks && typeof BroadcastChannel === 'function') {
     try {
       var channel = new BroadcastChannel('auggy-visitor-auth');
-      channel.postMessage({ type: promotionIntent.type, version: 1, threadId: threadId });
+      channel.postMessage({ type: promotionIntent.type, version: 1 });
       channel.close();
     } catch (_) { /* storage/focus events remain as compatibility fallbacks */ }
   }

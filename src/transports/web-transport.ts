@@ -1479,6 +1479,50 @@ export function webTransport(opts: WebTransportOptions): Augment {
     return mergeMatchingExternalVisitorAuth(visitorAuth, await resolveExternalVisitorAuth(req));
   }
 
+  async function resolveConsoleVisitorIdentity(visitorToken: string): Promise<{
+    status: "verified";
+    email: string;
+    expiresAt: number;
+  } | null> {
+    if (!visitorTokensEnabled || !signingKey || !opts.visitorTokens?.identityLookup) return null;
+    let payload: VisitorTokenPayload | null;
+    try {
+      payload = await verifyVisitorToken(signingKey, visitorToken);
+    } catch {
+      return null;
+    }
+    if (
+      !payload ||
+      typeof payload.visitorId !== "string" ||
+      payload.visitorId.length === 0 ||
+      typeof payload.agentId !== "string" ||
+      !Number.isFinite(payload.expiresAt) ||
+      payload.expiresAt < 0 ||
+      payload.expiresAt > 8_640_000_000_000_000
+    ) {
+      return null;
+    }
+    const expectedBinding = opts.visitorTokens.agentBinding ?? "auggy";
+    if (payload.agentId !== expectedBinding) return null;
+    if (opts.visitorTokens.revocationCheck?.(payload.visitorId)) return null;
+
+    const identity = opts.visitorTokens.identityLookup(payload.visitorId);
+    if (
+      !identity ||
+      identity.visitorId !== payload.visitorId ||
+      typeof identity.email !== "string" ||
+      identity.email.trim().length === 0 ||
+      identity.email.length > 320
+    ) {
+      return null;
+    }
+    return {
+      status: "verified",
+      email: identity.email,
+      expiresAt: payload.expiresAt,
+    };
+  }
+
   function mergeMatchingExternalVisitorAuth(
     visitorAuth: Extract<RouteVisitorAuthContext, { state: "recognized" }>,
     externalAuth: RouteVisitorAuthContext | null,
@@ -2408,6 +2452,9 @@ export function webTransport(opts: WebTransportOptions): Augment {
                 ...(consoleChatStore ? { consoleChat: consoleChatStore } : {}),
                 ...(consoleInternalRunMarker
                   ? { consoleChatInternalMarker: consoleInternalRunMarker }
+                  : {}),
+                ...(visitorTokensEnabled && opts.visitorTokens?.identityLookup
+                  ? { resolveConsoleVisitorIdentity }
                   : {}),
               });
             }

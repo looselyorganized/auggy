@@ -41,6 +41,10 @@ import {
   type ChatWorkspaceAction,
   type ChatWorkspaceState,
 } from "@/lib/chat-workspace";
+import {
+  resolveConsoleVisitorIdentity,
+  type VisitorIdentityState,
+} from "@/lib/visitor-identity-api";
 
 const VISITOR_TOKEN_STORAGE_KEY = "auggy-visitor-token";
 const VISITOR_PROMOTION_INTENT_STORAGE_KEY = "auggy-visitor-promotion-intent";
@@ -78,6 +82,7 @@ export interface ChatWorkspaceContextValue {
   hydrationError: string | null;
   anonymousAllowed: boolean;
   hasVisitorToken: boolean;
+  visitorIdentity: VisitorIdentityState;
   create: (previewMode?: ChatPreviewMode) => string;
   select: (threadId: string) => boolean;
   loadThread: (threadId: string) => Promise<boolean>;
@@ -173,12 +178,18 @@ export function ChatWorkspaceProvider({
   const pendingVisitorPromotionsRef = useRef(
     new Map<string, string>(
       initialPromotionIntent
-        ? [[initialPromotionIntent.threadId, initialPromotionIntent.visitorToken]]
+        ? [[initialPromotionIntent.threadId, currentVisitorTokenRef.current!]]
         : [],
     ),
   );
   const mountedRef = useRef(true);
   const [hasVisitorToken, setHasVisitorToken] = useState(() => Boolean(readVisitorToken()));
+  const [visitorIdentity, setVisitorIdentity] = useState<VisitorIdentityState>(() =>
+    currentVisitorTokenRef.current ? { status: "checking" } : { status: "absent" },
+  );
+  const visitorIdentityRequestRef = useRef(0);
+  const visitorIdentityInFlightTokenRef = useRef<string | undefined>(undefined);
+  const visitorIdentitySettledTokenRef = useRef<string | undefined>(undefined);
   const [hydrationStatus, setHydrationStatus] = useState<"loading" | "ready" | "error">(
     initialState ? "ready" : "loading",
   );
@@ -224,6 +235,8 @@ export function ChatWorkspaceProvider({
       visitorTokenByThreadRef.current.clear();
       invalidatedVisitorThreadsRef.current.clear();
       pendingVisitorPromotionsRef.current.clear();
+      visitorIdentityInFlightTokenRef.current = undefined;
+      visitorIdentitySettledTokenRef.current = undefined;
       deletingThreadIdsRef.current.clear();
       draftRenamedIdsRef.current.clear();
     };
@@ -289,14 +302,64 @@ export function ChatWorkspaceProvider({
     };
   }, [dispatch, initialState]);
 
-  const refreshVisitorToken = useCallback(() => {
+  const resolveVisitorIdentity = useCallback((token: string | undefined, force = false) => {
+    if (!token) {
+      visitorIdentityRequestRef.current++;
+      visitorIdentityInFlightTokenRef.current = undefined;
+      visitorIdentitySettledTokenRef.current = undefined;
+      if (mountedRef.current) setVisitorIdentity({ status: "absent" });
+      return;
+    }
+    if (
+      visitorIdentityInFlightTokenRef.current === token ||
+      (!force && visitorIdentitySettledTokenRef.current === token)
+    ) {
+      return;
+    }
+    const csrf = consoleChatCsrf(dependenciesRef.current.data);
+    if (!csrf) {
+      if (mountedRef.current) {
+        setVisitorIdentity({ status: "unavailable", error: "Console session unavailable." });
+      }
+      return;
+    }
+    const requestId = ++visitorIdentityRequestRef.current;
+    visitorIdentityInFlightTokenRef.current = token;
+    if (mountedRef.current) setVisitorIdentity({ status: "checking" });
+    void resolveConsoleVisitorIdentity(token, csrf, {
+      fetchImpl: dependenciesRef.current.fetchImpl,
+    }).then(
+      (identity) => {
+        if (
+          !mountedRef.current ||
+          visitorIdentityRequestRef.current !== requestId ||
+          readVisitorToken() !== token
+        ) {
+          return;
+        }
+        visitorIdentityInFlightTokenRef.current = undefined;
+        visitorIdentitySettledTokenRef.current = token;
+        setVisitorIdentity(identity);
+      },
+      (error: unknown) => {
+        if (!mountedRef.current || visitorIdentityRequestRef.current !== requestId) return;
+        visitorIdentityInFlightTokenRef.current = undefined;
+        setVisitorIdentity({
+          status: "unavailable",
+          error: errorMessage(error, "Visitor identity could not be verified."),
+        });
+      },
+    );
+  }, []);
+
+  const refreshVisitorToken = useCallback((forceIdentity = false) => {
     const token = readVisitorToken();
     currentVisitorTokenRef.current = token;
     const available = Boolean(token);
     pendingVisitorPromotionsRef.current.clear();
-    const intent = readVisitorPromotionIntent(token);
-    if (intent) {
-      pendingVisitorPromotionsRef.current.set(intent.threadId, intent.visitorToken);
+    const intent = readVisitorPromotionIntent(token, { quarantineInvalid: true });
+    if (intent && token) {
+      pendingVisitorPromotionsRef.current.set(intent.threadId, token);
     }
     if (!available) {
       for (const threadId of visitorTokenByThreadRef.current.keys()) {
@@ -304,8 +367,9 @@ export function ChatWorkspaceProvider({
       }
     }
     if (mountedRef.current) setHasVisitorToken(available);
+    resolveVisitorIdentity(token, forceIdentity);
     return available;
-  }, []);
+  }, [resolveVisitorIdentity]);
 
   const clearVisitor = useCallback(() => {
     for (const threadId of visitorTokenByThreadRef.current.keys()) {
@@ -315,8 +379,9 @@ export function ChatWorkspaceProvider({
     clearVisitorPromotionIntent();
     currentVisitorTokenRef.current = undefined;
     pendingVisitorPromotionsRef.current.clear();
+    resolveVisitorIdentity(undefined);
     if (mountedRef.current) setHasVisitorToken(false);
-  }, []);
+  }, [resolveVisitorIdentity]);
 
   const persistReadState = useCallback(
     async (threadId: string, unread: boolean): Promise<boolean> => {
@@ -390,9 +455,19 @@ export function ChatWorkspaceProvider({
   ]);
 
   useEffect(() => {
-    const refresh = () => refreshVisitorToken();
+    const refresh = () => refreshVisitorToken(true);
+    const handleStorage = (event: StorageEvent) => {
+      if (
+        event.key === VISITOR_TOKEN_STORAGE_KEY ||
+        event.key === VISITOR_PROMOTION_INTENT_STORAGE_KEY ||
+        event.key === null
+      ) {
+        refresh();
+      }
+    };
+    refresh();
     window.addEventListener("focus", refresh);
-    window.addEventListener("storage", refresh);
+    window.addEventListener("storage", handleStorage);
     const channel =
       typeof window.BroadcastChannel === "function"
         ? new window.BroadcastChannel(VISITOR_AUTH_BROADCAST_CHANNEL)
@@ -403,11 +478,26 @@ export function ChatWorkspaceProvider({
     channel?.addEventListener("message", handleVerification);
     return () => {
       window.removeEventListener("focus", refresh);
-      window.removeEventListener("storage", refresh);
+      window.removeEventListener("storage", handleStorage);
       channel?.removeEventListener("message", handleVerification);
       channel?.close();
     };
   }, [refreshVisitorToken]);
+
+  useEffect(() => {
+    if (visitorIdentity.status !== "verified") return;
+    const remaining = visitorIdentity.expiresAt - Date.now();
+    if (remaining <= 0) {
+      visitorIdentitySettledTokenRef.current = currentVisitorTokenRef.current;
+      setVisitorIdentity({ status: "invalid", error: "Visitor identity expired." });
+      return;
+    }
+    const timer = setTimeout(() => {
+      visitorIdentitySettledTokenRef.current = currentVisitorTokenRef.current;
+      setVisitorIdentity({ status: "invalid", error: "Visitor identity expired." });
+    }, Math.min(remaining, 2_147_483_647));
+    return () => clearTimeout(timer);
+  }, [visitorIdentity]);
 
   useEffect(() => {
     const model = modelSnapshotFromDashboard(data);
@@ -1048,6 +1138,10 @@ export function ChatWorkspaceProvider({
 
         if (response.status === 419) throw new Error("Session expired — reload the page.");
         if (!response.ok) {
+          if (promotingVisitor && response.status === 403) {
+            pendingVisitorPromotionsRef.current.delete(threadId);
+            clearVisitorPromotionIntent(threadId, visitorToken);
+          }
           const detail = await readErrorDetail(response);
           throw new Error(
             `${response.status} ${response.statusText}${detail ? ` — ${detail}` : ""}`,
@@ -1163,6 +1257,7 @@ export function ChatWorkspaceProvider({
       hydrationError,
       anonymousAllowed: data?.web.allowAnonymous.value !== false,
       hasVisitorToken,
+      visitorIdentity,
       create,
       select,
       loadThread,
@@ -1184,6 +1279,7 @@ export function ChatWorkspaceProvider({
       deleteThread,
       deletingThreadIds,
       hasVisitorToken,
+      visitorIdentity,
       hydrationError,
       hydrationStatus,
       loadThread,
@@ -1391,10 +1487,13 @@ interface VisitorPromotionIntent {
   type: typeof VISITOR_VERIFIED_EVENT_TYPE;
   version: 1;
   threadId: string;
-  visitorToken: string;
+  tokenTag: string;
 }
 
-function readVisitorPromotionIntent(visitorToken?: string): VisitorPromotionIntent | undefined {
+function readVisitorPromotionIntent(
+  visitorToken?: string,
+  options: { quarantineInvalid?: boolean } = {},
+): VisitorPromotionIntent | undefined {
   if (!visitorToken) return undefined;
   try {
     if (typeof localStorage === "undefined") return undefined;
@@ -1407,17 +1506,27 @@ function readVisitorPromotionIntent(visitorToken?: string): VisitorPromotionInte
       typeof value.threadId !== "string" ||
       value.threadId.length === 0 ||
       value.threadId.length > 256 ||
-      value.visitorToken !== visitorToken
+      value.tokenTag !== visitorTokenTag(visitorToken)
     ) {
+      if (options.quarantineInvalid) {
+        localStorage.removeItem(VISITOR_PROMOTION_INTENT_STORAGE_KEY);
+      }
       return undefined;
     }
     return {
       type: VISITOR_VERIFIED_EVENT_TYPE,
       version: 1,
       threadId: value.threadId,
-      visitorToken,
+      tokenTag: value.tokenTag,
     };
   } catch {
+    if (options.quarantineInvalid) {
+      try {
+        localStorage.removeItem(VISITOR_PROMOTION_INTENT_STORAGE_KEY);
+      } catch {
+        // Ignore the same storage failure that made the intent unreadable.
+      }
+    }
     return undefined;
   }
 }
@@ -1427,8 +1536,7 @@ function isVisitorVerifiedNotification(value: unknown): boolean {
   const notification = value as Record<string, unknown>;
   return (
     notification.type === VISITOR_VERIFIED_EVENT_TYPE &&
-    notification.version === 1 &&
-    typeof notification.threadId === "string"
+    notification.version === 1
   );
 }
 
@@ -1446,6 +1554,15 @@ function clearVisitorPromotionIntent(threadId?: string, visitorToken?: string): 
   } catch {
     // Storage can be unavailable in private browsing or sandboxed contexts.
   }
+}
+
+function visitorTokenTag(token: string): string {
+  let hash = 2_166_136_261;
+  for (let index = 0; index < token.length; index++) {
+    hash ^= token.charCodeAt(index);
+    hash = Math.imul(hash, 16_777_619);
+  }
+  return `fnv1a32-${(hash >>> 0).toString(16).padStart(8, "0")}`;
 }
 
 function clearVisitorToken(): void {

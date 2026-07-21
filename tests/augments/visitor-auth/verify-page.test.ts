@@ -44,10 +44,13 @@ describe("buildVerifySuccessPage", () => {
     expect(html).toContain("auggy-visitor-promotion-intent");
     expect(html).toContain("visitor-auth.verified");
     expect(html).toContain("origin-thread");
-    expect(html).toContain("visitorToken: token");
+    expect(html).toContain("tokenTag: tokenTag");
     expect(html).toContain("new BroadcastChannel('auggy-visitor-auth')");
     expect(html).toContain("channel.postMessage");
-    expect(html).toContain("threadId: threadId");
+    expect(html).toContain("channel.postMessage({ type: promotionIntent.type, version: 1 })");
+    expect(html).not.toContain(
+      "channel.postMessage({ type: promotionIntent.type, version: 1, threadId",
+    );
   });
 
   test("JSON-encodes the originating thread identifier", () => {

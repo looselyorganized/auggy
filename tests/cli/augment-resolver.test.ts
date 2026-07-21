@@ -15,6 +15,8 @@ import { resolveAugments } from "../../src/cli/augment-resolver";
 import type { AugmentConfig } from "../../src/cli/types";
 import type { AdminOverrides } from "../../src/lib/admin-overrides";
 import { createVisitorToken, deriveSigningKey } from "../../src/transports/visitor-token";
+import { generateCsrfToken } from "../../src/transports/admin/admin-csrf";
+import { createSqliteVisitorAuthStore } from "../../src/augments/visitorAuth/storage/sqlite-store";
 import { defineAgent } from "../../src/agent";
 import { createMockModel } from "../fixtures/mock-model";
 import type { AgentHandle } from "../../src/types";
@@ -1202,6 +1204,88 @@ describe("resolveAugments — visitorAuth", () => {
       TMP,
     );
     expect(augments).toHaveLength(1);
+  });
+
+  test("wires protected console identity summary lookup into webTransport", async () => {
+    const port = getLikelyFreePort();
+    const signingKey = "resolver-visitor-summary-signing-key";
+    const agentBinding = "resolver-visitor-summary";
+    const visitorId = "vis_resolver_summary";
+    const bearer = "resolver-visitor-summary-bearer";
+    const dbPath = join(TMP, "visitor-summary.db");
+    const augments = await resolveAugments(
+      [
+        {
+          type: "visitorAuth",
+          name: "custom-visitor-auth",
+          options: {
+            publicUrl: `http://127.0.0.1:${port}`,
+            dbPath,
+            agentMail: { transport: "console" },
+            signingKey,
+            agentBinding,
+            layeredMemoryDbPath: null,
+            allowConsoleInProduction: true,
+          },
+        },
+        {
+          type: "webTransport",
+          name: "web",
+          options: {
+            port,
+            auth: { type: "bearer", token: bearer },
+            visitorTokens: { agentBinding },
+          },
+        },
+      ],
+      TMP,
+    );
+
+    const store = createSqliteVisitorAuthStore({ dbPath });
+    store.initialize();
+    store.recordVerifiedVisitor({
+      visitorId,
+      email: "resolver@example.com",
+      verifiedAt: Date.now(),
+      lastSeenAt: Date.now(),
+      reverifyDueAt: Date.now() + 86_400_000,
+      revoked: false,
+      revokedAt: null,
+      revokedReason: null,
+    });
+    store.close();
+
+    const model = createMockModel();
+    const agent = defineAgent({ name: agentBinding, model: "mock", augments }, model);
+    if (!(await startAgentIfSocketsAvailable(agent))) return;
+    try {
+      const key = await deriveSigningKey(signingKey);
+      const visitorToken = await createVisitorToken(key, agentBinding, 3_600, visitorId);
+      const csrf = await generateCsrfToken({
+        bearer,
+        agentName: agentBinding,
+        actionId: "console-chat",
+      });
+      const response = await fetch(`http://127.0.0.1:${port}/console/api/visitor-identity`, {
+        method: "POST",
+        headers: {
+          authorization: `Basic ${Buffer.from(`:${bearer}`).toString("base64")}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ csrf, visitorToken: visitorToken.token }),
+      });
+
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({
+        identity: {
+          status: "verified",
+          email: "resolver@example.com",
+          expiresAt: visitorToken.payload.expiresAt,
+        },
+      });
+    } finally {
+      await agent.stop();
+    }
   });
 
   // G34: agentMail.transport flows through opts.agentMail without resolver

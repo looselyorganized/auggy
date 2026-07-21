@@ -50,6 +50,7 @@ export function ChatTab() {
     deletingThreadIds,
     anonymousAllowed,
     hasVisitorToken,
+    visitorIdentity,
     rename,
     markUnread,
     deleteThread,
@@ -74,7 +75,8 @@ export function ChatTab() {
   const externalActiveStream = streaming && !ownsLocalStream;
   const anyThreadStreaming = streaming || anotherLocalStream;
   const previewMode = activeThread.previewMode;
-  const visitorVerificationRequired = previewMode === "visitor" && !hasVisitorToken;
+  const visitorVerificationRequired =
+    previewMode === "visitor" && visitorIdentity.status !== "verified";
   const deleting = deletingThreadIds.has(activeThread.id);
   const disabledReason = deleting
     ? "This chat is being deleted."
@@ -204,6 +206,7 @@ export function ChatTab() {
         streaming={streaming}
         anonymousAllowed={anonymousAllowed}
         hasVisitorToken={hasVisitorToken}
+        visitorIdentity={visitorIdentity}
         previewModeDisabledReason={
           anyThreadStreaming
             ? externalActiveStream

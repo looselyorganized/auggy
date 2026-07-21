@@ -1,5 +1,6 @@
 import { ChevronDown, Copy, Mail } from "lucide-react";
 
+import { AuthIdentityControl } from "@/components/admin/AuthIdentityControl";
 import {
   ChatThreadDeleteMenuItem,
   ChatThreadMutationDialogs,
@@ -13,20 +14,9 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Button } from "@/components/ui/button";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
 import type { ChatPreviewMode } from "@/lib/chat-workspace";
+import type { VisitorIdentityState } from "@/lib/visitor-identity-api";
 import { cn } from "@/lib/utils";
-
-const PREVIEW_MODE_LABELS: Record<ChatPreviewMode, string> = {
-  creator: "Creator",
-  anonymous: "Anonymous",
-  visitor: "Verified",
-};
 
 export type ChatThreadHeaderAction =
   | "preview-mode"
@@ -44,6 +34,7 @@ export interface ChatThreadHeaderProps {
   streaming: boolean;
   anonymousAllowed: boolean;
   hasVisitorToken: boolean;
+  visitorIdentity: VisitorIdentityState;
   /** Disables every identity option, for example while any chat owns the global stream. */
   previewModeDisabledReason?: string;
   onPreviewModeChange: (mode: ChatPreviewMode) => void | Promise<void>;
@@ -69,6 +60,7 @@ export function ChatThreadHeader({
   streaming,
   anonymousAllowed,
   hasVisitorToken,
+  visitorIdentity,
   previewModeDisabledReason,
   onPreviewModeChange,
   onRename,
@@ -149,95 +141,19 @@ export function ChatThreadHeader({
               </DropdownMenuContent>
             </DropdownMenu>
 
-            <div className="pointer-events-auto ml-auto flex min-w-0 max-w-[70%] shrink items-center gap-2 overflow-x-auto rounded-lg border border-border/60 bg-background/75 p-1 pl-2 shadow-sm backdrop-blur-md [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-              <span className="shrink-0 text-xs text-muted-foreground">
-                Auth
-              </span>
-              <div
-                className="flex min-w-0 flex-nowrap items-center gap-0.5"
-                aria-label="Preview chat as"
-                role="group"
-              >
-                {(["creator", "anonymous", "visitor"] as const).map((mode) => {
-                  const disabledReason = getPreviewModeDisabledReason(mode, {
-                    anonymousAllowed,
-                    hasVisitorToken,
-                    previewModeDisabledReason,
-                  });
-                  const button = (
-                    <Button
-                      type="button"
-                      variant={previewMode === mode ? "secondary" : "ghost"}
-                      size="sm"
-                      onClick={() =>
-                        void runAction("preview-mode", () =>
-                          onPreviewModeChange(mode),
-                        )
-                      }
-                      disabled={Boolean(disabledReason)}
-                      aria-pressed={previewMode === mode}
-                      className="h-7 rounded-sm px-2 text-[11px]"
-                    >
-                      {PREVIEW_MODE_LABELS[mode]}
-                    </Button>
-                  );
-
-                  if (!disabledReason) return <span key={mode}>{button}</span>;
-
-                  return (
-                    <Tooltip key={mode}>
-                      <TooltipTrigger
-                        render={
-                          <span
-                            className="inline-flex rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                            tabIndex={0}
-                            aria-label={`${PREVIEW_MODE_LABELS[mode]} unavailable: ${disabledReason}`}
-                          />
-                        }
-                      >
-                        {button}
-                      </TooltipTrigger>
-                      <TooltipContent>{disabledReason}</TooltipContent>
-                    </Tooltip>
-                  );
-                })}
-              </div>
-              {hasVisitorToken && (
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  disabled={Boolean(previewModeDisabledReason)}
-                  onClick={() =>
-                    void runAction("clear-visitor", onClearVisitor)
-                  }
-                  className="h-7 px-2 text-[11px] text-muted-foreground"
-                >
-                  Clear visitor
-                </Button>
-              )}
-            </div>
+            <AuthIdentityControl
+              previewMode={previewMode}
+              anonymousAllowed={anonymousAllowed}
+              hasVisitorToken={hasVisitorToken}
+              visitorIdentity={visitorIdentity}
+              disabledReason={previewModeDisabledReason}
+              onPreviewModeChange={onPreviewModeChange}
+              onForgetVisitor={onClearVisitor}
+              onActionError={onActionError}
+            />
           </div>
         </header>
       )}
     </ChatThreadMutationDialogs>
   );
-}
-
-function getPreviewModeDisabledReason(
-  mode: ChatPreviewMode,
-  options: Pick<
-    ChatThreadHeaderProps,
-    "anonymousAllowed" | "hasVisitorToken" | "previewModeDisabledReason"
-  >,
-): string | undefined {
-  if (options.previewModeDisabledReason)
-    return options.previewModeDisabledReason;
-  if (mode === "anonymous" && !options.anonymousAllowed) {
-    return "Anonymous chat is disabled for this agent.";
-  }
-  if (mode === "visitor" && !options.hasVisitorToken) {
-    return "Verify a visitor before previewing as one.";
-  }
-  return undefined;
 }

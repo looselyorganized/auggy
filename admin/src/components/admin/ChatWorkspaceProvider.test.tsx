@@ -443,6 +443,47 @@ describe("ChatWorkspaceProvider persistence", () => {
     expect(harness.value.activeThread.previewMode).toBe("anonymous");
   });
 
+  it("quarantines an exact promotion intent when the server rejects its proof", async () => {
+    const storage = new Map<string, string>([
+      [VISITOR_TOKEN_KEY, "verified.payload.signature"],
+      [
+        VISITOR_PROMOTION_INTENT_KEY,
+        promotionIntent("verified-origin", "verified.payload.signature"),
+      ],
+    ]);
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      value: {
+        getItem: (key: string) => storage.get(key) ?? null,
+        removeItem: (key: string) => storage.delete(key),
+      },
+    });
+    const anonymous = {
+      ...populatedThread("verified-origin", "Manage order"),
+      previewMode: "anonymous" as const,
+    };
+    const fetchImpl = mockFetch(async (path) => {
+      if (path === "/console/api/visitor-identity") {
+        return identityResponse("visitor@example.com");
+      }
+      if (path === "/console/api/chat") {
+        return json({ error: "console thread verification does not match" }, 403);
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    const harness = await mountProvider({
+      fetchImpl,
+      initialState: createChatWorkspace(anonymous),
+    });
+
+    await act(async () => {
+      expect(await harness.value.send("Done")).toMatchObject({ ok: false });
+    });
+
+    expect(storage.has(VISITOR_PROMOTION_INTENT_KEY)).toBe(false);
+    expect(harness.value.activeThread.previewMode).toBe("anonymous");
+  });
+
   it("clears both the compatible visitor token and pending intent on signout", async () => {
     const storage = new Map<string, string>([
       [VISITOR_TOKEN_KEY, "verified.payload.signature"],
@@ -472,6 +513,61 @@ describe("ChatWorkspaceProvider persistence", () => {
     expect(storage.has(VISITOR_TOKEN_KEY)).toBe(false);
     expect(storage.has(VISITOR_PROMOTION_INTENT_KEY)).toBe(false);
     expect(harness.value.hasVisitorToken).toBe(false);
+  });
+
+  it("ignores stale identity responses after token rotation and signout", async () => {
+    const storage = new Map<string, string>([[VISITOR_TOKEN_KEY, "token-a"]]);
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      value: {
+        getItem: (key: string) => storage.get(key) ?? null,
+        removeItem: (key: string) => storage.delete(key),
+      },
+    });
+    const requests = new Map<string, ReturnType<typeof deferred<Response>>>();
+    const fetchImpl = mockFetch(async (path, init) => {
+      if (path !== "/console/api/visitor-identity") {
+        throw new Error(`Unexpected request: ${path}`);
+      }
+      const body = JSON.parse(String(init?.body)) as { visitorToken: string };
+      const request = deferred<Response>();
+      requests.set(body.visitorToken, request);
+      return request.promise;
+    });
+    const harness = await mountProvider({
+      fetchImpl,
+      initialState: createChatWorkspace(
+        createChatThread({ id: "draft", previewMode: "creator", model: MODEL, now: T0 }),
+      ),
+    });
+
+    storage.set(VISITOR_TOKEN_KEY, "token-b");
+    await act(async () => {
+      harness.value.refreshVisitorToken();
+      requests.get("token-b")?.resolve(identityResponse("b@example.com"));
+    });
+    expect(harness.value.visitorIdentity).toMatchObject({
+      status: "verified",
+      email: "b@example.com",
+    });
+
+    await act(async () => {
+      requests.get("token-a")?.resolve(identityResponse("a@example.com"));
+    });
+    expect(harness.value.visitorIdentity).toMatchObject({
+      status: "verified",
+      email: "b@example.com",
+    });
+
+    storage.set(VISITOR_TOKEN_KEY, "token-c");
+    act(() => {
+      harness.value.refreshVisitorToken();
+      harness.value.clearVisitor();
+    });
+    await act(async () => {
+      requests.get("token-c")?.resolve(identityResponse("c@example.com"));
+    });
+    expect(harness.value.visitorIdentity).toEqual({ status: "absent" });
   });
 
   it("rolls back optimistic messages and preserves the draft when the server rejects a run", async () => {
@@ -957,6 +1053,16 @@ function completedSse(threadId: string): Response {
   return new Response(body, { headers: { "content-type": "text/event-stream" } });
 }
 
+function identityResponse(email: string): Response {
+  return json({
+    identity: {
+      status: "verified",
+      email,
+      expiresAt: Date.now() + 60_000,
+    },
+  });
+}
+
 function segmentedSse(threadId: string): Response {
   const body = [
     { type: "TEXT_MESSAGE_START", messageId: "segment-one", role: "assistant" },
@@ -993,8 +1099,17 @@ function promotionIntent(threadId: string, visitorToken: string): string {
     type: "visitor-auth.verified",
     version: 1,
     threadId,
-    visitorToken,
+    tokenTag: testVisitorTokenTag(visitorToken),
   });
+}
+
+function testVisitorTokenTag(token: string): string {
+  let hash = 2_166_136_261;
+  for (let index = 0; index < token.length; index++) {
+    hash ^= token.charCodeAt(index);
+    hash = Math.imul(hash, 16_777_619);
+  }
+  return `fnv1a32-${(hash >>> 0).toString(16).padStart(8, "0")}`;
 }
 
 function deferred<T>() {
