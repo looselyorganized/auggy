@@ -162,6 +162,69 @@ describe("auggy augment command", () => {
     expect(promptCreateSkill).toHaveBeenCalledWith("weather");
     expect(logs.join("\n")).toContain('Created and installed custom augment "weather"');
     expect(logs.join("\n")).toContain("skills/weather/SKILL.md");
+    expect(logs.join("\n")).toContain(
+      "Next: customize the augment implementation and skill for your use case.",
+    );
+  });
+
+  test("create --with-skill bypasses prompting and prints actionable next steps", async () => {
+    const root = mkdtempSync(join(tmpdir(), "augment-create-with-skill-"));
+    writeFileSync(
+      join(root, "agent.yaml"),
+      "name: demo\nengine:\n  provider: anthropic\n  model: claude-sonnet-4-6\naugments: []\n",
+    );
+    const promptCreateSkill = mock(async () => false);
+    const logs: string[] = [];
+    const origLog = console.log;
+    console.log = (msg: unknown) => {
+      logs.push(String(msg));
+    };
+
+    try {
+      const cmd = augmentCommand({ cwd: root, promptCreateSkill });
+      await cmd.parseAsync(["create", "order-support", "--with-skill"], { from: "user" });
+
+      expect(promptCreateSkill).not.toHaveBeenCalled();
+      expect(existsSync(join(root, "augments", "order-support", "SKILL.md"))).toBe(false);
+      expect(existsSync(join(root, "skills", "order-support", "SKILL.md"))).toBe(true);
+      expect(logs).toContain(
+        'Created and installed custom augment "order-support" at augments/order-support.',
+      );
+      expect(logs).toContain("Created skill at skills/order-support/SKILL.md.");
+      expect(logs).toContain(
+        "Next: customize the augment implementation and skill for your use case.",
+      );
+    } finally {
+      console.log = origLog;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("create --without-skill omits skill output and bypasses prompting", async () => {
+    const root = mkdtempSync(join(tmpdir(), "augment-create-without-skill-"));
+    writeFileSync(
+      join(root, "agent.yaml"),
+      "name: demo\nengine:\n  provider: anthropic\n  model: claude-sonnet-4-6\naugments: []\n",
+    );
+    const promptCreateSkill = mock(async () => true);
+    const logs: string[] = [];
+    const origLog = console.log;
+    console.log = (msg: unknown) => {
+      logs.push(String(msg));
+    };
+
+    try {
+      const cmd = augmentCommand({ cwd: root, promptCreateSkill });
+      await cmd.parseAsync(["create", "weather", "--without-skill"], { from: "user" });
+
+      expect(promptCreateSkill).not.toHaveBeenCalled();
+      expect(existsSync(join(root, "skills", "weather", "SKILL.md"))).toBe(false);
+      expect(logs.join("\n")).not.toContain("Created skill");
+      expect(logs.join("\n")).not.toContain("and skill for your use case");
+    } finally {
+      console.log = origLog;
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   test("create exits 1 on scaffold errors", async () => {

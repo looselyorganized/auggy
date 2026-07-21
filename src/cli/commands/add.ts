@@ -35,6 +35,7 @@ import { writeKnowledgeScaffold } from "../scaffold-knowledge";
 import { displayPath } from "../display-path";
 import { ensureMcpConfig } from "../mcp-config";
 import { writeFileSafely } from "../safe-write";
+import { errorLabel, infoLabel } from "../_shared/styles";
 import { formatAgentMailSetupResult, runAgentMailSetup } from "./agentmail";
 
 export interface AddOpts {
@@ -446,10 +447,8 @@ async function offerSetupForAddedAugments(
     if (!proceed) {
       if (target === "visitorAuth") {
         console.log();
-        console.log(
-          "ℹ visitorAuth will use console delivery for now. Local magic links will be printed to the agent console until AgentMail is configured.",
-        );
-        console.log("  Run `auggy augment setup visitorAuth` to enable AgentMail delivery.");
+        console.log(`${infoLabel()} visitorAuth will use local console delivery for magic links.`);
+        console.log("     Set up AgentMail later: `auggy augment setup visitorAuth`.");
       }
       continue;
     }
@@ -460,9 +459,11 @@ async function offerSetupForAddedAugments(
       console.log(formatAgentMailSetupResult(result));
     } catch (err) {
       console.error();
-      console.error(`AgentMail setup did not complete: ${(err as Error).message}`);
-      console.error(`Local ${target} install is still applied.`);
-      console.error(`Retry when ready: auggy augment setup ${target}`);
+      console.error(
+        `${errorLabel({ color: Boolean(process.stderr.isTTY) })} AgentMail setup did not complete: ${(err as Error).message}`,
+      );
+      console.error(`      Local ${target} install is still applied.`);
+      console.error(`      Retry when ready: auggy augment setup ${target}`);
     }
   }
 }

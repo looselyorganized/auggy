@@ -663,9 +663,10 @@ describe("runAdd no-op cases", () => {
     }
 
     const output = logs.join("\n");
-    expect(output).toContain("visitorAuth will use console delivery for now");
-    expect(output).toContain("Local magic links will be printed to the agent console");
-    expect(output).toContain("auggy augment setup visitorAuth");
+    expect(output).toContain(
+      "INFO visitorAuth will use local console delivery for magic links.\n" +
+        "     Set up AgentMail later: `auggy augment setup visitorAuth`.",
+    );
   });
 
   test("adding visitorAuth fills blank generated env vars", async () => {

@@ -256,7 +256,7 @@ export function augmentCommand(deps: AugmentCommandDeps = {}): Command {
           );
           if (result.skillDir) {
             console.log(`Created skill at ${displayPath(result.skillDir, deps.cwd)}/SKILL.md.`);
-            console.log("Edit this model-visible guidance before running the agent.");
+            console.log("Next: customize the augment implementation and skill for your use case.");
           }
         } catch (err) {
           console.error(`Error: ${(err as Error).message}`);
