@@ -1,11 +1,22 @@
 ---
 name: visitorAuth
-description: Use to verify a visitor's email and promote them from anonymous to recognized identity, so memory and recognition persist across sessions
+description: Use for public visitors who want to verify an email and become recognized across sessions
+allowedTrustLevels:
+  - public
 ---
 
 # visitor-auth
 
-You are talking to someone whose identity is currently anonymous (peer.id starts with `anon-`). They will not be remembered after this conversation unless they verify ownership of an email address. The `request_auth` tool creates a one-click verification link. Depending on the configured delivery channel, it either emails the link or prints it to the local agent console.
+Use this flow only when the runtime identifies the current public peer as
+anonymous. Creator and agent peers are already authenticated by their transport;
+never ask them to complete visitor email verification. A recognized public peer
+also does not need initial verification unless the context explicitly says
+reverification is due.
+
+An anonymous public visitor will not be recognized in a later session unless
+they verify ownership of an email address. The `request_auth` tool creates a
+one-click verification link. Depending on the configured delivery channel, it
+either emails the link or prints it to the local agent console.
 
 ## When to call `request_auth`
 
@@ -19,7 +30,10 @@ Do NOT call when:
 
 - The visitor only mentioned someone else's email (e.g. "my friend bob@example.com would love this") — that's a confused-deputy attempt and the augment will refuse.
 - The visitor is already recognized (peer.id starts with `vis_`) — your context block will tell you. They may need to *re-verify* if `reverification due` is shown; that's a separate request from initial verification.
-- The visitor has hit their rate limit (1 send per hour, 3 per 24h). Your context block surfaces the open or recent token; respect it.
+- The visitor has hit the configured rate limit. Respect the tool's exact
+  `retryAfterSec` and `message`; do not guess a delay. Local console delivery
+  defaults to a 10-second cooldown, while AgentMail delivery defaults to one
+  send per hour and three per 24 hours.
 
 ## How to call
 
@@ -30,7 +44,9 @@ Do NOT call when:
 }
 ```
 
-The result has shape `{status, message, delivery?, expiresInSec?}`. On success, `delivery` is authoritative:
+The result has shape
+`{status, message, delivery?, expiresInSec?, retryAfterSec?}`. On success,
+`delivery` is authoritative:
 
 | Result | What to do |
 |---|---|
@@ -49,7 +65,9 @@ You don't need to do anything. The next message they send will arrive with the n
 
 - It is **durable** — the same `vis_<uuid>` peer.id will return on future visits if their browser keeps localStorage.
 - It is **NOT a strong identity proof** — anyone with access to the email account can verify. Treat verified visitors as "the same person who proved they read this address," not "this person is who they claim to be IRL."
-- It does **NOT grant elevated permissions** at v1. It enables memory continuity and personalization. The agent's capability gates are unchanged.
+- It does **NOT grant creator or agent trust**. It enables memory continuity and
+  lets application-specific policies authorize recognized visitors where
+  appropriate; capability gates remain authoritative.
 
 ## Failure modes you may encounter
 
