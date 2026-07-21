@@ -178,6 +178,12 @@ export interface ConsoleChatStore {
     threadId: string,
     input: UpdateConsoleChatThreadInput,
   ): ConsoleChatThreadSummary | null;
+  /** One-way, caller-authorized transition that preserves the existing transcript. */
+  promoteAnonymousThread(
+    threadId: string,
+    peer: PeerIdentity,
+    updatedAt: number,
+  ): ConsoleChatThreadSummary | null;
   appendMessage(threadId: string, input: AppendConsoleChatMessageInput): ConsoleChatMessage;
   updateMessage(
     threadId: string,
@@ -694,6 +700,53 @@ export function createConsoleChatStore(options: {
       ],
     );
     return requiredThreadSummary(id);
+  }
+
+  function promoteAnonymousThread(
+    threadId: string,
+    peer: PeerIdentity,
+    updatedAt: number,
+  ): ConsoleChatThreadSummary | null {
+    const id = assertIdentifier(threadId, "threadId");
+    if (previewModeForPeer(peer, id) !== "visitor") {
+      throw new Error(`${STORE_LABEL}: thread promotion requires recognized visitor identity`);
+    }
+    const owner = normalizeOwner(consoleChatOwnerFromPeer(peer), id, "visitor");
+    if (owner === null) throw new Error(`${STORE_LABEL}: kernel history access denied`);
+    const at = assertTimestamp(updatedAt, "thread.updatedAt");
+
+    return db.transaction(() => {
+      const row = getThreadStatement.get(id) as ThreadRow | null;
+      if (!row) return null;
+      const existing = rowToThread(row);
+      if (existing.runStatus === "streaming") {
+        throw new Error(`${STORE_LABEL}: streaming thread cannot be promoted`);
+      }
+      if (
+        existing.previewMode !== "anonymous" ||
+        existing.owner?.peerId !== `anon-${id}` ||
+        existing.owner.kind !== "human" ||
+        existing.owner.trustLevel !== "public" ||
+        existing.owner.publicSubstate !== "anonymous"
+      ) {
+        throw new Error(`${STORE_LABEL}: only its bound anonymous thread can be promoted`);
+      }
+
+      const result = db.run(
+        `UPDATE console_chat_threads
+            SET preview_mode = 'visitor', bound_peer_id = ?, owner_peer_kind = ?,
+                owner_trust_level = ?, owner_public_substate = ?,
+                updated_at = MAX(updated_at, ?)
+          WHERE id = ? AND preview_mode = 'anonymous'
+            AND bound_peer_id = ? AND owner_peer_kind = 'human'
+            AND owner_trust_level = 'public' AND owner_public_substate = 'anonymous'`,
+        [owner.peerId, owner.kind, owner.trustLevel, owner.publicSubstate, at, id, `anon-${id}`],
+      );
+      if (result.changes !== 1) {
+        throw new Error(`${STORE_LABEL}: anonymous thread promotion lost its ownership claim`);
+      }
+      return requiredThreadSummary(id);
+    })();
   }
 
   function insertMessage(
@@ -1271,6 +1324,7 @@ export function createConsoleChatStore(options: {
     createThreadWithMessages,
     upsertThread,
     updateThread,
+    promoteAnonymousThread,
     appendMessage,
     updateMessage,
     beginRun,

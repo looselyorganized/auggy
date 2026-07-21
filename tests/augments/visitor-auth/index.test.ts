@@ -358,6 +358,22 @@ describe("visitorAuth (skeleton)", () => {
     expect(result).toEqual([]);
     await aug.onShutdown?.();
   });
+
+  test("thread promotion proof fails closed before boot and after shutdown", async () => {
+    const aug = visitorAuth({
+      publicUrl: "https://example.com",
+      dbPath,
+      agentMail: { apiKey: "am_x", inboxId: "ibx_x" },
+      signingKey: "sig",
+      _agentMailClient: fakeAgentMail(),
+    });
+
+    expect(aug.canPromoteAnonymousThread("vis_unknown", "thread-1")).toBe(false);
+    await aug.onBoot?.();
+    expect(aug.canPromoteAnonymousThread("vis_unknown", "thread-1")).toBe(false);
+    await aug.onShutdown?.();
+    expect(aug.canPromoteAnonymousThread("vis_unknown", "thread-1")).toBe(false);
+  });
 });
 
 describe("buildVerifyUrl (F6) — URL-spec-compliant construction", () => {

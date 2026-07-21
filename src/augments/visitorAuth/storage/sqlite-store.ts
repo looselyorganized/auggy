@@ -168,6 +168,7 @@ export function createSqliteVisitorAuthStore(
   let hasNotifiedStmt: Statement | null = null;
   let markNotifiedStmt: Statement | null = null;
   let findByIdStmt: Statement | null = null;
+  let canPromoteThreadStmt: Statement | null = null;
   let addRevokedStmt: Statement | null = null;
   let isRevokedIdStmt: Statement | null = null;
 
@@ -250,6 +251,23 @@ export function createSqliteVisitorAuthStore(
       `INSERT OR IGNORE INTO first_verify_notifications (email, notified_at) VALUES (?, ?)`,
     );
     findByIdStmt = db.prepare(`SELECT * FROM verified_visitors WHERE visitor_id = ?`);
+    canPromoteThreadStmt = db.prepare(
+      `SELECT 1
+         FROM visitor_auth_tokens AS token
+         JOIN verified_visitors AS visitor ON visitor.email = token.email
+        WHERE visitor.visitor_id = ?
+          AND visitor.revoked = 0
+          AND token.thread_id = ?
+          AND token.peer_id = ('anon-' || ?)
+          AND token.consumed = 1
+          AND token.consumed_at IS NOT NULL
+          AND token.consumed_at >= visitor.verified_at
+          AND NOT EXISTS (
+            SELECT 1 FROM revoked_visitor_ids AS revoked
+             WHERE revoked.visitor_id = visitor.visitor_id
+          )
+        LIMIT 1`,
+    );
     addRevokedStmt = db.prepare(
       `INSERT OR IGNORE INTO revoked_visitor_ids (visitor_id, email, revoked_at, revoked_reason) VALUES (?, ?, ?, ?)`,
     );
@@ -376,6 +394,10 @@ export function createSqliteVisitorAuthStore(
       ensurePrepared();
       const row = findByIdStmt!.get(visitorId) as VerifiedRow | undefined;
       return row ? rowToVerified(row) : null;
+    },
+    canPromoteAnonymousThread(visitorId: string, threadId: string): boolean {
+      ensurePrepared();
+      return canPromoteThreadStmt!.get(visitorId, threadId, threadId) !== null;
     },
     unrevokeAndRotate(
       email: string,

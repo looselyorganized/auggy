@@ -83,6 +83,7 @@ export type ChatWorkspaceAction =
   | { type: "thread.rename"; threadId: string; title: string; at: string }
   | { type: "thread.delete"; threadId: string; fallbackDraft: ChatThread; at: string }
   | { type: "thread.preview-mode-set"; threadId: string; previewMode: ChatPreviewMode; at: string }
+  | { type: "thread.identity-promoted"; threadId: string; at: string }
   | { type: "thread.model-set"; threadId: string; model: ChatModelSnapshot | null; at: string }
   | { type: "thread.read-state-set"; threadId: string; unread: boolean; at: string }
   | {
@@ -370,6 +371,13 @@ export function chatWorkspaceReducer(
         if (!isEmptyChatThread(thread)) return thread;
         return { ...thread, previewMode: action.previewMode, updatedAt: action.at };
       });
+
+    case "thread.identity-promoted":
+      return updateThread(state, action.threadId, (thread) => ({
+        ...thread,
+        previewMode: "visitor",
+        updatedAt: action.at,
+      }));
 
     case "thread.model-set":
       return updateThread(state, action.threadId, (thread) => {

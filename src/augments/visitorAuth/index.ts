@@ -602,6 +602,11 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
     };
   }
 
+  function canPromoteAnonymousThread(visitorId: string, threadId: string): boolean {
+    if (!booted) return false;
+    return store.canPromoteAnonymousThread(visitorId, threadId);
+  }
+
   async function adminInfo(): Promise<AdminInfoBlock> {
     const visitors = store.listVerifiedVisitors();
     const isProd = process.env.NODE_ENV === "production";
@@ -675,7 +680,10 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
   };
 
   const augment: Augment &
-    Pick<VisitorAuthAugmentExtras, "isVisitorRevoked" | "resolveVisitorIdentity"> = {
+    Pick<
+      VisitorAuthAugmentExtras,
+      "isVisitorRevoked" | "resolveVisitorIdentity" | "canPromoteAnonymousThread"
+    > = {
     name: "visitor-auth",
     type: "visitorAuth",
     category: "guardrails",
@@ -684,6 +692,7 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
     adminActions,
     isVisitorRevoked,
     resolveVisitorIdentity,
+    canPromoteAnonymousThread,
     httpRoutes: [
       // -----------------------------------------------------------------------
       // GET /visitor-auth/verify?token=<uuid>
@@ -923,7 +932,11 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
           }
 
           return new Response(
-            buildVerifySuccessPage({ visitorToken: minted.token, email: consume.email! }),
+            buildVerifySuccessPage({
+              visitorToken: minted.token,
+              email: consume.email!,
+              threadId: consume.threadId!,
+            }),
             {
               status: 200,
               headers: VERIFY_HTML_HEADERS,

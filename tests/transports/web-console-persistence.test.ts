@@ -3,9 +3,11 @@ import { join } from "node:path";
 import { defineAgent } from "@/agent";
 import { generateCsrfToken } from "@/transports/admin/admin-csrf";
 import { webTransport } from "@/transports/web-transport";
+import { createVisitorToken, deriveSigningKey } from "@/transports/visitor-token";
 import { createMockModel } from "@tests/fixtures/mock-model";
 import { createTempDir } from "@tests/fixtures/temp-dir";
-import type { ModelClient } from "@/types";
+import { z } from "zod";
+import type { Augment, ModelClient } from "@/types";
 
 const bearer = "console-persistence-test-token";
 
@@ -22,6 +24,25 @@ async function sendConsoleMessage(port: number, threadId: string, message: strin
   });
 }
 
+async function sendConsolePreviewMessage(
+  port: number,
+  threadId: string,
+  message: string,
+  chatMode: "anonymous" | "visitor",
+  visitorToken?: string,
+) {
+  const csrf = await generateCsrfToken({
+    bearer,
+    agentName: "console-persistence-test",
+    actionId: "console-chat",
+  });
+  return fetch(`http://127.0.0.1:${port}/console/api/chat`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ csrf, threadId, message, chatMode, visitorToken }),
+  });
+}
+
 async function readThread(port: number, threadId: string) {
   const response = await fetch(
     `http://127.0.0.1:${port}/console/api/chat/threads/${encodeURIComponent(threadId)}`,
@@ -29,6 +50,7 @@ async function readThread(port: number, threadId: string) {
   expect(response.status).toBe(200);
   return (await response.json()) as {
     thread: {
+      previewMode: string;
       runStatus: string;
       unread: boolean;
       messages: Array<{ role: string; content: string; error?: string }>;
@@ -160,6 +182,224 @@ describe("webTransport console persistence boundary", () => {
       });
       expect(direct.status).toBe(403);
       expect(model.calls).toHaveLength(callsBefore);
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("persists separate paragraphs for text emitted across tool-loop inference segments", async () => {
+    const port = 19446;
+    let inference = 0;
+    const model: ModelClient = {
+      maxContextTokens: 100_000,
+      async complete(_prompt, options) {
+        if (inference++ === 0) {
+          options?.onDelta?.({ kind: "text_delta", text: "I'll check the order." });
+          return {
+            content: "I'll check the order.",
+            toolCalls: [{ name: "echo", arguments: { input: "A-1042" } }],
+            inputTokens: 1,
+            outputTokens: 1,
+            finishReason: "tool_use",
+          };
+        }
+        options?.onDelta?.({ kind: "text_delta", text: "The address is current." });
+        return {
+          content: "The address is current.",
+          inputTokens: 1,
+          outputTokens: 1,
+          finishReason: "end_turn",
+        };
+      },
+      countTokens(text) {
+        return Math.ceil(text.length / 4);
+      },
+    };
+    const echoAugment: Augment = {
+      name: "echo-augment",
+      tools: [
+        {
+          name: "echo",
+          description: "Echo an order identifier.",
+          category: "utility",
+          input: z.object({ input: z.string() }),
+          execute: async ({ input }) => input,
+        },
+      ],
+    };
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: bearer },
+      consoleChat: { dbPath: null },
+    });
+    const agent = defineAgent(
+      { name: "console-persistence-test", model: "mock", augments: [echoAugment, aug] },
+      model,
+    );
+    await agent.start();
+
+    try {
+      const response = await sendConsoleMessage(port, "segmented-thread", "check the order");
+      expect(response.status).toBe(200);
+      await response.text();
+
+      const { thread } = await readThread(port, "segmented-thread");
+      expect(thread.messages.at(-1)?.content).toBe(
+        "I'll check the order.\n\nThe address is current.",
+      );
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("continues the exact anonymous thread as its verified visitor", async () => {
+    const port = 19447;
+    const signingKey = "console-thread-promotion-key";
+    const agentBinding = "console-persistence-test";
+    const visitorId = "vis_promoted";
+    let promotionCheckThrows = false;
+    const model = createMockModel({ response: "identity received" });
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: bearer },
+      allowAnonymous: true,
+      consoleChat: { dbPath: null },
+      visitorTokens: {
+        enabled: true,
+        signingKey,
+        agentBinding,
+        threadPromotionCheck: (candidateVisitorId, threadId) => {
+          if (promotionCheckThrows) throw new Error("proof store unavailable");
+          return candidateVisitorId === visitorId && threadId === "verification-thread";
+        },
+      },
+    });
+    const agent = defineAgent(
+      { name: "console-persistence-test", model: "mock", augments: [aug] },
+      model,
+    );
+    await agent.start();
+
+    try {
+      const anonymous = await sendConsolePreviewMessage(
+        port,
+        "verification-thread",
+        "Please verify me",
+        "anonymous",
+      );
+      expect(anonymous.status).toBe(200);
+      await anonymous.text();
+
+      const key = await deriveSigningKey(signingKey);
+      const token = await createVisitorToken(key, agentBinding, 3_600, visitorId);
+      promotionCheckThrows = true;
+      const unavailableProof = await sendConsolePreviewMessage(
+        port,
+        "verification-thread",
+        "Do not continue when proof cannot be checked",
+        "visitor",
+        token.token,
+      );
+      expect(unavailableProof.status).toBe(409);
+      expect(await unavailableProof.json()).toEqual({
+        error: "console thread identity promotion failed",
+      });
+      promotionCheckThrows = false;
+      expect((await readThread(port, "verification-thread")).thread).toMatchObject({
+        previewMode: "anonymous",
+        messages: [
+          expect.objectContaining({ content: "Please verify me" }),
+          expect.objectContaining({ content: "identity received" }),
+        ],
+      });
+
+      const unrelatedToken = await createVisitorToken(
+        key,
+        agentBinding,
+        3_600,
+        "vis_unrelated",
+      );
+      const unrelated = await sendConsolePreviewMessage(
+        port,
+        "verification-thread",
+        "This token belongs to somebody else",
+        "visitor",
+        unrelatedToken.token,
+      );
+      expect(unrelated.status).toBe(403);
+      expect(await unrelated.json()).toEqual({
+        error: "console thread verification does not match",
+      });
+      expect((await readThread(port, "verification-thread")).thread).toMatchObject({
+        previewMode: "anonymous",
+        messages: [
+          expect.objectContaining({ content: "Please verify me" }),
+          expect.objectContaining({ content: "identity received" }),
+        ],
+      });
+
+      const otherAnonymous = await sendConsolePreviewMessage(
+        port,
+        "other-verification-thread",
+        "A different anonymous conversation",
+        "anonymous",
+      );
+      expect(otherAnonymous.status).toBe(200);
+      await otherAnonymous.text();
+      const wrongThread = await sendConsolePreviewMessage(
+        port,
+        "other-verification-thread",
+        "Use the first thread's proof here",
+        "visitor",
+        token.token,
+      );
+      expect(wrongThread.status).toBe(403);
+      expect(await wrongThread.json()).toEqual({
+        error: "console thread verification does not match",
+      });
+
+      const verified = await sendConsolePreviewMessage(
+        port,
+        "verification-thread",
+        "Done",
+        "visitor",
+        token.token,
+      );
+      expect(verified.status).toBe(200);
+      await verified.text();
+
+      const continued = await sendConsolePreviewMessage(
+        port,
+        "verification-thread",
+        "Continue as the same visitor",
+        "visitor",
+        token.token,
+      );
+      expect(continued.status).toBe(200);
+      await continued.text();
+
+      const { thread } = await readThread(port, "verification-thread");
+      expect(thread.previewMode).toBe("visitor");
+      expect(thread.messages.map(({ content }) => content)).toEqual([
+        "Please verify me",
+        "identity received",
+        "Done",
+        "identity received",
+        "Continue as the same visitor",
+        "identity received",
+      ]);
+      expect(model.calls[2]?.messages.map(({ content }) => content)).toEqual([
+        "Please verify me",
+        "identity received",
+        "Done",
+      ]);
+      expect(model.calls[3]?.messages.map(({ content }) => content)).toEqual([
+        "Please verify me",
+        "identity received",
+        "Done",
+        "identity received",
+        "Continue as the same visitor",
+      ]);
     } finally {
       await agent.stop();
     }

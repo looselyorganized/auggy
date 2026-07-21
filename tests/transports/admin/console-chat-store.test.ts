@@ -560,6 +560,154 @@ describe("console chat SQLite store", () => {
     ).toThrow(/requires an identified owner/);
   });
 
+  it("promotes only the exact bound anonymous thread and preserves its transcript", async () => {
+    const { store } = await openStore();
+    const anonymousThread = {
+      ...THREAD,
+      id: "promoted-thread",
+      previewMode: "anonymous" as const,
+      owner: {
+        peerId: "anon-promoted-thread",
+        kind: "human" as const,
+        trustLevel: "public" as const,
+        publicSubstate: "anonymous" as const,
+      },
+    };
+    store.createThreadWithMessages(anonymousThread, [USER_MESSAGE]);
+    store.saveKernelHistory(anonymousThread.id, KERNEL_HISTORY, 1_200);
+
+    const promoted = store.promoteAnonymousThread(
+      anonymousThread.id,
+      {
+        id: "vis_verified",
+        kind: "human",
+        trustLevel: "public",
+        publicSubstate: "recognized",
+        sourceAugment: "web",
+      },
+      2_000,
+    );
+
+    expect(promoted).toMatchObject({
+      id: anonymousThread.id,
+      previewMode: "visitor",
+      owner: {
+        peerId: "vis_verified",
+        trustLevel: "public",
+        publicSubstate: "recognized",
+      },
+    });
+    expect(store.getThread(anonymousThread.id)?.messages).toHaveLength(1);
+    expect(
+      store.loadKernelHistoryForPeer(anonymousThread.id, {
+        id: "vis_verified",
+        kind: "human",
+        trustLevel: "public",
+        publicSubstate: "recognized",
+        sourceAugment: "web",
+      }),
+    ).toEqual(KERNEL_HISTORY);
+  });
+
+  it("rejects promotion for the wrong owner or while the anonymous thread is streaming", async () => {
+    const { store } = await openStore();
+    const anonymousPeer: PeerIdentity = {
+      id: "anon-streaming-promotion",
+      kind: "human",
+      trustLevel: "public",
+      publicSubstate: "anonymous",
+      sourceAugment: "web",
+    };
+    const visitorPeer: PeerIdentity = {
+      id: "vis_verified",
+      kind: "human",
+      trustLevel: "public",
+      publicSubstate: "recognized",
+      sourceAugment: "web",
+    };
+    const anonymousThread = {
+      ...THREAD,
+      id: "streaming-promotion",
+      previewMode: "anonymous" as const,
+      owner: {
+        peerId: anonymousPeer.id,
+        kind: "human" as const,
+        trustLevel: "public" as const,
+        publicSubstate: "anonymous" as const,
+      },
+    };
+
+    store.createThread(THREAD);
+    expect(() => store.promoteAnonymousThread(THREAD.id, visitorPeer, 2_000)).toThrow(
+      /only its bound anonymous thread can be promoted/,
+    );
+    expect(() =>
+      store.promoteAnonymousThread(anonymousThread.id, anonymousPeer, 2_000),
+    ).toThrow(/requires recognized visitor identity/);
+
+    store.beginRun({
+      thread: { ...anonymousThread, runStatus: "streaming" },
+      peer: anonymousPeer,
+      runId: "streaming-promotion-run",
+      userMessage: USER_MESSAGE,
+      assistantMessage: ASSISTANT_MESSAGE,
+    });
+    expect(() => store.promoteAnonymousThread(anonymousThread.id, visitorPeer, 2_000)).toThrow(
+      /streaming thread cannot be promoted/,
+    );
+    expect(store.getThread(anonymousThread.id)).toMatchObject({
+      previewMode: "anonymous",
+      runStatus: "streaming",
+      owner: { peerId: anonymousPeer.id, publicSubstate: "anonymous" },
+    });
+  });
+
+  it("persists a promoted owner across restart without exposing history to another visitor", async () => {
+    const { dbPath, store } = await openStore();
+    const threadId = "restarted-promotion";
+    const visitorPeer: PeerIdentity = {
+      id: "vis_verified",
+      kind: "human",
+      trustLevel: "public",
+      publicSubstate: "recognized",
+      sourceAugment: "web",
+    };
+    store.createThreadWithMessages(
+      {
+        ...THREAD,
+        id: threadId,
+        previewMode: "anonymous",
+        owner: {
+          peerId: `anon-${threadId}`,
+          kind: "human",
+          trustLevel: "public",
+          publicSubstate: "anonymous",
+        },
+      },
+      [USER_MESSAGE],
+    );
+    store.saveKernelHistory(threadId, KERNEL_HISTORY, 1_200);
+    store.promoteAnonymousThread(threadId, visitorPeer, 2_000);
+
+    store.close();
+    stores.pop();
+    const reopened = createConsoleChatStore({ dbPath, now: () => 5_000 });
+    stores.push(reopened);
+
+    expect(reopened.getThread(threadId)).toMatchObject({
+      previewMode: "visitor",
+      owner: { peerId: visitorPeer.id, publicSubstate: "recognized" },
+      messages: [expect.objectContaining({ id: USER_MESSAGE.id })],
+    });
+    expect(reopened.loadKernelHistoryForPeer(threadId, visitorPeer)).toEqual(KERNEL_HISTORY);
+    expect(() =>
+      reopened.loadKernelHistoryForPeer(threadId, {
+        ...visitorPeer,
+        id: "vis_unrelated",
+      }),
+    ).toThrow(/kernel history access denied/);
+  });
+
   it("rejects cross-mode owners and non-thread-derived anonymous identities", async () => {
     const { store } = await openStore();
     expect(() =>

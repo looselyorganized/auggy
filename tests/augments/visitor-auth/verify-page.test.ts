@@ -5,13 +5,16 @@ import {
 } from "../../../src/augments/visitorAuth/verify-page";
 
 describe("buildVerifySuccessPage", () => {
+  const successPage = (visitorToken: string, email = "alice@example.com") =>
+    buildVerifySuccessPage({ visitorToken, email, threadId: "origin-thread" });
+
   test("includes no-referrer meta tag", () => {
-    const html = buildVerifySuccessPage({ visitorToken: "tok.sig", email: "alice@example.com" });
+    const html = successPage("tok.sig");
     expect(html).toContain('<meta name="referrer" content="no-referrer">');
   });
 
   test("contains zero external assets (no <link>, no <script src>, no <img src>)", () => {
-    const html = buildVerifySuccessPage({ visitorToken: "tok.sig", email: "alice@example.com" });
+    const html = successPage("tok.sig");
     expect(html).not.toMatch(/<link[^>]+href=/i);
     expect(html).not.toMatch(/<script[^>]+src=/i);
     expect(html).not.toMatch(/<img[^>]+src=/i);
@@ -19,7 +22,7 @@ describe("buildVerifySuccessPage", () => {
   });
 
   test("calls history.replaceState to drop the token from the URL", () => {
-    const html = buildVerifySuccessPage({ visitorToken: "tok.sig", email: "alice@example.com" });
+    const html = successPage("tok.sig");
     expect(html).toContain("history.replaceState");
     // Must use a relative path so it resolves correctly under subpath deployments.
     // The current location during verify is <publicUrl>/visitor-auth/verify?token=...
@@ -30,15 +33,37 @@ describe("buildVerifySuccessPage", () => {
   });
 
   test("calls localStorage.setItem with the visitor token", () => {
-    const html = buildVerifySuccessPage({ visitorToken: "tok.sig", email: "alice@example.com" });
+    const html = successPage("tok.sig");
     expect(html).toContain("localStorage.setItem");
     expect(html).toContain("auggy-visitor-token");
     expect(html).toContain("tok.sig");
   });
 
+  test("stores and broadcasts an exact originating-thread promotion intent", () => {
+    const html = successPage("tok.sig");
+    expect(html).toContain("auggy-visitor-promotion-intent");
+    expect(html).toContain("visitor-auth.verified");
+    expect(html).toContain("origin-thread");
+    expect(html).toContain("visitorToken: token");
+    expect(html).toContain("new BroadcastChannel('auggy-visitor-auth')");
+    expect(html).toContain("channel.postMessage");
+    expect(html).toContain("threadId: threadId");
+  });
+
+  test("JSON-encodes the originating thread identifier", () => {
+    const html = buildVerifySuccessPage({
+      visitorToken: "tok.sig",
+      email: "a@x.com",
+      threadId: "origin</script><script>alert(1)</script>",
+    });
+    const insideOurScript = html.match(/<script>([\s\S]*?)<\/script>/i);
+    expect(insideOurScript).not.toBeNull();
+    expect(insideOurScript?.[1]).not.toMatch(/<\/script>/i);
+  });
+
   test("token value is JSON-encoded (escapes quote, backslash, newline)", () => {
     const tricky = `weird"\\<>&\n`;
-    const html = buildVerifySuccessPage({ visitorToken: tricky, email: "a@x.com" });
+    const html = successPage(tricky, "a@x.com");
     // The injected token must NOT close the script tag or the string literal.
     expect(html).not.toMatch(/localStorage\.setItem\([^)]*"\s*"/); // no premature quote close
     expect(html).toContain("\\n"); // newline must be escaped
@@ -48,7 +73,7 @@ describe("buildVerifySuccessPage", () => {
 
   test("escapes </script> sequences in the token", () => {
     const evil = "abc</script><script>alert(1)</script>";
-    const html = buildVerifySuccessPage({ visitorToken: evil, email: "a@x.com" });
+    const html = successPage(evil, "a@x.com");
     // The evil </script> must NOT terminate our script block. We escape via
     // Unicode `<\/script>` substitution or JSON-encode the slash.
     // Case-insensitive: HTML tag matching MUST be case-insensitive (an
@@ -64,6 +89,7 @@ describe("buildVerifySuccessPage", () => {
     const html = buildVerifySuccessPage({
       visitorToken: "t.s",
       email: "alice<script>x</script>@x.com",
+      threadId: "origin-thread",
     });
     // The email is shown as innerText only — no raw HTML rendering.
     // We should NOT see the raw `<script>` from the email substring rendered as a tag.
@@ -71,7 +97,7 @@ describe("buildVerifySuccessPage", () => {
   });
 
   test("contains a human-readable success message", () => {
-    const html = buildVerifySuccessPage({ visitorToken: "t.s", email: "a@x.com" });
+    const html = successPage("t.s", "a@x.com");
     expect(html.toLowerCase()).toMatch(/verified|success/);
     expect(html).toContain("return to the originating console chat");
     expect(html).toContain("picked up automatically when you continue");
@@ -82,7 +108,7 @@ describe("buildVerifySuccessPage", () => {
   });
 
   test("gives an accurate fallback when JavaScript cannot apply the identity", () => {
-    const html = buildVerifySuccessPage({ visitorToken: "t.s", email: "a@x.com" });
+    const html = successPage("t.s", "a@x.com");
     expect(html).toContain("JavaScript is required to apply the verified identity automatically");
     expect(html).toContain("request a new verification link from the originating chat");
     expect(html).toContain("storage and JavaScript enabled");
@@ -93,7 +119,7 @@ describe("buildVerifySuccessPage", () => {
 
   // F8: localStorage failure detection
   test("contains both success-path and storage-fallback branches in JS (F8)", () => {
-    const html = buildVerifySuccessPage({ visitorToken: "vis_tok.sig", email: "a@x.com" });
+    const html = successPage("vis_tok.sig", "a@x.com");
     // storageWorks conditional must be present
     expect(html).toContain("storageWorks");
     // Both branches are represented in the rendered HTML
@@ -103,13 +129,13 @@ describe("buildVerifySuccessPage", () => {
   });
 
   test("storage-fallback element is present but hidden by default (F8)", () => {
-    const html = buildVerifySuccessPage({ visitorToken: "t.s", email: "a@x.com" });
+    const html = successPage("t.s", "a@x.com");
     // The fallback paragraph is in the DOM with display:none so JS can reveal it
     expect(html).toMatch(/id="storage-fallback"[^>]*style="display:none"/);
   });
 
   test("storage fallback does not expose the bearer token for an unsupported manual flow", () => {
-    const html = buildVerifySuccessPage({ visitorToken: "t.s", email: "a@x.com" });
+    const html = successPage("t.s", "a@x.com");
     expect(html).not.toContain("manualEl");
     expect(html).not.toContain("Copy this token");
   });

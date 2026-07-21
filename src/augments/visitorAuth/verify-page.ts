@@ -19,6 +19,8 @@ export interface VerifyConfirmPageInput {
 export interface VerifySuccessPageInput {
   visitorToken: string;
   email: string;
+  /** Authoritative originating thread read from the consumed one-time token. */
+  threadId: string;
 }
 
 export interface VerifyFailurePageInput {
@@ -114,6 +116,7 @@ export function buildVerifyConfirmPage(input: VerifyConfirmPageInput): string {
 export function buildVerifySuccessPage(input: VerifySuccessPageInput): string {
   const tokenLit = jsStringLiteral(input.visitorToken);
   const emailLit = jsStringLiteral(input.email);
+  const threadIdLit = jsStringLiteral(input.threadId);
   return `${COMMON_HEAD}
 <body>
 <h1 id="title">Verifying…</h1>
@@ -127,11 +130,26 @@ export function buildVerifySuccessPage(input: VerifySuccessPageInput): string {
 (function () {
   var token = ${tokenLit};
   var email = ${emailLit};
+  var threadId = ${threadIdLit};
+  var promotionIntent = {
+    type: 'visitor-auth.verified',
+    version: 1,
+    threadId: threadId,
+    visitorToken: token
+  };
   var storageWorks = false;
   try {
     localStorage.setItem('auggy-visitor-token', token);
+    localStorage.setItem('auggy-visitor-promotion-intent', JSON.stringify(promotionIntent));
     storageWorks = true;
   } catch (_) { /* storage may be denied in private/incognito mode or sandboxed iframes */ }
+  if (storageWorks && typeof BroadcastChannel === 'function') {
+    try {
+      var channel = new BroadcastChannel('auggy-visitor-auth');
+      channel.postMessage({ type: promotionIntent.type, version: 1, threadId: threadId });
+      channel.close();
+    } catch (_) { /* storage/focus events remain as compatibility fallbacks */ }
+  }
   try {
     history.replaceState(null, '', './verified');
   } catch (_) { /* older browsers — best-effort */ }

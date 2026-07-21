@@ -22,6 +22,8 @@ import type { DashboardData } from "@/lib/types";
 const T0 = "2026-07-20T10:00:00.000Z";
 const T1 = "2026-07-20T10:01:00.000Z";
 const MODEL = { id: "claude-sonnet", displayName: "Claude Sonnet", provider: "anthropic" };
+const VISITOR_TOKEN_KEY = "auggy-visitor-token";
+const VISITOR_PROMOTION_INTENT_KEY = "auggy-visitor-promotion-intent";
 
 const dashboardData = {
   card: { provider: { name: "test-agent" } },
@@ -250,6 +252,226 @@ describe("ChatWorkspaceProvider persistence", () => {
       body: { csrf: "csrf-token", unread: false },
     });
     expect(sendReceiver).toBeUndefined();
+  });
+
+  it("continues the originating anonymous thread as verified after its token arrives", async () => {
+    const storage = new Map<string, string>();
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      value: {
+        getItem: (key: string) => storage.get(key) ?? null,
+        removeItem: (key: string) => storage.delete(key),
+      },
+    });
+    const anonymous = {
+      ...populatedThread("verified-origin", "Manage order"),
+      previewMode: "anonymous" as const,
+    };
+    const initial = createChatWorkspace(anonymous);
+    let submitted: Record<string, unknown> | undefined;
+    const fetchImpl = mockFetch(async (path, init) => {
+      if (path === "/console/api/chat") {
+        submitted = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+        return completedSse(anonymous.id);
+      }
+      if (path.endsWith("/read-state")) {
+        return json({
+          thread: { ...summary(anonymous), previewMode: "visitor", lastReadAt: T1 },
+        });
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    const harness = await mountProvider({ fetchImpl, initialState: initial });
+
+    storage.set(VISITOR_TOKEN_KEY, "verified.payload.signature");
+    storage.set(
+      VISITOR_PROMOTION_INTENT_KEY,
+      promotionIntent(anonymous.id, "verified.payload.signature"),
+    );
+    await act(async () => {
+      expect(harness.value.refreshVisitorToken()).toBe(true);
+      expect(await harness.value.send("Done")).toEqual({ ok: true });
+    });
+
+    expect(submitted).toMatchObject({
+      threadId: anonymous.id,
+      chatMode: "visitor",
+      visitorToken: "verified.payload.signature",
+    });
+    expect(harness.value.activeThread.previewMode).toBe("visitor");
+    expect(storage.get(VISITOR_TOKEN_KEY)).toBe("verified.payload.signature");
+    expect(storage.has(VISITOR_PROMOTION_INTENT_KEY)).toBe(false);
+  });
+
+  it("continues the originating anonymous thread as verified when its token exists at startup", async () => {
+    const storage = new Map<string, string>([
+      [VISITOR_TOKEN_KEY, "verified.payload.signature"],
+      [
+        VISITOR_PROMOTION_INTENT_KEY,
+        promotionIntent("verified-origin", "verified.payload.signature"),
+      ],
+    ]);
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      value: {
+        getItem: (key: string) => storage.get(key) ?? null,
+        removeItem: (key: string) => storage.delete(key),
+      },
+    });
+    const anonymous = {
+      ...populatedThread("verified-origin", "Manage order"),
+      previewMode: "anonymous" as const,
+    };
+    const initial = createChatWorkspace(anonymous);
+    let submitted: Record<string, unknown> | undefined;
+    const fetchImpl = mockFetch(async (path, init) => {
+      if (path === "/console/api/chat") {
+        submitted = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+        return completedSse(anonymous.id);
+      }
+      if (path.endsWith("/read-state")) {
+        return json({
+          thread: { ...summary(anonymous), previewMode: "visitor", lastReadAt: T1 },
+        });
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    const harness = await mountProvider({ fetchImpl, initialState: initial });
+
+    await act(async () => {
+      expect(await harness.value.send("Done")).toEqual({ ok: true });
+    });
+
+    expect(submitted).toMatchObject({
+      threadId: anonymous.id,
+      chatMode: "visitor",
+      visitorToken: "verified.payload.signature",
+    });
+    expect(harness.value.activeThread.previewMode).toBe("visitor");
+    expect(storage.has(VISITOR_PROMOTION_INTENT_KEY)).toBe(false);
+  });
+
+  it("never promotes a selected anonymous thread that is not the intent origin", async () => {
+    const storage = new Map<string, string>([
+      [VISITOR_TOKEN_KEY, "verified.payload.signature"],
+      [
+        VISITOR_PROMOTION_INTENT_KEY,
+        promotionIntent("different-origin", "verified.payload.signature"),
+      ],
+    ]);
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      value: {
+        getItem: (key: string) => storage.get(key) ?? null,
+        removeItem: (key: string) => storage.delete(key),
+      },
+    });
+    const anonymous = {
+      ...populatedThread("selected-anonymous", "Unrelated test"),
+      previewMode: "anonymous" as const,
+    };
+    let submitted: Record<string, unknown> | undefined;
+    const fetchImpl = mockFetch(async (path, init) => {
+      if (path === "/console/api/chat") {
+        submitted = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+        return completedSse(anonymous.id);
+      }
+      if (path.endsWith("/read-state")) {
+        return json({ thread: { ...summary(anonymous), lastReadAt: T1 } });
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    const harness = await mountProvider({
+      fetchImpl,
+      initialState: createChatWorkspace(anonymous),
+    });
+
+    await act(async () => {
+      expect(await harness.value.send("Keep this anonymous")).toEqual({ ok: true });
+    });
+
+    expect(submitted).toMatchObject({
+      threadId: anonymous.id,
+      chatMode: "anonymous",
+    });
+    expect(submitted).not.toHaveProperty("visitorToken");
+    expect(harness.value.activeThread.previewMode).toBe("anonymous");
+    expect(storage.has(VISITOR_PROMOTION_INTENT_KEY)).toBe(true);
+  });
+
+  it("never pairs a stale promotion intent with a newer visitor token", async () => {
+    const storage = new Map<string, string>([
+      [VISITOR_TOKEN_KEY, "new.payload.signature"],
+      [
+        VISITOR_PROMOTION_INTENT_KEY,
+        promotionIntent("verified-origin", "old.payload.signature"),
+      ],
+    ]);
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      value: {
+        getItem: (key: string) => storage.get(key) ?? null,
+        removeItem: (key: string) => storage.delete(key),
+      },
+    });
+    const anonymous = {
+      ...populatedThread("verified-origin", "Manage order"),
+      previewMode: "anonymous" as const,
+    };
+    let submitted: Record<string, unknown> | undefined;
+    const fetchImpl = mockFetch(async (path, init) => {
+      if (path === "/console/api/chat") {
+        submitted = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+        return completedSse(anonymous.id);
+      }
+      if (path.endsWith("/read-state")) {
+        return json({ thread: { ...summary(anonymous), lastReadAt: T1 } });
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    const harness = await mountProvider({
+      fetchImpl,
+      initialState: createChatWorkspace(anonymous),
+    });
+
+    await act(async () => {
+      expect(await harness.value.send("Keep this anonymous")).toEqual({ ok: true });
+    });
+
+    expect(submitted).toMatchObject({ chatMode: "anonymous" });
+    expect(submitted).not.toHaveProperty("visitorToken");
+    expect(harness.value.activeThread.previewMode).toBe("anonymous");
+  });
+
+  it("clears both the compatible visitor token and pending intent on signout", async () => {
+    const storage = new Map<string, string>([
+      [VISITOR_TOKEN_KEY, "verified.payload.signature"],
+      [
+        VISITOR_PROMOTION_INTENT_KEY,
+        promotionIntent("origin", "verified.payload.signature"),
+      ],
+    ]);
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      value: {
+        getItem: (key: string) => storage.get(key) ?? null,
+        removeItem: (key: string) => storage.delete(key),
+      },
+    });
+    const harness = await mountProvider({
+      fetchImpl: mockFetch(async (path) => {
+        throw new Error(`Unexpected request: ${path}`);
+      }),
+      initialState: createChatWorkspace(
+        createChatThread({ id: "draft", previewMode: "creator", model: MODEL, now: T0 }),
+      ),
+    });
+
+    act(() => harness.value.clearVisitor());
+
+    expect(storage.has(VISITOR_TOKEN_KEY)).toBe(false);
+    expect(storage.has(VISITOR_PROMOTION_INTENT_KEY)).toBe(false);
+    expect(harness.value.hasVisitorToken).toBe(false);
   });
 
   it("rolls back optimistic messages and preserves the draft when the server rejects a run", async () => {
@@ -764,6 +986,15 @@ function mockFetch(
     observeReceiver?.(this, path);
     return handler(path, init);
   }) as typeof fetch;
+}
+
+function promotionIntent(threadId: string, visitorToken: string): string {
+  return JSON.stringify({
+    type: "visitor-auth.verified",
+    version: 1,
+    threadId,
+    visitorToken,
+  });
 }
 
 function deferred<T>() {

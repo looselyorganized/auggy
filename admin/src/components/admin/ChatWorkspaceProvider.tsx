@@ -43,6 +43,9 @@ import {
 } from "@/lib/chat-workspace";
 
 const VISITOR_TOKEN_STORAGE_KEY = "auggy-visitor-token";
+const VISITOR_PROMOTION_INTENT_STORAGE_KEY = "auggy-visitor-promotion-intent";
+const VISITOR_AUTH_BROADCAST_CHANNEL = "auggy-visitor-auth";
+const VISITOR_VERIFIED_EVENT_TYPE = "visitor-auth.verified";
 const EXTERNAL_RUN_POLL_INITIAL_MS = 750;
 const EXTERNAL_RUN_POLL_MAX_MS = 5_000;
 const CHAT_HYDRATION_RETRY_INITIAL_MS = 750;
@@ -165,6 +168,15 @@ export function ChatWorkspaceProvider({
   // thread's privileged model context.
   const visitorTokenByThreadRef = useRef(new Map<string, string>());
   const invalidatedVisitorThreadsRef = useRef(new Set<string>());
+  const currentVisitorTokenRef = useRef(readVisitorToken());
+  const initialPromotionIntent = readVisitorPromotionIntent(currentVisitorTokenRef.current);
+  const pendingVisitorPromotionsRef = useRef(
+    new Map<string, string>(
+      initialPromotionIntent
+        ? [[initialPromotionIntent.threadId, initialPromotionIntent.visitorToken]]
+        : [],
+    ),
+  );
   const mountedRef = useRef(true);
   const [hasVisitorToken, setHasVisitorToken] = useState(() => Boolean(readVisitorToken()));
   const [hydrationStatus, setHydrationStatus] = useState<"loading" | "ready" | "error">(
@@ -211,6 +223,7 @@ export function ChatWorkspaceProvider({
       runLockRef.current = null;
       visitorTokenByThreadRef.current.clear();
       invalidatedVisitorThreadsRef.current.clear();
+      pendingVisitorPromotionsRef.current.clear();
       deletingThreadIdsRef.current.clear();
       draftRenamedIdsRef.current.clear();
     };
@@ -245,7 +258,11 @@ export function ChatWorkspaceProvider({
           summaries[0]
             ? summaries[0].id
             : current.activeThreadId;
-        dispatch({ type: "workspace.hydrate", threads: hydrated, activeThreadId });
+        dispatch({
+          type: "workspace.hydrate",
+          threads: hydrated,
+          activeThreadId,
+        });
         setHydrationStatus("ready");
         setHydrationError(null);
       } catch (error: unknown) {
@@ -273,7 +290,14 @@ export function ChatWorkspaceProvider({
   }, [dispatch, initialState]);
 
   const refreshVisitorToken = useCallback(() => {
-    const available = Boolean(readVisitorToken());
+    const token = readVisitorToken();
+    currentVisitorTokenRef.current = token;
+    const available = Boolean(token);
+    pendingVisitorPromotionsRef.current.clear();
+    const intent = readVisitorPromotionIntent(token);
+    if (intent) {
+      pendingVisitorPromotionsRef.current.set(intent.threadId, intent.visitorToken);
+    }
     if (!available) {
       for (const threadId of visitorTokenByThreadRef.current.keys()) {
         invalidatedVisitorThreadsRef.current.add(threadId);
@@ -288,6 +312,9 @@ export function ChatWorkspaceProvider({
       invalidatedVisitorThreadsRef.current.add(threadId);
     }
     clearVisitorToken();
+    clearVisitorPromotionIntent();
+    currentVisitorTokenRef.current = undefined;
+    pendingVisitorPromotionsRef.current.clear();
     if (mountedRef.current) setHasVisitorToken(false);
   }, []);
 
@@ -366,9 +393,19 @@ export function ChatWorkspaceProvider({
     const refresh = () => refreshVisitorToken();
     window.addEventListener("focus", refresh);
     window.addEventListener("storage", refresh);
+    const channel =
+      typeof window.BroadcastChannel === "function"
+        ? new window.BroadcastChannel(VISITOR_AUTH_BROADCAST_CHANNEL)
+        : null;
+    const handleVerification = (event: MessageEvent<unknown>) => {
+      if (isVisitorVerifiedNotification(event.data)) refresh();
+    };
+    channel?.addEventListener("message", handleVerification);
     return () => {
       window.removeEventListener("focus", refresh);
       window.removeEventListener("storage", refresh);
+      channel?.removeEventListener("message", handleVerification);
+      channel?.close();
     };
   }, [refreshVisitorToken]);
 
@@ -547,6 +584,9 @@ export function ChatWorkspaceProvider({
           detailReconciliationRetriesRef.current.delete(thread.id);
           visitorTokenByThreadRef.current.delete(thread.id);
           invalidatedVisitorThreadsRef.current.delete(thread.id);
+          const promotionToken = pendingVisitorPromotionsRef.current.get(thread.id);
+          pendingVisitorPromotionsRef.current.delete(thread.id);
+          clearVisitorPromotionIntent(thread.id, promotionToken);
           const localDraft = next.threads.find(
             (candidate) =>
               !persistedThreadIdsRef.current.has(candidate.id) && isEmptyChatThread(candidate),
@@ -608,7 +648,8 @@ export function ChatWorkspaceProvider({
 
   const select = useCallback(
     (threadId: string) => {
-      if (!getChatThread(stateRef.current, threadId)) return false;
+      const thread = getChatThread(stateRef.current, threadId);
+      if (!thread) return false;
       dispatch({
         type: "thread.select",
         threadId,
@@ -784,6 +825,9 @@ export function ChatWorkspaceProvider({
         detailReconciliationRetriesRef.current.delete(threadId);
         visitorTokenByThreadRef.current.delete(threadId);
         invalidatedVisitorThreadsRef.current.delete(threadId);
+        const promotionToken = pendingVisitorPromotionsRef.current.get(threadId);
+        pendingVisitorPromotionsRef.current.delete(threadId);
+        clearVisitorPromotionIntent(threadId, promotionToken);
         draftRenamedIdsRef.current.delete(threadId);
         const next = dispatch({
           type: "thread.delete",
@@ -875,15 +919,23 @@ export function ChatWorkspaceProvider({
 
       const deps = dependenciesRef.current;
       const anonymousAllowed = deps.data?.web.allowAnonymous.value !== false;
-      const visitorToken = thread.previewMode === "visitor" ? readVisitorToken() : undefined;
-      setHasVisitorToken(Boolean(readVisitorToken()));
+      refreshVisitorToken();
+      const storedVisitorToken = readVisitorToken();
+      const promotionToken = pendingVisitorPromotionsRef.current.get(threadId);
+      const promotingVisitor =
+        thread.previewMode === "anonymous" &&
+        Boolean(storedVisitorToken) &&
+        promotionToken === storedVisitorToken;
+      const effectivePreviewMode = promotingVisitor ? "visitor" : thread.previewMode;
+      const visitorToken =
+        effectivePreviewMode === "visitor" ? storedVisitorToken : undefined;
       const availabilityError = previewModeAvailabilityError(
-        thread.previewMode,
+        effectivePreviewMode,
         anonymousAllowed,
         Boolean(visitorToken),
       );
       if (availabilityError) return { ok: false, error: availabilityError };
-      if (thread.previewMode === "visitor" && visitorToken) {
+      if (effectivePreviewMode === "visitor" && visitorToken && !promotingVisitor) {
         if (invalidatedVisitorThreadsRef.current.has(threadId)) {
           return {
             ok: false,
@@ -983,7 +1035,7 @@ export function ChatWorkspaceProvider({
             csrf,
             message: text,
             threadId,
-            chatMode: thread.previewMode,
+            chatMode: effectivePreviewMode,
             title: submittedTitle,
             ...(runModel ? { model: runModel } : {}),
             runId: clientRunId,
@@ -1005,8 +1057,17 @@ export function ChatWorkspaceProvider({
         persistedThreadIdsRef.current.add(threadId);
         loadedThreadIdsRef.current.add(threadId);
         draftRenamedIdsRef.current.delete(threadId);
-        if (thread.previewMode === "visitor" && visitorToken) {
+        if (effectivePreviewMode === "visitor" && visitorToken) {
           visitorTokenByThreadRef.current.set(threadId, visitorToken);
+        }
+        if (promotingVisitor) {
+          pendingVisitorPromotionsRef.current.delete(threadId);
+          clearVisitorPromotionIntent(threadId, visitorToken);
+          dispatch({
+            type: "thread.identity-promoted",
+            threadId,
+            at: dependenciesRef.current.now().toISOString(),
+          });
         }
         try {
           onAccepted?.();
@@ -1323,6 +1384,67 @@ function readVisitorToken(): string | undefined {
     return token && token.trim() !== "" ? token : undefined;
   } catch {
     return undefined;
+  }
+}
+
+interface VisitorPromotionIntent {
+  type: typeof VISITOR_VERIFIED_EVENT_TYPE;
+  version: 1;
+  threadId: string;
+  visitorToken: string;
+}
+
+function readVisitorPromotionIntent(visitorToken?: string): VisitorPromotionIntent | undefined {
+  if (!visitorToken) return undefined;
+  try {
+    if (typeof localStorage === "undefined") return undefined;
+    const raw = localStorage.getItem(VISITOR_PROMOTION_INTENT_STORAGE_KEY);
+    if (!raw) return undefined;
+    const value = JSON.parse(raw) as Record<string, unknown>;
+    if (
+      value.type !== VISITOR_VERIFIED_EVENT_TYPE ||
+      value.version !== 1 ||
+      typeof value.threadId !== "string" ||
+      value.threadId.length === 0 ||
+      value.threadId.length > 256 ||
+      value.visitorToken !== visitorToken
+    ) {
+      return undefined;
+    }
+    return {
+      type: VISITOR_VERIFIED_EVENT_TYPE,
+      version: 1,
+      threadId: value.threadId,
+      visitorToken,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function isVisitorVerifiedNotification(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  const notification = value as Record<string, unknown>;
+  return (
+    notification.type === VISITOR_VERIFIED_EVENT_TYPE &&
+    notification.version === 1 &&
+    typeof notification.threadId === "string"
+  );
+}
+
+function clearVisitorPromotionIntent(threadId?: string, visitorToken?: string): void {
+  try {
+    if (typeof localStorage === "undefined") return;
+    if (threadId === undefined) {
+      localStorage.removeItem(VISITOR_PROMOTION_INTENT_STORAGE_KEY);
+      return;
+    }
+    const current = readVisitorPromotionIntent(visitorToken);
+    if (current?.threadId === threadId) {
+      localStorage.removeItem(VISITOR_PROMOTION_INTENT_STORAGE_KEY);
+    }
+  } catch {
+    // Storage can be unavailable in private browsing or sandboxed contexts.
   }
 }
 

@@ -149,6 +149,8 @@ export interface VisitorAuthAugmentExtras {
     verifiedAt: number;
     reverifyDueAt: number;
   } | null;
+  /** Authorize promotion only for the anonymous thread that issued the consumed link. */
+  canPromoteAnonymousThread(visitorId: string, threadId: string): boolean;
 }
 
 /** Return shape of `request_auth({...})`. JSON-stringified by the tool. */
