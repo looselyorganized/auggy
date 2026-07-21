@@ -1,9 +1,10 @@
 import { AlertTriangle, CheckCircle2, ShieldAlert } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardHeader } from "@/components/ui/card";
 import {
   CodeExample,
   ConnectionDetails,
+  IntegrationRouteList,
   type CopyHandler,
 } from "@/components/integrations/IntegrationPrimitives";
 import {
@@ -28,9 +29,12 @@ export function BrowserIntegrationPanel({
   onCopy: CopyHandler;
 }) {
   const browserRoutes = routes.filter((route) => isBrowserCallableAppRoute(route, web));
-  const cors = web.corsOrigins.length
-    ? `Configured origins: ${web.corsOrigins.join(", ")}`
-    : "Same-origin only";
+  const cors =
+    web.corsOrigins.length === 1
+      ? `Configured origin: ${web.corsOrigins[0]}`
+      : web.corsOrigins.length > 1
+        ? "Invalid: multiple origins configured"
+        : "Same-origin only";
   const routeCommand = `auggy routes ${agentName} --client ts --target browser --out src/auggy-client.ts`;
   const frontendConfig = `type: webTransport
 config:
@@ -44,7 +48,7 @@ config:
             Browser application
           </h3>
           <Badge variant={guidance.ready ? "success" : "warn"}>
-            {guidance.ready ? "Ready" : "Setup required"}
+            {guidance.ready ? "Auth ready" : "Setup required"}
           </Badge>
         </div>
         <p className="mt-1 text-sm text-muted-foreground">
@@ -52,7 +56,11 @@ config:
         </p>
       </div>
 
-      <div className="flex gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2.5 text-sm">
+      <div
+        className="flex gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2.5 text-sm"
+        role="note"
+        aria-label="Browser credential warning"
+      >
         <ShieldAlert className="mt-0.5 size-4 shrink-0 text-amber-500" aria-hidden="true" />
         <p>
           Never expose <code>AUGGY_WEB_TOKEN</code> in browser code. It grants creator-level access.
@@ -62,7 +70,7 @@ config:
       <div className="grid gap-4 lg:grid-cols-2">
         <Card>
           <CardHeader>
-            <CardTitle>Connection</CardTitle>
+            <h4 className="font-semibold leading-none">Connection</h4>
             <CardDescription>The live conversation surface for this runtime.</CardDescription>
           </CardHeader>
           <CardContent>
@@ -74,9 +82,12 @@ config:
                 {
                   label: "CORS",
                   value: cors,
-                  note: web.corsOrigins.length
-                    ? "Configured origins are reported by the running agent."
-                    : "Configure webTransport.config.cors.origins before calling from another origin.",
+                  note:
+                    web.corsOrigins.length === 1
+                      ? "This is the one browser origin admitted by the running agent."
+                      : web.corsOrigins.length > 1
+                        ? "Use one origin. Static Access-Control-Allow-Origin responses cannot contain an origin list."
+                        : "Configure webTransport.config.cors.origins with one origin before calling from another origin.",
                 },
               ]}
             />
@@ -91,7 +102,7 @@ config:
               ) : (
                 <AlertTriangle className="size-4 text-amber-500" aria-hidden="true" />
               )}
-              <CardTitle>{guidance.title}</CardTitle>
+              <h4 className="font-semibold leading-none">{guidance.title}</h4>
             </div>
             <CardDescription>{guidance.summary}</CardDescription>
           </CardHeader>
@@ -103,7 +114,7 @@ config:
 
       <Card>
         <CardHeader>
-          <CardTitle>Conversation API</CardTitle>
+          <h4 className="font-semibold leading-none">Conversation API</h4>
           <CardDescription>
             Stream AG-UI events while keeping one thread ID across the conversation.
           </CardDescription>
@@ -111,7 +122,6 @@ config:
         <CardContent>
           {guidance.typescript ? (
             <CodeExample
-              id="browser-conversation"
               label="Browser TypeScript example"
               value={guidance.typescript}
               language="typescript"
@@ -130,16 +140,24 @@ config:
 
       <Card>
         <CardHeader>
-          <CardTitle>App routes</CardTitle>
+          <h4 className="font-semibold leading-none">App routes</h4>
           <CardDescription>
             Generate a typed client for augment routes. This client does not include the streaming
             <code> /agent/run</code> conversation API.
           </CardDescription>
         </CardHeader>
         <CardContent className="grid gap-3">
-          <BrowserRouteList routes={browserRoutes} />
+          {guidance.mode === "external-auth" && (
+            <p className="text-xs leading-5 text-muted-foreground">
+              Set the generated client's <code>authAssertionHeader</code> to your configured
+              external-auth header when it differs from <code>x-auggy-auth-assertion</code>.
+            </p>
+          )}
+          <IntegrationRouteList
+            routes={browserRoutes}
+            emptyMessage="No browser-callable augment routes are currently reported."
+          />
           <CodeExample
-            id="browser-routes"
             label="Generate browser app-route client"
             value={routeCommand}
             language="bash"
@@ -151,14 +169,13 @@ config:
 
       <Card>
         <CardHeader>
-          <CardTitle>Send visitors to your frontend</CardTitle>
+          <h4 className="font-semibold leading-none">Send visitors to your frontend</h4>
           <CardDescription>
             Replace the runtime landing page with your product's browser application.
           </CardDescription>
         </CardHeader>
         <CardContent>
           <CodeExample
-            id="browser-frontend"
             label="augments/webTransport/augment.yaml"
             value={frontendConfig}
             language="yaml"
@@ -203,26 +220,5 @@ function AuthenticationNote({ mode }: { mode: BrowserConnectionGuidance["mode"] 
       Visitor tokens cannot open a private conversation endpoint on their own. Configure external
       auth for browser access, or deliberately enable anonymous access before visitor bootstrap.
     </p>
-  );
-}
-
-function BrowserRouteList({ routes }: { routes: RouteManifestEntry[] }) {
-  if (routes.length === 0) {
-    return (
-      <div className="rounded-md border border-dashed px-3 py-4 text-sm text-muted-foreground">
-        No browser-callable augment routes are currently reported.
-      </div>
-    );
-  }
-  return (
-    <div className="divide-y rounded-md border">
-      {routes.map((route) => (
-        <div key={`${route.method} ${route.path}`} className="grid gap-1 px-3 py-2.5 sm:grid-cols-[4rem_minmax(0,1fr)_9rem]">
-          <span className="font-mono text-xs">{route.method}</span>
-          <span className="break-all font-mono text-xs">{route.path}</span>
-          <span className="text-xs text-muted-foreground sm:text-right">{route.auth}</span>
-        </div>
-      ))}
-    </div>
   );
 }

@@ -1,7 +1,20 @@
-import type { RouteAuthMode, RouteManifestEntry, WebDashboardState } from "./types";
+import type { RouteManifestEntry, WebDashboardState } from "./types";
 
 const DEFAULT_EXTERNAL_AUTH_HEADER = "x-auggy-auth-assertion";
 const HEADER_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
+const RESERVED_EXTERNAL_AUTH_HEADERS = new Set([
+  "authorization",
+  "content-type",
+  "idempotency-key",
+  "x-agent-id",
+  "x-agent-secret",
+  "x-auggy-console-internal",
+  "x-org-id",
+  "x-peer-id",
+  "x-peer-kind",
+  "x-peer-name",
+  "x-visitor-token",
+]);
 
 type BrowserPosture = Pick<
   WebDashboardState,
@@ -15,7 +28,6 @@ export type BrowserConnectionMode =
   | "configuration-required";
 
 export interface BrowserConnectionGuidance {
-  caller: "browser";
   endpoint: string;
   protocol: "AG-UI over SSE";
   mode: BrowserConnectionMode;
@@ -26,10 +38,8 @@ export interface BrowserConnectionGuidance {
 }
 
 export interface ServerConnectionGuidance {
-  caller: "server";
   endpoint: string;
   protocol: "AG-UI over SSE";
-  ready: true;
   title: string;
   summary: string;
   environmentVariable: "AUGGY_WEB_TOKEN";
@@ -54,9 +64,20 @@ export function selectBrowserConnection(
   const endpoint = endpointUrl(origin, "/agent/run");
 
   if (web.externalAuthEnabled === true) {
-    const header = safeExternalAuthHeader(web.externalAuthHeader);
+    const header = resolveExternalAuthHeader(web.externalAuthHeader);
+    if (!header) {
+      return {
+        endpoint,
+        protocol: "AG-UI over SSE",
+        mode: "configuration-required",
+        ready: false,
+        title: "External auth header needs attention",
+        summary:
+          "The configured external-auth header is invalid or conflicts with another Auggy credential. Fix webTransport.config.externalAuth.header before connecting a browser application.",
+        typescript: null,
+      };
+    }
     return {
-      caller: "browser",
       endpoint,
       protocol: "AG-UI over SSE",
       mode: "external-auth",
@@ -72,7 +93,6 @@ export function selectBrowserConnection(
 
   if (web.allowAnonymous.value === true && web.visitorTokensEnabled === true) {
     return {
-      caller: "browser",
       endpoint,
       protocol: "AG-UI over SSE",
       mode: "visitor-token",
@@ -86,7 +106,6 @@ export function selectBrowserConnection(
 
   if (web.allowAnonymous.value === true) {
     return {
-      caller: "browser",
       endpoint,
       protocol: "AG-UI over SSE",
       mode: "anonymous",
@@ -98,7 +117,6 @@ export function selectBrowserConnection(
   }
 
   return {
-    caller: "browser",
     endpoint,
     protocol: "AG-UI over SSE",
     mode: "configuration-required",
@@ -116,10 +134,8 @@ export function selectBrowserConnection(
 export function selectServerConnection(origin: string): ServerConnectionGuidance {
   const endpoint = endpointUrl(origin, "/agent/run");
   return {
-    caller: "server",
     endpoint,
     protocol: "AG-UI over SSE",
-    ready: true,
     title: "Trusted server connection",
     summary:
       "Call the conversation endpoint from trusted server code and keep the creator credential in the server environment.",
@@ -138,10 +154,11 @@ export function classifyIntegrationPath(path: string): IntegrationSurface {
 
 /** Custom routes safe to call directly from a browser under the current posture. */
 export function isBrowserCallableAppRoute(
-  route: Pick<RouteManifestEntry, "path" | "auth">,
+  route: Pick<RouteManifestEntry, "path" | "auth" | "policy">,
   web: BrowserPosture,
 ): boolean {
   if (classifyIntegrationPath(route.path) !== "app-route") return false;
+  if (route.policy?.kind === "webhook.signature") return false;
   if (route.auth === "none" || route.auth === "visitor.optional") return true;
   if (route.auth === "visitor.required") {
     return web.visitorTokensEnabled === true || web.externalAuthEnabled === true;
@@ -151,18 +168,11 @@ export function isBrowserCallableAppRoute(
 
 /** Custom routes a trusted server can call with the configured creator credential. */
 export function isServerCallableAppRoute(
-  route: Pick<RouteManifestEntry, "path" | "auth">,
+  route: Pick<RouteManifestEntry, "path" | "auth" | "policy">,
 ): boolean {
   if (classifyIntegrationPath(route.path) !== "app-route") return false;
+  if (route.policy?.kind === "webhook.signature") return false;
   return route.auth === "none" || route.auth === "bearer" || route.auth === "creator";
-}
-
-export function routeAuthAudience(auth: RouteAuthMode): "browser" | "server" | "specialized" {
-  if (auth === "none" || auth === "visitor.optional" || auth === "visitor.required") {
-    return "browser";
-  }
-  if (auth === "bearer" || auth === "creator") return "server";
-  return "specialized";
 }
 
 function endpointUrl(origin: string, path: string): string {
@@ -170,9 +180,12 @@ function endpointUrl(origin: string, path: string): string {
   return normalized ? `${normalized}${path}` : path;
 }
 
-function safeExternalAuthHeader(header: string | undefined): string {
-  const normalized = header?.trim().toLowerCase();
-  return normalized && HEADER_NAME.test(normalized) ? normalized : DEFAULT_EXTERNAL_AUTH_HEADER;
+function resolveExternalAuthHeader(header: string | undefined): string | null {
+  if (header === undefined) return DEFAULT_EXTERNAL_AUTH_HEADER;
+  const normalized = header.trim().toLowerCase();
+  if (!normalized || !HEADER_NAME.test(normalized)) return null;
+  if (!normalized.startsWith("x-") || RESERVED_EXTERNAL_AUTH_HEADERS.has(normalized)) return null;
+  return normalized;
 }
 
 type BrowserSnippetAuth =

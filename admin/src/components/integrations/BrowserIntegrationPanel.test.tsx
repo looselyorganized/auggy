@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { selectBrowserConnection } from "@/lib/integration-guidance";
-import type { WebDashboardState } from "@/lib/types";
+import type { RouteManifestEntry, WebDashboardState } from "@/lib/types";
 import { BrowserIntegrationPanel } from "./BrowserIntegrationPanel";
 
 function posture(patch: Partial<WebDashboardState> = {}): WebDashboardState {
@@ -16,13 +16,13 @@ function posture(patch: Partial<WebDashboardState> = {}): WebDashboardState {
   };
 }
 
-function renderBrowser(web: WebDashboardState): string {
+function renderBrowser(web: WebDashboardState, routes: RouteManifestEntry[] = []): string {
   return renderToStaticMarkup(
     <BrowserIntegrationPanel
       agentName="demo"
       guidance={selectBrowserConnection("https://agent.example", web)}
       web={web}
-      routes={[]}
+      routes={routes}
       copied={null}
       onCopy={() => undefined}
     />,
@@ -42,7 +42,7 @@ describe("BrowserIntegrationPanel", () => {
     expect(html).toContain("Browser application");
     expect(html).toContain("getAuggyAuthAssertion");
     expect(html).toContain("x-product-identity");
-    expect(html).toContain("Configured origins: https://app.example");
+    expect(html).toContain("Configured origin: https://app.example");
     expect(html).not.toContain("Authorization:");
     expect(html).not.toContain("Bearer &lt;");
     expect(html).not.toContain("x-visitor-token");
@@ -69,5 +69,22 @@ describe("BrowserIntegrationPanel", () => {
     expect(html).toContain("Do not use the creator bearer as");
     expect(html).not.toContain("Copy Browser TypeScript example");
     expect(html).not.toContain("fetch(&quot;https://agent.example/agent/run&quot;");
+  });
+
+  it("does not present signed webhooks as directly browser-callable", () => {
+    const html = renderBrowser(posture({ allowAnonymous: { value: true } }), [
+      {
+        method: "POST",
+        path: "/webhooks/stripe",
+        augmentName: "stripe",
+        auth: "none",
+        params: [],
+        public: true,
+        security: "public",
+        policy: { kind: "webhook.signature" },
+      },
+    ]);
+
+    expect(html).not.toContain("/webhooks/stripe");
   });
 });

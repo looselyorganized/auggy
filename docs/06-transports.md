@@ -218,7 +218,7 @@ The reference transport implementation. ~250 LOC. Speaks AG-UI over SSE on three
 export interface WebTransportOptions {
   port: number;
   auth: { type: "bearer"; token: string };
-  cors?: { origins: string[] };
+  cors?: { origins: [string] }; // exactly one browser origin in the current static-CORS implementation
   maxMessageLength?: number;     // default 4000
   access?: { agents?: AgentAccessEntry[] };  // admitted agent list
   concurrency?: number;          // default 1

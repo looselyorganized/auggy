@@ -1,9 +1,11 @@
-import { Bot, Globe2, Server } from "lucide-react";
+import { Bot, Check, Globe2, Server } from "lucide-react";
+import type { KeyboardEvent } from "react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 
 export type IntegrationMode = "browser" | "server" | "agent";
+export const DEFAULT_INTEGRATION_MODE: IntegrationMode = "browser";
 
 const MODES = [
   {
@@ -35,19 +37,24 @@ export function IntegrationModeSelector({
   onChange: (mode: IntegrationMode) => void;
 }) {
   return (
-    <div className="grid gap-2 sm:grid-cols-3" aria-label="Integration type">
-      {MODES.map((mode) => {
+    <div className="grid gap-2 sm:grid-cols-3" role="tablist" aria-label="Integration type">
+      {MODES.map((mode, index) => {
         const Icon = mode.icon;
         const selected = value === mode.id;
         return (
           <Button
             key={mode.id}
+            id={`integration-mode-${mode.id}`}
             type="button"
             variant="outline"
-            aria-pressed={selected}
+            role="tab"
+            aria-selected={selected}
+            aria-controls={`integration-panel-${mode.id}`}
+            tabIndex={selected ? 0 : -1}
             onClick={() => onChange(mode.id)}
+            onKeyDown={(event) => navigateModes(event, index, onChange)}
             className={cn(
-              "h-auto min-h-20 items-start justify-start gap-3 whitespace-normal px-3 py-3 text-left",
+              "h-auto min-h-20 w-full min-w-0 items-start justify-start gap-3 whitespace-normal px-3 py-3 text-left",
               selected && "border-foreground bg-muted/60",
             )}
           >
@@ -63,9 +70,27 @@ export function IntegrationModeSelector({
                 {mode.description}
               </span>
             </span>
+            {selected && <Check className="ml-auto size-4 shrink-0" aria-label="Selected" />}
           </Button>
         );
       })}
     </div>
   );
+}
+
+function navigateModes(
+  event: KeyboardEvent<HTMLButtonElement>,
+  currentIndex: number,
+  onChange: (mode: IntegrationMode) => void,
+) {
+  let nextIndex: number | null = null;
+  if (event.key === "ArrowRight") nextIndex = (currentIndex + 1) % MODES.length;
+  if (event.key === "ArrowLeft") nextIndex = (currentIndex - 1 + MODES.length) % MODES.length;
+  if (event.key === "Home") nextIndex = 0;
+  if (event.key === "End") nextIndex = MODES.length - 1;
+  if (nextIndex === null) return;
+  event.preventDefault();
+  const nextMode = MODES[nextIndex]!;
+  onChange(nextMode.id);
+  document.getElementById(`integration-mode-${nextMode.id}`)?.focus();
 }

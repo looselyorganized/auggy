@@ -50,9 +50,9 @@ export function AgentIntegrationPanel({
           <div className="flex items-start gap-3">
             <ShieldAlert className="mt-0.5 size-5 shrink-0" aria-hidden="true" />
             <div className="min-w-0 flex-1">
-              <h3 id="legacy-discovery-warning-title" className="text-sm font-semibold">
+              <h4 id="legacy-discovery-warning-title" className="text-sm font-semibold">
                 Legacy developer discovery is currently public
-              </h3>
+              </h4>
               <p className="mt-1 max-w-3xl text-sm leading-6">
                 This publishes legacy Auggy developer metadata. It is not a standards-compatible
                 A2A connection and may expose more implementation detail than intended.
@@ -61,7 +61,7 @@ export function AgentIntegrationPanel({
                 type="button"
                 variant="outline"
                 size="sm"
-                className="mt-3 border-amber-700/50 bg-background text-foreground hover:bg-muted dark:border-amber-300/50"
+                className="mt-3 h-auto w-full whitespace-normal border-amber-700/50 bg-background text-foreground hover:bg-muted sm:w-auto dark:border-amber-300/50"
                 disabled={disabling}
                 onClick={() => void onMakePrivate()}
               >
@@ -75,6 +75,8 @@ export function AgentIntegrationPanel({
         <p
           className="rounded-lg border bg-muted/20 px-4 py-3 text-sm text-muted-foreground"
           aria-label="Legacy developer discovery status: private"
+          role="status"
+          aria-live="polite"
         >
           Legacy developer discovery is private.
         </p>

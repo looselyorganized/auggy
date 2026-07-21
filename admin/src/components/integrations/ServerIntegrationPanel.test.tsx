@@ -41,6 +41,7 @@ function panel() {
         route("/orders/update", "creator"),
         route("/visitor/profile", "visitor.required"),
         route("/peer/handoff", "agent.required"),
+        { ...route("/webhooks/stripe", "none"), policy: { kind: "webhook.signature" } },
       ]}
       copied={null}
       onCopy={() => undefined}
@@ -91,7 +92,7 @@ describe("ServerIntegrationPanel", () => {
     await act(async () => curlTab?.props.onClick());
     const example = renderer?.root
       .findAllByType(CodeExample)
-      .find((node) => node.props.id === "server-conversation");
+      .find((node) => node.props.label === "Server cURL example");
     expect(example?.props.label).toBe("Server cURL example");
     expect(example?.props.value).toContain("curl --fail-with-body --silent --show-error -N");
     expect(example?.props.value).toContain("$AUGGY_WEB_TOKEN");
@@ -105,6 +106,7 @@ describe("ServerIntegrationPanel", () => {
     expect(html).toContain("/orders/update");
     expect(html).not.toContain("/visitor/profile");
     expect(html).not.toContain("/peer/handoff");
+    expect(html).not.toContain("/webhooks/stripe");
     expect(html).toContain("These artifacts do not");
     expect(html).toContain("include the streaming");
     expect(html).toContain("require their own specialized credentials");

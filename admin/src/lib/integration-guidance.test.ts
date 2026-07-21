@@ -3,7 +3,6 @@ import {
   classifyIntegrationPath,
   isBrowserCallableAppRoute,
   isServerCallableAppRoute,
-  routeAuthAudience,
   selectBrowserConnection,
   selectServerConnection,
 } from "./integration-guidance";
@@ -52,15 +51,29 @@ describe("browser integration guidance", () => {
     assertBrowserSafe(guidance.typescript);
   });
 
-  it("falls back to the default assertion header when dashboard data is malformed", () => {
+  it("uses the default assertion header when no override is configured", () => {
     const guidance = selectBrowserConnection("", posture({
       externalAuthEnabled: true,
-      externalAuthHeader: 'unsafe\nheader: "value"',
     }));
 
     expect(guidance.endpoint).toBe("/agent/run");
     expect(guidance.typescript).toContain('"x-auggy-auth-assertion": assertion');
     assertBrowserSafe(guidance.typescript);
+  });
+
+  it("fails closed for invalid or credential-conflicting assertion headers", () => {
+    for (const externalAuthHeader of ['unsafe\nheader: "value"', "authorization", "idempotency-key", "cookie"]) {
+      const guidance = selectBrowserConnection(
+        "https://agent.example",
+        posture({ externalAuthEnabled: true, externalAuthHeader }),
+      );
+      expect(guidance).toMatchObject({
+        mode: "configuration-required",
+        ready: false,
+        typescript: null,
+      });
+      expect(guidance.summary).toContain("conflicts with another Auggy credential");
+    }
   });
 
   it("persists rotated visitor tokens only when anonymous bootstrap is available", () => {
@@ -151,8 +164,6 @@ describe("server integration guidance", () => {
     const guidance = selectServerConnection("https://agent.example/");
 
     expect(guidance).toMatchObject({
-      caller: "server",
-      ready: true,
       environmentVariable: "AUGGY_WEB_TOKEN",
       endpoint: "https://agent.example/agent/run",
     });
@@ -199,6 +210,12 @@ describe("integration surface and route policy", () => {
     expect(canCall("creator")).toBeFalse();
     expect(canCall("agent.required")).toBeFalse();
     expect(isBrowserCallableAppRoute({ path: "/agent/run", auth: "none" }, browser)).toBeFalse();
+    expect(
+      isBrowserCallableAppRoute(
+        { path: "/webhooks/stripe", auth: "none", policy: { kind: "webhook.signature" } },
+        browser,
+      ),
+    ).toBeFalse();
   });
 
   it("does not claim visitor-required routes are callable without an identity mechanism", () => {
@@ -216,12 +233,12 @@ describe("integration surface and route policy", () => {
     expect(isServerCallableAppRoute({ path: "/orders/:id", auth: "creator" })).toBeTrue();
     expect(isServerCallableAppRoute({ path: "/orders/:id", auth: "visitor.required" })).toBeFalse();
     expect(isServerCallableAppRoute({ path: "/orders/:id", auth: "agent.required" })).toBeFalse();
-  });
-
-  it("labels route audiences without treating peer credentials as server credentials", () => {
-    expect(routeAuthAudience("none")).toBe("browser");
-    expect(routeAuthAudience("visitor.required")).toBe("browser");
-    expect(routeAuthAudience("creator")).toBe("server");
-    expect(routeAuthAudience("agent.required")).toBe("specialized");
+    expect(
+      isServerCallableAppRoute({
+        path: "/webhooks/stripe",
+        auth: "none",
+        policy: { kind: "webhook.signature" },
+      }),
+    ).toBeFalse();
   });
 });

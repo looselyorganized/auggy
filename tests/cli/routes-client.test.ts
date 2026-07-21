@@ -569,7 +569,10 @@ describe("createTypeScriptClient", () => {
     expect(source).not.toContain("agentCredentials?: AgentCredentialsProvider;");
     expect(source).toContain("visitorToken?: TokenProvider;");
     expect(source).toContain("authAssertion?: TokenProvider;");
-    expect(source).toContain('headers.set("x-auggy-auth-assertion", credentials.authAssertion);');
+    expect(source).toContain("authAssertionHeader?: string;");
+    expect(source).toContain(
+      'headers.set(config.authAssertionHeader ?? "x-auggy-auth-assertion", credentials.authAssertion);',
+    );
     expect(source).toContain("requires a visitorToken or authAssertion");
     expect(source).toContain('"GET /services/:serviceId":');
     expect(source).toContain('auth: "visitor.required"');
@@ -1096,6 +1099,7 @@ describe("createTypeScriptClient", () => {
       baseUrl: "https://agent.example",
       fetch: fetchImpl,
       authAssertion: async () => "assertion-only",
+      authAssertionHeader: "x-product-identity",
     });
 
     const getResult = await api.get("/services/:serviceId", {
@@ -1131,9 +1135,8 @@ describe("createTypeScriptClient", () => {
     expect(calls[2]?.url).toBe("https://agent.example/me");
     expect(new Headers(calls[2]?.init.headers).get("x-test")).toBe("1");
     expect(new Headers(calls[3]?.init.headers).get("x-visitor-token")).toBeNull();
-    expect(new Headers(calls[3]?.init.headers).get("x-auggy-auth-assertion")).toBe(
-      "assertion-only",
-    );
+    expect(new Headers(calls[3]?.init.headers).get("x-auggy-auth-assertion")).toBeNull();
+    expect(new Headers(calls[3]?.init.headers).get("x-product-identity")).toBe("assertion-only");
     expect(seenVisitorTokens).toEqual(["vis-next", "vis-next", "vis-next"]);
   });
 

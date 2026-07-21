@@ -69,6 +69,20 @@ import { join } from "node:path";
 const PUBLIC_PAGE_CACHE_CONTROL = "public, max-age=0, must-revalidate";
 const DEFAULT_EXTERNAL_AUTH_ASSERTION_HEADER = "x-auggy-auth-assertion";
 const CONSOLE_INTERNAL_RUN_HEADER = "x-auggy-console-internal";
+const HTTP_HEADER_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
+const RESERVED_EXTERNAL_AUTH_HEADERS = new Set([
+  "authorization",
+  "content-type",
+  "idempotency-key",
+  "x-agent-id",
+  "x-agent-secret",
+  CONSOLE_INTERNAL_RUN_HEADER,
+  "x-org-id",
+  "x-peer-id",
+  "x-peer-kind",
+  "x-peer-name",
+  "x-visitor-token",
+]);
 
 // ---------------------------------------------------------------------------
 // Types
@@ -1016,7 +1030,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
               type: "boolean",
               required: true,
               helpText:
-                "Persists across restart via admin-overrides.json. Publishes /agent and unauthenticated agent-card discovery; does not publish /agent/run.",
+                "Persists across restart via admin-overrides.json. Publishes /agent and unauthenticated legacy Auggy runtime metadata; does not publish /agent/run or a current A2A Agent Card.",
             },
           ],
         },
@@ -2330,6 +2344,11 @@ export function webTransport(opts: WebTransportOptions): Augment {
     adminInfo,
     adminActions,
     async onBoot() {
+      if (opts.cors && opts.cors.origins.length !== 1) {
+        throw new Error(
+          "[web-transport] cors.origins must contain exactly one browser origin. Multiple Access-Control-Allow-Origin values are not valid; run separate public origins behind an app proxy until dynamic origin matching is supported.",
+        );
+      }
       if (opts.externalAuth) {
         if (!opts.externalAuth.secret) {
           throw new Error(
@@ -2351,8 +2370,18 @@ export function webTransport(opts: WebTransportOptions): Augment {
             );
           }
         }
-        if (opts.externalAuth.header !== undefined && opts.externalAuth.header.trim() === "") {
-          throw new Error("[web-transport] externalAuth.header must be non-empty when configured.");
+        if (opts.externalAuth.header !== undefined) {
+          const header = opts.externalAuth.header.trim().toLowerCase();
+          if (
+            !header ||
+            !HTTP_HEADER_NAME.test(header) ||
+            !header.startsWith("x-") ||
+            RESERVED_EXTERNAL_AUTH_HEADERS.has(header)
+          ) {
+            throw new Error(
+              "[web-transport] externalAuth.header must be a non-reserved x-* HTTP header name.",
+            );
+          }
         }
         if (opts.externalAuth.maxTtlSeconds !== undefined && opts.externalAuth.maxTtlSeconds <= 0) {
           throw new Error(

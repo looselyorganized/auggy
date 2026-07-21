@@ -1,13 +1,14 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { useActionDispatcher } from "@/components/admin/useActionDispatcher";
 import { AgentIntegrationPanel } from "@/components/integrations/AgentIntegrationPanel";
 import { BrowserIntegrationPanel } from "@/components/integrations/BrowserIntegrationPanel";
 import { ServerIntegrationPanel } from "@/components/integrations/ServerIntegrationPanel";
 import {
   IntegrationModeSelector,
+  DEFAULT_INTEGRATION_MODE,
   type IntegrationMode,
 } from "@/components/integrations/IntegrationModeSelector";
-import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardDescription, CardHeader } from "@/components/ui/card";
 import { useDashboardContext } from "@/components/admin/DashboardContext";
 import { selectBrowserConnection, selectServerConnection } from "@/lib/integration-guidance";
 import type { DashboardData } from "@/lib/types";
@@ -17,15 +18,16 @@ const PUBLIC_INTEGRATION_SIGNAL_KEY = "auggy-public-integration";
 export function IntegrationsTab() {
   const { data, loading, error, updateData } = useDashboardContext();
   const { dispatch, busy } = useActionDispatcher();
-  const [mode, setMode] = useState<IntegrationMode>("browser");
+  const [mode, setMode] = useState<IntegrationMode>(DEFAULT_INTEGRATION_MODE);
   const [copied, setCopied] = useState<string | null>(null);
+  const [copyStatus, setCopyStatus] = useState("");
   const origin = typeof window === "undefined" ? "" : window.location.origin;
 
   if (loading && !data) {
     return (
-      <Card>
+      <Card role="status">
         <CardHeader>
-          <CardTitle>Integrations</CardTitle>
+          <h2 className="font-semibold leading-none">Integrations</h2>
           <CardDescription>Loading...</CardDescription>
         </CardHeader>
       </Card>
@@ -34,9 +36,9 @@ export function IntegrationsTab() {
 
   if (error && !data) {
     return (
-      <Card className="border-destructive/40">
+      <Card className="border-destructive/40" role="alert">
         <CardHeader>
-          <CardTitle className="text-destructive">Integrations load failed</CardTitle>
+          <h2 className="font-semibold leading-none text-destructive">Integrations load failed</h2>
           <CardDescription className="font-mono text-xs">{error}</CardDescription>
         </CardHeader>
       </Card>
@@ -56,10 +58,19 @@ export function IntegrationsTab() {
   const legacyDiscoveryPublic = data.web.publicIntegration.value === true;
 
   async function copy(label: string, value: string) {
-    if (!value || typeof navigator === "undefined") return;
-    await navigator.clipboard.writeText(value);
-    setCopied(label);
-    window.setTimeout(() => setCopied((current) => (current === label ? null : current)), 1200);
+    if (!value || typeof navigator === "undefined" || !navigator.clipboard) {
+      setCopyStatus(`Could not copy ${label}.`);
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopied(label);
+      setCopyStatus(`${label} copied.`);
+      window.setTimeout(() => setCopied((current) => (current === label ? null : current)), 1200);
+    } catch {
+      setCopied(null);
+      setCopyStatus(`Could not copy ${label}.`);
+    }
   }
 
   async function makeLegacyDiscoveryPrivate() {
@@ -87,41 +98,81 @@ export function IntegrationsTab() {
           </p>
         </section>
 
+        {shouldShowLegacyDiscoveryAlert(legacyDiscoveryPublic, mode) && (
+          <div
+            role="alert"
+            className="flex flex-col gap-3 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-3 text-sm sm:flex-row sm:items-center sm:justify-between"
+          >
+            <div>
+              <div className="font-semibold">Legacy developer discovery is public</div>
+              <p className="mt-1 text-muted-foreground">
+                This is Auggy-only runtime metadata, not a standards-compatible A2A connection.
+              </p>
+            </div>
+            <button
+              type="button"
+              className="shrink-0 self-start underline underline-offset-4 sm:self-auto"
+              onClick={() => setMode("agent")}
+            >
+              Review and make private
+            </button>
+          </div>
+        )}
+
         <IntegrationModeSelector value={mode} onChange={setMode} />
 
         {mode === "browser" && (
-          <BrowserIntegrationPanel
-            agentName={data.agentMeta?.name ?? "<agent>"}
-            guidance={browser}
-            web={data.web}
-            routes={data.routes.entries}
-            copied={copied}
-            onCopy={copy}
-          />
+          <IntegrationPanel mode="browser">
+            <BrowserIntegrationPanel
+              agentName={data.agentMeta?.name ?? "<agent>"}
+              guidance={browser}
+              web={data.web}
+              routes={data.routes.entries}
+              copied={copied}
+              onCopy={copy}
+            />
+          </IntegrationPanel>
         )}
 
         {mode === "server" && (
-          <ServerIntegrationPanel
-            agentName={data.agentMeta?.name ?? "<agent>"}
-            guidance={server}
-            routes={data.routes.entries}
-            copied={copied}
-            onCopy={copy}
-          />
+          <IntegrationPanel mode="server">
+            <ServerIntegrationPanel
+              agentName={data.agentMeta?.name ?? "<agent>"}
+              guidance={server}
+              routes={data.routes.entries}
+              copied={copied}
+              onCopy={copy}
+            />
+          </IntegrationPanel>
         )}
 
         {mode === "agent" && (
-          <AgentIntegrationPanel
-            legacyDiscoveryPublic={legacyDiscoveryPublic}
-            disabling={busy}
-            onMakePrivate={makeLegacyDiscoveryPrivate}
-          />
+          <IntegrationPanel mode="agent">
+            <AgentIntegrationPanel
+              legacyDiscoveryPublic={legacyDiscoveryPublic}
+              disabling={busy}
+              onMakePrivate={makeLegacyDiscoveryPrivate}
+            />
+          </IntegrationPanel>
         )}
 
         <div className="sr-only" role="status" aria-live="polite">
-          {copied ? `${copied} copied` : ""}
+          {copyStatus}
         </div>
       </div>
+    </div>
+  );
+}
+
+function IntegrationPanel({ mode, children }: { mode: IntegrationMode; children: ReactNode }) {
+  return (
+    <div
+      id={`integration-panel-${mode}`}
+      role="tabpanel"
+      aria-labelledby={`integration-mode-${mode}`}
+      tabIndex={0}
+    >
+      {children}
     </div>
   );
 }
@@ -134,7 +185,7 @@ function signalPublicIntegrationChange(value: boolean): void {
   }
 }
 
-function patchPublicIntegration(data: DashboardData, value: boolean): DashboardData {
+export function patchPublicIntegration(data: DashboardData, value: boolean): DashboardData {
   return {
     ...data,
     web: {
@@ -163,4 +214,11 @@ function patchPublicIntegration(data: DashboardData, value: boolean): DashboardD
       };
     }),
   };
+}
+
+export function shouldShowLegacyDiscoveryAlert(
+  legacyDiscoveryPublic: boolean,
+  mode: IntegrationMode,
+): boolean {
+  return legacyDiscoveryPublic && mode !== "agent";
 }

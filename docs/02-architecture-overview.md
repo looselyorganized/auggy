@@ -193,7 +193,7 @@ Turns Auggy from "write a `main.ts`" into "configure a YAML file and run `auggy 
 ### `src/parts.ts`, `src/helpers.ts`, `src/tokenizer.ts`, `src/http.ts`
 Small utility modules.
 
-- `parts.ts` — `extractText(parts)`, `textPart(text)`, `dataPart(data)`. The A2A `Part[]` shape requires helpers to convert between text-only and the polymorphic content type.
+- `parts.ts` — `extractText(parts)`, `textPart(text)`, `dataPart(data)`. Auggy's standard-inspired `Part[]` shape requires helpers to convert between text-only and polymorphic content; it is not a current A2A wire contract.
 - `helpers.ts` — `defineAugment(spec)`, `defineTool(spec)`. These are pass-throughs that exist purely for type inference (so users get autocomplete on partial specs). They're not factories — they don't add behavior.
 - `tokenizer.ts` — `createTokenizer()` returns a `{count(text)}` object. v1 uses a simple character-divided-by-4 estimate. Real tokenization is a model-specific concern that should live in the `ModelClient` adapter.
 - `http.ts` — shared HTTP client used by `webFetch` and `knowledge`. Enforces redirect security (same-origin on auth redirects), body size cap, and auth-header stripping on cross-origin redirects.

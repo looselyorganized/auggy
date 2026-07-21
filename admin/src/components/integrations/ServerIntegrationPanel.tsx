@@ -3,11 +3,12 @@ import { Server, ShieldAlert } from "lucide-react";
 import {
   CodeExample,
   ConnectionDetails,
+  IntegrationRouteList,
   type CopyHandler,
 } from "@/components/integrations/IntegrationPrimitives";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardHeader } from "@/components/ui/card";
 import {
   isServerCallableAppRoute,
   type ServerConnectionGuidance,
@@ -77,7 +78,7 @@ auggy routes ${agentName} --json`;
       <div className="grid gap-4 lg:grid-cols-2">
         <Card>
           <CardHeader>
-            <CardTitle>Connection</CardTitle>
+            <h4 className="font-semibold leading-none">Connection</h4>
             <CardDescription>Runtime endpoints used by a trusted application server.</CardDescription>
           </CardHeader>
           <CardContent>
@@ -100,7 +101,7 @@ auggy routes ${agentName} --json`;
           <CardHeader>
             <div className="flex items-center gap-2">
               <Server className="size-4 text-sky-500" aria-hidden="true" />
-              <CardTitle>{guidance.title}</CardTitle>
+              <h4 className="font-semibold leading-none">{guidance.title}</h4>
             </div>
             <CardDescription>{guidance.summary}</CardDescription>
           </CardHeader>
@@ -120,7 +121,7 @@ auggy routes ${agentName} --json`;
 
       <Card>
         <CardHeader>
-          <CardTitle>Conversation API</CardTitle>
+          <h4 className="font-semibold leading-none">Conversation API</h4>
           <CardDescription>
             POST to <code>/agent/run</code> and consume the AG-UI event stream through completion.
           </CardDescription>
@@ -135,9 +136,7 @@ auggy routes ${agentName} --json`;
               id="server-example-typescript"
               selected={example === "typescript"}
               onSelect={() => setExample("typescript")}
-              onNavigate={(event) =>
-                navigateExample(event, "server-example-curl", () => setExample("curl"))
-              }
+              onNavigate={(event) => navigateExample(event, 0, setExample)}
             >
               TypeScript
             </ExampleTab>
@@ -145,11 +144,7 @@ auggy routes ${agentName} --json`;
               id="server-example-curl"
               selected={example === "curl"}
               onSelect={() => setExample("curl")}
-              onNavigate={(event) =>
-                navigateExample(event, "server-example-typescript", () =>
-                  setExample("typescript"),
-                )
-              }
+              onNavigate={(event) => navigateExample(event, 1, setExample)}
             >
               cURL
             </ExampleTab>
@@ -160,7 +155,6 @@ auggy routes ${agentName} --json`;
             aria-labelledby={`server-example-${example}`}
           >
             <CodeExample
-              id="server-conversation"
               label={selectedLabel}
               value={selectedExample}
               language={example === "typescript" ? "typescript" : "bash"}
@@ -173,7 +167,7 @@ auggy routes ${agentName} --json`;
 
       <Card>
         <CardHeader>
-          <CardTitle>App routes</CardTitle>
+          <h4 className="font-semibold leading-none">App routes</h4>
           <CardDescription>
             Generate clients and schemas for augment-defined app routes. These artifacts do not
             include the streaming <code>/agent/run</code> conversation endpoint.
@@ -184,9 +178,11 @@ auggy routes ${agentName} --json`;
             The routes below accept this creator credential. A generated server client can also
             include agent or webhook routes that require their own specialized credentials.
           </p>
-          <ServerRouteList routes={serverRoutes} />
+          <IntegrationRouteList
+            routes={serverRoutes}
+            emptyMessage="No app routes callable with the creator credential are currently reported."
+          />
           <CodeExample
-            id="server-routes"
             label="Generate server app-route artifacts"
             value={routeCommands}
             language="bash"
@@ -233,36 +229,18 @@ function ExampleTab({
 
 function navigateExample(
   event: KeyboardEvent<HTMLButtonElement>,
-  targetId: string,
-  selectTarget: () => void,
+  currentIndex: number,
+  selectTarget: (example: ConversationExample) => void,
 ) {
-  if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+  const examples: ConversationExample[] = ["typescript", "curl"];
+  let nextIndex: number | null = null;
+  if (event.key === "ArrowRight") nextIndex = (currentIndex + 1) % examples.length;
+  if (event.key === "ArrowLeft") nextIndex = (currentIndex - 1 + examples.length) % examples.length;
+  if (event.key === "Home") nextIndex = 0;
+  if (event.key === "End") nextIndex = examples.length - 1;
+  if (nextIndex === null) return;
   event.preventDefault();
-  selectTarget();
-  document.getElementById(targetId)?.focus();
-}
-
-function ServerRouteList({ routes }: { routes: RouteManifestEntry[] }) {
-  if (routes.length === 0) {
-    return (
-      <div className="rounded-md border border-dashed px-3 py-4 text-sm text-muted-foreground">
-        No app routes callable with the creator credential are currently reported.
-      </div>
-    );
-  }
-
-  return (
-    <div className="divide-y rounded-md border">
-      {routes.map((route) => (
-        <div
-          key={`${route.method} ${route.path}`}
-          className="grid gap-1 px-3 py-2.5 sm:grid-cols-[4rem_minmax(0,1fr)_9rem]"
-        >
-          <span className="font-mono text-xs">{route.method}</span>
-          <span className="break-all font-mono text-xs">{route.path}</span>
-          <span className="text-xs text-muted-foreground sm:text-right">{route.auth}</span>
-        </div>
-      ))}
-    </div>
-  );
+  const next = examples[nextIndex]!;
+  selectTarget(next);
+  document.getElementById(`server-example-${next}`)?.focus();
 }

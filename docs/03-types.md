@@ -606,8 +606,8 @@ model-facing context blocks.
 
 An augment's runtime surfaces are defined by the concrete fields it provides.
 Tools, context, transports, memory, and lifecycle hooks need no duplicate
-capability declaration. Agent Card discovery is likewise derived from the
-mounted augment structure.
+capability declaration. Legacy Auggy runtime metadata is likewise derived from
+the mounted augment structure; it is not a sanitized A2A discovery contract.
 
 **`context()`** is the augment's contribution to the prompt. Returns either an array of `ContextBlock`s or a single string (which gets wrapped as a default-priority block).
 

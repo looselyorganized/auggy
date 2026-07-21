@@ -10,7 +10,7 @@ A tool answers: "Can the model call this function?"
 
 An augment answers: "What runtime capability does this agent now have, and under what identity, trust, lifecycle, memory, transport, budget, and security policy does it operate?"
 
-That distinction matters because many useful agent capabilities are not model-callable functions. A Telegram transport, visitor-auth route, memory provider, spend limiter, inbound email listener, or A2A link is not naturally "a tool." It is infrastructure.
+That distinction matters because many useful agent capabilities are not model-callable functions. A Telegram transport, visitor-auth route, memory provider, spend limiter, inbound email listener, or peer transport is not naturally "a tool." It is infrastructure.
 
 ## Why augments over tools
 
@@ -78,7 +78,7 @@ An MCP server generally does not own Auggy's current peer identity. It can expos
 
 ### Transports are not tools
 
-A web chat endpoint, Telegram bot, A2A link, or email inbox is an entrypoint into the agent, not a callable function.
+A web chat endpoint, Telegram bot, legacy peer link, or email inbox is an entrypoint into the agent, not a callable function.
 
 Transport augments need to:
 
@@ -241,7 +241,7 @@ A SaaS company runs several specialized Auggy agents:
 - `notify` for escalation
 - `agentMail` for customer follow-up
 - `budgets` for per-agent spend ceilings
-- `link` for peer-to-peer A2A transport
+- `link` for legacy A2A-v0.2 peer traffic (preview only)
 - `skills` for specialized operating instructions per agent
 
 ### Potential new augments

@@ -2133,6 +2133,45 @@ describe("webTransport external auth config guard", () => {
     );
     await expect(previousKeyAgent.start()).rejects.toThrow(/externalAuth\.secrets keyId/);
   });
+
+  it("rejects invalid and credential-conflicting assertion headers", async () => {
+    const model = createMockModel({ response: "ok" });
+    for (const [index, header] of [
+      "authorization",
+      "idempotency-key",
+      "cookie",
+      "bad\nheader",
+    ].entries()) {
+      const aug = webTransport({
+        port: 19622 + index,
+        auth: { type: "bearer", token: "test-token" },
+        externalAuth: { secret: "current-secret", header },
+      });
+      const agent = defineAgent(
+        { name: `test-header-${index}`, model: "mock", augments: [aug] },
+        model,
+      );
+      await expect(agent.start()).rejects.toThrow(/non-reserved x-\* HTTP header/);
+    }
+  });
+});
+
+describe("webTransport CORS config guard", () => {
+  it("fails closed when the static CORS response cannot represent the configured origins", async () => {
+    const model = createMockModel({ response: "ok" });
+    for (const origins of [[], ["https://one.example", "https://two.example"]]) {
+      const aug = webTransport({
+        port: 19630 + origins.length,
+        auth: { type: "bearer", token: "test-token" },
+        cors: { origins },
+      });
+      const agent = defineAgent(
+        { name: `test-cors-${origins.length}`, model: "mock", augments: [aug] },
+        model,
+      );
+      await expect(agent.start()).rejects.toThrow(/exactly one browser origin/);
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------

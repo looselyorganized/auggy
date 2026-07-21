@@ -1,6 +1,8 @@
 import { Check, Copy } from "lucide-react";
+import { useId } from "react";
 import { Button } from "@/components/ui/button";
 import { HighlightedCode } from "@/components/ui/highlighted-code";
+import type { RouteManifestEntry } from "@/lib/types";
 
 export type CopyHandler = (label: string, value: string) => void | Promise<void>;
 
@@ -29,44 +31,78 @@ export function ConnectionDetails({
 }
 
 export function CodeExample({
-  id,
   label,
   value,
   language,
   copied,
   onCopy,
 }: {
-  id: string;
   label: string;
   value: string;
   language: string;
   copied: string | null;
   onCopy: CopyHandler;
 }) {
-  const copyLabel = `${id}:${label}`;
+  const labelId = useId();
   return (
-    <div className="min-w-0 overflow-hidden rounded-md border" aria-label={label}>
+    <figure className="min-w-0 overflow-hidden rounded-md border" aria-labelledby={labelId}>
       <div className="flex items-center justify-between gap-3 border-b bg-muted/50 px-3 py-2">
-        <span className="font-mono text-xs text-muted-foreground">{label}</span>
+        <figcaption
+          id={labelId}
+          className="min-w-0 break-words font-mono text-xs text-muted-foreground"
+        >
+          {label}
+        </figcaption>
         <Button
           type="button"
           variant="ghost"
           size="sm"
-          className="h-7"
+          className="h-7 shrink-0"
           aria-label={`Copy ${label}`}
-          onClick={() => void onCopy(copyLabel, value)}
+          onClick={() => void onCopy(label, value)}
         >
-          {copied === copyLabel ? (
+          {copied === label ? (
             <Check className="mr-1.5 size-3.5" aria-hidden="true" />
           ) : (
             <Copy className="mr-1.5 size-3.5" aria-hidden="true" />
           )}
-          {copied === copyLabel ? "Copied" : "Copy"}
+          {copied === label ? "Copied" : "Copy"}
         </Button>
       </div>
       <div className="overflow-x-auto">
         <HighlightedCode code={value} language={language} />
       </div>
-    </div>
+    </figure>
+  );
+}
+
+export function IntegrationRouteList({
+  routes,
+  emptyMessage,
+}: {
+  routes: RouteManifestEntry[];
+  emptyMessage: string;
+}) {
+  if (routes.length === 0) {
+    return (
+      <div className="rounded-md border border-dashed px-3 py-4 text-sm text-muted-foreground">
+        {emptyMessage}
+      </div>
+    );
+  }
+
+  return (
+    <ul className="divide-y rounded-md border">
+      {routes.map((route) => (
+        <li
+          key={`${route.method} ${route.path}`}
+          className="grid gap-1 px-3 py-2.5 sm:grid-cols-[4rem_minmax(0,1fr)_9rem]"
+        >
+          <span className="font-mono text-xs"><span className="sr-only">Method: </span>{route.method}</span>
+          <span className="break-all font-mono text-xs"><span className="sr-only">Path: </span>{route.path}</span>
+          <span className="text-xs text-muted-foreground sm:text-right"><span className="sr-only">Auth: </span>{route.auth}</span>
+        </li>
+      ))}
+    </ul>
   );
 }

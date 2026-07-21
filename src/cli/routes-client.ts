@@ -167,6 +167,7 @@ function clientConfig(target: TypeScriptClientTarget): string {
       : [
           "  visitorToken?: TokenProvider;",
           "  authAssertion?: TokenProvider;",
+          "  authAssertionHeader?: string;",
           "  onVisitorToken?: (token: string) => void;",
         ]),
     "  headers?: HeadersProvider;",
@@ -305,7 +306,7 @@ async function request(
     headers.set("x-visitor-token", credentials.visitorToken);
   }
   if (credentials.authAssertion) {
-    headers.set("x-auggy-auth-assertion", credentials.authAssertion);
+    headers.set(config.authAssertionHeader ?? "x-auggy-auth-assertion", credentials.authAssertion);
   }`
       : ""
   }
