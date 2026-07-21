@@ -34,6 +34,11 @@ describe("augment catalog", () => {
     );
     expect(entry!.hasSkill).toBe(true);
     expect(entry!.stability).toBe("stable");
+    expect(entry!.defaultOptions.rateLimit).toEqual({
+      minIntervalSeconds: 10,
+      perHour: 360,
+      perDay: 8_640,
+    });
   });
 
   it("catalog treats Agent Mail as stable post-setup email infrastructure", () => {

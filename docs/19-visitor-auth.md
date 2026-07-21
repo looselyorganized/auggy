@@ -160,7 +160,7 @@ config:
     inboxId: ${AGENTMAIL_INBOX_ID}
     subjectPrefix: "[Verify] "
   signingKey: ${VISITOR_SIGNING_KEY}          # also auto-wired into webTransport's visitorTokens
-  rateLimit: { perHour: 1, perDay: 3 }        # per anonymous peer
+  rateLimit: { perHour: 1, perDay: 3 }        # per email; AgentMail default
   reverifyAfterDays: 90
   tokenTtlMinutes: 15
   layeredMemoryDbPath: ./data/memory.db       # null to disable peer-id migration
@@ -277,7 +277,7 @@ The `notifyOnFirstVerify` option (operator-alert email on each new visitor) cann
 - Set `signingKey` only in `visitorAuth`. The augment-resolver auto-injects it into `webTransport.visitorTokens` at boot. Setting it in both places triggers a warning and `visitorAuth`'s value takes precedence. If they differ, visitor tokens minted by visitorAuth will fail webTransport's verification.
 - AgentMail keys should be least-privilege. visitorAuth uses `inbox_read` during boot healthcheck and `message_send` for verification delivery, so a permission-whitelisted key needs both.
 - `publicUrl` MUST point to a host where the agent's `/visitor-auth/verify` route is reachable from the public internet. If you're running behind a tunnel (ngrok, Cloudflare), use the tunnel URL; if you're running on Railway, use the Railway domain.
-- Per-anonymous-peer rate limits are **in-memory only** — restart resets state.
+- Per-email rate limits are **in-memory only** — restart resets state.
   Verification tokens and visitors live in the schema-branded SQLite store;
   the unique email constraint and atomic token update prevent duplicate
   verification commits.
@@ -299,7 +299,7 @@ If a revoke is interrupted (e.g., Ctrl-C between the visitor-auth UPDATE and the
 
 1. Visitor types email in chat (e.g., "I'm alice@example.com").
 2. Agent decides to verify, calls `request_auth({method: "email", email: "alice@example.com"})`.
-3. visitorAuth validates: email format, email-must-appear-in-recent-messages (defense against confused-deputy), per-peer rate limit (1/hr, 3/day).
+3. visitorAuth validates: email format, email-must-appear-in-recent-messages (defense against confused-deputy), and the configured per-email rate limit. AgentMail delivery defaults to 1/hour and 3/day; local console delivery defaults to a 10-second minimum interval.
 4. Generates a UUID token. Writes a row to `visitor_auth_tokens` with 15-minute TTL. Sends email via `agentmail-client.ts` (direct, not through `notify`).
 5. Visitor clicks link in email. GET hits `/visitor-auth/verify?token=<uuid>`.
 6. One atomic `UPDATE ... RETURNING` both consumes the unexpired token and

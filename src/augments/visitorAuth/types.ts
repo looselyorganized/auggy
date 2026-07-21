@@ -57,6 +57,8 @@ export interface AgentMailConsoleConfig {
 export interface VisitorAuthRateLimit {
   perHour: number;
   perDay: number;
+  /** Optional minimum delay between successful sends for the same email. Set 0 to disable. */
+  minIntervalSeconds?: number;
 }
 
 /**
@@ -97,7 +99,10 @@ export interface VisitorAuthOptions {
    * agent B's expected binding.
    */
   agentBinding?: string;
-  /** Optional rate-limit caps. Defaults: { perHour: 1, perDay: 3 }. */
+  /**
+   * Optional rate-limit policy. AgentMail defaults to 1/hour and 3/day.
+   * Local console delivery defaults to a 10-second cooldown when omitted.
+   */
   rateLimit?: VisitorAuthRateLimit;
   /** Days before reverification is required. Default: 90. */
   reverifyAfterDays?: number;
@@ -172,6 +177,8 @@ export interface RequestAuthResult {
   delivery?: "email" | "console";
   /** Present iff status === "sent". TTL of the issued token. */
   expiresInSec?: number;
+  /** Present when code is `rate_limited`; exact ceiling in seconds. */
+  retryAfterSec?: number;
 }
 
 /**

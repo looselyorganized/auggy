@@ -165,6 +165,42 @@ describe("visitorAuth (skeleton)", () => {
     ).toThrow(/signingKey/);
   });
 
+  test("factory rejects malformed rate-limit configuration", () => {
+    const base = {
+      publicUrl: "https://example.com",
+      dbPath,
+      agentMail: { apiKey: "am_x", inboxId: "ibx_x" },
+      signingKey: "sig",
+    };
+    expect(() => visitorAuth({ ...base, rateLimit: { perHour: 0, perDay: 3 } })).toThrow(
+      /rateLimit\.perHour.*positive integer/,
+    );
+    expect(() =>
+      visitorAuth({ ...base, rateLimit: { perHour: 1.5, perDay: 3 } }),
+    ).toThrow(/rateLimit\.perHour.*positive integer/);
+    expect(() =>
+      visitorAuth({ ...base, rateLimit: { perHour: 1, perDay: Number.POSITIVE_INFINITY } }),
+    ).toThrow(/rateLimit\.perDay.*positive integer/);
+    expect(() =>
+      visitorAuth({
+        ...base,
+        rateLimit: { perHour: 1, perDay: 3, minIntervalSeconds: 1.5 },
+      }),
+    ).toThrow(/rateLimit\.minIntervalSeconds.*non-negative integer/);
+    expect(() =>
+      visitorAuth({
+        ...base,
+        rateLimit: { perHour: 1, perDay: 3, minIntervalSeconds: -1 },
+      }),
+    ).toThrow(/rateLimit\.minIntervalSeconds.*non-negative integer/);
+    expect(() =>
+      visitorAuth({
+        ...base,
+        rateLimit: { perHour: 1, perDay: 3, minIntervalSeconds: 0 },
+      }),
+    ).not.toThrow();
+  });
+
   test("onBoot calls AgentMail.getInbox; warns on failure but does not throw", async () => {
     let getInboxCalls = 0;
     const aug = visitorAuth({
@@ -466,7 +502,8 @@ describe("buildVerifyUrl (F6) — URL-spec-compliant construction", () => {
 describe("request_auth tool", () => {
   function buildAug(overrides?: {
     sendImpl?: AgentMailClient["send"];
-    rateLimit?: { perHour: number; perDay: number };
+    rateLimit?: { perHour: number; perDay: number; minIntervalSeconds?: number };
+    useDefaultRateLimit?: boolean;
     nowFn?: () => number;
     consoleDelivery?: boolean;
   }) {
@@ -478,7 +515,9 @@ describe("request_auth tool", () => {
         ? { transport: "console" }
         : { apiKey: "am_x", inboxId: "ibx_x" },
       signingKey: "sig",
-      rateLimit: overrides?.rateLimit ?? { perHour: 1, perDay: 3 },
+      ...(overrides?.useDefaultRateLimit
+        ? {}
+        : { rateLimit: overrides?.rateLimit ?? { perHour: 1, perDay: 3 } }),
       _now: overrides?.nowFn,
       _agentMailClient: fakeAgentMail({
         send: async (input) => {
@@ -696,6 +735,202 @@ describe("request_auth tool", () => {
     await aug.onShutdown?.();
   });
 
+  test("console delivery defaults to an exact 10-second cooldown", async () => {
+    let clock = 1_000_000_000_000;
+    const { aug, sendCalls } = buildAug({
+      consoleDelivery: true,
+      useDefaultRateLimit: true,
+      nowFn: () => clock,
+    });
+    await aug.onBoot?.();
+    await aug.onTurnStart?.(turnWithVisitor("alice@example.com"));
+    const ctx: ToolExecuteContext = {
+      turnId: "t",
+      threadId: "thread1",
+      peer: {
+        id: "anon-thread1",
+        kind: "anonymous",
+        trustLevel: "public",
+        publicSubstate: "anonymous",
+        sourceAugment: "web",
+      },
+    };
+
+    const first = JSON.parse(
+      (await aug.tools![0]!.execute(
+        { method: "email", email: "alice@example.com" },
+        ctx,
+      )) as string,
+    );
+    expect(first.status).toBe("sent");
+
+    clock += 9_000;
+    const blocked = JSON.parse(
+      (await aug.tools![0]!.execute(
+        { method: "email", email: "alice@example.com" },
+        ctx,
+      )) as string,
+    );
+    expect(blocked).toMatchObject({
+      status: "rejected",
+      code: "rate_limited",
+      retryAfterSec: 1,
+    });
+    expect(blocked.message).toContain("Try again in 1 second(s).");
+    expect(blocked.message).not.toMatch(/minute|~/i);
+
+    clock += 1_000;
+    const afterCooldown = JSON.parse(
+      (await aug.tools![0]!.execute(
+        { method: "email", email: "alice@example.com" },
+        ctx,
+      )) as string,
+    );
+    expect(afterCooldown.status).toBe("sent");
+    expect(sendCalls).toHaveLength(2);
+    await aug.onShutdown?.();
+  });
+
+  test("serializes concurrent sends for one email so cooldown cannot be bypassed", async () => {
+    let sendStarted!: () => void;
+    let finishSend!: () => void;
+    const started = new Promise<void>((resolve) => {
+      sendStarted = resolve;
+    });
+    const pendingSend = new Promise<void>((resolve) => {
+      finishSend = resolve;
+    });
+    const { aug, sendCalls } = buildAug({
+      consoleDelivery: true,
+      useDefaultRateLimit: true,
+      sendImpl: async () => {
+        sendStarted();
+        await pendingSend;
+        return { status: "sent", messageId: "m1", threadId: "t1" };
+      },
+    });
+    await aug.onBoot?.();
+    await aug.onTurnStart?.(turnWithVisitor("alice@example.com"));
+    const ctx: ToolExecuteContext = {
+      turnId: "t",
+      threadId: "thread1",
+      peer: {
+        id: "anon-thread1",
+        kind: "anonymous",
+        trustLevel: "public",
+        publicSubstate: "anonymous",
+        sourceAugment: "web",
+      },
+    };
+
+    const firstPromise = aug.tools![0]!.execute(
+      { method: "email", email: "alice@example.com" },
+      ctx,
+    );
+    await started;
+    const secondPromise = aug.tools![0]!.execute(
+      { method: "email", email: "alice@example.com" },
+      ctx,
+    );
+    finishSend();
+
+    const [first, second] = await Promise.all([firstPromise, secondPromise]).then((results) =>
+      results.map((raw) => JSON.parse(raw as string)),
+    );
+    expect(first.status).toBe("sent");
+    expect(second).toMatchObject({
+      status: "rejected",
+      code: "rate_limited",
+      retryAfterSec: 10,
+    });
+    expect(sendCalls).toHaveLength(1);
+    await aug.onShutdown?.();
+  });
+
+  test("AgentMail delivery keeps the existing one-per-hour default", async () => {
+    let clock = 1_000_000_000_000;
+    const { aug } = buildAug({ useDefaultRateLimit: true, nowFn: () => clock });
+    await aug.onBoot?.();
+    await aug.onTurnStart?.(turnWithVisitor("alice@example.com"));
+    const ctx: ToolExecuteContext = {
+      turnId: "t",
+      threadId: "thread1",
+      peer: {
+        id: "anon-thread1",
+        kind: "anonymous",
+        trustLevel: "public",
+        publicSubstate: "anonymous",
+        sourceAugment: "web",
+      },
+    };
+    const first = JSON.parse(
+      (await aug.tools![0]!.execute(
+        { method: "email", email: "alice@example.com" },
+        ctx,
+      )) as string,
+    );
+    expect(first.status).toBe("sent");
+
+    clock += 10_000;
+    const blocked = JSON.parse(
+      (await aug.tools![0]!.execute(
+        { method: "email", email: "alice@example.com" },
+        ctx,
+      )) as string,
+    );
+    expect(blocked).toMatchObject({
+      status: "rejected",
+      code: "rate_limited",
+      retryAfterSec: 3_590,
+    });
+    expect(blocked.message).toContain("3590 second(s)");
+    await aug.onShutdown?.();
+  });
+
+  test("a failed local delivery does not consume the cooldown", async () => {
+    let attempts = 0;
+    const { aug } = buildAug({
+      consoleDelivery: true,
+      useDefaultRateLimit: true,
+      sendImpl: async () => {
+        attempts++;
+        return attempts === 1
+          ? { status: "failed", detail: "stdout unavailable" }
+          : { status: "sent", messageId: "m2", threadId: "t2" };
+      },
+    });
+    await aug.onBoot?.();
+    await aug.onTurnStart?.(turnWithVisitor("alice@example.com"));
+    const ctx: ToolExecuteContext = {
+      turnId: "t",
+      threadId: "thread1",
+      peer: {
+        id: "anon-thread1",
+        kind: "anonymous",
+        trustLevel: "public",
+        publicSubstate: "anonymous",
+        sourceAugment: "web",
+      },
+    };
+
+    const failed = JSON.parse(
+      (await aug.tools![0]!.execute(
+        { method: "email", email: "alice@example.com" },
+        ctx,
+      )) as string,
+    );
+    const retry = JSON.parse(
+      (await aug.tools![0]!.execute(
+        { method: "email", email: "alice@example.com" },
+        ctx,
+      )) as string,
+    );
+    expect(failed.code).toBe("send_failed");
+    expect(retry.status).toBe("sent");
+    expect(attempts).toBe(2);
+    await aug.onShutdown?.();
+  });
+
   test("rate-limit blocks 2nd send within the hour (keyed to email, not peer.id)", async () => {
     // Fix H1: the rate limit is now keyed to the EMAIL address, not the peer.id.
     // This test proves threadId rotation no longer bypasses the limit:
@@ -849,7 +1084,8 @@ describe("request_auth tool", () => {
 
   // F3 — failure-path token cleanup must be token-scoped, not peer-scoped.
   //
-  // Race scenario: A and B run in parallel for the same peer.
+  // Race scenario: A and B run in parallel for the same peer but different
+  // email keys (same-email requests are serialized by the delivery lock).
   //   1. A: pre-invalidate (no priors), issue tokenA, await send (→ fails).
   //   2. B: pre-invalidate (kills tokenA — line 192's intentional
   //      one-open-at-a-time policy), issue tokenB, await send (→ succeeds).
@@ -882,7 +1118,7 @@ describe("request_auth tool", () => {
         }) as unknown as ReturnType<AgentMailClient["send"]>,
     });
     await aug.onBoot?.();
-    await aug.onTurnStart?.(turnWithVisitor("alice@example.com"));
+    await aug.onTurnStart?.(turnWithVisitor("alice@example.com and bob@example.com"));
     const ctx: ToolExecuteContext = {
       turnId: "t",
       threadId: "thread1",
@@ -895,7 +1131,8 @@ describe("request_auth tool", () => {
       },
     };
 
-    // Kick off two parallel calls. Both pass rate-limit and pre-invalidate,
+    // Kick off two parallel calls. Their distinct email locks both pass the
+    // rate limit and pre-invalidate,
     // then both await send. Their `execute()` Promises stay pending until
     // we resolve their corresponding entries in sendResolvers.
     const callA = aug.tools![0]!.execute({ method: "email", email: "alice@example.com" }, ctx);
@@ -903,7 +1140,7 @@ describe("request_auth tool", () => {
     // pre-invalidates. Without this yield, the relative ordering of
     // pre-invalidate vs. issueToken can interleave unpredictably.
     await new Promise((r) => setTimeout(r, 0));
-    const callB = aug.tools![0]!.execute({ method: "email", email: "alice@example.com" }, ctx);
+    const callB = aug.tools![0]!.execute({ method: "email", email: "bob@example.com" }, ctx);
     await new Promise((r) => setTimeout(r, 0));
     expect(sendCallCount).toBe(2);
 

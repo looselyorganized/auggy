@@ -30,6 +30,7 @@ import type {
   RequestAuthResult,
   VisitorAuthAugmentExtras,
   VisitorAuthOptions,
+  VisitorAuthRateLimit,
 } from "./types";
 import {
   createSqliteVisitorAuthStore,
@@ -47,7 +48,14 @@ import {
 
 const DEFAULT_TOKEN_TTL_MIN = 15;
 const DEFAULT_REVERIFY_DAYS = 90;
-const DEFAULT_RATE_LIMIT = { perHour: 1, perDay: 3 };
+const DEFAULT_AGENTMAIL_RATE_LIMIT = { perHour: 1, perDay: 3 };
+const DEFAULT_CONSOLE_RATE_LIMIT = {
+  minIntervalSeconds: 10,
+  // These ceilings are exactly what a 10-second cooldown permits, so the
+  // local default behaves as a cooldown without a surprising longer window.
+  perHour: 360,
+  perDay: 8_640,
+};
 const VERIFY_PATH = "/visitor-auth/verify";
 const VERIFY_HTML_HEADERS = {
   "content-type": "text/html; charset=utf-8",
@@ -174,6 +182,24 @@ function validateOptions(opts: VisitorAuthInternalOptions): void {
   if (!opts.dbPath) {
     throw new Error("visitorAuth: dbPath is required");
   }
+  if (opts.rateLimit) validateRateLimit(opts.rateLimit);
+}
+
+function validateRateLimit(rateLimit: VisitorAuthRateLimit): void {
+  for (const [name, value] of [
+    ["perHour", rateLimit.perHour],
+    ["perDay", rateLimit.perDay],
+  ] as const) {
+    if (!Number.isSafeInteger(value) || value < 1) {
+      throw new Error(`visitorAuth: rateLimit.${name} must be a positive integer`);
+    }
+  }
+  if (
+    rateLimit.minIntervalSeconds !== undefined &&
+    (!Number.isSafeInteger(rateLimit.minIntervalSeconds) || rateLimit.minIntervalSeconds < 0)
+  ) {
+    throw new Error("visitorAuth: rateLimit.minIntervalSeconds must be a non-negative integer");
+  }
 }
 
 function looksLikePlaceholder(value: string): boolean {
@@ -245,10 +271,33 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
   const now = opts._now ?? (() => Date.now());
   const tokenTtlMin = opts.tokenTtlMinutes ?? DEFAULT_TOKEN_TTL_MIN;
   const reverifyDays = opts.reverifyAfterDays ?? DEFAULT_REVERIFY_DAYS;
-  const rateLimitCaps = opts.rateLimit ?? DEFAULT_RATE_LIMIT;
+  const rateLimitCaps =
+    opts.rateLimit ??
+    (opts.agentMail.transport === "console"
+      ? DEFAULT_CONSOLE_RATE_LIMIT
+      : DEFAULT_AGENTMAIL_RATE_LIMIT);
   const subjectPrefix = opts.agentMail.subjectPrefix ?? "[Verify] ";
   const agentBinding = opts.agentBinding ?? "auggy";
   const verificationDelivery = opts.agentMail.transport === "console" ? "console" : "email";
+  const verificationQueues = new Map<string, Promise<void>>();
+
+  async function withVerificationLock<T>(key: string, work: () => Promise<T>): Promise<T> {
+    const previous = verificationQueues.get(key) ?? Promise.resolve();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const tail = previous.then(() => gate);
+    verificationQueues.set(key, tail);
+
+    await previous;
+    try {
+      return await work();
+    } finally {
+      release();
+      if (verificationQueues.get(key) === tail) verificationQueues.delete(key);
+    }
+  }
 
   const storeConfig: SqliteVisitorAuthStoreConfig = { dbPath: opts.dbPath };
   const store: VisitorAuthStore = createSqliteVisitorAuthStore(storeConfig);
@@ -407,7 +456,13 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
       status: "rejected" | "failed",
       code: RequestAuthCode,
       message: string,
-    ): RequestAuthResult => ({ status, code, message });
+      retryAfterSec?: number,
+    ): RequestAuthResult => ({
+      status,
+      code,
+      message,
+      ...(retryAfterSec === undefined ? {} : { retryAfterSec }),
+    });
 
     if (!booted) {
       return fail(
@@ -439,75 +494,72 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
     // Keying on email prevents an attacker from rotating peer.id / threadId
     // to escape the rate limit. The "email:" prefix namespaces the key so
     // future per-IP keying (e.g. "ip:...") can coexist without collision.
-    const t = now();
     const rlKey = `email:${email}`;
-    const rl = rateLimiter.check(rlKey, t);
-    if (!rl.allowed) {
-      const wait = Math.ceil(rl.retryAfterSec / 60);
-      return fail(
-        "rejected",
-        "rate_limited",
-        `Verification rate limit reached for this visitor (${rl.reason}). Try again in ~${wait} minute(s).`,
-      );
-    }
+    return withVerificationLock(rlKey, async () => {
+      const t = now();
+      const rl = rateLimiter.check(rlKey, t);
+      if (!rl.allowed) {
+        return fail(
+          "rejected",
+          "rate_limited",
+          `Verification rate limit reached for this visitor (${rl.reason}). Try again in ${rl.retryAfterSec} second(s).`,
+          rl.retryAfterSec,
+        );
+      }
 
-    // Invalidate any prior open token for this peer; only one open at a time.
-    store.invalidateOpenTokensForPeer(input.peerId, t);
+      // Invalidate any prior open token for this peer; only one open at a time.
+      store.invalidateOpenTokensForPeer(input.peerId, t);
 
-    // Mint a fresh token + write the row + build URL.
-    const token = crypto.randomUUID();
-    const ttlMs = tokenTtlMin * 60_000;
-    store.issueToken({
-      token,
-      email,
-      peerId: input.peerId,
-      threadId: input.threadId,
-      expiresAt: t + ttlMs,
-      sourceMessageId,
-    });
-    const verifyUrl = buildVerifyUrl(token);
-    const { subject, text, html } = buildEmailBody(verifyUrl, tokenTtlMin);
+      // Mint a fresh token + write the row + build URL.
+      const token = crypto.randomUUID();
+      const ttlMs = tokenTtlMin * 60_000;
+      store.issueToken({
+        token,
+        email,
+        peerId: input.peerId,
+        threadId: input.threadId,
+        expiresAt: t + ttlMs,
+        sourceMessageId,
+      });
+      const verifyUrl = buildVerifyUrl(token);
+      const { subject, text, html } = buildEmailBody(verifyUrl, tokenTtlMin);
 
-    // Send via agentmail-client.ts (direct — see plan §"Spec deviation").
-    // In console mode `mailInboxId` is the routing placeholder "console";
-    // the ConsoleMailClient ignores it and prints the verify URL instead.
-    const sendResult = await agentMail.send({
-      inboxId: mailInboxId,
-      to: [email],
-      subject,
-      text,
-      html,
-      labels: ["visitor-auth", "verify"],
-    });
+      // Serialize sends for the same email so parallel requests cannot bypass
+      // the cooldown between the policy check and successful delivery record.
+      const sendResult = await agentMail.send({
+        inboxId: mailInboxId,
+        to: [email],
+        subject,
+        text,
+        html,
+        labels: ["visitor-auth", "verify"],
+      });
 
-    if (sendResult.status !== "sent") {
-      // Mark THIS token consumed so it can't be redeemed despite the visitor
-      // never receiving it. Use the token-scoped variant (F3): a peer-wide
-      // invalidate would steamroll a sibling concurrent request_auth call's
-      // token if one was issued in between (the line-192 pre-invalidate kills
-      // OUR pending token from the sibling's perspective; OUR failure cleanup
-      // must not return the favor).
-      store.invalidateTokenIfStillOpen(token, t + 1);
-      return fail(
-        "failed",
-        "send_failed",
-        verificationDelivery === "console"
-          ? `Failed to print verification link to the local agent console: ${sendResult.detail ?? "unknown error"}`
-          : `Failed to send verification email: ${sendResult.detail ?? "unknown error"}`,
-      );
-    }
+      if (sendResult.status !== "sent") {
+        // A failed delivery does not consume quota, but its token must not be redeemable.
+        store.invalidateTokenIfStillOpen(token, t + 1);
+        return fail(
+          "failed",
+          "send_failed",
+          verificationDelivery === "console"
+            ? `Failed to print verification link to the local agent console: ${sendResult.detail ?? "unknown error"}`
+            : `Failed to send verification email: ${sendResult.detail ?? "unknown error"}`,
+        );
+      }
 
-    // Record the rate-limit tick AFTER successful send (keyed to email, not peer).
-    rateLimiter.record(rlKey, t);
+      // Record the rate-limit tick AFTER successful send (keyed to email, not peer).
+      rateLimiter.record(rlKey, t);
 
-    return {
+      return {
       status: "sent",
       delivery: verificationDelivery,
-      message: verificationDelivery === "console"
-        ? `Verification link created for ${email} and printed to the local agent console. No email was sent. Open the console link within ${tokenTtlMin} minutes.`
-        : `Verification email sent to ${email}. The link expires in ${tokenTtlMin} minutes.`,
+      message:
+        verificationDelivery === "console"
+          ? `Verification link created for ${email} and printed to the local agent console. No email was sent. Open the console link within ${tokenTtlMin} minutes.`
+          : `Verification email sent to ${email}. The link expires in ${tokenTtlMin} minutes.`,
       expiresInSec: Math.floor(ttlMs / 1000),
-    };
+      };
+    });
   }
 
   function requestAuthHttpStatus(result: RequestAuthResult): number {

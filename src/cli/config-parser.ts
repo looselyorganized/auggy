@@ -173,6 +173,39 @@ function validateWebTransportOptions(
   }
 }
 
+function validateVisitorAuthOptions(
+  opts: Record<string, unknown>,
+  optionsPrefix: string,
+  errors: string[],
+): void {
+  if (opts.rateLimit === undefined) return;
+  if (
+    opts.rateLimit === null ||
+    typeof opts.rateLimit !== "object" ||
+    Array.isArray(opts.rateLimit)
+  ) {
+    errors.push(`${optionsPrefix}.rateLimit: must be an object`);
+    return;
+  }
+
+  const rateLimit = opts.rateLimit as Record<string, unknown>;
+  for (const field of ["perHour", "perDay"] as const) {
+    const value = rateLimit[field];
+    if (!Number.isSafeInteger(value) || (value as number) < 1) {
+      errors.push(`${optionsPrefix}.rateLimit.${field}: must be a positive integer`);
+    }
+  }
+  if (
+    rateLimit.minIntervalSeconds !== undefined &&
+    (!Number.isSafeInteger(rateLimit.minIntervalSeconds) ||
+      (rateLimit.minIntervalSeconds as number) < 0)
+  ) {
+    errors.push(
+      `${optionsPrefix}.rateLimit.minIntervalSeconds: must be a non-negative integer`,
+    );
+  }
+}
+
 /**
  * Validate a BudgetCaps object (used for agent, public.anonymous, public.recognized).
  * Each field must be a positive number when present.
@@ -1356,6 +1389,9 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
       if (type === "webTransport") {
         const webOpts = (aug.options ?? {}) as Record<string, unknown>;
         validateWebTransportOptions(webOpts, optionsPrefix, errors);
+      } else if (type === "visitorAuth") {
+        const visitorAuthOpts = (aug.options ?? {}) as Record<string, unknown>;
+        validateVisitorAuthOptions(visitorAuthOpts, optionsPrefix, errors);
       } else if (type === "budgets") {
         const opts = (aug.options ?? {}) as Record<string, unknown>;
         validateBudgetsOptions(opts, optionsPrefix, errors);
