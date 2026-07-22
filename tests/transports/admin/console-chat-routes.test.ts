@@ -221,6 +221,9 @@ describe("persisted console chat routes", () => {
         const thread = store.getThread(threadId);
         return thread ? { ...thread, runStatus: "streaming" } : null;
       },
+      deleteThread() {
+        throw new Error("streaming delete conflict");
+      },
     };
     const ctx = await makeContext({ consoleChat: streamingStore }, (id) => forgotten.push(id));
 
@@ -233,17 +236,15 @@ describe("persisted console chat routes", () => {
     expect(forgotten).toEqual([]);
   });
 
-  it("classifies a streaming transition during delete as a conflict without inspecting error text", async () => {
+  it("classifies a transactional streaming conflict without inspecting error text", async () => {
     const store = createStore();
     createThread(store);
-    let reads = 0;
     const forgotten: string[] = [];
     const racingStore: ConsoleChatStore = {
       ...store,
       getThread(threadId) {
         const thread = store.getThread(threadId);
-        reads += 1;
-        return thread && reads > 1 ? { ...thread, runStatus: "streaming" } : thread;
+        return thread ? { ...thread, runStatus: "streaming" } : null;
       },
       deleteThread() {
         throw new Error("opaque storage conflict");
@@ -260,6 +261,88 @@ describe("persisted console chat routes", () => {
       error: "Cannot delete a chat while it is streaming.",
     });
     expect(forgotten).toEqual([]);
+  });
+
+  it("deletes absent and already-deleted identifiers idempotently through storage first", async () => {
+    const store = createStore();
+    createThread(store);
+    const order: string[] = [];
+    const deleteThread = store.deleteThread.bind(store);
+    store.deleteThread = (threadId) => {
+      order.push(`store:${threadId}`);
+      return deleteThread(threadId);
+    };
+    const ctx = await makeContext({ consoleChat: store }, (threadId) =>
+      order.push(`kernel:${threadId}`),
+    );
+    const token = await csrf();
+
+    for (const threadId of ["thread-1", "thread-1", "never-created", "never-created"]) {
+      const response = await handleAdminRoute(
+        post(`/console/api/chat/threads/${threadId}/delete`, { csrf: token }),
+        ctx,
+      );
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ ok: true });
+    }
+
+    expect(order).toEqual([
+      "store:thread-1",
+      "kernel:thread-1",
+      "store:thread-1",
+      "kernel:thread-1",
+      "store:never-created",
+      "kernel:never-created",
+      "store:never-created",
+      "kernel:never-created",
+    ]);
+    expect(store.isThreadDeleted("thread-1")).toBeTrue();
+    expect(store.isThreadDeleted("never-created")).toBeTrue();
+  });
+
+  it("distinguishes tombstoned threads from identifiers that were never seen", async () => {
+    const store = createStore();
+    createThread(store);
+    expect(store.deleteThread("thread-1")).toBeTrue();
+    expect(store.deleteThread("absent-tombstone")).toBeFalse();
+    const ctx = await makeContext({ consoleChat: store });
+    const token = await csrf();
+
+    for (const threadId of ["thread-1", "absent-tombstone"]) {
+      const requests = [
+        get(`/console/api/chat/threads/${threadId}`),
+        post(`/console/api/chat/threads/${threadId}/rename`, {
+          csrf: token,
+          title: "Still gone",
+        }),
+        post(`/console/api/chat/threads/${threadId}/read-state`, {
+          csrf: token,
+          unread: true,
+        }),
+      ];
+      for (const request of requests) {
+        const response = await handleAdminRoute(request, ctx);
+        expect(response.status).toBe(410);
+        expect(await response.json()).toEqual({ error: "thread was deleted" });
+      }
+    }
+
+    const neverSeenRequests = [
+      get("/console/api/chat/threads/never-seen"),
+      post("/console/api/chat/threads/never-seen/rename", {
+        csrf: token,
+        title: "Missing",
+      }),
+      post("/console/api/chat/threads/never-seen/read-state", {
+        csrf: token,
+        unread: true,
+      }),
+    ];
+    for (const request of neverSeenRequests) {
+      const response = await handleAdminRoute(request, ctx);
+      expect(response.status).toBe(404);
+      expect(await response.json()).toEqual({ error: "thread not found" });
+    }
   });
 
   it("strictly validates route ids, request bodies, titles, methods, and CSRF", async () => {

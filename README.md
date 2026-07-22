@@ -451,6 +451,8 @@ auggy deploy --yes
 
 - Node.js >= 20.17 is recommended for the npm dependency chain.
 - Bun >= 1.2 is required at runtime.
+- Console static assets require opened-descriptor paths (`/proc/self/fd` on Linux or
+  `/dev/fd` on macOS); runtimes without either fail closed while APIs remain available.
 - Railway deployment requires the Railway CLI and `railway login`.
 
 ```bash
@@ -465,10 +467,11 @@ cd auggy
 bun install
 bun run typecheck
 bun run lint
-bun test
+bun run test
 ```
 
-This repository is a Bun workspace. The core runtime and CLI live in `src/`,
+This repository is a Bun workspace; the root install includes the console and
+provider packages. The core runtime and CLI live in `src/`,
 provider adapters live in `packages/{anthropic,openai,openrouter,ollama}`, tests
 live in `tests/`, and runnable integrations live in `examples/`. The React/Vite
 operator console is developed in `admin/`; its production bundle is checked in

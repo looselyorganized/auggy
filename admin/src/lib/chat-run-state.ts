@@ -1,4 +1,4 @@
-import type { ActiveChatRun, ChatThread } from "@/lib/chat-workspace";
+import type { ChatThreadSummary } from "@/lib/chat-workspace";
 
 export interface ChatRunPresentation {
   /** A request owned by this browser page; only this state may expose Stop. */
@@ -18,23 +18,24 @@ export interface MobileChatNavigationState {
 }
 
 export function getChatRunPresentation(
-  threads: ChatThread[],
-  activeThreadId: string,
-  activeRun: ActiveChatRun | null,
+  durableThreads: readonly ChatThreadSummary[],
+  selectedThread: Pick<ChatThreadSummary, "id" | "runStatus"> | null,
+  activeRun: { threadId: string } | null,
 ): ChatRunPresentation {
+  const selectedThreadId = selectedThread?.id ?? null;
   return {
-    ownsLocalStream: activeRun?.threadId === activeThreadId,
-    activeThreadStreaming:
-      threads.find((thread) => thread.id === activeThreadId)?.runStatus === "streaming",
-    anotherThreadStreaming: threads.some(
-      (thread) => thread.id !== activeThreadId && thread.runStatus === "streaming",
+    ownsLocalStream:
+      selectedThreadId !== null && activeRun?.threadId === selectedThreadId,
+    activeThreadStreaming: selectedThread?.runStatus === "streaming",
+    anotherThreadStreaming: durableThreads.some(
+      (thread) => thread.id !== selectedThreadId && thread.runStatus === "streaming",
     ),
   };
 }
 
 /** Aggregate state for the compact mobile nav while its thread list is off-screen. */
 export function getMobileChatNavigationState(
-  threads: readonly ChatThread[],
+  threads: readonly ChatThreadSummary[],
   chatRouteActive: boolean,
 ): MobileChatNavigationState {
   const unreadCount = threads.filter((thread) => thread.unread).length;

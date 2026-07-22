@@ -58,6 +58,22 @@ async function readThread(port: number, threadId: string) {
   };
 }
 
+async function deleteConsoleThread(port: number, threadId: string) {
+  const csrf = await generateCsrfToken({
+    bearer,
+    agentName: "console-persistence-test",
+    actionId: "console-chat",
+  });
+  return fetch(
+    `http://127.0.0.1:${port}/console/api/chat/threads/${encodeURIComponent(threadId)}/delete`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ csrf }),
+    },
+  );
+}
+
 describe("webTransport console persistence boundary", () => {
   it("restores a file-backed transcript and kernel history after a full agent restart", async () => {
     const firstPort = 39444;
@@ -136,6 +152,113 @@ describe("webTransport console persistence boundary", () => {
     }
   });
 
+  it("keeps a deleted file-backed thread tombstoned across restart while new chat still works", async () => {
+    const firstPort = 39446;
+    const secondPort = 39447;
+    const deletedThreadId = "deleted-across-restart";
+    const freshThreadId = "fresh-after-restart";
+    const directory = await createTempDir();
+    const dbPath = join(directory.path, "console-chat.db");
+    const firstModel = createMockModel({ response: "reply before deletion" });
+    const firstAgent = defineAgent(
+      {
+        name: "console-persistence-test",
+        model: "mock",
+        augments: [
+          webTransport({
+            port: firstPort,
+            auth: { type: "bearer", token: bearer },
+            consoleChat: { dbPath },
+          }),
+        ],
+      },
+      firstModel,
+    );
+    let firstStarted = false;
+    let secondStarted = false;
+    let secondAgent: ReturnType<typeof defineAgent> | null = null;
+
+    try {
+      await firstAgent.start();
+      firstStarted = true;
+
+      const created = await sendConsoleMessage(
+        firstPort,
+        deletedThreadId,
+        "persist and delete this",
+      );
+      expect(created.status).toBe(200);
+      expect(await created.text()).toContain("reply before deletion");
+      expect(firstModel.calls).toHaveLength(1);
+      expect((await readThread(firstPort, deletedThreadId)).thread.messages).toEqual([
+        expect.objectContaining({ role: "user", content: "persist and delete this" }),
+        expect.objectContaining({ role: "assistant", content: "reply before deletion" }),
+      ]);
+
+      const deleted = await deleteConsoleThread(firstPort, deletedThreadId);
+      expect(deleted.status).toBe(200);
+      expect(await deleted.json()).toEqual({ ok: true });
+
+      await firstAgent.stop();
+      firstStarted = false;
+
+      const secondModel = createMockModel({ response: "fresh reply" });
+      secondAgent = defineAgent(
+        {
+          name: "console-persistence-test",
+          model: "mock",
+          augments: [
+            webTransport({
+              port: secondPort,
+              auth: { type: "bearer", token: bearer },
+              consoleChat: { dbPath },
+            }),
+          ],
+        },
+        secondModel,
+      );
+      await secondAgent.start();
+      secondStarted = true;
+
+      const emptyList = await fetch(`http://127.0.0.1:${secondPort}/console/api/chat/threads`);
+      expect(emptyList.status).toBe(200);
+      expect(await emptyList.json()).toEqual({ threads: [] });
+
+      const deletedDetail = await fetch(
+        `http://127.0.0.1:${secondPort}/console/api/chat/threads/${deletedThreadId}`,
+      );
+      expect(deletedDetail.status).toBe(410);
+      expect(await deletedDetail.json()).toEqual({ error: "thread was deleted" });
+
+      const repeatedDelete = await deleteConsoleThread(secondPort, deletedThreadId);
+      expect(repeatedDelete.status).toBe(200);
+      expect(await repeatedDelete.json()).toEqual({ ok: true });
+
+      const rejectedReuse = await sendConsoleMessage(
+        secondPort,
+        deletedThreadId,
+        "do not resurrect this",
+      );
+      expect(rejectedReuse.status).toBe(410);
+      expect(await rejectedReuse.json()).toEqual({ error: "console thread was deleted" });
+      expect(secondModel.calls).toHaveLength(0);
+
+      const fresh = await sendConsoleMessage(secondPort, freshThreadId, "start fresh");
+      expect(fresh.status).toBe(200);
+      expect(await fresh.text()).toContain("fresh reply");
+      expect(secondModel.calls).toHaveLength(1);
+
+      const finalList = await fetch(`http://127.0.0.1:${secondPort}/console/api/chat/threads`);
+      expect(finalList.status).toBe(200);
+      const finalBody = (await finalList.json()) as { threads: Array<{ id: string }> };
+      expect(finalBody.threads.map(({ id }) => id)).toEqual([freshThreadId]);
+    } finally {
+      if (firstStarted) await firstAgent.stop();
+      if (secondStarted && secondAgent) await secondAgent.stop();
+      await directory.cleanup();
+    }
+  });
+
   it("durably finishes the transcript before exposing RUN_FINISHED and blocks direct reuse", async () => {
     const port = 19441;
     const model = createMockModel({ response: "persisted assistant reply" });
@@ -183,6 +306,99 @@ describe("webTransport console persistence boundary", () => {
       expect(direct.status).toBe(403);
       expect(model.calls).toHaveLength(callsBefore);
     } finally {
+      await agent.stop();
+    }
+  });
+
+  it("returns gone without invoking the model when a deleted console thread is reused", async () => {
+    const port = 19448;
+    const model = createMockModel({ response: "should not be regenerated" });
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: bearer },
+      consoleChat: { dbPath: null },
+    });
+    const agent = defineAgent(
+      { name: "console-persistence-test", model: "mock", augments: [aug] },
+      model,
+    );
+    await agent.start();
+
+    try {
+      const created = await sendConsoleMessage(port, "deleted-thread", "create me");
+      expect(created.status).toBe(200);
+      await created.text();
+
+      const deleted = await deleteConsoleThread(port, "deleted-thread");
+      expect(deleted.status).toBe(200);
+      const callsBeforeReuse = model.calls.length;
+
+      const reused = await sendConsoleMessage(port, "deleted-thread", "bring me back");
+      expect(reused.status).toBe(410);
+      expect(await reused.json()).toEqual({ error: "console thread was deleted" });
+      expect(model.calls).toHaveLength(callsBeforeReuse);
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("keeps an active console run conflict at conflict rather than gone", async () => {
+    const port = 19449;
+    let callCount = 0;
+    let signalStarted!: () => void;
+    let release!: () => void;
+    const started = new Promise<void>((resolve) => {
+      signalStarted = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const model: ModelClient = {
+      maxContextTokens: 100_000,
+      async complete(_prompt, options) {
+        callCount += 1;
+        signalStarted();
+        await gate;
+        options?.onDelta?.({ kind: "text_delta", text: "finished" });
+        return {
+          content: "finished",
+          inputTokens: 1,
+          outputTokens: 1,
+          finishReason: "end_turn",
+        };
+      },
+      countTokens(text) {
+        return Math.ceil(text.length / 4);
+      },
+    };
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: bearer },
+      consoleChat: { dbPath: null },
+    });
+    const agent = defineAgent(
+      { name: "console-persistence-test", model: "mock", augments: [aug] },
+      model,
+    );
+    await agent.start();
+
+    try {
+      const first = sendConsoleMessage(port, "running-thread", "hold this run");
+      await started;
+
+      const conflict = await sendConsoleMessage(port, "running-thread", "start another run");
+      expect(conflict.status).toBe(409);
+      expect(await conflict.json()).toEqual({
+        error: "console thread access denied or already running",
+      });
+      expect(callCount).toBe(1);
+
+      release();
+      const firstResponse = await first;
+      expect(firstResponse.status).toBe(200);
+      await firstResponse.text();
+    } finally {
+      release();
       await agent.stop();
     }
   });

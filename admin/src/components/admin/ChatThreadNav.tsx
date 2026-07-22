@@ -18,11 +18,11 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import type { ChatThread } from "@/lib/chat-workspace";
+import type { ChatThreadSummary } from "@/lib/chat-workspace";
 import { cn } from "@/lib/utils";
 
 export interface ChatThreadNavProps {
-  threads: ChatThread[];
+  threads: readonly ChatThreadSummary[];
   activeId: string;
   loading?: boolean;
   error?: string | null;
@@ -153,7 +153,7 @@ function ThreadButton({
   onDelete,
   deleting,
 }: {
-  thread: ChatThread;
+  thread: ChatThreadSummary;
   active: boolean;
   compact: boolean;
   onSelect: (threadId: string) => void;
@@ -195,7 +195,7 @@ function ThreadButton({
 }
 
 interface ThreadRowProps {
-  thread: ChatThread;
+  thread: ChatThreadSummary;
   itemLabel: string;
   active: boolean;
   compact: boolean;
@@ -269,7 +269,7 @@ function ThreadRow({
   );
 }
 
-function ThreadStatusIcon({ thread }: { thread: ChatThread }) {
+function ThreadStatusIcon({ thread }: { thread: ChatThreadSummary }) {
   return (
     <MessageSquare
       className={cn(
@@ -285,7 +285,7 @@ function ThreadStatusIcon({ thread }: { thread: ChatThread }) {
   );
 }
 
-function getRunLabel(status: ChatThread["runStatus"]): string | null {
+function getRunLabel(status: ChatThreadSummary["runStatus"]): string | null {
   switch (status) {
     case "streaming":
       return "Streaming response";

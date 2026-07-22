@@ -73,14 +73,19 @@
     "bun": ">=1.2.0"
   },
   "workspaces": [
+    "admin",
     "packages/*"
   ],
   "private": false,
   "scripts": {
-    "test": "bun test",
-    "test:watch": "bun test --watch",
+    "test": "bun run test:runtime && bun run test:admin",
+    "test:runtime": "bun test ./tests ./examples ./packages",
+    "test:admin": "bun run --cwd admin test",
+    "test:watch": "bun test --watch ./tests ./examples ./packages",
     "dx:agent": "bash scripts/dx-lab-agent.sh",
     "smoke:release": "bash scripts/release-smoke.sh",
+    "build:admin": "bun run --cwd admin build",
+    "check:admin-dist": "bun run scripts/check-admin-dist.ts",
     "typecheck": "bunx tsc --noEmit",
     "lint": "bunx --bun @biomejs/biome check",
     "lint:fix": "bunx --bun @biomejs/biome check --write",

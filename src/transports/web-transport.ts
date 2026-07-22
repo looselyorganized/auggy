@@ -59,6 +59,7 @@ import { renderAgentIntegrationPage, renderInfoPage } from "./info-page";
 import {
   createConsoleChatStore,
   createDeferredConsoleThreadHistoryPersistence,
+  isConsoleChatThreadDeletedError,
   type ConsoleChatModelSnapshot,
   type ConsoleChatPreviewMode,
   type ConsoleChatStore,
@@ -1888,7 +1889,10 @@ export function webTransport(opts: WebTransportOptions): Augment {
             createdAt: runStartedAt,
           },
         });
-      } catch {
+      } catch (error) {
+        if (isConsoleChatThreadDeletedError(error)) {
+          return json({ error: "console thread was deleted" }, 410);
+        }
         return json({ error: "console thread access denied or already running" }, 409);
       }
     }

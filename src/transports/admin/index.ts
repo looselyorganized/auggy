@@ -18,7 +18,12 @@ import {
   collectToolSummaries,
 } from "./admin-collector";
 import { generateCsrfToken, validateCsrfToken } from "./admin-csrf";
-import { buildRequiredResponse, resolveDistDir, serveStaticFile } from "./admin-static";
+import {
+  buildRequiredResponse,
+  resolveDistDir,
+  serveStaticFile,
+  staticFailureResponse,
+} from "./admin-static";
 import { createRouteManifest, summarizeRouteManifest } from "../../kernel/route-manifest";
 import type { CollectedRoute } from "../../kernel/route-collector";
 import {
@@ -697,15 +702,18 @@ async function handleDashboardJson(ctx: AdminRouteContext, agentName: string): P
 }
 
 function handleStaticOrSpa(ctx: AdminRouteContext, pathname: string): Response {
-  if (!ctx.staticDir) return buildRequiredResponse();
-
-  // /console/assets/* → file from dist/assets/. Anything else under /console
-  // falls back to index.html so the React Router can handle the route.
-  if (pathname.startsWith("/console/assets/")) {
-    const rel = pathname.slice("/console/".length); // assets/index-...js
-    const file = serveStaticFile(ctx.staticDir, rel);
-    return file ?? new Response(null, { status: 404 });
+  // Published static namespaces must fail closed. Returning the SPA shell for
+  // a missing script, stylesheet, or brand image hides incomplete packages
+  // behind a misleading 200 HTML response.
+  const publishedStaticPath = classifyPublishedStaticPath(pathname);
+  if (publishedStaticPath.kind === "invalid") return staticFailureResponse(404);
+  if (publishedStaticPath.kind === "file") {
+    if (!ctx.staticDir) return staticFailureResponse(503);
+    const file = serveStaticFile(ctx.staticDir, publishedStaticPath.relativePath);
+    return file ?? staticFailureResponse(404);
   }
+
+  if (!ctx.staticDir) return buildRequiredResponse();
 
   // Other static files Vite emits at the root (e.g. /console/vite.svg, source
   // maps). Try the literal path first; if missing, fall through to index.html
@@ -720,6 +728,56 @@ function handleStaticOrSpa(ctx: AdminRouteContext, pathname: string): Response {
 
   const index = serveStaticFile(ctx.staticDir, "index.html");
   return index ?? buildRequiredResponse();
+}
+
+type PublishedStaticPath =
+  | { kind: "not-static" }
+  | { kind: "invalid" }
+  | { kind: "file"; relativePath: string };
+
+function classifyPublishedStaticPath(pathname: string): PublishedStaticPath {
+  const consolePrefix = "/console/";
+  if (!pathname.startsWith(consolePrefix)) return { kind: "not-static" };
+
+  const encodedSegments = pathname.slice(consolePrefix.length).split("/");
+  let namespace: string;
+  try {
+    namespace = decodeURIComponent(encodedSegments[0] ?? "");
+  } catch {
+    return { kind: "invalid" };
+  }
+  if (hasUnsafeStaticSegment(namespace)) return { kind: "invalid" };
+  if (namespace !== "assets" && namespace !== "brand") return { kind: "not-static" };
+
+  const decodedSegments: string[] = [];
+  for (const [index, encodedSegment] of encodedSegments.entries()) {
+    let segment: string;
+    try {
+      segment = decodeURIComponent(encodedSegment);
+    } catch {
+      return { kind: "invalid" };
+    }
+    const isEmptyInteriorSegment = segment === "" && index < encodedSegments.length - 1;
+    if (isEmptyInteriorSegment || hasUnsafeStaticSegment(segment)) {
+      return { kind: "invalid" };
+    }
+    decodedSegments.push(segment);
+  }
+  return { kind: "file", relativePath: decodedSegments.join("/") };
+}
+
+function hasUnsafeStaticSegment(segment: string): boolean {
+  const hasControlCharacter = Array.from(segment).some((character) => {
+    const codePoint = character.codePointAt(0) ?? 0;
+    return codePoint <= 0x1f || codePoint === 0x7f;
+  });
+  return (
+    segment === "." ||
+    segment === ".." ||
+    segment.includes("/") ||
+    segment.includes("\\") ||
+    hasControlCharacter
+  );
 }
 
 async function handleActionPost(
@@ -963,7 +1021,7 @@ function handleConsoleThreadRead(ctx: AdminRouteContext, threadId: string): Resp
   if (!ctx.consoleChat) return consoleChatUnavailableResponse();
   try {
     const thread = ctx.consoleChat.getThread(threadId);
-    if (!thread) return jsonResponse({ error: "thread not found" }, 404);
+    if (!thread) return consoleThreadMissingResponse(ctx.consoleChat, threadId);
     return jsonResponse({ thread: consoleThreadDto(thread) });
   } catch {
     return jsonResponse({ error: "Unable to read console chat." }, 500);
@@ -994,8 +1052,14 @@ async function handleConsoleThreadAction(
   if (!csrf.ok) return jsonResponse({ error: csrf.message }, csrf.status);
 
   try {
+    if (action === "delete") {
+      ctx.consoleChat.deleteThread(threadId);
+      ctx.kernel.forgetThreadHistory?.(threadId);
+      return jsonResponse({ ok: true });
+    }
+
     const existing = ctx.consoleChat.getThread(threadId);
-    if (!existing) return jsonResponse({ error: "thread not found" }, 404);
+    if (!existing) return consoleThreadMissingResponse(ctx.consoleChat, threadId);
 
     if (action === "rename") {
       const title = validateConsoleThreadTitle(body.title);
@@ -1003,31 +1067,19 @@ async function handleConsoleThreadAction(
       const thread = ctx.consoleChat.renameThread(threadId, title, Date.now());
       return thread
         ? jsonResponse({ thread: consoleThreadDto(thread) })
-        : jsonResponse({ error: "thread not found" }, 404);
+        : consoleThreadMissingResponse(ctx.consoleChat, threadId);
     }
 
-    if (action === "read-state") {
-      if (typeof body.unread !== "boolean") {
-        return jsonResponse({ error: "unread must be a boolean" }, 400);
-      }
-      const thread = ctx.consoleChat.setThreadReadState(threadId, body.unread, Date.now());
-      return thread
-        ? jsonResponse({ thread: consoleThreadDto(thread) })
-        : jsonResponse({ error: "thread not found" }, 404);
+    if (typeof body.unread !== "boolean") {
+      return jsonResponse({ error: "unread must be a boolean" }, 400);
     }
-
-    if (existing.runStatus === "streaming") {
-      return jsonResponse({ error: "Cannot delete a chat while it is streaming." }, 409);
-    }
-    if (!ctx.consoleChat.deleteThread(threadId)) {
-      return jsonResponse({ error: "thread not found" }, 404);
-    }
-    ctx.kernel.forgetThreadHistory?.(threadId);
-    return jsonResponse({ ok: true });
+    const thread = ctx.consoleChat.setThreadReadState(threadId, body.unread, Date.now());
+    return thread
+      ? jsonResponse({ thread: consoleThreadDto(thread) })
+      : consoleThreadMissingResponse(ctx.consoleChat, threadId);
   } catch {
-    // deleteThread performs its own transactional streaming check. If a run
-    // starts after our optimistic read, classify that race without coupling
-    // the API to a storage-engine error string.
+    // deleteThread owns the transactional streaming check. Classify a storage
+    // rejection from current state without coupling the API to error text.
     if (action === "delete") {
       try {
         if (ctx.consoleChat.getThread(threadId)?.runStatus === "streaming") {
@@ -1039,6 +1091,12 @@ async function handleConsoleThreadAction(
     }
     return jsonResponse({ error: "Unable to update console chat." }, 500);
   }
+}
+
+function consoleThreadMissingResponse(store: ConsoleChatStore, threadId: string): Response {
+  return store.isThreadDeleted(threadId)
+    ? jsonResponse({ error: "thread was deleted" }, 410)
+    : jsonResponse({ error: "thread not found" }, 404);
 }
 
 function consoleThreadDto(

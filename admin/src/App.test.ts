@@ -1,161 +1,168 @@
 import { describe, expect, it } from "bun:test";
 
 import {
+  CHAT_DRAFT_PATH,
+  CHAT_WELCOME_PATH,
   chatThreadPath,
   decodeChatThreadRouteParam,
   getChatNavigationState,
-  isChatThreadActuallyVisible,
+  getVisibleChatWorkspaceTarget,
+  parseChatRouteTarget,
 } from "@/lib/chat-route";
-import { createChatThread, type ChatThread } from "@/lib/chat-workspace";
+import { createChatThread } from "@/lib/chat-workspace";
+import type { DurableChatThreadSummary } from "@/lib/chat-workspace-state";
 
 function thread(
   id: string,
   title: string,
-  patch: Partial<ChatThread> = {},
-): ChatThread {
-  return {
-    ...createChatThread({
-      id,
-      title,
-      previewMode: "creator",
-      now: "2026-07-20T10:00:00.000Z",
-    }),
-    ...patch,
-  };
+  patch: Partial<DurableChatThreadSummary> = {},
+): DurableChatThreadSummary {
+  const { messages: _messages, ...summary } = createChatThread({
+    id,
+    title,
+    previewMode: "creator",
+    now: "2026-07-20T10:00:00.000Z",
+  });
+  return { ...summary, lifecycle: "summary", ...patch };
 }
 
-describe("console chat routes", () => {
-  it("creates an exact deep link for a thread", () => {
-    expect(chatThreadPath("thread-123")).toBe("/chat/thread-123");
+describe("console chat route parsing", () => {
+  it("assigns distinct authority to welcome and the one local draft", () => {
+    expect(parseChatRouteTarget(CHAT_WELCOME_PATH)).toEqual({ kind: "welcome" });
+    expect(parseChatRouteTarget(`${CHAT_WELCOME_PATH}/`)).toEqual({ kind: "welcome" });
+    expect(parseChatRouteTarget(CHAT_DRAFT_PATH)).toEqual({ kind: "draft" });
+    expect(parseChatRouteTarget(`${CHAT_DRAFT_PATH}/`)).toEqual({ kind: "draft" });
   });
 
-  it("keeps a thread identifier inside one encoded path segment", () => {
-    expect(chatThreadPath("owner:debug/chat?one")).toBe(
-      "/chat/owner%3Adebug%2Fchat%3Fone",
-    );
+  it("round-trips a durable ID that matches the reserved draft segment", () => {
+    expect(chatThreadPath("new")).toBe("/chat/%6Eew");
+    expect(parseChatRouteTarget(chatThreadPath("new"))).toEqual({
+      kind: "thread",
+      threadId: "new",
+    });
+  });
+
+  it("keeps an encoded durable identifier inside one route segment", () => {
+    const path = chatThreadPath("owner:debug/chat?one");
+    expect(path).toBe("/chat/owner%3Adebug%2Fchat%3Fone");
+    expect(parseChatRouteTarget(path)).toEqual({
+      kind: "thread",
+      threadId: "owner:debug/chat?one",
+    });
     expect(decodeChatThreadRouteParam("owner%3Adebug%2Fchat%3Fone")).toBe(
       "owner:debug/chat?one",
     );
   });
 
-  it("fails closed without crashing on a malformed route encoding", () => {
-    expect(decodeChatThreadRouteParam("bad%thread")).toBe("bad%thread");
+  it("fails closed outside exact chat paths", () => {
+    for (const pathname of [
+      "/",
+      "/integrations",
+      "/chats",
+      "/chatty",
+      "/chat//",
+      "/chat/new/extra",
+      "/chat/thread/extra",
+    ]) {
+      expect(parseChatRouteTarget(pathname)).toEqual({ kind: "outside" });
+    }
   });
 
-  it("only treats the exact active thread as visible", () => {
+  it("preserves a malformed durable encoding without throwing", () => {
+    expect(parseChatRouteTarget("/chat/bad%thread")).toEqual({
+      kind: "thread",
+      threadId: "bad%thread",
+    });
+  });
+});
+
+describe("console chat route visibility", () => {
+  it("proves visibility only for the exact durable route selection", () => {
     expect(
-      isChatThreadActuallyVisible({
-        chatRouteActive: true,
+      getVisibleChatWorkspaceTarget({
+        route: { kind: "thread", threadId: "requested" },
         documentVisible: true,
-        routedThreadId: "requested",
-        activeThreadId: "fallback",
+        localDraftId: "draft",
+        selection: { kind: "thread", threadId: "fallback" },
       }),
-    ).toBe(false);
+    ).toBeNull();
     expect(
-      isChatThreadActuallyVisible({
-        chatRouteActive: true,
+      getVisibleChatWorkspaceTarget({
+        route: { kind: "thread", threadId: "requested" },
         documentVisible: true,
-        routedThreadId: "requested",
-        activeThreadId: "requested",
+        localDraftId: "draft",
+        selection: { kind: "thread", threadId: "requested" },
       }),
-    ).toBe(true);
+    ).toEqual({ kind: "thread", threadId: "requested" });
   });
 
-  it("does not mark a thread visible in a background tab", () => {
+  it("proves draft visibility against the exact locally-owned draft", () => {
     expect(
-      isChatThreadActuallyVisible({
-        chatRouteActive: true,
+      getVisibleChatWorkspaceTarget({
+        route: { kind: "draft" },
+        documentVisible: true,
+        localDraftId: "draft",
+        selection: { kind: "draft", draftId: "stale-draft" },
+      }),
+    ).toBeNull();
+    expect(
+      getVisibleChatWorkspaceTarget({
+        route: { kind: "draft" },
+        documentVisible: true,
+        localDraftId: "draft",
+        selection: { kind: "draft", draftId: "draft" },
+      }),
+    ).toEqual({ kind: "draft", draftId: "draft" });
+  });
+
+  it("never proves visibility for welcome, outside paths, or a background tab", () => {
+    expect(
+      getVisibleChatWorkspaceTarget({
+        route: { kind: "welcome" },
+        documentVisible: true,
+        localDraftId: "draft",
+        selection: { kind: "thread", threadId: "saved" },
+      }),
+    ).toBeNull();
+    expect(
+      getVisibleChatWorkspaceTarget({
+        route: { kind: "outside" },
+        documentVisible: true,
+        localDraftId: "draft",
+        selection: { kind: "draft", draftId: "draft" },
+      }),
+    ).toBeNull();
+    expect(
+      getVisibleChatWorkspaceTarget({
+        route: { kind: "thread", threadId: "saved" },
         documentVisible: false,
-        routedThreadId: "requested",
-        activeThreadId: "requested",
+        localDraftId: null,
+        selection: { kind: "thread", threadId: "saved" },
       }),
-    ).toBe(false);
+    ).toBeNull();
+  });
+});
+
+describe("console chat navigation", () => {
+  it("never activates a durable row on welcome or draft routes", () => {
+    const saved = thread("saved", "Saved investigation");
+    expect(
+      getChatNavigationState({
+        threads: [saved],
+        route: { kind: "welcome" },
+        selection: { kind: "welcome" },
+      }).activeId,
+    ).toBe("");
+    expect(
+      getChatNavigationState({
+        threads: [saved],
+        route: { kind: "draft" },
+        selection: { kind: "draft", draftId: "draft" },
+      }).activeId,
+    ).toBe("");
   });
 
-  it("shows the welcome route without selecting or listing its untouched draft", () => {
-    const saved = thread("saved", "Saved investigation", {
-      messages: [
-        {
-          id: "message",
-          role: "user",
-          content: "Hello",
-          createdAt: "2026-07-20T10:01:00.000Z",
-          updatedAt: "2026-07-20T10:01:00.000Z",
-        },
-      ],
-    });
-    const draft = thread("draft", "New chat");
-
-    const navigation = getChatNavigationState({
-      threads: [draft, saved],
-      chatRouteActive: true,
-      routedThreadId: undefined,
-      activeThreadId: draft.id,
-      ephemeralDraftId: draft.id,
-    });
-
-    expect(navigation.activeId).toBe("");
-    expect(navigation.threads.map((candidate) => candidate.id)).toEqual([
-      saved.id,
-    ]);
-  });
-
-  it("does not list the untouched restart draft beside a routed saved chat", () => {
-    const saved = thread("saved", "Saved investigation", {
-      messages: [
-        {
-          id: "message",
-          role: "user",
-          content: "Hello",
-          createdAt: "2026-07-20T10:01:00.000Z",
-          updatedAt: "2026-07-20T10:01:00.000Z",
-        },
-      ],
-    });
-    const restartDraft = thread("restart-draft", "New chat");
-
-    const navigation = getChatNavigationState({
-      threads: [restartDraft, saved],
-      chatRouteActive: true,
-      routedThreadId: saved.id,
-      activeThreadId: saved.id,
-      ephemeralDraftId: restartDraft.id,
-    });
-
-    expect(navigation.activeId).toBe(saved.id);
-    expect(navigation.threads.map((candidate) => candidate.id)).toEqual([
-      saved.id,
-    ]);
-  });
-
-  it("lists the reusable restart draft after it becomes a real conversation", () => {
-    const restartDraft = thread("restart-draft", "Shipping address", {
-      messages: [
-        {
-          id: "message",
-          role: "user",
-          content: "Change my shipping address",
-          createdAt: "2026-07-20T10:01:00.000Z",
-          updatedAt: "2026-07-20T10:01:00.000Z",
-        },
-      ],
-    });
-
-    const navigation = getChatNavigationState({
-      threads: [restartDraft],
-      chatRouteActive: true,
-      routedThreadId: restartDraft.id,
-      activeThreadId: restartDraft.id,
-      ephemeralDraftId: restartDraft.id,
-    });
-
-    expect(navigation).toMatchObject({
-      activeId: restartDraft.id,
-      threads: [restartDraft],
-    });
-  });
-
-  it("selects an exact routed chat and clears selection outside chat routes", () => {
+  it("activates only the exact routed durable chat and sorts canonical summaries", () => {
     const first = thread("first", "First", {
       updatedAt: "2026-07-20T10:01:00.000Z",
     });
@@ -166,17 +173,22 @@ describe("console chat routes", () => {
     expect(
       getChatNavigationState({
         threads: [first, second],
-        chatRouteActive: true,
-        routedThreadId: second.id,
-        activeThreadId: second.id,
+        route: { kind: "thread", threadId: second.id },
+        selection: { kind: "thread", threadId: second.id },
       }),
     ).toMatchObject({ activeId: second.id, threads: [second, first] });
     expect(
       getChatNavigationState({
         threads: [first, second],
-        chatRouteActive: false,
-        routedThreadId: undefined,
-        activeThreadId: second.id,
+        route: { kind: "thread", threadId: second.id },
+        selection: { kind: "thread", threadId: first.id },
+      }).activeId,
+    ).toBe("");
+    expect(
+      getChatNavigationState({
+        threads: [first, second],
+        route: { kind: "outside" },
+        selection: { kind: "thread", threadId: second.id },
       }).activeId,
     ).toBe("");
   });

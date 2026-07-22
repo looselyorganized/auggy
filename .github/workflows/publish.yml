@@ -5,6 +5,10 @@ on:
     tags:
       - "v*.*.*"
 
+concurrency:
+  group: npm-publish
+  cancel-in-progress: false
+
 # All packages version-lock together: one tag → one version across
 # `auggy`, `@auggy/anthropic`, `@auggy/openai`, `@auggy/openrouter`,
 # `@auggy/ollama`. Each package's package.json version MUST equal the
@@ -22,6 +26,7 @@ jobs:
   publish:
     name: Publish auggy + engine packages
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: read
       id-token: write
@@ -42,13 +47,19 @@ jobs:
           registry-url: "https://registry.npmjs.org"
 
       - name: Install deps
-        run: bun install
-
-      - name: Typecheck
-        run: bunx tsc --noEmit
+        run: bun install --frozen-lockfile
 
       - name: Run tests
-        run: bun test
+        run: bun run test
+
+      - name: Confirm tag commit belongs to main
+        run: |
+          git fetch origin main:refs/remotes/origin/main --no-tags
+          TAG_COMMIT="$(git rev-list -n 1 "$GITHUB_REF")"
+          if ! git merge-base --is-ancestor "$TAG_COMMIT" origin/main; then
+            echo "::error::Tag commit $TAG_COMMIT is not reachable from origin/main."
+            exit 1
+          fi
 
       # Every package's package.json version must equal the tag suffix.
       # Catches drift between `auggy` and the engine packages — they
@@ -74,6 +85,11 @@ jobs:
             echo "  $PKG_NAME @ $PKG_VERSION OK"
           done
 
+      - name: Smoke packed release
+        env:
+          AUGGY_RELEASE_ARTIFACT_DIR: ${{ runner.temp }}/release-artifacts
+        run: bun run smoke:release
+
       # Publish engines first, then core. Order matters: a fresh user
       # doing `npm i -g auggy@<tag>` immediately followed by `auggy
       # create` needs the engine packages already on npm so `bun
@@ -97,24 +113,29 @@ jobs:
 
           publish_pkg() {
             local pkg_dir="$1"
+            local tarball="$2"
             local pkg_name
             pkg_name="$(node -p "require('./$pkg_dir/package.json').name")"
+            if [ ! -f "$tarball" ]; then
+              echo "::error::Missing verified release artifact: $tarball"
+              exit 1
+            fi
             if npm view "$pkg_name@$TAG_VERSION" version >/dev/null 2>&1; then
               echo "  $pkg_name@$TAG_VERSION already on npm; skipping"
             else
-              echo "  publishing $pkg_name@$TAG_VERSION from $pkg_dir"
-              (cd "$pkg_dir" && npm publish --access public)
+              echo "  publishing verified $pkg_name@$TAG_VERSION artifact"
+              npm publish "$tarball" --access public
             fi
           }
 
           echo "-- Engine packages first --"
-          publish_pkg "packages/anthropic"
-          publish_pkg "packages/openai"
-          publish_pkg "packages/openrouter"
-          publish_pkg "packages/ollama"
+          publish_pkg "packages/anthropic" "$RUNNER_TEMP/release-artifacts/auggy-anthropic-$TAG_VERSION.tgz"
+          publish_pkg "packages/openai" "$RUNNER_TEMP/release-artifacts/auggy-openai-$TAG_VERSION.tgz"
+          publish_pkg "packages/openrouter" "$RUNNER_TEMP/release-artifacts/auggy-openrouter-$TAG_VERSION.tgz"
+          publish_pkg "packages/ollama" "$RUNNER_TEMP/release-artifacts/auggy-ollama-$TAG_VERSION.tgz"
 
           echo "-- @auggy/evals --"
-          publish_pkg "packages/evals"
+          publish_pkg "packages/evals" "$RUNNER_TEMP/release-artifacts/auggy-evals-$TAG_VERSION.tgz"
 
           echo "-- auggy core last --"
-          publish_pkg "."
+          publish_pkg "." "$RUNNER_TEMP/release-artifacts/auggy-$TAG_VERSION.tgz"

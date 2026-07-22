@@ -1,7 +1,7 @@
 node_modules
-dist/*
-!dist/index.html
-!dist/assets/
-!dist/assets/**
+# The published runtime ships this complete tree. Keep every generated file
+# visible to Git so the root provenance check can detect additions and drift.
+!dist/
+!dist/**
 .vite
 *.tsbuildinfo

@@ -1,9 +1,10 @@
 import { describe, expect, it } from "bun:test";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
 import { coerceInputs } from "@/transports/admin/admin-coerce";
+import { serveStaticFile } from "@/transports/admin/admin-static";
 import {
   type AdminActionRegistry,
   type AdminRouteContext,
@@ -501,6 +502,163 @@ describe("handleAdminRoute — auth", () => {
     });
     const res = await handleAdminRoute(req, await makeCtx({ callerIp: "10.0.0.5" }));
     expect(res.status).toBe(426);
+  });
+});
+
+describe("handleAdminRoute — static console", () => {
+  it("fails closed for static namespaces while preserving files and SPA deep links", async () => {
+    const staticDir = mkdtempSync(join(tmpdir(), "auggy-console-static-"));
+    mkdirSync(join(staticDir, "assets"), { recursive: true });
+    mkdirSync(join(staticDir, "brand"), { recursive: true });
+    writeFileSync(join(staticDir, "index.html"), "<!doctype html><title>Console shell</title>");
+    writeFileSync(join(staticDir, "assets", "app.js"), "console.log('console');");
+    writeFileSync(join(staticDir, "assets", "app.css"), "body { color: black; }");
+    writeFileSync(join(staticDir, "assets", "app.woff2"), "font");
+    writeFileSync(join(staticDir, "brand", "auggy-wave.png"), Buffer.from([137, 80, 78, 71]));
+
+    try {
+      const ctx = await makeCtx({ staticDir });
+      const get = (pathname: string) =>
+        handleAdminRoute(
+          new Request(`http://127.0.0.1:8080${pathname}`, {
+            headers: { authorization: basicHeader("test-bearer") },
+          }),
+          ctx,
+        );
+
+      const script = await get("/console/assets/app.js");
+      expect(script.status).toBe(200);
+      expect(script.headers.get("content-type")).toContain("application/javascript");
+      expect(await script.text()).toContain("console.log");
+
+      const stylesheet = await get("/console/assets/app.css");
+      expect(stylesheet.status).toBe(200);
+      expect(stylesheet.headers.get("content-type")).toContain("text/css");
+      expect(await stylesheet.text()).toContain("color: black");
+
+      const font = await get("/console/assets/app.woff2");
+      expect(font.status).toBe(200);
+      expect(font.headers.get("content-type")).toBe("font/woff2");
+      expect(font.headers.get("x-content-type-options")).toBe("nosniff");
+
+      const brand = await get("/console/brand/auggy-wave.png");
+      expect(brand.status).toBe(200);
+      expect(brand.headers.get("content-type")).toBe("image/png");
+
+      for (const pathname of [
+        "/console/assets/missing.js",
+        "/console/assets",
+        "/console/brand/missing.png",
+        "/console/brand/missing",
+        "/console/brand",
+      ]) {
+        const missing = await get(pathname);
+        expect(missing.status).toBe(404);
+        expect(missing.headers.get("cache-control")).toBe("no-store");
+        expect(missing.headers.get("x-content-type-options")).toBe("nosniff");
+        expect(await missing.text()).toBe("");
+      }
+
+      for (const pathname of ["/console/chat/saved-thread", "/console/chat/saved.thread"]) {
+        const deepLink = await get(pathname);
+        expect(deepLink.status).toBe(200);
+        expect(deepLink.headers.get("content-type")).toContain("text/html");
+        expect(await deepLink.text()).toContain("Console shell");
+      }
+    } finally {
+      rmSync(staticDir, { recursive: true, force: true });
+    }
+  });
+
+  it("decodes static paths once and rejects unsafe encoded segments", async () => {
+    const staticDir = mkdtempSync(join(tmpdir(), "auggy-console-encoded-static-"));
+    mkdirSync(join(staticDir, "assets"), { recursive: true });
+    mkdirSync(join(staticDir, "brand"), { recursive: true });
+    writeFileSync(join(staticDir, "index.html"), "<!doctype html><title>Console shell</title>");
+    writeFileSync(join(staticDir, "assets", "app.js"), "encoded asset");
+
+    try {
+      const ctx = await makeCtx({ staticDir });
+      const get = (pathname: string) =>
+        handleAdminRoute(new Request(`http://127.0.0.1:8080${pathname}`), ctx);
+
+      const encodedAsset = await get("/console/%61ssets/%61pp.js");
+      expect(encodedAsset.status).toBe(200);
+      expect(await encodedAsset.text()).toBe("encoded asset");
+
+      for (const pathname of [
+        "/console/%61ssets/missing.js",
+        "/console/%62rand/missing.png",
+        "/console/assets/%",
+        "/console/assets/%2Fetc",
+        "/console/assets/%5Cetc",
+        "/console/assets/%00",
+        "/console/assets/%2E%2E%2Fsecret.txt",
+        "/console/assets//app.js",
+      ]) {
+        const response = await get(pathname);
+        expect(response.status).toBe(404);
+        expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+        expect(await response.text()).not.toContain("Console shell");
+      }
+
+      for (const pathname of ["/console/assets-old/missing.js", "/console/branding/missing.png"]) {
+        const nearCollision = await get(pathname);
+        expect(nearCollision.status).toBe(200);
+        expect(await nearCollision.text()).toContain("Console shell");
+      }
+    } finally {
+      rmSync(staticDir, { recursive: true, force: true });
+    }
+  });
+
+  it("returns a non-HTML 503 for static namespaces when the bundle is unavailable", async () => {
+    const response = await handleAdminRoute(
+      new Request("http://127.0.0.1:8080/console/%61ssets/app.js"),
+      await makeCtx(),
+    );
+
+    expect(response.status).toBe(503);
+    expect(response.headers.get("content-type")).toBeNull();
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(await response.text()).toBe("");
+  });
+
+  it("rejects lexical traversal before reading outside the static root", async () => {
+    const fixtureRoot = mkdtempSync(join(tmpdir(), "auggy-console-traversal-"));
+    const staticDir = join(fixtureRoot, "dist");
+    mkdirSync(staticDir);
+    writeFileSync(join(fixtureRoot, "secret.txt"), "outside static root");
+
+    try {
+      const response = serveStaticFile(staticDir, "../secret.txt");
+      expect(response).not.toBeNull();
+      expect(response?.status).toBe(403);
+      expect(response?.headers.get("x-content-type-options")).toBe("nosniff");
+      expect(await response?.text()).toBe("forbidden");
+    } finally {
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects static files reached through a symlink outside the static root", async () => {
+    const fixtureRoot = mkdtempSync(join(tmpdir(), "auggy-console-symlink-"));
+    const staticDir = join(fixtureRoot, "dist");
+    const outsideDir = join(fixtureRoot, "outside");
+    mkdirSync(staticDir);
+    mkdirSync(outsideDir);
+    writeFileSync(join(outsideDir, "secret.txt"), "outside static root");
+    symlinkSync(outsideDir, join(staticDir, "assets"), "dir");
+
+    try {
+      const response = serveStaticFile(staticDir, "assets/secret.txt");
+      expect(response).not.toBeNull();
+      expect(response?.status).toBe(403);
+      expect(await response?.text()).toBe("forbidden");
+    } finally {
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
   });
 });
 

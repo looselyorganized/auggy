@@ -19,7 +19,13 @@ import {
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { constants, Database } from "bun:sqlite";
-import { openHardenedSqlite } from "../../src/lib/sqlite";
+import {
+  admitOwnedSqliteSchema,
+  canonicalSqliteSchemaSql,
+  openHardenedSqlite,
+  type OwnedSqliteSchemaOptions,
+  type SqliteSchemaObject,
+} from "../../src/lib/sqlite";
 
 type SqliteHandle = ReturnType<typeof openHardenedSqlite>;
 
@@ -58,6 +64,53 @@ afterEach(() => {
 
 function mode(path: string): number {
   return statSync(path).mode & 0o777;
+}
+
+const OWNED_TEST_APPLICATION_ID = 0x41554759;
+const OWNED_TEST_OLD_SCHEMA = "CREATE TABLE records (id INTEGER PRIMARY KEY, value TEXT NOT NULL)";
+const OWNED_TEST_CURRENT_SCHEMA =
+  "CREATE TABLE records (id INTEGER PRIMARY KEY, value TEXT NOT NULL, note TEXT NOT NULL DEFAULT '')";
+
+function exactSchema(objects: readonly SqliteSchemaObject[], expectedSql: string): boolean {
+  return (
+    objects.length === 1 &&
+    objects[0]?.type === "table" &&
+    objects[0].name === "records" &&
+    canonicalSqliteSchemaSql(objects[0].sql) === canonicalSqliteSchemaSql(expectedSql)
+  );
+}
+
+function ownedTestOptions(
+  overrides: Partial<OwnedSqliteSchemaOptions> = {},
+): OwnedSqliteSchemaOptions {
+  return {
+    label: "owned test SQLite",
+    applicationId: OWNED_TEST_APPLICATION_ID,
+    schemaVersion: 2,
+    initialize(db) {
+      db.run(OWNED_TEST_CURRENT_SCHEMA);
+    },
+    validate(_db, objects) {
+      if (!exactSchema(objects, OWNED_TEST_CURRENT_SCHEMA)) {
+        throw new Error("current schema validation failed");
+      }
+    },
+    isLegacy: () => false,
+    ...overrides,
+  };
+}
+
+function seedOwnedTestDatabase(
+  path: string,
+  applicationId = OWNED_TEST_APPLICATION_ID,
+  userVersion = 1,
+): void {
+  const seed = new Database(path, { create: true });
+  seed.run(OWNED_TEST_OLD_SCHEMA);
+  seed.run("INSERT INTO records (value) VALUES ('preserved')");
+  seed.run(`PRAGMA application_id = ${applicationId}`);
+  seed.run(`PRAGMA user_version = ${userVersion}`);
+  seed.close();
 }
 
 const sqliteArtifacts = [
@@ -313,6 +366,152 @@ describe("openHardenedSqlite", () => {
     });
     expect(leakedTableCount).toBe(0);
     recovered.close();
+  });
+
+  test("transactionally migrates an exact branded older owned schema", () => {
+    const dbPath = join(tempRoot(), "owned-migration.sqlite");
+    seedOwnedTestDatabase(dbPath);
+    let migrationCalls = 0;
+
+    const handle = open(dbPath, {
+      prepare(db) {
+        admitOwnedSqliteSchema(
+          db,
+          ownedTestOptions({
+            migrateOwned(migrationDb, fromVersion, objects) {
+              migrationCalls += 1;
+              if (fromVersion !== 1 || !exactSchema(objects, OWNED_TEST_OLD_SCHEMA)) {
+                throw new Error("unsupported prior owned schema");
+              }
+              migrationDb.run("ALTER TABLE records ADD COLUMN note TEXT NOT NULL DEFAULT ''");
+            },
+          }),
+        );
+      },
+    });
+
+    expect(migrationCalls).toBe(1);
+    expect(
+      handle.db.query<{ application_id: number }, []>("PRAGMA application_id").get()
+        ?.application_id,
+    ).toBe(OWNED_TEST_APPLICATION_ID);
+    expect(
+      handle.db.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version,
+    ).toBe(2);
+    expect(
+      handle.db.query<{ value: string; note: string }, []>("SELECT value, note FROM records").get(),
+    ).toEqual({ value: "preserved", note: "" });
+  });
+
+  test("rejects an older branded schema when no owned migration is registered", () => {
+    const dbPath = join(tempRoot(), "owned-migration-missing.sqlite");
+    seedOwnedTestDatabase(dbPath);
+
+    expect(() =>
+      open(dbPath, {
+        prepare(db) {
+          admitOwnedSqliteSchema(db, ownedTestOptions());
+        },
+      }),
+    ).toThrow(/schema 1 requires a migration to version 2/i);
+
+    const inspect = new Database(dbPath);
+    expect(
+      inspect.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version,
+    ).toBe(1);
+    expect(
+      inspect
+        .query<{ name: string }, []>("PRAGMA table_info(records)")
+        .all()
+        .map(({ name }) => name),
+    ).toEqual(["id", "value"]);
+    inspect.close();
+  });
+
+  test("rolls back failed owned migration DDL and marker changes", () => {
+    const dbPath = join(tempRoot(), "owned-migration-rollback.sqlite");
+    seedOwnedTestDatabase(dbPath);
+
+    expect(() =>
+      open(dbPath, {
+        prepare(db) {
+          admitOwnedSqliteSchema(
+            db,
+            ownedTestOptions({
+              migrateOwned(migrationDb, fromVersion, objects) {
+                if (fromVersion !== 1 || !exactSchema(objects, OWNED_TEST_OLD_SCHEMA)) {
+                  throw new Error("unsupported prior owned schema");
+                }
+                migrationDb.run("ALTER TABLE records ADD COLUMN note TEXT NOT NULL DEFAULT ''");
+                migrationDb.run("PRAGMA user_version = 99");
+                throw new Error("owned migration rejected");
+              },
+            }),
+          );
+        },
+      }),
+    ).toThrow("owned migration rejected");
+
+    const inspect = new Database(dbPath);
+    expect(
+      inspect.query<{ application_id: number }, []>("PRAGMA application_id").get()?.application_id,
+    ).toBe(OWNED_TEST_APPLICATION_ID);
+    expect(
+      inspect.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version,
+    ).toBe(1);
+    expect(
+      inspect
+        .query<{ name: string }, []>("PRAGMA table_info(records)")
+        .all()
+        .map(({ name }) => name),
+    ).toEqual(["id", "value"]);
+    inspect.close();
+  });
+
+  test("never offers wrong, future, or unowned lookalike schemas to owned migration", () => {
+    const cases = [
+      {
+        name: "wrong-application",
+        applicationId: OWNED_TEST_APPLICATION_ID + 1,
+        userVersion: 1,
+        error: /another application/i,
+      },
+      {
+        name: "future-version",
+        applicationId: OWNED_TEST_APPLICATION_ID,
+        userVersion: 3,
+        error: /newer than supported/i,
+      },
+      {
+        name: "unowned-lookalike",
+        applicationId: 0,
+        userVersion: 0,
+        error: /not a recognized legacy schema/i,
+      },
+    ];
+    let migrationCalls = 0;
+
+    for (const candidate of cases) {
+      const dbPath = join(tempRoot(), `${candidate.name}.sqlite`);
+      seedOwnedTestDatabase(dbPath, candidate.applicationId, candidate.userVersion);
+
+      expect(() =>
+        open(dbPath, {
+          prepare(db) {
+            admitOwnedSqliteSchema(
+              db,
+              ownedTestOptions({
+                migrateOwned() {
+                  migrationCalls += 1;
+                },
+              }),
+            );
+          },
+        }),
+      ).toThrow(candidate.error);
+    }
+
+    expect(migrationCalls).toBe(0);
   });
 
   test("rejects an unrelated database in prepare without changing its bytes or journal mode", () => {

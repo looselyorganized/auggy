@@ -36,6 +36,7 @@ export type ConsoleChatThreadSummary = Omit<ChatThread, "messages">;
 export type ConsoleChatApiErrorCode =
   | "csrf-expired"
   | "conflict"
+  | "gone"
   | "not-found"
   | "unavailable"
   | "invalid-response"
@@ -203,7 +204,9 @@ async function responseError(response: Response): Promise<ConsoleChatApiError> {
   }
 
   const code: ConsoleChatApiErrorCode =
-    response.status === 404
+    response.status === 410
+      ? "gone"
+      : response.status === 404
       ? "not-found"
       : response.status === 409
         ? "conflict"

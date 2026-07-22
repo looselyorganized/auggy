@@ -11,13 +11,14 @@ import { Button } from "@/components/ui/button";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { detectCodeLanguage, HighlightedCode } from "@/components/ui/highlighted-code";
 import { formatChatTranscript } from "@/lib/chat-transcript";
-import { chatThreadPath } from "@/lib/chat-route";
+import { CHAT_DRAFT_PATH } from "@/lib/chat-route";
 import { getChatRunPresentation } from "@/lib/chat-run-state";
 import {
   type ChatMessage,
   type ChatPreviewMode,
   type ChatToolCall,
 } from "@/lib/chat-workspace";
+import { getChatWorkspaceTargetById } from "@/lib/chat-workspace-state";
 import { useToast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 
@@ -60,14 +61,25 @@ export function ChatTab() {
     stop,
   } = useChatWorkspace();
   const { push } = useToast();
+  assertChatTabThread(activeThread);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [preflightErrors, setPreflightErrors] = useState<Record<string, string | null>>({});
+  const mountedRef = useRef(true);
+  const activeThreadIdRef = useRef(activeThread.id);
+  activeThreadIdRef.current = activeThread.id;
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   const input = drafts[activeThread.id] ?? "";
   const messages = activeThread.messages;
   const { ownsLocalStream, activeThreadStreaming: streaming } = getChatRunPresentation(
-    state.threads,
-    activeThread.id,
+    state.durableThreads,
+    activeThread,
     state.activeRun,
   );
   const anotherLocalStream =
@@ -88,9 +100,10 @@ export function ChatTab() {
       ? "This response is still running in another console session."
       : anotherLocalStream
         ? `A response is running in ${
-            state.threads.find(
-              (thread) => thread.id !== activeThread.id && thread.runStatus === "streaming",
-            )?.title ?? "another chat"
+            state.activeRun
+              ? getChatWorkspaceTargetById(state, state.activeRun.threadId)?.title ??
+                "another chat"
+              : "another chat"
           }.`
         : undefined;
 
@@ -118,6 +131,7 @@ export function ChatTab() {
 
   const emptyPrompts = previewMode === "creator" ? CREATOR_EMPTY_PROMPTS : PEER_EMPTY_PROMPTS;
   const preflightError = preflightErrors[activeThread.id] ?? null;
+  const detailError = activeThread.lifecycle === "detail" ? activeThread.detailError : null;
 
   const sendFromThread = useCallback(
     (overrideText?: string) => {
@@ -131,9 +145,15 @@ export function ChatTab() {
       let accepted = false;
       void send(text, threadId, () => {
         accepted = true;
+        if (!mountedRef.current) return;
         setDrafts((current) => ({ ...current, [threadId]: "" }));
       }).then((result) => {
-        if (!result.ok && !accepted) {
+        if (
+          !result.ok &&
+          !accepted &&
+          mountedRef.current &&
+          activeThreadIdRef.current === threadId
+        ) {
           setPreflightErrors((current) => ({ ...current, [threadId]: result.error }));
         }
       });
@@ -157,7 +177,7 @@ export function ChatTab() {
     }
     setDrafts((current) => ({ ...current, [result.threadId]: "" }));
     setPreflightErrors((current) => ({ ...current, [result.threadId]: null }));
-    navigate(chatThreadPath(result.threadId));
+    navigate(CHAT_DRAFT_PATH);
   };
 
   const handleCopyTranscript = useCallback(async () => {
@@ -203,6 +223,7 @@ export function ChatTab() {
         previewMode={previewMode}
         hasMessages={messages.length > 0}
         unread={activeThread.unread}
+        markUnreadAvailable={activeThread.lifecycle === "detail"}
         streaming={streaming}
         anonymousAllowed={anonymousAllowed}
         hasVisitorToken={hasVisitorToken}
@@ -227,10 +248,8 @@ export function ChatTab() {
         }}
         onClearVisitor={clearVisitor}
         onDelete={async () => {
-          if (!(await deleteThread(activeThread.id))) {
-            throw new Error("This chat cannot be deleted while its response is running.");
-          }
-          navigate("/chat", { replace: true });
+          const result = await deleteThread(activeThread.id);
+          if (!result.ok) throw new Error(result.error);
         }}
         onActionError={(action, actionError) => {
           push(
@@ -256,6 +275,14 @@ export function ChatTab() {
 
       <div className="relative z-10 shrink-0 px-3 pb-3 sm:px-6 sm:pb-6">
         <div className="mx-auto max-w-3xl">
+          {detailError && (
+            <div
+              role="alert"
+              className="mb-2 rounded-md border border-destructive/30 bg-background/95 px-3 py-2 text-xs text-destructive shadow-sm"
+            >
+              {detailError}
+            </div>
+          )}
           {preflightError && (
             <div
               role="alert"
@@ -285,6 +312,12 @@ export function ChatTab() {
       </div>
     </div>
   );
+}
+
+function assertChatTabThread<T>(thread: T | null): asserts thread is T {
+  if (!thread) {
+    throw new Error("ChatTab requires a selected draft or loaded conversation detail.");
+  }
 }
 
 function MessageList({

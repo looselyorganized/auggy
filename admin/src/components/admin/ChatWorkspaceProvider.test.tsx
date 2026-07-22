@@ -8,16 +8,21 @@ import {
   shouldDeferDetailReconciliation,
   shouldRetryChatHydration,
   useChatWorkspace,
+  type ChatWorkspaceCommandResult,
   type ChatWorkspaceContextValue,
 } from "@/components/admin/ChatWorkspaceProvider";
 import { ConsoleChatApiError } from "@/lib/console-chat-api";
 import {
   createChatThread,
-  createChatWorkspace,
   type ChatMessage,
   type ChatThread,
-  type ChatWorkspaceState,
 } from "@/lib/chat-workspace";
+import {
+  createChatWorkspaceLifecycleState,
+  createLocalChatDraft,
+  type ChatWorkspaceLifecycleState,
+  type DurableChatThreadDetail,
+} from "@/lib/chat-workspace-state";
 import type { DashboardData } from "@/lib/types";
 
 const T0 = "2026-07-20T10:00:00.000Z";
@@ -46,7 +51,7 @@ const dashboardData = {
   skills: { installed: [], available: [], skillsDir: null },
 } as unknown as DashboardData;
 
-let renderer: ReactTestRenderer | null = null;
+const renderers = new Set<ReactTestRenderer>();
 
 beforeEach(() => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -68,8 +73,13 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
-  if (renderer) await act(async () => renderer?.unmount());
-  renderer = null;
+  const mountedRenderers = [...renderers];
+  renderers.clear();
+  if (mountedRenderers.length > 0) {
+    await act(async () => {
+      for (const mountedRenderer of mountedRenderers) mountedRenderer.unmount();
+    });
+  }
   Reflect.deleteProperty(globalThis, "window");
   Reflect.deleteProperty(globalThis, "localStorage");
 });
@@ -138,15 +148,380 @@ describe("ChatWorkspaceProvider persistence", () => {
     const harness = await mountProvider({ fetchImpl });
 
     expect(harness.value.hydrationStatus).toBe("ready");
-    expect(harness.value.state.threads.map(({ id }) => id)).toEqual(["saved", "id-1"]);
-    expect(harness.value.activeThread.messages).toEqual([]);
+    expect(harness.value.state.durableThreads.map(({ id }) => id)).toEqual(["saved"]);
+    expect(harness.value.state.draft).toBeNull();
+    expect(harness.value.activeThread).toBeNull();
     await act(async () => {
       expect(await harness.value.loadThread("saved")).toBe(true);
     });
-    expect(harness.value.activeThread.messages.map(({ content }) => content)).toEqual([
+    expect(harness.value.activeThread?.messages.map(({ content }) => content)).toEqual([
       "Earlier question",
       "Earlier answer",
     ]);
+  });
+
+  it("creates, reuses, and deletes a pristine draft without a server request", async () => {
+    const requests: string[] = [];
+    const fetchImpl = mockFetch(async (path) => {
+      requests.push(path);
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    const harness = await mountProvider({
+      fetchImpl,
+      initialState: createChatWorkspaceLifecycleState(),
+    });
+
+    expect(harness.value.state.selection).toEqual({ kind: "welcome" });
+    expect(harness.value.activeThread).toBeNull();
+    let first = "";
+    let second = "";
+    await act(async () => {
+      first = harness.value.create("anonymous");
+      second = harness.value.create("creator");
+    });
+    expect(second).toBe(first);
+    expect(harness.value.state.draft).toMatchObject({
+      id: first,
+      lifecycle: "draft",
+      previewMode: "creator",
+    });
+    expect(harness.value.state.durableThreads).toEqual([]);
+    const draftBeforeLoad = harness.value.state.draft;
+
+    await act(async () => {
+      expect(await harness.value.loadThread(first)).toBe(false);
+    });
+    expect(harness.value.state.draft).toBe(draftBeforeLoad);
+    expect(harness.value.state.selection).toEqual({ kind: "draft", draftId: first });
+
+    act(() => harness.value.selectWelcome());
+    expect(harness.value.state.selection).toEqual({ kind: "welcome" });
+    act(() => expect(harness.value.select(first)).toBe(true));
+    expect(harness.value.state.selection).toEqual({ kind: "draft", draftId: first });
+
+    await act(async () => {
+      expect(await harness.value.markUnread(first)).toBe(false);
+      expect(await harness.value.deleteThread(first)).toEqual({ ok: true });
+      expect(await harness.value.deleteThread(first)).toEqual({
+        ok: false,
+        error: "This chat no longer exists.",
+      });
+    });
+    expect(harness.value.state.draft).toBeNull();
+    expect(harness.value.state.selection).toEqual({ kind: "welcome" });
+    expect(harness.value.activeThread).toBeNull();
+    expect(harness.value.confirmedDeletedThreadIds.size).toBe(0);
+    expect(requests).toEqual([]);
+  });
+
+  it("deletes an ambiguously durable first-send draft on the server before clearing it", async () => {
+    const initial = createDraftWorkspace(
+      createChatThread({ id: "ambiguous", previewMode: "creator", model: MODEL, now: T0 }),
+    );
+    initial.unconfirmedDraftRun = {
+      threadId: "ambiguous",
+      clientRunId: "run-unknown",
+      userMessageId: "user-unknown",
+      assistantMessageId: "assistant-unknown",
+    };
+    const requests: Array<{ path: string; body: unknown }> = [];
+    const harness = await mountProvider({
+      initialState: initial,
+      fetchImpl: mockFetch(async (path, init) => {
+        requests.push({
+          path,
+          body: JSON.parse(String(init?.body ?? "{}")) as unknown,
+        });
+        if (path === "/console/api/chat/threads/ambiguous/delete") {
+          return json({ ok: true });
+        }
+        throw new Error(`Unexpected request: ${path}`);
+      }),
+    });
+
+    await act(async () => {
+      expect(await harness.value.deleteThread("ambiguous")).toEqual({ ok: true });
+    });
+
+    expect(requests).toEqual([
+      {
+        path: "/console/api/chat/threads/ambiguous/delete",
+        body: { csrf: "csrf-token" },
+      },
+    ]);
+    expect(harness.value.state.draft).toBeNull();
+    expect(harness.value.state.unconfirmedDraftRun).toBeNull();
+    expect(harness.value.state.selection).toEqual({ kind: "welcome" });
+  });
+
+  it("preserves an ambiguously durable draft when its server deletion fails", async () => {
+    const initial = createDraftWorkspace(
+      createChatThread({ id: "ambiguous", previewMode: "creator", model: MODEL, now: T0 }),
+    );
+    initial.unconfirmedDraftRun = {
+      threadId: "ambiguous",
+      clientRunId: "run-unknown",
+      userMessageId: "user-unknown",
+      assistantMessageId: "assistant-unknown",
+    };
+    const harness = await mountProvider({
+      initialState: initial,
+      fetchImpl: mockFetch(async (path, init) => {
+        expect(path).toBe("/console/api/chat/threads/ambiguous/delete");
+        expect(JSON.parse(String(init?.body))).toEqual({ csrf: "csrf-token" });
+        return json({ error: "storage unavailable" }, 503);
+      }),
+    });
+    const draftBeforeDelete = harness.value.state.draft;
+    const unconfirmedBeforeDelete = harness.value.state.unconfirmedDraftRun;
+
+    await act(async () => {
+      expect(await harness.value.deleteThread("ambiguous")).toEqual({
+        ok: false,
+        error: "storage unavailable",
+      });
+    });
+
+    expect(harness.value.state.draft).toBe(draftBeforeDelete);
+    expect(harness.value.state.unconfirmedDraftRun).toEqual(unconfirmedBeforeDelete);
+    expect(harness.value.state.selection).toEqual({
+      kind: "draft",
+      draftId: "ambiguous",
+    });
+    expect(harness.value.confirmedDeletedThreadIds.has("ambiguous")).toBe(false);
+  });
+
+  it("never re-adds a confirmed deletion from a later stale list snapshot", async () => {
+    const saved = populatedThread("confirmed-gone", "Confirmed gone");
+    const pollClock = {
+      ...populatedThread("confirmed-poll-clock", "Polling clock"),
+      runStatus: "streaming" as const,
+    };
+    const initial = createChatWorkspace(saved);
+    initial.durableThreads = [
+      ...initial.durableThreads,
+      { ...pollClock, lifecycle: "detail", detailError: null },
+    ];
+    let listCalls = 0;
+    const fetchImpl = mockFetch(async (path) => {
+      if (path === "/console/api/chat/threads/confirmed-gone/delete") {
+        return json({ ok: true });
+      }
+      if (path === "/console/api/chat/threads") {
+        listCalls++;
+        return json({ threads: [summary(saved), summary(pollClock)] });
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    const harness = await mountProvider({ fetchImpl, initialState: initial });
+
+    await act(async () => {
+      expect(await harness.value.deleteThread(saved.id)).toEqual({ ok: true });
+    });
+    expect(harness.value.confirmedDeletedThreadIds.has(saved.id)).toBe(true);
+    expect(harness.value.state.durableThreads.some(({ id }) => id === saved.id)).toBe(false);
+
+    await waitForCondition(() => listCalls > 0, "a stale post-delete list snapshot");
+    await act(async () => Promise.resolve());
+
+    expect(harness.value.state.durableThreads.some(({ id }) => id === saved.id)).toBe(false);
+    expect(harness.value.confirmedDeletedThreadIds.has(saved.id)).toBe(true);
+  });
+
+  it("removes a recovered first-send identity when detail lands during deletion", async () => {
+    const initial = createDraftWorkspace(
+      createChatThread({ id: "ambiguous", previewMode: "creator", model: MODEL, now: T0 }),
+    );
+    initial.unconfirmedDraftRun = {
+      threadId: "ambiguous",
+      clientRunId: "run-unknown",
+      userMessageId: "user-unknown",
+      assistantMessageId: "assistant-unknown",
+    };
+    const persisted = populatedThread("ambiguous", "Recovered first send");
+    const recoveredDetail = { ...persisted, updatedAt: T1 };
+    const detail = deferred<Response>();
+    const deletion = deferred<Response>();
+    const fetchImpl = mockFetch(async (path) => {
+      if (path === "/console/api/chat/threads") {
+        return json({ threads: [summary(persisted)] });
+      }
+      if (path === "/console/api/chat/threads/ambiguous") return detail.promise;
+      if (path === "/console/api/chat/threads/ambiguous/delete") return deletion.promise;
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    const harness = await mountProvider({ fetchImpl, initialState: initial });
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, EXTERNAL_POLL_TEST_WAIT_MS));
+    });
+    expect(harness.value.state.draft).toBeNull();
+    expect(harness.value.state.durableThreads).toEqual([
+      { ...summary(persisted), lifecycle: "summary" },
+    ]);
+
+    let loading!: Promise<boolean>;
+    let deleting!: Promise<ChatWorkspaceCommandResult>;
+    await act(async () => {
+      loading = harness.value.loadThread("ambiguous");
+      await Promise.resolve();
+      deleting = harness.value.deleteThread("ambiguous");
+      await Promise.resolve();
+      detail.resolve(json({ thread: recoveredDetail }));
+    });
+    await act(async () => expect(await loading).toBe(true));
+    expect(harness.value.activeThread?.id).toBe("ambiguous");
+
+    await act(async () => deletion.resolve(json({ ok: true })));
+    await act(async () => expect(await deleting).toEqual({ ok: true }));
+    expect(harness.value.state.draft).toBeNull();
+    expect(harness.value.state.unconfirmedDraftRun).toBeNull();
+    expect(harness.value.state.durableThreads).toEqual([]);
+    expect(harness.value.state.selection).toEqual({ kind: "welcome" });
+  });
+
+  it("does not re-add an ambiguous draft queued by a poll before deletion", async () => {
+    const draft = createChatThread({
+      id: "queued-draft",
+      previewMode: "creator",
+      model: MODEL,
+      now: T0,
+    });
+    const initial = createDraftWorkspace(draft);
+    initial.unconfirmedDraftRun = {
+      threadId: draft.id,
+      clientRunId: "run-unknown",
+      userMessageId: "user-unknown",
+      assistantMessageId: "assistant-unknown",
+    };
+    const blocking = {
+      ...populatedThread("blocking-detail", "Blocking detail"),
+      runStatus: "streaming" as const,
+    };
+    initial.durableThreads = [
+      { ...blocking, lifecycle: "detail", detailError: null },
+    ];
+    const persistedDraft = populatedThread(draft.id, "Persisted draft");
+    const terminalBlocking = {
+      ...blocking,
+      updatedAt: T1,
+      runStatus: "complete" as const,
+    };
+    const detailStarted = deferred<void>();
+    const blockingDetail = deferred<Response>();
+    const deletion = deferred<Response>();
+    const fetchImpl = mockFetch(async (path) => {
+      if (path === "/console/api/chat/threads") {
+        return json({
+          threads: [summary(persistedDraft), summary(terminalBlocking)],
+        });
+      }
+      if (path === "/console/api/chat/threads/blocking-detail") {
+        detailStarted.resolve();
+        return blockingDetail.promise;
+      }
+      if (path === "/console/api/chat/threads/queued-draft/delete") {
+        return deletion.promise;
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    const harness = await mountProvider({ fetchImpl, initialState: initial });
+
+    await act(async () => detailStarted.promise);
+
+    let deleting!: Promise<ChatWorkspaceCommandResult>;
+    await act(async () => {
+      deleting = harness.value.deleteThread(draft.id);
+      await Promise.resolve();
+      deletion.resolve(json({ ok: true }));
+      blockingDetail.resolve(json({ thread: terminalBlocking }));
+      expect(await deleting).toEqual({ ok: true });
+      await Promise.resolve();
+    });
+
+    expect(harness.value.state.draft).toBeNull();
+    expect(harness.value.state.unconfirmedDraftRun).toBeNull();
+    expect(harness.value.state.durableThreads.some(({ id }) => id === draft.id)).toBe(false);
+    expect(harness.value.state.selection).toEqual({ kind: "welcome" });
+  });
+
+  it("returns deterministic refusal reasons for local and external active runs", async () => {
+    const external = {
+      ...populatedThread("external", "External run"),
+      runStatus: "streaming" as const,
+    };
+    const response = deferred<Response>();
+    const fetchImpl = mockFetch(async (path) => {
+      if (path === "/console/api/chat") return response.promise;
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    const harness = await mountProvider({
+      fetchImpl,
+      initialState: workspaceWithDurables([
+        populatedThread("local", "Local run"),
+        external,
+      ], "local"),
+    });
+
+    await act(async () => {
+      expect(await harness.value.deleteThread("external")).toEqual({
+        ok: false,
+        error:
+          "This response is still running. Wait for it to finish before deleting this chat.",
+      });
+    });
+
+    let sending!: Promise<ChatWorkspaceCommandResult>;
+    await act(async () => {
+      sending = harness.value.send("Keep running", "local");
+      await Promise.resolve();
+      expect(await harness.value.deleteThread("local")).toEqual({
+        ok: false,
+        error: "Wait for this response to finish or stop it before deleting this chat.",
+      });
+    });
+    await act(async () => response.resolve(completedSse("local")));
+    await act(async () => expect(await sending).toEqual({ ok: true }));
+  });
+
+  it("does not accept a response that arrives after its run was stopped", async () => {
+    const response = deferred<Response>();
+    const draft = createChatThread({
+      id: "stopped-before-response",
+      previewMode: "creator",
+      model: MODEL,
+      now: T0,
+    });
+    const harness = await mountProvider({
+      initialState: createDraftWorkspace(draft),
+      fetchImpl: mockFetch(async (path) => {
+        if (path === "/console/api/chat") return response.promise;
+        throw new Error(`Unexpected request: ${path}`);
+      }),
+    });
+    let accepted = false;
+    let sending!: Promise<ChatWorkspaceCommandResult>;
+
+    await act(async () => {
+      sending = harness.value.send("Stop before acceptance", draft.id, () => {
+        accepted = true;
+      });
+      await Promise.resolve();
+      expect(harness.value.stop()).toBe(true);
+      response.resolve(completedSse(draft.id));
+    });
+    await act(async () => {
+      expect(await sending).toEqual({
+        ok: false,
+        error: "Response stopped before completion.",
+      });
+    });
+
+    expect(accepted).toBe(false);
+    expect(harness.value.state.activeRun).toBeNull();
+    expect(harness.value.state.unconfirmedDraftRun?.threadId).toBe(draft.id);
+    expect(harness.value.state.draft?.messages).toEqual([]);
+    expect(harness.value.stop()).toBe(false);
   });
 
   it("automatically restores saved chats when the backend becomes available", async () => {
@@ -174,11 +549,11 @@ describe("ChatWorkspaceProvider persistence", () => {
     expect(listCalls).toBeGreaterThanOrEqual(2);
     expect(harness.value.hydrationStatus).toBe("ready");
     expect(harness.value.hydrationError).toBeNull();
-    expect(harness.value.state.threads.map(({ id }) => id)).toEqual([
+    expect(harness.value.state.durableThreads.map(({ id }) => id)).toEqual([
       "saved-after-restart",
-      "id-1",
     ]);
-    expect(harness.value.state.activeThreadId).toBe("saved-after-restart");
+    expect(harness.value.state.selection).toEqual({ kind: "welcome" });
+    expect(harness.value.activeThread).toBeNull();
   });
 
   it("does not retry a permanently invalid hydration response", async () => {
@@ -203,7 +578,7 @@ describe("ChatWorkspaceProvider persistence", () => {
   });
 
   it("sends stable run/message IDs, generated title, and model, then durably marks an active visible completion read", async () => {
-    const initial = createChatWorkspace(
+    const initial = createDraftWorkspace(
       createChatThread({ id: "draft", previewMode: "creator", model: MODEL, now: T0 }),
     );
     const requests: Array<{ path: string; body: Record<string, unknown> }> = [];
@@ -231,7 +606,11 @@ describe("ChatWorkspaceProvider persistence", () => {
     const harness = await mountProvider({ fetchImpl, initialState: initial });
 
     await act(async () => {
-      expect(await harness.value.send("  Review   auth behavior  ")).toEqual({ ok: true });
+      expect(
+        await harness.value.send("  Review   auth behavior  ", undefined, () => {
+          harness.value.setChatVisible({ kind: "thread", threadId: "draft" });
+        }),
+      ).toEqual({ ok: true });
     });
 
     expect(requests[0]).toEqual({
@@ -270,6 +649,7 @@ describe("ChatWorkspaceProvider persistence", () => {
     };
     const initial = createChatWorkspace(anonymous);
     let submitted: Record<string, unknown> | undefined;
+    let callbackDraftId: string | undefined;
     const fetchImpl = mockFetch(async (path, init) => {
       if (path === "/console/api/chat") {
         submitted = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
@@ -291,7 +671,13 @@ describe("ChatWorkspaceProvider persistence", () => {
     );
     await act(async () => {
       expect(harness.value.refreshVisitorToken()).toBe(true);
-      expect(await harness.value.send("Done")).toEqual({ ok: true });
+      expect(
+        await harness.value.send("Done", undefined, () => {
+          // Creating from the callback inherits the promoted durable identity.
+          // If promotion ran later, this would reuse the anonymous run draft.
+          callbackDraftId = harness.value.create();
+        }),
+      ).toEqual({ ok: true });
     });
 
     expect(submitted).toMatchObject({
@@ -299,7 +685,17 @@ describe("ChatWorkspaceProvider persistence", () => {
       chatMode: "visitor",
       visitorToken: "verified.payload.signature",
     });
-    expect(harness.value.activeThread.previewMode).toBe("visitor");
+    expect(callbackDraftId).toBeDefined();
+    expect(callbackDraftId).not.toBe(anonymous.id);
+    expect(harness.value.state.draft).toMatchObject({
+      id: callbackDraftId,
+      previewMode: "visitor",
+      lifecycle: "draft",
+    });
+    expect(
+      harness.value.state.durableThreads.find(({ id }) => id === anonymous.id),
+    ).toMatchObject({ previewMode: "visitor", lifecycle: "detail" });
+    expect(harness.value.activeThread?.previewMode).toBe("visitor");
     expect(storage.get(VISITOR_TOKEN_KEY)).toBe("verified.payload.signature");
     expect(storage.has(VISITOR_PROMOTION_INTENT_KEY)).toBe(false);
   });
@@ -348,7 +744,7 @@ describe("ChatWorkspaceProvider persistence", () => {
       chatMode: "visitor",
       visitorToken: "verified.payload.signature",
     });
-    expect(harness.value.activeThread.previewMode).toBe("visitor");
+    expect(harness.value.activeThread?.previewMode).toBe("visitor");
     expect(storage.has(VISITOR_PROMOTION_INTENT_KEY)).toBe(false);
   });
 
@@ -396,7 +792,7 @@ describe("ChatWorkspaceProvider persistence", () => {
       chatMode: "anonymous",
     });
     expect(submitted).not.toHaveProperty("visitorToken");
-    expect(harness.value.activeThread.previewMode).toBe("anonymous");
+    expect(harness.value.activeThread?.previewMode).toBe("anonymous");
     expect(storage.has(VISITOR_PROMOTION_INTENT_KEY)).toBe(true);
   });
 
@@ -441,7 +837,7 @@ describe("ChatWorkspaceProvider persistence", () => {
 
     expect(submitted).toMatchObject({ chatMode: "anonymous" });
     expect(submitted).not.toHaveProperty("visitorToken");
-    expect(harness.value.activeThread.previewMode).toBe("anonymous");
+    expect(harness.value.activeThread?.previewMode).toBe("anonymous");
   });
 
   it("quarantines an exact promotion intent when the server rejects its proof", async () => {
@@ -482,7 +878,7 @@ describe("ChatWorkspaceProvider persistence", () => {
     });
 
     expect(storage.has(VISITOR_PROMOTION_INTENT_KEY)).toBe(false);
-    expect(harness.value.activeThread.previewMode).toBe("anonymous");
+    expect(harness.value.activeThread?.previewMode).toBe("anonymous");
   });
 
   it("clears both the compatible visitor token and pending intent on signout", async () => {
@@ -504,7 +900,7 @@ describe("ChatWorkspaceProvider persistence", () => {
       fetchImpl: mockFetch(async (path) => {
         throw new Error(`Unexpected request: ${path}`);
       }),
-      initialState: createChatWorkspace(
+      initialState: createDraftWorkspace(
         createChatThread({ id: "draft", previewMode: "creator", model: MODEL, now: T0 }),
       ),
     });
@@ -537,7 +933,7 @@ describe("ChatWorkspaceProvider persistence", () => {
     });
     const harness = await mountProvider({
       fetchImpl,
-      initialState: createChatWorkspace(
+      initialState: createDraftWorkspace(
         createChatThread({ id: "draft", previewMode: "creator", model: MODEL, now: T0 }),
       ),
     });
@@ -591,7 +987,7 @@ describe("ChatWorkspaceProvider persistence", () => {
     const harness = await mountProvider({
       fetchImpl,
       dashboard: null,
-      initialState: createChatWorkspace(
+      initialState: createDraftWorkspace(
         createChatThread({ id: "draft", previewMode: "creator", model: MODEL, now: T0 }),
       ),
     });
@@ -609,7 +1005,7 @@ describe("ChatWorkspaceProvider persistence", () => {
   });
 
   it("rolls back optimistic messages and preserves the draft when the server rejects a run", async () => {
-    const initial = createChatWorkspace(
+    const initial = createDraftWorkspace(
       createChatThread({ id: "draft", previewMode: "creator", model: MODEL, now: T0 }),
     );
     let accepted = false;
@@ -629,13 +1025,60 @@ describe("ChatWorkspaceProvider persistence", () => {
     });
 
     expect(accepted).toBe(false);
-    expect(harness.value.activeThread.messages).toEqual([]);
-    expect(harness.value.activeThread.runStatus).toBe("idle");
-    expect(harness.value.activeThread.title).toBe("New chat");
+    expect(harness.value.activeThread?.messages).toEqual([]);
+    expect(harness.value.activeThread?.runStatus).toBe("idle");
+    expect(harness.value.activeThread?.title).toBe("New chat");
+  });
+
+  it("recovers a first send committed before its HTTP response was lost", async () => {
+    const draft = createChatThread({
+      id: "uncertain-draft",
+      previewMode: "creator",
+      model: MODEL,
+      now: T0,
+    });
+    const persisted = populatedThread(draft.id, "Persisted first send");
+    let committed = false;
+    const fetchImpl = mockFetch(async (path) => {
+      if (path === "/console/api/chat") {
+        committed = true;
+        throw new TypeError("connection reset after commit");
+      }
+      if (path === "/console/api/chat/threads") {
+        return json({ threads: committed ? [summary(persisted)] : [] });
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    const harness = await mountProvider({
+      fetchImpl,
+      initialState: createDraftWorkspace(draft),
+    });
+
+    await act(async () => {
+      expect(await harness.value.send("Persist this", draft.id)).toEqual({
+        ok: false,
+        error: "connection reset after commit",
+      });
+    });
+    expect(harness.value.state.draft?.id).toBe(draft.id);
+    expect(harness.value.state.unconfirmedDraftRun?.threadId).toBe(draft.id);
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, EXTERNAL_POLL_TEST_WAIT_MS));
+    });
+    expect(harness.value.state.draft).toBeNull();
+    expect(harness.value.state.unconfirmedDraftRun).toBeNull();
+    expect(harness.value.state.selection).toEqual({
+      kind: "thread",
+      threadId: draft.id,
+    });
+    expect(harness.value.state.durableThreads).toEqual([
+      { ...summary(persisted), lifecycle: "summary" },
+    ]);
   });
 
   it("separates assistant text emitted by multiple tool-loop inference segments", async () => {
-    const initial = createChatWorkspace(
+    const initial = createDraftWorkspace(
       createChatThread({ id: "draft", previewMode: "creator", model: MODEL, now: T0 }),
     );
     const fetchImpl = mockFetch(async (path) => {
@@ -657,13 +1100,13 @@ describe("ChatWorkspaceProvider persistence", () => {
       expect(await harness.value.send("Check an order")).toEqual({ ok: true });
     });
 
-    expect(harness.value.activeThread.messages.at(-1)?.content).toBe(
+    expect(harness.value.activeThread?.messages.at(-1)?.content).toBe(
       "I'll check the order.\n\nThe address is current.",
     );
   });
 
   it("preserves an explicit empty-draft rename as the first persisted title", async () => {
-    const initial = createChatWorkspace(
+    const initial = createDraftWorkspace(
       createChatThread({ id: "draft", previewMode: "creator", model: MODEL, now: T0 }),
     );
     const sentBodies: Array<Record<string, unknown>> = [];
@@ -691,17 +1134,15 @@ describe("ChatWorkspaceProvider persistence", () => {
     });
 
     expect(sentBodies[0]?.title).toBe("My investigation");
-    expect(harness.value.activeThread.title).toBe("My investigation");
+    expect(harness.value.activeThread?.title).toBe("My investigation");
   });
 
   it("persists rename, unread, and delete mutations without changing state on failure", async () => {
     const saved = populatedThread("saved", "Original");
-    const initial: ChatWorkspaceState = {
-      ...createChatWorkspace(saved),
-      threads: [saved],
-    };
+    const initial = createChatWorkspace(saved);
     const calls: string[] = [];
     let rejectRename = true;
+    let rejectDelete = true;
     const fetchImpl = mockFetch(async (path, init) => {
       calls.push(path);
       if (path.endsWith("/rename")) {
@@ -716,6 +1157,10 @@ describe("ChatWorkspaceProvider persistence", () => {
       }
       if (path.endsWith("/delete")) {
         expect(JSON.parse(String(init?.body))).toEqual({ csrf: "csrf-token" });
+        if (rejectDelete) {
+          rejectDelete = false;
+          return json({ error: "delete failed" }, 503);
+        }
         return json({ ok: true });
       }
       throw new Error(`Unexpected request: ${path}`);
@@ -725,23 +1170,294 @@ describe("ChatWorkspaceProvider persistence", () => {
     await expect(harness.value.rename("saved", "Does not stick")).rejects.toThrow(
       "rename failed",
     );
-    expect(harness.value.activeThread.title).toBe("Original");
+    expect(harness.value.activeThread?.title).toBe("Original");
     await act(async () => {
       await harness.value.rename("saved", "Renamed");
       await harness.value.markUnread("saved");
-      expect(await harness.value.deleteThread("saved")).toBe(true);
+      expect(await harness.value.deleteThread("saved")).toEqual({
+        ok: false,
+        error: "delete failed",
+      });
+      expect(harness.value.activeThread?.id).toBe("saved");
+      expect(harness.value.confirmedDeletedThreadIds.has("saved")).toBe(false);
+      expect(await harness.value.deleteThread("saved")).toEqual({ ok: true });
     });
     expect(calls).toEqual([
       "/console/api/chat/threads/saved/rename",
       "/console/api/chat/threads/saved/rename",
       "/console/api/chat/threads/saved/read-state",
       "/console/api/chat/threads/saved/delete",
+      "/console/api/chat/threads/saved/delete",
     ]);
-    expect(harness.value.activeThread.id).not.toBe("saved");
-    const fallbackId = harness.value.activeThread.id;
+    expect(harness.value.activeThread).toBeNull();
+    expect(harness.value.state.selection).toEqual({ kind: "welcome" });
+    expect(harness.value.confirmedDeletedThreadIds.has("saved")).toBe(true);
+    const callsBeforeConfirmedLoad = [...calls];
     await act(async () => {
-      expect(harness.value.create()).toBe(fallbackId);
+      expect(await harness.value.loadThread("saved")).toBe(false);
     });
+    expect(calls).toEqual(callsBeforeConfirmedLoad);
+    let draftId = "";
+    await act(async () => {
+      draftId = harness.value.create();
+    });
+    expect(harness.value.activeThread?.id).toBe(draftId);
+  });
+
+  it("executes rapid same-thread renames in order and commits only the latest intent", async () => {
+    const saved = populatedThread("rename-queue", "Original");
+    const firstResponse = deferred<Response>();
+    const secondResponse = deferred<Response>();
+    const requestedTitles: string[] = [];
+    const fetchImpl = mockFetch(async (path, init) => {
+      if (path !== "/console/api/chat/threads/rename-queue/rename") {
+        throw new Error(`Unexpected request: ${path}`);
+      }
+      const body = JSON.parse(String(init?.body)) as { title: string };
+      requestedTitles.push(body.title);
+      return requestedTitles.length === 1 ? firstResponse.promise : secondResponse.promise;
+    });
+    const harness = await mountProvider({
+      fetchImpl,
+      initialState: createChatWorkspace(saved),
+    });
+    let firstRename!: Promise<unknown>;
+    let secondRename!: Promise<unknown>;
+
+    await act(async () => {
+      firstRename = harness.value.rename(saved.id, "First title");
+      secondRename = harness.value.rename(saved.id, "Second title");
+      await Promise.resolve();
+    });
+    expect(requestedTitles).toEqual(["First title"]);
+
+    await act(async () => {
+      firstResponse.resolve(
+        json({
+          thread: { ...summary(saved), title: "First title", updatedAt: T1 },
+        }),
+      );
+      await firstRename;
+      await Promise.resolve();
+    });
+    expect(requestedTitles).toEqual(["First title", "Second title"]);
+    expect(harness.value.activeThread?.title).toBe("Original");
+
+    await act(async () => {
+      secondResponse.resolve(
+        json({
+          thread: {
+            ...summary(saved),
+            title: "Second title",
+            updatedAt: "2026-07-20T10:02:00.000Z",
+          },
+        }),
+      );
+      await secondRename;
+    });
+
+    expect(harness.value.activeThread?.title).toBe("Second title");
+    expect(requestedTitles).toEqual(["First title", "Second title"]);
+  });
+
+  it("runs a newer queued read intent after the previous intent fails", async () => {
+    const saved = populatedThread("read-queue", "Read queue");
+    const firstResponse = deferred<Response>();
+    const secondResponse = deferred<Response>();
+    const requestedUnreadStates: boolean[] = [];
+    const fetchImpl = mockFetch(async (path, init) => {
+      if (path !== "/console/api/chat/threads/read-queue/read-state") {
+        throw new Error(`Unexpected request: ${path}`);
+      }
+      const body = JSON.parse(String(init?.body)) as { unread: boolean };
+      requestedUnreadStates.push(body.unread);
+      return requestedUnreadStates.length === 1
+        ? firstResponse.promise
+        : secondResponse.promise;
+    });
+    const harness = await mountProvider({
+      fetchImpl,
+      initialState: createChatWorkspace(saved),
+    });
+    let firstRead!: Promise<boolean>;
+    let secondRead!: Promise<boolean>;
+
+    await act(async () => {
+      firstRead = harness.value.markUnread(saved.id, false);
+      secondRead = harness.value.markUnread(saved.id, true);
+      await Promise.resolve();
+    });
+    expect(requestedUnreadStates).toEqual([false]);
+
+    await act(async () => {
+      firstResponse.resolve(json({ error: "first read failed" }, 500));
+      await expect(firstRead).rejects.toThrow("first read failed");
+      await Promise.resolve();
+    });
+    expect(requestedUnreadStates).toEqual([false, true]);
+
+    await act(async () => {
+      secondResponse.resolve(
+        json({
+          thread: { ...summary(saved), unread: true, lastReadAt: T1 },
+        }),
+      );
+      expect(await secondRead).toBe(true);
+    });
+
+    expect(harness.value.activeThread?.unread).toBe(true);
+    expect(harness.value.activeThread?.lastReadAt).toBe(T1);
+    expect(requestedUnreadStates).toEqual([false, true]);
+  });
+
+  it("forgets a tombstoned summary during explicit load and ignores an older detail response", async () => {
+    const saved = populatedThread("gone-detail", "Gone detail");
+    const staleDetail = deferred<Response>();
+    let detailCalls = 0;
+    const fetchImpl = mockFetch(async (path) => {
+      if (path === "/console/api/chat/threads") {
+        return json({ threads: [summary(saved)] });
+      }
+      if (path === "/console/api/chat/threads/gone-detail") {
+        detailCalls += 1;
+        return detailCalls === 1
+          ? staleDetail.promise
+          : json({ error: "console thread was deleted" }, 410);
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    const harness = await mountProvider({ fetchImpl });
+
+    let staleLoad!: Promise<boolean>;
+    await act(async () => {
+      staleLoad = harness.value.loadThread("gone-detail");
+      await Promise.resolve();
+      expect(await harness.value.loadThread("gone-detail")).toBe(false);
+    });
+    expect(harness.value.state.durableThreads).toEqual([]);
+    expect(harness.value.state.selection).toEqual({ kind: "welcome" });
+
+    await act(async () => staleDetail.resolve(json({ thread: saved })));
+    await act(async () => expect(await staleLoad).toBe(false));
+    expect(harness.value.state.durableThreads).toEqual([]);
+    expect(harness.value.activeThread).toBeNull();
+  });
+
+  it("forgets a loaded thread when polling detail reports its tombstone", async () => {
+    const local = {
+      ...populatedThread("gone-poll", "Gone while polling"),
+      runStatus: "streaming" as const,
+    };
+    const terminalSummary = {
+      ...summary(local),
+      updatedAt: T1,
+      runStatus: "complete" as const,
+    };
+    const fetchImpl = mockFetch(async (path) => {
+      if (path === "/console/api/chat/threads") {
+        return json({ threads: [terminalSummary] });
+      }
+      if (path === "/console/api/chat/threads/gone-poll") {
+        return json({ error: "console thread was deleted" }, 410);
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    const harness = await mountProvider({
+      fetchImpl,
+      initialState: createChatWorkspace(local),
+    });
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, EXTERNAL_POLL_TEST_WAIT_MS));
+    });
+
+    expect(harness.value.state.durableThreads).toEqual([]);
+    expect(harness.value.state.selection).toEqual({ kind: "welcome" });
+    expect(harness.value.activeThread).toBeNull();
+  });
+
+  it("cleans durable identities when rename and read-state report tombstones", async () => {
+    const renameTarget = populatedThread("gone-rename", "Rename target");
+    const unreadTarget = populatedThread("gone-unread", "Unread target");
+    const requests: Array<{ path: string; body: unknown }> = [];
+    const fetchImpl = mockFetch(async (path, init) => {
+      requests.push({
+        path,
+        body: JSON.parse(String(init?.body ?? "{}")) as unknown,
+      });
+      if (path.endsWith("/rename") || path.endsWith("/read-state")) {
+        return json({ error: "console thread was deleted" }, 410);
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    const harness = await mountProvider({
+      fetchImpl,
+      initialState: workspaceWithDurables([renameTarget, unreadTarget], renameTarget.id),
+    });
+
+    await act(async () => {
+      await expect(harness.value.rename(renameTarget.id, "Never applied")).rejects.toThrow(
+        "console thread was deleted",
+      );
+      await expect(harness.value.markUnread(unreadTarget.id)).rejects.toThrow(
+        "console thread was deleted",
+      );
+    });
+
+    expect(requests).toEqual([
+      {
+        path: "/console/api/chat/threads/gone-rename/rename",
+        body: { csrf: "csrf-token", title: "Never applied" },
+      },
+      {
+        path: "/console/api/chat/threads/gone-unread/read-state",
+        body: { csrf: "csrf-token", unread: true },
+      },
+    ]);
+    expect(harness.value.state.durableThreads).toEqual([]);
+    expect(harness.value.state.selection).toEqual({ kind: "welcome" });
+    expect(await harness.value.send("Cannot reuse", renameTarget.id)).toEqual({
+      ok: false,
+      error: "This chat no longer exists.",
+    });
+    expect(await harness.value.send("Cannot reuse", unreadTarget.id)).toEqual({
+      ok: false,
+      error: "This chat no longer exists.",
+    });
+    expect(requests).toHaveLength(2);
+  });
+
+  it("rolls back a tombstoned send without resurrecting its durable identity", async () => {
+    const saved = populatedThread("gone-send", "Gone send");
+    let sendCalls = 0;
+    const fetchImpl = mockFetch(async (path) => {
+      if (path === "/console/api/chat") {
+        sendCalls += 1;
+        return json({ error: "console thread was deleted" }, 410);
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    const harness = await mountProvider({
+      fetchImpl,
+      initialState: createChatWorkspace(saved),
+    });
+
+    await act(async () => {
+      expect(await harness.value.send("Do not restore me", saved.id)).toMatchObject({
+        ok: false,
+      });
+    });
+
+    expect(sendCalls).toBe(1);
+    expect(harness.value.state.activeRun).toBeNull();
+    expect(harness.value.state.durableThreads).toEqual([]);
+    expect(harness.value.state.selection).toEqual({ kind: "welcome" });
+    expect(harness.value.activeThread).toBeNull();
+    expect(await harness.value.send("Try again", saved.id)).toEqual({
+      ok: false,
+      error: "This chat no longer exists.",
+    });
+    expect(sendCalls).toBe(1);
   });
 
   it("prevents a send from claiming a thread while deletion is in flight", async () => {
@@ -756,7 +1472,7 @@ describe("ChatWorkspaceProvider persistence", () => {
       initialState: createChatWorkspace(saved),
     });
 
-    let deleting!: Promise<boolean>;
+    let deleting!: Promise<ChatWorkspaceCommandResult>;
     await act(async () => {
       deleting = harness.value.deleteThread("saved");
       await Promise.resolve();
@@ -764,21 +1480,20 @@ describe("ChatWorkspaceProvider persistence", () => {
         ok: false,
         error: "This chat is being deleted.",
       });
+      expect(await harness.value.deleteThread("saved")).toEqual({
+        ok: false,
+        error: "This chat is already being deleted.",
+      });
     });
     await act(async () => deletion.resolve(json({ ok: true })));
-    await act(async () => expect(await deleting).toBe(true));
-    expect(harness.value.state.threads.some(({ id }) => id === "saved")).toBe(false);
+    await act(async () => expect(await deleting).toEqual({ ok: true }));
+    expect(harness.value.state.durableThreads.some(({ id }) => id === "saved")).toBe(false);
   });
 
   it("retains server unread semantics for a background completion", async () => {
     const owner = populatedThread("owner", "Owner");
     const active = populatedThread("active", "Active");
-    const initial: ChatWorkspaceState = {
-      threads: [owner, active],
-      activeThreadId: "active",
-      chatVisible: true,
-      activeRun: null,
-    };
+    const initial = workspaceWithDurables([owner, active], "active");
     const calls: string[] = [];
     const fetchImpl = mockFetch(async (path) => {
       calls.push(path);
@@ -790,7 +1505,9 @@ describe("ChatWorkspaceProvider persistence", () => {
     await act(async () => {
       expect(await harness.value.send("Background check", "owner")).toEqual({ ok: true });
     });
-    expect(harness.value.state.threads.find(({ id }) => id === "owner")?.unread).toBe(true);
+    expect(harness.value.state.durableThreads.find(({ id }) => id === "owner")?.unread).toBe(
+      true,
+    );
     expect(calls).toEqual(["/console/api/chat"]);
   });
 
@@ -841,13 +1558,13 @@ describe("ChatWorkspaceProvider persistence", () => {
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, EXTERNAL_POLL_TEST_WAIT_MS));
     });
-    expect(harness.value.activeThread.runStatus).toBe("streaming");
-    expect(harness.value.activeThread.messages.at(-1)?.content).toBe("Part");
+    expect(harness.value.activeThread?.runStatus).toBe("streaming");
+    expect(harness.value.activeThread?.messages.at(-1)?.content).toBe("Part");
 
     await act(async () => terminalDetail.resolve(json({ thread: terminal })));
-    expect(harness.value.activeThread.runStatus).toBe("complete");
-    expect(harness.value.activeThread.messages.at(-1)?.content).toBe("Part and final");
-    expect(harness.value.activeThread.unread).toBe(false);
+    expect(harness.value.activeThread?.runStatus).toBe("complete");
+    expect(harness.value.activeThread?.messages.at(-1)?.content).toBe("Part and final");
+    expect(harness.value.activeThread?.unread).toBe(false);
     expect(calls).toContain("/console/api/chat/threads/external/read-state");
   });
 
@@ -902,8 +1619,12 @@ describe("ChatWorkspaceProvider persistence", () => {
       await new Promise((resolve) => setTimeout(resolve, EXTERNAL_POLL_TEST_WAIT_MS));
     });
     expect(detailCalls).toBe(1);
-    expect(harness.value.activeThread.runStatus).toBe("error");
-    expect(harness.value.activeThread.messages.at(-1)?.error).toContain("could not be refreshed");
+    expect(harness.value.activeThread?.runStatus).toBe("error");
+    expect(
+      harness.value.activeThread && "detailError" in harness.value.activeThread
+        ? harness.value.activeThread.detailError
+        : null,
+    ).toContain("could not be refreshed");
 
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, EXTERNAL_POLL_TEST_WAIT_MS));
@@ -918,10 +1639,135 @@ describe("ChatWorkspaceProvider persistence", () => {
       await new Promise((resolve) => setTimeout(resolve, EXTERNAL_POLL_TEST_WAIT_MS));
     });
     expect(detailCalls).toBeGreaterThanOrEqual(3);
-    expect(harness.value.activeThread.messages.at(-1)).toMatchObject({
+    expect(harness.value.activeThread?.messages.at(-1)).toMatchObject({
       content: "Saved failure detail",
       error: "Provider failed",
     });
+  });
+
+  it("converges two providers after deletion without replacing the other tab's new draft", async () => {
+    const saved = populatedThread("shared-saved", "Shared saved chat");
+    const clock = {
+      ...populatedThread("poll-clock", "Polling clock"),
+      runStatus: "streaming" as const,
+    };
+    const added = populatedThread("added-later", "Added later");
+    const backend = new Map<string, ChatThread>([
+      [saved.id, saved],
+      [clock.id, clock],
+    ]);
+    const requests: Array<{
+      client: "a" | "b";
+      kind: "list" | "delete";
+      ids: string[];
+    }> = [];
+    const sharedFetch = (client: "a" | "b") =>
+      mockFetch(async (path, init) => {
+        if (path === "/console/api/chat/threads") {
+          const ids = [...backend.keys()];
+          requests.push({ client, kind: "list", ids });
+          return json({ threads: [...backend.values()].map(summary) });
+        }
+        if (path === "/console/api/chat/threads/shared-saved/delete") {
+          expect(client).toBe("a");
+          expect(JSON.parse(String(init?.body))).toEqual({ csrf: "csrf-token" });
+          backend.delete(saved.id);
+          requests.push({ client, kind: "delete", ids: [...backend.keys()] });
+          return json({ ok: true });
+        }
+        throw new Error(`Unexpected ${client} request: ${path}`);
+      });
+
+    const tabA = await mountProvider({ fetchImpl: sharedFetch("a") });
+    const tabB = await mountProvider({ fetchImpl: sharedFetch("b") });
+
+    expect(requests.slice(0, 2)).toEqual([
+      { client: "a", kind: "list", ids: [saved.id, clock.id] },
+      { client: "b", kind: "list", ids: [saved.id, clock.id] },
+    ]);
+    expect(tabA.value.state.durableThreads.map(({ id }) => id)).toEqual([
+      saved.id,
+      clock.id,
+    ]);
+    expect(tabB.value.state.durableThreads.map(({ id }) => id)).toEqual([
+      saved.id,
+      clock.id,
+    ]);
+    act(() => {
+      expect(tabA.value.select(saved.id)).toBe(true);
+      expect(tabB.value.select(saved.id)).toBe(true);
+    });
+
+    await act(async () => {
+      expect(await tabA.value.deleteThread(saved.id)).toEqual({ ok: true });
+    });
+    expect(requests.find(({ kind }) => kind === "delete")).toEqual({
+      client: "a",
+      kind: "delete",
+      ids: [clock.id],
+    });
+    expect(tabA.value.state.durableThreads.some(({ id }) => id === saved.id)).toBe(false);
+    expect(tabA.value.state.selection).toEqual({ kind: "welcome" });
+
+    await waitForCondition(
+      () =>
+        !tabB.value.state.durableThreads.some(({ id }) => id === saved.id) &&
+        tabB.value.state.selection.kind === "welcome",
+      "tab B to observe the shared deletion",
+    );
+    const deletionRequestIndex = requests.findIndex(({ kind }) => kind === "delete");
+    const tabBDeletionPollIndex = requests.findIndex(
+      ({ client, kind, ids }, index) =>
+        index > deletionRequestIndex &&
+        client === "b" &&
+        kind === "list" &&
+        !ids.includes(saved.id),
+    );
+    expect(tabBDeletionPollIndex).toBeGreaterThan(deletionRequestIndex);
+
+    let draftId = "";
+    act(() => {
+      draftId = tabB.value.create();
+    });
+    expect(tabB.value.state.selection).toEqual({ kind: "draft", draftId });
+    expect(tabB.value.state.draft?.id).toBe(draftId);
+    const tabBListsBeforeDraftPoll = requests.filter(
+      ({ client, kind }) => client === "b" && kind === "list",
+    ).length;
+
+    await waitForCondition(
+      () =>
+        requests.filter(({ client, kind }) => client === "b" && kind === "list").length >
+        tabBListsBeforeDraftPoll,
+      "tab B to poll after creating its local draft",
+    );
+    expect(tabB.value.state.durableThreads.some(({ id }) => id === saved.id)).toBe(false);
+    expect(tabB.value.state.draft?.id).toBe(draftId);
+    expect(tabB.value.state.selection).toEqual({ kind: "draft", draftId });
+
+    backend.set(added.id, added);
+    await waitForCondition(
+      () =>
+        tabA.value.state.durableThreads.some(({ id }) => id === added.id) &&
+        tabB.value.state.durableThreads.some(({ id }) => id === added.id),
+      "both tabs to observe the new durable thread",
+      6_000,
+    );
+
+    expect(tabA.value.state.selection).toEqual({ kind: "welcome" });
+    expect(tabB.value.state.selection).toEqual({ kind: "draft", draftId });
+    expect(tabB.value.activeThread?.id).toBe(draftId);
+    expect(tabB.value.state.draft?.id).toBe(draftId);
+    expect(tabA.value.state.durableThreads.some(({ id }) => id === saved.id)).toBe(false);
+    expect(tabB.value.state.durableThreads.some(({ id }) => id === saved.id)).toBe(false);
+    for (const client of ["a", "b"] as const) {
+      expect(
+        requests.some(
+          ({ client: requestClient, kind, ids }) =>
+            requestClient === client && kind === "list" && ids.includes(added.id),
+        ),
+      ).toBe(true);
+    }
   });
 
   it("reconciles cross-tab additions and deletions instead of polling stale navigation", async () => {
@@ -934,6 +1780,9 @@ describe("ChatWorkspaceProvider persistence", () => {
       if (path === "/console/api/chat/threads") {
         return json({ threads: [summary(added)] });
       }
+      if (path === "/console/api/chat/threads/missing") {
+        return json({ error: "console thread was deleted" }, 410);
+      }
       throw new Error(`Unexpected request: ${path}`);
     });
     const harness = await mountProvider({
@@ -944,8 +1793,9 @@ describe("ChatWorkspaceProvider persistence", () => {
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, EXTERNAL_POLL_TEST_WAIT_MS));
     });
-    expect(harness.value.activeThread.id).not.toBe("missing");
-    expect(harness.value.state.threads.map(({ id }) => id)).toContain("added");
+    expect(harness.value.activeThread?.id).not.toBe("missing");
+    expect(harness.value.confirmedDeletedThreadIds.has("missing")).toBe(true);
+    expect(harness.value.state.durableThreads.map(({ id }) => id)).toContain("added");
   });
 
   it("does not let a slow detail response steal selection from a newer deep link", async () => {
@@ -973,7 +1823,56 @@ describe("ChatWorkspaceProvider persistence", () => {
     });
     await act(async () => slow.resolve(json({ thread: first })));
     await act(async () => expect(await firstLoad).toBe(true));
-    expect(harness.value.activeThread.id).toBe("second");
+    expect(harness.value.activeThread?.id).toBe("second");
+  });
+
+  it("does not let a slow durable detail steal selection from a new draft route", async () => {
+    const saved = populatedThread("saved", "Saved");
+    const slow = deferred<Response>();
+    const fetchImpl = mockFetch(async (path) => {
+      if (path === "/console/api/chat/threads") {
+        return json({ threads: [summary(saved)] });
+      }
+      if (path === "/console/api/chat/threads/saved") return slow.promise;
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    const harness = await mountProvider({ fetchImpl });
+
+    let load!: Promise<boolean>;
+    let draftId = "";
+    await act(async () => {
+      load = harness.value.loadThread("saved");
+      draftId = harness.value.create();
+    });
+    await act(async () => slow.resolve(json({ thread: saved })));
+    await act(async () => expect(await load).toBe(true));
+
+    expect(harness.value.state.selection).toEqual({ kind: "draft", draftId });
+    expect(harness.value.activeThread?.id).toBe(draftId);
+  });
+
+  it("keeps the welcome route authoritative over a delayed detail load", async () => {
+    const saved = populatedThread("saved", "Saved");
+    const slow = deferred<Response>();
+    const fetchImpl = mockFetch(async (path) => {
+      if (path === "/console/api/chat/threads") {
+        return json({ threads: [summary(saved)] });
+      }
+      if (path === "/console/api/chat/threads/saved") return slow.promise;
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    const harness = await mountProvider({ fetchImpl });
+
+    let load!: Promise<boolean>;
+    await act(async () => {
+      load = harness.value.loadThread("saved");
+      harness.value.selectWelcome();
+    });
+    await act(async () => slow.resolve(json({ thread: saved })));
+    await act(async () => expect(await load).toBe(true));
+
+    expect(harness.value.state.selection).toEqual({ kind: "welcome" });
+    expect(harness.value.activeThread).toBeNull();
   });
 
   it("refetches detail instead of masking a newer revision with a delayed transcript", async () => {
@@ -1020,7 +1919,7 @@ describe("ChatWorkspaceProvider persistence", () => {
       title: "Renamed",
       updatedAt: T1,
     });
-    expect(harness.value.activeThread.messages.at(-1)?.content).toBe("Fresh answer");
+    expect(harness.value.activeThread?.messages.at(-1)?.content).toBe("Fresh answer");
   });
 
   it("does not resurrect a thread deleted while its detail request is in flight", async () => {
@@ -1045,17 +1944,18 @@ describe("ChatWorkspaceProvider persistence", () => {
       load = harness.value.loadThread("removed");
       await new Promise((resolve) => setTimeout(resolve, EXTERNAL_POLL_TEST_WAIT_MS));
     });
-    expect(harness.value.state.threads.some(({ id }) => id === "removed")).toBe(false);
+    expect(harness.value.state.durableThreads.some(({ id }) => id === "removed")).toBe(false);
+    expect(harness.value.confirmedDeletedThreadIds.has("removed")).toBe(false);
 
     await act(async () => slow.resolve(json({ thread: removed })));
     await act(async () => expect(await load).toBe(false));
-    expect(harness.value.state.threads.some(({ id }) => id === "removed")).toBe(false);
+    expect(harness.value.state.durableThreads.some(({ id }) => id === "removed")).toBe(false);
   });
 });
 
 async function mountProvider(options: {
   fetchImpl: typeof fetch;
-  initialState?: ChatWorkspaceState;
+  initialState?: ChatWorkspaceLifecycleState;
   dashboard?: DashboardData | null;
 }) {
   let value: ChatWorkspaceContextValue | null = null;
@@ -1085,7 +1985,7 @@ async function mountProvider(options: {
     );
   }
   await act(async () => {
-    renderer = create(
+    const mountedRenderer = create(
       <DashboardHarness>
         <ChatWorkspaceProvider
           initialState={options.initialState}
@@ -1097,6 +1997,7 @@ async function mountProvider(options: {
         </ChatWorkspaceProvider>
       </DashboardHarness>,
     );
+    renderers.add(mountedRenderer);
   });
   if (!value) throw new Error("Provider did not render");
   return {
@@ -1105,6 +2006,56 @@ async function mountProvider(options: {
       return value;
     },
     setDashboard,
+  };
+}
+
+function createDraftWorkspace(thread: ChatThread): ChatWorkspaceLifecycleState {
+  const initial = createChatWorkspaceLifecycleState();
+  const draft = {
+    ...createLocalChatDraft({
+      id: thread.id,
+      previewMode: thread.previewMode,
+      model: thread.model,
+      now: thread.createdAt,
+      ...(thread.title === "New chat" ? {} : { title: thread.title }),
+    }),
+    ...thread,
+    lifecycle: "draft" as const,
+    titleSource: thread.title === "New chat" ? ("default" as const) : ("explicit" as const),
+  };
+  return {
+    ...initial,
+    draft,
+    selection: { kind: "draft", draftId: draft.id },
+    chatVisible: true,
+    visibleTarget: { kind: "draft", draftId: draft.id },
+  };
+}
+
+function createChatWorkspace(thread: ChatThread): ChatWorkspaceLifecycleState {
+  return workspaceWithDurables([thread], thread.id);
+}
+
+function workspaceWithDurables(
+  threads: readonly ChatThread[],
+  selectedThreadId?: string,
+): ChatWorkspaceLifecycleState {
+  const initial = createChatWorkspaceLifecycleState();
+  const durableThreads: DurableChatThreadDetail[] = threads.map((thread) => ({
+    ...thread,
+    lifecycle: "detail",
+    detailError: null,
+  }));
+  return {
+    ...initial,
+    durableThreads,
+    ...(selectedThreadId
+      ? {
+          selection: { kind: "thread" as const, threadId: selectedThreadId },
+          chatVisible: true,
+          visibleTarget: { kind: "thread" as const, threadId: selectedThreadId },
+        }
+      : {}),
   };
 }
 
@@ -1217,6 +2168,20 @@ function deferred<T>() {
     resolve = accept;
   });
   return { promise, resolve };
+}
+
+async function waitForCondition(
+  condition: () => boolean,
+  description: string,
+  timeoutMs = 3_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!condition()) {
+    if (Date.now() >= deadline) throw new Error(`Timed out waiting for ${description}`);
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    });
+  }
 }
 
 const EXTERNAL_POLL_TEST_WAIT_MS = 850;

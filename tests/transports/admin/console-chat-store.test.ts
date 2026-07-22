@@ -6,10 +6,12 @@ import { createTempDir } from "@tests/fixtures/temp-dir";
 import {
   CONSOLE_CHAT_APPLICATION_ID,
   CONSOLE_CHAT_SCHEMA_VERSION,
+  ConsoleChatThreadDeletedError,
   consoleChatOwnerMatchesPeer,
   createConsoleChatStore,
   createDeferredConsoleThreadHistoryPersistence,
   createConsoleThreadHistoryPersistence,
+  isConsoleChatThreadDeletedError,
   type AppendConsoleChatMessageInput,
   type ConsoleChatStore,
 } from "@/transports/admin/console-chat-store";
@@ -89,13 +91,33 @@ describe("console chat SQLite store", () => {
     while (cleanups.length > 0) await cleanups.pop()!();
   });
 
-  async function openStore(now = 2_000): Promise<{ dbPath: string; store: ConsoleChatStore }> {
+  async function openStore(
+    now: number | (() => number) = 2_000,
+  ): Promise<{ dbPath: string; store: ConsoleChatStore }> {
     const directory = await createTempDir();
     cleanups.push(directory.cleanup);
     const dbPath = join(directory.path, "console-chat.db");
-    const store = createConsoleChatStore({ dbPath, now: () => now });
+    const store = createConsoleChatStore({
+      dbPath,
+      now: typeof now === "function" ? now : () => now,
+    });
     stores.push(store);
     return { dbPath, store };
+  }
+
+  function downgradeCurrentDatabaseToVersion2(
+    dbPath: string,
+    mutate?: (db: Database) => void,
+  ): void {
+    const db = new Database(dbPath);
+    try {
+      db.run("DROP TRIGGER trg_console_chat_threads_reject_tombstone");
+      db.run("DROP TABLE console_chat_tombstones");
+      db.run("PRAGMA user_version = 2");
+      mutate?.(db);
+    } finally {
+      db.close();
+    }
   }
 
   it("creates a branded hardened database with the exact owned schema", async () => {
@@ -111,7 +133,7 @@ describe("console chat SQLite store", () => {
     });
     expect((await stat(dbPath)).mode & 0o777).toBe(0o600);
 
-    const probe = new Database(dbPath, { readonly: true });
+    const probe = new Database(dbPath);
     try {
       expect(probe.query("PRAGMA application_id").get()).toEqual({
         application_id: CONSOLE_CHAT_APPLICATION_ID,
@@ -126,6 +148,23 @@ describe("console chat SQLite store", () => {
       expect(columns).not.toContain("visitor_token");
       expect(columns).not.toContain("email");
       expect(columns).not.toContain("csrf");
+      expect(
+        probe
+          .query<{ name: string }, []>("PRAGMA table_info(console_chat_tombstones)")
+          .all()
+          .map(({ name }) => name),
+      ).toEqual(["thread_id", "deleted_at"]);
+      expect(probe.query("PRAGMA foreign_key_list(console_chat_tombstones)").all()).toEqual([]);
+      expect(() =>
+        probe.run("INSERT INTO console_chat_tombstones (thread_id, deleted_at) VALUES ('', 1)"),
+      ).toThrow(/CHECK constraint failed/);
+      expect(
+        probe
+          .query<{ type: string }, []>(
+            "SELECT type FROM sqlite_schema WHERE name = 'trg_console_chat_threads_reject_tombstone'",
+          )
+          .get(),
+      ).toEqual({ type: "trigger" });
     } finally {
       probe.close();
     }
@@ -164,6 +203,98 @@ describe("console chat SQLite store", () => {
       ).toEqual(["console_chat_threads"]);
     } finally {
       probe.close();
+    }
+  });
+
+  it("migrates only the exact branded version 2 schema and preserves its data", async () => {
+    const { dbPath, store } = await openStore();
+    store.createThreadWithMessages(THREAD, [USER_MESSAGE, ASSISTANT_MESSAGE]);
+    store.saveKernelHistory(THREAD.id, KERNEL_HISTORY, 1_300);
+    store.close();
+    stores.pop();
+    downgradeCurrentDatabaseToVersion2(dbPath);
+
+    const reopened = createConsoleChatStore({ dbPath, now: () => 5_000 });
+    stores.push(reopened);
+    expect(reopened.getThread(THREAD.id)).toMatchObject({
+      id: THREAD.id,
+      messages: [
+        expect.objectContaining({ id: USER_MESSAGE.id }),
+        expect.objectContaining({ id: ASSISTANT_MESSAGE.id }),
+      ],
+    });
+    expect(reopened.loadKernelHistory(THREAD.id)).toEqual(KERNEL_HISTORY);
+
+    const probe = new Database(dbPath, { readonly: true });
+    try {
+      expect(probe.query("PRAGMA user_version").get()).toEqual({
+        user_version: CONSOLE_CHAT_SCHEMA_VERSION,
+      });
+      expect(probe.query("SELECT COUNT(*) AS count FROM console_chat_tombstones").get()).toEqual({
+        count: 0,
+      });
+    } finally {
+      probe.close();
+    }
+  });
+
+  it("rejects malformed or unsupported old branded schemas without partial migration", async () => {
+    const malformed = await openStore();
+    malformed.store.createThread(THREAD);
+    malformed.store.close();
+    stores.pop();
+    downgradeCurrentDatabaseToVersion2(malformed.dbPath, (db) => {
+      db.run("CREATE TABLE unexpected_console_chat_object (id TEXT PRIMARY KEY)");
+    });
+
+    expect(() => createConsoleChatStore({ dbPath: malformed.dbPath })).toThrow(
+      /only the exact version 2 schema can be migrated/,
+    );
+    const malformedProbe = new Database(malformed.dbPath, { readonly: true });
+    try {
+      expect(malformedProbe.query("PRAGMA user_version").get()).toEqual({ user_version: 2 });
+      expect(
+        malformedProbe
+          .query("SELECT name FROM sqlite_schema WHERE name = 'console_chat_tombstones'")
+          .get(),
+      ).toBeNull();
+      expect(
+        malformedProbe.query("SELECT title FROM console_chat_threads WHERE id = ?").get(THREAD.id),
+      ).toEqual({ title: THREAD.title });
+    } finally {
+      malformedProbe.close();
+    }
+
+    const unsupported = await openStore();
+    unsupported.store.close();
+    stores.pop();
+    downgradeCurrentDatabaseToVersion2(unsupported.dbPath, (db) => {
+      db.run("PRAGMA user_version = 1");
+    });
+    expect(() => createConsoleChatStore({ dbPath: unsupported.dbPath })).toThrow(
+      /only the exact version 2 schema can be migrated/,
+    );
+  });
+
+  it("rejects a current schema with a missing or altered tombstone guard trigger", async () => {
+    for (const alteration of ["missing", "altered"] as const) {
+      const { dbPath, store } = await openStore();
+      store.close();
+      stores.pop();
+      const tamper = new Database(dbPath);
+      tamper.run("DROP TRIGGER trg_console_chat_threads_reject_tombstone");
+      if (alteration === "altered") {
+        tamper.run(
+          `CREATE TRIGGER trg_console_chat_threads_reject_tombstone
+             BEFORE INSERT ON console_chat_threads
+             BEGIN SELECT 1; END`,
+        );
+      }
+      tamper.close();
+
+      expect(() => createConsoleChatStore({ dbPath })).toThrow(
+        /schema contains missing, incompatible, or unexpected objects/,
+      );
     }
   });
 
@@ -297,9 +428,128 @@ describe("console chat SQLite store", () => {
       expect(
         probe.query("SELECT COUNT(*) AS count FROM console_chat_kernel_history").get(),
       ).toEqual({ count: 0 });
+      expect(
+        probe.query("SELECT thread_id, deleted_at FROM console_chat_tombstones").get(),
+      ).toEqual({ thread_id: THREAD.id, deleted_at: 2_000 });
     } finally {
       probe.close();
     }
+  });
+
+  it("tombstones an absent identifier and blocks every later creation path", async () => {
+    const { dbPath, store } = await openStore();
+    const thread = { ...THREAD, id: "never-created" };
+
+    expect(store.deleteThread(thread.id)).toBeFalse();
+    const attempts = [
+      () => store.createThread(thread),
+      () => store.createThreadWithMessages(thread, [USER_MESSAGE]),
+      () => store.upsertThread(thread),
+      () =>
+        store.beginRun({
+          thread,
+          peer: CREATOR_PEER,
+          runId: "run-never-created",
+          userMessage: USER_MESSAGE,
+          assistantMessage: ASSISTANT_MESSAGE,
+        }),
+    ];
+    for (const attempt of attempts) {
+      let error: unknown;
+      try {
+        attempt();
+      } catch (caught) {
+        error = caught;
+      }
+      expect(error).toBeInstanceOf(ConsoleChatThreadDeletedError);
+      expect(isConsoleChatThreadDeletedError(error)).toBeTrue();
+      expect(error).toMatchObject({ code: "thread-deleted", threadId: thread.id });
+    }
+    expect(store.getThread(thread.id)).toBeNull();
+
+    const raw = new Database(dbPath);
+    try {
+      expect(() =>
+        raw.run(
+          `INSERT INTO console_chat_threads
+            (id, title, preview_mode, created_at, updated_at, last_read_at, unread, run_status)
+           VALUES (?, ?, 'creator', 1000, 1000, 1000, 0, 'idle')`,
+          [thread.id, thread.title],
+        ),
+      ).toThrow(/console chat thread id is tombstoned/);
+    } finally {
+      raw.close();
+    }
+  });
+
+  it("persists the first deletion tombstone across restart", async () => {
+    let clock = 2_000;
+    const { dbPath, store } = await openStore(() => clock);
+    store.createThread({ ...THREAD, updatedAt: 3_000 });
+    expect(store.deleteThread(THREAD.id)).toBeTrue();
+    clock = -1;
+    expect(store.deleteThread(THREAD.id)).toBeFalse();
+    expect(() => store.createThread(THREAD)).toThrow(ConsoleChatThreadDeletedError);
+    expect(() => store.createThreadWithMessages(THREAD, [USER_MESSAGE])).toThrow(
+      ConsoleChatThreadDeletedError,
+    );
+    expect(() => store.upsertThread({ ...THREAD, updatedAt: 3_000 })).toThrow(
+      ConsoleChatThreadDeletedError,
+    );
+    expect(() =>
+      store.beginRun({
+        thread: THREAD,
+        peer: CREATOR_PEER,
+        runId: "run-after-delete",
+        userMessage: USER_MESSAGE,
+        assistantMessage: ASSISTANT_MESSAGE,
+      }),
+    ).toThrow(ConsoleChatThreadDeletedError);
+    store.close();
+    stores.pop();
+
+    const reopened = createConsoleChatStore({ dbPath, now: () => 9_000 });
+    stores.push(reopened);
+    expect(() => reopened.createThread(THREAD)).toThrow(ConsoleChatThreadDeletedError);
+    expect(reopened.deleteThread(THREAD.id)).toBeFalse();
+
+    const probe = new Database(dbPath, { readonly: true });
+    try {
+      expect(
+        probe.query("SELECT thread_id, deleted_at FROM console_chat_tombstones").get(),
+      ).toEqual({ thread_id: THREAD.id, deleted_at: 3_000 });
+    } finally {
+      probe.close();
+    }
+  });
+
+  it("distinguishes active, absent, and deleted identifiers across restart", async () => {
+    const { dbPath, store } = await openStore();
+    const absentId = "never-seen";
+
+    expect(store.hasThread(absentId)).toBeFalse();
+    expect(store.isThreadDeleted(absentId)).toBeFalse();
+
+    store.createThread(THREAD);
+    expect(store.hasThread(THREAD.id)).toBeTrue();
+    expect(store.isThreadDeleted(THREAD.id)).toBeFalse();
+
+    expect(store.deleteThread(THREAD.id)).toBeTrue();
+    expect(store.hasThread(THREAD.id)).toBeFalse();
+    expect(store.isThreadDeleted(THREAD.id)).toBeTrue();
+    expect(store.isThreadDeleted(absentId)).toBeFalse();
+
+    expect(() => store.isThreadDeleted("")).toThrow(/threadId has an invalid length/);
+    expect(() => store.isThreadDeleted("x".repeat(257))).toThrow(/threadId has an invalid length/);
+    expect(() => store.isThreadDeleted(null as never)).toThrow(/threadId must be a string/);
+
+    store.close();
+    stores.pop();
+    const reopened = createConsoleChatStore({ dbPath });
+    stores.push(reopened);
+    expect(reopened.hasThread(THREAD.id)).toBeFalse();
+    expect(reopened.isThreadDeleted(THREAD.id)).toBeTrue();
+    expect(reopened.isThreadDeleted(absentId)).toBeFalse();
   });
 
   it("supports explicit kernel-history clearing and rejects invalid histories", async () => {
@@ -936,8 +1186,8 @@ describe("console chat SQLite store", () => {
     expect(store.getThread(THREAD.id)?.messages[1]?.content).toBe("Final response");
   });
 
-  it("rejects active-run deletion and permits deletion after a terminal finish", async () => {
-    const { store } = await openStore();
+  it("rejects active-run deletion without tombstoning and permits terminal deletion", async () => {
+    const { dbPath, store } = await openStore();
     store.beginRun({
       thread: THREAD,
       peer: CREATOR_PEER,
@@ -948,6 +1198,14 @@ describe("console chat SQLite store", () => {
 
     expect(() => store.deleteThread(THREAD.id)).toThrow(/cannot delete a streaming thread/);
     expect(store.hasThread(THREAD.id)).toBe(true);
+    const streamingProbe = new Database(dbPath, { readonly: true });
+    try {
+      expect(
+        streamingProbe.query("SELECT COUNT(*) AS count FROM console_chat_tombstones").get(),
+      ).toEqual({ count: 0 });
+    } finally {
+      streamingProbe.close();
+    }
     store.finishRun(THREAD.id, "run-1", ASSISTANT_MESSAGE.id, {
       status: "interrupted",
       error: "Stopped",
@@ -955,6 +1213,47 @@ describe("console chat SQLite store", () => {
       updatedAt: 1_300,
     });
     expect(store.deleteThread(THREAD.id)).toBe(true);
+  });
+
+  it("serializes delete-first and begin-first orders across two store handles", async () => {
+    const { dbPath, store: first } = await openStore(2_000);
+    const second = createConsoleChatStore({ dbPath, now: () => 2_500 });
+    stores.push(second);
+
+    const deletedFirst = { ...THREAD, id: "deleted-first" };
+    expect(first.deleteThread(deletedFirst.id)).toBeFalse();
+    expect(() =>
+      second.beginRun({
+        thread: deletedFirst,
+        peer: CREATOR_PEER,
+        runId: "deleted-first-run",
+        userMessage: USER_MESSAGE,
+        assistantMessage: ASSISTANT_MESSAGE,
+      }),
+    ).toThrow(ConsoleChatThreadDeletedError);
+
+    const begunFirst = { ...THREAD, id: "begun-first" };
+    first.beginRun({
+      thread: begunFirst,
+      peer: CREATOR_PEER,
+      runId: "begun-first-run",
+      userMessage: USER_MESSAGE,
+      assistantMessage: ASSISTANT_MESSAGE,
+    });
+    expect(() => second.deleteThread(begunFirst.id)).toThrow(/cannot delete a streaming thread/);
+
+    const probe = new Database(dbPath, { readonly: true });
+    try {
+      expect(
+        probe
+          .query<{ thread_id: string }, []>(
+            "SELECT thread_id FROM console_chat_tombstones ORDER BY thread_id",
+          )
+          .all(),
+      ).toEqual([{ thread_id: deletedFirst.id }]);
+    } finally {
+      probe.close();
+    }
   });
 
   it("abandons an exact active run after an oversized update, then permits retry and deletion", async () => {

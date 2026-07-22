@@ -258,7 +258,14 @@ describe("console chat API", () => {
     }
   });
 
-  it("classifies conflicts and rejects successful non-JSON responses", async () => {
+  it("classifies gone and conflict responses and rejects successful non-JSON responses", async () => {
+    const goneFetch: AdminFetch = async () => json({ error: "thread was deleted" }, 410);
+    await expect(getConsoleChatThread("thread:one", options(goneFetch))).rejects.toMatchObject({
+      status: 410,
+      code: "gone",
+      responseMessage: "thread was deleted",
+    });
+
     const conflictFetch: AdminFetch = async () =>
       json({ error: "Cannot delete a chat while it is streaming." }, 409);
     await expect(

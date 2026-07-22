@@ -1,25 +1,25 @@
 import { describe, expect, it } from "bun:test";
 
-import { createChatThread, type ChatThread } from "@/lib/chat-workspace";
+import { createChatThread, type ChatRunStatus } from "@/lib/chat-workspace";
+import type { DurableChatThreadSummary } from "@/lib/chat-workspace-state";
 import {
   getChatRunPresentation,
   getMobileChatNavigationState,
 } from "@/lib/chat-run-state";
 
-function thread(id: string, runStatus: ChatThread["runStatus"]): ChatThread {
-  return {
-    ...createChatThread({
-      id,
-      previewMode: "creator",
-      now: "2026-07-20T10:00:00.000Z",
-    }),
-    runStatus,
-  };
+function thread(id: string, runStatus: ChatRunStatus): DurableChatThreadSummary {
+  const { messages: _messages, ...summary } = createChatThread({
+    id,
+    previewMode: "creator",
+    now: "2026-07-20T10:00:00.000Z",
+  });
+  return { ...summary, lifecycle: "summary", runStatus };
 }
 
 describe("chat run presentation", () => {
   it("does not expose local Stop for a hydrated stream owned by another session", () => {
-    expect(getChatRunPresentation([thread("one", "streaming")], "one", null)).toEqual({
+    const selected = thread("one", "streaming");
+    expect(getChatRunPresentation([selected], selected, null)).toEqual({
       ownsLocalStream: false,
       activeThreadStreaming: true,
       anotherThreadStreaming: false,
@@ -30,7 +30,7 @@ describe("chat run presentation", () => {
     expect(
       getChatRunPresentation(
         [thread("one", "idle"), thread("two", "streaming")],
-        "one",
+        thread("one", "idle"),
         null,
       ),
     ).toEqual({
@@ -42,15 +42,33 @@ describe("chat run presentation", () => {
 
   it("identifies a stream controlled by this page", () => {
     expect(
-      getChatRunPresentation([thread("one", "streaming")], "one", {
-        clientRunId: "run-one",
+      getChatRunPresentation([thread("one", "streaming")], thread("one", "streaming"), {
         threadId: "one",
-        assistantMessageId: "assistant-one",
       }),
     ).toEqual({
       ownsLocalStream: true,
       activeThreadStreaming: true,
       anotherThreadStreaming: false,
+    });
+  });
+
+  it("supports welcome and a selected local draft without adding the draft to aggregates", () => {
+    const background = thread("saved", "streaming");
+    expect(getChatRunPresentation([background], null, null)).toEqual({
+      ownsLocalStream: false,
+      activeThreadStreaming: false,
+      anotherThreadStreaming: true,
+    });
+    expect(
+      getChatRunPresentation(
+        [background],
+        { id: "draft", runStatus: "streaming" },
+        { threadId: "draft" },
+      ),
+    ).toEqual({
+      ownsLocalStream: true,
+      activeThreadStreaming: true,
+      anotherThreadStreaming: true,
     });
   });
 });

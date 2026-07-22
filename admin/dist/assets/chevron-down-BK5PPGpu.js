@@ -1,5 +1,5 @@
-import{c as o}from"./index-GE2DCROh.js";/**
- * @license lucide-react v1.24.0 - ISC
+import{c as o}from"./index-BpaPmNOz.js";/**
+ * @license lucide-react v1.25.0 - ISC
  *
  * This source code is licensed under the ISC license.
  * See the LICENSE file in the root directory of this source tree.

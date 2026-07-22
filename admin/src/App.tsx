@@ -1,38 +1,41 @@
-import { lazy, Suspense, useEffect, useState, type ReactNode } from "react";
+import {
+  lazy,
+  Suspense,
+  useEffect,
+  useState,
+  type ReactNode,
+} from "react";
 import {
   NavLink,
   Navigate,
   Route,
   Routes,
-  matchPath,
   useLocation,
   useNavigate,
-  useParams,
 } from "react-router-dom";
-import { LoaderCircle, MessageSquare, Network, Plug, Plus } from "lucide-react";
+import { LoaderCircle, MessageSquare, Network, Plug } from "lucide-react";
 import { ChatThreadNav } from "@/components/admin/ChatThreadNav";
 import {
   ChatWorkspaceProvider,
   useChatWorkspace,
 } from "@/components/admin/ChatWorkspaceProvider";
 import { Header } from "@/components/layout/Header";
-import { Button } from "@/components/ui/button";
 import { ToastProvider } from "@/lib/toast";
 import { ConfirmProvider } from "@/lib/confirm";
 import { DashboardProvider } from "@/components/admin/DashboardContext";
 import { useDashboard } from "@/hooks/useDashboard";
 import {
+  CHAT_DRAFT_PATH,
+  CHAT_WELCOME_PATH,
   chatThreadPath,
-  decodeChatThreadRouteParam,
   getChatNavigationState,
-  isChatThreadActuallyVisible,
+  getVisibleChatWorkspaceTarget,
+  parseChatRouteTarget,
 } from "@/lib/chat-route";
 import { getMobileChatNavigationState } from "@/lib/chat-run-state";
+import { ChatRoute } from "@/routes/ChatRoute";
 import { cn } from "@/lib/utils";
 
-const ChatTab = lazy(() =>
-  import("@/routes/ChatTab").then((m) => ({ default: m.ChatTab })),
-);
 const IntegrationsTab = lazy(() =>
   import("@/routes/IntegrationsTab").then((m) => ({
     default: m.IntegrationsTab,
@@ -92,7 +95,6 @@ function ConsoleShell({
 }) {
   const {
     state,
-    ephemeralDraftId,
     create,
     select,
     rename,
@@ -105,32 +107,31 @@ function ConsoleShell({
   const navigate = useNavigate();
   const location = useLocation();
   const documentVisible = useDocumentVisible();
-  const chatRouteActive = location.pathname.startsWith("/chat");
-  const routedThreadId = decodeChatThreadRouteParam(
-    matchPath("/chat/:threadId", location.pathname)?.params.threadId,
-  );
-  const chatVisible = isChatThreadActuallyVisible({
-    chatRouteActive,
+  const chatRoute = parseChatRouteTarget(location.pathname);
+  const chatRouteActive = chatRoute.kind !== "outside";
+  const visibleChatTarget = getVisibleChatWorkspaceTarget({
+    route: chatRoute,
     documentVisible,
-    routedThreadId,
-    activeThreadId: state.activeThreadId,
+    localDraftId: state.draft?.id ?? null,
+    selection: state.selection,
   });
   const { activeId: activeNavId, threads } = getChatNavigationState({
-    threads: state.threads,
-    chatRouteActive,
-    routedThreadId,
-    activeThreadId: state.activeThreadId,
-    ephemeralDraftId,
+    threads: state.durableThreads,
+    route: chatRoute,
+    selection: state.selection,
   });
   const mobileChatNavigation = getMobileChatNavigationState(
-    state.threads,
+    state.durableThreads,
     chatRouteActive,
   );
 
-  useEffect(() => setChatVisible(chatVisible), [chatVisible, setChatVisible]);
+  useEffect(
+    () => setChatVisible(visibleChatTarget),
+    [setChatVisible, visibleChatTarget],
+  );
   const openNewChat = () => {
-    const threadId = create();
-    navigate(chatThreadPath(threadId));
+    create();
+    navigate(CHAT_DRAFT_PATH);
   };
   const openChat = (threadId: string) => {
     if (!select(threadId)) return;
@@ -141,14 +142,8 @@ function ConsoleShell({
     if (!result.valid) throw new Error(result.message);
   };
   const deleteChat = async (threadId: string) => {
-    if (!(await deleteThread(threadId))) {
-      throw new Error(
-        "This chat cannot be deleted while its response is running.",
-      );
-    }
-    if (!routedThreadId || routedThreadId === threadId) {
-      navigate("/chat", { replace: true });
-    }
+    const result = await deleteThread(threadId);
+    if (!result.ok) throw new Error(result.error);
   };
   return (
     <div className="flex h-full min-w-0 flex-col overflow-hidden bg-background">
@@ -221,7 +216,7 @@ function ConsoleShell({
           aria-label="Console sections"
         >
           <ConsoleNavLink
-            to="/chat"
+            to={CHAT_WELCOME_PATH}
             ariaLabel={mobileChatNavigation.accessibleLabel}
             icon={
               <span className="relative" aria-hidden="true">
@@ -255,12 +250,13 @@ function ConsoleShell({
         <main className="min-h-0 flex-1 overflow-hidden bg-muted/30 pb-12 sm:pb-0">
           <Suspense fallback={<ConsoleRouteFallback />}>
             <Routes>
-              <Route path="/" element={<Navigate to="/chat" replace />} />
-              <Route path="/chat" element={<ChatRoute />} />
+              <Route path="/" element={<Navigate to={CHAT_WELCOME_PATH} replace />} />
+              <Route path={CHAT_WELCOME_PATH} element={<ChatRoute />} />
+              <Route path="/chat/new" element={<ChatRoute />} />
               <Route path="/chat/:threadId" element={<ChatRoute />} />
               <Route path="/integrations" element={<IntegrationsTab />} />
               <Route path="/capabilities" element={<CapabilitiesTab />} />
-              <Route path="*" element={<Navigate to="/chat" replace />} />
+              <Route path="*" element={<Navigate to={CHAT_WELCOME_PATH} replace />} />
             </Routes>
           </Suspense>
         </main>
@@ -282,186 +278,6 @@ function useDocumentVisible(): boolean {
     return () => document.removeEventListener("visibilitychange", update);
   }, []);
   return visible;
-}
-
-type ChatRouteLookup =
-  | { threadId: string; status: "loading" }
-  | { threadId: string; status: "ready" }
-  | { threadId: string; status: "not-found" }
-  | { threadId: string; status: "error"; detail: string };
-
-/**
- * Keeps the URL as the durable conversation selector. Thread details are lazy-loaded
- * so a copied deep link works without fetching every transcript into the sidebar.
- */
-function ChatRoute() {
-  const { threadId } = useParams<{ threadId?: string }>();
-  const {
-    state,
-    activeThread,
-    hydrationStatus,
-    hydrationError,
-    loadThread,
-    create,
-  } = useChatWorkspace();
-  const navigate = useNavigate();
-  const [lookup, setLookup] = useState<ChatRouteLookup | null>(null);
-
-  useEffect(() => {
-    if (hydrationStatus !== "ready" || !threadId) return;
-    let current = true;
-    setLookup({ threadId, status: "loading" });
-    void loadThread(threadId).then(
-      (found) => {
-        if (current)
-          setLookup({ threadId, status: found ? "ready" : "not-found" });
-      },
-      (error: unknown) => {
-        if (current) {
-          setLookup({
-            threadId,
-            status: "error",
-            detail:
-              error instanceof Error
-                ? error.message
-                : "The conversation is unavailable.",
-          });
-        }
-      },
-    );
-    return () => {
-      current = false;
-    };
-  }, [hydrationStatus, loadThread, threadId]);
-
-  const requestedThreadWasRemoved =
-    Boolean(threadId) &&
-    lookup?.threadId === threadId &&
-    lookup?.status === "ready" &&
-    !state.threads.some((candidate) => candidate.id === threadId);
-  const recoverFromMissingThread =
-    lookup?.threadId === threadId &&
-    (lookup?.status === "not-found" || requestedThreadWasRemoved);
-
-  useEffect(() => {
-    if (hydrationStatus !== "ready" || !threadId || !recoverFromMissingThread)
-      return;
-    navigate("/chat", { replace: true });
-  }, [hydrationStatus, navigate, recoverFromMissingThread, threadId]);
-
-  if (hydrationStatus === "loading") {
-    return <ChatRouteStatus title="Loading chat…" />;
-  }
-
-  if (hydrationStatus === "error") {
-    return (
-      <ChatRouteStatus
-        title="Could not load chats"
-        detail={hydrationError ?? "The conversation list is unavailable."}
-        actionLabel="Try again"
-        onAction={() => window.location.reload()}
-      />
-    );
-  }
-
-  if (threadId && lookup?.threadId !== threadId) {
-    return <ChatRouteStatus title="Loading chat…" />;
-  }
-
-  if (!threadId) {
-    return (
-      <ChatWelcome
-        onStart={() => {
-          const createdThreadId = create();
-          navigate(chatThreadPath(createdThreadId));
-        }}
-      />
-    );
-  }
-
-  if (lookup?.status === "loading") {
-    return <ChatRouteStatus title="Loading chat…" />;
-  }
-
-  if (recoverFromMissingThread) {
-    return <ChatRouteStatus title="Loading chat…" />;
-  }
-
-  if (lookup?.status === "error") {
-    return (
-      <ChatRouteStatus
-        title="Could not load this chat"
-        detail={lookup.detail}
-        actionLabel="Back to chats"
-        onAction={() => navigate("/chat", { replace: true })}
-      />
-    );
-  }
-
-  // loadThread selects atomically. Do not render the previous conversation under
-  // the requested URL while its detail is still resolving.
-  if (lookup?.status !== "ready" || activeThread.id !== threadId) {
-    return <ChatRouteStatus title="Loading chat…" />;
-  }
-
-  return <ChatTab />;
-}
-
-function ChatWelcome({ onStart }: { onStart: () => void }) {
-  return (
-    <div className="auggy-grid-surface grid h-full place-items-center overflow-hidden bg-background px-6 py-12">
-      <div className="max-w-md text-center">
-        <img
-          src="/console/brand/auggy-wave.png"
-          alt=""
-          className="mx-auto h-44 w-44 object-contain drop-shadow-lg sm:h-52 sm:w-52"
-        />
-        <h1 className="mt-3 text-2xl font-semibold tracking-tight text-foreground">
-          Say hi to Auggy
-        </h1>
-        <p className="mx-auto mt-2 max-w-sm text-sm leading-6 text-muted-foreground">
-          Start a chat to test your agent, or pick up an existing conversation
-          from the sidebar.
-        </p>
-        <Button type="button" onClick={onStart} className="mt-6">
-          <Plus className="size-4" aria-hidden="true" />
-          Start a chat
-        </Button>
-      </div>
-    </div>
-  );
-}
-
-function ChatRouteStatus({
-  title,
-  detail,
-  actionLabel,
-  onAction,
-}: {
-  title: string;
-  detail?: string;
-  actionLabel?: string;
-  onAction?: () => void;
-}) {
-  return (
-    <div className="grid h-full place-items-center p-6">
-      <div className="max-w-sm text-center">
-        <p className="text-sm font-medium text-foreground">{title}</p>
-        {detail && (
-          <p className="mt-1 text-sm text-muted-foreground">{detail}</p>
-        )}
-        {actionLabel && onAction && (
-          <button
-            type="button"
-            className="mt-4 rounded-md border bg-background px-3 py-2 text-sm font-medium text-foreground hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            onClick={onAction}
-          >
-            {actionLabel}
-          </button>
-        )}
-      </div>
-    </div>
-  );
 }
 
 function ConsoleRouteFallback() {
