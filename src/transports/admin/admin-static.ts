@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -14,8 +14,8 @@ const CONTENT_TYPES: Record<string, string> = {
   jpg: "image/jpeg",
   jpeg: "image/jpeg",
   webp: "image/webp",
-  woff: "font-woff",
-  woff2: "font-woff2",
+  woff: "font/woff",
+  woff2: "font/woff2",
   map: "application/json",
 };
 
@@ -38,21 +38,58 @@ export function resolveDistDir(): string | undefined {
  * returns a 403 Response on traversal attempts.
  */
 export function serveStaticFile(staticDir: string, relativePath: string): Response | null {
-  const filePath = join(staticDir, relativePath);
-  const dirWithSep = staticDir.endsWith(sep) ? staticDir : staticDir + sep;
-  if (!filePath.startsWith(dirWithSep) && filePath !== staticDir) {
-    return new Response("forbidden", { status: 403 });
+  const rootPath = resolve(staticDir);
+  const filePath = resolve(rootPath, relativePath);
+  if (!isWithin(rootPath, filePath)) return staticFailureResponse(403, "forbidden");
+
+  let canonicalRoot: string;
+  let canonicalFile: string;
+  try {
+    canonicalRoot = realpathSync(rootPath);
+    canonicalFile = realpathSync(filePath);
+  } catch {
+    return null;
   }
-  if (!existsSync(filePath)) return null;
-  if (!statSync(filePath).isFile()) return null;
-  const content = readFileSync(filePath);
-  const ext = filePath.split(".").pop()?.toLowerCase() ?? "";
+  if (!isWithin(canonicalRoot, canonicalFile)) {
+    return staticFailureResponse(403, "forbidden");
+  }
+
+  let content: Buffer;
+  try {
+    if (!statSync(canonicalFile).isFile()) return null;
+    content = readFileSync(canonicalFile);
+  } catch {
+    // Treat deletion or replacement between canonicalization and read as a
+    // miss. Static serving must not turn a filesystem race into a 500.
+    return null;
+  }
+  const ext = canonicalFile.split(".").pop()?.toLowerCase() ?? "";
   const contentType = CONTENT_TYPES[ext] ?? "application/octet-stream";
   return new Response(content, {
     status: 200,
     headers: {
       "content-type": contentType,
       "cache-control": "no-store, must-revalidate",
+      "x-content-type-options": "nosniff",
+      "x-robots-tag": "noindex, nofollow",
+    },
+  });
+}
+
+function isWithin(rootPath: string, candidatePath: string): boolean {
+  const rootWithSep = rootPath.endsWith(sep) ? rootPath : rootPath + sep;
+  return candidatePath === rootPath || candidatePath.startsWith(rootWithSep);
+}
+
+export function staticFailureResponse(
+  status: 403 | 404 | 503,
+  body: string | null = null,
+): Response {
+  return new Response(body, {
+    status,
+    headers: {
+      "cache-control": "no-store",
+      "x-content-type-options": "nosniff",
       "x-robots-tag": "noindex, nofollow",
     },
   });
