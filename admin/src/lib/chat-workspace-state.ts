@@ -91,6 +91,7 @@ export type ChatWorkspaceLifecycleAction =
   | { type: "thread.summary-merge"; thread: ChatThreadSummary }
   | { type: "thread.reconciliation-failed"; thread: ChatThreadSummary; error: string }
   | { type: "thread.deleted"; threadId: string }
+  | { type: "thread.server-deletion-confirmed"; threadId: string }
   | { type: "draft.set"; draft: LocalChatDraft }
   | { type: "draft.rename"; draftId: string; title: string; at: string }
   | {
@@ -482,7 +483,19 @@ export function clearLocalChatDraft(
   state: ChatWorkspaceLifecycleState,
   draftId: string,
 ): ChatWorkspaceLifecycleState {
-  return clearLocalChatDraftWithAuthority(state, draftId, false);
+  if (state.activeRun?.targetKind === "draft") return state;
+  if (state.draft?.id !== draftId) return state;
+  if (state.unconfirmedDraftRun?.threadId === draftId) return state;
+  const selectionChanged = state.selection.kind === "draft";
+  return {
+    ...state,
+    draft: null,
+    deferredDraftSummary: null,
+    unconfirmedDraftRun: null,
+    selection: selectionChanged ? WELCOME_SELECTION : state.selection,
+    chatVisible: selectionChanged ? false : state.chatVisible,
+    visibleTarget: selectionChanged ? null : state.visibleTarget,
+  };
 }
 
 /**
@@ -494,29 +507,7 @@ export function clearLocalChatDraftAfterConfirmedServerDeletion(
   state: ChatWorkspaceLifecycleState,
   draftId: string,
 ): ChatWorkspaceLifecycleState {
-  return clearLocalChatDraftWithAuthority(state, draftId, true);
-}
-
-function clearLocalChatDraftWithAuthority(
-  state: ChatWorkspaceLifecycleState,
-  draftId: string,
-  serverDeletionConfirmed: boolean,
-): ChatWorkspaceLifecycleState {
-  if (state.activeRun?.targetKind === "draft") return state;
-  if (state.draft?.id !== draftId) return state;
-  if (!serverDeletionConfirmed && state.unconfirmedDraftRun?.threadId === draftId) {
-    return state;
-  }
-  const selectionChanged = state.selection.kind === "draft";
-  return {
-    ...state,
-    draft: null,
-    deferredDraftSummary: null,
-    unconfirmedDraftRun: null,
-    selection: selectionChanged ? WELCOME_SELECTION : state.selection,
-    chatVisible: selectionChanged ? false : state.chatVisible,
-    visibleTarget: selectionChanged ? null : state.visibleTarget,
-  };
+  return confirmServerChatThreadDeletion(state, draftId);
 }
 
 export function renameLocalChatDraft(
@@ -973,6 +964,53 @@ export function deleteDurableChatThread(
   };
 }
 
+/**
+ * Apply authoritative server evidence that an ID is tombstoned. Unlike local
+ * discard, this transition wins over optimistic and unconfirmed run state.
+ */
+export function confirmServerChatThreadDeletion(
+  state: ChatWorkspaceLifecycleState,
+  threadId: string,
+): ChatWorkspaceLifecycleState {
+  const hasDurableThread = state.durableThreads.some((thread) => thread.id === threadId);
+  const removesDraft = state.draft?.id === threadId;
+  const removesDeferredDraft = state.deferredDraftSummary?.id === threadId;
+  const removesUnconfirmedRun = state.unconfirmedDraftRun?.threadId === threadId;
+  const removesActiveRun = state.activeRun?.threadId === threadId;
+  const removesSelection =
+    (state.selection.kind === "draft" && state.selection.draftId === threadId) ||
+    (state.selection.kind === "thread" && state.selection.threadId === threadId);
+  const removesVisibleTarget =
+    (state.visibleTarget?.kind === "draft" && state.visibleTarget.draftId === threadId) ||
+    (state.visibleTarget?.kind === "thread" && state.visibleTarget.threadId === threadId);
+
+  if (
+    !hasDurableThread &&
+    !removesDraft &&
+    !removesDeferredDraft &&
+    !removesUnconfirmedRun &&
+    !removesActiveRun &&
+    !removesSelection &&
+    !removesVisibleTarget
+  ) {
+    return state;
+  }
+
+  return {
+    ...state,
+    durableThreads: hasDurableThread
+      ? state.durableThreads.filter((thread) => thread.id !== threadId)
+      : state.durableThreads,
+    draft: removesDraft ? null : state.draft,
+    deferredDraftSummary: removesDeferredDraft ? null : state.deferredDraftSummary,
+    unconfirmedDraftRun: removesUnconfirmedRun ? null : state.unconfirmedDraftRun,
+    activeRun: removesActiveRun ? null : state.activeRun,
+    selection: removesSelection ? WELCOME_SELECTION : state.selection,
+    chatVisible: removesSelection || removesVisibleTarget ? false : state.chatVisible,
+    visibleTarget: removesSelection || removesVisibleTarget ? null : state.visibleTarget,
+  };
+}
+
 export function chatWorkspaceLifecycleReducer(
   state: ChatWorkspaceLifecycleState,
   action: ChatWorkspaceLifecycleAction,
@@ -988,6 +1026,8 @@ export function chatWorkspaceLifecycleReducer(
       return recordDurableChatThreadDetailError(state, action.thread, action.error);
     case "thread.deleted":
       return deleteDurableChatThread(state, action.threadId);
+    case "thread.server-deletion-confirmed":
+      return confirmServerChatThreadDeletion(state, action.threadId);
     case "draft.set":
       return setLocalChatDraft(state, action.draft);
     case "draft.rename":

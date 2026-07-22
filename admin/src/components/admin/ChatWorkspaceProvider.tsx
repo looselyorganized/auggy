@@ -364,6 +364,32 @@ export function ChatWorkspaceProvider({
     if (mountedRef.current) setHasVisitorToken(false);
   }, [resolveVisitorIdentity]);
 
+  const confirmServerThreadDeletion = useCallback(
+    (threadId: string) => {
+      if (!mountedRef.current) return;
+
+      // Invalidate every callback that could otherwise merge stale state for
+      // this ID after the server has proven it is tombstoned. Keep the delete
+      // request's own ownership marker intact until its caller reaches finally.
+      threadRevisionRef.current.set(
+        threadId,
+        (threadRevisionRef.current.get(threadId) ?? 0) + 1,
+      );
+      detailRequestRef.current.delete(threadId);
+      detailReconciliationRetriesRef.current.delete(threadId);
+      mutationRequestRef.current.delete(`${threadId}:rename`);
+      mutationRequestRef.current.delete(`${threadId}:read`);
+      readMutationQueueRef.current.delete(threadId);
+      visitorTokenByThreadRef.current.delete(threadId);
+      invalidatedVisitorThreadsRef.current.delete(threadId);
+      const promotionToken = pendingVisitorPromotionsRef.current.get(threadId);
+      pendingVisitorPromotionsRef.current.delete(threadId);
+      clearVisitorPromotionIntent(threadId, promotionToken);
+      dispatch({ type: "thread.server-deletion-confirmed", threadId });
+    },
+    [dispatch],
+  );
+
   const persistReadState = useCallback(
     async (threadId: string, unread: boolean): Promise<boolean> => {
       if (!hasDurableChatThread(stateRef.current, threadId)) return false;
@@ -386,6 +412,16 @@ export function ChatWorkspaceProvider({
       let summary;
       try {
         summary = await request;
+      } catch (error) {
+        if (
+          isConsoleChatApiError(error) &&
+          error.code === "gone" &&
+          mountedRef.current &&
+          mutationRequestRef.current.get(key) === requestId
+        ) {
+          confirmServerThreadDeletion(threadId);
+        }
+        throw error;
       } finally {
         if (readMutationQueueRef.current.get(threadId) === request) {
           readMutationQueueRef.current.delete(threadId);
@@ -405,7 +441,7 @@ export function ChatWorkspaceProvider({
       }
       return true;
     },
-    [dispatch],
+    [confirmServerThreadDeletion, dispatch],
   );
 
   const setChatVisible = useCallback(
@@ -596,6 +632,12 @@ export function ChatWorkspaceProvider({
               continue;
             } catch (error) {
               if (isAbortError(error)) return;
+              if (isConsoleChatApiError(error) && error.code === "gone") {
+                if (mountedRef.current && !controller.signal.aborted) {
+                  confirmServerThreadDeletion(summary.id);
+                }
+                continue;
+              }
               if (summary.runStatus !== "streaming") {
                 // Unlock this thread using an explicit local error state while
                 // retaining its last known transcript. Because the server
@@ -682,6 +724,7 @@ export function ChatWorkspaceProvider({
       if (timer) clearTimeout(timer);
     };
   }, [
+    confirmServerThreadDeletion,
     dispatch,
     externalStreamingKey,
     hydrationStatus,
@@ -787,13 +830,22 @@ export function ChatWorkspaceProvider({
           if (selectionRequest === selectionRequestRef.current) select(threadId);
           return true;
         } catch (error) {
+          if (
+            isConsoleChatApiError(error) &&
+            error.code === "gone" &&
+            mountedRef.current &&
+            detailRequestRef.current.get(threadId) === detailRequest
+          ) {
+            confirmServerThreadDeletion(threadId);
+            return false;
+          }
           if (isConsoleChatApiError(error) && error.code === "not-found") return false;
           throw error;
         }
       }
       throw new Error("The conversation changed while it was loading. Try again.");
     },
-    [dispatch, select],
+    [confirmServerThreadDeletion, dispatch, select],
   );
 
   const rename = useCallback(
@@ -821,9 +873,22 @@ export function ChatWorkspaceProvider({
       const key = `${threadId}:rename`;
       const requestId = ++nextRequestIdRef.current;
       mutationRequestRef.current.set(key, requestId);
-      const summary = await renameConsoleChatThread(threadId, validation.title, csrf, {
-        fetchImpl: dependenciesRef.current.fetchImpl,
-      });
+      let summary;
+      try {
+        summary = await renameConsoleChatThread(threadId, validation.title, csrf, {
+          fetchImpl: dependenciesRef.current.fetchImpl,
+        });
+      } catch (error) {
+        if (
+          isConsoleChatApiError(error) &&
+          error.code === "gone" &&
+          mountedRef.current &&
+          mutationRequestRef.current.get(key) === requestId
+        ) {
+          confirmServerThreadDeletion(threadId);
+        }
+        throw error;
+      }
       if (
         mountedRef.current &&
         mutationRequestRef.current.get(key) === requestId &&
@@ -838,7 +903,7 @@ export function ChatWorkspaceProvider({
       }
       return validation;
     },
-    [dispatch],
+    [confirmServerThreadDeletion, dispatch],
   );
 
   const markUnread = useCallback(
@@ -864,68 +929,68 @@ export function ChatWorkspaceProvider({
       if (deletingThreadIdsRef.current.has(threadId)) {
         return { ok: false, error: "This chat is already being deleted." };
       }
-      if (
-        target.lifecycle === "draft" &&
-        current.unconfirmedDraftRun?.threadId === target.id
-      ) {
-        return {
-          ok: false,
-          error: "This chat is still reconciling with saved history. Retry deletion shortly.",
-        };
-      }
       if (current.activeRun?.threadId === threadId) {
         return {
           ok: false,
           error: "Wait for this response to finish or stop it before deleting this chat.",
         };
       }
-      if (target.runStatus === "streaming") {
+      const serverMayOwnDraft =
+        target.lifecycle === "draft" && current.unconfirmedDraftRun?.threadId === target.id;
+      if (target.lifecycle === "draft" && !serverMayOwnDraft) {
+        visitorTokenByThreadRef.current.delete(threadId);
+        invalidatedVisitorThreadsRef.current.delete(threadId);
+        const promotionToken = pendingVisitorPromotionsRef.current.get(threadId);
+        pendingVisitorPromotionsRef.current.delete(threadId);
+        clearVisitorPromotionIntent(threadId, promotionToken);
+        dispatch({ type: "draft.cleared", draftId: threadId });
+        return { ok: true };
+      }
+      if (target.lifecycle !== "draft" && target.runStatus === "streaming") {
         return {
           ok: false,
           error: "This response is still running. Wait for it to finish before deleting this chat.",
         };
       }
       deletingThreadIdsRef.current.add(threadId);
+      // Polls that started before DELETE must not promote a stale summary even
+      // if their response arrives after the pending-delete guard is released.
+      threadRevisionRef.current.set(
+        threadId,
+        (threadRevisionRef.current.get(threadId) ?? 0) + 1,
+      );
       setDeletingThreadIds(new Set(deletingThreadIdsRef.current));
       try {
-        if (target.lifecycle !== "draft") {
-          const csrf = consoleChatCsrf(dependenciesRef.current.data);
-          if (!csrf) throw new Error("Session expired — reload the page.");
-          const key = `${threadId}:delete`;
-          const requestId = ++nextRequestIdRef.current;
-          mutationRequestRef.current.set(key, requestId);
+        const csrf = consoleChatCsrf(dependenciesRef.current.data);
+        if (!csrf) throw new Error("Session expired — reload the page.");
+        const key = `${threadId}:delete`;
+        const requestId = ++nextRequestIdRef.current;
+        mutationRequestRef.current.set(key, requestId);
+        try {
           await deleteConsoleChatThread(threadId, csrf, {
             fetchImpl: dependenciesRef.current.fetchImpl,
           });
-          if (!mountedRef.current || mutationRequestRef.current.get(key) !== requestId) {
-            return {
-              ok: false,
-              error: "This deletion was superseded. Retry if the chat is still present.",
-            };
+        } catch (error) {
+          if (
+            isConsoleChatApiError(error) &&
+            error.code === "gone" &&
+            mountedRef.current &&
+            mutationRequestRef.current.get(key) === requestId
+          ) {
+            confirmServerThreadDeletion(threadId);
+            return { ok: true };
           }
+          throw error;
         }
-        // The pending-delete guard prevents a send from claiming this thread
-        // while the server mutation is in flight. Re-check before removing
-        // persistence bookkeeping so future refactors cannot reintroduce it.
-        if (stateRef.current.activeRun?.threadId === threadId) {
+        if (!mountedRef.current || mutationRequestRef.current.get(key) !== requestId) {
           return {
             ok: false,
-            error: "The chat changed while it was being deleted. Refresh saved chats.",
+            error: "This deletion was superseded. Retry if the chat is still present.",
           };
         }
-
-        detailRequestRef.current.delete(threadId);
-        detailReconciliationRetriesRef.current.delete(threadId);
-        visitorTokenByThreadRef.current.delete(threadId);
-        invalidatedVisitorThreadsRef.current.delete(threadId);
-        const promotionToken = pendingVisitorPromotionsRef.current.get(threadId);
-        pendingVisitorPromotionsRef.current.delete(threadId);
-        clearVisitorPromotionIntent(threadId, promotionToken);
-        dispatch(
-          target.lifecycle === "draft"
-            ? { type: "draft.cleared", draftId: threadId }
-            : { type: "thread.deleted", threadId },
-        );
+        // A successful DELETE is authoritative even if a future refactor lets
+        // local optimistic state appear while the request is in flight.
+        confirmServerThreadDeletion(threadId);
         return { ok: true };
       } catch (error) {
         return {
@@ -933,11 +998,12 @@ export function ChatWorkspaceProvider({
           error: errorMessage(error, "Could not delete this chat."),
         };
       } finally {
+        mutationRequestRef.current.delete(`${threadId}:delete`);
         deletingThreadIdsRef.current.delete(threadId);
         if (mountedRef.current) setDeletingThreadIds(new Set(deletingThreadIdsRef.current));
       }
     },
-    [dispatch],
+    [confirmServerThreadDeletion, dispatch],
   );
 
   const setPreviewMode = useCallback(
@@ -1144,6 +1210,15 @@ export function ChatWorkspaceProvider({
         });
 
         if (!response.ok) durabilityRejected = true;
+        if (
+          response.status === 410 &&
+          mountedRef.current &&
+          runLockRef.current?.clientRunId === clientRunId &&
+          runLockRef.current.threadId === threadId &&
+          runLockRef.current.assistantMessageId === assistantMessageId
+        ) {
+          confirmServerThreadDeletion(threadId);
+        }
         if (response.status === 419) throw new Error("Session expired — reload the page.");
         if (!response.ok) {
           if (promotingVisitor && response.status === 403) {
@@ -1251,7 +1326,7 @@ export function ChatWorkspaceProvider({
         ? { ok: true }
         : { ok: false, error: eventError ?? "The response did not complete." };
     },
-    [dispatch, persistReadState],
+    [confirmServerThreadDeletion, dispatch, persistReadState],
   );
 
   const activeThread = getSelectedRenderableChatWorkspaceThread(state) ?? null;

@@ -4,6 +4,7 @@ import {
   chatWorkspaceLifecycleReducer,
   clearLocalChatDraft,
   clearLocalChatDraftAfterConfirmedServerDeletion,
+  confirmServerChatThreadDeletion,
   createChatWorkspaceLifecycleState,
   createLocalChatDraft,
   deleteDurableChatThread,
@@ -253,7 +254,7 @@ describe("explicit chat workspace lifecycle state", () => {
       }),
     ).toBe(state);
 
-    const confirmed = clearLocalChatDraftAfterConfirmedServerDeletion(state, "draft");
+    const confirmed = confirmServerChatThreadDeletion(state, "draft");
     expect(confirmed).toMatchObject({
       draft: null,
       unconfirmedDraftRun: null,
@@ -261,6 +262,105 @@ describe("explicit chat workspace lifecycle state", () => {
       chatVisible: false,
       visibleTarget: null,
     });
+    expect(clearLocalChatDraftAfterConfirmedServerDeletion(state, "draft")).toEqual(confirmed);
+  });
+
+  it("lets authoritative deletion override a pending draft run and deferred summary", () => {
+    let state = setLocalChatDraft(
+      createChatWorkspaceLifecycleState(),
+      createLocalChatDraft({ id: "draft", previewMode: "creator", now: T0 }),
+    );
+    state = selectLocalChatDraft(state, "draft");
+    state = chatWorkspaceLifecycleReducer(state, {
+      type: "workspace.visibility-set",
+      target: { kind: "draft", draftId: "draft" },
+      at: T1,
+    });
+    state = startRun(state, "draft");
+    state = hydrateDurableChatThreads(state, [
+      { ...summary("draft", "Server draft", T1), runStatus: "streaming" },
+    ]);
+
+    expect(state.activeRun).toMatchObject({ threadId: "draft", phase: "pending" });
+    expect(state.deferredDraftSummary?.id).toBe("draft");
+    const confirmed = chatWorkspaceLifecycleReducer(state, {
+      type: "thread.server-deletion-confirmed",
+      threadId: "draft",
+    });
+
+    expect(confirmed).toMatchObject({
+      durableThreads: [],
+      draft: null,
+      deferredDraftSummary: null,
+      unconfirmedDraftRun: null,
+      activeRun: null,
+      selection: { kind: "welcome" },
+      chatVisible: false,
+      visibleTarget: null,
+    });
+  });
+
+  it("authoritatively removes a promoted durable run without selecting an MRU fallback", () => {
+    let state = setLocalChatDraft(
+      createChatWorkspaceLifecycleState(),
+      createLocalChatDraft({ id: "draft", previewMode: "creator", now: T0 }),
+    );
+    state = hydrateDurableChatThreads(state, [summary("keep", "Keep", T2)]);
+    state = selectLocalChatDraft(state, "draft");
+    state = startRun(state, "draft");
+    state = acceptRun(state, "draft");
+    state = chatWorkspaceLifecycleReducer(state, {
+      type: "workspace.visibility-set",
+      target: { kind: "thread", threadId: "draft" },
+      at: T2,
+    });
+
+    expect(state.activeRun).toMatchObject({
+      threadId: "draft",
+      targetKind: "thread",
+      phase: "accepted",
+    });
+    const confirmed = confirmServerChatThreadDeletion(state, "draft");
+
+    expect(confirmed.durableThreads.map(({ id }) => id)).toEqual(["keep"]);
+    expect(confirmed).toMatchObject({
+      draft: null,
+      activeRun: null,
+      selection: { kind: "welcome" },
+      chatVisible: false,
+      visibleTarget: null,
+    });
+  });
+
+  it("preserves unrelated workspace owners and is referentially idempotent", () => {
+    let state = acceptedDurableRun("running");
+    state = hydrateDurableChatThreads(state, [summary("running"), summary("remove")]);
+    state = setLocalChatDraft(
+      state,
+      createLocalChatDraft({ id: "draft", previewMode: "creator", now: T0 }),
+    );
+    state = selectDurableChatThread(state, "running");
+    state = chatWorkspaceLifecycleReducer(state, {
+      type: "workspace.visibility-set",
+      target: { kind: "thread", threadId: "running" },
+      at: T2,
+    });
+    const running = getDurableChatThread(state, "running");
+    const draft = state.draft;
+    const selection = state.selection;
+    const visibleTarget = state.visibleTarget;
+    const activeRun = state.activeRun;
+
+    const confirmed = confirmServerChatThreadDeletion(state, "remove");
+
+    expect(confirmed.durableThreads.map(({ id }) => id)).toEqual(["running"]);
+    expect(getDurableChatThread(confirmed, "running")).toBe(running);
+    expect(confirmed.draft).toBe(draft);
+    expect(confirmed.selection).toBe(selection);
+    expect(confirmed.visibleTarget).toBe(visibleTarget);
+    expect(confirmed.chatVisible).toBeTrue();
+    expect(confirmed.activeRun).toBe(activeRun);
+    expect(confirmServerChatThreadDeletion(confirmed, "remove")).toBe(confirmed);
   });
 
   it("deletes the selected durable thread to welcome without an MRU fallback", () => {

@@ -155,8 +155,10 @@ describe("ChatWorkspaceProvider persistence", () => {
     ]);
   });
 
-  it("creates, reuses, and locally deletes the one explicit draft", async () => {
+  it("creates, reuses, and deletes a pristine draft without a server request", async () => {
+    const requests: string[] = [];
     const fetchImpl = mockFetch(async (path) => {
+      requests.push(path);
       throw new Error(`Unexpected request: ${path}`);
     });
     const harness = await mountProvider({
@@ -203,9 +205,10 @@ describe("ChatWorkspaceProvider persistence", () => {
     expect(harness.value.state.draft).toBeNull();
     expect(harness.value.state.selection).toEqual({ kind: "welcome" });
     expect(harness.value.activeThread).toBeNull();
+    expect(requests).toEqual([]);
   });
 
-  it("refuses to clear a draft whose first send is still reconciling durability", async () => {
+  it("deletes an ambiguously durable first-send draft on the server before clearing it", async () => {
     const initial = createDraftWorkspace(
       createChatThread({ id: "ambiguous", previewMode: "creator", model: MODEL, now: T0 }),
     );
@@ -215,33 +218,122 @@ describe("ChatWorkspaceProvider persistence", () => {
       userMessageId: "user-unknown",
       assistantMessageId: "assistant-unknown",
     };
-    const requests: string[] = [];
+    const requests: Array<{ path: string; body: unknown }> = [];
     const harness = await mountProvider({
       initialState: initial,
-      fetchImpl: mockFetch(async (path) => {
-        requests.push(path);
+      fetchImpl: mockFetch(async (path, init) => {
+        requests.push({
+          path,
+          body: JSON.parse(String(init?.body ?? "{}")) as unknown,
+        });
+        if (path === "/console/api/chat/threads/ambiguous/delete") {
+          return json({ ok: true });
+        }
         throw new Error(`Unexpected request: ${path}`);
       }),
     });
+
+    await act(async () => {
+      expect(await harness.value.deleteThread("ambiguous")).toEqual({ ok: true });
+    });
+
+    expect(requests).toEqual([
+      {
+        path: "/console/api/chat/threads/ambiguous/delete",
+        body: { csrf: "csrf-token" },
+      },
+    ]);
+    expect(harness.value.state.draft).toBeNull();
+    expect(harness.value.state.unconfirmedDraftRun).toBeNull();
+    expect(harness.value.state.selection).toEqual({ kind: "welcome" });
+  });
+
+  it("preserves an ambiguously durable draft when its server deletion fails", async () => {
+    const initial = createDraftWorkspace(
+      createChatThread({ id: "ambiguous", previewMode: "creator", model: MODEL, now: T0 }),
+    );
+    initial.unconfirmedDraftRun = {
+      threadId: "ambiguous",
+      clientRunId: "run-unknown",
+      userMessageId: "user-unknown",
+      assistantMessageId: "assistant-unknown",
+    };
+    const harness = await mountProvider({
+      initialState: initial,
+      fetchImpl: mockFetch(async (path, init) => {
+        expect(path).toBe("/console/api/chat/threads/ambiguous/delete");
+        expect(JSON.parse(String(init?.body))).toEqual({ csrf: "csrf-token" });
+        return json({ error: "storage unavailable" }, 503);
+      }),
+    });
     const draftBeforeDelete = harness.value.state.draft;
+    const unconfirmedBeforeDelete = harness.value.state.unconfirmedDraftRun;
 
     await act(async () => {
       expect(await harness.value.deleteThread("ambiguous")).toEqual({
         ok: false,
-        error:
-          "This chat is still reconciling with saved history. Retry deletion shortly.",
+        error: "storage unavailable",
       });
     });
 
-    expect(requests).toEqual([]);
     expect(harness.value.state.draft).toBe(draftBeforeDelete);
-    expect(harness.value.state.unconfirmedDraftRun).toEqual(
-      initial.unconfirmedDraftRun,
-    );
+    expect(harness.value.state.unconfirmedDraftRun).toEqual(unconfirmedBeforeDelete);
     expect(harness.value.state.selection).toEqual({
       kind: "draft",
       draftId: "ambiguous",
     });
+  });
+
+  it("removes a recovered first-send identity when detail lands during deletion", async () => {
+    const initial = createDraftWorkspace(
+      createChatThread({ id: "ambiguous", previewMode: "creator", model: MODEL, now: T0 }),
+    );
+    initial.unconfirmedDraftRun = {
+      threadId: "ambiguous",
+      clientRunId: "run-unknown",
+      userMessageId: "user-unknown",
+      assistantMessageId: "assistant-unknown",
+    };
+    const persisted = populatedThread("ambiguous", "Recovered first send");
+    const recoveredDetail = { ...persisted, updatedAt: T1 };
+    const detail = deferred<Response>();
+    const deletion = deferred<Response>();
+    const fetchImpl = mockFetch(async (path) => {
+      if (path === "/console/api/chat/threads") {
+        return json({ threads: [summary(persisted)] });
+      }
+      if (path === "/console/api/chat/threads/ambiguous") return detail.promise;
+      if (path === "/console/api/chat/threads/ambiguous/delete") return deletion.promise;
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    const harness = await mountProvider({ fetchImpl, initialState: initial });
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, EXTERNAL_POLL_TEST_WAIT_MS));
+    });
+    expect(harness.value.state.draft).toBeNull();
+    expect(harness.value.state.durableThreads).toEqual([
+      { ...summary(persisted), lifecycle: "summary" },
+    ]);
+
+    let loading!: Promise<boolean>;
+    let deleting!: Promise<ChatWorkspaceCommandResult>;
+    await act(async () => {
+      loading = harness.value.loadThread("ambiguous");
+      await Promise.resolve();
+      deleting = harness.value.deleteThread("ambiguous");
+      await Promise.resolve();
+      detail.resolve(json({ thread: recoveredDetail }));
+    });
+    await act(async () => expect(await loading).toBe(true));
+    expect(harness.value.activeThread?.id).toBe("ambiguous");
+
+    await act(async () => deletion.resolve(json({ ok: true })));
+    await act(async () => expect(await deleting).toEqual({ ok: true }));
+    expect(harness.value.state.draft).toBeNull();
+    expect(harness.value.state.unconfirmedDraftRun).toBeNull();
+    expect(harness.value.state.durableThreads).toEqual([]);
+    expect(harness.value.state.selection).toEqual({ kind: "welcome" });
   });
 
   it("returns deterministic refusal reasons for local and external active runs", async () => {
@@ -954,6 +1046,156 @@ describe("ChatWorkspaceProvider persistence", () => {
       draftId = harness.value.create();
     });
     expect(harness.value.activeThread?.id).toBe(draftId);
+  });
+
+  it("forgets a tombstoned summary during explicit load and ignores an older detail response", async () => {
+    const saved = populatedThread("gone-detail", "Gone detail");
+    const staleDetail = deferred<Response>();
+    let detailCalls = 0;
+    const fetchImpl = mockFetch(async (path) => {
+      if (path === "/console/api/chat/threads") {
+        return json({ threads: [summary(saved)] });
+      }
+      if (path === "/console/api/chat/threads/gone-detail") {
+        detailCalls += 1;
+        return detailCalls === 1
+          ? staleDetail.promise
+          : json({ error: "console thread was deleted" }, 410);
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    const harness = await mountProvider({ fetchImpl });
+
+    let staleLoad!: Promise<boolean>;
+    await act(async () => {
+      staleLoad = harness.value.loadThread("gone-detail");
+      await Promise.resolve();
+      expect(await harness.value.loadThread("gone-detail")).toBe(false);
+    });
+    expect(harness.value.state.durableThreads).toEqual([]);
+    expect(harness.value.state.selection).toEqual({ kind: "welcome" });
+
+    await act(async () => staleDetail.resolve(json({ thread: saved })));
+    await act(async () => expect(await staleLoad).toBe(false));
+    expect(harness.value.state.durableThreads).toEqual([]);
+    expect(harness.value.activeThread).toBeNull();
+  });
+
+  it("forgets a loaded thread when polling detail reports its tombstone", async () => {
+    const local = {
+      ...populatedThread("gone-poll", "Gone while polling"),
+      runStatus: "streaming" as const,
+    };
+    const terminalSummary = {
+      ...summary(local),
+      updatedAt: T1,
+      runStatus: "complete" as const,
+    };
+    const fetchImpl = mockFetch(async (path) => {
+      if (path === "/console/api/chat/threads") {
+        return json({ threads: [terminalSummary] });
+      }
+      if (path === "/console/api/chat/threads/gone-poll") {
+        return json({ error: "console thread was deleted" }, 410);
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    const harness = await mountProvider({
+      fetchImpl,
+      initialState: createChatWorkspace(local),
+    });
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, EXTERNAL_POLL_TEST_WAIT_MS));
+    });
+
+    expect(harness.value.state.durableThreads).toEqual([]);
+    expect(harness.value.state.selection).toEqual({ kind: "welcome" });
+    expect(harness.value.activeThread).toBeNull();
+  });
+
+  it("cleans durable identities when rename and read-state report tombstones", async () => {
+    const renameTarget = populatedThread("gone-rename", "Rename target");
+    const unreadTarget = populatedThread("gone-unread", "Unread target");
+    const requests: Array<{ path: string; body: unknown }> = [];
+    const fetchImpl = mockFetch(async (path, init) => {
+      requests.push({
+        path,
+        body: JSON.parse(String(init?.body ?? "{}")) as unknown,
+      });
+      if (path.endsWith("/rename") || path.endsWith("/read-state")) {
+        return json({ error: "console thread was deleted" }, 410);
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    const harness = await mountProvider({
+      fetchImpl,
+      initialState: workspaceWithDurables([renameTarget, unreadTarget], renameTarget.id),
+    });
+
+    await act(async () => {
+      await expect(harness.value.rename(renameTarget.id, "Never applied")).rejects.toThrow(
+        "console thread was deleted",
+      );
+      await expect(harness.value.markUnread(unreadTarget.id)).rejects.toThrow(
+        "console thread was deleted",
+      );
+    });
+
+    expect(requests).toEqual([
+      {
+        path: "/console/api/chat/threads/gone-rename/rename",
+        body: { csrf: "csrf-token", title: "Never applied" },
+      },
+      {
+        path: "/console/api/chat/threads/gone-unread/read-state",
+        body: { csrf: "csrf-token", unread: true },
+      },
+    ]);
+    expect(harness.value.state.durableThreads).toEqual([]);
+    expect(harness.value.state.selection).toEqual({ kind: "welcome" });
+    expect(await harness.value.send("Cannot reuse", renameTarget.id)).toEqual({
+      ok: false,
+      error: "This chat no longer exists.",
+    });
+    expect(await harness.value.send("Cannot reuse", unreadTarget.id)).toEqual({
+      ok: false,
+      error: "This chat no longer exists.",
+    });
+    expect(requests).toHaveLength(2);
+  });
+
+  it("rolls back a tombstoned send without resurrecting its durable identity", async () => {
+    const saved = populatedThread("gone-send", "Gone send");
+    let sendCalls = 0;
+    const fetchImpl = mockFetch(async (path) => {
+      if (path === "/console/api/chat") {
+        sendCalls += 1;
+        return json({ error: "console thread was deleted" }, 410);
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    const harness = await mountProvider({
+      fetchImpl,
+      initialState: createChatWorkspace(saved),
+    });
+
+    await act(async () => {
+      expect(await harness.value.send("Do not restore me", saved.id)).toMatchObject({
+        ok: false,
+      });
+    });
+
+    expect(sendCalls).toBe(1);
+    expect(harness.value.state.activeRun).toBeNull();
+    expect(harness.value.state.durableThreads).toEqual([]);
+    expect(harness.value.state.selection).toEqual({ kind: "welcome" });
+    expect(harness.value.activeThread).toBeNull();
+    expect(await harness.value.send("Try again", saved.id)).toEqual({
+      ok: false,
+      error: "This chat no longer exists.",
+    });
+    expect(sendCalls).toBe(1);
   });
 
   it("prevents a send from claiming a thread while deletion is in flight", async () => {
