@@ -47,10 +47,12 @@ jobs:
         run: |
           bun run lint
           bun test
-          bun run build
+
+      - name: Build creator console
+        run: bun run build:admin
 
       - name: Verify creator console bundle is current
-        run: git diff --exit-code -- admin/dist
+        run: bun run check:admin-dist
 
       - name: Pricing freshness check
         run: bun run scripts/check-pricing-freshness.ts

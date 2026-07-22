@@ -81,6 +81,8 @@
     "test:watch": "bun test --watch",
     "dx:agent": "bash scripts/dx-lab-agent.sh",
     "smoke:release": "bash scripts/release-smoke.sh",
+    "build:admin": "bun run --cwd admin build",
+    "check:admin-dist": "bun run scripts/check-admin-dist.ts",
     "typecheck": "bunx tsc --noEmit",
     "lint": "bunx --bun @biomejs/biome check",
     "lint:fix": "bunx --bun @biomejs/biome check --write",
