@@ -31,6 +31,7 @@ export interface ChatThreadHeaderProps {
   previewMode: ChatPreviewMode;
   hasMessages: boolean;
   unread: boolean;
+  markUnreadAvailable?: boolean;
   streaming: boolean;
   anonymousAllowed: boolean;
   hasVisitorToken: boolean;
@@ -57,6 +58,7 @@ export function ChatThreadHeader({
   previewMode,
   hasMessages,
   unread,
+  markUnreadAvailable = true,
   streaming,
   anonymousAllowed,
   hasVisitorToken,
@@ -126,13 +128,15 @@ export function ChatThreadHeader({
                   <Copy aria-hidden="true" />
                   Copy transcript
                 </DropdownMenuItem>
-                <DropdownMenuItem
-                  disabled={unread || streaming}
-                  onClick={() => void runAction("mark-unread", onMarkUnread)}
-                >
-                  <Mail aria-hidden="true" />
-                  {unread ? "Marked unread" : "Mark unread"}
-                </DropdownMenuItem>
+                {markUnreadAvailable && (
+                  <DropdownMenuItem
+                    disabled={unread || streaming}
+                    onClick={() => void runAction("mark-unread", onMarkUnread)}
+                  >
+                    <Mail aria-hidden="true" />
+                    {unread ? "Marked unread" : "Mark unread"}
+                  </DropdownMenuItem>
+                )}
                 <DropdownMenuSeparator />
                 <ChatThreadDeleteMenuItem
                   disabled={streaming}

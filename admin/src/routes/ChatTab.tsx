@@ -18,6 +18,7 @@ import {
   type ChatPreviewMode,
   type ChatToolCall,
 } from "@/lib/chat-workspace";
+import { getChatWorkspaceTargetById } from "@/lib/chat-workspace-state";
 import { useToast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 
@@ -60,14 +61,15 @@ export function ChatTab() {
     stop,
   } = useChatWorkspace();
   const { push } = useToast();
+  assertChatTabThread(activeThread);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [preflightErrors, setPreflightErrors] = useState<Record<string, string | null>>({});
 
   const input = drafts[activeThread.id] ?? "";
   const messages = activeThread.messages;
   const { ownsLocalStream, activeThreadStreaming: streaming } = getChatRunPresentation(
-    state.threads,
-    activeThread.id,
+    state.durableThreads,
+    activeThread,
     state.activeRun,
   );
   const anotherLocalStream =
@@ -88,9 +90,10 @@ export function ChatTab() {
       ? "This response is still running in another console session."
       : anotherLocalStream
         ? `A response is running in ${
-            state.threads.find(
-              (thread) => thread.id !== activeThread.id && thread.runStatus === "streaming",
-            )?.title ?? "another chat"
+            state.activeRun
+              ? getChatWorkspaceTargetById(state, state.activeRun.threadId)?.title ??
+                "another chat"
+              : "another chat"
           }.`
         : undefined;
 
@@ -118,6 +121,7 @@ export function ChatTab() {
 
   const emptyPrompts = previewMode === "creator" ? CREATOR_EMPTY_PROMPTS : PEER_EMPTY_PROMPTS;
   const preflightError = preflightErrors[activeThread.id] ?? null;
+  const detailError = activeThread.lifecycle === "detail" ? activeThread.detailError : null;
 
   const sendFromThread = useCallback(
     (overrideText?: string) => {
@@ -203,6 +207,7 @@ export function ChatTab() {
         previewMode={previewMode}
         hasMessages={messages.length > 0}
         unread={activeThread.unread}
+        markUnreadAvailable={activeThread.lifecycle === "detail"}
         streaming={streaming}
         anonymousAllowed={anonymousAllowed}
         hasVisitorToken={hasVisitorToken}
@@ -256,6 +261,14 @@ export function ChatTab() {
 
       <div className="relative z-10 shrink-0 px-3 pb-3 sm:px-6 sm:pb-6">
         <div className="mx-auto max-w-3xl">
+          {detailError && (
+            <div
+              role="alert"
+              className="mb-2 rounded-md border border-destructive/30 bg-background/95 px-3 py-2 text-xs text-destructive shadow-sm"
+            >
+              {detailError}
+            </div>
+          )}
           {preflightError && (
             <div
               role="alert"
@@ -285,6 +298,12 @@ export function ChatTab() {
       </div>
     </div>
   );
+}
+
+function assertChatTabThread<T>(thread: T | null): asserts thread is T {
+  if (!thread) {
+    throw new Error("ChatTab requires a selected draft or loaded conversation detail.");
+  }
 }
 
 function MessageList({

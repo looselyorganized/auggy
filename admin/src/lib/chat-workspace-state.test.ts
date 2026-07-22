@@ -110,6 +110,7 @@ describe("explicit chat workspace lifecycle state", () => {
       durableThreads: [],
       draft: null,
       deferredDraftSummary: null,
+      unconfirmedDraftRun: null,
       selection: { kind: "welcome" },
       chatVisible: false,
       visibleTarget: null,
@@ -539,6 +540,45 @@ describe("explicit chat workspace lifecycle state", () => {
 
     const repeated = hydrateDurableChatThreads(state, [summary("draft", "Durable", T2)]);
     expect(repeated.durableThreads).toHaveLength(1);
+  });
+
+  it("recovers durability observed only after an ambiguous draft rollback", () => {
+    let state = setLocalChatDraft(
+      createChatWorkspaceLifecycleState(),
+      createLocalChatDraft({ id: "draft", previewMode: "creator", now: T0 }),
+    );
+    state = selectLocalChatDraft(state, "draft");
+    state = startRun(state, "draft");
+    state = chatWorkspaceLifecycleReducer(state, {
+      type: "run.rollback",
+      clientRunId: "run-1",
+      threadId: "draft",
+      assistantMessageId: "assistant-1",
+      durability: "unknown",
+    });
+
+    expect(state.draft?.id).toBe("draft");
+    expect(state.unconfirmedDraftRun).toMatchObject({
+      threadId: "draft",
+      clientRunId: "run-1",
+      userMessageId: "user-1",
+      assistantMessageId: "assistant-1",
+    });
+
+    state = setLocalChatDraft(
+      state,
+      createLocalChatDraft({ id: "draft", previewMode: "creator", now: T1 }),
+    );
+    expect(state.unconfirmedDraftRun?.clientRunId).toBe("run-1");
+
+    state = hydrateDurableChatThreads(state, [summary("draft", "Recovered", T2)]);
+    expect(state.draft).toBeNull();
+    expect(state.unconfirmedDraftRun).toBeNull();
+    expect(state.selection).toEqual({ kind: "thread", threadId: "draft" });
+    expect(getDurableChatThread(state, "draft")).toMatchObject({
+      lifecycle: "summary",
+      title: "Recovered",
+    });
   });
 
   it("binds draft selection to its exact identity", () => {

@@ -1,23 +1,21 @@
 import { describe, expect, it } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 
-import { createChatThread, type ChatThread } from "@/lib/chat-workspace";
+import { createChatThread, type ChatThreadSummary } from "@/lib/chat-workspace";
 import { ChatThreadNav } from "./ChatThreadNav";
 
 function thread(
   id: string,
   title: string,
-  patch: Partial<ChatThread> = {},
-): ChatThread {
-  return {
-    ...createChatThread({
-      id,
-      title,
-      previewMode: "creator",
-      now: "2026-07-20T10:00:00.000Z",
-    }),
-    ...patch,
-  };
+  patch: Partial<ChatThreadSummary> = {},
+): ChatThreadSummary {
+  const { messages: _messages, ...summary } = createChatThread({
+    id,
+    title,
+    previewMode: "creator",
+    now: "2026-07-20T10:00:00.000Z",
+  });
+  return { ...summary, ...patch };
 }
 
 describe("ChatThreadNav", () => {
@@ -59,7 +57,7 @@ describe("ChatThreadNav", () => {
     expect(html).toContain('disabled=""');
   });
 
-  it("hides stale drafts and reports a hydration failure", () => {
+  it("hides durable rows and reports a hydration failure", () => {
     const html = renderToStaticMarkup(
       <ChatThreadNav
         threads={[thread("draft", "Draft chat")]}

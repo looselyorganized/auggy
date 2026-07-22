@@ -25,9 +25,13 @@ import {
   chatThreadPath,
   decodeChatThreadRouteParam,
   getChatNavigationState,
-  isChatThreadActuallyVisible,
+  getVisibleChatWorkspaceTarget,
 } from "@/lib/chat-route";
 import { getMobileChatNavigationState } from "@/lib/chat-run-state";
+import {
+  getChatWorkspaceTargetById,
+  getSelectedChatWorkspaceId,
+} from "@/lib/chat-workspace-state";
 import { cn } from "@/lib/utils";
 
 const ChatTab = lazy(() =>
@@ -92,7 +96,6 @@ function ConsoleShell({
 }) {
   const {
     state,
-    ephemeralDraftId,
     create,
     select,
     rename,
@@ -109,25 +112,27 @@ function ConsoleShell({
   const routedThreadId = decodeChatThreadRouteParam(
     matchPath("/chat/:threadId", location.pathname)?.params.threadId,
   );
-  const chatVisible = isChatThreadActuallyVisible({
+  const visibleChatTarget = getVisibleChatWorkspaceTarget({
     chatRouteActive,
     documentVisible,
     routedThreadId,
-    activeThreadId: state.activeThreadId,
+    selection: state.selection,
   });
   const { activeId: activeNavId, threads } = getChatNavigationState({
-    threads: state.threads,
+    threads: state.durableThreads,
     chatRouteActive,
     routedThreadId,
-    activeThreadId: state.activeThreadId,
-    ephemeralDraftId,
+    selection: state.selection,
   });
   const mobileChatNavigation = getMobileChatNavigationState(
-    state.threads,
+    state.durableThreads,
     chatRouteActive,
   );
 
-  useEffect(() => setChatVisible(chatVisible), [chatVisible, setChatVisible]);
+  useEffect(
+    () => setChatVisible(visibleChatTarget),
+    [setChatVisible, visibleChatTarget],
+  );
   const openNewChat = () => {
     const threadId = create();
     navigate(chatThreadPath(threadId));
@@ -303,9 +308,17 @@ function ChatRoute() {
     hydrationError,
     loadThread,
     create,
+    selectWelcome,
   } = useChatWorkspace();
   const navigate = useNavigate();
   const [lookup, setLookup] = useState<ChatRouteLookup | null>(null);
+  const routeTargetLifecycle = threadId
+    ? getChatWorkspaceTargetById(state, threadId)?.lifecycle
+    : undefined;
+
+  useEffect(() => {
+    if (!threadId) selectWelcome();
+  }, [selectWelcome, threadId]);
 
   useEffect(() => {
     if (hydrationStatus !== "ready" || !threadId) return;
@@ -332,13 +345,13 @@ function ChatRoute() {
     return () => {
       current = false;
     };
-  }, [hydrationStatus, loadThread, threadId]);
+  }, [hydrationStatus, loadThread, routeTargetLifecycle, threadId]);
 
   const requestedThreadWasRemoved =
-    Boolean(threadId) &&
+    threadId !== undefined &&
     lookup?.threadId === threadId &&
     lookup?.status === "ready" &&
-    !state.threads.some((candidate) => candidate.id === threadId);
+    !getChatWorkspaceTargetById(state, threadId);
   const recoverFromMissingThread =
     lookup?.threadId === threadId &&
     (lookup?.status === "not-found" || requestedThreadWasRemoved);
@@ -400,7 +413,11 @@ function ChatRoute() {
 
   // loadThread selects atomically. Do not render the previous conversation under
   // the requested URL while its detail is still resolving.
-  if (lookup?.status !== "ready" || activeThread.id !== threadId) {
+  if (
+    lookup?.status !== "ready" ||
+    getSelectedChatWorkspaceId(state) !== threadId ||
+    activeThread?.id !== threadId
+  ) {
     return <ChatRouteStatus title="Loading chat…" />;
   }
 

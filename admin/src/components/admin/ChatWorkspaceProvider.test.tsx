@@ -13,11 +13,15 @@ import {
 import { ConsoleChatApiError } from "@/lib/console-chat-api";
 import {
   createChatThread,
-  createChatWorkspace,
   type ChatMessage,
   type ChatThread,
-  type ChatWorkspaceState,
 } from "@/lib/chat-workspace";
+import {
+  createChatWorkspaceLifecycleState,
+  createLocalChatDraft,
+  type ChatWorkspaceLifecycleState,
+  type DurableChatThreadDetail,
+} from "@/lib/chat-workspace-state";
 import type { DashboardData } from "@/lib/types";
 
 const T0 = "2026-07-20T10:00:00.000Z";
@@ -138,15 +142,50 @@ describe("ChatWorkspaceProvider persistence", () => {
     const harness = await mountProvider({ fetchImpl });
 
     expect(harness.value.hydrationStatus).toBe("ready");
-    expect(harness.value.state.threads.map(({ id }) => id)).toEqual(["saved", "id-1"]);
-    expect(harness.value.activeThread.messages).toEqual([]);
+    expect(harness.value.state.durableThreads.map(({ id }) => id)).toEqual(["saved"]);
+    expect(harness.value.state.draft).toBeNull();
+    expect(harness.value.activeThread).toBeNull();
     await act(async () => {
       expect(await harness.value.loadThread("saved")).toBe(true);
     });
-    expect(harness.value.activeThread.messages.map(({ content }) => content)).toEqual([
+    expect(harness.value.activeThread?.messages.map(({ content }) => content)).toEqual([
       "Earlier question",
       "Earlier answer",
     ]);
+  });
+
+  it("creates, reuses, and locally deletes the one explicit draft", async () => {
+    const fetchImpl = mockFetch(async (path) => {
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    const harness = await mountProvider({
+      fetchImpl,
+      initialState: createChatWorkspaceLifecycleState(),
+    });
+
+    expect(harness.value.state.selection).toEqual({ kind: "welcome" });
+    expect(harness.value.activeThread).toBeNull();
+    let first = "";
+    let second = "";
+    await act(async () => {
+      first = harness.value.create("anonymous");
+      second = harness.value.create("creator");
+    });
+    expect(second).toBe(first);
+    expect(harness.value.state.draft).toMatchObject({
+      id: first,
+      lifecycle: "draft",
+      previewMode: "creator",
+    });
+    expect(harness.value.state.durableThreads).toEqual([]);
+
+    await act(async () => {
+      expect(await harness.value.markUnread(first)).toBe(false);
+      expect(await harness.value.deleteThread(first)).toBe(true);
+    });
+    expect(harness.value.state.draft).toBeNull();
+    expect(harness.value.state.selection).toEqual({ kind: "welcome" });
+    expect(harness.value.activeThread).toBeNull();
   });
 
   it("automatically restores saved chats when the backend becomes available", async () => {
@@ -174,11 +213,11 @@ describe("ChatWorkspaceProvider persistence", () => {
     expect(listCalls).toBeGreaterThanOrEqual(2);
     expect(harness.value.hydrationStatus).toBe("ready");
     expect(harness.value.hydrationError).toBeNull();
-    expect(harness.value.state.threads.map(({ id }) => id)).toEqual([
+    expect(harness.value.state.durableThreads.map(({ id }) => id)).toEqual([
       "saved-after-restart",
-      "id-1",
     ]);
-    expect(harness.value.state.activeThreadId).toBe("saved-after-restart");
+    expect(harness.value.state.selection).toEqual({ kind: "welcome" });
+    expect(harness.value.activeThread).toBeNull();
   });
 
   it("does not retry a permanently invalid hydration response", async () => {
@@ -203,7 +242,7 @@ describe("ChatWorkspaceProvider persistence", () => {
   });
 
   it("sends stable run/message IDs, generated title, and model, then durably marks an active visible completion read", async () => {
-    const initial = createChatWorkspace(
+    const initial = createDraftWorkspace(
       createChatThread({ id: "draft", previewMode: "creator", model: MODEL, now: T0 }),
     );
     const requests: Array<{ path: string; body: Record<string, unknown> }> = [];
@@ -231,7 +270,11 @@ describe("ChatWorkspaceProvider persistence", () => {
     const harness = await mountProvider({ fetchImpl, initialState: initial });
 
     await act(async () => {
-      expect(await harness.value.send("  Review   auth behavior  ")).toEqual({ ok: true });
+      expect(
+        await harness.value.send("  Review   auth behavior  ", undefined, () => {
+          harness.value.setChatVisible({ kind: "thread", threadId: "draft" });
+        }),
+      ).toEqual({ ok: true });
     });
 
     expect(requests[0]).toEqual({
@@ -299,7 +342,7 @@ describe("ChatWorkspaceProvider persistence", () => {
       chatMode: "visitor",
       visitorToken: "verified.payload.signature",
     });
-    expect(harness.value.activeThread.previewMode).toBe("visitor");
+    expect(harness.value.activeThread?.previewMode).toBe("visitor");
     expect(storage.get(VISITOR_TOKEN_KEY)).toBe("verified.payload.signature");
     expect(storage.has(VISITOR_PROMOTION_INTENT_KEY)).toBe(false);
   });
@@ -348,7 +391,7 @@ describe("ChatWorkspaceProvider persistence", () => {
       chatMode: "visitor",
       visitorToken: "verified.payload.signature",
     });
-    expect(harness.value.activeThread.previewMode).toBe("visitor");
+    expect(harness.value.activeThread?.previewMode).toBe("visitor");
     expect(storage.has(VISITOR_PROMOTION_INTENT_KEY)).toBe(false);
   });
 
@@ -396,7 +439,7 @@ describe("ChatWorkspaceProvider persistence", () => {
       chatMode: "anonymous",
     });
     expect(submitted).not.toHaveProperty("visitorToken");
-    expect(harness.value.activeThread.previewMode).toBe("anonymous");
+    expect(harness.value.activeThread?.previewMode).toBe("anonymous");
     expect(storage.has(VISITOR_PROMOTION_INTENT_KEY)).toBe(true);
   });
 
@@ -441,7 +484,7 @@ describe("ChatWorkspaceProvider persistence", () => {
 
     expect(submitted).toMatchObject({ chatMode: "anonymous" });
     expect(submitted).not.toHaveProperty("visitorToken");
-    expect(harness.value.activeThread.previewMode).toBe("anonymous");
+    expect(harness.value.activeThread?.previewMode).toBe("anonymous");
   });
 
   it("quarantines an exact promotion intent when the server rejects its proof", async () => {
@@ -482,7 +525,7 @@ describe("ChatWorkspaceProvider persistence", () => {
     });
 
     expect(storage.has(VISITOR_PROMOTION_INTENT_KEY)).toBe(false);
-    expect(harness.value.activeThread.previewMode).toBe("anonymous");
+    expect(harness.value.activeThread?.previewMode).toBe("anonymous");
   });
 
   it("clears both the compatible visitor token and pending intent on signout", async () => {
@@ -504,7 +547,7 @@ describe("ChatWorkspaceProvider persistence", () => {
       fetchImpl: mockFetch(async (path) => {
         throw new Error(`Unexpected request: ${path}`);
       }),
-      initialState: createChatWorkspace(
+      initialState: createDraftWorkspace(
         createChatThread({ id: "draft", previewMode: "creator", model: MODEL, now: T0 }),
       ),
     });
@@ -537,7 +580,7 @@ describe("ChatWorkspaceProvider persistence", () => {
     });
     const harness = await mountProvider({
       fetchImpl,
-      initialState: createChatWorkspace(
+      initialState: createDraftWorkspace(
         createChatThread({ id: "draft", previewMode: "creator", model: MODEL, now: T0 }),
       ),
     });
@@ -591,7 +634,7 @@ describe("ChatWorkspaceProvider persistence", () => {
     const harness = await mountProvider({
       fetchImpl,
       dashboard: null,
-      initialState: createChatWorkspace(
+      initialState: createDraftWorkspace(
         createChatThread({ id: "draft", previewMode: "creator", model: MODEL, now: T0 }),
       ),
     });
@@ -609,7 +652,7 @@ describe("ChatWorkspaceProvider persistence", () => {
   });
 
   it("rolls back optimistic messages and preserves the draft when the server rejects a run", async () => {
-    const initial = createChatWorkspace(
+    const initial = createDraftWorkspace(
       createChatThread({ id: "draft", previewMode: "creator", model: MODEL, now: T0 }),
     );
     let accepted = false;
@@ -629,13 +672,60 @@ describe("ChatWorkspaceProvider persistence", () => {
     });
 
     expect(accepted).toBe(false);
-    expect(harness.value.activeThread.messages).toEqual([]);
-    expect(harness.value.activeThread.runStatus).toBe("idle");
-    expect(harness.value.activeThread.title).toBe("New chat");
+    expect(harness.value.activeThread?.messages).toEqual([]);
+    expect(harness.value.activeThread?.runStatus).toBe("idle");
+    expect(harness.value.activeThread?.title).toBe("New chat");
+  });
+
+  it("recovers a first send committed before its HTTP response was lost", async () => {
+    const draft = createChatThread({
+      id: "uncertain-draft",
+      previewMode: "creator",
+      model: MODEL,
+      now: T0,
+    });
+    const persisted = populatedThread(draft.id, "Persisted first send");
+    let committed = false;
+    const fetchImpl = mockFetch(async (path) => {
+      if (path === "/console/api/chat") {
+        committed = true;
+        throw new TypeError("connection reset after commit");
+      }
+      if (path === "/console/api/chat/threads") {
+        return json({ threads: committed ? [summary(persisted)] : [] });
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    const harness = await mountProvider({
+      fetchImpl,
+      initialState: createDraftWorkspace(draft),
+    });
+
+    await act(async () => {
+      expect(await harness.value.send("Persist this", draft.id)).toEqual({
+        ok: false,
+        error: "connection reset after commit",
+      });
+    });
+    expect(harness.value.state.draft?.id).toBe(draft.id);
+    expect(harness.value.state.unconfirmedDraftRun?.threadId).toBe(draft.id);
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, EXTERNAL_POLL_TEST_WAIT_MS));
+    });
+    expect(harness.value.state.draft).toBeNull();
+    expect(harness.value.state.unconfirmedDraftRun).toBeNull();
+    expect(harness.value.state.selection).toEqual({
+      kind: "thread",
+      threadId: draft.id,
+    });
+    expect(harness.value.state.durableThreads).toEqual([
+      { ...summary(persisted), lifecycle: "summary" },
+    ]);
   });
 
   it("separates assistant text emitted by multiple tool-loop inference segments", async () => {
-    const initial = createChatWorkspace(
+    const initial = createDraftWorkspace(
       createChatThread({ id: "draft", previewMode: "creator", model: MODEL, now: T0 }),
     );
     const fetchImpl = mockFetch(async (path) => {
@@ -657,13 +747,13 @@ describe("ChatWorkspaceProvider persistence", () => {
       expect(await harness.value.send("Check an order")).toEqual({ ok: true });
     });
 
-    expect(harness.value.activeThread.messages.at(-1)?.content).toBe(
+    expect(harness.value.activeThread?.messages.at(-1)?.content).toBe(
       "I'll check the order.\n\nThe address is current.",
     );
   });
 
   it("preserves an explicit empty-draft rename as the first persisted title", async () => {
-    const initial = createChatWorkspace(
+    const initial = createDraftWorkspace(
       createChatThread({ id: "draft", previewMode: "creator", model: MODEL, now: T0 }),
     );
     const sentBodies: Array<Record<string, unknown>> = [];
@@ -691,15 +781,12 @@ describe("ChatWorkspaceProvider persistence", () => {
     });
 
     expect(sentBodies[0]?.title).toBe("My investigation");
-    expect(harness.value.activeThread.title).toBe("My investigation");
+    expect(harness.value.activeThread?.title).toBe("My investigation");
   });
 
   it("persists rename, unread, and delete mutations without changing state on failure", async () => {
     const saved = populatedThread("saved", "Original");
-    const initial: ChatWorkspaceState = {
-      ...createChatWorkspace(saved),
-      threads: [saved],
-    };
+    const initial = createChatWorkspace(saved);
     const calls: string[] = [];
     let rejectRename = true;
     const fetchImpl = mockFetch(async (path, init) => {
@@ -725,7 +812,7 @@ describe("ChatWorkspaceProvider persistence", () => {
     await expect(harness.value.rename("saved", "Does not stick")).rejects.toThrow(
       "rename failed",
     );
-    expect(harness.value.activeThread.title).toBe("Original");
+    expect(harness.value.activeThread?.title).toBe("Original");
     await act(async () => {
       await harness.value.rename("saved", "Renamed");
       await harness.value.markUnread("saved");
@@ -737,11 +824,13 @@ describe("ChatWorkspaceProvider persistence", () => {
       "/console/api/chat/threads/saved/read-state",
       "/console/api/chat/threads/saved/delete",
     ]);
-    expect(harness.value.activeThread.id).not.toBe("saved");
-    const fallbackId = harness.value.activeThread.id;
+    expect(harness.value.activeThread).toBeNull();
+    expect(harness.value.state.selection).toEqual({ kind: "welcome" });
+    let draftId = "";
     await act(async () => {
-      expect(harness.value.create()).toBe(fallbackId);
+      draftId = harness.value.create();
     });
+    expect(harness.value.activeThread?.id).toBe(draftId);
   });
 
   it("prevents a send from claiming a thread while deletion is in flight", async () => {
@@ -767,18 +856,13 @@ describe("ChatWorkspaceProvider persistence", () => {
     });
     await act(async () => deletion.resolve(json({ ok: true })));
     await act(async () => expect(await deleting).toBe(true));
-    expect(harness.value.state.threads.some(({ id }) => id === "saved")).toBe(false);
+    expect(harness.value.state.durableThreads.some(({ id }) => id === "saved")).toBe(false);
   });
 
   it("retains server unread semantics for a background completion", async () => {
     const owner = populatedThread("owner", "Owner");
     const active = populatedThread("active", "Active");
-    const initial: ChatWorkspaceState = {
-      threads: [owner, active],
-      activeThreadId: "active",
-      chatVisible: true,
-      activeRun: null,
-    };
+    const initial = workspaceWithDurables([owner, active], "active");
     const calls: string[] = [];
     const fetchImpl = mockFetch(async (path) => {
       calls.push(path);
@@ -790,7 +874,9 @@ describe("ChatWorkspaceProvider persistence", () => {
     await act(async () => {
       expect(await harness.value.send("Background check", "owner")).toEqual({ ok: true });
     });
-    expect(harness.value.state.threads.find(({ id }) => id === "owner")?.unread).toBe(true);
+    expect(harness.value.state.durableThreads.find(({ id }) => id === "owner")?.unread).toBe(
+      true,
+    );
     expect(calls).toEqual(["/console/api/chat"]);
   });
 
@@ -841,13 +927,13 @@ describe("ChatWorkspaceProvider persistence", () => {
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, EXTERNAL_POLL_TEST_WAIT_MS));
     });
-    expect(harness.value.activeThread.runStatus).toBe("streaming");
-    expect(harness.value.activeThread.messages.at(-1)?.content).toBe("Part");
+    expect(harness.value.activeThread?.runStatus).toBe("streaming");
+    expect(harness.value.activeThread?.messages.at(-1)?.content).toBe("Part");
 
     await act(async () => terminalDetail.resolve(json({ thread: terminal })));
-    expect(harness.value.activeThread.runStatus).toBe("complete");
-    expect(harness.value.activeThread.messages.at(-1)?.content).toBe("Part and final");
-    expect(harness.value.activeThread.unread).toBe(false);
+    expect(harness.value.activeThread?.runStatus).toBe("complete");
+    expect(harness.value.activeThread?.messages.at(-1)?.content).toBe("Part and final");
+    expect(harness.value.activeThread?.unread).toBe(false);
     expect(calls).toContain("/console/api/chat/threads/external/read-state");
   });
 
@@ -902,8 +988,12 @@ describe("ChatWorkspaceProvider persistence", () => {
       await new Promise((resolve) => setTimeout(resolve, EXTERNAL_POLL_TEST_WAIT_MS));
     });
     expect(detailCalls).toBe(1);
-    expect(harness.value.activeThread.runStatus).toBe("error");
-    expect(harness.value.activeThread.messages.at(-1)?.error).toContain("could not be refreshed");
+    expect(harness.value.activeThread?.runStatus).toBe("error");
+    expect(
+      harness.value.activeThread && "detailError" in harness.value.activeThread
+        ? harness.value.activeThread.detailError
+        : null,
+    ).toContain("could not be refreshed");
 
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, EXTERNAL_POLL_TEST_WAIT_MS));
@@ -918,7 +1008,7 @@ describe("ChatWorkspaceProvider persistence", () => {
       await new Promise((resolve) => setTimeout(resolve, EXTERNAL_POLL_TEST_WAIT_MS));
     });
     expect(detailCalls).toBeGreaterThanOrEqual(3);
-    expect(harness.value.activeThread.messages.at(-1)).toMatchObject({
+    expect(harness.value.activeThread?.messages.at(-1)).toMatchObject({
       content: "Saved failure detail",
       error: "Provider failed",
     });
@@ -944,8 +1034,8 @@ describe("ChatWorkspaceProvider persistence", () => {
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, EXTERNAL_POLL_TEST_WAIT_MS));
     });
-    expect(harness.value.activeThread.id).not.toBe("missing");
-    expect(harness.value.state.threads.map(({ id }) => id)).toContain("added");
+    expect(harness.value.activeThread?.id).not.toBe("missing");
+    expect(harness.value.state.durableThreads.map(({ id }) => id)).toContain("added");
   });
 
   it("does not let a slow detail response steal selection from a newer deep link", async () => {
@@ -973,7 +1063,31 @@ describe("ChatWorkspaceProvider persistence", () => {
     });
     await act(async () => slow.resolve(json({ thread: first })));
     await act(async () => expect(await firstLoad).toBe(true));
-    expect(harness.value.activeThread.id).toBe("second");
+    expect(harness.value.activeThread?.id).toBe("second");
+  });
+
+  it("keeps the welcome route authoritative over a delayed detail load", async () => {
+    const saved = populatedThread("saved", "Saved");
+    const slow = deferred<Response>();
+    const fetchImpl = mockFetch(async (path) => {
+      if (path === "/console/api/chat/threads") {
+        return json({ threads: [summary(saved)] });
+      }
+      if (path === "/console/api/chat/threads/saved") return slow.promise;
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    const harness = await mountProvider({ fetchImpl });
+
+    let load!: Promise<boolean>;
+    await act(async () => {
+      load = harness.value.loadThread("saved");
+      harness.value.selectWelcome();
+    });
+    await act(async () => slow.resolve(json({ thread: saved })));
+    await act(async () => expect(await load).toBe(true));
+
+    expect(harness.value.state.selection).toEqual({ kind: "welcome" });
+    expect(harness.value.activeThread).toBeNull();
   });
 
   it("refetches detail instead of masking a newer revision with a delayed transcript", async () => {
@@ -1020,7 +1134,7 @@ describe("ChatWorkspaceProvider persistence", () => {
       title: "Renamed",
       updatedAt: T1,
     });
-    expect(harness.value.activeThread.messages.at(-1)?.content).toBe("Fresh answer");
+    expect(harness.value.activeThread?.messages.at(-1)?.content).toBe("Fresh answer");
   });
 
   it("does not resurrect a thread deleted while its detail request is in flight", async () => {
@@ -1045,17 +1159,17 @@ describe("ChatWorkspaceProvider persistence", () => {
       load = harness.value.loadThread("removed");
       await new Promise((resolve) => setTimeout(resolve, EXTERNAL_POLL_TEST_WAIT_MS));
     });
-    expect(harness.value.state.threads.some(({ id }) => id === "removed")).toBe(false);
+    expect(harness.value.state.durableThreads.some(({ id }) => id === "removed")).toBe(false);
 
     await act(async () => slow.resolve(json({ thread: removed })));
     await act(async () => expect(await load).toBe(false));
-    expect(harness.value.state.threads.some(({ id }) => id === "removed")).toBe(false);
+    expect(harness.value.state.durableThreads.some(({ id }) => id === "removed")).toBe(false);
   });
 });
 
 async function mountProvider(options: {
   fetchImpl: typeof fetch;
-  initialState?: ChatWorkspaceState;
+  initialState?: ChatWorkspaceLifecycleState;
   dashboard?: DashboardData | null;
 }) {
   let value: ChatWorkspaceContextValue | null = null;
@@ -1105,6 +1219,56 @@ async function mountProvider(options: {
       return value;
     },
     setDashboard,
+  };
+}
+
+function createDraftWorkspace(thread: ChatThread): ChatWorkspaceLifecycleState {
+  const initial = createChatWorkspaceLifecycleState();
+  const draft = {
+    ...createLocalChatDraft({
+      id: thread.id,
+      previewMode: thread.previewMode,
+      model: thread.model,
+      now: thread.createdAt,
+      ...(thread.title === "New chat" ? {} : { title: thread.title }),
+    }),
+    ...thread,
+    lifecycle: "draft" as const,
+    titleSource: thread.title === "New chat" ? ("default" as const) : ("explicit" as const),
+  };
+  return {
+    ...initial,
+    draft,
+    selection: { kind: "draft", draftId: draft.id },
+    chatVisible: true,
+    visibleTarget: { kind: "draft", draftId: draft.id },
+  };
+}
+
+function createChatWorkspace(thread: ChatThread): ChatWorkspaceLifecycleState {
+  return workspaceWithDurables([thread], thread.id);
+}
+
+function workspaceWithDurables(
+  threads: readonly ChatThread[],
+  selectedThreadId?: string,
+): ChatWorkspaceLifecycleState {
+  const initial = createChatWorkspaceLifecycleState();
+  const durableThreads: DurableChatThreadDetail[] = threads.map((thread) => ({
+    ...thread,
+    lifecycle: "detail",
+    detailError: null,
+  }));
+  return {
+    ...initial,
+    durableThreads,
+    ...(selectedThreadId
+      ? {
+          selection: { kind: "thread" as const, threadId: selectedThreadId },
+          chatVisible: true,
+          visibleTarget: { kind: "thread" as const, threadId: selectedThreadId },
+        }
+      : {}),
   };
 }
 

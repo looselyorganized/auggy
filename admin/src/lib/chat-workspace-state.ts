@@ -46,6 +46,13 @@ export interface ChatWorkspaceLifecycleState {
   draft: LocalChatDraft | null;
   /** Server durability observed before the matching POST response was accepted locally. */
   deferredDraftSummary: ChatThreadSummary | null;
+  /** A first-send request may have committed even though no HTTP response arrived. */
+  unconfirmedDraftRun: {
+    threadId: string;
+    clientRunId: string;
+    userMessageId: string;
+    assistantMessageId: string;
+  } | null;
   selection: ChatWorkspaceSelection;
   /** Derived convenience flag kept coherent with the identity-bound visible target. */
   chatVisible: boolean;
@@ -142,6 +149,8 @@ export type ChatWorkspaceLifecycleAction =
       clientRunId: string;
       threadId: string;
       assistantMessageId: string;
+      /** `unknown` means transport failure prevented a definitive server response. */
+      durability?: "rejected" | "unknown";
     }
   | {
       type: "run.message-update";
@@ -169,6 +178,7 @@ export function createChatWorkspaceLifecycleState(): ChatWorkspaceLifecycleState
     durableThreads: [],
     draft: null,
     deferredDraftSummary: null,
+    unconfirmedDraftRun: null,
     selection: WELCOME_SELECTION,
     chatVisible: false,
     visibleTarget: null,
@@ -282,6 +292,29 @@ export function hydrateDurableChatThreads(
   summaries: readonly ChatThreadSummary[],
 ): ChatWorkspaceLifecycleState {
   assertUniqueThreadIds(summaries);
+  const recoveredDraftSummary = summaries.find(
+    (summary) =>
+      !state.activeRun &&
+      state.draft?.id === summary.id &&
+      state.unconfirmedDraftRun?.threadId === summary.id,
+  );
+  if (recoveredDraftSummary && state.draft) {
+    const draftId = state.draft.id;
+    const selected =
+      state.selection.kind === "draft" && state.selection.draftId === draftId;
+    return hydrateDurableChatThreads(
+      {
+        ...state,
+        draft: null,
+        deferredDraftSummary: null,
+        unconfirmedDraftRun: null,
+        selection: selected ? { kind: "thread", threadId: draftId } : state.selection,
+        chatVisible: selected ? false : state.chatVisible,
+        visibleTarget: selected ? null : state.visibleTarget,
+      },
+      summaries,
+    );
+  }
   const pendingDraftId =
     state.activeRun?.phase === "pending" && state.activeRun.targetKind === "draft"
       ? state.activeRun.threadId
@@ -435,6 +468,10 @@ export function setLocalChatDraft(
     ...state,
     draft,
     deferredDraftSummary: null,
+    unconfirmedDraftRun:
+      state.unconfirmedDraftRun?.threadId === draft.id
+        ? state.unconfirmedDraftRun
+        : null,
     selection,
     chatVisible: selectionChanged ? false : state.chatVisible,
     visibleTarget: selectionChanged ? null : state.visibleTarget,
@@ -452,6 +489,7 @@ export function clearLocalChatDraft(
     ...state,
     draft: null,
     deferredDraftSummary: null,
+    unconfirmedDraftRun: null,
     selection: selectionChanged ? WELCOME_SELECTION : state.selection,
     chatVisible: selectionChanged ? false : state.chatVisible,
     visibleTarget: selectionChanged ? null : state.visibleTarget,
@@ -678,6 +716,7 @@ export function acceptChatWorkspaceLifecycleRun(
       durableThreads,
       draft: null,
       deferredDraftSummary: null,
+      unconfirmedDraftRun: null,
       selection:
         state.selection.kind === "draft" && state.selection.draftId === detail.id
           ? { kind: "thread", threadId: detail.id }
@@ -733,6 +772,7 @@ export function rollbackChatWorkspaceLifecycleRun(
       durableThreads: [...state.durableThreads, recovered],
       draft: null,
       deferredDraftSummary: null,
+      unconfirmedDraftRun: null,
       selection:
         state.selection.kind === "draft" && state.selection.draftId === target.id
           ? { kind: "thread", threadId: target.id }
@@ -773,7 +813,16 @@ export function rollbackChatWorkspaceLifecycleRun(
     };
   }
   const next = replaceLoadedChatWorkspaceTarget(state, rolledBack);
-  return { ...next, activeRun: null };
+  const unconfirmedDraftRun =
+    run.targetKind === "draft" && action.durability === "unknown"
+      ? {
+          threadId: run.threadId,
+          clientRunId: run.clientRunId,
+          userMessageId: run.rollback.userMessageId,
+          assistantMessageId: run.assistantMessageId,
+        }
+      : state.unconfirmedDraftRun;
+  return { ...next, activeRun: null, unconfirmedDraftRun };
 }
 
 export function updateChatWorkspaceLifecycleRunMessage(

@@ -1,4 +1,8 @@
-import { isEmptyChatThread, type ChatThread } from "@/lib/chat-workspace";
+import type {
+  ChatWorkspaceSelection,
+  ChatWorkspaceVisibleTarget,
+  DurableChatThread,
+} from "@/lib/chat-workspace-state";
 
 /** Build a console-relative URL for a durable chat identifier. */
 export function chatThreadPath(threadId: string): string {
@@ -17,53 +21,54 @@ export function decodeChatThreadRouteParam(
   }
 }
 
-export function isChatThreadActuallyVisible(options: {
+export function getVisibleChatWorkspaceTarget(options: {
   chatRouteActive: boolean;
   documentVisible: boolean;
   routedThreadId: string | undefined;
-  activeThreadId: string;
-}): boolean {
-  return (
-    options.chatRouteActive &&
-    options.documentVisible &&
-    options.routedThreadId !== undefined &&
-    options.routedThreadId === options.activeThreadId
-  );
+  selection: ChatWorkspaceSelection;
+}): ChatWorkspaceVisibleTarget | null {
+  if (
+    !options.chatRouteActive ||
+    !options.documentVisible ||
+    options.routedThreadId === undefined
+  ) {
+    return null;
+  }
+  if (
+    options.selection.kind === "draft" &&
+    options.selection.draftId === options.routedThreadId
+  ) {
+    return options.selection;
+  }
+  if (
+    options.selection.kind === "thread" &&
+    options.selection.threadId === options.routedThreadId
+  ) {
+    return options.selection;
+  }
+  return null;
 }
 
 export function getChatNavigationState(options: {
-  threads: readonly ChatThread[];
+  threads: readonly DurableChatThread[];
   chatRouteActive: boolean;
   routedThreadId: string | undefined;
-  activeThreadId: string;
-  ephemeralDraftId?: string;
-}): { activeId: string; threads: ChatThread[] } {
-  const {
-    threads,
-    chatRouteActive,
-    routedThreadId,
-    activeThreadId,
-    ephemeralDraftId,
-  } = options;
+  selection: ChatWorkspaceSelection;
+}): { activeId: string; threads: DurableChatThread[] } {
+  const { threads, chatRouteActive, routedThreadId, selection } = options;
+  const selectedDurableId = selection.kind === "thread" ? selection.threadId : null;
 
   return {
     activeId:
-      chatRouteActive && routedThreadId === activeThreadId
-        ? activeThreadId
+      chatRouteActive && routedThreadId === selectedDurableId
+        ? selectedDurableId
         : "",
-    threads: threads
-      // The workspace keeps one reusable local draft ready for the composer.
-      // It is not a conversation yet and must never appear beside durable chats.
-      .filter(
-        (thread) =>
-          thread.id !== ephemeralDraftId || !isEmptyChatThread(thread),
-      )
-      .sort((a, b) => {
-        if (a.updatedAt !== b.updatedAt)
-          return b.updatedAt.localeCompare(a.updatedAt);
-        if (a.createdAt !== b.createdAt)
-          return b.createdAt.localeCompare(a.createdAt);
-        return a.id.localeCompare(b.id);
-      }),
+    threads: [...threads].sort((a, b) => {
+      if (a.updatedAt !== b.updatedAt)
+        return b.updatedAt.localeCompare(a.updatedAt);
+      if (a.createdAt !== b.createdAt)
+        return b.createdAt.localeCompare(a.createdAt);
+      return a.id.localeCompare(b.id);
+    }),
   };
 }
