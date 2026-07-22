@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import {
+  canStartChatWorkspaceLifecycleRun,
   chatWorkspaceLifecycleReducer,
   clearLocalChatDraft,
   createChatWorkspaceLifecycleState,
@@ -666,6 +667,48 @@ describe("explicit chat workspace lifecycle state", () => {
     ).toBe(replacement);
   });
 
+  it("admits runs only for one loaded, idle target at a time", () => {
+    let state = hydrateDurableChatThreads(createChatWorkspaceLifecycleState(), [
+      summary("first"),
+      { ...summary("remote"), runStatus: "streaming" },
+    ]);
+    state = mergeDurableChatThreadDetail(state, detail("first", "First", []));
+    state = mergeDurableChatThreadDetail(state, {
+      ...detail("remote", "Remote", []),
+      runStatus: "streaming",
+    });
+    state = setLocalChatDraft(
+      state,
+      createLocalChatDraft({ id: "draft", previewMode: "creator", now: T0 }),
+    );
+
+    expect(canStartChatWorkspaceLifecycleRun(state, "first")).toBe(true);
+    expect(canStartChatWorkspaceLifecycleRun(state, "remote")).toBe(false);
+    expect(canStartChatWorkspaceLifecycleRun(state, "draft")).toBe(true);
+
+    const running = startRun(state, "first");
+    expect(canStartChatWorkspaceLifecycleRun(running, "draft")).toBe(false);
+    expect(startRun(running, "draft")).toBe(running);
+  });
+
+  it("attributes a continuing durable conversation to the latest run model", () => {
+    const previousMessage = message("previous", "Earlier question");
+    let state = hydrateDurableChatThreads(createChatWorkspaceLifecycleState(), [
+      { ...summary("saved", "Saved"), model: { id: "old", displayName: "Old" } },
+    ]);
+    state = mergeDurableChatThreadDetail(state, {
+      ...detail("saved", "Saved", [previousMessage]),
+      model: { id: "old", displayName: "Old" },
+    });
+
+    state = startRun(state, "saved");
+    expect(getLoadedDurableChatThread(state, "saved")).toMatchObject({
+      title: "Saved",
+      model: MODEL,
+      messages: [previousMessage, { id: "user-1" }, { id: "assistant-1" }],
+    });
+  });
+
   it("rejects duplicate server IDs rather than creating ambiguous durable identity", () => {
     expect(() =>
       hydrateDurableChatThreads(createChatWorkspaceLifecycleState(), [
@@ -975,6 +1018,7 @@ describe("explicit chat workspace lifecycle state", () => {
     });
     expect(getLoadedDurableChatThread(state, "remote")?.messages).toBe(transcript);
     expect(getLoadedDurableChatThread(state, "remote")?.messages[1]?.error).toBeUndefined();
+    expect(canStartChatWorkspaceLifecycleRun(state, "remote")).toBe(true);
 
     state = chatWorkspaceLifecycleReducer(state, {
       type: "thread.detail-loaded",
