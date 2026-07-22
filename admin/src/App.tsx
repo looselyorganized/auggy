@@ -124,7 +124,6 @@ function ConsoleShell({
     state.durableThreads,
     chatRouteActive,
   );
-
   useEffect(
     () => setChatVisible(visibleChatTarget),
     [setChatVisible, visibleChatTarget],

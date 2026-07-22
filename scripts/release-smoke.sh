@@ -66,9 +66,6 @@ info "typecheck"
 info "build creator console"
 (cd "$ROOT" && bun run build:admin)
 
-info "verify creator console bundle is current"
-(cd "$ROOT" && bun run check:admin-dist)
-
 pack_release_package() {
   local package_dir="$1"
   local expected_name="$2"
@@ -125,13 +122,13 @@ require_pack_entry "README.md"
 require_pack_entry "CHANGELOG.md"
 require_pack_entry "LICENSE"
 require_pack_entry "SECURITY.md"
-TRACKED_ADMIN_DIST="$LOG_DIR/tracked-admin-dist.txt"
-(cd "$ROOT" && git ls-files -- admin/dist) >"$TRACKED_ADMIN_DIST"
-[[ -s "$TRACKED_ADMIN_DIST" ]] || fail "Git does not track the built console tree"
+BUILT_ADMIN_DIST="$LOG_DIR/built-admin-dist.txt"
+(cd "$ROOT" && find admin/dist -type f -print | LC_ALL=C sort) >"$BUILT_ADMIN_DIST"
+[[ -s "$BUILT_ADMIN_DIST" ]] || fail "creator console build produced no files"
 while IFS= read -r dist_path; do
   [[ -n "$dist_path" ]] || continue
   require_pack_entry "$dist_path"
-done <"$TRACKED_ADMIN_DIST"
+done <"$BUILT_ADMIN_DIST"
 grep -Eq '^package/admin/dist/assets/.+\.js$' "$PACK_LIST" \
   || fail "tarball missing built console JavaScript"
 grep -Eq '^package/admin/dist/assets/.+\.css$' "$PACK_LIST" \

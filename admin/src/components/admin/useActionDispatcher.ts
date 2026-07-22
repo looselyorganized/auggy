@@ -8,6 +8,13 @@ export interface DispatchOpts {
   actionId: string;
   rowKey?: string;
   values?: Record<string, string>;
+  toast: {
+    action: string;
+    successTitle: string;
+    successDescription: string;
+    errorTitle: string;
+    errorDescription: string;
+  };
   confirmRequired: boolean;
   confirmMessage?: string;
   /** Dashboard refresh timing after the action posts. Defaults to immediate. */
@@ -46,7 +53,11 @@ export function useActionDispatcher(): UseActionDispatcher {
       }
       const csrf = findCsrfToken(data?.csrfTokens ?? [], opts.actionId, opts.rowKey);
       if (!csrf) {
-        push("error", `No CSRF token available for ${opts.actionId}. Reloading…`);
+        push(
+          "error",
+          opts.toast.errorTitle,
+          `Reload the console and try again to ${opts.toast.action}.`,
+        );
         await refresh();
         return false;
       }
@@ -54,11 +65,22 @@ export function useActionDispatcher(): UseActionDispatcher {
       try {
         const result = await postAction(opts.actionId, csrf, opts.values, opts.rowKey);
         if (result.csrfExpired) {
-          push("warn", "Session expired — refreshing.");
+          push(
+            "warn",
+            "Session expired",
+            `Reloading so you can ${opts.toast.action}.`,
+          );
           window.location.reload();
           return false;
         }
-        push(result.ok ? "success" : "error", result.message || (result.ok ? "Done." : "Failed."));
+        push(
+          result.ok ? "success" : "error",
+          result.ok ? opts.toast.successTitle : opts.toast.errorTitle,
+          result.message ||
+            (result.ok
+              ? opts.toast.successDescription
+              : opts.toast.errorDescription),
+        );
         const refreshMode = opts.refresh ?? "immediate";
         if (refreshMode === "immediate") {
           await refresh();
@@ -67,7 +89,13 @@ export function useActionDispatcher(): UseActionDispatcher {
         }
         return result.ok;
       } catch (err) {
-        push("error", `Action failed: ${(err as Error).message}`);
+        push(
+          "error",
+          opts.toast.errorTitle,
+          err instanceof Error && err.message
+            ? err.message
+            : opts.toast.errorDescription,
+        );
         if (opts.refresh === "deferred") {
           globalThis.setTimeout(() => void refresh(), 350);
         }

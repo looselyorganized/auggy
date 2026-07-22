@@ -66,7 +66,58 @@ export function ChatTab() {
   const [preflightErrors, setPreflightErrors] = useState<Record<string, string | null>>({});
   const mountedRef = useRef(true);
   const activeThreadIdRef = useRef(activeThread.id);
+  const detailErrorToastRef = useRef<{
+    threadId: string;
+    message: string;
+  } | null>(null);
+  const chatLoadErrorToastRef = useRef<string | null>(null);
+  const preflightErrorToastRef = useRef<{ threadId: string; message: string } | null>(null);
   activeThreadIdRef.current = activeThread.id;
+  const preflightError = preflightErrors[activeThread.id] ?? null;
+  const detailError = activeThread.lifecycle === "detail" ? activeThread.detailError : null;
+
+  useEffect(() => {
+    if (!error) {
+      chatLoadErrorToastRef.current = null;
+      return;
+    }
+    if (chatLoadErrorToastRef.current === error) return;
+    push("error", "Chat load failed", error);
+    chatLoadErrorToastRef.current = error;
+  }, [error, push]);
+
+  useEffect(() => {
+    if (!detailError) {
+      detailErrorToastRef.current = null;
+      return;
+    }
+    if (
+      detailErrorToastRef.current?.threadId === activeThread.id &&
+      detailErrorToastRef.current.message === detailError
+    ) {
+      return;
+    }
+    push("error", "Conversation details unavailable", detailError);
+    detailErrorToastRef.current = {
+      threadId: activeThread.id,
+      message: detailError,
+    };
+  }, [activeThread.id, detailError, push]);
+
+  useEffect(() => {
+    if (!preflightError) {
+      preflightErrorToastRef.current = null;
+      return;
+    }
+    if (
+      preflightErrorToastRef.current?.threadId === activeThread.id &&
+      preflightErrorToastRef.current?.message === preflightError
+    ) {
+      return;
+    }
+    push("error", "Could not send message", preflightError);
+    preflightErrorToastRef.current = { threadId: activeThread.id, message: preflightError };
+  }, [activeThread.id, preflightError, push]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -130,8 +181,6 @@ export function ChatTab() {
       : modelProvider ?? modelId ?? modelDisplayName;
 
   const emptyPrompts = previewMode === "creator" ? CREATOR_EMPTY_PROMPTS : PEER_EMPTY_PROMPTS;
-  const preflightError = preflightErrors[activeThread.id] ?? null;
-  const detailError = activeThread.lifecycle === "detail" ? activeThread.detailError : null;
 
   const sendFromThread = useCallback(
     (overrideText?: string) => {
@@ -191,7 +240,7 @@ export function ChatTab() {
 
     if (!navigator.clipboard?.writeText) throw new Error("Clipboard API unavailable");
     await navigator.clipboard.writeText(transcript);
-    push("success", "copied transcript");
+    push("success", "Transcript copied", "The transcript is on your clipboard.");
   }, [activeThread.id, agentName, messages, previewMode, push]);
 
   if (loading && !data) {
@@ -245,18 +294,37 @@ export function ChatTab() {
           if (!(await markUnread(activeThread.id))) {
             throw new Error("This chat no longer exists.");
           }
+          push(
+            "success",
+            "Marked unread",
+            "This chat will appear unread in the conversation list.",
+          );
         }}
-        onClearVisitor={clearVisitor}
+        onClearVisitor={async () => {
+          await clearVisitor();
+          push(
+            "success",
+            "Local identity forgotten",
+            "Verified visitor credentials were removed from this browser.",
+          );
+        }}
         onDelete={async () => {
           const result = await deleteThread(activeThread.id);
           if (!result.ok) throw new Error(result.error);
         }}
         onActionError={(action, actionError) => {
+          const actionLabel = {
+            "preview-mode": "Change preview mode",
+            rename: "Rename chat",
+            copy: "Copy transcript",
+            "mark-unread": "Mark unread",
+            "clear-visitor": "Forget local identity",
+            delete: "Delete chat",
+          }[action];
           push(
             "error",
-            `${action} failed: ${
-              actionError instanceof Error ? actionError.message : "Unknown error"
-            }`,
+            `${actionLabel} failed`,
+            actionError instanceof Error ? actionError.message : "Unknown error",
           );
         }}
       />

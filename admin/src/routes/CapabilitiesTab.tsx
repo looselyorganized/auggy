@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useRef, useMemo, useState } from "react";
 import {
   CAPABILITY_DETAIL_ID,
   CapabilityMobileSelector,
@@ -9,6 +9,7 @@ import { CapabilityDetail } from "@/components/capabilities/CapabilitySurfaces";
 import { Card, CardContent, CardDescription, CardHeader } from "@/components/ui/card";
 import { useDashboardContext } from "@/components/admin/DashboardContext";
 import { buildCapabilityModel } from "@/lib/capability-model";
+import { useToast } from "@/lib/toast";
 
 export {
   buildConversationSurfaceRows,
@@ -17,11 +18,23 @@ export {
 
 export function CapabilitiesTab() {
   const { data, loading, error } = useDashboardContext();
+  const { push } = useToast();
+  const loadErrorRef = useRef<string | null>(null);
   const [selectedAugmentName, setSelectedAugmentName] = useState<string | null>(null);
   const model = useMemo(
     () => (data ? buildCapabilityModel(data, { selectedAugmentName }) : null),
     [data, selectedAugmentName],
   );
+
+  useEffect(() => {
+    if (!error) {
+      loadErrorRef.current = null;
+      return;
+    }
+    if (loadErrorRef.current === error) return;
+    push("error", "Capabilities load failed", error);
+    loadErrorRef.current = error;
+  }, [error, push]);
 
   if (loading && !data) {
     return (

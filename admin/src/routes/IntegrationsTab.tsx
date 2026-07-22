@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useActionDispatcher } from "@/components/admin/useActionDispatcher";
 import { AgentIntegrationPanel } from "@/components/integrations/AgentIntegrationPanel";
 import { BrowserIntegrationPanel } from "@/components/integrations/BrowserIntegrationPanel";
@@ -11,6 +11,7 @@ import {
 import { Card, CardDescription, CardHeader } from "@/components/ui/card";
 import { useDashboardContext } from "@/components/admin/DashboardContext";
 import { selectBrowserConnection, selectServerConnection } from "@/lib/integration-guidance";
+import { useToast } from "@/lib/toast";
 import type { DashboardData } from "@/lib/types";
 
 const PUBLIC_INTEGRATION_SIGNAL_KEY = "auggy-public-integration";
@@ -18,11 +19,21 @@ const PUBLIC_INTEGRATION_SIGNAL_KEY = "auggy-public-integration";
 export function IntegrationsTab() {
   const { data, loading, error, updateData } = useDashboardContext();
   const { dispatch, busy } = useActionDispatcher();
+  const { push } = useToast();
   const [mode, setMode] = useState<IntegrationMode>(DEFAULT_INTEGRATION_MODE);
   const [copied, setCopied] = useState<string | null>(null);
-  const [copyStatus, setCopyStatus] = useState("");
-  const [copyError, setCopyError] = useState("");
+  const loadErrorRef = useRef<string | null>(null);
   const origin = typeof window === "undefined" ? "" : window.location.origin;
+
+  useEffect(() => {
+    if (!error) {
+      loadErrorRef.current = null;
+      return;
+    }
+    if (loadErrorRef.current === error) return;
+    push("error", "Integrations load failed", error);
+    loadErrorRef.current = error;
+  }, [error, push]);
 
   if (loading && !data) {
     return (
@@ -60,21 +71,26 @@ export function IntegrationsTab() {
   const agentCliName = data.agentMeta?.name ?? data.card.provider.name ?? "agent";
 
   async function copy(label: string, value: string) {
-    if (!value || typeof navigator === "undefined" || !navigator.clipboard) {
-      setCopyStatus(`Could not copy ${label}.`);
-      setCopyError(`Could not copy ${label}. Select the text and copy it manually.`);
+    if (!value || typeof navigator === "undefined" || !navigator.clipboard?.writeText) {
+      push(
+        "error",
+        "Copy failed",
+        `Could not copy ${label}. Select the text and copy it manually.`,
+      );
       return;
     }
     try {
       await navigator.clipboard.writeText(value);
       setCopied(label);
-      setCopyStatus(`${label} copied.`);
-      setCopyError("");
+      push("success", "Copied", `Copied ${label}.`);
       window.setTimeout(() => setCopied((current) => (current === label ? null : current)), 1200);
     } catch {
       setCopied(null);
-      setCopyStatus(`Could not copy ${label}.`);
-      setCopyError(`Could not copy ${label}. Select the text and copy it manually.`);
+      push(
+        "error",
+        "Copy failed",
+        `Could not copy ${label}. Select the text and copy it manually.`,
+      );
     }
   }
 
@@ -83,6 +99,14 @@ export function IntegrationsTab() {
     const ok = await dispatch({
       actionId: "posture-public-integration-set",
       values: { value: "false" },
+      toast: {
+        action: "make legacy discovery private",
+        successTitle: "Legacy discovery is private",
+        successDescription:
+          "Developer discovery metadata is no longer publicly available.",
+        errorTitle: "Could not update discovery visibility",
+        errorDescription: "Legacy discovery is still public.",
+      },
       confirmRequired: false,
       refresh: "none",
     });
@@ -161,18 +185,6 @@ export function IntegrationsTab() {
           </IntegrationPanel>
         )}
 
-        {copyError && (
-          <p
-            className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
-            role="alert"
-          >
-            {copyError}
-          </p>
-        )}
-
-        <div className="sr-only" role="status" aria-live="polite">
-          {copyStatus}
-        </div>
       </div>
     </div>
   );

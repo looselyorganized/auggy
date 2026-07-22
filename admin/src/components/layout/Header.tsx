@@ -11,6 +11,7 @@ import {
 } from "@/components/ui/dialog";
 import { apply, getTheme, setTheme, subscribeSystemTheme, type Theme } from "@/lib/theme";
 import { formatModelLabel } from "@/lib/dashboard-format";
+import { useToast } from "@/lib/toast";
 import type { DashboardData } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -125,12 +126,22 @@ function AgentDetailsButton({
   const auggyVersion = dashboard?.auggyVersion;
   const transports = dashboard?.augments.filter((a) => a.isTransport).map((a) => a.type) ?? [];
   const augmentCount = dashboard?.augments.length ?? 0;
+  const { push } = useToast();
 
   async function copy(label: string, value: string) {
-    if (!value || typeof navigator === "undefined") return;
-    await navigator.clipboard.writeText(value);
-    setCopied(label);
-    window.setTimeout(() => setCopied((current) => (current === label ? null : current)), 1200);
+    if (!value || typeof navigator === "undefined" || !navigator.clipboard?.writeText) {
+      push("error", "Copy failed", `Could not copy ${label}.`);
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopied(label);
+      push("success", "Copied", `Copied ${label} to the clipboard.`);
+      window.setTimeout(() => setCopied((current) => (current === label ? null : current)), 1200);
+    } catch {
+      setCopied(null);
+      push("error", "Copy failed", `Could not copy ${label}.`);
+    }
   }
 
   const diagnostics = [

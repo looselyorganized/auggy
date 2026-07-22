@@ -18,6 +18,7 @@ import {
 } from "@/components/ui/dialog";
 import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
+import { useToast } from "@/lib/toast";
 import {
   RENAMED_CHAT_THREAD_TITLE_MAX_LENGTH,
   validateRenamedChatThreadTitle,
@@ -62,6 +63,7 @@ export function ChatThreadMutationDialogs({
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
   const deleteBusy = deleting || deletePending;
+  const { push } = useToast();
 
   useEffect(() => {
     if (!renameOpen) setRenameValue(title);
@@ -93,9 +95,11 @@ export function ChatThreadMutationDialogs({
     setRenameError(null);
     try {
       await onRename(validation.title);
+      push("success", "Chat renamed", `Renamed to "${validation.title}".`);
       setRenameOpen(false);
     } catch (error) {
       setRenameError(actionErrorMessage(error, "Could not rename this chat."));
+      push("error", "Rename failed", actionErrorMessage(error, "Could not rename this chat."));
     } finally {
       setRenaming(false);
     }
@@ -107,8 +111,12 @@ export function ChatThreadMutationDialogs({
     setDeleteError(null);
     try {
       await onDelete();
+      push("success", "Chat deleted", `Deleted “${title}”.`);
+      setDeleteOpen(false);
     } catch (error) {
       setDeleteError(actionErrorMessage(error, "Could not delete this chat."));
+      push("error", "Delete failed", actionErrorMessage(error, "Could not delete this chat."));
+    } finally {
       setDeleting(false);
     }
   };
