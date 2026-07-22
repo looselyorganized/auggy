@@ -691,6 +691,9 @@ export function ChatWorkspaceProvider({
 
   const create = useCallback(
     (previewMode?: ChatPreviewMode) => {
+      // Creating/selecting the local draft is route-authoritative and must
+      // invalidate any durable detail selection still in flight.
+      selectionRequestRef.current++;
       const current = getSelectedRenderableChatWorkspaceThread(stateRef.current);
       const deps = dependenciesRef.current;
       const createdAt = deps.now().toISOString();
@@ -729,12 +732,11 @@ export function ChatWorkspaceProvider({
 
   const loadThread = useCallback(
     async (threadId: string): Promise<boolean> => {
-      const selectionRequest = ++selectionRequestRef.current;
       const existing = getChatWorkspaceTargetById(stateRef.current, threadId);
-      if (existing?.lifecycle === "draft") {
-        if (selectionRequest === selectionRequestRef.current) select(threadId);
-        return true;
-      }
+      // Drafts belong exclusively to /chat/new. Durable loading must never
+      // select one or cancel an in-flight durable selection generation.
+      if (existing?.lifecycle === "draft") return false;
+      const selectionRequest = ++selectionRequestRef.current;
       if (existing?.lifecycle === "detail") {
         if (selectionRequest === selectionRequestRef.current) select(threadId);
         return true;

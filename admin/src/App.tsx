@@ -4,10 +4,8 @@ import {
   Navigate,
   Route,
   Routes,
-  matchPath,
   useLocation,
   useNavigate,
-  useParams,
 } from "react-router-dom";
 import { LoaderCircle, MessageSquare, Network, Plug, Plus } from "lucide-react";
 import { ChatThreadNav } from "@/components/admin/ChatThreadNav";
@@ -22,10 +20,12 @@ import { ConfirmProvider } from "@/lib/confirm";
 import { DashboardProvider } from "@/components/admin/DashboardContext";
 import { useDashboard } from "@/hooks/useDashboard";
 import {
+  CHAT_DRAFT_PATH,
+  CHAT_WELCOME_PATH,
   chatThreadPath,
-  decodeChatThreadRouteParam,
   getChatNavigationState,
   getVisibleChatWorkspaceTarget,
+  parseChatRouteTarget,
 } from "@/lib/chat-route";
 import { getMobileChatNavigationState } from "@/lib/chat-run-state";
 import {
@@ -108,20 +108,17 @@ function ConsoleShell({
   const navigate = useNavigate();
   const location = useLocation();
   const documentVisible = useDocumentVisible();
-  const chatRouteActive = location.pathname.startsWith("/chat");
-  const routedThreadId = decodeChatThreadRouteParam(
-    matchPath("/chat/:threadId", location.pathname)?.params.threadId,
-  );
+  const chatRoute = parseChatRouteTarget(location.pathname);
+  const chatRouteActive = chatRoute.kind !== "outside";
   const visibleChatTarget = getVisibleChatWorkspaceTarget({
-    chatRouteActive,
+    route: chatRoute,
     documentVisible,
-    routedThreadId,
+    localDraftId: state.draft?.id ?? null,
     selection: state.selection,
   });
   const { activeId: activeNavId, threads } = getChatNavigationState({
     threads: state.durableThreads,
-    chatRouteActive,
-    routedThreadId,
+    route: chatRoute,
     selection: state.selection,
   });
   const mobileChatNavigation = getMobileChatNavigationState(
@@ -134,8 +131,8 @@ function ConsoleShell({
     [setChatVisible, visibleChatTarget],
   );
   const openNewChat = () => {
-    const threadId = create();
-    navigate(chatThreadPath(threadId));
+    create();
+    navigate(CHAT_DRAFT_PATH);
   };
   const openChat = (threadId: string) => {
     if (!select(threadId)) return;
@@ -151,8 +148,8 @@ function ConsoleShell({
         "This chat cannot be deleted while its response is running.",
       );
     }
-    if (!routedThreadId || routedThreadId === threadId) {
-      navigate("/chat", { replace: true });
+    if (chatRoute.kind === "thread" && chatRoute.threadId === threadId) {
+      navigate(CHAT_WELCOME_PATH, { replace: true });
     }
   };
   return (
@@ -260,12 +257,13 @@ function ConsoleShell({
         <main className="min-h-0 flex-1 overflow-hidden bg-muted/30 pb-12 sm:pb-0">
           <Suspense fallback={<ConsoleRouteFallback />}>
             <Routes>
-              <Route path="/" element={<Navigate to="/chat" replace />} />
+              <Route path="/" element={<Navigate to={CHAT_WELCOME_PATH} replace />} />
               <Route path="/chat" element={<ChatRoute />} />
+              <Route path="/chat/new" element={<ChatRoute />} />
               <Route path="/chat/:threadId" element={<ChatRoute />} />
               <Route path="/integrations" element={<IntegrationsTab />} />
               <Route path="/capabilities" element={<CapabilitiesTab />} />
-              <Route path="*" element={<Navigate to="/chat" replace />} />
+              <Route path="*" element={<Navigate to={CHAT_WELCOME_PATH} replace />} />
             </Routes>
           </Suspense>
         </main>
@@ -300,7 +298,8 @@ type ChatRouteLookup =
  * so a copied deep link works without fetching every transcript into the sidebar.
  */
 function ChatRoute() {
-  const { threadId } = useParams<{ threadId?: string }>();
+  const location = useLocation();
+  const route = parseChatRouteTarget(location.pathname);
   const {
     state,
     activeThread,
@@ -308,20 +307,55 @@ function ChatRoute() {
     hydrationError,
     loadThread,
     create,
+    select,
     selectWelcome,
   } = useChatWorkspace();
   const navigate = useNavigate();
   const [lookup, setLookup] = useState<ChatRouteLookup | null>(null);
+  const threadId = route.kind === "thread" ? route.threadId : undefined;
   const routeTargetLifecycle = threadId
     ? getChatWorkspaceTargetById(state, threadId)?.lifecycle
     : undefined;
 
   useEffect(() => {
-    if (!threadId) selectWelcome();
-  }, [selectWelcome, threadId]);
+    if (route.kind === "welcome") selectWelcome();
+  }, [route.kind, selectWelcome]);
+
+  useEffect(() => {
+    if (
+      hydrationStatus !== "ready" ||
+      route.kind !== "draft" ||
+      location.pathname !== CHAT_DRAFT_PATH
+    ) {
+      return;
+    }
+    const draftId = state.draft?.id;
+    if (!draftId) {
+      create();
+      return;
+    }
+    if (
+      state.selection.kind !== "draft" ||
+      state.selection.draftId !== draftId
+    ) {
+      select(draftId);
+    }
+  }, [
+    create,
+    hydrationStatus,
+    location.pathname,
+    route.kind,
+    select,
+    state.draft?.id,
+    state.selection,
+  ]);
 
   useEffect(() => {
     if (hydrationStatus !== "ready" || !threadId) return;
+    if (state.draft?.id === threadId) {
+      setLookup({ threadId, status: "not-found" });
+      return;
+    }
     let current = true;
     setLookup({ threadId, status: "loading" });
     void loadThread(threadId).then(
@@ -345,7 +379,13 @@ function ChatRoute() {
     return () => {
       current = false;
     };
-  }, [hydrationStatus, loadThread, routeTargetLifecycle, threadId]);
+  }, [
+    hydrationStatus,
+    loadThread,
+    routeTargetLifecycle,
+    state.draft?.id,
+    threadId,
+  ]);
 
   const requestedThreadWasRemoved =
     threadId !== undefined &&
@@ -359,8 +399,16 @@ function ChatRoute() {
   useEffect(() => {
     if (hydrationStatus !== "ready" || !threadId || !recoverFromMissingThread)
       return;
-    navigate("/chat", { replace: true });
+    navigate(CHAT_WELCOME_PATH, { replace: true });
   }, [hydrationStatus, navigate, recoverFromMissingThread, threadId]);
+
+  if (route.kind === "outside") {
+    return <Navigate to={CHAT_WELCOME_PATH} replace />;
+  }
+
+  if (route.kind === "draft" && location.pathname !== CHAT_DRAFT_PATH) {
+    return <Navigate to={CHAT_DRAFT_PATH} replace />;
+  }
 
   if (hydrationStatus === "loading") {
     return <ChatRouteStatus title="Loading chat…" />;
@@ -377,19 +425,33 @@ function ChatRoute() {
     );
   }
 
-  if (threadId && lookup?.threadId !== threadId) {
-    return <ChatRouteStatus title="Loading chat…" />;
-  }
-
-  if (!threadId) {
+  if (route.kind === "welcome") {
     return (
       <ChatWelcome
         onStart={() => {
-          const createdThreadId = create();
-          navigate(chatThreadPath(createdThreadId));
+          create();
+          navigate(CHAT_DRAFT_PATH);
         }}
       />
     );
+  }
+
+  if (route.kind === "draft") {
+    const selectedDraftId =
+      state.selection.kind === "draft" ? state.selection.draftId : null;
+    if (
+      !state.draft ||
+      selectedDraftId !== state.draft.id ||
+      activeThread?.lifecycle !== "draft" ||
+      activeThread.id !== state.draft.id
+    ) {
+      return <ChatRouteStatus title="Loading chat…" />;
+    }
+    return <ChatTab />;
+  }
+
+  if (lookup?.threadId !== threadId) {
+    return <ChatRouteStatus title="Loading chat…" />;
   }
 
   if (lookup?.status === "loading") {
@@ -406,7 +468,7 @@ function ChatRoute() {
         title="Could not load this chat"
         detail={lookup.detail}
         actionLabel="Back to chats"
-        onAction={() => navigate("/chat", { replace: true })}
+        onAction={() => navigate(CHAT_WELCOME_PATH, { replace: true })}
       />
     );
   }
@@ -416,7 +478,8 @@ function ChatRoute() {
   if (
     lookup?.status !== "ready" ||
     getSelectedChatWorkspaceId(state) !== threadId ||
-    activeThread?.id !== threadId
+    activeThread?.id !== threadId ||
+    activeThread.lifecycle !== "detail"
   ) {
     return <ChatRouteStatus title="Loading chat…" />;
   }

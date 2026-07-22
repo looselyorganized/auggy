@@ -178,6 +178,18 @@ describe("ChatWorkspaceProvider persistence", () => {
       previewMode: "creator",
     });
     expect(harness.value.state.durableThreads).toEqual([]);
+    const draftBeforeLoad = harness.value.state.draft;
+
+    await act(async () => {
+      expect(await harness.value.loadThread(first)).toBe(false);
+    });
+    expect(harness.value.state.draft).toBe(draftBeforeLoad);
+    expect(harness.value.state.selection).toEqual({ kind: "draft", draftId: first });
+
+    act(() => harness.value.selectWelcome());
+    expect(harness.value.state.selection).toEqual({ kind: "welcome" });
+    act(() => expect(harness.value.select(first)).toBe(true));
+    expect(harness.value.state.selection).toEqual({ kind: "draft", draftId: first });
 
     await act(async () => {
       expect(await harness.value.markUnread(first)).toBe(false);
@@ -313,6 +325,7 @@ describe("ChatWorkspaceProvider persistence", () => {
     };
     const initial = createChatWorkspace(anonymous);
     let submitted: Record<string, unknown> | undefined;
+    let callbackDraftId: string | undefined;
     const fetchImpl = mockFetch(async (path, init) => {
       if (path === "/console/api/chat") {
         submitted = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
@@ -334,7 +347,13 @@ describe("ChatWorkspaceProvider persistence", () => {
     );
     await act(async () => {
       expect(harness.value.refreshVisitorToken()).toBe(true);
-      expect(await harness.value.send("Done")).toEqual({ ok: true });
+      expect(
+        await harness.value.send("Done", undefined, () => {
+          // Creating from the callback inherits the promoted durable identity.
+          // If promotion ran later, this would reuse the anonymous run draft.
+          callbackDraftId = harness.value.create();
+        }),
+      ).toEqual({ ok: true });
     });
 
     expect(submitted).toMatchObject({
@@ -342,6 +361,16 @@ describe("ChatWorkspaceProvider persistence", () => {
       chatMode: "visitor",
       visitorToken: "verified.payload.signature",
     });
+    expect(callbackDraftId).toBeDefined();
+    expect(callbackDraftId).not.toBe(anonymous.id);
+    expect(harness.value.state.draft).toMatchObject({
+      id: callbackDraftId,
+      previewMode: "visitor",
+      lifecycle: "draft",
+    });
+    expect(
+      harness.value.state.durableThreads.find(({ id }) => id === anonymous.id),
+    ).toMatchObject({ previewMode: "visitor", lifecycle: "detail" });
     expect(harness.value.activeThread?.previewMode).toBe("visitor");
     expect(storage.get(VISITOR_TOKEN_KEY)).toBe("verified.payload.signature");
     expect(storage.has(VISITOR_PROMOTION_INTENT_KEY)).toBe(false);
@@ -1064,6 +1093,31 @@ describe("ChatWorkspaceProvider persistence", () => {
     await act(async () => slow.resolve(json({ thread: first })));
     await act(async () => expect(await firstLoad).toBe(true));
     expect(harness.value.activeThread?.id).toBe("second");
+  });
+
+  it("does not let a slow durable detail steal selection from a new draft route", async () => {
+    const saved = populatedThread("saved", "Saved");
+    const slow = deferred<Response>();
+    const fetchImpl = mockFetch(async (path) => {
+      if (path === "/console/api/chat/threads") {
+        return json({ threads: [summary(saved)] });
+      }
+      if (path === "/console/api/chat/threads/saved") return slow.promise;
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    const harness = await mountProvider({ fetchImpl });
+
+    let load!: Promise<boolean>;
+    let draftId = "";
+    await act(async () => {
+      load = harness.value.loadThread("saved");
+      draftId = harness.value.create();
+    });
+    await act(async () => slow.resolve(json({ thread: saved })));
+    await act(async () => expect(await load).toBe(true));
+
+    expect(harness.value.state.selection).toEqual({ kind: "draft", draftId });
+    expect(harness.value.activeThread?.id).toBe(draftId);
   });
 
   it("keeps the welcome route authoritative over a delayed detail load", async () => {
