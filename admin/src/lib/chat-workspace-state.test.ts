@@ -5,9 +5,15 @@ import {
   createChatWorkspaceLifecycleState,
   createLocalChatDraft,
   deleteDurableChatThread,
+  getChatWorkspaceTargetById,
   getDurableChatThread,
   getLoadedDurableChatThread,
+  getSelectedChatWorkspaceId,
+  getSelectedRenderableChatWorkspaceThread,
   getSelectedChatWorkspaceTarget,
+  getVisibleDurableChatThreadId,
+  hasChatWorkspaceUserMessages,
+  hasDurableChatThread,
   hydrateDurableChatThreads,
   mergeDurableChatThreadDetail,
   selectDurableChatThread,
@@ -75,6 +81,27 @@ function startRun(
   });
 }
 
+function acceptRun(
+  state: ReturnType<typeof createChatWorkspaceLifecycleState>,
+  threadId: string,
+) {
+  return chatWorkspaceLifecycleReducer(state, {
+    type: "run.accept",
+    clientRunId: "run-1",
+    threadId,
+    assistantMessageId: "assistant-1",
+  });
+}
+
+function acceptedDurableRun(threadId = "running") {
+  let state = hydrateDurableChatThreads(createChatWorkspaceLifecycleState(), [
+    summary(threadId),
+  ]);
+  state = mergeDurableChatThreadDetail(state, detail(threadId, threadId, []));
+  state = startRun(state, threadId);
+  return acceptRun(state, threadId);
+}
+
 describe("explicit chat workspace lifecycle state", () => {
   it("starts at welcome with no implicit draft, durable thread, or run", () => {
     const state = createChatWorkspaceLifecycleState();
@@ -84,6 +111,8 @@ describe("explicit chat workspace lifecycle state", () => {
       draft: null,
       deferredDraftSummary: null,
       selection: { kind: "welcome" },
+      chatVisible: false,
+      visibleTarget: null,
       activeRun: null,
     });
     expect(getSelectedChatWorkspaceTarget(state)).toEqual({ kind: "welcome" });
@@ -232,7 +261,7 @@ describe("explicit chat workspace lifecycle state", () => {
     });
     expect(getSelectedChatWorkspaceTarget(state)).toEqual({ kind: "draft", draft });
 
-    state = clearLocalChatDraft(state);
+    state = clearLocalChatDraft(state, "draft");
     expect(state.selection).toEqual({ kind: "welcome" });
   });
 
@@ -306,6 +335,7 @@ describe("explicit chat workspace lifecycle state", () => {
     let state = setLocalChatDraft(createChatWorkspaceLifecycleState(), initialDraft);
     state = chatWorkspaceLifecycleReducer(state, {
       type: "draft.rename",
+      draftId: "draft",
       title: "  Deliberate title  ",
       at: T1,
     });
@@ -633,5 +663,405 @@ describe("explicit chat workspace lifecycle state", () => {
     );
     expect(state.draft).toBe(draft);
     expect(state.durableThreads).toEqual([]);
+  });
+
+  it("clears unread only for the exact selected durable route proven visible", () => {
+    let state = hydrateDurableChatThreads(createChatWorkspaceLifecycleState(), [
+      { ...summary("selected"), unread: true, lastReadAt: null },
+      { ...summary("other"), unread: true, lastReadAt: null },
+    ]);
+    state = selectDurableChatThread(state, "selected");
+    state = chatWorkspaceLifecycleReducer(state, {
+      type: "workspace.visibility-set",
+      target: { kind: "thread", threadId: "other" },
+      at: T1,
+    });
+    expect(getDurableChatThread(state, "selected")?.unread).toBe(true);
+    expect(getDurableChatThread(state, "other")?.unread).toBe(true);
+
+    state = chatWorkspaceLifecycleReducer(state, {
+      type: "workspace.visibility-set",
+      target: { kind: "thread", threadId: "selected" },
+      at: T1,
+    });
+    expect(getDurableChatThread(state, "selected")).toMatchObject({
+      unread: false,
+      lastReadAt: T1,
+    });
+    expect(getDurableChatThread(state, "other")?.unread).toBe(true);
+    expect(
+      chatWorkspaceLifecycleReducer(state, {
+        type: "workspace.visibility-set",
+        target: { kind: "thread", threadId: "selected" },
+        at: T1,
+      }),
+    ).toBe(state);
+
+    state = selectDurableChatThread(state, "other");
+    expect(state).toMatchObject({ chatVisible: false, visibleTarget: null });
+    const delayedVisibility = chatWorkspaceLifecycleReducer(state, {
+      type: "workspace.visibility-set",
+      target: { kind: "thread", threadId: "selected" },
+      at: T2,
+    });
+    expect(delayedVisibility).toBe(state);
+    expect(getDurableChatThread(delayedVisibility, "other")?.unread).toBe(true);
+
+    state = chatWorkspaceLifecycleReducer(state, { type: "selection.welcome" });
+    state = chatWorkspaceLifecycleReducer(state, {
+      type: "workspace.visibility-set",
+      target: null,
+      at: T1,
+    });
+    state = chatWorkspaceLifecycleReducer(state, {
+      type: "thread.read-state-confirmed",
+      threadId: "selected",
+      unread: true,
+      lastReadAt: T1,
+    });
+    state = chatWorkspaceLifecycleReducer(state, {
+      type: "workspace.visibility-set",
+      target: { kind: "thread", threadId: "selected" },
+      at: T2,
+    });
+    expect(getDurableChatThread(state, "selected")?.unread).toBe(true);
+  });
+
+  it("routes an accepted stream to its exact owner after selection changes", () => {
+    let state = acceptedDurableRun("one");
+    state = hydrateDurableChatThreads(state, [summary("one"), summary("two")]);
+    state = selectDurableChatThread(state, "two");
+    state = chatWorkspaceLifecycleReducer(state, {
+      type: "workspace.visibility-set",
+      target: { kind: "thread", threadId: "two" },
+      at: T1,
+    });
+    state = chatWorkspaceLifecycleReducer(state, {
+      type: "run.message-update",
+      clientRunId: "run-1",
+      threadId: "one",
+      assistantMessageId: "assistant-1",
+      patch: { content: "Background answer" },
+      at: T2,
+    });
+
+    expect(getLoadedDurableChatThread(state, "one")).toMatchObject({
+      unread: true,
+      messages: [{ id: "user-1" }, { id: "assistant-1", content: "Background answer" }],
+    });
+    expect(getDurableChatThread(state, "two")?.unread).toBe(false);
+  });
+
+  it("marks hidden activity unread and keeps the exactly visible owner read", () => {
+    let visible = acceptedDurableRun("visible");
+    visible = selectDurableChatThread(visible, "visible");
+    visible = chatWorkspaceLifecycleReducer(visible, {
+      type: "workspace.visibility-set",
+      target: { kind: "thread", threadId: "visible" },
+      at: T1,
+    });
+    visible = chatWorkspaceLifecycleReducer(visible, {
+      type: "run.message-update",
+      clientRunId: "run-1",
+      threadId: "visible",
+      assistantMessageId: "assistant-1",
+      patch: { content: "Visible answer" },
+      at: T2,
+    });
+    expect(getLoadedDurableChatThread(visible, "visible")).toMatchObject({
+      unread: false,
+      lastReadAt: T2,
+    });
+
+    let hidden = acceptedDurableRun("hidden");
+    hidden = selectDurableChatThread(hidden, "hidden");
+    hidden = chatWorkspaceLifecycleReducer(hidden, {
+      type: "workspace.visibility-set",
+      target: null,
+      at: T1,
+    });
+    hidden = chatWorkspaceLifecycleReducer(hidden, {
+      type: "run.message-update",
+      clientRunId: "run-1",
+      threadId: "hidden",
+      assistantMessageId: "assistant-1",
+      patch: { content: "Hidden answer" },
+      at: T2,
+    });
+    expect(getLoadedDurableChatThread(hidden, "hidden")).toMatchObject({
+      unread: true,
+      lastReadAt: T0,
+    });
+  });
+
+  it("rejects stale run tuples, pending finishes, and duplicate terminal callbacks", () => {
+    let pending = hydrateDurableChatThreads(createChatWorkspaceLifecycleState(), [
+      summary("running"),
+    ]);
+    pending = mergeDurableChatThreadDetail(pending, detail("running", "running", []));
+    pending = startRun(pending, "running");
+    expect(
+      chatWorkspaceLifecycleReducer(pending, {
+        type: "run.message-update",
+        clientRunId: "run-1",
+        threadId: "running",
+        assistantMessageId: "assistant-1",
+        patch: { content: "Too early" },
+        at: T2,
+      }),
+    ).toBe(pending);
+    expect(
+      chatWorkspaceLifecycleReducer(pending, {
+        type: "run.finish",
+        clientRunId: "run-1",
+        threadId: "running",
+        assistantMessageId: "assistant-1",
+        outcome: "complete",
+        at: T2,
+      }),
+    ).toBe(pending);
+
+    const accepted = acceptRun(pending, "running");
+    const staleUpdate = chatWorkspaceLifecycleReducer(accepted, {
+      type: "run.message-update",
+      clientRunId: "run-1",
+      threadId: "running",
+      assistantMessageId: "other-assistant",
+      patch: { content: "Wrong owner" },
+      at: T2,
+    });
+    expect(staleUpdate).toBe(accepted);
+    expect(
+      chatWorkspaceLifecycleReducer(accepted, {
+        type: "run.message-update",
+        clientRunId: "run-1",
+        threadId: "running",
+        assistantMessageId: "assistant-1",
+        patch: { content: "" },
+        at: T2,
+      }),
+    ).toBe(accepted);
+    expect(
+      chatWorkspaceLifecycleReducer(accepted, {
+        type: "run.finish",
+        clientRunId: "stale-run",
+        threadId: "running",
+        assistantMessageId: "assistant-1",
+        outcome: "error",
+        at: T2,
+      }),
+    ).toBe(accepted);
+
+    const finished = chatWorkspaceLifecycleReducer(accepted, {
+      type: "run.finish",
+      clientRunId: "run-1",
+      threadId: "running",
+      assistantMessageId: "assistant-1",
+      outcome: "complete",
+      at: T2,
+    });
+    expect(finished.activeRun).toBeNull();
+    expect(
+      chatWorkspaceLifecycleReducer(finished, {
+        type: "run.finish",
+        clientRunId: "run-1",
+        threadId: "running",
+        assistantMessageId: "assistant-1",
+        outcome: "error",
+        at: T2,
+      }),
+    ).toBe(finished);
+  });
+
+  it("terminalizes the owned assistant message and every running tool", () => {
+    let state = acceptedDurableRun("running");
+    state = chatWorkspaceLifecycleReducer(state, {
+      type: "run.message-update",
+      clientRunId: "run-1",
+      threadId: "running",
+      assistantMessageId: "assistant-1",
+      patch: {
+        toolCalls: [
+          { id: "active", name: "search", status: "running" },
+          { id: "done", name: "read", status: "completed" },
+        ],
+      },
+      at: T1,
+    });
+    state = chatWorkspaceLifecycleReducer(state, {
+      type: "run.finish",
+      clientRunId: "run-1",
+      threadId: "running",
+      assistantMessageId: "assistant-1",
+      outcome: "interrupted",
+      at: T2,
+    });
+
+    expect(getLoadedDurableChatThread(state, "running")).toMatchObject({
+      runStatus: "interrupted",
+      messages: [
+        { id: "user-1" },
+        {
+          id: "assistant-1",
+          error: "Response stopped before completion.",
+          toolCalls: [{ status: "error" }, { status: "completed" }],
+        },
+      ],
+    });
+  });
+
+  it("keeps canonical summary status when detail reconciliation fails", () => {
+    const transcript = [
+      message("user", "Question"),
+      { ...message("assistant", "Partial"), role: "assistant" as const },
+    ];
+    let state = hydrateDurableChatThreads(createChatWorkspaceLifecycleState(), [
+      { ...summary("remote"), runStatus: "streaming" },
+    ]);
+    state = mergeDurableChatThreadDetail(state, {
+      ...detail("remote", "Remote", transcript),
+      runStatus: "streaming",
+    });
+    const canonical = { ...summary("remote", "Canonical", T2), runStatus: "complete" as const };
+    state = chatWorkspaceLifecycleReducer(state, {
+      type: "thread.reconciliation-failed",
+      thread: canonical,
+      error: "Saved transcript unavailable.",
+    });
+    expect(getLoadedDurableChatThread(state, "remote")).toMatchObject({
+      title: "Canonical",
+      runStatus: "complete",
+      detailError: "Saved transcript unavailable.",
+    });
+    expect(getLoadedDurableChatThread(state, "remote")?.messages).toBe(transcript);
+    expect(getLoadedDurableChatThread(state, "remote")?.messages[1]?.error).toBeUndefined();
+
+    state = chatWorkspaceLifecycleReducer(state, {
+      type: "thread.detail-loaded",
+      thread: { ...detail("remote", "Canonical", transcript), runStatus: "complete" },
+    });
+    expect(getLoadedDurableChatThread(state, "remote")?.detailError).toBeNull();
+  });
+
+  it("limits draft settings to the exact idle draft and applies confirmed metadata durably", () => {
+    let state = setLocalChatDraft(
+      createChatWorkspaceLifecycleState(),
+      createLocalChatDraft({ id: "draft", previewMode: "creator", now: T0 }),
+    );
+    expect(
+      chatWorkspaceLifecycleReducer(state, {
+        type: "draft.rename",
+        draftId: "stale-draft",
+        title: "Wrong draft",
+        at: T1,
+      }),
+    ).toBe(state);
+    expect(
+      chatWorkspaceLifecycleReducer(state, {
+        type: "draft.cleared",
+        draftId: "stale-draft",
+      }),
+    ).toBe(state);
+    state = chatWorkspaceLifecycleReducer(state, {
+      type: "draft.preview-mode-set",
+      draftId: "draft",
+      previewMode: "anonymous",
+      at: T1,
+    });
+    state = chatWorkspaceLifecycleReducer(state, {
+      type: "draft.model-set",
+      draftId: "draft",
+      model: MODEL,
+      at: T1,
+    });
+    expect(state.draft).toMatchObject({ previewMode: "anonymous", model: MODEL });
+
+    const running = startRun(state, "draft");
+    expect(
+      chatWorkspaceLifecycleReducer(running, {
+        type: "draft.preview-mode-set",
+        draftId: "draft",
+        previewMode: "visitor",
+        at: T2,
+      }),
+    ).toBe(running);
+    expect(
+      chatWorkspaceLifecycleReducer(running, {
+        type: "draft.model-set",
+        draftId: "draft",
+        model: null,
+        at: T2,
+      }),
+    ).toBe(running);
+
+    const durableRun = acceptedDurableRun("owned");
+    expect(
+      chatWorkspaceLifecycleReducer(durableRun, {
+        type: "thread.rename-confirmed",
+        threadId: "owned",
+        title: "Late rename",
+        updatedAt: T2,
+      }),
+    ).toBe(durableRun);
+    const readDuringRun = chatWorkspaceLifecycleReducer(durableRun, {
+      type: "thread.read-state-confirmed",
+      threadId: "owned",
+      unread: true,
+      lastReadAt: T1,
+    });
+    expect(getDurableChatThread(readDuringRun, "owned")).toMatchObject({
+      title: "owned",
+      unread: true,
+      lastReadAt: T1,
+    });
+
+    let durable = hydrateDurableChatThreads(createChatWorkspaceLifecycleState(), [
+      summary("saved", "Before"),
+    ]);
+    durable = chatWorkspaceLifecycleReducer(durable, {
+      type: "thread.rename-confirmed",
+      threadId: "saved",
+      title: "Server title",
+      updatedAt: T2,
+    });
+    durable = chatWorkspaceLifecycleReducer(durable, {
+      type: "thread.read-state-confirmed",
+      threadId: "saved",
+      unread: true,
+      lastReadAt: T1,
+    });
+    expect(getDurableChatThread(durable, "saved")).toMatchObject({
+      lifecycle: "summary",
+      title: "Server title",
+      updatedAt: T2,
+      unread: true,
+      lastReadAt: T1,
+    });
+  });
+
+  it("exposes lifecycle-safe selectors for provider rendering and ownership", () => {
+    const draft = createLocalChatDraft({ id: "draft", previewMode: "creator", now: T0 });
+    let state = setLocalChatDraft(createChatWorkspaceLifecycleState(), draft);
+    state = hydrateDurableChatThreads(state, [summary("summary"), summary("loaded")]);
+    state = mergeDurableChatThreadDetail(state, detail("loaded"));
+
+    expect(getChatWorkspaceTargetById(state, "draft")).toBe(draft);
+    expect(hasDurableChatThread(state, "summary")).toBe(true);
+    expect(hasDurableChatThread(state, "draft")).toBe(false);
+    state = selectDurableChatThread(state, "summary");
+    expect(getSelectedChatWorkspaceId(state)).toBe("summary");
+    expect(getSelectedRenderableChatWorkspaceThread(state)).toBeUndefined();
+    state = selectDurableChatThread(state, "loaded");
+    expect(getSelectedRenderableChatWorkspaceThread(state)?.id).toBe("loaded");
+    expect(hasChatWorkspaceUserMessages(getSelectedRenderableChatWorkspaceThread(state)!)).toBe(
+      true,
+    );
+    expect(getVisibleDurableChatThreadId(state)).toBeNull();
+    state = chatWorkspaceLifecycleReducer(state, {
+      type: "workspace.visibility-set",
+      target: { kind: "thread", threadId: "loaded" },
+      at: T2,
+    });
+    expect(getVisibleDurableChatThreadId(state)).toBe("loaded");
   });
 });

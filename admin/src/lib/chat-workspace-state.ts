@@ -6,6 +6,7 @@ import {
   type ChatThreadSummary,
   type ChatMessage,
   type ChatModelSnapshot,
+  type ChatPreviewMode,
   type ChatRunStatus,
   type CreateChatThreadOptions,
 } from "./chat-workspace";
@@ -18,6 +19,8 @@ export type DurableChatThreadSummary = ChatThreadSummary & {
 /** A durable conversation whose transcript has also been loaded. */
 export type DurableChatThreadDetail = ChatThread & {
   lifecycle: "detail";
+  /** A detail refresh failure is transport state, not the canonical run status. */
+  detailError: string | null;
 };
 
 export type DurableChatThread = DurableChatThreadSummary | DurableChatThreadDetail;
@@ -36,12 +39,17 @@ export type ChatWorkspaceSelection =
   | { kind: "draft"; draftId: string }
   | { kind: "thread"; threadId: string };
 
+export type ChatWorkspaceVisibleTarget = Exclude<ChatWorkspaceSelection, { kind: "welcome" }>;
+
 export interface ChatWorkspaceLifecycleState {
   durableThreads: readonly DurableChatThread[];
   draft: LocalChatDraft | null;
   /** Server durability observed before the matching POST response was accepted locally. */
   deferredDraftSummary: ChatThreadSummary | null;
   selection: ChatWorkspaceSelection;
+  /** Derived convenience flag kept coherent with the identity-bound visible target. */
+  chatVisible: boolean;
+  visibleTarget: ChatWorkspaceVisibleTarget | null;
   activeRun: ChatWorkspaceLifecycleRun | null;
 }
 
@@ -73,13 +81,45 @@ export type SelectedChatWorkspaceTarget =
 export type ChatWorkspaceLifecycleAction =
   | { type: "server.hydrated"; summaries: readonly ChatThreadSummary[] }
   | { type: "thread.detail-loaded"; thread: ChatThread }
+  | { type: "thread.summary-merge"; thread: ChatThreadSummary }
+  | { type: "thread.reconciliation-failed"; thread: ChatThreadSummary; error: string }
   | { type: "thread.deleted"; threadId: string }
   | { type: "draft.set"; draft: LocalChatDraft }
-  | { type: "draft.rename"; title: string; at: string }
-  | { type: "draft.cleared" }
+  | { type: "draft.rename"; draftId: string; title: string; at: string }
+  | {
+      type: "draft.preview-mode-set";
+      draftId: string;
+      previewMode: ChatPreviewMode;
+      at: string;
+    }
+  | {
+      type: "draft.model-set";
+      draftId: string;
+      model: ChatModelSnapshot | null;
+      at: string;
+    }
+  | { type: "draft.cleared"; draftId: string }
+  | {
+      type: "workspace.visibility-set";
+      /** Null means hidden; otherwise the exact selected identity proven visible. */
+      target: ChatWorkspaceVisibleTarget | null;
+      at: string;
+    }
   | { type: "selection.welcome" }
   | { type: "selection.draft"; draftId: string }
   | { type: "selection.thread"; threadId: string }
+  | {
+      type: "thread.rename-confirmed";
+      threadId: string;
+      title: string;
+      updatedAt: string;
+    }
+  | {
+      type: "thread.read-state-confirmed";
+      threadId: string;
+      unread: boolean;
+      lastReadAt: string | null;
+    }
   | {
       type: "run.start";
       clientRunId: string;
@@ -102,6 +142,23 @@ export type ChatWorkspaceLifecycleAction =
       clientRunId: string;
       threadId: string;
       assistantMessageId: string;
+    }
+  | {
+      type: "run.message-update";
+      clientRunId: string;
+      threadId: string;
+      assistantMessageId: string;
+      patch: Partial<Pick<ChatMessage, "content" | "toolCalls" | "error">>;
+      at: string;
+    }
+  | {
+      type: "run.finish";
+      clientRunId: string;
+      threadId: string;
+      assistantMessageId: string;
+      outcome: Exclude<ChatRunStatus, "idle" | "streaming">;
+      error?: string;
+      at: string;
     };
 
 const WELCOME_SELECTION: ChatWorkspaceSelection = { kind: "welcome" };
@@ -113,6 +170,8 @@ export function createChatWorkspaceLifecycleState(): ChatWorkspaceLifecycleState
     draft: null,
     deferredDraftSummary: null,
     selection: WELCOME_SELECTION,
+    chatVisible: false,
+    visibleTarget: null,
     activeRun: null,
   };
 }
@@ -139,6 +198,63 @@ export function getLoadedDurableChatThread(
 ): DurableChatThreadDetail | undefined {
   const thread = getDurableChatThread(state, threadId);
   return thread?.lifecycle === "detail" ? thread : undefined;
+}
+
+/** Resolve a workspace-owned target without conflating summaries and drafts. */
+export function getChatWorkspaceTargetById(
+  state: ChatWorkspaceLifecycleState,
+  targetId: string,
+): LocalChatDraft | DurableChatThread | undefined {
+  if (state.draft?.id === targetId) return state.draft;
+  return getDurableChatThread(state, targetId);
+}
+
+export function getSelectedChatWorkspaceId(
+  state: ChatWorkspaceLifecycleState,
+): string | null {
+  if (state.selection.kind === "draft") return state.selection.draftId;
+  if (state.selection.kind === "thread") return state.selection.threadId;
+  return null;
+}
+
+/** A summary is navigation data and is not renderable as an empty transcript. */
+export function getSelectedRenderableChatWorkspaceThread(
+  state: ChatWorkspaceLifecycleState,
+): LocalChatDraft | DurableChatThreadDetail | undefined {
+  const selectedId = getSelectedChatWorkspaceId(state);
+  if (!selectedId) return undefined;
+  const target = getChatWorkspaceTargetById(state, selectedId);
+  return target?.lifecycle === "summary" ? undefined : target;
+}
+
+export function hasDurableChatThread(
+  state: ChatWorkspaceLifecycleState,
+  threadId: string,
+): boolean {
+  return getDurableChatThread(state, threadId) !== undefined;
+}
+
+/** The exact durable selection that may receive visible/read semantics. */
+export function getVisibleDurableChatThreadId(
+  state: ChatWorkspaceLifecycleState,
+): string | null {
+  if (
+    !state.chatVisible ||
+    state.visibleTarget?.kind !== "thread" ||
+    state.selection.kind !== "thread" ||
+    state.visibleTarget.threadId !== state.selection.threadId
+  ) {
+    return null;
+  }
+  return hasDurableChatThread(state, state.visibleTarget.threadId)
+    ? state.visibleTarget.threadId
+    : null;
+}
+
+export function hasChatWorkspaceUserMessages(
+  thread: LocalChatDraft | DurableChatThreadDetail,
+): boolean {
+  return thread.messages.some((message) => message.role === "user");
 }
 
 export function getSelectedChatWorkspaceTarget(
@@ -197,6 +313,7 @@ export function hydrateDurableChatThreads(
           : {}),
         messages: existing.messages,
         lifecycle: "detail",
+        detailError: existing.detailError,
       };
     }
     return { ...summary, lifecycle: "summary" };
@@ -213,6 +330,7 @@ export function hydrateDurableChatThreads(
     state.selection.kind === "thread" && !durableIds.has(state.selection.threadId)
       ? WELCOME_SELECTION
       : state.selection;
+  const selectionChanged = selection !== state.selection;
 
   return {
     ...state,
@@ -226,6 +344,8 @@ export function hydrateDurableChatThreads(
         ? { ...state.activeRun, deferredSummary: deferredRunSummary }
         : state.activeRun,
     selection,
+    chatVisible: selectionChanged ? false : state.chatVisible,
+    visibleTarget: selectionChanged ? null : state.visibleTarget,
   };
 }
 
@@ -241,8 +361,61 @@ export function mergeDurableChatThreadDetail(
   const index = state.durableThreads.findIndex((candidate) => candidate.id === thread.id);
   if (index < 0) return state;
   const durableThreads = state.durableThreads.slice();
-  durableThreads[index] = { ...thread, lifecycle: "detail" };
+  durableThreads[index] = { ...thread, lifecycle: "detail", detailError: null };
   return { ...state, durableThreads };
+}
+
+/**
+ * Merge one server summary without dropping a previously loaded transcript.
+ * Run-owned optimistic fields remain deferred until that run resolves.
+ */
+export function mergeDurableChatThreadSummary(
+  state: ChatWorkspaceLifecycleState,
+  summary: ChatThreadSummary,
+): ChatWorkspaceLifecycleState {
+  const index = state.durableThreads.findIndex((candidate) => candidate.id === summary.id);
+  if (index < 0) return state;
+  const existing = state.durableThreads[index];
+  if (!existing) return state;
+  if (state.activeRun?.threadId === summary.id) {
+    return {
+      ...state,
+      activeRun: { ...state.activeRun, deferredSummary: summary },
+    };
+  }
+  const next: DurableChatThread =
+    existing.lifecycle === "detail"
+      ? {
+          ...summary,
+          messages: existing.messages,
+          lifecycle: "detail",
+          detailError: existing.detailError,
+        }
+      : { ...summary, lifecycle: "summary" };
+  if (durableChatThreadsEqual(existing, next)) return state;
+  const durableThreads = state.durableThreads.slice();
+  durableThreads[index] = next;
+  return { ...state, durableThreads };
+}
+
+/** Preserve the transcript when terminal detail reconciliation cannot be loaded. */
+export function recordDurableChatThreadDetailError(
+  state: ChatWorkspaceLifecycleState,
+  summary: ChatThreadSummary,
+  error: string,
+): ChatWorkspaceLifecycleState {
+  if (!error) return mergeDurableChatThreadSummary(state, summary);
+  const existing = getLoadedDurableChatThread(state, summary.id);
+  if (!existing) return state;
+  if (state.activeRun?.threadId === summary.id) return state;
+  const next: DurableChatThreadDetail = {
+    ...summary,
+    messages: existing.messages,
+    lifecycle: "detail",
+    detailError: error,
+  };
+  if (durableChatThreadsEqual(existing, next)) return state;
+  return replaceLoadedChatWorkspaceTarget(state, next);
 }
 
 /** Add or replace the local draft without changing the current selection. */
@@ -253,37 +426,52 @@ export function setLocalChatDraft(
   assertNoDraftDurableIdCollision(draft, state.durableThreads);
   if (state.activeRun?.targetKind === "draft") return state;
   if (state.draft === draft) return state;
+  const selection =
+    state.selection.kind === "draft" && state.selection.draftId !== draft.id
+      ? WELCOME_SELECTION
+      : state.selection;
+  const selectionChanged = selection !== state.selection;
   return {
     ...state,
     draft,
     deferredDraftSummary: null,
-    selection:
-      state.selection.kind === "draft" && state.selection.draftId !== draft.id
-        ? WELCOME_SELECTION
-        : state.selection,
+    selection,
+    chatVisible: selectionChanged ? false : state.chatVisible,
+    visibleTarget: selectionChanged ? null : state.visibleTarget,
   };
 }
 
 export function clearLocalChatDraft(
   state: ChatWorkspaceLifecycleState,
+  draftId: string,
 ): ChatWorkspaceLifecycleState {
   if (state.activeRun?.targetKind === "draft") return state;
-  if (!state.draft) return state;
+  if (state.draft?.id !== draftId) return state;
+  const selectionChanged = state.selection.kind === "draft";
   return {
     ...state,
     draft: null,
     deferredDraftSummary: null,
-    selection: state.selection.kind === "draft" ? WELCOME_SELECTION : state.selection,
+    selection: selectionChanged ? WELCOME_SELECTION : state.selection,
+    chatVisible: selectionChanged ? false : state.chatVisible,
+    visibleTarget: selectionChanged ? null : state.visibleTarget,
   };
 }
 
 export function renameLocalChatDraft(
   state: ChatWorkspaceLifecycleState,
+  draftId: string,
   title: string,
   at: string,
 ): ChatWorkspaceLifecycleState {
   const validation = validateRenamedChatThreadTitle(title);
-  if (!state.draft || !validation.valid || state.activeRun?.targetKind === "draft") return state;
+  if (
+    state.draft?.id !== draftId ||
+    !validation.valid ||
+    state.activeRun
+  ) {
+    return state;
+  }
   return {
     ...state,
     draft: {
@@ -293,6 +481,94 @@ export function renameLocalChatDraft(
       updatedAt: at,
     },
   };
+}
+
+export function setLocalChatDraftPreviewMode(
+  state: ChatWorkspaceLifecycleState,
+  draftId: string,
+  previewMode: ChatPreviewMode,
+  at: string,
+): ChatWorkspaceLifecycleState {
+  if (state.activeRun || state.draft?.id !== draftId) return state;
+  if (state.draft.previewMode === previewMode) return state;
+  return { ...state, draft: { ...state.draft, previewMode, updatedAt: at } };
+}
+
+export function setLocalChatDraftModel(
+  state: ChatWorkspaceLifecycleState,
+  draftId: string,
+  model: ChatModelSnapshot | null,
+  at: string,
+): ChatWorkspaceLifecycleState {
+  if (state.activeRun || state.draft?.id !== draftId) return state;
+  if (chatModelsEqual(state.draft.model, model)) return state;
+  return { ...state, draft: { ...state.draft, model, updatedAt: at } };
+}
+
+export function setChatWorkspaceVisibility(
+  state: ChatWorkspaceLifecycleState,
+  target: ChatWorkspaceVisibleTarget | null,
+  at: string,
+): ChatWorkspaceLifecycleState {
+  if (!target) {
+    return state.chatVisible || state.visibleTarget
+      ? { ...state, chatVisible: false, visibleTarget: null }
+      : state;
+  }
+  if (!visibleTargetMatchesSelection(target, state.selection)) return state;
+  if (
+    (target.kind === "draft" && state.draft?.id !== target.draftId) ||
+    (target.kind === "thread" && !hasDurableChatThread(state, target.threadId))
+  ) {
+    return state;
+  }
+  const exactVisibleThreadId = target.kind === "thread" ? target.threadId : null;
+  const exactVisibleThread = exactVisibleThreadId
+    ? getDurableChatThread(state, exactVisibleThreadId)
+    : undefined;
+  const durableThreads =
+    exactVisibleThread && (exactVisibleThread.unread || exactVisibleThread.lastReadAt !== at)
+      ? state.durableThreads.map((thread) =>
+          thread.id === exactVisibleThreadId
+            ? { ...thread, unread: false, lastReadAt: at }
+            : thread,
+        )
+      : state.durableThreads;
+  if (
+    state.chatVisible &&
+    visibleTargetsEqual(state.visibleTarget, target) &&
+    durableThreads === state.durableThreads
+  ) {
+    return state;
+  }
+  return { ...state, chatVisible: true, visibleTarget: target, durableThreads };
+}
+
+export function confirmDurableChatThreadRename(
+  state: ChatWorkspaceLifecycleState,
+  threadId: string,
+  title: string,
+  updatedAt: string,
+): ChatWorkspaceLifecycleState {
+  if (state.activeRun?.threadId === threadId) return state;
+  return updateDurableChatThread(state, threadId, (thread) =>
+    thread.title === title && thread.updatedAt === updatedAt
+      ? thread
+      : { ...thread, title, updatedAt },
+  );
+}
+
+export function confirmDurableChatThreadReadState(
+  state: ChatWorkspaceLifecycleState,
+  threadId: string,
+  unread: boolean,
+  lastReadAt: string | null,
+): ChatWorkspaceLifecycleState {
+  return updateDurableChatThread(state, threadId, (thread) =>
+    thread.unread === unread && thread.lastReadAt === lastReadAt
+      ? thread
+      : { ...thread, unread, lastReadAt },
+  );
 }
 
 export function canStartChatWorkspaceLifecycleRun(
@@ -391,7 +667,11 @@ export function acceptChatWorkspaceLifecycleRun(
       previewMode,
     };
     const { lifecycle: _lifecycle, titleSource: _titleSource, ...thread } = acceptedDraft;
-    const detail: DurableChatThreadDetail = { ...thread, lifecycle: "detail" };
+    const detail: DurableChatThreadDetail = {
+      ...thread,
+      lifecycle: "detail",
+      detailError: null,
+    };
     const durableThreads = [...state.durableThreads, detail];
     return {
       ...state,
@@ -402,6 +682,14 @@ export function acceptChatWorkspaceLifecycleRun(
         state.selection.kind === "draft" && state.selection.draftId === detail.id
           ? { kind: "thread", threadId: detail.id }
           : state.selection,
+      chatVisible:
+        state.selection.kind === "draft" && state.selection.draftId === detail.id
+          ? false
+          : state.chatVisible,
+      visibleTarget:
+        state.selection.kind === "draft" && state.selection.draftId === detail.id
+          ? null
+          : state.visibleTarget,
       activeRun: {
         ...run,
         targetKind: "thread",
@@ -449,6 +737,14 @@ export function rollbackChatWorkspaceLifecycleRun(
         state.selection.kind === "draft" && state.selection.draftId === target.id
           ? { kind: "thread", threadId: target.id }
           : state.selection,
+      chatVisible:
+        state.selection.kind === "draft" && state.selection.draftId === target.id
+          ? false
+          : state.chatVisible,
+      visibleTarget:
+        state.selection.kind === "draft" && state.selection.draftId === target.id
+          ? null
+          : state.visibleTarget,
       activeRun: null,
     };
   }
@@ -460,7 +756,12 @@ export function rollbackChatWorkspaceLifecycleRun(
   let rolledBack: LocalChatDraft | DurableChatThreadDetail;
   if (run.deferredSummary) {
     if (target.lifecycle !== "detail") return state;
-    rolledBack = { ...run.deferredSummary, messages, lifecycle: "detail" };
+    rolledBack = {
+      ...run.deferredSummary,
+      messages,
+      lifecycle: "detail",
+      detailError: target.detailError,
+    };
   } else {
     rolledBack = {
       ...target,
@@ -475,12 +776,73 @@ export function rollbackChatWorkspaceLifecycleRun(
   return { ...next, activeRun: null };
 }
 
+export function updateChatWorkspaceLifecycleRunMessage(
+  state: ChatWorkspaceLifecycleState,
+  action: Extract<ChatWorkspaceLifecycleAction, { type: "run.message-update" }>,
+): ChatWorkspaceLifecycleState {
+  const run = matchingChatWorkspaceLifecycleRun(state, action);
+  if (!run || run.phase !== "accepted") return state;
+  const target = getLoadedChatWorkspaceTarget(state, action.threadId);
+  if (!target) return state;
+  const assistant = target.messages.find(
+    (message) => message.id === action.assistantMessageId && message.role === "assistant",
+  );
+  if (!assistant || !messagePatchChanges(assistant, action.patch)) return state;
+  const nextTarget = withChatWorkspaceActivity(
+    state,
+    {
+      ...target,
+      messages: target.messages.map((message) =>
+        message.id === action.assistantMessageId
+          ? { ...message, ...action.patch, updatedAt: action.at }
+          : message,
+      ),
+    },
+    action.at,
+  );
+  return replaceLoadedChatWorkspaceTarget(state, nextTarget);
+}
+
+export function finishChatWorkspaceLifecycleRun(
+  state: ChatWorkspaceLifecycleState,
+  action: Extract<ChatWorkspaceLifecycleAction, { type: "run.finish" }>,
+): ChatWorkspaceLifecycleState {
+  const run = matchingChatWorkspaceLifecycleRun(state, action);
+  if (!run || run.phase !== "accepted") return state;
+  const target = getLoadedDurableChatThread(state, action.threadId);
+  if (!target) return state;
+  const assistant = target.messages.find(
+    (message) => message.id === action.assistantMessageId && message.role === "assistant",
+  );
+  if (!assistant) return state;
+  const nextTarget = withChatWorkspaceActivity(
+    state,
+    {
+      ...target,
+      messages: target.messages.map((message) =>
+        message.id === action.assistantMessageId
+          ? finalizeAssistantMessage(message, action.outcome, action.error, action.at)
+          : message,
+      ),
+      runStatus: action.outcome,
+    },
+    action.at,
+  );
+  const next = replaceLoadedChatWorkspaceTarget(state, nextTarget);
+  return next === state ? state : { ...next, activeRun: null };
+}
+
 export function selectChatWelcome(
   state: ChatWorkspaceLifecycleState,
 ): ChatWorkspaceLifecycleState {
   return state.selection.kind === "welcome"
     ? state
-    : { ...state, selection: WELCOME_SELECTION };
+    : {
+        ...state,
+        selection: WELCOME_SELECTION,
+        chatVisible: false,
+        visibleTarget: null,
+      };
 }
 
 export function selectLocalChatDraft(
@@ -491,7 +853,12 @@ export function selectLocalChatDraft(
   if (state.selection.kind === "draft" && state.selection.draftId === state.draft.id) {
     return state;
   }
-  return { ...state, selection: { kind: "draft", draftId: state.draft.id } };
+  return {
+    ...state,
+    selection: { kind: "draft", draftId: state.draft.id },
+    chatVisible: false,
+    visibleTarget: null,
+  };
 }
 
 export function selectDurableChatThread(
@@ -500,7 +867,12 @@ export function selectDurableChatThread(
 ): ChatWorkspaceLifecycleState {
   if (!getDurableChatThread(state, threadId)) return state;
   if (state.selection.kind === "thread" && state.selection.threadId === threadId) return state;
-  return { ...state, selection: { kind: "thread", threadId } };
+  return {
+    ...state,
+    selection: { kind: "thread", threadId },
+    chatVisible: false,
+    visibleTarget: null,
+  };
 }
 
 /**
@@ -519,7 +891,14 @@ export function deleteDurableChatThread(
     state.selection.kind === "thread" && state.selection.threadId === threadId
       ? WELCOME_SELECTION
       : state.selection;
-  return { ...state, durableThreads, selection };
+  const selectionChanged = selection !== state.selection;
+  return {
+    ...state,
+    durableThreads,
+    selection,
+    chatVisible: selectionChanged ? false : state.chatVisible,
+    visibleTarget: selectionChanged ? null : state.visibleTarget,
+  };
 }
 
 export function chatWorkspaceLifecycleReducer(
@@ -531,26 +910,59 @@ export function chatWorkspaceLifecycleReducer(
       return hydrateDurableChatThreads(state, action.summaries);
     case "thread.detail-loaded":
       return mergeDurableChatThreadDetail(state, action.thread);
+    case "thread.summary-merge":
+      return mergeDurableChatThreadSummary(state, action.thread);
+    case "thread.reconciliation-failed":
+      return recordDurableChatThreadDetailError(state, action.thread, action.error);
     case "thread.deleted":
       return deleteDurableChatThread(state, action.threadId);
     case "draft.set":
       return setLocalChatDraft(state, action.draft);
     case "draft.rename":
-      return renameLocalChatDraft(state, action.title, action.at);
+      return renameLocalChatDraft(state, action.draftId, action.title, action.at);
+    case "draft.preview-mode-set":
+      return setLocalChatDraftPreviewMode(
+        state,
+        action.draftId,
+        action.previewMode,
+        action.at,
+      );
+    case "draft.model-set":
+      return setLocalChatDraftModel(state, action.draftId, action.model, action.at);
     case "draft.cleared":
-      return clearLocalChatDraft(state);
+      return clearLocalChatDraft(state, action.draftId);
+    case "workspace.visibility-set":
+      return setChatWorkspaceVisibility(state, action.target, action.at);
     case "selection.welcome":
       return selectChatWelcome(state);
     case "selection.draft":
       return selectLocalChatDraft(state, action.draftId);
     case "selection.thread":
       return selectDurableChatThread(state, action.threadId);
+    case "thread.rename-confirmed":
+      return confirmDurableChatThreadRename(
+        state,
+        action.threadId,
+        action.title,
+        action.updatedAt,
+      );
+    case "thread.read-state-confirmed":
+      return confirmDurableChatThreadReadState(
+        state,
+        action.threadId,
+        action.unread,
+        action.lastReadAt,
+      );
     case "run.start":
       return startChatWorkspaceLifecycleRun(state, action);
     case "run.accept":
       return acceptChatWorkspaceLifecycleRun(state, action);
     case "run.rollback":
       return rollbackChatWorkspaceLifecycleRun(state, action);
+    case "run.message-update":
+      return updateChatWorkspaceLifecycleRunMessage(state, action);
+    case "run.finish":
+      return finishChatWorkspaceLifecycleRun(state, action);
   }
 }
 
@@ -576,6 +988,38 @@ function replaceLoadedChatWorkspaceTarget(
     durableThreads: state.durableThreads.map((thread) =>
       thread.id === target.id ? target : thread,
     ),
+  };
+}
+
+function updateDurableChatThread(
+  state: ChatWorkspaceLifecycleState,
+  threadId: string,
+  update: (thread: DurableChatThread) => DurableChatThread,
+): ChatWorkspaceLifecycleState {
+  const existing = getDurableChatThread(state, threadId);
+  if (!existing) return state;
+  const next = update(existing);
+  if (next === existing) return state;
+  return {
+    ...state,
+    durableThreads: state.durableThreads.map((thread) =>
+      thread.id === threadId ? next : thread,
+    ),
+  };
+}
+
+function withChatWorkspaceActivity<T extends LocalChatDraft | DurableChatThreadDetail>(
+  state: ChatWorkspaceLifecycleState,
+  target: T,
+  at: string,
+): T {
+  if (target.lifecycle === "draft") return { ...target, updatedAt: at };
+  const visible = getVisibleDurableChatThreadId(state) === target.id;
+  return {
+    ...target,
+    updatedAt: at,
+    unread: !visible,
+    lastReadAt: visible ? at : target.lastReadAt,
   };
 }
 
@@ -606,4 +1050,83 @@ function assertNoDraftDurableIdCollision(
   if (draft && durableThreads.some((thread) => thread.id === draft.id)) {
     throw new Error(`Local draft ID collides with durable chat thread ID: ${draft.id}`);
   }
+}
+
+function messagePatchChanges(
+  message: ChatMessage,
+  patch: Partial<Pick<ChatMessage, "content" | "toolCalls" | "error">>,
+): boolean {
+  if ("content" in patch && patch.content !== message.content) return true;
+  if ("error" in patch && patch.error !== message.error) return true;
+  if ("toolCalls" in patch && !jsonValuesEqual(patch.toolCalls, message.toolCalls)) return true;
+  return false;
+}
+
+function chatModelsEqual(
+  left: ChatModelSnapshot | null,
+  right: ChatModelSnapshot | null,
+): boolean {
+  return (
+    left === right ||
+    (left !== null &&
+      right !== null &&
+      left.id === right.id &&
+      left.displayName === right.displayName &&
+      left.provider === right.provider)
+  );
+}
+
+function durableChatThreadsEqual(
+  left: DurableChatThread,
+  right: DurableChatThread,
+): boolean {
+  return jsonValuesEqual(left, right);
+}
+
+function jsonValuesEqual(left: unknown, right: unknown): boolean {
+  return left === right || JSON.stringify(left) === JSON.stringify(right);
+}
+
+function visibleTargetMatchesSelection(
+  target: ChatWorkspaceVisibleTarget,
+  selection: ChatWorkspaceSelection,
+): boolean {
+  return (
+    (target.kind === "draft" &&
+      selection.kind === "draft" &&
+      target.draftId === selection.draftId) ||
+    (target.kind === "thread" &&
+      selection.kind === "thread" &&
+      target.threadId === selection.threadId)
+  );
+}
+
+function visibleTargetsEqual(
+  left: ChatWorkspaceVisibleTarget | null,
+  right: ChatWorkspaceVisibleTarget,
+): boolean {
+  return left !== null && visibleTargetMatchesSelection(left, right);
+}
+
+function finalizeAssistantMessage(
+  message: ChatMessage,
+  outcome: Exclude<ChatRunStatus, "idle" | "streaming">,
+  error: string | undefined,
+  at: string,
+): ChatMessage {
+  const toolStatus = outcome === "complete" ? "completed" : "error";
+  const fallbackError =
+    outcome === "interrupted"
+      ? "Response stopped before completion."
+      : outcome === "error"
+        ? "The response failed before completion."
+        : undefined;
+  return {
+    ...message,
+    toolCalls: message.toolCalls?.map((toolCall) =>
+      toolCall.status === "running" ? { ...toolCall, status: toolStatus } : toolCall,
+    ),
+    error: error ?? message.error ?? fallbackError,
+    updatedAt: at,
+  };
 }
