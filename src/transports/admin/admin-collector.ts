@@ -38,6 +38,17 @@ export interface AugmentSummary {
   lifecycleHooks: AugmentLifecycleHook[];
   handlesInternalTurns: boolean;
   hasTurnGate: boolean;
+  /** Safe, operator-facing memory ownership and context policy metadata. */
+  memory?: {
+    ownership: { kind: "static"; labels: string[] } | { kind: "namespace"; prefix: string };
+    mutable: boolean;
+    origin: string;
+    priority: string;
+    placement: string;
+    eviction: string;
+    ttl: string;
+    writeTrustLevels?: string[];
+  };
 }
 
 /**
@@ -64,6 +75,25 @@ export function collectAugmentSummaries(kernel: TransportKernel): AugmentSummary
         required: aug.required ?? false,
         category: aug.category ?? inferCategory(aug),
         ...inspectAugment(aug),
+        ...(aug.memory
+          ? {
+              memory: {
+                ownership:
+                  aug.memory.owns.kind === "static"
+                    ? { kind: "static" as const, labels: [...aug.memory.owns.labels] }
+                    : { kind: "namespace" as const, prefix: aug.memory.owns.prefix },
+                mutable: aug.memory.defaults.mutable,
+                origin: aug.memory.defaults.origin,
+                priority: aug.memory.defaults.priority,
+                placement: aug.memory.defaults.placement,
+                eviction: aug.memory.defaults.eviction,
+                ttl: aug.memory.defaults.ttl ?? "persistent",
+                ...(aug.memory.writeTrustLevels
+                  ? { writeTrustLevels: [...aug.memory.writeTrustLevels] }
+                  : {}),
+              },
+            }
+          : {}),
       }))
   );
 }

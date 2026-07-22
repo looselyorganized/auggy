@@ -33,13 +33,13 @@ describe("CapabilityMobileSelector", () => {
     expect(html).toContain("All capabilities");
   });
 
-  it("names the selected augment type and runtime in its trigger", () => {
+  it("names the selected runtime instance in its trigger", () => {
     const model = buildCapabilityModel(dashboard(), { selectedAugmentName: "web-runtime" });
     const html = renderToStaticMarkup(
       <CapabilityMobileSelector model={model} onSelect={() => undefined} />,
     );
 
-    expect(html).toContain("Capability owner: webTransport · web-runtime");
+    expect(html).toContain("Capability owner: web-runtime");
   });
 });
 
@@ -78,7 +78,79 @@ describe("CapabilityNavigation", () => {
     await act(async () => allButton?.props.onClick());
     expect(selections).toEqual([null]);
   });
+
+  it("distinguishes identity instructions from learned behavior memory", () => {
+    const data = dashboard();
+    data.augments = [identityMemory(), learnedMemory()];
+    const html = renderToStaticMarkup(
+      <CapabilityNavigation model={buildCapabilityModel(data)} onSelect={() => undefined} />,
+    );
+
+    expect(html).toContain("Agent identity");
+    expect(html).toContain("fileMemory · self");
+    expect(html).toContain("Learned behaviors");
+    expect(html).toContain("fileMemory · learned");
+  });
+
+  it("keeps conventional memory roles clear against an older runtime payload", () => {
+    const data = dashboard();
+    data.augments = [identityMemory(), learnedMemory()].map(({ memory: _, ...augment }) => augment);
+    const html = renderToStaticMarkup(
+      <CapabilityNavigation model={buildCapabilityModel(data)} onSelect={() => undefined} />,
+    );
+
+    expect(html).toContain("Agent identity");
+    expect(html).toContain("Learned behaviors");
+  });
 });
+
+function identityMemory(): DashboardData["augments"][number] {
+  return memoryAugment("identity", {
+    ownership: { kind: "static", labels: ["self"] },
+    mutable: false,
+    origin: "operator",
+    priority: "required",
+    placement: "system",
+    eviction: "never",
+    ttl: "persistent",
+  });
+}
+
+function learnedMemory(): DashboardData["augments"][number] {
+  return memoryAugment("fileMemory", {
+    ownership: { kind: "static", labels: ["learned"] },
+    mutable: true,
+    origin: "operator",
+    priority: "high",
+    placement: "preamble",
+    eviction: "drop",
+    ttl: "persistent",
+    writeTrustLevels: ["creator"],
+  });
+}
+
+function memoryAugment(
+  name: string,
+  memory: NonNullable<DashboardData["augments"][number]["memory"]>,
+): DashboardData["augments"][number] {
+  return {
+    type: "fileMemory",
+    name,
+    required: false,
+    category: "memory",
+    hasContext: true,
+    usesSharedMemoryTools: true,
+    toolCount: 0,
+    isTransport: false,
+    isMemoryProvider: true,
+    httpRouteCount: 0,
+    hasAdminInfo: true,
+    lifecycleHooks: ["onBoot"],
+    handlesInternalTurns: false,
+    hasTurnGate: false,
+    memory,
+  };
+}
 
 function dashboard(): DashboardData {
   return {

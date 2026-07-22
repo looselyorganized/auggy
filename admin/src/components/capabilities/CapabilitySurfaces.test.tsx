@@ -38,6 +38,53 @@ describe("CapabilityDetail", () => {
       badges: [{ label: "auth not reported", tone: "neutral" }],
     });
   });
+
+  it("explains memory role, mutability, and context placement", async () => {
+    const data = dashboard();
+    data.augments = [
+      {
+        type: "fileMemory",
+        name: "identity",
+        required: false,
+        category: "memory",
+        hasContext: true,
+        usesSharedMemoryTools: true,
+        toolCount: 0,
+        isTransport: false,
+        isMemoryProvider: true,
+        httpRouteCount: 0,
+        hasAdminInfo: true,
+        lifecycleHooks: ["onBoot"],
+        handlesInternalTurns: false,
+        hasTurnGate: false,
+        memory: {
+          ownership: { kind: "static", labels: ["self"] },
+          mutable: false,
+          origin: "operator",
+          priority: "required",
+          placement: "system",
+          eviction: "never",
+          ttl: "persistent",
+        },
+      },
+    ];
+
+    let renderer: ReturnType<typeof create> | undefined;
+    await act(async () => {
+      renderer = create(
+        <MemoryRouter>
+          <CapabilityDetail data={data} model={buildCapabilityModel(data)} />
+        </MemoryRouter>,
+      );
+    });
+
+    const output = JSON.stringify(renderer?.toJSON());
+    expect(output).toContain("Agent identity");
+    expect(output).toContain("Required, read-only system instructions");
+    expect(output).toContain("read-only");
+    expect(output).toContain("system");
+    expect(output).toContain("persistent");
+  });
 });
 
 function dashboard(): DashboardData {

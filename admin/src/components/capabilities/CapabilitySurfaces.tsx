@@ -7,6 +7,7 @@ import type {
   CapabilityModel,
 } from "@/lib/capability-model";
 import type { AugmentSummary, DashboardData } from "@/lib/types";
+import { presentAugment } from "@/lib/capability-presenters";
 import {
   CapabilityEmptyState,
   CapabilityRow,
@@ -93,16 +94,20 @@ export function CapabilityDetail({
 
 function AugmentIdentity({ node }: { node: AugmentCapabilityModel }) {
   const { augment } = node;
+  const presentation = presentAugment(augment);
   return (
     <div className="grid gap-3 rounded-md border bg-muted/20 p-3">
       <div className="flex min-w-0 flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
-          <h4 className="break-words text-base font-semibold" title={augment.type}>
-            {augment.type}
+          <h4 className="break-words text-base font-semibold" title={presentation.title}>
+            {presentation.title}
           </h4>
           <div className="mt-1 break-all font-mono text-xs text-muted-foreground">
-            {augment.name}
+            {augment.name} · {augment.type}
           </div>
+          {presentation.detail && (
+            <p className="mt-1 text-xs text-muted-foreground">{presentation.detail}</p>
+          )}
         </div>
         <div className="flex flex-wrap gap-1">
           <Badge variant="outline">{augment.category}</Badge>
@@ -217,14 +222,21 @@ function SkillSurface({ model }: { model: CapabilityModel }) {
 function MemorySurface({ model }: { model: CapabilityModel }) {
   return (
     <CapabilitySurface title="Memory" icon={<Brain className="size-4" />}>
-      {model.scope.memoryAugments.map((augment) => (
+      {model.scope.memoryAugments.map((augment) => {
+        const presentation = presentAugment(augment);
+        return (
         <CapabilityRow
           key={augment.name}
-          title={augment.type}
-          detail={augment.name}
+          title={presentation.title}
+          detail={
+            presentation.detail
+              ? `${augment.name} · ${presentation.detail}`
+              : presentation.subtitle ?? augment.name
+          }
           badges={memoryBadges(augment)}
         />
-      ))}
+        );
+      })}
     </CapabilitySurface>
   );
 }
@@ -254,6 +266,17 @@ function memoryBadges(augment: AugmentSummary): CapabilityBadge[] {
   if (augment.hasContext) badges.push(semanticBadge("tool-category", "context", "info"));
   if (augment.usesSharedMemoryTools) {
     badges.push(semanticBadge("tool-category", "shared tools", "info"));
+  }
+  if (augment.memory) {
+    badges.push(
+      semanticBadge(
+        "tool-category",
+        augment.memory.mutable ? "writable" : "read-only",
+        augment.memory.mutable ? "info" : "neutral",
+      ),
+    );
+    badges.push(semanticBadge("tool-category", augment.memory.placement, "neutral"));
+    badges.push(semanticBadge("tool-category", augment.memory.ttl, "neutral"));
   }
   return badges;
 }

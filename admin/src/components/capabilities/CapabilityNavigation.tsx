@@ -24,6 +24,7 @@ import type {
   CapabilitySurfaceSummary,
 } from "@/lib/capability-model";
 import type { AugmentSummary } from "@/lib/types";
+import { presentAugment } from "@/lib/capability-presenters";
 import { cn } from "@/lib/utils";
 
 const CATEGORY_LABELS: Record<AugmentSummary["category"], string> = {
@@ -128,7 +129,7 @@ export function CapabilityMobileSelector({
     ? model.augmentNodes.find((node) => node.augment.name === model.scope.selectedAugmentName)
     : undefined;
   const selectionLabel = selectedNode
-    ? `${selectedNode.augment.type} · ${selectedNode.augment.name}`
+    ? presentAugment(selectedNode.augment).title
     : "All capabilities";
 
   return (
@@ -176,15 +177,18 @@ export function CapabilityMobileSelector({
                 >
                   {CATEGORY_LABELS[category]}
                 </div>
-                {nodes.map((node) => (
+                {nodes.map((node) => {
+                  const presentation = presentAugment(node.augment);
+                  return (
                   <OwnerMenuItem
                     key={node.augment.name}
-                    title={node.augment.type}
-                    subtitle={node.augment.name}
+                    title={presentation.title}
+                    subtitle={presentation.subtitle}
                     selected={model.scope.selectedAugmentName === node.augment.name}
                     onSelect={() => onSelect(node.augment.name)}
                   />
-                ))}
+                  );
+                })}
               </div>
             );
           })}
@@ -201,7 +205,7 @@ function OwnerMenuItem({
   onSelect,
 }: {
   title: string;
-  subtitle: string;
+  subtitle?: string;
   selected: boolean;
   onSelect: () => void;
 }) {
@@ -217,7 +221,9 @@ function OwnerMenuItem({
       />
       <span className="grid min-w-0 gap-0.5">
         <span className="break-words font-medium">{title}</span>
-        <span className="break-all font-mono text-[11px] text-muted-foreground">{subtitle}</span>
+        {subtitle && (
+          <span className="break-all font-mono text-[11px] text-muted-foreground">{subtitle}</span>
+        )}
       </span>
     </DropdownMenuItem>
   );
@@ -232,10 +238,11 @@ function AugmentNavigationButton({
   selected: boolean;
   onSelect: () => void;
 }) {
+  const presentation = presentAugment(node.augment);
   return (
     <NavigationButton
-      title={node.augment.type}
-      subtitle={node.augment.name}
+      title={presentation.title}
+      subtitle={presentation.subtitle}
       summary={node.summary}
       selected={selected}
       onSelect={onSelect}
@@ -251,7 +258,7 @@ function NavigationButton({
   onSelect,
 }: {
   title: string;
-  subtitle: string;
+  subtitle?: string;
   summary: CapabilitySurfaceSummary;
   selected: boolean;
   onSelect: () => void;
@@ -273,9 +280,11 @@ function NavigationButton({
           <div className="break-words text-sm font-semibold" title={title}>
             {title}
           </div>
-          <div className="break-all font-mono text-[11px] text-muted-foreground" title={subtitle}>
-            {subtitle}
-          </div>
+          {subtitle && (
+            <div className="break-all font-mono text-[11px] text-muted-foreground" title={subtitle}>
+              {subtitle}
+            </div>
+          )}
         </div>
         {summary.issueCount > 0 && (
           <Badge variant={summary.errorCount > 0 ? "destructive" : "warn"}>
