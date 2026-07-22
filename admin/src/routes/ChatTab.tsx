@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
-import { useLocation, useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 
 import { ChatComposer } from "@/components/admin/ChatComposer";
 import { useChatWorkspace } from "@/components/admin/ChatWorkspaceProvider";
@@ -11,11 +11,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { detectCodeLanguage, HighlightedCode } from "@/components/ui/highlighted-code";
 import { formatChatTranscript } from "@/lib/chat-transcript";
-import {
-  CHAT_DRAFT_PATH,
-  CHAT_WELCOME_PATH,
-  chatThreadPath,
-} from "@/lib/chat-route";
+import { CHAT_DRAFT_PATH } from "@/lib/chat-route";
 import { getChatRunPresentation } from "@/lib/chat-run-state";
 import {
   type ChatMessage,
@@ -46,41 +42,8 @@ const PEER_EMPTY_PROMPTS = [
   "Summarize this conversation so far.",
 ];
 
-export function getAcceptedChatNavigationPath(options: {
-  mounted: boolean;
-  sentTargetKind: "draft" | "thread";
-  sentThreadId: string;
-  activeThreadId: string;
-  pathname: string;
-}): string | null {
-  return options.mounted &&
-    options.sentTargetKind === "draft" &&
-    options.activeThreadId === options.sentThreadId &&
-    options.pathname === CHAT_DRAFT_PATH
-    ? chatThreadPath(options.sentThreadId)
-    : null;
-}
-
-export function shouldReplaceDeletedChatWithWelcome(options: {
-  mounted: boolean;
-  deletedThreadId: string;
-  activeThreadId: string;
-  startedLocationKey: string;
-  currentLocationKey: string;
-  startedPathname: string;
-  currentPathname: string;
-}): boolean {
-  return (
-    options.mounted &&
-    options.deletedThreadId === options.activeThreadId &&
-    options.startedLocationKey === options.currentLocationKey &&
-    options.startedPathname === options.currentPathname
-  );
-}
-
 export function ChatTab() {
   const navigate = useNavigate();
-  const location = useLocation();
   const { data, loading, error } = useDashboardContext();
   const {
     state,
@@ -103,11 +66,7 @@ export function ChatTab() {
   const [preflightErrors, setPreflightErrors] = useState<Record<string, string | null>>({});
   const mountedRef = useRef(true);
   const activeThreadIdRef = useRef(activeThread.id);
-  const pathnameRef = useRef(location.pathname);
-  const locationKeyRef = useRef(location.key);
   activeThreadIdRef.current = activeThread.id;
-  pathnameRef.current = location.pathname;
-  locationKeyRef.current = location.key;
 
   useEffect(() => {
     mountedRef.current = true;
@@ -177,7 +136,6 @@ export function ChatTab() {
   const sendFromThread = useCallback(
     (overrideText?: string) => {
       const threadId = activeThread.id;
-      const sentTargetKind = activeThread.lifecycle === "draft" ? "draft" : "thread";
       const text = (overrideText ?? input).trim();
       if (!text || deleting || streaming || anotherLocalStream || visitorVerificationRequired) {
         return;
@@ -189,14 +147,6 @@ export function ChatTab() {
         accepted = true;
         if (!mountedRef.current) return;
         setDrafts((current) => ({ ...current, [threadId]: "" }));
-        const nextPath = getAcceptedChatNavigationPath({
-          mounted: mountedRef.current,
-          sentTargetKind,
-          sentThreadId: threadId,
-          activeThreadId: activeThreadIdRef.current,
-          pathname: pathnameRef.current,
-        });
-        if (nextPath) navigate(nextPath, { replace: true });
       }).then((result) => {
         if (
           !result.ok &&
@@ -209,11 +159,9 @@ export function ChatTab() {
       });
     }, [
       activeThread.id,
-      activeThread.lifecycle,
       anotherLocalStream,
       deleting,
       input,
-      navigate,
       send,
       streaming,
       visitorVerificationRequired,
@@ -300,24 +248,8 @@ export function ChatTab() {
         }}
         onClearVisitor={clearVisitor}
         onDelete={async () => {
-          const threadId = activeThread.id;
-          const startedPathname = location.pathname;
-          const startedLocationKey = location.key;
-          const result = await deleteThread(threadId);
+          const result = await deleteThread(activeThread.id);
           if (!result.ok) throw new Error(result.error);
-          if (
-            shouldReplaceDeletedChatWithWelcome({
-              mounted: mountedRef.current,
-              deletedThreadId: threadId,
-              activeThreadId: activeThreadIdRef.current,
-              startedLocationKey,
-              currentLocationKey: locationKeyRef.current,
-              startedPathname,
-              currentPathname: pathnameRef.current,
-            })
-          ) {
-            navigate(CHAT_WELCOME_PATH, { replace: true });
-          }
         }}
         onActionError={(action, actionError) => {
           push(
