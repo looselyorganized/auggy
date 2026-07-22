@@ -19,6 +19,7 @@ import {
   getChatWorkspaceTargetById,
   getSelectedChatWorkspaceId,
 } from "@/lib/chat-workspace-state";
+import { useToast } from "@/lib/toast";
 
 const ChatTab = lazy(() =>
   import("@/routes/ChatTab").then((module) => ({ default: module.ChatTab })),
@@ -53,6 +54,11 @@ export function ChatRoute() {
   const draftRouteOwnershipRef = useRef<ChatDraftRouteOwnership>(
     createChatDraftRouteOwnership(),
   );
+  const { push } = useToast();
+  const lookupErrorToastRef = useRef<
+    | { kind: "thread"; threadId: string; message: string }
+    | null
+  >(null);
   const threadId = route.kind === "thread" ? route.threadId : undefined;
   const routeTargetLifecycle = threadId
     ? getChatWorkspaceTargetById(state, threadId)?.lifecycle
@@ -126,18 +132,38 @@ export function ChatRoute() {
     setLookup({ threadId, status: "loading" });
     void loadThread(threadId).then(
       (found) => {
-        if (current)
+        if (current) {
+          if (
+            found &&
+            lookupErrorToastRef.current?.kind === "thread" &&
+            lookupErrorToastRef.current.threadId === threadId
+          ) {
+            lookupErrorToastRef.current = null;
+          }
           setLookup({ threadId, status: found ? "ready" : "not-found" });
+        }
       },
       (error: unknown) => {
         if (current) {
+          const detail =
+            error instanceof Error ? error.message : "The conversation is unavailable.";
+          const previousToast =
+            lookupErrorToastRef.current?.kind === "thread" &&
+            lookupErrorToastRef.current.threadId === threadId
+              ? lookupErrorToastRef.current
+              : null;
+          if (!previousToast || previousToast.message !== detail) {
+            push("error", "Could not load this chat", detail);
+            lookupErrorToastRef.current = {
+              kind: "thread",
+              threadId,
+              message: detail,
+            };
+          }
           setLookup({
             threadId,
             status: "error",
-            detail:
-              error instanceof Error
-                ? error.message
-                : "The conversation is unavailable.",
+            detail,
           });
         }
       },

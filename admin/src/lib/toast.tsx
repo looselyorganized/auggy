@@ -5,7 +5,7 @@ import { Toaster } from "@/components/ui/sonner";
 export type ToastLevel = "info" | "success" | "warn" | "error";
 
 interface ToastContextValue {
-  push: (level: ToastLevel, message: string) => void;
+  push: (level: ToastLevel, title: string, description?: string) => void;
 }
 
 const ToastContext = createContext<ToastContextValue | null>(null);
@@ -17,12 +17,16 @@ function sentenceCase(message: string): string {
 }
 
 export function ToastProvider({ children }: { children: ReactNode }) {
-  const push = useCallback((level: ToastLevel, message: string) => {
-    const text = sentenceCase(message);
-    if (level === "success") toast.success(text);
-    else if (level === "warn") toast.warning(text);
-    else if (level === "error") toast.error(text);
-    else toast(text);
+  const push = useCallback((level: ToastLevel, title: string, description?: string) => {
+    const toastTitle = sentenceCase(title);
+    const toastDescription =
+      description === undefined ? undefined : sentenceCase(description);
+    const toastOptions = toastDescription === undefined ? undefined : { description: toastDescription };
+
+    if (level === "success") toast.success(toastTitle, toastOptions);
+    else if (level === "warn") toast.warning(toastTitle, toastOptions);
+    else if (level === "error") toast.error(toastTitle, toastOptions);
+    else toast(toastTitle, toastOptions);
   }, []);
 
   return (

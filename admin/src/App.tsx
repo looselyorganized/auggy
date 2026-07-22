@@ -2,6 +2,7 @@ import {
   lazy,
   Suspense,
   useEffect,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -20,7 +21,7 @@ import {
   useChatWorkspace,
 } from "@/components/admin/ChatWorkspaceProvider";
 import { Header } from "@/components/layout/Header";
-import { ToastProvider } from "@/lib/toast";
+import { ToastProvider, useToast } from "@/lib/toast";
 import { ConfirmProvider } from "@/lib/confirm";
 import { DashboardProvider } from "@/components/admin/DashboardContext";
 import { useDashboard } from "@/hooks/useDashboard";
@@ -104,6 +105,8 @@ function ConsoleShell({
     hydrationError,
     setChatVisible,
   } = useChatWorkspace();
+  const { push } = useToast();
+  const hydrationErrorToastRef = useRef<string | null>(null);
   const navigate = useNavigate();
   const location = useLocation();
   const documentVisible = useDocumentVisible();
@@ -124,6 +127,16 @@ function ConsoleShell({
     state.durableThreads,
     chatRouteActive,
   );
+  useEffect(() => {
+    if (hydrationStatus !== "error") {
+      hydrationErrorToastRef.current = null;
+      return;
+    }
+    const message = hydrationError ?? "The conversation list is unavailable.";
+    if (hydrationErrorToastRef.current === message) return;
+    push("error", "Could not load chats", message);
+    hydrationErrorToastRef.current = message;
+  }, [hydrationError, hydrationStatus, push]);
 
   useEffect(
     () => setChatVisible(visibleChatTarget),

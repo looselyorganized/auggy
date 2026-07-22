@@ -66,7 +66,47 @@ export function ChatTab() {
   const [preflightErrors, setPreflightErrors] = useState<Record<string, string | null>>({});
   const mountedRef = useRef(true);
   const activeThreadIdRef = useRef(activeThread.id);
+  const detailErrorToastRef = useRef<string | null>(null);
+  const chatLoadErrorToastRef = useRef<string | null>(null);
+  const preflightErrorToastRef = useRef<{ threadId: string; message: string } | null>(null);
   activeThreadIdRef.current = activeThread.id;
+  const preflightError = preflightErrors[activeThread.id] ?? null;
+  const detailError = activeThread.lifecycle === "detail" ? activeThread.detailError : null;
+
+  useEffect(() => {
+    if (!error) {
+      chatLoadErrorToastRef.current = null;
+      return;
+    }
+    if (chatLoadErrorToastRef.current === error) return;
+    push("error", "Chat load failed", error);
+    chatLoadErrorToastRef.current = error;
+  }, [error, push]);
+
+  useEffect(() => {
+    if (!detailError) {
+      detailErrorToastRef.current = null;
+      return;
+    }
+    if (detailErrorToastRef.current === detailError) return;
+    push("error", "Conversation details unavailable", detailError);
+    detailErrorToastRef.current = detailError;
+  }, [detailError, push]);
+
+  useEffect(() => {
+    if (!preflightError) {
+      preflightErrorToastRef.current = null;
+      return;
+    }
+    if (
+      preflightErrorToastRef.current?.threadId === activeThread.id &&
+      preflightErrorToastRef.current?.message === preflightError
+    ) {
+      return;
+    }
+    push("error", "Could not send message", preflightError);
+    preflightErrorToastRef.current = { threadId: activeThread.id, message: preflightError };
+  }, [activeThread.id, preflightError, push]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -130,8 +170,6 @@ export function ChatTab() {
       : modelProvider ?? modelId ?? modelDisplayName;
 
   const emptyPrompts = previewMode === "creator" ? CREATOR_EMPTY_PROMPTS : PEER_EMPTY_PROMPTS;
-  const preflightError = preflightErrors[activeThread.id] ?? null;
-  const detailError = activeThread.lifecycle === "detail" ? activeThread.detailError : null;
 
   const sendFromThread = useCallback(
     (overrideText?: string) => {
@@ -191,7 +229,7 @@ export function ChatTab() {
 
     if (!navigator.clipboard?.writeText) throw new Error("Clipboard API unavailable");
     await navigator.clipboard.writeText(transcript);
-    push("success", "copied transcript");
+    push("success", "Transcript copied", "The transcript is on your clipboard.");
   }, [activeThread.id, agentName, messages, previewMode, push]);
 
   if (loading && !data) {
@@ -254,9 +292,8 @@ export function ChatTab() {
         onActionError={(action, actionError) => {
           push(
             "error",
-            `${action} failed: ${
-              actionError instanceof Error ? actionError.message : "Unknown error"
-            }`,
+            `${action} failed`,
+            actionError instanceof Error ? actionError.message : "Unknown error",
           );
         }}
       />

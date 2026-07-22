@@ -46,7 +46,11 @@ export function useActionDispatcher(): UseActionDispatcher {
       }
       const csrf = findCsrfToken(data?.csrfTokens ?? [], opts.actionId, opts.rowKey);
       if (!csrf) {
-        push("error", `No CSRF token available for ${opts.actionId}. Reloading…`);
+        push(
+          "error",
+          "Action blocked",
+          `No CSRF token available for ${actionLabel(opts.actionId)}. Reloading…`,
+        );
         await refresh();
         return false;
       }
@@ -54,11 +58,16 @@ export function useActionDispatcher(): UseActionDispatcher {
       try {
         const result = await postAction(opts.actionId, csrf, opts.values, opts.rowKey);
         if (result.csrfExpired) {
-          push("warn", "Session expired — refreshing.");
+          push("warn", "Session expired", `Refresh to continue ${actionLabel(opts.actionId)}.`);
           window.location.reload();
           return false;
         }
-        push(result.ok ? "success" : "error", result.message || (result.ok ? "Done." : "Failed."));
+        const actionLabelText = `${actionLabel(opts.actionId)} ${result.ok ? "completed" : "failed"}`;
+        push(
+          result.ok ? "success" : "error",
+          actionLabelText,
+          result.message || (result.ok ? "Done." : "The action failed."),
+        );
         const refreshMode = opts.refresh ?? "immediate";
         if (refreshMode === "immediate") {
           await refresh();
@@ -67,7 +76,11 @@ export function useActionDispatcher(): UseActionDispatcher {
         }
         return result.ok;
       } catch (err) {
-        push("error", `Action failed: ${(err as Error).message}`);
+        push(
+          "error",
+          `${actionLabel(opts.actionId)} failed`,
+          (err as Error).message || "Could not perform this action.",
+        );
         if (opts.refresh === "deferred") {
           globalThis.setTimeout(() => void refresh(), 350);
         }
@@ -80,4 +93,14 @@ export function useActionDispatcher(): UseActionDispatcher {
   );
 
   return { dispatch, busy };
+}
+
+function actionLabel(actionId: string): string {
+  const label = actionId
+    .replace(/[^a-zA-Z0-9]+/g, " ")
+    .trim()
+    .toLocaleLowerCase();
+
+  if (!label) return "Action";
+  return label.replace(/\b\w/g, (char) => char.toLocaleUpperCase());
 }
