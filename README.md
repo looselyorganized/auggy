@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/auggy.png" alt="Auggy — a sketch of a modular robot with detachable arms, sensors, and accessories" width="220" />
+  <img src="assets/auggy.png" alt="Auggy — a hand-drawn modular robot waving" width="220" />
 </p>
 
 <h1 align="center">Auggy</h1>
