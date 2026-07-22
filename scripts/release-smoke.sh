@@ -8,7 +8,7 @@ PACK_CACHE="$SMOKE_DIR/npm-pack-cache"
 INSTALL_CACHE="$SMOKE_DIR/npm-install-cache"
 GLOBAL_PREFIX="$SMOKE_DIR/npm-global"
 LOG_DIR="$SMOKE_DIR/logs"
-PACK_DIR="$SMOKE_DIR/packs"
+PACK_DIR="${AUGGY_RELEASE_ARTIFACT_DIR:-$SMOKE_DIR/packs}"
 SMOKE_HOME="$SMOKE_DIR/home"
 SMOKE_PORT=""
 SERVER_PID=""
@@ -17,16 +17,21 @@ FAILED=""
 mkdir -p "$LOG_DIR" "$PACK_DIR" "$SMOKE_HOME"
 
 cleanup() {
+  local exit_status="$1"
   if [[ -n "$SERVER_PID" ]] && kill -0 "$SERVER_PID" 2>/dev/null; then
     kill "$SERVER_PID" 2>/dev/null || true
     wait "$SERVER_PID" 2>/dev/null || true
   fi
-  if [[ -n "$FAILED" ]]; then
-    return
+  if [[ -n "$FAILED" ]] || (( exit_status != 0 )); then
+    if [[ -z "$FAILED" ]]; then
+      printf '\nrelease smoke exited unexpectedly with status %s\n' "$exit_status" >&2
+      printf 'logs: %s\n' "$LOG_DIR" >&2
+    fi
+    return "$exit_status"
   fi
   rm -rf "$SMOKE_DIR"
 }
-trap cleanup EXIT
+trap 'cleanup $?' EXIT
 
 info() {
   printf '\n==> %s\n' "$1"
@@ -46,31 +51,64 @@ require_cmd() {
 require_cmd npm
 require_cmd bun
 require_cmd curl
+require_cmd git
 require_cmd node
+require_cmd perl
 require_cmd script
 require_cmd tar
 
 info "typecheck"
 (cd "$ROOT" && bunx tsc --noEmit)
 
-info "pack auggy"
-PACK_NAME="$(cd "$ROOT" && npm_config_cache="$PACK_CACHE" npm pack --silent --pack-destination "$PACK_DIR")"
-TARBALL="$PACK_DIR/$PACK_NAME"
-[[ -f "$TARBALL" ]] || fail "npm pack did not create $TARBALL"
+info "install creator console dependencies"
+(cd "$ROOT/admin" && bun install --frozen-lockfile)
 
-info "pack default engine adapter"
-ANTHROPIC_PACK_NAME="$(
-  cd "$ROOT/packages/anthropic" && npm_config_cache="$PACK_CACHE" npm pack --silent --pack-destination "$PACK_DIR"
-)"
-ANTHROPIC_TARBALL="$PACK_DIR/$ANTHROPIC_PACK_NAME"
-[[ -f "$ANTHROPIC_TARBALL" ]] || fail "npm pack did not create $ANTHROPIC_TARBALL"
+info "build creator console"
+(cd "$ROOT" && bun run build:admin)
+
+info "verify creator console bundle is current"
+(cd "$ROOT" && bun run check:admin-dist)
+
+pack_release_package() {
+  local package_dir="$1"
+  local expected_name="$2"
+  local expected_version="$3"
+  local pack_name
+  local tarball
+  pack_name="$(
+    cd "$ROOT/$package_dir" \
+      && npm_config_cache="$PACK_CACHE" npm pack --silent --pack-destination "$PACK_DIR"
+  )"
+  tarball="$PACK_DIR/$pack_name"
+  [[ -f "$tarball" ]] || fail "npm pack did not create $tarball"
+  tar -xOf "$tarball" package/package.json \
+    | node -e '
+        const manifest = JSON.parse(require("node:fs").readFileSync(0, "utf8"));
+        const [expectedName, expectedVersion] = process.argv.slice(1);
+        if (manifest.name !== expectedName || manifest.version !== expectedVersion) {
+          console.error(`expected ${expectedName}@${expectedVersion}, packed ${manifest.name}@${manifest.version}`);
+          process.exit(1);
+        }
+      ' "$expected_name" "$expected_version" \
+    || fail "packed metadata mismatch for $package_dir"
+  printf '%s\n' "$tarball"
+}
+
+ROOT_VERSION="$(node -p "require('$ROOT/package.json').version")"
+info "pack every publishable package"
+TARBALL="$(pack_release_package "." "auggy" "$ROOT_VERSION")"
+ANTHROPIC_TARBALL="$(pack_release_package "packages/anthropic" "@auggy/anthropic" "$ROOT_VERSION")"
+pack_release_package "packages/openai" "@auggy/openai" "$ROOT_VERSION" >/dev/null
+pack_release_package "packages/openrouter" "@auggy/openrouter" "$ROOT_VERSION" >/dev/null
+pack_release_package "packages/ollama" "@auggy/ollama" "$ROOT_VERSION" >/dev/null
+pack_release_package "packages/evals" "@auggy/evals" "$ROOT_VERSION" >/dev/null
 
 info "verify package contents"
 PACK_LIST="$LOG_DIR/tarball-files.txt"
 tar -tf "$TARBALL" >"$PACK_LIST"
 
 require_pack_entry() {
-  grep -qx "package/$1" "$PACK_LIST" || fail "tarball missing package/$1"
+  grep -Fqx "package/$1" "$PACK_LIST" || fail "tarball missing package/$1"
 }
 
 reject_pack_pattern() {
@@ -87,6 +125,13 @@ require_pack_entry "README.md"
 require_pack_entry "CHANGELOG.md"
 require_pack_entry "LICENSE"
 require_pack_entry "SECURITY.md"
+TRACKED_ADMIN_DIST="$LOG_DIR/tracked-admin-dist.txt"
+(cd "$ROOT" && git ls-files -- admin/dist) >"$TRACKED_ADMIN_DIST"
+[[ -s "$TRACKED_ADMIN_DIST" ]] || fail "Git does not track the built console tree"
+while IFS= read -r dist_path; do
+  [[ -n "$dist_path" ]] || continue
+  require_pack_entry "$dist_path"
+done <"$TRACKED_ADMIN_DIST"
 grep -Eq '^package/admin/dist/assets/.+\.js$' "$PACK_LIST" \
   || fail "tarball missing built console JavaScript"
 grep -Eq '^package/admin/dist/assets/.+\.css$' "$PACK_LIST" \
@@ -131,27 +176,53 @@ grep -q "interactive and needs a terminal" "$LOG_DIR/no-tty-create.log" \
 [[ ! -e "$SMOKE_DIR/no-tty-agent" ]] || fail "non-TTY create left a directory behind"
 
 info "create agent through PTY"
+PTY_RUNNER="$SMOKE_DIR/create-agent.sh"
+cat >"$PTY_RUNNER" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+env \
+  HOME="$AUGGY_SMOKE_HOME" \
+  AUGGY_SCAFFOLD_AUGGY_SPEC="file:$AUGGY_SMOKE_TARBALL" \
+  AUGGY_SCAFFOLD_ENGINE_SPEC="file:$AUGGY_SMOKE_ANTHROPIC_TARBALL" \
+  "$AUGGY_SMOKE_CLI" create "$AUGGY_SMOKE_AGENT_NAME" --skip-install
+: >"$AUGGY_SMOKE_CREATE_SENTINEL"
+SH
+chmod +x "$PTY_RUNNER"
+export AUGGY_SMOKE_HOME="$SMOKE_HOME"
+export AUGGY_SMOKE_TARBALL="$TARBALL"
+export AUGGY_SMOKE_ANTHROPIC_TARBALL="$ANTHROPIC_TARBALL"
+export AUGGY_SMOKE_CLI="$CLI"
+export AUGGY_SMOKE_AGENT_NAME="$AGENT_NAME"
+export AUGGY_SMOKE_CREATE_SENTINEL="$SMOKE_DIR/create-agent.succeeded"
 (
   cd "$SMOKE_DIR"
-  (
-    sleep 0.2
-    printf '\n'
-    sleep 0.2
-    printf '\n'
-    sleep 0.2
-    printf '\n'
-    sleep 0.2
-    printf '\n'
-    sleep 0.2
-    printf '\n'
-    sleep 0.2
-    printf '\n'
-  ) | script -q /dev/null env \
-    HOME="$SMOKE_HOME" \
-    AUGGY_SCAFFOLD_AUGGY_SPEC="file:$TARBALL" \
-    AUGGY_SCAFFOLD_ENGINE_SPEC="file:$ANTHROPIC_TARBALL" \
-    "$CLI" create "$AGENT_NAME" --skip-install
+  answer_create_prompts() {
+    local _
+    # Inquirer switches raw-mode listeners between prompts. Space the
+    # defaults out so keystrokes cannot be consumed during those transitions.
+    for _ in {1..12}; do
+      sleep 0.5
+      printf '\n' || return 0
+    done
+  }
+  set +e
+  if script --version 2>&1 | grep -qi 'util-linux'; then
+    { answer_create_prompts || true; } | script -q -e -c ./create-agent.sh /dev/null
+  else
+    { answer_create_prompts || true; } | script -q /dev/null ./create-agent.sh
+  fi
+  pty_status=$?
+  set -e
+  # The feeder may receive SIGPIPE after the wizard exits. The wrapper writes
+  # this sentinel only after `auggy create` itself completes successfully.
+  if [[ -f "$AUGGY_SMOKE_CREATE_SENTINEL" ]]; then
+    exit 0
+  fi
+  (( pty_status != 0 )) || pty_status=1
+  exit "$pty_status"
 ) >"$LOG_DIR/create.log" 2>&1
+[[ -f "$AUGGY_SMOKE_CREATE_SENTINEL" ]] \
+  || fail "PTY agent creation did not complete successfully"
 
 AGENT_DIR="$SMOKE_DIR/$AGENT_NAME"
 [[ -f "$AGENT_DIR/agent.yaml" ]] || fail "agent.yaml was not created"
@@ -191,13 +262,95 @@ info "run agent and check health"
 SERVER_PID="$!"
 
 for _ in {1..40}; do
-  if curl -fsS "http://127.0.0.1:$SMOKE_PORT/health" >/dev/null 2>&1; then
+  if curl --connect-timeout 1 --max-time 2 -fsS \
+    "http://127.0.0.1:$SMOKE_PORT/health" >/dev/null 2>&1; then
     break
   fi
   sleep 0.25
 done
-curl -fsS "http://127.0.0.1:$SMOKE_PORT/health" | grep -q '"status":"healthy"' \
+curl --connect-timeout 1 --max-time 2 -fsS \
+  "http://127.0.0.1:$SMOKE_PORT/health" | grep -q '"status":"healthy"' \
   || fail "agent health did not become healthy"
+
+info "verify packed console shell and assets"
+WEB_TOKEN="$(sed -n 's/^AUGGY_WEB_TOKEN=//p' "$AGENT_DIR/.env")"
+[[ ${#WEB_TOKEN} -eq 64 ]] || fail "generated AUGGY_WEB_TOKEN is not 64 characters"
+case "$WEB_TOKEN" in
+  *[!0-9a-f]*) fail "generated AUGGY_WEB_TOKEN is not lowercase hexadecimal" ;;
+esac
+
+HTTP_STATUS=""
+HTTP_CONTENT_TYPE=""
+HTTP_BODY=""
+fetch_console_resource() {
+  local resource_path="$1"
+  local log_name="$2"
+  local metadata
+  HTTP_BODY="$LOG_DIR/$log_name.body"
+  if ! metadata="$(
+    curl --silent --show-error \
+      --connect-timeout 2 \
+      --max-time 10 \
+      --user ":$WEB_TOKEN" \
+      --dump-header "$LOG_DIR/$log_name.headers" \
+      --output "$HTTP_BODY" \
+      --write-out $'%{http_code}\t%{content_type}' \
+      "http://127.0.0.1:$SMOKE_PORT$resource_path"
+  )"; then
+    fail "could not fetch packed console resource: $resource_path"
+  fi
+  IFS=$'\t' read -r HTTP_STATUS HTTP_CONTENT_TYPE <<<"$metadata"
+}
+
+assert_console_response() {
+  local resource_path="$1"
+  local expected_content_type="$2"
+  [[ "$HTTP_STATUS" == "200" ]] \
+    || fail "packed console resource returned HTTP $HTTP_STATUS: $resource_path"
+  case "$HTTP_CONTENT_TYPE" in
+    "$expected_content_type"*) ;;
+    *)
+      fail "packed console resource returned $HTTP_CONTENT_TYPE, expected $expected_content_type: $resource_path"
+      ;;
+  esac
+}
+
+fetch_console_resource "/console/chat" "console-chat"
+assert_console_response "/console/chat" "text/html"
+CONSOLE_HTML="$HTTP_BODY"
+CONSOLE_ASSETS="$LOG_DIR/console-assets.txt"
+node - "$CONSOLE_HTML" >"$CONSOLE_ASSETS" <<'NODE'
+const { readFileSync } = require("node:fs");
+const html = readFileSync(process.argv[2], "utf8");
+const assets = new Set();
+for (const match of html.matchAll(/\b(?:src|href)=["'](\/console\/assets\/[^"']+\.(?:js|css))["']/g)) {
+  assets.add(match[1]);
+}
+process.stdout.write([...assets].sort().join("\n"));
+if (assets.size > 0) process.stdout.write("\n");
+NODE
+grep -Eq '\.js$' "$CONSOLE_ASSETS" || fail "served console HTML does not reference JavaScript"
+grep -Eq '\.css$' "$CONSOLE_ASSETS" || fail "served console HTML does not reference CSS"
+
+asset_index=0
+while IFS= read -r asset_path; do
+  [[ -n "$asset_path" ]] || continue
+  asset_index=$((asset_index + 1))
+  fetch_console_resource "$asset_path" "console-asset-$asset_index"
+  case "$asset_path" in
+    *.js) assert_console_response "$asset_path" "application/javascript" ;;
+    *.css) assert_console_response "$asset_path" "text/css" ;;
+    *) fail "served console HTML referenced an unexpected asset type: $asset_path" ;;
+  esac
+done <"$CONSOLE_ASSETS"
+
+brand_index=0
+for brand_path in "/console/brand/auggy-wave.png" "/console/brand/auggy-white.png"; do
+  brand_index=$((brand_index + 1))
+  fetch_console_resource "$brand_path" "console-brand-$brand_index"
+  assert_console_response "$brand_path" "image/png"
+done
+
 kill "$SERVER_PID" 2>/dev/null || true
 wait "$SERVER_PID" 2>/dev/null || true
 SERVER_PID=""
