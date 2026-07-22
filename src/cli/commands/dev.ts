@@ -20,7 +20,12 @@ import { defineAgent } from "../../agent";
 import { parseConfig } from "../config-parser";
 import { resolveEngine } from "../engine-resolver";
 import { resolveAugments } from "../augment-resolver";
-import { claimRuntimePidManifest, releaseRuntimePidManifest } from "../pid-registry";
+import {
+  claimRuntimePidManifest,
+  formatAgentAlreadyRunningMessage,
+  readPidManifest,
+  releaseRuntimePidManifest,
+} from "../pid-registry";
 import { resolveConfigPath } from "../resolve-config";
 import { openBrowser } from "../open-browser";
 import type { AgentConfig, Augment, ModelClient } from "../../types";
@@ -196,9 +201,7 @@ export async function runDev(name: string | undefined, opts: DevOpts): Promise<v
     );
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "EEXIST") {
-      throw new Error(
-        `Agent "${agentName}" is already running. Use "auggy stop ${agentName}" first.`,
-      );
+      throw new Error(formatAgentAlreadyRunningMessage(agentName, readPidManifest(agentName)));
     }
     throw err;
   }

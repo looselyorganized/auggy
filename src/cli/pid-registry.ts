@@ -93,8 +93,20 @@ export function claimRuntimePidManifest(
   opts: RuntimePidRegistryOptions = {},
 ): boolean {
   if (opts.internalMode === "railway") return false;
-  writePidManifest(manifest, opts);
-  return true;
+
+  try {
+    writePidManifest(manifest, opts);
+    return true;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+
+    // A previous runtime may have exited without releasing its manifest.
+    // Clean that record and retry the same atomic write once. If the process
+    // is still alive, preserve the original EEXIST conflict for the caller.
+    if (readLivePidManifest(manifest.name, opts)) throw err;
+    writePidManifest(manifest, opts);
+    return true;
+  }
 }
 
 /** Release a manifest only when claimRuntimePidManifest actually wrote it. */
@@ -115,6 +127,37 @@ export function readPidManifest(name: string, opts: PidRegistryOptions = {}): Pi
   } catch {
     return null;
   }
+}
+
+/**
+ * Read a manifest only when its process is still alive.
+ * Dead or corrupt records are removed so they cannot block a future start.
+ */
+export function readLivePidManifest(
+  name: string,
+  opts: PidRegistryOptions = {},
+): PidManifest | null {
+  const manifest = readPidManifest(name, opts);
+  if (manifest && isProcessAlive(manifest.pid)) return manifest;
+
+  removePidManifest(name, opts);
+  return null;
+}
+
+/** Format a conflict using details from the existing runtime manifest. */
+export function formatAgentAlreadyRunningMessage(
+  name: string,
+  manifest: PidManifest | null,
+): string {
+  const details = manifest
+    ? ` (PID ${manifest.pid}${manifest.port !== null ? `, port ${manifest.port}` : ""})`
+    : "";
+  const consoleUrl =
+    manifest?.port !== null && manifest?.port !== undefined
+      ? `\nConsole: http://localhost:${manifest.port}/console`
+      : "";
+
+  return `Agent "${name}" is already running${details}.${consoleUrl}\nStop it with: auggy stop ${name}`;
 }
 
 /** Remove a PID manifest (called on clean shutdown). */
@@ -162,21 +205,10 @@ export function listPidManifests(opts: PidRegistryOptions = {}): PidManifest[] {
 /**
  * Try to claim a name for a new agent. If a manifest exists:
  *  - If the process is dead, remove the stale manifest and return true.
- *  - If the process is alive but older than 24h, treat it as stuck —
- *    remove the manifest and return true.
- *  - If the process is alive and recent, return false (name is taken).
+ *  - If the process is alive, return false (name is taken).
  */
 export function tryClaimName(name: string, opts: PidRegistryOptions = {}): boolean {
-  const manifest = readPidManifest(name, opts);
-  if (!manifest) return true;
-
-  if (!isProcessAlive(manifest.pid)) {
-    removePidManifest(name, opts);
-    return true;
-  }
-
-  // Process is alive — name is taken.
-  return false;
+  return readLivePidManifest(name, opts) === null;
 }
 
 /**
