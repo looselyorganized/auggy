@@ -3,6 +3,7 @@ import {
   canStartChatWorkspaceLifecycleRun,
   chatWorkspaceLifecycleReducer,
   clearLocalChatDraft,
+  clearLocalChatDraftAfterConfirmedServerDeletion,
   createChatWorkspaceLifecycleState,
   createLocalChatDraft,
   deleteDurableChatThread,
@@ -197,6 +198,124 @@ describe("explicit chat workspace lifecycle state", () => {
     const afterOtherDelete = deleteDurableChatThread(state, "keep-me");
     expect(afterOtherDelete.draft).toBe(draft);
     expect(afterOtherDelete.selection).toEqual({ kind: "draft", draftId: "draft" });
+  });
+
+  it("discards a confirmed-local selected draft atomically to welcome", () => {
+    let state = setLocalChatDraft(
+      createChatWorkspaceLifecycleState(),
+      createLocalChatDraft({ id: "draft", previewMode: "creator", now: T0 }),
+    );
+    state = selectLocalChatDraft(state, "draft");
+    state = chatWorkspaceLifecycleReducer(state, {
+      type: "workspace.visibility-set",
+      target: { kind: "draft", draftId: "draft" },
+      at: T1,
+    });
+
+    state = clearLocalChatDraft(state, "draft");
+
+    expect(state).toMatchObject({
+      draft: null,
+      deferredDraftSummary: null,
+      unconfirmedDraftRun: null,
+      selection: { kind: "welcome" },
+      chatVisible: false,
+      visibleTarget: null,
+    });
+  });
+
+  it("preserves an ambiguously durable draft until server deletion is confirmed", () => {
+    let state = setLocalChatDraft(
+      createChatWorkspaceLifecycleState(),
+      createLocalChatDraft({ id: "draft", previewMode: "creator", now: T0 }),
+    );
+    state = selectLocalChatDraft(state, "draft");
+    state = chatWorkspaceLifecycleReducer(state, {
+      type: "workspace.visibility-set",
+      target: { kind: "draft", draftId: "draft" },
+      at: T1,
+    });
+    state = startRun(state, "draft");
+    state = chatWorkspaceLifecycleReducer(state, {
+      type: "run.rollback",
+      clientRunId: "run-1",
+      threadId: "draft",
+      assistantMessageId: "assistant-1",
+      durability: "unknown",
+    });
+
+    expect(state.unconfirmedDraftRun?.threadId).toBe("draft");
+    expect(clearLocalChatDraft(state, "draft")).toBe(state);
+    expect(
+      chatWorkspaceLifecycleReducer(state, {
+        type: "draft.cleared",
+        draftId: "draft",
+      }),
+    ).toBe(state);
+
+    const confirmed = clearLocalChatDraftAfterConfirmedServerDeletion(state, "draft");
+    expect(confirmed).toMatchObject({
+      draft: null,
+      unconfirmedDraftRun: null,
+      selection: { kind: "welcome" },
+      chatVisible: false,
+      visibleTarget: null,
+    });
+  });
+
+  it("deletes the selected durable thread to welcome without an MRU fallback", () => {
+    const draft = createLocalChatDraft({ id: "draft", previewMode: "creator", now: T0 });
+    let state = setLocalChatDraft(createChatWorkspaceLifecycleState(), draft);
+    state = hydrateDurableChatThreads(state, [
+      summary("selected", "Selected", T0),
+      summary("newest", "Newest", T2),
+      summary("older", "Older", T1),
+    ]);
+    state = selectDurableChatThread(state, "selected");
+    state = chatWorkspaceLifecycleReducer(state, {
+      type: "workspace.visibility-set",
+      target: { kind: "thread", threadId: "selected" },
+      at: T2,
+    });
+
+    state = deleteDurableChatThread(state, "selected");
+
+    expect(state.durableThreads.map(({ id }) => id)).toEqual(["newest", "older"]);
+    expect(state.draft).toBe(draft);
+    expect(state.selection).toEqual({ kind: "welcome" });
+    expect(state.chatVisible).toBeFalse();
+    expect(state.visibleTarget).toBeNull();
+  });
+
+  it("preserves exact draft and other durable selections when deleting in the background", () => {
+    const draft = createLocalChatDraft({ id: "draft", previewMode: "creator", now: T0 });
+    let draftSelected = setLocalChatDraft(createChatWorkspaceLifecycleState(), draft);
+    draftSelected = hydrateDurableChatThreads(draftSelected, [summary("background")]);
+    draftSelected = selectLocalChatDraft(draftSelected, "draft");
+    draftSelected = chatWorkspaceLifecycleReducer(draftSelected, {
+      type: "workspace.visibility-set",
+      target: { kind: "draft", draftId: "draft" },
+      at: T1,
+    });
+    const afterDraftBackgroundDelete = deleteDurableChatThread(draftSelected, "background");
+    expect(afterDraftBackgroundDelete.selection).toBe(draftSelected.selection);
+    expect(afterDraftBackgroundDelete.visibleTarget).toBe(draftSelected.visibleTarget);
+    expect(afterDraftBackgroundDelete.chatVisible).toBeTrue();
+
+    let durableSelected = hydrateDurableChatThreads(createChatWorkspaceLifecycleState(), [
+      summary("selected"),
+      summary("background"),
+    ]);
+    durableSelected = selectDurableChatThread(durableSelected, "selected");
+    durableSelected = chatWorkspaceLifecycleReducer(durableSelected, {
+      type: "workspace.visibility-set",
+      target: { kind: "thread", threadId: "selected" },
+      at: T1,
+    });
+    const afterDurableBackgroundDelete = deleteDurableChatThread(durableSelected, "background");
+    expect(afterDurableBackgroundDelete.selection).toBe(durableSelected.selection);
+    expect(afterDurableBackgroundDelete.visibleTarget).toBe(durableSelected.visibleTarget);
+    expect(afterDurableBackgroundDelete.chatVisible).toBeTrue();
   });
 
   it("does not resurrect a deleted thread from delayed detail", () => {

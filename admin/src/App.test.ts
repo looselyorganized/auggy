@@ -11,6 +11,10 @@ import {
 } from "@/lib/chat-route";
 import { createChatThread } from "@/lib/chat-workspace";
 import type { DurableChatThreadSummary } from "@/lib/chat-workspace-state";
+import {
+  getMissingOwnedDraftNavigationPath,
+  shouldReplaceSidebarDeletedChatWithWelcome,
+} from "./App";
 
 function thread(
   id: string,
@@ -191,5 +195,86 @@ describe("console chat navigation", () => {
         selection: { kind: "thread", threadId: second.id },
       }).activeId,
     ).toBe("");
+  });
+});
+
+describe("sidebar delete navigation", () => {
+  const current = {
+    deletedThreadId: "selected",
+    routeAtStart: { kind: "thread", threadId: "selected" } as const,
+    startedLocationKey: "route-1",
+    currentLocationKey: "route-1",
+    startedPathname: "/chat/selected",
+    currentPathname: "/chat/selected",
+  };
+
+  it("replaces the unchanged selected durable route with welcome", () => {
+    expect(shouldReplaceSidebarDeletedChatWithWelcome(current)).toBe(true);
+  });
+
+  it("preserves the current route when deleting a background durable row", () => {
+    expect(
+      shouldReplaceSidebarDeletedChatWithWelcome({
+        ...current,
+        deletedThreadId: "background",
+      }),
+    ).toBe(false);
+    expect(
+      shouldReplaceSidebarDeletedChatWithWelcome({
+        ...current,
+        routeAtStart: { kind: "draft" },
+        deletedThreadId: "background",
+        startedPathname: "/chat/new",
+        currentPathname: "/chat/new",
+      }),
+    ).toBe(false);
+  });
+
+  it("does not redirect a late completion after navigation", () => {
+    expect(
+      shouldReplaceSidebarDeletedChatWithWelcome({
+        ...current,
+        currentLocationKey: "route-2",
+        currentPathname: "/capabilities",
+      }),
+    ).toBe(false);
+    expect(
+      shouldReplaceSidebarDeletedChatWithWelcome({
+        ...current,
+        currentLocationKey: "route-3",
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("owned draft route transitions", () => {
+  it("moves an accepted draft to its exact durable route", () => {
+    expect(
+      getMissingOwnedDraftNavigationPath("draft/one", {
+        kind: "thread",
+        threadId: "draft/one",
+      }),
+    ).toBe("/chat/draft%2Fone");
+  });
+
+  it("moves a deleted draft to welcome", () => {
+    expect(
+      getMissingOwnedDraftNavigationPath("draft", { kind: "welcome" }),
+    ).toBe(CHAT_WELCOME_PATH);
+  });
+
+  it("never transfers ownership to a mismatched or stale selection", () => {
+    expect(
+      getMissingOwnedDraftNavigationPath("draft", {
+        kind: "thread",
+        threadId: "other",
+      }),
+    ).toBeNull();
+    expect(
+      getMissingOwnedDraftNavigationPath("draft", {
+        kind: "draft",
+        draftId: "draft",
+      }),
+    ).toBeNull();
   });
 });

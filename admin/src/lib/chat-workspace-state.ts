@@ -482,8 +482,31 @@ export function clearLocalChatDraft(
   state: ChatWorkspaceLifecycleState,
   draftId: string,
 ): ChatWorkspaceLifecycleState {
+  return clearLocalChatDraftWithAuthority(state, draftId, false);
+}
+
+/**
+ * An authoritative server delete/tombstone handler may use this only after
+ * receiving confirmed deletion evidence. Local discard must use
+ * `clearLocalChatDraft`, which preserves ambiguously durable drafts.
+ */
+export function clearLocalChatDraftAfterConfirmedServerDeletion(
+  state: ChatWorkspaceLifecycleState,
+  draftId: string,
+): ChatWorkspaceLifecycleState {
+  return clearLocalChatDraftWithAuthority(state, draftId, true);
+}
+
+function clearLocalChatDraftWithAuthority(
+  state: ChatWorkspaceLifecycleState,
+  draftId: string,
+  serverDeletionConfirmed: boolean,
+): ChatWorkspaceLifecycleState {
   if (state.activeRun?.targetKind === "draft") return state;
   if (state.draft?.id !== draftId) return state;
+  if (!serverDeletionConfirmed && state.unconfirmedDraftRun?.threadId === draftId) {
+    return state;
+  }
   const selectionChanged = state.selection.kind === "draft";
   return {
     ...state,

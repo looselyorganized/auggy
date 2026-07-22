@@ -8,6 +8,7 @@ import {
   shouldDeferDetailReconciliation,
   shouldRetryChatHydration,
   useChatWorkspace,
+  type ChatWorkspaceCommandResult,
   type ChatWorkspaceContextValue,
 } from "@/components/admin/ChatWorkspaceProvider";
 import { ConsoleChatApiError } from "@/lib/console-chat-api";
@@ -193,11 +194,93 @@ describe("ChatWorkspaceProvider persistence", () => {
 
     await act(async () => {
       expect(await harness.value.markUnread(first)).toBe(false);
-      expect(await harness.value.deleteThread(first)).toBe(true);
+      expect(await harness.value.deleteThread(first)).toEqual({ ok: true });
+      expect(await harness.value.deleteThread(first)).toEqual({
+        ok: false,
+        error: "This chat no longer exists.",
+      });
     });
     expect(harness.value.state.draft).toBeNull();
     expect(harness.value.state.selection).toEqual({ kind: "welcome" });
     expect(harness.value.activeThread).toBeNull();
+  });
+
+  it("refuses to clear a draft whose first send is still reconciling durability", async () => {
+    const initial = createDraftWorkspace(
+      createChatThread({ id: "ambiguous", previewMode: "creator", model: MODEL, now: T0 }),
+    );
+    initial.unconfirmedDraftRun = {
+      threadId: "ambiguous",
+      clientRunId: "run-unknown",
+      userMessageId: "user-unknown",
+      assistantMessageId: "assistant-unknown",
+    };
+    const requests: string[] = [];
+    const harness = await mountProvider({
+      initialState: initial,
+      fetchImpl: mockFetch(async (path) => {
+        requests.push(path);
+        throw new Error(`Unexpected request: ${path}`);
+      }),
+    });
+    const draftBeforeDelete = harness.value.state.draft;
+
+    await act(async () => {
+      expect(await harness.value.deleteThread("ambiguous")).toEqual({
+        ok: false,
+        error:
+          "This chat is still reconciling with saved history. Retry deletion shortly.",
+      });
+    });
+
+    expect(requests).toEqual([]);
+    expect(harness.value.state.draft).toBe(draftBeforeDelete);
+    expect(harness.value.state.unconfirmedDraftRun).toEqual(
+      initial.unconfirmedDraftRun,
+    );
+    expect(harness.value.state.selection).toEqual({
+      kind: "draft",
+      draftId: "ambiguous",
+    });
+  });
+
+  it("returns deterministic refusal reasons for local and external active runs", async () => {
+    const external = {
+      ...populatedThread("external", "External run"),
+      runStatus: "streaming" as const,
+    };
+    const response = deferred<Response>();
+    const fetchImpl = mockFetch(async (path) => {
+      if (path === "/console/api/chat") return response.promise;
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    const harness = await mountProvider({
+      fetchImpl,
+      initialState: workspaceWithDurables([
+        populatedThread("local", "Local run"),
+        external,
+      ], "local"),
+    });
+
+    await act(async () => {
+      expect(await harness.value.deleteThread("external")).toEqual({
+        ok: false,
+        error:
+          "This response is still running. Wait for it to finish before deleting this chat.",
+      });
+    });
+
+    let sending!: Promise<ChatWorkspaceCommandResult>;
+    await act(async () => {
+      sending = harness.value.send("Keep running", "local");
+      await Promise.resolve();
+      expect(await harness.value.deleteThread("local")).toEqual({
+        ok: false,
+        error: "Wait for this response to finish or stop it before deleting this chat.",
+      });
+    });
+    await act(async () => response.resolve(completedSse("local")));
+    await act(async () => expect(await sending).toEqual({ ok: true }));
   });
 
   it("automatically restores saved chats when the backend becomes available", async () => {
@@ -818,6 +901,7 @@ describe("ChatWorkspaceProvider persistence", () => {
     const initial = createChatWorkspace(saved);
     const calls: string[] = [];
     let rejectRename = true;
+    let rejectDelete = true;
     const fetchImpl = mockFetch(async (path, init) => {
       calls.push(path);
       if (path.endsWith("/rename")) {
@@ -832,6 +916,10 @@ describe("ChatWorkspaceProvider persistence", () => {
       }
       if (path.endsWith("/delete")) {
         expect(JSON.parse(String(init?.body))).toEqual({ csrf: "csrf-token" });
+        if (rejectDelete) {
+          rejectDelete = false;
+          return json({ error: "delete failed" }, 503);
+        }
         return json({ ok: true });
       }
       throw new Error(`Unexpected request: ${path}`);
@@ -845,12 +933,18 @@ describe("ChatWorkspaceProvider persistence", () => {
     await act(async () => {
       await harness.value.rename("saved", "Renamed");
       await harness.value.markUnread("saved");
-      expect(await harness.value.deleteThread("saved")).toBe(true);
+      expect(await harness.value.deleteThread("saved")).toEqual({
+        ok: false,
+        error: "delete failed",
+      });
+      expect(harness.value.activeThread?.id).toBe("saved");
+      expect(await harness.value.deleteThread("saved")).toEqual({ ok: true });
     });
     expect(calls).toEqual([
       "/console/api/chat/threads/saved/rename",
       "/console/api/chat/threads/saved/rename",
       "/console/api/chat/threads/saved/read-state",
+      "/console/api/chat/threads/saved/delete",
       "/console/api/chat/threads/saved/delete",
     ]);
     expect(harness.value.activeThread).toBeNull();
@@ -874,7 +968,7 @@ describe("ChatWorkspaceProvider persistence", () => {
       initialState: createChatWorkspace(saved),
     });
 
-    let deleting!: Promise<boolean>;
+    let deleting!: Promise<ChatWorkspaceCommandResult>;
     await act(async () => {
       deleting = harness.value.deleteThread("saved");
       await Promise.resolve();
@@ -882,9 +976,13 @@ describe("ChatWorkspaceProvider persistence", () => {
         ok: false,
         error: "This chat is being deleted.",
       });
+      expect(await harness.value.deleteThread("saved")).toEqual({
+        ok: false,
+        error: "This chat is already being deleted.",
+      });
     });
     await act(async () => deletion.resolve(json({ ok: true })));
-    await act(async () => expect(await deleting).toBe(true));
+    await act(async () => expect(await deleting).toEqual({ ok: true }));
     expect(harness.value.state.durableThreads.some(({ id }) => id === "saved")).toBe(false);
   });
 

@@ -11,7 +11,11 @@ import { Button } from "@/components/ui/button";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { detectCodeLanguage, HighlightedCode } from "@/components/ui/highlighted-code";
 import { formatChatTranscript } from "@/lib/chat-transcript";
-import { CHAT_DRAFT_PATH, chatThreadPath } from "@/lib/chat-route";
+import {
+  CHAT_DRAFT_PATH,
+  CHAT_WELCOME_PATH,
+  chatThreadPath,
+} from "@/lib/chat-route";
 import { getChatRunPresentation } from "@/lib/chat-run-state";
 import {
   type ChatMessage,
@@ -57,6 +61,23 @@ export function getAcceptedChatNavigationPath(options: {
     : null;
 }
 
+export function shouldReplaceDeletedChatWithWelcome(options: {
+  mounted: boolean;
+  deletedThreadId: string;
+  activeThreadId: string;
+  startedLocationKey: string;
+  currentLocationKey: string;
+  startedPathname: string;
+  currentPathname: string;
+}): boolean {
+  return (
+    options.mounted &&
+    options.deletedThreadId === options.activeThreadId &&
+    options.startedLocationKey === options.currentLocationKey &&
+    options.startedPathname === options.currentPathname
+  );
+}
+
 export function ChatTab() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -83,8 +104,10 @@ export function ChatTab() {
   const mountedRef = useRef(true);
   const activeThreadIdRef = useRef(activeThread.id);
   const pathnameRef = useRef(location.pathname);
+  const locationKeyRef = useRef(location.key);
   activeThreadIdRef.current = activeThread.id;
   pathnameRef.current = location.pathname;
+  locationKeyRef.current = location.key;
 
   useEffect(() => {
     mountedRef.current = true;
@@ -277,10 +300,24 @@ export function ChatTab() {
         }}
         onClearVisitor={clearVisitor}
         onDelete={async () => {
-          if (!(await deleteThread(activeThread.id))) {
-            throw new Error("This chat cannot be deleted while its response is running.");
+          const threadId = activeThread.id;
+          const startedPathname = location.pathname;
+          const startedLocationKey = location.key;
+          const result = await deleteThread(threadId);
+          if (!result.ok) throw new Error(result.error);
+          if (
+            shouldReplaceDeletedChatWithWelcome({
+              mounted: mountedRef.current,
+              deletedThreadId: threadId,
+              activeThreadId: activeThreadIdRef.current,
+              startedLocationKey,
+              currentLocationKey: locationKeyRef.current,
+              startedPathname,
+              currentPathname: pathnameRef.current,
+            })
+          ) {
+            navigate(CHAT_WELCOME_PATH, { replace: true });
           }
-          navigate("/chat", { replace: true });
         }}
         onActionError={(action, actionError) => {
           push(

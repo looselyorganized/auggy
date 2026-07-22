@@ -1,5 +1,8 @@
 import { describe, expect, it } from "bun:test";
-import { getAcceptedChatNavigationPath } from "./ChatTab";
+import {
+  getAcceptedChatNavigationPath,
+  shouldReplaceDeletedChatWithWelcome,
+} from "./ChatTab";
 
 describe("getAcceptedChatNavigationPath", () => {
   it("replaces the local draft route with its durable URL after acceptance", () => {
@@ -60,5 +63,59 @@ describe("getAcceptedChatNavigationPath", () => {
         pathname: "/chat/new",
       }),
     ).toBeNull();
+  });
+});
+
+describe("shouldReplaceDeletedChatWithWelcome", () => {
+  const current = {
+    mounted: true,
+    deletedThreadId: "selected",
+    activeThreadId: "selected",
+    startedLocationKey: "route-1",
+    currentLocationKey: "route-1",
+    startedPathname: "/chat/selected",
+    currentPathname: "/chat/selected",
+  };
+
+  it("replaces the unchanged selected chat route after deletion", () => {
+    expect(shouldReplaceDeletedChatWithWelcome(current)).toBe(true);
+    expect(
+      shouldReplaceDeletedChatWithWelcome({
+        ...current,
+        deletedThreadId: "draft",
+        activeThreadId: "draft",
+        startedPathname: "/chat/new",
+        currentPathname: "/chat/new",
+      }),
+    ).toBe(true);
+  });
+
+  it("does not navigate after selection moves to another chat", () => {
+    expect(
+      shouldReplaceDeletedChatWithWelcome({
+        ...current,
+        activeThreadId: "other",
+        currentLocationKey: "route-2",
+        currentPathname: "/chat/other",
+      }),
+    ).toBe(false);
+  });
+
+  it("does not navigate after leaving and returning to the same URL", () => {
+    expect(
+      shouldReplaceDeletedChatWithWelcome({
+        ...current,
+        currentLocationKey: "route-3",
+      }),
+    ).toBe(false);
+  });
+
+  it("does not navigate after the chat surface unmounts", () => {
+    expect(
+      shouldReplaceDeletedChatWithWelcome({
+        ...current,
+        mounted: false,
+      }),
+    ).toBe(false);
   });
 });

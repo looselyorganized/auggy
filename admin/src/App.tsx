@@ -1,4 +1,11 @@
-import { lazy, Suspense, useEffect, useState, type ReactNode } from "react";
+import {
+  lazy,
+  Suspense,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import {
   NavLink,
   Navigate,
@@ -26,11 +33,13 @@ import {
   getChatNavigationState,
   getVisibleChatWorkspaceTarget,
   parseChatRouteTarget,
+  type ChatRouteTarget,
 } from "@/lib/chat-route";
 import { getMobileChatNavigationState } from "@/lib/chat-run-state";
 import {
   getChatWorkspaceTargetById,
   getSelectedChatWorkspaceId,
+  type ChatWorkspaceSelection,
 } from "@/lib/chat-workspace-state";
 import { cn } from "@/lib/utils";
 
@@ -47,6 +56,32 @@ const CapabilitiesTab = lazy(() =>
     default: m.CapabilitiesTab,
   })),
 );
+
+export function shouldReplaceSidebarDeletedChatWithWelcome(options: {
+  deletedThreadId: string;
+  routeAtStart: ChatRouteTarget;
+  startedLocationKey: string;
+  currentLocationKey: string;
+  startedPathname: string;
+  currentPathname: string;
+}): boolean {
+  return (
+    options.routeAtStart.kind === "thread" &&
+    options.routeAtStart.threadId === options.deletedThreadId &&
+    options.startedLocationKey === options.currentLocationKey &&
+    options.startedPathname === options.currentPathname
+  );
+}
+
+export function getMissingOwnedDraftNavigationPath(
+  draftId: string,
+  selection: ChatWorkspaceSelection,
+): string | null {
+  if (selection.kind === "welcome") return CHAT_WELCOME_PATH;
+  return selection.kind === "thread" && selection.threadId === draftId
+    ? chatThreadPath(draftId)
+    : null;
+}
 
 export function App() {
   const dashboard = useDashboard();
@@ -107,6 +142,8 @@ function ConsoleShell({
   } = useChatWorkspace();
   const navigate = useNavigate();
   const location = useLocation();
+  const locationRef = useRef(location);
+  locationRef.current = location;
   const documentVisible = useDocumentVisible();
   const chatRoute = parseChatRouteTarget(location.pathname);
   const chatRouteActive = chatRoute.kind !== "outside";
@@ -143,12 +180,21 @@ function ConsoleShell({
     if (!result.valid) throw new Error(result.message);
   };
   const deleteChat = async (threadId: string) => {
-    if (!(await deleteThread(threadId))) {
-      throw new Error(
-        "This chat cannot be deleted while its response is running.",
-      );
-    }
-    if (chatRoute.kind === "thread" && chatRoute.threadId === threadId) {
+    const routeAtStart = chatRoute;
+    const locationAtStart = location;
+    const result = await deleteThread(threadId);
+    if (!result.ok) throw new Error(result.error);
+    const currentLocation = locationRef.current;
+    if (
+      shouldReplaceSidebarDeletedChatWithWelcome({
+        deletedThreadId: threadId,
+        routeAtStart,
+        startedLocationKey: locationAtStart.key,
+        currentLocationKey: currentLocation.key,
+        startedPathname: locationAtStart.pathname,
+        currentPathname: currentLocation.pathname,
+      })
+    ) {
       navigate(CHAT_WELCOME_PATH, { replace: true });
     }
   };
@@ -223,7 +269,7 @@ function ConsoleShell({
           aria-label="Console sections"
         >
           <ConsoleNavLink
-            to="/chat"
+            to={CHAT_WELCOME_PATH}
             ariaLabel={mobileChatNavigation.accessibleLabel}
             icon={
               <span className="relative" aria-hidden="true">
@@ -258,7 +304,7 @@ function ConsoleShell({
           <Suspense fallback={<ConsoleRouteFallback />}>
             <Routes>
               <Route path="/" element={<Navigate to={CHAT_WELCOME_PATH} replace />} />
-              <Route path="/chat" element={<ChatRoute />} />
+              <Route path={CHAT_WELCOME_PATH} element={<ChatRoute />} />
               <Route path="/chat/new" element={<ChatRoute />} />
               <Route path="/chat/:threadId" element={<ChatRoute />} />
               <Route path="/integrations" element={<IntegrationsTab />} />
@@ -293,6 +339,12 @@ type ChatRouteLookup =
   | { threadId: string; status: "not-found" }
   | { threadId: string; status: "error"; detail: string };
 
+interface DraftRouteOwnership {
+  locationKey: string;
+  draftId: string | null;
+  createRequested: boolean;
+}
+
 /**
  * Keeps the URL as the durable conversation selector. Thread details are lazy-loaded
  * so a copied deep link works without fetching every transcript into the sidebar.
@@ -312,6 +364,7 @@ function ChatRoute() {
   } = useChatWorkspace();
   const navigate = useNavigate();
   const [lookup, setLookup] = useState<ChatRouteLookup | null>(null);
+  const draftRouteOwnershipRef = useRef<DraftRouteOwnership | null>(null);
   const threadId = route.kind === "thread" ? route.threadId : undefined;
   const routeTargetLifecycle = threadId
     ? getChatWorkspaceTargetById(state, threadId)?.lifecycle
@@ -322,6 +375,23 @@ function ChatRoute() {
   }, [route.kind, selectWelcome]);
 
   useEffect(() => {
+    if (route.kind !== "draft" || location.pathname !== CHAT_DRAFT_PATH) {
+      draftRouteOwnershipRef.current = null;
+      return;
+    }
+    let ownership = draftRouteOwnershipRef.current;
+    if (!ownership || ownership.locationKey !== location.key) {
+      ownership = {
+        locationKey: location.key,
+        draftId: null,
+        createRequested: false,
+      };
+      draftRouteOwnershipRef.current = ownership;
+    }
+    if (state.draft) ownership.draftId = state.draft.id;
+  }, [location.key, location.pathname, route.kind, state.draft]);
+
+  useEffect(() => {
     if (
       hydrationStatus !== "ready" ||
       route.kind !== "draft" ||
@@ -329,11 +399,25 @@ function ChatRoute() {
     ) {
       return;
     }
+    const ownership = draftRouteOwnershipRef.current;
+    if (!ownership || ownership.locationKey !== location.key) return;
     const draftId = state.draft?.id;
     if (!draftId) {
-      create();
+      if (ownership.draftId) {
+        const nextPath = getMissingOwnedDraftNavigationPath(
+          ownership.draftId,
+          state.selection,
+        );
+        if (nextPath) navigate(nextPath, { replace: true });
+        return;
+      }
+      if (!ownership.createRequested) {
+        ownership.createRequested = true;
+        create();
+      }
       return;
     }
+    ownership.draftId = draftId;
     if (
       state.selection.kind !== "draft" ||
       state.selection.draftId !== draftId
@@ -343,7 +427,9 @@ function ChatRoute() {
   }, [
     create,
     hydrationStatus,
+    location.key,
     location.pathname,
+    navigate,
     route.kind,
     select,
     state.draft?.id,
