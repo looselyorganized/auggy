@@ -51,7 +51,7 @@ const dashboardData = {
   skills: { installed: [], available: [], skillsDir: null },
 } as unknown as DashboardData;
 
-let renderer: ReactTestRenderer | null = null;
+const renderers = new Set<ReactTestRenderer>();
 
 beforeEach(() => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -73,8 +73,13 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
-  if (renderer) await act(async () => renderer?.unmount());
-  renderer = null;
+  const mountedRenderers = [...renderers];
+  renderers.clear();
+  if (mountedRenderers.length > 0) {
+    await act(async () => {
+      for (const mountedRenderer of mountedRenderers) mountedRenderer.unmount();
+    });
+  }
   Reflect.deleteProperty(globalThis, "window");
   Reflect.deleteProperty(globalThis, "localStorage");
 });
@@ -1594,6 +1599,131 @@ describe("ChatWorkspaceProvider persistence", () => {
     });
   });
 
+  it("converges two providers after deletion without replacing the other tab's new draft", async () => {
+    const saved = populatedThread("shared-saved", "Shared saved chat");
+    const clock = {
+      ...populatedThread("poll-clock", "Polling clock"),
+      runStatus: "streaming" as const,
+    };
+    const added = populatedThread("added-later", "Added later");
+    const backend = new Map<string, ChatThread>([
+      [saved.id, saved],
+      [clock.id, clock],
+    ]);
+    const requests: Array<{
+      client: "a" | "b";
+      kind: "list" | "delete";
+      ids: string[];
+    }> = [];
+    const sharedFetch = (client: "a" | "b") =>
+      mockFetch(async (path, init) => {
+        if (path === "/console/api/chat/threads") {
+          const ids = [...backend.keys()];
+          requests.push({ client, kind: "list", ids });
+          return json({ threads: [...backend.values()].map(summary) });
+        }
+        if (path === "/console/api/chat/threads/shared-saved/delete") {
+          expect(client).toBe("a");
+          expect(JSON.parse(String(init?.body))).toEqual({ csrf: "csrf-token" });
+          backend.delete(saved.id);
+          requests.push({ client, kind: "delete", ids: [...backend.keys()] });
+          return json({ ok: true });
+        }
+        throw new Error(`Unexpected ${client} request: ${path}`);
+      });
+
+    const tabA = await mountProvider({ fetchImpl: sharedFetch("a") });
+    const tabB = await mountProvider({ fetchImpl: sharedFetch("b") });
+
+    expect(requests.slice(0, 2)).toEqual([
+      { client: "a", kind: "list", ids: [saved.id, clock.id] },
+      { client: "b", kind: "list", ids: [saved.id, clock.id] },
+    ]);
+    expect(tabA.value.state.durableThreads.map(({ id }) => id)).toEqual([
+      saved.id,
+      clock.id,
+    ]);
+    expect(tabB.value.state.durableThreads.map(({ id }) => id)).toEqual([
+      saved.id,
+      clock.id,
+    ]);
+    act(() => {
+      expect(tabA.value.select(saved.id)).toBe(true);
+      expect(tabB.value.select(saved.id)).toBe(true);
+    });
+
+    await act(async () => {
+      expect(await tabA.value.deleteThread(saved.id)).toEqual({ ok: true });
+    });
+    expect(requests.find(({ kind }) => kind === "delete")).toEqual({
+      client: "a",
+      kind: "delete",
+      ids: [clock.id],
+    });
+    expect(tabA.value.state.durableThreads.some(({ id }) => id === saved.id)).toBe(false);
+    expect(tabA.value.state.selection).toEqual({ kind: "welcome" });
+
+    await waitForCondition(
+      () =>
+        !tabB.value.state.durableThreads.some(({ id }) => id === saved.id) &&
+        tabB.value.state.selection.kind === "welcome",
+      "tab B to observe the shared deletion",
+    );
+    const deletionRequestIndex = requests.findIndex(({ kind }) => kind === "delete");
+    const tabBDeletionPollIndex = requests.findIndex(
+      ({ client, kind, ids }, index) =>
+        index > deletionRequestIndex &&
+        client === "b" &&
+        kind === "list" &&
+        !ids.includes(saved.id),
+    );
+    expect(tabBDeletionPollIndex).toBeGreaterThan(deletionRequestIndex);
+
+    let draftId = "";
+    act(() => {
+      draftId = tabB.value.create();
+    });
+    expect(tabB.value.state.selection).toEqual({ kind: "draft", draftId });
+    expect(tabB.value.state.draft?.id).toBe(draftId);
+    const tabBListsBeforeDraftPoll = requests.filter(
+      ({ client, kind }) => client === "b" && kind === "list",
+    ).length;
+
+    await waitForCondition(
+      () =>
+        requests.filter(({ client, kind }) => client === "b" && kind === "list").length >
+        tabBListsBeforeDraftPoll,
+      "tab B to poll after creating its local draft",
+    );
+    expect(tabB.value.state.durableThreads.some(({ id }) => id === saved.id)).toBe(false);
+    expect(tabB.value.state.draft?.id).toBe(draftId);
+    expect(tabB.value.state.selection).toEqual({ kind: "draft", draftId });
+
+    backend.set(added.id, added);
+    await waitForCondition(
+      () =>
+        tabA.value.state.durableThreads.some(({ id }) => id === added.id) &&
+        tabB.value.state.durableThreads.some(({ id }) => id === added.id),
+      "both tabs to observe the new durable thread",
+      6_000,
+    );
+
+    expect(tabA.value.state.selection).toEqual({ kind: "welcome" });
+    expect(tabB.value.state.selection).toEqual({ kind: "draft", draftId });
+    expect(tabB.value.activeThread?.id).toBe(draftId);
+    expect(tabB.value.state.draft?.id).toBe(draftId);
+    expect(tabA.value.state.durableThreads.some(({ id }) => id === saved.id)).toBe(false);
+    expect(tabB.value.state.durableThreads.some(({ id }) => id === saved.id)).toBe(false);
+    for (const client of ["a", "b"] as const) {
+      expect(
+        requests.some(
+          ({ client: requestClient, kind, ids }) =>
+            requestClient === client && kind === "list" && ids.includes(added.id),
+        ),
+      ).toBe(true);
+    }
+  });
+
   it("reconciles cross-tab additions and deletions instead of polling stale navigation", async () => {
     const missing = {
       ...populatedThread("missing", "Deleted elsewhere"),
@@ -1804,7 +1934,7 @@ async function mountProvider(options: {
     );
   }
   await act(async () => {
-    renderer = create(
+    const mountedRenderer = create(
       <DashboardHarness>
         <ChatWorkspaceProvider
           initialState={options.initialState}
@@ -1816,6 +1946,7 @@ async function mountProvider(options: {
         </ChatWorkspaceProvider>
       </DashboardHarness>,
     );
+    renderers.add(mountedRenderer);
   });
   if (!value) throw new Error("Provider did not render");
   return {
@@ -1986,6 +2117,20 @@ function deferred<T>() {
     resolve = accept;
   });
   return { promise, resolve };
+}
+
+async function waitForCondition(
+  condition: () => boolean,
+  description: string,
+  timeoutMs = 3_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!condition()) {
+    if (Date.now() >= deadline) throw new Error(`Timed out waiting for ${description}`);
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    });
+  }
 }
 
 const EXTERNAL_POLL_TEST_WAIT_MS = 850;
