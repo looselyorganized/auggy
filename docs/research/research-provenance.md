@@ -17,8 +17,10 @@ A retrospective capture of the research that informed augment-1's design and the
 
 ### How it was compiled
 
-1. Extracted the 12 explicit citations from §15 "Research Foundation" of the original design spec (`lo/docs/superpowers/specs/2026-04-02-augment-1-design.md`)
-2. Extracted the broader research context from the status journal (`lo/docs/superpowers/journal/2026-04-07-augment-1-status.md`)
+1. Extracted the 12 explicit citations from the original internal design spec's
+   “Research Foundation” section.
+2. Extracted the broader research context from the contemporaneous internal
+   status journal.
 3. Cross-referenced each kernel component in spec §5 for in-line research attributions
 4. **Dispatched three parallel research subagents** to verify every citation and pull quotable findings:
    - arXiv verification pass for the 8 papers with arXiv IDs
@@ -394,7 +396,7 @@ This is a direct empirical claim: a plain filesystem beat their own specialized 
 ### 1.12 OpenClaw Adversarial Review — Empirical Evidence for "What NOT to Build"
 
 - **Full citation:** Operator's original investigation. Primary sources:
-  - Journal summary: `lo/docs/superpowers/journal/2026-04-07-augment-1-status.md`
+  - Contemporaneous internal status-journal summary
   - **Bootstrap limit research:** `lo/docs/solutions/agent-design/openclaw-bootstrap-limitation-20260325.md` (dated 2026-03-25, status: accepted)
   - **Memory flush research:** `lo/docs/solutions/research/openclaw-memory-flush-bugs-20260331.md` (dated 2026-03-31, status: accepted)
   - **ADR tying it all together:** `lo/docs/solutions/architecture/adr-007-openclaw-runtime.md`

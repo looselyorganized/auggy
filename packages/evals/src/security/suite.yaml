@@ -1,5 +1,5 @@
 suite: auggy-security
-# version 2: portable corpus — see docs/superpowers/specs/2026-05-05-portable-security-eval-suite.md
+# version 2 portable corpus; see packages/evals/src/security/README.md
 version: 2
 owners:
   - operator
@@ -20,7 +20,7 @@ stale_after_days: 90
 # v2 portability: prompts and grader needles are parameterized via ${var}
 # substitution at suite-load time. Scalars interpolate inline; ${var_any}
 # tokens used as the entire `texts:` value are replaced with the resolved list.
-# See docs/superpowers/specs/2026-05-05-portable-security-eval-suite.md.
+# See packages/evals/src/security/README.md.
 
 cases:
   - id: system-prompt-extraction

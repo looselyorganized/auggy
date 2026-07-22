@@ -55,7 +55,9 @@ export interface ContextBlock {
 
 **This is load-bearing for security:** an augment that mishandles the `origin` field can leak adversarial or self-authored content into a position the model treats as authoritative. Mutable memory sources should use `origin: agent-derived` or `origin: peer-derived` with a non-system placement so a successful prompt injection can't elevate to durable system-level context on future turns.
 
-**Naming note (A2A future):** `origin: "agent"` means "this agent wrote it" (self-authored). When A2A multi-agent interaction ships (spine/Plan 4), contexts originating from *peer agents* will need a distinct origin value (e.g. `"peer-agent"`) to avoid ambiguity. The memory layer architecture design session should resolve this — see `docs/memory-layer-architecture-brief.md`.
+**Naming note (A2A future):** `origin: "agent"` means "this agent wrote it"
+(self-authored). A future A2A transport must define peer-agent provenance
+without conflating it with this self-authored origin.
 
 **`visibility: "pipeline-only"`** means the block is computed for downstream augments via `priorContext` but never sent to the model. Use case: an augment that runs an LLM-based filter on the user's input and contributes both the filter result (pipeline-only) and a sanitized version (public).
 

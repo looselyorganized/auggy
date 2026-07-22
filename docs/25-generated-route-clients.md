@@ -141,6 +141,54 @@ Generated input types come from the route manifest:
 
 Query arrays are encoded as repeated query parameters, not comma-joined values.
 
+## Request And Response Media Types
+
+Routes can declare ordered representations with `requestMediaTypes` and
+`responseMediaTypes`. The first entry is the preferred representation used by
+generated artifacts. Wildcard media ranges are rejected, as are request bodies
+on `GET` routes.
+
+```ts
+import type { AugmentHttpRoute } from "auggy";
+
+const verifyRoute: AugmentHttpRoute = {
+  method: "POST",
+  path: "/visitor-auth/verify",
+  auth: "none",
+  requestJsonSchema: {
+    body: {
+      type: "object",
+      properties: { token: { type: "string" } },
+      required: ["token"],
+    },
+  },
+  requestMediaTypes: [
+    "application/x-www-form-urlencoded",
+    "application/json",
+  ],
+  responseMediaTypes: ["text/html"],
+  handler: handleVerificationRequest,
+};
+```
+
+Media metadata does not parse a server request by itself. The route handler
+must parse and validate every declared representation. The `defineRoute.post`
+helper parses JSON bodies; use a raw `AugmentHttpRoute` handler when accepting
+form, multipart, or other body formats.
+
+Generated clients:
+
+- set `Accept` to the preferred response media type,
+- use the preferred request media type unless the caller supplies a declared
+  `content-type`,
+- serialize JSON, text, URL-encoded objects/`URLSearchParams`, and
+  `FormData` multipart bodies,
+- parse JSON and `+json` responses as JSON and other responses as text.
+
+An explicitly supplied `content-type` that is not declared by the route fails
+locally before the request is sent. For multipart requests, pass `FormData` and
+let `fetch` add the boundary parameter.
+
 ## Result Handling
 
 The generated client has fetch-like result behavior. It does not throw for

@@ -263,7 +263,9 @@ config:
   publicUrl: ${AUGGY_PUBLIC_URL}
 ```
 
-The interpolation resolves at boot. First deploys work because the deploy command provisions the domain → sets the env var → triggers `railway up` in that order ([D7 of the archived deploy plan](./superpowers/plans/archive/2026-05-06-aug1-deploy-railway.md)).
+The interpolation resolves at boot. First deploys work because the deploy
+command provisions the domain, sets the environment variable, and only then
+triggers `railway up`.
 
 For production magic-link email, run:
 

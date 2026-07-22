@@ -22,7 +22,8 @@ When this file disagrees with code, code wins.
 | Typed tools | Published | [`03`](./03-types.md), [`04`](./04-kernel.md) | Zod inputs, generated JSON Schema, validation, and structured results |
 | Skills | Published | [`11`](./11-skills.md) | Markdown instruction folders installed with agents and augments |
 | Web transport and `/agent/run` | Published | [`06`](./06-transports.md), [`20`](./20-embedding.md) | HTTP/SSE chat through AG-UI-shaped events |
-| Creator console | Published | [`21`](./21-console.md) | Chat, configuration, augment, memory, and diagnostic surfaces |
+| Creator console | Published | [`21`](./21-console.md) | Chat-first per-agent browser surface with integration guidance |
+| Console capability runtime map | On main | [`21`](./21-console.md) | Observed augments, routes, tools, memory, skills, reported safeguards, issues, and notes |
 | CLI create/run/doctor lifecycle | Published | root [`README`](../README.md) | Scaffold, local operation, diagnostics, and background process commands |
 | Railway deploy | Published | [`18`](./18-deploy.md) | Railway-first staging, secrets, persistent volume, and health verification |
 
@@ -52,7 +53,7 @@ When this file disagrees with code, code wins.
 | --- | --- | --- | --- |
 | Deterministic augment routes | On main | [`25`](./25-generated-route-clients.md) | Small GET/POST surfaces served beside the agent runtime |
 | Route manifest and OpenAPI-shaped export | On main | [`25`](./25-generated-route-clients.md) | Inspection through `auggy routes` |
-| Generated TypeScript route clients | On main | [`25`](./25-generated-route-clients.md) | Browser/server targets and typed successful responses |
+| Generated TypeScript route clients | On main | [`25`](./25-generated-route-clients.md) | Browser/server targets, typed successful responses, and declared request/response media types |
 | Route auth modes | On main | [`19`](./19-visitor-auth.md), [`25`](./25-generated-route-clients.md) | Public, visitor, creator, bearer, and agent route postures |
 | Webhook route policy | On main | [`25`](./25-generated-route-clients.md), [`26`](./26-delegated-authorization.md) | Policy metadata plus Stripe and Svix signature verification |
 | Delegated app authorization | On main | [`26`](./26-delegated-authorization.md) | App-signed scopes/grants enforced on routes and tools |

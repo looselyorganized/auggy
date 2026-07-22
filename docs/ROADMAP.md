@@ -20,8 +20,8 @@ The old "v1.1/v1.2/v1.3" labels are now pre-1.0 candidates. SemVer `1.1+` is
 reserved for after `1.0.0`.
 
 The `docs/todos.md` file is the operational backlog for bugs and small polish.
-Roadmap features live here. Implementation plans belong in `docs/plans/` or
-`docs/superpowers/plans/`; completed plans should be archived.
+Roadmap features live here. Active implementation plans belong in `docs/plans/`;
+completed plans are removed once their durable decisions reach reference docs.
 
 ---
 
@@ -52,15 +52,6 @@ What has landed:
 - Concierge example proving shared route/tool/domain logic.
 - `auggy doctor` route posture checks for custom augment routes.
 
-Release tasks:
-
-- Publish public npm packages while keeping the source repository private during
-  preview.
-- Keep npm provenance off and private GitHub repository metadata out of package
-  manifests until the source repo is public.
-- Run release rehearsal and package boot checks.
-- Confirm docs still make shipped, preview, and planned work easy to distinguish.
-
 ---
 
 ## 0.6.0 Candidate — App-Builder DX
@@ -71,8 +62,7 @@ engineer examples.
 - Auggy Builder Skill for Claude, Codex, Cursor, and similar coding agents:
   an installable companion skill that teaches agents to explain Auggy, scaffold
   projects, create augments, generate route clients, wire app auth safely, and
-  run validation. See the
-  [Auggy Builder Skill Plan](./plans/auggy-builder-skill-plan.md).
+  run validation.
 - `auggy augment create <name> --with-route --with-tool` scaffolds a custom
   augment with a domain function, route wrapper, tool wrapper, schema, tests, and
   env validation.

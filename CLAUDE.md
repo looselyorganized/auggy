@@ -12,7 +12,6 @@ Current branch status is tracked in:
 - `docs/README.md` — source authority and reference index
 - `docs/FEATURES.md` — feature status matrix
 - `docs/ROADMAP.md` — release roadmap
-- `docs/0.5-preview-launch.md` — public npm/private source preview posture
 
 ## Commands
 
@@ -79,6 +78,5 @@ auggy logs
 
 ## Release Posture
 
-For `0.5.0`, npm packages are public and the source repository can remain
-private. Provenance stays off until the source repo is public. The release PR is
-the only place to move package versions and changelog entries into `0.5.0`.
+The npm packages are public-preview software. The release PR is the only place
+to move package versions and changelog entries into a numbered release.

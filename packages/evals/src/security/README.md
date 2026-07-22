@@ -9,7 +9,7 @@ First-party security testing for any Auggy agent. Seeded from a 2026-04-16 red-t
 ```bash
 cd auggy
 auggy eval                                  # against the bundled fixture (default)
-auggy eval my-agent                         # against a registered agent (looked up via `auggy ls`)
+auggy eval my-agent                         # against a child project in the current directory
 auggy eval --config path/to/agent.yaml      # against a one-off path
 ```
 
@@ -135,7 +135,7 @@ their own paid key into their own CI.
 
 **Comparison runs against larger models.** A second fixture variant lives at `fixtures/test-agent-sonnet.yaml` (identical composition, Sonnet 4.6 instead of Haiku 4.5). Maintainers dispatch it via the workflow's `config` input from the Actions tab to compare model-size sensitivity. Cost: ~$0.35/run vs Haiku's ~$0.07. Use case: pre-release verification, or debugging an over-refusal flake to determine whether it's model-size-sensitive (Haiku-specific) vs a real Auggy regression (would fail on Sonnet too).
 
-**For contributors:** see [CONTRIBUTING.md "Security eval" section](../../CONTRIBUTING.md). Short version — run locally before submitting, or configure your own secret + trigger in your own repository.
+**For contributors:** see [CONTRIBUTING.md "Security eval" section](../../../../CONTRIBUTING.md). Short version — run locally before submitting, or configure your own secret + trigger in your own repository.
 
 **For Auggy adopters who deploy their own agent:** copy the workflow into your
 own repository and configure `ANTHROPIC_API_KEY_SECURITY_EVAL` in that repo's
@@ -213,6 +213,5 @@ The suite YAML format and result JSONL format are **stable v2**. Additive change
 
 Community contributors: extend via corpora (new cases) and graders (new types). If you need a breaking change, open an issue first — the point of v2 being stable is that downstream tooling doesn't break silently.
 
-## Design
-
-See `lo/docs/superpowers/specs/2026-05-05-portable-security-eval-suite.md` for the full design spec, including the per-case rewrite rationale and rejected alternatives.
+The schemas and runner tests are the source of truth for the portable suite
+contract. Historical implementation plans are intentionally not retained.

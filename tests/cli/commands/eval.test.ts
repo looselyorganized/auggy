@@ -81,7 +81,7 @@ describe("resolveEvalConfigPath", () => {
   test("missing agent project name throws clear error", () => {
     expect(() => resolveEvalConfigPath({ agentName: "ghost" }, { auggyDir })).toThrow(/not found/i);
     expect(() => resolveEvalConfigPath({ agentName: "ghost" }, { auggyDir })).toThrow(
-      /auggy ls|--config/i,
+      /auggy create|--config/i,
     );
   });
 

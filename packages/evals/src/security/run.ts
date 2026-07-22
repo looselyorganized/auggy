@@ -289,9 +289,7 @@ function interpolateGrader(
 }
 
 /**
- * Walk a parsed `Suite` and substitute every `${var}` reference per
- * Decision 1 of
- * `docs/superpowers/specs/2026-05-05-portable-security-eval-suite.md`:
+ * Walk a parsed `Suite` and substitute every `${var}` reference:
  *
  * - Scalar `${var}` references are replaced inline inside any string in
  *   `messages[].content`, grader `text:` fields, and grader `texts:` array

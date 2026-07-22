@@ -26,9 +26,10 @@ bun install
 # 2. Local CLI
 bun link                 # makes `auggy` available globally
 
-# 3. Tests + typecheck
-bun test
+# 3. Static checks + tests
 bun run typecheck
+bun run lint
+bun test
 
 # 4. Run the demo agent (requires ANTHROPIC_API_KEY)
 cp .env.example .env     # add your key
@@ -48,10 +49,13 @@ Required versions: **Bun ≥ 1.2.0**, **TypeScript ≥ 5**.
 ## Coding conventions
 
 - **TypeScript strict mode is on.** No `any`, no `@ts-ignore`. If you genuinely need an escape hatch, justify it inline.
-- **Every shared type lives in `src/types.ts`.** Don't scatter types across modules.
-- **Every module is a `create*` factory** returning an object — no classes, no `this`.
+- **Public runtime contracts live in `src/types.ts`.** Module-local and
+  implementation-only types may stay with the code that owns them.
+- **Prefer factories and plain functions.** Avoid stateful classes unless an
+  external SDK contract requires one.
 - **A2A-shaped types are load-bearing** (`Part[]`, `TaskState`, `AgentCard`). Don't drift the shapes even if v1 doesn't speak A2A on the wire.
-- **Skills are files, not code.** Don't boot-load `SKILL.md` into context — they're meant to be discovered on demand by the filesystem augment.
+- **Skills are files, not code.** The runtime publishes frontmatter summaries
+  for discovery; full `SKILL.md` bodies and references are read on demand.
 
 If you've read the rule list in [CLAUDE.md](CLAUDE.md), you've seen all of this.
 
@@ -70,7 +74,9 @@ src/augments/<name>/
 - **Frontmatter is required** (`name`, `description`) — matches the [agentskills.io](https://agentskills.io/home) OSS convention so the skill is byte-for-byte interchangeable with third-party skill folders.
 - **SKILL.md content:** tool inventory + when-to-use guidance + common pitfalls. Roughly 100–200 lines per skill is the norm — `src/augments/filesystem/skill/SKILL.md` is the template shape.
 - **Operator-friendly framing.** No internal type names, kernel hooks, or factory function names exposed in skill content. Identity.md security rule 3 ("don't disclose internal architecture") applies — skills get loaded by the model and must read like operator docs, not implementation notes.
-- **Scaffold copies it.** `auggy create` and `auggy add` walk the augment list and copy `src/augments/<name>/skill/` into `<agent-dir>/skills/<name>/`. `auggy add-skill <name>` re-installs it post-scaffold.
+- **Scaffold copies it.** `auggy create` and `auggy augment add` copy
+  `src/augments/<name>/skill/` into `<agent-dir>/skills/<name>/`. `auggy skill
+  add <name>` re-installs it post-scaffold.
 - **Boot-time validator.** `src/cli/skill-validator.ts` warns at agent startup if a tool-providing augment is mounted without a skill — applies to factory-declared `tools[]` AND namespace memory providers (kernel-synthesized `memory_*` tools).
 - **Tool-less augments may skip the skill folder.** Memory providers without tools, transports, and admission gates contribute only `context()` blocks — no model-callable tools, no skill required.
 

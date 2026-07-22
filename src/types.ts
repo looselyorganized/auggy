@@ -1115,8 +1115,8 @@ export interface AugmentConstraints {
 }
 
 // ===========================================================================
-// G36 — Admin route contract (built into webTransport; see
-// docs/superpowers/specs/2026-05-19-g36-admin-route-design.md)
+// Admin information contract used by webTransport's console dashboard.
+// See docs/21-console.md for the current operator-surface contract.
 // ===========================================================================
 
 /** A typed render block for an augment's section on /admin. */

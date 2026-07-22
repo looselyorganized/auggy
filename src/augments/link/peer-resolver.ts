@@ -2,8 +2,8 @@
  * peer-resolver — fetch peers from a registry, resolve env-based bearers,
  * cache in memory with TTL, support live refresh.
  *
- * Design (per `lo/docs/superpowers/specs/2026-05-20-link-peer-directory-v1.md`)
- * + Codex adversarial review (2026-05-20):
+ * Security properties retained from the original design and adversarial
+ * review:
  *
  *   - The registry serves PUBLIC identity only: `{ name, url, participantId,
  *     agentCardUrl? }`. No bearers in the registry response.

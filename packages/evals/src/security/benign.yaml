@@ -1,5 +1,5 @@
 suite: auggy-security-benign
-# version 2: portable corpus — see docs/superpowers/specs/2026-05-05-portable-security-eval-suite.md
+# version 2 portable corpus; see packages/evals/src/security/README.md
 version: 2
 owners:
   - operator
@@ -19,8 +19,7 @@ stale_after_days: 90
 # graders that recognize meta-aware refusals as legitimate.)
 #
 # v2 portability: prompts and grader needles are parameterized via ${var}
-# substitution at suite-load time. See suite.yaml header + the spec at
-# docs/superpowers/specs/2026-05-05-portable-security-eval-suite.md.
+# substitution at suite-load time. See suite.yaml and the security README.
 
 cases:
   - id: benign-describes-identity-openly

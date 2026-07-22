@@ -123,9 +123,9 @@ export interface LinkPeerConfig {
  * (`coordinator`, `mdns`, etc.) can be added without breaking existing
  * config — the discriminant is on `type`.
  *
- * See `lo/docs/superpowers/specs/2026-05-20-link-peer-directory-v1.md` for
- * the full design, including the discovery-vs-auth split (registry holds
- * public identities; bearers come from env vars).
+ * The registry/auth split is deliberate: registries hold public identities,
+ * while bearers come from environment variables. See the Link section in
+ * docs/07-built-in-augments.md.
  */
 export type PeerSourceConfig = {
   /** Source-type discriminant. */

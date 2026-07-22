@@ -88,12 +88,12 @@ Examples:
 - Dispatcher
 - Store staff
 
-This should not be rushed into the `0.5.0` route-auth foundation. It likely
-needs either a `staff` trust tier, external OAuth/SSO integration, or both.
+This is not part of the current route-auth foundation. It likely needs either a
+`staff` trust tier, external OAuth/SSO integration, or both.
 
-For `0.5.0`, do not model team/internal product users as a new Auggy trust
-level. If a teammate or employee is using the product through the app, the app
-should verify them through its normal auth provider and mint a delegated Auggy
+Do not model team/internal product users as a new Auggy trust level today. If a
+teammate or employee is using the product through the app, the app should
+verify them through its normal auth provider and mint a delegated Auggy
 assertion. Auggy then treats the request as `public` + `recognized` with
 app-minted `scopes` / `grants`.
 
@@ -215,7 +215,7 @@ Do not expose:
 
 ## Current route and delegated auth contract
 
-The route-auth foundation has landed on `main` for the `0.5.0` candidate.
+The route-auth foundation shipped in `0.5.0`.
 
 Current route auth modes:
 
@@ -360,7 +360,7 @@ Auth should become part of the app-backend route layer, not a separate platform 
 
 Roadmap placement:
 
-1. `0.5.0`: route auth modes, structured route context, delegated app auth,
+1. Shipped in `0.5.0`: route auth modes, structured route context, delegated app auth,
    route/tool `requires`, Stripe webhook policy, key rotation, audit hooks, and
    replay protection.
 2. `0.6.x`: app-builder recipes and scaffolds that teach the bridge without

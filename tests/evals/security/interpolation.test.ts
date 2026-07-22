@@ -1,8 +1,6 @@
 /**
  * Tests for `interpolateSuite` — the YAML `${var}` substitution pass run
- * after `loadSuite` and before the runner consumes the suite. Spec:
- * `docs/superpowers/specs/2026-05-05-portable-security-eval-suite.md`
- * Decision 1.
+ * after `loadSuite` and before the runner consumes the suite.
  */
 
 import { describe, it, expect } from "bun:test";

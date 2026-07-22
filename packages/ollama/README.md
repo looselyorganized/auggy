@@ -6,23 +6,26 @@ Ollama engine adapter for [auggy](https://www.npmjs.com/package/auggy) — drive
 
 1. Install Ollama from [ollama.com](https://ollama.com)
 2. Start the server: `ollama serve`
-3. Pull a tool-capable model: `ollama pull llama3.2`
+3. Pull a tool-capable model: `ollama pull qwen3.5:9b`
 4. Scaffold an auggy agent and pick the `ollama` provider:
 
 ```bash
 auggy create my-agent
 # → at the engine-provider prompt, choose "ollama"
-# → at the model prompt, pick llama3.2 (or another pulled model)
+# → installed tool-capable models appear first in the model prompt
 ```
 
-`auggy create` installs `@auggy/ollama` into the agent dir's `node_modules`. No `OLLAMA_API_KEY` env var — Ollama doesn't authenticate by default.
+`auggy create` installs `@auggy/ollama` into the agent directory and asks
+whether Ollama is local or remote. Local Ollama needs no API key. For Ollama
+Cloud or a bearer-gated proxy, enter the remote URL and store the bearer in
+`OLLAMA_API_KEY` when prompted.
 
 ## agent.yaml
 
 ```yaml
 engine:
   provider: ollama
-  model: llama3.2
+  model: qwen3.5:9b
   # Optional:
   # baseURL: http://localhost:11434         # default
   # maxContextTokens: 8192                  # default (Llama 3.2 supports up to 128k)
@@ -35,16 +38,19 @@ engine:
 
 ## Recommended models (tool-capable)
 
-Ollama models vary in their support for tool-calling. These work well with auggy's tool-using flow:
+Ollama models vary in structured tool-call reliability. The create wizard
+discovers locally installed models and prioritizes these supported families:
 
-| Model | Approx size | Notes |
-|---|---|---|
-| `llama3.2` | ~2 GB | Meta Llama 3.2, fast, recommended for first-time setup |
-| `llama3.1` | ~4 GB | Meta Llama 3.1, more capable but slower |
-| `qwen2.5` | ~4 GB | Alibaba Qwen 2.5, strong multilingual support |
-| `qwen2.5-coder` | ~4 GB | Qwen 2.5 Coder, optimized for code |
+- `qwen3.6`
+- `qwen3.5`
+- `qwen3`
+- `gemma4`
+- `glm-5.1`
+- `deepseek-v3.2`
 
-Smaller / older models (e.g. `llama2`, `mistral`) may not support tool-calling at all. If you see your agent loop forever without calling tools, swap to a tool-capable model.
+The current first-pull recommendation is `qwen3.5:9b`. Other installed models
+remain selectable through the custom-model path, but weak or non-standard tool
+calling can lead to empty turns or loops.
 
 ## Pricing
 

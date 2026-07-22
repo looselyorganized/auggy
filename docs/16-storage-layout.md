@@ -8,24 +8,33 @@ An Auggy agent is a normal project folder wherever the operator creates it:
 
 ```
 <name>/
-├── agent.yaml              # source-of-truth config (uses `identity:` shorthand)
-├── .auggy/models.lock.json # model metadata snapshot from create/refresh
-├── .auggy-cloud.json       # cloud-deploy record (only present when deployed)
-├── identity.md             # who the agent is — operator-authored rules + voice
-├── learned-behaviors.md    # mutable fileMemory store for learned behavior
-├── .env                    # secrets (gitignored)
-├── .env.example            # required secret names, no values
-├── package.json            # agent-local runtime and augment dependencies
-├── skills/                 # bundled and user-authored skills
-│   ├── filesystem/SKILL.md (+ references/)
-│   └── ...                 # webFetch, turnControl, and added augments
-├── knowledge/              # scaffolded by `auggy augment add knowledge`
-├── data/
-└── augments/               # installed augment config and custom augment source
-    ├── filesystem/augment.yaml
-    ├── webFetch/augment.yaml
-    └── ...
+├── .auggy/models.lock.json  # model metadata snapshot from create/refresh
+├── .auggy-cloud.json        # only present after a cloud deploy
+├── .env                     # secrets (gitignored)
+├── .env.example             # required secret names, no values
+├── .gitignore
+├── agent.yaml               # source-of-truth config
+├── identity.md              # operator-authored identity and boundaries
+├── learned-behaviors.md     # mutable fileMemory store
+├── package.json             # agent-local runtime and engine dependencies
+├── bun.lock                 # written by the default dependency install
+├── augments/
+│   ├── README.md
+│   ├── fileMemory/augment.yaml
+│   ├── filesystem/augment.yaml
+│   ├── webTransport/augment.yaml
+│   ├── webFetch/augment.yaml
+│   └── turnControl/augment.yaml
+├── skills/
+│   ├── auggy/SKILL.md       # starter build-out guide
+│   ├── filesystem/SKILL.md
+│   ├── webFetch/SKILL.md
+│   └── turnControl/SKILL.md
+└── data/workspace/README.md # writable artifact workspace
 ```
+
+`knowledge/`, additional skill folders, augment state, and custom augment
+source appear only after the corresponding augment or capability is added.
 
 `auggy create <name>` scaffolds `./<name>/`. `auggy init` scaffolds the current
 directory. The directory IS the agent; there is no central index file that has

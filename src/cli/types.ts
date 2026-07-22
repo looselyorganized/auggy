@@ -154,9 +154,8 @@ export interface AgentSettings {
  *
  * Consumed by the suite's eval-context module to resolve `${var}` interpolation
  * in `packages/evals/src/security/suite.yaml`. Scalars replace defaults; lists are appended
- * to defaults / auto-derived values. See
- * `docs/superpowers/specs/2026-05-05-portable-security-eval-suite.md` for the
- * full variable inventory.
+ * to defaults / auto-derived values. The stable suite contract and extension
+ * guidance live in `packages/evals/src/security/README.md`.
  */
 export interface SecurityEvalOverride {
   /** Replaces the creator-name scalar (default: `creator.displayName` or `"the creator"`). */

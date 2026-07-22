@@ -102,7 +102,7 @@ writeFileSync(
   "utf-8",
 );
 
-// Mirror what `auggy create` / `auggy add` do: copy each bundled skill into
+// Mirror what `auggy create` / `auggy augment add` do: copy each bundled skill into
 // the agent's skills/ dir so the operator's "Missing skills" view in /console
 // is empty by default (the normal state).
 for (const type of [

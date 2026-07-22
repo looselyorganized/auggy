@@ -16,7 +16,7 @@ You don't normally install this directly — `auggy create` does it for you when
 import { createOpenAIEngine } from "@auggy/openai";
 
 const engine = createOpenAIEngine({
-  model: "gpt-5",
+  model: "gpt-5.4-mini",
   // apiKey omitted → SDK reads OPENAI_API_KEY from env.
 });
 ```
@@ -26,7 +26,7 @@ The auggy runtime resolves the engine via `agent.yaml`:
 ```yaml
 engine:
   provider: openai
-  model: gpt-5
+  model: gpt-5.4-mini
   maxContextTokens: 200000
   maxTokens: 4096
 ```

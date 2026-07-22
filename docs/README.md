@@ -127,13 +127,11 @@ Auggy project and not a replacement for a general application backend.
 
 ## Exploratory Material
 
-`docs/use-cases/`, `docs/plans/`, `docs/research/`, and archived design specs
-contain useful rationale and product exploration. Treat them as internal design
-material unless a current reference document explicitly promotes a behavior.
+`docs/use-cases/`, `docs/plans/`, and `docs/research/` contain useful rationale
+and product exploration. Treat them as internal design material unless a
+current reference document explicitly promotes a behavior.
 
 ## Operations
 
 - [Releasing](./RELEASING.md)
-- [0.5 Public Preview Launch](./0.5-preview-launch.md)
 - [Todos](./todos.md)
-- [Eval Testing Plan](./eval-testing-plan.md)

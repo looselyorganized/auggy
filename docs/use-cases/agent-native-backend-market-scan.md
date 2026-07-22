@@ -288,7 +288,7 @@ The implication for Auggy:
 - The same capability should be able to grow from today's HTTP routes and
   Auggy tools toward MCP tools, A2A task handlers, admin actions, and UI
   components without rewriting policy each time. Some of those adapters are
-  future-facing, not current `0.5` runtime guarantees.
+  future-facing, not current runtime guarantees.
 
 This is a meaningful wedge if Auggy provides adapters while preserving local
 auth, grants, rate limits, audit, and tool exposure controls.

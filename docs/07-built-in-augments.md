@@ -34,7 +34,7 @@ The principle: Auggy ships the *contracts* (`MemoryProviderSpec`, `TransportSpec
 Fresh agents are scaffolded for the shortest path to chat:
 
 - `fileMemory` learned-behavior store
-- `filesystem` with read-only `./skills` and writable `./workspace`
+- `filesystem` with read-only `./skills` and writable `./data/workspace`
 - `webTransport` for `/console`, `/console/chat`, `/agent/run`, and `/health`
 - `webFetch`
 - `turnControl`
@@ -855,7 +855,9 @@ export interface KnowledgeRootOptions {
 
 ### `knowledge/sources.json`
 
-`auggy create` scaffolds `knowledge/sources.json` plus a `knowledge/local/` source so an adopter has working local knowledge without standing up an HTTP server.
+`auggy augment add knowledge` scaffolds `knowledge/sources.json` plus a
+`knowledge/local/` source so an adopter has working local knowledge without
+standing up an HTTP server.
 
 ```json
 {

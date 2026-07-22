@@ -25,8 +25,8 @@ account lookup, policy, tools, admin visibility, memory, and notifications.
 
 ## Current route surface
 
-The current route surface is intentionally small, but now complete enough for
-the first app-backend release candidate:
+The current route surface is intentionally small, but complete enough for
+useful app-backend integrations:
 
 - `GET` and `POST`
 - Exact paths and full-segment path params such as `/orders/:id`
@@ -37,6 +37,8 @@ the first app-backend release candidate:
 - Per-route rate limits
 - Request schema metadata for params, query, and JSON body
 - Successful response schemas for generated-client `data` typing
+- Ordered request and response media types preserved across manifests,
+  OpenAPI, the console, and generated clients
 - Delegated `requires` for app-minted scopes/grants on visitor routes
 - Webhook signature policy metadata, with Stripe verification shipped
 - Route manifest and OpenAPI-style inspection through `auggy routes`

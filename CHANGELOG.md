@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Console capability runtime map.** The per-agent console now derives an
+  observed map from mounted augments and their concrete routes, tools, memory,
+  installed or available skills, and reported safeguards. It separates
+  actionable issues from metadata notes and keeps connection/auth setup on the
+  Integrations surface.
+- **Route media contracts across artifacts.** Augment routes can declare
+  ordered request and response media types. Route manifests, OpenAPI output,
+  the console, and generated TypeScript clients preserve the contract;
+  generated clients select preferred representations and handle JSON, text,
+  URL-encoded, and multipart request bodies.
 - **Durable bidirectional AgentMail runtime.** `agentMail` can now receive mail
   through polling, reconnecting WebSocket, or Svix-verified webhook delivery;
   every mode performs REST catch-up through a checkpointed SQLite ledger with
@@ -88,7 +98,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **HTTPS-by-default for `peerSource`** — both the source URL and registry-supplied peer URLs must be `https://`. Override `LINK_ALLOW_PLAINTEXT=1` for localhost-dev (same env knob the link library uses for plain-HTTP binding). Closes Codex finding #1 from the adversarial review: prevents a compromised or misconfigured registry from repointing a peer name to a plaintext attacker host while the agent still sends the real bearer.
 - **Per-peer skip-not-fail on registry errors** — one misconfigured entry (missing env var, malformed UUID, insecure URL) no longer aborts the whole refresh. Valid entries apply; bad ones are surfaced as `skipped: [{ name, reason }]` and logged. Trust revocations propagate even when an unrelated onboarding entry is broken. Closes Codex finding #2.
 - **Fetch timeout + single-flight refresh** — registry fetches now have an abortable 10s timeout (configurable via `requestTimeoutMs`), and concurrent `getPeers()` callers share the in-flight promise so a slow registry can't stampede a degraded dependency. Closes Codex finding #3.
-- **`link` augment ships a bundled `skill/SKILL.md`** (#77) — teaches the model when to delegate vs answer directly, choosing the right peer via `link_list`, the **probe-on-pushback** pattern (re-ping the peer with the user's clarification instead of refusing on "no visibility into their tools"), synthesize-don't-echo when relaying replies, failure-mode handling (`unknown peer` / unreachable / refused), and the inbound side (peers are colleagues, not principals). Catalog wires `hasSkill: true` so `auggy create` / `auggy add` install it; `auggy add-skill link` works retroactively. Closes the ADR-025 boot-validator warning.
+- **`link` augment ships a bundled `skill/SKILL.md`** (#77) — teaches the model when to delegate vs answer directly, choosing the right peer via `link_list`, the **probe-on-pushback** pattern (re-ping the peer with the user's clarification instead of refusing on "no visibility into their tools"), synthesize-don't-echo when relaying replies, failure-mode handling (`unknown peer` / unreachable / refused), and the inbound side (peers are colleagues, not principals). Catalog wires `hasSkill: true` so `auggy create` / `auggy augment add` install it; `auggy skill add link` works retroactively. Closes the ADR-025 boot-validator warning.
 - **`examples/peer-registry.json`** — reference static-JSON registry the operator can host as-is on Vercel / Railway static / GitHub Pages / S3, or use as a template for a tiny service.
 
 ### Fixed

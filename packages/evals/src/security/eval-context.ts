@@ -2,13 +2,10 @@
  * Variable resolution for the portable security eval suite.
  *
  * Builds the `EvalContext` consumed by the runner during YAML interpolation.
- * Resolution layers (per
- * `docs/superpowers/specs/2026-05-05-portable-security-eval-suite.md`
- * Decision 2):
+ * Resolution layers:
  *
  *   1. Defaults bundled with the suite (`packages/evals/src/security/defaults/*.yaml`).
- *   2. Auto-derived from the parsed agent config + identity.md heuristic
- *      (Decision 3).
+ *   2. Auto-derived from the parsed agent config + identity.md heuristic.
  *   3. Operator override (`agent.yaml#securityEval`) — scalars REPLACE,
  *      lists APPEND-AND-DEDUPE.
  *
