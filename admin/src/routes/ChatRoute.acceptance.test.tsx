@@ -16,6 +16,7 @@ import {
   useChatWorkspace,
 } from "@/components/admin/ChatWorkspaceProvider";
 import { CHAT_WELCOME_PATH, chatThreadPath } from "@/lib/chat-route";
+import { createChatThread, type ChatThread } from "@/lib/chat-workspace";
 import { ToastProvider } from "@/lib/toast";
 import type { DashboardData } from "@/lib/types";
 import { ChatRoute } from "./ChatRoute";
@@ -260,11 +261,166 @@ describe("ChatRoute lifecycle acceptance", () => {
     });
     expect(uniqueTransitions(harness.transitions)).toEqual([]);
   });
+
+  it("keeps a newer draft route authoritative when an older delete finishes", async () => {
+    const saved = createChatThread({
+      id: "saved",
+      title: "Saved conversation",
+      previewMode: "creator",
+      model: MODEL,
+      now: NOW,
+    });
+    const deletion = deferred<Response>();
+    const requests: Array<{ body: unknown; method: string; path: string }> = [];
+    let deleteStarted = false;
+    const harness = await mountChatRoute({
+      initialEntry: chatThreadPath(saved.id),
+      createIds: ["newer-draft"],
+      fetchImpl: mockFetch(async (path, init) => {
+        const method = init?.method ?? "GET";
+        requests.push({
+          path,
+          method,
+          body: init?.body ? JSON.parse(String(init.body)) : null,
+        });
+        if (path === "/console/api/chat/threads") {
+          return json({ threads: [summary(saved)] });
+        }
+        if (path === "/console/api/chat/threads/saved") {
+          return json({ thread: saved });
+        }
+        if (path === "/console/api/chat/threads/saved/delete") {
+          deleteStarted = true;
+          return deletion.promise;
+        }
+        throw new Error(`Unexpected request: ${path}`);
+      }),
+    });
+
+    await waitForCondition(
+      () =>
+        harness.workspace.activeThread?.id === saved.id &&
+        harness.renderer.root.findAllByType(ChatThreadHeader).length === 1,
+      "the saved detail route to render",
+    );
+    expect(requests.some(({ path }) => path === "/console/api/chat/threads")).toBe(true);
+    expect(
+      requests.some(({ path }) => path === "/console/api/chat/threads/saved"),
+    ).toBe(true);
+
+    const savedHeader = harness.renderer.root.findByType(ChatThreadHeader);
+    let deleting!: Promise<void>;
+    act(() => {
+      deleting = Promise.resolve(savedHeader.props.onDelete());
+    });
+    await waitForCondition(() => deleteStarted, "the saved deletion to start");
+
+    await act(async () => {
+      await harness.router.navigate("/chat/new");
+    });
+    await waitForCondition(
+      () =>
+        harness.workspace.state.draft?.id === "newer-draft" &&
+        harness.workspace.state.selection.kind === "draft" &&
+        harness.renderer.root.findAllByType(ChatThreadHeader).length === 1,
+      "the newer draft route to take ownership",
+    );
+    const newerLocation = harness.router.state.location;
+    harness.transitions.length = 0;
+
+    await act(async () => {
+      deletion.resolve(json({ ok: true }));
+      await deleting;
+    });
+    await waitForCondition(
+      () =>
+        !harness.workspace.state.durableThreads.some(({ id }) => id === saved.id),
+      "the saved identity to be removed",
+    );
+    await act(async () => Promise.resolve());
+
+    expect(
+      requests.filter(({ path }) => path === "/console/api/chat/threads/saved/delete"),
+    ).toEqual([
+      {
+        path: "/console/api/chat/threads/saved/delete",
+        method: "POST",
+        body: { csrf: "csrf-token" },
+      },
+    ]);
+    expect(harness.router.state.location).toMatchObject({
+      key: newerLocation.key,
+      pathname: "/chat/new",
+    });
+    expect(harness.workspace.state.draft?.id).toBe("newer-draft");
+    expect(harness.workspace.state.selection).toEqual({
+      kind: "draft",
+      draftId: "newer-draft",
+    });
+    expect(harness.workspace.activeThread?.id).toBe("newer-draft");
+    expect(harness.transitions).toEqual([]);
+  });
+
+  it("replaces a tombstoned deep link with welcome exactly once", async () => {
+    const gone = createChatThread({
+      id: "gone",
+      title: "Deleted elsewhere",
+      previewMode: "creator",
+      model: MODEL,
+      now: NOW,
+    });
+    const releaseDetail = deferred<void>();
+    let detailCalls = 0;
+    const harness = await mountChatRoute({
+      initialEntry: chatThreadPath(gone.id),
+      createIds: [],
+      fetchImpl: mockFetch(async (path) => {
+        if (path === "/console/api/chat/threads") {
+          return json({ threads: [summary(gone)] });
+        }
+        if (path === "/console/api/chat/threads/gone") {
+          detailCalls++;
+          await releaseDetail.promise;
+          return json({ error: "thread was deleted" }, 410);
+        }
+        throw new Error(`Unexpected request: ${path}`);
+      }),
+    });
+
+    await waitForCondition(() => detailCalls > 0, "the tombstoned detail load to start");
+    expect(harness.workspace.state.durableThreads.map(({ id }) => id)).toContain(gone.id);
+    expect(harness.idAllocations()).toBe(0);
+    expect(harness.renderer.root.findAllByType(ChatThreadHeader)).toHaveLength(0);
+    harness.transitions.length = 0;
+
+    await act(async () => {
+      releaseDetail.resolve();
+      await releaseDetail.promise;
+    });
+    await waitForCondition(
+      () =>
+        harness.router.state.location.pathname === CHAT_WELCOME_PATH &&
+        !harness.workspace.state.durableThreads.some(({ id }) => id === gone.id),
+      "the tombstoned route to recover to welcome",
+    );
+    await act(async () => Promise.resolve());
+
+    expect(detailCalls).toBeGreaterThanOrEqual(1);
+    expect(harness.workspace.state.selection).toEqual({ kind: "welcome" });
+    expect(harness.workspace.state.draft).toBeNull();
+    expect(harness.workspace.activeThread).toBeNull();
+    expect(harness.idAllocations()).toBe(0);
+    expect(harness.renderer.root.findAllByType(ChatThreadHeader)).toHaveLength(0);
+    expect(uniqueTransitions(harness.transitions)).toEqual([
+      expect.objectContaining({ action: "REPLACE", pathname: CHAT_WELCOME_PATH }),
+    ]);
+  });
 });
 
 async function mountChatRoute(options: {
   createIds: readonly string[];
   fetchImpl: typeof fetch;
+  initialEntry?: string;
 }) {
   let workspace: ChatWorkspaceContextValue | null = null;
   let idAllocationCount = 0;
@@ -300,7 +456,7 @@ async function mountChatRoute(options: {
       },
       { path: "/elsewhere", element: <div>Elsewhere</div> },
     ],
-    { initialEntries: ["/chat/new"] },
+    { initialEntries: [options.initialEntry ?? "/chat/new"] },
   );
   const transitions: LocationTransition[] = [];
   const unsubscribe = router.subscribe((state) => {
@@ -400,6 +556,11 @@ function completedSse(threadId: string): Response {
     .map((event) => `data: ${JSON.stringify(event)}\n\n`)
     .join("");
   return new Response(body, { headers: { "content-type": "text/event-stream" } });
+}
+
+function summary(thread: ChatThread): Omit<ChatThread, "messages"> {
+  const { messages: _messages, ...value } = thread;
+  return value;
 }
 
 function mockFetch(
