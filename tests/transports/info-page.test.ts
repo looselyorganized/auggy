@@ -41,15 +41,16 @@ describe("renderInfoPage — HTML structure", () => {
     expect(html).toContain("</html>");
   });
 
-  it("title is `<name> — agent-native app backend`", () => {
+  it("identifies the configured agent in the document title", () => {
     const html = renderInfoPage(mockCard({ name: "zip", purpose: "concierge agent" }));
-    expect(html).toContain("<title>zip — agent-native app backend</title>");
+    expect(html).toContain("<title>zip — Auggy agent</title>");
   });
 
-  it("shows the agent-native app backend heading and visible agent name", () => {
+  it("uses the configured agent name as the page heading", () => {
     const html = renderInfoPage(mockCard({ name: "zip", purpose: "concierge agent" }));
-    expect(html).toContain("<h1>Agent-native app backend.</h1>");
-    expect(html).toContain("zip is running");
+    expect(html).toContain("<h1>zip</h1>");
+    expect(html).toContain('<p class="eyebrow">Auggy agent</p>');
+    expect(html).not.toContain("Agent-native app backend");
   });
 
   it("includes viewport meta tag", () => {
@@ -64,7 +65,7 @@ describe("renderInfoPage — HTML structure", () => {
 
   it("includes Open Graph tags with name + purpose", () => {
     const html = renderInfoPage(mockCard({ name: "zip", purpose: "concierge agent" }));
-    expect(html).toContain('<meta property="og:title" content="zip — agent-native app backend">');
+    expect(html).toContain('<meta property="og:title" content="zip — Auggy agent">');
     expect(html).toContain('<meta property="og:description" content="concierge agent">');
     expect(html).toContain('<meta property="og:type" content="website">');
   });
@@ -93,6 +94,28 @@ describe("renderInfoPage — HTML structure", () => {
   it("includes purpose copy in body when purpose is non-empty", () => {
     const html = renderInfoPage(mockCard({ name: "zip", purpose: "concierge agent" }));
     expect(html).toContain('<p class="purpose">concierge agent</p>');
+  });
+
+  it("orients creators with factual test, inspect, and connect paths", () => {
+    const html = renderInfoPage(mockCard({ name: "zip", purpose: "concierge agent" }));
+    expect(html).toContain("<h2>Test</h2>");
+    expect(html).toContain('href="/console/chat">Open chat</a>');
+    expect(html).toContain("<h2>Inspect</h2>");
+    expect(html).toContain('href="/console/capabilities">View capabilities</a>');
+    expect(html).toContain("<h2>Connect</h2>");
+    expect(html).toContain('href="/console/integrations">Integration setup</a>');
+    expect(html).not.toContain("/transactions/create");
+    expect(html).not.toContain("lookup_transaction");
+  });
+
+  it("links the published developer surface from runtime access and Connect", () => {
+    const html = renderInfoPage(mockCard({ name: "zip", purpose: "concierge agent" }), {
+      publicIntegration: true,
+    });
+    expect(html).toContain(
+      '<span class="label">Developer surface</span><span class="value"><a href="/agent">Published</a></span>',
+    );
+    expect(html).toContain('href="/agent">View developer surface</a>');
   });
 
   it("includes the shared public/console theme sync script", () => {
@@ -137,14 +160,14 @@ describe("renderInfoPage — fallbacks and edge cases", () => {
   it("falls back to 'An Auggy agent' when name is empty string", () => {
     const html = renderInfoPage(mockCard({ name: "", purpose: "x" }));
     expect(html).toContain("<title>An Auggy agent</title>");
-    expect(html).toContain("An Auggy agent is running");
+    expect(html).toContain("<h1>An Auggy agent</h1>");
     expect(html).toContain('<meta property="og:title" content="An Auggy agent">');
   });
 
   it("falls back to 'An Auggy agent' when name is whitespace-only", () => {
     const html = renderInfoPage(mockCard({ name: "   \t\n", purpose: "x" }));
     expect(html).toContain("<title>An Auggy agent</title>");
-    expect(html).toContain("An Auggy agent is running");
+    expect(html).toContain("<h1>An Auggy agent</h1>");
   });
 
   it("omits the body purpose paragraph when purpose is undefined", () => {

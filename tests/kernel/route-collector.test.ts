@@ -191,6 +191,65 @@ describe("collectAugmentRoutes", () => {
     ]);
   });
 
+  test("accepts non-empty request and response media type metadata", () => {
+    const result = collectAugmentRoutes([
+      aug("auth", [
+        {
+          ...route("POST", "/visitor-auth/verify", "none"),
+          requestMediaTypes: ["application/x-www-form-urlencoded", "application/json"],
+          responseMediaTypes: ["text/html", "application/json"],
+        },
+      ]),
+    ]);
+
+    expect(result.errors).toEqual([]);
+    expect(result.routes[0]?.requestMediaTypes).toEqual([
+      "application/x-www-form-urlencoded",
+      "application/json",
+    ]);
+  });
+
+  test("rejects empty or malformed media type metadata", () => {
+    const withMedia = (
+      path: string,
+      field: "requestMediaTypes" | "responseMediaTypes",
+      value: unknown,
+    ): AugmentHttpRoute => ({
+      ...route("POST", path, "none"),
+      [field]: value,
+    });
+    const result = collectAugmentRoutes([
+      aug("a", [withMedia("/a", "requestMediaTypes", [])]),
+      aug("b", [withMedia("/b", "requestMediaTypes", [""])]),
+      aug("c", [withMedia("/c", "responseMediaTypes", [" text/html"])]),
+      aug("d", [withMedia("/d", "responseMediaTypes", "application/json")]),
+      aug("e", [withMedia("/e", "requestMediaTypes", ["application/json; charset=utf-8"])]),
+      aug("f", [withMedia("/f", "responseMediaTypes", ["application/json", "Application/JSON"])]),
+      aug("g", [withMedia("/g", "requestMediaTypes", ["application/*"])]),
+    ]);
+
+    expect(result.routes).toEqual([]);
+    expect(result.errors).toHaveLength(7);
+    expect(result.errors.join("\n")).toContain("requestMediaTypes");
+    expect(result.errors.join("\n")).toContain("responseMediaTypes");
+  });
+
+  test("rejects request body metadata on GET routes", () => {
+    const result = collectAugmentRoutes([
+      aug("download", [
+        {
+          ...route("GET", "/download", "none"),
+          requestMediaTypes: ["application/octet-stream"],
+        },
+      ]),
+    ]);
+
+    expect(result.routes).toEqual([]);
+    expect(result.errors).toEqual([
+      'Augment "download" registered HTTP route GET "/download" with request body metadata — GET routes cannot declare request bodies.',
+    ]);
+  });
+
   test("rejects routes with invalid delegated authorization requirements", () => {
     const r = (path: string, requires: unknown): AugmentHttpRoute => ({
       ...route("POST", path, "visitor.required"),

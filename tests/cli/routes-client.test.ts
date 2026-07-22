@@ -1200,6 +1200,158 @@ describe("createTypeScriptClient", () => {
     expect(new Headers(calls[2]?.init.headers).get("x-agent-id")).toBeNull();
   });
 
+  test("generated runtime honors preferred request and response media types", async () => {
+    const mediaReport: ClientRoutesReport = {
+      agent: { name: "media", configPath: "/tmp/media/agent.yaml" },
+      summary: {
+        totalRoutes: 3,
+        publicRoutes: 3,
+        privateRoutes: 0,
+        publicRoutePaths: ["POST /verify", "POST /upload", "POST /multipart"],
+      },
+      routes: [
+        {
+          method: "POST",
+          path: "/verify",
+          augmentName: "visitor-auth",
+          auth: "none",
+          params: [],
+          public: true,
+          security: "public",
+          requestJsonSchema: {
+            body: {
+              type: "object",
+              properties: { token: { type: "string" } },
+              required: ["token"],
+            },
+          },
+          requestMediaTypes: ["application/x-www-form-urlencoded", "application/json"],
+          responseMediaTypes: ["text/html"],
+        },
+        {
+          method: "POST",
+          path: "/upload",
+          augmentName: "upload",
+          auth: "none",
+          params: [],
+          public: true,
+          security: "public",
+          requestMediaTypes: ["text/plain"],
+          responseMediaTypes: ["application/problem+json"],
+          responseJsonSchema: {
+            type: "object",
+            properties: { ok: { type: "boolean" } },
+            required: ["ok"],
+          },
+        },
+        {
+          method: "POST",
+          path: "/multipart",
+          augmentName: "upload",
+          auth: "none",
+          params: [],
+          public: true,
+          security: "public",
+          requestMediaTypes: ["multipart/form-data"],
+          responseMediaTypes: ["text/plain"],
+        },
+      ],
+    };
+    const mod = await loadGeneratedClient(createTypeScriptClient(mediaReport));
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    const api = mod.createAuggyClient({
+      baseUrl: "https://agent.example",
+      fetch: async (url: unknown, init?: RequestInit) => {
+        calls.push({ url: String(url), init: init ?? {} });
+        return new Response(JSON.stringify({ ok: true }), {
+          headers: { "content-type": "application/problem+json" },
+        });
+      },
+    });
+
+    await api.post("/verify", { body: { token: "a b" } });
+    await api.post(
+      "/verify",
+      { body: { token: "json" } },
+      {
+        headers: { "content-type": "application/json; charset=utf-8" },
+      },
+    );
+    const upload = await api.post("/upload", { body: "hello" });
+    const multipart = new FormData();
+    multipart.set("file", new Blob(["hello"]), "hello.txt");
+    await api.post("/multipart", { body: multipart });
+
+    expect(new Headers(calls[0]?.init.headers).get("content-type")).toBe(
+      "application/x-www-form-urlencoded",
+    );
+    expect(new Headers(calls[0]?.init.headers).get("accept")).toBe("text/html");
+    expect(calls[0]?.init.body).toBe("token=a+b");
+    expect(calls[1]?.init.body).toBe(JSON.stringify({ token: "json" }));
+    expect(new Headers(calls[2]?.init.headers).get("content-type")).toBe("text/plain");
+    expect(new Headers(calls[2]?.init.headers).get("accept")).toBe("application/problem+json");
+    expect(calls[2]?.init.body).toBe("hello");
+    expect(upload.data).toEqual({ ok: true });
+    expect(new Headers(calls[3]?.init.headers).get("content-type")).toBeNull();
+    expect(calls[3]?.init.body).toBe(multipart);
+    await expect(
+      api.post(
+        "/upload",
+        { body: "hello" },
+        {
+          headers: { "content-type": "application/json" },
+        },
+      ),
+    ).rejects.toThrow("content-type application/json is not declared for this Auggy route");
+    await expect(api.post("/multipart", { body: "not form data" })).rejects.toThrow(
+      "multipart/form-data request bodies must be FormData",
+    );
+
+    await expectGeneratedClientTypechecks(
+      "media-browser",
+      mediaReport,
+      "browser",
+      `
+        import { createAuggyClient } from "./client";
+        const api = createAuggyClient({ baseUrl: "https://agent.example" });
+        api.post("/verify", { body: { token: "abc" } });
+        async function upload() {
+          const result = await api.post("/upload", { body: "plain text" });
+          if (result.ok) result.data.ok.valueOf();
+        }
+        api.post("/multipart", { body: new FormData() });
+      `,
+    );
+  });
+
+  test("generated clients reject GET request body contracts", () => {
+    const invalid: ClientRoutesReport = {
+      agent: { name: "invalid", configPath: "/tmp/invalid/agent.yaml" },
+      summary: {
+        totalRoutes: 1,
+        publicRoutes: 1,
+        privateRoutes: 0,
+        publicRoutePaths: ["GET /invalid"],
+      },
+      routes: [
+        {
+          method: "GET",
+          path: "/invalid",
+          augmentName: "invalid",
+          auth: "none",
+          params: [],
+          public: true,
+          security: "public",
+          requestMediaTypes: ["text/plain"],
+        },
+      ],
+    };
+
+    expect(() => createTypeScriptClient(invalid)).toThrow(
+      "Cannot generate a Fetch client for GET /invalid: GET routes cannot declare request bodies.",
+    );
+  });
+
   test("generated runtime returns non-2xx results without throwing", async () => {
     const mod = await loadGeneratedClient(createTypeScriptClient(report()));
     const api = mod.createAuggyClient({

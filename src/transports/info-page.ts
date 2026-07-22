@@ -65,7 +65,10 @@ const PUBLIC_PAGE_CSS = `
     .content { min-width: 0; padding: 28px 24px 42px; }
     .content-inner { width: min(1060px, 100%); margin: 0 auto; }
     .hero { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 16px; align-items: stretch; margin-bottom: 16px; }
-    .below, .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .paths { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+    .paths .panel { display: flex; min-height: 168px; flex-direction: column; }
+    .paths .actions { margin-top: auto; padding-top: 4px; }
     .panel, .hero-main { border: 1px solid var(--border); border-radius: 8px; background: var(--card); }
     .hero-main { padding: 28px; }
     .panel { padding: 18px; }
@@ -88,7 +91,7 @@ const PUBLIC_PAGE_CSS = `
     .steps { display: grid; gap: 9px; margin: 0; padding: 0; list-style: none; }
     .steps li { display: grid; grid-template-columns: 24px minmax(0, 1fr); gap: 10px; align-items: start; color: var(--foreground); font-size: 13px; }
     .mark { width: 22px; height: 22px; display: inline-grid; place-items: center; border-radius: 50%; background: var(--muted); color: var(--foreground); font-size: 12px; font-weight: 900; }
-    @media (max-width: 900px) { .hero, .below, .grid { grid-template-columns: 1fr; } .status-row { width: calc(100% - 36px); margin-top: 18px; } .content { padding: 18px; } .hero-main { padding: 22px; } }
+    @media (max-width: 900px) { .hero, .paths, .grid { grid-template-columns: 1fr; } .paths .panel { min-height: 0; } .status-row { width: calc(100% - 36px); margin-top: 18px; } .content { padding: 18px; } .hero-main { padding: 22px; } }
 `;
 
 export interface InfoPageOptions {
@@ -240,50 +243,57 @@ ${actions
  */
 export function renderInfoPage(card: AgentCard, opts: InfoPageOptions = {}): string {
   const { escapedName, escapedPurpose, hasName, hasPurpose, heading } = getAgentText(card);
-  const title = hasName ? `${escapedName} — agent-native app backend` : FALLBACK;
+  const title = hasName ? `${escapedName} — Auggy agent` : FALLBACK;
   const integrationValue = opts.publicIntegration ? '<a href="/agent">Published</a>' : "Private";
-  const integrationLink = opts.publicIntegration
-    ? `\n          <p>Developers can review the <a href="/agent">public developer surface</a>.</p>`
-    : "";
+  const connectCopy = opts.publicIntegration
+    ? "Review the public developer surface for this agent's supported integration paths."
+    : "Configure frontend routing, authentication, and whether to publish a developer surface.";
+  const connectAction = opts.publicIntegration
+    ? { href: "/agent", label: "View developer surface" }
+    : { href: "/console/integrations", label: "Integration setup" };
 
   const body = [
     `  <div class="signal" aria-hidden="true"></div>`,
     renderStatusRow({
       ariaLabel: "Runtime status",
-      subtitle: "Agent-native app runtime",
+      subtitle: "Agent runtime",
       title: "Auggy",
       status: "Runtime online",
     }),
-    renderContent(`      <section class="hero" aria-label="Agent-native app backend">
+    renderContent(`      <section class="hero" aria-label="Agent overview">
         <div class="hero-main">
-          <p class="eyebrow">${heading} is running</p>
-          <h1>Agent-native app backend.</h1>
-          <p class="purpose">${hasPurpose ? escapedPurpose : "This Auggy runtime can serve deterministic app routes and agent-mediated workflows from the same modular augments."}</p>
+          <p class="eyebrow">Auggy agent</p>
+          <h1>${heading}</h1>
+          <p class="purpose">${hasPurpose ? escapedPurpose : "This agent is online and ready for its configured conversations and app workflows."}</p>
 ${renderActions([
   { href: "/console", label: "Open console", primary: true },
   ...(opts.publicIntegration ? [{ href: "/agent", label: "Developer surface" }] : []),
 ])}
         </div>
-        <aside class="panel" aria-label="Runtime surfaces">
-          <h2>Runtime surfaces</h2>
-          <p>Conversation, app routes, identity, memory, tools, and operator controls can live in one deployable agent project.</p>
+        <aside class="panel" aria-label="Runtime access">
+          <h2>Runtime access</h2>
+          <p>This page reports stable runtime entry points. Detailed capability and security posture live in the creator console.</p>
           ${renderMetaRows([
-            ["Name", heading],
             ["Conversation", "POST /agent/run"],
-            ["Integration", integrationValue],
+            ["Developer surface", integrationValue],
           ])}
         </aside>
       </section>
-      <section class="below">
+      <section class="paths" aria-label="Get started">
 ${renderPanel({
-  title: "Routes for app behavior",
-  body: `          <p>Custom augments can serve deterministic HTTP routes for forms, webhooks, catalog lookup, bookings, orders, and other normal frontend traffic.</p>
-          <div class="actions"><a class="button" href="/console/integrations">Integration setup</a></div>`,
+  title: "Test",
+  body: `          <p>Start a conversation and observe the agent's responses and tool activity.</p>
+${renderActions([{ href: "/console/chat", label: "Open chat" }])}`,
 })}
 ${renderPanel({
-  title: "Tools for agent workflows",
-  body: `          <p>Use model-callable tools when conversation, judgment, memory, or escalation should mediate the workflow.</p>
-          <div class="notice"><strong>One capability, two faces.</strong>A domain augment can expose an app route such as <code>POST /transactions/create</code> and a safe tool such as <code>lookup_transaction</code> over the same data.</div>${integrationLink}`,
+  title: "Inspect",
+  body: `          <p>Review the routes, tools, skills, memory, and safeguards this agent actually exposes.</p>
+${renderActions([{ href: "/console/capabilities", label: "View capabilities" }])}`,
+})}
+${renderPanel({
+  title: "Connect",
+  body: `          <p>${connectCopy}</p>
+${renderActions([connectAction])}`,
 })}
       </section>`),
   ].join("\n");
@@ -314,7 +324,7 @@ export function renderAgentIntegrationPage(card: AgentCard): string {
     }),
     renderContent(`      <section class="hero" aria-label="Developer surface overview">
         <div class="hero-main">
-          <p class="eyebrow">Build against this agent-native app</p>
+          <p class="eyebrow">Integrate with ${heading}</p>
           <h1>Developer surface for ${heading}.</h1>
           <p class="lede">Use <code>/agent/run</code> for AG-UI conversation. Use custom augment routes for deterministic app and API traffic.</p>${purposeParagraph}
 ${renderActions([

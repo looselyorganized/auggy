@@ -57,6 +57,12 @@ const DEFAULT_CONSOLE_RATE_LIMIT = {
   perDay: 8_640,
 };
 const VERIFY_PATH = "/visitor-auth/verify";
+const VERIFY_TOKEN_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const verifyTokenSchema = z.string().regex(VERIFY_TOKEN_PATTERN);
+const verifyTokenJsonSchema = z.toJSONSchema(z.object({ token: verifyTokenSchema })) as Record<
+  string,
+  unknown
+>;
 const VERIFY_HTML_HEADERS = {
   "content-type": "text/html; charset=utf-8",
   "cache-control": "no-store, max-age=0",
@@ -118,6 +124,32 @@ const requestAuthRouteBody = z
     meta: requestAuthRouteMeta.optional(),
   })
   .strict();
+
+const requestAuthRouteResponse = z.discriminatedUnion("status", [
+  z
+    .object({
+      status: z.literal("sent"),
+      delivery: z.enum(["email", "console"]),
+      message: z.string(),
+      expiresInSec: z.number().int().nonnegative(),
+    })
+    .strict(),
+  z
+    .object({
+      status: z.literal("rejected"),
+      code: z.enum(["malformed_email", "rate_limited"]),
+      message: z.string(),
+      retryAfterSec: z.number().int().nonnegative().optional(),
+    })
+    .strict(),
+  z
+    .object({
+      status: z.literal("failed"),
+      code: z.enum(["not_booted", "send_failed"]),
+      message: z.string(),
+    })
+    .strict(),
+]);
 
 function sourceMessageIdFromRouteMeta(meta: Record<string, unknown> | undefined): string | null {
   const value = meta?.messageId ?? meta?.sourceMessageId;
@@ -784,6 +816,8 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
         path: VERIFY_PATH,
         auth: "none",
         rateLimit: { maxPerMinute: 60 },
+        requestJsonSchema: { query: verifyTokenJsonSchema },
+        responseMediaTypes: ["text/html"],
         handler: async (req, _opts) => {
           if (!booted || !signingCryptoKey) {
             return new Response(buildVerifyFailurePage({ reason: "unknown" }), {
@@ -795,10 +829,7 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
           const token = url.searchParams.get("token");
           // UUID-shape validation — still reject malformed tokens early so the
           // confirm page is never shown for obviously wrong inputs.
-          if (
-            !token ||
-            !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(token)
-          ) {
+          if (!token || !VERIFY_TOKEN_PATTERN.test(token)) {
             return new Response(buildVerifyFailurePage({ reason: "malformed" }), {
               status: 400,
               headers: VERIFY_HTML_HEADERS,
@@ -823,6 +854,9 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
         path: VERIFY_PATH,
         auth: "none",
         rateLimit: { maxPerMinute: 60 },
+        requestJsonSchema: { body: verifyTokenJsonSchema },
+        requestMediaTypes: ["application/x-www-form-urlencoded", "application/json"],
+        responseMediaTypes: ["text/html"],
         handler: async (req, _opts) => {
           if (!booted || !signingCryptoKey) {
             return new Response(buildVerifyFailurePage({ reason: "unknown" }), {
@@ -852,10 +886,9 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
           }
 
           // UUID-shape validation — distinguish parse failure from malformed UUID.
-          const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
           const postReason = bodyParseFailed
             ? "bad-body"
-            : !token || !uuidRegex.test(token)
+            : !token || !VERIFY_TOKEN_PATTERN.test(token)
               ? "malformed"
               : null;
           if (postReason) {
@@ -1023,6 +1056,9 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
       defineRoute.post(REQUEST_PATH, {
         auth: "visitor.optional",
         body: requestAuthRouteBody,
+        response: requestAuthRouteResponse,
+        requestMediaTypes: ["application/json"],
+        responseMediaTypes: ["application/json"],
         maxBodyBytes: 8_192,
         rateLimit: { maxPerMinute: 20 },
         handler: async ({ body }) => {

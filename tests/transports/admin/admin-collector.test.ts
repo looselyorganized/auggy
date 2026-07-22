@@ -49,7 +49,20 @@ describe("admin-collector", () => {
         }),
         mockAugment({
           name: "memory",
-          memory: {} as NonNullable<Augment["memory"]>,
+          memory: {
+            owns: { kind: "static", labels: ["learned"] },
+            defaults: {
+              mutable: true,
+              origin: "operator",
+              priority: "high",
+              placement: "preamble",
+              eviction: "drop",
+              ttl: "persistent",
+            },
+            writeTrustLevels: ["creator"],
+            read: async () => null,
+            write: async () => undefined,
+          },
         }),
       ]),
     );
@@ -68,6 +81,16 @@ describe("admin-collector", () => {
       hasContext: true,
       usesSharedMemoryTools: true,
       isMemoryProvider: true,
+      memory: {
+        ownership: { kind: "static", labels: ["learned"] },
+        mutable: true,
+        origin: "operator",
+        priority: "high",
+        placement: "preamble",
+        eviction: "drop",
+        ttl: "persistent",
+        writeTrustLevels: ["creator"],
+      },
     });
   });
 

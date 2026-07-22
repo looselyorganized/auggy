@@ -28,6 +28,8 @@ export interface RouteManifestEntry {
   requires?: AuthorizationRequirement | readonly AuthorizationRequirement[];
   requestJsonSchema?: AugmentHttpRouteRequestJsonSchema;
   responseJsonSchema?: AugmentHttpRouteResponseJsonSchema;
+  requestMediaTypes?: readonly string[];
+  responseMediaTypes?: readonly string[];
 }
 
 export interface RouteManifestSummary {
@@ -63,6 +65,12 @@ export function createRouteManifest(
         ...(route.requires ? { requires: freezeRequires(route.requires) } : {}),
         ...(route.requestJsonSchema ? { requestJsonSchema: route.requestJsonSchema } : {}),
         ...(route.responseJsonSchema ? { responseJsonSchema: route.responseJsonSchema } : {}),
+        ...(route.requestMediaTypes
+          ? { requestMediaTypes: Object.freeze([...route.requestMediaTypes]) }
+          : {}),
+        ...(route.responseMediaTypes
+          ? { responseMediaTypes: Object.freeze([...route.responseMediaTypes]) }
+          : {}),
       });
     }),
   );

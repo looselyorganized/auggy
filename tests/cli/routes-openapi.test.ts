@@ -320,6 +320,92 @@ describe("createOpenApiDocument", () => {
     expect(doc.components).toBeUndefined();
   });
 
+  test("exports explicit request and response media types", () => {
+    const doc = createOpenApiDocument({
+      agent: { name: "zip", configPath: "/tmp/zip/agent.yaml" },
+      summary: {
+        totalRoutes: 1,
+        publicRoutes: 1,
+        privateRoutes: 0,
+        publicRoutePaths: ["POST /visitor-auth/verify"],
+      },
+      routes: [
+        {
+          method: "POST",
+          path: "/visitor-auth/verify",
+          augmentName: "visitor-auth",
+          auth: "none",
+          params: [],
+          public: true,
+          security: "public",
+          requestJsonSchema: {
+            body: { type: "object", properties: { token: { type: "string" } } },
+          },
+          responseJsonSchema: { type: "object", properties: { status: { type: "string" } } },
+          requestMediaTypes: ["application/x-www-form-urlencoded", "application/json"],
+          responseMediaTypes: ["text/html", "application/json"],
+        },
+      ],
+    }) as {
+      paths: Record<
+        string,
+        Record<
+          string,
+          {
+            requestBody?: { content?: Record<string, unknown> };
+            responses?: Record<string, { content?: Record<string, unknown> }>;
+            "x-auggy"?: unknown;
+          }
+        >
+      >;
+    };
+
+    const post = doc.paths["/visitor-auth/verify"]?.post;
+    expect(Object.keys(post?.requestBody?.content ?? {})).toEqual([
+      "application/x-www-form-urlencoded",
+      "application/json",
+    ]);
+    expect(Object.keys(post?.responses?.["200"]?.content ?? {})).toEqual([
+      "text/html",
+      "application/json",
+    ]);
+    expect(post?.["x-auggy"]).toMatchObject({
+      requestMediaTypes: ["application/x-www-form-urlencoded", "application/json"],
+      responseMediaTypes: ["text/html", "application/json"],
+    });
+  });
+
+  test("exports an explicit request media contract without inventing a schema", () => {
+    const doc = createOpenApiDocument({
+      agent: { name: "upload", configPath: "/tmp/upload/agent.yaml" },
+      summary: {
+        totalRoutes: 1,
+        publicRoutes: 1,
+        privateRoutes: 0,
+        publicRoutePaths: ["/upload"],
+      },
+      routes: [
+        {
+          method: "POST",
+          path: "/upload",
+          augmentName: "upload",
+          auth: "none",
+          params: [],
+          public: true,
+          security: "public",
+          requestMediaTypes: ["application/octet-stream"],
+        },
+      ],
+    }) as {
+      paths: Record<string, Record<string, { requestBody?: unknown }>>;
+    };
+
+    expect(doc.paths["/upload"]?.post?.requestBody).toEqual({
+      required: true,
+      content: { "application/octet-stream": {} },
+    });
+  });
+
   test("exports creator route auth as bearer security with semantic metadata", () => {
     const doc = createOpenApiDocument({
       agent: { name: "zip", configPath: "/tmp/zip/agent.yaml" },

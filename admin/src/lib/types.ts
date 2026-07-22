@@ -125,6 +125,19 @@ export interface AugmentSummary {
   lifecycleHooks: AugmentLifecycleHook[];
   handlesInternalTurns: boolean;
   hasTurnGate: boolean;
+  /** Safe memory ownership and context policy metadata reported by the runtime. */
+  memory?: {
+    ownership:
+      | { kind: "static"; labels: string[] }
+      | { kind: "namespace"; prefix: string };
+    mutable: boolean;
+    origin: string;
+    priority: string;
+    placement: string;
+    eviction: string;
+    ttl: string;
+    writeTrustLevels?: string[];
+  };
 }
 
 /** Skill installed under `<agentDir>/skills/<folder>/SKILL.md`. */
@@ -133,6 +146,7 @@ export interface InstalledSkillInfo {
   name: string | null;
   description: string | null;
   source: "bundled" | "modified" | "manual";
+  fromAugmentType?: string;
   frontmatterValid: boolean;
   contentBytes: number;
 }
@@ -178,6 +192,8 @@ export interface RouteManifestEntry {
     body?: Record<string, unknown>;
   };
   responseJsonSchema?: Record<string, unknown>;
+  requestMediaTypes?: string[];
+  responseMediaTypes?: string[];
 }
 
 export interface RouteManifestSummary {

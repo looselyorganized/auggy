@@ -197,7 +197,19 @@ function generatedRouteEntry(route: RouteManifestEntry): string {
     route.method,
   )}, path: ${JSON.stringify(route.path)}, auth: ${JSON.stringify(
     route.auth,
-  )}, params: ${JSON.stringify(route.params)}${generatedRequiresSource(route)} },`;
+  )}, params: ${JSON.stringify(route.params)}${generatedMediaTypesSource(route)}${generatedRequiresSource(route)} },`;
+}
+
+function generatedMediaTypesSource(route: RouteManifestEntry): string {
+  const requestMediaTypes =
+    route.requestMediaTypes ??
+    (route.requestJsonSchema?.body ? (["application/json"] as const) : undefined);
+  const responseMediaTypes =
+    route.responseMediaTypes ??
+    (route.responseJsonSchema ? (["application/json"] as const) : undefined);
+  return `${requestMediaTypes ? `, requestMediaTypes: ${JSON.stringify(requestMediaTypes)}` : ""}${
+    responseMediaTypes ? `, responseMediaTypes: ${JSON.stringify(responseMediaTypes)}` : ""
+  }`;
 }
 
 function generatedRequiresSource(route: RouteManifestEntry): string {

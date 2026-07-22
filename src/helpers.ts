@@ -81,6 +81,8 @@ interface RouteOptionsBase {
   rateLimit?: RouteRateLimit;
   policy?: AugmentHttpRoutePolicy;
   requires?: AuthorizationRequirement | readonly AuthorizationRequirement[];
+  /** Explicit success-response representations; overrides JSON-schema inference. */
+  responseMediaTypes?: readonly string[];
 }
 
 export interface DefineGetRouteOptions<
@@ -106,6 +108,8 @@ export interface DefinePostRouteOptions<
   TQuery extends AnySchema | undefined = undefined,
   TResponse extends AnySchema | undefined = undefined,
 > extends RouteOptionsBase {
+  /** Explicit request-body representations; overrides JSON-schema inference. */
+  requestMediaTypes?: readonly string[];
   body?: TBody;
   params?: TParams;
   query?: TQuery;
@@ -138,7 +142,7 @@ function badRequest(): Response {
 function routeBase(
   method: HttpMethod,
   path: string,
-  opts: RouteOptionsBase,
+  opts: RouteOptionsBase & { requestMediaTypes?: readonly string[] },
   handler: AugmentHttpRoute["handler"],
   requestJsonSchema?: AugmentHttpRouteRequestJsonSchema,
   responseJsonSchema?: AugmentHttpRouteResponseJsonSchema,
@@ -155,6 +159,8 @@ function routeBase(
     ...(opts.requires !== undefined ? { requires: opts.requires } : {}),
     ...(requestJsonSchema ? { requestJsonSchema } : {}),
     ...(responseJsonSchema ? { responseJsonSchema } : {}),
+    ...(opts.requestMediaTypes ? { requestMediaTypes: [...opts.requestMediaTypes] } : {}),
+    ...(opts.responseMediaTypes ? { responseMediaTypes: [...opts.responseMediaTypes] } : {}),
   };
 }
 

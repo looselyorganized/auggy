@@ -28,6 +28,16 @@ export function createTypeScriptClient(
     const right = `${b.method} ${b.path}`;
     return left.localeCompare(right);
   });
+  const getWithBody = allRoutes.find(
+    (route) =>
+      route.method === "GET" &&
+      (route.requestMediaTypes !== undefined || route.requestJsonSchema?.body !== undefined),
+  );
+  if (getWithBody) {
+    throw new Error(
+      `Cannot generate a Fetch client for GET ${getWithBody.path}: GET routes cannot declare request bodies.`,
+    );
+  }
   const routes = allRoutes.filter((route) => routeSupportsTarget(route, target));
   const skippedRoutes = allRoutes.filter((route) => !routeSupportsTarget(route, target));
 
@@ -86,6 +96,8 @@ export function createTypeScriptClient(
     "  path: string;",
     "  auth: RouteAuth;",
     "  params: readonly string[];",
+    "  requestMediaTypes?: readonly string[];",
+    "  responseMediaTypes?: readonly string[];",
     "  requires?: RouteAuthorizationRequirement | readonly RouteAuthorizationRequirement[];",
     "};",
     "",
@@ -201,8 +213,10 @@ function inputTypeForRoute(route: RouteManifestEntry): string {
     );
   }
 
-  if (route.requestJsonSchema?.body) {
+  if (route.method === "POST" && route.requestJsonSchema?.body) {
     fields.push(`body: ${schemaToType(route.requestJsonSchema.body)};`);
+  } else if (route.method === "POST" && route.requestMediaTypes) {
+    fields.push("body: BodyInit;");
   }
 
   return fields.length > 0 ? `{ ${fields.join(" ")} }` : "{}";
@@ -215,12 +229,19 @@ function routeOutputMap(name: string, routes: readonly RouteManifestEntry[]): st
 
   return [
     `export interface ${name} {`,
-    ...routes.map(
-      (route) =>
-        `  ${JSON.stringify(route.path)}: ${route.responseJsonSchema ? schemaToType(route.responseJsonSchema) : "unknown"};`,
-    ),
+    ...routes.map((route) => `  ${JSON.stringify(route.path)}: ${outputTypeForRoute(route)};`),
     "}",
   ].join("\n");
+}
+
+function outputTypeForRoute(route: RouteManifestEntry): string {
+  const preferred =
+    route.responseMediaTypes?.[0] ?? (route.responseJsonSchema ? "application/json" : undefined);
+  if (preferred?.startsWith("text/")) return "string";
+  if (preferred && isJsonMediaType(preferred) && route.responseJsonSchema) {
+    return schemaToType(route.responseJsonSchema);
+  }
+  return "unknown";
 }
 
 function paramsTypeForRoute(route: RouteManifestEntry): string {
@@ -240,10 +261,21 @@ function routeTable(routes: readonly RouteManifestEntry[]): string {
         route.method,
       )}, path: ${JSON.stringify(route.path)}, auth: ${JSON.stringify(
         route.auth,
-      )}, params: ${JSON.stringify(route.params)}${routeRequiresSource(route)} },`,
+      )}, params: ${JSON.stringify(route.params)}${routeMediaTypesSource(route)}${routeRequiresSource(route)} },`,
   );
 
   return ["const ROUTES: Record<string, RouteMeta> = {", ...entries, "};"].join("\n");
+}
+
+function routeMediaTypesSource(route: RouteManifestEntry): string {
+  const requestMediaTypes =
+    route.requestMediaTypes ?? (route.requestJsonSchema?.body ? ["application/json"] : undefined);
+  const responseMediaTypes =
+    route.responseMediaTypes ?? (route.responseJsonSchema ? ["application/json"] : undefined);
+  return [
+    requestMediaTypes ? `, requestMediaTypes: ${JSON.stringify(requestMediaTypes)}` : "",
+    responseMediaTypes ? `, responseMediaTypes: ${JSON.stringify(responseMediaTypes)}` : "",
+  ].join("");
 }
 
 function routeRequiresSource(route: RouteManifestEntry): string {
@@ -313,9 +345,12 @@ async function request(
 
   const url = buildUrl(config.baseUrl, route.path, route.params, input);
   const init: RequestInit = { method, headers, signal: options.signal };
+  if (route.responseMediaTypes?.[0] && !headers.has("accept")) {
+    headers.set("accept", route.responseMediaTypes[0]);
+  }
   if (method === "POST" && Object.prototype.hasOwnProperty.call(input, "body")) {
-    if (!headers.has("content-type")) headers.set("content-type", "application/json");
-    init.body = JSON.stringify(input.body);
+    const mediaType = resolveRequestMediaType(headers, route.requestMediaTypes);
+    init.body = serializeRequestBody(mediaType, input.body, headers);
   }
 
   const response = await fetchImpl(url, init);
@@ -473,6 +508,67 @@ function mergeHeaders(headers: Headers, extra: HeadersInit | undefined): void {
   new Headers(extra).forEach((value, key) => headers.set(key, value));
 }
 
+function resolveRequestMediaType(
+  headers: Headers,
+  declared: readonly string[] | undefined,
+): string {
+  const supported = declared ?? ["application/json"];
+  const configured = headers.get("content-type");
+  if (configured) {
+    const configuredBase = mediaTypeBase(configured);
+    if (!supported.some((mediaType) => mediaTypeBase(mediaType) === configuredBase)) {
+      throw new Error(
+        "content-type " + configuredBase + " is not declared for this Auggy route.",
+      );
+    }
+    return configured;
+  }
+  const preferred = supported[0] ?? "application/json";
+  headers.set("content-type", preferred);
+  return preferred;
+}
+
+function serializeRequestBody(mediaType: string, body: unknown, headers: Headers): BodyInit {
+  const normalized = mediaTypeBase(mediaType);
+  if (normalized === "application/json" || normalized.endsWith("+json")) {
+    return JSON.stringify(body);
+  }
+  if (normalized === "application/x-www-form-urlencoded") {
+    if (body instanceof URLSearchParams) return body.toString();
+    if (!isRecord(body) || Array.isArray(body)) {
+      throw new Error("application/x-www-form-urlencoded request bodies must be objects or URLSearchParams.");
+    }
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(body)) {
+      if (value === undefined || value === null) continue;
+      const values = Array.isArray(value) ? value : [value];
+      for (const item of values) {
+        if (typeof item === "object" && item !== null) {
+          throw new Error("Form request body values must be strings, numbers, or booleans.");
+        }
+        params.append(key, String(item));
+      }
+    }
+    return params.toString();
+  }
+  if (normalized.startsWith("text/")) {
+    if (typeof body !== "string") throw new Error("Text request bodies must be strings.");
+    return body;
+  }
+  if (normalized === "multipart/form-data") {
+    if (!(body instanceof FormData)) {
+      throw new Error("multipart/form-data request bodies must be FormData.");
+    }
+    headers.delete("content-type");
+    return body;
+  }
+  return body as BodyInit;
+}
+
+function mediaTypeBase(value: string): string {
+  return value.split(";", 1)[0]!.trim().toLowerCase();
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
@@ -480,7 +576,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 async function parseResponseData(response: Response): Promise<unknown> {
   if (response.status === 204) return undefined;
   const contentType = response.headers.get("content-type") ?? "";
-  if (contentType.toLowerCase().includes("application/json")) return response.json();
+  const normalized = mediaTypeBase(contentType);
+  if (normalized === "application/json" || normalized.endsWith("+json")) {
+    return response.json();
+  }
   return response.text();
 }`;
 }
@@ -647,6 +746,11 @@ function propertyName(name: string): string {
 
 function routeKey(route: RouteManifestEntry): string {
   return `${route.method} ${route.path}`;
+}
+
+function isJsonMediaType(value: string): boolean {
+  const normalized = value.toLowerCase();
+  return normalized === "application/json" || normalized.endsWith("+json");
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
