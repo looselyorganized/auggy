@@ -1,0 +1,12 @@
+type: budgets
+config:
+  dbPath: ./data/budgets.db
+  caps:
+    public:
+      anonymous:
+        maxTurnsPerThread: 6
+        maxTurnsPerDay: 12
+      recognized:
+        maxTurnsPerThread: 30
+        maxTurnsPerDay: 60
+  anonymousGlobalLimit: 30

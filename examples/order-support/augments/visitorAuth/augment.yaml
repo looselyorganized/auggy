@@ -1,0 +1,15 @@
+type: visitorAuth
+config:
+  publicUrl: ${AUGGY_PUBLIC_URL}
+  dbPath: ./data/visitor-auth.db
+  agentMail:
+    transport: console
+    subjectPrefix: "[Northstar verification] "
+  signingKey: ${VISITOR_SIGNING_KEY}
+  agentBinding: ${AUGGY_AGENT_ID}
+  rateLimit:
+    minIntervalSeconds: 10
+    perHour: 20
+    perDay: 50
+  reverifyAfterDays: 90
+  tokenTtlMinutes: 15

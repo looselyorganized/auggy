@@ -1,0 +1,14 @@
+{
+  "name": "auggy-example-service-dispatch",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "bun test augments/service-dispatch/service-dispatch.test.ts",
+    "generate:client": "auggy routes --client ts --target browser --out service-dispatch-client.ts"
+  },
+  "dependencies": {
+    "@auggy/anthropic": "file:../../packages/anthropic",
+    "auggy": "file:../..",
+    "zod": "^4.4.3"
+  }
+}

@@ -1,0 +1,19 @@
+id: aug1_7d8df3da-0465-4d7f-8a6f-c59b68977881
+name: pickleball-storefront
+displayName: Baseline Pickleball
+purpose: Help players choose compatible pickleball gear and prepare a checkout.
+creator:
+  displayName: Store operator
+identity: ./identity.md
+engine:
+  provider: anthropic
+  model: claude-sonnet-4-6
+  maxContextTokens: 200000
+  maxTokens: 4096
+settings:
+  compactionStrategy: truncate
+  maxInferenceLoops: 8
+augments:
+  - webTransport
+  - budgets
+  - pickleball-storefront
