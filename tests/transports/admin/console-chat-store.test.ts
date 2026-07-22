@@ -523,6 +523,35 @@ describe("console chat SQLite store", () => {
     }
   });
 
+  it("distinguishes active, absent, and deleted identifiers across restart", async () => {
+    const { dbPath, store } = await openStore();
+    const absentId = "never-seen";
+
+    expect(store.hasThread(absentId)).toBeFalse();
+    expect(store.isThreadDeleted(absentId)).toBeFalse();
+
+    store.createThread(THREAD);
+    expect(store.hasThread(THREAD.id)).toBeTrue();
+    expect(store.isThreadDeleted(THREAD.id)).toBeFalse();
+
+    expect(store.deleteThread(THREAD.id)).toBeTrue();
+    expect(store.hasThread(THREAD.id)).toBeFalse();
+    expect(store.isThreadDeleted(THREAD.id)).toBeTrue();
+    expect(store.isThreadDeleted(absentId)).toBeFalse();
+
+    expect(() => store.isThreadDeleted("")).toThrow(/threadId has an invalid length/);
+    expect(() => store.isThreadDeleted("x".repeat(257))).toThrow(/threadId has an invalid length/);
+    expect(() => store.isThreadDeleted(null as never)).toThrow(/threadId must be a string/);
+
+    store.close();
+    stores.pop();
+    const reopened = createConsoleChatStore({ dbPath });
+    stores.push(reopened);
+    expect(reopened.hasThread(THREAD.id)).toBeFalse();
+    expect(reopened.isThreadDeleted(THREAD.id)).toBeTrue();
+    expect(reopened.isThreadDeleted(absentId)).toBeFalse();
+  });
+
   it("supports explicit kernel-history clearing and rejects invalid histories", async () => {
     const { store } = await openStore();
     store.createThread(THREAD);

@@ -183,6 +183,7 @@ export interface AbandonConsoleChatRunInput {
 
 export interface ConsoleChatStore {
   hasThread(threadId: string): boolean;
+  isThreadDeleted(threadId: string): boolean;
   listThreads(): ConsoleChatThreadSummary[];
   getThread(threadId: string): ConsoleChatThread | null;
   createThread(input: CreateConsoleChatThreadInput): ConsoleChatThread;
@@ -593,6 +594,11 @@ export function createConsoleChatStore(options: {
   function hasThread(threadId: string): boolean {
     const id = assertIdentifier(threadId, "threadId");
     return hasThreadStatement.get(id) !== null;
+  }
+
+  function isThreadDeleted(threadId: string): boolean {
+    const id = assertIdentifier(threadId, "threadId");
+    return getTombstoneStatement.get(id) !== null;
   }
 
   function listThreads(): ConsoleChatThreadSummary[] {
@@ -1396,6 +1402,7 @@ export function createConsoleChatStore(options: {
 
   return {
     hasThread,
+    isThreadDeleted,
     listThreads,
     getThread,
     createThread,

@@ -963,7 +963,7 @@ function handleConsoleThreadRead(ctx: AdminRouteContext, threadId: string): Resp
   if (!ctx.consoleChat) return consoleChatUnavailableResponse();
   try {
     const thread = ctx.consoleChat.getThread(threadId);
-    if (!thread) return jsonResponse({ error: "thread not found" }, 404);
+    if (!thread) return consoleThreadMissingResponse(ctx.consoleChat, threadId);
     return jsonResponse({ thread: consoleThreadDto(thread) });
   } catch {
     return jsonResponse({ error: "Unable to read console chat." }, 500);
@@ -994,8 +994,14 @@ async function handleConsoleThreadAction(
   if (!csrf.ok) return jsonResponse({ error: csrf.message }, csrf.status);
 
   try {
+    if (action === "delete") {
+      ctx.consoleChat.deleteThread(threadId);
+      ctx.kernel.forgetThreadHistory?.(threadId);
+      return jsonResponse({ ok: true });
+    }
+
     const existing = ctx.consoleChat.getThread(threadId);
-    if (!existing) return jsonResponse({ error: "thread not found" }, 404);
+    if (!existing) return consoleThreadMissingResponse(ctx.consoleChat, threadId);
 
     if (action === "rename") {
       const title = validateConsoleThreadTitle(body.title);
@@ -1003,31 +1009,19 @@ async function handleConsoleThreadAction(
       const thread = ctx.consoleChat.renameThread(threadId, title, Date.now());
       return thread
         ? jsonResponse({ thread: consoleThreadDto(thread) })
-        : jsonResponse({ error: "thread not found" }, 404);
+        : consoleThreadMissingResponse(ctx.consoleChat, threadId);
     }
 
-    if (action === "read-state") {
-      if (typeof body.unread !== "boolean") {
-        return jsonResponse({ error: "unread must be a boolean" }, 400);
-      }
-      const thread = ctx.consoleChat.setThreadReadState(threadId, body.unread, Date.now());
-      return thread
-        ? jsonResponse({ thread: consoleThreadDto(thread) })
-        : jsonResponse({ error: "thread not found" }, 404);
+    if (typeof body.unread !== "boolean") {
+      return jsonResponse({ error: "unread must be a boolean" }, 400);
     }
-
-    if (existing.runStatus === "streaming") {
-      return jsonResponse({ error: "Cannot delete a chat while it is streaming." }, 409);
-    }
-    if (!ctx.consoleChat.deleteThread(threadId)) {
-      return jsonResponse({ error: "thread not found" }, 404);
-    }
-    ctx.kernel.forgetThreadHistory?.(threadId);
-    return jsonResponse({ ok: true });
+    const thread = ctx.consoleChat.setThreadReadState(threadId, body.unread, Date.now());
+    return thread
+      ? jsonResponse({ thread: consoleThreadDto(thread) })
+      : consoleThreadMissingResponse(ctx.consoleChat, threadId);
   } catch {
-    // deleteThread performs its own transactional streaming check. If a run
-    // starts after our optimistic read, classify that race without coupling
-    // the API to a storage-engine error string.
+    // deleteThread owns the transactional streaming check. Classify a storage
+    // rejection from current state without coupling the API to error text.
     if (action === "delete") {
       try {
         if (ctx.consoleChat.getThread(threadId)?.runStatus === "streaming") {
@@ -1039,6 +1033,12 @@ async function handleConsoleThreadAction(
     }
     return jsonResponse({ error: "Unable to update console chat." }, 500);
   }
+}
+
+function consoleThreadMissingResponse(store: ConsoleChatStore, threadId: string): Response {
+  return store.isThreadDeleted(threadId)
+    ? jsonResponse({ error: "thread was deleted" }, 410)
+    : jsonResponse({ error: "thread not found" }, 404);
 }
 
 function consoleThreadDto(
