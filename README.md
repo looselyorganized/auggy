@@ -29,7 +29,12 @@ cd my-agent
 auggy run
 ```
 
-For a hosted model, add the provider key requested during setup to `.env`:
+`auggy create` walks through the engine, model, identity, and augment choices,
+then installs the agent's local dependencies. Choose Anthropic, OpenAI,
+OpenRouter, or a local/remote Ollama instance.
+
+For a hosted model, enter the provider key during setup or add it to the
+generated `.env` afterward:
 
 ```env
 ANTHROPIC_API_KEY=sk-ant-...
@@ -95,32 +100,55 @@ uses capabilities, and completes turns.
 
 ```text
 my-agent/
+  .auggy/
+    models.lock.json
+  .env
+  .env.example
+  .gitignore
   agent.yaml
   identity.md
   learned-behaviors.md
   package.json
-  .env
-  .env.example
   augments/
+    README.md
+    fileMemory/
+      augment.yaml
     filesystem/
+      augment.yaml
+    webTransport/
       augment.yaml
     webFetch/
       augment.yaml
+    turnControl/
+      augment.yaml
   skills/
+    auggy/
+      SKILL.md
+    filesystem/
+      SKILL.md
+    webFetch/
+      SKILL.md
+    turnControl/
+      SKILL.md
   data/
     workspace/
+      README.md
 ```
 
 `agent.yaml` is the runtime entry point. It selects the engine and lists enabled
 augments in boot order.
 
 `identity.md` contains operator-authored identity and boundaries.
-`learned-behaviors.md` stores creator-approved operating guidance. Augment
-configuration lives under `augments/`, skills are plain Markdown folders, and
-mutable runtime data stays under `data/`.
+`learned-behaviors.md` stores creator-approved operating guidance. Each
+built-in augment has metadata in `augments/<name>/augment.yaml`; its runtime
+implementation comes from the installed `auggy` package. Skills are plain
+Markdown folders, `.auggy/models.lock.json` records the selected model and
+pricing snapshot, and mutable runtime data stays under `data/`.
 
 Each agent has its own `package.json`, so its Auggy runtime and model adapter are
-portable and version-pinned.
+portable and managed independently from the global CLI. The install also writes
+the agent's Bun lockfile and `node_modules/`; pin exact dependency versions in
+`package.json` when preparing a production deployment during the public preview.
 
 ## The Default Agent
 
@@ -133,6 +161,10 @@ Fresh agents include a compact chat-ready set:
 | `webTransport` | Serves chat, console, health, and home pages |
 | `webFetch` | Fetches public URLs and APIs with SSRF protection |
 | `turnControl` | Lets the agent stop and request missing input |
+| `skills` | Auto-mounts installed `SKILL.md` instructions for model discovery |
+
+The `skills` row is runtime infrastructure: it is synthesized when the agent
+has a `skills/` directory, so it does not need its own entry in `agent.yaml`.
 
 List everything available:
 
@@ -223,6 +255,23 @@ export default function weather() {
 An augment can also contribute context, memory, a transport, lifecycle hooks,
 operator information, policy, or optional HTTP routes. The kernel does not need
 to change when your agent gains a new capability.
+
+## Operator Console
+
+Agents with `webTransport` serve a chat-first console at `/console`. Its current
+top-level surfaces are:
+
+- **Chat** for Markdown conversations, visible tool activity, and copyable
+  transcripts,
+- **Integrations** for browser, server, authentication, CORS, route, and
+  generated-client guidance,
+- **Capabilities** for an observed runtime map of mounted augments, routes,
+  tools, memory, installed or available skills, reported safeguards, and
+  configuration findings.
+
+The Capabilities view reports what the running agent exposes now; it is not a
+claim that every intended capability is configured or secure. Configuration,
+process management, deployment, and logs remain CLI workflows.
 
 ## Identity, Skills, And Memory
 
@@ -315,7 +364,10 @@ auggy augment setup agentMail
 
 Custom augments can register small policy-aware `GET` and `POST` routes beside
 the agent runtime. Auggy can inspect their manifests, export an OpenAPI-shaped
-description, and generate TypeScript clients.
+description, and generate TypeScript clients. Route contracts can declare
+ordered request and response media types; generated clients select the preferred
+representation, serialize JSON, text, URL-encoded, or multipart request bodies,
+and parse JSON or text responses accordingly.
 
 ```bash
 auggy routes
@@ -374,9 +426,13 @@ auggy deploy --yes
 | `auggy create <name>` | Scaffold a standalone agent project |
 | `auggy init [name]` | Initialize the current directory as an agent |
 | `auggy run [name]` | Run locally and open chat |
+| `auggy dev [name]` | Run in the foreground without opening a browser |
 | `auggy doctor [name]` | Check configuration, environment, dependencies, port, and skills |
+| `auggy list` / `auggy status [name]` | Discover agent projects and inspect local process state |
+| `auggy chat [name]` | Open a running agent's browser chat |
 | `auggy augment list` | Show core, stable, and preview augments |
 | `auggy augment add [name...]` | Select or add built-in augments |
+| `auggy augment setup <name>` | Run a supported augment setup recipe |
 | `auggy augment create <name>` | Create and register a custom augment in the current agent |
 | `auggy augment install <agent> <path>` | Import a custom augment authored elsewhere |
 | `auggy skill create <name>` | Create a skill folder |
@@ -384,9 +440,12 @@ auggy deploy --yes
 | `auggy routes [name]` | Inspect preview routes and generate clients |
 | `auggy mcp init/list/show/add-json/remove/doctor` | Manage MCP servers |
 | `auggy models list [provider] --refresh` | Refresh the provider model list |
+| `auggy visitors <name>` | List verified visitors for an agent |
 | `auggy deploy` | Deploy the current agent to Railway |
 | `auggy logs` | Open Railway logs for a deployed agent |
 | `auggy start` / `stop` / `restart` | Manage a background local agent |
+| `auggy remove [name]` | Remove a local agent project, with an explicit cloud option |
+| `auggy eval` | Run eval suites when `@auggy/evals` is installed |
 
 ## Requirements
 
@@ -404,8 +463,23 @@ curl -fsSL https://bun.sh/install | bash
 git clone <auggy-repository-url>
 cd auggy
 bun install
+bun run typecheck
+bun run lint
 bun test
-bunx tsc --noEmit
+```
+
+This repository is a Bun workspace. The core runtime and CLI live in `src/`,
+provider adapters live in `packages/{anthropic,openai,openrouter,ollama}`, tests
+live in `tests/`, and runnable integrations live in `examples/`. The React/Vite
+operator console is developed in `admin/`; its production bundle is checked in
+under `admin/dist/` because the published runtime serves those static files.
+
+When changing the console, verify and rebuild it from its workspace:
+
+```bash
+cd admin
+bun test
+bun run build
 ```
 
 For a local CLI install from this checkout:
