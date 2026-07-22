@@ -87,6 +87,8 @@ export interface ChatWorkspaceContextValue {
   state: ChatWorkspaceLifecycleState;
   activeThread: LocalChatDraft | DurableChatThreadDetail | null;
   deletingThreadIds: ReadonlySet<string>;
+  /** IDs whose deletion was proven by DELETE success or an explicit server tombstone. */
+  confirmedDeletedThreadIds: ReadonlySet<string>;
   hydrationStatus: "loading" | "ready" | "error";
   hydrationError: string | null;
   anonymousAllowed: boolean;
@@ -191,6 +193,7 @@ export function ChatWorkspaceProvider({
   const threadRevisionRef = useRef(new Map<string, number>());
   const detailReconciliationRetriesRef = useRef(new Map<string, DetailReconciliationRetry>());
   const deletingThreadIdsRef = useRef(new Set<string>());
+  const confirmedDeletedThreadIdsRef = useRef(new Set<string>());
   // Visitor credentials are deliberately memory-only and bound to the first
   // request made by a thread. A later token must never silently inherit that
   // thread's privileged model context.
@@ -220,12 +223,33 @@ export function ChatWorkspaceProvider({
   const [deletingThreadIds, setDeletingThreadIds] = useState<ReadonlySet<string>>(
     () => new Set(),
   );
+  const [confirmedDeletedThreadIds, setConfirmedDeletedThreadIds] = useState<
+    ReadonlySet<string>
+  >(() => new Set());
   const consoleChatCsrfToken = consoleChatCsrf(data);
   const visibleDurableThreadId = getVisibleDurableChatThreadId(state);
 
   const dispatch = useCallback((action: ChatWorkspaceLifecycleAction) => {
     const previous = stateRef.current;
-    const next = chatWorkspaceLifecycleReducer(previous, action);
+    let acceptedAction = action;
+    if (confirmedDeletedThreadIdsRef.current.size > 0) {
+      switch (action.type) {
+        case "server.hydrated":
+          acceptedAction = {
+            ...action,
+            summaries: action.summaries.filter(
+              ({ id }) => !confirmedDeletedThreadIdsRef.current.has(id),
+            ),
+          };
+          break;
+        case "thread.detail-loaded":
+        case "thread.summary-merge":
+        case "thread.reconciliation-failed":
+          if (confirmedDeletedThreadIdsRef.current.has(action.thread.id)) return previous;
+          break;
+      }
+    }
+    const next = chatWorkspaceLifecycleReducer(previous, acceptedAction);
     if (next !== previous) {
       const previousById = new Map(
         previous.durableThreads.map((thread) => [thread.id, thread]),
@@ -449,6 +473,11 @@ export function ChatWorkspaceProvider({
   const confirmServerThreadDeletion = useCallback(
     (threadId: string) => {
       if (!mountedRef.current) return;
+
+      if (!confirmedDeletedThreadIdsRef.current.has(threadId)) {
+        confirmedDeletedThreadIdsRef.current.add(threadId);
+        setConfirmedDeletedThreadIds(new Set(confirmedDeletedThreadIdsRef.current));
+      }
 
       // Invalidate every callback that could otherwise merge stale state for
       // this ID after the server has proven it is tombstoned. Keep the delete
@@ -777,8 +806,45 @@ export function ChatWorkspaceProvider({
           if (
             stateRef.current.activeRun?.threadId === thread.id ||
             summaryIds.has(thread.id) ||
+            deletingThreadIdsRef.current.has(thread.id)
+          ) {
+            continue;
+          }
+          if (thread.lifecycle === "detail") {
+            const beforeRevision = threadRevisionRef.current.get(thread.id) ?? 0;
+            try {
+              const detail = await getConsoleChatThread(thread.id, {
+                signal: controller.signal,
+                fetchImpl: dependenciesRef.current.fetchImpl,
+              });
+              if (!ownsPoll()) return;
+              if (
+                getDurableChatThread(stateRef.current, thread.id) &&
+                !confirmedDeletedThreadIdsRef.current.has(thread.id) &&
+                (threadRevisionRef.current.get(thread.id) ?? 0) === beforeRevision
+              ) {
+                dispatch({ type: "thread.detail-loaded", thread: detail });
+              }
+              // A list omission alone is not deletion evidence. Whether detail
+              // was current or superseded, keep the identity until an explicit
+              // not-found/tombstone response proves otherwise.
+              continue;
+            } catch (error) {
+              if (!ownsPoll() || isAbortError(error)) return;
+              if (isConsoleChatApiError(error) && error.code === "gone") {
+                confirmServerThreadDeletion(thread.id);
+                continue;
+              }
+              if (!isConsoleChatApiError(error) || error.code !== "not-found") {
+                // Preserve the last loaded transcript across a transient probe
+                // failure. A later poll can retry without disrupting its route.
+                continue;
+              }
+            }
+          }
+          if (
             (threadRevisionRef.current.get(thread.id) ?? 0) !==
-              (revisionsBeforeRequest.get(thread.id) ?? 0)
+            (revisionsBeforeRequest.get(thread.id) ?? 0)
           ) {
             continue;
           }
@@ -896,6 +962,7 @@ export function ChatWorkspaceProvider({
 
   const loadThread = useCallback(
     async (threadId: string): Promise<boolean> => {
+      if (confirmedDeletedThreadIdsRef.current.has(threadId)) return false;
       const existing = getChatWorkspaceTargetById(stateRef.current, threadId);
       // Drafts belong exclusively to /chat/new. Durable loading must never
       // select one or cancel an in-flight durable selection generation.
@@ -1479,6 +1546,7 @@ export function ChatWorkspaceProvider({
       state,
       activeThread,
       deletingThreadIds,
+      confirmedDeletedThreadIds,
       hydrationStatus,
       hydrationError,
       anonymousAllowed: data?.web.allowAnonymous.value !== false,
@@ -1501,6 +1569,7 @@ export function ChatWorkspaceProvider({
     [
       activeThread,
       clearVisitor,
+      confirmedDeletedThreadIds,
       create,
       data?.web.allowAnonymous.value,
       deleteThread,

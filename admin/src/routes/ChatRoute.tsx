@@ -40,6 +40,7 @@ export function ChatRoute() {
   const {
     state,
     activeThread,
+    confirmedDeletedThreadIds,
     hydrationStatus,
     hydrationError,
     loadThread,
@@ -56,6 +57,9 @@ export function ChatRoute() {
   const routeTargetLifecycle = threadId
     ? getChatWorkspaceTargetById(state, threadId)?.lifecycle
     : undefined;
+  const threadDeletionConfirmed = threadId
+    ? confirmedDeletedThreadIds.has(threadId)
+    : false;
 
   useEffect(() => {
     if (route.kind === "welcome") selectWelcome();
@@ -110,6 +114,10 @@ export function ChatRoute() {
 
   useEffect(() => {
     if (hydrationStatus !== "ready" || !threadId) return;
+    if (threadDeletionConfirmed) {
+      setLookup({ threadId, status: "not-found" });
+      return;
+    }
     if (state.draft?.id === threadId) {
       setLookup({ threadId, status: "not-found" });
       return;
@@ -142,17 +150,13 @@ export function ChatRoute() {
     loadThread,
     routeTargetLifecycle,
     state.draft?.id,
+    threadDeletionConfirmed,
     threadId,
   ]);
 
-  const requestedThreadWasRemoved =
-    threadId !== undefined &&
-    lookup?.threadId === threadId &&
-    lookup?.status === "ready" &&
-    !getChatWorkspaceTargetById(state, threadId);
   const recoverFromMissingThread =
-    lookup?.threadId === threadId &&
-    (lookup?.status === "not-found" || requestedThreadWasRemoved);
+    threadDeletionConfirmed ||
+    (lookup?.threadId === threadId && lookup?.status === "not-found");
 
   useEffect(() => {
     if (hydrationStatus !== "ready" || !threadId || !recoverFromMissingThread)

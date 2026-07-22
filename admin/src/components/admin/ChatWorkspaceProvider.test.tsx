@@ -210,6 +210,7 @@ describe("ChatWorkspaceProvider persistence", () => {
     expect(harness.value.state.draft).toBeNull();
     expect(harness.value.state.selection).toEqual({ kind: "welcome" });
     expect(harness.value.activeThread).toBeNull();
+    expect(harness.value.confirmedDeletedThreadIds.size).toBe(0);
     expect(requests).toEqual([]);
   });
 
@@ -287,6 +288,44 @@ describe("ChatWorkspaceProvider persistence", () => {
       kind: "draft",
       draftId: "ambiguous",
     });
+    expect(harness.value.confirmedDeletedThreadIds.has("ambiguous")).toBe(false);
+  });
+
+  it("never re-adds a confirmed deletion from a later stale list snapshot", async () => {
+    const saved = populatedThread("confirmed-gone", "Confirmed gone");
+    const pollClock = {
+      ...populatedThread("confirmed-poll-clock", "Polling clock"),
+      runStatus: "streaming" as const,
+    };
+    const initial = createChatWorkspace(saved);
+    initial.durableThreads = [
+      ...initial.durableThreads,
+      { ...pollClock, lifecycle: "detail", detailError: null },
+    ];
+    let listCalls = 0;
+    const fetchImpl = mockFetch(async (path) => {
+      if (path === "/console/api/chat/threads/confirmed-gone/delete") {
+        return json({ ok: true });
+      }
+      if (path === "/console/api/chat/threads") {
+        listCalls++;
+        return json({ threads: [summary(saved), summary(pollClock)] });
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    const harness = await mountProvider({ fetchImpl, initialState: initial });
+
+    await act(async () => {
+      expect(await harness.value.deleteThread(saved.id)).toEqual({ ok: true });
+    });
+    expect(harness.value.confirmedDeletedThreadIds.has(saved.id)).toBe(true);
+    expect(harness.value.state.durableThreads.some(({ id }) => id === saved.id)).toBe(false);
+
+    await waitForCondition(() => listCalls > 0, "a stale post-delete list snapshot");
+    await act(async () => Promise.resolve());
+
+    expect(harness.value.state.durableThreads.some(({ id }) => id === saved.id)).toBe(false);
+    expect(harness.value.confirmedDeletedThreadIds.has(saved.id)).toBe(true);
   });
 
   it("removes a recovered first-send identity when detail lands during deletion", async () => {
@@ -1140,6 +1179,7 @@ describe("ChatWorkspaceProvider persistence", () => {
         error: "delete failed",
       });
       expect(harness.value.activeThread?.id).toBe("saved");
+      expect(harness.value.confirmedDeletedThreadIds.has("saved")).toBe(false);
       expect(await harness.value.deleteThread("saved")).toEqual({ ok: true });
     });
     expect(calls).toEqual([
@@ -1151,6 +1191,12 @@ describe("ChatWorkspaceProvider persistence", () => {
     ]);
     expect(harness.value.activeThread).toBeNull();
     expect(harness.value.state.selection).toEqual({ kind: "welcome" });
+    expect(harness.value.confirmedDeletedThreadIds.has("saved")).toBe(true);
+    const callsBeforeConfirmedLoad = [...calls];
+    await act(async () => {
+      expect(await harness.value.loadThread("saved")).toBe(false);
+    });
+    expect(calls).toEqual(callsBeforeConfirmedLoad);
     let draftId = "";
     await act(async () => {
       draftId = harness.value.create();
@@ -1734,6 +1780,9 @@ describe("ChatWorkspaceProvider persistence", () => {
       if (path === "/console/api/chat/threads") {
         return json({ threads: [summary(added)] });
       }
+      if (path === "/console/api/chat/threads/missing") {
+        return json({ error: "console thread was deleted" }, 410);
+      }
       throw new Error(`Unexpected request: ${path}`);
     });
     const harness = await mountProvider({
@@ -1745,6 +1794,7 @@ describe("ChatWorkspaceProvider persistence", () => {
       await new Promise((resolve) => setTimeout(resolve, EXTERNAL_POLL_TEST_WAIT_MS));
     });
     expect(harness.value.activeThread?.id).not.toBe("missing");
+    expect(harness.value.confirmedDeletedThreadIds.has("missing")).toBe(true);
     expect(harness.value.state.durableThreads.map(({ id }) => id)).toContain("added");
   });
 
@@ -1895,6 +1945,7 @@ describe("ChatWorkspaceProvider persistence", () => {
       await new Promise((resolve) => setTimeout(resolve, EXTERNAL_POLL_TEST_WAIT_MS));
     });
     expect(harness.value.state.durableThreads.some(({ id }) => id === "removed")).toBe(false);
+    expect(harness.value.confirmedDeletedThreadIds.has("removed")).toBe(false);
 
     await act(async () => slow.resolve(json({ thread: removed })));
     await act(async () => expect(await load).toBe(false));

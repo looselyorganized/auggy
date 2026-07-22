@@ -3,19 +3,30 @@ import { StrictMode, Suspense } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import {
   createMemoryRouter,
+  Outlet,
   RouterProvider,
   type RouterState,
+  useLocation,
+  useNavigate,
 } from "react-router-dom";
 
 import { ChatComposer } from "@/components/admin/ChatComposer";
 import { DashboardProvider } from "@/components/admin/DashboardContext";
 import { ChatThreadHeader } from "@/components/admin/ChatThreadHeader";
+import { ChatThreadMutationDialogs } from "@/components/admin/ChatThreadMutationDialogs";
+import { ChatThreadNav } from "@/components/admin/ChatThreadNav";
 import {
   ChatWorkspaceProvider,
   type ChatWorkspaceContextValue,
   useChatWorkspace,
 } from "@/components/admin/ChatWorkspaceProvider";
-import { CHAT_WELCOME_PATH, chatThreadPath } from "@/lib/chat-route";
+import {
+  CHAT_DRAFT_PATH,
+  CHAT_WELCOME_PATH,
+  chatThreadPath,
+  getChatNavigationState,
+  parseChatRouteTarget,
+} from "@/lib/chat-route";
 import { createChatThread, type ChatThread } from "@/lib/chat-workspace";
 import { ToastProvider } from "@/lib/toast";
 import type { DashboardData } from "@/lib/types";
@@ -361,6 +372,238 @@ describe("ChatRoute lifecycle acceptance", () => {
     expect(harness.transitions).toEqual([]);
   });
 
+  it("recovers immediately when sidebar deletion wins over the first detail load", async () => {
+    const saved = createChatThread({
+      id: "delete-while-loading",
+      title: "Delete while loading",
+      previewMode: "creator",
+      model: MODEL,
+      now: NOW,
+    });
+    const staleDetail = deferred<Response>();
+    let detailCalls = 0;
+    const harness = await mountChatRoute({
+      initialEntry: chatThreadPath(saved.id),
+      createIds: [],
+      fetchImpl: mockFetch(async (path) => {
+        if (path === "/console/api/chat/threads") {
+          return json({ threads: [summary(saved)] });
+        }
+        if (path === "/console/api/chat/threads/delete-while-loading") {
+          detailCalls++;
+          return staleDetail.promise;
+        }
+        if (path === "/console/api/chat/threads/delete-while-loading/delete") {
+          return json({ ok: true });
+        }
+        throw new Error(`Unexpected request: ${path}`);
+      }),
+    });
+
+    await waitForCondition(() => detailCalls === 1, "the initial detail load to start");
+    await waitForCondition(
+      () =>
+        harness.renderer.root
+          .findAllByType(ChatThreadMutationDialogs)
+          .some(({ props }) => props.title === saved.title),
+      "the routed durable chat to appear in the sidebar",
+    );
+    expect(harness.renderer.root.findAllByType(ChatThreadHeader)).toHaveLength(0);
+    harness.transitions.length = 0;
+    const sidebarMutation = harness.renderer.root
+      .findAllByType(ChatThreadMutationDialogs)
+      .find(({ props }) => props.title === saved.title);
+    if (!sidebarMutation) throw new Error("Sidebar mutation controls did not render");
+    await act(async () => {
+      await sidebarMutation.props.onDelete();
+    });
+    await waitForCondition(
+      () => harness.router.state.location.pathname === CHAT_WELCOME_PATH,
+      "the sidebar deletion to recover without detail",
+    );
+
+    expect(detailCalls).toBe(1);
+    expect(harness.workspace.confirmedDeletedThreadIds.has(saved.id)).toBe(true);
+    expect(uniqueTransitions(harness.transitions)).toEqual([
+      expect.objectContaining({ action: "REPLACE", pathname: CHAT_WELCOME_PATH }),
+    ]);
+
+    await act(async () => {
+      staleDetail.resolve(json({ thread: saved }));
+      await staleDetail.promise;
+    });
+    await act(async () => Promise.resolve());
+    expect(harness.router.state.location.pathname).toBe(CHAT_WELCOME_PATH);
+    expect(harness.workspace.state.durableThreads.some(({ id }) => id === saved.id)).toBe(
+      false,
+    );
+    expect(detailCalls).toBe(1);
+    expect(uniqueTransitions(harness.transitions)).toEqual([
+      expect.objectContaining({ action: "REPLACE", pathname: CHAT_WELCOME_PATH }),
+    ]);
+  });
+
+  it("keeps a ready durable route when one poll omission is disproved by detail", async () => {
+    const saved: ChatThread = {
+      ...createChatThread({
+        id: "omitted-but-present",
+        title: "Omitted but present",
+        previewMode: "creator",
+        model: MODEL,
+        now: NOW,
+      }),
+      runStatus: "streaming",
+    };
+    const followupDetail = deferred<Response>();
+    let detailCalls = 0;
+    let omissionObserved = false;
+    const durablePath = chatThreadPath(saved.id);
+    const harness = await mountChatRoute({
+      initialEntry: durablePath,
+      createIds: [],
+      fetchImpl: mockFetch(async (path) => {
+        if (path === "/console/api/chat/threads") {
+          if (detailCalls > 0 && !omissionObserved) {
+            omissionObserved = true;
+            return json({ threads: [] });
+          }
+          return json({ threads: [summary(saved)] });
+        }
+        if (path === "/console/api/chat/threads/omitted-but-present") {
+          detailCalls++;
+          if (detailCalls === 1) return json({ thread: saved });
+          if (detailCalls === 2 && omissionObserved) return followupDetail.promise;
+          throw new Error(`Unexpected detail request ${detailCalls}`);
+        }
+        throw new Error(`Unexpected request: ${path}`);
+      }),
+    });
+
+    await waitForCondition(
+      () =>
+        harness.workspace.activeThread?.id === saved.id &&
+        harness.renderer.root.findAllByType(ChatThreadHeader).length === 1,
+      "the durable deep link to become ready",
+    );
+    expect(harness.workspace.state.selection).toEqual({
+      kind: "thread",
+      threadId: saved.id,
+    });
+    harness.transitions.length = 0;
+
+    await waitForCondition(
+      () => omissionObserved && detailCalls === 2,
+      "the omitted summary to trigger one confirming detail request",
+    );
+    expect(harness.router.state.location.pathname).toBe(durablePath);
+    expect(harness.workspace.state.selection).toEqual({
+      kind: "thread",
+      threadId: saved.id,
+    });
+    expect(harness.workspace.state.durableThreads.some(({ id }) => id === saved.id)).toBe(
+      true,
+    );
+    expect(harness.transitions).toEqual([]);
+
+    await act(async () => {
+      followupDetail.resolve(json({ thread: saved }));
+      await followupDetail.promise;
+    });
+    await waitForCondition(
+      () =>
+        harness.workspace.activeThread?.id === saved.id &&
+        harness.renderer.root.findAllByType(ChatThreadHeader).length === 1,
+      "the confirming detail to preserve the ready route",
+    );
+    await act(async () => Promise.resolve());
+
+    expect(detailCalls).toBe(2);
+    expect(harness.router.state.location.pathname).toBe(durablePath);
+    expect(harness.workspace.state.selection).toEqual({
+      kind: "thread",
+      threadId: saved.id,
+    });
+    expect(harness.workspace.confirmedDeletedThreadIds.has(saved.id)).toBe(false);
+    expect(harness.transitions).toEqual([]);
+  });
+
+  it("replaces a ready durable route once when an omitted poll entry is explicitly gone", async () => {
+    const gone: ChatThread = {
+      ...createChatThread({
+        id: "omitted-and-gone",
+        title: "Omitted and gone",
+        previewMode: "creator",
+        model: MODEL,
+        now: NOW,
+      }),
+      runStatus: "streaming",
+    };
+    const followupDetail = deferred<Response>();
+    let detailCalls = 0;
+    let omissionObserved = false;
+    const durablePath = chatThreadPath(gone.id);
+    const harness = await mountChatRoute({
+      initialEntry: durablePath,
+      createIds: [],
+      fetchImpl: mockFetch(async (path) => {
+        if (path === "/console/api/chat/threads") {
+          if (detailCalls > 0 && !omissionObserved) {
+            omissionObserved = true;
+            return json({ threads: [] });
+          }
+          return json({ threads: omissionObserved ? [] : [summary(gone)] });
+        }
+        if (path === "/console/api/chat/threads/omitted-and-gone") {
+          detailCalls++;
+          if (detailCalls === 1) return json({ thread: gone });
+          if (detailCalls === 2 && omissionObserved) return followupDetail.promise;
+          throw new Error(`Unexpected detail request ${detailCalls}`);
+        }
+        throw new Error(`Unexpected request: ${path}`);
+      }),
+    });
+
+    await waitForCondition(
+      () =>
+        harness.workspace.activeThread?.id === gone.id &&
+        harness.renderer.root.findAllByType(ChatThreadHeader).length === 1,
+      "the soon-gone durable deep link to become ready",
+    );
+    harness.transitions.length = 0;
+
+    await waitForCondition(
+      () => omissionObserved && detailCalls === 2,
+      "the omitted summary to trigger one authoritative detail request",
+    );
+    expect(harness.router.state.location.pathname).toBe(durablePath);
+    expect(harness.workspace.state.selection).toEqual({
+      kind: "thread",
+      threadId: gone.id,
+    });
+    expect(harness.transitions).toEqual([]);
+
+    await act(async () => {
+      followupDetail.resolve(json({ error: "thread was deleted" }, 410));
+      await followupDetail.promise;
+    });
+    await waitForCondition(
+      () =>
+        harness.router.state.location.pathname === CHAT_WELCOME_PATH &&
+        harness.workspace.confirmedDeletedThreadIds.has(gone.id),
+      "the explicit poll tombstone to replace the durable route",
+    );
+    await act(async () => Promise.resolve());
+
+    expect(detailCalls).toBe(2);
+    expect(harness.workspace.state.selection).toEqual({ kind: "welcome" });
+    expect(harness.workspace.state.durableThreads.some(({ id }) => id === gone.id)).toBe(
+      false,
+    );
+    expect(uniqueTransitions(harness.transitions)).toEqual([
+      expect.objectContaining({ action: "REPLACE", pathname: CHAT_WELCOME_PATH }),
+    ]);
+  });
+
   it("replaces a tombstoned deep link with welcome exactly once", async () => {
     const gone = createChatThread({
       id: "gone",
@@ -405,7 +648,7 @@ describe("ChatRoute lifecycle acceptance", () => {
     );
     await act(async () => Promise.resolve());
 
-    expect(detailCalls).toBeGreaterThanOrEqual(1);
+    expect(detailCalls).toBe(1);
     expect(harness.workspace.state.selection).toEqual({ kind: "welcome" });
     expect(harness.workspace.state.draft).toBeNull();
     expect(harness.workspace.activeThread).toBeNull();
@@ -431,30 +674,36 @@ async function mountChatRoute(options: {
   const router = createMemoryRouter(
     [
       {
-        path: "/chat",
-        element: (
-          <Suspense fallback={null}>
-            <ChatRoute />
-          </Suspense>
-        ),
+        path: "/",
+        element: <ChatAcceptanceShell />,
+        children: [
+          {
+            path: "chat",
+            element: (
+              <Suspense fallback={null}>
+                <ChatRoute />
+              </Suspense>
+            ),
+          },
+          {
+            path: "chat/new",
+            element: (
+              <Suspense fallback={null}>
+                <ChatRoute />
+              </Suspense>
+            ),
+          },
+          {
+            path: "chat/:threadId",
+            element: (
+              <Suspense fallback={null}>
+                <ChatRoute />
+              </Suspense>
+            ),
+          },
+          { path: "elsewhere", element: <div>Elsewhere</div> },
+        ],
       },
-      {
-        path: "/chat/new",
-        element: (
-          <Suspense fallback={null}>
-            <ChatRoute />
-          </Suspense>
-        ),
-      },
-      {
-        path: "/chat/:threadId",
-        element: (
-          <Suspense fallback={null}>
-            <ChatRoute />
-          </Suspense>
-        ),
-      },
-      { path: "/elsewhere", element: <div>Elsewhere</div> },
     ],
     { initialEntries: [options.initialEntry ?? "/chat/new"] },
   );
@@ -515,6 +764,59 @@ async function mountChatRoute(options: {
       return workspace;
     },
   };
+}
+
+/**
+ * Mount the real sidebar navigation and route outlet against one workspace.
+ * This keeps acceptance coverage on the same sidebar command wiring as App's
+ * ConsoleShell without widening production exports solely for tests.
+ */
+function ChatAcceptanceShell() {
+  const {
+    state,
+    create,
+    select,
+    rename,
+    deleteThread,
+    deletingThreadIds,
+    hydrationStatus,
+    hydrationError,
+  } = useChatWorkspace();
+  const navigate = useNavigate();
+  const route = parseChatRouteTarget(useLocation().pathname);
+  const { activeId, threads } = getChatNavigationState({
+    threads: state.durableThreads,
+    route,
+    selection: state.selection,
+  });
+
+  return (
+    <>
+      <ChatThreadNav
+        threads={threads}
+        activeId={activeId}
+        loading={hydrationStatus === "loading"}
+        error={hydrationStatus === "error" ? hydrationError : null}
+        onNew={() => {
+          create();
+          navigate(CHAT_DRAFT_PATH);
+        }}
+        onSelect={(threadId) => {
+          if (select(threadId)) navigate(chatThreadPath(threadId));
+        }}
+        onRename={async (threadId, title) => {
+          const result = await rename(threadId, title);
+          if (!result.valid) throw new Error(result.message);
+        }}
+        onDelete={async (threadId) => {
+          const result = await deleteThread(threadId);
+          if (!result.ok) throw new Error(result.error);
+        }}
+        deletingThreadIds={deletingThreadIds}
+      />
+      <Outlet />
+    </>
+  );
 }
 
 function uniqueTransitions(transitions: readonly LocationTransition[]): LocationTransition[] {
