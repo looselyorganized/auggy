@@ -61,6 +61,13 @@ export interface OwnedSqliteSchemaOptions {
   /** Recognizes the exact un-stamped schema shipped before identity markers. */
   isLegacy(db: Database, objects: readonly SqliteSchemaObject[]): boolean;
   migrateLegacy?(db: Database): void;
+  /**
+   * Migrates a branded schema older than schemaVersion. Implementations must
+   * explicitly accept fromVersion and validate objects as the exact schema for
+   * that version before applying any DDL. Throw for every unsupported version
+   * or schema; the surrounding admission transaction will be rolled back.
+   */
+  migrateOwned?(db: Database, fromVersion: number, objects: readonly SqliteSchemaObject[]): void;
 }
 
 export interface SqliteCheckpointResult {
@@ -260,9 +267,10 @@ function pragmaSafeInteger(db: Database, name: "application_id" | "user_version"
 }
 
 /**
- * Admits an empty database, an exact pre-marker legacy schema, or the current
- * owned schema. Unrelated/lookalike databases are rejected before any DDL or
- * journal-mode mutation. Must run inside openHardenedSqlite's prepare hook.
+ * Admits an empty database, an exact pre-marker legacy schema, the current
+ * owned schema, or a branded older schema accepted by migrateOwned. Unrelated
+ * and lookalike databases are rejected before any DDL or journal-mode
+ * mutation. Must run inside openHardenedSqlite's prepare hook.
  */
 export function admitOwnedSqliteSchema(db: Database, options: OwnedSqliteSchemaOptions): void {
   const applicationId = pragmaSafeInteger(db, "application_id", options.label);
@@ -281,7 +289,19 @@ export function admitOwnedSqliteSchema(db: Database, options: OwnedSqliteSchemaO
 
   const empty = objects.length === 0;
   const unowned = applicationId === 0 && userVersion === 0;
-  if (empty) {
+  const ownedOlder =
+    applicationId === options.applicationId &&
+    userVersion > 0 &&
+    userVersion < options.schemaVersion;
+  if (ownedOlder) {
+    if (!options.migrateOwned) {
+      throw contextualError(
+        options.label,
+        `database schema ${userVersion} requires a migration to version ${options.schemaVersion}`,
+      );
+    }
+    options.migrateOwned(db, userVersion, objects);
+  } else if (empty) {
     if (!unowned) {
       throw contextualError(options.label, "database identity and schema version disagree");
     }

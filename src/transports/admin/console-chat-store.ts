@@ -16,7 +16,7 @@ import type {
 } from "../../types";
 
 export const CONSOLE_CHAT_APPLICATION_ID = 0x43434854; // "CCHT"
-export const CONSOLE_CHAT_SCHEMA_VERSION = 2;
+export const CONSOLE_CHAT_SCHEMA_VERSION = 3;
 
 export const CONSOLE_CHAT_RESTART_INTERRUPTION =
   "Response interrupted because the console server restarted.";
@@ -30,6 +30,23 @@ const MAX_RUN_ERROR_LENGTH = 4_096;
 const MAX_MESSAGE_CONTENT_LENGTH = 16 * 1024 * 1024;
 const MAX_TOOL_JSON_LENGTH = 16 * 1024 * 1024;
 const MAX_KERNEL_HISTORY_JSON_LENGTH = 64 * 1024 * 1024;
+
+export class ConsoleChatThreadDeletedError extends Error {
+  readonly code = "thread-deleted";
+  readonly threadId: string;
+
+  constructor(threadId: string) {
+    super(`${STORE_LABEL}: thread was deleted: ${threadId}`);
+    this.name = "ConsoleChatThreadDeletedError";
+    this.threadId = threadId;
+  }
+}
+
+export function isConsoleChatThreadDeletedError(
+  error: unknown,
+): error is ConsoleChatThreadDeletedError {
+  return error instanceof ConsoleChatThreadDeletedError;
+}
 
 export type ConsoleChatPreviewMode = "creator" | "anonymous" | "visitor";
 export type ConsoleChatRunStatus = "idle" | "streaming" | "complete" | "error" | "interrupted";
@@ -338,7 +355,7 @@ export function createDeferredConsoleThreadHistoryPersistence(
   };
 }
 
-const SCHEMA_STATEMENTS = [
+const VERSION_2_SCHEMA_STATEMENTS = [
   `CREATE TABLE IF NOT EXISTS console_chat_threads (
     id                TEXT PRIMARY KEY CHECK(length(id) BETWEEN 1 AND 256),
     title             TEXT NOT NULL CHECK(length(title) BETWEEN 1 AND 80),
@@ -392,20 +409,47 @@ const SCHEMA_STATEMENTS = [
   )`,
 ] as const;
 
-const EXPECTED_SCHEMA = new Map(
-  SCHEMA_STATEMENTS.map((sql) => {
-    const match = sql.match(/(?:TABLE|INDEX)\s+IF\s+NOT\s+EXISTS\s+([^\s(]+)/i);
-    if (!match?.[1]) throw new Error(`${STORE_LABEL}: invalid schema declaration`);
-    return [match[1], canonicalSqliteSchemaSql(sql)] as const;
-  }),
-);
+const TOMBSTONE_SCHEMA_STATEMENT = `CREATE TABLE IF NOT EXISTS console_chat_tombstones (
+  thread_id         TEXT PRIMARY KEY CHECK(length(thread_id) BETWEEN 1 AND 256),
+  deleted_at        INTEGER NOT NULL CHECK(deleted_at >= 0)
+)`;
 
-function hasExactSchema(objects: readonly SqliteSchemaObject[]): boolean {
+const TOMBSTONE_GUARD_TRIGGER_STATEMENT = `CREATE TRIGGER IF NOT EXISTS trg_console_chat_threads_reject_tombstone
+  BEFORE INSERT ON console_chat_threads
+  FOR EACH ROW
+  WHEN EXISTS (
+    SELECT 1 FROM console_chat_tombstones WHERE thread_id = NEW.id
+  )
+  BEGIN
+    SELECT RAISE(ABORT, 'console chat thread id is tombstoned');
+  END`;
+
+const SCHEMA_STATEMENTS = [
+  ...VERSION_2_SCHEMA_STATEMENTS,
+  TOMBSTONE_SCHEMA_STATEMENT,
+  TOMBSTONE_GUARD_TRIGGER_STATEMENT,
+] as const;
+
+function expectedSchema(statements: readonly string[]): Map<string, string> {
+  return new Map(
+    statements.map((sql) => {
+      const match = sql.match(/(?:TABLE|INDEX|TRIGGER)\s+IF\s+NOT\s+EXISTS\s+([^\s(]+)/i);
+      if (!match?.[1]) throw new Error(`${STORE_LABEL}: invalid schema declaration`);
+      return [match[1], canonicalSqliteSchemaSql(sql)] as const;
+    }),
+  );
+}
+
+const VERSION_2_EXPECTED_SCHEMA = expectedSchema(VERSION_2_SCHEMA_STATEMENTS);
+const EXPECTED_SCHEMA = expectedSchema(SCHEMA_STATEMENTS);
+
+function hasExactSchema(
+  objects: readonly SqliteSchemaObject[],
+  expected = EXPECTED_SCHEMA,
+): boolean {
   return (
-    objects.length === EXPECTED_SCHEMA.size &&
-    objects.every(
-      (object) => EXPECTED_SCHEMA.get(object.name) === canonicalSqliteSchemaSql(object.sql),
-    )
+    objects.length === expected.size &&
+    objects.every((object) => expected.get(object.name) === canonicalSqliteSchemaSql(object.sql))
   );
 }
 
@@ -472,6 +516,13 @@ export function createConsoleChatStore(options: {
         isLegacy() {
           return false;
         },
+        migrateOwned(db, fromVersion, objects) {
+          if (fromVersion !== 2 || !hasExactSchema(objects, VERSION_2_EXPECTED_SCHEMA)) {
+            throw new Error(`${STORE_LABEL}: only the exact version 2 schema can be migrated`);
+          }
+          db.run(TOMBSTONE_SCHEMA_STATEMENT);
+          db.run(TOMBSTONE_GUARD_TRIGGER_STATEMENT);
+        },
         validate(_db, objects) {
           assertExactSchema(objects);
         },
@@ -529,6 +580,15 @@ export function createConsoleChatStore(options: {
   const getHistoryStatement = db.prepare(
     `SELECT history_json, updated_at FROM console_chat_kernel_history WHERE thread_id = ?`,
   );
+  const getTombstoneStatement = db.prepare(
+    `SELECT deleted_at FROM console_chat_tombstones WHERE thread_id = ?`,
+  );
+
+  function assertThreadNotDeleted(threadId: string): void {
+    if (getTombstoneStatement.get(threadId) !== null) {
+      throw new ConsoleChatThreadDeletedError(threadId);
+    }
+  }
 
   function hasThread(threadId: string): boolean {
     const id = assertIdentifier(threadId, "threadId");
@@ -551,6 +611,7 @@ export function createConsoleChatStore(options: {
 
   function insertThread(input: CreateConsoleChatThreadInput): void {
     const value = normalizeThreadInput(input);
+    assertThreadNotDeleted(value.id);
     db.run(
       `INSERT INTO console_chat_threads
         (id, title, preview_mode, bound_peer_id, owner_peer_kind, owner_trust_level,
@@ -562,7 +623,7 @@ export function createConsoleChatStore(options: {
   }
 
   function createThread(input: CreateConsoleChatThreadInput): ConsoleChatThread {
-    insertThread(input);
+    db.transaction(() => insertThread(input))();
     return requiredThread(input.id);
   }
 
@@ -598,25 +659,29 @@ export function createConsoleChatStore(options: {
 
   function upsertThread(input: CreateConsoleChatThreadInput): ConsoleChatThread {
     const value = normalizeThreadInput(input);
-    const existingRow = getThreadStatement.get(value.id) as ThreadRow | null;
-    if (existingRow) {
-      const existing = rowToThread(existingRow);
-      if (existing.runStatus === "streaming") {
-        throw new Error(`${STORE_LABEL}: streaming thread must be changed through its active run`);
-      }
-      assertTimestampNotBefore(value.updatedAt, existing.updatedAt, "thread.updatedAt");
-      if (hasMessages(value.id)) {
-        if (
-          value.previewMode !== existing.previewMode ||
-          !sameOwner(value.owner, existing.owner) ||
-          !sameModel(value.model, existing.model)
-        ) {
-          throw new Error(`${STORE_LABEL}: populated thread identity and model are immutable`);
+    return db.transaction(() => {
+      assertThreadNotDeleted(value.id);
+      const existingRow = getThreadStatement.get(value.id) as ThreadRow | null;
+      if (existingRow) {
+        const existing = rowToThread(existingRow);
+        if (existing.runStatus === "streaming") {
+          throw new Error(
+            `${STORE_LABEL}: streaming thread must be changed through its active run`,
+          );
+        }
+        assertTimestampNotBefore(value.updatedAt, existing.updatedAt, "thread.updatedAt");
+        if (hasMessages(value.id)) {
+          if (
+            value.previewMode !== existing.previewMode ||
+            !sameOwner(value.owner, existing.owner) ||
+            !sameModel(value.model, existing.model)
+          ) {
+            throw new Error(`${STORE_LABEL}: populated thread identity and model are immutable`);
+          }
         }
       }
-    }
-    db.run(
-      `INSERT INTO console_chat_threads
+      db.run(
+        `INSERT INTO console_chat_threads
         (id, title, preview_mode, bound_peer_id, owner_peer_kind, owner_trust_level,
          owner_public_substate, model_provider, model_id, model_display, created_at, updated_at,
          last_read_at, unread, run_status)
@@ -636,9 +701,10 @@ export function createConsoleChatStore(options: {
          unread = excluded.unread,
          run_status = excluded.run_status
        WHERE excluded.updated_at >= console_chat_threads.updated_at`,
-      threadBindings(value),
-    );
-    return requiredThread(value.id);
+        threadBindings(value),
+      );
+      return requiredThread(value.id);
+    })();
   }
 
   function updateThread(
@@ -878,6 +944,7 @@ export function createConsoleChatStore(options: {
     }
 
     db.transaction(() => {
+      assertThreadNotDeleted(thread.id);
       const initialRow = getThreadStatement.get(thread.id) as ThreadRow | null;
       if (!initialRow) {
         insertThread({
@@ -1166,11 +1233,22 @@ export function createConsoleChatStore(options: {
   function deleteThread(threadId: string): boolean {
     const id = assertIdentifier(threadId, "threadId");
     return db.transaction(() => {
+      if (getTombstoneStatement.get(id) !== null) return false;
       const row = getThreadStatement.get(id) as ThreadRow | null;
-      if (!row) return false;
-      if (rowToThread(row).runStatus === "streaming") {
+      const existing = row ? rowToThread(row) : null;
+      if (existing?.runStatus === "streaming") {
         throw new Error(`${STORE_LABEL}: cannot delete a streaming thread`);
       }
+      const requestedDeletedAt = assertTimestamp(now(), "now()");
+      const deletedAt = existing
+        ? Math.max(requestedDeletedAt, existing.updatedAt)
+        : requestedDeletedAt;
+      db.run(
+        `INSERT INTO console_chat_tombstones (thread_id, deleted_at)
+         VALUES (?, ?) ON CONFLICT(thread_id) DO NOTHING`,
+        [id, deletedAt],
+      );
+      if (!row) return false;
       // Bun/SQLite includes rows removed by FK cascades in `changes` on some
       // versions, so this is deliberately a positive check rather than `=== 1`.
       return db.run(`DELETE FROM console_chat_threads WHERE id = ?`, [id]).changes > 0;
