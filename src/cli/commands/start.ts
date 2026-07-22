@@ -17,7 +17,11 @@ import {
   plistInstallPath,
   logDir,
 } from "../plist-generator";
-import { readPidManifest, tryClaimName } from "../pid-registry";
+import {
+  formatAgentAlreadyRunningMessage,
+  readLivePidManifest,
+  readPidManifest,
+} from "../pid-registry";
 import { resolveConfigPath } from "../resolve-config";
 
 function resolveBunPath(): string {
@@ -40,10 +44,9 @@ export async function runStart(
   const agentName = config.name;
 
   // Check if already running.
-  if (!tryClaimName(agentName)) {
-    throw new Error(
-      `Agent "${agentName}" is already running. Use "auggy stop ${agentName}" first.`,
-    );
+  const runningManifest = readLivePidManifest(agentName);
+  if (runningManifest) {
+    throw new Error(formatAgentAlreadyRunningMessage(agentName, runningManifest));
   }
 
   // Unload existing plist if present.

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { PidManifest } from "../../src/cli/types";
@@ -10,7 +10,9 @@ import type { PidManifest } from "../../src/cli/types";
 import {
   writePidManifest,
   claimRuntimePidManifest,
+  formatAgentAlreadyRunningMessage,
   releaseRuntimePidManifest,
+  readLivePidManifest,
   readPidManifest,
   removePidManifest,
   listPidManifests,
@@ -146,6 +148,80 @@ describe("runtime PID manifest policy", () => {
     ).toThrow();
     releaseRuntimePidManifest(manifest.name, true, { auggyDir });
     expect(readPidManifest(manifest.name, { auggyDir })).toBeNull();
+  });
+
+  test("local boots replace a stale manifest and continue", () => {
+    const name = "stale-local-runtime";
+    writePidManifest(
+      {
+        pid: 99999999,
+        name,
+        port: 8083,
+        configPath: "/tmp/old-agent.yaml",
+        agentDir: "/tmp/old-agent",
+        startedAt: new Date(0).toISOString(),
+        mode: "dev",
+      },
+      { auggyDir },
+    );
+
+    const replacement: PidManifest = {
+      pid: process.pid,
+      name,
+      port: 9090,
+      configPath: "/tmp/new-agent.yaml",
+      agentDir: "/tmp/new-agent",
+      startedAt: new Date().toISOString(),
+      mode: "dev",
+    };
+
+    expect(claimRuntimePidManifest(replacement, { auggyDir })).toBe(true);
+    expect(readPidManifest(name, { auggyDir })).toEqual(replacement);
+  });
+});
+
+describe("running agent diagnostics", () => {
+  test("includes the existing PID, port, and console URL", () => {
+    const manifest: PidManifest = {
+      pid: 12345,
+      name: "order-support",
+      port: 8083,
+      configPath: "/tmp/order-support/agent.yaml",
+      agentDir: "/tmp/order-support",
+      startedAt: new Date().toISOString(),
+      mode: "dev",
+    };
+
+    expect(formatAgentAlreadyRunningMessage(manifest.name, manifest)).toBe(
+      'Agent "order-support" is already running (PID 12345, port 8083).\n' +
+        "Console: http://localhost:8083/console\n" +
+        "Stop it with: auggy stop order-support",
+    );
+  });
+
+  test("omits port details when the existing runtime has no web transport", () => {
+    const manifest: PidManifest = {
+      pid: 12345,
+      name: "worker",
+      port: null,
+      configPath: "/tmp/worker/agent.yaml",
+      agentDir: "/tmp/worker",
+      startedAt: new Date().toISOString(),
+      mode: "dev",
+    };
+
+    const message = formatAgentAlreadyRunningMessage(manifest.name, manifest);
+    expect(message).toContain('Agent "worker" is already running (PID 12345).');
+    expect(message).not.toContain("port");
+    expect(message).not.toContain("Console:");
+  });
+
+  test("readLivePidManifest removes corrupt records", () => {
+    const name = "corrupt-runtime";
+    writeFileSync(join(auggyDir, `${name}.json`), "not json");
+
+    expect(readLivePidManifest(name, { auggyDir })).toBeNull();
+    expect(existsSync(join(auggyDir, `${name}.json`))).toBe(false);
   });
 });
 
