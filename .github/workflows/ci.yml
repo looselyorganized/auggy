@@ -32,10 +32,6 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      - name: Install console dependencies
-        working-directory: admin
-        run: bun install --frozen-lockfile
-
       - name: Lint (Biome)
         run: bun run lint
 

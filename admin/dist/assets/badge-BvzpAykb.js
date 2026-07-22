@@ -1,10 +1,10 @@
-import{c as t,u as o,m as d,a as i,b as s}from"./index-DS3CnqHt.js";/**
- * @license lucide-react v1.24.0 - ISC
+import{c as t,u as o,m as d,a as i,b as s}from"./index-BpaPmNOz.js";/**
+ * @license lucide-react v1.25.0 - ISC
  *
  * This source code is licensed under the ISC license.
  * See the LICENSE file in the root directory of this source tree.
  */const c=[["circle",{cx:"12",cy:"12",r:"10",key:"1mglay"}],["path",{d:"m9 12 2 2 4-4",key:"dzmm74"}]],m=t("circle-check",c);/**
- * @license lucide-react v1.24.0 - ISC
+ * @license lucide-react v1.25.0 - ISC
  *
  * This source code is licensed under the ISC license.
  * See the LICENSE file in the root directory of this source tree.

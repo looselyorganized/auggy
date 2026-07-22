@@ -11,10 +11,10 @@ areas in `tests/`; integrations and reference material live in `examples/` and
 
 ## Build, Test, and Development Commands
 
-- `bun install` installs workspace dependencies.
+- `bun install` installs runtime, provider, and console workspace dependencies.
 - `bun run typecheck` runs strict TypeScript checks.
 - `bun run lint` checks source with Biome.
-- `bun test` runs all tests; pass a path for a focused run.
+- `bun run test` runs the tracked runtime and console suites; use `bun test <path>` for a focused run.
 - `cd admin && bun run dev` starts the console development server.
 - `cd admin && bun test && bun run build` verifies and rebuilds console assets.
 - `bun link` exposes the local `auggy` CLI for end-to-end development.
@@ -32,8 +32,9 @@ types/components, and kebab-case for CLI-facing slugs.
 
 ## Testing Guidelines
 
-Use `bun:test`, never Vitest. Name tests `*.test.ts` in the matching `tests/`
-subtree. Cover success, validation, authorization, and failures. Generated route
+Use `bun:test`, never Vitest. Put runtime `*.test.ts` files in the matching
+`tests/` subtree and console `*.test.tsx` files beside their owner in
+`admin/src/`. Cover success, validation, authorization, and failures. Generated route
 clients, manifests, OpenAPI, and
 console payloads are contract-sensitive; update fixtures and parity tests
 together.

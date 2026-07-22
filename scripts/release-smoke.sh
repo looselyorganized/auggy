@@ -57,11 +57,11 @@ require_cmd perl
 require_cmd script
 require_cmd tar
 
+info "install workspace dependencies"
+(cd "$ROOT" && bun install --frozen-lockfile)
+
 info "typecheck"
 (cd "$ROOT" && bunx tsc --noEmit)
-
-info "install creator console dependencies"
-(cd "$ROOT/admin" && bun install --frozen-lockfile)
 
 info "build creator console"
 (cd "$ROOT" && bun run build:admin)
