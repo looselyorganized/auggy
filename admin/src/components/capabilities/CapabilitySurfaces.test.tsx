@@ -24,6 +24,8 @@ describe("CapabilityDetail", () => {
     expect(output).toContain("Access & controls");
     expect(output).toContain("Notes");
     expect(output).toContain("Web authentication posture");
+    expect(output).toContain("Reported");
+    expect(output).toContain("Installs to");
     expect(output).toContain("Change auth and integration settings");
     expect(renderer?.root.findAllByType("a")[0]?.props.href).toBe("/integrations");
   });
@@ -34,8 +36,9 @@ describe("CapabilityDetail", () => {
     });
 
     expect(rows[0]).toMatchObject({
-      detail: "AG-UI chat authentication not reported",
-      badges: [{ label: "auth not reported", tone: "neutral" }],
+      detail: "Primary AG-UI conversation endpoint.",
+      health: "neutral",
+      fields: [{ label: "Access", value: "Not reported" }],
     });
   });
 
@@ -83,7 +86,7 @@ describe("CapabilityDetail", () => {
     expect(output).toContain("Required, read-only system instructions");
     expect(output).toContain("read-only");
     expect(output).toContain("system");
-    expect(output).toContain("persistent");
+    expect(output).toContain("Persistent");
   });
 });
 

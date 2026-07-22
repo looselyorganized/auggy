@@ -292,20 +292,8 @@ function NavigationButton({
           </Badge>
         )}
       </div>
-      <div className="flex flex-wrap gap-1">
-        {summary.routeCount > 0 && (
-          <Badge variant="info">{countLabel(summary.routeCount, "route")}</Badge>
-        )}
-        {summary.toolCount > 0 && (
-          <Badge variant="secondary">{countLabel(summary.toolCount, "tool")}</Badge>
-        )}
-        {summary.skillCount > 0 && (
-          <Badge variant="outline">{countLabel(summary.skillCount, "skill")}</Badge>
-        )}
-        {summary.memoryAugmentCount > 0 && <Badge variant="info">memory</Badge>}
-        {summary.noteCount > 0 && (
-          <Badge variant="outline">{countLabel(summary.noteCount, "note")}</Badge>
-        )}
+      <div className="text-xs leading-5 text-muted-foreground">
+        {summaryParts(summary).join(" · ") || "No reported surfaces"}
       </div>
     </button>
   );
@@ -313,4 +301,14 @@ function NavigationButton({
 
 function countLabel(count: number, singular: string): string {
   return `${count} ${count === 1 ? singular : `${singular}s`}`;
+}
+
+function summaryParts(summary: CapabilitySurfaceSummary): string[] {
+  return [
+    summary.routeCount > 0 ? countLabel(summary.routeCount, "route") : undefined,
+    summary.toolCount > 0 ? countLabel(summary.toolCount, "tool") : undefined,
+    summary.skillCount > 0 ? countLabel(summary.skillCount, "skill") : undefined,
+    summary.memoryAugmentCount > 0 ? "memory" : undefined,
+    summary.noteCount > 0 ? countLabel(summary.noteCount, "note") : undefined,
+  ].filter((part): part is string => part !== undefined);
 }

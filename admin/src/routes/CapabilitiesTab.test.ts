@@ -11,16 +11,11 @@ describe("buildConversationSurfaceRows", () => {
 
     expect(rows).toEqual([
       {
-        title: "POST /agent/run",
-        detail: "AG-UI chat, authentication required",
-        badges: [
-          {
-            id: "auth:auth required",
-            kind: "auth",
-            label: "auth required",
-            tone: "neutral",
-          },
-        ],
+        title: "/agent/run",
+        prefix: "POST",
+        detail: "Primary AG-UI conversation endpoint.",
+        health: "ready",
+        fields: [{ label: "Access", value: "Authentication required" }],
       },
     ]);
     expect(rows.map((row) => row.title)).not.toContain("GET /agent");
@@ -34,35 +29,27 @@ describe("buildConversationSurfaceRows", () => {
       },
     });
 
-    expect(rows[0]?.detail).toBe("AG-UI chat, anonymous allowed");
-    expect(rows[0]?.badges).toEqual([
-      {
-        id: "auth:anonymous",
-        kind: "auth",
-        label: "anonymous",
-        tone: "neutral",
-      },
-    ]);
+    expect(rows[0]?.fields).toEqual([{ label: "Access", value: "Public" }]);
   });
 });
 
 describe("formatMemorySurfaceCapabilities", () => {
-  it("preserves the context and tools memory badge", () => {
+  it("preserves the context and tools memory description", () => {
     expect(
       formatMemorySurfaceCapabilities({ hasContext: true, usesSharedMemoryTools: true }),
-    ).toBe("context, tools");
+    ).toBe("Context contribution · Shared memory tools");
   });
 
   it("reports each structural memory surface independently", () => {
     expect(
       formatMemorySurfaceCapabilities({ hasContext: true, usesSharedMemoryTools: false }),
-    ).toBe("context");
+    ).toBe("Context contribution");
     expect(
       formatMemorySurfaceCapabilities({ hasContext: false, usesSharedMemoryTools: true }),
-    ).toBe("tools");
+    ).toBe("Shared memory tools");
   });
 
-  it("omits the capability badge when neither structural surface is present", () => {
+  it("omits the capability description when neither structural surface is present", () => {
     expect(
       formatMemorySurfaceCapabilities({ hasContext: false, usesSharedMemoryTools: false }),
     ).toBeUndefined();
