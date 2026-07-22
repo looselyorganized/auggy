@@ -451,6 +451,8 @@ auggy deploy --yes
 
 - Node.js >= 20.17 is recommended for the npm dependency chain.
 - Bun >= 1.2 is required at runtime.
+- Console static assets require opened-descriptor paths (`/proc/self/fd` on Linux or
+  `/dev/fd` on macOS); runtimes without either fail closed while APIs remain available.
 - Railway deployment requires the Railway CLI and `railway login`.
 
 ```bash

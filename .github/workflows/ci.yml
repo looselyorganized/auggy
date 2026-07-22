@@ -74,6 +74,7 @@ jobs:
             tests/cli/scaffold-package-json.test.ts \
             tests/cli/model-picker.test.ts \
             tests/kernel/thread-history-persistence.test.ts \
+            tests/transports/admin/admin-static.test.ts \
             tests/transports/admin/console-chat-store.test.ts \
             tests/transports/admin/console-chat-routes.test.ts \
             tests/transports/web-console-persistence.test.ts \
