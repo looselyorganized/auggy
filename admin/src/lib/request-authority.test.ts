@@ -75,6 +75,20 @@ describe("request authority", () => {
     expect(authority.finish(second)).toBe(false);
   });
 
+  it("keeps a replacement lease current when stale effect cleanup finishes after invalidation", () => {
+    const authority = createRequestAuthority();
+    const leaseA = authority.begin("thread:one");
+    const disposeEffectA = () => authority.finish(leaseA);
+
+    authority.invalidateAll();
+    const leaseB = authority.begin("thread:one");
+
+    expect(disposeEffectA()).toBe(false);
+    expect(authority.isCurrent(leaseB)).toBe(true);
+    expect(authority.finish(leaseB)).toBe(true);
+    expect(authority.isCurrent(leaseB)).toBe(false);
+  });
+
   it("keeps repeated invalidation idempotent and permits fresh authority", () => {
     const authority = createRequestAuthority();
     const retired = authority.begin("thread:one");

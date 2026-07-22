@@ -336,6 +336,71 @@ describe("ChatWorkspaceProvider persistence", () => {
     expect(harness.value.state.selection).toEqual({ kind: "welcome" });
   });
 
+  it("does not re-add an ambiguous draft queued by a poll before deletion", async () => {
+    const draft = createChatThread({
+      id: "queued-draft",
+      previewMode: "creator",
+      model: MODEL,
+      now: T0,
+    });
+    const initial = createDraftWorkspace(draft);
+    initial.unconfirmedDraftRun = {
+      threadId: draft.id,
+      clientRunId: "run-unknown",
+      userMessageId: "user-unknown",
+      assistantMessageId: "assistant-unknown",
+    };
+    const blocking = {
+      ...populatedThread("blocking-detail", "Blocking detail"),
+      runStatus: "streaming" as const,
+    };
+    initial.durableThreads = [
+      { ...blocking, lifecycle: "detail", detailError: null },
+    ];
+    const persistedDraft = populatedThread(draft.id, "Persisted draft");
+    const terminalBlocking = {
+      ...blocking,
+      updatedAt: T1,
+      runStatus: "complete" as const,
+    };
+    const detailStarted = deferred<void>();
+    const blockingDetail = deferred<Response>();
+    const deletion = deferred<Response>();
+    const fetchImpl = mockFetch(async (path) => {
+      if (path === "/console/api/chat/threads") {
+        return json({
+          threads: [summary(persistedDraft), summary(terminalBlocking)],
+        });
+      }
+      if (path === "/console/api/chat/threads/blocking-detail") {
+        detailStarted.resolve();
+        return blockingDetail.promise;
+      }
+      if (path === "/console/api/chat/threads/queued-draft/delete") {
+        return deletion.promise;
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    const harness = await mountProvider({ fetchImpl, initialState: initial });
+
+    await act(async () => detailStarted.promise);
+
+    let deleting!: Promise<ChatWorkspaceCommandResult>;
+    await act(async () => {
+      deleting = harness.value.deleteThread(draft.id);
+      await Promise.resolve();
+      deletion.resolve(json({ ok: true }));
+      blockingDetail.resolve(json({ thread: terminalBlocking }));
+      expect(await deleting).toEqual({ ok: true });
+      await Promise.resolve();
+    });
+
+    expect(harness.value.state.draft).toBeNull();
+    expect(harness.value.state.unconfirmedDraftRun).toBeNull();
+    expect(harness.value.state.durableThreads.some(({ id }) => id === draft.id)).toBe(false);
+    expect(harness.value.state.selection).toEqual({ kind: "welcome" });
+  });
+
   it("returns deterministic refusal reasons for local and external active runs", async () => {
     const external = {
       ...populatedThread("external", "External run"),
@@ -373,6 +438,46 @@ describe("ChatWorkspaceProvider persistence", () => {
     });
     await act(async () => response.resolve(completedSse("local")));
     await act(async () => expect(await sending).toEqual({ ok: true }));
+  });
+
+  it("does not accept a response that arrives after its run was stopped", async () => {
+    const response = deferred<Response>();
+    const draft = createChatThread({
+      id: "stopped-before-response",
+      previewMode: "creator",
+      model: MODEL,
+      now: T0,
+    });
+    const harness = await mountProvider({
+      initialState: createDraftWorkspace(draft),
+      fetchImpl: mockFetch(async (path) => {
+        if (path === "/console/api/chat") return response.promise;
+        throw new Error(`Unexpected request: ${path}`);
+      }),
+    });
+    let accepted = false;
+    let sending!: Promise<ChatWorkspaceCommandResult>;
+
+    await act(async () => {
+      sending = harness.value.send("Stop before acceptance", draft.id, () => {
+        accepted = true;
+      });
+      await Promise.resolve();
+      expect(harness.value.stop()).toBe(true);
+      response.resolve(completedSse(draft.id));
+    });
+    await act(async () => {
+      expect(await sending).toEqual({
+        ok: false,
+        error: "Response stopped before completion.",
+      });
+    });
+
+    expect(accepted).toBe(false);
+    expect(harness.value.state.activeRun).toBeNull();
+    expect(harness.value.state.unconfirmedDraftRun?.threadId).toBe(draft.id);
+    expect(harness.value.state.draft?.messages).toEqual([]);
+    expect(harness.value.stop()).toBe(false);
   });
 
   it("automatically restores saved chats when the backend becomes available", async () => {
@@ -1046,6 +1151,112 @@ describe("ChatWorkspaceProvider persistence", () => {
       draftId = harness.value.create();
     });
     expect(harness.value.activeThread?.id).toBe(draftId);
+  });
+
+  it("executes rapid same-thread renames in order and commits only the latest intent", async () => {
+    const saved = populatedThread("rename-queue", "Original");
+    const firstResponse = deferred<Response>();
+    const secondResponse = deferred<Response>();
+    const requestedTitles: string[] = [];
+    const fetchImpl = mockFetch(async (path, init) => {
+      if (path !== "/console/api/chat/threads/rename-queue/rename") {
+        throw new Error(`Unexpected request: ${path}`);
+      }
+      const body = JSON.parse(String(init?.body)) as { title: string };
+      requestedTitles.push(body.title);
+      return requestedTitles.length === 1 ? firstResponse.promise : secondResponse.promise;
+    });
+    const harness = await mountProvider({
+      fetchImpl,
+      initialState: createChatWorkspace(saved),
+    });
+    let firstRename!: Promise<unknown>;
+    let secondRename!: Promise<unknown>;
+
+    await act(async () => {
+      firstRename = harness.value.rename(saved.id, "First title");
+      secondRename = harness.value.rename(saved.id, "Second title");
+      await Promise.resolve();
+    });
+    expect(requestedTitles).toEqual(["First title"]);
+
+    await act(async () => {
+      firstResponse.resolve(
+        json({
+          thread: { ...summary(saved), title: "First title", updatedAt: T1 },
+        }),
+      );
+      await firstRename;
+      await Promise.resolve();
+    });
+    expect(requestedTitles).toEqual(["First title", "Second title"]);
+    expect(harness.value.activeThread?.title).toBe("Original");
+
+    await act(async () => {
+      secondResponse.resolve(
+        json({
+          thread: {
+            ...summary(saved),
+            title: "Second title",
+            updatedAt: "2026-07-20T10:02:00.000Z",
+          },
+        }),
+      );
+      await secondRename;
+    });
+
+    expect(harness.value.activeThread?.title).toBe("Second title");
+    expect(requestedTitles).toEqual(["First title", "Second title"]);
+  });
+
+  it("runs a newer queued read intent after the previous intent fails", async () => {
+    const saved = populatedThread("read-queue", "Read queue");
+    const firstResponse = deferred<Response>();
+    const secondResponse = deferred<Response>();
+    const requestedUnreadStates: boolean[] = [];
+    const fetchImpl = mockFetch(async (path, init) => {
+      if (path !== "/console/api/chat/threads/read-queue/read-state") {
+        throw new Error(`Unexpected request: ${path}`);
+      }
+      const body = JSON.parse(String(init?.body)) as { unread: boolean };
+      requestedUnreadStates.push(body.unread);
+      return requestedUnreadStates.length === 1
+        ? firstResponse.promise
+        : secondResponse.promise;
+    });
+    const harness = await mountProvider({
+      fetchImpl,
+      initialState: createChatWorkspace(saved),
+    });
+    let firstRead!: Promise<boolean>;
+    let secondRead!: Promise<boolean>;
+
+    await act(async () => {
+      firstRead = harness.value.markUnread(saved.id, false);
+      secondRead = harness.value.markUnread(saved.id, true);
+      await Promise.resolve();
+    });
+    expect(requestedUnreadStates).toEqual([false]);
+
+    await act(async () => {
+      firstResponse.resolve(json({ error: "first read failed" }, 500));
+      await expect(firstRead).rejects.toThrow("first read failed");
+      await Promise.resolve();
+    });
+    expect(requestedUnreadStates).toEqual([false, true]);
+
+    await act(async () => {
+      secondResponse.resolve(
+        json({
+          thread: { ...summary(saved), unread: true, lastReadAt: T1 },
+        }),
+      );
+      expect(await secondRead).toBe(true);
+    });
+
+    expect(harness.value.activeThread?.unread).toBe(true);
+    expect(harness.value.activeThread?.lastReadAt).toBe(T1);
+    expect(requestedUnreadStates).toEqual([false, true]);
   });
 
   it("forgets a tombstoned summary during explicit load and ignores an older detail response", async () => {
