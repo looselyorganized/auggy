@@ -72,7 +72,11 @@ export function IntegrationsTab() {
 
   async function copy(label: string, value: string) {
     if (!value || typeof navigator === "undefined" || !navigator.clipboard?.writeText) {
-      push("error", "Copy failed", `Could not copy ${label}.`);
+      push(
+        "error",
+        "Copy failed",
+        `Could not copy ${label}. Select the text and copy it manually.`,
+      );
       return;
     }
     try {
@@ -82,7 +86,11 @@ export function IntegrationsTab() {
       window.setTimeout(() => setCopied((current) => (current === label ? null : current)), 1200);
     } catch {
       setCopied(null);
-      push("error", "Copy failed", `Could not copy ${label}.`);
+      push(
+        "error",
+        "Copy failed",
+        `Could not copy ${label}. Select the text and copy it manually.`,
+      );
     }
   }
 
@@ -91,6 +99,14 @@ export function IntegrationsTab() {
     const ok = await dispatch({
       actionId: "posture-public-integration-set",
       values: { value: "false" },
+      toast: {
+        action: "make legacy discovery private",
+        successTitle: "Legacy discovery is private",
+        successDescription:
+          "Developer discovery metadata is no longer publicly available.",
+        errorTitle: "Could not update discovery visibility",
+        errorDescription: "Legacy discovery is still public.",
+      },
       confirmRequired: false,
       refresh: "none",
     });

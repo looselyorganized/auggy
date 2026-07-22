@@ -8,6 +8,13 @@ export interface DispatchOpts {
   actionId: string;
   rowKey?: string;
   values?: Record<string, string>;
+  toast: {
+    action: string;
+    successTitle: string;
+    successDescription: string;
+    errorTitle: string;
+    errorDescription: string;
+  };
   confirmRequired: boolean;
   confirmMessage?: string;
   /** Dashboard refresh timing after the action posts. Defaults to immediate. */
@@ -48,8 +55,8 @@ export function useActionDispatcher(): UseActionDispatcher {
       if (!csrf) {
         push(
           "error",
-          "Action blocked",
-          `No CSRF token available for ${actionLabel(opts.actionId)}. Reloading…`,
+          opts.toast.errorTitle,
+          `Reload the console and try again to ${opts.toast.action}.`,
         );
         await refresh();
         return false;
@@ -58,15 +65,21 @@ export function useActionDispatcher(): UseActionDispatcher {
       try {
         const result = await postAction(opts.actionId, csrf, opts.values, opts.rowKey);
         if (result.csrfExpired) {
-          push("warn", "Session expired", `Refresh to continue ${actionLabel(opts.actionId)}.`);
+          push(
+            "warn",
+            "Session expired",
+            `Reloading so you can ${opts.toast.action}.`,
+          );
           window.location.reload();
           return false;
         }
-        const actionLabelText = `${actionLabel(opts.actionId)} ${result.ok ? "completed" : "failed"}`;
         push(
           result.ok ? "success" : "error",
-          actionLabelText,
-          result.message || (result.ok ? "Done." : "The action failed."),
+          result.ok ? opts.toast.successTitle : opts.toast.errorTitle,
+          result.message ||
+            (result.ok
+              ? opts.toast.successDescription
+              : opts.toast.errorDescription),
         );
         const refreshMode = opts.refresh ?? "immediate";
         if (refreshMode === "immediate") {
@@ -78,8 +91,10 @@ export function useActionDispatcher(): UseActionDispatcher {
       } catch (err) {
         push(
           "error",
-          `${actionLabel(opts.actionId)} failed`,
-          (err as Error).message || "Could not perform this action.",
+          opts.toast.errorTitle,
+          err instanceof Error && err.message
+            ? err.message
+            : opts.toast.errorDescription,
         );
         if (opts.refresh === "deferred") {
           globalThis.setTimeout(() => void refresh(), 350);
@@ -93,14 +108,4 @@ export function useActionDispatcher(): UseActionDispatcher {
   );
 
   return { dispatch, busy };
-}
-
-function actionLabel(actionId: string): string {
-  const label = actionId
-    .replace(/[^a-zA-Z0-9]+/g, " ")
-    .trim()
-    .toLocaleLowerCase();
-
-  if (!label) return "Action";
-  return label.replace(/\b\w/g, (char) => char.toLocaleUpperCase());
 }

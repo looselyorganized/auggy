@@ -66,7 +66,10 @@ export function ChatTab() {
   const [preflightErrors, setPreflightErrors] = useState<Record<string, string | null>>({});
   const mountedRef = useRef(true);
   const activeThreadIdRef = useRef(activeThread.id);
-  const detailErrorToastRef = useRef<string | null>(null);
+  const detailErrorToastRef = useRef<{
+    threadId: string;
+    message: string;
+  } | null>(null);
   const chatLoadErrorToastRef = useRef<string | null>(null);
   const preflightErrorToastRef = useRef<{ threadId: string; message: string } | null>(null);
   activeThreadIdRef.current = activeThread.id;
@@ -88,10 +91,18 @@ export function ChatTab() {
       detailErrorToastRef.current = null;
       return;
     }
-    if (detailErrorToastRef.current === detailError) return;
+    if (
+      detailErrorToastRef.current?.threadId === activeThread.id &&
+      detailErrorToastRef.current.message === detailError
+    ) {
+      return;
+    }
     push("error", "Conversation details unavailable", detailError);
-    detailErrorToastRef.current = detailError;
-  }, [detailError, push]);
+    detailErrorToastRef.current = {
+      threadId: activeThread.id,
+      message: detailError,
+    };
+  }, [activeThread.id, detailError, push]);
 
   useEffect(() => {
     if (!preflightError) {
@@ -283,16 +294,36 @@ export function ChatTab() {
           if (!(await markUnread(activeThread.id))) {
             throw new Error("This chat no longer exists.");
           }
+          push(
+            "success",
+            "Marked unread",
+            "This chat will appear unread in the conversation list.",
+          );
         }}
-        onClearVisitor={clearVisitor}
+        onClearVisitor={async () => {
+          await clearVisitor();
+          push(
+            "success",
+            "Local identity forgotten",
+            "Verified visitor credentials were removed from this browser.",
+          );
+        }}
         onDelete={async () => {
           const result = await deleteThread(activeThread.id);
           if (!result.ok) throw new Error(result.error);
         }}
         onActionError={(action, actionError) => {
+          const actionLabel = {
+            "preview-mode": "Change preview mode",
+            rename: "Rename chat",
+            copy: "Copy transcript",
+            "mark-unread": "Mark unread",
+            "clear-visitor": "Forget local identity",
+            delete: "Delete chat",
+          }[action];
           push(
             "error",
-            `${action} failed`,
+            `${actionLabel} failed`,
             actionError instanceof Error ? actionError.message : "Unknown error",
           );
         }}

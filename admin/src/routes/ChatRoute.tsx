@@ -68,6 +68,10 @@ export function ChatRoute() {
     : false;
 
   useEffect(() => {
+    lookupErrorToastRef.current = null;
+  }, [threadId]);
+
+  useEffect(() => {
     if (route.kind === "welcome") selectWelcome();
   }, [route.kind, selectWelcome]);
 
@@ -178,6 +182,7 @@ export function ChatRoute() {
     state.draft?.id,
     threadDeletionConfirmed,
     threadId,
+    push,
   ]);
 
   const recoverFromMissingThread =

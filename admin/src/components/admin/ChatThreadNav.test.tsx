@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 
 import { createChatThread, type ChatThreadSummary } from "@/lib/chat-workspace";
+import { ToastProvider } from "@/lib/toast";
 import { ChatThreadNav } from "./ChatThreadNav";
 
 function thread(
@@ -89,14 +90,16 @@ describe("ChatThreadNav", () => {
 
   it("renders a permanent chat icon and desktop mutation affordance", () => {
     const html = renderToStaticMarkup(
-      <ChatThreadNav
-        threads={[thread("active", "Current chat")]}
-        activeId="active"
-        onNew={() => {}}
-        onSelect={() => {}}
-        onRename={() => {}}
-        onDelete={() => {}}
-      />,
+      <ToastProvider>
+        <ChatThreadNav
+          threads={[thread("active", "Current chat")]}
+          activeId="active"
+          onNew={() => {}}
+          onSelect={() => {}}
+          onRename={() => {}}
+          onDelete={() => {}}
+        />
+      </ToastProvider>,
     );
 
     expect(html).toContain("lucide-message-square");
