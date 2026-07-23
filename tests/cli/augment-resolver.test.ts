@@ -191,6 +191,58 @@ describe("resolveAugments — filesystem", () => {
   });
 });
 
+describe("resolveAugments — supabaseMemory", () => {
+  test("requires an explicit peer or shared scope", async () => {
+    await expect(
+      resolveAugments(
+        [
+          {
+            name: "episodes",
+            type: "supabaseMemory",
+            options: {
+              namespace: "episode",
+              supabaseUrl: "https://example.supabase.co",
+              supabaseKey: "test-key",
+              table: "agent_memories",
+              mutable: true,
+              origin: "peer-derived",
+              priority: "normal",
+              placement: "preamble",
+              eviction: "drop",
+            },
+          },
+        ],
+        TMP,
+      ),
+    ).rejects.toThrow(/requires explicit scope/);
+  });
+
+  test("keeps exact reads unavailable for peer-scoped memory", async () => {
+    const [augment] = await resolveAugments(
+      [
+        {
+          name: "episodes",
+          type: "supabaseMemory",
+          options: {
+            namespace: "episode",
+            scope: "peer",
+            supabaseUrl: "https://example.supabase.co",
+            supabaseKey: "test-key",
+            table: "agent_memories",
+            mutable: true,
+            origin: "peer-derived",
+            priority: "normal",
+            placement: "preamble",
+            eviction: "drop",
+          },
+        },
+      ],
+      TMP,
+    );
+    expect(augment?.memory?.read).toBeUndefined();
+  });
+});
+
 describe("resolveAugments — mcp", () => {
   test("resolves the MCP augment with lifecycle-managed tools", async () => {
     const augments = await resolveAugments([{ name: "mcp", type: "mcp", options: {} }], TMP);
@@ -1406,7 +1458,7 @@ describe("resolveAugments — C1 wiring (fix F17)", () => {
     const VISITOR_ID = `vis_f17_regression_${Date.now()}`;
     const { token: visitorToken } = await createVisitorToken(
       cryptoKey,
-      "", // no agentBinding
+      "f17-test",
       86_400, // 24h TTL
       VISITOR_ID,
     );
@@ -1428,6 +1480,7 @@ describe("resolveAugments — C1 wiring (fix F17)", () => {
             apiBaseUrl: "http://127.0.0.1:1/agentmail-unreachable",
           },
           signingKey: SIGNING_KEY,
+          agentBinding: "f17-test",
           layeredMemoryDbPath: null,
           // Use the test's TMP dir for the VA DB.
           dbPath: join(TMP, "f17-va.db"),
@@ -1653,10 +1706,14 @@ describe("resolveAugments — cross-augment agentBinding validation (fix H3)", (
     expect(augments).toHaveLength(2);
   });
 
-  test("throws when visitorAuth has agentBinding but webTransport does not", async () => {
-    await expect(resolveAugments([vaConfig("agent-A"), wtConfig(undefined)], TMP)).rejects.toThrow(
-      /agentBinding/,
-    );
+  test("injects an explicit visitorAuth binding into webTransport when omitted", async () => {
+    const configs = [vaConfig("agent-A"), wtConfig(undefined)];
+    const augments = await resolveAugments(configs, TMP);
+    expect(augments).toHaveLength(2);
+    expect(
+      ((configs[1]!.options as Record<string, unknown>).visitorTokens as Record<string, unknown>)
+        .agentBinding,
+    ).toBe("agent-A");
   });
 
   test("checks every webTransport for an agentBinding mismatch", async () => {
@@ -1669,18 +1726,27 @@ describe("resolveAugments — cross-augment agentBinding validation (fix H3)", (
     );
   });
 
-  test("treats omitted bindings as the effective auggy default", async () => {
-    const defaulted = await resolveAugments([vaConfig(undefined), wtConfig(undefined)], TMP);
-    expect(defaulted).toHaveLength(2);
-
-    const explicitVisitorDefault = await resolveAugments(
-      [vaConfig("auggy"), wtConfig(undefined)],
-      TMP,
+  test("rejects a securityNamespace that overrides the visitor binding", async () => {
+    const web = wtConfig("agent-A");
+    web.options = { ...web.options, securityNamespace: "agent-B" };
+    await expect(resolveAugments([vaConfig("agent-A"), web], TMP)).rejects.toThrow(
+      /securityNamespace.*agent-B/,
     );
-    expect(explicitVisitorDefault).toHaveLength(2);
+  });
 
-    const explicitWebDefault = await resolveAugments([vaConfig(undefined), wtConfig("auggy")], TMP);
-    expect(explicitWebDefault).toHaveLength(2);
+  test("requires explicit matching bindings instead of a shared default", async () => {
+    await expect(resolveAugments([vaConfig(undefined), wtConfig(undefined)], TMP)).rejects.toThrow(
+      /explicitly configured/,
+    );
+    const injected = [vaConfig("auggy"), wtConfig(undefined)];
+    await expect(resolveAugments(injected, TMP)).resolves.toHaveLength(2);
+    expect(
+      ((injected[1]!.options as Record<string, unknown>).visitorTokens as Record<string, unknown>)
+        .agentBinding,
+    ).toBe("auggy");
+    await expect(resolveAugments([vaConfig(undefined), wtConfig("auggy")], TMP)).rejects.toThrow(
+      /explicitly configured/,
+    );
   });
 
   test("does not throw when neither augment is present", async () => {
@@ -1709,6 +1775,7 @@ describe("resolveAugments — single-source signingKey injection (fix F2)", () =
         publicUrl: "https://zip.test",
         agentMail: { apiKey: "am_x", inboxId: "ibx_x" },
         signingKey,
+        agentBinding: "resolver-test-agent",
         layeredMemoryDbPath: null,
       },
     };

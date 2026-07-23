@@ -273,6 +273,11 @@ async function resolveSupabaseMemory(opts: Record<string, unknown>): Promise<Aug
       "supabaseMemory requires supabaseUrl and supabaseKey options (use ${ENV_VAR} interpolation)",
     );
   }
+  if (rest.scope !== "peer" && rest.scope !== "shared") {
+    throw new Error(
+      'supabaseMemory requires explicit scope: "peer" or "shared"; peer scope also requires a peer_id column migration',
+    );
+  }
 
   // Lazy import — only load @supabase/supabase-js when supabaseMemory is used.
   // The real SupabaseClient has narrower types than SupabaseLikeClient
@@ -284,8 +289,10 @@ async function resolveSupabaseMemory(opts: Record<string, unknown>): Promise<Aug
 
   return supabaseMemory({
     namespace: rest.namespace as string,
+    scope: rest.scope,
     client,
     table: rest.table as string,
+    peerColumn: rest.peerColumn as string | undefined,
     mutable: rest.mutable as boolean,
     origin: rest.origin as ContextOrigin,
     priority: rest.priority as "required" | "high" | "normal" | "low" | "evictable",
@@ -352,6 +359,42 @@ export function resolveConsoleChatOptions(
   };
 }
 
+function resolveWebIdempotencyOptions(
+  opts: Record<string, unknown>,
+  agentDir: string,
+  runtimeDataRoot?: string,
+): WebTransportOptions["idempotency"] {
+  const configured = opts.idempotency as
+    | {
+        dbPath?: string | null;
+        maxRecords?: number;
+        maxReplayBytes?: number;
+        maxStoredBytes?: number;
+        maxRecordsPerPartition?: number;
+        maxPublicRecords?: number;
+        maxAgentRecords?: number;
+        maxCreatorRecords?: number;
+        waitTimeoutMs?: number;
+        staleAfterMs?: number;
+        retentionMs?: number;
+        maxWaiters?: number;
+        maxWaitersPerKey?: number;
+      }
+    | undefined;
+  return {
+    ...configured,
+    dbPath:
+      configured?.dbPath === null
+        ? null
+        : resolveSqlitePath(
+            configured?.dbPath ?? "./data/web-idempotency.db",
+            agentDir,
+            runtimeDataRoot,
+            "webTransport idempotency.dbPath",
+          ),
+  };
+}
+
 function resolveWebTransport(
   opts: Record<string, unknown>,
   agentDir: string,
@@ -371,6 +414,7 @@ function resolveWebTransport(
     port: opts.port as number,
     auth: opts.auth as { type: "bearer"; token: string },
     cors: opts.cors as { origins: [string] } | undefined,
+    securityNamespace: opts.securityNamespace as string | undefined,
     maxMessageLength: opts.maxMessageLength as number | undefined,
     access: opts.access as { agents?: Array<{ id: string; sharedSecret: string }> } | undefined,
     concurrency: opts.concurrency as number | undefined,
@@ -394,6 +438,7 @@ function resolveWebTransport(
     publicFrontendUrl: opts.publicFrontendUrl as string | undefined,
     adminRoute: opts.adminRoute as boolean | undefined,
     consoleChat: resolveConsoleChatOptions(opts, agentDir, runtimeDataRoot),
+    idempotency: resolveWebIdempotencyOptions(opts, agentDir, runtimeDataRoot),
     // Wire the agent dir through to webTransport so the /console module can
     // read/write `.env`, `identity.md`, and admin-overrides.json. Without
     // this, the Credentials and Identity tabs render "agent directory not
@@ -700,6 +745,8 @@ export async function resolveAugments(
       const vaSigningKey = (vaConfig.options as Record<string, unknown> | undefined)?.signingKey as
         | string
         | undefined;
+      const vaAgentBinding = (vaConfig.options as Record<string, unknown> | undefined)
+        ?.agentBinding as string | undefined;
 
       if (vt.enabled === false) {
         // Operator explicitly disabled visitor tokens despite mounting visitorAuth.
@@ -719,6 +766,9 @@ export async function resolveAugments(
       }
       // Inject visitorAuth's signingKey and enable visitor tokens.
       vt.signingKey = vaSigningKey;
+      if (vt.agentBinding === undefined && vaAgentBinding !== undefined) {
+        vt.agentBinding = vaAgentBinding;
+      }
       vt.enabled = true;
       wtOpts.visitorTokens = vt;
       wtConfig.options = wtOpts;
@@ -933,28 +983,47 @@ export async function resolveAugments(
     );
   }
 
-  // Fix H3: cross-augment validation — visitorAuth.agentBinding MUST match
-  // webTransport.visitorTokens.agentBinding when both are configured. A mismatch
-  // silently strands visitors: the magic-link flow succeeds, but the next request
-  // rejects the minted token because the agentBinding field won't match.
+  // Fix H3: cross-augment validation — visitorAuth.agentBinding MUST be
+  // explicitly configured and match the effective
+  // webTransport.visitorTokens.agentBinding when both augments are present.
+  // The resolver may inject that explicit visitorAuth value into webTransport,
+  // just as it injects the shared signing key. The web runtime's secure omitted
+  // default is its registered agent namespace, which the standalone
+  // visitorAuth factory cannot derive. Treating two omitted values as the
+  // legacy shared "auggy" audience would make credentials replayable across
+  // agents sharing a key.
   const vaConfig = configs.find((c) => c.type === "visitorAuth");
   const wtConfigs = configs.filter((c) => c.type === "webTransport");
   if (vaConfig) {
     const configuredVaBinding = (vaConfig.options as Record<string, unknown> | undefined)
       ?.agentBinding as string | undefined;
-    const vaBinding = configuredVaBinding ?? "auggy";
     for (const wtConfig of wtConfigs) {
+      const configuredSecurityNamespace = (wtConfig.options as Record<string, unknown> | undefined)
+        ?.securityNamespace as string | undefined;
       const configuredWtBinding = (
         (wtConfig.options as Record<string, unknown> | undefined)?.visitorTokens as
           | Record<string, unknown>
           | undefined
       )?.agentBinding as string | undefined;
-      const wtBinding = configuredWtBinding ?? "auggy";
-      if (vaBinding !== wtBinding) {
+      const visitorTokensEnabled =
+        (
+          (wtConfig.options as Record<string, unknown> | undefined)?.visitorTokens as
+            | Record<string, unknown>
+            | undefined
+        )?.enabled !== false;
+      if (!visitorTokensEnabled) continue;
+      if (
+        configuredVaBinding === undefined ||
+        configuredWtBinding === undefined ||
+        configuredVaBinding !== configuredWtBinding ||
+        (configuredSecurityNamespace !== undefined &&
+          configuredSecurityNamespace !== configuredVaBinding)
+      ) {
         throw new Error(
-          `Cross-augment config mismatch: visitorAuth.agentBinding (${configuredVaBinding ?? `unset; effective ${vaBinding}`}) ` +
-            `must match webTransport "${wtConfig.name}" visitorTokens.agentBinding (${configuredWtBinding ?? `unset; effective ${wtBinding}`}). ` +
-            `Set them both to the same value (e.g., \${AUGGY_AGENT_ID}) in augments/visitorAuth/augment.yaml and augments/webTransport/augment.yaml.`,
+          `Cross-augment config mismatch: visitorAuth.agentBinding (${configuredVaBinding ?? "unset"}) ` +
+            `must be explicitly configured and match webTransport "${wtConfig.name}" visitorTokens.agentBinding (${configuredWtBinding ?? "unset"}) ` +
+            `and securityNamespace (${configuredSecurityNamespace ?? "unset"}). ` +
+            `Set visitorAuth.agentBinding to a stable value (e.g., \${AUGGY_AGENT_ID}); the resolver injects it into webTransport when omitted.`,
         );
       }
     }
