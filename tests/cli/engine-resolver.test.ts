@@ -82,7 +82,7 @@ describe("resolveEngine", () => {
         provider: "openrouter",
         model: "qwen/qwen3.5-397b-a17b",
         reasoningEffort: "high",
-        providerRouting: { only: ["DeepInfra"], sort: "throughput" },
+        providerRouting: { only: ["deepinfra"], sort: "throughput" },
       },
       AGENT_DIR,
     );

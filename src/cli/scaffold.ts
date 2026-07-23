@@ -205,8 +205,8 @@ engine:
   maxContextTokens: 200000   # for openrouter, set per-model — defaults vary
   maxTokens: 4096            # sent as max_completion_tokens for openai/openrouter
   # reasoningEffort: medium  # optional: none|minimal|low|medium|high|xhigh
-  # providerRouting:         # openrouter only — slugs not semantically validated
-  #   only: [OpenAI]
+  # providerRouting:         # openrouter only — base slugs verified before inference
+  #   only: [openai]         # canonical lowercase slug; variants with "/" are rejected
   #   sort: price
 
 settings:

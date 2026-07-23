@@ -89,8 +89,8 @@ export interface EngineConfig {
   reasoningEffort?: "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
   /**
    * OpenRouter-only: provider routing hints. Rejected by the parser when provider !== "openrouter".
-   * Note: provider slugs in `only`/`ignore` are NOT semantically validated — a typo
-   * silently falls back to OpenRouter's default routing.
+   * Restrictive base-provider slugs are verified against OpenRouter's
+   * authenticated provider directory before each model request.
    */
   providerRouting?: ProviderRouting;
   /**
@@ -129,7 +129,7 @@ export interface EngineConfig {
 
 /** OpenRouter provider routing config (forwarded as the `provider` body field). */
 export interface ProviderRouting {
-  /** Allowlist of provider slugs (e.g. ["OpenAI", "Anthropic"]). */
+  /** Allowlist of canonical base-provider slugs (e.g. ["openai", "anthropic"]). */
   only?: string[];
   /** Denylist of provider slugs. */
   ignore?: string[];

@@ -11,6 +11,22 @@ let lastCreateOptions: { signal?: AbortSignal } | null = null;
 let lastConstructorArgs: Record<string, unknown> | null = null;
 let throwOnCreate: Error | null = null;
 let nextResponse: OpenAI.Chat.ChatCompletion | null = null;
+let providerDirectoryRequests = 0;
+
+function providerDirectoryFetch(
+  slugs: string[] = ["openai", "anthropic", "deepinfra"],
+): (input: string | URL | Request, init?: RequestInit) => Promise<Response> {
+  return mock(async (input: string | URL | Request, init?: RequestInit) => {
+    providerDirectoryRequests += 1;
+    expect(String(input)).toBe("https://openrouter.ai/api/v1/providers");
+    expect(init?.redirect).toBe("error");
+    expect(init?.headers).toEqual({
+      Accept: "application/json",
+      Authorization: "Bearer sk-test",
+    });
+    return Response.json({ data: slugs.map((slug) => ({ slug })) });
+  });
+}
 
 const defaultResponse = (): OpenAI.Chat.ChatCompletion => ({
   id: "chatcmpl-test",
@@ -62,6 +78,7 @@ beforeEach(() => {
   lastConstructorArgs = null;
   throwOnCreate = null;
   nextResponse = null;
+  providerDirectoryRequests = 0;
   // Restore env to original values before each test.
   if (ORIGINAL_OPENROUTER === undefined) delete process.env.OPENROUTER_API_KEY;
   else process.env.OPENROUTER_API_KEY = ORIGINAL_OPENROUTER;
@@ -202,13 +219,16 @@ describe("createOpenRouterEngine — SDK call payload", () => {
   test("provider routing serialized into provider field", async () => {
     const engine = createOpenRouterEngine({
       model: "qwen/qwen3.5-397b-a17b",
-      providerRouting: { only: ["OpenAI"], sort: "price" },
+      providerRouting: { only: ["openai"], sort: "price" },
+      providerDirectoryFetch: providerDirectoryFetch(),
     });
     await engine.complete(emptyPrompt({ messages: [msg({ content: "hi" })] }));
     expect(lastCreateArgs?.provider).toEqual({
-      only: ["OpenAI"],
+      only: ["openai"],
       sort: "price",
+      allow_fallbacks: false,
     });
+    expect(providerDirectoryRequests).toBe(1);
   });
 
   test("combined reasoning + routing both appear in params", async () => {
@@ -220,6 +240,155 @@ describe("createOpenRouterEngine — SDK call payload", () => {
     await engine.complete(emptyPrompt({ messages: [msg({ content: "hi" })] }));
     expect(lastCreateArgs?.reasoning).toEqual({ effort: "medium" });
     expect(lastCreateArgs?.provider).toEqual({ sort: "throughput" });
+  });
+
+  test("rejects an unknown restrictive provider before model execution", async () => {
+    const engine = createOpenRouterEngine({
+      model: "qwen/qwen3.5-397b-a17b",
+      providerRouting: { only: ["openai", "openaii"] },
+      providerDirectoryFetch: providerDirectoryFetch(),
+    });
+
+    await expect(engine.complete(emptyPrompt())).rejects.toThrow(
+      "OpenRouter provider allowlist could not be verified",
+    );
+    expect(lastCreateArgs).toBeNull();
+  });
+
+  test("fails closed when the authoritative directory is unavailable", async () => {
+    const engine = createOpenRouterEngine({
+      model: "qwen/qwen3.5-397b-a17b",
+      providerRouting: { only: ["openai"] },
+      providerDirectoryFetch: mock(async () => new Response("", { status: 503 })),
+    });
+
+    await expect(engine.complete(emptyPrompt())).rejects.toThrow(
+      "OpenRouter provider allowlist could not be verified",
+    );
+    expect(lastCreateArgs).toBeNull();
+  });
+
+  test("redacts directory failures and credentials from the exposed error", async () => {
+    const sentinel = "sk-directory-sentinel-do-not-leak";
+    const engine = createOpenRouterEngine({
+      model: "qwen/qwen3.5-397b-a17b",
+      apiKey: sentinel,
+      providerRouting: { only: ["openai"] },
+      providerDirectoryFetch: mock(async () => {
+        throw new Error(`request failed with ${sentinel}`);
+      }),
+    });
+
+    try {
+      await engine.complete(emptyPrompt());
+      throw new Error("expected provider verification to fail");
+    } catch (error) {
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toBe(
+        "OpenRouter provider allowlist could not be verified; no model request was sent",
+      );
+      expect((error as Error & { cause?: unknown }).cause).toBeUndefined();
+      expect(String(error)).not.toContain(sentinel);
+    }
+    expect(lastCreateArgs).toBeNull();
+  });
+
+  test("fails closed on redirects and malformed authoritative responses", async () => {
+    for (const response of [
+      Response.redirect("https://attacker.example/providers"),
+      Response.json({ data: [{ name: "OpenAI" }] }),
+      Response.json({ data: [] }),
+    ]) {
+      const engine = createOpenRouterEngine({
+        model: "qwen/qwen3.5-397b-a17b",
+        providerRouting: { only: ["openai"] },
+        providerDirectoryFetch: mock(async () => response.clone() as unknown as Response),
+      });
+
+      await expect(engine.complete(emptyPrompt())).rejects.toThrow(
+        "OpenRouter provider allowlist could not be verified",
+      );
+      expect(lastCreateArgs).toBeNull();
+    }
+  });
+
+  test("fails closed before parsing an oversized provider directory", async () => {
+    const engine = createOpenRouterEngine({
+      model: "qwen/qwen3.5-397b-a17b",
+      apiKey: "sk-test",
+      providerRouting: { only: ["openai"] },
+      providerDirectoryFetch: mock(
+        async () =>
+          new Response(JSON.stringify({ data: [{ slug: "openai" }] }), {
+            headers: { "Content-Length": String(256 * 1024 + 1) },
+          }),
+      ),
+    });
+
+    await expect(engine.complete(emptyPrompt())).rejects.toThrow(
+      "OpenRouter provider allowlist could not be verified",
+    );
+    expect(lastCreateArgs).toBeNull();
+  });
+
+  test("validates denylist slugs authoritatively without changing fallback policy", async () => {
+    const engine = createOpenRouterEngine({
+      model: "qwen/qwen3.5-397b-a17b",
+      apiKey: "sk-test",
+      providerRouting: { ignore: ["anthropic"], sort: "latency" },
+      providerDirectoryFetch: providerDirectoryFetch(),
+    });
+
+    await engine.complete(emptyPrompt());
+    expect(lastCreateArgs?.provider).toEqual({
+      ignore: ["anthropic"],
+      sort: "latency",
+    });
+    expect(providerDirectoryRequests).toBe(1);
+  });
+
+  test("rejects malformed and duplicate restrictive slugs for direct callers", () => {
+    for (const only of [
+      [""],
+      [" openai"],
+      ["OpenAI"],
+      ["openai", "openai"],
+      ["deepinfra/turbo"],
+      ["openai%2fother"],
+    ]) {
+      expect(() =>
+        createOpenRouterEngine({
+          model: "qwen/qwen3.5-397b-a17b",
+          apiKey: "sk-test",
+          providerRouting: { only },
+          providerDirectoryFetch: providerDirectoryFetch(),
+        }),
+      ).toThrow("providerRouting.only");
+    }
+  });
+
+  test("restrictive validation follows caller cancellation", async () => {
+    const controller = new AbortController();
+    const directoryFetch = mock((_input: string | URL | Request, init?: RequestInit) => {
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener(
+          "abort",
+          () => reject(init.signal?.reason ?? new DOMException("Aborted", "AbortError")),
+          { once: true },
+        );
+      });
+    });
+    const engine = createOpenRouterEngine({
+      model: "qwen/qwen3.5-397b-a17b",
+      apiKey: "sk-test",
+      providerRouting: { only: ["openai"] },
+      providerDirectoryFetch: directoryFetch,
+    });
+
+    const pending = engine.complete(emptyPrompt(), { signal: controller.signal });
+    controller.abort();
+    await expect(pending).rejects.toThrow();
+    expect(lastCreateArgs).toBeNull();
   });
 
   test("neither reasoning nor provider in params when neither option set", async () => {

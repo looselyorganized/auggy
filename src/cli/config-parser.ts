@@ -147,6 +147,8 @@ const BUILTIN_TYPES = new Set([
 ]);
 const VALID_REASONING_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh"]);
 const VALID_ROUTING_SORTS = new Set(["price", "throughput", "latency"]);
+const VALID_ROUTING_KEYS = new Set(["only", "ignore", "sort", "max_price"]);
+const PROVIDER_SLUG_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 // ---------------------------------------------------------------------------
 // Per-augment option validators
@@ -1425,23 +1427,43 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
         errors.push("engine.providerRouting: only valid for provider 'openrouter'");
       } else {
         const r = engine.providerRouting as Record<string, unknown>;
+        for (const key of Object.keys(r)) {
+          if (!VALID_ROUTING_KEYS.has(key)) {
+            errors.push(`engine.providerRouting.${key}: unknown routing option`);
+          }
+        }
         if (r.only !== undefined) {
           if (
             !Array.isArray(r.only) ||
             r.only.length === 0 ||
-            !r.only.every((v) => typeof v === "string")
+            r.only.length > 32 ||
+            !r.only.every((v) => typeof v === "string" && PROVIDER_SLUG_PATTERN.test(v)) ||
+            new Set(r.only).size !== r.only.length
           ) {
-            errors.push("engine.providerRouting.only: must be a non-empty array of strings");
+            errors.push(
+              "engine.providerRouting.only: must contain 1 to 32 unique canonical lowercase base-provider slugs",
+            );
           }
         }
         if (r.ignore !== undefined) {
           if (
             !Array.isArray(r.ignore) ||
             r.ignore.length === 0 ||
-            !r.ignore.every((v) => typeof v === "string")
+            r.ignore.length > 32 ||
+            !r.ignore.every((v) => typeof v === "string" && PROVIDER_SLUG_PATTERN.test(v)) ||
+            new Set(r.ignore).size !== r.ignore.length
           ) {
-            errors.push("engine.providerRouting.ignore: must be a non-empty array of strings");
+            errors.push(
+              "engine.providerRouting.ignore: must contain 1 to 32 unique canonical lowercase base-provider slugs",
+            );
           }
+        }
+        if (
+          Array.isArray(r.only) &&
+          Array.isArray(r.ignore) &&
+          r.only.some((slug) => (r.ignore as unknown[]).includes(slug))
+        ) {
+          errors.push("engine.providerRouting: a provider cannot appear in both only and ignore");
         }
         if (
           r.sort !== undefined &&
@@ -1460,6 +1482,11 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
             errors.push("engine.providerRouting.max_price: must be an object");
           } else {
             const mp = r.max_price as Record<string, unknown>;
+            for (const key of Object.keys(mp)) {
+              if (key !== "prompt" && key !== "completion") {
+                errors.push(`engine.providerRouting.max_price.${key}: unknown price option`);
+              }
+            }
             if (mp.prompt !== undefined && (typeof mp.prompt !== "number" || mp.prompt <= 0)) {
               errors.push("engine.providerRouting.max_price.prompt: must be a positive number");
             }

@@ -600,7 +600,7 @@ describe("engine.providerRouting validation", () => {
           provider: "openrouter",
           model: "qwen/qwen3.5-397b-a17b",
           providerRouting: {
-            only: ["OpenAI"],
+            only: ["openai"],
             sort: "price",
             max_price: { prompt: 1, completion: 2 },
           },
@@ -608,8 +608,45 @@ describe("engine.providerRouting validation", () => {
       }),
     );
     const config = parseConfig(path);
-    expect(config.engine.providerRouting?.only).toEqual(["OpenAI"]);
+    expect(config.engine.providerRouting?.only).toEqual(["openai"]);
     expect(config.engine.providerRouting?.sort).toBe("price");
+  });
+
+  test("rejects malformed, noncanonical, and duplicate restrictive slugs", () => {
+    for (const only of [
+      [""],
+      [" openai"],
+      ["OpenAI"],
+      ["openai", "openai"],
+      ["deepinfra/turbo"],
+      ["openai%2fother"],
+    ]) {
+      const path = writeYaml(
+        "agent.yaml",
+        minimalConfig({
+          engine: {
+            provider: "openrouter",
+            model: "qwen/qwen3.5-397b-a17b",
+            providerRouting: { only },
+          },
+        }),
+      );
+      expect(() => parseConfig(path)).toThrow("providerRouting.only");
+    }
+  });
+
+  test("rejects unknown providerRouting keys instead of ignoring typos", () => {
+    const path = writeYaml(
+      "agent.yaml",
+      minimalConfig({
+        engine: {
+          provider: "openrouter",
+          model: "qwen/qwen3.5-397b-a17b",
+          providerRouting: { onIy: ["openai"] },
+        },
+      }),
+    );
+    expect(() => parseConfig(path)).toThrow("providerRouting.onIy");
   });
 
   test("rejects providerRouting for non-openrouter provider", () => {
