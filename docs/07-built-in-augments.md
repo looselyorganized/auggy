@@ -247,6 +247,7 @@ import { supabaseMemory } from "auggy";
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 const episodic = supabaseMemory({
   namespace: "episode",
+  scope: "peer",
   client: supabase,
   table: "agent_memories",
   mutable: true,
@@ -259,7 +260,11 @@ const episodic = supabaseMemory({
 
 ### What it is
 
-A namespace `MemoryProviderSpec` backed by a Supabase table. Implements `search` (ILIKE on content), `read` (eq on label), and `write` (insert). Used for episodic memory — open-ended labeled entries that accumulate over time.
+A namespace `MemoryProviderSpec` backed by a Supabase table. `scope` is
+required: use `"peer"` for peer-derived memory and `"shared"` only for
+deliberately cross-peer operator/system content. Peer scope filters by the
+resolved peer in SQL before ordering or limiting results, omits unsafe exact
+label reads, and fails closed when no peer identity is available.
 
 ### When to use it
 
@@ -286,8 +291,10 @@ A second-order benefit: having two reference providers (`fileMemory` static, `su
 ```ts
 export interface SupabaseMemoryOptions {
   namespace: string;                  // e.g. "episode" → prefix becomes "episode:"
+  scope: "peer" | "shared";           // required authorization boundary
   client: SupabaseLikeClient;
   table: string;                      // the table to read/write
+  peerColumn?: string;                // default "peer_id"
   mutable: boolean;                   // whether write() is exposed
   origin: ContextOrigin;
   priority: ContextPriority;
@@ -305,17 +312,17 @@ The `namespace` becomes the prefix — `"episode"` is normalized to `"episode:"`
 export interface SupabaseLikeClient {
   from(table: string): {
     insert(row: unknown): PromiseLike<{ error: Error | null }>;
-    select(columns?: string): {
-      eq(column: string, value: unknown): {
-        maybeSingle(): PromiseLike<{ data: unknown; error: Error | null }>;
-      };
-      ilike(column: string, value: string): {
-        order(column: string, opts?: { ascending?: boolean }): {
-          limit(n: number): PromiseLike<{ data: unknown[]; error: Error | null }>;
-        };
-      };
-    };
+    select(columns?: string): SupabaseQueryBuilder;
   };
+}
+
+export interface SupabaseQueryBuilder
+  extends PromiseLike<{ data: unknown[]; error: Error | null }> {
+  eq(column: string, value: unknown): SupabaseQueryBuilder;
+  ilike(column: string, value: string): SupabaseQueryBuilder;
+  order(column: string, opts?: { ascending?: boolean }): SupabaseQueryBuilder;
+  limit(n: number): SupabaseQueryBuilder;
+  maybeSingle(): PromiseLike<{ data: unknown; error: Error | null }>;
 }
 ```
 
@@ -333,25 +340,89 @@ create table agent_memories (
   label       text not null,
   content     text not null,
   metadata    jsonb,
+  peer_id     text not null,
   created_at  timestamptz not null default now()
 );
 
 create index agent_memories_label_idx on agent_memories (label);
 create index agent_memories_created_at_idx on agent_memories (created_at desc);
+create index agent_memories_peer_created_idx
+  on agent_memories (peer_id, created_at desc);
 ```
 
-You can have additional columns; the augment only reads and writes those four. The table name is configurable (`opts.table`).
+For an existing peer-derived table, use a staged migration rather than
+guessing ownership:
+
+```sql
+alter table agent_memories add column if not exists peer_id text;
+
+-- Backfill only from authoritative application/audit data. Quarantine rows
+-- whose owner cannot be proven; do not assign them to a convenient peer.
+create index concurrently if not exists agent_memories_peer_created_idx
+  on agent_memories (peer_id, created_at desc);
+
+-- Run only after the authoritative backfill and quarantine are complete.
+alter table agent_memories alter column peer_id set not null;
+```
+
+Rows that cannot be assigned to a verified peer must not be made visible
+through peer scope. Move deliberately global operator/system content to a
+separate table and provider configured with `scope: "shared"`.
+
+Repeat the peer boundary in database RLS as defense in depth. The precise
+session/JWT claim is deployment-specific, but the policy must compare it to
+the row rather than accept a caller-supplied query value:
+
+```sql
+alter table agent_memories enable row level security;
+alter table agent_memories force row level security;
+
+-- Replace auggy_runtime with the actual least-privilege runtime role.
+-- Audit and remove obsolete broad policies before enabling this role.
+create policy agent_memories_runtime_grant on agent_memories
+  as permissive for all to auggy_runtime
+  using (true)
+  with check (true);
+
+create policy agent_memories_peer_isolation on agent_memories
+  as restrictive for all to auggy_runtime
+  using (peer_id = current_setting('request.jwt.claim.peer_id', true))
+  with check (peer_id = current_setting('request.jwt.claim.peer_id', true));
+```
+
+PostgreSQL OR-combines permissive policies. A new permissive isolation policy
+does not neutralize an existing broad permissive policy. Inventory policies for
+the runtime role (including policies granted to `PUBLIC`), remove stale grants,
+and use a restrictive peer predicate alongside an explicit role-scoped grant
+as shown above.
+
+Supabase service-role credentials bypass RLS. If the runtime uses them, the
+augment's SQL predicate and post-validation are the primary boundary; restrict
+that credential to the server and monitor it accordingly. The table and
+peer-column names are configurable, and the configured identifier is strictly
+validated.
+
+Rollback is security-sensitive. An older binary ignores `peer_id` and can
+reopen cross-peer reads. Before rolling back, disable this provider or enforce
+an equivalent peer predicate in a database role/policy the old binary cannot
+bypass. Replace or disable service-role credentials before relying on RLS
+during rollback. Do not drop `peer_id`, its index, or the RLS policy.
 
 ### Implementation notes
 
 #### `search(query)`
 
 ```ts
-const search = async (query: string): Promise<MemoryEntry[]> => {
-  const { data, error } = await opts.client
+const scope = opts.scope; // authorization configuration is snapshotted
+const search = async (query: string, queryOpts?: MemoryQueryOpts): Promise<MemoryEntry[]> => {
+  const peerId = scope === "peer" ? requirePeerId(queryOpts) : undefined;
+  let request = opts.client
     .from(opts.table)
-    .select("label, content, metadata, created_at")
-    .ilike("content", `%${query}%`)
+    .select("label, content, metadata, created_at, peer_id")
+    .ilike("label", "episode:%");
+  if (scope === "peer") request = request.eq("peer_id", peerId);
+  const { data, error } = await request
+    .ilike("content", `%${escapedQuery}%`)
     .order("created_at", { ascending: false })
     .limit(limit);
 
@@ -363,13 +434,18 @@ const search = async (query: string): Promise<MemoryEntry[]> => {
 };
 ```
 
-The namespace post-filter (`r.label.startsWith(prefix)`) is **defense-in-depth**: even if the table holds rows from multiple namespaces (e.g. several providers sharing one table), this provider only returns rows it actually owns.
+Namespace and peer predicates are applied before `limit`; post-validation
+rejects malformed, wrong-namespace, or wrong-peer rows returned by a faulty
+client or policy.
 
-This was the P1 review finding ("Restrict Supabase memory search to the declared namespace"). The original implementation only filtered on `content` and would have leaked rows from other namespaces if a shared table was misconfigured. The post-filter makes the declared namespace ownership a hard guarantee, not a configuration assumption.
-
-There's no upper bound on how many results the post-filter throws away — if you have 100 rows matching the content query but only 5 of them are in this namespace, you get 5. The trade-off: the SQL query stays simple, the worst case is "fewer results than `limit`" (correct behavior), and you can compensate by raising `searchLimit` if you notice starvation.
+`searchLimit` is validated between 1 and 100. ILIKE wildcard characters in the
+query are escaped so a peer cannot broaden a restrictive search with `%`, `_`,
+or backslash.
 
 #### `read(label)`
+
+Exact reads are exposed only for `scope: "shared"`. Peer-scoped callers use
+`search(query, { peerId })`; a label alone is not ownership evidence.
 
 ```ts
 const read = async (label: string): Promise<MemoryEntry | null> => {
@@ -392,17 +468,21 @@ The early-return on prefix mismatch is the same defense as `search`. `lookupProv
 
 ```ts
 const write = opts.mutable
-  ? async (label: string, content: string): Promise<void> => {
+  ? async (label: string, content: string, writeOpts?: MemoryWriteOpts): Promise<void> => {
       if (!label.startsWith(prefix)) {
-        throw new Error(
-          `supabaseMemory: label "${label}" does not start with namespace prefix "${prefix}"`,
-        );
+        throw new Error("label is outside this namespace");
       }
-      const { error } = await opts.client.from(opts.table).insert({
+      const peerId = scope === "peer" ? requirePeerId(writeOpts) : undefined;
+      if (peerId && !label.startsWith(`${prefix}${peerId}:`)) {
+        throw new Error("label is not structurally bound to this peer");
+      }
+      const row = {
         label,
         content,
+        ...(peerId ? { peer_id: peerId } : {}),
         created_at: new Date().toISOString(),
-      });
+      };
+      const { error } = await opts.client.from(opts.table).insert(row);
       if (error) throw error;
     }
   : undefined;
@@ -410,7 +490,8 @@ const write = opts.mutable
 
 `write` is **insert-only**. Each call appends a new row, even if a row with that label already exists. This is intentional for episodic memory — you typically don't want to overwrite past episodes; you want a log of what happened. If a use case needs upsert, that's a different provider.
 
-The label-prefix check on write is the same defense-in-depth: we never want a write to land outside this provider's declared namespace.
+Peer-scoped writes require a resolved peer, require the label to be
+structurally peer-bound, and persist that peer in the configured peer column.
 
 ### Lifecycle
 
@@ -433,7 +514,9 @@ async (turnState) => {
   if (turnState.trigger.type !== "message") return [];   // only on message triggers
   const text = extractText((turnState.trigger.payload as InboundMessage).parts);
   if (!text) return [];
-  const entries = await aug.memory.search(text);
+  const entries = await aug.memory.search(text, {
+    peerId: turnState.trigger.peer?.id,
+  });
   return entries.map((entry) => ({
     source: aug.name,                       // "supabase-memory-episode"
     content: entry.content,
@@ -576,6 +659,7 @@ const agent = defineAgent({
     }),
     supabaseMemory({
       namespace: "episode",
+      scope: "peer",
       client: supabase,
       table: "agent_memories",
       mutable: true,
@@ -699,8 +783,17 @@ Three permission tiers: **read-only** (default) → **writable** → **writable 
 
 ### Security model
 
-- **`fs.realpath()`** resolves symlinks before every boundary check — prevents symlink-escape attacks
+- **Nearest-existing-ancestor canonicalization** catches escaping symlink
+  parents even when the requested leaf and intermediate descendants do not
+  exist. Dangling links fail closed.
+- **Mutation paths reject symlink components.** Parent directories are created
+  one segment at a time and revalidated; file leaves use `O_NOFOLLOW`, reject
+  hard-linked inodes, and compare the opened device/inode with preflight state
+  before truncation.
 - **`path.relative()`-based boundary check** — prevents `../` traversal, prefix-collision escapes (mount `/var/data/work` doesn't accept `/var/data/workspace/...`), and cross-drive escapes on Windows, while still working correctly when the mount itself is a filesystem root (e.g. `/` on POSIX)
+- **Search/list isolation** rejects traversal glob patterns, canonicalizes every
+  search result, and never follows an escaping symlink to disclose target
+  metadata.
 - **Binary detection** via file extension — returns an error message instead of garbage content for images, PDFs, compiled binaries
 - **Size truncation** — files over `maxReadSize` are truncated with a `[truncated at 256KB, total size: 20MB]` marker
 - **Per-mount permissions** — enforced on every operation before any file I/O
@@ -712,11 +805,18 @@ Three permission tiers: **read-only** (default) → **writable** → **writable 
   trusted instructions. Public turns do not receive it unless explicitly
   configured.
 
+Portable JavaScript does not expose descriptor-relative `openat2` resolution,
+so it cannot eliminate every parent-directory replacement race against a
+hostile process with write access to the same mount. Writable mount directories
+must therefore be inaccessible to less-trusted local users/processes and
+confined with OS/container permissions. The no-follow and inode checks reduce
+the window but are not a substitute for that deployment boundary.
+
 ### Lifecycle
 
 | Hook | What it does |
 |------|-------------|
-| `onBoot` | Resolves and caches all mount root paths. Optionally loads a SKILL.md if `skillFile` is configured. |
+| `onBoot` | Creates missing writable mount roots with owner-only POSIX permissions, then resolves and caches every mount root. Missing read-only roots fail boot. Optionally loads a SKILL.md if `skillFile` is configured. |
 | `context` | Produces bounded workspace policy/catalog blocks for allowed peers; scans metadata only. |
 | `onShutdown` | None. |
 

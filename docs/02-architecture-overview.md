@@ -210,8 +210,6 @@ This is what happens when a peer sends a message via the web transport.
 ```
 POST /agent/run
 Authorization: Bearer <token>
-x-peer-id: visitor-001
-x-peer-kind: human
 Content-Type: application/json
 
 { "messages": [{ "role": "user", "content": "are you open?" }] }
@@ -219,7 +217,11 @@ Content-Type: application/json
 
 ### 2. The transport authenticates and identifies
 
-`webTransport.handleAgentRun` checks the bearer token, builds a `PeerIdentity` from `x-peer-*` headers (via `transport.identify()`), parses the body, and constructs a `TurnTrigger`:
+`webTransport.handleAgentRun` authenticates the caller and resolves
+`PeerIdentity` only from a verified bearer, admitted agent credential, signed
+visitor token/external assertion, or server-minted anonymous-session
+capability. Caller-supplied `x-peer-*` metadata never establishes identity or
+trust. The transport then parses the body and constructs a `TurnTrigger`:
 
 ```ts
 {
@@ -228,7 +230,7 @@ Content-Type: application/json
   threadId: ...,
   timestamp: ...,
   source: "web",
-  peer: { id: "visitor-001", kind: "human", trustLevel: "public", ... },
+  peer: { id: "creator", kind: "human", trustLevel: "creator", ... },
   payload: {
     parts: [{ kind: "text", text: "are you open?" }],
     sourceAugment: "web",

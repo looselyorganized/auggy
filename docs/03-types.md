@@ -192,6 +192,7 @@ export interface PeerIdentity {
   kind: PeerKind;
   trustLevel: TrustLevel;
   publicSubstate?: "anonymous" | "recognized";  // set iff trustLevel === "public"
+  authenticatedPriorPeerId?: string; // verified one-way identity transition
   sourceAugment: string;     // which augment minted this identity
   displayName?: string;
   orgId?: string;
@@ -217,10 +218,21 @@ Trust levels are ordered from most to least:
 - **`public`** — everyone else. Inputs from `public` peers should be treated as potentially adversarial.
 
 **`publicSubstate`** differentiates two sub-populations within `public` trust:
-- `"anonymous"` — no visitor token present; ephemeral identity (peer.id is `anon-<threadId>`). Memory writes attach to this ephemeral ID.
+- `"anonymous"` — no verified visitor token; web callers receive a signed
+  anonymous-session capability whose server-minted subject becomes `peer.id`.
+  It is not derived from caller-controlled `threadId`.
 - `"recognized"` — a valid HMAC visitor token was verified; durable identity (peer.id is `vis_*` from the token). Memory writes attach to this durable ID across sessions.
 
 `publicSubstate` is present **only** when `trustLevel === "public"`. Other trust levels must omit it. The budgets augment uses `publicSubstate` to apply differentiated caps (tighter defaults for anonymous, looser for recognized).
+
+`authenticatedPriorPeerId` is authorization evidence for a one-way identity
+transition, such as a recognized visitor proving ownership of its earlier
+anonymous-session subject. A transport may set it only after
+cryptographically verifying that relationship. It is not caller metadata,
+must not be copied from headers or model output, and is deliberately omitted
+from logs and model-visible identity context. The kernel uses it only to
+authorize promotion of already-bound thread and memory state; it never permits
+a recognized-to-anonymous downgrade.
 
 Route auth contexts also expose `auth.principal.kind`. That field is a
 TypeScript discriminator for the concrete identity payload (`anonymous`,

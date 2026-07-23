@@ -49,7 +49,8 @@ to stay in sync with the filesystem.
 - `data/` is the project-local durable-data convention. Core create uses
   `data/workspace`; locally, relative SQLite paths resolve from the agent
   project. On Railway, the resolver roots layered memory, budgets, and visitor
-  auth directly under `/app/data`, stores console conversations at
+  auth directly under `/app/data`, stores the web idempotency ledger at
+  `/app/data/web-idempotency.db`, stores console conversations at
   `/app/data/console-chat.db`, and isolates AgentMail beneath
   `/app/data/agent-mail/<augment-name>`. Only Link retains a legacy
   `/app/link.db` compatibility symlink. See [18-deploy.md](./18-deploy.md).

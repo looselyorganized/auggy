@@ -37,7 +37,12 @@ The `augmentName` parameter was added in commit `0710e2f` (Phase B) to support c
 
 **`identify(raw)`** is a pure function from "whatever the transport's wire format hands you" to `PeerIdentity | null`. It runs once per inbound request, before the request enters the queue. Returning `null` means "I cannot identify this peer" — the transport is responsible for what to do with that (the web transport returns a 400 error).
 
-The web transport's `identify()` reads `x-peer-id`, `x-peer-kind`, `x-peer-name`, and `x-org-id` headers from a request and returns a `PeerIdentity` with `trustLevel` set from `opts.trustLevel` (default `"public"`). A future spine transport would read auth tokens from a different envelope and probably set `trustLevel: "agent"`.
+The web transport's handler first verifies bearer, admitted-agent, visitor,
+external-auth, and anonymous-session credentials. It then passes only verified
+identity evidence into `identify()`. `x-peer-id`, `x-peer-kind`, and `x-org-id`
+are not identity or authorization proof; `x-peer-name` is cosmetic. The
+resolved trust level is a deterministic result of the credential path:
+creator, agent, public-recognized, or public-anonymous.
 
 **`concurrency`**, **`maxQueueDepth`**, and **`rateLimitPerPeer`** are configuration for the per-transport queue that the runtime constructs when the agent starts. Defaults: `1`, `50`, none. See [04-kernel.md § transport-queue.ts](./04-kernel.md#srckerneltransport-queuets--per-transport-queue) for details.
 
@@ -219,15 +224,32 @@ export interface WebTransportOptions {
   port: number;
   auth: { type: "bearer"; token: string };
   cors?: { origins: [string] }; // exactly one browser origin in the current static-CORS implementation
+  securityNamespace?: string;   // stable logical-agent identity shared by replicas
   maxMessageLength?: number;     // default 4000
   access?: { agents?: AgentAccessEntry[] };  // admitted agent list
   concurrency?: number;          // default 1
   maxQueueDepth?: number;        // default 50
   rateLimitPerPeer?: { maxPerMinute: number };
   visitorTokens?: {
-    enabled?: boolean;       // default true
+    enabled?: boolean;       // opt-in; resolver enables when visitorAuth is mounted
     ttlSeconds?: number;     // default 30 days
-    signingKey?: string;     // derive from VISITOR_SIGNING_KEY; ephemeral if absent
+    signingKey?: string;     // required when enabled
+    agentBinding?: string;   // defaults to securityNamespace, then registered agent name
+  };
+  idempotency?: {
+    dbPath?: string | null;  // CLI default: data/web-idempotency.db
+    maxRecords?: number;     // default 50,000; minimum 3
+    maxReplayBytes?: number; // default 2 MiB
+    maxStoredBytes?: number; // default 256 MiB aggregate replay bodies
+    maxRecordsPerPartition?: number; // default min(maxRecords, 10,000)
+    maxPublicRecords?: number;  // default 50% of maxRecords
+    maxAgentRecords?: number;   // default 30% of maxRecords
+    maxCreatorRecords?: number; // default remainder (20% at default)
+    waitTimeoutMs?: number;  // default 30 seconds
+    staleAfterMs?: number;   // default 30 seconds
+    retentionMs?: number;    // replay bytes retained for 24 hours
+    maxWaiters?: number;     // default 64 across the process
+    maxWaitersPerKey?: number; // default 8
   };
   publicFrontendUrl?: string;    // optional 302 redirect target for GET /
   publicIntegration?: boolean;   // publish legacy discovery: /agent + generic runtime metadata
@@ -275,16 +297,78 @@ The bearer token is validated with a timing-safe comparison to prevent extractio
 
 #### 2. Idempotency-Key
 
-If the `Idempotency-Key` header is present, it is validated and used as `turnId`:
+If the `Idempotency-Key` header is present, the web transport claims it in a
+dedicated SQLite execution ledger before history access, gates, inference, or
+tools. The ledger stores hashes of the key and canonical request binding—not
+the raw key, message, or credentials. The binding includes the agent audience,
+resolved peer, effective authorization, thread, context/task IDs, roles, and
+message content.
 
-```ts
-// Valid: 1–128 chars matching [A-Za-z0-9_-]
-turnId = idempotencyKey;    // used as trigger.turnId
-```
+The first claimant receives a fresh internal turn UUID. Matching concurrent
+requests wait for that execution and receive its exact terminal SSE bytes;
+matching later requests replay those bytes, including after a restart. A
+changed peer, thread, authorization, or request returns
+`409 idempotency_key_conflict`. A crash or oversized unreplayable result leaves
+a fail-closed tombstone and returns `409 idempotency_outcome_unknown` rather
+than rerunning possibly side-effecting work.
 
-Malformed key → HTTP 400. Absent → fresh `crypto.randomUUID()`.
+Leaders renew a durable heartbeat while executing. A `running` claim whose
+heartbeat is older than `staleAfterMs` (default 30 seconds) is atomically
+converted to outcome-unknown; it is never taken over and rerun.
 
-When the budgets augment is mounted, `turnId` is also the primary key of `turn_reservations`. Retrying with the same `Idempotency-Key` hits the store's PK conflict path — the reservation already exists and the store returns the cached decision rather than re-evaluating caps. This is what makes retries safe under budget caps.
+Malformed keys (1–128 `[A-Za-z0-9_-]` characters) return HTTP 400. Unkeyed
+requests receive a fresh UUID and are not persisted for replay. Fresh anonymous
+keyed requests first return `428 anonymous_session_required` plus a signed
+anonymous-session capability; the client retries with that capability and the
+same key before any execution occurs.
+
+CLI-managed agents default the ledger to `data/web-idempotency.db` (or the
+configured runtime data root). Every programmatic deployment must set
+`webTransport.idempotency.dbPath`; keyed requests fail with 503 if storage is
+unspecified or unavailable. Tests and disposable local processes can
+explicitly choose `dbPath: ":memory:"`, acknowledging that restart safety is
+then absent. The bounded ledger fails closed at `maxRecords`
+(default 50,000), at the per-partition limit, or at the applicable trust-class
+limit. Default class reservations are public 50%, agent 30%, and creator 20%;
+custom class limits must sum to no more than the global limit. All anonymous
+sessions intentionally share the public partition, so minting new anonymous
+credentials cannot evade its cap. This is an availability boundary: sustained
+public keyed traffic can exhaust the public allocation, but cannot consume the
+agent or creator reservations.
+
+Replay capture is capped at 2 MiB per response and 256 MiB in aggregate.
+Concurrent followers are also bounded (64 globally and 8 per key by default).
+After 24 hours the response bytes are removed and the record becomes an
+outcome-unknown tombstone. Complete and unknown execution tombstones are never
+automatically deleted because deleting them would permit a late retry to run
+again. Operators must provision the ledger for their idempotency horizon; at
+capacity the safe behavior is 503, not eviction and duplicate execution.
+
+SQLite coordinates processes only when every replica opens the same database
+file on storage whose locking semantics SQLite supports. Replicas with
+independent volumes do not provide cross-host exactly-once execution. Such
+deployments must use single-writer/sticky routing for keyed execution or defer
+enabling keyed requests until a shared coordinator is available. Changing
+`securityNamespace` deliberately creates a separate key namespace and
+invalidates outstanding anonymous capabilities; it must not be used as an
+unsafe capacity reset while old retries remain possible. Replicas of one
+logical agent must share a namespace, while unrelated agents sharing a
+database or signing key must use different namespaces.
+
+A ledger file is one physical availability boundary. Its row-class and
+aggregate replay-byte ceilings are shared even when distinct security
+namespaces prevent key collisions. Do not point unrelated agents at one file
+unless that capacity coupling is intentional; prefer one ledger file per
+logical agent.
+
+`Idempotency-Key` is only a client correlation and execution-claim input. It is
+never emitted as the AG-UI `runId`. Keyed responses use a server-minted UUID
+that is stable across followers and replay. Clients that previously assumed
+`runId === Idempotency-Key` must store those values separately.
+
+Budgets and traces use the internal UUID, never the caller's key. Direct kernel
+injection has no response-replay coordinator, so a duplicate turn ID is denied
+instead of reusing an earlier allowance.
 
 #### 3. Identity resolution — four paths
 
@@ -301,7 +385,29 @@ layer.
 
 **Path 3 — Public recognized:** `x-visitor-token` header present and HMAC-verified. Mints `{ trustLevel: "public", publicSubstate: "recognized", id: "<visitorId from token>" }`. The caller's public ID is durable across sessions — memory writes attach to it.
 
-**Path 4 — Public anonymous:** default path. Mints `{ trustLevel: "public", publicSubstate: "anonymous", id: "anon-<threadId>" }`. For fresh anonymous visitors, the transport issues a new visitor token in the `x-visitor-token` response header so subsequent requests can become "recognized."
+**Path 4 — Public anonymous:** default path. Mints a server-authenticated
+anonymous-session subject and returns its capability in
+`x-auggy-anonymous-session`; the identity is never derived from the
+caller-controlled thread ID. When visitor-token bootstrapping is enabled, the
+runtime returns a distinct `vis_*` identity whose signed payload proves the
+prior anonymous peer and thread scope. That one-way proof lets the next
+recognized request promote the already-bound thread. A revoked or otherwise
+invalid visitor token cannot downgrade back into the same thread.
+
+For public callers, a request `threadId` is a logical client identifier rather
+than the kernel's globally addressable thread ID. The transport derives an
+opaque HMAC-scoped thread ID from the security namespace, authenticated peer
+scope, and logical ID. A caller cannot pre-claim another peer's predictable
+thread name. The kernel binds every resulting thread to the first resolved
+peer before history retrieval or model execution and rejects mismatches.
+
+Anonymous-session capabilities expire after 24 hours and are also invalidated
+by bearer-secret or `securityNamespace` rotation. An invalid capability returns
+401 with `x-auggy-anonymous-session-status: invalid` before an idempotency
+claim or model execution. Browser clients may then remove only that credential
+and retry once with the same key; a fresh keyed request receives the normal
+428 bootstrap response and can be retried once more. Do not retry arbitrary
+401 responses or loop indefinitely.
 
 Path 2 is evaluated before Path 1 — if agent headers are present, they determine the outcome regardless of whether the bearer token is also valid.
 
@@ -359,13 +465,22 @@ The body must have a `messages: [{ role, content }, ...]` array. v1 only uses th
 #### 4. Build the trigger
 
 ```ts
-const threadId = body.threadId ?? body.contextId ?? crypto.randomUUID();
+const requestedThreadId = body.threadId ?? body.contextId;
+const threadId =
+  peer.trustLevel === "public"
+    ? canonicalPublicThreadId(requestedThreadId, idempotencyKey, authenticatedThreadScopeId)
+    : requestedThreadId ?? crypto.randomUUID();
 const parts: Part[] = [{ kind: "text", text }];
 const inbound: InboundMessage = { parts, sourceAugment: "web", peer, timestamp: Date.now(), contextId: body.contextId, taskId: body.taskId };
 const trigger: TurnTrigger = { type: "message", turnId: crypto.randomUUID(), threadId, contextId: body.contextId, taskId: body.taskId, timestamp: Date.now(), source: "web", peer, payload: inbound };
 ```
 
-The `threadId` is taken from the request if present, otherwise minted fresh. This is what makes a new conversation actually new — clients that don't pass a `threadId` get a per-request thread, which means the agent's history doesn't carry across requests.
+Creator and admitted-agent callers can supply their logical thread ID.
+Public callers cannot attach directly to a raw caller-selected thread:
+`canonicalPublicThreadId` binds the logical ID to the authenticated
+visitor/anonymous capability and security namespace. Omitting a thread ID
+mints a new conversation, except that a keyed request derives one stable
+logical thread so its exact retry can join.
 
 #### 5. Open the SSE stream
 
@@ -1019,7 +1134,7 @@ across web console and Telegram private chat.
 
 | Transport | Recognized / agent peers | Anonymous peers |
 |---|---|---|
-| `webTransport` | `creator` (bearer), `vis_<uuid>` (visitor token), or `agent:<agentId>` | `anon-<threadId>` |
+| `webTransport` | `creator` (bearer), `vis_<uuid>` (visitor token), or `agent:<agentId>` | `anon_session_<uuid>` authenticated by a 24-hour signed capability |
 | `telegramTransport` | `creator` (private chat from configured creator user ID), configured agent IDs, or `tg_user_<userId>` (recognized public) | `tg_anon_<threadId>` (ephemeral) or `tg_user_<userId>` (durable) |
 
 The non-creator prefixes are chosen to be non-overlapping by construction. A

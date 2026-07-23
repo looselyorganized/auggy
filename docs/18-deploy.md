@@ -209,6 +209,7 @@ volume even when an agent's portable config uses a project-relative default:
 - `/app/data/budgets.db` (`budgets` augment)
 - `/app/data/visitor-auth.db` (`visitorAuth` augment)
 - `/app/data/link.db` (`link` augment, when present)
+- `/app/data/web-idempotency.db` (`webTransport` execution ledger)
 - `/app/data/console-chat.db` (`webTransport` operator conversations)
 - `/app/data/agent-mail/<augment-name>/agent-mail.db` (`agentMail`; each
   instance receives an isolated state namespace)
@@ -218,6 +219,11 @@ messages, unread markers, and resumable model history. Completed turns survive
 redeploys and process restarts. If the process exits during an active turn, the
 next boot marks that run interrupted instead of presenting it as still
 streaming.
+
+`/app/data/web-idempotency.db` is part of the side-effect safety boundary.
+Back it up and restore it together with downstream state: losing the ledger
+while retaining completed side effects allows an old caller key to execute
+again.
 
 Only Link retains a root-level compatibility symlink:
 
@@ -248,6 +254,13 @@ capture each database with any `-wal` and `-shm` siblings as one set; copying a
 live `.db` file alone can omit committed WAL data. Restore and test the complete
 set before starting the agent. The CLI does not currently schedule backups or
 verify restores for you.
+
+Security-boundary releases require a drained, all-at-once rollout. Do not run
+old and new bundles concurrently: an old replica does not enforce the durable
+idempotency ledger or public-thread ownership and can re-execute a retry or
+serve caller-selected thread history. Before rollback, stop keyed and public
+traffic and drain outstanding retries; rollback otherwise deliberately reopens
+H-01/H-02.
 
 ---
 

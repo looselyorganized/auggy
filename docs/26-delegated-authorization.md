@@ -73,7 +73,8 @@ The default assertion header is `x-auggy-auth-assertion`. Override
 `externalAuth.header` only when an app gateway requires a different header.
 
 The `audience` should be stable for the agent. If omitted, Auggy falls back to
-`visitorTokens.agentBinding`, then the agent-card provider name, then `"auggy"`.
+the web transport security namespace: `securityNamespace`, then
+`visitorTokens.agentBinding`, then the registered agent-card provider name.
 Use an explicit audience when assertions are minted outside the Auggy process.
 
 `externalAuth.secret` is the current signing secret. `externalAuth.keyId`

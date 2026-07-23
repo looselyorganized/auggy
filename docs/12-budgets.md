@@ -197,7 +197,7 @@ One row per turn. Primary key: `turn_id`.
 
 | Column | Type | Description |
 |---|---|---|
-| `turn_id` | TEXT PK | The turn's UUID (or Idempotency-Key if provided). |
+| `turn_id` | TEXT PK | Internal server-generated turn UUID. The web transport keeps caller idempotency keys in its separate hashed replay ledger. |
 | `peer_id` | TEXT | Peer identity. |
 | `thread_id` | TEXT | Thread this turn belongs to. |
 | `day` | TEXT | `YYYY-MM-DD` UTC. |
