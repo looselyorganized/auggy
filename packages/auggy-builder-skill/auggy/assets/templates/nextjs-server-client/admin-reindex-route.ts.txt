@@ -1,18 +1,186 @@
+import "server-only";
 import { createAuggyClient } from "@/src/auggy-client.server";
 
-const api = createAuggyClient({
-  baseUrl: process.env.AUGGY_BASE_URL!,
-  bearerToken: () => process.env.AUGGY_BEARER_TOKEN,
+export type VerifiedOperatorSession = Readonly<{
+  subject: string;
+  roles: readonly string[];
+}>;
+
+type AdminClient = {
+  post(
+    path: "/admin/reindex",
+    input: { body: { reason: "manual-refresh" } },
+  ): Promise<{ ok: boolean; status: number; data: unknown }>;
+};
+
+export type AdminReindexDependencies = Readonly<{
+  expectedOrigin(): string | undefined;
+  verifySession(request: Request): Promise<VerifiedOperatorSession | null>;
+  verifyCsrfToken(
+    request: Request,
+    session: VerifiedOperatorSession,
+    token: string,
+  ): Promise<boolean>;
+  getClient(): AdminClient;
+}>;
+
+const RESPONSE_HEADERS = {
+  "cache-control": "private, no-store",
+  "x-content-type-options": "nosniff",
+} as const;
+
+export function createAdminReindexHandler(dependencies: AdminReindexDependencies) {
+  return async function POST(request: Request): Promise<Response> {
+    let expectedOrigin: string | null;
+    try {
+      expectedOrigin = parseConfiguredOrigin(dependencies.expectedOrigin());
+    } catch {
+      expectedOrigin = null;
+    }
+    if (!expectedOrigin) {
+      return jsonError("admin_origin_unavailable", 503);
+    }
+
+    const requestOrigin = parseRequestOrigin(request.headers.get("origin"));
+    if (requestOrigin !== expectedOrigin) {
+      return jsonError("origin_denied", 403);
+    }
+
+    let session: VerifiedOperatorSession | null;
+    try {
+      session = await dependencies.verifySession(request);
+    } catch {
+      return jsonError("operator_auth_unavailable", 503);
+    }
+    if (session === null) {
+      return jsonError("unauthorized", 401);
+    }
+    if (!isVerifiedSession(session)) {
+      return jsonError("operator_auth_unavailable", 503);
+    }
+    if (!session.roles.some((role) => role === "admin" || role === "operator")) {
+      return jsonError("forbidden", 403);
+    }
+
+    const csrfToken = request.headers.get("x-csrf-token");
+    if (!isBoundedCsrfToken(csrfToken)) {
+      return jsonError("csrf_denied", 403);
+    }
+    let csrfVerified = false;
+    try {
+      csrfVerified = await dependencies.verifyCsrfToken(request, session, csrfToken);
+    } catch {
+      return jsonError("csrf_unavailable", 503);
+    }
+    if (csrfVerified !== true) {
+      return jsonError("csrf_denied", 403);
+    }
+
+    try {
+      const result = await dependencies.getClient().post("/admin/reindex", {
+        body: { reason: "manual-refresh" },
+      });
+      if (!result.ok) {
+        return jsonError("reindex_failed", safeUpstreamStatus(result.status));
+      }
+      return Response.json(result.data, { headers: RESPONSE_HEADERS });
+    } catch {
+      return jsonError("reindex_unavailable", 502);
+    }
+  };
+}
+
+async function verifyAppOperatorSession(
+  _request: Request,
+): Promise<VerifiedOperatorSession | null> {
+  // Replace this fail-closed stub with the app's server-side session verifier.
+  // Return roles only from authenticated server-owned session state, never from
+  // request headers, query parameters, or request bodies.
+  return null;
+}
+
+async function verifyAppCsrfToken(
+  _request: Request,
+  _session: VerifiedOperatorSession,
+  _token: string,
+): Promise<boolean> {
+  // Replace this fail-closed stub with the app's session-bound CSRF verifier.
+  // Validate on every request; use atomic one-time tokens when replay matters.
+  return false;
+}
+
+function createServerClient(): AdminClient {
+  const baseUrl = process.env.AUGGY_BASE_URL;
+  const bearerToken = process.env.AUGGY_BEARER_TOKEN;
+  if (!baseUrl || !bearerToken) {
+    throw new Error("Auggy server credentials are not configured.");
+  }
+  return createAuggyClient({
+    baseUrl,
+    bearerToken: () => bearerToken,
+  });
+}
+
+export const POST = createAdminReindexHandler({
+  expectedOrigin: () => process.env.APP_ORIGIN,
+  verifySession: verifyAppOperatorSession,
+  verifyCsrfToken: verifyAppCsrfToken,
+  getClient: createServerClient,
 });
 
-export async function POST() {
-  const result = await api.post("/admin/reindex", {
-    body: { reason: "manual-refresh" },
-  });
-
-  if (!result.ok) {
-    return Response.json({ error: "reindex_failed" }, { status: result.status });
+function parseConfiguredOrigin(value: string | undefined): string | null {
+  if (!value || value.length > 2048) return null;
+  try {
+    const url = new URL(value);
+    if (
+      (url.protocol !== "https:" && url.protocol !== "http:") ||
+      url.username ||
+      url.password ||
+      url.pathname !== "/" ||
+      url.search ||
+      url.hash
+    ) {
+      return null;
+    }
+    return url.origin;
+  } catch {
+    return null;
   }
+}
 
-  return Response.json(result.data);
+function parseRequestOrigin(value: string | null): string | null {
+  if (!value || value === "null" || value.length > 2048) return null;
+  return parseConfiguredOrigin(value);
+}
+
+function isVerifiedSession(value: unknown): value is VerifiedOperatorSession {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as { subject?: unknown; roles?: unknown };
+  return (
+    typeof candidate.subject === "string" &&
+    candidate.subject.length > 0 &&
+    candidate.subject.length <= 256 &&
+    Array.isArray(candidate.roles) &&
+    candidate.roles.length <= 32 &&
+    candidate.roles.every(
+      (role) => typeof role === "string" && role.length > 0 && role.length <= 64,
+    )
+  );
+}
+
+function isBoundedCsrfToken(value: string | null): value is string {
+  return (
+    value !== null &&
+    value.length >= 16 &&
+    value.length <= 512 &&
+    !/[\u0000-\u001f\u007f]/.test(value)
+  );
+}
+
+function safeUpstreamStatus(value: number): number {
+  return Number.isInteger(value) && value >= 400 && value <= 599 ? value : 502;
+}
+
+function jsonError(error: string, status: number): Response {
+  return Response.json({ error }, { status, headers: RESPONSE_HEADERS });
 }

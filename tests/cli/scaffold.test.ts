@@ -199,6 +199,17 @@ describe("scaffoldAgent", () => {
     expect(browserClient).toContain("authAssertion");
     expect(browserClient).toContain("NEXT_PUBLIC_AUGGY_BASE_URL");
 
+    const adminRoute = readFileSync(
+      join(templatesRoot, "nextjs-server-client", "admin-reindex-route.ts.txt"),
+      "utf-8",
+    );
+    expect(adminRoute).toContain('import "server-only";');
+    expect(adminRoute).toContain("createAdminReindexHandler");
+    expect(adminRoute).toContain("verifyAppOperatorSession");
+    expect(adminRoute).toContain("verifyAppCsrfToken");
+    expect(adminRoute).toContain("return null;");
+    expect(adminRoute).toContain("return false;");
+
     const authBridge = readFileSync(
       join(templatesRoot, "app-auth-bridge", "next-route.ts.txt"),
       "utf-8",

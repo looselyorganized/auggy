@@ -117,6 +117,7 @@ reject_pack_pattern() {
 require_pack_entry "src/cli/index.ts"
 require_pack_entry "src/cli/model-registry.ts"
 require_pack_entry "src/cli/model-snapshot.ts"
+require_pack_entry "src/scaffold-starter-skills/auggy/assets/templates/nextjs-server-client/admin-reindex-route.ts.txt"
 require_pack_entry "admin/dist/index.html"
 require_pack_entry "README.md"
 require_pack_entry "CHANGELOG.md"
@@ -228,6 +229,12 @@ grep -q "\"auggy\": \"file:$TARBALL\"" "$AGENT_DIR/package.json" \
 grep -q "\"@auggy/anthropic\": \"file:$ANTHROPIC_TARBALL\"" "$AGENT_DIR/package.json" \
   || fail "agent package.json did not pin @auggy/anthropic to the packed adapter"
 assert_agent_uses_folder_backed_augments fileMemory filesystem webTransport webFetch turnControl
+ADMIN_TEMPLATE="$AGENT_DIR/skills/auggy/assets/templates/nextjs-server-client/admin-reindex-route.ts.txt"
+[[ -f "$ADMIN_TEMPLATE" ]] || fail "scaffold missing hardened admin route template"
+grep -Fq 'import "server-only";' "$ADMIN_TEMPLATE" \
+  || fail "scaffold admin route template is not server-only"
+grep -Fq 'createAdminReindexHandler' "$ADMIN_TEMPLATE" \
+  || fail "scaffold admin route template lacks the fail-closed authorization boundary"
 
 SMOKE_PORT="$(
   node -e 'const net=require("net"); const server=net.createServer(); server.listen(0,"127.0.0.1",()=>{console.log(server.address().port); server.close();});'
