@@ -10,6 +10,7 @@ import { z } from "zod";
 import type { Augment, ModelClient } from "@/types";
 
 const bearer = "console-persistence-test-token";
+const consoleAuthorization = `Basic ${Buffer.from(`:${bearer}`).toString("base64")}`;
 
 async function sendConsoleMessage(port: number, threadId: string, message: string) {
   const csrf = await generateCsrfToken({
@@ -19,7 +20,11 @@ async function sendConsoleMessage(port: number, threadId: string, message: strin
   });
   return fetch(`http://127.0.0.1:${port}/console/api/chat`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: {
+      authorization: consoleAuthorization,
+      "content-type": "application/json",
+      origin: `http://127.0.0.1:${port}`,
+    },
     body: JSON.stringify({ csrf, threadId, message, chatMode: "creator" }),
   });
 }
@@ -38,7 +43,11 @@ async function sendConsolePreviewMessage(
   });
   return fetch(`http://127.0.0.1:${port}/console/api/chat`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: {
+      authorization: consoleAuthorization,
+      "content-type": "application/json",
+      origin: `http://127.0.0.1:${port}`,
+    },
     body: JSON.stringify({ csrf, threadId, message, chatMode, visitorToken }),
   });
 }
@@ -46,6 +55,7 @@ async function sendConsolePreviewMessage(
 async function readThread(port: number, threadId: string) {
   const response = await fetch(
     `http://127.0.0.1:${port}/console/api/chat/threads/${encodeURIComponent(threadId)}`,
+    { headers: { authorization: consoleAuthorization } },
   );
   expect(response.status).toBe(200);
   return (await response.json()) as {
@@ -68,7 +78,11 @@ async function deleteConsoleThread(port: number, threadId: string) {
     `http://127.0.0.1:${port}/console/api/chat/threads/${encodeURIComponent(threadId)}/delete`,
     {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: {
+        authorization: consoleAuthorization,
+        "content-type": "application/json",
+        origin: `http://127.0.0.1:${port}`,
+      },
       body: JSON.stringify({ csrf }),
     },
   );
@@ -220,12 +234,15 @@ describe("webTransport console persistence boundary", () => {
       await secondAgent.start();
       secondStarted = true;
 
-      const emptyList = await fetch(`http://127.0.0.1:${secondPort}/console/api/chat/threads`);
+      const emptyList = await fetch(`http://127.0.0.1:${secondPort}/console/api/chat/threads`, {
+        headers: { authorization: consoleAuthorization },
+      });
       expect(emptyList.status).toBe(200);
       expect(await emptyList.json()).toEqual({ threads: [] });
 
       const deletedDetail = await fetch(
         `http://127.0.0.1:${secondPort}/console/api/chat/threads/${deletedThreadId}`,
+        { headers: { authorization: consoleAuthorization } },
       );
       expect(deletedDetail.status).toBe(410);
       expect(await deletedDetail.json()).toEqual({ error: "thread was deleted" });
@@ -248,7 +265,9 @@ describe("webTransport console persistence boundary", () => {
       expect(await fresh.text()).toContain("fresh reply");
       expect(secondModel.calls).toHaveLength(1);
 
-      const finalList = await fetch(`http://127.0.0.1:${secondPort}/console/api/chat/threads`);
+      const finalList = await fetch(`http://127.0.0.1:${secondPort}/console/api/chat/threads`, {
+        headers: { authorization: consoleAuthorization },
+      });
       expect(finalList.status).toBe(200);
       const finalBody = (await finalList.json()) as { threads: Array<{ id: string }> };
       expect(finalBody.threads.map(({ id }) => id)).toEqual([freshThreadId]);
