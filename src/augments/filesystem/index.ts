@@ -1,6 +1,8 @@
 import { z } from "zod";
-import { readFile, writeFile, readdir, mkdir, rm, realpath, stat, lstat } from "node:fs/promises";
-import { resolve, join, relative, extname, isAbsolute, sep, dirname } from "node:path";
+import { constants } from "node:fs";
+import type { Stats } from "node:fs";
+import { readFile, readdir, mkdir, open, rm, realpath, stat, lstat } from "node:fs/promises";
+import { resolve, join, relative, extname, isAbsolute, sep, dirname, basename } from "node:path";
 import { Glob } from "bun";
 import type {
   AdminInfoBlock,
@@ -28,8 +30,9 @@ import {
  * and the augment resolves to physical paths with security enforcement.
  *
  * Security model:
- *  - fs.realpath() resolves symlinks before every boundary check
- *  - startsWith() against the realpath'd mount root prevents traversal
+ *  - nearest-existing-ancestor realpath checks catch missing-leaf symlink escapes
+ *  - path.relative() against the canonical mount root prevents traversal
+ *  - mutation paths reject symlink components and no-follow file leaves
  *  - Per-mount read/write/delete permissions enforced per operation
  *  - Binary file detection on read prevents garbage in tool results
  *  - maxReadSize truncation prevents large files from blowing context
@@ -217,11 +220,26 @@ export function filesystem(opts: FilesystemOptions): Augment {
       const real = await realpath(resolve(mount.path));
       resolvedRoots.set(mount.name, real);
       return real;
-    } catch {
-      // Mount path doesn't exist yet — resolve without following symlinks
-      const resolved = resolve(mount.path);
-      resolvedRoots.set(mount.name, resolved);
-      return resolved;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      if (!mount.writable) {
+        throw new Error(
+          `filesystem: read-only mount "${mount.name}" does not exist at "${mount.path}"`,
+        );
+      }
+
+      // Writable roots historically auto-created on first write. Do that once
+      // at boot, then cache the canonical root. The configured path is an
+      // operator-controlled boundary; descendants remain subject to the
+      // component-by-component no-symlink checks below.
+      await mkdir(resolve(mount.path), { recursive: true, mode: 0o700 });
+      const created = await realpath(resolve(mount.path));
+      const createdStats = await lstat(created);
+      if (!createdStats.isDirectory()) {
+        throw new Error(`filesystem: mount "${mount.name}" is not a directory`);
+      }
+      resolvedRoots.set(mount.name, created);
+      return created;
     }
   }
 
@@ -303,12 +321,47 @@ export function filesystem(opts: FilesystemOptions): Augment {
   }
 
   async function canonicalCandidatePath(mount: FsMount, physicalPath: string): Promise<string> {
-    const candidate = await realpath(physicalPath).catch(() => resolve(physicalPath));
+    const candidate = await resolveNearestExistingAncestor(physicalPath, mount.name);
     const mountRoot = await resolveMountRoot(mount);
     if (!isWithinMount(candidate, mountRoot)) {
       throw new Error(`Path resolves outside mount "${mount.name}" boundary`);
     }
     return candidate;
+  }
+
+  async function resolveNearestExistingAncestor(
+    physicalPath: string,
+    mountName: string,
+  ): Promise<string> {
+    let current = resolve(physicalPath);
+    const missingSegments: string[] = [];
+
+    while (true) {
+      try {
+        const existing = await realpath(current);
+        return resolve(existing, ...missingSegments);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+
+        // A dangling symlink is an existing path whose target cannot be
+        // canonicalized. Never treat it as an ordinary missing component:
+        // it could begin resolving outside the mount after this check.
+        const currentStats = await lstat(current).catch((lstatError: NodeJS.ErrnoException) => {
+          if (lstatError.code === "ENOENT") return null;
+          throw lstatError;
+        });
+        if (currentStats?.isSymbolicLink()) {
+          throw new Error(
+            `Path resolves outside mount "${mountName}" boundary through an unresolved symlink`,
+          );
+        }
+
+        const parent = dirname(current);
+        if (parent === current) throw error;
+        missingSegments.unshift(basename(current));
+        current = parent;
+      }
+    }
   }
 
   async function resolveAndValidate(
@@ -332,21 +385,85 @@ export function filesystem(opts: FilesystemOptions): Augment {
     const mountRoot = await resolveMountRoot(mount);
     const targetPath = resolve(mountRoot, subPath);
 
-    // Resolve symlinks on the target to catch symlink escapes
-    let realTarget: string;
-    try {
-      realTarget = await realpath(targetPath);
-    } catch {
-      // Target doesn't exist yet (for writes/mkdirs) — use the resolved
-      // path but still validate it's within the mount boundary
-      realTarget = targetPath;
-    }
+    // Resolve the nearest existing ancestor, not just the leaf. A missing
+    // write target may still sit below a symlinked parent that escapes the
+    // mount. Falling back to the lexical leaf would miss that boundary hop.
+    const realTarget = await resolveNearestExistingAncestor(targetPath, mountName);
 
     if (!isWithinMount(realTarget, mountRoot)) {
       throw new Error(`Path "${logicalPath}" resolves outside mount "${mountName}" boundary`);
     }
 
     return { physicalPath: realTarget, mount };
+  }
+
+  async function resolveMutationTarget(
+    logicalPath: string,
+    requireMount: (mount: FsMount) => string | null,
+    createParents: boolean,
+  ): Promise<{ physicalPath: string; mount: FsMount; targetStats: Stats | null }> {
+    const { mountName, subPath } = parseLogicalPath(logicalPath);
+    const mount = mountMap.get(mountName);
+    if (!mount) {
+      throw new Error(
+        `Unknown mount "${mountName}". Available mounts: ${[...mountMap.keys()].join(", ")}`,
+      );
+    }
+    const permissionError = requireMount(mount);
+    if (permissionError) throw new Error(permissionError);
+
+    const mountRoot = await resolveMountRoot(mount);
+    const physicalPath = resolve(mountRoot, subPath);
+    if (!isWithinMount(physicalPath, mountRoot)) {
+      throw new Error(`Path "${logicalPath}" resolves outside mount "${mountName}" boundary`);
+    }
+    if (physicalPath === mountRoot) {
+      return { physicalPath, mount, targetStats: await lstat(physicalPath) };
+    }
+
+    const parentRelative = relative(mountRoot, dirname(physicalPath));
+    const parentSegments = parentRelative === "" ? [] : parentRelative.split(sep);
+    let current = mountRoot;
+    for (const segment of parentSegments) {
+      current = join(current, segment);
+      let currentStats = await lstat(current).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT") return null;
+        throw error;
+      });
+      if (!currentStats) {
+        if (!createParents) throw new Error(`Parent directory does not exist for "${logicalPath}"`);
+        await mkdir(current);
+        currentStats = await lstat(current);
+      }
+      if (currentStats.isSymbolicLink()) {
+        throw new Error(
+          `Path "${logicalPath}" resolves outside mount "${mountName}" boundary through a symlink`,
+        );
+      }
+      if (!currentStats.isDirectory()) {
+        throw new Error(`Parent component for "${logicalPath}" is not a directory`);
+      }
+      const canonicalParent = await realpath(current);
+      if (!isWithinMount(canonicalParent, mountRoot)) {
+        throw new Error(`Path "${logicalPath}" resolves outside mount "${mountName}" boundary`);
+      }
+    }
+
+    const targetStats = await lstat(physicalPath).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return null;
+      throw error;
+    });
+    if (targetStats?.isSymbolicLink()) {
+      throw new Error(
+        `Path "${logicalPath}" resolves outside mount "${mountName}" boundary through a symlink`,
+      );
+    }
+    const canonicalTarget = await resolveNearestExistingAncestor(physicalPath, mountName);
+    if (!isWithinMount(canonicalTarget, mountRoot)) {
+      throw new Error(`Path "${logicalPath}" resolves outside mount "${mountName}" boundary`);
+    }
+
+    return { physicalPath, mount, targetStats };
   }
 
   // --- Tools ---
@@ -374,27 +491,36 @@ export function filesystem(opts: FilesystemOptions): Augment {
         }
       }
 
-      // Binary detection
-      const ext = extname(physicalPath).toLowerCase();
-      if (BINARY_EXTENSIONS.has(ext)) {
-        const stats = await stat(physicalPath);
-        return `Error: Binary file (${ext}, ${formatSize(stats.size)}). Use fs_list to see metadata.`;
+      const handle = await open(physicalPath, constants.O_RDONLY | constants.O_NOFOLLOW);
+      try {
+        const stats = await handle.stat();
+        if (!stats.isFile()) {
+          if (stats.isDirectory()) {
+            return `Error: "${logicalPath}" is a directory. Use fs_list instead.`;
+          }
+          return `Error: "${logicalPath}" is not a regular file`;
+        }
+
+        // Binary detection
+        const ext = extname(physicalPath).toLowerCase();
+        if (BINARY_EXTENSIONS.has(ext)) {
+          return `Error: Binary file (${ext}, ${formatSize(stats.size)}). Use fs_list to see metadata.`;
+        }
+
+        // Read from the validated handle so a leaf replacement cannot redirect
+        // the operation after the boundary check.
+        const maxRead = mount.maxReadSize ?? DEFAULT_MAX_READ;
+        const buffer = Buffer.allocUnsafe(Math.min(stats.size, maxRead));
+        const { bytesRead } = await handle.read(buffer, 0, buffer.byteLength, 0);
+        const content = buffer.subarray(0, bytesRead).toString("utf8");
+
+        if (stats.size > maxRead) {
+          return `${content}\n\n[truncated at ${formatSize(maxRead)}, total size: ${formatSize(stats.size)}]`;
+        }
+        return content;
+      } finally {
+        await handle.close();
       }
-
-      // Read with size cap
-      const maxRead = mount.maxReadSize ?? DEFAULT_MAX_READ;
-      const stats = await stat(physicalPath);
-
-      if (stats.isDirectory()) {
-        return `Error: "${logicalPath}" is a directory. Use fs_list instead.`;
-      }
-
-      const content = await Bun.file(physicalPath).slice(0, maxRead).text();
-
-      if (stats.size > maxRead) {
-        return `${content}\n\n[truncated at ${formatSize(maxRead)}, total size: ${formatSize(stats.size)}]`;
-      }
-      return content;
     },
   });
 
@@ -408,20 +534,54 @@ export function filesystem(opts: FilesystemOptions): Augment {
       content: z.string().describe("File content to write"),
     }),
     execute: async ({ path: logicalPath, content }) => {
-      const { physicalPath, mount } = await resolveAndValidate(logicalPath, (m) =>
-        m.writable ? null : `Mount "${m.name}" is read-only`,
+      const { mountName } = parseLogicalPath(logicalPath);
+      const configuredMount = mountMap.get(mountName);
+      if (!configuredMount) {
+        throw new Error(
+          `Unknown mount "${mountName}". Available mounts: ${[...mountMap.keys()].join(", ")}`,
+        );
+      }
+      if (!configuredMount.writable) {
+        throw new Error(`Mount "${configuredMount.name}" is read-only`);
+      }
+      const maxWrite = configuredMount.maxWriteSize ?? DEFAULT_MAX_WRITE;
+      const contentSize = Buffer.byteLength(content, "utf8");
+      if (contentSize > maxWrite) {
+        return `Error: Content exceeds max write size (${formatSize(contentSize)} > ${formatSize(maxWrite)})`;
+      }
+      const { physicalPath, targetStats } = await resolveMutationTarget(
+        logicalPath,
+        (m) => (m.writable ? null : `Mount "${m.name}" is read-only`),
+        true,
       );
 
-      const maxWrite = mount.maxWriteSize ?? DEFAULT_MAX_WRITE;
-      if (content.length > maxWrite) {
-        return `Error: Content exceeds max write size (${formatSize(content.length)} > ${formatSize(maxWrite)})`;
+      const handle = await open(
+        physicalPath,
+        constants.O_WRONLY |
+          constants.O_NOFOLLOW |
+          (targetStats ? 0 : constants.O_CREAT | constants.O_EXCL),
+        0o600,
+      );
+      try {
+        const openedStats = await handle.stat();
+        if (!openedStats.isFile()) {
+          throw new Error(`Path "${logicalPath}" is not a regular file`);
+        }
+        if (
+          targetStats &&
+          (openedStats.dev !== targetStats.dev || openedStats.ino !== targetStats.ino)
+        ) {
+          throw new Error(`Path "${logicalPath}" changed during security validation`);
+        }
+        if (openedStats.nlink > 1) {
+          throw new Error(`Path "${logicalPath}" has multiple filesystem links`);
+        }
+        await handle.truncate(0);
+        await handle.writeFile(content, "utf8");
+      } finally {
+        await handle.close();
       }
-
-      // Ensure parent directory exists
-      await mkdir(dirname(physicalPath), { recursive: true });
-
-      await writeFile(physicalPath, content, "utf-8");
-      return `Written ${formatSize(content.length)} to "${logicalPath}"`;
+      return `Written ${formatSize(contentSize)} to "${logicalPath}"`;
     },
   });
 
@@ -463,12 +623,23 @@ export function filesystem(opts: FilesystemOptions): Augment {
             }
             const entryPath = join(physicalPath, entry.name);
             try {
-              const s = await stat(entryPath);
+              const entryStats = await lstat(entryPath);
+              if (entryStats.isSymbolicLink()) {
+                try {
+                  await canonicalCandidatePath(mount, entryPath);
+                } catch {
+                  return {
+                    name: entry.name,
+                    type: "symlink",
+                  };
+                }
+              }
+              const s = entryStats.isSymbolicLink() ? await stat(entryPath) : entryStats;
               return {
                 name: entry.name,
-                type: entry.isDirectory() ? "dir" : "file",
-                size: entry.isDirectory() ? undefined : s.size,
-                sizeFormatted: entry.isDirectory() ? undefined : formatSize(s.size),
+                type: s.isDirectory() ? "dir" : entryStats.isSymbolicLink() ? "symlink" : "file",
+                size: s.isDirectory() ? undefined : s.size,
+                sizeFormatted: s.isDirectory() ? undefined : formatSize(s.size),
                 modified: s.mtime.toISOString(),
               };
             } catch {
@@ -501,10 +672,20 @@ export function filesystem(opts: FilesystemOptions): Augment {
       path: z.string().describe("Logical path for the new directory"),
     }),
     execute: async ({ path: logicalPath }) => {
-      const { physicalPath } = await resolveAndValidate(logicalPath, (m) =>
-        m.writable ? null : `Mount "${m.name}" is read-only`,
+      const { physicalPath, mount, targetStats } = await resolveMutationTarget(
+        logicalPath,
+        (m) => (m.writable ? null : `Mount "${m.name}" is read-only`),
+        true,
       );
-      await mkdir(physicalPath, { recursive: true });
+      if (!targetStats) await mkdir(physicalPath);
+      const createdStats = await lstat(physicalPath);
+      if (createdStats.isSymbolicLink() || !createdStats.isDirectory()) {
+        throw new Error(`Path "${logicalPath}" is not a safe directory`);
+      }
+      const mountRoot = await resolveMountRoot(mount);
+      if (!isWithinMount(await realpath(physicalPath), mountRoot)) {
+        throw new Error(`Path "${logicalPath}" resolves outside mount "${mount.name}" boundary`);
+      }
       return `Created directory "${logicalPath}"`;
     },
   });
@@ -518,11 +699,15 @@ export function filesystem(opts: FilesystemOptions): Augment {
       path: z.string().describe("Logical path to the file or empty directory to remove"),
     }),
     execute: async ({ path: logicalPath }) => {
-      const { physicalPath, mount } = await resolveAndValidate(logicalPath, (m) => {
-        if (!m.writable) return `Mount "${m.name}" is read-only`;
-        if (!m.deletable) return `Mount "${m.name}" does not allow deletion`;
-        return null;
-      });
+      const { physicalPath, mount } = await resolveMutationTarget(
+        logicalPath,
+        (m) => {
+          if (!m.writable) return `Mount "${m.name}" is read-only`;
+          if (!m.deletable) return `Mount "${m.name}" does not allow deletion`;
+          return null;
+        },
+        false,
+      );
 
       // Prevent deleting the mount root itself before the empty-directory
       // branch can remove it.
@@ -561,6 +746,9 @@ export function filesystem(opts: FilesystemOptions): Augment {
       const { physicalPath, mount } = await resolveAndValidate(logicalPath);
       const restricted = await restrictedSkillPathError(physicalPath, mount, context);
       if (restricted) return restricted;
+      if (isAbsolute(pattern) || pattern.split(/[\\/]+/).some((segment) => segment === "..")) {
+        throw new Error(`Search pattern "${pattern}" may not leave the mount boundary`);
+      }
       const cap = Math.min(maxResults ?? 100, 1000);
 
       const excludes = mount.searchExcludes ?? DEFAULT_SEARCH_EXCLUDES;
@@ -574,8 +762,8 @@ export function filesystem(opts: FilesystemOptions): Augment {
         absolute: false,
         dot: false,
       })) {
+        const candidatePath = await canonicalCandidatePath(mount, join(physicalPath, entry));
         if (mount.name === "skills") {
-          const candidatePath = await canonicalCandidatePath(mount, join(physicalPath, entry));
           const restrictedEntry = await restrictedSkillPathError(candidatePath, mount, context);
           if (restrictedEntry) continue;
         }

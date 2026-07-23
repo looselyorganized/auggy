@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { access, writeFile, mkdir, symlink, readFile } from "node:fs/promises";
+import { access, writeFile, mkdir, symlink, readFile, link } from "node:fs/promises";
 import { join } from "node:path";
 import { filesystem, isWithinMount } from "@/augments/filesystem";
 import type { ContextBlock, PeerIdentity, ToolExecuteContext, TurnState } from "@/types";
@@ -181,6 +181,18 @@ describe("filesystem augment", () => {
     });
   });
 
+  it("creates and canonicalizes a missing writable mount root at boot", async () => {
+    const root = join(tmp.path, "not-created", "work");
+    const aug = filesystem({
+      mounts: [{ name: "work", path: root, writable: true }],
+    });
+
+    expect(await execTool(aug, "fs_write", { path: "work/new.txt", content: "safe" })).toContain(
+      "Written",
+    );
+    expect(await readFile(join(root, "new.txt"), "utf8")).toBe("safe");
+  });
+
   // === fs_read ===
 
   describe("fs_read", () => {
@@ -298,6 +310,63 @@ describe("filesystem augment", () => {
       );
     });
 
+    it("rejects a write through an escaping symlink parent when the leaf does not exist", async () => {
+      const outside = join(tmp.path, "outside-write");
+      await mkdir(outside, { recursive: true });
+      await symlink(outside, join(tmp.path, "writable", "escape-parent"), "dir");
+
+      const aug = createTestFs();
+      await expect(
+        execTool(aug, "fs_write", {
+          path: "work/escape-parent/new.txt",
+          content: "must stay inside the mount",
+        }),
+      ).rejects.toThrow(/outside mount.*boundary/);
+      await expect(access(join(outside, "new.txt"))).rejects.toThrow();
+    });
+
+    it("rejects mkdir through an escaping symlink parent when the target does not exist", async () => {
+      const outside = join(tmp.path, "outside-mkdir");
+      await mkdir(outside, { recursive: true });
+      await symlink(outside, join(tmp.path, "writable", "escape-parent"), "dir");
+
+      const aug = createTestFs();
+      await expect(
+        execTool(aug, "fs_mkdir", { path: "work/escape-parent/new-directory" }),
+      ).rejects.toThrow(/outside mount.*boundary/);
+      await expect(access(join(outside, "new-directory"))).rejects.toThrow();
+    });
+
+    it("rejects writes through any symlinked parent, including links that currently stay inside", async () => {
+      await mkdir(join(tmp.path, "writable", "real-parent"), { recursive: true });
+      await symlink(
+        join(tmp.path, "writable", "real-parent"),
+        join(tmp.path, "writable", "linked-parent"),
+        "dir",
+      );
+
+      const aug = createTestFs();
+      await expect(
+        execTool(aug, "fs_write", {
+          path: "work/linked-parent/new.txt",
+          content: "do not follow mutation aliases",
+        }),
+      ).rejects.toThrow(/symlink/);
+      await expect(access(join(tmp.path, "writable", "real-parent", "new.txt"))).rejects.toThrow();
+    });
+
+    it("rejects search patterns that traverse outside the mount", async () => {
+      await writeFile(join(tmp.path, "outside-search-secret.txt"), "secret", "utf8");
+      const aug = createTestFs();
+
+      await expect(
+        execTool(aug, "fs_search", {
+          path: "read",
+          pattern: "../outside-search-secret.txt",
+        }),
+      ).rejects.toThrow(/may not leave the mount boundary/);
+    });
+
     // Codex review P2: separator-suffix check broke mounts rooted at
     // filesystem roots ("/" on POSIX). These pure-unit tests verify the
     // new `path.relative`-based boundary check handles root mounts,
@@ -405,6 +474,60 @@ describe("filesystem augment", () => {
       });
       expect(result).toContain("exceeds max write size");
     });
+
+    it("enforces maxWriteSize in UTF-8 bytes", async () => {
+      const aug = filesystem({
+        mounts: [
+          {
+            name: "work",
+            path: join(tmp.path, "writable"),
+            writable: true,
+            maxWriteSize: 4,
+          },
+        ],
+      });
+      const result = await execTool(aug, "fs_write", {
+        path: "work/unicode.txt",
+        content: "ééé",
+      });
+      expect(result).toContain("exceeds max write size");
+      await expect(access(join(tmp.path, "writable", "unicode.txt"))).rejects.toThrow();
+    });
+
+    it("rejects oversized content before creating parent directories", async () => {
+      const aug = filesystem({
+        mounts: [
+          {
+            name: "work",
+            path: join(tmp.path, "writable"),
+            writable: true,
+            maxWriteSize: 2,
+          },
+        ],
+      });
+      const result = await execTool(aug, "fs_write", {
+        path: "work/must-not-exist/nested/file.txt",
+        content: "too large",
+      });
+      expect(result).toContain("exceeds max write size");
+      await expect(access(join(tmp.path, "writable", "must-not-exist"))).rejects.toThrow();
+    });
+
+    it("rejects writing through a hard-linked leaf", async () => {
+      const outside = join(tmp.path, "outside-hardlink.txt");
+      const inside = join(tmp.path, "writable", "hardlink.txt");
+      await writeFile(outside, "outside content", "utf8");
+      await link(outside, inside);
+
+      const aug = createTestFs();
+      await expect(
+        execTool(aug, "fs_write", {
+          path: "work/hardlink.txt",
+          content: "must not mutate the outside alias",
+        }),
+      ).rejects.toThrow(/multiple filesystem links/);
+      expect(await readFile(outside, "utf8")).toBe("outside content");
+    });
   });
 
   // === fs_list ===
@@ -438,6 +561,20 @@ describe("filesystem augment", () => {
       };
       expect(parsed.type).toBe("file");
       expect(parsed.size).toBe(11); // "hello world"
+    });
+
+    it("does not follow escaping symlinks when listing metadata", async () => {
+      const outside = join(tmp.path, "outside-list-secret.txt");
+      await writeFile(outside, "sensitive-size", "utf8");
+      await symlink(outside, join(tmp.path, "readable", "outside-link.txt"));
+
+      const aug = createTestFs();
+      const result = await execTool(aug, "fs_list", { path: "read" });
+      const parsed = JSON.parse(result) as {
+        entries: Array<{ name: string; type: string; size?: number; modified?: string }>;
+      };
+      const linkEntry = parsed.entries.find((entry) => entry.name === "outside-link.txt");
+      expect(linkEntry).toEqual({ name: "outside-link.txt", type: "symlink" });
     });
   });
 
