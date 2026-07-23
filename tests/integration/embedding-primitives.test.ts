@@ -52,6 +52,15 @@ function createPeerCaptureAugment(): PeerCapture {
   return { augment, captured };
 }
 
+function runStartedThreadId(sse: string): string {
+  for (const line of sse.split("\n")) {
+    if (!line.startsWith("data: ")) continue;
+    const event = JSON.parse(line.slice(6)) as { type?: string; threadId?: string };
+    if (event.type === "RUN_STARTED" && event.threadId) return event.threadId;
+  }
+  throw new Error("RUN_STARTED event was not present");
+}
+
 describe("integration: embedding primitives (docs/20-embedding.md)", () => {
   let tmp: { path: string; cleanup: () => Promise<void> };
   let agent: AgentHandle | undefined;
@@ -113,12 +122,15 @@ describe("integration: embedding primitives (docs/20-embedding.md)", () => {
     await resp.text();
 
     // The agent saw the turn with public:anonymous trust.
-    // In direct fetch the threadId we send IS used by the runtime → peer.id = anon-<threadId>.
+    // The runtime binds anonymous identity to a server-minted subject, never
+    // to the caller-controlled thread ID. The separately signed visitor token
+    // can prove a one-way promotion without sharing this memory subject.
     expect(peerCapture.captured).toHaveLength(1);
     const peer = peerCapture.captured[0]!;
     expect(peer.trustLevel).toBe("public");
     expect(peer.publicSubstate).toBe("anonymous");
-    expect(peer.id).toBe("anon-thread-pa-1");
+    expect(peer.id).toMatch(/^anon_session_/);
+    expect(resp.headers.get("x-auggy-anonymous-session")).toBeTruthy();
   }, 30_000);
 
   // ---------------------------------------------------------------------------
@@ -155,7 +167,9 @@ describe("integration: embedding primitives (docs/20-embedding.md)", () => {
       }),
     });
     const rotatedToken = r1.headers.get("x-visitor-token")!;
+    const anonymousSession = r1.headers.get("x-auggy-anonymous-session")!;
     expect(rotatedToken).toBeTruthy();
+    expect(anonymousSession).toBeTruthy();
     await r1.text();
 
     // Call 2: send the rotated token → recognized.
@@ -164,6 +178,7 @@ describe("integration: embedding primitives (docs/20-embedding.md)", () => {
       headers: {
         "content-type": "application/json",
         "x-visitor-token": rotatedToken,
+        "x-auggy-anonymous-session": anonymousSession,
       },
       body: JSON.stringify({
         messages: [{ role: "user", content: "follow-up" }],
@@ -181,6 +196,7 @@ describe("integration: embedding primitives (docs/20-embedding.md)", () => {
     expect(recog.publicSubstate).toBe("recognized");
     expect(recog.trustLevel).toBe("public");
     expect(recog.id).toMatch(/^vis_/); // recognized peer.id is the token's visitorId
+    expect(model.calls[1]?.messages.some((message) => message.content.includes("hi"))).toBe(true);
 
     // Call 3: same rotated token → same peer.id (stable visitorId).
     const r3 = await fetch(`http://localhost:${PORT}/agent/run`, {
@@ -188,6 +204,7 @@ describe("integration: embedding primitives (docs/20-embedding.md)", () => {
       headers: {
         "content-type": "application/json",
         "x-visitor-token": rotatedToken,
+        "x-auggy-anonymous-session": anonymousSession,
       },
       body: JSON.stringify({
         messages: [{ role: "user", content: "third" }],
@@ -240,6 +257,7 @@ describe("integration: embedding primitives (docs/20-embedding.md)", () => {
           enabled: true,
           signingKey: SIGNING_KEY,
           ttlSeconds: 7_776_000,
+          agentBinding: "pa-verify",
         },
       });
 
@@ -248,6 +266,7 @@ describe("integration: embedding primitives (docs/20-embedding.md)", () => {
         dbPath: join(tmp.path, "visitor-auth.db"),
         agentMail: { transport: "console" },
         signingKey: SIGNING_KEY,
+        agentBinding: "pa-verify",
         layeredMemoryDbPath: null,
       });
 
@@ -270,7 +289,9 @@ describe("integration: embedding primitives (docs/20-embedding.md)", () => {
         }),
       });
       expect(r1.status).toBe(200);
-      await r1.text();
+      const anonymousSession = r1.headers.get("x-auggy-anonymous-session");
+      expect(anonymousSession).toBeTruthy();
+      const firstRunBody = await r1.text();
 
       // Extract the verify URL from captured stdout.
       const verifyLine = logs.find((l) => l.includes("/visitor-auth/verify"));
@@ -304,20 +325,29 @@ describe("integration: embedding primitives (docs/20-embedding.md)", () => {
         headers: {
           "content-type": "application/json",
           "x-visitor-token": visToken,
+          ...(anonymousSession ? { "x-auggy-anonymous-session": anonymousSession } : {}),
         },
         body: JSON.stringify({
           messages: [{ role: "user", content: "am I recognized now?" }],
-          threadId: "thread-pa-verify-2",
+          threadId: "thread-pa-verify",
         }),
       });
       expect(r2.status).toBe(200);
-      await r2.text();
+      const promotedRunBody = await r2.text();
+      expect(runStartedThreadId(promotedRunBody)).toBe(runStartedThreadId(firstRunBody));
 
       // The last captured peer should be recognized with a vis_ id.
       const lastPeer = peerCapture.captured[peerCapture.captured.length - 1]!;
       expect(lastPeer.trustLevel).toBe("public");
       expect(lastPeer.publicSubstate).toBe("recognized");
       expect(lastPeer.id).toMatch(/^vis_/);
+      expect(
+        model.calls
+          .at(-1)
+          ?.messages.some((message) =>
+            message.content.includes("verify me embedding-test@example.com"),
+          ),
+      ).toBe(true);
     } finally {
       logSpy.mockRestore();
     }
@@ -363,13 +393,95 @@ describe("integration: embedding primitives (docs/20-embedding.md)", () => {
 
     expect(peerCapture.captured).toHaveLength(1);
     const peer = peerCapture.captured[0]!;
-    expect(peer.id).toBe("anon-thread-spoof"); // computed from threadId, NOT from x-peer-id
+    expect(peer.id).toMatch(/^anon_session_/);
+    expect(peer.id).not.toBe("attacker-controlled-id");
     expect(peer.id).not.toBe("spoofed-id-12345");
     // x-peer-name DOES populate displayName (cosmetic — not trusted for identity).
     expect(peer.displayName).toBe("Forged Display Name");
     // Trust level is unaffected by header forgery.
     expect(peer.trustLevel).toBe("public");
     expect(peer.publicSubstate).toBe("anonymous");
+  }, 30_000);
+
+  it("denies recognized-to-anonymous downgrade after visitor revocation", async () => {
+    const PORT = 19207;
+    const model = createMockModel({ response: "ok" });
+    let revokedVisitorId: string | null = null;
+    const transport = webTransport({
+      port: PORT,
+      auth: { type: "bearer", token: BEARER },
+      allowAnonymous: true,
+      visitorTokens: {
+        enabled: true,
+        signingKey: SIGNING_KEY,
+        ttlSeconds: 86_400,
+        revocationCheck: (visitorId) => visitorId === revokedVisitorId,
+      },
+    });
+    agent = defineAgent({ name: "pa-revocation", model: "mock", augments: [transport] }, model);
+    await agent.start();
+
+    const bootstrap = await fetch(`http://localhost:${PORT}/agent/run`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-visitor-token": "bootstrap",
+      },
+      body: JSON.stringify({
+        threadId: "predictable-public-thread",
+        messages: [{ role: "user", content: "anonymous start" }],
+      }),
+    });
+    const visitorToken = bootstrap.headers.get("x-visitor-token");
+    const anonymousSession = bootstrap.headers.get("x-auggy-anonymous-session");
+    expect(visitorToken).toBeTruthy();
+    expect(anonymousSession).toBeTruthy();
+    const bootstrapBody = await bootstrap.text();
+
+    const recognized = await fetch(`http://localhost:${PORT}/agent/run`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-visitor-token": visitorToken!,
+        "x-auggy-anonymous-session": anonymousSession!,
+      },
+      body: JSON.stringify({
+        threadId: "predictable-public-thread",
+        messages: [{ role: "user", content: "recognized continuation" }],
+      }),
+    });
+    const recognizedBody = await recognized.text();
+    expect(runStartedThreadId(recognizedBody)).toBe(runStartedThreadId(bootstrapBody));
+    const tokenPayload = JSON.parse(atob(visitorToken!.split(".")[0]!)) as {
+      visitorId: string;
+    };
+    revokedVisitorId = tokenPayload.visitorId;
+
+    const downgrade = await fetch(`http://localhost:${PORT}/agent/run`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-auggy-anonymous-session": anonymousSession!,
+      },
+      body: JSON.stringify({
+        threadId: "predictable-public-thread",
+        messages: [{ role: "user", content: "downgrade attempt" }],
+      }),
+    });
+    expect(await downgrade.text()).toContain('"type":"RUN_ERROR"');
+    expect(model.calls).toHaveLength(2);
+
+    const unrelatedAnonymous = await fetch(`http://localhost:${PORT}/agent/run`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        threadId: "predictable-public-thread",
+        messages: [{ role: "user", content: "independent anonymous thread" }],
+      }),
+    });
+    const unrelatedBody = await unrelatedAnonymous.text();
+    expect(runStartedThreadId(unrelatedBody)).not.toBe(runStartedThreadId(bootstrapBody));
+    expect(model.calls).toHaveLength(3);
   }, 30_000);
 
   // ---------------------------------------------------------------------------
