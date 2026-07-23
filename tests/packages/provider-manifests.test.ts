@@ -51,7 +51,11 @@ describe("published provider package contracts", () => {
 
   test("@hono/node-server v2 preserves the MCP SDK integration export", async () => {
     const nodeServer = await import("@hono/node-server");
+    const { StreamableHTTPServerTransport } = await import(
+      "@modelcontextprotocol/sdk/server/streamableHttp.js"
+    );
 
     expect(typeof nodeServer.getRequestListener).toBe("function");
+    expect(new StreamableHTTPServerTransport()).toBeInstanceOf(StreamableHTTPServerTransport);
   });
 });

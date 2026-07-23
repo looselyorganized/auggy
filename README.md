@@ -33,6 +33,15 @@ auggy run
 then installs the agent's local dependencies. Choose Anthropic, OpenAI,
 OpenRouter, or a local/remote Ollama instance.
 
+Generated agents own an audited root-level dependency override for
+`@hono/node-server` v2. Direct library consumers must copy the `overrides`
+block from Auggy's `package.json` into their application root because package
+managers do not inherit overrides from dependencies. This temporary boundary
+remains necessary until `@modelcontextprotocol/sdk` accepts the fixed v2 range.
+Provider adapters mark this peer optional only at the installer layer so a
+package manager cannot silently fetch the stale registry core. The local core
+is still a runtime requirement and must be installed explicitly.
+
 For a hosted model, enter the provider key during setup or add it to the
 generated `.env` afterward:
 

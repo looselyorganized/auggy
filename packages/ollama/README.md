@@ -8,6 +8,14 @@ Ollama engine adapter for [auggy](https://www.npmjs.com/package/auggy) — drive
 bun add auggy @auggy/ollama
 ```
 
+`auggy create` writes the audited transitive dependency overrides. For a direct
+package install, copy the `overrides` block from the installed `auggy` manifest
+into the consumer application's root `package.json`; package managers do not
+inherit overrides from dependencies. This is required until
+`@modelcontextprotocol/sdk` accepts the fixed `@hono/node-server` v2 range.
+The peer is optional only to package installers; the adapter imports Auggy at
+runtime, so install the matching local core explicitly.
+
 ## Setup
 
 1. Install Ollama from [ollama.com](https://ollama.com)

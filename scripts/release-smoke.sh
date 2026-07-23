@@ -114,7 +114,7 @@ verify_adapter_manifest() {
           throw new Error(`${expectedName} does not declare auggy ^${expectedVersion}`);
         }
         if (manifest.peerDependenciesMeta?.auggy?.optional !== true) {
-          throw new Error(`${expectedName} must require an explicit auggy install`);
+          throw new Error(`${expectedName} may not auto-install the stale registry core`);
         }
       ' "$expected_name" "$ROOT_VERSION" \
     || fail "packed peer contract mismatch for $expected_name"
@@ -133,12 +133,25 @@ verify_adapter_consumer() {
 const { writeFileSync } = require("node:fs");
 writeFileSync(
   process.argv[2],
-  `${JSON.stringify({ name: "packed-provider-consumer", private: true, type: "module" }, null, 2)}\n`,
+  `${JSON.stringify({
+    name: "packed-provider-consumer",
+    private: true,
+    type: "module",
+    overrides: {
+      "@hono/node-server": "2.0.11",
+      "body-parser": "2.3.0",
+      "fast-uri": "3.1.4",
+      "hono": "4.12.31",
+    },
+  }, null, 2)}\n`,
 );
 NODE
   (
     cd "$consumer_dir"
-    bun add --no-summary "$TARBALL" "$adapter_tarball" "$@"
+    # Install the required runtime peer first so package managers never try to
+    # satisfy it from the stale published registry version.
+    bun add --offline --no-summary "$TARBALL"
+    bun add --offline --no-summary "$adapter_tarball" "$@"
     bun -e '
       const [packageName, factoryName] = process.argv.slice(1);
       const provider = await import(packageName);
@@ -146,6 +159,37 @@ NODE
         throw new Error(`${packageName} does not export ${factoryName}`);
       }
     ' "$package_name" "$factory_name"
+    bun -e '
+      import { existsSync, readFileSync } from "node:fs";
+      import { dirname, join } from "node:path";
+
+      const expected = {
+        "@hono/node-server": "2.0.11",
+        "body-parser": "2.3.0",
+        "fast-uri": "3.1.4",
+        hono: "4.12.31",
+      };
+      for (const [name, version] of Object.entries(expected)) {
+        let directory = dirname(Bun.resolveSync(name, process.cwd()));
+        let manifest;
+        for (let depth = 0; depth < 8; depth += 1) {
+          const candidate = join(directory, "package.json");
+          if (existsSync(candidate)) {
+            const parsed = JSON.parse(readFileSync(candidate, "utf8"));
+            if (parsed.name === name) {
+              manifest = parsed;
+              break;
+            }
+          }
+          directory = dirname(directory);
+        }
+        if (manifest?.version !== version) {
+          throw new Error(
+            `${name} resolved to ${manifest?.version ?? "unknown"}, expected ${version}`,
+          );
+        }
+      }
+    '
   ) >"$LOG_DIR/provider-$slug.log" 2>&1 \
     || fail "packed provider consumer failed for $package_name"
 }

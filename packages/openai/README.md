@@ -10,6 +10,14 @@ bun add auggy @auggy/openai
 
 You don't normally install this directly — `auggy create` does it for you when you pick `openai` as the engine provider during scaffold.
 
+`auggy create` also writes the audited transitive dependency overrides. For a
+direct package install, copy the `overrides` block from the installed `auggy`
+manifest into the consumer application's root `package.json`; package managers
+do not inherit overrides from dependencies. This is required until
+`@modelcontextprotocol/sdk` accepts the fixed `@hono/node-server` v2 range.
+The peer is optional only to package installers; the adapter imports Auggy at
+runtime, so install the matching local core explicitly.
+
 ## Usage
 
 ```ts
