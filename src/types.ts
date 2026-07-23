@@ -190,6 +190,20 @@ export interface PeerIdentity {
   kind: PeerKind;
   trustLevel: TrustLevel;
   /**
+   * Authenticated origin carried across a delegated transport hop.
+   *
+   * The active transport mints the local `id` and records the original
+   * subject separately so peer-derived storage never trusts a caller-chosen
+   * cross-transport identifier. Only transports that authenticate and verify
+   * the delegation envelope may populate this field.
+   */
+  delegatedOrigin?: {
+    subject: string;
+    sourceAugment: string;
+    viaPeerId: string;
+    hopCount: number;
+  };
+  /**
    * Substate within the `public` trust level. Set by the transport at
    * identity resolution. Differentiates first-contact anonymous visitors
    * from those holding a valid agent-issued visitor token.

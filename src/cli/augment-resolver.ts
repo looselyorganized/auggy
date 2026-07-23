@@ -50,6 +50,7 @@ import type {
   LinkAugmentAgentCard,
   LinkAugmentInternalOptions,
   LinkPeerConfig,
+  PeerSourceConfig,
 } from "../augments/link";
 import type {
   AgentMailAugmentOptions,
@@ -531,6 +532,8 @@ async function resolveLink(opts: Record<string, unknown>, agentDir: string): Pro
       participantId: p.participantId as string,
       inboundBearer: p.inboundBearer as string,
       inboundBearerId: p.inboundBearerId as string,
+      purpose: p.purpose as string | undefined,
+      examples: p.examples as string[] | undefined,
     };
   }
 
@@ -539,6 +542,8 @@ async function resolveLink(opts: Record<string, unknown>, agentDir: string): Pro
     dbPath: resolvePath(opts.dbPath as string, agentDir),
     agentCard,
     peers,
+    peerSource: opts.peerSource as PeerSourceConfig | undefined,
+    outbound: opts.outbound as LinkAugmentInternalOptions["outbound"],
     agentDir,
   };
 

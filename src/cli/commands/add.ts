@@ -319,11 +319,11 @@ export async function runAdd(target: string | undefined, opts: AddOpts): Promise
     console.log();
     console.log("Use link (preview):");
     console.log("  - Link opens a peer-to-peer A2A listener on its own port");
-    console.log("  - Configured inbound peers are admitted as agent trust");
-    console.log("  - Bearer possession is the authority boundary; rotate peer bearers separately");
-    console.log(
-      "  - Do not use link for public or reduced-privilege peers until granular trust lands",
-    );
+    console.log("  - Configured bearers authenticate the immediate forwarding agent");
+    console.log("  - Delegated authority is cryptographically capped at the caller's trust");
+    console.log("  - Public outbound delegation is disabled by default");
+    console.log("  - Public use also requires a publicDelegationPeers endpoint/id attestation");
+    console.log("  - Rotate each peer bearer separately");
     console.log("  - Review augments/link/augment.yaml before exposing the port");
   }
 

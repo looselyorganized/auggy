@@ -576,6 +576,15 @@ function validateLinkOptions(
             errors.push(`${peerPrefix}.${field}: required non-empty string`);
           }
         }
+        if (p.purpose !== undefined && typeof p.purpose !== "string") {
+          errors.push(`${peerPrefix}.purpose: must be a string`);
+        }
+        if (
+          p.examples !== undefined &&
+          (!Array.isArray(p.examples) || p.examples.some((example) => typeof example !== "string"))
+        ) {
+          errors.push(`${peerPrefix}.examples: must be an array of strings`);
+        }
       }
     }
   }
@@ -586,6 +595,11 @@ function validateLinkOptions(
       errors.push(`${optionsPrefix}.peerSource: must be an object`);
     } else {
       const ps = peerSource as Record<string, unknown>;
+      for (const key of Object.keys(ps)) {
+        if (key !== "type" && key !== "url" && key !== "cacheSeconds" && key !== "pins") {
+          errors.push(`${optionsPrefix}.peerSource.${key}: unknown option`);
+        }
+      }
       if (ps.type !== "registry") {
         errors.push(
           `${optionsPrefix}.peerSource.type: must be "registry" (no other source types at v1)`,
@@ -601,6 +615,161 @@ function validateLinkOptions(
         errors.push(
           `${optionsPrefix}.peerSource.cacheSeconds: must be a positive number (seconds)`,
         );
+      }
+      if (
+        !ps.pins ||
+        typeof ps.pins !== "object" ||
+        Array.isArray(ps.pins) ||
+        Object.keys(ps.pins).length === 0
+      ) {
+        errors.push(
+          `${optionsPrefix}.peerSource.pins: required non-empty peer-name to endpoint/participant object`,
+        );
+      } else {
+        for (const [name, value] of Object.entries(ps.pins as Record<string, unknown>)) {
+          const pinPrefix = `${optionsPrefix}.peerSource.pins.${name || "<empty>"}`;
+          if (name.length === 0 || !value || typeof value !== "object" || Array.isArray(value)) {
+            errors.push(`${pinPrefix}: must be an endpoint/participant object`);
+            continue;
+          }
+          const pin = value as Record<string, unknown>;
+          if (Object.keys(pin).some((key) => key !== "url" && key !== "participantId")) {
+            errors.push(`${pinPrefix}: unknown option`);
+          }
+          if (typeof pin.url !== "string" || pin.url.length === 0) {
+            errors.push(`${pinPrefix}.url: required non-empty string`);
+          }
+          if (typeof pin.participantId !== "string" || pin.participantId.length === 0) {
+            errors.push(`${pinPrefix}.participantId: required non-empty string`);
+          }
+        }
+      }
+    }
+  }
+
+  const outbound = opts.outbound;
+  if (outbound !== undefined) {
+    if (!outbound || typeof outbound !== "object" || Array.isArray(outbound)) {
+      errors.push(`${optionsPrefix}.outbound: must be an object`);
+    } else {
+      const policy = outbound as Record<string, unknown>;
+      for (const key of Object.keys(policy)) {
+        if (key !== "allowedTrustLevels" && key !== "publicDelegationPeers") {
+          errors.push(`${optionsPrefix}.outbound.${key}: unknown option`);
+        }
+      }
+      const levels = policy.allowedTrustLevels;
+      if (!Array.isArray(levels) || levels.length === 0) {
+        errors.push(`${optionsPrefix}.outbound.allowedTrustLevels: must be a non-empty array`);
+      } else {
+        const seen = new Set<string>();
+        for (let index = 0; index < levels.length; index++) {
+          const level = levels[index];
+          if (level !== "creator" && level !== "agent" && level !== "public") {
+            errors.push(
+              `${optionsPrefix}.outbound.allowedTrustLevels[${index}]: must be "creator", "agent", or "public"`,
+            );
+          } else if (seen.has(level)) {
+            errors.push(
+              `${optionsPrefix}.outbound.allowedTrustLevels[${index}]: duplicate "${level}"`,
+            );
+          } else {
+            seen.add(level);
+          }
+        }
+      }
+
+      const publicPeers = policy.publicDelegationPeers;
+      if (publicPeers !== undefined) {
+        if (
+          !publicPeers ||
+          typeof publicPeers !== "object" ||
+          Array.isArray(publicPeers) ||
+          Object.keys(publicPeers).length === 0
+        ) {
+          errors.push(
+            `${optionsPrefix}.outbound.publicDelegationPeers: must be a non-empty peer-name to endpoint/participant object`,
+          );
+        } else {
+          for (const [peer, value] of Object.entries(publicPeers as Record<string, unknown>)) {
+            if (peer.length === 0 || !value || typeof value !== "object" || Array.isArray(value)) {
+              errors.push(
+                `${optionsPrefix}.outbound.publicDelegationPeers.${peer || "<empty>"}: must be an endpoint/participant object`,
+              );
+              continue;
+            }
+            const binding = value as Record<string, unknown>;
+            if (Object.keys(binding).some((key) => key !== "url" && key !== "participantId")) {
+              errors.push(
+                `${optionsPrefix}.outbound.publicDelegationPeers.${peer}: unknown option`,
+              );
+            }
+            if (typeof binding.url !== "string" || binding.url.length === 0) {
+              errors.push(
+                `${optionsPrefix}.outbound.publicDelegationPeers.${peer}.url: required non-empty string`,
+              );
+            }
+            if (typeof binding.participantId !== "string" || binding.participantId.length === 0) {
+              errors.push(
+                `${optionsPrefix}.outbound.publicDelegationPeers.${peer}.participantId: required non-empty string`,
+              );
+            }
+          }
+        }
+      }
+      const permitsPublic = Array.isArray(levels) && levels.includes("public");
+      const hasPublicPeerBindings =
+        publicPeers !== null &&
+        typeof publicPeers === "object" &&
+        !Array.isArray(publicPeers) &&
+        Object.keys(publicPeers).length > 0;
+      if (permitsPublic && !hasPublicPeerBindings) {
+        errors.push(
+          `${optionsPrefix}.outbound.publicDelegationPeers: required when public trust is allowed`,
+        );
+      } else if (!permitsPublic && publicPeers !== undefined) {
+        errors.push(
+          `${optionsPrefix}.outbound.publicDelegationPeers: requires public in allowedTrustLevels`,
+        );
+      } else if (permitsPublic && hasPublicPeerBindings && peerSource === undefined) {
+        const configuredPeers =
+          peers && typeof peers === "object" && !Array.isArray(peers)
+            ? (peers as Record<string, unknown>)
+            : {};
+        for (const [peer, value] of Object.entries(publicPeers as Record<string, unknown>)) {
+          const configured = configuredPeers[peer] as Record<string, unknown> | undefined;
+          const binding = value as Record<string, unknown>;
+          if (!configured) {
+            errors.push(
+              `${optionsPrefix}.outbound.publicDelegationPeers: unknown inline peer "${peer}"`,
+            );
+          } else if (
+            configured.participantId !== binding.participantId ||
+            configured.url !== binding.url
+          ) {
+            errors.push(
+              `${optionsPrefix}.outbound.publicDelegationPeers.${peer}: must match the inline peer url and participantId`,
+            );
+          }
+        }
+      } else if (permitsPublic && hasPublicPeerBindings && peerSource !== undefined) {
+        const source =
+          peerSource && typeof peerSource === "object" && !Array.isArray(peerSource)
+            ? (peerSource as Record<string, unknown>)
+            : {};
+        const pins =
+          source.pins && typeof source.pins === "object" && !Array.isArray(source.pins)
+            ? (source.pins as Record<string, unknown>)
+            : {};
+        for (const [peer, value] of Object.entries(publicPeers as Record<string, unknown>)) {
+          const binding = value as Record<string, unknown>;
+          const pin = pins[peer] as Record<string, unknown> | undefined;
+          if (!pin || pin.participantId !== binding.participantId || pin.url !== binding.url) {
+            errors.push(
+              `${optionsPrefix}.outbound.publicDelegationPeers.${peer}: must match the peerSource endpoint and participant pin`,
+            );
+          }
+        }
       }
     }
   }

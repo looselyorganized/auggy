@@ -110,8 +110,10 @@ describe("runAdd mutates per-agent package.json", () => {
     expect(metadata.kind).toBeUndefined();
     const output = logs.join("\n");
     expect(output).toContain("Use link (preview):");
-    expect(output).toContain("admitted as agent trust");
-    expect(output).toContain("Bearer possession is the authority boundary");
+    expect(output).toContain("bearers authenticate the immediate forwarding agent");
+    expect(output).toContain("Delegated authority is cryptographically capped");
+    expect(output).toContain("Public outbound delegation is disabled by default");
+    expect(output).toContain("publicDelegationPeers endpoint/id attestation");
   });
 
   test("invokes bun install in agent dir when packageDeps are added", async () => {

@@ -193,6 +193,12 @@ export interface PeerIdentity {
   trustLevel: TrustLevel;
   publicSubstate?: "anonymous" | "recognized";  // set iff trustLevel === "public"
   authenticatedPriorPeerId?: string; // verified one-way identity transition
+  delegatedOrigin?: {
+    subject: string;       // original subject, not used directly as local peer.id
+    sourceAugment: string; // transport that first resolved the subject
+    viaPeerId: string;     // authenticated immediate forwarding peer
+    hopCount: number;
+  };
   sourceAugment: string;     // which augment minted this identity
   displayName?: string;
   orgId?: string;
@@ -233,6 +239,13 @@ must not be copied from headers or model output, and is deliberately omitted
 from logs and model-visible identity context. The kernel uses it only to
 authorize promotion of already-bound thread and memory state; it never permits
 a recognized-to-anonymous downgrade.
+
+`delegatedOrigin` is authenticated transport evidence for an identity relayed
+across a delegation boundary. The receiving transport mints a namespaced local
+`peer.id`; peer-derived storage never indexes directly by the asserted subject.
+Only a transport that verifies the delegation envelope may set this field.
+Link uses it to preserve the original subject/source and bounded hop count
+while capping trust to the authenticated forwarding peer.
 
 Route auth contexts also expose `auth.principal.kind`. That field is a
 TypeScript discriminator for the concrete identity payload (`anonymous`,

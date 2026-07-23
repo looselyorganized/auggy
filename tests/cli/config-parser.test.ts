@@ -386,6 +386,184 @@ describe("link agent card capabilities", () => {
       "augments[0].options.agentCard.capabilities: must be an array of strings",
     );
   });
+
+  test("accepts an explicit outbound trust delegation", () => {
+    const path = writeYaml(
+      "agent.yaml",
+      minimalConfig({
+        augments: [
+          {
+            type: "link",
+            options: {
+              ...linkOptions,
+              peers: {
+                researcher: {
+                  url: "https://researcher.example.org",
+                  bearer: "outbound-test-bearer",
+                  participantId: "00000000-0000-4000-8000-00000000bbbb",
+                  inboundBearer: "inbound-test-bearer",
+                  inboundBearerId: "inbound-test-key",
+                },
+              },
+              outbound: {
+                allowedTrustLevels: ["creator", "agent", "public"],
+                publicDelegationPeers: {
+                  researcher: {
+                    url: "https://researcher.example.org",
+                    participantId: "00000000-0000-4000-8000-00000000bbbb",
+                  },
+                },
+              },
+            },
+          },
+        ],
+      }),
+    );
+
+    expect(parseConfig(path).augments[0]?.options?.outbound).toEqual({
+      allowedTrustLevels: ["creator", "agent", "public"],
+      publicDelegationPeers: {
+        researcher: {
+          url: "https://researcher.example.org",
+          participantId: "00000000-0000-4000-8000-00000000bbbb",
+        },
+      },
+    });
+  });
+
+  test("rejects malformed, duplicate, empty, and misspelled outbound trust policy", () => {
+    for (const outbound of [
+      { allowedTrustLevels: [] },
+      { allowedTrustLevels: ["creator", "creator"] },
+      { allowedTrustLevels: ["staff"] },
+      { allowedTrustLevels: ["public"] },
+      {
+        allowedTrustLevels: ["creator"],
+        publicDelegationPeers: {
+          researcher: {
+            url: "https://researcher.example.org",
+            participantId: "00000000-0000-4000-8000-00000000bbbb",
+          },
+        },
+      },
+      {
+        allowedTrustLevels: ["public"],
+        publicDelegationPeers: {},
+      },
+      {
+        allowedTrustLevels: ["public"],
+        publicDelegationPeers: [],
+      },
+      {
+        allowedTrustLevels: ["public"],
+        publicDelegationPeers: { researcher: "" },
+      },
+      {
+        allowedTrustLevels: ["public"],
+        publicDelegationPeers: {
+          researcher: {
+            url: "https://researcher.example.org",
+            participantId: "00000000-0000-4000-8000-00000000cccc",
+          },
+        },
+      },
+      {
+        allowedTrustLevels: ["public"],
+        publicDelegationPeers: {
+          unknown: {
+            url: "https://unknown.example.org",
+            participantId: "00000000-0000-4000-8000-00000000bbbb",
+          },
+        },
+      },
+      { allowTrustLevels: ["public"] },
+    ]) {
+      const path = writeYaml(
+        "agent.yaml",
+        minimalConfig({
+          augments: [
+            {
+              type: "link",
+              options: { ...linkOptions, outbound },
+            },
+          ],
+        }),
+      );
+      expect(() => parseConfig(path)).toThrow(/outbound/);
+    }
+  });
+
+  test("requires exact operator-owned endpoint and participant pins for peerSource", () => {
+    const valid = writeYaml(
+      "agent.yaml",
+      minimalConfig({
+        augments: [
+          {
+            type: "link",
+            options: {
+              ...linkOptions,
+              peerSource: {
+                type: "registry",
+                url: "https://registry.example.org/peers.json",
+                pins: {
+                  researcher: {
+                    url: "https://researcher.example.org",
+                    participantId: "00000000-0000-4000-8000-00000000bbbb",
+                  },
+                },
+              },
+            },
+          },
+        ],
+      }),
+    );
+    expect(parseConfig(valid).augments[0]?.options?.peerSource).toMatchObject({
+      pins: {
+        researcher: {
+          url: "https://researcher.example.org",
+          participantId: "00000000-0000-4000-8000-00000000bbbb",
+        },
+      },
+    });
+
+    for (const peerSource of [
+      { type: "registry", url: "https://registry.example.org/peers.json" },
+      {
+        type: "registry",
+        url: "https://registry.example.org/peers.json",
+        pins: {},
+      },
+      {
+        type: "registry",
+        url: "https://registry.example.org/peers.json",
+        pins: { researcher: { participantId: "peer" } },
+      },
+      {
+        type: "registry",
+        url: "https://registry.example.org/peers.json",
+        pins: {
+          researcher: {
+            url: "https://researcher.example.org",
+            participantId: "peer",
+            delegatedOrigin: true,
+          },
+        },
+      },
+    ]) {
+      const invalid = writeYaml(
+        "agent.yaml",
+        minimalConfig({
+          augments: [
+            {
+              type: "link",
+              options: { ...linkOptions, peerSource },
+            },
+          ],
+        }),
+      );
+      expect(() => parseConfig(invalid)).toThrow(/peerSource/);
+    }
+  });
 });
 
 describe("engine.reasoningEffort validation", () => {

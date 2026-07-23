@@ -20,6 +20,7 @@ import { createSqliteVisitorAuthStore } from "../../src/augments/visitorAuth/sto
 import { defineAgent } from "../../src/agent";
 import { createMockModel } from "../fixtures/mock-model";
 import type { AgentHandle } from "../../src/types";
+import { asStringTool } from "../fixtures/tool-helpers";
 
 const TMP = join(import.meta.dir, ".tmp-resolver-test");
 
@@ -255,6 +256,94 @@ describe("resolveAugments — mcp", () => {
   });
 });
 
+describe("resolveAugments — link", () => {
+  test("forwards outbound trust policy and peer routing metadata", async () => {
+    writeFileSync(
+      join(TMP, "package.json"),
+      JSON.stringify({ name: "link-resolver-test", dependencies: { "@auggy/link": "^0.1.2" } }),
+    );
+    mkdirSync(join(TMP, "node_modules", "@auggy"), { recursive: true });
+    symlinkSync(
+      join(process.cwd(), "node_modules", "@auggy", "link"),
+      join(TMP, "node_modules", "@auggy", "link"),
+      "dir",
+    );
+    const [augment] = await resolveAugments(
+      [
+        {
+          name: "mesh",
+          type: "link",
+          options: {
+            dbPath: "./link.db",
+            agentCard: {
+              id: "00000000-0000-4000-8000-00000000aaaa",
+              name: "resolver-agent",
+              description: "Resolver test",
+              endpointUrl: "https://resolver.example.org",
+            },
+            outbound: {
+              allowedTrustLevels: ["public"],
+              publicDelegationPeers: {
+                researcher: {
+                  url: "https://researcher.example.org",
+                  participantId: "00000000-0000-4000-8000-00000000bbbb",
+                },
+              },
+            },
+            peers: {
+              researcher: {
+                url: "https://researcher.example.org",
+                bearer: "outbound",
+                participantId: "00000000-0000-4000-8000-00000000bbbb",
+                inboundBearer: "inbound",
+                inboundBearerId: "inbound-id",
+                purpose: "Research specialist",
+                examples: ["Find a paper"],
+              },
+            },
+          },
+        },
+      ],
+      TMP,
+    );
+
+    expect(augment?.constraints?.perTrustLevel?.creator?.neverExpose).toEqual([
+      "link_send",
+      "link_list",
+    ]);
+    expect(augment?.constraints?.perTrustLevel?.agent?.neverExpose).toEqual([
+      "link_send",
+      "link_list",
+    ]);
+    expect(augment?.constraints?.perTrustLevel?.public).toBeUndefined();
+    const list = augment?.tools?.find((tool) => tool.name === "link_list");
+    expect(list).toBeDefined();
+    const result = JSON.parse(
+      await asStringTool(list!).execute(
+        {},
+        {
+          turnId: "public-turn",
+          threadId: "public-thread",
+          peer: {
+            id: "visitor",
+            kind: "human",
+            trustLevel: "public",
+            publicSubstate: "recognized",
+            sourceAugment: "web",
+          },
+        },
+      ),
+    );
+    expect(result.peers).toEqual([
+      {
+        name: "researcher",
+        purpose: "Research specialist",
+        examples: ["Find a paper"],
+      },
+    ]);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // layeredMemory
 // ---------------------------------------------------------------------------
@@ -441,8 +530,8 @@ describe("resolveAugments — webTransport", () => {
   // Without this, the Credentials and Identity tabs render
   // "agent directory not configured" / "agent directory or identity path not
   // configured" errors. End-to-end: scaffold a .env file, hit
-  // /console/api/credentials from loopback, assert it returns the parsed
-  // entries (not the "not configured" error).
+  // /console/api/credentials with explicit console auth, assert it returns
+  // the parsed entries (not the "not configured" error).
   test("forwards agentDir to webTransport so /console can read .env", async () => {
     const { writeFileSync } = await import("node:fs");
     const port = getLikelyFreePort();
@@ -468,7 +557,10 @@ describe("resolveAugments — webTransport", () => {
     const agent = defineAgent({ name: "test", model: "mock", augments }, model);
     if (!(await startAgentIfSocketsAvailable(agent))) return;
     try {
-      const resp = await fetch(`http://127.0.0.1:${port}/console/api/credentials`);
+      const authorization = `Basic ${Buffer.from(":test-token").toString("base64")}`;
+      const resp = await fetch(`http://127.0.0.1:${port}/console/api/credentials`, {
+        headers: { authorization },
+      });
       expect(resp.status).toBe(200);
       const body = (await resp.json()) as { error?: string; entries?: unknown[] };
       // The bug surfaced as `{ error: "agent directory not configured" }`.

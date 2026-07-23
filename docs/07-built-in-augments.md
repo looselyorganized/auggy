@@ -1430,6 +1430,13 @@ config:
       examples:
         - "What's the state of test-time compute scaling?"
         - "Find recent papers on agent benchmarks"
+  outbound:
+    allowedTrustLevels: [creator, agent] # default; add public explicitly
+    # Required with public: exact receivers verified to enforce signed origin.
+    # publicDelegationPeers:
+    #   researcher:
+    #     url: https://researcher.example.org
+    #     participantId: <peer-uuid>
 ```
 
 ### What it is
@@ -1440,11 +1447,12 @@ shape, and to send outbound traffic to configured peers. It is not compatible
 with current A2A 1.0 clients or cards. Peer-to-peer traffic uses mutual bearer
 auth with no central service and binds a separate port from `webTransport`.
 
-`link` remains a legacy preview in the pre-1.0 line. Every configured inbound
-peer that presents a valid bearer is admitted as `trustLevel: "agent"`; there
-is no authenticated-but-reduced peer tier yet. Do not use it for public,
-customer, semi-trusted collaborator, or production A2A interoperability traffic
-until the roadmap acceptance criteria are met.
+`link` remains a legacy preview in the pre-1.0 line. A configured inbound peer
+that presents a valid bearer is the authenticated forwarding hop. Auggy-issued
+outbound calls add a short-lived HMAC origin assertion bound to the receiver,
+content, and idempotency key. The receiver caps the asserted origin at the
+forwarding hop's authority. Unsigned legacy traffic is downgraded to public
+anonymous rather than receiving agent authority.
 
 ### When to use it
 
@@ -1460,9 +1468,32 @@ interoperability.
 - **`link_send(to, text)`** — send a text message to a configured peer. Returns the peer's synchronous reply text (when available) or a task id (when the peer chose async handling).
 - **`link_list()`** — enumerate configured peers as `{ peers: [{ name, purpose?, examples? }] }`. The LLM uses this to discover *who* it can reach and *what each peer is good for*. `purpose` and `examples` come from `augments/link/augment.yaml`; both are optional. Beware: bad examples mislead the model more than they help — keep them tight or omit.
 
+Both tools default to `creator` and `agent` turns. To allow a public turn to
+delegate while preserving public authority downstream:
+
+```yaml
+outbound:
+  allowedTrustLevels: [creator, agent, public]
+  publicDelegationPeers:
+    researcher:
+      url: https://researcher.example.org
+      participantId: <peer-uuid>
+```
+
+The policy is enforced when tools are exposed and again immediately before
+network access. Public delegation additionally requires an exact peer-name,
+HTTPS endpoint, and participant-id binding in `publicDelegationPeers`. Each
+binding is the operator's attestation that that exact receiving agent has been
+upgraded and enforces signed delegated-origin provenance; it is never learned
+from a peer card or registry. If a registry reassigns a name or endpoint, the
+peer disappears from the public roster and sends fail closed. Public turns see
+only matching attested peers in `link_list` and the preamble. Missing execution
+context fails closed.
+
 ### Context block — peer roster
 
-The augment surfaces a minimal preamble block on every turn listing only peer **names**:
+For an allowed turn, the augment surfaces a minimal preamble block listing only
+peer **names**:
 
 ```
 Peers reachable via link_send: researcher, analyst. Call link_list to see what each peer is good for.
@@ -1505,6 +1536,10 @@ config:
     type: registry
     url: https://lorf-context.up.railway.app/peers.json
     cacheSeconds: 60     # default 60; lower for snappier propagation
+    pins:
+      frontier:
+        url: https://frontier.example.org:8081
+        participantId: 54bb9528-05c6-4e2e-a419-62e6e003156c
   # peers: {...}         # optional — fallback if registry is unreachable
 ```
 
@@ -1525,7 +1560,11 @@ The registry response shape (the **stable wire contract**):
 
 Required per entry: `name`, `url`, `participantId`. Optional: `agentCardUrl` (reserved for future capability discovery; not used at v1).
 
-**Discovery separate from auth.** The registry holds public identity only. Bearers live in environment variables on each Auggy, keyed by peer name:
+**Discovery separate from authority.** The registry controls whether an
+operator-pinned peer is currently present; it cannot introduce a new peer,
+change an endpoint, or reassign a participant. Every returned entry must
+exactly match `peerSource.pins` or it is skipped. Bearers live in environment
+variables on each Auggy, keyed by peer name:
 
 | Env var | What it is |
 |---|---|
@@ -1537,14 +1576,14 @@ Names are uppercased; non-alphanumeric characters become underscores. Peer `data
 
 **Behavior:**
 - On boot, the augment fetches `peerSource.url`. On success, peers populate the AddressBook + BearerAuthProvider. On failure, the augment falls back to the inline `peers` block if present, or runs inbound-only if not.
-- A periodic refresh (TTL = `cacheSeconds`) propagates registry edits to running agents without a restart. Refresh failures preserve the last-good peer state — degradation, not outage.
+- A periodic refresh (TTL = `cacheSeconds`) propagates presence/removal edits to running agents without a restart. Endpoint or identity changes require an operator config update and restart. Refresh failures preserve the last-good peer state — degradation, not outage.
 - Peers absent from a successful refresh are **forgotten**: outbound to that name returns "unknown peer"; inbound from that participant is 401'd. In-flight conversations complete on the bearer they started with — there is no mid-stream eviction.
 - **Per-peer error handling:** if a single entry in the registry is invalid (malformed, insecure URL, missing env-var bearer), the augment logs a warning and skips that entry. Other entries — including removals of revoked peers — still apply. This prevents an unrelated misconfiguration from blocking trust revocations.
 
 **Security defaults:**
 - `peerSource.url` MUST be `https://`. Plaintext `http://` is rejected at boot. To override for localhost dev, set `LINK_ALLOW_PLAINTEXT=1` (the same env knob the link library uses for plain-HTTP binding).
-- Registry-supplied peer URLs (and `agentCardUrl`) MUST be `https://`. Plaintext entries are skipped — they don't poison the rest of the directory but they're never used for outbound traffic. Same `LINK_ALLOW_PLAINTEXT=1` override applies.
-- Why: the registry is a remote trust boundary. Without HTTPS enforcement, a compromised or misconfigured registry could repoint a peer name to an attacker-controlled host while the agent still sends the real `LINK_BEARER_<NAME>`. HTTPS is mandatory for any production deployment.
+- Registry-supplied peer URLs (and `agentCardUrl`) MUST be `https://` and must exactly match the operator pin. Plaintext or mismatched entries are skipped—they don't poison the rest of the directory and never receive a bearer. The same `LINK_ALLOW_PLAINTEXT=1` override applies only to the scheme check for localhost development; it does not disable pin matching.
+- Why: the registry is a remote trust boundary. HTTPS authenticates a host but does not authorize it to receive a name-scoped bearer. Exact endpoint and participant pins prevent a compromised or misconfigured registry from redirecting credentials.
 
 **Reliability defaults:**
 - Registry fetches have a **10-second timeout** (abortable). A hung registry won't stall agent startup indefinitely.
@@ -1565,18 +1604,42 @@ current A2A Agent Card. Anyone who can reach the URL can read it — keep
 descriptions and `capabilities[]` appropriately vague if you're cross-org.
 `capabilities` is a free-form `string[]`: semantic, not structural.
 
-### Trust model — important caveat
+### Trust model and rollout
 
-All admitted peers are minted as `trust: "agent"` today — there is no per-peer
-trust override. If you need to admit a peer at *reduced* privilege, the only
-downgrade today is `public` (the visitor tier), which has the wrong semantic
-for "authenticated-but-restricted peer." This is a known authorization gap and
-is one reason the roadmap calls for a more granular trust model.
+The bearer authenticates the immediate configured agent; it never proves that
+the originating caller was an agent. Auggy therefore signs origin metadata on
+each outbound delegation and verifies it before history retrieval or model
+execution. Forwarded identities are domain-separated by the receiving Link
+instance, audience, authority class, authenticated hop, original subject, and
+a signed digest of the complete forwarding path; their thread IDs include the
+receiving instance. Different users relayed by one agent—or the same user
+arriving through separate paths or Link instances—cannot share a thread or
+peer-derived memory identity.
+
+Creator authority is capped to agent when it crosses an agent bearer. Public
+anonymous/recognized state remains public. A valid origin assertion is accepted
+for at most five minutes and eight hops. Changed audience, body, idempotency
+key, origin, or signature is rejected before the kernel runs. Reserved wire
+metadata is consumed at the transport boundary and is not shown to the model.
+
+Old sender to new receiver is downgraded to public anonymous. New sender to old
+receiver remains wire-compatible for creator/agent callers, but public
+delegation is denied unless the operator explicitly attests that the receiver
+enforces provenance in `publicDelegationPeers`. Upgrade receivers, verify their
+enforcement, and only then add that attestation. Delegated traffic receives new
+thread IDs; do not alias old shared history into the new identities.
+
+Existing `peerSource` deployments must add reviewed `pins` for every permitted
+registry peer before upgrading. Copy neither values nor endpoints blindly from
+the registry being constrained. Public-delegation entries must bind both the
+same endpoint and participant id. The parser rejects missing pins and older
+participant-id-only public bindings. Endpoint or identity rotation is an
+operator configuration change followed by restart, not a registry-only edit.
 
 Operationally, treat each inbound peer bearer like an agent-privilege
 credential. Rotate inbound and outbound bearers independently, keep them out of
-registries and public metadata documents, and expose the link port only to peers that
-should receive the current `agent` capability surface.
+registries and public metadata documents, and expose the link port only to
+configured peers.
 
 ### Forward-compat with the coordinator
 
